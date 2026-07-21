@@ -1,0 +1,2119 @@
+import { randomUUID } from "node:crypto";
+import { afterAll, describe, expect, it } from "vitest";
+import { textMessageContent } from "../../domain/content";
+import { loadAdminUsageQueryRows } from "../auth/adminUsageQueries";
+import { prisma } from "../prisma";
+import { createPrismaSettingsRepository } from "../settings/prismaRepository";
+import { createPrismaRunRepository } from "./prismaRepository";
+import {
+  ActiveLeafConflictError,
+  ActiveRunConflictError,
+  AttachmentLinkConflictError,
+  type AcceptedRunDefaults,
+  type RunRepository
+} from "./runRepositoryContract";
+
+async function withRunUser<T>(run: (input: { userId: string }) => Promise<T>): Promise<T> {
+  const userId = `run-repository-test-${randomUUID()}`;
+
+  await prisma.user.create({
+    data: {
+      displayName: "Run Repository Test User",
+      id: userId,
+      settings: {
+        create: {
+          defaultControlValues: {},
+          defaultModelId: "fake-qsa",
+          defaultProvider: "fake",
+          defaultSearchStrategyId: "search-disabled"
+        }
+      }
+    }
+  });
+
+  try {
+    return await run({ userId });
+  } finally {
+    await prisma.user.deleteMany({
+      where: {
+        id: userId
+      }
+    });
+  }
+}
+
+async function promptFlags(userId: string): Promise<Map<string, boolean>> {
+  const prompts = await prisma.promptPreset.findMany({
+    select: {
+      id: true,
+      isDefault: true
+    },
+    where: {
+      userId
+    }
+  });
+
+  return new Map(prompts.map((prompt) => [prompt.id, prompt.isDefault]));
+}
+
+function createRunInput(input: {
+  attachmentIds?: string[];
+  chatId: string;
+  defaults?: Partial<AcceptedRunDefaults>;
+  question: string;
+  userId: string;
+}): Parameters<RunRepository["createRun"]>[0] {
+  const content = textMessageContent(input.question);
+  const defaults: AcceptedRunDefaults = {
+    controlDefaults: input.defaults?.controlDefaults ?? {},
+    modelId: "fake-qsa",
+    promptPresetId: null,
+    provider: "fake",
+    searchStrategy: "search-disabled",
+    userId: input.userId,
+    ...input.defaults
+  };
+
+  return {
+    chatId: input.chatId,
+    content,
+    defaults,
+    expectedActiveLeafId: null,
+    modelId: "fake-qsa",
+    normalizedRequest: {
+      attachmentIds: input.attachmentIds ?? [],
+      chatId: input.chatId,
+      content,
+      modelCapabilities: {
+        nativePdfInput: false,
+        nativeSearch: false,
+        pdf: false,
+        reasoning: false,
+        vision: false
+      },
+      modelId: "fake-qsa",
+      params: {},
+      prompt: {
+        developer: null,
+        presetId: null,
+        system: null
+      },
+      provider: "fake",
+      searchStrategy: "search-disabled"
+    },
+    provider: "fake",
+    providerRequestPreview: {},
+    userId: input.userId
+  };
+}
+
+function createRegenerationInput(
+  prepared: Parameters<RunRepository["createRun"]>[0],
+  userMessageId: string
+): Parameters<RunRepository["createRegenerationRun"]>[0] {
+  return {
+    chatId: prepared.chatId,
+    defaults: prepared.defaults,
+    modelId: prepared.modelId,
+    normalizedRequest: prepared.normalizedRequest,
+    provider: prepared.provider,
+    providerRequestPreview: prepared.providerRequestPreview,
+    userId: prepared.userId,
+    userMessageId
+  };
+}
+
+function chatGraph(chatId: string) {
+  return prisma.chat.findUniqueOrThrow({
+    select: {
+      _count: {
+        select: {
+          messages: true,
+          modelRuns: true
+        }
+      },
+      activeLeafMessageId: true,
+      title: true
+    },
+    where: {
+      id: chatId
+    }
+  });
+}
+
+function storedDefaults(userId: string) {
+  return prisma.userSettings.findUnique({
+    select: {
+      defaultControlValues: true,
+      defaultModelId: true,
+      defaultPromptPresetId: true,
+      defaultProvider: true,
+      defaultSearchStrategyId: true
+    },
+    where: {
+      userId
+    }
+  });
+}
+
+async function createActiveRun(repository: RunRepository, userId: string, title: string) {
+  const chat = await prisma.chat.create({
+    data: {
+      defaultModelId: "fake-qsa",
+      defaultProvider: "fake",
+      title,
+      userId
+    }
+  });
+  const created = await repository.createRun(
+    createRunInput({
+      chatId: chat.id,
+      question: title,
+      userId
+    })
+  );
+
+  return {
+    assistantMessageId: created.assistantMessageId,
+    chatId: chat.id,
+    runId: created.runId,
+    userId
+  };
+}
+
+function completionInput(input: {
+  assistantMessageId: string;
+  chatId: string;
+  runId: string;
+  userId: string;
+}): Parameters<RunRepository["completeRun"]>[0] {
+  return {
+    ...input,
+    estimatedCostMicros: 17,
+    finalProviderResponsePreview: {},
+    finalText: "Completed answer",
+    modelId: "fake-qsa",
+    provider: "fake",
+    usage: {
+      cachedInputTokens: 0,
+      cacheWriteInputTokens: 0,
+      inputTokens: 2,
+      outputTokens: 3,
+      reasoningTokens: 1,
+      totalTokens: 6
+    }
+  };
+}
+
+async function terminalState(input: {
+  assistantMessageId: string;
+  chatId: string;
+  runId: string;
+}) {
+  const [run, message, usageCount, chat] = await Promise.all([
+    prisma.modelRun.findUniqueOrThrow({
+      select: {
+        errorPayload: true,
+        status: true
+      },
+      where: {
+        id: input.runId
+      }
+    }),
+    prisma.message.findUniqueOrThrow({
+      select: {
+        errorMessage: true,
+        status: true
+      },
+      where: {
+        id: input.assistantMessageId
+      }
+    }),
+    prisma.usageEvent.count({
+      where: {
+        modelRunId: input.runId
+      }
+    }),
+    prisma.chat.findUniqueOrThrow({
+      select: {
+        totalInputTokens: true,
+        totalOutputTokens: true,
+        totalReasoningTokens: true
+      },
+      where: {
+        id: input.chatId
+      }
+    })
+  ]);
+
+  return { chat, message, run, usageCount };
+}
+
+async function expectTerminalState(
+  input: Parameters<typeof terminalState>[0],
+  status: "cancelled" | "complete"
+) {
+  const state = await terminalState(input);
+  const complete = status === "complete";
+
+  expect(state).toMatchObject({
+    chat: {
+      totalInputTokens: complete ? 2 : 0,
+      totalOutputTokens: complete ? 3 : 0,
+      totalReasoningTokens: complete ? 1 : 0
+    },
+    message: { status },
+    run: { status },
+    usageCount: complete ? 1 : 0
+  });
+
+  return state;
+}
+
+const cancelPayload = {
+  code: "model_run_cancelled",
+  message: "Model run cancelled"
+};
+
+describe("Prisma run repository", () => {
+  afterAll(async () => {
+    await prisma.$disconnect();
+  });
+
+  it("loads only the selected ancestor path in root-to-leaf order", async () => {
+    await withRunUser(async ({ userId }) => {
+      const chat = await prisma.chat.create({
+        data: {
+          defaultModelId: "fake-qsa",
+          defaultProvider: "fake",
+          title: "Branched context",
+          userId
+        }
+      });
+      const root = await prisma.message.create({
+        data: {
+          chatId: chat.id,
+          content: textMessageContent("Root"),
+          role: "user",
+          status: "complete"
+        }
+      });
+      const ignoredRole = await prisma.message.create({
+        data: {
+          chatId: chat.id,
+          content: textMessageContent("Tool trace"),
+          parentMessageId: root.id,
+          role: "tool",
+          status: "complete"
+        }
+      });
+      const ignoredStatus = await prisma.message.create({
+        data: {
+          chatId: chat.id,
+          content: textMessageContent("Failed answer"),
+          parentMessageId: ignoredRole.id,
+          role: "assistant",
+          status: "error"
+        }
+      });
+      const activeLeaf = await prisma.message.create({
+        data: {
+          chatId: chat.id,
+          content: textMessageContent("Active leaf"),
+          parentMessageId: ignoredStatus.id,
+          role: "assistant",
+          status: "streaming"
+        }
+      });
+      const sibling = await prisma.message.create({
+        data: {
+          chatId: chat.id,
+          content: textMessageContent("Sibling"),
+          parentMessageId: root.id,
+          role: "assistant",
+          status: "complete"
+        }
+      });
+      const siblingLeaf = await prisma.message.create({
+        data: {
+          chatId: chat.id,
+          content: textMessageContent("Sibling leaf"),
+          parentMessageId: sibling.id,
+          role: "user",
+          status: "complete"
+        }
+      });
+      await prisma.chat.update({
+        data: {
+          activeLeafMessageId: activeLeaf.id
+        },
+        where: {
+          id: chat.id
+        }
+      });
+      const repository = createPrismaRunRepository(prisma);
+
+      await expect(repository.loadConversationContext(chat.id, userId)).resolves.toMatchObject([
+        { id: root.id, role: "user" },
+        { id: activeLeaf.id, role: "assistant" }
+      ]);
+      await expect(
+        repository.loadConversationContextForExpectedLeaf(chat.id, userId, activeLeaf.id)
+      ).resolves.toMatchObject([
+        { id: root.id, role: "user" },
+        { id: activeLeaf.id, role: "assistant" }
+      ]);
+      await expect(
+        repository.loadConversationContextForExpectedLeaf(chat.id, userId, siblingLeaf.id)
+      ).resolves.toBeNull();
+      await expect(
+        repository.loadConversationContextForLeaf(chat.id, userId, siblingLeaf.id)
+      ).resolves.toMatchObject([
+        { id: root.id, role: "user" },
+        { id: sibling.id, role: "assistant" },
+        { id: siblingLeaf.id, role: "user" }
+      ]);
+    });
+  });
+
+  it("preserves missing, unowned, archived, and empty-chat context contracts", async () => {
+    await withRunUser(async ({ userId }) => {
+      await withRunUser(async ({ userId: otherUserId }) => {
+        const [emptyChat, archivedChat, otherChat] = await Promise.all([
+          prisma.chat.create({
+            data: {
+              defaultModelId: "fake-qsa",
+              defaultProvider: "fake",
+              title: "Empty context",
+              userId
+            }
+          }),
+          prisma.chat.create({
+            data: {
+              archived: true,
+              defaultModelId: "fake-qsa",
+              defaultProvider: "fake",
+              title: "Archived context",
+              userId
+            }
+          }),
+          prisma.chat.create({
+            data: {
+              defaultModelId: "fake-qsa",
+              defaultProvider: "fake",
+              title: "Foreign context",
+              userId: otherUserId
+            }
+          })
+        ]);
+        const repository = createPrismaRunRepository(prisma);
+        const missingChatId = randomUUID();
+        const missingLeafId = randomUUID();
+
+        await expect(repository.loadConversationContext(emptyChat.id, userId)).resolves.toEqual([]);
+        await expect(
+          repository.loadConversationContextForExpectedLeaf(emptyChat.id, userId, null)
+        ).resolves.toEqual([]);
+        await expect(
+          repository.loadConversationContextForExpectedLeaf(emptyChat.id, userId, missingLeafId)
+        ).resolves.toBeNull();
+        await expect(
+          repository.loadConversationContextForLeaf(emptyChat.id, userId, missingLeafId)
+        ).resolves.toEqual([]);
+
+        for (const unavailableChatId of [missingChatId, archivedChat.id, otherChat.id]) {
+          await expect(repository.loadConversationContext(unavailableChatId, userId)).resolves.toEqual([]);
+          await expect(
+            repository.loadConversationContextForExpectedLeaf(unavailableChatId, userId, null)
+          ).resolves.toBeNull();
+          await expect(
+            repository.loadConversationContextForLeaf(unavailableChatId, userId, missingLeafId)
+          ).resolves.toEqual([]);
+        }
+      });
+    });
+  });
+
+  it("terminates an ancestor query when malformed parentage contains a cycle", async () => {
+    await withRunUser(async ({ userId }) => {
+      const chat = await prisma.chat.create({
+        data: {
+          defaultModelId: "fake-qsa",
+          defaultProvider: "fake",
+          title: "Cyclic context",
+          userId
+        }
+      });
+      const first = await prisma.message.create({
+        data: {
+          chatId: chat.id,
+          content: textMessageContent("First"),
+          role: "user",
+          status: "complete"
+        }
+      });
+      const second = await prisma.message.create({
+        data: {
+          chatId: chat.id,
+          content: textMessageContent("Second"),
+          parentMessageId: first.id,
+          role: "assistant",
+          status: "complete"
+        }
+      });
+
+      try {
+        await prisma.message.update({
+          data: {
+            parentMessageId: second.id
+          },
+          where: {
+            id: first.id
+          }
+        });
+        await prisma.chat.update({
+          data: {
+            activeLeafMessageId: first.id
+          },
+          where: {
+            id: chat.id
+          }
+        });
+
+        const repository = createPrismaRunRepository(prisma);
+        await expect(repository.loadConversationContext(chat.id, userId)).resolves.toMatchObject([
+          { id: second.id, role: "assistant" },
+          { id: first.id, role: "user" }
+        ]);
+      } finally {
+        await prisma.message.update({
+          data: {
+            parentMessageId: null
+          },
+          where: {
+            id: first.id
+          }
+        });
+      }
+    });
+  });
+
+  it("loads capabilities only for enabled provider-model catalog rows", async () => {
+    const provider = `repo-test-${randomUUID()}`;
+    const enabledModelId = "enabled-model";
+    const disabledModelId = "disabled-model";
+    await prisma.providerModel.createMany({
+      data: [
+        {
+          capabilities: {
+            streaming: true
+          },
+          contextWindow: 12345,
+          defaultParams: {
+            maxOutputTokens: 512
+          },
+          displayName: "Enabled Model",
+          enabled: true,
+          modelId: enabledModelId,
+          provider,
+          supportsNativeSearch: true,
+          supportsPdf: true,
+          supportsReasoning: true,
+          supportsVision: true
+        },
+        {
+          capabilities: {
+            streaming: true
+          },
+          contextWindow: 12345,
+          defaultParams: {},
+          displayName: "Disabled Model",
+          enabled: false,
+          modelId: disabledModelId,
+          provider,
+          supportsNativeSearch: true,
+          supportsPdf: true,
+          supportsReasoning: true,
+          supportsVision: true
+        }
+      ]
+    });
+
+    try {
+      const repository = createPrismaRunRepository(prisma);
+
+      await expect(repository.loadModelConfiguration(provider, enabledModelId)).resolves.toMatchObject({
+        capabilities: {
+          contextWindow: 12345,
+          defaultMaxOutputTokens: 512,
+          nativeSearch: true,
+          pdf: true,
+          reasoning: true,
+          streaming: true,
+          vision: true
+        },
+        defaultParams: {
+          maxOutputTokens: 512
+        }
+      });
+      await expect(repository.loadModelConfiguration(provider, disabledModelId)).resolves.toBeNull();
+      await expect(repository.loadModelConfiguration(provider, "unknown-model")).resolves.toBeNull();
+    } finally {
+      await prisma.providerModel.deleteMany({
+        where: {
+          provider
+        }
+      });
+    }
+  });
+
+  it("loads only enabled concrete search strategies for run admission", async () => {
+    const enabledStrategyId = `repo-test-enabled-${randomUUID()}`;
+    const disabledStrategyId = `repo-test-disabled-${randomUUID()}`;
+    await prisma.searchStrategy.createMany({
+      data: [
+        {
+          config: { policy: "server-owned" },
+          description: "Enabled run admission fixture",
+          displayName: "Enabled run admission fixture",
+          kind: "fixture",
+          modelId: "fixture-search-model",
+          provider: "system",
+          strategyId: enabledStrategyId
+        },
+        {
+          config: {},
+          description: "Disabled run admission fixture",
+          displayName: "Disabled run admission fixture",
+          enabled: false,
+          kind: "fixture",
+          provider: "system",
+          strategyId: disabledStrategyId
+        }
+      ]
+    });
+
+    try {
+      const repository = createPrismaRunRepository(prisma);
+
+      await expect(repository.isSearchStrategyEnabled(enabledStrategyId)).resolves.toBe(true);
+      await expect(repository.isSearchStrategyEnabled(disabledStrategyId)).resolves.toBe(false);
+      await expect(repository.isSearchStrategyEnabled(`missing-${randomUUID()}`)).resolves.toBe(false);
+      await expect(
+        repository.loadSearchStrategyConfiguration(enabledStrategyId)
+      ).resolves.toEqual({
+        config: { policy: "server-owned" },
+        kind: "fixture",
+        modelId: "fixture-search-model",
+        provider: "system",
+        strategyId: enabledStrategyId
+      });
+      await expect(
+        repository.loadSearchStrategyConfiguration(disabledStrategyId)
+      ).resolves.toBeNull();
+      await expect(
+        repository.loadSearchStrategyConfiguration(`missing-${randomUUID()}`)
+      ).resolves.toBeNull();
+    } finally {
+      await prisma.searchStrategy.deleteMany({
+        where: {
+          strategyId: {
+            in: [enabledStrategyId, disabledStrategyId]
+          }
+        }
+      });
+    }
+  });
+
+  it("rejects run creation when the active leaf changed after context preparation", async () => {
+    await withRunUser(async ({ userId }) => {
+      const chat = await prisma.chat.create({
+        data: {
+          defaultModelId: "fake-qsa",
+          defaultProvider: "fake",
+          title: "Branch conflict",
+          userId
+        }
+      });
+      const originalLeaf = await prisma.message.create({
+        data: {
+          chatId: chat.id,
+          content: textMessageContent("Original branch"),
+          role: "user",
+          status: "complete"
+        }
+      });
+      const selectedLeaf = await prisma.message.create({
+        data: {
+          chatId: chat.id,
+          content: textMessageContent("Selected branch"),
+          role: "user",
+          status: "complete"
+        }
+      });
+      await prisma.chat.update({
+        data: {
+          activeLeafMessageId: originalLeaf.id
+        },
+        where: {
+          id: chat.id
+        }
+      });
+
+      const repository = createPrismaRunRepository(prisma);
+      const prepared = createRunInput({
+        chatId: chat.id,
+        question: "Must stay on original branch",
+        userId
+      });
+      prepared.expectedActiveLeafId = originalLeaf.id;
+      await prisma.chat.update({
+        data: {
+          activeLeafMessageId: selectedLeaf.id
+        },
+        where: {
+          id: chat.id
+        }
+      });
+
+      await expect(repository.createRun(prepared)).rejects.toBeInstanceOf(ActiveLeafConflictError);
+      await expect(
+        prisma.chat.findUniqueOrThrow({
+          select: {
+            _count: {
+              select: {
+                messages: true,
+                modelRuns: true
+              }
+            },
+            activeLeafMessageId: true
+          },
+          where: {
+            id: chat.id
+          }
+        })
+      ).resolves.toEqual({
+        _count: {
+          messages: 2,
+          modelRuns: 0
+        },
+        activeLeafMessageId: selectedLeaf.id
+      });
+    });
+  });
+
+  it("rolls back a run when an attachment was linked after preparation", async () => {
+    await withRunUser(async ({ userId }) => {
+      const [targetChat, otherChat] = await Promise.all([
+        prisma.chat.create({
+          data: {
+            defaultModelId: "fake-qsa",
+            defaultProvider: "fake",
+            title: "Attachment target",
+            userId
+          }
+        }),
+        prisma.chat.create({
+          data: {
+            defaultModelId: "fake-qsa",
+            defaultProvider: "fake",
+            title: "Attachment winner",
+            userId
+          }
+        })
+      ]);
+      const otherMessage = await prisma.message.create({
+        data: {
+          chatId: otherChat.id,
+          content: textMessageContent("Already linked"),
+          role: "user",
+          status: "complete"
+        }
+      });
+      const attachment = await prisma.attachment.create({
+        data: {
+          byteSize: 12,
+          chatId: otherChat.id,
+          extractedText: "private text",
+          fileName: "race.txt",
+          kind: "document",
+          messageId: otherMessage.id,
+          metadata: {},
+          mimeType: "text/plain",
+          status: "ready",
+          storageKey: `${userId}/attachment-race-${randomUUID()}`,
+          userId
+        }
+      });
+      const prepared = createRunInput({
+        attachmentIds: [attachment.id],
+        chatId: targetChat.id,
+        question: "Use the raced attachment",
+        userId
+      });
+      const repository = createPrismaRunRepository(prisma);
+
+      await expect(repository.createRun(prepared)).rejects.toBeInstanceOf(AttachmentLinkConflictError);
+      await expect(chatGraph(targetChat.id)).resolves.toEqual({
+        _count: { messages: 0, modelRuns: 0 },
+        activeLeafMessageId: null,
+        title: "Attachment target"
+      });
+      await expect(
+        prisma.attachment.findUniqueOrThrow({
+          select: { chatId: true, messageId: true },
+          where: { id: attachment.id }
+        })
+      ).resolves.toEqual({
+        chatId: otherChat.id,
+        messageId: otherMessage.id
+      });
+    });
+  });
+
+  it("commits run graphs and non-prompt defaults without changing the user prompt default", async () => {
+    await withRunUser(async ({ userId }) => {
+      const first = await prisma.promptPreset.create({
+        data: {
+          isDefault: true,
+          name: "Default",
+          systemPrompt: "Default system prompt.",
+          userId
+        }
+      });
+      const second = await prisma.promptPreset.create({
+        data: {
+          isDefault: false,
+          name: "Second",
+          systemPrompt: "Second system prompt.",
+          userId
+        }
+      });
+      await prisma.userSettings.update({
+        data: {
+          defaultControlValues: {
+            "fake:fake-qsa": {
+              maxOutputTokens: "1024"
+            },
+            "other:model": {
+              temperature: "0.4"
+            }
+          },
+          defaultPromptPresetId: first.id
+        },
+        where: {
+          userId
+        }
+      });
+      const chat = await prisma.chat.create({
+        data: {
+          defaultModelId: "fake-qsa",
+          defaultProvider: "fake",
+          title: "New Chat",
+          userId
+        }
+      });
+      const repository = createPrismaRunRepository(prisma);
+      const sendInput = createRunInput({
+        chatId: chat.id,
+        defaults: {
+          controlDefaults: {
+            temperature: "0.2"
+          },
+          promptPresetId: second.id
+        },
+        question: "Atomic defaults",
+        userId
+      });
+      sendInput.normalizedRequest.prompt.presetId = second.id;
+      const sent = await repository.createRun(sendInput);
+
+      const [afterSend, afterSendChat] = await Promise.all([
+        storedDefaults(userId),
+        chatGraph(chat.id)
+      ]);
+
+      expect(afterSend).toMatchObject({
+        defaultControlValues: {
+          "fake:fake-qsa": {
+            maxOutputTokens: "1024",
+            temperature: "0.2"
+          },
+          "other:model": {
+            temperature: "0.4"
+          }
+        },
+        defaultPromptPresetId: first.id
+      });
+      expect(afterSendChat).toEqual({
+        _count: {
+          messages: 2,
+          modelRuns: 1
+        },
+        activeLeafMessageId: sent.assistantMessageId,
+        title: "Atomic defaults"
+      });
+      await expect(
+        prisma.message.findMany({
+          orderBy: { createdAt: "asc" },
+          select: { id: true, promptPresetId: true },
+          where: { chatId: chat.id }
+        })
+      ).resolves.toEqual([
+        { id: sent.userMessageId, promptPresetId: second.id },
+        { id: sent.assistantMessageId, promptPresetId: second.id }
+      ]);
+      await expect(
+        prisma.chat.findUniqueOrThrow({
+          select: { defaultPromptPresetId: true },
+          where: { id: chat.id }
+        })
+      ).resolves.toEqual({ defaultPromptPresetId: second.id });
+      let flags = await promptFlags(userId);
+      expect(flags.get(first.id)).toBe(true);
+      expect(flags.get(second.id)).toBe(false);
+
+      await prisma.modelRun.update({
+        data: {
+          status: "complete"
+        },
+        where: {
+          id: sent.runId
+        }
+      });
+      const regenerationPrepared = createRunInput({
+        chatId: chat.id,
+        defaults: {
+          controlDefaults: {
+            reasoningEffort: "high"
+          },
+          promptPresetId: second.id
+        },
+        question: "Atomic defaults",
+        userId
+      });
+      regenerationPrepared.normalizedRequest.prompt.presetId = second.id;
+      const regenerated = await repository.createRegenerationRun(
+        createRegenerationInput(regenerationPrepared, sent.userMessageId)
+      );
+
+      const [afterRegeneration, afterRegenerationChat] = await Promise.all([
+        storedDefaults(userId),
+        chatGraph(chat.id)
+      ]);
+
+      expect(afterRegeneration).toMatchObject({
+        defaultControlValues: {
+          "fake:fake-qsa": {
+            maxOutputTokens: "1024",
+            reasoningEffort: "high",
+            temperature: "0.2"
+          },
+          "other:model": {
+            temperature: "0.4"
+          }
+        },
+        defaultPromptPresetId: first.id
+      });
+      expect(afterRegenerationChat).toEqual({
+        _count: {
+          messages: 3,
+          modelRuns: 2
+        },
+        activeLeafMessageId: regenerated.assistantMessageId,
+        title: "Atomic defaults"
+      });
+      await expect(
+        prisma.message.findUniqueOrThrow({
+          select: { promptPresetId: true },
+          where: { id: regenerated.assistantMessageId }
+        })
+      ).resolves.toEqual({ promptPresetId: second.id });
+      flags = await promptFlags(userId);
+      expect(flags.get(first.id)).toBe(true);
+      expect(flags.get(second.id)).toBe(false);
+    });
+  });
+
+  it("fails closed for a foreign prompt or missing settings row", async () => {
+    await withRunUser(async ({ userId }) => {
+      await withRunUser(async ({ userId: otherUserId }) => {
+        const [ownedPrompt, foreignPrompt] = await Promise.all([
+          prisma.promptPreset.create({
+            data: {
+              isDefault: true,
+              name: "Owned prompt",
+              systemPrompt: "Owned.",
+              userId
+            }
+          }),
+          prisma.promptPreset.create({
+            data: {
+              name: "Foreign prompt",
+              systemPrompt: "Foreign.",
+              userId: otherUserId
+            }
+          })
+        ]);
+        await prisma.userSettings.update({
+          data: {
+            defaultControlValues: {
+              "other:model": {
+                temperature: "0.5"
+              }
+            },
+            defaultPromptPresetId: ownedPrompt.id
+          },
+          where: {
+            userId
+          }
+        });
+        const [sendChat, regenerationChat] = await Promise.all([
+          prisma.chat.create({
+            data: {
+              defaultModelId: "fake-qsa",
+              defaultProvider: "fake",
+              title: "New Chat",
+              userId
+            }
+          }),
+          prisma.chat.create({
+            data: {
+              defaultModelId: "fake-qsa",
+              defaultProvider: "fake",
+              title: "Regeneration source",
+              userId
+            }
+          })
+        ]);
+        const source = await prisma.message.create({
+          data: {
+            chatId: regenerationChat.id,
+            content: textMessageContent("Source"),
+            role: "user",
+            status: "complete"
+          }
+        });
+        await prisma.chat.update({
+          data: {
+            activeLeafMessageId: source.id
+          },
+          where: {
+            id: regenerationChat.id
+          }
+        });
+        const attachment = await prisma.attachment.create({
+          data: {
+            byteSize: 7,
+            fileName: "rollback.txt",
+            kind: "text",
+            metadata: {},
+            mimeType: "text/plain",
+            storageKey: `rollback/${randomUUID()}`,
+            userId
+          }
+        });
+        const repository = createPrismaRunRepository(prisma);
+        const foreignPromptInput = createRunInput({
+          attachmentIds: [attachment.id],
+          chatId: sendChat.id,
+          defaults: {
+            controlDefaults: {
+              temperature: "0.2"
+            },
+            promptPresetId: foreignPrompt.id
+          },
+          question: "Foreign prompt",
+          userId
+        });
+
+        await expect(repository.createRun(foreignPromptInput)).rejects.toThrow(
+          "Run defaults persistence failed: not_found"
+        );
+        const [sendAfter, attachmentAfter, defaultsAfter, flags] = await Promise.all([
+          chatGraph(sendChat.id),
+          prisma.attachment.findUniqueOrThrow({
+            select: {
+              chatId: true,
+              messageId: true
+            },
+            where: {
+              id: attachment.id
+            }
+          }),
+          storedDefaults(userId),
+          promptFlags(userId)
+        ]);
+
+        expect(sendAfter).toEqual({
+          _count: {
+            messages: 0,
+            modelRuns: 0
+          },
+          activeLeafMessageId: null,
+          title: "New Chat"
+        });
+        expect(attachmentAfter).toEqual({ chatId: null, messageId: null });
+        expect(defaultsAfter).toMatchObject({
+          defaultControlValues: {
+            "other:model": {
+              temperature: "0.5"
+            }
+          },
+          defaultPromptPresetId: ownedPrompt.id
+        });
+        expect(flags.get(ownedPrompt.id)).toBe(true);
+
+        await prisma.userSettings.delete({
+          where: {
+            userId
+          }
+        });
+        const regenerationPrepared = createRunInput({
+          chatId: regenerationChat.id,
+          question: "Source",
+          userId
+        });
+        await expect(
+          repository.createRegenerationRun(createRegenerationInput(regenerationPrepared, source.id))
+        ).rejects.toThrow("Run defaults persistence failed: not_found");
+
+        await expect(chatGraph(regenerationChat.id)).resolves.toEqual({
+          _count: {
+            messages: 1,
+            modelRuns: 0
+          },
+          activeLeafMessageId: source.id,
+          title: "Regeneration source"
+        });
+      });
+    });
+  });
+
+  it("preserves concurrent keyed settings patches while a run accepts defaults", async () => {
+    await withRunUser(async ({ userId }) => {
+      await prisma.userSettings.update({
+        data: {
+          defaultControlValues: {
+            "fake:fake-qsa": {
+              maxOutputTokens: "1024"
+            }
+          }
+        },
+        where: {
+          userId
+        }
+      });
+      const chat = await prisma.chat.create({
+        data: {
+          defaultModelId: "fake-qsa",
+          defaultProvider: "fake",
+          title: "Concurrent settings",
+          userId
+        }
+      });
+      const runRepository = createPrismaRunRepository(prisma);
+      const settingsRepository = createPrismaSettingsRepository(prisma);
+      let createPromise: ReturnType<RunRepository["createRun"]> | undefined;
+      let patchPromise: ReturnType<typeof settingsRepository.updateSettings> | undefined;
+
+      await prisma.$transaction(async (tx) => {
+        await tx.$queryRaw<Array<{ id: string }>>`
+          SELECT "id"
+          FROM "UserSettings"
+          WHERE "userId" = ${userId}
+          FOR UPDATE
+        `;
+        createPromise = runRepository.createRun(
+          createRunInput({
+            chatId: chat.id,
+            defaults: {
+              controlDefaults: {
+                temperature: "0.2"
+              }
+            },
+            question: "Serialize these defaults",
+            userId
+          })
+        );
+        patchPromise = settingsRepository.updateSettings(
+          userId,
+          {
+            defaultControlValues: {
+              "other:model": {
+                reasoningEffort: "low"
+              }
+            }
+          },
+          []
+        );
+      });
+
+      await expect(Promise.all([createPromise, patchPromise])).resolves.toEqual([
+        expect.objectContaining({
+          assistantMessageId: expect.any(String),
+          runId: expect.any(String),
+          userMessageId: expect.any(String)
+        }),
+        expect.objectContaining({
+          kind: "updated"
+        })
+      ]);
+      await expect(storedDefaults(userId)).resolves.toMatchObject({
+        defaultControlValues: {
+          "fake:fake-qsa": {
+            maxOutputTokens: "1024",
+            temperature: "0.2"
+          },
+          "other:model": {
+            reasoningEffort: "low"
+          }
+        }
+      });
+    });
+  });
+
+  it("returns the ordered client projection only for the owning user", async () => {
+    await withRunUser(async ({ userId }) => {
+      const chat = await prisma.chat.create({
+        data: {
+          defaultModelId: "fake-qsa",
+          defaultProvider: "fake",
+          title: "Run projection chat",
+          userId
+        }
+      });
+      const repository = createPrismaRunRepository(prisma);
+      const created = await repository.createRun(
+        createRunInput({
+          chatId: chat.id,
+          question: "Inspect this run",
+          userId
+        })
+      );
+      await repository.appendRunEvent(created.runId, 2, {
+        data: {
+          artifactType: "summary",
+          payload: {
+            status: "streaming"
+          }
+        },
+        type: "artifact"
+      });
+      await repository.appendRunEvent(created.runId, 1, {
+        data: {
+          delta: "First"
+        },
+        type: "token"
+      });
+
+      const run = await repository.getRunForUser(created.runId, userId);
+
+      expect(run).toMatchObject({
+        cachedInputTokens: 0,
+        cacheWriteInputTokens: 0,
+        events: [
+          {
+            eventType: "token",
+            sequence: 1
+          },
+          {
+            eventType: "artifact",
+            sequence: 2
+          }
+        ],
+        id: created.runId,
+        inputTokens: 0,
+        modelId: "fake-qsa",
+        outputTokens: 0,
+        provider: "fake",
+        reasoningTokens: 0,
+        searchRuns: [],
+        status: "streaming",
+        totalTokens: 0
+      });
+      await expect(repository.getRunForUser(created.runId, "other-user")).resolves.toBeNull();
+    });
+  });
+
+  it("sets a bounded local title only for a placeholder chat's first run", async () => {
+    await withRunUser(async ({ userId }) => {
+      const [newChat, legacyPlaceholderChat, namedChat] = await Promise.all([
+        prisma.chat.create({
+          data: {
+            defaultModelId: "fake-qsa",
+            defaultProvider: "fake",
+            title: "New Chat",
+            userId
+          }
+        }),
+        prisma.chat.create({
+          data: {
+            defaultModelId: "fake-qsa",
+            defaultProvider: "fake",
+            title: "Untitled QSA",
+            userId
+          }
+        }),
+        prisma.chat.create({
+          data: {
+            defaultModelId: "fake-qsa",
+            defaultProvider: "fake",
+            title: "Operator title",
+            userId
+          }
+        })
+      ]);
+      const repository = createPrismaRunRepository(prisma);
+
+      await Promise.all([
+        repository.createRun(
+          createRunInput({
+            chatId: newChat.id,
+            question: "  Explain\ntransaction   isolation  ",
+            userId
+          })
+        ),
+        repository.createRun(
+          createRunInput({
+            chatId: legacyPlaceholderChat.id,
+            question: "Legacy placeholder gets a local title",
+            userId
+          })
+        ),
+        repository.createRun(
+          createRunInput({
+            chatId: namedChat.id,
+            question: "This must not replace the chosen title",
+            userId
+          })
+        )
+      ]);
+
+      const stored = await prisma.chat.findMany({
+        orderBy: {
+          title: "asc"
+        },
+        select: {
+          id: true,
+          title: true
+        },
+        where: {
+          id: {
+            in: [newChat.id, legacyPlaceholderChat.id, namedChat.id]
+          }
+        }
+      });
+      const titles = new Map(stored.map((chat) => [chat.id, chat.title]));
+
+      expect(titles.get(newChat.id)).toBe("Explain transaction isolation");
+      expect(titles.get(legacyPlaceholderChat.id)).toBe("Legacy placeholder gets a local title");
+      expect(titles.get(namedChat.id)).toBe("Operator title");
+    });
+  });
+
+  it("maps a second same-chat active run to the neutral conflict and rolls back its messages", async () => {
+    await withRunUser(async ({ userId }) => {
+      const chat = await prisma.chat.create({
+        data: {
+          defaultModelId: "fake-qsa",
+          defaultProvider: "fake",
+          title: "Run conflict chat",
+          userId
+        }
+      });
+      const originalMessage = await prisma.message.create({
+        data: {
+          chatId: chat.id,
+          content: textMessageContent("Existing branch root"),
+          role: "user",
+          status: "complete"
+        }
+      });
+      await prisma.chat.update({
+        data: {
+          activeLeafMessageId: originalMessage.id
+        },
+        where: {
+          id: chat.id
+        }
+      });
+      const repository = createPrismaRunRepository(prisma);
+      const firstInput = createRunInput({
+        chatId: chat.id,
+        question: "First active question",
+        userId
+      });
+      firstInput.expectedActiveLeafId = originalMessage.id;
+      const first = await repository.createRun(firstInput);
+
+      const [beforeConflict, settingsBeforeConflict] = await Promise.all([
+        chatGraph(chat.id),
+        storedDefaults(userId)
+      ]);
+
+      expect(beforeConflict).toEqual({
+        _count: {
+          messages: 3,
+          modelRuns: 1
+        },
+        activeLeafMessageId: first.assistantMessageId,
+        title: "Run conflict chat"
+      });
+      const conflictingInput = createRunInput({
+        chatId: chat.id,
+        defaults: {
+          controlDefaults: {
+            reasoningEffort: "high"
+          }
+        },
+        question: "Conflicting active question",
+        userId
+      });
+      conflictingInput.expectedActiveLeafId = first.assistantMessageId;
+      await expect(repository.createRun(conflictingInput)).rejects.toBeInstanceOf(ActiveRunConflictError);
+
+      const [afterConflict, runs, settingsAfterConflict] = await Promise.all([
+        chatGraph(chat.id),
+        prisma.modelRun.findMany({
+          select: {
+            assistantMessageId: true,
+            id: true,
+            status: true,
+            userMessageId: true
+          },
+          where: {
+            chatId: chat.id
+          }
+        }),
+        storedDefaults(userId)
+      ]);
+
+      expect(afterConflict).toEqual(beforeConflict);
+      expect(settingsAfterConflict).toEqual(settingsBeforeConflict);
+      expect(runs).toEqual([
+        {
+          assistantMessageId: first.assistantMessageId,
+          id: first.runId,
+          status: "streaming",
+          userMessageId: first.userMessageId
+        }
+      ]);
+    });
+  });
+
+  it("keeps completion and cancellation mutually exclusive in either winner order", async () => {
+    await withRunUser(async ({ userId }) => {
+      const repository = createPrismaRunRepository(prisma);
+      const completionFirst = await createActiveRun(repository, userId, "Completion first");
+      const completion = completionInput(completionFirst);
+
+      await expect(repository.completeRun(completion)).resolves.toBe(true);
+      await expect(repository.completeRun(completion)).resolves.toBe(false);
+      await expect(
+        repository.cancelRun({
+          payload: cancelPayload,
+          runId: completionFirst.runId,
+          userId
+        })
+      ).resolves.toMatchObject({
+        kind: "current",
+        run: {
+          status: "complete"
+        }
+      });
+      await expect(
+        repository.updateCancelledRunProviderPreview({
+          providerCancelPreview: { status: "must_not_persist" },
+          runId: completionFirst.runId,
+          userId
+        })
+      ).resolves.toBe(false);
+      const completedState = await expectTerminalState(completionFirst, "complete");
+      expect(completedState.message.errorMessage).toBeNull();
+      expect(completedState.run.errorPayload).toBeNull();
+
+      const cancelFirst = await createActiveRun(repository, userId, "Cancellation first");
+      await expect(
+        repository.cancelRun({
+          payload: cancelPayload,
+          runId: cancelFirst.runId,
+          userId
+        })
+      ).resolves.toMatchObject({
+        kind: "cancelled",
+        run: {
+          status: "cancelled"
+        }
+      });
+      await expect(
+        repository.updateCancelledRunProviderPreview({
+          providerCancelPreview: { provider: "cancelled" },
+          runId: cancelFirst.runId,
+          userId
+        })
+      ).resolves.toBe(true);
+      await expect(
+        repository.completeRun(completionInput(cancelFirst))
+      ).resolves.toBe(false);
+      const cancelledState = await expectTerminalState(cancelFirst, "cancelled");
+      expect(cancelledState.message.errorMessage).toBe(cancelPayload.message);
+      expect(cancelledState.run.errorPayload).toEqual({
+        ...cancelPayload,
+        providerCancelPreview: {
+          provider: "cancelled"
+        }
+      });
+
+      await expect(
+        repository.cancelRun({
+          payload: cancelPayload,
+          runId: cancelFirst.runId,
+          userId: "another-user"
+        })
+      ).resolves.toEqual({ kind: "not_found" });
+      await expect(
+        repository.cancelRun({
+          payload: cancelPayload,
+          runId: randomUUID(),
+          userId
+        })
+      ).resolves.toEqual({ kind: "not_found" });
+    });
+  });
+
+  it("records split provider usage on a non-complete run without incrementing completed chat totals", async () => {
+    await withRunUser(async ({ userId }) => {
+      const repository = createPrismaRunRepository(prisma);
+      const active = await createActiveRun(repository, userId, "Partial attributed usage");
+      const usageAttributions = [
+        {
+          estimatedCostMicros: 11,
+          modelId: "answer-model",
+          provider: "openai",
+          usage: {
+            inputTokens: 2,
+            outputTokens: 1,
+            reasoningTokens: 0,
+            totalTokens: 3
+          }
+        },
+        {
+          estimatedCostMicros: 13,
+          modelId: "perplexity/sonar-pro-search",
+          provider: "openrouter",
+          usage: {
+            inputTokens: 3,
+            outputTokens: 2,
+            reasoningTokens: 1,
+            totalTokens: 5
+          }
+        }
+      ];
+
+      await expect(
+        repository.recordRunUsageEvents({
+          chatId: active.chatId,
+          runId: active.runId,
+          usageAttributions,
+          userId
+        })
+      ).resolves.toBe(true);
+      await expect(
+        repository.recordRunUsageEvents({
+          chatId: active.chatId,
+          runId: active.runId,
+          usageAttributions,
+          userId
+        })
+      ).resolves.toBe(true);
+
+      const [run, chat, usageEvents, adminUsage] = await Promise.all([
+        prisma.modelRun.findUniqueOrThrow({
+          select: {
+            estimatedCostMicros: true,
+            inputTokens: true,
+            outputTokens: true,
+            reasoningTokens: true,
+            status: true,
+            totalTokens: true
+          },
+          where: { id: active.runId }
+        }),
+        prisma.chat.findUniqueOrThrow({
+          select: {
+            totalInputTokens: true,
+            totalOutputTokens: true,
+            totalReasoningTokens: true
+          },
+          where: { id: active.chatId }
+        }),
+        prisma.usageEvent.findMany({
+          orderBy: { provider: "asc" },
+          select: {
+            inputTokens: true,
+            modelId: true,
+            outputTokens: true,
+            provider: true,
+            reasoningTokens: true,
+            totalTokens: true
+          },
+          where: { modelRunId: active.runId }
+        }),
+        loadAdminUsageQueryRows(prisma)
+      ]);
+
+      expect(run).toEqual({
+        estimatedCostMicros: 24,
+        inputTokens: 5,
+        outputTokens: 3,
+        reasoningTokens: 1,
+        status: "streaming",
+        totalTokens: 8
+      });
+      expect(chat).toEqual({
+        totalInputTokens: 0,
+        totalOutputTokens: 0,
+        totalReasoningTokens: 0
+      });
+      expect(usageEvents).toEqual([
+        {
+          inputTokens: 2,
+          modelId: "answer-model",
+          outputTokens: 1,
+          provider: "openai",
+          reasoningTokens: 0,
+          totalTokens: 3
+        },
+        {
+          inputTokens: 3,
+          modelId: "perplexity/sonar-pro-search",
+          outputTokens: 2,
+          provider: "openrouter",
+          reasoningTokens: 1,
+          totalTokens: 5
+        }
+      ]);
+      expect(adminUsage.userRows.find((row) => row.userId === userId)?._count._all).toBe(1);
+      expect(
+        adminUsage.providerModelRows
+          .filter((row) => row.userId === userId)
+          .map((row) => row._count._all)
+      ).toEqual([1, 1]);
+
+      await prisma.modelRun.delete({ where: { id: active.runId } });
+      const detachedUsage = await loadAdminUsageQueryRows(prisma);
+      expect(detachedUsage.userRows.find((row) => row.userId === userId)).toMatchObject({
+        _count: { _all: 0 },
+        _sum: { totalTokens: 8 }
+      });
+      expect(
+        detachedUsage.providerModelRows
+          .filter((row) => row.userId === userId)
+          .map((row) => row._count._all)
+      ).toEqual([0, 0]);
+    });
+  });
+
+  it("settles concurrent terminal writers and duplicate cancels exactly once", async () => {
+    await withRunUser(async ({ userId }) => {
+      const repository = createPrismaRunRepository(prisma);
+      const duplicateCancel = await createActiveRun(repository, userId, "Duplicate cancel");
+      const cancelInput = {
+        payload: cancelPayload,
+        runId: duplicateCancel.runId,
+        userId
+      };
+      const cancelResults = await Promise.all([
+        repository.cancelRun(cancelInput),
+        repository.cancelRun(cancelInput)
+      ]);
+
+      expect(cancelResults.map((result) => result.kind).sort()).toEqual(["cancelled", "current"]);
+      expect(cancelResults.find((result) => result.kind === "current")).toMatchObject({
+        run: {
+          status: "cancelled"
+        }
+      });
+      await expectTerminalState(duplicateCancel, "cancelled");
+
+      const terminalRace = await createActiveRun(repository, userId, "Terminal race");
+      const [completed, cancelled] = await Promise.all([
+        repository.completeRun(completionInput(terminalRace)),
+        repository.cancelRun({
+          payload: cancelPayload,
+          runId: terminalRace.runId,
+          userId
+        })
+      ]);
+
+      if (completed) {
+        expect(cancelled).toMatchObject({ kind: "current", run: { status: "complete" } });
+        await expectTerminalState(terminalRace, "complete");
+      } else {
+        expect(cancelled).toMatchObject({ kind: "cancelled", run: { status: "cancelled" } });
+        await expectTerminalState(terminalRace, "cancelled");
+      }
+    });
+  });
+
+  it("settles a recovered tool-call error once with atomic events and usage", async () => {
+    await withRunUser(async ({ userId }) => {
+      const repository = createPrismaRunRepository(prisma);
+      const recovered = await createActiveRun(repository, userId, "Recovered tool call");
+      const independent = await createActiveRun(repository, userId, "Independent recovery");
+      await repository.updateRunProviderResponseId(recovered.runId, "response-tool");
+      await repository.failRun(recovered.runId, recovered.assistantMessageId, {
+        code: "provider_refresh_failed",
+        message: "Transient refresh failure"
+      });
+      const settlement: Parameters<RunRepository["settleRecoveredRunError"]>[0] = {
+        error: {
+          code: "tool_loop_recovery_required",
+          message: "Outstanding tool calls require a new run."
+        },
+        events: [
+          {
+            data: {
+              artifactType: "summary",
+              payload: { status: "provider_complete" }
+            },
+            type: "artifact"
+          }
+        ],
+        providerResponseId: "response-tool",
+        runId: recovered.runId,
+        usageAttributions: [
+          {
+            estimatedCostMicros: 19,
+            modelId: "fake-qsa",
+            provider: "fake",
+            usage: {
+              inputTokens: 7,
+              outputTokens: 2,
+              reasoningTokens: 1,
+              totalTokens: 9
+            }
+          }
+        ],
+        userId
+      };
+
+      const settlements = await Promise.all([
+        repository.settleRecoveredRunError(settlement),
+        repository.settleRecoveredRunError(settlement)
+      ]);
+
+      expect(settlements.sort()).toEqual([false, true]);
+      await expect(
+        repository.settleRecoveredRunError({ ...settlement, userId: "another-user" })
+      ).resolves.toBe(false);
+      const [run, message, events, usageEvents, chats, controls] = await Promise.all([
+        prisma.modelRun.findUniqueOrThrow({
+          select: {
+            errorPayload: true,
+            inputTokens: true,
+            outputTokens: true,
+            reasoningTokens: true,
+            status: true,
+            totalTokens: true
+          },
+          where: { id: recovered.runId }
+        }),
+        prisma.message.findUniqueOrThrow({
+          select: { errorMessage: true, status: true },
+          where: { id: recovered.assistantMessageId }
+        }),
+        prisma.modelRunEvent.findMany({
+          orderBy: { sequence: "asc" },
+          select: { eventType: true, sequence: true },
+          where: { modelRunId: recovered.runId }
+        }),
+        prisma.usageEvent.findMany({
+          select: {
+            estimatedCostMicros: true,
+            inputTokens: true,
+            outputTokens: true,
+            totalTokens: true
+          },
+          where: { modelRunId: recovered.runId }
+        }),
+        prisma.chat.findMany({
+          orderBy: { id: "asc" },
+          select: {
+            id: true,
+            totalInputTokens: true,
+            totalOutputTokens: true,
+            totalReasoningTokens: true
+          },
+          where: { id: { in: [recovered.chatId, independent.chatId] } }
+        }),
+        Promise.all([
+          repository.getRunControlForUser(recovered.runId, userId),
+          repository.getRunControlForUser(independent.runId, userId)
+        ])
+      ]);
+
+      expect(run).toEqual({
+        errorPayload: {
+          code: "tool_loop_recovery_required",
+          message: "Outstanding tool calls require a new run.",
+          recoveryTerminal: true
+        },
+        inputTokens: 7,
+        outputTokens: 2,
+        reasoningTokens: 1,
+        status: "error",
+        totalTokens: 9
+      });
+      expect(message).toEqual({
+        errorMessage: "Outstanding tool calls require a new run.",
+        status: "error"
+      });
+      expect(events).toEqual([
+        { eventType: "error", sequence: 0 },
+        { eventType: "artifact", sequence: 1 },
+        { eventType: "error", sequence: 2 }
+      ]);
+      expect(usageEvents).toEqual([
+        {
+          estimatedCostMicros: 19,
+          inputTokens: 7,
+          outputTokens: 2,
+          totalTokens: 9
+        }
+      ]);
+      expect(chats).toEqual(
+        [recovered.chatId, independent.chatId]
+          .sort()
+          .map((id) => ({
+            id,
+            totalInputTokens: 0,
+            totalOutputTokens: 0,
+            totalReasoningTokens: 0
+          }))
+      );
+      expect(controls).toEqual([
+        expect.objectContaining({ recoverySettled: true, status: "error" }),
+        expect.objectContaining({ recoverySettled: false, status: "streaming" })
+      ]);
+      await expect(
+        repository.completeRun({
+          ...completionInput(recovered),
+          providerResponseId: "response-tool"
+        })
+      ).resolves.toBe(false);
+    });
+  });
+
+  it("preserves completion and cancellation winners against recovered-error settlement", async () => {
+    await withRunUser(async ({ userId }) => {
+      const repository = createPrismaRunRepository(prisma);
+      const completionWinner = await createActiveRun(
+        repository,
+        userId,
+        "Recovered completion winner"
+      );
+      await repository.updateRunProviderResponseId(
+        completionWinner.runId,
+        "response-complete"
+      );
+      await repository.failRun(
+        completionWinner.runId,
+        completionWinner.assistantMessageId,
+        { code: "provider_refresh_failed", message: "Transient failure" }
+      );
+      await expect(
+        repository.completeRun({
+          ...completionInput(completionWinner),
+          providerResponseId: "response-complete"
+        })
+      ).resolves.toBe(true);
+      await expect(
+        repository.settleRecoveredRunError({
+          error: { code: "late_error", message: "Must not replace completion" },
+          events: [],
+          runId: completionWinner.runId,
+          usageAttributions: [],
+          userId
+        })
+      ).resolves.toBe(false);
+      await expectTerminalState(completionWinner, "complete");
+
+      const cancellationWinner = await createActiveRun(
+        repository,
+        userId,
+        "Recovered cancellation winner"
+      );
+      await expect(
+        repository.cancelRun({
+          payload: cancelPayload,
+          runId: cancellationWinner.runId,
+          userId
+        })
+      ).resolves.toMatchObject({ kind: "cancelled" });
+      await expect(
+        repository.settleRecoveredRunError({
+          error: { code: "late_error", message: "Must not replace cancellation" },
+          events: [],
+          runId: cancellationWinner.runId,
+          usageAttributions: [],
+          userId
+        })
+      ).resolves.toBe(false);
+      await expectTerminalState(cancellationWinner, "cancelled");
+    });
+  });
+
+  it("preserves an existing provider response id when completing without a new one", async () => {
+    await withRunUser(async ({ userId }) => {
+      const chat = await prisma.chat.create({
+        data: {
+          defaultModelId: "fake-qsa",
+          defaultProvider: "fake",
+          title: "Run chat",
+          userId
+        }
+      });
+      const userMessage = await prisma.message.create({
+        data: {
+          chatId: chat.id,
+          content: textMessageContent("Question"),
+          role: "user",
+          status: "complete"
+        }
+      });
+      const assistantMessage = await prisma.message.create({
+        data: {
+          chatId: chat.id,
+          content: textMessageContent(""),
+          modelId: "fake-qsa",
+          parentMessageId: userMessage.id,
+          provider: "fake",
+          role: "assistant",
+          status: "streaming"
+        }
+      });
+      const runId = randomUUID();
+      await prisma.$executeRaw`
+        INSERT INTO "ModelRun" (
+          "id",
+          "chatId",
+          "userId",
+          "userMessageId",
+          "assistantMessageId",
+          "provider",
+          "modelId",
+          "status",
+          "normalizedRequest",
+          "providerResponseId",
+          "createdAt",
+          "updatedAt"
+        )
+        VALUES (
+          ${runId},
+          ${chat.id},
+          ${userId},
+          ${userMessage.id},
+          ${assistantMessage.id},
+          ${"fake"},
+          ${"fake-qsa"},
+          ${"streaming"}::"ModelRunStatus",
+          ${JSON.stringify({})}::jsonb,
+          ${"resp-existing"},
+          now(),
+          now()
+        )
+      `;
+      const repository = createPrismaRunRepository(prisma);
+
+      const completed = await repository.completeRun({
+        assistantMessageId: assistantMessage.id,
+        chatId: chat.id,
+        estimatedCostMicros: null,
+        finalProviderResponsePreview: {},
+        finalText: "Done",
+        modelId: "fake-qsa",
+        provider: "fake",
+        runId,
+        usage: {
+          cachedInputTokens: 4,
+          cacheWriteInputTokens: 1,
+          inputTokens: 1,
+          outputTokens: 2,
+          reasoningTokens: 3,
+          totalTokens: 7
+        },
+        userId
+      });
+
+      expect(completed).toBe(true);
+      await expect(
+        prisma.modelRun.findUniqueOrThrow({
+          select: {
+            cachedInputTokens: true,
+            cacheWriteInputTokens: true,
+            providerResponseId: true,
+            totalTokens: true
+          },
+          where: {
+            id: runId
+          }
+        })
+      ).resolves.toEqual({
+        cachedInputTokens: 4,
+        cacheWriteInputTokens: 1,
+        providerResponseId: "resp-existing",
+        totalTokens: 7
+      });
+    });
+  });
+
+  it("publishes provider response ids only while active and reports a cancellation winner", async () => {
+    await withRunUser(async ({ userId }) => {
+      const repository = createPrismaRunRepository(prisma);
+      const cancelledFirst = await createActiveRun(repository, userId, "Cancellation before response id");
+
+      await expect(
+        repository.cancelRun({
+          payload: cancelPayload,
+          runId: cancelledFirst.runId,
+          userId
+        })
+      ).resolves.toMatchObject({ kind: "cancelled" });
+      await expect(
+        repository.updateRunProviderResponseId(cancelledFirst.runId, "response-late")
+      ).resolves.toBe("cancelled");
+      await expect(repository.getRunControlForUser(cancelledFirst.runId, userId)).resolves.toMatchObject({
+        providerResponseId: null,
+        status: "cancelled"
+      });
+
+      const publishedFirst = await createActiveRun(repository, userId, "Response id before cancellation");
+      await expect(
+        repository.updateRunProviderResponseId(publishedFirst.runId, "response-published")
+      ).resolves.toBe("published");
+      await expect(
+        repository.cancelRun({
+          payload: cancelPayload,
+          runId: publishedFirst.runId,
+          userId
+        })
+      ).resolves.toMatchObject({
+        kind: "cancelled",
+        run: {
+          providerResponseId: "response-published"
+        }
+      });
+    });
+  });
+
+  it("sweeps only active runs created before the process boot boundary", async () => {
+    await withRunUser(async ({ userId }) => {
+      const repository = createPrismaRunRepository(prisma);
+      const preBoot = await createActiveRun(repository, userId, "Pre-boot orphan");
+      const postBoot = await createActiveRun(repository, userId, "Post-boot live run");
+      await Promise.all([
+        prisma.modelRun.update({
+          data: { createdAt: new Date("2026-07-12T09:59:00.000Z") },
+          where: { id: preBoot.runId }
+        }),
+        prisma.modelRun.update({
+          data: { createdAt: new Date("2026-07-12T10:01:00.000Z") },
+          where: { id: postBoot.runId }
+        })
+      ]);
+
+      await expect(
+        repository.sweepBootOrphanedRuns({
+          createdBefore: new Date("2026-07-12T10:00:00.000Z"),
+          liveRunIds: []
+        })
+      ).resolves.toBe(1);
+      await expect(
+        prisma.modelRun.findMany({
+          orderBy: { createdAt: "asc" },
+          select: { id: true, status: true },
+          where: { id: { in: [preBoot.runId, postBoot.runId] } }
+        })
+      ).resolves.toEqual([
+        { id: preBoot.runId, status: "error" },
+        { id: postBoot.runId, status: "streaming" }
+      ]);
+    });
+  });
+
+  it("commits completion with provider artifacts followed by durable usage and done evidence", async () => {
+    await withRunUser(async ({ userId }) => {
+      const repository = createPrismaRunRepository(prisma);
+      const created = await createActiveRun(repository, userId, "Atomic terminal evidence");
+      await repository.appendRunEvent(created.runId, 0, {
+        data: {
+          artifactType: "summary",
+          payload: { status: "in_progress" }
+        },
+        type: "artifact"
+      });
+      const completion = completionInput(created);
+      completion.eventsBeforeTerminal = [
+        {
+          data: {
+            artifactType: "summary",
+            payload: { status: "completed" }
+          },
+          type: "artifact"
+        }
+      ];
+
+      await expect(repository.completeRun(completion)).resolves.toBe(true);
+      await expect(
+        prisma.modelRunEvent.findMany({
+          orderBy: { sequence: "asc" },
+          select: { eventType: true, sequence: true },
+          where: { modelRunId: created.runId }
+        })
+      ).resolves.toEqual([
+        { eventType: "artifact", sequence: 0 },
+        { eventType: "artifact", sequence: 1 },
+        { eventType: "usage", sequence: 2 },
+        { eventType: "done", sequence: 3 }
+      ]);
+    });
+  });
+
+  it("reports whether failure settlement won the active-status CAS", async () => {
+    await withRunUser(async ({ userId }) => {
+      const repository = createPrismaRunRepository(prisma);
+      const cancelled = await createActiveRun(repository, userId, "Cancelled before failure");
+      await repository.cancelRun({ payload: cancelPayload, runId: cancelled.runId, userId });
+
+      await expect(
+        repository.failRun(cancelled.runId, cancelled.assistantMessageId, {
+          code: "late_failure",
+          message: "Must not replace cancellation"
+        })
+      ).resolves.toBe(false);
+      await expect(repository.getRunControlForUser(cancelled.runId, userId)).resolves.toMatchObject({
+        status: "cancelled"
+      });
+
+      const active = await createActiveRun(repository, userId, "Failure winner");
+      await expect(
+        repository.failRun(active.runId, active.assistantMessageId, {
+          code: "provider_failed",
+          message: "Failure wins"
+        })
+      ).resolves.toBe(true);
+      await expect(repository.getRunControlForUser(active.runId, userId)).resolves.toMatchObject({
+        status: "error"
+      });
+      await expect(
+        prisma.modelRunEvent.findMany({
+          orderBy: { createdAt: "asc" },
+          select: { eventType: true, modelRunId: true },
+          where: { modelRunId: { in: [cancelled.runId, active.runId] } }
+        })
+      ).resolves.toEqual([{ eventType: "error", modelRunId: active.runId }]);
+    });
+  });
+});

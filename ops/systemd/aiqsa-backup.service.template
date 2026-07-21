@@ -1,0 +1,16 @@
+[Unit]
+Description=AIQSA coordinated PostgreSQL and private-object backup
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+WorkingDirectory=__AIQSA_CURRENT_DIRECTORY__
+EnvironmentFile=__AIQSA_ENV_FILE__
+Environment=COMPOSE_PROJECT_NAME=aiqsa
+UMask=0077
+ExecStart=__AIQSA_CURRENT_DIRECTORY__/ops/backup/create.sh __AIQSA_BACKUP_DIRECTORY__
+NoNewPrivileges=true
+PrivateTmp=true

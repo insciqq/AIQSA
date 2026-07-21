@@ -1,0 +1,83 @@
+{
+  "name": "aiqsa",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Self-hosted multi-user Question-Search-Answer web app with explicit AI provider, model, and search control.",
+  "license": "AGPL-3.0-only",
+  "repository": {
+    "type": "git",
+    "url": "git+https://gitlab.com/tulnov.dl/aiqsa.git"
+  },
+  "engines": {
+    "node": ">=22 <25",
+    "npm": ">=10 <12"
+  },
+  "packageManager": "npm@10.9.4",
+  "scripts": {
+    "dev": "next dev --hostname 0.0.0.0",
+    "build": "next build",
+    "check": "prisma generate && npm run docs:check && npm run lint && tsc --noEmit && vitest run",
+    "docs:check": "node scripts/docs-check.mjs",
+    "db:generate": "prisma generate",
+    "db:bootstrap:production": "tsx prisma/production-bootstrap.ts",
+    "db:migrate:deploy": "prisma migrate deploy",
+    "db:migrate:dev": "prisma migrate dev",
+    "db:migrate:resolve": "prisma migrate resolve",
+    "db:integrity:smoke": "prisma generate && tsx prisma/schema-integrity-smoke.ts",
+    "db:migration:contract": "tsx prisma/scripts/tests/schema-integrity-migration-contract.ts",
+    "db:retention:migration:contract": "tsx prisma/scripts/tests/attachment-retention-migration-contract.ts",
+    "db:seed": "prisma generate && prisma db seed",
+    "db:seed:smoke": "prisma generate && tsx prisma/seed-smoke.ts",
+    "db:test:bootstrap": "npm run db:migrate:deploy && npm run db:seed",
+    "start": "next start --hostname 0.0.0.0",
+    "lint": "eslint . --max-warnings=0",
+    "prune": "tsx scripts/prune.ts",
+    "security:deps": "npm audit --audit-level=high",
+    "smoke:openai": "tsx scripts/smoke-openai-responses.ts",
+    "smoke:openrouter": "tsx scripts/smoke-openrouter-perplexity.ts",
+    "pretest": "prisma generate",
+    "preprune": "prisma generate",
+    "typecheck": "prisma generate && tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:e2e": "playwright test --project=chromium",
+    "task:new": "node scripts/task-ledger.mjs new",
+    "task:promote": "node scripts/task-ledger.mjs promote",
+    "task:complete": "node scripts/task-ledger.mjs complete"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.1063.0",
+    "@prisma/client": "^6.19.3",
+    "jose": "6.2.3",
+    "katex": "0.18.1",
+    "lucide-react": "0.468.0",
+    "next": "16.2.7",
+    "react": "19",
+    "react-dom": "19",
+    "shiki": "^4.2.0",
+    "unpdf": "^1.6.2",
+    "zustand": "^5.0.14"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.60.0",
+    "@testing-library/jest-dom": "6.6.3",
+    "@testing-library/react": "16.1.0",
+    "@types/node": "^22.12.0",
+    "@types/react": "19",
+    "@types/react-dom": "19",
+    "autoprefixer": "10.4.20",
+    "eslint": "9",
+    "eslint-config-next": "16.2.7",
+    "jsdom": "25.0.1",
+    "postcss": "8.5.10",
+    "prisma": "^6.19.3",
+    "tailwindcss": "3.4.17",
+    "tsx": "^4.22.4",
+    "typescript": "5.7.2",
+    "vitest": "4.1.8"
+  },
+  "overrides": {
+    "esbuild": "0.28.1",
+    "postcss": "8.5.10"
+  }
+}

@@ -1,0 +1,11 @@
+[Unit]
+Description=Run the coordinated AIQSA backup every day
+
+[Timer]
+OnCalendar=*-*-* 03:30:00
+RandomizedDelaySec=15m
+Persistent=true
+Unit=aiqsa-backup.service
+
+[Install]
+WantedBy=timers.target

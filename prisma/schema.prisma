@@ -1,0 +1,542 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum AuthAccessRuleKind {
+  email
+  domain
+}
+
+enum AuthFlowTokenPurpose {
+  email_verification
+  password_reset
+  invite_acceptance
+}
+
+enum AuthIdentityProvider {
+  password
+  google
+  yandex
+}
+
+enum UserRole {
+  admin
+  user
+}
+
+enum UserStatus {
+  pending
+  active
+  disabled
+  denied
+}
+
+enum MessageStatus {
+  queued
+  streaming
+  complete
+  cancelled
+  error
+}
+
+enum ModelRunStatus {
+  queued
+  streaming
+  in_progress
+  complete
+  cancelled
+  error
+}
+
+enum SearchRunStatus {
+  complete
+  error
+}
+
+enum AttachmentStatus {
+  ready
+}
+
+model User {
+  id                     String               @id @default(uuid())
+  email                  String?              @unique
+  displayName            String
+  role                   UserRole             @default(user)
+  status                 UserStatus           @default(pending)
+  createdAt              DateTime             @default(now())
+  updatedAt              DateTime             @updatedAt
+  accessGrants           AccessGrant[]
+  attachments            Attachment[]
+  authAccessRulesCreated AuthAccessRule[]     @relation("AuthAccessRuleCreator")
+  authFlowTokens         AuthFlowToken[]
+  authIdentities         AuthIdentity[]
+  authInvitesAccepted    AuthInvite[]         @relation("AuthInviteAcceptedUser")
+  authInvitesCreated     AuthInvite[]         @relation("AuthInviteCreator")
+  authSessions           AuthSession[]
+  authSessionsRevoked    AuthSession[]        @relation("AuthSessionRevoker")
+  chats                  Chat[]
+  folders                Folder[]
+  groups                 UserGroup[]
+  modelRuns              ModelRun[]
+  promptPresets          PromptPreset[]
+  settings               UserSettings?
+  sharedSnapshots        SharedChatSnapshot[]
+  usageEvents            UsageEvent[]
+}
+
+model AuthIdentity {
+  id                String               @id @default(uuid())
+  userId            String
+  provider          AuthIdentityProvider
+  providerAccountId String
+  normalizedEmail   String
+  emailVerifiedAt   DateTime?
+  passwordHash      String?
+  createdAt         DateTime             @default(now())
+  updatedAt         DateTime             @updatedAt
+  flowTokens        AuthFlowToken[]
+  user              User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@unique([provider, normalizedEmail])
+  @@index([normalizedEmail])
+  @@index([userId])
+}
+
+model AuthSession {
+  id                 String    @id @default(uuid())
+  userId             String
+  tokenHash          String    @unique
+  expiresAt          DateTime
+  revokedAt          DateTime?
+  revokedByUserId    String?
+  revokedReason      String?
+  createdByIp        String?
+  createdByUserAgent String?
+  lastSeenAt         DateTime?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+  revokedBy          User?     @relation("AuthSessionRevoker", fields: [revokedByUserId], references: [id], onDelete: SetNull)
+  user               User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([expiresAt])
+  @@index([revokedAt])
+  @@index([userId, expiresAt])
+}
+
+model AuthAccessRule {
+  id              String                @id @default(uuid())
+  kind            AuthAccessRuleKind
+  value           String
+  enabled         Boolean               @default(true)
+  createdByUserId String?
+  createdAt       DateTime              @default(now())
+  updatedAt       DateTime              @updatedAt
+  createdBy       User?                 @relation("AuthAccessRuleCreator", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  defaultGroups   AuthAccessRuleGroup[]
+
+  @@unique([kind, value])
+  @@index([enabled])
+}
+
+model AuthAccessRuleGroup {
+  accessRuleId String
+  groupId      String
+  role         String         @default("member")
+  createdAt    DateTime       @default(now())
+  accessRule   AuthAccessRule @relation(fields: [accessRuleId], references: [id], onDelete: Cascade)
+  group        Group          @relation(fields: [groupId], references: [id], onDelete: Cascade)
+
+  @@id([accessRuleId, groupId])
+  @@index([groupId])
+}
+
+model AuthInvite {
+  id               String            @id @default(uuid())
+  email            String
+  normalizedEmail  String
+  expiresAt        DateTime
+  acceptedAt       DateTime?
+  acceptedByUserId String?
+  revokedAt        DateTime?
+  createdByUserId  String?
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+  acceptedBy       User?             @relation("AuthInviteAcceptedUser", fields: [acceptedByUserId], references: [id], onDelete: SetNull)
+  createdBy        User?             @relation("AuthInviteCreator", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  defaultGroups    AuthInviteGroup[]
+  flowTokens       AuthFlowToken[]
+
+  @@index([expiresAt])
+  @@index([normalizedEmail])
+  @@index([revokedAt])
+}
+
+model AuthInviteGroup {
+  inviteId  String
+  groupId   String
+  role      String     @default("member")
+  createdAt DateTime   @default(now())
+  group     Group      @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  invite    AuthInvite @relation(fields: [inviteId], references: [id], onDelete: Cascade)
+
+  @@id([inviteId, groupId])
+  @@index([groupId])
+}
+
+model AuthFlowToken {
+  id              String               @id @default(uuid())
+  purpose         AuthFlowTokenPurpose
+  tokenHash       String               @unique
+  userId          String?
+  identityId      String?
+  inviteId        String?
+  normalizedEmail String?
+  sentToEmail     String?
+  expiresAt       DateTime
+  consumedAt      DateTime?
+  metadata        Json                 @default("{}")
+  createdAt       DateTime             @default(now())
+  updatedAt       DateTime             @updatedAt
+  identity        AuthIdentity?        @relation(fields: [identityId], references: [id], onDelete: Cascade)
+  invite          AuthInvite?          @relation(fields: [inviteId], references: [id], onDelete: Cascade)
+  user            User?                @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([identityId])
+  @@index([inviteId])
+  @@index([normalizedEmail])
+  @@index([consumedAt])
+  @@index([purpose, expiresAt])
+  @@index([userId])
+}
+
+model Group {
+  id                     String                @id @default(uuid())
+  name                   String                @unique
+  archivedAt             DateTime?
+  createdAt              DateTime              @default(now())
+  updatedAt              DateTime              @updatedAt
+  accessGrants           AccessGrant[]
+  authAccessRuleDefaults AuthAccessRuleGroup[]
+  authInviteDefaults     AuthInviteGroup[]
+  users                  UserGroup[]
+
+  @@index([archivedAt])
+}
+
+model UserGroup {
+  userId    String
+  groupId   String
+  role      String   @default("member")
+  createdAt DateTime @default(now())
+  group     Group    @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([userId, groupId])
+}
+
+model UserSettings {
+  id                      String   @id @default(uuid())
+  userId                  String   @unique
+  defaultProvider         String
+  defaultModelId          String
+  defaultPromptPresetId   String?
+  defaultFolderId         String?
+  defaultSearchStrategyId String   @default("openai-native-web-search")
+  defaultControlValues    Json     @default("{}")
+  showCitations           Boolean  @default(true)
+  showReasoningBlocks     Boolean  @default(false)
+  createdAt               DateTime @default(now())
+  updatedAt               DateTime @updatedAt
+  user                    User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model AccessGrant {
+  id             String   @id @default(uuid())
+  userId         String?
+  groupId        String?
+  provider       String?
+  modelId        String?
+  searchStrategy String?
+  enabled        Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  group          Group?   @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  user           User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([groupId])
+  @@index([provider, modelId])
+  @@index([searchStrategy])
+  @@index([userId])
+}
+
+model Folder {
+  id            String   @id @default(uuid())
+  userId        String
+  parentId      String?
+  name          String
+  projectMemory String   @default("")
+  sortOrder     Int      @default(0)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  chats         Chat[]
+  children      Folder[] @relation("FolderHierarchy")
+  parent        Folder?  @relation("FolderHierarchy", fields: [parentId], references: [id], onDelete: SetNull)
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, parentId, name])
+  @@index([parentId])
+  @@index([userId, sortOrder])
+  @@index([userId, parentId, sortOrder])
+}
+
+model PromptPreset {
+  id              String    @id @default(uuid())
+  userId          String
+  name            String
+  systemPrompt    String
+  developerPrompt String?
+  isDefault       Boolean   @default(false)
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  messages        Message[]
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, name])
+}
+
+model ProviderModel {
+  id                     String   @id @default(uuid())
+  provider               String
+  modelId                String
+  displayName            String
+  contextWindow          Int
+  inputTokenPriceMicros  Int      @default(0)
+  outputTokenPriceMicros Int      @default(0)
+  supportsVision         Boolean  @default(false)
+  supportsPdf            Boolean  @default(false)
+  supportsReasoning      Boolean  @default(false)
+  supportsNativeSearch   Boolean  @default(false)
+  enabled                Boolean  @default(true)
+  capabilities           Json
+  defaultParams          Json
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+
+  @@unique([provider, modelId])
+  @@index([provider, enabled])
+}
+
+model SearchStrategy {
+  id          String   @id @default(uuid())
+  strategyId  String   @unique
+  provider    String
+  modelId     String?
+  displayName String
+  kind        String
+  description String
+  enabled     Boolean  @default(true)
+  config      Json
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model Chat {
+  id                    String       @id @default(uuid())
+  userId                String
+  folderId              String?
+  title                 String
+  activeLeafMessageId   String?
+  defaultProvider       String
+  defaultModelId        String
+  defaultPromptPresetId String?
+  pinned                Boolean      @default(false)
+  archived              Boolean      @default(false)
+  totalInputTokens      Int          @default(0)
+  totalOutputTokens     Int          @default(0)
+  totalReasoningTokens  Int          @default(0)
+  createdAt             DateTime     @default(now())
+  updatedAt             DateTime     @updatedAt
+  /// The migration uses PostgreSQL's column-scoped SET NULL so deleting the leaf clears only activeLeafMessageId, never Chat.id.
+  activeLeafMessage     Message?     @relation("ChatActiveLeaf", fields: [id, activeLeafMessageId], references: [chatId, id], onDelete: SetNull, onUpdate: Restrict, map: "Chat_id_activeLeafMessageId_fkey")
+  attachments           Attachment[]
+  folder                Folder?      @relation(fields: [folderId], references: [id], onDelete: SetNull)
+  messages              Message[]    @relation("ChatMessages")
+  modelRuns             ModelRun[]
+  user                  User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([activeLeafMessageId])
+  @@index([userId, archived, updatedAt])
+}
+
+model Message {
+  id                 String        @id @default(uuid())
+  chatId             String
+  role               String
+  parentMessageId    String?
+  content            Json
+  provider           String?
+  modelId            String?
+  promptPresetId     String?
+  status             MessageStatus @default(complete)
+  inputTokens        Int           @default(0)
+  outputTokens       Int           @default(0)
+  reasoningTokens    Int           @default(0)
+  errorMessage       String?
+  createdAt          DateTime      @default(now())
+  updatedAt          DateTime      @updatedAt
+  assistantModelRuns ModelRun[]    @relation("AssistantMessageRun")
+  activeLeafForChats Chat[]        @relation("ChatActiveLeaf")
+  chat               Chat          @relation("ChatMessages", fields: [chatId], references: [id], onDelete: Cascade)
+  children           Message[]     @relation("MessageBranches")
+  parent             Message?      @relation("MessageBranches", fields: [chatId, parentMessageId], references: [chatId, id], onDelete: Restrict, onUpdate: Restrict, map: "Message_chatId_parentMessageId_fkey")
+  promptPreset       PromptPreset? @relation(fields: [promptPresetId], references: [id], onDelete: SetNull)
+  userModelRuns      ModelRun[]    @relation("UserMessageRun")
+
+  @@unique([chatId, id], map: "Message_chatId_id_key")
+  @@index([chatId, parentMessageId])
+  @@index([chatId, createdAt])
+}
+
+model ModelRun {
+  id                           String          @id @default(uuid())
+  chatId                       String
+  userId                       String
+  userMessageId                String
+  assistantMessageId           String?
+  provider                     String
+  modelId                      String
+  status                       ModelRunStatus
+  normalizedRequest            Json
+  providerRequestPreview       Json?
+  providerResponseId           String?
+  finalProviderResponsePreview Json?
+  inputTokens                  Int             @default(0)
+  cachedInputTokens            Int             @default(0)
+  cacheWriteInputTokens        Int             @default(0)
+  outputTokens                 Int             @default(0)
+  reasoningTokens              Int             @default(0)
+  totalTokens                  Int             @default(0)
+  estimatedCostMicros          Int             @default(0)
+  errorPayload                 Json?
+  createdAt                    DateTime        @default(now())
+  updatedAt                    DateTime        @updatedAt
+  assistantMessage             Message?        @relation("AssistantMessageRun", fields: [assistantMessageId], references: [id], onDelete: SetNull)
+  chat                         Chat            @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  events                       ModelRunEvent[]
+  searchRuns                   SearchRun[]
+  user                         User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userMessage                  Message         @relation("UserMessageRun", fields: [userMessageId], references: [id], onDelete: Restrict)
+  usageEvents                  UsageEvent[]
+
+  @@index([chatId, createdAt])
+  @@index([provider, modelId])
+  @@index([status])
+  @@index([userId, createdAt])
+}
+
+model ModelRunEvent {
+  id         String   @id @default(uuid())
+  modelRunId String
+  sequence   Int
+  eventType  String
+  payload    Json
+  createdAt  DateTime @default(now())
+  modelRun   ModelRun @relation(fields: [modelRunId], references: [id], onDelete: Cascade)
+
+  @@unique([modelRunId, sequence])
+}
+
+model SearchRun {
+  id             String          @id @default(uuid())
+  modelRunId     String
+  strategyId     String
+  provider       String
+  modelId        String?
+  requestPreview Json
+  artifacts      Json
+  status         SearchRunStatus
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+  modelRun       ModelRun        @relation(fields: [modelRunId], references: [id], onDelete: Cascade)
+
+  @@index([strategyId])
+}
+
+model Attachment {
+  id            String           @id @default(uuid())
+  userId        String
+  chatId        String?
+  messageId     String?
+  kind          String
+  mimeType      String
+  fileName      String
+  storageKey    String
+  checksum      String?
+  status        AttachmentStatus @default(ready)
+  byteSize      Int
+  extractedText String?
+  metadata      Json
+  createdAt     DateTime         @default(now())
+  chat          Chat?            @relation(fields: [chatId], references: [id], onDelete: SetNull)
+  user          User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@index([messageId])
+  @@index([storageKey])
+}
+
+model AttachmentDeletionJob {
+  id              String    @id @default(uuid())
+  storageKey      String    @unique
+  claimToken      String?
+  claimedAt       DateTime?
+  attemptCount    Int       @default(0)
+  lastAttemptAt   DateTime?
+  lastErrorCode   String?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@index([claimedAt, createdAt])
+}
+
+model SharedChatSnapshot {
+  id          String    @id @default(uuid())
+  ownerUserId String
+  slugHash    String    @unique
+  title       String
+  snapshot    Json
+  expiresAt   DateTime?
+  revokedAt   DateTime?
+  createdAt   DateTime  @default(now())
+  owner       User      @relation(fields: [ownerUserId], references: [id], onDelete: Cascade)
+
+  @@index([ownerUserId, createdAt])
+}
+
+model UsageEvent {
+  id                    String    @id @default(uuid())
+  userId                String
+  chatId                String?
+  modelRunId            String?
+  provider              String
+  modelId               String
+  inputTokens           Int       @default(0)
+  cachedInputTokens     Int       @default(0)
+  cacheWriteInputTokens Int       @default(0)
+  outputTokens          Int       @default(0)
+  reasoningTokens       Int       @default(0)
+  totalTokens           Int       @default(0)
+  estimatedCostMicros   Int       @default(0)
+  createdAt             DateTime  @default(now())
+  modelRun              ModelRun? @relation(fields: [modelRunId], references: [id], onDelete: SetNull)
+  user                  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@index([provider, modelId])
+}

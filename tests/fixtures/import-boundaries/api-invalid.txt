@@ -1,0 +1,7 @@
+import "@/components/app-shell/PowerAppShell";
+import "../../../components/app-shell/PowerAppShell";
+import "components/app-shell/PowerAppShell";
+import "@/app/../components/app-shell/PowerAppShell";
+import "../../../app/../components/app-shell/PowerAppShell";
+void import("components/app-shell/PowerAppShell");
+require("@/components/app-shell/PowerAppShell");

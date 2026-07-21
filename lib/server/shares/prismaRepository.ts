@@ -1,0 +1,116 @@
+import { Prisma } from "@prisma/client";
+import { buildPublicShareSnapshot, type PublicShareSnapshot } from "../../domain/shareSnapshot";
+import { prisma } from "../prisma";
+import type { ShareRepository } from "./handlers";
+
+function json(value: unknown): Prisma.InputJsonValue {
+  return value as Prisma.InputJsonValue;
+}
+
+function publicSnapshot(value: unknown): PublicShareSnapshot {
+  return value as PublicShareSnapshot;
+}
+
+export function createPrismaShareRepository(prismaClient = prisma): ShareRepository {
+  return {
+    createChatShare: async ({ activeLeafMessageId, chatId, shareToken, slugHash, userId }) =>
+      prismaClient.$transaction(async (tx) => {
+        const chat = await tx.chat.findFirst({
+          include: {
+            messages: true
+          },
+          where: {
+            archived: false,
+            id: chatId,
+            userId
+          }
+        });
+
+        if (!chat) {
+          return null;
+        }
+
+        const leaf = activeLeafMessageId ?? chat.activeLeafMessageId;
+        if (!leaf) {
+          return null;
+        }
+
+        if (!chat.messages.some((message) => message.id === leaf)) {
+          return {
+            error: "invalid_active_leaf" as const
+          };
+        }
+
+        const snapshot = buildPublicShareSnapshot({
+          activeLeafMessageId: leaf,
+          messages: chat.messages.map((message) => ({
+            content: message.content,
+            id: message.id,
+            parentMessageId: message.parentMessageId,
+            role: message.role as "assistant" | "system" | "tool" | "user"
+          })),
+          title: chat.title
+        });
+
+        const share = await tx.sharedChatSnapshot.create({
+          data: {
+            ownerUserId: userId,
+            slugHash,
+            snapshot: json(snapshot),
+            title: chat.title
+          }
+        });
+
+        return {
+          createdAt: share.createdAt,
+          id: share.id,
+          shareToken,
+          snapshot,
+          title: share.title
+        };
+      }),
+    findPublicShare: async (slugHash, now) => {
+      const share = await prismaClient.sharedChatSnapshot.findFirst({
+        where: {
+          OR: [
+            {
+              expiresAt: null
+            },
+            {
+              expiresAt: {
+                gt: now
+              }
+            }
+          ],
+          revokedAt: null,
+          slugHash
+        }
+      });
+
+      if (!share) {
+        return null;
+      }
+
+      return {
+        createdAt: share.createdAt,
+        id: share.id,
+        snapshot: publicSnapshot(share.snapshot),
+        title: share.title
+      };
+    },
+    revokeShare: async ({ shareId, userId }) => {
+      const result = await prismaClient.sharedChatSnapshot.updateMany({
+        data: {
+          revokedAt: new Date()
+        },
+        where: {
+          id: shareId,
+          ownerUserId: userId,
+          revokedAt: null
+        }
+      });
+
+      return result.count > 0;
+    }
+  };
+}

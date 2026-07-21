@@ -1,0 +1,573 @@
+import type {
+  ErrorResponse,
+  MutationOriginErrorCode,
+  SessionErrorCode
+} from "./http";
+
+export type ThreadMessage = {
+  artifactSummary?: ThreadArtifactSummary | null;
+  content: unknown;
+  id: string;
+  modelId?: string;
+  parentMessageId: string | null;
+  provider?: string;
+  role: "assistant" | "user";
+  runId?: string | null;
+  status: "cancelled" | "complete" | "error" | "streaming";
+};
+
+export type ThreadArtifactSummary = {
+  citationCount: number;
+  citations: ThreadCitation[];
+  contextTruncation?: {
+    approxDroppedTokens: number;
+    droppedMessages: number;
+  } | null;
+  reasoningCount: number;
+  reasoningText: string[];
+  searchCount: number;
+  searchDetails?: ThreadSearchDetail[];
+  searchStrategy: string | null;
+};
+
+export type ThreadSearchDetail = {
+  callPreview?: unknown;
+  modelId?: string | null;
+  provider?: string | null;
+  requestPreview?: unknown;
+  responsePreview?: unknown;
+  status?: string | null;
+  strategyId?: string | null;
+};
+
+export type ThreadCitation = {
+  index: number;
+  snippet?: string;
+  source?: string;
+  title: string;
+  url: string;
+};
+
+export type WorkspaceChatSummary = {
+  activeLeafMessageId: string | null;
+  createdAt: string;
+  defaultModelId: string;
+  defaultPromptPresetId: string | null;
+  defaultProvider: string;
+  folderId: string | null;
+  id: string;
+  messageCount: number;
+  pinned?: boolean;
+  title: string;
+  updatedAt: string;
+};
+
+export type ChatUsageStats = {
+  activeBranchMessageCount: number;
+  cachedInputTokens: number;
+  cacheWriteInputTokens: number;
+  totalTokens: number;
+};
+
+export type ChatDetail = WorkspaceChatSummary & {
+  messages: ThreadMessage[];
+  usageStats: ChatUsageStats | null;
+};
+
+/** Prefer the explicit workspace name in new code; this alias is summary-only. */
+export type ChatSummary = WorkspaceChatSummary;
+
+export type ChatMessageWire = {
+  artifactSummary?: ThreadArtifactSummary | null;
+  content: unknown;
+  createdAt: string;
+  errorMessage: string | null;
+  id: string;
+  modelId: string | null;
+  modelRunId: string | null;
+  parentMessageId: string | null;
+  provider: string | null;
+  role: string;
+  status: string;
+};
+
+export type WorkspaceChatSummaryWire = Omit<WorkspaceChatSummary, "pinned"> & {
+  pinned: boolean;
+};
+
+export type ChatDetailWire = WorkspaceChatSummaryWire & {
+  messages: ChatMessageWire[];
+  usageStats: ChatUsageStats | null;
+};
+
+export type ChatSummaryResponseWire = {
+  chat: WorkspaceChatSummaryWire;
+};
+
+export type ChatDetailResponseWire = {
+  chat: ChatDetailWire;
+};
+
+export type CreateChatRequestWire = {
+  folderId?: string | null;
+  title?: string | null;
+};
+
+export type UpdateChatRequestWire = {
+  activeLeafMessageId?: string | null;
+  folderId?: string | null;
+  pinned?: boolean;
+  title?: string | null;
+};
+
+export type ChatRouteServerErrorCode =
+  | SessionErrorCode
+  | MutationOriginErrorCode
+  | "active_run_in_progress"
+  | "chat_not_created"
+  | "chat_not_found"
+  | "workspace_not_found";
+
+export type ChatRouteErrorResponse = ErrorResponse<ChatRouteServerErrorCode>;
+
+export type ChatContentMatchWire = {
+  chatId: string;
+  snippet: string | null;
+};
+
+export type FolderWire = {
+  id: string;
+  name: string;
+  parentId: string | null;
+  projectMemory: string;
+  sortOrder: number;
+};
+
+export type WorkspaceChatsResponseWire = {
+  chats: WorkspaceChatSummaryWire[];
+  contentMatches: ChatContentMatchWire[];
+  folders: FolderWire[];
+};
+
+export type DecodedWorkspaceChatsResponse = {
+  chats: WorkspaceChatSummaryWire[];
+  contentMatches: ChatContentMatchWire[];
+  folders: FolderWire[];
+};
+
+export type ChatUpdateDataWire = {
+  chat: WorkspaceChatSummaryWire & {
+    usageStats: ChatUsageStats | null;
+  };
+  messages: ChatMessageWire[];
+};
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function requiredString(value: unknown): string | null {
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function nullableString(value: unknown): string | null | undefined {
+  return value === null ? null : typeof value === "string" ? value : undefined;
+}
+
+function finiteNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function nullableId(value: unknown): string | null | undefined {
+  return value === null
+    ? null
+    : typeof value === "string" && value.length > 0
+      ? value
+      : undefined;
+}
+
+function nonNegativeInteger(value: unknown): number | null {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0
+    ? value
+    : null;
+}
+
+function decodeUsageStats(value: unknown): ChatUsageStats | null | undefined {
+  if (value === null) {
+    return null;
+  }
+  if (!isRecord(value)) {
+    return undefined;
+  }
+
+  const activeBranchMessageCount = nonNegativeInteger(value.activeBranchMessageCount);
+  const cachedInputTokens = nonNegativeInteger(value.cachedInputTokens);
+  const cacheWriteInputTokens = nonNegativeInteger(value.cacheWriteInputTokens);
+  const totalTokens = nonNegativeInteger(value.totalTokens);
+  if (
+    activeBranchMessageCount === null ||
+    cachedInputTokens === null ||
+    cacheWriteInputTokens === null ||
+    totalTokens === null
+  ) {
+    return undefined;
+  }
+
+  return {
+    activeBranchMessageCount,
+    cachedInputTokens,
+    cacheWriteInputTokens,
+    totalTokens
+  };
+}
+
+function validOptionalString(record: Record<string, unknown>, key: string): boolean {
+  return !(key in record) || typeof record[key] === "string";
+}
+
+function validOptionalNullableString(record: Record<string, unknown>, key: string): boolean {
+  return !(key in record) || record[key] === null || typeof record[key] === "string";
+}
+
+function decodeThreadCitation(value: unknown): ThreadCitation | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+
+  const index = nonNegativeInteger(value.index);
+  const title = requiredString(value.title);
+  const url = requiredString(value.url);
+  if (
+    index === null ||
+    !title ||
+    !url ||
+    !validOptionalString(value, "snippet") ||
+    !validOptionalString(value, "source")
+  ) {
+    return null;
+  }
+
+  return {
+    index,
+    ...(typeof value.snippet === "string" ? { snippet: value.snippet } : {}),
+    ...(typeof value.source === "string" ? { source: value.source } : {}),
+    title,
+    url
+  };
+}
+
+function decodeThreadSearchDetail(value: unknown): ThreadSearchDetail | null {
+  if (
+    !isRecord(value) ||
+    !validOptionalNullableString(value, "modelId") ||
+    !validOptionalNullableString(value, "provider") ||
+    !validOptionalNullableString(value, "status") ||
+    !validOptionalNullableString(value, "strategyId")
+  ) {
+    return null;
+  }
+
+  return {
+    ...(value.callPreview !== undefined ? { callPreview: value.callPreview } : {}),
+    ...(value.modelId !== undefined ? { modelId: value.modelId as string | null } : {}),
+    ...(value.provider !== undefined ? { provider: value.provider as string | null } : {}),
+    ...(value.requestPreview !== undefined ? { requestPreview: value.requestPreview } : {}),
+    ...(value.responsePreview !== undefined ? { responsePreview: value.responsePreview } : {}),
+    ...(value.status !== undefined ? { status: value.status as string | null } : {}),
+    ...(value.strategyId !== undefined ? { strategyId: value.strategyId as string | null } : {})
+  };
+}
+
+function decodeThreadArtifactSummary(value: unknown): ThreadArtifactSummary | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+
+  const citationCount = nonNegativeInteger(value.citationCount);
+  const reasoningCount = nonNegativeInteger(value.reasoningCount);
+  const searchCount = nonNegativeInteger(value.searchCount);
+  const searchStrategy = nullableId(value.searchStrategy);
+  if (
+    citationCount === null ||
+    reasoningCount === null ||
+    searchCount === null ||
+    searchStrategy === undefined ||
+    !Array.isArray(value.citations) ||
+    !Array.isArray(value.reasoningText) ||
+    value.reasoningText.some((text) => typeof text !== "string")
+  ) {
+    return null;
+  }
+
+  const citations = value.citations.map(decodeThreadCitation);
+  if (citations.some((citation) => citation === null)) {
+    return null;
+  }
+
+  let contextTruncation: ThreadArtifactSummary["contextTruncation"];
+  if (value.contextTruncation === null || value.contextTruncation === undefined) {
+    contextTruncation = value.contextTruncation;
+  } else if (isRecord(value.contextTruncation)) {
+    const approxDroppedTokens = nonNegativeInteger(value.contextTruncation.approxDroppedTokens);
+    const droppedMessages = nonNegativeInteger(value.contextTruncation.droppedMessages);
+    if (approxDroppedTokens === null || droppedMessages === null) {
+      return null;
+    }
+    contextTruncation = { approxDroppedTokens, droppedMessages };
+  } else {
+    return null;
+  }
+
+  let searchDetails: ThreadSearchDetail[] | undefined;
+  if (value.searchDetails !== undefined) {
+    if (!Array.isArray(value.searchDetails)) {
+      return null;
+    }
+    const decodedSearchDetails = value.searchDetails.map(decodeThreadSearchDetail);
+    if (decodedSearchDetails.some((detail) => detail === null)) {
+      return null;
+    }
+    searchDetails = decodedSearchDetails.filter(
+      (detail): detail is ThreadSearchDetail => detail !== null
+    );
+  }
+
+  return {
+    citationCount,
+    citations: citations.filter((citation): citation is ThreadCitation => citation !== null),
+    ...(contextTruncation !== undefined ? { contextTruncation } : {}),
+    reasoningCount,
+    reasoningText: value.reasoningText as string[],
+    searchCount,
+    ...(searchDetails !== undefined ? { searchDetails } : {}),
+    searchStrategy
+  };
+}
+
+function decodeChatMessageWire(value: unknown): ChatMessageWire | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+
+  const id = requiredString(value.id);
+  const createdAt = requiredString(value.createdAt);
+  const errorMessage = nullableString(value.errorMessage);
+  const modelId = nullableString(value.modelId);
+  const modelRunId = nullableString(value.modelRunId);
+  const parentMessageId = nullableId(value.parentMessageId);
+  const provider = nullableString(value.provider);
+  const role = value.role === "assistant" || value.role === "user" ? value.role : null;
+  const status =
+    value.status === "queued" ||
+    value.status === "streaming" ||
+    value.status === "complete" ||
+    value.status === "cancelled" ||
+    value.status === "error"
+      ? value.status
+      : null;
+  let artifactSummary: ThreadArtifactSummary | null | undefined;
+  if (value.artifactSummary === undefined || value.artifactSummary === null) {
+    artifactSummary = value.artifactSummary;
+  } else {
+    artifactSummary = decodeThreadArtifactSummary(value.artifactSummary);
+    if (!artifactSummary) {
+      return null;
+    }
+  }
+  if (
+    !id ||
+    !createdAt ||
+    errorMessage === undefined ||
+    modelId === undefined ||
+    modelRunId === undefined ||
+    parentMessageId === undefined ||
+    provider === undefined ||
+    !role ||
+    !status ||
+    !("content" in value)
+  ) {
+    return null;
+  }
+
+  return {
+    artifactSummary,
+    content: value.content,
+    createdAt,
+    errorMessage,
+    id,
+    modelId,
+    modelRunId,
+    parentMessageId,
+    provider,
+    role,
+    status
+  };
+}
+
+function decodeWorkspaceChatSummaryWire(value: unknown): WorkspaceChatSummaryWire | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+
+  const activeLeafMessageId = nullableId(value.activeLeafMessageId);
+  const id = requiredString(value.id);
+  const createdAt = requiredString(value.createdAt);
+  const defaultModelId = requiredString(value.defaultModelId);
+  const defaultPromptPresetId = nullableId(value.defaultPromptPresetId);
+  const defaultProvider = requiredString(value.defaultProvider);
+  const folderId = nullableId(value.folderId);
+  const messageCount = nonNegativeInteger(value.messageCount);
+  const title = requiredString(value.title);
+  const updatedAt = requiredString(value.updatedAt);
+  if (
+    activeLeafMessageId === undefined ||
+    !id ||
+    !createdAt ||
+    !defaultModelId ||
+    defaultPromptPresetId === undefined ||
+    !defaultProvider ||
+    folderId === undefined ||
+    messageCount === null ||
+    typeof value.pinned !== "boolean" ||
+    !title ||
+    !updatedAt
+  ) {
+    return null;
+  }
+
+  return {
+    activeLeafMessageId,
+    createdAt,
+    defaultModelId,
+    defaultPromptPresetId,
+    defaultProvider,
+    folderId,
+    id,
+    messageCount,
+    pinned: value.pinned,
+    title,
+    updatedAt
+  };
+}
+
+function decodeFolderWire(value: unknown): FolderWire | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+
+  const id = requiredString(value.id);
+  const name = requiredString(value.name);
+  const parentId = nullableId(value.parentId);
+  const projectMemory = typeof value.projectMemory === "string" ? value.projectMemory : null;
+  const sortOrder = finiteNumber(value.sortOrder);
+  if (!id || !name || parentId === undefined || projectMemory === null || sortOrder === null) {
+    return null;
+  }
+
+  return {
+    id,
+    name,
+    parentId,
+    projectMemory,
+    sortOrder
+  };
+}
+
+function decodeChatContentMatchWire(value: unknown): ChatContentMatchWire | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+
+  const chatId = requiredString(value.chatId);
+  const snippet = nullableString(value.snippet);
+  if (!chatId || snippet === undefined) {
+    return null;
+  }
+
+  return {
+    chatId,
+    snippet
+  };
+}
+
+export function decodeWorkspaceChatsResponse(
+  value: unknown
+): DecodedWorkspaceChatsResponse | null {
+  if (
+    !isRecord(value) ||
+    !Array.isArray(value.chats) ||
+    !Array.isArray(value.contentMatches) ||
+    !Array.isArray(value.folders)
+  ) {
+    return null;
+  }
+
+  const chats = value.chats.map(decodeWorkspaceChatSummaryWire);
+  const folders = value.folders.map(decodeFolderWire);
+  const contentMatches = value.contentMatches.map(decodeChatContentMatchWire);
+  if (
+    chats.some((chat) => !chat) ||
+    folders.some((folder) => !folder) ||
+    contentMatches.some((match) => !match)
+  ) {
+    return null;
+  }
+
+  return {
+    chats: chats.filter((chat): chat is WorkspaceChatSummaryWire => Boolean(chat)),
+    contentMatches: contentMatches.filter(
+      (match): match is ChatContentMatchWire => Boolean(match)
+    ),
+    folders: folders.filter((folder): folder is FolderWire => Boolean(folder))
+  };
+}
+
+export function decodeChatSummaryResponse(value: unknown): WorkspaceChatSummaryWire | null {
+  return isRecord(value) ? decodeWorkspaceChatSummaryWire(value.chat) : null;
+}
+
+export function decodeChatDetailResponse(value: unknown): ChatDetailWire | null {
+  if (!isRecord(value) || !isRecord(value.chat) || !Array.isArray(value.chat.messages)) {
+    return null;
+  }
+
+  const chat = decodeWorkspaceChatSummaryWire(value.chat);
+  const usageStats = decodeUsageStats(value.chat.usageStats);
+  const messages = value.chat.messages.map(decodeChatMessageWire);
+  if (!chat || usageStats === undefined || messages.some((message) => message === null)) {
+    return null;
+  }
+
+  return {
+    ...chat,
+    messages: messages.filter((message): message is ChatMessageWire => message !== null),
+    usageStats
+  };
+}
+
+export function decodeChatUpdateData(value: unknown): ChatUpdateDataWire | null {
+  if (!isRecord(value) || !isRecord(value.chat) || !Array.isArray(value.messages)) {
+    return null;
+  }
+
+  const chat = decodeWorkspaceChatSummaryWire(value.chat);
+  const usageStats = decodeUsageStats(value.chat.usageStats);
+  if (!chat || usageStats === undefined) {
+    return null;
+  }
+
+  const decodedMessages = value.messages.map(decodeChatMessageWire);
+  if (decodedMessages.some((message) => message === null)) {
+    return null;
+  }
+
+  return {
+    chat: {
+      ...chat,
+      usageStats
+    },
+    messages: decodedMessages.filter(
+      (message): message is ChatMessageWire => message !== null
+    )
+  };
+}

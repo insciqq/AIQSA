@@ -1,0 +1,184 @@
+import type { AdminDeletionInfo, AdminUserRecord } from "@/lib/contracts/admin";
+
+export type AdminUserDeletionSource = Readonly<{
+  ownedDataCount: number;
+  status: AdminUserRecord["status"];
+}>;
+
+export type AdminGroupDeletionSource = Readonly<{
+  _count: Readonly<{
+    users: number;
+  }>;
+  accessGrants: readonly Readonly<{
+    enabled: boolean;
+  }>[];
+}>;
+
+export type AdminInviteDeletionSource = Readonly<{
+  acceptedAt: Date | null;
+  expiresAt: Date;
+  revokedAt: Date | null;
+}>;
+
+export type AdminUserOwnedDataSource = Readonly<{
+  _count: Readonly<{
+    accessGrants: number;
+    attachments: number;
+    chats: number;
+    folders: number;
+    modelRuns: number;
+    promptPresets: number;
+    sharedSnapshots: number;
+    usageEvents: number;
+  }>;
+  settings: unknown | null;
+}>;
+
+export type AdminOwnedAppDataCounts = Readonly<{
+  accessGrants: number;
+  attachments: number;
+  chats: number;
+  folders: number;
+  modelRuns: number;
+  promptPresets: number;
+  settings: number;
+  sharedSnapshots: number;
+  usageEvents: number;
+}>;
+
+export type AdminUserDeletionBlock = "user_active" | "user_has_owned_data";
+export type AdminGroupDeletionBlock = "group_has_grants" | "group_has_members";
+export type AdminInviteDeletionBlock = "invite_accepted" | "invite_open";
+
+export function adminUserDeletionBlock(input: AdminUserDeletionSource): AdminUserDeletionBlock | null {
+  if (input.status === "active") {
+    return "user_active";
+  }
+
+  return input.ownedDataCount > 0 ? "user_has_owned_data" : null;
+}
+
+export function adminGroupDeletionBlock(input: {
+  activeGrantCount: number;
+  memberCount: number;
+}): AdminGroupDeletionBlock | null {
+  if (input.memberCount > 0) {
+    return "group_has_members";
+  }
+
+  return input.activeGrantCount > 0 ? "group_has_grants" : null;
+}
+
+export function adminInviteDeletionBlock(
+  invite: AdminInviteDeletionSource,
+  now: Date
+): AdminInviteDeletionBlock | null {
+  if (invite.acceptedAt) {
+    return "invite_accepted";
+  }
+
+  return !invite.revokedAt && invite.expiresAt > now ? "invite_open" : null;
+}
+
+export function adminUserDeletionInfo(input: AdminUserDeletionSource): AdminDeletionInfo {
+  const block = adminUserDeletionBlock(input);
+
+  if (block === "user_active") {
+    return {
+      canDelete: false,
+      reason: "active_user",
+      summary: "Disable this user before deletion can be considered."
+    };
+  }
+
+  if (block === "user_has_owned_data") {
+    return {
+      canDelete: false,
+      reason: "user_has_owned_data",
+      summary: `${input.ownedDataCount} owned app record${input.ownedDataCount === 1 ? "" : "s"} keep this account as disabled history.`
+    };
+  }
+
+  return {
+    canDelete: true,
+    reason: null,
+    summary: "No app-owned records detected; auth request data can be removed."
+  };
+}
+
+export function adminGroupDeletionInfo(group: AdminGroupDeletionSource): AdminDeletionInfo {
+  const activeGrantCount = group.accessGrants.filter((grant) => grant.enabled).length;
+  const block = adminGroupDeletionBlock({
+    activeGrantCount,
+    memberCount: group._count.users
+  });
+
+  if (block === "group_has_members") {
+    return {
+      canDelete: false,
+      reason: "group_has_members",
+      summary: `Remove ${group._count.users} member${group._count.users === 1 ? "" : "s"} before deleting this group.`
+    };
+  }
+
+  if (block === "group_has_grants") {
+    return {
+      canDelete: false,
+      reason: "group_has_grants",
+      summary: `Remove ${activeGrantCount} active grant${activeGrantCount === 1 ? "" : "s"} before deleting this group.`
+    };
+  }
+
+  return {
+    canDelete: true,
+    reason: null,
+    summary: "No members or active grants; this group can be deleted."
+  };
+}
+
+export function adminInviteDeletionInfo(invite: AdminInviteDeletionSource, now: Date): AdminDeletionInfo {
+  const block = adminInviteDeletionBlock(invite, now);
+
+  if (block === "invite_accepted") {
+    return {
+      canDelete: false,
+      reason: "invite_accepted",
+      summary: "Accepted invites are kept for audit history."
+    };
+  }
+
+  if (block === "invite_open") {
+    return {
+      canDelete: false,
+      reason: "invite_open",
+      summary: "Revoke this open invite before deleting it."
+    };
+  }
+
+  return {
+    canDelete: true,
+    reason: null,
+    summary: "This stale invite can be deleted."
+  };
+}
+
+export function adminUserOwnedDataCount(user: AdminUserOwnedDataSource): number {
+  return adminOwnedAppDataCount({
+    ...user._count,
+    settings: user.settings ? 1 : 0
+  });
+}
+
+export function adminOwnedAppDataCount(counts: AdminOwnedAppDataCounts): number {
+  return (
+    counts.accessGrants +
+    counts.attachments +
+    counts.chats +
+    counts.folders +
+    counts.modelRuns +
+    counts.promptPresets +
+    counts.settings +
+    counts.sharedSnapshots +
+    counts.usageEvents
+  );
+}

@@ -1,0 +1,262 @@
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type { UserSettingsWire } from "@/lib/contracts/settings";
+import {
+  applySettingsDefaultsReconciliation,
+  createSettingsMutationCoordinator,
+  sendSettingsDefaultsPatch,
+  type SettingsDefaultsPatch
+} from "./settingsMutationCoordinator";
+
+function settings(overrides: Partial<UserSettingsWire> = {}): UserSettingsWire {
+  return {
+    defaultControlValues: {},
+    defaultModelId: "gpt-5.5",
+    defaultPromptPresetId: null,
+    defaultProvider: "openai",
+    defaultSearchStrategyId: "search-disabled",
+    showCitations: true,
+    showReasoningBlocks: false,
+    ...overrides
+  };
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((settle) => {
+    resolve = settle;
+  });
+
+  return { promise, resolve };
+}
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+});
+
+describe("settings mutation coordinator", () => {
+  it("serializes requests, deep-coalesces pending keys, and overlays newer intent on an older response", async () => {
+    const responses = [deferred<UserSettingsWire>(), deferred<UserSettingsWire>()];
+    let activeRequests = 0;
+    let maxActiveRequests = 0;
+    const send = vi.fn(async (_patch: SettingsDefaultsPatch) => {
+      const response = responses[send.mock.calls.length - 1];
+      if (!response) {
+        throw new Error("unexpected_settings_request");
+      }
+
+      activeRequests += 1;
+      maxActiveRequests = Math.max(maxActiveRequests, activeRequests);
+      try {
+        return await response.promise;
+      } finally {
+        activeRequests -= 1;
+      }
+    });
+    const reconciled: SettingsDefaultsPatch[] = [];
+    const coordinator = createSettingsMutationCoordinator({
+      callbacks: {
+        onFailure: vi.fn(),
+        onReconcile: (patch) => reconciled.push(patch),
+        onRecovered: vi.fn()
+      },
+      send
+    });
+
+    const first = coordinator.enqueue({ showCitations: false });
+    const second = coordinator.enqueue({
+      controlValues: {
+        "openai:gpt-5.5": {
+          temperature: "0.2"
+        }
+      },
+      showCitations: true
+    });
+    const third = coordinator.enqueue({
+      controlValues: {
+        "openai:gpt-5.5": {
+          streamMode: true
+        },
+        "openrouter:model-b": {
+          reasoningEffort: "high"
+        }
+      },
+      showReasoningBlocks: true
+    });
+
+    expect(send).toHaveBeenCalledTimes(1);
+    responses[0]?.resolve(settings({ showCitations: false }));
+
+    await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(2));
+    expect(reconciled[0]).toMatchObject({
+      controlValues: {
+        "openai:gpt-5.5": {
+          streamMode: true,
+          temperature: "0.2"
+        },
+        "openrouter:model-b": {
+          reasoningEffort: "high"
+        }
+      },
+      showCitations: true,
+      showReasoningBlocks: true
+    });
+    expect(send.mock.calls[1]?.[0]).toEqual({
+      controlValues: {
+        "openai:gpt-5.5": {
+          streamMode: true,
+          temperature: "0.2"
+        },
+        "openrouter:model-b": {
+          reasoningEffort: "high"
+        }
+      },
+      showCitations: true,
+      showReasoningBlocks: true
+    });
+
+    responses[1]?.resolve(
+      settings({
+        defaultControlValues: {
+          "openai:gpt-5.5": {
+            streamMode: true,
+            temperature: "0.2"
+          },
+          "openrouter:model-b": {
+            reasoningEffort: "high"
+          }
+        },
+        showCitations: true,
+        showReasoningBlocks: true
+      })
+    );
+    await Promise.all([first, second, third]);
+
+    expect(maxActiveRequests).toBe(1);
+  });
+
+  it("retains a failed patch for an explicit retry", async () => {
+    const retryCallbacks: Array<() => void> = [];
+    const failureScopes: string[] = [];
+    const recoveredScopes: string[] = [];
+    const send = vi
+      .fn<(patch: SettingsDefaultsPatch) => Promise<UserSettingsWire>>()
+      .mockRejectedValueOnce(new Error("settings_update_failed_503"))
+      .mockRejectedValueOnce(new Error("settings_update_failed_503"))
+      .mockResolvedValueOnce(
+        settings({
+          defaultControlValues: {
+            "openai:gpt-5.5": {
+              streamMode: false
+            }
+          },
+          defaultPromptPresetId: "prompt-b",
+          showCitations: false
+        })
+      );
+    const coordinator = createSettingsMutationCoordinator({
+      callbacks: {
+        onFailure: (_error, retry, noticeScope) => {
+          failureScopes.push(noticeScope);
+          retryCallbacks.push(retry);
+        },
+        onReconcile: vi.fn(),
+        onRecovered: (noticeScope) => recoveredScopes.push(noticeScope)
+      },
+      send
+    });
+
+    const first = coordinator.enqueue({
+      controlValues: {
+        "openai:gpt-5.5": {
+          streamMode: false
+        }
+      },
+      showCitations: false
+    });
+    await vi.waitFor(() => expect(retryCallbacks).toHaveLength(1));
+    await expect(first).resolves.toBe(false);
+
+    const second = coordinator.enqueue(
+      {
+        promptPresetId: "prompt-b"
+      },
+      {
+        noticeScope: "settings"
+      }
+    );
+    await vi.waitFor(() => expect(retryCallbacks).toHaveLength(2));
+    await expect(second).resolves.toBe(false);
+    expect(failureScopes).toEqual(["general", "general"]);
+
+    retryCallbacks[1]?.();
+    await vi.waitFor(() => expect(recoveredScopes).toEqual(["general"]));
+
+    expect(send).toHaveBeenCalledTimes(3);
+    expect(send.mock.calls[2]?.[0]).toEqual({
+      controlValues: {
+        "openai:gpt-5.5": {
+          streamMode: false
+        }
+      },
+      promptPresetId: "prompt-b",
+      showCitations: false
+    });
+  });
+
+  it("rejects a malformed successful response before reconciliation", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        Response.json({
+          settings: {
+            defaultControlValues: {}
+          }
+        })
+      )
+    );
+
+    await expect(sendSettingsDefaultsPatch({ showCitations: false })).rejects.toThrow(
+      "settings_malformed"
+    );
+  });
+
+  it("replaces a server-confirmed model draft before preserving unrelated keys", () => {
+    const result = applySettingsDefaultsReconciliation(
+      {
+        controlValues: {
+          "openai:gpt-5.5": {
+            staleField: true,
+            temperature: "0.4"
+          },
+          "openrouter:model-b": {
+            reasoningEffort: "high"
+          }
+        },
+        modelId: "gpt-5.5",
+        promptPresetId: null,
+        provider: "openai",
+        searchStrategyId: "search-disabled",
+        showCitations: true,
+        showReasoningBlocks: false
+      },
+      {
+        controlValues: {
+          "openai:gpt-5.5": {
+            temperature: "0.2"
+          }
+        }
+      },
+      new Set(["openai:gpt-5.5"])
+    );
+
+    expect(result.controlValues).toEqual({
+      "openai:gpt-5.5": {
+        temperature: "0.2"
+      },
+      "openrouter:model-b": {
+        reasoningEffort: "high"
+      }
+    });
+  });
+});

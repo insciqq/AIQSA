@@ -1,0 +1,4 @@
+/DEPLOY.md export-ignore
+/ops/deploy export-ignore
+/ops/deploy/** export-ignore
+/sa.json* export-ignore

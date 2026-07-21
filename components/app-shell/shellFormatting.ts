@@ -1,0 +1,168 @@
+import { inspectorEventErrorMessage } from "@/components/app-shell/eventLog";
+import { isRecord } from "@/components/app-shell/shellValues";
+import type { CatalogModel, RunEventView } from "@/components/app-shell/types";
+
+export function formatTokenCount(value: number): string {
+  if (value >= 1_000_000) {
+    return `${Number((value / 1_000_000).toFixed(value >= 10_000_000 ? 0 : 2))}m`;
+  }
+
+  if (value >= 1_000) {
+    const thousands = Number((value / 1_000).toFixed(value >= 100_000 ? 0 : 1));
+
+    return thousands >= 1_000 ? "1m" : `${thousands}k`;
+  }
+
+  return String(value);
+}
+
+export function eventLabel(event: RunEventView): string {
+  if (event.type === "error") {
+    return inspectorEventErrorMessage(event);
+  }
+
+  if (isRecord(event.data) && typeof event.data.delta === "string") {
+    return event.data.delta.trim() ? "answer text" : "token";
+  }
+
+  if (isRecord(event.data) && typeof event.data.status === "string") {
+    return event.data.status;
+  }
+
+  if (isRecord(event.data) && typeof event.data.artifactType === "string") {
+    return event.data.artifactType;
+  }
+
+  return "ok";
+}
+
+export function safeDownloadName(value: string): string {
+  const normalized = value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+
+  return normalized || "aiqsa-chat";
+}
+
+export function errorMessage(error: unknown): string {
+  return humanizeErrorCode(error instanceof Error ? error.message : "Request failed");
+}
+
+export function humanizeErrorCode(code: string): string {
+  const raw = code.trim();
+  if (!raw) {
+    return "Request failed";
+  }
+
+  if (!/^[a-z][a-z0-9_:-]*$/i.test(raw)) {
+    return raw;
+  }
+
+  if (raw === "active_run_in_progress") {
+    return "Another response is still running. Stop it or wait for it to finish before sending. (active_run_in_progress)";
+  }
+
+  const httpFailure = /^(.*)_failed_(\d{3})$/.exec(raw);
+  if (httpFailure) {
+    const action = actionLabel(httpFailure[1]);
+
+    return `${action} failed with HTTP ${httpFailure[2]} (${raw})`;
+  }
+
+  const labels: Record<string, string> = {
+    active_leaf_changed: "The active branch changed before send. Review the selected branch and retry",
+    attachment_not_found: "Attachment not found",
+    branch_checkout_failed: "Branch checkout failed",
+    catalog_malformed: "Catalog response was malformed",
+    chat_detail_malformed: "Chat detail response was malformed",
+    edit_malformed: "Message edit response was malformed",
+    provider_not_available: "Provider is not available",
+    run_malformed: "Run response was malformed",
+    search_provider_not_available: "Search provider is not available",
+    settings_malformed: "Settings response was malformed",
+    unsupported_attachment_type: "Attachment is not supported by this model",
+    unsupported_search_strategy: "Search is not supported for this model",
+    upload_malformed: "Upload response was malformed",
+    workspace_malformed: "Workspace response was malformed"
+  };
+
+  return `${labels[raw] ?? raw.replace(/_/g, " ")} (${raw})`;
+}
+
+function actionLabel(action: string): string {
+  const labels: Record<string, string> = {
+    branch_chat: "Branch creation",
+    branch_checkout: "Branch checkout",
+    chat_create: "Chat creation",
+    chat_delete: "Chat deletion",
+    chat_detail: "Chat detail load",
+    chat_update: "Chat update",
+    edit: "Message edit",
+    folder_create: "Folder creation",
+    folder_delete: "Folder deletion",
+    folder_move: "Folder move",
+    folder_rename: "Folder rename",
+    message_delete: "Message deletion",
+    project_settings: "Project settings",
+    prompt_create: "Prompt creation",
+    prompt_default: "Default prompt update",
+    prompt_delete: "Prompt deletion",
+    prompt_duplicate: "Prompt duplication",
+    prompt_update: "Prompt update",
+    regenerate: "Regeneration",
+    send: "Send",
+    settings_update: "Settings update",
+    share: "Share",
+    workspace: "Workspace load"
+  };
+
+  return labels[action] ?? action.replace(/_/g, " ");
+}
+
+export async function responseErrorMessage(
+  response: Response,
+  fallback: string
+): Promise<string> {
+  const text = await response.text().catch(() => "");
+  if (!text) {
+    return humanizeErrorCode(fallback);
+  }
+
+  try {
+    const body = JSON.parse(text) as unknown;
+    if (isRecord(body) && typeof body.error === "string") {
+      return humanizeErrorCode(body.error);
+    }
+  } catch {
+    return text.slice(0, 240);
+  }
+
+  return humanizeErrorCode(fallback);
+}
+
+export function modelCapabilityLabel(model: CatalogModel): string {
+  const flags = [
+    model.capabilities.reasoning ? "reasoning" : null,
+    model.capabilities.imageInput ? "vision" : null,
+    model.capabilities.documentInputMode !== "none" ? "pdf" : null,
+    model.capabilities.nativeWebSearch || model.capabilities.openRouterPerplexitySearch
+      ? "search"
+      : null,
+    model.capabilities.streaming ? "stream" : null
+  ].filter(Boolean);
+
+  return flags.length > 0 ? flags.join(" / ") : "text";
+}
+
+export function searchStrategyDescription(strategyId: string): string {
+  if (strategyId === "openai-native-web-search") {
+    return "OpenAI web_search";
+  }
+
+  if (strategyId === "perplexity-tool-search") {
+    return "Perplexity tool";
+  }
+
+  return "No Search";
+}

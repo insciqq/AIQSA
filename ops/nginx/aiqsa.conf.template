@@ -1,0 +1,43 @@
+# Render the two __AIQSA_*__ placeholders before enabling this site.
+# Keep the upstream bound to loopback; expose only Nginx to the Internet.
+log_format aiqsa_json escape=json
+    '{"time":"$time_iso8601","request_id":"$request_id",'
+    '"method":"$request_method","status":$status,'
+    '"request_time":$request_time,"upstream_time":"$upstream_response_time"}';
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name __AIQSA_DOMAIN__;
+    server_tokens off;
+
+    # AIQSA accepts files up to 25,000,000 bytes. Leave multipart headroom.
+    client_max_body_size 32m;
+    access_log /var/log/nginx/aiqsa-access.log aiqsa_json;
+    add_header X-Request-ID $request_id always;
+
+    location / {
+        proxy_pass http://127.0.0.1:__AIQSA_LOOPBACK_PORT__;
+        proxy_http_version 1.1;
+
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Port $server_port;
+        proxy_set_header X-Request-ID $request_id;
+
+        # Security boundary: overwrite untrusted client forwarding headers.
+        # Do not replace this with $proxy_add_x_forwarded_for.
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Real-IP $remote_addr;
+
+        # Preserve long AIQSA SSE/background runs without response buffering.
+        proxy_set_header Connection "";
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_hide_header X-Powered-By;
+        gzip off;
+        proxy_read_timeout 720s;
+        proxy_send_timeout 720s;
+    }
+}

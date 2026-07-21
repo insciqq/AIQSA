@@ -1,0 +1,890 @@
+import { Prisma } from "@prisma/client";
+import type { ContextTruncationSummary } from "../../domain/contextBudget";
+import { safeExternalHref } from "../../domain/links";
+import { prisma } from "../prisma";
+import { lockOwnedPromptPreset, lockUserPromptDefaultsShared } from "../prompts/promptDefaultsLock";
+import { ActiveRunConflictError } from "../runs/runRepositoryContract";
+import type {
+  ChatDetailRecord,
+  ChatRepository,
+  ChatSummaryRecord,
+  ChatUsageStats,
+  ThreadArtifactSummary,
+  ThreadCitation
+} from "./handlers";
+import { defaultChatTitle } from "./titlePolicy";
+
+const chatDetailInclude = {
+  messages: {
+    include: {
+      assistantModelRuns: {
+        orderBy: {
+          createdAt: "desc"
+        },
+        select: {
+          cachedInputTokens: true,
+          cacheWriteInputTokens: true,
+          events: {
+            orderBy: {
+              sequence: "asc"
+            },
+            select: {
+              payload: true
+            },
+            where: {
+              eventType: "artifact"
+            }
+          },
+          id: true,
+          inputTokens: true,
+          outputTokens: true,
+          searchRuns: {
+            orderBy: {
+              createdAt: "asc"
+            },
+            select: {
+              artifacts: true,
+              modelId: true,
+              provider: true,
+              requestPreview: true,
+              status: true,
+              strategyId: true
+            }
+          },
+          status: true,
+          totalTokens: true
+        },
+        take: 1
+      }
+    },
+    orderBy: {
+      createdAt: "asc"
+    }
+  }
+} satisfies Prisma.ChatInclude;
+
+const chatSummarySelect = {
+  _count: {
+    select: {
+      messages: true
+    }
+  },
+  activeLeafMessageId: true,
+  createdAt: true,
+  defaultModelId: true,
+  defaultPromptPresetId: true,
+  defaultProvider: true,
+  folderId: true,
+  id: true,
+  pinned: true,
+  title: true,
+  updatedAt: true
+} satisfies Prisma.ChatSelect;
+
+type ChatDetailRow = Prisma.ChatGetPayload<{ include: typeof chatDetailInclude }>;
+type ChatSummaryRow = Prisma.ChatGetPayload<{ select: typeof chatSummarySelect }>;
+type ArtifactSummaryRun = {
+  events: { payload: unknown }[];
+  searchRuns: {
+    artifacts?: unknown;
+    modelId?: string | null;
+    provider?: string;
+    requestPreview?: unknown;
+    status: string;
+    strategyId: string;
+  }[];
+};
+
+type UsageStatsMessage = {
+  assistantModelRuns: {
+    cachedInputTokens: number;
+    cacheWriteInputTokens: number;
+    inputTokens: number;
+    outputTokens: number;
+    status: string;
+    totalTokens: number;
+  }[];
+  id: string;
+  parentMessageId: string | null;
+  role: string;
+};
+
+function activeBranchPath<TMessage extends { id: string; parentMessageId: string | null }>(
+  messages: TMessage[],
+  activeLeafMessageId: string | null
+): TMessage[] {
+  if (!activeLeafMessageId) {
+    return [];
+  }
+
+  const byId = new Map(messages.map((message) => [message.id, message]));
+  const path: TMessage[] = [];
+  const seen = new Set<string>();
+  let cursor: string | null = activeLeafMessageId;
+
+  while (cursor) {
+    if (seen.has(cursor)) {
+      return [];
+    }
+
+    const message = byId.get(cursor);
+    if (!message) {
+      return [];
+    }
+
+    seen.add(cursor);
+    path.push(message);
+    cursor = message.parentMessageId;
+  }
+
+  return path.reverse();
+}
+
+function summarizeChatUsageStats(input: {
+  activeLeafMessageId: string | null;
+  messages: UsageStatsMessage[];
+}): ChatUsageStats {
+  const activeMessages = activeBranchPath(input.messages, input.activeLeafMessageId);
+  const completedRuns = activeMessages.flatMap((message) => {
+    if (message.role !== "assistant") {
+      return [];
+    }
+
+    const run = message.assistantModelRuns[0];
+    return run?.status === "complete" ? [run] : [];
+  });
+
+  return completedRuns.reduce<ChatUsageStats>(
+    (total, run) => ({
+      activeBranchMessageCount: total.activeBranchMessageCount,
+      cachedInputTokens: total.cachedInputTokens + run.cachedInputTokens,
+      cacheWriteInputTokens: total.cacheWriteInputTokens + run.cacheWriteInputTokens,
+      totalTokens: total.totalTokens + (run.totalTokens > 0 ? run.totalTokens : run.inputTokens + run.outputTokens)
+    }),
+    {
+      activeBranchMessageCount: activeMessages.length,
+      cachedInputTokens: 0,
+      cacheWriteInputTokens: 0,
+      totalTokens: 0
+    }
+  );
+}
+
+function serializeChatDetail(chat: ChatDetailRow): ChatDetailRecord {
+  return {
+    activeLeafMessageId: chat.activeLeafMessageId,
+    createdAt: chat.createdAt,
+    defaultModelId: chat.defaultModelId,
+    defaultPromptPresetId: chat.defaultPromptPresetId,
+    defaultProvider: chat.defaultProvider,
+    folderId: chat.folderId,
+    id: chat.id,
+    messageCount: chat.messages.length,
+    messages: chat.messages.map((message) => {
+      const modelRun = message.assistantModelRuns[0];
+
+      return {
+        artifactSummary: modelRun ? summarizeMessageRunArtifacts(modelRun) : null,
+        content: message.content,
+        createdAt: message.createdAt,
+        errorMessage: message.errorMessage,
+        id: message.id,
+        modelId: message.modelId,
+        modelRunId: modelRun?.id ?? null,
+        parentMessageId: message.parentMessageId,
+        provider: message.provider,
+        role: message.role,
+        status: message.status
+      };
+    }),
+    pinned: chat.pinned,
+    title: chat.title,
+    updatedAt: chat.updatedAt,
+    usageStats: summarizeChatUsageStats(chat)
+  };
+}
+
+function serializeChatSummary(chat: ChatSummaryRow): ChatSummaryRecord {
+  return {
+    activeLeafMessageId: chat.activeLeafMessageId,
+    createdAt: chat.createdAt,
+    defaultModelId: chat.defaultModelId,
+    defaultPromptPresetId: chat.defaultPromptPresetId,
+    defaultProvider: chat.defaultProvider,
+    folderId: chat.folderId,
+    id: chat.id,
+    messageCount: chat._count.messages,
+    pinned: chat.pinned,
+    title: chat.title,
+    updatedAt: chat.updatedAt
+  };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function safeJsonSnippet(value: unknown): string {
+  if (typeof value === "string") {
+    return value.trim().slice(0, 1200);
+  }
+
+  try {
+    return JSON.stringify(value, null, 2).slice(0, 1200);
+  } catch {
+    return "";
+  }
+}
+
+function optionalString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function reasoningTextFromValue(value: unknown): string | null {
+  if (typeof value === "string") {
+    return value.trim() || null;
+  }
+
+  if (Array.isArray(value)) {
+    const parts = value.map(reasoningTextFromValue).filter((text): text is string => Boolean(text));
+    return parts.length > 0 ? parts.join("\n\n") : null;
+  }
+
+  if (!isRecord(value)) {
+    const text = safeJsonSnippet(value);
+    return text || null;
+  }
+
+  for (const key of ["delta", "summary", "reasoning", "text"]) {
+    if (key in value) {
+      return reasoningTextFromValue(value[key]);
+    }
+  }
+
+  if (Object.keys(value).length === 0) {
+    return null;
+  }
+
+  const text = safeJsonSnippet(value);
+  return text || null;
+}
+
+function artifactType(payload: unknown): string | null {
+  return isRecord(payload) && typeof payload.artifactType === "string" ? payload.artifactType : null;
+}
+
+function artifactInnerPayload(payload: unknown): unknown {
+  return isRecord(payload) && "payload" in payload ? payload.payload : null;
+}
+
+function reasoningText(payload: unknown): string | null {
+  const inner = artifactInnerPayload(payload);
+  return reasoningTextFromValue(inner);
+}
+
+function searchStrategyFromPayload(payload: unknown): string | null {
+  const inner = artifactInnerPayload(payload);
+  if (!isRecord(inner)) {
+    return null;
+  }
+
+  if (typeof inner.strategyId === "string") {
+    return inner.strategyId;
+  }
+
+  return inner.type === "web_search_call" ? "openai-native-web-search" : null;
+}
+
+function citationFromPayload(payload: unknown, fallbackIndex: number): ThreadCitation | null {
+  const inner = artifactInnerPayload(payload);
+  if (typeof inner === "string" && inner.trim()) {
+    const url = safeExternalHref(inner);
+    if (!url) {
+      return null;
+    }
+
+    return {
+      index: fallbackIndex,
+      title: `Source ${fallbackIndex}`,
+      url
+    };
+  }
+
+  if (!isRecord(inner)) {
+    return null;
+  }
+
+  const url = safeExternalHref(optionalString(inner.url) ?? optionalString(inner.href));
+  if (!url) {
+    return null;
+  }
+
+  const index = typeof inner.index === "number" && Number.isFinite(inner.index) ? inner.index : fallbackIndex;
+
+  return {
+    index,
+    snippet: optionalString(inner.snippet),
+    source: optionalString(inner.source),
+    title: optionalString(inner.title) ?? `Source ${index}`,
+    url
+  };
+}
+
+function contextTruncationFromPayload(payload: unknown): ContextTruncationSummary | null {
+  const inner = artifactInnerPayload(payload);
+
+  if (!isRecord(inner) || typeof inner.droppedMessages !== "number" || inner.droppedMessages <= 0) {
+    return null;
+  }
+
+  return inner as ContextTruncationSummary;
+}
+
+function responsePreviewFromSearchArtifacts(artifacts: unknown): unknown {
+  return isRecord(artifacts) && "finalProviderResponsePreview" in artifacts
+    ? artifacts.finalProviderResponsePreview
+    : artifacts;
+}
+
+function searchDetailsFromArtifacts(artifactPayloads: unknown[]): ThreadArtifactSummary["searchDetails"] {
+  return artifactPayloads.flatMap((payload) => {
+    const inner = artifactInnerPayload(payload);
+    if (!isRecord(inner)) {
+      return [];
+    }
+
+    return [
+      {
+        callPreview: inner,
+        status: typeof inner.status === "string" ? inner.status : null,
+        strategyId: searchStrategyFromPayload(payload)
+      }
+    ];
+  });
+}
+
+export function summarizeMessageRunArtifacts(run: ArtifactSummaryRun): ThreadArtifactSummary | null {
+  const artifactPayloads = run.events.map((event) => event.payload);
+  const searchPayloads = artifactPayloads.filter((payload) => artifactType(payload) === "search");
+  const searchArtifactCount = searchPayloads.length;
+  const completedSearchRuns = run.searchRuns.filter((searchRun) => searchRun.status === "complete");
+  const runSearchDetails = run.searchRuns.map((searchRun) => ({
+    modelId: searchRun.modelId ?? null,
+    provider: searchRun.provider ?? null,
+    requestPreview: searchRun.requestPreview,
+    responsePreview: responsePreviewFromSearchArtifacts(searchRun.artifacts),
+    status: searchRun.status,
+    strategyId: searchRun.strategyId
+  }));
+  const searchDetails = runSearchDetails.length > 0 ? runSearchDetails : searchDetailsFromArtifacts(searchPayloads);
+  const searchCount = Math.max(searchArtifactCount, completedSearchRuns.length);
+  const reasoningPayloads = artifactPayloads.filter((payload) => artifactType(payload) === "reasoning");
+  const reasoningSnippets = reasoningPayloads
+    .map(reasoningText)
+    .filter((text): text is string => Boolean(text));
+  const reasoningCount = reasoningSnippets.length > 0 ? reasoningSnippets.length : reasoningPayloads.length;
+  const citationPayloads = artifactPayloads.filter((payload) => artifactType(payload) === "citation");
+  const citations = citationPayloads
+    .map((payload, index) => citationFromPayload(payload, index + 1))
+    .filter((citation): citation is ThreadCitation => Boolean(citation));
+  const citationCount = Math.max(citationPayloads.length, citations.length);
+  const contextTruncation =
+    artifactPayloads
+      .filter((payload) => artifactType(payload) === "context_truncated")
+      .map(contextTruncationFromPayload)
+      .filter((summary): summary is ContextTruncationSummary => Boolean(summary))
+      .at(-1) ?? null;
+
+  if (searchCount === 0 && reasoningPayloads.length === 0 && citationCount === 0 && !contextTruncation) {
+    return null;
+  }
+
+  return {
+    citationCount,
+    citations,
+    contextTruncation,
+    reasoningCount,
+    reasoningText: reasoningSnippets,
+    searchCount,
+    searchDetails,
+    searchStrategy:
+      completedSearchRuns[0]?.strategyId ??
+      artifactPayloads.map(searchStrategyFromPayload).find((strategy): strategy is string => Boolean(strategy)) ??
+      null
+  };
+}
+
+async function findOwnedFolder(
+  prismaClient: Pick<typeof prisma, "folder">,
+  folderId: string | null | undefined,
+  userId: string
+) {
+  if (!folderId) {
+    return null;
+  }
+
+  return prismaClient.folder.findFirst({
+    select: {
+      id: true
+    },
+    where: {
+      id: folderId,
+      userId
+    }
+  });
+}
+
+async function wouldCreateFolderCycle(input: {
+  folderId: string;
+  parentId: string | null | undefined;
+  prismaClient: Pick<typeof prisma, "folder">;
+  userId: string;
+}) {
+  if (!input.parentId) {
+    return false;
+  }
+
+  let currentParentId: string | null = input.parentId;
+  const visited = new Set<string>();
+  while (currentParentId) {
+    if (currentParentId === input.folderId || visited.has(currentParentId)) {
+      return true;
+    }
+
+    visited.add(currentParentId);
+    const parent: { parentId: string | null } | null = await input.prismaClient.folder.findFirst({
+      select: {
+        parentId: true
+      },
+      where: {
+        id: currentParentId,
+        userId: input.userId
+      }
+    });
+
+    currentParentId = parent?.parentId ?? null;
+  }
+
+  return false;
+}
+
+export async function loadChatUsageStats(
+  prismaClient: typeof prisma,
+  input: { chatId: string; userId: string }
+): Promise<ChatUsageStats | null> {
+  const chat = await prismaClient.chat.findFirst({
+    select: {
+      activeLeafMessageId: true,
+      messages: {
+        select: {
+          assistantModelRuns: {
+            orderBy: {
+              createdAt: "desc"
+            },
+            select: {
+              cachedInputTokens: true,
+              cacheWriteInputTokens: true,
+              inputTokens: true,
+              outputTokens: true,
+              status: true,
+              totalTokens: true
+            },
+            take: 1
+          },
+          id: true,
+          parentMessageId: true,
+          role: true
+        }
+      }
+    },
+    where: {
+      archived: false,
+      id: input.chatId,
+      userId: input.userId
+    }
+  });
+
+  return chat ? summarizeChatUsageStats(chat) : null;
+}
+
+export function createPrismaChatRepository(prismaClient = prisma): ChatRepository {
+  return {
+    archiveChat: async ({ chatId, userId }) => {
+      return prismaClient.$transaction(async (tx) => {
+        const chats = await tx.$queryRaw<Array<{ archived: boolean; id: string }>>`
+          SELECT "id", "archived"
+          FROM "Chat"
+          WHERE "id" = ${chatId}
+            AND "userId" = ${userId}
+          FOR UPDATE
+        `;
+        if (!chats[0] || chats[0].archived) {
+          return false;
+        }
+
+        const activeRun = await tx.modelRun.findFirst({
+          select: {
+            id: true
+          },
+          where: {
+            chatId,
+            status: {
+              in: ["streaming", "queued", "in_progress"]
+            }
+          }
+        });
+        if (activeRun) {
+          throw new ActiveRunConflictError();
+        }
+
+        await tx.chat.update({
+          data: {
+            archived: true
+          },
+          where: {
+            id: chatId
+          }
+        });
+        return true;
+      });
+    },
+    createChat: async ({ folderId, title, userId }) => {
+      return prismaClient.$transaction(async (tx) => {
+        await lockUserPromptDefaultsShared(tx, userId);
+        const [settings, folder] = await Promise.all([
+          tx.userSettings.findUnique({
+            where: {
+              userId
+            }
+          }),
+          findOwnedFolder(tx, folderId, userId)
+        ]);
+
+        if (!settings) {
+          return null;
+        }
+
+        const resolvedFolderId = folderId === undefined ? settings.defaultFolderId : folder?.id ?? null;
+        if (folderId && !folder) {
+          return null;
+        }
+        const defaultPromptPresetId = settings.defaultPromptPresetId
+          ? await lockOwnedPromptPreset(tx, {
+              promptId: settings.defaultPromptPresetId,
+              userId
+            })
+          : null;
+
+        const chat = await tx.chat.create({
+          data: {
+            defaultModelId: settings.defaultModelId,
+            defaultPromptPresetId,
+            defaultProvider: settings.defaultProvider,
+            folderId: resolvedFolderId,
+            title: title?.trim() || defaultChatTitle,
+            userId
+          },
+          select: chatSummarySelect
+        });
+
+        return serializeChatSummary(chat);
+      });
+    },
+    createFolder: async ({ name, parentId, userId }) => {
+      const trimmed = name.trim().slice(0, 60);
+      if (!trimmed) {
+        return null;
+      }
+
+      if (parentId) {
+        const parent = await findOwnedFolder(prismaClient, parentId, userId);
+        if (!parent) {
+          return null;
+        }
+      }
+
+      const aggregate = await prismaClient.folder.aggregate({
+        _max: {
+          sortOrder: true
+        },
+        where: {
+          userId
+        }
+      });
+
+      try {
+        return await prismaClient.folder.create({
+          data: {
+            name: trimmed,
+            parentId: parentId ?? null,
+            sortOrder: (aggregate._max.sortOrder ?? 0) + 10,
+            userId
+          },
+          select: {
+            id: true,
+            name: true,
+            parentId: true,
+            projectMemory: true,
+            sortOrder: true
+          }
+        });
+      } catch (error) {
+        if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
+          return null;
+        }
+
+        throw error;
+      }
+    },
+    deleteFolder: async ({ folderId, userId }) => {
+      const result = await prismaClient.folder.deleteMany({
+        where: {
+          id: folderId,
+          userId
+        }
+      });
+
+      return result.count > 0;
+    },
+    getChat: async ({ chatId, userId }) => {
+      const chat = await prismaClient.chat.findFirst({
+        include: chatDetailInclude,
+        where: {
+          archived: false,
+          id: chatId,
+          userId
+        }
+      });
+
+      return chat ? serializeChatDetail(chat) : null;
+    },
+    searchChatContent: async ({ limit, query, userId }) => {
+      const trimmed = query.trim();
+      if (!trimmed) {
+        return [];
+      }
+
+      const normalizedLimit = Number.isFinite(limit) ? Math.floor(limit) : 50;
+      const boundedLimit = Math.min(Math.max(normalizedLimit, 1), 50);
+      const pattern = `%${trimmed}%`;
+      const rows = await prismaClient.$queryRaw<{ chatId: string; snippet: string | null }[]>`
+        SELECT
+          m."chatId" AS "chatId",
+          MIN(substring(m."content"::text FROM 1 FOR 180)) AS "snippet"
+        FROM "Message" m
+        INNER JOIN "Chat" c ON c."id" = m."chatId"
+        WHERE c."userId" = ${userId}
+          AND c."archived" = false
+          AND m."content"::text ILIKE ${pattern}
+        GROUP BY m."chatId", c."updatedAt"
+        ORDER BY c."updatedAt" DESC
+        LIMIT ${boundedLimit}
+      `;
+
+      return rows.map((row) => ({
+        chatId: row.chatId,
+        snippet: row.snippet
+      }));
+    },
+    updateFolder: async ({ folderId, name, parentId, projectMemory, userId }) => {
+      const trimmed = typeof name === "string" ? name.trim().slice(0, 60) : undefined;
+      if (typeof name === "string" && !trimmed) {
+        return null;
+      }
+
+      if (parentId === folderId) {
+        return null;
+      }
+
+      try {
+        return await prismaClient.$transaction(
+          async (tx) => {
+            if (parentId) {
+              const parent = await findOwnedFolder(tx, parentId, userId);
+              if (!parent) {
+                return null;
+              }
+            }
+
+            if (
+              await wouldCreateFolderCycle({
+                folderId,
+                parentId,
+                prismaClient: tx,
+                userId
+              })
+            ) {
+              return null;
+            }
+
+            const result = await tx.folder.updateMany({
+              data: {
+                ...(trimmed !== undefined ? { name: trimmed } : {}),
+                ...(parentId !== undefined ? { parentId } : {}),
+                ...(projectMemory !== undefined ? { projectMemory: projectMemory.slice(0, 12000) } : {})
+              },
+              where: {
+                id: folderId,
+                userId
+              }
+            });
+
+            if (result.count === 0) {
+              return null;
+            }
+
+            return tx.folder.findFirst({
+              select: {
+                id: true,
+                name: true,
+                parentId: true,
+                projectMemory: true,
+                sortOrder: true
+              },
+              where: {
+                id: folderId,
+                userId
+              }
+            });
+          },
+          {
+            isolationLevel: Prisma.TransactionIsolationLevel.Serializable
+          }
+        );
+      } catch (error) {
+        if (
+          error instanceof Prisma.PrismaClientKnownRequestError &&
+          (error.code === "P2002" || error.code === "P2034")
+        ) {
+          return null;
+        }
+
+        throw error;
+      }
+    },
+    listWorkspace: async (userId) => {
+      const user = await prismaClient.user.findUnique({
+        select: {
+          id: true
+        },
+        where: {
+          id: userId
+        }
+      });
+
+      if (!user) {
+        return null;
+      }
+
+      const [folders, chats] = await Promise.all([
+        prismaClient.folder.findMany({
+          orderBy: [
+            {
+              sortOrder: "asc"
+            },
+            {
+              name: "asc"
+            }
+          ],
+          select: {
+            id: true,
+            name: true,
+            parentId: true,
+            projectMemory: true,
+            sortOrder: true
+          },
+          where: {
+            userId
+          }
+        }),
+        prismaClient.chat.findMany({
+          orderBy: [
+            {
+              pinned: "desc"
+            },
+            {
+              updatedAt: "desc"
+            }
+          ],
+          select: chatSummarySelect,
+          where: {
+            archived: false,
+            userId
+          }
+        })
+      ]);
+
+      return {
+        chats: chats.map(serializeChatSummary),
+        folders
+      };
+    },
+    updateChat: async ({ activeLeafMessageId, chatId, folderId, pinned, title, userId }) =>
+      prismaClient.$transaction(async (tx) => {
+        const chats = await tx.$queryRaw<Array<{ archived: boolean; id: string }>>`
+          SELECT "id", "archived"
+          FROM "Chat"
+          WHERE "id" = ${chatId}
+            AND "userId" = ${userId}
+          FOR UPDATE
+        `;
+        if (!chats[0] || chats[0].archived) {
+          return null;
+        }
+
+        if (folderId) {
+          const folder = await findOwnedFolder(tx, folderId, userId);
+          if (!folder) {
+            return null;
+          }
+        }
+
+        if (activeLeafMessageId) {
+          const message = await tx.message.findFirst({
+            select: {
+              id: true
+            },
+            where: {
+              chatId,
+              id: activeLeafMessageId
+            }
+          });
+          if (!message) {
+            return null;
+          }
+        }
+
+        if (activeLeafMessageId !== undefined) {
+          const activeRun = await tx.modelRun.findFirst({
+            select: {
+              id: true
+            },
+            where: {
+              chatId,
+              status: {
+                in: ["streaming", "queued", "in_progress"]
+              }
+            }
+          });
+          if (activeRun) {
+            throw new ActiveRunConflictError();
+          }
+        }
+
+        const updated = await tx.chat.update({
+          data: {
+            ...(activeLeafMessageId !== undefined ? { activeLeafMessageId } : {}),
+            ...(folderId !== undefined ? { folderId } : {}),
+            ...(pinned !== undefined ? { pinned } : {}),
+            ...(title ? { title: title.trim().slice(0, 80) } : {})
+          },
+          select: chatSummarySelect,
+          where: {
+            id: chatId
+          }
+        });
+
+        return serializeChatSummary(updated);
+      })
+  };
+}

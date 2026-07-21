@@ -1,0 +1,232 @@
+import { describe, expect, it } from "vitest";
+
+import {
+  decodeCancelModelRunResponse,
+  decodeGetModelRunResponse,
+  type ModelRunResponseProjection
+} from "./runs";
+
+function requiredRunFields(): Record<string, unknown> {
+  return {
+    events: [],
+    id: "run-1",
+    inputTokens: 12,
+    modelId: "gpt-5",
+    provider: "openai",
+    status: "complete"
+  };
+}
+
+describe("decodeCancelModelRunResponse", () => {
+  it("distinguishes a cancellation winner from the current non-cancelable state", () => {
+    expect(
+      decodeCancelModelRunResponse({
+        run: {
+          id: "run-1",
+          providerCancelPreview: { status: "cancelled" },
+          providerResponseId: "response-1",
+          status: "cancelled"
+        }
+      })
+    ).toEqual({
+      kind: "cancelled",
+      run: {
+        id: "run-1",
+        status: "cancelled"
+      }
+    });
+    expect(
+      decodeCancelModelRunResponse({
+        error: "model_run_not_cancelable",
+        requestId: "request-1",
+        run: {
+          id: "run-1",
+          status: "complete"
+        }
+      })
+    ).toEqual({
+      kind: "not_cancelled",
+      run: {
+        id: "run-1",
+        status: "complete"
+      }
+    });
+    expect(
+      decodeCancelModelRunResponse({
+        error: "model_run_not_cancelable",
+        run: {
+          id: "run-1",
+          status: "cancelled"
+        }
+      })
+    ).toEqual({
+      kind: "not_cancelled",
+      run: {
+        id: "run-1",
+        status: "cancelled"
+      }
+    });
+  });
+
+  it.each([
+    null,
+    {},
+    { run: null },
+    { run: { id: "", status: "cancelled" } },
+    { run: { id: "run-1", status: "complete" } },
+    { run: { id: "run-1", status: "completed" } },
+    {
+      error: "model_run_not_found",
+      run: { id: "run-1", status: "complete" }
+    },
+    {
+      error: "model_run_not_cancelable",
+      run: { id: "run-1", status: "completed" }
+    }
+  ])("rejects malformed or ambiguous cancellation response %#", (value) => {
+    expect(decodeCancelModelRunResponse(value)).toBeNull();
+  });
+});
+
+describe("decodeGetModelRunResponse", () => {
+  it("decodes a complete model-run response", () => {
+    const payload = { delta: "answer" };
+    const errorPayload = { code: "provider_warning", nested: { retryable: false } };
+    const searchRun = { artifacts: [{ url: "https://example.test" }], strategyId: "native" };
+
+    expect(
+      decodeGetModelRunResponse({
+        run: {
+          cachedInputTokens: 3,
+          cacheWriteInputTokens: 4,
+          errorPayload,
+          estimatedCostMicros: 125,
+          events: [{ eventType: "token", payload, sequence: 7 }],
+          id: "run-1",
+          inputTokens: 12,
+          modelId: "gpt-5",
+          outputTokens: 8,
+          provider: "openai",
+          reasoningTokens: 2,
+          searchRuns: [searchRun],
+          status: "complete",
+          totalTokens: 20
+        }
+      })
+    ).toEqual({
+      cachedInputTokens: 3,
+      cacheWriteInputTokens: 4,
+      errorPayload,
+      estimatedCostMicros: 125,
+      events: [{ eventType: "token", payload, sequence: 7 }],
+      id: "run-1",
+      inputTokens: 12,
+      modelId: "gpt-5",
+      outputTokens: 8,
+      provider: "openai",
+      reasoningTokens: 2,
+      searchRuns: [searchRun],
+      status: "complete",
+      totalTokens: 20
+    });
+  });
+
+  it("applies usage, cost, and search defaults", () => {
+    expect(
+      decodeGetModelRunResponse({
+        run: {
+          ...requiredRunFields(),
+          cachedInputTokens: Number.NaN,
+          cacheWriteInputTokens: "4",
+          estimatedCostMicros: 0,
+          outputTokens: Number.POSITIVE_INFINITY,
+          reasoningTokens: null,
+          searchRuns: null,
+          totalTokens: undefined
+        }
+      })
+    ).toEqual({
+      cachedInputTokens: 0,
+      cacheWriteInputTokens: 0,
+      errorPayload: undefined,
+      estimatedCostMicros: null,
+      events: [],
+      id: "run-1",
+      inputTokens: 12,
+      modelId: "gpt-5",
+      outputTokens: 0,
+      provider: "openai",
+      reasoningTokens: 0,
+      searchRuns: [],
+      status: "complete",
+      totalTokens: 12
+    });
+  });
+
+  it("ignores additive envelope and run fields while preserving opaque entries", () => {
+    const opaquePayload = Symbol("payload");
+    const opaqueError = new Date("2026-07-13T00:00:00.000Z");
+    const opaqueSearchEntry = new Map([["query", "contract"]]);
+    const response = {
+      envelopeVersion: 2,
+      run: {
+        ...requiredRunFields(),
+        assistantMessageId: "message-1",
+        errorPayload: opaqueError,
+        events: [
+          {
+            createdAt: "2026-07-13T00:00:00.000Z",
+            eventType: "artifact",
+            payload: opaquePayload,
+            sequence: 1
+          }
+        ],
+        finalProviderResponsePreview: { finishReason: "stop" },
+        searchRuns: [opaqueSearchEntry]
+      }
+    };
+
+    const decoded = decodeGetModelRunResponse(response);
+
+    expect(decoded?.errorPayload).toBe(opaqueError);
+    expect(decoded?.events[0]?.payload).toBe(opaquePayload);
+    expect(decoded?.searchRuns[0]).toBe(opaqueSearchEntry);
+    expect(decoded).not.toHaveProperty("assistantMessageId");
+    expect(decoded?.events[0]).not.toHaveProperty("createdAt");
+
+    const runWithInspectionFields = {
+      ...decoded!,
+      assistantMessageId: "message-1",
+      normalizedRequest: { stream: true }
+    };
+    const projection: ModelRunResponseProjection = runWithInspectionFields;
+    expect(projection.id).toBe("run-1");
+  });
+
+  it.each([
+    null,
+    {},
+    { run: null },
+    { run: { ...requiredRunFields(), events: null } },
+    { run: { ...requiredRunFields(), id: "" } },
+    { run: { ...requiredRunFields(), modelId: "" } },
+    { run: { ...requiredRunFields(), provider: "" } },
+    { run: { ...requiredRunFields(), status: "" } },
+    { run: { ...requiredRunFields(), status: "completed" } },
+    { run: { ...requiredRunFields(), inputTokens: Number.NaN } },
+    { run: { ...requiredRunFields(), events: [null] } },
+    { run: { ...requiredRunFields(), events: [{ eventType: "", sequence: 1 }] } },
+    { run: { ...requiredRunFields(), events: [{ eventType: "token", sequence: "1" }] } },
+    {
+      run: {
+        ...requiredRunFields(),
+        events: [
+          { eventType: "token", payload: "ok", sequence: 1 },
+          { eventType: "done", sequence: Number.POSITIVE_INFINITY }
+        ]
+      }
+    }
+  ])("rejects malformed model-run response %#", (value) => {
+    expect(decodeGetModelRunResponse(value)).toBeNull();
+  });
+});

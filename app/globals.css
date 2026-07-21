@@ -1,0 +1,370 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  background: rgb(var(--surface-canvas));
+}
+
+:root,
+[data-theme="aiqsa"] {
+  color-scheme: dark;
+  --surface-canvas: 8 9 11;
+  --surface-navigation: 16 17 20;
+  --surface-thread: 11 12 15;
+  --surface-raised: 23 25 29;
+  --surface-overlay: 28 30 35;
+  --surface-hover: 31 34 40;
+  --surface-active: 20 43 43;
+  --surface-selected: 22 53 51;
+  --separator-subtle: 43 47 54;
+  --separator-strong: 68 73 83;
+  --text-primary: 244 241 232;
+  --text-secondary: 204 201 193;
+  --text-muted: 154 154 149;
+  --text-disabled: 101 102 101;
+  --accent-cyan: 39 215 196;
+  --accent-green: 155 213 109;
+  --accent-amber: 245 188 82;
+  --accent-rose: 239 111 130;
+  --overlay-scrim: 0 0 0;
+  --shadow-float: 0 10px 30px rgb(0 0 0 / 0.28);
+  --shadow-overlay: 0 18px 48px rgb(0 0 0 / 0.36);
+  --text-link: var(--accent-cyan);
+  --atmosphere-accent: var(--accent-cyan);
+  --atmosphere-layer-opacity: 1;
+  --selection-accent: var(--accent-cyan);
+}
+
+[data-theme="graphite"] {
+  color-scheme: dark;
+  --surface-canvas: 7 9 12;
+  --surface-navigation: 14 17 21;
+  --surface-thread: 10 12 16;
+  --surface-raised: 21 25 31;
+  --surface-overlay: 27 32 39;
+  --surface-hover: 33 39 48;
+  --surface-active: 22 42 52;
+  --surface-selected: 27 51 62;
+  --separator-subtle: 52 59 70;
+  --separator-strong: 76 85 99;
+  --text-primary: 241 245 249;
+  --text-secondary: 202 210 220;
+  --text-muted: 144 154 168;
+  --text-disabled: 96 105 118;
+  --accent-cyan: 119 198 226;
+  --accent-green: 142 210 148;
+  --accent-amber: 232 190 103;
+  --accent-rose: 235 122 146;
+  --overlay-scrim: 0 0 0;
+  --shadow-float: 0 10px 30px rgb(0 0 0 / 0.28);
+  --shadow-overlay: 0 18px 48px rgb(0 0 0 / 0.36);
+  --text-link: var(--accent-cyan);
+  --atmosphere-accent: var(--accent-cyan);
+  --atmosphere-layer-opacity: 1;
+  --selection-accent: var(--accent-cyan);
+}
+
+[data-theme="verdant"] {
+  color-scheme: dark;
+  --surface-canvas: 6 10 9;
+  --surface-navigation: 12 18 16;
+  --surface-thread: 8 14 12;
+  --surface-raised: 19 28 25;
+  --surface-overlay: 24 34 30;
+  --surface-hover: 29 41 36;
+  --surface-active: 19 44 33;
+  --surface-selected: 23 55 41;
+  --separator-subtle: 43 61 54;
+  --separator-strong: 65 83 74;
+  --text-primary: 241 245 238;
+  --text-secondary: 203 214 206;
+  --text-muted: 142 158 148;
+  --text-disabled: 94 109 99;
+  --accent-cyan: 123 220 169;
+  --accent-green: 178 214 113;
+  --accent-amber: 232 185 92;
+  --accent-rose: 235 119 137;
+  --overlay-scrim: 0 0 0;
+  --shadow-float: 0 10px 30px rgb(0 0 0 / 0.28);
+  --shadow-overlay: 0 18px 48px rgb(0 0 0 / 0.36);
+  --text-link: var(--accent-cyan);
+  --atmosphere-accent: var(--accent-cyan);
+  --atmosphere-layer-opacity: 1;
+  --selection-accent: var(--accent-cyan);
+}
+
+[data-theme="classic-dark"] {
+  color-scheme: dark;
+  --surface-canvas: 27 29 33;
+  --surface-navigation: 23 25 29;
+  --surface-thread: 27 29 33;
+  --surface-raised: 34 37 42;
+  --surface-overlay: 26 28 31;
+  --surface-hover: 41 45 51;
+  --surface-active: 29 48 71;
+  --surface-selected: 32 59 89;
+  --separator-subtle: 56 60 67;
+  --separator-strong: 90 96 107;
+  --text-primary: 244 245 247;
+  --text-secondary: 203 208 216;
+  --text-muted: 156 165 177;
+  --text-disabled: 103 112 124;
+  --accent-cyan: 147 197 253;
+  --accent-green: 134 239 172;
+  --accent-amber: 251 191 36;
+  --accent-rose: 255 128 148;
+  --overlay-scrim: 0 0 0;
+  --shadow-float: 0 10px 30px rgb(0 0 0 / 0.3);
+  --shadow-overlay: 0 18px 48px rgb(0 0 0 / 0.42);
+  --text-link: var(--accent-cyan);
+  --atmosphere-accent: var(--accent-cyan);
+  --atmosphere-layer-opacity: 0;
+  --selection-accent: var(--accent-cyan);
+}
+
+[data-theme="neutral"] {
+  color-scheme: light;
+  --surface-canvas: 247 247 248;
+  --surface-navigation: 240 241 243;
+  --surface-thread: 255 255 255;
+  --surface-raised: 245 246 247;
+  --surface-overlay: 255 255 255;
+  --surface-hover: 233 235 238;
+  --surface-active: 226 234 245;
+  --surface-selected: 217 230 245;
+  --separator-subtle: 223 226 230;
+  --separator-strong: 179 186 196;
+  --text-primary: 32 33 36;
+  --text-secondary: 75 85 99;
+  --text-muted: 88 102 122;
+  --text-disabled: 148 163 184;
+  --accent-cyan: 0 50 125;
+  --accent-green: 19 115 51;
+  --accent-amber: 140 85 0;
+  --accent-rose: 180 35 58;
+  --overlay-scrim: 15 23 42;
+  --shadow-float: 0 10px 30px rgb(15 23 42 / 0.14);
+  --shadow-overlay: 0 18px 48px rgb(15 23 42 / 0.18);
+  --text-link: var(--accent-cyan);
+  --atmosphere-accent: var(--accent-cyan);
+  --atmosphere-layer-opacity: 0;
+  --selection-accent: var(--accent-cyan);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  background: rgb(var(--surface-canvas));
+  color: rgb(var(--text-primary));
+}
+
+/* Prevent iOS focus zoom from invalidating the dynamic-viewport composer and sheets. */
+@media (max-width: 1023px), (hover: none), (pointer: coarse) {
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]),
+  select,
+  textarea {
+    font-size: 1rem !important;
+  }
+}
+
+/*
+ * Atmosphere: one fixed layer behind all content. A faint brand wash plus an
+ * SVG grain so large empty surfaces read as designed instead of unpainted;
+ * the grain also dithers the wash against banding on 1080p panels.
+ */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  opacity: var(--atmosphere-layer-opacity);
+  pointer-events: none;
+  background-image: radial-gradient(
+      120rem 60rem at 60% -12%,
+      rgb(var(--atmosphere-accent) / 0.045),
+      transparent 62%
+    ),
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='g'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23g)' opacity='0.055'/%3E%3C/svg%3E");
+  background-repeat: no-repeat, repeat;
+}
+
+button,
+textarea,
+input {
+  font: inherit;
+}
+
+@layer base {
+  /* Interaction baseline: color-only transitions so hover/active stop snapping. */
+  a,
+  button,
+  select,
+  [role="tab"],
+  [role="option"] {
+    transition-property: color, background-color, border-color, opacity;
+    transition-duration: 100ms;
+    transition-timing-function: ease-out;
+  }
+}
+
+@layer components {
+  /* Loading placeholder bars; the shimmer is disabled with the rest of the motion layer. */
+  .skeleton-block {
+    @apply rounded-control bg-surface-hover;
+    animation: skeleton-shimmer 1.6s ease-in-out infinite;
+  }
+
+  /* Shared popover/menu/dialog entrance; exits stay instant (unmount). */
+  .pop-enter {
+    animation: pop-enter 120ms ease-out both;
+  }
+
+  /* Soft mount fade for post-run metadata such as the composer usage line. */
+  .fade-in-soft {
+    animation: fade-in-soft 220ms ease-out both;
+  }
+}
+
+/*
+ * Motion layer. Sanctioned moments only: pipeline run lifecycle,
+ * streaming liveness, the one-time shell reveal, popover entrances, and the
+ * answer-complete settle. Everything below dies under html[data-motion="off"]
+ * and prefers-reduced-motion via the global kill rules at the end of this file.
+ */
+
+/* Evidence-based run activity: the live glyph carries a subtle working pulse. */
+.pipeline-indicator[data-phase="running"] [data-run-activity] {
+  animation: pipeline-pulse 1.3s ease-in-out infinite;
+}
+
+/* Completion: one quiet flash, replayed only when the phase changes again. */
+.pipeline-indicator[data-phase="settled"] {
+  animation: pipeline-settle 700ms ease-out 1;
+}
+
+/* Answer-complete settle: the finished turn's metadata line cools from teal. */
+[data-run-settled="true"] {
+  animation: settle-flash 800ms ease-out 1;
+}
+
+/*
+ * One-time login/reload reveal: the shell controller removes .shell-reveal
+ * shortly after mount, so later pane remounts never replay the entrance.
+ */
+.shell-reveal [data-testid="left-chat-pane"] {
+  animation: shell-reveal-in 220ms ease-out both;
+}
+
+.shell-reveal [data-testid="main-thread-pane"] {
+  animation: shell-reveal-in 220ms ease-out 40ms both;
+}
+
+.shell-reveal [data-testid="main-thread-pane"] > form {
+  animation: shell-reveal-in 220ms ease-out 120ms both;
+}
+
+@keyframes skeleton-shimmer {
+  0%,
+  100% {
+    opacity: 0.45;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@keyframes pipeline-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.4;
+  }
+}
+
+/* from-only keyframes settle back to the element's natural computed style. */
+@keyframes pipeline-settle {
+  from {
+    background-color: rgb(var(--accent-cyan) / 0.14);
+  }
+}
+
+@keyframes settle-flash {
+  from {
+    color: rgb(var(--accent-cyan));
+  }
+}
+
+@keyframes shell-reveal-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes pop-enter {
+  from {
+    opacity: 0;
+    transform: scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes fade-in-soft {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* Test mode pins every animation/transition so assertions stay deterministic. */
+html[data-motion="off"] *,
+html[data-motion="off"] *::before,
+html[data-motion="off"] *::after {
+  animation: none !important;
+  transition: none !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+::selection {
+  background: rgb(var(--selection-accent) / 0.35);
+}
+
+/* Shiki emits both palettes as variables so an already-rendered block follows runtime theme changes. */
+.shiki,
+.shiki span {
+  color: var(--shiki-dark);
+}
+
+[data-color-scheme="light"] .shiki,
+[data-color-scheme="light"] .shiki span {
+  color: var(--shiki-light);
+}
