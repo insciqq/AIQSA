@@ -21,6 +21,7 @@ test-results/
 !.env.example
 
 /DEPLOY.md
+/GITHUB_RELEASE.md
 /ops/deploy/
 /sa.json
 /sa.json:Zone.Identifier

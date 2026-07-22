@@ -54,3 +54,7 @@ docker compose -f docker-compose.dev.yml down -v
 ```
 
 The separate Compose project keeps this reset away from the persistent volumes used by the normal installation.
+
+## Public releases
+
+The public repository is [GitHub](https://github.com/insciqq/AIQSA). Maintainer development happens in a private GitLab repository, and reviewed public snapshots are published to GitHub deliberately rather than through an automatic mirror.

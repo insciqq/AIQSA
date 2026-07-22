@@ -52,6 +52,10 @@ git status --short
 
 If Git reports that this is not a repository, record that in the final response and continue without Git synchronization.
 
+## Repository Publication
+
+The maintainer checkout keeps `origin` as the private GitLab development remote and `github` as the public GitHub release remote. Normal development pushes go only to `origin`. Push reviewed release refs to `github` only after an explicit operator request and a fresh public-release privacy check; never mirror the private repository. Public clone links point to GitHub.
+
 ## Product And Implementation Contract
 
 `agent_docs/CRITICAL_INVARIANTS.md` is the single home for durable product, agent-development, backend, and frontend invariants. This entry point only routes the workflow:
