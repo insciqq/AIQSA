@@ -1,0 +1,122 @@
+name: aiqsa-dev
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: dev
+    command: sh -c "npm run db:generate && npm run db:migrate:deploy && npm run db:seed && npm run dev"
+    environment:
+      AIQSA_APP_BASE_URL: http://localhost:${AIQSA_PORT:-3000}
+      AIQSA_AUTH_SESSION_SECRET: ${AIQSA_AUTH_SESSION_SECRET:-aiqsa-development-session-secret-000000000000000000000000}
+      AIQSA_BOOTSTRAP_AUTH_TOKEN: ${AIQSA_BOOTSTRAP_AUTH_TOKEN:-}
+      AIQSA_BOOTSTRAP_AUTH_TOKEN_SHA256: ${AIQSA_BOOTSTRAP_AUTH_TOKEN_SHA256:-}
+      AIQSA_BOOTSTRAP_LOGIN_ENABLED: ${AIQSA_BOOTSTRAP_LOGIN_ENABLED:-}
+      AIQSA_BOOTSTRAP_USER_ID: ${AIQSA_BOOTSTRAP_USER_ID:-00000000-0000-4000-8000-000000000001}
+      AIQSA_COOKIE_SECURE: "0"
+      AIQSA_FAKE_PROVIDER_TOKEN_DELAY_MS: ${AIQSA_FAKE_PROVIDER_TOKEN_DELAY_MS:-}
+      AIQSA_GOOGLE_OAUTH_CLIENT_ID: ""
+      AIQSA_GOOGLE_OAUTH_CLIENT_SECRET: ""
+      AIQSA_OPENAI_BACKGROUND_POLL_TIMEOUT_MS: ${AIQSA_OPENAI_BACKGROUND_POLL_TIMEOUT_MS:-}
+      AIQSA_PROVIDER_RESPONSE_MAX_BYTES: ${AIQSA_PROVIDER_RESPONSE_MAX_BYTES:-}
+      AIQSA_PROVIDER_STREAM_IDLE_TIMEOUT_MS: ${AIQSA_PROVIDER_STREAM_IDLE_TIMEOUT_MS:-}
+      AIQSA_PROVIDER_TIMEOUT_MS: ${AIQSA_PROVIDER_TIMEOUT_MS:-}
+      AIQSA_SMTP_COMMAND_TIMEOUT_MS: ${AIQSA_SMTP_COMMAND_TIMEOUT_MS:-15000}
+      AIQSA_SMTP_CONNECT_TIMEOUT_MS: ${AIQSA_SMTP_CONNECT_TIMEOUT_MS:-10000}
+      AIQSA_SMTP_FROM: ${AIQSA_SMTP_FROM:-}
+      AIQSA_SMTP_HOST: ${AIQSA_SMTP_HOST:-}
+      AIQSA_SMTP_PASSWORD: ${AIQSA_SMTP_PASSWORD:-}
+      AIQSA_SMTP_PORT: ${AIQSA_SMTP_PORT:-587}
+      AIQSA_SMTP_SECURE: ${AIQSA_SMTP_SECURE:-0}
+      AIQSA_SMTP_STARTTLS: ${AIQSA_SMTP_STARTTLS:-1}
+      AIQSA_SMTP_TOTAL_TIMEOUT_MS: ${AIQSA_SMTP_TOTAL_TIMEOUT_MS:-60000}
+      AIQSA_SMTP_USER: ${AIQSA_SMTP_USER:-}
+      AIQSA_TEST_MODE: "1"
+      AIQSA_TRUST_PROXY_HEADERS: ${AIQSA_TRUST_PROXY_HEADERS:-}
+      AIQSA_TRUSTED_PROXY_COUNT: ${AIQSA_TRUSTED_PROXY_COUNT:-}
+      AIQSA_UPLOAD_MAX_BYTES: ${AIQSA_UPLOAD_MAX_BYTES:-25000000}
+      AIQSA_UPLOAD_STORAGE_DIR: ${AIQSA_UPLOAD_STORAGE_DIR:-}
+      AIQSA_YANDEX_OAUTH_CLIENT_ID: ""
+      AIQSA_YANDEX_OAUTH_CLIENT_SECRET: ""
+      ANTHROPIC_API_KEY: ""
+      ANTHROPIC_BASE_URL: ""
+      DATABASE_URL: postgresql://aiqsa:aiqsa-dev-password@postgres:5432/aiqsa?schema=public
+      NEXT_TELEMETRY_DISABLED: "1"
+      OPENAI_API_KEY: ""
+      OPENAI_BASE_URL: ""
+      OPENROUTER_API_KEY: ""
+      OPENROUTER_APP_TITLE: ${OPENROUTER_APP_TITLE:-AIQSA}
+      OPENROUTER_BASE_URL: ""
+      OPENROUTER_HTTP_REFERER: ${OPENROUTER_HTTP_REFERER:-http://localhost:3000}
+      PLAYWRIGHT_TEST_AUTH: "1"
+      S3_ACCESS_KEY_ID: aiqsa
+      S3_BUCKET: aiqsa-uploads
+      S3_ENDPOINT: http://minio:9000
+      S3_REGION: us-east-1
+      S3_SECRET_ACCESS_KEY: aiqsa-development-password
+    ports:
+      - "127.0.0.1:${AIQSA_PORT:-3000}:3000"
+    volumes:
+      - .:/app
+      - /app/node_modules
+      - /app/.next
+    depends_on:
+      minio:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+
+  postgres:
+    image: postgres:16.14-alpine@sha256:16bc17c64a573ef34162af9298258d1aec548232985b33ed7b1eac33ba35c229
+    environment:
+      POSTGRES_DB: aiqsa
+      POSTGRES_PASSWORD: aiqsa-dev-password
+      POSTGRES_USER: aiqsa
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aiqsa -d aiqsa"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - postgres_dev_data:/var/lib/postgresql/data
+
+  minio:
+    image: minio/minio:RELEASE.2025-09-07T16-13-09Z@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_PASSWORD: aiqsa-development-password
+      MINIO_ROOT_USER: aiqsa
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    ports:
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
+    volumes:
+      - minio_dev_data:/data
+
+  minio-init:
+    image: minio/mc:RELEASE.2025-08-13T08-35-41Z@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        set -eu
+        mc alias set local http://minio:9000 aiqsa aiqsa-development-password
+        mc mb --ignore-existing local/aiqsa-uploads
+        mc anonymous set private local/aiqsa-uploads
+    restart: "no"
+
+volumes:
+  minio_dev_data:
+  postgres_dev_data:

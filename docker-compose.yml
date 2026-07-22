@@ -1,123 +1,51 @@
-x-prod-logging: &prod-logging
+name: aiqsa
+
+x-logging: &default-logging
   driver: json-file
   options:
-    max-file: "${AIQSA_PROD_LOG_MAX_FILES:-5}"
-    max-size: "${AIQSA_PROD_LOG_MAX_SIZE:-10m}"
+    max-file: "${AIQSA_LOG_MAX_FILES:-5}"
+    max-size: "${AIQSA_LOG_MAX_SIZE:-10m}"
 
 services:
   app:
+    image: ${AIQSA_APP_IMAGE:-aiqsa-app:local}
     build:
       context: .
       dockerfile: Dockerfile
-      target: dev
-    command: sh -c "npm run db:generate && npm run db:migrate:deploy && npm run db:seed && npm run dev"
+      target: runtime
     environment:
+      AIQSA_APP_BASE_URL: ${AIQSA_APP_BASE_URL:-http://localhost:3000}
+      AIQSA_AUTH_SESSION_SECRET: ${AIQSA_AUTH_SESSION_SECRET:?Set AIQSA_AUTH_SESSION_SECRET in .env}
       AIQSA_BOOTSTRAP_AUTH_TOKEN: ${AIQSA_BOOTSTRAP_AUTH_TOKEN:-}
       AIQSA_BOOTSTRAP_AUTH_TOKEN_SHA256: ${AIQSA_BOOTSTRAP_AUTH_TOKEN_SHA256:-}
       AIQSA_BOOTSTRAP_LOGIN_ENABLED: ${AIQSA_BOOTSTRAP_LOGIN_ENABLED:-}
-      AIQSA_BOOTSTRAP_USER_ID: ${AIQSA_BOOTSTRAP_USER_ID:-00000000-0000-4000-8000-000000000001}
-      AIQSA_APP_BASE_URL: ${AIQSA_APP_BASE_URL:-http://localhost:3000}
+      AIQSA_BOOTSTRAP_USER_ID: ${AIQSA_BOOTSTRAP_USER_ID:-}
       AIQSA_COOKIE_SECURE: ${AIQSA_COOKIE_SECURE:-}
       AIQSA_GOOGLE_OAUTH_CLIENT_ID: ${AIQSA_GOOGLE_OAUTH_CLIENT_ID:-}
       AIQSA_GOOGLE_OAUTH_CLIENT_SECRET: ${AIQSA_GOOGLE_OAUTH_CLIENT_SECRET:-}
-      AIQSA_FAKE_PROVIDER: ${AIQSA_FAKE_PROVIDER:-}
-      AIQSA_FAKE_PROVIDER_TOKEN_DELAY_MS: ${AIQSA_FAKE_PROVIDER_TOKEN_DELAY_MS:-}
       AIQSA_OPENAI_BACKGROUND_POLL_TIMEOUT_MS: ${AIQSA_OPENAI_BACKGROUND_POLL_TIMEOUT_MS:-}
       AIQSA_PROVIDER_RESPONSE_MAX_BYTES: ${AIQSA_PROVIDER_RESPONSE_MAX_BYTES:-}
       AIQSA_PROVIDER_STREAM_IDLE_TIMEOUT_MS: ${AIQSA_PROVIDER_STREAM_IDLE_TIMEOUT_MS:-}
       AIQSA_PROVIDER_TIMEOUT_MS: ${AIQSA_PROVIDER_TIMEOUT_MS:-}
-      AIQSA_SHOW_FAKE_PROVIDER: ${AIQSA_SHOW_FAKE_PROVIDER:-}
+      AIQSA_SMTP_COMMAND_TIMEOUT_MS: ${AIQSA_SMTP_COMMAND_TIMEOUT_MS:-15000}
+      AIQSA_SMTP_CONNECT_TIMEOUT_MS: ${AIQSA_SMTP_CONNECT_TIMEOUT_MS:-10000}
       AIQSA_SMTP_FROM: ${AIQSA_SMTP_FROM:-}
       AIQSA_SMTP_HOST: ${AIQSA_SMTP_HOST:-}
       AIQSA_SMTP_PASSWORD: ${AIQSA_SMTP_PASSWORD:-}
       AIQSA_SMTP_PORT: ${AIQSA_SMTP_PORT:-587}
       AIQSA_SMTP_SECURE: ${AIQSA_SMTP_SECURE:-0}
       AIQSA_SMTP_STARTTLS: ${AIQSA_SMTP_STARTTLS:-1}
-      AIQSA_SMTP_CONNECT_TIMEOUT_MS: ${AIQSA_SMTP_CONNECT_TIMEOUT_MS:-10000}
-      AIQSA_SMTP_COMMAND_TIMEOUT_MS: ${AIQSA_SMTP_COMMAND_TIMEOUT_MS:-15000}
       AIQSA_SMTP_TOTAL_TIMEOUT_MS: ${AIQSA_SMTP_TOTAL_TIMEOUT_MS:-60000}
       AIQSA_SMTP_USER: ${AIQSA_SMTP_USER:-}
       AIQSA_TRUST_PROXY_HEADERS: ${AIQSA_TRUST_PROXY_HEADERS:-}
       AIQSA_TRUSTED_PROXY_COUNT: ${AIQSA_TRUSTED_PROXY_COUNT:-}
+      AIQSA_UPLOAD_MAX_BYTES: ${AIQSA_UPLOAD_MAX_BYTES:-25000000}
       AIQSA_UPLOAD_STORAGE_DIR: ${AIQSA_UPLOAD_STORAGE_DIR:-}
       AIQSA_YANDEX_OAUTH_CLIENT_ID: ${AIQSA_YANDEX_OAUTH_CLIENT_ID:-}
       AIQSA_YANDEX_OAUTH_CLIENT_SECRET: ${AIQSA_YANDEX_OAUTH_CLIENT_SECRET:-}
-      APP_ENV: ${APP_ENV:-local}
-      AUTH_SESSION_SECRET: ${AUTH_SESSION_SECRET:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       ANTHROPIC_BASE_URL: ${ANTHROPIC_BASE_URL:-}
-      DATABASE_URL: postgresql://aiqsa:aiqsa@postgres:5432/aiqsa?schema=public
-      NEXT_TELEMETRY_DISABLED: "1"
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
-      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
-      OPENROUTER_APP_TITLE: ${OPENROUTER_APP_TITLE:-AIQSA}
-      OPENROUTER_BASE_URL: ${OPENROUTER_BASE_URL:-}
-      OPENROUTER_HTTP_REFERER: ${OPENROUTER_HTTP_REFERER:-http://localhost:3000}
-      S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:-aiqsa}
-      S3_BUCKET: ${S3_BUCKET:-aiqsa-uploads}
-      S3_ENDPOINT: ${S3_ENDPOINT:-http://minio:9000}
-      S3_REGION: ${S3_REGION:-us-east-1}
-      S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:-aiqsa-local-password}
-      UPLOAD_MAX_BYTES: ${UPLOAD_MAX_BYTES:-25000000}
-    ports:
-      - "${AIQSA_DEV_BIND_ADDRESS:-127.0.0.1}:3000:3000"
-    volumes:
-      - .:/app
-      - /app/node_modules
-      - /app/.next
-    depends_on:
-      postgres:
-        condition: service_healthy
-      minio:
-        condition: service_healthy
-      minio-init:
-        condition: service_completed_successfully
-
-  app-prod:
-    profiles:
-      - prod
-    image: ${AIQSA_APP_IMAGE:-aiqsa-app:local}
-    build:
-      context: .
-      dockerfile: Dockerfile
-      target: prod
-    environment:
-      AIQSA_BOOTSTRAP_AUTH_TOKEN: ${AIQSA_BOOTSTRAP_AUTH_TOKEN:-}
-      AIQSA_BOOTSTRAP_AUTH_TOKEN_SHA256: ${AIQSA_BOOTSTRAP_AUTH_TOKEN_SHA256:-}
-      AIQSA_BOOTSTRAP_LOGIN_ENABLED: ${AIQSA_BOOTSTRAP_LOGIN_ENABLED:-}
-      AIQSA_BOOTSTRAP_USER_ID: ${AIQSA_BOOTSTRAP_USER_ID:-00000000-0000-4000-8000-000000000001}
-      AIQSA_APP_BASE_URL: ${AIQSA_APP_BASE_URL:-}
-      AIQSA_COOKIE_SECURE: ${AIQSA_COOKIE_SECURE:-}
-      AIQSA_GOOGLE_OAUTH_CLIENT_ID: ${AIQSA_GOOGLE_OAUTH_CLIENT_ID:-}
-      AIQSA_GOOGLE_OAUTH_CLIENT_SECRET: ${AIQSA_GOOGLE_OAUTH_CLIENT_SECRET:-}
-      AIQSA_FAKE_PROVIDER: ${AIQSA_FAKE_PROVIDER:-}
-      AIQSA_FAKE_PROVIDER_TOKEN_DELAY_MS: ${AIQSA_FAKE_PROVIDER_TOKEN_DELAY_MS:-}
-      AIQSA_OPENAI_BACKGROUND_POLL_TIMEOUT_MS: ${AIQSA_OPENAI_BACKGROUND_POLL_TIMEOUT_MS:-}
-      AIQSA_PROVIDER_RESPONSE_MAX_BYTES: ${AIQSA_PROVIDER_RESPONSE_MAX_BYTES:-}
-      AIQSA_PROVIDER_STREAM_IDLE_TIMEOUT_MS: ${AIQSA_PROVIDER_STREAM_IDLE_TIMEOUT_MS:-}
-      AIQSA_PROVIDER_TIMEOUT_MS: ${AIQSA_PROVIDER_TIMEOUT_MS:-}
-      AIQSA_SHOW_FAKE_PROVIDER: ${AIQSA_SHOW_FAKE_PROVIDER:-}
-      AIQSA_SMTP_FROM: ${AIQSA_SMTP_FROM:-}
-      AIQSA_SMTP_HOST: ${AIQSA_SMTP_HOST:-}
-      AIQSA_SMTP_PASSWORD: ${AIQSA_SMTP_PASSWORD:-}
-      AIQSA_SMTP_PORT: ${AIQSA_SMTP_PORT:-}
-      AIQSA_SMTP_SECURE: ${AIQSA_SMTP_SECURE:-}
-      AIQSA_SMTP_STARTTLS: ${AIQSA_SMTP_STARTTLS:-}
-      AIQSA_SMTP_CONNECT_TIMEOUT_MS: ${AIQSA_SMTP_CONNECT_TIMEOUT_MS:-10000}
-      AIQSA_SMTP_COMMAND_TIMEOUT_MS: ${AIQSA_SMTP_COMMAND_TIMEOUT_MS:-15000}
-      AIQSA_SMTP_TOTAL_TIMEOUT_MS: ${AIQSA_SMTP_TOTAL_TIMEOUT_MS:-60000}
-      AIQSA_SMTP_USER: ${AIQSA_SMTP_USER:-}
-      AIQSA_TRUST_PROXY_HEADERS: ${AIQSA_TRUST_PROXY_HEADERS:-}
-      AIQSA_TRUSTED_PROXY_COUNT: ${AIQSA_TRUSTED_PROXY_COUNT:-}
-      AIQSA_UPLOAD_STORAGE_DIR: ${AIQSA_UPLOAD_STORAGE_DIR:-}
-      AIQSA_YANDEX_OAUTH_CLIENT_ID: ${AIQSA_YANDEX_OAUTH_CLIENT_ID:-}
-      AIQSA_YANDEX_OAUTH_CLIENT_SECRET: ${AIQSA_YANDEX_OAUTH_CLIENT_SECRET:-}
-      APP_ENV: ${APP_ENV:-production}
-      AUTH_SESSION_SECRET: ${AUTH_SESSION_SECRET:-}
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
-      ANTHROPIC_BASE_URL: ${ANTHROPIC_BASE_URL:-}
-      DATABASE_URL: ${AIQSA_PROD_DATABASE_URL:-}
+      DATABASE_URL: postgresql://${AIQSA_POSTGRES_USER:-aiqsa}:${AIQSA_POSTGRES_PASSWORD:?Set AIQSA_POSTGRES_PASSWORD in .env}@postgres:5432/${AIQSA_POSTGRES_DB:-aiqsa}?schema=public
       HOSTNAME: 0.0.0.0
       NEXT_TELEMETRY_DISABLED: "1"
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
@@ -126,23 +54,12 @@ services:
       OPENROUTER_APP_TITLE: ${OPENROUTER_APP_TITLE:-AIQSA}
       OPENROUTER_BASE_URL: ${OPENROUTER_BASE_URL:-}
       OPENROUTER_HTTP_REFERER: ${OPENROUTER_HTTP_REFERER:-http://localhost:3000}
-      S3_ACCESS_KEY_ID: ${AIQSA_PROD_S3_ACCESS_KEY_ID:-}
-      S3_BUCKET: ${AIQSA_PROD_S3_BUCKET:-}
-      S3_ENDPOINT: ${AIQSA_PROD_S3_ENDPOINT:-http://minio-prod:9000}
-      S3_REGION: ${AIQSA_PROD_S3_REGION:-us-east-1}
-      S3_SECRET_ACCESS_KEY: ${AIQSA_PROD_S3_SECRET_ACCESS_KEY:-}
-      UPLOAD_MAX_BYTES: ${UPLOAD_MAX_BYTES:-25000000}
-    command:
-      - /bin/sh
-      - -c
-      - |
-        set -eu
-        : "$${DATABASE_URL:?Set AIQSA_PROD_DATABASE_URL for the prod profile}"
-        : "$${S3_ACCESS_KEY_ID:?Set AIQSA_PROD_S3_ACCESS_KEY_ID for the prod profile}"
-        : "$${S3_BUCKET:?Set AIQSA_PROD_S3_BUCKET for the prod profile}"
-        : "$${S3_SECRET_ACCESS_KEY:?Set AIQSA_PROD_S3_SECRET_ACCESS_KEY for the prod profile}"
-        exec node server.js
-    cpus: ${AIQSA_PROD_APP_CPU_LIMIT:-2.0}
+      S3_ACCESS_KEY_ID: ${AIQSA_S3_ACCESS_KEY_ID:-aiqsa}
+      S3_BUCKET: ${AIQSA_S3_BUCKET:-aiqsa-uploads}
+      S3_ENDPOINT: ${AIQSA_S3_ENDPOINT:-http://minio:9000}
+      S3_REGION: ${AIQSA_S3_REGION:-us-east-1}
+      S3_SECRET_ACCESS_KEY: ${AIQSA_S3_SECRET_ACCESS_KEY:?Set AIQSA_S3_SECRET_ACCESS_KEY in .env}
+    cpus: ${AIQSA_APP_CPU_LIMIT:-2.0}
     healthcheck:
       test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:3000/api/health/ready').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
       interval: 10s
@@ -150,77 +67,70 @@ services:
       retries: 20
       start_period: 30s
     init: true
-    logging: *prod-logging
-    mem_limit: ${AIQSA_PROD_APP_MEMORY_LIMIT:-2g}
+    logging: *default-logging
+    mem_limit: ${AIQSA_APP_MEMORY_LIMIT:-2g}
     ports:
-      - "${AIQSA_PROD_BIND_ADDRESS:-127.0.0.1}:${AIQSA_PROD_APP_PORT:-3100}:3000"
+      - "${AIQSA_BIND_ADDRESS:-127.0.0.1}:${AIQSA_PORT:-3000}:3000"
     restart: unless-stopped
     stop_grace_period: 30s
     depends_on:
-      postgres-prod:
-        condition: service_healthy
-      minio-prod:
-        condition: service_healthy
-      minio-prod-init:
+      migrate-bootstrap:
         condition: service_completed_successfully
-      prod-migrate-bootstrap:
+      minio:
+        condition: service_healthy
+      minio-init:
         condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
 
-  prod-migrate-bootstrap:
-    profiles:
-      - prod
+  migrate-bootstrap:
     image: ${AIQSA_TOOLS_IMAGE:-aiqsa-tools:local}
     build:
       context: .
       dockerfile: Dockerfile
-      target: prod-tools
+      target: tools
     environment:
-      AIQSA_INITIAL_ADMIN_DISPLAY_NAME: ${AIQSA_INITIAL_ADMIN_DISPLAY_NAME:-}
-      AIQSA_INITIAL_ADMIN_EMAIL: ${AIQSA_INITIAL_ADMIN_EMAIL:-}
+      AIQSA_INITIAL_ADMIN_DISPLAY_NAME: ${AIQSA_INITIAL_ADMIN_DISPLAY_NAME:-Administrator}
+      AIQSA_INITIAL_ADMIN_EMAIL: ${AIQSA_INITIAL_ADMIN_EMAIL:?Set AIQSA_INITIAL_ADMIN_EMAIL in .env}
       AIQSA_INITIAL_ADMIN_PASSWORD: ${AIQSA_INITIAL_ADMIN_PASSWORD:-}
       AIQSA_INITIAL_ADMIN_USER_ID: ${AIQSA_INITIAL_ADMIN_USER_ID:-}
-      APP_ENV: production
-      DATABASE_URL: ${AIQSA_PROD_DATABASE_URL:-}
+      DATABASE_URL: postgresql://${AIQSA_POSTGRES_USER:-aiqsa}:${AIQSA_POSTGRES_PASSWORD:?Set AIQSA_POSTGRES_PASSWORD in .env}@postgres:5432/${AIQSA_POSTGRES_DB:-aiqsa}?schema=public
       NEXT_TELEMETRY_DISABLED: "1"
       NODE_ENV: production
-      S3_ACCESS_KEY_ID: ${AIQSA_PROD_S3_ACCESS_KEY_ID:-}
-      S3_BUCKET: ${AIQSA_PROD_S3_BUCKET:-}
-      S3_ENDPOINT: http://minio-prod:9000
-      S3_REGION: ${AIQSA_PROD_S3_REGION:-us-east-1}
-      S3_SECRET_ACCESS_KEY: ${AIQSA_PROD_S3_SECRET_ACCESS_KEY:-}
-    command:
-      - /bin/sh
-      - -c
-      - |
-        set -eu
-        : "$${DATABASE_URL:?Set AIQSA_PROD_DATABASE_URL for the prod profile}"
-        npm run db:migrate:deploy
-        npm run db:bootstrap:production
-    cpus: ${AIQSA_PROD_TOOLS_CPU_LIMIT:-1.0}
+      S3_ACCESS_KEY_ID: ${AIQSA_S3_ACCESS_KEY_ID:-aiqsa}
+      S3_BUCKET: ${AIQSA_S3_BUCKET:-aiqsa-uploads}
+      S3_ENDPOINT: ${AIQSA_S3_ENDPOINT:-http://minio:9000}
+      S3_REGION: ${AIQSA_S3_REGION:-us-east-1}
+      S3_SECRET_ACCESS_KEY: ${AIQSA_S3_SECRET_ACCESS_KEY:?Set AIQSA_S3_SECRET_ACCESS_KEY in .env}
+    command: ["sh", "-c", "npm run db:migrate:deploy && npm run db:bootstrap"]
+    cpus: ${AIQSA_TOOLS_CPU_LIMIT:-1.0}
     depends_on:
-      minio-prod:
+      minio:
         condition: service_healthy
-      minio-prod-init:
+      minio-init:
         condition: service_completed_successfully
-      postgres-prod:
+      postgres:
         condition: service_healthy
-    logging: *prod-logging
-    mem_limit: ${AIQSA_PROD_TOOLS_MEMORY_LIMIT:-1g}
+    logging: *default-logging
+    mem_limit: ${AIQSA_TOOLS_MEMORY_LIMIT:-1g}
     restart: "no"
 
   postgres:
     image: postgres:16.14-alpine@sha256:16bc17c64a573ef34162af9298258d1aec548232985b33ed7b1eac33ba35c229
     environment:
-      POSTGRES_DB: aiqsa
-      POSTGRES_PASSWORD: aiqsa
-      POSTGRES_USER: aiqsa
+      POSTGRES_DB: ${AIQSA_POSTGRES_DB:-aiqsa}
+      POSTGRES_PASSWORD: ${AIQSA_POSTGRES_PASSWORD:?Set AIQSA_POSTGRES_PASSWORD in .env}
+      POSTGRES_USER: ${AIQSA_POSTGRES_USER:-aiqsa}
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U aiqsa -d aiqsa"]
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
       interval: 5s
       timeout: 3s
       retries: 20
-    ports:
-      - "${AIQSA_DEV_BIND_ADDRESS:-127.0.0.1}:5432:5432"
+    cpus: ${AIQSA_POSTGRES_CPU_LIMIT:-1.0}
+    logging: *default-logging
+    mem_limit: ${AIQSA_POSTGRES_MEMORY_LIMIT:-1g}
+    restart: unless-stopped
+    stop_grace_period: 60s
     volumes:
       - postgres_data:/var/lib/postgresql/data
 
@@ -228,16 +138,18 @@ services:
     image: minio/minio:RELEASE.2025-09-07T16-13-09Z@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
     command: server /data --console-address ":9001"
     environment:
-      MINIO_ROOT_PASSWORD: ${S3_SECRET_ACCESS_KEY:-aiqsa-local-password}
-      MINIO_ROOT_USER: ${S3_ACCESS_KEY_ID:-aiqsa}
+      MINIO_ROOT_PASSWORD: ${AIQSA_S3_SECRET_ACCESS_KEY:?Set AIQSA_S3_SECRET_ACCESS_KEY in .env}
+      MINIO_ROOT_USER: ${AIQSA_S3_ACCESS_KEY_ID:-aiqsa}
     healthcheck:
       test: ["CMD", "mc", "ready", "local"]
       interval: 5s
       timeout: 3s
       retries: 20
-    ports:
-      - "${AIQSA_DEV_BIND_ADDRESS:-127.0.0.1}:9000:9000"
-      - "${AIQSA_DEV_BIND_ADDRESS:-127.0.0.1}:9001:9001"
+    cpus: ${AIQSA_MINIO_CPU_LIMIT:-1.0}
+    logging: *default-logging
+    mem_limit: ${AIQSA_MINIO_MEMORY_LIMIT:-1g}
+    restart: unless-stopped
+    stop_grace_period: 30s
     volumes:
       - minio_data:/data
 
@@ -251,97 +163,19 @@ services:
       - -c
       - |
         set -eu
-        mc alias set local http://minio:9000 "$${S3_ACCESS_KEY_ID:-aiqsa}" "$${S3_SECRET_ACCESS_KEY:-aiqsa-local-password}"
-        mc mb --ignore-existing "local/$${S3_BUCKET:-aiqsa-uploads}"
-        mc anonymous set private "local/$${S3_BUCKET:-aiqsa-uploads}"
+        mc alias set local http://minio:9000 "$${S3_ACCESS_KEY_ID}" "$${S3_SECRET_ACCESS_KEY}"
+        mc mb --ignore-existing "local/$${S3_BUCKET}"
+        mc anonymous set private "local/$${S3_BUCKET}"
     environment:
-      S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:-aiqsa}
-      S3_BUCKET: ${S3_BUCKET:-aiqsa-uploads}
-      S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:-aiqsa-local-password}
-
-  postgres-prod:
-    profiles:
-      - prod
-    image: postgres:16.14-alpine@sha256:16bc17c64a573ef34162af9298258d1aec548232985b33ed7b1eac33ba35c229
-    environment:
-      POSTGRES_DB: ${AIQSA_PROD_POSTGRES_DB:-}
-      POSTGRES_PASSWORD: ${AIQSA_PROD_POSTGRES_PASSWORD:-}
-      POSTGRES_USER: ${AIQSA_PROD_POSTGRES_USER:-}
-    entrypoint:
-      - /bin/sh
-      - -c
-      - |
-        : "$${POSTGRES_DB:?Set AIQSA_PROD_POSTGRES_DB for the prod profile}"
-        : "$${POSTGRES_PASSWORD:?Set AIQSA_PROD_POSTGRES_PASSWORD for the prod profile}"
-        : "$${POSTGRES_USER:?Set AIQSA_PROD_POSTGRES_USER for the prod profile}"
-        exec docker-entrypoint.sh postgres
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
-      interval: 5s
-      timeout: 3s
-      retries: 20
-    cpus: ${AIQSA_PROD_POSTGRES_CPU_LIMIT:-1.0}
-    logging: *prod-logging
-    mem_limit: ${AIQSA_PROD_POSTGRES_MEMORY_LIMIT:-1g}
-    restart: unless-stopped
-    stop_grace_period: 60s
-    volumes:
-      - postgres_prod_data:/var/lib/postgresql/data
-
-  minio-prod:
-    profiles:
-      - prod
-    image: minio/minio:RELEASE.2025-09-07T16-13-09Z@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
-    environment:
-      MINIO_ROOT_PASSWORD: ${AIQSA_PROD_S3_SECRET_ACCESS_KEY:-}
-      MINIO_ROOT_USER: ${AIQSA_PROD_S3_ACCESS_KEY_ID:-}
-    entrypoint:
-      - /bin/sh
-      - -c
-      - |
-        : "$${MINIO_ROOT_USER:?Set AIQSA_PROD_S3_ACCESS_KEY_ID for the prod profile}"
-        : "$${MINIO_ROOT_PASSWORD:?Set AIQSA_PROD_S3_SECRET_ACCESS_KEY for the prod profile}"
-        exec minio server /data --console-address ":9001"
-    healthcheck:
-      test: ["CMD", "mc", "ready", "local"]
-      interval: 5s
-      timeout: 3s
-      retries: 20
-    cpus: ${AIQSA_PROD_MINIO_CPU_LIMIT:-1.0}
-    logging: *prod-logging
-    mem_limit: ${AIQSA_PROD_MINIO_MEMORY_LIMIT:-1g}
-    restart: unless-stopped
-    stop_grace_period: 30s
-    volumes:
-      - minio_prod_data:/data
-
-  minio-prod-init:
-    profiles:
-      - prod
-    image: minio/mc:RELEASE.2025-08-13T08-35-41Z@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727
-    depends_on:
-      minio-prod:
-        condition: service_healthy
-    entrypoint:
-      - /bin/sh
-      - -c
-      - |
-        set -eu
-        : "$${AIQSA_PROD_S3_ACCESS_KEY_ID:?Set AIQSA_PROD_S3_ACCESS_KEY_ID for the prod profile}"
-        : "$${AIQSA_PROD_S3_BUCKET:?Set AIQSA_PROD_S3_BUCKET for the prod profile}"
-        : "$${AIQSA_PROD_S3_SECRET_ACCESS_KEY:?Set AIQSA_PROD_S3_SECRET_ACCESS_KEY for the prod profile}"
-        mc alias set local http://minio-prod:9000 "$${AIQSA_PROD_S3_ACCESS_KEY_ID}" "$${AIQSA_PROD_S3_SECRET_ACCESS_KEY}"
-        mc mb --ignore-existing "local/$${AIQSA_PROD_S3_BUCKET}"
-        mc anonymous set private "local/$${AIQSA_PROD_S3_BUCKET}"
-    environment:
-      AIQSA_PROD_S3_ACCESS_KEY_ID: ${AIQSA_PROD_S3_ACCESS_KEY_ID:-}
-      AIQSA_PROD_S3_BUCKET: ${AIQSA_PROD_S3_BUCKET:-}
-      AIQSA_PROD_S3_SECRET_ACCESS_KEY: ${AIQSA_PROD_S3_SECRET_ACCESS_KEY:-}
-    logging: *prod-logging
+      S3_ACCESS_KEY_ID: ${AIQSA_S3_ACCESS_KEY_ID:-aiqsa}
+      S3_BUCKET: ${AIQSA_S3_BUCKET:-aiqsa-uploads}
+      S3_ENDPOINT: ${AIQSA_S3_ENDPOINT:-http://minio:9000}
+      S3_SECRET_ACCESS_KEY: ${AIQSA_S3_SECRET_ACCESS_KEY:?Set AIQSA_S3_SECRET_ACCESS_KEY in .env}
+    logging: *default-logging
     restart: "no"
 
 volumes:
   minio_data:
-  minio_prod_data:
+    name: ${AIQSA_MINIO_VOLUME_NAME:-aiqsa_minio_data}
   postgres_data:
-  postgres_prod_data:
+    name: ${AIQSA_POSTGRES_VOLUME_NAME:-aiqsa_postgres_data}

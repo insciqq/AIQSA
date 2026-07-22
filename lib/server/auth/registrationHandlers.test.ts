@@ -30,7 +30,7 @@ function jsonRequest(path: string, body: Record<string, unknown>): Request {
   });
 }
 
-const handlerConfig = getAuthConfig({ AUTH_SESSION_SECRET: "test-secret" });
+const handlerConfig = getAuthConfig({ AIQSA_AUTH_SESSION_SECRET: "test-secret" });
 
 function createMemoryRegistrationRepository(input: {
   acceptResult?: InviteAcceptanceResult | null;
@@ -88,7 +88,7 @@ describe("registration auth handlers", () => {
         getAuthConfig({
           AIQSA_APP_BASE_URL: "https://aiqsa.example",
           AIQSA_COOKIE_SECURE: "1",
-          AUTH_SESSION_SECRET: "test-secret"
+          AIQSA_AUTH_SESSION_SECRET: "test-secret"
         }),
       now: () => new Date("2026-07-17T00:00:00.000Z"),
       repository
@@ -122,7 +122,7 @@ describe("registration auth handlers", () => {
   it("rejects invalid invite acceptance without setting a session cookie", async () => {
     const repository = createMemoryRegistrationRepository({ acceptResult: null });
     const POST = createInviteAcceptanceHandler({
-      getConfig: () => getAuthConfig({ AUTH_SESSION_SECRET: "test-secret" }),
+      getConfig: () => getAuthConfig({ AIQSA_AUTH_SESSION_SECRET: "test-secret" }),
       repository
     });
 
@@ -141,7 +141,7 @@ describe("registration auth handlers", () => {
   it("requires a valid password before invite acceptance", async () => {
     const repository = createMemoryRegistrationRepository();
     const POST = createInviteAcceptanceHandler({
-      getConfig: () => getAuthConfig({ AUTH_SESSION_SECRET: "test-secret" }),
+      getConfig: () => getAuthConfig({ AIQSA_AUTH_SESSION_SECRET: "test-secret" }),
       repository
     });
 
@@ -167,7 +167,7 @@ describe("registration auth handlers", () => {
       getConfig: () =>
         getAuthConfig({
           AIQSA_APP_BASE_URL: "https://aiqsa.example",
-          AUTH_SESSION_SECRET: "test-secret"
+          AIQSA_AUTH_SESSION_SECRET: "test-secret"
         }),
       mailer,
       now: () => new Date("2026-06-14T00:00:00.000Z"),
@@ -206,7 +206,7 @@ describe("registration auth handlers", () => {
     const mailer = createMemoryAuthMailer();
     const config = getAuthConfig({
       AIQSA_APP_BASE_URL: "https://aiqsa.example",
-      AUTH_SESSION_SECRET: "test-secret"
+      AIQSA_AUTH_SESSION_SECRET: "test-secret"
     });
     const newPOST = createRegisterHandler({
       getConfig: () => config,
@@ -245,7 +245,7 @@ describe("registration auth handlers", () => {
     });
     const mailer = createMemoryAuthMailer();
     const POST = createRegisterHandler({
-      getConfig: () => getAuthConfig({ AUTH_SESSION_SECRET: "test-secret" }),
+      getConfig: () => getAuthConfig({ AIQSA_AUTH_SESSION_SECRET: "test-secret" }),
       mailer,
       repository
     });
@@ -273,7 +273,7 @@ describe("registration auth handlers", () => {
     });
     const mailer = createMemoryAuthMailer();
     const POST = createRegisterHandler({
-      getConfig: () => getAuthConfig({ AUTH_SESSION_SECRET: "test-secret" }),
+      getConfig: () => getAuthConfig({ AIQSA_AUTH_SESSION_SECRET: "test-secret" }),
       mailer,
       repository
     });
@@ -294,7 +294,7 @@ describe("registration auth handlers", () => {
   it("reports unavailable verification mail without claiming delivery", async () => {
     const repository = createMemoryRegistrationRepository();
     const POST = createRegisterHandler({
-      getConfig: () => getAuthConfig({ AUTH_SESSION_SECRET: "test-secret" }),
+      getConfig: () => getAuthConfig({ AIQSA_AUTH_SESSION_SECRET: "test-secret" }),
       mailer: createNoopAuthMailer(),
       repository
     });
@@ -315,7 +315,7 @@ describe("registration auth handlers", () => {
     const repository = createMemoryRegistrationRepository();
     const errorLog = vi.spyOn(console, "error").mockImplementation(() => undefined);
     const POST = createRegisterHandler({
-      getConfig: () => getAuthConfig({ AUTH_SESSION_SECRET: "test-secret" }),
+      getConfig: () => getAuthConfig({ AIQSA_AUTH_SESSION_SECRET: "test-secret" }),
       mailer: {
         deliveryConfigured: true,
         async send() {

@@ -14,11 +14,11 @@ describe("local seed auth", () => {
     expect(LOCAL_OPERATOR_PASSWORD).toBe("AIQSA-local-2026!");
   });
 
-  it("allows only an explicitly local non-production runtime", () => {
-    expect(isLocalSeedRuntime({ APP_ENV: "local" })).toBe(true);
-    expect(isLocalSeedRuntime({ APP_ENV: "local", NODE_ENV: "development" })).toBe(true);
-    expect(isLocalSeedRuntime({ APP_ENV: "local", NODE_ENV: "test" })).toBe(true);
-    expect(() => assertLocalSeedRuntime({ APP_ENV: "local", NODE_ENV: "test" })).not.toThrow();
+  it("allows only an explicit non-production test runtime", () => {
+    expect(isLocalSeedRuntime({ AIQSA_TEST_MODE: "1" })).toBe(true);
+    expect(isLocalSeedRuntime({ AIQSA_TEST_MODE: "1", NODE_ENV: "development" })).toBe(true);
+    expect(isLocalSeedRuntime({ AIQSA_TEST_MODE: "1", NODE_ENV: "test" })).toBe(true);
+    expect(() => assertLocalSeedRuntime({ AIQSA_TEST_MODE: "1", NODE_ENV: "test" })).not.toThrow();
   });
 
   it("retains a matching password hash and repairs wrong or malformed hashes", async () => {
@@ -36,17 +36,15 @@ describe("local seed auth", () => {
   });
 
   it.each([
-    { env: {}, reason: "unset APP_ENV" },
-    { env: { APP_ENV: "production" }, reason: "production APP_ENV" },
-    { env: { APP_ENV: "staging" }, reason: "non-local APP_ENV" },
-    { env: { APP_ENV: "LOCAL" }, reason: "non-exact local APP_ENV" },
-    { env: { APP_ENV: " local " }, reason: "padded local APP_ENV" },
-    { env: { APP_ENV: "local", NODE_ENV: "production" }, reason: "production NODE_ENV" },
-    { env: { APP_ENV: "local", NODE_ENV: " Production " }, reason: "normalized production NODE_ENV" }
+    { env: {}, reason: "unset test mode" },
+    { env: { AIQSA_TEST_MODE: "true" }, reason: "non-exact test mode" },
+    { env: { AIQSA_TEST_MODE: " 1 " }, reason: "padded test mode" },
+    { env: { AIQSA_TEST_MODE: "1", NODE_ENV: "production" }, reason: "production NODE_ENV" },
+    { env: { AIQSA_TEST_MODE: "1", NODE_ENV: " Production " }, reason: "normalized production NODE_ENV" }
   ])("rejects $reason", ({ env }) => {
     expect(isLocalSeedRuntime(env)).toBe(false);
     expect(() => assertLocalSeedRuntime(env)).toThrow(
-      "AIQSA demo seed requires APP_ENV=local and refuses NODE_ENV=production"
+      "AIQSA demo seed requires AIQSA_TEST_MODE=1 and refuses NODE_ENV=production"
     );
   });
 });

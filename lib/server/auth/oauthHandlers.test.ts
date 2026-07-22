@@ -19,7 +19,7 @@ const config = getAuthConfig({
   AIQSA_GOOGLE_OAUTH_CLIENT_SECRET: "google-secret",
   AIQSA_YANDEX_OAUTH_CLIENT_ID: "yandex-client",
   AIQSA_YANDEX_OAUTH_CLIENT_SECRET: "yandex-secret",
-  AUTH_SESSION_SECRET: "oauth-handler-test-secret"
+  AIQSA_AUTH_SESSION_SECRET: "oauth-handler-test-secret"
 });
 const now = new Date("2026-07-18T12:00:00.000Z");
 

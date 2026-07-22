@@ -11,7 +11,7 @@ function usable(value: string | undefined): value is string {
   return Boolean(value?.trim() && !value.startsWith("replace-with-"));
 }
 
-export function productionRuntimeIssues(
+export function runtimeConfigurationIssues(
   env: Record<string, string | undefined>
 ): string[] {
   const auth = getAuthConfig(env);
@@ -25,27 +25,22 @@ export function productionRuntimeIssues(
     issues.push("database_url");
   }
 
-  const appEnv = auth.appEnv.trim().toLowerCase();
-  const nodeProduction = env.NODE_ENV?.trim().toLowerCase() === "production";
-
-  if (appEnv === "local" && !nodeProduction) {
-    return issues;
+  if (![env.OPENAI_API_KEY, env.ANTHROPIC_API_KEY, env.OPENROUTER_API_KEY].some(usable)) {
+    issues.push("provider_api_key");
   }
 
-  if (appEnv !== "production") {
-    issues.push("app_env");
-  }
-
+  let secureBaseUrl = false;
   try {
     const baseUrl = new URL(auth.appBaseUrl);
-    if (baseUrl.protocol !== "https:" || baseUrl.username || baseUrl.password) {
+    secureBaseUrl = baseUrl.protocol === "https:";
+    if (!new Set(["http:", "https:"]).has(baseUrl.protocol) || baseUrl.username || baseUrl.password) {
       issues.push("app_base_url");
     }
   } catch {
     issues.push("app_base_url");
   }
 
-  if (!auth.cookieSecure) {
+  if (auth.cookieSecure !== secureBaseUrl) {
     issues.push("secure_cookie");
   }
 
@@ -53,7 +48,12 @@ export function productionRuntimeIssues(
     issues.push("bootstrap_login");
   }
 
-  if (enabled(env.PLAYWRIGHT_TEST_AUTH) || enabled(env.AIQSA_FAKE_PROVIDER) || enabled(env.AIQSA_SHOW_FAKE_PROVIDER)) {
+  if (
+    enabled(env.AIQSA_TEST_MODE) ||
+    enabled(env.PLAYWRIGHT_TEST_AUTH) ||
+    enabled(env.AIQSA_FAKE_PROVIDER) ||
+    enabled(env.AIQSA_SHOW_FAKE_PROVIDER)
+  ) {
     issues.push("test_runtime");
   }
 

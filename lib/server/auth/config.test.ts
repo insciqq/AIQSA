@@ -8,13 +8,13 @@ describe("auth config", () => {
     vi.restoreAllMocks();
   });
 
-  it("keeps Secure cookies off for local runtime unless explicitly enabled", () => {
+  it("derives Secure cookies from the public app URL unless explicitly overridden", () => {
     expect(
       getAuthConfig({
         AIQSA_BOOTSTRAP_AUTH_TOKEN: "local-token",
         AIQSA_BOOTSTRAP_LOGIN_ENABLED: "1",
-        APP_ENV: "local",
-        AUTH_SESSION_SECRET: "secret"
+        AIQSA_APP_BASE_URL: "http://localhost:3000",
+        AIQSA_AUTH_SESSION_SECRET: "secret"
       }).cookieSecure
     ).toBe(false);
 
@@ -23,19 +23,19 @@ describe("auth config", () => {
         AIQSA_BOOTSTRAP_AUTH_TOKEN: "local-token",
         AIQSA_BOOTSTRAP_LOGIN_ENABLED: "1",
         AIQSA_COOKIE_SECURE: "1",
-        APP_ENV: "local",
-        AUTH_SESSION_SECRET: "secret"
+        AIQSA_APP_BASE_URL: "http://localhost:3000",
+        AIQSA_AUTH_SESSION_SECRET: "secret"
       }).cookieSecure
     ).toBe(true);
   });
 
-  it("enables Secure cookies for non-local runtime unless explicitly disabled", () => {
+  it("enables Secure cookies for HTTPS unless explicitly disabled", () => {
     expect(
       getAuthConfig({
         AIQSA_BOOTSTRAP_AUTH_TOKEN: "deploy-token",
         AIQSA_BOOTSTRAP_LOGIN_ENABLED: "1",
-        APP_ENV: "production",
-        AUTH_SESSION_SECRET: "secret"
+        AIQSA_APP_BASE_URL: "https://aiqsa.example",
+        AIQSA_AUTH_SESSION_SECRET: "secret"
       }).cookieSecure
     ).toBe(true);
 
@@ -44,8 +44,8 @@ describe("auth config", () => {
         AIQSA_BOOTSTRAP_AUTH_TOKEN: "deploy-token",
         AIQSA_BOOTSTRAP_LOGIN_ENABLED: "1",
         AIQSA_COOKIE_SECURE: "0",
-        APP_ENV: "production",
-        AUTH_SESSION_SECRET: "secret"
+        AIQSA_APP_BASE_URL: "https://aiqsa.example",
+        AIQSA_AUTH_SESSION_SECRET: "secret"
       }).cookieSecure
     ).toBe(false);
   });
@@ -76,7 +76,7 @@ describe("auth config", () => {
 
   it("separates session auth readiness from bootstrap token availability", () => {
     const config = getAuthConfig({
-      AUTH_SESSION_SECRET: "secret"
+      AIQSA_AUTH_SESSION_SECRET: "secret"
     });
 
     expect(config.configured).toBe(true);
@@ -89,7 +89,7 @@ describe("auth config", () => {
       AIQSA_GOOGLE_OAUTH_CLIENT_ID: " google-client ",
       AIQSA_GOOGLE_OAUTH_CLIENT_SECRET: "google-secret",
       AIQSA_YANDEX_OAUTH_CLIENT_ID: "partial-yandex",
-      AUTH_SESSION_SECRET: "secret"
+      AIQSA_AUTH_SESSION_SECRET: "secret"
     });
 
     expect(config.oauthProviders).toEqual({
@@ -104,8 +104,7 @@ describe("auth config", () => {
     expect(
       getAuthConfig({
         AIQSA_BOOTSTRAP_AUTH_TOKEN: "local-token",
-        APP_ENV: "local",
-        AUTH_SESSION_SECRET: "secret"
+        AIQSA_AUTH_SESSION_SECRET: "secret"
       })
     ).toMatchObject({
       bootstrapConfigured: false,
@@ -115,8 +114,7 @@ describe("auth config", () => {
       getAuthConfig({
         AIQSA_BOOTSTRAP_AUTH_TOKEN: "local-token",
         AIQSA_BOOTSTRAP_LOGIN_ENABLED: "1",
-        APP_ENV: "local",
-        AUTH_SESSION_SECRET: "secret"
+        AIQSA_AUTH_SESSION_SECRET: "secret"
       })
     ).toMatchObject({
       bootstrapConfigured: true,
@@ -124,7 +122,7 @@ describe("auth config", () => {
     });
     expect(
       getAuthConfig({
-        APP_ENV: "local",
+        AIQSA_TEST_MODE: "1",
         PLAYWRIGHT_TEST_AUTH: "1"
       })
     ).toMatchObject({
@@ -134,10 +132,11 @@ describe("auth config", () => {
     });
   });
 
-  it("does not enable deterministic test auth in production or non-local runtime", () => {
+  it("does not enable deterministic test auth in production or without explicit test mode", () => {
     expect(
       getAuthConfig({
-        APP_ENV: "production",
+        AIQSA_TEST_MODE: "1",
+        NODE_ENV: "production",
         PLAYWRIGHT_TEST_AUTH: "1"
       })
     ).toMatchObject({
@@ -148,8 +147,7 @@ describe("auth config", () => {
     });
     expect(
       getAuthConfig({
-        APP_ENV: "local",
-        NODE_ENV: "production",
+        NODE_ENV: "test",
         PLAYWRIGHT_TEST_AUTH: "1"
       })
     ).toMatchObject({
@@ -160,13 +158,12 @@ describe("auth config", () => {
     });
   });
 
-  it("warns once when the known dev bootstrap token is configured outside local runtime and enabled", () => {
+  it("warns once when the known dev bootstrap token is configured outside test mode and enabled", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const env = {
       AIQSA_BOOTSTRAP_AUTH_TOKEN_SHA256: hashToken(TEST_AUTH_TOKEN),
       AIQSA_BOOTSTRAP_LOGIN_ENABLED: "1",
-      APP_ENV: "production",
-      AUTH_SESSION_SECRET: "secret"
+      AIQSA_AUTH_SESSION_SECRET: "secret"
     };
 
     getAuthConfig(env);

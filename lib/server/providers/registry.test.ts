@@ -26,23 +26,24 @@ describe("provider registry", () => {
     ).toEqual(["openrouter"]);
   });
 
-  it("registers fake only in explicit fake or test mode", () => {
-    expect(Object.keys(createProviderAdaptersFromEnv({ AIQSA_FAKE_PROVIDER: "1" }))).toEqual(["fake"]);
+  it("registers fake only in explicit non-production test mode", () => {
     expect(
       Object.keys(
         createProviderAdaptersFromEnv({
-          APP_ENV: "local",
-          PLAYWRIGHT_TEST_AUTH: "1"
+          AIQSA_TEST_MODE: "1"
         })
       )
     ).toEqual(["fake"]);
     expect(
       Object.keys(
         createProviderAdaptersFromEnv({
-          APP_ENV: "production",
-          PLAYWRIGHT_TEST_AUTH: "1"
+          AIQSA_TEST_MODE: "1",
+          NODE_ENV: "production"
         })
       )
     ).toEqual([]);
+    expect(Object.keys(createProviderAdaptersFromEnv({ AIQSA_TEST_MODE: "true" }))).toEqual([]);
+    expect(Object.keys(createProviderAdaptersFromEnv({ AIQSA_FAKE_PROVIDER: "1" }))).toEqual([]);
+    expect(Object.keys(createProviderAdaptersFromEnv({ AIQSA_SHOW_FAKE_PROVIDER: "1" }))).toEqual([]);
   });
 });

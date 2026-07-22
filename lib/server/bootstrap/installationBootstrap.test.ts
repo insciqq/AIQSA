@@ -2,21 +2,20 @@ import { Prisma, type PrismaClient } from "@prisma/client";
 import { defaultProviderModels, defaultSearchStrategies } from "@/lib/domain/catalog";
 import { describe, expect, it, vi } from "vitest";
 import {
-  bootstrapProductionDatabase,
-  ProductionBootstrapError,
-  productionBootstrapInputFromEnv,
-  validateProductionBootstrapInput,
-  type ProductionBootstrapInput
-} from "./productionBootstrap";
+  bootstrapInstallationDatabase,
+  InstallationBootstrapError,
+  installationBootstrapInputFromEnv,
+  validateInstallationBootstrapInput,
+  type InstallationBootstrapInput
+} from "./installationBootstrap";
 
 const USER_ID = "7e6db97e-d8a9-4e94-b03c-6df0f1df44a1";
 const NOW = new Date("2026-07-14T16:00:00.000Z");
 
-const baseInput: ProductionBootstrapInput = {
+const baseInput: InstallationBootstrapInput = {
   displayName: "Initial Admin",
   email: "admin@example.com",
-  password: "correct horse battery staple",
-  userId: USER_ID
+  password: "correct horse battery staple"
 };
 
 type AdoptedState = {
@@ -131,9 +130,9 @@ function createBootstrapClient(fixture: BootstrapTransactionFixture) {
   };
 }
 
-function expectBootstrapError(error: unknown, code: ProductionBootstrapError["code"]): void {
-  expect(error).toBeInstanceOf(ProductionBootstrapError);
-  expect((error as ProductionBootstrapError).code).toBe(code);
+function expectBootstrapError(error: unknown, code: InstallationBootstrapError["code"]): void {
+  expect(error).toBeInstanceOf(InstallationBootstrapError);
+  expect((error as InstallationBootstrapError).code).toBe(code);
 }
 
 function allFoundationMutationSpies(fixture: BootstrapTransactionFixture) {
@@ -149,10 +148,19 @@ function allFoundationMutationSpies(fixture: BootstrapTransactionFixture) {
   ];
 }
 
-describe("production bootstrap", () => {
+describe("installation bootstrap", () => {
   it("reads explicit identity inputs while allowing the password to be removed after adoption", () => {
     expect(
-      productionBootstrapInputFromEnv({
+      installationBootstrapInputFromEnv({
+        AIQSA_INITIAL_ADMIN_EMAIL: " ADMIN@example.com ",
+      })
+    ).toEqual({
+      displayName: "Administrator",
+      email: "ADMIN@example.com"
+    });
+
+    expect(
+      installationBootstrapInputFromEnv({
         AIQSA_INITIAL_ADMIN_DISPLAY_NAME: " Initial Admin ",
         AIQSA_INITIAL_ADMIN_EMAIL: " ADMIN@example.com ",
         AIQSA_INITIAL_ADMIN_USER_ID: USER_ID
@@ -164,16 +172,15 @@ describe("production bootstrap", () => {
     });
 
     expect(() =>
-      productionBootstrapInputFromEnv({
-        AIQSA_INITIAL_ADMIN_DISPLAY_NAME: "Initial Admin",
+      installationBootstrapInputFromEnv({
         AIQSA_INITIAL_ADMIN_USER_ID: USER_ID
       })
-    ).toThrowError(ProductionBootstrapError);
+    ).toThrowError(InstallationBootstrapError);
   });
 
   it("normalizes email and rejects invalid email, password, display-name, and user-id inputs", () => {
     expect(
-      validateProductionBootstrapInput({
+      validateInstallationBootstrapInput({
         ...baseInput,
         displayName: " Initial Admin ",
         email: " ADMIN@Example.com "
@@ -184,8 +191,8 @@ describe("production bootstrap", () => {
     });
 
     const invalidInputs: Array<{
-      code: ProductionBootstrapError["code"];
-      input: ProductionBootstrapInput;
+      code: InstallationBootstrapError["code"];
+      input: InstallationBootstrapInput;
     }> = [
       { code: "email_invalid", input: { ...baseInput, email: "not-an-email" } },
       { code: "password_too_short", input: { ...baseInput, password: "short" } },
@@ -195,7 +202,7 @@ describe("production bootstrap", () => {
 
     for (const invalid of invalidInputs) {
       try {
-        validateProductionBootstrapInput(invalid.input);
+        validateInstallationBootstrapInput(invalid.input);
         throw new Error("Expected input validation to fail.");
       } catch (error) {
         expectBootstrapError(error, invalid.code);
@@ -209,9 +216,10 @@ describe("production bootstrap", () => {
     const hashPassword = vi.fn(async () => "hashed-initial-password");
 
     await expect(
-      bootstrapProductionDatabase(prisma, baseInput, {
+      bootstrapInstallationDatabase(prisma, baseInput, {
         hashPassword,
-        now: () => NOW
+        now: () => NOW,
+        randomUUID: () => USER_ID
       })
     ).resolves.toEqual({
       catalogModelCount: defaultProviderModels.length,
@@ -223,10 +231,9 @@ describe("production bootstrap", () => {
     expect(transaction.mock.calls[0]?.[1]).toMatchObject({
       isolationLevel: Prisma.TransactionIsolationLevel.Serializable
     });
-    expect(fixture.events.slice(0, 4)).toEqual([
+    expect(fixture.events.slice(0, 3)).toEqual([
       "lock",
       "count",
-      "user.findUnique",
       "authIdentity.findFirst"
     ]);
     expect(hashPassword).toHaveBeenCalledOnce();
@@ -290,7 +297,7 @@ describe("production bootstrap", () => {
     const hashPassword = vi.fn(async () => "unused");
 
     try {
-      await bootstrapProductionDatabase(
+      await bootstrapInstallationDatabase(
         prisma,
         {
           ...baseInput,
@@ -317,7 +324,7 @@ describe("production bootstrap", () => {
     const hashPassword = vi.fn(async () => "unused");
 
     try {
-      await bootstrapProductionDatabase(prisma, baseInput, { hashPassword });
+      await bootstrapInstallationDatabase(prisma, baseInput, { hashPassword });
       throw new Error("Expected bootstrap to fail.");
     } catch (error) {
       expectBootstrapError(error, "unsafe_nonempty_database");
@@ -352,7 +359,7 @@ describe("production bootstrap", () => {
     const hashPassword = vi.fn(async () => "must-not-be-used");
 
     await expect(
-      bootstrapProductionDatabase(
+      bootstrapInstallationDatabase(
         prisma,
         baseInput,
         { hashPassword }
@@ -397,12 +404,41 @@ describe("production bootstrap", () => {
     const { prisma } = createBootstrapClient(fixture);
 
     await expect(
-      bootstrapProductionDatabase(prisma, {
+      bootstrapInstallationDatabase(prisma, {
         ...baseInput,
         password: undefined
       })
     ).resolves.toMatchObject({
       status: "already_adopted"
+    });
+  });
+
+  it("rejects an adopted identity when an explicit user id does not match", async () => {
+    const fixture = createBootstrapTransaction({
+      adopted: {
+        identity: {
+          emailVerifiedAt: NOW,
+          normalizedEmail: "admin@example.com",
+          passwordHash: "operator-owned-password-hash",
+          providerAccountId: "admin@example.com",
+          userId: USER_ID
+        },
+        user: {
+          email: "admin@example.com",
+          id: USER_ID
+        }
+      },
+      nonempty: true
+    });
+    const { prisma } = createBootstrapClient(fixture);
+
+    await expect(
+      bootstrapInstallationDatabase(prisma, {
+        ...baseInput,
+        userId: "c80db0fc-87b9-4b82-96a3-7e1772072485"
+      })
+    ).rejects.toMatchObject({
+      code: "unsafe_nonempty_database"
     });
   });
 
@@ -425,7 +461,7 @@ describe("production bootstrap", () => {
     });
     const { prisma } = createBootstrapClient(fixture);
 
-    await expect(bootstrapProductionDatabase(prisma, baseInput)).rejects.toMatchObject({
+    await expect(bootstrapInstallationDatabase(prisma, baseInput)).rejects.toMatchObject({
       code: "unsafe_nonempty_database"
     });
     expect(fixture.spies.providerModelUpsert).not.toHaveBeenCalled();

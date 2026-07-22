@@ -1,9 +1,6 @@
 import { hashToken } from "./token";
 import type { OAuthProviderId } from "../../auth/oauth";
-import {
-  isNonLocalRuntimeEnv,
-  isTestAuthAllowedEnv
-} from "./csrf";
+import { isTestAuthAllowedEnv } from "./csrf";
 
 export const DEFAULT_BOOTSTRAP_USER_ID = "00000000-0000-4000-8000-000000000001";
 export const TEST_AUTH_TOKEN = "aiqsa-test-token";
@@ -13,7 +10,6 @@ const TRUE_ENV_VALUES = new Set(["1", "true", "yes", "on"]);
 const FALSE_ENV_VALUES = new Set(["0", "false", "no", "off"]);
 
 export type AuthConfig = {
-  appEnv: string;
   appBaseUrl: string;
   bootstrapConfigured: boolean;
   bootstrapLoginEnabled: boolean;
@@ -79,8 +75,12 @@ function optionalPositiveInteger(value: string | undefined): number | null {
   return parsed;
 }
 
-export function isNonLocalRuntime(env: Record<string, string | undefined>): boolean {
-  return isNonLocalRuntimeEnv(env);
+function secureCookieDefault(appBaseUrl: string): boolean {
+  try {
+    return new URL(appBaseUrl).protocol === "https:";
+  } catch {
+    return false;
+  }
 }
 
 export function isTestAuthEnabled(env: Record<string, string | undefined> = process.env): boolean {
@@ -88,11 +88,10 @@ export function isTestAuthEnabled(env: Record<string, string | undefined> = proc
 }
 
 function shouldWarnForDevBootstrapToken(
-  env: Record<string, string | undefined>,
   bootstrapTokenHash: string,
   testAuthEnabled: boolean
 ): boolean {
-  return bootstrapTokenHash === TEST_AUTH_TOKEN_HASH && isNonLocalRuntime(env) && !testAuthEnabled;
+  return bootstrapTokenHash === TEST_AUTH_TOKEN_HASH && !testAuthEnabled;
 }
 
 let warnedDevBootstrapToken = false;
@@ -104,10 +103,11 @@ export function resetAuthConfigWarningsForTests(): void {
 export function getAuthConfig(env: Record<string, string | undefined> = process.env): AuthConfig {
   const testAuthEnabled = isTestAuthEnabled(env);
   const bootstrapLoginEnabled = (optionalBoolean(env.AIQSA_BOOTSTRAP_LOGIN_ENABLED) ?? false) || testAuthEnabled;
-  const cookieSecure = optionalBoolean(env.AIQSA_COOKIE_SECURE) ?? isNonLocalRuntime(env);
+  const appBaseUrl = env.AIQSA_APP_BASE_URL?.trim() || "http://localhost:3000";
+  const cookieSecure = optionalBoolean(env.AIQSA_COOKIE_SECURE) ?? secureCookieDefault(appBaseUrl);
   const trustForwardedFor = optionalBoolean(env.AIQSA_TRUST_PROXY_HEADERS) ?? false;
-  const sessionSecret = usableSecret(env.AUTH_SESSION_SECRET)
-    ? env.AUTH_SESSION_SECRET
+  const sessionSecret = usableSecret(env.AIQSA_AUTH_SESSION_SECRET)
+    ? env.AIQSA_AUTH_SESSION_SECRET
     : testAuthEnabled
       ? TEST_SESSION_SECRET
       : "";
@@ -129,18 +129,17 @@ export function getAuthConfig(env: Record<string, string | undefined> = process.
 
   if (
     bootstrapLoginEnabled &&
-    shouldWarnForDevBootstrapToken(env, bootstrapTokenHash, testAuthEnabled) &&
+    shouldWarnForDevBootstrapToken(bootstrapTokenHash, testAuthEnabled) &&
     !warnedDevBootstrapToken
   ) {
     warnedDevBootstrapToken = true;
     console.warn(
-      "AIQSA bootstrap recovery login is enabled with the known development bootstrap token hash outside APP_ENV=local. Generate a unique AIQSA_BOOTSTRAP_AUTH_TOKEN or AIQSA_BOOTSTRAP_AUTH_TOKEN_SHA256 before exposing the app."
+      "AIQSA bootstrap recovery login is enabled with the known development bootstrap token hash outside test mode. Generate a unique AIQSA_BOOTSTRAP_AUTH_TOKEN or AIQSA_BOOTSTRAP_AUTH_TOKEN_SHA256 before exposing the app."
     );
   }
 
   return {
-    appEnv: env.APP_ENV || "",
-    appBaseUrl: env.AIQSA_APP_BASE_URL?.trim() || "http://localhost:3000",
+    appBaseUrl,
     bootstrapConfigured: bootstrapLoginEnabled && Boolean(bootstrapTokenHash),
     bootstrapLoginEnabled,
     bootstrapTokenHash,

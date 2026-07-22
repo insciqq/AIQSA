@@ -91,22 +91,20 @@ describe("auth CSRF and recovery gate helpers", () => {
     ).toBe(false);
   });
 
-  it("keeps deterministic test auth out of production and non-local runtime", () => {
+  it("keeps deterministic test auth behind explicit non-production test mode", () => {
     expect(
       isTestAuthAllowedEnv({
-        APP_ENV: "local",
+        AIQSA_TEST_MODE: "1",
         PLAYWRIGHT_TEST_AUTH: "1"
       })
     ).toBe(true);
     expect(isTestAuthAllowedEnv({ PLAYWRIGHT_TEST_AUTH: "1" })).toBe(false);
-    expect(isTestAuthAllowedEnv({ APP_ENV: "local" })).toBe(false);
-    expect(isTestAuthAllowedEnv({ APP_ENV: "local", NODE_ENV: "test" })).toBe(false);
-    expect(isTestAuthAllowedEnv({ APP_ENV: "production", PLAYWRIGHT_TEST_AUTH: "1" })).toBe(false);
-    expect(isTestAuthAllowedEnv({ APP_ENV: "local", NODE_ENV: "production", PLAYWRIGHT_TEST_AUTH: "1" })).toBe(
+    expect(isTestAuthAllowedEnv({ AIQSA_TEST_MODE: "1" })).toBe(false);
+    expect(isTestAuthAllowedEnv({ AIQSA_TEST_MODE: "true", PLAYWRIGHT_TEST_AUTH: "1" })).toBe(false);
+    expect(isTestAuthAllowedEnv({ AIQSA_TEST_MODE: "1", NODE_ENV: "production", PLAYWRIGHT_TEST_AUTH: "1" })).toBe(
       false
     );
-    expect(isTestAuthAllowedEnv({ APP_ENV: "staging", NODE_ENV: "test", PLAYWRIGHT_TEST_AUTH: "1" })).toBe(false);
-    expect(isTestAuthAllowedEnv({ APP_ENV: "local", PLAYWRIGHT_TEST_AUTH: "true" })).toBe(false);
+    expect(isTestAuthAllowedEnv({ AIQSA_TEST_MODE: "1", PLAYWRIGHT_TEST_AUTH: "true" })).toBe(false);
   });
 
   it("exposes bootstrap login only for explicit recovery or allowed tests", () => {
@@ -114,11 +112,17 @@ describe("auth CSRF and recovery gate helpers", () => {
     expect(isBootstrapLoginPublicEnv({ AIQSA_BOOTSTRAP_LOGIN_ENABLED: "1" })).toBe(true);
     expect(
       isBootstrapLoginPublicEnv({
-        APP_ENV: "local",
+        AIQSA_TEST_MODE: "1",
         PLAYWRIGHT_TEST_AUTH: "1",
       })
     ).toBe(true);
     expect(isBootstrapLoginPublicEnv({ PLAYWRIGHT_TEST_AUTH: "1" })).toBe(false);
-    expect(isBootstrapLoginPublicEnv({ APP_ENV: "production", PLAYWRIGHT_TEST_AUTH: "1" })).toBe(false);
+    expect(
+      isBootstrapLoginPublicEnv({
+        AIQSA_TEST_MODE: "1",
+        NODE_ENV: "production",
+        PLAYWRIGHT_TEST_AUTH: "1"
+      })
+    ).toBe(false);
   });
 });

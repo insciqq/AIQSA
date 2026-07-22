@@ -50,26 +50,16 @@ function isEquivalentLoopbackOrigin(origin: string, allowedOrigin: string): bool
   );
 }
 
-export function isNonLocalRuntimeEnv(env: Record<string, string | undefined>): boolean {
-  const appEnv = normalizedEnvValue(env.APP_ENV);
-
-  if (appEnv) {
-    return appEnv !== "local";
-  }
-
-  return normalizedEnvValue(env.NODE_ENV) === "production";
-}
-
 export function isProductionNodeEnv(env: Record<string, string | undefined>): boolean {
   return normalizedEnvValue(env.NODE_ENV) === "production";
 }
 
+export function isTestModeAllowedEnv(env: Record<string, string | undefined>): boolean {
+  return env.AIQSA_TEST_MODE === "1" && !isProductionNodeEnv(env);
+}
+
 export function isTestAuthAllowedEnv(env: Record<string, string | undefined>): boolean {
-  return (
-    env.PLAYWRIGHT_TEST_AUTH === "1" &&
-    normalizedEnvValue(env.APP_ENV) === "local" &&
-    !isProductionNodeEnv(env)
-  );
+  return env.PLAYWRIGHT_TEST_AUTH === "1" && isTestModeAllowedEnv(env);
 }
 
 export function isBootstrapLoginPublicEnv(env: Record<string, string | undefined>): boolean {

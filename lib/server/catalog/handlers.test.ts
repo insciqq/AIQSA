@@ -7,7 +7,7 @@ import { buildCurrentUserCatalog, createCatalogHandler } from "./handlers";
 
 const config = getAuthConfig({
   AIQSA_BOOTSTRAP_AUTH_TOKEN: "token",
-  AUTH_SESSION_SECRET: "secret"
+  AIQSA_AUTH_SESSION_SECRET: "secret"
 });
 const auth = createTestAuth({
   user: {

@@ -27,7 +27,7 @@ import {
 const config = getAuthConfig({
   AIQSA_BOOTSTRAP_AUTH_TOKEN: TEST_AUTH_TOKEN,
   AIQSA_BOOTSTRAP_LOGIN_ENABLED: "1",
-  AUTH_SESSION_SECRET: "test-secret"
+  AIQSA_AUTH_SESSION_SECRET: "test-secret"
 });
 
 const user: SafeUserWithGroups = {

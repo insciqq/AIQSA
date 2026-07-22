@@ -19,7 +19,7 @@
     "check": "prisma generate && npm run docs:check && npm run lint && tsc --noEmit && vitest run",
     "docs:check": "node scripts/docs-check.mjs",
     "db:generate": "prisma generate",
-    "db:bootstrap:production": "tsx prisma/production-bootstrap.ts",
+    "db:bootstrap": "tsx prisma/bootstrap.ts",
     "db:migrate:deploy": "prisma migrate deploy",
     "db:migrate:dev": "prisma migrate dev",
     "db:migrate:resolve": "prisma migrate resolve",

@@ -6,7 +6,7 @@ import {
   createOpenRouterPerplexitySearchAdapter
 } from "./openRouterChat";
 import { createFetchOpenAIResponsesClient, createOpenAIResponsesAdapter } from "./openaiResponses";
-import { isTestAuthEnabled } from "../auth/config";
+import { isTestModeAllowedEnv } from "../auth/csrf";
 import type { ProviderAdapter, ProviderSearchAdapter } from "./types";
 
 export type ProviderRegistryEnv = Record<string, string | undefined> & {
@@ -25,11 +25,7 @@ function present(value: string | undefined): value is string {
 }
 
 function fakeProviderEnabled(env: ProviderRegistryEnv): boolean {
-  return (
-    isTestAuthEnabled(env) ||
-    env.AIQSA_FAKE_PROVIDER === "1" ||
-    env.AIQSA_SHOW_FAKE_PROVIDER === "1"
-  );
+  return isTestModeAllowedEnv(env);
 }
 
 export function createProviderAdaptersFromEnv(env: ProviderRegistryEnv = process.env): Record<string, ProviderAdapter> {

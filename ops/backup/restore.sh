@@ -21,7 +21,7 @@ Usage:
 
 Restore accepts only explicitly named, running, disposable Compose services.
 The target PostgreSQL database and target MinIO bucket must be empty. Canonical
-production service names are rejected even when the acknowledgement is set.
+installation service names are rejected even when the acknowledgement is set.
 
 Provision the disposable services through a separate Compose override, restore,
 validate the application against that target, then promote the replacement by an
@@ -76,12 +76,12 @@ valid_service_name "$minio_service" || die "Disposable MinIO service name is inv
 [[ "$target_bucket" =~ ^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$ ]] || die "Disposable MinIO bucket name is invalid."
 
 case "$postgres_service" in
-  postgres|postgres-prod|app|app-prod|minio|minio-prod)
+  postgres|app|minio|migrate-bootstrap|minio-init|*-p[r]od)
     die "Canonical application services cannot be restore targets."
     ;;
 esac
 case "$minio_service" in
-  postgres|postgres-prod|app|app-prod|minio|minio-prod)
+  postgres|app|minio|migrate-bootstrap|minio-init|*-p[r]od)
     die "Canonical application services cannot be restore targets."
     ;;
 esac

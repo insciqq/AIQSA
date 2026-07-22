@@ -28,6 +28,7 @@ Every ADR also declares `Amends: none` or a comma-separated list of earlier ADR 
 - `0017-conservative-multilingual-context-estimates.md` - context admission uses a dependency-free conservative Unicode estimate, exposes the safe input budget separately from total context, and keeps runtime attachment/tool re-budgeting.
 - `0018-intent-gated-mobile-reading-mode.md` - compact chat chrome uses one application rail with direct Workspace/New chat access, while recent deliberate reading scroll in either direction may collapse idle Run/profile controls without hiding Message or an addressable Stop action; completed-tap expansion prevents Run click-through.
 - `0019-safe-katex-math-rendering.md` - the custom Markdown parser recognizes common TeX delimiters and sends only restricted untrusted expressions through locally bundled KaTeX; failed math stays escaped React text.
+- `0020-unified-installation-and-isolated-development.md` - the default Compose path is one persistent install/update topology with canonical environment names, while deterministic seed/Fake QSA checks use a separate disposable development stack.
 
 ## Superseded ADRs
 

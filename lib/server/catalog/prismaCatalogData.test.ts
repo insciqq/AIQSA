@@ -51,18 +51,14 @@ function searchStrategy(overrides: Partial<SearchStrategy>): SearchStrategy {
 }
 
 describe("prisma catalog data loader", () => {
-  it("exposes the fake provider only in explicit test/debug modes", () => {
+  it("exposes the fake provider only in explicit non-production test mode", () => {
     expect(exposeFakeProvider({})).toBe(false);
-    expect(
-      exposeFakeProvider({
-        APP_ENV: "local",
-        PLAYWRIGHT_TEST_AUTH: "1"
-      })
-    ).toBe(true);
+    expect(exposeFakeProvider({ AIQSA_TEST_MODE: "1" })).toBe(true);
     expect(exposeFakeProvider({ NODE_ENV: "test" })).toBe(false);
-    expect(exposeFakeProvider({ APP_ENV: "production", PLAYWRIGHT_TEST_AUTH: "1" })).toBe(false);
-    expect(exposeFakeProvider({ AIQSA_FAKE_PROVIDER: "1" })).toBe(true);
-    expect(exposeFakeProvider({ AIQSA_SHOW_FAKE_PROVIDER: "1" })).toBe(true);
+    expect(exposeFakeProvider({ AIQSA_TEST_MODE: "1", NODE_ENV: "production" })).toBe(false);
+    expect(exposeFakeProvider({ AIQSA_TEST_MODE: "true" })).toBe(false);
+    expect(exposeFakeProvider({ AIQSA_FAKE_PROVIDER: "1" })).toBe(false);
+    expect(exposeFakeProvider({ AIQSA_SHOW_FAKE_PROVIDER: "1" })).toBe(false);
   });
 
   it("filters models by adapter availability and fake-provider exposure", () => {

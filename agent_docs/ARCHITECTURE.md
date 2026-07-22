@@ -36,7 +36,7 @@ Compact semantic ownership:
 | Shared client-safe wire contracts | `lib/contracts/` |
 | Pure provider-neutral rules | `lib/domain/` |
 | Auth, persistence, providers, uploads, and runs | `lib/server/` |
-| Schema, migrations, and deterministic local seed | `prisma/` |
+| Schema, migrations, installation bootstrap, and deterministic test seed | `prisma/` |
 | Product and integration tests | colocated `*.test.*` plus `tests/e2e/` |
 | Small operational helpers | `scripts/` |
 | Current architecture/workflow and task ledgers | `agent_docs/` |
@@ -49,16 +49,17 @@ The stable dependency directions above are executable in `eslint.config.mjs`: co
 
 ## Runtime And Deployment Boundary
 
-Docker Compose is the supported local and single-host production topology:
+Docker Compose is the supported local and single-host installation topology:
 
-- `app` is the bind-mounted development/check service.
-- the optional production profile separates a one-shot non-root `prod-migrate-bootstrap` tools image from the small non-root `app-prod` standalone runtime. The tools image normally applies committed migrations and the fail-closed idempotent production bootstrap before the app becomes healthy, and is also the explicit command-override owner for manual/cron retention; the runtime contains neither source migrations nor Prisma CLI;
-- Postgres owns relational state;
-- MinIO/S3 owns private upload objects, with a filesystem fallback only when S3 configuration is absent.
+- default `docker-compose.yml` owns the persistent operator installation: a small non-root `app` standalone runtime, one-shot non-root `migrate-bootstrap` tools service, internal Postgres, and internal MinIO/bucket initialization;
+- the tools service applies committed migrations and the fail-closed idempotent installation bootstrap before the app becomes healthy, and is also the explicit command-override owner for manual/cron retention; the runtime contains neither migration source nor Prisma CLI;
+- named Postgres and MinIO volumes preserve relational state and private objects across container rebuilds and ordinary `git pull` plus `docker compose up -d --build` updates;
+- explicit `docker-compose.dev.yml` owns bind-mounted development and test execution, deterministic seed/auth/Fake QSA switches, and separate disposable volumes;
+- MinIO/S3 owns private upload objects, with a filesystem fallback only when S3 configuration is absent outside the bundled stack.
 
-Production profile credentials and exposure rules are owned by `ENV_VARIABLES.md` and `SECURITY.md`. Postgres and MinIO remain internal, while the only application publication is a resource-bounded loopback port behind the host TLS reverse proxy. Process liveness is separate from readiness: readiness also checks secure production configuration, Postgres, and the configured private bucket. `ops/backup/` owns the coordinated write-quiesced database/object backup plus guarded disposable-target restore, and `ops/nginx/` owns the SSE/upload-aware single-host proxy template.
+Configuration and exposure rules are owned by `ENV_VARIABLES.md` and `SECURITY.md`. The default app publication is loopback HTTP, so a clone can run without a domain, SMTP, OAuth, or reverse proxy. An exposed installation may place the same canonical stack behind the host TLS proxy without selecting another environment tier. Postgres and MinIO have no host publications. Process liveness is separate from readiness: readiness also checks explicit runtime security configuration, Postgres, and the configured private bucket. `ops/backup/` owns the coordinated write-quiesced database/object backup plus guarded disposable-target restore, and `ops/nginx/` owns the optional SSE/upload-aware single-host proxy template.
 
-Local verification uses the ordinary Compose services and may mutate or reset their shared development database and bucket. It has no disposable namespace, crash recovery, parallel-run, or local-data-preservation contract. This is an accepted developer-workflow tradeoff under ADR 0015, not production authority. Production state is protected by deployment credentials, pre-migration coordinated backups, committed `migrate deploy` migrations, the non-demo production bootstrap, guarded restore, and commit-tagged application/tools images. Quotas, broader resource controls, observability, and 50-user load evidence remain separate launch-scale work.
+Local verification always names `docker-compose.dev.yml` and may mutate or reset only that stack's development database and bucket. It has no crash recovery, parallel-run, or data-preservation contract. This is the accepted developer-workflow tradeoff under ADR 0015 as amended by ADR 0020; it grants no authority over the default operator installation. Installation state is protected by stable named volumes, pre-migration coordinated backups, committed `migrate deploy` migrations, the non-demo installation bootstrap, guarded restore, and optional commit-tagged application/tools images. Quotas, broader resource controls, observability, and 50-user load evidence remain separate launch-scale work.
 
 The current run-cancellation controller registry is process-local. Durable database status and the per-chat active-run uniqueness constraint survive restarts, but live abort ownership does not cross replicas. ADR 0005 owns that accepted limitation; multi-replica/HA work remains backlog scope rather than a reason to split the monolith now.
 

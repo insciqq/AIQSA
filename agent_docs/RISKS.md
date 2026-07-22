@@ -39,7 +39,7 @@
     - Default to Playwright CLI and inspect rendered UI only when the DOM/test output is insufficient.
 
 13. Schema drift can destroy data if migrations are bypassed.
-    - Persistent Postgres volumes must use a coordinated database/object backup followed by committed Prisma migrations and `prisma migrate deploy`; `prisma db push` is only acceptable for disposable scratch databases. The production bootstrap is not a replacement for migration rollback and must never be substituted with the demo seed.
+    - Persistent Postgres volumes must use a coordinated database/object backup followed by committed Prisma migrations and `prisma migrate deploy`; `prisma db push` is only acceptable for disposable scratch databases. The installation bootstrap is not a replacement for migration rollback and must never be substituted with the demo seed.
 
 14. Compose service exposure is easy to misapply.
-    - Use the named `app-prod` prod-profile path with explicit `AIQSA_PROD_*` credentials, loopback-only application publication, and the TLS proxy template for exposed installs; do not publish local-development Postgres/MinIO ports or reuse local placeholder datastore credentials on a VPS.
+    - The default stack is persistent and publishes only the application on `AIQSA_BIND_ADDRESS`; keep Postgres/MinIO internal and use the TLS proxy template for exposed installs. Run deterministic credentials, seed, Fake QSA, and host-published datastores only through `docker-compose.dev.yml`, never by adding those switches to the installation stack.

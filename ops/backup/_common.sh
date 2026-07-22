@@ -18,7 +18,7 @@ require_command() {
 }
 
 compose() {
-  docker compose --profile prod "$@"
+  docker compose "$@"
 }
 
 service_is_running() {

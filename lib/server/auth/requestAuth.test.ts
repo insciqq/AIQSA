@@ -13,7 +13,7 @@ import { createMemoryAuthSessionStore, createTestUser } from "./testRequestAuth"
 
 const config = getAuthConfig({
   AIQSA_BOOTSTRAP_AUTH_TOKEN: TEST_AUTH_TOKEN,
-  AUTH_SESSION_SECRET: "secret"
+  AIQSA_AUTH_SESSION_SECRET: "secret"
 });
 
 describe("DB-backed request auth", () => {

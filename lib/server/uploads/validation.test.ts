@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { validateUpload } from "./validation";
+import { defaultUploadMaxBytes, validateUpload } from "./validation";
 
 const magicFixtures = [
   {
@@ -41,6 +41,12 @@ const magicFixtures = [
 ] as const;
 
 describe("upload validation", () => {
+  it("reads the canonical upload-size setting and falls back safely", () => {
+    expect(defaultUploadMaxBytes({ AIQSA_UPLOAD_MAX_BYTES: "1048576" })).toBe(1_048_576);
+    expect(defaultUploadMaxBytes({ AIQSA_UPLOAD_MAX_BYTES: "invalid" })).toBe(25_000_000);
+    expect(defaultUploadMaxBytes({})).toBe(25_000_000);
+  });
+
   it("accepts allowed PDF, image, and text document types by MIME and extension", () => {
     expect(
       validateUpload({

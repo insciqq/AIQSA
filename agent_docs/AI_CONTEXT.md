@@ -18,7 +18,7 @@ The shipped product is a conversation-first workspace for explicit provider/mode
 - React, Tailwind CSS, Zustand, and `lucide-react` in the browser.
 - Postgres/Prisma plus S3-compatible storage, local MinIO, and a filesystem fallback.
 - Fake, OpenAI Responses, Anthropic Messages, and OpenRouter adapters behind server-only provider contracts.
-- Docker Compose for runtime/checks; Vitest, Testing Library, and Playwright CLI for verification.
+- Default Docker Compose for the persistent installation; `docker-compose.dev.yml`, Vitest, Testing Library, and Playwright CLI for isolated development verification.
 
 ## Runtime Shape
 
@@ -41,7 +41,7 @@ The shipped product is a conversation-first workspace for explicit provider/mode
 | `FRONTEND.md` | UI capability, behavior, state ownership, accessibility, responsive composition, and admin workflows. |
 | `DESIGN_SYSTEM.md` | Palette/tokens, typography, geometry, density, visual hierarchy, and visual recipes. |
 | `SECURITY.md` | Auth/threat boundaries, origin/session hardening, secret/exposure rules, and dependency-security policy. |
-| `ENV_VARIABLES.md` | Complete environment inventory, defaults, switch semantics, and production configuration. |
+| `ENV_VARIABLES.md` | Complete environment inventory, defaults, switch semantics, and installation configuration. |
 | `PROVIDER_API_NOTES.md` | Externally verified provider constraints, wire quirks, verification dates, and provider-specific caveats. |
 | `TESTING.md` | Focused iteration, the one routine Compose check, destructive local E2E, task-specific checks, and test-authoring rules. |
 

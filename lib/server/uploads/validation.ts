@@ -100,7 +100,7 @@ export function matchesDeclaredUploadType(mimeType: string, bytes: Buffer | Uint
 }
 
 export function defaultUploadMaxBytes(env: Record<string, string | undefined> = process.env): number {
-  const parsed = Number(env.UPLOAD_MAX_BYTES);
+  const parsed = Number(env.AIQSA_UPLOAD_MAX_BYTES);
 
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 25_000_000;
 }

@@ -2,7 +2,7 @@ import { defaultProviderModels, defaultSearchStrategies, fallbackParameterContro
 import type { ProviderModelCatalogEntry, SearchStrategyCatalogEntry } from "@/lib/domain/catalog";
 import type { ResolvedEntitlements } from "@/lib/server/auth/entitlements";
 import { loadEntitlementsForUser } from "@/lib/server/auth/dbEntitlements";
-import { isTestAuthEnabled } from "@/lib/server/auth/config";
+import { isTestModeAllowedEnv } from "@/lib/server/auth/csrf";
 import type { CatalogData } from "@/lib/server/catalog/currentUserCatalog";
 import { createProviderAdaptersFromEnv, createSearchProviderAdaptersFromEnv } from "@/lib/server/providers/registry";
 import type { PrismaClient, ProviderModel, SearchStrategy } from "@prisma/client";
@@ -41,11 +41,7 @@ export type CatalogDataLoaderDeps = {
 };
 
 export function exposeFakeProvider(env: Record<string, string | undefined> = process.env): boolean {
-  return (
-    isTestAuthEnabled(env) ||
-    env.AIQSA_FAKE_PROVIDER === "1" ||
-    env.AIQSA_SHOW_FAKE_PROVIDER === "1"
-  );
+  return isTestModeAllowedEnv(env);
 }
 
 export function providerModelToCatalogEntry(model: ProviderModel): ProviderModelCatalogEntry {

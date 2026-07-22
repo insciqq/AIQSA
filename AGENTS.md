@@ -44,19 +44,13 @@ When docs conflict, use this precedence: `agent_docs/CRITICAL_INVARIANTS.md` > a
 
 ## Repository State
 
-This workspace may contain a read-only `.git/` mount created by the agent sandbox. If `.repo.git/` exists, use it as the repository gitdir:
-
-```bash
-git --git-dir=.repo.git --work-tree=. status --short
-```
-
-If no `.repo.git/` exists and `.git/` is a normal writable Git directory, run:
+Inspect the normal repository worktree before making changes:
 
 ```bash
 git status --short
 ```
 
-If git commands report that this is not a repository, record that in the final response and continue without git synchronization.
+If Git reports that this is not a repository, record that in the final response and continue without Git synchronization.
 
 ## Product And Implementation Contract
 
@@ -65,7 +59,7 @@ If git commands report that this is not a repository, record that in the final r
 - Choose the smallest change that leaves the app runnable or clearly verifiable.
 - Prefer existing code and local docs over inventing new scope.
 - Make conservative decisions without blocking on taste questions.
-- Use Docker Compose for app checks.
+- Use `docker-compose.dev.yml` for application checks; never run destructive development or test workflows against the default persistent installation.
 - Update `agent_docs` whenever architecture, env, testing, workflow, or product behavior changes.
 - Keep task state in the Markdown ledgers through the repository `task:*` commands; move only verified significant completion notes to `agent_docs/done_tasks/`.
 - Delete stale harness material only when it is not part of the active development workflow.

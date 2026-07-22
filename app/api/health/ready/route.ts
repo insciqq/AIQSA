@@ -1,7 +1,7 @@
 import { prisma } from "@/lib/server/prisma";
 import {
   checkS3Readiness,
-  productionRuntimeIssues
+  runtimeConfigurationIssues
 } from "@/lib/server/health/readiness";
 
 export const dynamic = "force-dynamic";
@@ -18,7 +18,7 @@ function unavailable() {
 }
 
 export async function GET() {
-  if (productionRuntimeIssues(process.env).length > 0) {
+  if (runtimeConfigurationIssues(process.env).length > 0) {
     return unavailable();
   }
 

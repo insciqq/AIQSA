@@ -13,9 +13,9 @@ usage() {
   cat <<'USAGE'
 Usage: ops/backup/create.sh DESTINATION_DIRECTORY
 
-Create a coordinated AIQSA production backup while app-prod is stopped. The
-script restarts app-prod only when it was running before the backup began.
-This assumes app-prod is the only writer to its PostgreSQL database and bucket.
+Create a coordinated AIQSA backup while app is stopped. The script restarts
+app only when it was running before the backup began. This assumes app is the
+only writer to its PostgreSQL database and bucket.
 
 The destination receives one mode-0700 bundle containing:
   manifest.env   privacy-safe format/runtime metadata
@@ -23,10 +23,10 @@ The destination receives one mode-0700 bundle containing:
   objects.tar    private MinIO bucket snapshot
   SHA256SUMS     checksums for all three artifacts
 
-The production Compose profile and its required AIQSA_PROD_* environment must
-already be configured. The script never removes Docker volumes or source data.
-Keep completed bundles on encrypted, access-restricted storage and copy them
-off-host. Retention and scheduling are intentionally operator-owned.
+The normal Compose installation and its required environment must already be
+configured. The script never removes Docker volumes or source data. Keep
+completed bundles on encrypted, access-restricted storage and copy them off-host.
+Retention and scheduling are intentionally operator-owned.
 USAGE
 }
 
@@ -54,8 +54,14 @@ destination="$(cd -- "$destination" && pwd -P)"
 
 cd "$REPOSITORY_ROOT"
 
-service_is_running postgres-prod || die "postgres-prod must be running before backup."
-service_is_running minio-prod || die "minio-prod must be running before backup."
+service_is_running postgres || die "postgres must be running before backup."
+service_is_running minio || die "minio must be running before backup."
+if ! compose run --rm --no-deps --entrypoint /bin/sh minio-init -ceu '
+  : "${S3_ENDPOINT:?}"
+  [ "$S3_ENDPOINT" = http://minio:9000 ]
+' >/dev/null 2>&1; then
+  die "This backup helper supports only the bundled MinIO endpoint; no service was stopped."
+fi
 
 created_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 bundle_name="aiqsa-backup-$(date -u +%Y%m%dT%H%M%SZ)"
@@ -79,10 +85,10 @@ cleanup() {
   fi
 
   if [[ "$app_was_running" -eq 1 ]]; then
-    if compose start app-prod >/dev/null 2>&1 && service_is_running app-prod; then
-      info "app-prod restarted."
+    if compose start app >/dev/null 2>&1 && service_is_running app; then
+      info "app restarted."
     else
-      info "Error: backup ended but app-prod could not be restarted."
+      info "Error: backup ended but app could not be restarted."
       status=1
     fi
   fi
@@ -94,19 +100,19 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 trap 'exit 129' HUP
 
-if service_is_running app-prod; then
+if service_is_running app; then
   app_was_running=1
-  info "Stopping app-prod for a write-quiesced backup..."
-  compose stop app-prod >/dev/null
+  info "Stopping app for a write-quiesced backup..."
+  compose stop app >/dev/null
 fi
 
-if service_is_running app-prod; then
-  die "app-prod is still running; backup was not started."
+if service_is_running app; then
+  die "app is still running; backup was not started."
 fi
 
 info "Creating PostgreSQL dump..."
 postgres_version="$({
-  compose exec -T postgres-prod sh -ceu '
+  compose exec -T postgres sh -ceu '
     : "${POSTGRES_DB:?}"
     : "${POSTGRES_USER:?}"
     : "${POSTGRES_PASSWORD:?}"
@@ -120,7 +126,7 @@ postgres_version="${postgres_version//$'\r'/}"
 postgres_version="${postgres_version//$'\n'/}"
 [[ "$postgres_version" =~ ^[0-9]{5,6}$ ]] || die "PostgreSQL returned an invalid server version."
 
-if ! compose exec -T postgres-prod sh -ceu '
+if ! compose exec -T postgres sh -ceu '
   : "${POSTGRES_DB:?}"
   : "${POSTGRES_USER:?}"
   : "${POSTGRES_PASSWORD:?}"
@@ -139,19 +145,21 @@ if ! compose run --rm --no-deps \
   --env HOME=/tmp \
   --volume "$objects_directory:/snapshot" \
   --entrypoint /bin/sh \
-  minio-prod-init -ceu '
+  minio-init -ceu '
     umask 077
-    : "${AIQSA_PROD_S3_ACCESS_KEY_ID:?}"
-    : "${AIQSA_PROD_S3_BUCKET:?}"
-    : "${AIQSA_PROD_S3_SECRET_ACCESS_KEY:?}"
-    mc alias set --quiet source http://minio-prod:9000 \
-      "$AIQSA_PROD_S3_ACCESS_KEY_ID" "$AIQSA_PROD_S3_SECRET_ACCESS_KEY" \
+    : "${S3_ACCESS_KEY_ID:?}"
+    : "${S3_BUCKET:?}"
+    : "${S3_ENDPOINT:?}"
+    : "${S3_SECRET_ACCESS_KEY:?}"
+    [ "$S3_ENDPOINT" = http://minio:9000 ] || exit 19
+    mc alias set --quiet source "$S3_ENDPOINT" \
+      "$S3_ACCESS_KEY_ID" "$S3_SECRET_ACCESS_KEY" \
       >/dev/null 2>&1 || exit 20
-    mc stat "source/$AIQSA_PROD_S3_BUCKET" >/dev/null 2>&1 || exit 21
-    mc mirror --quiet --overwrite "source/$AIQSA_PROD_S3_BUCKET" /snapshot \
+    mc stat "source/$S3_BUCKET" >/dev/null 2>&1 || exit 21
+    mc mirror --quiet --overwrite "source/$S3_BUCKET" /snapshot \
       >/dev/null 2>&1 || exit 22
   ' >/dev/null 2>&1; then
-  die "Private object snapshot failed; no object names were logged and no backup bundle was published."
+  die "Private object snapshot failed. This helper supports only the bundled MinIO endpoint; no object names were logged and no backup bundle was published."
 fi
 
 if find "$objects_directory" -type l -print -quit | grep -q .; then

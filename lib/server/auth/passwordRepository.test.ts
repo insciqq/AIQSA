@@ -155,8 +155,8 @@ describe("Prisma password reset completion", () => {
     const POST = createPasswordLoginHandler({
       getConfig: () =>
         getAuthConfig({
-          APP_ENV: "local",
-          AUTH_SESSION_SECRET: "password-race-test-secret"
+          AIQSA_APP_BASE_URL: "http://localhost:3000",
+          AIQSA_AUTH_SESSION_SECRET: "password-race-test-secret"
         }),
       repository,
       verifyPassword: async () => {

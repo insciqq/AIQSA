@@ -18,7 +18,7 @@ EXPOSE 3000
 
 CMD ["npm", "run", "dev"]
 
-FROM ${NODE_IMAGE} AS prod-deps
+FROM ${NODE_IMAGE} AS runtime-deps
 
 WORKDIR /app
 
@@ -33,14 +33,14 @@ COPY prisma ./prisma
 RUN if [ -f package-lock.json ]; then npm ci; else npm install; fi \
   && npx prisma generate
 
-FROM prod-deps AS prod-build
+FROM runtime-deps AS runtime-build
 
 ENV NODE_ENV=production
 
 COPY . .
 RUN npm run build
 
-FROM ${NODE_IMAGE} AS prod
+FROM ${NODE_IMAGE} AS runtime
 
 WORKDIR /app
 
@@ -53,9 +53,9 @@ RUN apt-get update \
   && apt-get install -y --no-install-recommends ca-certificates openssl \
   && rm -rf /var/lib/apt/lists/*
 
-COPY --chown=node:node --from=prod-build /app/.next/standalone ./
-COPY --chown=node:node --from=prod-build /app/.next/static ./.next/static
-COPY --chown=node:node --from=prod-build /app/public ./public
+COPY --chown=node:node --from=runtime-build /app/.next/standalone ./
+COPY --chown=node:node --from=runtime-build /app/.next/static ./.next/static
+COPY --chown=node:node --from=runtime-build /app/public ./public
 
 USER node
 
@@ -66,7 +66,7 @@ CMD ["node", "server.js"]
 # Retain only the four direct tools roots and let npm preserve their complete
 # locked transitive closure. Deriving their versions from the npm-ci result
 # keeps package-lock.json authoritative without naming transitive packages.
-FROM prod-deps AS prod-tools-deps
+FROM runtime-deps AS tools-deps
 
 RUN PRISMA_VERSION="$(node -p "require('./node_modules/prisma/package.json').version")" \
   && PRISMA_CLIENT_VERSION="$(node -p "require('./node_modules/@prisma/client/package.json').version")" \
@@ -80,10 +80,10 @@ RUN PRISMA_VERSION="$(node -p "require('./node_modules/prisma/package.json').ver
     "dependencies.tsx=$TSX_VERSION" \
   && npm prune --omit=dev --ignore-scripts --no-audit --no-fund
 
-# Prisma migrations and the production bootstrap deliberately live outside the
+# Prisma migrations and the installation bootstrap deliberately live outside the
 # long-running application image. Copying the pruned tree into a clean stage
 # prevents deleted build dependencies from remaining in lower image layers.
-FROM ${NODE_IMAGE} AS prod-tools
+FROM ${NODE_IMAGE} AS tools
 
 WORKDIR /app
 
@@ -93,9 +93,9 @@ RUN apt-get update \
   && apt-get install -y --no-install-recommends ca-certificates openssl \
   && rm -rf /var/lib/apt/lists/*
 
-COPY --chown=node:node --from=prod-tools-deps /app/node_modules ./node_modules
+COPY --chown=node:node --from=tools-deps /app/node_modules ./node_modules
 COPY --chown=node:node . .
 
 USER node
 
-CMD ["sh", "-c", "npm run db:migrate:deploy && npm run db:bootstrap:production"]
+CMD ["sh", "-c", "npm run db:migrate:deploy && npm run db:bootstrap"]

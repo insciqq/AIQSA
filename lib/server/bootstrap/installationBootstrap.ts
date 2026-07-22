@@ -1,3 +1,4 @@
+import { randomUUID as randomNodeUuid } from "node:crypto";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { defaultProviderModels, defaultSearchStrategies } from "@/lib/domain/catalog";
 import {
@@ -7,7 +8,7 @@ import {
   validatePassword
 } from "@/lib/server/auth/password";
 
-const BOOTSTRAP_LOCK_KEY = "aiqsa:production-bootstrap:v1";
+const BOOTSTRAP_LOCK_KEY = "aiqsa:installation-bootstrap:v1";
 const INITIAL_ADMIN_GROUP_NAME = "private-operators";
 const INITIAL_PROMPT_NAME = "Helpful Assistant";
 const INITIAL_SYSTEM_PROMPT =
@@ -15,20 +16,20 @@ const INITIAL_SYSTEM_PROMPT =
 const MAX_DISPLAY_NAME_LENGTH = 200;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-export type ProductionBootstrapInput = {
+export type InstallationBootstrapInput = {
   displayName: string;
   email: string;
   password?: string;
-  userId: string;
+  userId?: string;
 };
 
-export type ProductionBootstrapResult = {
+export type InstallationBootstrapResult = {
   catalogModelCount: number;
   catalogSearchStrategyCount: number;
   status: "already_adopted" | "created";
 };
 
-export type ProductionBootstrapErrorCode =
+export type InstallationBootstrapErrorCode =
   | "display_name_invalid"
   | "email_invalid"
   | "fresh_database_password_required"
@@ -39,25 +40,30 @@ export type ProductionBootstrapErrorCode =
   | "unsafe_nonempty_database"
   | "user_id_invalid";
 
-export class ProductionBootstrapError extends Error {
-  readonly code: ProductionBootstrapErrorCode;
+export class InstallationBootstrapError extends Error {
+  readonly code: InstallationBootstrapErrorCode;
 
-  constructor(code: ProductionBootstrapErrorCode, message: string) {
+  constructor(code: InstallationBootstrapErrorCode, message: string) {
     super(message);
     this.code = code;
-    this.name = "ProductionBootstrapError";
+    this.name = "InstallationBootstrapError";
   }
 }
 
-type ProductionBootstrapDependencies = {
+type InstallationBootstrapDependencies = {
   hashPassword?: (password: string) => Promise<string>;
   now?: () => Date;
+  randomUUID?: () => string;
 };
 
-type ValidatedProductionBootstrapInput = {
+type ValidatedInstallationBootstrapInput = {
   displayName: string;
   email: string;
   password?: string;
+  userId?: string;
+};
+
+type ResolvedInstallationBootstrapInput = Omit<ValidatedInstallationBootstrapInput, "userId"> & {
   userId: string;
 };
 
@@ -83,51 +89,52 @@ function requiredEnvironmentValue(
   const value = env[name]?.trim();
 
   if (!value) {
-    throw new ProductionBootstrapError(
+    throw new InstallationBootstrapError(
       "required_environment_missing",
-      `${name} is required for the production bootstrap.`
+      `${name} is required for installation bootstrap.`
     );
   }
 
   return value;
 }
 
-export function productionBootstrapInputFromEnv(
+export function installationBootstrapInputFromEnv(
   env: Record<string, string | undefined> = process.env
-): ProductionBootstrapInput {
+): InstallationBootstrapInput {
   const password = env.AIQSA_INITIAL_ADMIN_PASSWORD;
+  const userId = env.AIQSA_INITIAL_ADMIN_USER_ID?.trim();
 
   return {
-    displayName: requiredEnvironmentValue(env, "AIQSA_INITIAL_ADMIN_DISPLAY_NAME"),
+    displayName: env.AIQSA_INITIAL_ADMIN_DISPLAY_NAME?.trim() || "Administrator",
     email: requiredEnvironmentValue(env, "AIQSA_INITIAL_ADMIN_EMAIL"),
     ...(password ? { password } : {}),
-    userId: requiredEnvironmentValue(env, "AIQSA_INITIAL_ADMIN_USER_ID")
+    ...(userId ? { userId } : {})
   };
 }
 
-export function validateProductionBootstrapInput(
-  input: ProductionBootstrapInput
-): ValidatedProductionBootstrapInput {
+export function validateInstallationBootstrapInput(
+  input: InstallationBootstrapInput
+): ValidatedInstallationBootstrapInput {
   const email = normalizeAuthEmail(input.email);
   const displayName = input.displayName.trim();
-  const userId = input.userId.trim();
+  const userId = input.userId?.trim();
 
   if (!isPlausibleEmail(email)) {
-    throw new ProductionBootstrapError(
+    throw new InstallationBootstrapError(
       "email_invalid",
       "AIQSA_INITIAL_ADMIN_EMAIL must be a valid email address."
     );
   }
 
   if (!displayName || displayName.length > MAX_DISPLAY_NAME_LENGTH) {
-    throw new ProductionBootstrapError(
+    throw new InstallationBootstrapError(
       "display_name_invalid",
       `AIQSA_INITIAL_ADMIN_DISPLAY_NAME must contain 1-${MAX_DISPLAY_NAME_LENGTH} characters.`
     );
   }
 
-  if (!UUID_PATTERN.test(userId)) {
-    throw new ProductionBootstrapError(
+  if (userId && !UUID_PATTERN.test(userId)) {
+    throw new InstallationBootstrapError(
       "user_id_invalid",
       "AIQSA_INITIAL_ADMIN_USER_ID must be a canonical UUID."
     );
@@ -140,7 +147,7 @@ export function validateProductionBootstrapInput(
       const passwordErrorCode =
         passwordError === "password_too_long" ? "password_too_long" : "password_too_short";
 
-      throw new ProductionBootstrapError(
+      throw new InstallationBootstrapError(
         passwordErrorCode,
         `AIQSA_INITIAL_ADMIN_PASSWORD failed validation (${passwordError}).`
       );
@@ -151,7 +158,7 @@ export function validateProductionBootstrapInput(
     displayName,
     email,
     ...(input.password !== undefined ? { password: input.password } : {}),
-    userId
+    ...(userId ? { userId } : {})
   };
 }
 
@@ -197,9 +204,9 @@ async function hasApplicationRows(tx: Prisma.TransactionClient): Promise<boolean
   const nonempty = rows[0]?.nonempty;
 
   if (nonempty !== "true" && nonempty !== "false") {
-    throw new ProductionBootstrapError(
+    throw new InstallationBootstrapError(
       "preflight_failed",
-      "Production bootstrap could not determine whether the application database is empty."
+      "Installation bootstrap could not determine whether the application database is empty."
     );
   }
 
@@ -209,36 +216,28 @@ async function hasApplicationRows(tx: Prisma.TransactionClient): Promise<boolean
 function isExactAdoptedIdentity(input: {
   identity: AdoptedPasswordIdentity | null;
   normalizedEmail: string;
+  requestedUserId?: string;
   user: AdoptedUser | null;
-  userId: string;
 }): boolean {
   return Boolean(
-    input.user?.id === input.userId &&
+    input.identity &&
+      input.user?.id === input.identity.userId &&
       input.user.email &&
       normalizeAuthEmail(input.user.email) === input.normalizedEmail &&
-      input.identity?.userId === input.userId &&
       input.identity.normalizedEmail === input.normalizedEmail &&
       input.identity.providerAccountId === input.normalizedEmail &&
       input.identity.emailVerifiedAt &&
-      input.identity.passwordHash
+      input.identity.passwordHash &&
+      (!input.requestedUserId || input.identity.userId === input.requestedUserId)
   );
 }
 
 async function inspectBootstrapState(
   tx: Prisma.TransactionClient,
-  input: ValidatedProductionBootstrapInput
-): Promise<{ adopted: boolean; nonempty: boolean }> {
-  const [nonempty, user, identity] = await Promise.all([
+  input: ValidatedInstallationBootstrapInput
+): Promise<{ adoptedUserId: string | null; nonempty: boolean }> {
+  const [nonempty, identity] = await Promise.all([
     hasApplicationRows(tx),
-    tx.user.findUnique({
-      select: {
-        email: true,
-        id: true
-      },
-      where: {
-        id: input.userId
-      }
-    }),
     tx.authIdentity.findFirst({
       select: {
         emailVerifiedAt: true,
@@ -250,19 +249,30 @@ async function inspectBootstrapState(
       where: {
         normalizedEmail: input.email,
         provider: "password",
-        providerAccountId: input.email,
-        userId: input.userId
+        providerAccountId: input.email
       }
     })
   ]);
+  const user = identity
+    ? await tx.user.findUnique({
+        select: {
+          email: true,
+          id: true
+        },
+        where: {
+          id: identity.userId
+        }
+      })
+    : null;
+  const adopted = isExactAdoptedIdentity({
+    identity,
+    normalizedEmail: input.email,
+    requestedUserId: input.userId,
+    user
+  });
 
   return {
-    adopted: isExactAdoptedIdentity({
-      identity,
-      normalizedEmail: input.email,
-      user,
-      userId: input.userId
-    }),
+    adoptedUserId: adopted && identity ? identity.userId : null,
     nonempty
   };
 }
@@ -335,7 +345,7 @@ async function synchronizeCodeOwnedCatalog(tx: Prisma.TransactionClient): Promis
 
 async function createInitialAdminFoundation(
   tx: Prisma.TransactionClient,
-  input: ValidatedProductionBootstrapInput,
+  input: ResolvedInstallationBootstrapInput,
   passwordHash: string,
   now: Date
 ): Promise<void> {
@@ -419,35 +429,36 @@ async function createInitialAdminFoundation(
   });
 }
 
-export async function bootstrapProductionDatabase(
+export async function bootstrapInstallationDatabase(
   prisma: PrismaClient,
-  rawInput: ProductionBootstrapInput,
-  dependencies: ProductionBootstrapDependencies = {}
-): Promise<ProductionBootstrapResult> {
-  const input = validateProductionBootstrapInput(rawInput);
+  rawInput: InstallationBootstrapInput,
+  dependencies: InstallationBootstrapDependencies = {}
+): Promise<InstallationBootstrapResult> {
+  const input = validateInstallationBootstrapInput(rawInput);
   const hashPassword = dependencies.hashPassword ?? hashAuthPassword;
   const now = dependencies.now ?? (() => new Date());
+  const randomUUID = dependencies.randomUUID ?? randomNodeUuid;
 
   return prisma.$transaction(
     async (tx) => {
       await lockBootstrapTransaction(tx);
       const state = await inspectBootstrapState(tx, input);
 
-      if (state.nonempty && !state.adopted) {
-        throw new ProductionBootstrapError(
+      if (state.nonempty && !state.adoptedUserId) {
+        throw new InstallationBootstrapError(
           "unsafe_nonempty_database",
-          "Refusing production bootstrap: the database is nonempty and does not contain the exact adopted initial-admin identity."
+          "Refusing installation bootstrap: the database is nonempty and does not contain the adopted initial-admin password identity."
         );
       }
 
-      if (!state.nonempty && state.adopted) {
-        throw new ProductionBootstrapError(
+      if (!state.nonempty && state.adoptedUserId) {
+        throw new InstallationBootstrapError(
           "preflight_failed",
-          "Production bootstrap found an inconsistent empty-database preflight result."
+          "Installation bootstrap found an inconsistent empty-database preflight result."
         );
       }
 
-      if (state.adopted) {
+      if (state.adoptedUserId) {
         await synchronizeCodeOwnedCatalog(tx);
 
         return {
@@ -458,15 +469,23 @@ export async function bootstrapProductionDatabase(
       }
 
       if (!input.password) {
-        throw new ProductionBootstrapError(
+        throw new InstallationBootstrapError(
           "fresh_database_password_required",
-          "AIQSA_INITIAL_ADMIN_PASSWORD is required for a fresh production database."
+          "AIQSA_INITIAL_ADMIN_PASSWORD is required for a fresh database."
+        );
+      }
+
+      const userId = input.userId ?? randomUUID();
+      if (!UUID_PATTERN.test(userId)) {
+        throw new InstallationBootstrapError(
+          "preflight_failed",
+          "Installation bootstrap could not generate a valid initial-admin UUID."
         );
       }
 
       const passwordHash = await hashPassword(input.password);
       await synchronizeCodeOwnedCatalog(tx);
-      await createInitialAdminFoundation(tx, input, passwordHash, now());
+      await createInitialAdminFoundation(tx, { ...input, userId }, passwordHash, now());
 
       return {
         catalogModelCount: defaultProviderModels.length,
