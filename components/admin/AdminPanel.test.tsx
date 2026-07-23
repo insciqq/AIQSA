@@ -563,6 +563,7 @@ describe("AdminPanel", () => {
     expect(screen.getByRole("tab", { name: "Usage" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Groups" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Model access" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "MCP servers" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Invites" })).toHaveAttribute("aria-selected", "true");
     expect(screen.getByRole("tab", { name: "Invites" })).toHaveAttribute("tabindex", "0");
     expect(screen.getByRole("tab", { name: "Users" })).toHaveAttribute("tabindex", "-1");

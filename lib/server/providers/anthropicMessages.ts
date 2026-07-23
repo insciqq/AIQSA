@@ -6,6 +6,7 @@ import {
   type AnthropicEffort,
   type AnthropicMessagesParams
 } from "../../domain/providerParams";
+import { anthropicMessagesToolBridge } from "../tools/bridges";
 import { conversationPreview, textConversationForRequest } from "./context";
 import {
   ProviderResponseTooLargeError,
@@ -38,6 +39,11 @@ type BuildOptions = {
 type AnthropicRequestMessage = {
   content: Record<string, unknown>[];
   role: "assistant" | "user";
+};
+
+type AnthropicContentBlockAccumulator = {
+  block: Record<string, unknown>;
+  inputJson: string;
 };
 
 function numberValue(value: unknown): number {
@@ -214,6 +220,32 @@ function mergeAdjacentAnthropicMessages(messages: AnthropicRequestMessage[]): An
   return merged;
 }
 
+function anthropicProviderToolMessages(messages: unknown[] | undefined): AnthropicRequestMessage[] {
+  return (messages ?? []).flatMap((message): AnthropicRequestMessage[] => {
+    const record = objectValue(message);
+    if (!record || (record.role !== "assistant" && record.role !== "user")) {
+      return [];
+    }
+
+    const content = Array.isArray(record.content)
+      ? record.content.flatMap((value) => {
+          const block = objectValue(value);
+          return block ? [block] : [];
+        })
+      : [];
+    if (content.length === 0) {
+      return [];
+    }
+
+    return [
+      {
+        content,
+        role: record.role
+      }
+    ];
+  });
+}
+
 function buildThinking(params: AnthropicMessagesParams): Record<string, unknown> | undefined {
   if (!params.thinking.enabled) {
     return undefined;
@@ -247,18 +279,22 @@ export function buildAnthropicMessagesRequest(
   const params = normalizeAnthropicMessagesParams(request.params);
   const conversation = textConversationForRequest(request);
   const messages = mergeAdjacentAnthropicMessages(
-    conversation.map((message, index) => ({
-      content:
-        index === conversation.length - 1 && message.role === "user"
-          ? buildUserContent(request, {
-              maxAttachmentTextChars: options.maxAttachmentTextChars,
-              redactFiles: options.redactFiles ?? false,
-              redactImages: options.redactImages ?? false
-            })
-          : [textContentBlock(message.content)],
-      role: message.role
-    }))
+    [
+      ...conversation.map((message, index) => ({
+        content:
+          index === conversation.length - 1 && message.role === "user"
+            ? buildUserContent(request, {
+                maxAttachmentTextChars: options.maxAttachmentTextChars,
+                redactFiles: options.redactFiles ?? false,
+                redactImages: options.redactImages ?? false
+              })
+            : [textContentBlock(message.content)],
+        role: message.role
+      })),
+      ...anthropicProviderToolMessages(request.providerToolMessages)
+    ]
   );
+  const tools = (request.tools ?? []).map((tool) => anthropicMessagesToolBridge.serializeTool(tool).tool);
   const body: Record<string, unknown> = {
     max_tokens: params.maxTokens,
     messages,
@@ -282,6 +318,16 @@ export function buildAnthropicMessagesRequest(
   body.output_config = {
     effort: params.outputConfig.effort
   };
+
+  if (tools.length > 0) {
+    body.tools = tools;
+    body.tool_choice = {
+      type: request.toolChoice ?? "auto",
+      ...(request.toolChoice !== "none" && request.parallelToolCalls !== true
+        ? { disable_parallel_tool_use: true }
+        : {})
+    };
+  }
 
   return body;
 }
@@ -337,6 +383,34 @@ function messageIdFromStart(event: AnthropicStreamEvent): string | undefined {
   return stringValue(objectValue(event.message)?.id);
 }
 
+function contentBlockIndex(event: AnthropicStreamEvent): number | null {
+  return typeof event.index === "number" && Number.isInteger(event.index) && event.index >= 0
+    ? event.index
+    : null;
+}
+
+function appendStringField(block: Record<string, unknown>, field: string, value: string): void {
+  block[field] = `${stringValue(block[field]) ?? ""}${value}`;
+}
+
+function finalizeAnthropicToolInput(accumulator: AnthropicContentBlockAccumulator): void {
+  if (!accumulator.inputJson) {
+    return;
+  }
+
+  let input: unknown;
+  try {
+    input = JSON.parse(accumulator.inputJson) as unknown;
+  } catch {
+    throw new Error("anthropic_tool_input_invalid");
+  }
+
+  if (!objectValue(input)) {
+    throw new Error("anthropic_tool_input_invalid");
+  }
+  accumulator.block.input = input;
+}
+
 function responsePreview(input: {
   finalText: string;
   messageId?: string;
@@ -384,6 +458,8 @@ export function createAnthropicMessagesAdapter(options: AnthropicMessagesAdapter
       let model: string | undefined;
       let stopReason: string | undefined;
       let terminalSeen = false;
+      const contentBlocks = new Map<number, AnthropicContentBlockAccumulator>();
+      const openContentBlocks = new Set<number>();
       let usage: ModelRunUsage = {
         inputTokens: 0,
         outputTokens: 0,
@@ -432,11 +508,42 @@ export function createAnthropicMessagesAdapter(options: AnthropicMessagesAdapter
           continue;
         }
 
+        if (type === "content_block_start") {
+          const index = contentBlockIndex(event);
+          const contentBlock = objectValue(event.content_block);
+          if (index === null || !contentBlock) {
+            throw new Error("anthropic_stream_truncated");
+          }
+
+          const block = { ...contentBlock };
+          contentBlocks.set(index, {
+            block,
+            inputJson: ""
+          });
+          openContentBlocks.add(index);
+
+          if (block.type === "text" && typeof block.text === "string" && block.text) {
+            finalText += block.text;
+            yield {
+              data: {
+                delta: block.text
+              },
+              type: "token"
+            };
+          }
+          continue;
+        }
+
         if (type === "content_block_delta") {
           const delta = objectValue(event.delta);
+          const index = contentBlockIndex(event);
+          const accumulator = index === null ? undefined : contentBlocks.get(index);
 
           if (delta?.type === "text_delta" && typeof delta.text === "string") {
             finalText += delta.text;
+            if (accumulator) {
+              appendStringField(accumulator.block, "text", delta.text);
+            }
             yield {
               data: {
                 delta: delta.text
@@ -446,6 +553,9 @@ export function createAnthropicMessagesAdapter(options: AnthropicMessagesAdapter
           }
 
           if (delta?.type === "thinking_delta" && typeof delta.thinking === "string") {
+            if (accumulator) {
+              appendStringField(accumulator.block, "thinking", delta.thinking);
+            }
             yield {
               data: {
                 artifactType: "reasoning",
@@ -458,16 +568,29 @@ export function createAnthropicMessagesAdapter(options: AnthropicMessagesAdapter
           }
 
           if (delta?.type === "input_json_delta" && typeof delta.partial_json === "string") {
-            yield {
-              data: {
-                artifactType: "summary",
-                payload: {
-                  partialJson: delta.partial_json,
-                  providerEvent: type
-                }
-              },
-              type: "artifact"
-            };
+            if (!accumulator || accumulator.block.type !== "tool_use") {
+              throw new Error("anthropic_stream_truncated");
+            }
+            accumulator.inputJson += delta.partial_json;
+          }
+
+          if (delta?.type === "signature_delta" && typeof delta.signature === "string" && accumulator) {
+            appendStringField(accumulator.block, "signature", delta.signature);
+          }
+          continue;
+        }
+
+        if (type === "content_block_stop") {
+          const index = contentBlockIndex(event);
+          if (index === null) {
+            throw new Error("anthropic_stream_truncated");
+          }
+          const accumulator = contentBlocks.get(index);
+          if (!accumulator || !openContentBlocks.delete(index)) {
+            throw new Error("anthropic_stream_truncated");
+          }
+          if (accumulator.block.type === "tool_use") {
+            finalizeAnthropicToolInput(accumulator);
           }
           continue;
         }
@@ -486,7 +609,7 @@ export function createAnthropicMessagesAdapter(options: AnthropicMessagesAdapter
         }
 
         if (type === "message_stop") {
-          if (!messageStarted) {
+          if (!messageStarted || openContentBlocks.size > 0) {
             throw new Error("anthropic_stream_truncated");
           }
 
@@ -504,6 +627,15 @@ export function createAnthropicMessagesAdapter(options: AnthropicMessagesAdapter
         throw new Error("anthropic_stream_truncated");
       }
 
+      const assistantContent = [...contentBlocks.entries()]
+        .sort(([left], [right]) => left - right)
+        .map(([, value]) => value.block);
+      const providerToolCallMessage = {
+        content: assistantContent,
+        role: "assistant"
+      };
+      const toolCalls = anthropicMessagesToolBridge.parseToolCalls(providerToolCallMessage);
+
       return {
         finalProviderResponsePreview: responsePreview({
           finalText,
@@ -513,7 +645,9 @@ export function createAnthropicMessagesAdapter(options: AnthropicMessagesAdapter
           usage
         }),
         finalText,
+        ...(toolCalls.length > 0 ? { providerToolCallMessage } : {}),
         providerResponseId: messageId,
+        toolCalls,
         usage
       };
     }

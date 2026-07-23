@@ -81,6 +81,7 @@ describe("composer control store", () => {
     useComposerControlStore.getState().setReasoningMode("pro");
     useComposerControlStore.getState().setShowCitations((visible) => !visible);
     useComposerControlStore.getState().setShowReasoningBlocks((visible) => !visible);
+    useComposerControlStore.getState().setShowToolActivity((visible) => !visible);
 
     expect(useComposerControlStore.getState()).toMatchObject({
       selectedModelId: "x-ai/grok",
@@ -88,7 +89,8 @@ describe("composer control store", () => {
       selectedSearchStrategy: "perplexity-tool-search",
       reasoningMode: "pro",
       showCitations: false,
-      showReasoningBlocks: true
+      showReasoningBlocks: true,
+      showToolActivity: false
     });
   });
 });

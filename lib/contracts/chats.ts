@@ -3,6 +3,13 @@ import type {
   MutationOriginErrorCode,
   SessionErrorCode
 } from "./http";
+import {
+  decodeThreadToolActivity,
+  type ThreadToolActivity,
+  type ThreadToolActivityStatus
+} from "./toolActivity";
+
+export type { ThreadToolActivity, ThreadToolActivityStatus };
 
 export type ThreadMessage = {
   artifactSummary?: ThreadArtifactSummary | null;
@@ -28,6 +35,8 @@ export type ThreadArtifactSummary = {
   searchCount: number;
   searchDetails?: ThreadSearchDetail[];
   searchStrategy: string | null;
+  toolCallCount: number;
+  toolCalls: ThreadToolActivity[];
 };
 
 export type ThreadSearchDetail = {
@@ -286,14 +295,17 @@ function decodeThreadArtifactSummary(value: unknown): ThreadArtifactSummary | nu
   const citationCount = nonNegativeInteger(value.citationCount);
   const reasoningCount = nonNegativeInteger(value.reasoningCount);
   const searchCount = nonNegativeInteger(value.searchCount);
+  const toolCallCount = nonNegativeInteger(value.toolCallCount);
   const searchStrategy = nullableId(value.searchStrategy);
   if (
     citationCount === null ||
     reasoningCount === null ||
     searchCount === null ||
+    toolCallCount === null ||
     searchStrategy === undefined ||
     !Array.isArray(value.citations) ||
     !Array.isArray(value.reasoningText) ||
+    !Array.isArray(value.toolCalls) ||
     value.reasoningText.some((text) => typeof text !== "string")
   ) {
     return null;
@@ -301,6 +313,11 @@ function decodeThreadArtifactSummary(value: unknown): ThreadArtifactSummary | nu
 
   const citations = value.citations.map(decodeThreadCitation);
   if (citations.some((citation) => citation === null)) {
+    return null;
+  }
+
+  const toolCalls = value.toolCalls.map(decodeThreadToolActivity);
+  if (toolCalls.some((toolCall) => toolCall === null) || toolCalls.length !== toolCallCount) {
     return null;
   }
 
@@ -340,7 +357,9 @@ function decodeThreadArtifactSummary(value: unknown): ThreadArtifactSummary | nu
     reasoningText: value.reasoningText as string[],
     searchCount,
     ...(searchDetails !== undefined ? { searchDetails } : {}),
-    searchStrategy
+    searchStrategy,
+    toolCallCount,
+    toolCalls: toolCalls.filter((toolCall): toolCall is ThreadToolActivity => toolCall !== null)
   };
 }
 

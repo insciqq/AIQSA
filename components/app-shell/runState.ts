@@ -7,13 +7,20 @@ export type PipelineStageStatus = "active" | "done" | "error" | "idle" | "skippe
 export type PipelinePhase = "cancelled" | "error" | "idle" | "running" | "settled";
 
 export type PipelineSnapshot = {
+  activity?: Readonly<{ count?: number; kind: "model" | "tools" }>;
   answer: PipelineStageStatus;
   phase: PipelinePhase;
   question: PipelineStageStatus;
   search: PipelineStageStatus;
 };
 
-export type RunActivityLabel = "Answering" | "Run error" | "Searching" | "Working";
+export type RunActivityLabel =
+  | "Answering"
+  | "Run error"
+  | `Running ${number} tools`
+  | "Searching"
+  | "Waiting for model"
+  | "Working";
 
 export type PipelineRunState = {
   events: RunEventView[];
@@ -32,6 +39,14 @@ const idlePipeline: PipelineSnapshot = {
 export function runActivityLabel(pipeline: PipelineSnapshot): RunActivityLabel {
   if (pipeline.phase === "error") {
     return "Run error";
+  }
+
+  if (pipeline.activity?.kind === "tools") {
+    return `Running ${pipeline.activity.count ?? 0} tools`;
+  }
+
+  if (pipeline.activity?.kind === "model") {
+    return "Waiting for model";
   }
 
   if (pipeline.answer === "active") {
@@ -71,12 +86,14 @@ export function pipelineStage(runState: PipelineRunState): PipelineSnapshot {
   let sawSearch = false;
   let sawSearchSkip = false;
   let sawAnswer = false;
+  let activity: PipelineSnapshot["activity"];
   let errorStage: "answer" | "question" | "search" | null = null;
   let doneStatus: string | null = null;
 
   for (const event of runState.events) {
     if (event.type === "token") {
       sawAnswer = true;
+      activity = undefined;
       continue;
     }
 
@@ -86,6 +103,18 @@ export function pipelineStage(runState: PipelineRunState): PipelineSnapshot {
         sawSearch = true;
       } else if (isSearchSkipArtifact(event)) {
         sawSearchSkip = true;
+      } else if (artifactType === "summary" && isRecord(event.data)) {
+        const payload = event.data.payload;
+        if (isRecord(payload) && payload.stage === "model" && payload.status === "waiting") {
+          activity = { kind: "model" };
+        } else if (isRecord(payload) && payload.stage === "tools" && payload.status === "running") {
+          activity = {
+            count: typeof payload.count === "number" && Number.isFinite(payload.count)
+              ? Math.max(0, Math.floor(payload.count))
+              : 0,
+            kind: "tools"
+          };
+        }
       }
       continue;
     }
@@ -149,6 +178,7 @@ export function pipelineStage(runState: PipelineRunState): PipelineSnapshot {
   }
 
   return {
+    ...(activity ? { activity } : {}),
     answer: sawAnswer ? "active" : "idle",
     phase: "running",
     question: sawSearch || sawAnswer ? "done" : "active",
@@ -186,6 +216,15 @@ export function appendAssistantDelta(
 ): ThreadMessage[] {
   return messages.map((message) =>
     message.id === assistantMessageId ? { ...message, content: `${textFromThreadContent(message.content)}${delta}` } : message
+  );
+}
+
+export function resetAssistantDraft(
+  messages: ThreadMessage[],
+  assistantMessageId: string
+): ThreadMessage[] {
+  return messages.map((message) =>
+    message.id === assistantMessageId ? { ...message, content: "" } : message
   );
 }
 

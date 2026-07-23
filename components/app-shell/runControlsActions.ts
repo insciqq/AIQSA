@@ -547,6 +547,16 @@ export function useRunControlsActions({
     });
   }
 
+  function toggleToolActivityVisibility() {
+    useComposerControlStore.getState().setShowToolActivity((visible) => {
+      const next = !visible;
+      void persistUserDefaults({
+        showToolActivity: next
+      });
+      return next;
+    });
+  }
+
   return {
     applyModelControlDefaults,
     buildControlDraft: currentControlDraft,
@@ -563,6 +573,7 @@ export function useRunControlsActions({
     selectRunProfile,
     selectSearchStrategy,
     toggleCitationsVisibility,
-    toggleReasoningBlockVisibility
+    toggleReasoningBlockVisibility,
+    toggleToolActivityVisibility
   };
 }

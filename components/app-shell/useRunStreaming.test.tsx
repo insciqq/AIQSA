@@ -112,6 +112,45 @@ describe("run streaming", () => {
     expect(selectRunSurface(useRunSurfaceStore.getState(), chatB.id).events).toEqual([]);
   });
 
+  it("clears provisional assistant text when a tool round resets the message", async () => {
+    const chatA = chat("chat-a", "Chat A");
+    useThreadStore.getState().replaceThread(chatA.id, {
+      activeLeafId: "assistant-chat-a",
+      messages: [{
+        content: "",
+        id: "assistant-chat-a",
+        parentMessageId: null,
+        role: "assistant",
+        status: "streaming"
+      }],
+      usageStats: null
+    });
+    const { result } = renderHook(() => useRunStreaming({ applyChatUpdate: vi.fn(() => false) }));
+    const tokenBuffer = result.current.createStreamTokenBuffer({
+      chatId: chatA.id,
+      getAssistantMessageId: () => "assistant-chat-a"
+    });
+
+    await act(async () => {
+      tokenBuffer.push("provisional");
+      tokenBuffer.flush();
+      await result.current.consumeRunStream({
+        chatId: chatA.id,
+        failurePrefix: "send_failed",
+        onMessageIds: vi.fn(),
+        onRunId: vi.fn(),
+        response: new Response('event: message_reset\ndata: {"round":1}\n\n'),
+        tokenBuffer
+      });
+    });
+
+    expect(selectThreadSnapshot(useThreadStore.getState(), chatA.id).messages[0]?.content).toBe("");
+    expect(selectRunSurface(useRunSurfaceStore.getState(), chatA.id).events.at(-1)).toEqual({
+      data: { round: 1 },
+      type: "message_reset"
+    });
+  });
+
   it("keeps late events and one parse warning on the explicit inactive source chat", async () => {
     const applyChatUpdate = vi.fn(() => false);
     const { result } = renderHook(() => useRunStreaming({ applyChatUpdate }));

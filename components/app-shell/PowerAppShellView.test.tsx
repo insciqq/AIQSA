@@ -46,6 +46,7 @@ type MainThreadProjectionKeys =
   | "creatingChat"
   | "noticeSlot"
   | "openDetails"
+  | "openMcpSettings"
   | "openSettings"
   | "pipeline"
   | "retryWorkspace"
@@ -195,6 +196,7 @@ function baseProps(): PowerAppShellViewProps {
       selectedSearchStrategy: "search-disabled",
       showCitations: true,
       showReasoningBlocks: true,
+      showToolActivity: true,
       stopCurrentRun: noop,
       streamMode: false,
       submitComposer: noop,
@@ -202,6 +204,7 @@ function baseProps(): PowerAppShellViewProps {
       toggleCitationsVisibility: noop,
       toggleNotificationSound: noop,
       toggleReasoningBlockVisibility: noop,
+      toggleToolActivityVisibility: noop,
       uploadFiles: noop,
       uploading: false
     },
@@ -268,6 +271,7 @@ function baseProps(): PowerAppShellViewProps {
       dismissNotice: noop,
       notice: null,
       open: noop,
+      openMcp: noop,
       prompt: {
         deleteConfirmation: null,
         editor: {
@@ -277,6 +281,7 @@ function baseProps(): PowerAppShellViewProps {
           systemPrompt: ""
         },
         open: false,
+        section: "prompts",
         saving: false,
         themeId: "aiqsa"
       },

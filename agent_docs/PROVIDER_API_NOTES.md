@@ -35,6 +35,7 @@ Externally constrained facts:
 - The 2026-06-06 low-token `gpt-5.5` smoke rejected effort `minimal`. Current supported direct-model effort metadata must therefore not infer that value; the guide's default is `medium`.
 - Explicit effort `none` is materially different from omitting the reasoning object for a reasoning-default model. A terminal `status: incomplete` is not a complete answer.
 - Native `web_search` uses the Responses tool contract and may return call/action sources and/or message annotations. It does not require a backend regex intent gate.
+- A 2026-07-23 low-token Responses smoke combined native `web_search` with two custom functions and `parallel_tool_calls: true`; the API returned HTTP 200 and both function calls in one response. Merely offering native web search therefore must not make AIQSA serialize independent custom or MCP calls sequentially.
 - Prompt caching is automatic where eligible; `prompt_cache_key` and retention hints influence routing/retention and must not expose a raw local chat id. GPT-5.6 replaces the older `prompt_cache_retention` field with `prompt_cache_options`; its currently documented TTL is `30m`.
 - Image input may use URLs, data URLs, or provider file ids where the model supports vision. Native PDF file input is model-capability dependent, and direct PDF parsing includes both extracted text and page images in context; provider-hosted File Search/vector stores are a separate provider-specific product from direct file input.
 
@@ -86,6 +87,24 @@ Externally constrained facts:
 - Native PDF routing is capability-dependent. OpenRouter file content plus its native PDF parser plugin avoids silently selecting a router-side parser/OCR fallback; unknown custom models must not be assumed native-capable.
 
 Current answer streaming/non-streaming behavior, routing defaults, Perplexity tool transcript/limits, PDF mapping, previews, and error normalization live in `BACKEND.md` and adapter tests.
+
+## MCP And Hosted Notion
+
+Primary references checked on 2026-07-22:
+
+- `https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization`
+- `https://developers.notion.com/docs/mcp`
+- `https://mcp.notion.com/mcp`
+
+Externally constrained facts and verification:
+
+- Remote MCP authorization is a protected-resource OAuth flow, not AI-provider sign-in. AIQSA uses Authorization Code with S256 PKCE plus protected-resource/authorization-server discovery, dynamic client registration or Client ID Metadata Documents, refresh, and revocation when advertised; the administrator owns the allowed resource, authorization-server origins, scopes, and callback policy.
+- The hosted Notion endpoint returned the expected protected-resource challenge. Its public metadata advertised the canonical MCP resource, authorization code and refresh grants, S256 PKCE, dynamic registration, Client ID Metadata Documents, introspection, and revocation.
+- A deterministic in-process official-SDK Streamable HTTP/OAuth fixture verifies AIQSA discovery, callback, encrypted token settlement, refresh/retry, inventory, and tool-call behavior without external credentials.
+- On 2026-07-23 an operator completed real hosted-Notion validation consent and AIQSA accepted the callback/token settlement. That run did not complete post-consent tool discovery/call before its disposable development state was reset, so full hosted-Notion end-to-end interoperability remains unverified. Automation must distinguish the observed consent callback from a successful tool call and must not treat metadata-only checks as either one.
+- ToolHive v0.40.1's interactive remote OAuth flow is not used for this path because it owns a local loopback/browser lifecycle rather than AIQSA's user-bound web callback. AIQSA's official MCP SDK wrapper owns remote sessions and OAuth; ToolHive owns only local stdio workload lifecycle.
+
+Current MCP policy, persistence, source matrix, readiness, and tool-loop behavior live in `BACKEND.md`, `SECURITY.md`, and ADR 0021 rather than this mutable external-facts note.
 
 ## Cross-Provider Boundaries
 

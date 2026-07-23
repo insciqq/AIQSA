@@ -1,9 +1,14 @@
 import { Prisma } from "@prisma/client";
 import type { ContextTruncationSummary } from "../../domain/contextBudget";
 import { safeExternalHref } from "../../domain/links";
+import {
+  mergeThreadToolActivity,
+  projectThreadToolActivity
+} from "../../domain/toolActivity";
 import { prisma } from "../prisma";
 import { lockOwnedPromptPreset, lockUserPromptDefaultsShared } from "../prompts/promptDefaultsLock";
 import { ActiveRunConflictError } from "../runs/runRepositoryContract";
+import { persistedToolCallActivity } from "../runs/toolInspection";
 import type {
   ChatDetailRecord,
   ChatRepository,
@@ -37,6 +42,7 @@ const chatDetailInclude = {
           },
           id: true,
           inputTokens: true,
+          normalizedRequest: true,
           outputTokens: true,
           searchRuns: {
             orderBy: {
@@ -52,6 +58,21 @@ const chatDetailInclude = {
             }
           },
           status: true,
+          toolCalls: {
+            orderBy: [{ roundIndex: "asc" }, { ordinal: "asc" }],
+            select: {
+              arguments: true,
+              completedAt: true,
+              mcpRunBindingId: true,
+              ordinal: true,
+              providerCallId: true,
+              result: true,
+              roundIndex: true,
+              startedAt: true,
+              state: true,
+              toolName: true
+            }
+          },
           totalTokens: true
         },
         take: 1
@@ -85,6 +106,7 @@ type ChatDetailRow = Prisma.ChatGetPayload<{ include: typeof chatDetailInclude }
 type ChatSummaryRow = Prisma.ChatGetPayload<{ select: typeof chatSummarySelect }>;
 type ArtifactSummaryRun = {
   events: { payload: unknown }[];
+  normalizedRequest?: unknown;
   searchRuns: {
     artifacts?: unknown;
     modelId?: string | null;
@@ -92,6 +114,19 @@ type ArtifactSummaryRun = {
     requestPreview?: unknown;
     status: string;
     strategyId: string;
+  }[];
+  status?: string;
+  toolCalls?: {
+    arguments: unknown;
+    completedAt: Date | string | null;
+    mcpRunBindingId?: string | null;
+    ordinal: number;
+    providerCallId: string;
+    result: unknown;
+    roundIndex: number;
+    startedAt: Date | string | null;
+    state: string;
+    toolName: string;
   }[];
 };
 
@@ -394,8 +429,28 @@ export function summarizeMessageRunArtifacts(run: ArtifactSummaryRun): ThreadArt
       .map(contextTruncationFromPayload)
       .filter((summary): summary is ContextTruncationSummary => Boolean(summary))
       .at(-1) ?? null;
+  const eventToolCalls = projectThreadToolActivity(artifactPayloads, run.status);
+  const durableToolCalls = (run.toolCalls ?? []).flatMap((call) => {
+    const activity = persistedToolCallActivity({
+      call,
+      normalizedRequest: run.normalizedRequest,
+      runStatus: run.status ?? "in_progress"
+    });
+    return activity ? [activity] : [];
+  });
+  const toolCallsById = new Map(eventToolCalls.map((call) => [call.callId, call]));
+  for (const call of durableToolCalls) {
+    const eventCall = toolCallsById.get(call.callId);
+    toolCallsById.set(
+      call.callId,
+      eventCall ? mergeThreadToolActivity(eventCall, call) : call
+    );
+  }
+  const toolCalls = [...toolCallsById.values()].sort(
+    (left, right) => left.round - right.round || left.ordinal - right.ordinal
+  );
 
-  if (searchCount === 0 && reasoningPayloads.length === 0 && citationCount === 0 && !contextTruncation) {
+  if (searchCount === 0 && reasoningPayloads.length === 0 && citationCount === 0 && !contextTruncation && toolCalls.length === 0) {
     return null;
   }
 
@@ -410,7 +465,9 @@ export function summarizeMessageRunArtifacts(run: ArtifactSummaryRun): ThreadArt
     searchStrategy:
       completedSearchRuns[0]?.strategyId ??
       artifactPayloads.map(searchStrategyFromPayload).find((strategy): strategy is string => Boolean(strategy)) ??
-      null
+      null,
+    toolCallCount: toolCalls.length,
+    toolCalls
   };
 }
 

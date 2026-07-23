@@ -1,6 +1,7 @@
 import { Composer, type ComposerAttachment } from "@/components/chat/Composer";
 import { attachmentPolicyForModel } from "@/components/app-shell/attachmentCapabilities";
 import { ComposerControls } from "@/components/app-shell/ComposerControls";
+import { McpComposerSummary } from "@/components/app-shell/McpComposerSummary";
 import { ComposerRunProfiles } from "@/components/app-shell/ComposerRunProfiles";
 import { useCompactComposerReadingMode } from "@/components/app-shell/useCompactComposerReadingMode";
 import { ThreadMessageRow } from "@/components/app-shell/ThreadMessageRow";
@@ -78,6 +79,7 @@ export type MainThreadPaneProps = {
   notificationSoundEnabled: boolean;
   operationError: string | null;
   openDetails(tab?: InspectorTabId): void;
+  openMcpSettings?(): void;
   openSettings(): void;
   pipeline?: PipelineSnapshot | null;
   reasoningEffort: string;
@@ -99,6 +101,7 @@ export type MainThreadPaneProps = {
   showCitations: boolean;
   showJumpToLatest: boolean;
   showReasoningBlocks: boolean;
+  showToolActivity: boolean;
   stopCurrentRun(): Promise<void> | void;
   streamMode: boolean;
   submitComposer(): Promise<void> | void;
@@ -108,6 +111,7 @@ export type MainThreadPaneProps = {
   toggleCitationsVisibility(): void;
   toggleNotificationSound(): void;
   toggleReasoningBlockVisibility(): void;
+  toggleToolActivityVisibility(): void;
   uploadFiles(files: FileList | readonly File[]): Promise<void> | void;
   uploading: boolean;
   visibleMessages: ThreadMessage[];
@@ -158,6 +162,7 @@ export function MainThreadPane({
   notificationSoundEnabled,
   operationError,
   openDetails,
+  openMcpSettings,
   openSettings,
   pipeline = null,
   reasoningEffort,
@@ -179,6 +184,7 @@ export function MainThreadPane({
   showCitations,
   showJumpToLatest,
   showReasoningBlocks,
+  showToolActivity,
   stopCurrentRun,
   streamMode,
   submitComposer,
@@ -188,6 +194,7 @@ export function MainThreadPane({
   toggleCitationsVisibility,
   toggleNotificationSound,
   toggleReasoningBlockVisibility,
+  toggleToolActivityVisibility,
   uploadFiles,
   uploading,
   visibleMessages,
@@ -466,7 +473,7 @@ export function MainThreadPane({
               message.role === "assistant" && message.runId && message.runId === currentRunId
                 ? liveArtifactSummary
                 : null;
-            const artifactSummary = message.artifactSummary ?? liveSummary;
+            const artifactSummary = liveSummary ?? message.artifactSummary;
             const answerModelLabel =
               message.role === "assistant" && (message.provider || message.modelId)
                 ? [
@@ -507,6 +514,7 @@ export function MainThreadPane({
                 runWarnings={messageRunWarnings}
                 showCitations={showCitations}
                 showReasoningBlocks={showReasoningBlocks}
+                showToolActivity={showToolActivity}
                 streaming={activeChatStreaming}
                 onBranchFromMessage={handleBranchFromMessage}
                 onCopyMessage={handleCopyMessage}
@@ -588,7 +596,8 @@ export function MainThreadPane({
           ) : null
         }
         controls={
-          <ComposerControls
+          <>
+            <ComposerControls
             backgroundMode={backgroundMode}
             catalog={catalog}
             catalogUnavailable={Boolean(catalogError)}
@@ -607,6 +616,7 @@ export function MainThreadPane({
             selectedSearchStrategy={selectedSearchStrategy}
             showCitations={showCitations}
             showReasoningBlocks={showReasoningBlocks}
+            showToolActivity={showToolActivity}
             streamMode={streamMode}
             streaming={activeChatStreaming}
             onBackgroundModeChange={changeBackgroundMode}
@@ -625,9 +635,12 @@ export function MainThreadPane({
             onToggleNotificationSound={toggleNotificationSound}
             onToggleCitations={toggleCitationsVisibility}
             onToggleReasoningBlocks={toggleReasoningBlockVisibility}
+            onToggleToolActivity={toggleToolActivityVisibility}
             notificationSoundEnabled={notificationSoundEnabled}
             temperature={temperature}
-          />
+            />
+            <McpComposerSummary onOpenSettings={openMcpSettings ?? openSettings} />
+          </>
         }
         disabled={composerUnavailable}
         disabledHint={activeDisabledHint}

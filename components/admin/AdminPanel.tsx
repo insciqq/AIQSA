@@ -9,6 +9,8 @@ import { AdminFeedbackMessages } from "@/components/admin/AdminFeedbackMessages"
 import { AdminGroupsSection } from "@/components/admin/AdminGroupsSection";
 import { AdminInvitesSection } from "@/components/admin/AdminInvitesSection";
 import { AdminModelAccessSection } from "@/components/admin/AdminModelAccessSection";
+import { AdminMcpGroupAccessPanel, AdminMcpUserAccessPanel } from "@/components/admin/AdminMcpGrantPanels";
+import { AdminMcpServersSection } from "@/components/admin/AdminMcpServersSection";
 import { AdminSafetySection } from "@/components/admin/AdminSafetySection";
 import { AdminSectionFrame } from "@/components/admin/AdminSectionFrame";
 import { AdminUsageSection } from "@/components/admin/AdminUsageSection";
@@ -25,6 +27,8 @@ import { useAdminFeedback } from "@/components/admin/useAdminFeedback";
 import { useAdminFieldErrors } from "@/components/admin/useAdminFieldErrors";
 import { useAdminGroupsController, type AdminGroupsController } from "@/components/admin/useAdminGroupsController";
 import { useAdminInvitesController, type AdminInvitesController } from "@/components/admin/useAdminInvitesController";
+import { useAdminMcpController, type AdminMcpController } from "@/components/admin/useAdminMcpController";
+import { useAdminMcpSectionState, type AdminMcpSectionState } from "@/components/admin/useAdminMcpSectionState";
 import { useAdminOperationalFocus } from "@/components/admin/useAdminOperationalFocus";
 import { useAdminSectionNavigation } from "@/components/admin/useAdminSectionNavigation";
 import { useAdminUsersController, type AdminUsersController } from "@/components/admin/useAdminUsersController";
@@ -97,6 +101,8 @@ function AdminSectionContent({
   groups,
   invites,
   lastLoadedAt,
+  mcp,
+  mcpSection,
   onRequestRevokeAllSessions,
   submitting,
   users
@@ -108,6 +114,8 @@ function AdminSectionContent({
   groups: AdminGroupsController;
   invites: AdminInvitesController;
   lastLoadedAt: Date | null;
+  mcp: AdminMcpController;
+  mcpSection: AdminMcpSectionState;
   onRequestRevokeAllSessions(): void;
   submitting: boolean;
   users: AdminUsersController;
@@ -117,8 +125,18 @@ function AdminSectionContent({
       return groups.groups.sectionProps ? <AdminGroupsSection {...groups.groups.sectionProps} /> : null;
     case "model-access":
       return groups.modelAccess.sectionProps ? (
-        <AdminModelAccessSection {...groups.modelAccess.sectionProps} />
+        <AdminModelAccessSection
+          {...groups.modelAccess.sectionProps}
+          mcpAccess={groups.modelAccess.sectionProps.data.selectedGroup ? (
+            <AdminMcpGroupAccessPanel
+              controller={mcp}
+              group={groups.modelAccess.sectionProps.data.selectedGroup}
+            />
+          ) : null}
+        />
       ) : null;
+    case "mcp":
+      return <AdminMcpServersSection controller={mcp} section={mcpSection} />;
     case "invites":
       return invites.sectionProps ? <AdminInvitesSection {...invites.sectionProps} /> : null;
     case "access-rules":
@@ -135,7 +153,14 @@ function AdminSectionContent({
         />
       );
     case "users":
-      return users.sectionProps ? <AdminUsersSection {...users.sectionProps} /> : null;
+      return users.sectionProps ? (
+        <AdminUsersSection
+          {...users.sectionProps}
+          mcpAccess={users.sectionProps.data.selectedUser ? (
+            <AdminMcpUserAccessPanel controller={mcp} user={users.sectionProps.data.selectedUser} />
+          ) : null}
+        />
+      ) : null;
   }
 
   return assertNeverSection(activeSection);
@@ -194,6 +219,10 @@ export function AdminPanel({ adminEmail, adminUserId }: AdminPanelProps) {
     fieldErrors,
     runAction: actionRunner.runAction
   });
+  const mcp = useAdminMcpController({
+    active: Boolean(resource.dashboard) && ["mcp", "model-access", "users"].includes(navigation.activeSection)
+  });
+  const mcpSection = useAdminMcpSectionState();
   const overview = useMemo(
     () => deriveAdminDashboardOverview(resource.dashboard, nowMs),
     [nowMs, resource.dashboard]
@@ -258,6 +287,8 @@ export function AdminPanel({ adminEmail, adminUserId }: AdminPanelProps) {
                 groups={groups}
                 invites={invites}
                 lastLoadedAt={resource.lastLoadedAt}
+                mcp={mcp}
+                mcpSection={mcpSection}
                 onRequestRevokeAllSessions={requestRevokeAllSessions}
                 submitting={actionsDisabled}
                 users={users}

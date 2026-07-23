@@ -12,6 +12,9 @@ export type AdminGroupDeletionSource = Readonly<{
   accessGrants: readonly Readonly<{
     enabled: boolean;
   }>[];
+  mcpGrants: readonly Readonly<{
+    canUse: boolean;
+  }>[];
 }>;
 
 export type AdminInviteDeletionSource = Readonly<{
@@ -26,6 +29,9 @@ export type AdminUserOwnedDataSource = Readonly<{
     attachments: number;
     chats: number;
     folders: number;
+    mcpGrants: number;
+    mcpOAuthConnections: number;
+    mcpUserServers: number;
     modelRuns: number;
     promptPresets: number;
     sharedSnapshots: number;
@@ -39,6 +45,9 @@ export type AdminOwnedAppDataCounts = Readonly<{
   attachments: number;
   chats: number;
   folders: number;
+  mcpGrants: number;
+  mcpOAuthConnections: number;
+  mcpUserServers: number;
   modelRuns: number;
   promptPresets: number;
   settings: number;
@@ -107,7 +116,9 @@ export function adminUserDeletionInfo(input: AdminUserDeletionSource): AdminDele
 }
 
 export function adminGroupDeletionInfo(group: AdminGroupDeletionSource): AdminDeletionInfo {
-  const activeGrantCount = group.accessGrants.filter((grant) => grant.enabled).length;
+  const activeGrantCount =
+    group.accessGrants.filter((grant) => grant.enabled).length +
+    group.mcpGrants.filter((grant) => grant.canUse).length;
   const block = adminGroupDeletionBlock({
     activeGrantCount,
     memberCount: group._count.users
@@ -175,6 +186,9 @@ export function adminOwnedAppDataCount(counts: AdminOwnedAppDataCounts): number 
     counts.attachments +
     counts.chats +
     counts.folders +
+    counts.mcpGrants +
+    counts.mcpOAuthConnections +
+    counts.mcpUserServers +
     counts.modelRuns +
     counts.promptPresets +
     counts.settings +

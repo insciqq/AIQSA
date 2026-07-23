@@ -43,6 +43,16 @@ const fakeSummaryArtifact: RunEventView = {
   type: "artifact"
 };
 
+const modelWaitingArtifact: RunEventView = {
+  data: { artifactType: "summary", payload: { stage: "model", status: "waiting" } },
+  type: "artifact"
+};
+
+const toolsRunningArtifact: RunEventView = {
+  data: { artifactType: "summary", payload: { count: 2, stage: "tools", status: "running" } },
+  type: "artifact"
+};
+
 const errorEvent: RunEventView = { data: { message: "provider exploded" }, type: "error" };
 
 function doneEvent(status = "complete"): RunEventView {
@@ -233,6 +243,12 @@ describe("runActivityLabel", () => {
 
   it("keeps failures readable without inventing the interrupted stage", () => {
     expect(runActivityLabel(stage([searchArtifact, errorEvent], { streaming: false }))).toBe("Run error");
+  });
+
+  it("shows explicit model and MCP tool phases until the next answer token", () => {
+    expect(runActivityLabel(stage([modelWaitingArtifact]))).toBe("Waiting for model");
+    expect(runActivityLabel(stage([modelWaitingArtifact, toolsRunningArtifact]))).toBe("Running 2 tools");
+    expect(runActivityLabel(stage([toolsRunningArtifact, tokenEvent]))).toBe("Answering");
   });
 });
 

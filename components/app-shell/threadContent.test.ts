@@ -199,6 +199,74 @@ describe("thread artifact summaries", () => {
       ]
     });
   });
+
+  it("correlates live parallel tool artifacts and keeps terminal live evidence", () => {
+    const toolCall = {
+      data: {
+        artifactType: "tool_call",
+        payload: {
+          argumentsPreview: { query: "memory" },
+          callId: "call-1",
+          ordinal: 0,
+          round: 1,
+          snapshot: {
+            capability: "mcp",
+            credentialSources: ["personal"],
+            serverName: "Mem0",
+            toolName: "search"
+          },
+          status: "requested"
+        }
+      },
+      type: "artifact"
+    };
+    const summary = summarizeThreadArtifacts(
+      [
+        toolCall,
+        {
+          data: {
+            artifactType: "tool_result",
+            payload: {
+              callId: "call-1",
+              durationMs: 90,
+              ordinal: 0,
+              resultPreview: { content: [{ text: "found", type: "text" }] },
+              round: 1,
+              status: "complete"
+            }
+          },
+          type: "artifact"
+        }
+      ],
+      [],
+      [{
+        argumentsPreview: { query: "memory" },
+        callId: "call-1",
+        capability: "mcp",
+        credentialSources: ["personal"],
+        durationMs: null,
+        errorMessage: null,
+        externalAccountLabel: null,
+        ordinal: 0,
+        resultPreview: null,
+        round: 1,
+        serverName: "Mem0",
+        status: "running",
+        toolName: "search"
+      }],
+      "streaming"
+    );
+
+    expect(summary).toMatchObject({
+      toolCallCount: 1,
+      toolCalls: [{
+        callId: "call-1",
+        durationMs: 90,
+        resultPreview: { content: [{ text: "found", type: "text" }] },
+        status: "complete"
+      }]
+    });
+  });
 });
 
 describe("thread content", () => {

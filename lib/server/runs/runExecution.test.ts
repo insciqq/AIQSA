@@ -4,6 +4,7 @@ import type { ContextTruncationSummary } from "../../domain/contextBudget";
 import type { ModelRunSseEvent, ModelRunUsage } from "../../domain/modelRunEvents";
 import { textFromContentBlocks } from "../../domain/modelRunEvents";
 import type { ResolvedEntitlements } from "../auth/entitlements";
+import type { McpRunPlanSnapshot } from "../mcp/runPlan";
 import type {
   NormalizedRunRequest,
   ProviderAdapter,
@@ -21,6 +22,7 @@ import {
 } from "./runExecution";
 import type { MaterializedPreparedRunData } from "./runPreparation";
 import type { RunChatUpdateRecord, RunRepository } from "./runRepositoryContract";
+import type { PersistedToolLoopCall } from "./toolLoopPersistence";
 
 type CompleteRunInput = Parameters<RunRepository["completeRun"]>[0];
 type CreateSearchRunInput = Parameters<RunRepository["createSearchRun"]>[0];
@@ -62,6 +64,7 @@ function providerResult(overrides: Partial<ProviderRunResult> = {}): ProviderRun
 function preparedData(input: Readonly<{
   chatId?: string;
   contextTruncation?: ContextTruncationSummary | null;
+  mcp?: McpRunPlanSnapshot;
   modelId?: string;
   provider?: string;
   searchStrategy?: string | null;
@@ -124,15 +127,20 @@ function preparedData(input: Readonly<{
       mode: "branch_path"
     },
     modelCapabilities: {
+      backgroundStreaming: true,
       contextWindow: 32_768,
       defaultMaxOutputTokens: 512,
+      nativeBackground: true,
       nativePdfInput: false,
       nativeSearch: false,
+      parallelToolCalls: true,
       pdf: true,
       reasoning: true,
       streaming: true,
+      toolCalling: true,
       vision: true
     },
+    ...(input.mcp ? { mcp: input.mcp } : {}),
     modelId,
     params: {},
     prompt: {
@@ -234,13 +242,40 @@ function createRepository(options: RepositoryOptions = {}) {
   const providerRequestPreviews: Record<string, unknown>[] = [];
   const recordedRunUsageEvents: RecordRunUsageEventsInput[] = [];
   const searchRuns: CreateSearchRunInput[] = [];
+  const toolCalls = new Map<string, PersistedToolLoopCall>();
+  let toolCallSequence = 0;
   let chatUpdateLoads = 0;
   const repository: RunExecutionRepository = {
+    async advanceToolLoopCallBatch() {
+      return "advanced";
+    },
     async appendAssistantText(_assistantMessageId, text) {
       assistantTexts.push(text);
     },
     async appendRunEvent(runId, sequence, event) {
       persistedEvents.push({ event, runId, sequence });
+    },
+    async beginToolLoopProviderRound() {
+      return "started";
+    },
+    async cancelPendingToolLoopCalls() {
+      let cancelled = 0;
+      for (const [id, call] of toolCalls) {
+        if (call.state !== "pending") continue;
+        toolCalls.set(id, { ...call, completedAt: new Date().toISOString(), state: "cancelled" });
+        cancelled += 1;
+      }
+      return cancelled;
+    },
+    async claimToolLoopCall({ callId }) {
+      const call = toolCalls.get(callId);
+      if (!call) return { kind: "not_found" };
+      if (call.state === "running") return { call, kind: "ambiguous" };
+      if (call.state === "cancelled") return { call, kind: "cancelled" };
+      if (call.state === "complete" || call.state === "error") return { call, kind: "settled" };
+      const claimed = { ...call, startedAt: new Date().toISOString(), state: "running" as const };
+      toolCalls.set(callId, claimed);
+      return { call: claimed, kind: "claimed" };
     },
     async completeRun(input) {
       completeRuns.push(input);
@@ -316,9 +351,59 @@ function createRepository(options: RepositoryOptions = {}) {
     async nextRunEventSequence() {
       return persistedEvents.length;
     },
+    async persistToolLoopCallBatch(input) {
+      const calls = input.calls.map((call) => {
+        const existing = [...toolCalls.values()].find((entry) =>
+          entry.roundIndex === input.roundIndex && entry.providerCallId === call.providerCallId
+        );
+        if (existing) return existing;
+        const id = `persisted-tool-call-${++toolCallSequence}`;
+        const persisted: PersistedToolLoopCall = {
+          arguments: call.arguments,
+          completedAt: null,
+          id,
+          mcpBinding: call.runtimeGenerationFingerprint ? {
+            id: `binding-${id}`,
+            runtimeGenerationFingerprint: call.runtimeGenerationFingerprint,
+            runtimeGenerationId: `generation-${call.runtimeGenerationFingerprint}`
+          } : null,
+          ordinal: call.ordinal,
+          providerCallId: call.providerCallId,
+          result: null,
+          roundIndex: input.roundIndex,
+          startedAt: null,
+          state: "pending",
+          toolName: call.toolName
+        };
+        toolCalls.set(id, persisted);
+        return persisted;
+      });
+      return { calls, kind: "persisted" };
+    },
     async recordRunUsageEvents(input) {
       recordedRunUsageEvents.push(input);
       return true;
+    },
+    async resetToolLoopAssistantDraft({ roundIndex, runId, sequence }) {
+      persistedEvents.push({
+        event: { data: { round: roundIndex }, type: "message_reset" },
+        runId,
+        sequence
+      });
+      return true;
+    },
+    async settleToolLoopCall({ callId, result, state }) {
+      const call = toolCalls.get(callId);
+      if (!call) return "not_found";
+      if (call.state === "complete" || call.state === "error") return "reused";
+      if (call.state !== "running") return "conflict";
+      toolCalls.set(callId, {
+        ...call,
+        completedAt: new Date().toISOString(),
+        result,
+        state
+      });
+      return "settled";
     },
     async updateRunProviderRequestPreview(_runId, preview) {
       providerRequestPreviews.push(preview);
@@ -347,6 +432,7 @@ function createRepository(options: RepositoryOptions = {}) {
 
 function executionInput(input: Readonly<{
   adapter: ProviderAdapter;
+  mcpRuntime?: RunExecutionInput["mcpRuntime"];
   prepared?: MaterializedPreparedRunData;
   repository: RunExecutionRepository;
   runId?: string;
@@ -361,6 +447,7 @@ function executionInput(input: Readonly<{
     },
     prepared: input.prepared ?? preparedData(),
     repository: input.repository,
+    ...(input.mcpRuntime ? { mcpRuntime: input.mcpRuntime } : {}),
     ...(input.searchAdapter ? { searchAdapter: input.searchAdapter } : {}),
     userId: "user-1"
   };
@@ -934,9 +1021,9 @@ describe("run execution", () => {
     ]);
     expect(requests).toHaveLength(1);
     expect(requests[0]).toMatchObject({
-      forceNonStreaming: true,
       toolChoice: "auto"
     });
+    expect(requests[0]?.forceNonStreaming).toBeUndefined();
     expect(requests[0]?.tools?.map((tool) => tool.name)).toEqual(["search_via_perplexity"]);
     expect(previewRequests).toHaveLength(1);
     expect(repository.providerRequestPreviews).toHaveLength(1);
@@ -1006,7 +1093,9 @@ describe("run execution", () => {
       "run_start",
       "message_start",
       "artifact",
+      "token",
       "artifact",
+      "message_reset",
       "artifact",
       "artifact",
       "token",
@@ -1018,7 +1107,8 @@ describe("run execution", () => {
         .filter((event) => event.type === "artifact")
         .map((event) => (event.type === "artifact" ? event.data.artifactType : ""))
     ).toEqual(["reasoning", "tool_call", "search", "tool_result"]);
-    expect(events.some((event) => event.type === "token" && event.data.delta === "discarded draft")).toBe(false);
+    expect(events.some((event) => event.type === "token" && event.data.delta === "discarded draft")).toBe(true);
+    expect(events.some((event) => event.type === "message_reset")).toBe(true);
     expect(providerRequests).toHaveLength(2);
     expect(providerRequests[1]?.providerToolMessages).toHaveLength(2);
     expect(previewRequests).toHaveLength(2);
@@ -1071,6 +1161,166 @@ describe("run execution", () => {
         }
       }
     ]);
+  });
+
+  it("routes tools from several MCP servers and executes one provider batch in parallel", async () => {
+    const firstTool = "mcp_memory_lookup_a";
+    const secondTool = "mcp_tasks_list_b";
+    const mcp: McpRunPlanSnapshot = {
+      servers: [
+        {
+          fingerprint: "fingerprint-memory",
+          revisionId: "revision-memory",
+          serverId: "server-memory",
+          serverName: "Memory"
+        },
+        {
+          fingerprint: "fingerprint-tasks",
+          revisionId: "revision-tasks",
+          serverId: "server-tasks",
+          serverName: "Tasks"
+        }
+      ],
+      tools: [
+        {
+          definitionHash: "a".repeat(64),
+          description: "Look up memory",
+          inputSchema: { type: "object" },
+          name: "lookup",
+          namespacedName: firstTool,
+          originalName: "lookup",
+          serverId: "server-memory",
+          serverName: "Memory"
+        },
+        {
+          definitionHash: "b".repeat(64),
+          description: "List tasks",
+          inputSchema: { type: "object" },
+          name: "list",
+          namespacedName: secondTool,
+          originalName: "list",
+          serverId: "server-tasks",
+          serverName: "Tasks"
+        }
+      ],
+      version: 1
+    };
+    const repository = createRepository();
+    const providerRequests: ProviderRunRequest[] = [];
+    const adapter = createAdapter(async function* (request) {
+      providerRequests.push(request);
+      if (providerRequests.length === 1) {
+        yield { data: { delta: "Checking both systems" }, type: "token" };
+        return providerResult({
+          finalText: "",
+          toolCalls: [
+            {
+              arguments: { apiKey: "sk-private-runtime-key", query: "AIQSA" },
+              id: "memory-call",
+              name: firstTool
+            },
+            { arguments: { project: "AIQSA" }, id: "tasks-call", name: secondTool }
+          ],
+          usage: usage(1, 1, 0)
+        });
+      }
+      yield { data: { delta: "Combined answer" }, type: "token" };
+      return providerResult({ finalText: "Combined answer", usage: usage(2, 2, 0) });
+    });
+    const release = deferred<void>();
+    const bothStarted = deferred<void>();
+    const calls: Array<{
+      generationId: string;
+      inputSchema: Record<string, unknown>;
+      name: string;
+    }> = [];
+    let active = 0;
+    let maxActive = 0;
+    const mcpRuntime: NonNullable<RunExecutionInput["mcpRuntime"]> = {
+      async callTool({ generationId, inputSchema, name }) {
+        calls.push({ generationId, inputSchema, name });
+        active += 1;
+        maxActive = Math.max(maxActive, active);
+        if (calls.length === 2) bothStarted.resolve();
+        await release.promise;
+        active -= 1;
+        return {
+          isError: false,
+          structuredContent: { generationId, name },
+          text: [`${name} result`],
+          unsupportedContentTypes: []
+        };
+      },
+      async ensureAcceptedGeneration(generationId) {
+        return generationId === "generation-fingerprint-memory" ||
+          generationId === "generation-fingerprint-tasks";
+      }
+    };
+    const responseBody = createRunExecutionResponse(executionInput({
+      adapter,
+      mcpRuntime,
+      prepared: preparedData({ mcp, modelId: "gpt-tool-model", provider: "openai" }),
+      repository: repository.repository
+    })).text();
+
+    await bothStarted.promise;
+    release.resolve();
+    const events = parseSse(await responseBody);
+
+    expect(maxActive).toBe(2);
+    expect(calls).toEqual([
+      {
+        generationId: "generation-fingerprint-memory",
+        inputSchema: mcp.tools[0]?.inputSchema,
+        name: "lookup"
+      },
+      {
+        generationId: "generation-fingerprint-tasks",
+        inputSchema: mcp.tools[1]?.inputSchema,
+        name: "list"
+      }
+    ]);
+    expect(providerRequests).toHaveLength(2);
+    expect(providerRequests[0]?.tools?.map((tool) => tool.name)).toEqual([firstTool, secondTool]);
+    expect(providerRequests[0]?.parallelToolCalls).toBe(true);
+    expect(providerRequests[1]?.providerToolMessages).toHaveLength(4);
+    expect(events.filter((event) => event.type === "message_reset")).toHaveLength(1);
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        data: expect.objectContaining({
+          artifactType: "summary",
+          payload: expect.objectContaining({ message: "Waiting for model" })
+        }),
+        type: "artifact"
+      }),
+      expect.objectContaining({
+        data: expect.objectContaining({
+          artifactType: "summary",
+          payload: expect.objectContaining({ count: 2, message: "Running 2 tools" })
+        }),
+        type: "artifact"
+      }),
+      expect.objectContaining({
+        data: expect.objectContaining({
+          artifactType: "tool_result",
+          payload: expect.objectContaining({ durationMs: expect.any(Number) })
+        }),
+        type: "artifact"
+      })
+    ]));
+    const toolCallEvent = events.find((event) =>
+      event.type === "artifact" && event.data.artifactType === "tool_call"
+    );
+    expect(JSON.stringify(toolCallEvent)).not.toContain("sk-private-runtime-key");
+    expect(toolCallEvent).toMatchObject({
+      data: {
+        payload: {
+          argumentsPreview: { apiKey: "[redacted]", query: "AIQSA" },
+          snapshot: { capability: "mcp", serverName: "Memory", toolName: "lookup" }
+        }
+      }
+    });
+    expect(repository.completeRuns[0]?.finalText).toBe("Combined answer");
   });
 
   it("re-budgets attachments with tool transcripts and emits cumulative late truncation evidence", async () => {
@@ -1256,8 +1506,9 @@ describe("run execution", () => {
       type: "error"
     });
     expect(repository.completeRuns).toEqual([]);
-    expect(repository.recordedRunUsageEvents).toHaveLength(1);
-    expect(repository.recordedRunUsageEvents[0]?.usageAttributions).toEqual([
+    expect(repository.recordedRunUsageEvents).toHaveLength(3);
+    expect(repository.recordedRunUsageEvents[0]?.usageAttributions).toHaveLength(1);
+    expect(repository.recordedRunUsageEvents.at(-1)?.usageAttributions).toEqual([
       {
         estimatedCostMicros: null,
         modelId: "openai-answer-model",

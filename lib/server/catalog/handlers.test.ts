@@ -42,7 +42,8 @@ describe("catalog handler", () => {
           defaultProvider: "openai",
           defaultSearchStrategyId: "openai-native-web-search",
           showCitations: true,
-          showReasoningBlocks: false
+          showReasoningBlocks: false,
+          showToolActivity: true,
         }
       }),
       resolveAuth: auth.resolveAuth
@@ -74,7 +75,8 @@ describe("catalog handler", () => {
       "provider",
       "searchStrategyId",
       "showCitations",
-      "showReasoningBlocks"
+      "showReasoningBlocks",
+      "showToolActivity"
     ]);
     expect(Object.keys(body.catalog.models[0])).toEqual([
       "capabilities",
@@ -121,7 +123,8 @@ describe("catalog handler", () => {
           defaultProvider: "openai",
           defaultSearchStrategyId: "openai-native-web-search",
           showCitations: true,
-          showReasoningBlocks: false
+          showReasoningBlocks: false,
+          showToolActivity: true,
         }
       }),
       resolveAuth: auth.resolveAuth
@@ -178,7 +181,8 @@ describe("catalog handler", () => {
         defaultProvider: "anthropic",
         defaultSearchStrategyId: "openai-native-web-search",
         showCitations: true,
-        showReasoningBlocks: false
+        showReasoningBlocks: false,
+        showToolActivity: true,
       }
     });
 
@@ -206,7 +210,8 @@ describe("catalog handler", () => {
         defaultProvider: "openai",
         defaultSearchStrategyId: "openai-native-web-search",
         showCitations: true,
-        showReasoningBlocks: false
+        showReasoningBlocks: false,
+        showToolActivity: true,
       }
     });
 

@@ -57,7 +57,8 @@ const emptyCatalog: Catalog = {
     provider: "openai",
     searchStrategyId: "search-disabled",
     showCitations: true,
-    showReasoningBlocks: false
+    showReasoningBlocks: false,
+    showToolActivity: true,
   },
   models: [],
   promptPresets: [],
@@ -202,7 +203,8 @@ describe("usePowerAppShellViewModel", () => {
         provider: "openai",
         searchStrategyId: "search-disabled",
         showCitations: true,
-        showReasoningBlocks: false
+        showReasoningBlocks: false,
+        showToolActivity: true,
       },
       models: [
         {
@@ -285,7 +287,8 @@ describe("usePowerAppShellViewModel", () => {
         provider: "openai",
         searchStrategyId: "search-disabled",
         showCitations: true,
-        showReasoningBlocks: false
+        showReasoningBlocks: false,
+        showToolActivity: true,
       },
       models: [
         {

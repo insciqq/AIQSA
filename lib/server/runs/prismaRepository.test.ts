@@ -2,6 +2,9 @@ import { randomUUID } from "node:crypto";
 import { afterAll, describe, expect, it } from "vitest";
 import { textMessageContent } from "../../domain/content";
 import { loadAdminUsageQueryRows } from "../auth/adminUsageQueries";
+import { mcpRuntimeFingerprint } from "../mcp/access";
+import { encryptMcpEnvelope } from "../mcp/encryption";
+import { createPrismaMcpRuntimeRepository } from "../mcp/runtimeRepository";
 import { prisma } from "../prisma";
 import { createPrismaSettingsRepository } from "../settings/prismaRepository";
 import { createPrismaRunRepository } from "./prismaRepository";
@@ -9,9 +12,12 @@ import {
   ActiveLeafConflictError,
   ActiveRunConflictError,
   AttachmentLinkConflictError,
+  McpRunPlanConflictError,
   type AcceptedRunDefaults,
   type RunRepository
 } from "./runRepositoryContract";
+
+const TEST_MCP_KEY = Buffer.alloc(32, 0x61);
 
 async function withRunUser<T>(run: (input: { userId: string }) => Promise<T>): Promise<T> {
   const userId = `run-repository-test-${randomUUID()}`;
@@ -40,6 +46,96 @@ async function withRunUser<T>(run: (input: { userId: string }) => Promise<T>): P
       }
     });
   }
+}
+
+async function createReadyMcpBinding(userId: string) {
+  const suffix = randomUUID();
+  const configuration = {
+    auth: { mode: "none" },
+    runtime: { callTimeoutMs: 30_000, startupTimeoutMs: 30_000 },
+    slots: [],
+    source: { kind: "remote", url: "https://mcp.example.test/rpc" },
+    transport: "streamable_http"
+  };
+  const server = await prisma.mcpServer.create({
+    data: {
+      description: "Run acceptance fixture",
+      displayName: "Run acceptance MCP",
+      draft: configuration,
+      enabled: true,
+      namespace: `run_acceptance_${suffix}`
+    }
+  });
+  const revision = await prisma.mcpRevision.create({
+    data: {
+      configuration,
+      draftHash: `draft-${suffix}`,
+      identityHash: `identity-${suffix}`,
+      revisionNumber: 1,
+      serverId: server.id,
+      validationEvidence: {}
+    }
+  });
+  await prisma.mcpServer.update({
+    data: { activeRevisionId: revision.id },
+    where: { id: server.id }
+  });
+  await prisma.mcpGrant.create({
+    data: { canUse: true, serverId: server.id, userId }
+  });
+  const preference = await prisma.mcpUserServer.create({
+    data: { enabled: true, serverId: server.id, userId }
+  });
+  const generation = await prisma.mcpRuntimeGeneration.create({
+    data: {
+      effectiveConfigEnvelope: encryptMcpEnvelope({ plan: [], values: {}, version: 1 }, TEST_MCP_KEY),
+      fingerprint: mcpRuntimeFingerprint({
+        oauthConnectionRevision: null,
+        plan: [],
+        revisionId: revision.id,
+        userId
+      }),
+      inventory: {
+        tools: [{
+          definitionHash: "a".repeat(64),
+          description: "Echo",
+          inputSchema: { type: "object" },
+          name: "echo"
+        }],
+        version: 1
+      },
+      inventoryUpdatedAt: new Date(),
+      revisionId: revision.id,
+      state: "ready",
+      userServerId: preference.id
+    }
+  });
+  await prisma.mcpUserServer.update({
+    data: { desiredRuntimeGenerationId: generation.id },
+    where: { id: preference.id }
+  });
+  return {
+    binding: {
+      fingerprint: generation.fingerprint,
+      runtimeGenerationId: generation.id,
+      serverId: server.id
+    },
+    generation,
+    preference,
+    revision,
+    server
+  };
+}
+
+async function deleteMcpFixture(serverId: string): Promise<void> {
+  await prisma.mcpServer.updateMany({
+    data: { activeRevisionId: null },
+    where: { id: serverId }
+  });
+  await prisma.mcpUserServer.deleteMany({ where: { serverId } });
+  await prisma.mcpGrant.deleteMany({ where: { serverId } });
+  await prisma.mcpRevision.deleteMany({ where: { serverId } });
+  await prisma.mcpServer.deleteMany({ where: { id: serverId } });
 }
 
 async function promptFlags(userId: string): Promise<Map<string, boolean>> {
@@ -278,6 +374,408 @@ const cancelPayload = {
 describe("Prisma run repository", () => {
   afterAll(async () => {
     await prisma.$disconnect();
+  });
+
+  it("checkpoints tool batches before dispatch and resumes every call state deterministically", async () => {
+    await withRunUser(async ({ userId }) => {
+      await prisma.user.update({ data: { status: "active" }, where: { id: userId } });
+      const chat = await prisma.chat.create({
+        data: {
+          defaultModelId: "fake-qsa",
+          defaultProvider: "fake",
+          title: "Durable tool loop",
+          userId
+        }
+      });
+      const fixture = await createReadyMcpBinding(userId);
+      try {
+        const repository = createPrismaRunRepository(prisma);
+        const runInput = createRunInput({
+          chatId: chat.id,
+          question: "Checkpoint these calls",
+          userId
+        });
+        runInput.mcpBindings = [fixture.binding];
+        const created = await repository.createRun(runInput);
+
+        await expect(repository.beginToolLoopProviderRound({
+          providerContinuation: { responseId: "response-1" },
+          providerCursor: "cursor-1",
+          roundIndex: 0,
+          runId: created.runId,
+          userId
+        })).resolves.toBe("started");
+        const batchInput: Parameters<RunRepository["persistToolLoopCallBatch"]>[0] = {
+          calls: [
+            {
+              arguments: { query: "first" },
+              ordinal: 0,
+              providerCallId: "call-1",
+              runtimeGenerationFingerprint: fixture.binding.fingerprint,
+              toolName: "echo"
+            },
+            {
+              arguments: { query: "second" },
+              ordinal: 1,
+              providerCallId: "call-2",
+              toolName: "local_search"
+            }
+          ],
+          providerContinuation: { responseId: "response-1" },
+          providerCursor: "cursor-1",
+          roundIndex: 0,
+          runId: created.runId,
+          userId
+        };
+        const persisted = await repository.persistToolLoopCallBatch(batchInput);
+        expect(persisted.kind).toBe("persisted");
+        if (persisted.kind !== "persisted") throw new Error("expected persisted tool batch");
+        await expect(repository.persistToolLoopCallBatch(batchInput)).resolves.toMatchObject({
+          kind: "reused"
+        });
+        await expect(prisma.modelRunToolCall.findMany({
+          orderBy: { ordinal: "asc" },
+          select: { mcpRunBindingId: true, state: true },
+          where: { modelRunId: created.runId }
+        })).resolves.toEqual([
+          { mcpRunBindingId: expect.any(String), state: "pending" },
+          { mcpRunBindingId: null, state: "pending" }
+        ]);
+
+        await repository.appendAssistantText(created.assistantMessageId, "discarded draft");
+        await expect(repository.resetToolLoopAssistantDraft({
+          roundIndex: 0,
+          runId: created.runId,
+          sequence: 0,
+          userId
+        })).resolves.toBe(true);
+        await expect(prisma.message.findUniqueOrThrow({
+          select: { content: true },
+          where: { id: created.assistantMessageId }
+        })).resolves.toMatchObject({ content: textMessageContent("") });
+
+        const firstClaim = await repository.claimToolLoopCall({
+          callId: persisted.calls[0]!.id,
+          runId: created.runId,
+          userId
+        });
+        expect(firstClaim.kind).toBe("claimed");
+        await expect(repository.claimToolLoopCall({
+          callId: persisted.calls[0]!.id,
+          runId: created.runId,
+          userId
+        })).resolves.toMatchObject({ kind: "ambiguous" });
+        await expect(repository.settleToolLoopCall({
+          callId: persisted.calls[0]!.id,
+          result: { content: "first result" },
+          runId: created.runId,
+          state: "complete",
+          userId
+        })).resolves.toBe("settled");
+        await expect(repository.settleToolLoopCall({
+          callId: persisted.calls[0]!.id,
+          result: { content: "first result" },
+          runId: created.runId,
+          state: "complete",
+          userId
+        })).resolves.toBe("reused");
+
+        await expect(repository.claimToolLoopCall({
+          callId: persisted.calls[1]!.id,
+          runId: created.runId,
+          userId
+        })).resolves.toMatchObject({ kind: "claimed" });
+        await expect(repository.settleToolLoopCall({
+          callId: persisted.calls[1]!.id,
+          result: { code: "tool_failed" },
+          runId: created.runId,
+          state: "error",
+          userId
+        })).resolves.toBe("settled");
+        await expect(repository.advanceToolLoopCallBatch({
+          roundIndex: 0,
+          runId: created.runId,
+          userId
+        })).resolves.toBe("advanced");
+
+        await expect(repository.loadCheckpointedToolLoopRun({
+          runId: created.runId,
+          userId
+        })).resolves.toMatchObject({
+          calls: [
+            { providerCallId: "call-1", state: "complete" },
+            { providerCallId: "call-2", state: "error" }
+          ],
+          checkpoint: {
+            phase: "provider_running",
+            providerContinuation: { responseId: "response-1" },
+            providerCursor: "cursor-1",
+            roundIndex: 1,
+            version: 1
+          }
+        });
+        await expect(prisma.modelRunEvent.findMany({
+          select: { eventType: true, payload: true, sequence: true },
+          where: { modelRunId: created.runId }
+        })).resolves.toEqual([{
+          eventType: "message_reset",
+          payload: { round: 0 },
+          sequence: 0
+        }]);
+      } finally {
+        await deleteMcpFixture(fixture.server.id);
+      }
+    });
+  });
+
+  it("atomically cancels pending checkpointed calls while preserving ambiguous running calls", async () => {
+    await withRunUser(async ({ userId }) => {
+      const repository = createPrismaRunRepository(prisma);
+      const created = await createActiveRun(repository, userId, "Cancel checkpointed calls");
+      await repository.beginToolLoopProviderRound({
+        providerContinuation: null,
+        roundIndex: 0,
+        runId: created.runId,
+        userId
+      });
+      const persisted = await repository.persistToolLoopCallBatch({
+        calls: [
+          { arguments: {}, ordinal: 0, providerCallId: "running", toolName: "first" },
+          { arguments: {}, ordinal: 1, providerCallId: "pending", toolName: "second" }
+        ],
+        providerContinuation: null,
+        roundIndex: 0,
+        runId: created.runId,
+        userId
+      });
+      if (persisted.kind !== "persisted") throw new Error("expected persisted tool batch");
+      await repository.claimToolLoopCall({
+        callId: persisted.calls[0]!.id,
+        runId: created.runId,
+        userId
+      });
+
+      await expect(repository.cancelRun({
+        payload: cancelPayload,
+        runId: created.runId,
+        userId
+      })).resolves.toMatchObject({ kind: "cancelled" });
+      await expect(prisma.modelRunToolCall.findMany({
+        orderBy: { ordinal: "asc" },
+        select: { state: true },
+        where: { modelRunId: created.runId }
+      })).resolves.toEqual([{ state: "running" }, { state: "cancelled" }]);
+      await expect(repository.claimToolLoopCall({
+        callId: persisted.calls[0]!.id,
+        runId: created.runId,
+        userId
+      })).resolves.toMatchObject({ kind: "ambiguous" });
+    });
+  });
+
+  it("cancels pending checkpointed calls when a run fails while preserving ambiguous running calls", async () => {
+    await withRunUser(async ({ userId }) => {
+      const repository = createPrismaRunRepository(prisma);
+      const created = await createActiveRun(repository, userId, "Fail checkpointed calls");
+      await repository.beginToolLoopProviderRound({
+        providerContinuation: null,
+        roundIndex: 0,
+        runId: created.runId,
+        userId
+      });
+      const persisted = await repository.persistToolLoopCallBatch({
+        calls: [
+          { arguments: {}, ordinal: 0, providerCallId: "running", toolName: "first" },
+          { arguments: {}, ordinal: 1, providerCallId: "pending", toolName: "second" }
+        ],
+        providerContinuation: null,
+        roundIndex: 0,
+        runId: created.runId,
+        userId
+      });
+      if (persisted.kind !== "persisted") throw new Error("expected persisted tool batch");
+      await repository.claimToolLoopCall({
+        callId: persisted.calls[0]!.id,
+        runId: created.runId,
+        userId
+      });
+
+      await expect(repository.failRun(created.runId, created.assistantMessageId, {
+        code: "tool_loop_checkpoint_failed",
+        message: "Tool-loop persistence failed"
+      })).resolves.toBe(true);
+      await expect(prisma.modelRunToolCall.findMany({
+        orderBy: { ordinal: "asc" },
+        select: { completedAt: true, startedAt: true, state: true },
+        where: { modelRunId: created.runId }
+      })).resolves.toEqual([
+        { completedAt: null, startedAt: expect.any(Date), state: "running" },
+        { completedAt: expect.any(Date), startedAt: null, state: "cancelled" }
+      ]);
+      await expect(repository.getRunControlForUser(created.runId, userId)).resolves.toMatchObject({
+        status: "error"
+      });
+    });
+  });
+
+  it("atomically binds the exact ready MCP generation for sends and regenerations", async () => {
+    await withRunUser(async ({ userId }) => {
+      await prisma.user.update({ data: { status: "active" }, where: { id: userId } });
+      const chat = await prisma.chat.create({
+        data: {
+          defaultModelId: "fake-qsa",
+          defaultProvider: "fake",
+          title: "MCP acceptance",
+          userId
+        }
+      });
+      const fixture = await createReadyMcpBinding(userId);
+      try {
+        const repository = createPrismaRunRepository(prisma);
+        const sendInput = createRunInput({
+          chatId: chat.id,
+          question: "Use the exact MCP generation",
+          userId
+        });
+        sendInput.mcpBindings = [fixture.binding];
+        const sent = await repository.createRun(sendInput);
+
+        await expect(prisma.mcpRunBinding.findMany({
+          select: {
+            modelRunId: true,
+            runtimeGenerationFingerprint: true,
+            runtimeGenerationId: true
+          },
+          where: { modelRunId: sent.runId }
+        })).resolves.toEqual([{
+          modelRunId: sent.runId,
+          runtimeGenerationFingerprint: fixture.binding.fingerprint,
+          runtimeGenerationId: fixture.binding.runtimeGenerationId
+        }]);
+
+        await prisma.modelRun.update({ data: { status: "complete" }, where: { id: sent.runId } });
+        const regenerationInput = createRegenerationInput(sendInput, sent.userMessageId);
+        regenerationInput.mcpBindings = [fixture.binding];
+        const regenerated = await repository.createRegenerationRun(regenerationInput);
+
+        await expect(prisma.mcpRunBinding.findMany({
+          orderBy: { modelRunId: "asc" },
+          select: { modelRunId: true, runtimeGenerationId: true },
+          where: { modelRunId: { in: [sent.runId, regenerated.runId] } }
+        })).resolves.toEqual([
+          { modelRunId: sent.runId, runtimeGenerationId: fixture.binding.runtimeGenerationId },
+          { modelRunId: regenerated.runId, runtimeGenerationId: fixture.binding.runtimeGenerationId }
+        ].sort((left, right) => left.modelRunId.localeCompare(right.modelRunId)));
+      } finally {
+        await deleteMcpFixture(fixture.server.id);
+      }
+    });
+  });
+
+  it("restores a no-longer-desired generation only while an active run still binds it", async () => {
+    await withRunUser(async ({ userId }) => {
+      await prisma.user.update({ data: { status: "active" }, where: { id: userId } });
+      const chat = await prisma.chat.create({
+        data: {
+          defaultModelId: "fake-qsa",
+          defaultProvider: "fake",
+          title: "Accepted generation recovery",
+          userId
+        }
+      });
+      const fixture = await createReadyMcpBinding(userId);
+      try {
+        const runs = createPrismaRunRepository(prisma);
+        const input = createRunInput({
+          chatId: chat.id,
+          question: "Keep the accepted generation",
+          userId
+        });
+        input.mcpBindings = [fixture.binding];
+        const created = await runs.createRun(input);
+        await prisma.mcpUserServer.update({
+          data: { desiredRuntimeGenerationId: null, enabled: false },
+          where: { id: fixture.preference.id }
+        });
+        await prisma.mcpServer.update({
+          data: { activeRevisionId: null, enabled: false },
+          where: { id: fixture.server.id }
+        });
+        const runtime = createPrismaMcpRuntimeRepository({
+          encryptionKey: () => TEST_MCP_KEY,
+          prisma
+        });
+        const now = new Date("2026-07-22T20:00:00.000Z");
+
+        await expect(runtime.loadAcceptedGeneration(fixture.generation.id, now)).resolves.toMatchObject({
+          fingerprint: fixture.generation.fingerprint,
+          generationId: fixture.generation.id,
+          headers: {},
+          url: "https://mcp.example.test/rpc"
+        });
+        await expect(runtime.markStarting({
+          fingerprint: fixture.generation.fingerprint,
+          generationId: fixture.generation.id,
+          now
+        })).resolves.toBe(true);
+        await expect(runtime.markReady({
+          fingerprint: fixture.generation.fingerprint,
+          generationId: fixture.generation.id,
+          inventory: { tools: [], version: 1 },
+          now
+        })).resolves.toBe(true);
+
+        await prisma.modelRun.update({ data: { status: "complete" }, where: { id: created.runId } });
+        await expect(runtime.loadAcceptedGeneration(fixture.generation.id, now)).resolves.toBeNull();
+        await expect(runtime.markStarting({
+          fingerprint: fixture.generation.fingerprint,
+          generationId: fixture.generation.id,
+          now
+        })).resolves.toBe(false);
+      } finally {
+        await deleteMcpFixture(fixture.server.id);
+      }
+    });
+  });
+
+  it("rolls back the complete run graph when an MCP binding loses eligibility before acceptance", async () => {
+    await withRunUser(async ({ userId }) => {
+      await prisma.user.update({ data: { status: "active" }, where: { id: userId } });
+      const chat = await prisma.chat.create({
+        data: {
+          defaultModelId: "fake-qsa",
+          defaultProvider: "fake",
+          title: "MCP race rollback",
+          userId
+        }
+      });
+      const fixture = await createReadyMcpBinding(userId);
+      try {
+        const repository = createPrismaRunRepository(prisma);
+        const sendInput = createRunInput({
+          chatId: chat.id,
+          question: "This graph must roll back",
+          userId
+        });
+        sendInput.mcpBindings = [fixture.binding];
+        await prisma.mcpUserServer.update({
+          data: { enabled: false },
+          where: { id: fixture.preference.id }
+        });
+
+        await expect(repository.createRun(sendInput)).rejects.toBeInstanceOf(McpRunPlanConflictError);
+        await expect(chatGraph(chat.id)).resolves.toEqual({
+          _count: { messages: 0, modelRuns: 0 },
+          activeLeafMessageId: null,
+          title: "MCP race rollback"
+        });
+        await expect(prisma.mcpRunBinding.count({
+          where: { runtimeGenerationId: fixture.generation.id }
+        })).resolves.toBe(0);
+      } finally {
+        await deleteMcpFixture(fixture.server.id);
+      }
+    });
   });
 
   it("loads only the selected ancestor path in root-to-leaf order", async () => {
@@ -1206,6 +1704,26 @@ describe("Prisma run repository", () => {
         },
         type: "token"
       });
+      const startedAt = new Date("2026-07-23T12:00:00.000Z");
+      await prisma.modelRunToolCall.create({
+        data: {
+          arguments: { apiKey: "sk-private-secret", query: "repository" },
+          completedAt: new Date("2026-07-23T12:00:00.025Z"),
+          modelRunId: created.runId,
+          ordinal: 0,
+          providerCallId: "call-repository",
+          result: {
+            callId: "call-repository",
+            content: [{ text: "found", type: "text" }],
+            name: "local_search",
+            status: "complete"
+          },
+          roundIndex: 1,
+          startedAt,
+          state: "complete",
+          toolName: "local_search"
+        }
+      });
 
       const run = await repository.getRunForUser(created.runId, userId);
 
@@ -1230,8 +1748,19 @@ describe("Prisma run repository", () => {
         reasoningTokens: 0,
         searchRuns: [],
         status: "streaming",
+        toolCalls: [{
+          argumentsPreview: { apiKey: "[redacted]", query: "repository" },
+          callId: "call-repository",
+          capability: "web_search",
+          durationMs: 25,
+          resultPreview: { content: [{ text: "found", type: "text" }] },
+          serverName: null,
+          status: "complete",
+          toolName: "local_search"
+        }],
         totalTokens: 0
       });
+      expect(JSON.stringify(run?.toolCalls)).not.toContain("private-secret");
       await expect(repository.getRunForUser(created.runId, "other-user")).resolves.toBeNull();
     });
   });
@@ -2012,11 +2541,28 @@ describe("Prisma run repository", () => {
     await withRunUser(async ({ userId }) => {
       const repository = createPrismaRunRepository(prisma);
       const preBoot = await createActiveRun(repository, userId, "Pre-boot orphan");
+      const checkpointed = await createActiveRun(repository, userId, "Pre-boot checkpointed run");
+      const background = await createActiveRun(repository, userId, "Pre-boot background run");
       const postBoot = await createActiveRun(repository, userId, "Post-boot live run");
+      await repository.beginToolLoopProviderRound({
+        providerContinuation: { responseId: "accepted-response" },
+        roundIndex: 0,
+        runId: checkpointed.runId,
+        userId
+      });
+      await repository.updateRunProviderResponseId(background.runId, "response-background");
       await Promise.all([
         prisma.modelRun.update({
           data: { createdAt: new Date("2026-07-12T09:59:00.000Z") },
           where: { id: preBoot.runId }
+        }),
+        prisma.modelRun.update({
+          data: { createdAt: new Date("2026-07-12T09:58:00.000Z") },
+          where: { id: checkpointed.runId }
+        }),
+        prisma.modelRun.update({
+          data: { createdAt: new Date("2026-07-12T09:57:00.000Z") },
+          where: { id: background.runId }
         }),
         prisma.modelRun.update({
           data: { createdAt: new Date("2026-07-12T10:01:00.000Z") },
@@ -2030,13 +2576,23 @@ describe("Prisma run repository", () => {
           liveRunIds: []
         })
       ).resolves.toBe(1);
+      await expect(repository.findInstallationRecoverableRuns!({
+        bootedBefore: new Date("2026-07-12T10:00:00.000Z"),
+        limit: 100,
+        staleBefore: new Date("2026-07-12T09:00:00.000Z")
+      })).resolves.toEqual(expect.arrayContaining([
+        expect.objectContaining({ id: checkpointed.runId, userId }),
+        expect.objectContaining({ id: background.runId, userId })
+      ]));
       await expect(
         prisma.modelRun.findMany({
           orderBy: { createdAt: "asc" },
           select: { id: true, status: true },
-          where: { id: { in: [preBoot.runId, postBoot.runId] } }
+          where: { id: { in: [preBoot.runId, checkpointed.runId, background.runId, postBoot.runId] } }
         })
       ).resolves.toEqual([
+        { id: background.runId, status: "streaming" },
+        { id: checkpointed.runId, status: "streaming" },
         { id: preBoot.runId, status: "error" },
         { id: postBoot.runId, status: "streaming" }
       ]);

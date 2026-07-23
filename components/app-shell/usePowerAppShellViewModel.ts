@@ -189,8 +189,8 @@ export function usePowerAppShellViewModel({
     [chats, folders]
   );
   const liveArtifactSummary = useMemo(
-    () => summarizeThreadArtifacts(runEvents, lastRun?.searchRuns),
-    [lastRun?.searchRuns, runEvents]
+    () => summarizeThreadArtifacts(runEvents, lastRun?.searchRuns, lastRun?.toolCalls, lastRun?.status),
+    [lastRun?.searchRuns, lastRun?.status, lastRun?.toolCalls, runEvents]
   );
   const currentPrompt = useMemo(
     () => catalog?.promptPresets.find((prompt) => prompt.id === selectedPromptId) ?? null,

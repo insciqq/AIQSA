@@ -1,4 +1,10 @@
-import { Prisma, type MessageStatus, type ModelRunStatus } from "@prisma/client";
+import { randomUUID } from "node:crypto";
+import {
+  Prisma,
+  type MessageStatus,
+  type ModelRunStatus,
+  type ModelRunToolCallState
+} from "@prisma/client";
 import { textMessageContent } from "../../domain/content";
 import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
 import { normalizeTokenUsage, sumTokenUsage } from "../../domain/usage";
@@ -15,11 +21,26 @@ import {
   ActiveLeafConflictError,
   ActiveRunConflictError,
   AttachmentLinkConflictError,
+  McpRunPlanConflictError,
   type AcceptedRunDefaults,
   type DurableRunControlRecord,
   type RunAttachmentRecord,
   type RunRepository
 } from "./runRepositoryContract";
+import type { McpRunPlanBinding } from "../mcp/runPlan";
+import { persistedToolCallActivity } from "./toolInspection";
+import {
+  isToolLoopJsonValue,
+  parseToolLoopCheckpoint,
+  snapshotToolLoopJson,
+  toolLoopCheckpoint,
+  toolLoopPersistenceLimits,
+  type CheckpointedToolLoopRun,
+  type PersistedToolLoopCall,
+  type PersistToolLoopCallBatchInput,
+  type ToolLoopCheckpointV1,
+  type ToolLoopJsonValue
+} from "./toolLoopPersistence";
 
 function json(value: unknown): Prisma.InputJsonValue {
   return value as Prisma.InputJsonValue;
@@ -31,6 +52,78 @@ function unique(values: string[]): string[] {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function canonicalJson(value: ToolLoopJsonValue): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (value && typeof value === "object") {
+    return `{${Object.keys(value).sort().map((key) =>
+      `${JSON.stringify(key)}:${canonicalJson(value[key]!)}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function toolLoopArguments(value: unknown): Readonly<Record<string, ToolLoopJsonValue>> | null {
+  const snapshot = snapshotToolLoopJson(value, toolLoopPersistenceLimits.argumentsBytes);
+  return snapshot && isRecord(snapshot)
+    ? snapshot as Readonly<Record<string, ToolLoopJsonValue>>
+    : null;
+}
+
+type ToolLoopCallRecord = {
+  arguments: Prisma.JsonValue;
+  completedAt: Date | null;
+  id: string;
+  mcpRunBinding: {
+    id: string;
+    runtimeGenerationFingerprint: string;
+    runtimeGenerationId: string | null;
+  } | null;
+  ordinal: number;
+  providerCallId: string;
+  result: Prisma.JsonValue | null;
+  roundIndex: number;
+  startedAt: Date | null;
+  state: ModelRunToolCallState;
+  toolName: string;
+};
+
+const toolLoopCallInclude = {
+  mcpRunBinding: {
+    select: {
+      id: true,
+      runtimeGenerationFingerprint: true,
+      runtimeGenerationId: true
+    }
+  }
+} satisfies Prisma.ModelRunToolCallInclude;
+
+function persistedToolLoopCall(call: ToolLoopCallRecord): PersistedToolLoopCall {
+  const argumentsValue = toolLoopArguments(call.arguments);
+  const result = call.result === null
+    ? null
+    : snapshotToolLoopJson(call.result, toolLoopPersistenceLimits.resultBytes);
+  if (!argumentsValue || (call.result !== null && result === null)) {
+    throw new Error("tool_loop_call_invalid_in_storage");
+  }
+  return {
+    arguments: argumentsValue,
+    completedAt: call.completedAt?.toISOString() ?? null,
+    id: call.id,
+    mcpBinding: call.mcpRunBinding,
+    ordinal: call.ordinal,
+    providerCallId: call.providerCallId,
+    result,
+    roundIndex: call.roundIndex,
+    startedAt: call.startedAt?.toISOString() ?? null,
+    state: call.state,
+    toolName: call.toolName
+  };
+}
+
+function sameCheckpoint(left: ToolLoopCheckpointV1, right: ToolLoopCheckpointV1): boolean {
+  return canonicalJson(left as unknown as ToolLoopJsonValue) ===
+    canonicalJson(right as unknown as ToolLoopJsonValue);
 }
 
 function numberValue(value: unknown): number | null {
@@ -126,9 +219,120 @@ async function persistAcceptedRunDefaults(
   }
 }
 
+export async function insertAcceptedMcpRunBindings(
+  tx: Pick<Prisma.TransactionClient, "$executeRaw">,
+  input: {
+    bindings: McpRunPlanBinding[] | undefined;
+    runId: string;
+    userId: string;
+  }
+): Promise<void> {
+  const bindings = input.bindings ?? [];
+  const serverIds = new Set<string>();
+  const generationIds = new Set<string>();
+  const fingerprints = new Set<string>();
+  for (const binding of bindings) {
+    if (!binding.serverId || !binding.runtimeGenerationId || !binding.fingerprint ||
+      serverIds.has(binding.serverId) || generationIds.has(binding.runtimeGenerationId) ||
+      fingerprints.has(binding.fingerprint)) {
+      throw new McpRunPlanConflictError();
+    }
+    serverIds.add(binding.serverId);
+    generationIds.add(binding.runtimeGenerationId);
+    fingerprints.add(binding.fingerprint);
+  }
+
+  for (const binding of bindings) {
+    const inserted = await tx.$executeRaw`
+      INSERT INTO "McpRunBinding" (
+        "id",
+        "modelRunId",
+        "runtimeGenerationId",
+        "runtimeGenerationFingerprint"
+      )
+      SELECT
+        ${randomUUID()},
+        ${input.runId},
+        generation."id",
+        generation."fingerprint"
+      FROM "McpRuntimeGeneration" AS generation
+      INNER JOIN "McpUserServer" AS preference
+        ON preference."id" = generation."userServerId"
+      INNER JOIN "McpServer" AS server
+        ON server."id" = preference."serverId"
+      INNER JOIN "User" AS owner
+        ON owner."id" = preference."userId"
+      WHERE owner."id" = ${input.userId}
+        AND owner."status" = 'active'
+        AND preference."enabled" = true
+        AND preference."desiredRuntimeGenerationId" = generation."id"
+        AND server."id" = ${binding.serverId}
+        AND server."enabled" = true
+        AND server."archivedAt" IS NULL
+        AND server."activeRevisionId" = generation."revisionId"
+        AND generation."id" = ${binding.runtimeGenerationId}
+        AND generation."fingerprint" = ${binding.fingerprint}
+        AND generation."state" = 'ready'
+        AND generation."inventory" IS NOT NULL
+        AND generation."inventoryUpdatedAt" IS NOT NULL
+        AND generation."inventoryUpdatedAt" >= CURRENT_TIMESTAMP - INTERVAL '5 minutes'
+        AND EXISTS (
+          SELECT 1
+          FROM "McpGrant" AS mcp_grant
+          WHERE mcp_grant."serverId" = server."id"
+            AND mcp_grant."canUse" = true
+            AND (
+              mcp_grant."userId" = ${input.userId}
+              OR mcp_grant."groupId" IN (
+                SELECT membership."groupId"
+                FROM "UserGroup" AS membership
+                INNER JOIN "Group" AS member_group
+                  ON member_group."id" = membership."groupId"
+                  AND member_group."archivedAt" IS NULL
+                WHERE membership."userId" = ${input.userId}
+              )
+            )
+        )
+    `;
+    if (inserted !== 1) throw new McpRunPlanConflictError();
+  }
+}
+
 const activeModelRunStatuses: ModelRunStatus[] = ["streaming", "queued", "in_progress"];
 const activeMessageStatuses: MessageStatus[] = ["streaming", "queued"];
 const recoveredRunTerminalMarker = "recoveryTerminal";
+
+type LockedToolLoopRun = {
+  assistantMessageId: string | null;
+  errorPayload: Prisma.JsonValue | null;
+  providerResponseId: string | null;
+  status: ModelRunStatus;
+  toolLoopState: Prisma.JsonValue | null;
+};
+
+async function lockToolLoopRun(
+  tx: Prisma.TransactionClient,
+  input: { runId: string; userId: string }
+): Promise<LockedToolLoopRun | null> {
+  const [run] = await tx.$queryRaw<LockedToolLoopRun[]>(Prisma.sql`
+    SELECT
+      "assistantMessageId",
+      "errorPayload",
+      "providerResponseId",
+      "status",
+      "toolLoopState"
+    FROM "ModelRun"
+    WHERE "id" = ${input.runId}
+      AND "userId" = ${input.userId}
+    FOR UPDATE
+  `);
+  return run ?? null;
+}
+
+function activeToolLoopRun(run: LockedToolLoopRun): boolean {
+  return activeModelRunStatuses.includes(run.status) ||
+    (run.status === "error" && !isRecoveredRunTerminalPayload(run.errorPayload));
+}
 
 function isRecoveredRunTerminalPayload(value: unknown): boolean {
   return isRecord(value) && value[recoveredRunTerminalMarker] === true;
@@ -278,6 +482,44 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
   }
 
   return {
+    advanceToolLoopCallBatch: async (input) => {
+      if (!Number.isSafeInteger(input.roundIndex) || input.roundIndex < 0 ||
+        input.roundIndex > toolLoopPersistenceLimits.roundIndex) return "conflict";
+      return prismaClient.$transaction(async (tx) => {
+        const run = await lockToolLoopRun(tx, input);
+        if (!run) return "not_found" as const;
+        if (run.status === "cancelled") return "cancelled" as const;
+        if (!activeToolLoopRun(run)) return "conflict" as const;
+        const checkpoint = parseToolLoopCheckpoint(run.toolLoopState);
+        if (!checkpoint || checkpoint.roundIndex !== input.roundIndex ||
+          (checkpoint.phase !== "tools_pending" && checkpoint.phase !== "tools_running")) {
+          return "conflict" as const;
+        }
+        const calls = await tx.modelRunToolCall.findMany({
+          select: { state: true },
+          where: { modelRunId: input.runId, roundIndex: input.roundIndex }
+        });
+        if (calls.length === 0) return "conflict" as const;
+        if (calls.some((call) => call.state !== "complete" && call.state !== "error")) {
+          return "incomplete" as const;
+        }
+        const next = toolLoopCheckpoint({
+          phase: "provider_running",
+          providerContinuation: checkpoint.providerContinuation,
+          providerCursor: checkpoint.providerCursor,
+          roundIndex: checkpoint.roundIndex + 1
+        });
+        if (!next) return "conflict" as const;
+        await tx.modelRun.update({
+          data: {
+            providerResponseId: null,
+            toolLoopState: json(next)
+          },
+          where: { id: input.runId }
+        });
+        return "advanced" as const;
+      });
+    },
     appendAssistantText: async (assistantMessageId, text) => {
       await prismaClient.message.updateMany({
         data: {
@@ -290,6 +532,96 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
         }
       });
     },
+    beginToolLoopProviderRound: async (input) => {
+      const checkpoint = toolLoopCheckpoint({
+        phase: "provider_running",
+        providerContinuation: input.providerContinuation,
+        providerCursor: input.providerCursor,
+        roundIndex: input.roundIndex
+      });
+      if (!checkpoint) return "conflict";
+      return prismaClient.$transaction(async (tx) => {
+        const run = await lockToolLoopRun(tx, input);
+        if (!run) return "not_found" as const;
+        if (run.status === "cancelled") return "cancelled" as const;
+        if (!activeToolLoopRun(run)) return "conflict" as const;
+        if (run.toolLoopState !== null) {
+          const current = parseToolLoopCheckpoint(run.toolLoopState);
+          return current && sameCheckpoint(current, checkpoint)
+            ? "reused" as const
+            : "conflict" as const;
+        }
+        await tx.modelRun.update({
+          data: {
+            providerResponseId: null,
+            toolLoopState: json(checkpoint)
+          },
+          where: { id: input.runId }
+        });
+        return "started" as const;
+      });
+    },
+    cancelPendingToolLoopCalls: async (input) => {
+      const cancelled = await prismaClient.modelRunToolCall.updateMany({
+        data: {
+          completedAt: new Date(),
+          state: "cancelled"
+        },
+        where: {
+          modelRun: { id: input.runId, userId: input.userId },
+          state: "pending"
+        }
+      });
+      return cancelled.count;
+    },
+    claimToolLoopCall: async (input) => prismaClient.$transaction(async (tx) => {
+      const run = await lockToolLoopRun(tx, input);
+      if (!run) return { kind: "not_found" as const };
+      let call = await tx.modelRunToolCall.findFirst({
+        include: toolLoopCallInclude,
+        where: { id: input.callId, modelRunId: input.runId }
+      });
+      if (!call) return { kind: "not_found" as const };
+      if (call.state === "complete" || call.state === "error") {
+        return { call: persistedToolLoopCall(call), kind: "settled" as const };
+      }
+      if (call.state === "running") {
+        return { call: persistedToolLoopCall(call), kind: "ambiguous" as const };
+      }
+      if (call.state === "cancelled") {
+        return { call: persistedToolLoopCall(call), kind: "cancelled" as const };
+      }
+      if (!activeToolLoopRun(run)) {
+        call = await tx.modelRunToolCall.update({
+          data: { completedAt: new Date(), state: "cancelled" },
+          include: toolLoopCallInclude,
+          where: { id: call.id }
+        });
+        return { call: persistedToolLoopCall(call), kind: "cancelled" as const };
+      }
+      const checkpoint = parseToolLoopCheckpoint(run.toolLoopState);
+      if (!checkpoint || checkpoint.roundIndex !== call.roundIndex ||
+        (checkpoint.phase !== "tools_pending" && checkpoint.phase !== "tools_running")) {
+        return { kind: "not_found" as const };
+      }
+      const runningCheckpoint = toolLoopCheckpoint({
+        ...checkpoint,
+        phase: "tools_running"
+      });
+      if (!runningCheckpoint) return { kind: "not_found" as const };
+      call = await tx.modelRunToolCall.update({
+        data: { startedAt: new Date(), state: "running" },
+        include: toolLoopCallInclude,
+        where: { id: call.id }
+      });
+      if (checkpoint.phase !== "tools_running") {
+        await tx.modelRun.update({
+          data: { toolLoopState: json(runningCheckpoint) },
+          where: { id: input.runId }
+        });
+      }
+      return { call: persistedToolLoopCall(call), kind: "claimed" as const };
+    }),
     appendRunEvent: async (runId, sequence, event) => {
       await prismaClient.$transaction(async (tx) => {
         await tx.modelRunEvent.create({
@@ -336,7 +668,9 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
               : {}),
             status: {
               in: activeModelRunStatuses
-            }
+            },
+            providerResponseId: null,
+            toolLoopState: { equals: Prisma.DbNull }
           }
         });
 
@@ -356,7 +690,9 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
             },
             status: {
               in: activeModelRunStatuses
-            }
+            },
+            providerResponseId: null,
+            toolLoopState: { equals: Prisma.DbNull }
           }
         });
         const assistantMessageIds = unique(
@@ -428,6 +764,17 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
             run: runControlRecord(run)
           } as const;
         }
+
+        await tx.modelRunToolCall.updateMany({
+          data: {
+            completedAt: new Date(),
+            state: "cancelled"
+          },
+          where: {
+            modelRunId: input.runId,
+            state: "pending"
+          }
+        });
 
         if (run.assistantMessageId) {
           await tx.message.updateMany({
@@ -734,6 +1081,12 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
             }
           });
 
+          await insertAcceptedMcpRunBindings(tx, {
+            bindings: input.mcpBindings,
+            runId: run.id,
+            userId: input.userId
+          });
+
           await persistAcceptedRunDefaults(tx, input.userId, input.defaults);
 
           await tx.chat.update({
@@ -835,6 +1188,12 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
             }
           });
 
+          await insertAcceptedMcpRunBindings(tx, {
+            bindings: input.mcpBindings,
+            runId: run.id,
+            userId: input.userId
+          });
+
           await persistAcceptedRunDefaults(tx, input.userId, input.defaults);
 
           await tx.chat.update({
@@ -855,6 +1214,21 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
       );
     },
     createSearchRun: async (input) => {
+      const artifacts = isRecord(input.artifacts) ? input.artifacts : null;
+      const toolCall = artifacts && isRecord(artifacts.toolCall) ? artifacts.toolCall : null;
+      const providerCallId = toolCall && typeof toolCall.id === "string" ? toolCall.id : null;
+      if (providerCallId) {
+        const existing = await prismaClient.searchRun.findFirst({
+          select: { id: true },
+          where: {
+            artifacts: { path: ["toolCall", "id"], equals: providerCallId },
+            modelRunId: input.modelRunId,
+            provider: input.provider,
+            strategyId: input.strategyId
+          }
+        });
+        if (existing) return;
+      }
       await prismaClient.searchRun.create({
         data: {
           artifacts: json(input.artifacts),
@@ -885,6 +1259,17 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
         if (updatedRun.count === 0) {
           return false;
         }
+
+        await tx.modelRunToolCall.updateMany({
+          data: {
+            completedAt: new Date(),
+            state: "cancelled"
+          },
+          where: {
+            modelRunId: runId,
+            state: "pending"
+          }
+        });
 
         await tx.message.updateMany({
           data: {
@@ -1003,6 +1388,35 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
           }
         }
       }),
+    findInstallationRecoverableRuns: (input) =>
+      prismaClient.modelRun.findMany({
+        orderBy: { updatedAt: "asc" },
+        select: {
+          assistantMessageId: true,
+          chatId: true,
+          id: true,
+          modelId: true,
+          provider: true,
+          providerResponseId: true,
+          status: true,
+          updatedAt: true,
+          userId: true
+        },
+        take: input.limit,
+        where: {
+          OR: [
+            {
+              createdAt: { lt: input.bootedBefore },
+              OR: [
+                { providerResponseId: { not: null } },
+                { toolLoopState: { not: Prisma.DbNull } }
+              ]
+            },
+            { updatedAt: { lt: input.staleBefore } }
+          ],
+          status: { in: activeModelRunStatuses }
+        }
+      }),
     findRegenerationSource: async (assistantMessageId, userId) => {
       const assistantMessage = await prismaClient.message.findFirst({
         include: {
@@ -1101,6 +1515,9 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
             orderBy: {
               createdAt: "asc"
             }
+          },
+          toolCalls: {
+            orderBy: [{ roundIndex: "asc" }, { ordinal: "asc" }]
           }
         },
         where: {
@@ -1150,6 +1567,14 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
           updatedAt: searchRun.updatedAt.toISOString()
         })),
         status: run.status,
+        toolCalls: run.toolCalls.flatMap((call) => {
+          const activity = persistedToolCallActivity({
+            call,
+            normalizedRequest: run.normalizedRequest,
+            runStatus: run.status
+          });
+          return activity ? [activity] : [];
+        }),
         updatedAt: run.updatedAt.toISOString(),
         userMessageId: run.userMessageId
       };
@@ -1188,6 +1613,7 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
                     }
                   },
                   id: true,
+                  normalizedRequest: true,
                   searchRuns: {
                     orderBy: {
                       createdAt: "asc"
@@ -1201,7 +1627,22 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
                       strategyId: true
                     }
                   },
-                  status: true
+                  status: true,
+                  toolCalls: {
+                    orderBy: [{ roundIndex: "asc" }, { ordinal: "asc" }],
+                    select: {
+                      arguments: true,
+                      completedAt: true,
+                      mcpRunBindingId: true,
+                      ordinal: true,
+                      providerCallId: true,
+                      result: true,
+                      roundIndex: true,
+                      startedAt: true,
+                      state: true,
+                      toolName: true
+                    }
+                  }
                 },
                 take: 1
               }
@@ -1400,14 +1841,28 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
 
       return {
         capabilities: {
+          backgroundStreaming:
+            typeof defaultCapabilities.backgroundStreaming === "boolean"
+              ? defaultCapabilities.backgroundStreaming
+              : false,
           contextWindow: model.contextWindow,
           defaultMaxOutputTokens: defaultMaxOutputTokens(model.defaultParams),
+          nativeBackground:
+            typeof defaultCapabilities.nativeBackground === "boolean"
+              ? defaultCapabilities.nativeBackground
+              : false,
           nativePdfInput:
             typeof defaultCapabilities.nativePdfInput === "boolean" ? defaultCapabilities.nativePdfInput : false,
           nativeSearch: model.supportsNativeSearch,
+          parallelToolCalls:
+            typeof defaultCapabilities.parallelToolCalls === "boolean"
+              ? defaultCapabilities.parallelToolCalls
+              : false,
           pdf: model.supportsPdf,
           reasoning: model.supportsReasoning,
           streaming: typeof defaultCapabilities.streaming === "boolean" ? defaultCapabilities.streaming : false,
+          toolCalling:
+            typeof defaultCapabilities.toolCalling === "boolean" ? defaultCapabilities.toolCalling : false,
           vision: model.supportsVision
         },
         defaultParams: isRecord(model.defaultParams)
@@ -1434,7 +1889,186 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
             inputTokenPriceMicros: model.inputTokenPriceMicros,
             outputTokenPriceMicros: model.outputTokenPriceMicros
           }
-        : null;
+          : null;
+    },
+    loadRunUsageAttributions: async (input) => {
+      const rows = await prismaClient.usageEvent.findMany({
+        orderBy: { createdAt: "asc" },
+        select: {
+          cachedInputTokens: true,
+          cacheWriteInputTokens: true,
+          estimatedCostMicros: true,
+          inputTokens: true,
+          modelId: true,
+          outputTokens: true,
+          provider: true,
+          reasoningTokens: true,
+          totalTokens: true
+        },
+        where: { modelRunId: input.runId, userId: input.userId }
+      });
+      return rows.map((row) => ({
+        estimatedCostMicros: row.estimatedCostMicros,
+        modelId: row.modelId,
+        provider: row.provider,
+        usage: {
+          cachedInputTokens: row.cachedInputTokens,
+          cacheWriteInputTokens: row.cacheWriteInputTokens,
+          inputTokens: row.inputTokens,
+          outputTokens: row.outputTokens,
+          reasoningTokens: row.reasoningTokens,
+          totalTokens: row.totalTokens
+        }
+      }));
+    },
+    loadCheckpointedToolLoopRun: async (input) => {
+      const run = await prismaClient.modelRun.findFirst({
+        include: {
+          toolCalls: {
+            include: toolLoopCallInclude,
+            orderBy: [{ roundIndex: "asc" }, { ordinal: "asc" }]
+          }
+        },
+        where: { id: input.runId, userId: input.userId }
+      });
+      if (!run || run.toolLoopState === null) return null;
+      const checkpoint = parseToolLoopCheckpoint(run.toolLoopState);
+      if (!checkpoint) throw new Error("tool_loop_checkpoint_invalid_in_storage");
+      return {
+        assistantMessageId: run.assistantMessageId,
+        calls: run.toolCalls.map(persistedToolLoopCall),
+        chatId: run.chatId,
+        checkpoint,
+        id: run.id,
+        modelId: run.modelId,
+        normalizedRequest: run.normalizedRequest as unknown as CheckpointedToolLoopRun["normalizedRequest"],
+        provider: run.provider,
+        providerResponseId: run.providerResponseId,
+        status: run.status,
+        userId: run.userId
+      };
+    },
+    persistToolLoopCallBatch: async (input: PersistToolLoopCallBatchInput) => {
+      if (!Number.isSafeInteger(input.roundIndex) || input.roundIndex < 0 ||
+        input.roundIndex > toolLoopPersistenceLimits.roundIndex || input.calls.length === 0 ||
+        input.calls.length > toolLoopPersistenceLimits.batchCalls) {
+        return { kind: "conflict" as const };
+      }
+      const providerCallIds = new Set<string>();
+      const preparedCalls: Array<{
+        arguments: Readonly<Record<string, ToolLoopJsonValue>>;
+        ordinal: number;
+        providerCallId: string;
+        runtimeGenerationFingerprint: string | null;
+        toolName: string;
+      }> = [];
+      for (const [index, call] of input.calls.entries()) {
+        const argumentsValue = toolLoopArguments(call.arguments);
+        const runtimeFingerprint = call.runtimeGenerationFingerprint ?? null;
+        if (!argumentsValue || call.ordinal !== index || !call.providerCallId.trim() ||
+          call.providerCallId.length > toolLoopPersistenceLimits.providerCallIdLength ||
+          providerCallIds.has(call.providerCallId) || !call.toolName.trim() ||
+          call.toolName.length > toolLoopPersistenceLimits.toolNameLength ||
+          (runtimeFingerprint !== null && !/^[a-f0-9]{64}$/u.test(runtimeFingerprint))) {
+          return { kind: "conflict" as const };
+        }
+        providerCallIds.add(call.providerCallId);
+        preparedCalls.push({
+          arguments: argumentsValue,
+          ordinal: call.ordinal,
+          providerCallId: call.providerCallId,
+          runtimeGenerationFingerprint: runtimeFingerprint,
+          toolName: call.toolName
+        });
+      }
+      const pendingCheckpoint = toolLoopCheckpoint({
+        phase: "tools_pending",
+        providerContinuation: input.providerContinuation,
+        providerCursor: input.providerCursor,
+        roundIndex: input.roundIndex
+      });
+      if (!pendingCheckpoint) return { kind: "conflict" as const };
+
+      return prismaClient.$transaction(async (tx) => {
+        const run = await lockToolLoopRun(tx, input);
+        if (!run) return { kind: "not_found" as const };
+        if (run.status === "cancelled") return { kind: "cancelled" as const };
+        if (!activeToolLoopRun(run)) return { kind: "conflict" as const };
+        const current = parseToolLoopCheckpoint(run.toolLoopState);
+        if (!current) return { kind: "conflict" as const };
+
+        const existing = await tx.modelRunToolCall.findMany({
+          include: toolLoopCallInclude,
+          orderBy: { ordinal: "asc" },
+          where: { modelRunId: input.runId, roundIndex: input.roundIndex }
+        });
+        if (existing.length > 0) {
+          const sameContinuation = current.roundIndex === pendingCheckpoint.roundIndex &&
+            (current.phase === "tools_pending" || current.phase === "tools_running") &&
+            canonicalJson(current.providerContinuation) ===
+              canonicalJson(pendingCheckpoint.providerContinuation) &&
+            canonicalJson(current.providerCursor) === canonicalJson(pendingCheckpoint.providerCursor);
+          const sameCalls = existing.length === preparedCalls.length && existing.every((call, index) => {
+            const expected = preparedCalls[index];
+            const argumentsValue = toolLoopArguments(call.arguments);
+            return Boolean(expected && argumentsValue && call.ordinal === expected.ordinal &&
+              call.providerCallId === expected.providerCallId && call.toolName === expected.toolName &&
+              (call.mcpRunBinding?.runtimeGenerationFingerprint ?? null) ===
+                expected.runtimeGenerationFingerprint &&
+              canonicalJson(argumentsValue!) === canonicalJson(expected.arguments as Record<string, ToolLoopJsonValue>));
+          });
+          return sameContinuation && sameCalls
+            ? { calls: existing.map(persistedToolLoopCall), kind: "reused" as const }
+            : { kind: "conflict" as const };
+        }
+        if (current.phase !== "provider_running" || current.roundIndex !== input.roundIndex) {
+          return { kind: "conflict" as const };
+        }
+
+        const fingerprints = [...new Set(preparedCalls.flatMap((call) =>
+          call.runtimeGenerationFingerprint ? [call.runtimeGenerationFingerprint] : []))];
+        const bindings = fingerprints.length
+          ? await tx.mcpRunBinding.findMany({
+              select: { id: true, runtimeGenerationFingerprint: true },
+              where: {
+                modelRunId: input.runId,
+                runtimeGenerationFingerprint: { in: fingerprints }
+              }
+            })
+          : [];
+        const bindingsByFingerprint = new Map(bindings.map((binding) =>
+          [binding.runtimeGenerationFingerprint, binding.id]));
+        if (bindingsByFingerprint.size !== fingerprints.length) {
+          return { kind: "conflict" as const };
+        }
+
+        for (const call of preparedCalls) {
+          await tx.modelRunToolCall.create({
+            data: {
+              arguments: json(call.arguments),
+              mcpRunBindingId: call.runtimeGenerationFingerprint
+                ? bindingsByFingerprint.get(call.runtimeGenerationFingerprint)!
+                : null,
+              modelRunId: input.runId,
+              ordinal: call.ordinal,
+              providerCallId: call.providerCallId,
+              roundIndex: input.roundIndex,
+              state: "pending",
+              toolName: call.toolName
+            }
+          });
+        }
+        await tx.modelRun.update({
+          data: { toolLoopState: json(pendingCheckpoint) },
+          where: { id: input.runId }
+        });
+        const persisted = await tx.modelRunToolCall.findMany({
+          include: toolLoopCallInclude,
+          orderBy: { ordinal: "asc" },
+          where: { modelRunId: input.runId, roundIndex: input.roundIndex }
+        });
+        return { calls: persisted.map(persistedToolLoopCall), kind: "persisted" as const };
+      });
     },
     recordRunUsageEvents: async (input) => {
       if (input.usageAttributions.length === 0) {
@@ -1495,6 +2129,45 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
             totalTokens: attribution.usage.totalTokens,
             userId: input.userId
           }))
+        });
+        return true;
+      });
+    },
+    resetToolLoopAssistantDraft: async (input) => {
+      if (!Number.isSafeInteger(input.roundIndex) || input.roundIndex < 0 ||
+        input.roundIndex > toolLoopPersistenceLimits.roundIndex ||
+        !Number.isInteger(input.sequence) || input.sequence < 0) return false;
+      return prismaClient.$transaction(async (tx) => {
+        const run = await lockToolLoopRun(tx, input);
+        if (!run || !activeToolLoopRun(run) || !run.assistantMessageId) return false;
+        const checkpoint = parseToolLoopCheckpoint(run.toolLoopState);
+        if (!checkpoint || checkpoint.roundIndex !== input.roundIndex ||
+          (checkpoint.phase !== "tools_pending" && checkpoint.phase !== "tools_running")) {
+          return false;
+        }
+        const reset = await tx.message.updateMany({
+          data: {
+            content: json(textMessageContent("")),
+            errorMessage: null,
+            status: "streaming"
+          },
+          where: {
+            id: run.assistantMessageId,
+              status: { in: [...activeMessageStatuses, "error"] }
+          }
+        });
+        if (reset.count !== 1) return false;
+        await tx.modelRunEvent.create({
+          data: {
+            eventType: "message_reset",
+            modelRunId: input.runId,
+            payload: json({ round: input.roundIndex }),
+            sequence: input.sequence
+          }
+        });
+        await tx.modelRun.update({
+          data: { updatedAt: new Date() },
+          where: { id: input.runId }
         });
         return true;
       });
@@ -1635,6 +2308,39 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
         });
 
         return true;
+      });
+    },
+    settleToolLoopCall: async (input) => {
+      const result = snapshotToolLoopJson(input.result, toolLoopPersistenceLimits.resultBytes);
+      if (result === null && input.result !== null) return "conflict";
+      return prismaClient.$transaction(async (tx) => {
+        const run = await lockToolLoopRun(tx, input);
+        if (!run) return "not_found" as const;
+        const call = await tx.modelRunToolCall.findFirst({
+          select: { id: true, result: true, state: true },
+          where: { id: input.callId, modelRunId: input.runId }
+        });
+        if (!call) return "not_found" as const;
+        if (call.state === "complete" || call.state === "error") {
+          const existing = call.result === null
+            ? null
+            : snapshotToolLoopJson(call.result, toolLoopPersistenceLimits.resultBytes);
+          return call.state === input.state &&
+            (call.result === null || existing !== null) &&
+            canonicalJson(existing) === canonicalJson(result)
+            ? "reused" as const
+            : "conflict" as const;
+        }
+        if (call.state !== "running") return "conflict" as const;
+        await tx.modelRunToolCall.update({
+          data: {
+            completedAt: new Date(),
+            result: result === null ? Prisma.JsonNull : json(result),
+            state: input.state
+          },
+          where: { id: call.id }
+        });
+        return "settled" as const;
       });
     },
     nextRunEventSequence: async (runId) => {

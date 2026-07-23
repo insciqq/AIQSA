@@ -490,6 +490,75 @@ describe("OpenRouter Chat response normalization", () => {
     });
   });
 
+  it("assembles ordered parallel tool calls from streamed argument fragments", async () => {
+    const normalized = await collect(
+      streamOpenRouterSseResponse(
+        sseResponse([
+          `data: ${JSON.stringify({
+            choices: [
+              {
+                delta: {
+                  tool_calls: [
+                    {
+                      function: { arguments: '{"page":', name: "notion__fetch" },
+                      id: "call-notion",
+                      index: 0,
+                      type: "function"
+                    },
+                    {
+                      function: { arguments: '{"query":"', name: "mem0__search" },
+                      id: "call-mem0",
+                      index: 1,
+                      type: "function"
+                    }
+                  ]
+                },
+                finish_reason: null
+              }
+            ],
+            id: "or-tools-1"
+          })}\n\n`,
+          `data: ${JSON.stringify({
+            choices: [
+              {
+                delta: {
+                  tool_calls: [
+                    { function: { arguments: '42}' }, index: 0 },
+                    { function: { arguments: 'ADR"}' }, index: 1 }
+                  ]
+                },
+                finish_reason: "tool_calls"
+              }
+            ],
+            id: "or-tools-1"
+          })}\n\n`,
+          "data: [DONE]\n\n"
+        ]),
+        responseContext
+      )
+    );
+
+    expect(normalized.result.toolCalls).toMatchObject([
+      {
+        arguments: { page: 42 },
+        id: "call-notion",
+        name: "notion__fetch"
+      },
+      {
+        arguments: { query: "ADR" },
+        id: "call-mem0",
+        name: "mem0__search"
+      }
+    ]);
+    expect(normalized.result.providerToolCallMessage).toMatchObject({
+      role: "assistant",
+      tool_calls: [
+        { id: "call-notion", type: "function" },
+        { id: "call-mem0", type: "function" }
+      ]
+    });
+  });
+
   it("uses the response header id and legacy sparse zero usage when the stream ends without JSON", async () => {
     const normalized = await collect(
       streamOpenRouterSseResponse(

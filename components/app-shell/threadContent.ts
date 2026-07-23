@@ -5,6 +5,10 @@ import type {
   ThreadCitation
 } from "@/components/app-shell/types";
 import { safeExternalHref } from "@/lib/domain/links";
+import {
+  mergeThreadToolActivity,
+  projectThreadToolActivity
+} from "@/lib/domain/toolActivity";
 
 function artifactTypeFromEvent(event: RunEventView): string | null {
   return event.type === "artifact" &&
@@ -197,7 +201,9 @@ function contextTruncationFromValue(
 
 export function summarizeThreadArtifacts(
   events: RunEventView[],
-  searchRuns?: unknown[]
+  searchRuns?: unknown[],
+  durableToolCalls: ThreadArtifactSummary["toolCalls"] = [],
+  runStatus?: string
 ): ThreadArtifactSummary | null {
   const searchArtifacts = events.filter(
     (event) => artifactTypeFromEvent(event) === "search"
@@ -234,12 +240,28 @@ export function summarizeThreadArtifacts(
     .filter((text): text is string => Boolean(text));
   const reasoningCount =
     reasoningText.length > 0 ? reasoningText.length : reasoningEvents.length;
+  const eventToolCalls = projectThreadToolActivity(
+    events.filter((event) => event.type === "artifact").map((event) => event.data),
+    runStatus
+  );
+  const toolCallsById = new Map(eventToolCalls.map((call) => [call.callId, call]));
+  for (const call of durableToolCalls) {
+    const eventCall = toolCallsById.get(call.callId);
+    toolCallsById.set(
+      call.callId,
+      eventCall ? mergeThreadToolActivity(eventCall, call) : call
+    );
+  }
+  const toolCalls = [...toolCallsById.values()].sort(
+    (left, right) => left.round - right.round || left.ordinal - right.ordinal
+  );
 
   if (
     searchCount === 0 &&
     reasoningEvents.length === 0 &&
     citationCount === 0 &&
-    !contextTruncation
+    !contextTruncation &&
+    toolCalls.length === 0
   ) {
     return null;
   }
@@ -255,7 +277,9 @@ export function summarizeThreadArtifacts(
     searchStrategy:
       searchArtifacts
         .map(searchStrategyFromEvent)
-        .find((strategy): strategy is string => Boolean(strategy)) ?? null
+        .find((strategy): strategy is string => Boolean(strategy)) ?? null,
+    toolCallCount: toolCalls.length,
+    toolCalls
   };
 }
 

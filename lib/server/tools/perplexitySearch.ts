@@ -20,7 +20,8 @@ export const perplexityWebSearchTool: RunTool = {
     required: ["keyword"],
     type: "object"
   },
-  name: "search_via_perplexity"
+  name: "search_via_perplexity",
+  strict: true
 };
 
 function stringArgument(call: ModelToolCall, keys: string[]): string {

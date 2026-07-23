@@ -11,9 +11,17 @@ docker compose -f docker-compose.dev.yml up -d --build
 docker compose -f docker-compose.dev.yml ps
 ```
 
-Open [http://localhost:3000](http://localhost:3000). The development stack enables its committed local fixture and deterministic Fake QSA provider for tests; neither is part of the normal installation or `.env.example`.
+Open [http://localhost:3000](http://localhost:3000). The development stack enables its committed local fixtures and deterministic Fake QSA provider for tests; none is part of the normal installation or `.env.example`.
 
-Source code is bind-mounted into the application container, so normal edits are picked up by Next.js. The dev service blanks provider and OAuth credentials even when the normal installation `.env` contains them. For an intentional one-off adapter smoke, pass only the required key explicitly, for example `docker compose -f docker-compose.dev.yml run -e OPENAI_API_KEY ...`; routine automated tests use Fake QSA and never make paid calls.
+The disposable development logins are:
+
+- administrator: `operator@aiqsa.local` / `AIQSA-local-2026!`;
+- MCP member: `mcp-member@aiqsa.local` / `AIQSA-mcp-member-2026!`;
+- restricted member: `restricted-member@aiqsa.local` / `AIQSA-restricted-member-2026!`.
+
+The two ordinary accounts make permission checks reproducible. Both see the group-granted `Fixture Shared MCP`; only MCP Member may edit its `Fixture workspace` field and see the directly granted `Fixture Private MCP`. These known credentials and fixed MCP definitions are repaired by the guarded local seed and must never be used for an exposed installation.
+
+Source code is bind-mounted into the application container, so normal edits are picked up by Next.js. The dev service blanks provider and sign-in OAuth credentials even when the normal installation `.env` contains them. It uses a deterministic development-only MCP encryption key and a separate ToolHive volume/private network; ToolHive still receives the host Docker socket, so this stack can create real sibling containers. For an intentional one-off adapter smoke, pass only the required key explicitly, for example `docker compose -f docker-compose.dev.yml run -e OPENAI_API_KEY ...`; routine automated tests use Fake QSA and never make paid calls.
 
 ## Checks
 
@@ -47,13 +55,20 @@ Stop the development containers while preserving their disposable volumes:
 docker compose -f docker-compose.dev.yml down
 ```
 
-Reset only the development data:
+Dynamic ToolHive MCP workloads are not removed by `down -v`. Before a complete development reset, remove only workloads bearing the deterministic dev installation marker:
+
+```bash
+docker compose -f docker-compose.dev.yml run --rm -T \
+  app npm run mcp:cleanup -- --execute
+```
+
+Then reset only the development data:
 
 ```bash
 docker compose -f docker-compose.dev.yml down -v
 ```
 
-The separate Compose project keeps this reset away from the persistent volumes used by the normal installation.
+The separate Compose project and encryption key keep this reset away from the persistent volumes and ownership marker used by the normal installation.
 
 ## Public releases
 

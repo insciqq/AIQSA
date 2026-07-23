@@ -127,7 +127,8 @@ export const matrixCatalog = {
     provider: "openai",
     searchStrategyId: "search-disabled",
     showCitations: true,
-    showReasoningBlocks: false
+    showReasoningBlocks: false,
+    showToolActivity: true,
   },
   models: [
     matrixModel({

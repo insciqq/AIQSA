@@ -29,9 +29,11 @@ import {
   ActiveLeafConflictError,
   ActiveRunConflictError,
   AttachmentLinkConflictError,
+  McpRunPlanConflictError,
   type DurableRunControlRecord,
   type RunRepository
 } from "./runRepositoryContract";
+import type { PersistedToolLoopCall } from "./toolLoopPersistence";
 
 const config = getAuthConfig({
   AIQSA_BOOTSTRAP_AUTH_TOKEN: "token",
@@ -40,7 +42,8 @@ const config = getAuthConfig({
 const auth = createTestAuth({ user: { id: config.bootstrapUserId } });
 const authDeps = {
   getConfig: () => config,
-  resolveAuth: auth.resolveAuth
+  resolveAuth: auth.resolveAuth,
+  searchProviders: {} as Record<string, ProviderSearchAdapter>
 };
 
 const entitledFakeModel: ResolvedEntitlements = {
@@ -108,8 +111,10 @@ function createMemoryRepository(
   modelCapabilities: ProviderModelCapabilities = {
     nativePdfInput: false,
     nativeSearch: true,
+    parallelToolCalls: false,
     pdf: true,
     reasoning: true,
+    toolCalling: true,
     vision: true
   }
 ) {
@@ -128,6 +133,7 @@ function createMemoryRepository(
     regenerated: Parameters<RunRepository["createRegenerationRun"]>[0] | null;
     searchRuns: Parameters<RunRepository["createSearchRun"]>[0][];
     staleActiveRuns: (ReturnType<typeof activeRunRecord> & { updatedAt: Date })[];
+    toolCalls: PersistedToolLoopCall[];
     updatedProviderRequestPreview: Record<string, unknown> | null;
   } = {
     assistantText: "",
@@ -144,14 +150,40 @@ function createMemoryRepository(
     regenerated: null,
     searchRuns: [],
     staleActiveRuns: [],
+    toolCalls: [],
     updatedProviderRequestPreview: null
   };
   const repository: RunRepository = {
+    advanceToolLoopCallBatch: async ({ roundIndex }) =>
+      state.toolCalls.some((call) => call.roundIndex === roundIndex &&
+        call.state !== "complete" && call.state !== "error")
+        ? "incomplete"
+        : "advanced",
     appendAssistantText: async (_assistantMessageId, text) => {
       state.assistantText = text;
     },
     appendRunEvent: async (_runId, sequence, event) => {
       state.events.push({ event, sequence });
+    },
+    beginToolLoopProviderRound: async () => "started",
+    cancelPendingToolLoopCalls: async () => {
+      let cancelled = 0;
+      state.toolCalls = state.toolCalls.map((call) => {
+        if (call.state !== "pending") return call;
+        cancelled += 1;
+        return { ...call, completedAt: new Date().toISOString(), state: "cancelled" };
+      });
+      return cancelled;
+    },
+    claimToolLoopCall: async ({ callId }) => {
+      const call = state.toolCalls.find((candidate) => candidate.id === callId);
+      if (!call) return { kind: "not_found" };
+      if (call.state === "complete" || call.state === "error") return { call, kind: "settled" };
+      if (call.state === "running") return { call, kind: "ambiguous" };
+      if (call.state === "cancelled") return { call, kind: "cancelled" };
+      const claimed = { ...call, startedAt: new Date().toISOString(), state: "running" as const };
+      state.toolCalls = state.toolCalls.map((candidate) => candidate.id === call.id ? claimed : candidate);
+      return { call: claimed, kind: "claimed" };
     },
     sweepBootOrphanedRuns: async ({ liveRunIds }) => {
       const liveRunIdSet = new Set(liveRunIds);
@@ -384,6 +416,7 @@ function createMemoryRepository(
                   : state.failed
                     ? "error"
                     : "streaming",
+              toolCalls: [],
               totalTokens: usage?.totalTokens ?? inputTokens + outputTokens,
               usage: state.completed?.usage ?? null
             };
@@ -498,8 +531,35 @@ function createMemoryRepository(
       defaultParams: {}
     }),
     loadModelPricing: async () => modelPricing,
+    loadRunUsageAttributions: async () => [],
+    loadCheckpointedToolLoopRun: async () => null,
     nextRunEventSequence: async () =>
       state.events.reduce((max, event) => Math.max(max, event.sequence), -1) + 1,
+    persistToolLoopCallBatch: async (input) => {
+      const existing = state.toolCalls.filter((call) => call.roundIndex === input.roundIndex);
+      if (existing.length > 0) return { calls: existing, kind: "reused" };
+      const calls = input.calls.map((call, index): PersistedToolLoopCall => ({
+        arguments: call.arguments,
+        completedAt: null,
+        id: `tool-call-${input.roundIndex}-${index}`,
+        mcpBinding: call.runtimeGenerationFingerprint
+          ? {
+              id: `binding-${index}`,
+              runtimeGenerationFingerprint: call.runtimeGenerationFingerprint,
+              runtimeGenerationId: "generation-1"
+            }
+          : null,
+        ordinal: call.ordinal,
+        providerCallId: call.providerCallId,
+        result: null,
+        roundIndex: input.roundIndex,
+        startedAt: null,
+        state: "pending",
+        toolName: call.toolName
+      }));
+      state.toolCalls.push(...calls);
+      return { calls, kind: "persisted" };
+    },
     recordRunUsageEvents: async () => true,
     settleRecoveredRunError: async (input) => {
       if (
@@ -528,6 +588,20 @@ function createMemoryRepository(
       }
       return true;
     },
+    settleToolLoopCall: async ({ callId, result, state: callState }) => {
+      const call = state.toolCalls.find((candidate) => candidate.id === callId);
+      if (!call) return "not_found";
+      state.toolCalls = state.toolCalls.map((candidate) => candidate.id === callId
+        ? {
+            ...candidate,
+            completedAt: new Date().toISOString(),
+            result,
+            state: callState
+          }
+        : candidate);
+      return "settled";
+    },
+    resetToolLoopAssistantDraft: async () => true,
     updateRunProviderResponseId: async (_runId, providerResponseId) => {
       state.providerResponseId = providerResponseId;
       return "published";
@@ -622,9 +696,11 @@ function createOpenRouterToolHarness(
   modelCapabilities: ProviderModelCapabilities = {
     nativePdfInput: false,
     nativeSearch: false,
+    parallelToolCalls: false,
     pdf: true,
     reasoning: true,
     streaming: true,
+    toolCalling: true,
     vision: true
   }
 ) {
@@ -711,18 +787,37 @@ async function sendOpenRouterToolMessage(
 
 function createOpenAIToolHarness(responses: Record<string, unknown>[]) {
   const bodies: Record<string, unknown>[] = [];
+  const nextResponse = () => {
+    const next = responses.shift();
+    if (!next) {
+      throw new Error("unexpected_openai_request");
+    }
+    return next;
+  };
   const client: OpenAIResponsesClient = {
     cancel: async () => ({}),
     create: async (body) => {
       bodies.push(body);
-      const next = responses.shift();
-      if (!next) {
-        throw new Error("unexpected_openai_request");
-      }
-
-      return next;
+      return nextResponse();
     },
-    retrieve: async () => ({})
+    retrieve: async () => ({}),
+    stream: async (body) => {
+      bodies.push(body);
+      const response = nextResponse();
+      const id = typeof response.id === "string" ? response.id : "response-test";
+      return new Response([
+        `event: response.created\ndata: ${JSON.stringify({
+          response: { id, status: "in_progress" },
+          type: "response.created"
+        })}\n\n`,
+        `event: response.completed\ndata: ${JSON.stringify({
+          response,
+          type: "response.completed"
+        })}\n\n`
+      ].join(""), {
+        headers: { "content-type": "text/event-stream" }
+      });
+    }
   };
   const { repository, state } = createMemoryRepository(
     {
@@ -744,11 +839,15 @@ function createOpenAIToolHarness(responses: Record<string, unknown>[]) {
       outputTokenPriceMicros: 8
     },
     {
+      backgroundStreaming: true,
       nativePdfInput: false,
+      nativeBackground: true,
       nativeSearch: true,
+      parallelToolCalls: false,
       pdf: true,
       reasoning: true,
       streaming: true,
+      toolCalling: true,
       vision: true
     }
   );
@@ -2447,7 +2546,7 @@ describe("model run route handlers", () => {
       provider: {
         only: ["Anthropic"]
       },
-      stream: false,
+      stream: true,
       tool_choice: "auto"
     });
     expect(state.searchRuns).toHaveLength(0);
@@ -2484,9 +2583,9 @@ describe("model run route handlers", () => {
 
     expect(bodies).toHaveLength(1);
     expect(bodies[0]).toMatchObject({
-      background: false,
+      background: true,
       parallel_tool_calls: false,
-      stream: false,
+      stream: true,
       tool_choice: "auto",
       tools: [
         {
@@ -2557,7 +2656,7 @@ describe("model run route handlers", () => {
     expect(bodies).toHaveLength(2);
     expect(JSON.stringify(bodies[0])).not.toContain("Search findings from");
     expect(bodies[0]).toMatchObject({
-      stream: false,
+      stream: true,
       tool_choice: "auto",
       tools: [
         {
@@ -2905,8 +3004,8 @@ describe("model run route handlers", () => {
     expect(JSON.stringify(bodies[0])).not.toContain("Search findings from");
     expect(JSON.stringify(bodies[0].input)).toContain("Какая последняя модель Anthropic?");
     expect(bodies[0]).toMatchObject({
-      background: false,
-      stream: false,
+      background: true,
+      stream: true,
       tool_choice: "auto",
       tools: [
         {
@@ -3161,6 +3260,41 @@ describe("model run route handlers", () => {
     await expect(response.json()).resolves.toEqual({
       error: "model_run_not_found"
     });
+  });
+
+  it("leaves a Perplexity and MCP checkpoint untouched when GET lacks search adapters", async () => {
+    const { repository, state } = createMemoryRepository();
+    const created = openAiCreatedRun();
+    state.created = {
+      ...created,
+      normalizedRequest: {
+        ...created.normalizedRequest,
+        mcp: { servers: [], tools: [], version: 1 },
+        searchStrategy: "perplexity-tool-search"
+      }
+    };
+    state.providerResponseId = "response-tool-round";
+    const loadCheckpoint = vi.fn(async () => {
+      throw new Error("partial GET dependencies must not own recovery");
+    });
+    repository.loadCheckpointedToolLoopRun = loadCheckpoint;
+    const GET = createGetModelRunHandler({
+      ...authDeps,
+      providers: {},
+      repository,
+      searchProviders: undefined
+    });
+
+    const response = await GET(
+      new Request("http://app.local/api/model-runs/run-1", {
+        headers: { cookie: authCookie() }
+      }),
+      { params: { runId: "run-1" } }
+    );
+
+    expect(response.status).toBe(200);
+    expect(loadCheckpoint).not.toHaveBeenCalled();
+    await expect(response.json()).resolves.toMatchObject({ run: { status: "streaming" } });
   });
 
   it("regenerates an assistant message by streaming a sibling assistant run", async () => {
@@ -5274,5 +5408,137 @@ describe("model run route handlers", () => {
       status: "provider_cancel_failed"
     });
     expect(JSON.stringify(await response.json())).not.toContain("secret provider response body");
+  });
+
+  it("passes the exact prepared MCP bindings to both send and regeneration acceptance", async () => {
+    const memory = createMemoryRepository({
+      modelKeys: new Set(["openrouter:anthropic/claude-opus-4.8"]),
+      providerKeys: new Set(),
+      searchStrategies: new Set()
+    });
+    const repository: RunRepository = {
+      ...memory.repository,
+      findRegenerationSource: async (assistantMessageId, userId) =>
+        assistantMessageId === "assistant-message-1" && userId === config.bootstrapUserId
+          ? {
+              assistantMessage: {
+                id: assistantMessageId,
+                modelId: "anthropic/claude-opus-4.8",
+                provider: "openrouter"
+              },
+              chat: {
+                defaultModelId: "anthropic/claude-opus-4.8",
+                defaultProvider: "openrouter",
+                id: "chat-1",
+                projectMemory: "Project prefers short bullet answers."
+              },
+              userMessage: {
+                content: { blocks: [{ text: "Original question", type: "text" }] },
+                id: "user-message-1"
+              }
+            }
+          : null
+    };
+    const { state } = memory;
+    const bindings = [{
+      fingerprint: "fingerprint-1",
+      runtimeGenerationId: "generation-1",
+      serverId: "server-1"
+    }];
+    const mcp = {
+      prepare: vi.fn(async () => ({
+        bindings,
+        ok: true as const,
+        snapshot: {
+          servers: [{
+            fingerprint: "fingerprint-1",
+            revisionId: "revision-1",
+            serverId: "server-1",
+            serverName: "Example MCP"
+          }],
+          tools: [],
+          version: 1 as const
+        }
+      }))
+    };
+    const deps = {
+      ...authDeps,
+      mcp,
+      providers: { openrouter: createFakeProviderAdapter() },
+      repository
+    };
+    const send = createSendMessageHandler(deps);
+    const regenerate = createRegenerateModelRunHandler(deps);
+
+    const sendResponse = await send(
+      new Request("http://app.local/api/chats/chat-1/messages", {
+        body: JSON.stringify({
+          modelId: "anthropic/claude-opus-4.8",
+          provider: "openrouter",
+          searchStrategy: "search-disabled",
+          text: "Use MCP"
+        }),
+        headers: { cookie: authCookie() },
+        method: "POST"
+      }),
+      { params: { chatId: "chat-1" } }
+    );
+    expect(sendResponse.status, await sendResponse.clone().text()).toBe(200);
+    expect(state.created?.mcpBindings).toEqual(bindings);
+
+    const regenerateResponse = await regenerate(
+      new Request("http://app.local/api/messages/assistant-message-1/regenerate", {
+        body: JSON.stringify({ searchStrategy: "search-disabled" }),
+        headers: { cookie: authCookie() },
+        method: "POST"
+      }),
+      { params: { messageId: "assistant-message-1" } }
+    );
+    expect(regenerateResponse.status).toBe(200);
+    expect(state.regenerated?.mcpBindings).toEqual(bindings);
+    expect(mcp.prepare).toHaveBeenCalledTimes(2);
+    expect(mcp.prepare).toHaveBeenCalledWith(config.bootstrapUserId);
+  });
+
+  it("maps send and regeneration MCP acceptance races to retryable mcp_not_ready conflicts", async () => {
+    const memory = createMemoryRepository();
+    const repository: RunRepository = {
+      ...memory.repository,
+      createRegenerationRun: async () => {
+        throw new McpRunPlanConflictError();
+      },
+      createRun: async () => {
+        throw new McpRunPlanConflictError();
+      }
+    };
+    const deps = {
+      ...authDeps,
+      providers: { fake: createFakeProviderAdapter() },
+      repository
+    };
+    const send = createSendMessageHandler(deps);
+    const regenerate = createRegenerateModelRunHandler(deps);
+
+    const sendResponse = await send(
+      new Request("http://app.local/api/chats/chat-1/messages", {
+        body: JSON.stringify({ searchStrategy: "search-disabled", text: "Race" }),
+        headers: { cookie: authCookie() },
+        method: "POST"
+      }),
+      { params: { chatId: "chat-1" } }
+    );
+    const regenerateResponse = await regenerate(
+      new Request("http://app.local/api/messages/assistant-message-1/regenerate", {
+        body: JSON.stringify({ searchStrategy: "search-disabled" }),
+        headers: { cookie: authCookie() },
+        method: "POST"
+      }),
+      { params: { messageId: "assistant-message-1" } }
+    );
+
+    expect(sendResponse.status).toBe(409);
+    await expect(sendResponse.json()).resolves.toEqual({ error: "mcp_not_ready" });
+    expect(regenerateResponse.status).toBe(409);
+    await expect(regenerateResponse.json()).resolves.toEqual({ error: "mcp_not_ready" });
   });
 });

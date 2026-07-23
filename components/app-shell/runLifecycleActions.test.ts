@@ -133,7 +133,8 @@ function runResponse(
       provider: "fake",
       reasoningTokens: 0,
       searchRuns: [],
-      status
+      status,
+      toolCalls: []
     }
   };
 }

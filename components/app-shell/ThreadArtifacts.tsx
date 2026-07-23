@@ -1,7 +1,22 @@
 import { searchStrategyDescription } from "@/components/app-shell/shellFormatting";
-import type { ThreadArtifactSummary, ThreadSearchDetail } from "@/components/app-shell/types";
+import type {
+  ThreadArtifactSummary,
+  ThreadSearchDetail,
+  ThreadToolActivity
+} from "@/components/app-shell/types";
 import { safeExternalHref } from "@/lib/domain/links";
-import { Brain, ChevronDown, ChevronRight, Scissors, Search } from "lucide-react";
+import {
+  Brain,
+  CheckCircle2,
+  ChevronDown,
+  ChevronRight,
+  CircleAlert,
+  LoaderCircle,
+  Scissors,
+  Search,
+  Square,
+  Wrench
+} from "lucide-react";
 import { memo, useState } from "react";
 
 function ContextTruncationBlockComponent({ summary }: { summary: ThreadArtifactSummary }) {
@@ -189,6 +204,148 @@ function formatPreview(value: unknown): string {
   }
 }
 
+function toolStatusLabel(status: ThreadToolActivity["status"]): string {
+  if (status === "complete") return "Completed";
+  if (status === "error") return "Failed";
+  if (status === "cancelled") return "Cancelled";
+  return "Running";
+}
+
+function ToolStatusIcon({ status }: { status: ThreadToolActivity["status"] }) {
+  if (status === "complete") {
+    return <CheckCircle2 className="size-3.5 text-accent-green" aria-hidden="true" />;
+  }
+  if (status === "error") {
+    return <CircleAlert className="size-3.5 text-accent-rose" aria-hidden="true" />;
+  }
+  if (status === "cancelled") {
+    return <Square className="size-3.5 text-content-muted" aria-hidden="true" />;
+  }
+  return <LoaderCircle className="size-3.5 animate-spin text-accent-cyan" aria-hidden="true" />;
+}
+
+function toolDuration(durationMs: number | null): string | null {
+  if (durationMs === null) return null;
+  return durationMs < 1_000 ? `${durationMs} ms` : `${(durationMs / 1_000).toFixed(1)} s`;
+}
+
+function toolIdentity(call: ThreadToolActivity): string {
+  return call.serverName ? `${call.serverName} / ${call.toolName}` : call.toolName;
+}
+
+function ToolActivityBlockComponent({ summary }: { summary: ThreadArtifactSummary }) {
+  const calls = summary.toolCalls;
+  const [open, setOpen] = useState(false);
+  if (calls.length === 0) return null;
+
+  const rounds = new Map<number, ThreadToolActivity[]>();
+  for (const call of calls) {
+    const current = rounds.get(call.round) ?? [];
+    current.push(call);
+    rounds.set(call.round, current);
+  }
+  const running = calls.filter((call) => call.status === "running").length;
+  const failed = calls.filter((call) => call.status === "error").length;
+  const servers = Array.from(new Set(calls.map((call) => call.serverName).filter(Boolean)));
+  const headline = running > 0
+    ? `Running ${running} ${running === 1 ? "tool" : "tools"}`
+    : `Used ${calls.length} ${calls.length === 1 ? "tool" : "tools"}`;
+
+  return (
+    <section
+      className="border-l-2 border-accent-cyan/35 pl-3 text-xs text-content-secondary"
+      data-testid="thread-tool-activity"
+      aria-label="Tool activity"
+    >
+      <button
+        className="flex min-h-control w-full flex-wrap items-center gap-x-2 gap-y-1 rounded-control px-2 text-left outline-none hover:bg-surface-hover focus-visible:ring-2 focus-visible:ring-accent-cyan/55 [@media(hover:none)]:min-h-touch [@media(pointer:coarse)]:min-h-touch"
+        type="button"
+        aria-expanded={open}
+        onClick={() => setOpen((expanded) => !expanded)}
+      >
+        {open ? (
+          <ChevronDown className="size-3.5 shrink-0 text-content-muted" aria-hidden="true" />
+        ) : (
+          <ChevronRight className="size-3.5 shrink-0 text-content-muted" aria-hidden="true" />
+        )}
+        <Wrench className="size-4 shrink-0 text-accent-cyan" aria-hidden="true" />
+        <span className="font-semibold text-content-primary">{headline}</span>
+        {failed > 0 ? <span className="text-accent-rose">· {failed} failed</span> : null}
+        {servers.length > 0 ? (
+          <span className="min-w-0 truncate text-content-muted">{servers.join(", ")}</span>
+        ) : null}
+      </button>
+
+      {open ? (
+        <div className="mt-2 grid gap-3" data-testid="thread-tool-activity-details">
+          {[...rounds.entries()].map(([round, roundCalls]) => (
+            <section className="rounded-control bg-surface-thread p-3" key={round} aria-label={`Tool round ${round}`}>
+              <div className="mb-2 flex flex-wrap items-center gap-2 text-[11px] text-content-muted">
+                <span className="font-semibold text-content-secondary">Round {round}</span>
+                <span>
+                  {roundCalls.length > 1
+                    ? `${roundCalls.length} parallel calls`
+                    : "1 call"}
+                </span>
+              </div>
+              <div className="grid gap-2">
+                {roundCalls.map((call) => (
+                  <details
+                    className="group/tool rounded-control bg-surface-canvas px-2.5 py-2"
+                    data-tool-status={call.status}
+                    key={call.callId}
+                  >
+                    <summary className="flex min-h-control cursor-pointer list-none items-center gap-2 break-words outline-none marker:hidden focus-visible:ring-2 focus-visible:ring-accent-cyan/55 [overflow-wrap:anywhere]">
+                      <ToolStatusIcon status={call.status} />
+                      <span className="min-w-0 flex-1 font-medium text-content-primary">
+                        {toolIdentity(call)}
+                      </span>
+                      <span className={call.status === "error" ? "text-accent-rose" : "text-content-muted"}>
+                        {toolStatusLabel(call.status)}
+                      </span>
+                      {toolDuration(call.durationMs) ? (
+                        <span className="font-mono text-content-muted">{toolDuration(call.durationMs)}</span>
+                      ) : null}
+                      <ChevronRight className="size-3.5 shrink-0 text-content-muted transition-transform group-open/tool:rotate-90" aria-hidden="true" />
+                    </summary>
+                    <div className="mt-2 grid gap-2 border-t border-separator-subtle pt-2">
+                      {call.externalAccountLabel || call.credentialSources.length > 0 ? (
+                        <div className="flex flex-wrap gap-x-2 gap-y-1 text-[11px] text-content-muted">
+                          {call.externalAccountLabel ? <span>Account: {call.externalAccountLabel}</span> : null}
+                          {call.credentialSources.length > 0 ? (
+                            <span>Credentials: {call.credentialSources.join(", ")}</span>
+                          ) : null}
+                        </div>
+                      ) : null}
+                      <div>
+                        <div className="mb-1 text-[11px] font-medium text-content-secondary">Arguments · sensitive values redacted</div>
+                        <pre className="max-h-48 max-w-full overflow-auto whitespace-pre-wrap break-words rounded-control bg-surface-active p-2 font-mono text-[11px] leading-5 text-content-secondary [overflow-wrap:anywhere]">
+                          {formatPreview(call.argumentsPreview)}
+                        </pre>
+                      </div>
+                      <div>
+                        <div className="mb-1 text-[11px] font-medium text-content-secondary">Result preview</div>
+                        <pre className="max-h-48 max-w-full overflow-auto whitespace-pre-wrap break-words rounded-control bg-surface-active p-2 font-mono text-[11px] leading-5 text-content-secondary [overflow-wrap:anywhere]">
+                          {formatPreview(call.resultPreview)}
+                        </pre>
+                      </div>
+                      {call.errorMessage ? (
+                        <p className="break-words text-[11px] leading-5 text-accent-rose [overflow-wrap:anywhere]">
+                          {call.errorMessage}
+                        </p>
+                      ) : null}
+                    </div>
+                  </details>
+                ))}
+              </div>
+            </section>
+          ))}
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
 function CitationBlockComponent({ summary }: { summary: ThreadArtifactSummary }) {
   const citations = summary.citations ?? [];
   const [open, setOpen] = useState(false);
@@ -292,3 +449,4 @@ export const ContextTruncationBlock = memo(ContextTruncationBlockComponent);
 export const SearchSummaryBlock = memo(SearchSummaryBlockComponent);
 export const CitationBlock = memo(CitationBlockComponent);
 export const ReasoningBlock = memo(ReasoningBlockComponent);
+export const ToolActivityBlock = memo(ToolActivityBlockComponent);

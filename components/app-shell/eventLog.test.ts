@@ -185,7 +185,10 @@ describe("summarizeInspectorEvents", () => {
       ["Citations", "1"],
       ["Tool results", "2"]
     ]);
-    expect(summaries.every((summary) => summary.stage === "S")).toBe(true);
+    expect(summaries.find((summary) => summary.label === "Tool calls")?.stage).toBe("TOOL");
+    expect(summaries.find((summary) => summary.label === "Tool results")?.stage).toBe("TOOL");
+    expect(summaries.find((summary) => summary.label === "Search artifacts")?.stage).toBe("S");
+    expect(summaries.find((summary) => summary.label === "Citations")?.stage).toBe("S");
     expect(summaries.find((summary) => summary.label === "Search artifacts")).toEqual(
       expect.objectContaining({
         detail: "openrouter / perplexity-tool-search / completed",

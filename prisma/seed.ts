@@ -1,11 +1,23 @@
 import { Prisma, PrismaClient } from "@prisma/client";
 import { defaultProviderModels, defaultSearchStrategies } from "../lib/domain/catalog";
 import { textMessageContent } from "../lib/domain/content";
+import { hashCanonicalMcpValue } from "../lib/server/mcp/definitions";
 import {
   assertLocalSeedRuntime,
+  ensureLocalFixturePasswordHash,
   ensureLocalOperatorPasswordHash,
   LOCAL_OPERATOR_EMAIL
 } from "./local-seed-auth";
+import {
+  LOCAL_MCP_FIXTURE_GROUP,
+  LOCAL_MCP_FIXTURE_TESTED_AT,
+  LOCAL_MCP_MEMBER,
+  LOCAL_ORDINARY_USERS,
+  LOCAL_PRIVATE_MCP_DRAFT,
+  LOCAL_PRIVATE_MCP_FIXTURE,
+  LOCAL_SHARED_MCP_DRAFT,
+  LOCAL_SHARED_MCP_FIXTURE
+} from "./local-seed-fixtures";
 
 const prisma = new PrismaClient();
 
@@ -20,6 +32,164 @@ const ids = {
 };
 
 const asJson = (value: unknown) => value as Prisma.InputJsonValue;
+
+async function seedLocalOrdinaryUser(user: (typeof LOCAL_ORDINARY_USERS)[number]) {
+  const [emailOwner, emailIdentity, passwordIdentities] = await Promise.all([
+    prisma.user.findUnique({ select: { id: true }, where: { email: user.email } }),
+    prisma.authIdentity.findUnique({
+      select: {
+        emailVerifiedAt: true,
+        id: true,
+        passwordHash: true,
+        userId: true
+      },
+      where: {
+        provider_normalizedEmail: {
+          normalizedEmail: user.email,
+          provider: "password"
+        }
+      }
+    }),
+    prisma.authIdentity.findMany({
+      select: {
+        emailVerifiedAt: true,
+        id: true,
+        passwordHash: true,
+        userId: true
+      },
+      where: {
+        provider: "password",
+        userId: user.id
+      }
+    })
+  ]);
+
+  if (emailOwner && emailOwner.id !== user.id) {
+    throw new Error(`The local fixture email ${user.email} belongs to another user`);
+  }
+  if (emailIdentity && emailIdentity.userId !== user.id) {
+    throw new Error(`The local fixture password identity ${user.email} belongs to another user`);
+  }
+  if (passwordIdentities.length > 1) {
+    throw new Error(`The local fixture ${user.email} has multiple password identities`);
+  }
+
+  const existingIdentity = emailIdentity ?? passwordIdentities[0];
+  const passwordHash = await ensureLocalFixturePasswordHash(user.password, existingIdentity?.passwordHash);
+
+  await prisma.$transaction(async (tx) => {
+    await tx.user.upsert({
+      create: {
+        displayName: user.displayName,
+        email: user.email,
+        id: user.id,
+        role: "user",
+        status: "active"
+      },
+      update: {
+        displayName: user.displayName,
+        email: user.email,
+        role: "user",
+        status: "active"
+      },
+      where: { id: user.id }
+    });
+
+    if (existingIdentity) {
+      await tx.authIdentity.update({
+        data: {
+          emailVerifiedAt: existingIdentity.emailVerifiedAt ?? new Date(),
+          normalizedEmail: user.email,
+          passwordHash,
+          providerAccountId: user.email
+        },
+        where: { id: existingIdentity.id }
+      });
+    } else {
+      await tx.authIdentity.create({
+        data: {
+          emailVerifiedAt: new Date(),
+          normalizedEmail: user.email,
+          passwordHash,
+          provider: "password",
+          providerAccountId: user.email,
+          userId: user.id
+        }
+      });
+    }
+  });
+}
+
+async function seedLocalMcpFixture(input: Readonly<{
+  description: string;
+  displayName: string;
+  draft: typeof LOCAL_SHARED_MCP_DRAFT;
+  id: string;
+  namespace: string;
+  revisionId: string;
+  toolName: string;
+}>) {
+  const draftHash = hashCanonicalMcpValue(input.draft);
+  const validationEvidence = {
+    evidence: { fixture: true, protocolVersion: "2025-06-18" },
+    testedAt: LOCAL_MCP_FIXTURE_TESTED_AT,
+    toolInventory: [{ description: "Deterministic development access fixture.", name: input.toolName }]
+  };
+  const draftTestEvidence = {
+    draftHash,
+    resolvedArtifact: null,
+    ...validationEvidence
+  };
+
+  await prisma.mcpServer.upsert({
+    create: {
+      description: input.description,
+      displayName: input.displayName,
+      draft: asJson(input.draft),
+      draftTestEvidence: asJson(draftTestEvidence),
+      enabled: true,
+      id: input.id,
+      namespace: input.namespace,
+      testedDraftHash: draftHash
+    },
+    update: {
+      archivedAt: null,
+      description: input.description,
+      displayName: input.displayName,
+      draft: asJson(input.draft),
+      draftTestEvidence: asJson(draftTestEvidence),
+      enabled: true,
+      testedDraftHash: draftHash
+    },
+    where: { id: input.id }
+  });
+
+  await prisma.mcpRevision.upsert({
+    create: {
+      configuration: asJson(input.draft),
+      draftHash,
+      id: input.revisionId,
+      identityHash: hashCanonicalMcpValue({ draftHash, fixture: input.id }),
+      resolvedArtifact: Prisma.DbNull,
+      revisionNumber: 1,
+      serverId: input.id,
+      validationEvidence: asJson(validationEvidence)
+    },
+    update: {
+      configuration: asJson(input.draft),
+      draftHash,
+      identityHash: hashCanonicalMcpValue({ draftHash, fixture: input.id }),
+      resolvedArtifact: Prisma.DbNull,
+      validationEvidence: asJson(validationEvidence)
+    },
+    where: { id: input.revisionId }
+  });
+
+  await prisma.mcpServer.update({
+    data: { activeRevisionId: input.revisionId },
+    where: { id: input.id }
+  });
+}
 
 async function main() {
   assertLocalSeedRuntime();
@@ -121,6 +291,10 @@ async function main() {
     }
   });
 
+  for (const user of LOCAL_ORDINARY_USERS) {
+    await seedLocalOrdinaryUser(user);
+  }
+
   await prisma.group.upsert({
     create: {
       id: ids.group,
@@ -148,6 +322,85 @@ async function main() {
       }
     }
   });
+
+  await prisma.group.upsert({
+    create: LOCAL_MCP_FIXTURE_GROUP,
+    update: {
+      archivedAt: null,
+      name: LOCAL_MCP_FIXTURE_GROUP.name
+    },
+    where: { id: LOCAL_MCP_FIXTURE_GROUP.id }
+  });
+
+  for (const user of LOCAL_ORDINARY_USERS) {
+    await prisma.userGroup.upsert({
+      create: {
+        groupId: LOCAL_MCP_FIXTURE_GROUP.id,
+        role: "member",
+        userId: user.id
+      },
+      update: { role: "member" },
+      where: {
+        userId_groupId: {
+          groupId: LOCAL_MCP_FIXTURE_GROUP.id,
+          userId: user.id
+        }
+      }
+    });
+
+    const existingFixtureSettings = await prisma.userSettings.findUnique({
+      select: { defaultPromptPresetId: true },
+      where: { userId: user.id }
+    });
+    const seedPromptIsFixtureDefault = !existingFixtureSettings ||
+      existingFixtureSettings.defaultPromptPresetId === user.promptPresetId;
+
+    if (seedPromptIsFixtureDefault) {
+      await prisma.promptPreset.updateMany({
+        data: { isDefault: false },
+        where: {
+          id: { not: user.promptPresetId },
+          isDefault: true,
+          userId: user.id
+        }
+      });
+    }
+
+    await prisma.promptPreset.upsert({
+      create: {
+        developerPrompt: null,
+        id: user.promptPresetId,
+        isDefault: seedPromptIsFixtureDefault,
+        name: "Helpful Assistant",
+        systemPrompt: "You are a helpful AI assistant. Today is {local_date}, local time is {local_time}.",
+        userId: user.id
+      },
+      update: {
+        developerPrompt: null,
+        isDefault: seedPromptIsFixtureDefault,
+        name: "Helpful Assistant",
+        systemPrompt: "You are a helpful AI assistant. Today is {local_date}, local time is {local_time}."
+      },
+      where: { id: user.promptPresetId }
+    });
+
+    await prisma.userSettings.upsert({
+      create: {
+        defaultControlValues: {},
+        defaultFolderId: null,
+        defaultModelId: "fake-qsa",
+        defaultPromptPresetId: user.promptPresetId,
+        defaultProvider: "fake",
+        defaultSearchStrategyId: "search-disabled",
+        showCitations: true,
+        showReasoningBlocks: false,
+        showToolActivity: true,
+        userId: user.id
+      },
+      update: {},
+      where: { userId: user.id }
+    });
+  }
 
   await prisma.folder.upsert({
     create: {
@@ -303,6 +556,7 @@ async function main() {
       defaultSearchStrategyId: "openai-native-web-search",
       showCitations: true,
       showReasoningBlocks: false,
+      showToolActivity: true,
       userId: ids.user
     },
     update: {},
@@ -396,6 +650,73 @@ async function main() {
       where: {
         id: grant.id
       }
+    });
+  }
+
+  await prisma.accessGrant.upsert({
+    create: {
+      enabled: true,
+      groupId: LOCAL_MCP_FIXTURE_GROUP.id,
+      id: "00000000-0000-4000-8000-000000000421",
+      modelId: "fake-qsa",
+      provider: "fake"
+    },
+    update: {
+      enabled: true,
+      groupId: LOCAL_MCP_FIXTURE_GROUP.id,
+      modelId: "fake-qsa",
+      provider: "fake"
+    },
+    where: { id: "00000000-0000-4000-8000-000000000421" }
+  });
+
+  await seedLocalMcpFixture({
+    ...LOCAL_SHARED_MCP_FIXTURE,
+    draft: LOCAL_SHARED_MCP_DRAFT
+  });
+  await seedLocalMcpFixture({
+    ...LOCAL_PRIVATE_MCP_FIXTURE,
+    draft: LOCAL_PRIVATE_MCP_DRAFT
+  });
+
+  const mcpGrants = [
+    {
+      canUse: true,
+      groupId: LOCAL_MCP_FIXTURE_GROUP.id,
+      id: "00000000-0000-4000-8000-000000000601",
+      personalSlotKeys: [] as string[],
+      serverId: LOCAL_SHARED_MCP_FIXTURE.id,
+      userId: null
+    },
+    {
+      canUse: false,
+      groupId: null,
+      id: "00000000-0000-4000-8000-000000000602",
+      personalSlotKeys: ["workspace"],
+      serverId: LOCAL_SHARED_MCP_FIXTURE.id,
+      userId: LOCAL_MCP_MEMBER.id
+    },
+    {
+      canUse: true,
+      groupId: null,
+      id: "00000000-0000-4000-8000-000000000603",
+      personalSlotKeys: [] as string[],
+      serverId: LOCAL_PRIVATE_MCP_FIXTURE.id,
+      userId: LOCAL_MCP_MEMBER.id
+    }
+  ];
+
+  for (const grant of mcpGrants) {
+    await prisma.mcpGrant.upsert({
+      create: grant,
+      update: {
+        canUse: grant.canUse,
+        groupId: grant.groupId,
+        personalSlotKeys: grant.personalSlotKeys,
+        serverId: grant.serverId,
+        userId: grant.userId
+      },
+      where: { id: grant.id }
     });
   }
 

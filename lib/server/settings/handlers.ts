@@ -25,6 +25,7 @@ export type UserSettingsUpdate = Partial<{
   defaultSearchStrategyId: string;
   showCitations: boolean;
   showReasoningBlocks: boolean;
+  showToolActivity: boolean;
 }>;
 
 export type SettingsValidationModel = Pick<
@@ -251,6 +252,14 @@ function buildSettingsUpdate(
     update.showReasoningBlocks = body.showReasoningBlocks;
   }
 
+  if ("showToolActivity" in body) {
+    if (typeof body.showToolActivity !== "boolean") {
+      return { error: "show_tool_activity_boolean_required" };
+    }
+
+    update.showToolActivity = body.showToolActivity;
+  }
+
   if ("defaultControlValues" in body) {
     update.defaultControlValues = sanitizeControlValues(body.defaultControlValues, models);
   }
@@ -268,7 +277,8 @@ function serializeSettings(settings: UserSettingsRecord): UserSettingsWire {
     defaultProvider: settings.defaultProvider,
     defaultSearchStrategyId: settings.defaultSearchStrategyId,
     showCitations: settings.showCitations,
-    showReasoningBlocks: settings.showReasoningBlocks
+    showReasoningBlocks: settings.showReasoningBlocks,
+    showToolActivity: settings.showToolActivity
   };
 }
 

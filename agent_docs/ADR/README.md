@@ -29,6 +29,7 @@ Every ADR also declares `Amends: none` or a comma-separated list of earlier ADR 
 - `0018-intent-gated-mobile-reading-mode.md` - compact chat chrome uses one application rail with direct Workspace/New chat access, while recent deliberate reading scroll in either direction may collapse idle Run/profile controls without hiding Message or an addressable Stop action; completed-tap expansion prevents Run click-through.
 - `0019-safe-katex-math-rendering.md` - the custom Markdown parser recognizes common TeX delimiters and sends only restricted untrusted expressions through locally bundled KaTeX; failed math stays escaped React text.
 - `0020-unified-installation-and-isolated-development.md` - the default Compose path is one persistent install/update topology with canonical environment names, while deterministic seed/Fake QSA checks use a separate disposable development stack.
+- `0021-admin-managed-mcp-tools-and-isolated-runtime.md` - administrators own and grant trusted revisioned MCP servers as whole tool sets; users persistently enable entitled servers, fill only explicitly permitted personal-value slots, and may authorize declared remote OAuth connections such as Notion, while AIQSA reuses its provider-neutral foreground/background parallel tool loop, uses the official MCP SDK for direct remote and ToolHive-proxied sessions, and uses ToolHive only to isolate local executable MCP.
 
 ## Superseded ADRs
 

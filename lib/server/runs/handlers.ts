@@ -9,7 +9,12 @@ import type { RequestAuthResolver } from "../auth/requestAuth";
 import type { ProviderAdapter, ProviderSearchAdapter } from "../providers/types";
 import type { StorageAdapter } from "../uploads/storage";
 import { activeRunControllerRegistry, createRunExecutionResponse } from "./runExecution";
-import { materializePreparedRunData, prepareRun, type RunPreparationFailure } from "./runPreparation";
+import {
+  materializePreparedRunData,
+  prepareRun,
+  type RunPreparationDeps,
+  type RunPreparationFailure
+} from "./runPreparation";
 import {
   activeRunStaleMs,
   reconcileStaleRuns,
@@ -19,7 +24,8 @@ import {
 import {
   ActiveLeafConflictError,
   ActiveRunConflictError,
-  AttachmentLinkConflictError
+  AttachmentLinkConflictError,
+  McpRunPlanConflictError
 } from "./runRepositoryContract";
 import type { RunRepository } from "./runRepositoryContract";
 
@@ -35,6 +41,7 @@ export type {
 
 export type RunHandlerDeps = {
   getConfig?: () => AuthConfig;
+  mcp?: RunPreparationDeps["mcp"];
   providers: Record<string, ProviderAdapter>;
   repository: RunRepository;
   resolveAuth: RequestAuthResolver;
@@ -71,11 +78,15 @@ function modelRunJson(data: GetModelRunResponse, init?: ResponseInit): Response 
   return Response.json(data, init);
 }
 
-function recoveryDeps(deps: Pick<RunHandlerDeps, "providers" | "repository">) {
+function recoveryDeps(
+  deps: Pick<RunHandlerDeps, "providers" | "repository" | "searchProviders" | "storage">
+) {
   return {
     providers: deps.providers,
     registry: activeRunControllerRegistry,
-    repository: deps.repository
+    repository: deps.repository,
+    ...(deps.searchProviders ? { searchProviders: deps.searchProviders } : {}),
+    ...(deps.storage ? { storage: deps.storage } : {})
   };
 }
 
@@ -89,6 +100,11 @@ function isActiveLeafConflictError(error: unknown): error is ActiveLeafConflictE
 
 function isAttachmentLinkConflictError(error: unknown): error is AttachmentLinkConflictError {
   return error instanceof AttachmentLinkConflictError || (error instanceof Error && error.name === "AttachmentLinkConflictError");
+}
+
+function isMcpRunPlanConflictError(error: unknown): error is McpRunPlanConflictError {
+  return error instanceof McpRunPlanConflictError ||
+    (error instanceof Error && error.name === "McpRunPlanConflictError");
 }
 
 function expectedActiveLeafFromBody(
@@ -212,6 +228,7 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
           controlDefaults: { ...preparedData.defaults.controlDefaults }
         },
         expectedActiveLeafId: preparedData.expectedActiveLeafId,
+        ...(preparedData.mcpBindings ? { mcpBindings: preparedData.mcpBindings } : {}),
         modelId: preparedData.normalizedRequest.modelId,
         normalizedRequest: preparedData.normalizedRequest,
         provider: preparedData.normalizedRequest.provider,
@@ -229,6 +246,10 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
 
       if (isAttachmentLinkConflictError(error)) {
         return Response.json({ error: "attachment_not_available" }, { status: 409 });
+      }
+
+      if (isMcpRunPlanConflictError(error)) {
+        return Response.json({ error: "mcp_not_ready" }, { status: 409 });
       }
 
       throw error;
@@ -303,6 +324,7 @@ export function createRegenerateModelRunHandler(deps: RunHandlerDeps) {
           ...preparedData.defaults,
           controlDefaults: { ...preparedData.defaults.controlDefaults }
         },
+        ...(preparedData.mcpBindings ? { mcpBindings: preparedData.mcpBindings } : {}),
         modelId: preparedData.normalizedRequest.modelId,
         normalizedRequest: preparedData.normalizedRequest,
         provider: preparedData.normalizedRequest.provider,
@@ -319,6 +341,10 @@ export function createRegenerateModelRunHandler(deps: RunHandlerDeps) {
         return Response.json({ error: "active_leaf_changed" }, { status: 409 });
       }
 
+      if (isMcpRunPlanConflictError(error)) {
+        return Response.json({ error: "mcp_not_ready" }, { status: 409 });
+      }
+
       throw error;
     }
     return createRunExecutionResponse({
@@ -333,7 +359,10 @@ export function createRegenerateModelRunHandler(deps: RunHandlerDeps) {
 }
 
 export function createGetModelRunHandler(
-  deps: Pick<RunHandlerDeps, "getConfig" | "providers" | "repository" | "resolveAuth">
+  deps: Pick<
+    RunHandlerDeps,
+    "getConfig" | "providers" | "repository" | "resolveAuth" | "searchProviders" | "storage"
+  >
 ) {
   return async function GET(
     request: Request,
@@ -350,12 +379,17 @@ export function createGetModelRunHandler(
     }
 
     const params = await context.params;
-    const recovery = recoveryDeps(deps);
-    await refreshProviderRunIfNeeded(recovery, params.runId, auth.userId).catch(() => undefined);
-    await reconcileStaleRuns(recovery, {
-      runId: params.runId,
-      userId: auth.userId
-    }).catch(() => undefined);
+    // The installation scheduler is the primary recovery owner. A GET may provide
+    // a low-latency assist only when it has the complete provider-neutral adapter
+    // set; otherwise it must remain a read and leave the checkpoint untouched.
+    if (deps.searchProviders) {
+      const recovery = recoveryDeps(deps);
+      await refreshProviderRunIfNeeded(recovery, params.runId, auth.userId).catch(() => undefined);
+      await reconcileStaleRuns(recovery, {
+        runId: params.runId,
+        userId: auth.userId
+      }).catch(() => undefined);
+    }
     const run = await deps.repository.getRunForUser(params.runId, auth.userId);
 
     if (!run) {

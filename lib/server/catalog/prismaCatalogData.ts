@@ -25,6 +25,7 @@ type UserSettingsRow = {
   defaultSearchStrategyId: string;
   showCitations: boolean;
   showReasoningBlocks: boolean;
+  showToolActivity: boolean;
 };
 
 type CatalogUserRow = {
@@ -54,12 +55,22 @@ export function providerModelToCatalogEntry(model: ProviderModel): ProviderModel
       ? (model.capabilities as Record<string, unknown>)
       : {};
   const fallbackCapabilities = {
+    backgroundStreaming:
+      typeof capabilityOverrides.backgroundStreaming === "boolean"
+        ? capabilityOverrides.backgroundStreaming
+        : false,
+    nativeBackground:
+      typeof capabilityOverrides.nativeBackground === "boolean" ? capabilityOverrides.nativeBackground : false,
     nativePdfInput:
       typeof capabilityOverrides.nativePdfInput === "boolean" ? capabilityOverrides.nativePdfInput : false,
     nativeSearch: model.supportsNativeSearch,
+    parallelToolCalls:
+      typeof capabilityOverrides.parallelToolCalls === "boolean" ? capabilityOverrides.parallelToolCalls : false,
     pdf: model.supportsPdf,
     reasoning: model.supportsReasoning,
     streaming: typeof capabilityOverrides.streaming === "boolean" ? capabilityOverrides.streaming : false,
+    toolCalling:
+      typeof capabilityOverrides.toolCalling === "boolean" ? capabilityOverrides.toolCalling : false,
     vision: model.supportsVision
   };
   const capabilities = defaultEntry?.capabilities ?? fallbackCapabilities;
@@ -222,7 +233,8 @@ export function createPrismaCatalogDataLoader({
         defaultProvider: user.settings.defaultProvider,
         defaultSearchStrategyId: user.settings.defaultSearchStrategyId,
         showCitations: user.settings.showCitations,
-        showReasoningBlocks: user.settings.showReasoningBlocks
+        showReasoningBlocks: user.settings.showReasoningBlocks,
+        showToolActivity: user.settings.showToolActivity
       }
     };
   };

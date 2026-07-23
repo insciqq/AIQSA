@@ -17,6 +17,31 @@ describe("auth CSRF and recovery gate helpers", () => {
     expect(isProtectedMutationPath("POST", "/login")).toBe(false);
   });
 
+  it("subjects MCP OAuth initiation POSTs to the same-origin mutation gate", () => {
+    const paths = [
+      "/api/me/mcp/server-1/oauth/connect",
+      "/api/me/mcp/server-1/oauth/reconnect",
+      "/api/admin/mcp/server-1/oauth/validation/connect",
+      "/api/admin/mcp/server-1/oauth/validation/reconnect"
+    ];
+
+    for (const pathname of paths) {
+      expect(isProtectedMutationPath("POST", pathname)).toBe(true);
+    }
+    expect(isAllowedMutationOrigin({
+      appBaseUrl: "https://aiqsa.example",
+      origin: "https://aiqsa.example",
+      requestOrigin: "http://internal:3000",
+      secFetchSite: "same-origin"
+    })).toBe(true);
+    expect(isAllowedMutationOrigin({
+      appBaseUrl: "https://aiqsa.example",
+      origin: "https://attacker.example",
+      requestOrigin: "http://internal:3000",
+      secFetchSite: "cross-site"
+    })).toBe(false);
+  });
+
   it("allows same-origin mutations and rejects foreign origins", () => {
     expect(
       isAllowedMutationOrigin({

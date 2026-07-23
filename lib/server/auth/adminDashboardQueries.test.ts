@@ -48,6 +48,13 @@ async function withAdminQueryData<T>(
         }
       }
     });
+    await prisma.mcpServer.deleteMany({
+      where: {
+        namespace: {
+          startsWith: marker
+        }
+      }
+    });
     await prisma.providerModel.deleteMany({
       where: {
         provider: {
@@ -212,6 +219,26 @@ describe("admin dashboard queries", () => {
           email: `pending@${domain}`,
           status: "pending"
         }
+      });
+      const mcpServer = await prisma.mcpServer.create({
+        data: {
+          displayName: "Dashboard deletion eligibility MCP",
+          namespace: `${marker}-mcp`
+        }
+      });
+      await prisma.mcpGrant.createMany({
+        data: [
+          {
+            canUse: true,
+            serverId: mcpServer.id,
+            userId: pendingUser.id
+          },
+          {
+            canUse: true,
+            groupId: groupZulu.id,
+            serverId: mcpServer.id
+          }
+        ]
       });
 
       await prisma.authSession.createMany({
@@ -397,6 +424,13 @@ describe("admin dashboard queries", () => {
               lastSeenAt: true
             }
           },
+          _count: {
+            select: {
+              mcpGrants: true,
+              mcpOAuthConnections: true,
+              mcpUserServers: true
+            }
+          },
           settings: {
             select: {
               id: true
@@ -468,8 +502,8 @@ describe("admin dashboard queries", () => {
       });
       expect(serializedPendingUser).toMatchObject({
         deletion: {
-          canDelete: true,
-          reason: null
+          canDelete: false,
+          reason: "user_has_owned_data"
         },
         hasVerifiedIdentity: false,
         lastSessionAt: null
@@ -481,6 +515,7 @@ describe("admin dashboard queries", () => {
           .map((group) => group.id)
       ).toEqual([groupAlpha.id, groupZulu.id]);
       const serializedAlphaGroup = dashboard.groups.find((group) => group.id === groupAlpha.id);
+      const serializedZuluGroup = dashboard.groups.find((group) => group.id === groupZulu.id);
       expect(serializedAlphaGroup).toMatchObject({
         deletion: {
           canDelete: false,
@@ -494,6 +529,14 @@ describe("admin dashboard queries", () => {
         grants[2].id,
         grants[3].id
       ]);
+      expect(serializedZuluGroup).toMatchObject({
+        deletion: {
+          canDelete: false,
+          reason: "group_has_grants"
+        },
+        userCount: 0
+      });
+      expect(serializedZuluGroup?.accessGrants).toEqual([]);
 
       expect(
         dashboard.accessRules

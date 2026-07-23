@@ -45,7 +45,8 @@ const catalog: Catalog = {
     provider: "fake",
     searchStrategyId: "search-disabled",
     showCitations: true,
-    showReasoningBlocks: false
+    showReasoningBlocks: false,
+    showToolActivity: true,
   },
   models: [model],
   promptPresets: [],
@@ -188,6 +189,7 @@ function renderPane(overrides: Partial<ComponentProps<typeof MainThreadPane>> = 
     showCitations: true,
     showJumpToLatest: false,
     showReasoningBlocks: false,
+    showToolActivity: true,
     stopCurrentRun: vi.fn(),
     streamMode: false,
     submitComposer: vi.fn(),
@@ -196,6 +198,7 @@ function renderPane(overrides: Partial<ComponentProps<typeof MainThreadPane>> = 
     toggleCitationsVisibility: vi.fn(),
     toggleNotificationSound: vi.fn(),
     toggleReasoningBlockVisibility: vi.fn(),
+    toggleToolActivityVisibility: vi.fn(),
     uploadFiles: vi.fn(),
     uploading: false,
     visibleMessages: [],
@@ -611,6 +614,56 @@ describe("MainThreadPane", () => {
     });
 
     expect(screen.queryByTestId("thread-run-activity")).not.toBeInTheDocument();
+  });
+
+  it("attaches live tool activity only to its run and prefers it over a stale message summary", () => {
+    const toolSummary = (callId: string, serverName: string, status: "complete" | "running") => ({
+      citationCount: 0,
+      citations: [],
+      reasoningCount: 0,
+      reasoningText: [],
+      searchCount: 0,
+      searchStrategy: null,
+      toolCallCount: 1,
+      toolCalls: [{
+        argumentsPreview: { query: callId },
+        callId,
+        capability: "mcp" as const,
+        credentialSources: ["personal" as const],
+        durationMs: status === "complete" ? 40 : null,
+        errorMessage: null,
+        externalAccountLabel: null,
+        ordinal: 0,
+        resultPreview: status === "complete" ? { ok: true } : null,
+        round: 1,
+        serverName,
+        status,
+        toolName: "lookup"
+      }]
+    });
+    const { container } = renderPane({
+      ...readyComposerOverrides,
+      currentRunId: "run-live",
+      liveArtifactSummary: toolSummary("call-live", "Live MCP", "complete"),
+      visibleMessages: [
+        assistantMessage("assistant-history", {
+          artifactSummary: toolSummary("call-history", "Historical MCP", "complete"),
+          runId: "run-history"
+        }),
+        assistantMessage("assistant-live", {
+          artifactSummary: toolSummary("call-live", "Stale MCP", "running"),
+          runId: "run-live",
+          status: "streaming"
+        })
+      ]
+    });
+
+    const historical = container.querySelector('[data-message-id="assistant-history"]');
+    const live = container.querySelector('[data-message-id="assistant-live"]');
+    expect(historical).toHaveTextContent("Historical MCP");
+    expect(historical).not.toHaveTextContent("Live MCP");
+    expect(live).toHaveTextContent("Live MCP");
+    expect(live).not.toHaveTextContent("Stale MCP");
   });
 
   it("keeps warnings on their originating run across branch changes", () => {

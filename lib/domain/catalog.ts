@@ -17,11 +17,15 @@ export type ProviderModelCatalogEntry = {
   inputTokenPriceMicros: number;
   outputTokenPriceMicros: number;
   capabilities: {
+    backgroundStreaming?: boolean;
     nativePdfInput: boolean;
+    nativeBackground?: boolean;
     pdf: boolean;
     reasoning: boolean;
     nativeSearch: boolean;
+    parallelToolCalls?: boolean;
     streaming: boolean;
+    toolCalling?: boolean;
     vision: boolean;
   };
   defaultParams: Record<string, unknown>;
@@ -92,11 +96,15 @@ function openAIGpt56Model(modelId: string, displayName: string): ProviderModelCa
     inputTokenPriceMicros: 0,
     outputTokenPriceMicros: 0,
     capabilities: {
+      backgroundStreaming: true,
+      nativeBackground: true,
       nativePdfInput: true,
       nativeSearch: true,
+      parallelToolCalls: true,
       pdf: true,
       reasoning: true,
       streaming: true,
+      toolCalling: true,
       vision: true
     },
     defaultParams: {
@@ -148,11 +156,15 @@ export const defaultProviderModels: ProviderModelCatalogEntry[] = [
     inputTokenPriceMicros: 0,
     outputTokenPriceMicros: 0,
     capabilities: {
+      backgroundStreaming: false,
+      nativeBackground: false,
       nativePdfInput: false,
       nativeSearch: true,
+      parallelToolCalls: false,
       pdf: true,
       reasoning: true,
       streaming: true,
+      toolCalling: false,
       vision: true
     },
     defaultParams: defaultFakeProviderParams(),
@@ -186,11 +198,15 @@ export const defaultProviderModels: ProviderModelCatalogEntry[] = [
     inputTokenPriceMicros: 0,
     outputTokenPriceMicros: 0,
     capabilities: {
+      backgroundStreaming: true,
+      nativeBackground: true,
       nativePdfInput: true,
       nativeSearch: true,
+      parallelToolCalls: true,
       pdf: true,
       reasoning: true,
       streaming: true,
+      toolCalling: true,
       vision: true
     },
     defaultParams: openAIResponsesParams,
@@ -231,11 +247,15 @@ export const defaultProviderModels: ProviderModelCatalogEntry[] = [
     inputTokenPriceMicros: 0,
     outputTokenPriceMicros: 0,
     capabilities: {
+      backgroundStreaming: false,
+      nativeBackground: false,
       nativePdfInput: true,
       nativeSearch: false,
+      parallelToolCalls: true,
       pdf: true,
       reasoning: true,
       streaming: true,
+      toolCalling: true,
       vision: true
     },
     defaultParams: anthropicMessagesParams,
@@ -269,11 +289,15 @@ export const defaultProviderModels: ProviderModelCatalogEntry[] = [
     inputTokenPriceMicros: 5,
     outputTokenPriceMicros: 25,
     capabilities: {
+      backgroundStreaming: false,
+      nativeBackground: false,
       nativePdfInput: true,
       nativeSearch: false,
+      parallelToolCalls: true,
       pdf: true,
       reasoning: true,
       streaming: true,
+      toolCalling: true,
       vision: true
     },
     defaultParams: {
@@ -319,11 +343,15 @@ export const defaultProviderModels: ProviderModelCatalogEntry[] = [
     inputTokenPriceMicros: 2,
     outputTokenPriceMicros: 9,
     capabilities: {
+      backgroundStreaming: false,
+      nativeBackground: false,
       nativePdfInput: false,
       nativeSearch: false,
+      parallelToolCalls: true,
       pdf: true,
       reasoning: true,
       streaming: true,
+      toolCalling: true,
       vision: true
     },
     defaultParams: {
@@ -366,11 +394,15 @@ export const defaultProviderModels: ProviderModelCatalogEntry[] = [
     inputTokenPriceMicros: 2,
     outputTokenPriceMicros: 12,
     capabilities: {
+      backgroundStreaming: false,
+      nativeBackground: false,
       nativePdfInput: false,
       nativeSearch: false,
+      parallelToolCalls: true,
       pdf: true,
       reasoning: true,
       streaming: true,
+      toolCalling: true,
       vision: true
     },
     defaultParams: {
@@ -413,11 +445,15 @@ export const defaultProviderModels: ProviderModelCatalogEntry[] = [
     inputTokenPriceMicros: 3,
     outputTokenPriceMicros: 15,
     capabilities: {
+      backgroundStreaming: false,
+      nativeBackground: false,
       nativePdfInput: false,
       nativeSearch: true,
+      parallelToolCalls: true,
       pdf: false,
       reasoning: false,
       streaming: true,
+      toolCalling: true,
       vision: false
     },
     defaultParams: {

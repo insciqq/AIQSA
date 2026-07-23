@@ -1,4 +1,5 @@
 import type { ErrorResponse, SessionErrorCode } from "./http";
+import { decodeThreadToolActivity, type ThreadToolActivity } from "./toolActivity";
 
 export type RunEventView = {
   data: unknown;
@@ -37,6 +38,7 @@ export type ModelRunResponseProjection = {
   reasoningTokens: number;
   searchRuns: unknown[];
   status: ModelRunStatus;
+  toolCalls: ThreadToolActivity[];
   totalTokens: number;
 };
 
@@ -154,7 +156,7 @@ export function decodeGetModelRunResponse(value: unknown): PersistedRun | null {
   }
 
   const run = value.run;
-  if (!Array.isArray(run.events)) {
+  if (!Array.isArray(run.events) || !Array.isArray(run.toolCalls)) {
     return null;
   }
 
@@ -186,6 +188,11 @@ export function decodeGetModelRunResponse(value: unknown): PersistedRun | null {
     });
   }
 
+  const toolCalls = run.toolCalls.map(decodeThreadToolActivity);
+  if (toolCalls.some((toolCall) => toolCall === null)) {
+    return null;
+  }
+
   const cachedInputTokens = finiteNumber(run.cachedInputTokens) ?? 0;
   const cacheWriteInputTokens = finiteNumber(run.cacheWriteInputTokens) ?? 0;
   const estimatedCostMicros = finiteNumber(run.estimatedCostMicros);
@@ -208,6 +215,7 @@ export function decodeGetModelRunResponse(value: unknown): PersistedRun | null {
     reasoningTokens,
     searchRuns: Array.isArray(run.searchRuns) ? run.searchRuns : [],
     status,
+    toolCalls: toolCalls.filter((toolCall): toolCall is ThreadToolActivity => toolCall !== null),
     totalTokens
   };
 }

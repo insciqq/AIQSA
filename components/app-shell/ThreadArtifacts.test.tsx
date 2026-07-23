@@ -1,7 +1,13 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import type { ThreadArtifactSummary } from "./types";
-import { CitationBlock, ContextTruncationBlock, ReasoningBlock, SearchSummaryBlock } from "./ThreadArtifacts";
+import {
+  CitationBlock,
+  ContextTruncationBlock,
+  ReasoningBlock,
+  SearchSummaryBlock,
+  ToolActivityBlock
+} from "./ThreadArtifacts";
 
 function summary(overrides: Partial<ThreadArtifactSummary> = {}): ThreadArtifactSummary {
   return {
@@ -11,6 +17,8 @@ function summary(overrides: Partial<ThreadArtifactSummary> = {}): ThreadArtifact
     reasoningText: [],
     searchCount: 0,
     searchStrategy: null,
+    toolCallCount: 0,
+    toolCalls: [],
     ...overrides
   };
 }
@@ -341,6 +349,89 @@ describe("ThreadArtifacts", () => {
       "break-words",
       "text-content-secondary",
       "[overflow-wrap:anywhere]"
+    );
+  });
+
+  it("discloses parallel MCP calls with status, timing, and safe previews", () => {
+    render(
+      <ToolActivityBlock
+        summary={summary({
+          toolCallCount: 3,
+          toolCalls: [
+            {
+              argumentsPreview: { apiKey: "[redacted]", text: "remember this" },
+              callId: "call-remember",
+              capability: "mcp",
+              credentialSources: ["personal"],
+              durationMs: 85,
+              errorMessage: null,
+              externalAccountLabel: "Personal memory",
+              ordinal: 0,
+              resultPreview: { content: [{ text: "saved", type: "text" }] },
+              round: 1,
+              serverName: "Mem0",
+              status: "complete",
+              toolName: "remember"
+            },
+            {
+              argumentsPreview: { page: "Roadmap" },
+              callId: "call-notion",
+              capability: "mcp",
+              credentialSources: ["oauth"],
+              durationMs: 1_250,
+              errorMessage: "Notion request failed",
+              externalAccountLabel: "Team Notion",
+              ordinal: 1,
+              resultPreview: { content: [{ text: "request failed", type: "text" }] },
+              round: 1,
+              serverName: "Notion",
+              status: "error",
+              toolName: "search"
+            },
+            {
+              argumentsPreview: { query: "follow-up" },
+              callId: "call-running",
+              capability: "mcp",
+              credentialSources: ["shared"],
+              durationMs: null,
+              errorMessage: null,
+              externalAccountLabel: null,
+              ordinal: 0,
+              resultPreview: null,
+              round: 2,
+              serverName: "Todoist",
+              status: "running",
+              toolName: "find_tasks"
+            }
+          ]
+        })}
+      />
+    );
+
+    const trigger = screen.getByRole("button", { name: /Running 1 tool/i });
+    expect(trigger).toHaveAttribute("aria-expanded", "false");
+    expect(trigger).toHaveTextContent("1 failed");
+    expect(trigger).toHaveTextContent("Mem0, Notion, Todoist");
+    expect(screen.queryByText("Round 1")).not.toBeInTheDocument();
+
+    fireEvent.click(trigger);
+
+    expect(trigger).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByText("Round 1")).toBeVisible();
+    expect(screen.getByText("2 parallel calls")).toBeVisible();
+    expect(screen.getByText("Round 2")).toBeVisible();
+    expect(screen.getByText("Mem0 / remember")).toBeVisible();
+    expect(screen.getByText("Completed")).toBeVisible();
+    expect(screen.getByText("85 ms")).toBeVisible();
+    expect(screen.getByText("1.3 s")).toBeVisible();
+
+    fireEvent.click(screen.getByText("Mem0 / remember").closest("summary")!);
+    expect(screen.getByText("Account: Personal memory")).toBeVisible();
+    expect(screen.getByText("Credentials: personal")).toBeVisible();
+    expect(screen.getByText(/remember this/)).toBeVisible();
+    expect(screen.getByText(/saved/)).toBeVisible();
+    expect(screen.getByTestId("thread-tool-activity-details")).not.toHaveTextContent(
+      "sk-private"
     );
   });
 });

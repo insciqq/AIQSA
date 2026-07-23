@@ -42,7 +42,7 @@ describe("DB-backed request auth", () => {
     });
     const resolveAuth = createRequestAuthResolver({
       getConfig: () => config,
-      now: () => new Date("2026-06-14T00:00:01.000Z"),
+      now: () => new Date("2026-06-14T00:01:01.000Z"),
       sessions
     });
 
@@ -55,6 +55,9 @@ describe("DB-backed request auth", () => {
     );
 
     expect(auth?.userId).toBe(config.bootstrapUserId);
+    expect(sessions.records.get(hashToken(created.token))?.lastSeenAt).toEqual(
+      new Date("2026-06-14T00:01:01.000Z")
+    );
   });
 
   it("rejects expired, revoked, and inactive user sessions", async () => {

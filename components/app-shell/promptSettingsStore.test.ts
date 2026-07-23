@@ -43,6 +43,17 @@ describe("prompt settings store", () => {
     expect(usePromptSettingsStore.getState().settingsPromptEditor).toEqual(promptEditorFromPreset(null));
   });
 
+  it("opens MCP settings without changing the current prompt draft", () => {
+    usePromptSettingsStore.getState().openSettings(prompts[0]);
+    usePromptSettingsStore.getState().openMcpSettings();
+
+    expect(usePromptSettingsStore.getState()).toMatchObject({
+      settingsOpen: true,
+      settingsSection: "mcp",
+      settingsPromptEditor: promptEditorFromPreset(prompts[0])
+    });
+  });
+
   it("detects dirty Settings drafts before close confirmation", () => {
     const pristineDraft = promptEditorFromPreset(prompts[0]);
     expect(pristineDraft).toEqual({

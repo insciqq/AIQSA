@@ -21,6 +21,9 @@ function ownedDataSource(
       attachments: 0,
       chats: 0,
       folders: 0,
+      mcpGrants: 0,
+      mcpOAuthConnections: 0,
+      mcpUserServers: 0,
       modelRuns: 0,
       promptPresets: 0,
       sharedSnapshots: 0,
@@ -119,7 +122,8 @@ describe("admin deletion metadata", () => {
     expect(
       adminGroupDeletionInfo({
         _count: { users: 2 },
-        accessGrants: [{ enabled: true }, { enabled: true }]
+        accessGrants: [{ enabled: true }, { enabled: true }],
+        mcpGrants: []
       })
     ).toEqual({
       canDelete: false,
@@ -130,7 +134,8 @@ describe("admin deletion metadata", () => {
     expect(
       adminGroupDeletionInfo({
         _count: { users: 1 },
-        accessGrants: []
+        accessGrants: [],
+        mcpGrants: []
       })
     ).toEqual({
       canDelete: false,
@@ -141,7 +146,8 @@ describe("admin deletion metadata", () => {
     expect(
       adminGroupDeletionInfo({
         _count: { users: 0 },
-        accessGrants: [{ enabled: true }, { enabled: true }, { enabled: false }]
+        accessGrants: [{ enabled: true }, { enabled: false }],
+        mcpGrants: [{ canUse: true }]
       })
     ).toEqual({
       canDelete: false,
@@ -152,7 +158,8 @@ describe("admin deletion metadata", () => {
     expect(
       adminGroupDeletionInfo({
         _count: { users: 0 },
-        accessGrants: [{ enabled: true }]
+        accessGrants: [],
+        mcpGrants: [{ canUse: true }]
       })
     ).toEqual({
       canDelete: false,
@@ -163,7 +170,8 @@ describe("admin deletion metadata", () => {
     expect(
       adminGroupDeletionInfo({
         _count: { users: 0 },
-        accessGrants: [{ enabled: false }]
+        accessGrants: [{ enabled: false }],
+        mcpGrants: []
       })
     ).toEqual({
       canDelete: true,
@@ -279,6 +287,9 @@ describe("admin deletion metadata", () => {
       "attachments",
       "chats",
       "folders",
+      "mcpGrants",
+      "mcpOAuthConnections",
+      "mcpUserServers",
       "modelRuns",
       "promptPresets",
       "sharedSnapshots",
@@ -293,6 +304,9 @@ describe("admin deletion metadata", () => {
         attachments: 0,
         chats: 0,
         folders: 0,
+        mcpGrants: 0,
+        mcpOAuthConnections: 0,
+        mcpUserServers: 0,
         modelRuns: 0,
         promptPresets: 0,
         sharedSnapshots: 0,
@@ -312,27 +326,33 @@ describe("admin deletion metadata", () => {
             attachments: 2,
             chats: 3,
             folders: 4,
-            modelRuns: 5,
-            promptPresets: 6,
-            sharedSnapshots: 7,
-            usageEvents: 8
+            mcpGrants: 5,
+            mcpOAuthConnections: 6,
+            mcpUserServers: 7,
+            modelRuns: 8,
+            promptPresets: 9,
+            sharedSnapshots: 10,
+            usageEvents: 11
           },
           {}
         )
       )
-    ).toBe(37);
+    ).toBe(67);
     expect(
       adminOwnedAppDataCount({
         accessGrants: 1,
         attachments: 2,
         chats: 3,
         folders: 4,
-        modelRuns: 5,
-        promptPresets: 6,
-        settings: 7,
-        sharedSnapshots: 8,
-        usageEvents: 9
+        mcpGrants: 5,
+        mcpOAuthConnections: 6,
+        mcpUserServers: 7,
+        modelRuns: 8,
+        promptPresets: 9,
+        settings: 10,
+        sharedSnapshots: 11,
+        usageEvents: 12
       })
-    ).toBe(45);
+    ).toBe(78);
   });
 });

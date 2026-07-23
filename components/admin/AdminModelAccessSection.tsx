@@ -15,7 +15,7 @@ import {
 } from "@/components/admin/adminPrimitives";
 import type { AdminCatalog, AdminGroup } from "@/lib/contracts/admin";
 import { Check, RotateCcw, Search } from "lucide-react";
-import type { Ref } from "react";
+import type { ReactNode, Ref } from "react";
 
 export type AdminModelAccessSectionData = Readonly<{
   catalog: AdminCatalog;
@@ -47,6 +47,7 @@ export type AdminModelAccessSectionProps = Readonly<{
   actions: AdminModelAccessSectionActions;
   data: AdminModelAccessSectionData;
   draft: AdminModelAccessSectionDraft;
+  mcpAccess?: ReactNode;
   refs: AdminModelAccessSectionRefs;
   status: AdminModelAccessSectionStatus;
 }>;
@@ -86,6 +87,7 @@ export function AdminModelAccessSection({
   actions,
   data,
   draft,
+  mcpAccess,
   refs: { detail: detailRef },
   status
 }: AdminModelAccessSectionProps) {
@@ -412,6 +414,7 @@ export function AdminModelAccessSection({
                 </table>
               </AdminTableRegion>
             </section>
+            {mcpAccess}
           </div>
         </div>
       ) : (

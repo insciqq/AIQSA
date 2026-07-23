@@ -6,6 +6,7 @@ export type UserSettingsWire = {
   defaultSearchStrategyId: string;
   showCitations: boolean;
   showReasoningBlocks: boolean;
+  showToolActivity: boolean;
 };
 
 export type UpdateSettingsResponse = {
@@ -37,7 +38,8 @@ export function decodeUpdateSettingsResponse(value: unknown): UpdateSettingsResp
     !isNonEmptyString(settings.defaultProvider) ||
     !isNonEmptyString(settings.defaultSearchStrategyId) ||
     typeof settings.showCitations !== "boolean" ||
-    typeof settings.showReasoningBlocks !== "boolean"
+    typeof settings.showReasoningBlocks !== "boolean" ||
+    typeof settings.showToolActivity !== "boolean"
   ) {
     return null;
   }
@@ -50,7 +52,8 @@ export function decodeUpdateSettingsResponse(value: unknown): UpdateSettingsResp
       defaultProvider: settings.defaultProvider,
       defaultSearchStrategyId: settings.defaultSearchStrategyId,
       showCitations: settings.showCitations,
-      showReasoningBlocks: settings.showReasoningBlocks
+      showReasoningBlocks: settings.showReasoningBlocks,
+      showToolActivity: settings.showToolActivity
     }
   };
 }

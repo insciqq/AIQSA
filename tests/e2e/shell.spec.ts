@@ -1040,7 +1040,8 @@ test("restores per-model search and reasoning drafts across model switches and r
           defaultProvider: defaults.provider,
           defaultSearchStrategyId: defaults.searchStrategyId,
           showCitations: defaults.showCitations,
-          showReasoningBlocks: defaults.showReasoningBlocks
+          showReasoningBlocks: defaults.showReasoningBlocks,
+          showToolActivity: defaults.showToolActivity
         }
       }
     });
@@ -1170,7 +1171,8 @@ test("saves selected search as a user per-model draft without requiring a global
           defaultProvider: defaults.provider,
           defaultSearchStrategyId: defaults.searchStrategyId,
           showCitations: defaults.showCitations,
-          showReasoningBlocks: defaults.showReasoningBlocks
+          showReasoningBlocks: defaults.showReasoningBlocks,
+          showToolActivity: defaults.showToolActivity
         }
       }
     });
@@ -1466,7 +1468,8 @@ test("loads catalog before activating a stored chat and avoids hydration warning
           defaultProvider: matrixCatalog.defaults.provider,
           defaultSearchStrategyId: matrixCatalog.defaults.searchStrategyId,
           showCitations: matrixCatalog.defaults.showCitations,
-          showReasoningBlocks: matrixCatalog.defaults.showReasoningBlocks
+          showReasoningBlocks: matrixCatalog.defaults.showReasoningBlocks,
+          showToolActivity: matrixCatalog.defaults.showToolActivity
         }
       }
     });
@@ -1572,7 +1575,8 @@ test("finds never-opened chats through server-side content search", async ({ pag
           defaultProvider: matrixCatalog.defaults.provider,
           defaultSearchStrategyId: matrixCatalog.defaults.searchStrategyId,
           showCitations: matrixCatalog.defaults.showCitations,
-          showReasoningBlocks: matrixCatalog.defaults.showReasoningBlocks
+          showReasoningBlocks: matrixCatalog.defaults.showReasoningBlocks,
+          showToolActivity: matrixCatalog.defaults.showToolActivity
         }
       }
     });
@@ -1973,6 +1977,7 @@ test("opens a second blank New Chat while another active run is still running", 
               reasoningTokens: 0,
               searchRuns: [],
               status: "complete",
+              toolCalls: [],
               totalTokens: 11
             }
           }),
@@ -2240,7 +2245,8 @@ test("keeps delayed chat_update scoped to its source chat after switching chats"
           modelId: "gpt-5.5",
           provider: "openai",
           searchRuns: [],
-          status: "complete"
+          status: "complete",
+          toolCalls: []
         }
       }
     });
@@ -2536,7 +2542,9 @@ test("recovers a background run after reload and renders search/reasoning thread
                     reasoningCount: 1,
                     reasoningText: ["Recovered reasoning summary"],
                     searchCount: 1,
-                    searchStrategy: "openai-native-web-search"
+                    searchStrategy: "openai-native-web-search",
+                    toolCallCount: 0,
+                    toolCalls: []
                   }
                 : null,
               content: {
@@ -2623,7 +2631,8 @@ test("recovers a background run after reload and renders search/reasoning thread
           modelId: "gpt-5.5",
           provider: "openai",
           searchRuns: [],
-          status: "complete"
+          status: "complete",
+          toolCalls: []
         }
       }
     });
@@ -2648,6 +2657,111 @@ test("recovers a background run after reload and renders search/reasoning thread
   await closeRunSettings(page);
   await page.getByTestId("thread-reasoning-block").getByRole("button", { name: /Reasoning 1/ }).click();
   await expect(page.getByTestId("thread-reasoning-block")).toContainText("Recovered reasoning summary");
+});
+
+test("shows tool activity by default and persists hide/show across reload", async ({ page }) => {
+  const chatId = "chat-tool-activity-preference";
+  let settingsPatches = 0;
+  const chat = {
+    activeLeafMessageId: "assistant-tool-activity",
+    createdAt: "2026-07-23T12:00:00.000Z",
+    defaultModelId: "gpt-5.5",
+    defaultPromptPresetId: "prompt-helpful",
+    defaultProvider: "openai",
+    folderId: null,
+    id: chatId,
+    messageCount: 2,
+    messages: [
+      {
+        artifactSummary: null,
+        content: { blocks: [{ text: "Use my memory", type: "text" }] },
+        createdAt: "2026-07-23T12:00:00.000Z",
+        errorMessage: null,
+        id: "user-tool-activity",
+        modelId: "gpt-5.5",
+        modelRunId: null,
+        parentMessageId: null,
+        provider: "openai",
+        role: "user",
+        status: "complete"
+      },
+      {
+        artifactSummary: {
+          citationCount: 0,
+          citations: [],
+          reasoningCount: 0,
+          reasoningText: [],
+          searchCount: 0,
+          searchStrategy: null,
+          toolCallCount: 1,
+          toolCalls: [{
+            argumentsPreview: { apiKey: "[redacted]", query: "memory" },
+            callId: "call-tool-activity",
+            capability: "mcp",
+            credentialSources: ["personal"],
+            durationMs: 64,
+            errorMessage: null,
+            externalAccountLabel: "Personal memory",
+            ordinal: 0,
+            resultPreview: { content: [{ text: "found", type: "text" }] },
+            round: 1,
+            serverName: "Mem0",
+            status: "complete",
+            toolName: "search"
+          }]
+        },
+        content: { blocks: [{ text: "I found the memory.", type: "text" }] },
+        createdAt: "2026-07-23T12:00:01.000Z",
+        errorMessage: null,
+        id: "assistant-tool-activity",
+        modelId: "gpt-5.5",
+        modelRunId: "run-tool-activity",
+        parentMessageId: "user-tool-activity",
+        provider: "openai",
+        role: "assistant",
+        status: "complete"
+      }
+    ],
+    pinned: false,
+    title: "Tool activity preference",
+    updatedAt: "2026-07-23T12:00:01.000Z",
+    usageStats: null
+  };
+
+  await page.addInitScript((activeChatId) => {
+    window.localStorage.setItem("aiqsa.activeChatId", activeChatId);
+  }, chatId);
+  await installMatrixCatalogFixture(
+    page,
+    { chats: [chat], contentMatches: [], folders: [] },
+    { onSettingsPatch: () => { settingsPatches += 1; } }
+  );
+  await signIn(page);
+
+  const activity = page.getByTestId("thread-tool-activity");
+  await expect(activity).toBeVisible();
+  await activity.getByRole("button", { name: /Used 1 tool/ }).click();
+  await expect(page.getByTestId("thread-tool-activity-details")).toContainText("Mem0 / search");
+
+  let settings = await openRunSettings(page);
+  await settings.getByRole("button", { name: "Hide tool activity" }).click();
+  await expect.poll(() => settingsPatches).toBe(1);
+  await closeRunSettings(page);
+  await expect(activity).toHaveCount(0);
+
+  await page.reload();
+  await expect(page.getByTestId("app-shell")).toBeVisible();
+  await expect(page.getByTestId("thread-tool-activity")).toHaveCount(0);
+
+  settings = await openRunSettings(page);
+  await settings.getByRole("button", { name: "Show tool activity" }).click();
+  await expect.poll(() => settingsPatches).toBe(2);
+  await closeRunSettings(page);
+  await expect(page.getByTestId("thread-tool-activity")).toBeVisible();
+
+  await page.reload();
+  await expect(page.getByTestId("app-shell")).toBeVisible();
+  await expect(page.getByTestId("thread-tool-activity")).toContainText("Mem0");
 });
 
 test("supports the default QSA chat and folder workflow", async ({ browser, page }) => {
@@ -3055,7 +3169,9 @@ for (const viewport of responsiveTouchViewports) {
             strategyId: "perplexity-tool-search"
           }
         ],
-        searchStrategy: "perplexity-tool-search"
+        searchStrategy: "perplexity-tool-search",
+        toolCallCount: 0,
+        toolCalls: []
       };
       const longMarkdown = [
         "# Responsive report",

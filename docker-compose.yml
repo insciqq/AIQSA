@@ -21,6 +21,7 @@ services:
       AIQSA_BOOTSTRAP_LOGIN_ENABLED: ${AIQSA_BOOTSTRAP_LOGIN_ENABLED:-}
       AIQSA_BOOTSTRAP_USER_ID: ${AIQSA_BOOTSTRAP_USER_ID:-}
       AIQSA_COOKIE_SECURE: ${AIQSA_COOKIE_SECURE:-}
+      AIQSA_ENCRYPTION_KEY: ${AIQSA_ENCRYPTION_KEY:?Set AIQSA_ENCRYPTION_KEY in .env}
       AIQSA_GOOGLE_OAUTH_CLIENT_ID: ${AIQSA_GOOGLE_OAUTH_CLIENT_ID:-}
       AIQSA_GOOGLE_OAUTH_CLIENT_SECRET: ${AIQSA_GOOGLE_OAUTH_CLIENT_SECRET:-}
       AIQSA_OPENAI_BACKGROUND_POLL_TIMEOUT_MS: ${AIQSA_OPENAI_BACKGROUND_POLL_TIMEOUT_MS:-}
@@ -39,6 +40,7 @@ services:
       AIQSA_SMTP_USER: ${AIQSA_SMTP_USER:-}
       AIQSA_TRUST_PROXY_HEADERS: ${AIQSA_TRUST_PROXY_HEADERS:-}
       AIQSA_TRUSTED_PROXY_COUNT: ${AIQSA_TRUSTED_PROXY_COUNT:-}
+      AIQSA_TOOLHIVE_URL: http://toolhive-runtime:8080
       AIQSA_UPLOAD_MAX_BYTES: ${AIQSA_UPLOAD_MAX_BYTES:-25000000}
       AIQSA_UPLOAD_STORAGE_DIR: ${AIQSA_UPLOAD_STORAGE_DIR:-}
       AIQSA_YANDEX_OAUTH_CLIENT_ID: ${AIQSA_YANDEX_OAUTH_CLIENT_ID:-}
@@ -69,6 +71,9 @@ services:
     init: true
     logging: *default-logging
     mem_limit: ${AIQSA_APP_MEMORY_LIMIT:-2g}
+    networks:
+      - default
+      - mcp-control
     ports:
       - "${AIQSA_BIND_ADDRESS:-127.0.0.1}:${AIQSA_PORT:-3000}:3000"
     restart: unless-stopped
@@ -82,6 +87,33 @@ services:
         condition: service_completed_successfully
       postgres:
         condition: service_healthy
+
+  toolhive-runtime:
+    image: ghcr.io/stacklok/toolhive:v0.40.1@sha256:677dff9d73b33681f3d2c9b3c0b187e3210dc5ca3b8b326590d8db975f155578
+    command: ["serve", "--host", "0.0.0.0", "--port", "8080"]
+    cap_drop:
+      - ALL
+    environment:
+      HOME: /var/lib/toolhive
+      XDG_CACHE_HOME: /var/lib/toolhive/cache
+      XDG_CONFIG_HOME: /var/lib/toolhive/config
+      XDG_DATA_HOME: /var/lib/toolhive/data
+      XDG_STATE_HOME: /var/lib/toolhive/state
+    init: true
+    logging: *default-logging
+    networks:
+      - mcp-control
+    read_only: true
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 30s
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec,size=256m
+    user: "0:0"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - toolhive_data:/var/lib/toolhive
 
   migrate-bootstrap:
     image: ${AIQSA_TOOLS_IMAGE:-aiqsa-tools:local}
@@ -113,6 +145,26 @@ services:
         condition: service_healthy
     logging: *default-logging
     mem_limit: ${AIQSA_TOOLS_MEMORY_LIMIT:-1g}
+    restart: "no"
+
+  mcp-maintenance:
+    profiles:
+      - maintenance
+    image: ${AIQSA_TOOLS_IMAGE:-aiqsa-tools:local}
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: tools
+    entrypoint: ["npm", "run", "mcp:cleanup", "--"]
+    command: []
+    environment:
+      AIQSA_ENCRYPTION_KEY: ${AIQSA_ENCRYPTION_KEY:?Set AIQSA_ENCRYPTION_KEY in .env}
+      AIQSA_TOOLHIVE_URL: http://toolhive-runtime:8080
+    depends_on:
+      - toolhive-runtime
+    init: true
+    networks:
+      - mcp-control
     restart: "no"
 
   postgres:
@@ -174,8 +226,14 @@ services:
     logging: *default-logging
     restart: "no"
 
+networks:
+  mcp-control:
+    internal: true
+
 volumes:
   minio_data:
     name: ${AIQSA_MINIO_VOLUME_NAME:-aiqsa_minio_data}
   postgres_data:
     name: ${AIQSA_POSTGRES_VOLUME_NAME:-aiqsa_postgres_data}
+  toolhive_data:
+    name: ${AIQSA_TOOLHIVE_VOLUME_NAME:-aiqsa_toolhive_data}

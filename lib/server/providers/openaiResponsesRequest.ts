@@ -45,7 +45,8 @@ export type OpenAIResponsesRequestBody = {
     context: "manual_context_replay" | "provider_context";
   };
   model: string;
-  parallel_tool_calls?: false;
+  parallel_tool_calls?: boolean;
+  previous_response_id?: string;
   prompt_cache_key: string;
   prompt_cache_options?: {
     ttl: "30m";
@@ -235,11 +236,13 @@ function buildOpenAIResponsesBody(
   const serializedTools = (request.tools ?? []).map((tool) => openAIResponsesToolBridge.serializeTool(tool).tool);
   const hostedTools = request.searchStrategy === "openai-native-web-search" ? [{ type: "web_search" }] : [];
   const tools: Record<string, unknown>[] = [...hostedTools, ...serializedTools];
-  const forceForeground = request.forceNonStreaming || serializedTools.length > 0;
+  const forceForeground = request.forceNonStreaming === true;
   const background = forceForeground ? false : Boolean(params.background);
   const stream = forceForeground ? false : params.stream;
   const instructions = combineInstructions(request);
-  const conversation = textConversationForRequest(request);
+  const conversation = request.previousProviderResponseId
+    ? []
+    : textConversationForRequest(request);
   const input: OpenAIResponsesInputItem[] = conversation.map((message, index): OpenAIResponsesInputMessage => ({
     content:
       index === conversation.length - 1 && message.role === "user"
@@ -278,6 +281,10 @@ function buildOpenAIResponsesBody(
     body.instructions = instructions;
   }
 
+  if (request.previousProviderResponseId) {
+    body.previous_response_id = request.previousProviderResponseId;
+  }
+
   if (reasoning) {
     body.reasoning = reasoning;
   }
@@ -292,7 +299,7 @@ function buildOpenAIResponsesBody(
   }
 
   if (serializedTools.length > 0) {
-    body.parallel_tool_calls = false;
+    body.parallel_tool_calls = request.parallelToolCalls === true;
   }
 
   return body;
@@ -320,7 +327,7 @@ export function buildOpenAIResponsesRequestPreview(
       redactImages: true
     }),
     provider: "openai",
-    replayedContext: conversationPreview(request),
+    replayedContext: request.previousProviderResponseId ? [] : conversationPreview(request),
     redactions: ["image_data_url", "pdf_base64"]
   };
 }

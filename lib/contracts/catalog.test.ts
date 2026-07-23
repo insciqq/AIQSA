@@ -11,7 +11,8 @@ function validResponse(): CatalogResponse {
         provider: "openai",
         searchStrategyId: "search-disabled",
         showCitations: true,
-        showReasoningBlocks: false
+        showReasoningBlocks: false,
+        showToolActivity: true,
       },
       models: [
         {
@@ -133,6 +134,15 @@ describe("catalog wire contract", () => {
       catalog: { defaults: { promptPresetId: unknown } };
     };
     response.catalog.defaults.promptPresetId = 42;
+
+    expect(decodeCatalogResponse(response)).toBeNull();
+  });
+
+  it("requires the persisted tool activity default", () => {
+    const response = validResponse() as unknown as {
+      catalog: { defaults: Record<string, unknown> };
+    };
+    delete response.catalog.defaults.showToolActivity;
 
     expect(decodeCatalogResponse(response)).toBeNull();
   });

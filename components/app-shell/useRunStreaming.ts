@@ -2,7 +2,7 @@ import {
   isSseParseError,
   sseParseWarningEvent
 } from "@/components/app-shell/shellApi";
-import { appendAssistantDelta } from "@/components/app-shell/runState";
+import { appendAssistantDelta, resetAssistantDraft } from "@/components/app-shell/runState";
 import { useRunSurfaceStore } from "@/components/app-shell/runSurfaceStore";
 import type { RunEventView } from "@/components/app-shell/types";
 import { useRunStream } from "@/components/app-shell/useRunStream";
@@ -81,6 +81,18 @@ export function useRunStreaming({ applyChatUpdate }: RunStreamingInput) {
         if (timer === null) {
           timer = window.setTimeout(flush, 50);
         }
+      },
+      reset() {
+        if (timer !== null) {
+          window.clearTimeout(timer);
+          timer = null;
+        }
+        bufferedDelta = "";
+        bufferedChunkCount = 0;
+        const assistantMessageId = getAssistantMessageId();
+        useThreadStore.getState().updateMessages(chatId, (current) =>
+          resetAssistantDraft(current, assistantMessageId)
+        );
       }
     };
   }

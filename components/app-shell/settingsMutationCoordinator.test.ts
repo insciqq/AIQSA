@@ -16,6 +16,7 @@ function settings(overrides: Partial<UserSettingsWire> = {}): UserSettingsWire {
     defaultSearchStrategyId: "search-disabled",
     showCitations: true,
     showReasoningBlocks: false,
+    showToolActivity: true,
     ...overrides
   };
 }
@@ -81,7 +82,8 @@ describe("settings mutation coordinator", () => {
           reasoningEffort: "high"
         }
       },
-      showReasoningBlocks: true
+      showReasoningBlocks: true,
+      showToolActivity: true,
     });
 
     expect(send).toHaveBeenCalledTimes(1);
@@ -99,7 +101,8 @@ describe("settings mutation coordinator", () => {
         }
       },
       showCitations: true,
-      showReasoningBlocks: true
+      showReasoningBlocks: true,
+      showToolActivity: true,
     });
     expect(send.mock.calls[1]?.[0]).toEqual({
       controlValues: {
@@ -112,7 +115,8 @@ describe("settings mutation coordinator", () => {
         }
       },
       showCitations: true,
-      showReasoningBlocks: true
+      showReasoningBlocks: true,
+      showToolActivity: true,
     });
 
     responses[1]?.resolve(
@@ -127,7 +131,8 @@ describe("settings mutation coordinator", () => {
           }
         },
         showCitations: true,
-        showReasoningBlocks: true
+        showReasoningBlocks: true,
+        showToolActivity: true,
       })
     );
     await Promise.all([first, second, third]);
@@ -221,6 +226,19 @@ describe("settings mutation coordinator", () => {
     );
   });
 
+  it("sends and decodes the persisted tool activity preference", async () => {
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
+      Response.json({ settings: settings({ showToolActivity: false }) })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(sendSettingsDefaultsPatch({ showToolActivity: false })).resolves.toMatchObject({
+      showToolActivity: false
+    });
+    const request = fetchMock.mock.calls[0]?.[1];
+    expect(JSON.parse(String(request?.body))).toEqual({ showToolActivity: false });
+  });
+
   it("replaces a server-confirmed model draft before preserving unrelated keys", () => {
     const result = applySettingsDefaultsReconciliation(
       {
@@ -238,7 +256,8 @@ describe("settings mutation coordinator", () => {
         provider: "openai",
         searchStrategyId: "search-disabled",
         showCitations: true,
-        showReasoningBlocks: false
+        showReasoningBlocks: false,
+        showToolActivity: true,
       },
       {
         controlValues: {

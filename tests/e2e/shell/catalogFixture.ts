@@ -54,13 +54,27 @@ export async function installMatrixCatalogFixture(
     defaultProvider: fixtureCatalog.defaults.provider,
     defaultSearchStrategyId: fixtureCatalog.defaults.searchStrategyId,
     showCitations: fixtureCatalog.defaults.showCitations,
-    showReasoningBlocks: fixtureCatalog.defaults.showReasoningBlocks
+    showReasoningBlocks: fixtureCatalog.defaults.showReasoningBlocks,
+    showToolActivity: fixtureCatalog.defaults.showToolActivity
   };
   await page.route("**/api/me/catalog", async (route) => {
     await route.fulfill({
       contentType: "application/json",
       json: {
-        catalog: fixtureCatalog
+        catalog: {
+          ...fixtureCatalog,
+          defaults: {
+            ...fixtureCatalog.defaults,
+            controlValues: settings.defaultControlValues,
+            modelId: settings.defaultModelId,
+            promptPresetId: settings.defaultPromptPresetId,
+            provider: settings.defaultProvider,
+            searchStrategyId: settings.defaultSearchStrategyId,
+            showCitations: settings.showCitations,
+            showReasoningBlocks: settings.showReasoningBlocks,
+            showToolActivity: settings.showToolActivity
+          }
+        }
       }
     });
   });
@@ -116,6 +130,9 @@ export async function installMatrixCatalogFixture(
     }
     if (typeof body.showReasoningBlocks === "boolean") {
       settings.showReasoningBlocks = body.showReasoningBlocks;
+    }
+    if (typeof body.showToolActivity === "boolean") {
+      settings.showToolActivity = body.showToolActivity;
     }
     if (body.defaultControlValues && typeof body.defaultControlValues === "object") {
       settings.defaultControlValues = {

@@ -32,9 +32,26 @@ docker compose -f docker-compose.dev.yml run --rm -T \
 
 This is intentionally destructive verification inside the `aiqsa-dev` project. It may reset its database, replace seeded state, and write to its object bucket. Do not run E2E concurrently with development or another check. If it is interrupted, use `docker compose -f docker-compose.dev.yml down --remove-orphans`; use the same command with `-v` when a complete development-stack reset is acceptable. Neither command targets the default installation volumes.
 
-The reset restores the ordinary local login `operator@aiqsa.local` / `AIQSA-local-2026!`, and auth browser coverage signs in through the visible password form. The credential is a public local fixture and is not safe for an exposed stack.
+The reset restores three public local logins: administrator `operator@aiqsa.local` / `AIQSA-local-2026!`, ordinary MCP member `mcp-member@aiqsa.local` / `AIQSA-mcp-member-2026!`, and ordinary restricted member `restricted-member@aiqsa.local` / `AIQSA-restricted-member-2026!`. Browser coverage signs in through the visible password form. These credentials exist only behind the development seed guard and are not safe for an exposed stack.
 
 The retained Playwright specs cover registration, auth/session isolation, admin authorization, the critical conversation workspace, and local unmocked fake-provider integration. There is no generated screenshot gallery or final-evidence suite. For a material visual change, inspect the affected desktop/mobile states in the running app and add a focused behavior test where practical.
+
+The two ordinary accounts deliberately exercise different MCP authority. Both receive Fake QSA and `Fixture Shared MCP` through the `dev-mcp-members` group; only MCP Member has the exact direct `workspace` personal-slot permission and a direct grant to `Fixture Private MCP`. Restricted Member has no direct MCP grants. `tests/e2e/non-admin-access.spec.ts` proves admin denial, group/direct catalog visibility, exact personal-slot writes, forbidden definition/grant/foreign-field mutations, enablement prerequisites, and ordinary model access against the real seeded routes. Run it on the reusable development server without resetting other local MCPs:
+
+```bash
+docker compose -f docker-compose.dev.yml exec -T \
+  -e PLAYWRIGHT_REUSE_SERVER=1 app \
+  npx playwright test tests/e2e/non-admin-access.spec.ts --project=chromium
+```
+
+The shell browser fixture also proves that persisted tool activity is visible by default and that hide/show survives reload without changing the run. Reuse the existing server so local MCP state is preserved:
+
+```bash
+docker compose -f docker-compose.dev.yml exec -T \
+  -e PLAYWRIGHT_REUSE_SERVER=1 app \
+  npx playwright test tests/e2e/shell.spec.ts --project=chromium \
+  --grep "shows tool activity by default and persists hide/show across reload"
+```
 
 ## Task-Specific Checks
 
@@ -47,6 +64,81 @@ Add only checks justified by the changed boundary:
 - Dependency changes: run `npm run security:deps` and review the lockfile/package lifecycle impact.
 - Provider adapter changes: run deterministic adapter tests first; then the small explicit provider smoke only when permitted by `CRITICAL_INVARIANTS.md` and a key is present.
 - Retention/schema changes: run `npm run db:retention:migration:contract`, use `npm run prune -- --dry-run`, and execute deletion only when intentional.
+
+For focused MCP catalog, remote policy/runtime, OAuth, local lifecycle, run-plan, and cleanup verification, use:
+
+```bash
+docker compose -f docker-compose.dev.yml exec -T app npx vitest run \
+  lib/server/mcp/handlers.test.ts \
+  lib/server/mcp/clientSession.test.ts \
+  lib/server/mcp/safeFetch.test.ts \
+  lib/server/mcp/remoteDraftValidator.test.ts \
+  lib/server/mcp/localPackageResolver.test.ts \
+  lib/server/mcp/localDraftValidator.test.ts \
+  lib/server/mcp/toolhiveClient.test.ts \
+  lib/server/mcp/toolhiveRuntimeDriver.test.ts \
+  lib/server/mcp/toolhiveSessionFactory.test.ts \
+  lib/server/mcp/toolhiveCleanupCli.test.ts \
+  lib/server/mcp/oauthService.test.ts \
+  lib/server/mcp/oauthRepository.test.ts \
+  lib/server/mcp/oauthHandlers.test.ts \
+  lib/server/mcp/oauthSettlement.test.ts \
+  lib/server/mcp/runtimeCoordinator.test.ts \
+  lib/server/mcp/runtimeRepository.test.ts \
+  lib/server/mcp/runPlan.test.ts \
+  lib/server/mcp/runPlanRepository.test.ts \
+  lib/server/runs/mcpRunBindings.test.ts \
+  lib/server/runs/toolInspection.test.ts
+```
+
+The local protocol integration starts an in-process official-SDK Streamable HTTP fixture and makes no external or paid call. OAuth unit/handler suites likewise use deterministic discovery/token fixtures; they do not authorize a real Notion workspace:
+
+```bash
+docker compose -f docker-compose.dev.yml exec -T app npx vitest run \
+  lib/server/mcp/remoteRuntime.integration.test.ts
+```
+
+The real ToolHive OCI stdio smoke is opt-in because it controls sibling Docker resources and may pull an image. Run it only against the disposable development ToolHive service, never the persistent installation:
+
+```bash
+docker compose -f docker-compose.dev.yml exec -T \
+  -e AIQSA_TOOLHIVE_INTEGRATION_TEST=1 app \
+  npx vitest run lib/server/mcp/toolhive.integration.test.ts
+```
+
+The test uses a random exact ownership group and cleans it after the run. Npm/PyPI materialization smokes may contact their registries and are task-specific rather than routine. A hosted Notion consent/token/tool-call smoke requires an explicitly authorized test workspace and is not part of automated verification; public metadata discovery alone must not be reported as end-to-end success.
+
+For the provider-neutral durable tool loop, run the generic loop/persistence suites together with live/recovery and provider wire adapters:
+
+```bash
+docker compose -f docker-compose.dev.yml exec -T app npx vitest run \
+  lib/server/runs/toolLoop.test.ts \
+  lib/server/runs/toolLoopPersistence.test.ts \
+  lib/server/runs/toolExecutionPersistence.test.ts \
+  lib/server/runs/providerToolLoop.test.ts \
+  lib/server/runs/runExecution.test.ts \
+  lib/server/runs/runRecovery.test.ts \
+  lib/server/providers/openaiResponsesRequest.test.ts \
+  lib/server/providers/openRouterChatResponse.test.ts \
+  lib/server/providers/anthropicMessages.test.ts
+```
+
+MCP UI behavior has focused component/API/store coverage in `components/app-shell/*Mcp*.test.tsx`, `components/app-shell/mcpSettings*.test.ts`, and `components/admin/AdminMcp*.test.tsx`. Its deterministic browser boundary is:
+
+```bash
+docker compose -f docker-compose.dev.yml run --rm -T \
+  app npx playwright test tests/e2e/mcp-ui.spec.ts --project=chromium
+```
+
+That standalone Playwright command intentionally runs the configured `prisma migrate reset` against the disposable development database before starting its test server. Do not use it when interactive development fixtures must survive. If the existing `docker-compose.dev.yml` app is already running with its normal local test-auth configuration, preserve its database and reuse that server instead:
+
+```bash
+docker compose -f docker-compose.dev.yml exec -T \
+  -e PLAYWRIGHT_REUSE_SERVER=1 app \
+  npx playwright test tests/e2e/mcp-ui.spec.ts --project=chromium
+```
+
+That spec mocks only the MCP catalog/mutation boundary while exercising Settings routing, multi-enable state, write-only fields, OAuth-return auto-enable state and query scrubbing, composer aggregate, and compact containment. Repository/route tests remain authoritative for server grants, secrets, OAuth settlement, and runtime state.
 
 Do not turn these into a cumulative local release pipeline. Exposed-installation readiness is proved by the specific backlog tasks for migrations/bootstrap, backup/restore, hardening, security, observability, quotas, and load—not by rerunning unrelated harness machinery on every feature.
 

@@ -72,6 +72,13 @@ describe("SettingsDialog", () => {
     vi.restoreAllMocks();
   });
 
+  it("opens directly on the MCP section when requested", () => {
+    renderDialog(defaultEditor, { initialSection: "mcp" });
+
+    expect(screen.getByRole("heading", { name: "MCP & tools" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "MCP & tools" })).toHaveAttribute("aria-current", "page");
+  });
+
   it("keeps editing, next-run selection, and the user default as separate actions", () => {
     const props = renderDialog();
 

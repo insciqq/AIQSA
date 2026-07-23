@@ -2,6 +2,7 @@ import { describe, expect, expectTypeOf, it } from "vitest";
 import { textMessageContent } from "../../domain/content";
 import { invalidRunParamsError } from "../../domain/runParams";
 import type { ResolvedEntitlements } from "../auth/entitlements";
+import type { McpRunPlanResult } from "../mcp/runPlan";
 import type {
   NormalizedRunRequest,
   ProviderAdapter,
@@ -82,6 +83,36 @@ function emptyEntitlements(): ResolvedEntitlements {
   };
 }
 
+function readyMcpPlan(): McpRunPlanResult {
+  return {
+    bindings: [{
+      fingerprint: "fingerprint-1",
+      runtimeGenerationId: "generation-1",
+      serverId: "server-1"
+    }],
+    ok: true,
+    snapshot: {
+      servers: [{
+        fingerprint: "fingerprint-1",
+        revisionId: "revision-1",
+        serverId: "server-1",
+        serverName: "Team tools"
+      }],
+      tools: [{
+        definitionHash: "a".repeat(64),
+        description: "Look up team data",
+        inputSchema: { type: "object" },
+        name: "lookup",
+        namespacedName: "mcp_team_lookup_1",
+        originalName: "lookup",
+        serverId: "server-1",
+        serverName: "Team tools"
+      }],
+      version: 1
+    }
+  };
+}
+
 function runAttachment(input: {
   id: string;
   kind: "image" | "pdf";
@@ -106,6 +137,7 @@ type HarnessOptions = Readonly<{
   capabilities?: ProviderModelCapabilities | null;
   defaultParams?: Readonly<Record<string, unknown>>;
   entitlements?: ResolvedEntitlements;
+  mcpPlan?: McpRunPlanResult;
   previewError?: Error;
   promptAvailable?: boolean;
   providerIds?: readonly string[];
@@ -303,6 +335,7 @@ function createHarness(options: HarnessOptions = {}) {
       }
     : undefined;
   const deps: RunPreparationDeps = {
+    ...(options.mcpPlan ? { mcp: { async prepare() { return options.mcpPlan!; } } } : {}),
     providers,
     repository,
     searchProviders:
@@ -885,6 +918,103 @@ describe("run preparation", () => {
     });
     expect(harness.searchStrategyChecks).toEqual(["openai-native-web-search"]);
     expect(harness.calls).toEqual(["entitlements", "capabilities"]);
+  });
+
+  it.each([
+    {
+      capabilities: { toolCalling: false },
+      expectedCode: "mcp_tool_calling_not_supported",
+      params: {}
+    },
+    {
+      capabilities: { nativeBackground: false, toolCalling: true },
+      expectedCode: "mcp_background_not_supported",
+      params: { background: true }
+    },
+    {
+      capabilities: {
+        backgroundStreaming: false,
+        nativeBackground: true,
+        toolCalling: true
+      },
+      expectedCode: "mcp_background_streaming_not_supported",
+      params: { background: true, stream: true }
+    }
+  ])("fails MCP preflight with $expectedCode", async ({ capabilities, expectedCode, params }) => {
+    const harness = createHarness({
+      capabilities: { ...baseCapabilities, ...capabilities },
+      defaultParams: { background: false, maxOutputTokens: 512, stream: true },
+      mcpPlan: readyMcpPlan()
+    });
+    const result = await prepareRun(
+      harness.deps,
+      sendInput(successBody({
+        modelId: "openai-tool-model",
+        params,
+        provider: "openai"
+      }))
+    );
+
+    expect(result).toMatchObject({ code: expectedCode, ok: false, status: 400 });
+    expect(harness.previewRequests).toHaveLength(0);
+  });
+
+  it("accepts an MCP snapshot for a provider model with explicit effective tool capabilities", async () => {
+    const mcpPlan = readyMcpPlan();
+    const harness = createHarness({
+      capabilities: {
+        ...baseCapabilities,
+        backgroundStreaming: true,
+        nativeBackground: true,
+        parallelToolCalls: true,
+        toolCalling: true
+      },
+      defaultParams: { background: true, maxOutputTokens: 512, stream: true },
+      mcpPlan
+    });
+    const result = await prepareRun(
+      harness.deps,
+      sendInput(successBody({
+        modelId: "openai-tool-model",
+        params: { background: true, stream: true },
+        provider: "openai"
+      }))
+    );
+    const prepared = preparedFrom(result);
+
+    expect(prepared.normalizedRequest.mcp).toEqual(mcpPlan.ok ? mcpPlan.snapshot : undefined);
+    expect(prepared.mcpBindings).toEqual(mcpPlan.ok ? mcpPlan.bindings : undefined);
+  });
+
+  it("rejects an initial MCP request when its exact provider tool schema exceeds context", async () => {
+    const basePlan = readyMcpPlan();
+    if (!basePlan.ok) throw new Error("invalid MCP fixture");
+    const mcpPlan: McpRunPlanResult = {
+      ...basePlan,
+      snapshot: {
+        ...basePlan.snapshot,
+        tools: basePlan.snapshot.tools.map((tool) => ({
+          ...tool,
+          description: "large schema description ".repeat(300)
+        }))
+      }
+    };
+    const harness = createHarness({
+      capabilities: {
+        ...baseCapabilities,
+        contextWindow: 1_000,
+        toolCalling: true
+      },
+      mcpPlan
+    });
+
+    const result = await prepareRun(
+      harness.deps,
+      sendInput(successBody({ modelId: "openai-tool-model", provider: "openai" }))
+    );
+
+    expect(result).toMatchObject({ code: "context_too_large", ok: false, status: 400 });
+    expect(harness.previewRequests).toHaveLength(0);
   });
 
   it("returns each validation failure at its authoritative precedence and skips later work", async () => {

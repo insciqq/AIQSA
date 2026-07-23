@@ -41,6 +41,22 @@ const usageStats = {
   totalTokens: 10
 };
 
+const toolActivity = {
+  argumentsPreview: { query: "memory" },
+  callId: "call-1",
+  capability: "mcp",
+  credentialSources: ["personal"],
+  durationMs: 42,
+  errorMessage: null,
+  externalAccountLabel: null,
+  ordinal: 0,
+  resultPreview: { content: [{ text: "found", type: "text" }] },
+  round: 1,
+  serverName: "Mem0",
+  status: "complete",
+  toolName: "search"
+};
+
 describe("chat wire contracts", () => {
   it("decodes workspace summaries without allowing additive thread fields into the result", () => {
     const workspace = decodeWorkspaceChatsResponse({
@@ -86,7 +102,9 @@ describe("chat wire contracts", () => {
       reasoningText: ["Checked reasoning"],
       searchCount: 0,
       searchDetails: [],
-      searchStrategy: null
+      searchStrategy: null,
+      toolCallCount: 0,
+      toolCalls: []
     };
     expect(
       decodeChatDetailResponse({
@@ -141,6 +159,42 @@ describe("chat wire contracts", () => {
     ).toBeNull();
     expect(
       decodeChatUpdateData({ chat: summary, messages: [message] })
+    ).toBeNull();
+  });
+
+  it("decodes complete tool activity summaries and fails closed on inconsistent counts", () => {
+    const artifactSummary = {
+      citationCount: 0,
+      citations: [],
+      reasoningCount: 0,
+      reasoningText: [],
+      searchCount: 0,
+      searchStrategy: null,
+      toolCallCount: 1,
+      toolCalls: [toolActivity]
+    };
+
+    expect(
+      decodeChatDetailResponse({
+        chat: {
+          ...summary,
+          messages: [{ ...message, artifactSummary }],
+          usageStats
+        }
+      })?.messages[0]?.artifactSummary
+    ).toEqual(artifactSummary);
+
+    expect(
+      decodeChatDetailResponse({
+        chat: {
+          ...summary,
+          messages: [{
+            ...message,
+            artifactSummary: { ...artifactSummary, toolCallCount: 0 }
+          }],
+          usageStats
+        }
+      })
     ).toBeNull();
   });
 });

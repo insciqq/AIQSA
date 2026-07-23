@@ -62,6 +62,34 @@ enum AttachmentStatus {
   ready
 }
 
+enum McpOAuthConnectionState {
+  ready
+  reauthorization_required
+  disconnecting
+  disconnected
+}
+
+enum McpOAuthPurpose {
+  user
+  validation
+}
+
+enum McpRuntimeState {
+  starting
+  ready
+  failed
+  idle
+  stopping
+}
+
+enum ModelRunToolCallState {
+  pending
+  running
+  complete
+  error
+  cancelled
+}
+
 model User {
   id                     String               @id @default(uuid())
   email                  String?              @unique
@@ -82,6 +110,9 @@ model User {
   chats                  Chat[]
   folders                Folder[]
   groups                 UserGroup[]
+  mcpGrants              McpGrant[]
+  mcpOAuthConnections    McpOAuthConnection[]
+  mcpUserServers         McpUserServer[]
   modelRuns              ModelRun[]
   promptPresets          PromptPreset[]
   settings               UserSettings?
@@ -224,6 +255,7 @@ model Group {
   accessGrants           AccessGrant[]
   authAccessRuleDefaults AuthAccessRuleGroup[]
   authInviteDefaults     AuthInviteGroup[]
+  mcpGrants              McpGrant[]
   users                  UserGroup[]
 
   @@index([archivedAt])
@@ -251,6 +283,7 @@ model UserSettings {
   defaultControlValues    Json     @default("{}")
   showCitations           Boolean  @default(true)
   showReasoningBlocks     Boolean  @default(false)
+  showToolActivity        Boolean  @default(true)
   createdAt               DateTime @default(now())
   updatedAt               DateTime @updatedAt
   user                    User     @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -404,7 +437,7 @@ model Message {
 }
 
 model ModelRun {
-  id                           String          @id @default(uuid())
+  id                           String             @id @default(uuid())
   chatId                       String
   userId                       String
   userMessageId                String
@@ -416,22 +449,25 @@ model ModelRun {
   providerRequestPreview       Json?
   providerResponseId           String?
   finalProviderResponsePreview Json?
-  inputTokens                  Int             @default(0)
-  cachedInputTokens            Int             @default(0)
-  cacheWriteInputTokens        Int             @default(0)
-  outputTokens                 Int             @default(0)
-  reasoningTokens              Int             @default(0)
-  totalTokens                  Int             @default(0)
-  estimatedCostMicros          Int             @default(0)
+  inputTokens                  Int                @default(0)
+  cachedInputTokens            Int                @default(0)
+  cacheWriteInputTokens        Int                @default(0)
+  outputTokens                 Int                @default(0)
+  reasoningTokens              Int                @default(0)
+  totalTokens                  Int                @default(0)
+  estimatedCostMicros          Int                @default(0)
   errorPayload                 Json?
-  createdAt                    DateTime        @default(now())
-  updatedAt                    DateTime        @updatedAt
-  assistantMessage             Message?        @relation("AssistantMessageRun", fields: [assistantMessageId], references: [id], onDelete: SetNull)
-  chat                         Chat            @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  toolLoopState                Json?
+  createdAt                    DateTime           @default(now())
+  updatedAt                    DateTime           @updatedAt
+  assistantMessage             Message?           @relation("AssistantMessageRun", fields: [assistantMessageId], references: [id], onDelete: SetNull)
+  chat                         Chat               @relation(fields: [chatId], references: [id], onDelete: Cascade)
   events                       ModelRunEvent[]
+  mcpRunBindings               McpRunBinding[]
   searchRuns                   SearchRun[]
-  user                         User            @relation(fields: [userId], references: [id], onDelete: Cascade)
-  userMessage                  Message         @relation("UserMessageRun", fields: [userMessageId], references: [id], onDelete: Restrict)
+  toolCalls                    ModelRunToolCall[]
+  user                         User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userMessage                  Message            @relation("UserMessageRun", fields: [userMessageId], references: [id], onDelete: Restrict)
   usageEvents                  UsageEvent[]
 
   @@index([chatId, createdAt])
@@ -450,6 +486,193 @@ model ModelRunEvent {
   modelRun   ModelRun @relation(fields: [modelRunId], references: [id], onDelete: Cascade)
 
   @@unique([modelRunId, sequence])
+}
+
+model McpServer {
+  id                   String               @id @default(uuid())
+  namespace            String               @unique
+  displayName          String
+  description          String               @default("")
+  enabled              Boolean              @default(false)
+  archivedAt           DateTime?
+  activeRevisionId     String?              @unique
+  draft                Json                 @default("{}")
+  testedDraftHash      String?
+  draftTestEvidence    Json?
+  sharedConfigEnvelope String?
+  sharedConfigVersion  Int                  @default(0)
+  createdAt            DateTime             @default(now())
+  updatedAt            DateTime             @updatedAt
+  activeRevision       McpRevision?         @relation("ActiveMcpRevision", fields: [activeRevisionId], references: [id], onDelete: SetNull)
+  grants               McpGrant[]
+  oauthConnections     McpOAuthConnection[]
+  revisions            McpRevision[]        @relation("McpServerRevisions")
+  userServers          McpUserServer[]
+
+  @@index([enabled, archivedAt])
+}
+
+model McpRevision {
+  id                 String                 @id @default(uuid())
+  serverId           String
+  revisionNumber     Int
+  configuration      Json
+  resolvedArtifact   Json?
+  validationEvidence Json
+  draftHash          String
+  identityHash       String
+  createdAt          DateTime               @default(now())
+  activeFor          McpServer?             @relation("ActiveMcpRevision")
+  runtimeGenerations McpRuntimeGeneration[]
+  server             McpServer              @relation("McpServerRevisions", fields: [serverId], references: [id], onDelete: Restrict)
+
+  @@unique([serverId, revisionNumber])
+  @@unique([serverId, identityHash])
+  @@index([serverId, draftHash])
+  @@index([serverId, createdAt])
+}
+
+model McpGrant {
+  id               String    @id @default(uuid())
+  serverId         String
+  userId           String?
+  groupId          String?
+  canUse           Boolean   @default(false)
+  personalSlotKeys String[]  @default([])
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+  group            Group?    @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  server           McpServer @relation(fields: [serverId], references: [id], onDelete: Cascade)
+  user             User?     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([serverId, userId])
+  @@unique([serverId, groupId])
+  @@index([groupId])
+  @@index([userId])
+}
+
+model McpUserServer {
+  id                         String                 @id @default(uuid())
+  serverId                   String
+  userId                     String
+  enabled                    Boolean                @default(false)
+  personalConfigEnvelope     String?
+  personalConfigVersion      Int                    @default(0)
+  desiredRuntimeGenerationId String?                @unique
+  createdAt                  DateTime               @default(now())
+  updatedAt                  DateTime               @updatedAt
+  desiredRuntimeGeneration   McpRuntimeGeneration?  @relation("McpDesiredRuntimeGeneration", fields: [desiredRuntimeGenerationId], references: [id], onDelete: SetNull)
+  runtimeGenerations         McpRuntimeGeneration[] @relation("McpUserRuntimeGenerations")
+  server                     McpServer              @relation(fields: [serverId], references: [id], onDelete: Cascade)
+  user                       User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, serverId])
+  @@index([userId, enabled])
+}
+
+model McpOAuthClient {
+  id                   String               @id @default(uuid())
+  registrationKey      String               @unique
+  clientId             String
+  clientMetadata       Json
+  clientSecretEnvelope String?
+  createdAt            DateTime             @default(now())
+  updatedAt            DateTime             @updatedAt
+  connections          McpOAuthConnection[]
+}
+
+model McpOAuthConnection {
+  id                    String                  @id @default(uuid())
+  serverId              String
+  userId                String
+  oauthClientId         String?
+  purpose               McpOAuthPurpose
+  policyFingerprint     String
+  state                 McpOAuthConnectionState @default(ready)
+  tokenEnvelope         String?
+  externalAccountLabel  String?
+  scopes                String[]                @default([])
+  expiresAt             DateTime?
+  disconnectRequestedAt DateTime?
+  createdAt             DateTime                @default(now())
+  updatedAt             DateTime                @updatedAt
+  oauthClient           McpOAuthClient?         @relation(fields: [oauthClientId], references: [id], onDelete: Restrict)
+  runtimeGenerations    McpRuntimeGeneration[]
+  server                McpServer               @relation(fields: [serverId], references: [id], onDelete: Cascade)
+  user                  User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([oauthClientId])
+  @@index([serverId, userId, purpose, state])
+}
+
+model McpRuntimeGeneration {
+  id                      String              @id @default(uuid())
+  userServerId            String
+  revisionId              String
+  oauthConnectionId       String?
+  fingerprint             String              @unique
+  credentialSources       String[]            @default([])
+  externalAccountLabel    String?
+  effectiveConfigEnvelope String?
+  runtimeHandle           Json?
+  inventory               Json?
+  inventoryUpdatedAt      DateTime?
+  state                   McpRuntimeState     @default(starting)
+  readinessCheckedAt      DateTime?
+  errorCode               String?
+  retryAt                 DateTime?
+  attemptCount            Int                 @default(0)
+  lastUsedAt              DateTime?
+  createdAt               DateTime            @default(now())
+  updatedAt               DateTime            @updatedAt
+  desiredFor              McpUserServer?      @relation("McpDesiredRuntimeGeneration")
+  oauthConnection         McpOAuthConnection? @relation(fields: [oauthConnectionId], references: [id], onDelete: Restrict)
+  revision                McpRevision         @relation(fields: [revisionId], references: [id], onDelete: Restrict)
+  runBindings             McpRunBinding[]
+  userServer              McpUserServer       @relation("McpUserRuntimeGenerations", fields: [userServerId], references: [id], onDelete: Cascade)
+
+  @@index([oauthConnectionId])
+  @@index([revisionId])
+  @@index([state, retryAt])
+  @@index([userServerId])
+}
+
+model McpRunBinding {
+  id                           String                @id @default(uuid())
+  modelRunId                   String
+  runtimeGenerationId          String?
+  runtimeGenerationFingerprint String
+  createdAt                    DateTime              @default(now())
+  modelRun                     ModelRun              @relation(fields: [modelRunId], references: [id], onDelete: Cascade)
+  runtimeGeneration            McpRuntimeGeneration? @relation(fields: [runtimeGenerationId], references: [id], onDelete: SetNull)
+  toolCalls                    ModelRunToolCall[]
+
+  @@unique([modelRunId, runtimeGenerationFingerprint])
+  @@index([runtimeGenerationId])
+}
+
+model ModelRunToolCall {
+  id              String                @id @default(uuid())
+  modelRunId      String
+  mcpRunBindingId String?
+  roundIndex      Int
+  ordinal         Int
+  providerCallId  String
+  toolName        String
+  arguments       Json
+  state           ModelRunToolCallState @default(pending)
+  result          Json?
+  startedAt       DateTime?
+  completedAt     DateTime?
+  createdAt       DateTime              @default(now())
+  updatedAt       DateTime              @updatedAt
+  mcpRunBinding   McpRunBinding?        @relation(fields: [mcpRunBindingId], references: [id], onDelete: SetNull)
+  modelRun        ModelRun              @relation(fields: [modelRunId], references: [id], onDelete: Cascade)
+
+  @@unique([modelRunId, roundIndex, providerCallId])
+  @@unique([modelRunId, roundIndex, ordinal])
+  @@index([mcpRunBindingId])
+  @@index([modelRunId, state])
 }
 
 model SearchRun {
@@ -492,15 +715,15 @@ model Attachment {
 }
 
 model AttachmentDeletionJob {
-  id              String    @id @default(uuid())
-  storageKey      String    @unique
-  claimToken      String?
-  claimedAt       DateTime?
-  attemptCount    Int       @default(0)
-  lastAttemptAt   DateTime?
-  lastErrorCode   String?
-  createdAt       DateTime  @default(now())
-  updatedAt       DateTime  @updatedAt
+  id            String    @id @default(uuid())
+  storageKey    String    @unique
+  claimToken    String?
+  claimedAt     DateTime?
+  attemptCount  Int       @default(0)
+  lastAttemptAt DateTime?
+  lastErrorCode String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
 
   @@index([claimedAt, createdAt])
 }

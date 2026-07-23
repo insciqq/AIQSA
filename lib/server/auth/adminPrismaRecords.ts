@@ -30,6 +30,14 @@ export const adminGroupRecordInclude = {
     where: {
       userId: null
     }
+  },
+  mcpGrants: {
+    select: {
+      canUse: true
+    },
+    where: {
+      userId: null
+    }
   }
 } satisfies Prisma.GroupInclude;
 

@@ -2,15 +2,20 @@ import type { ModelRunSseEvent, ModelRunUsage } from "../../domain/modelRunEvent
 import type { ContextTruncationSummary } from "../../domain/contextBudget";
 import type { SearchRunParamControls } from "../../domain/runParams";
 import type { ModelToolCall, RunTool } from "../tools/types";
+import type { McpRunPlanSnapshot } from "../mcp/runPlan";
 
 export type ProviderModelCapabilities = {
+  backgroundStreaming?: boolean;
   contextWindow?: number;
   defaultMaxOutputTokens?: number;
   nativePdfInput: boolean;
+  nativeBackground?: boolean;
   nativeSearch: boolean;
+  parallelToolCalls?: boolean;
   pdf: boolean;
   reasoning: boolean;
   streaming?: boolean;
+  toolCalling?: boolean;
   vision: boolean;
 };
 
@@ -41,6 +46,7 @@ export type NormalizedRunRequest = {
     };
   };
   modelCapabilities: ProviderModelCapabilities;
+  mcp?: McpRunPlanSnapshot;
   modelId: string;
   params: Record<string, unknown>;
   prompt: {
@@ -72,6 +78,8 @@ export type ProviderConversationMessage = {
 export type ProviderRunRequest = NormalizedRunRequest & {
   attachments: ProviderAttachment[];
   forceNonStreaming?: boolean;
+  parallelToolCalls?: boolean;
+  previousProviderResponseId?: string;
   providerToolMessages?: unknown[];
   toolChoice?: "auto" | "none";
   tools?: RunTool[];

@@ -1,13 +1,14 @@
 import type { ModelRunSseEvent, ModelRunUsage } from "@/lib/domain/modelRunEvents";
 import type { ProviderRunRequest } from "@/lib/server/providers/types";
 
-export type RunToolCapability = "web_search";
+export type RunToolCapability = "mcp" | "web_search";
 
 export type RunTool = {
   capability: RunToolCapability;
   description: string;
   inputSchema: Record<string, unknown>;
   name: string;
+  strict?: boolean;
 };
 
 export type SerializedProviderTool = {
@@ -66,6 +67,11 @@ export type ProviderToolBridge = {
   appendToolResult(request: unknown, result: ToolExecutionResult): unknown;
   parseToolCalls(response: unknown): ModelToolCall[];
   provider: string;
+  serializeAssistantToolCalls(input: Readonly<{
+    calls: readonly ModelToolCall[];
+    providerMessage?: unknown;
+  }>): unknown[];
+  serializeHostedTools?(request: ProviderRunRequest): readonly Record<string, unknown>[];
   serializeTool(tool: RunTool): SerializedProviderTool;
   supportsToolCalling(input: ProviderToolSupportInput): boolean;
 };

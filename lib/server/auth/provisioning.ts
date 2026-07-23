@@ -94,6 +94,7 @@ export async function provisionActiveUser(
       defaultSearchStrategyId: "openai-native-web-search",
       showCitations: true,
       showReasoningBlocks: false,
+      showToolActivity: true,
       userId: input.userId
     },
     update: {},

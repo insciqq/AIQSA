@@ -3,6 +3,17 @@ import type { ModelRunResponseProjection, ModelRunStatus } from "../../contracts
 import type { ModelRunSseEvent, ModelRunUsage } from "../../domain/modelRunEvents";
 import type { ModelTokenPricing } from "../../domain/usage";
 import type { ResolvedEntitlements } from "../auth/entitlements";
+import type { McpRunPlanBinding } from "../mcp/runPlan";
+import type {
+  AdvanceToolLoopCallBatchResult,
+  BeginToolLoopProviderRoundResult,
+  CheckpointedToolLoopRun,
+  ClaimToolLoopCallResult,
+  PersistToolLoopCallBatchInput,
+  PersistToolLoopCallBatchResult,
+  SettleToolLoopCallResult,
+  ToolLoopJsonValue
+} from "./toolLoopPersistence";
 import type {
   NormalizedRunRequest,
   ProviderAttachment,
@@ -44,6 +55,10 @@ export type DurableRunControlRecord = Omit<RunControlRecord, "status"> & {
 
 export type StaleRunControlRecord = RunControlRecord & {
   updatedAt: Date | string;
+};
+
+export type InstallationRecoverableRunRecord = StaleRunControlRecord & {
+  userId: string;
 };
 
 export type RunChatUpdateRecord = {
@@ -97,6 +112,13 @@ export class AttachmentLinkConflictError extends Error {
   }
 }
 
+export class McpRunPlanConflictError extends Error {
+  constructor() {
+    super("mcp_not_ready");
+    this.name = "McpRunPlanConflictError";
+  }
+}
+
 export type AcceptedRunDefaults = {
   controlDefaults: Record<string, boolean | string>;
   modelId: string;
@@ -129,8 +151,26 @@ export type RunUsageAttribution = {
 export type ProviderResponseIdPublication = "cancelled" | "published" | "terminal";
 
 export type RunRepository = {
+  advanceToolLoopCallBatch(input: {
+    roundIndex: number;
+    runId: string;
+    userId: string;
+  }): Promise<AdvanceToolLoopCallBatchResult>;
   appendAssistantText(assistantMessageId: string, text: string): Promise<void>;
   appendRunEvent(runId: string, sequence: number, event: ModelRunSseEvent): Promise<void>;
+  beginToolLoopProviderRound(input: {
+    providerContinuation: ToolLoopJsonValue | null;
+    providerCursor?: number | string | null;
+    roundIndex: number;
+    runId: string;
+    userId: string;
+  }): Promise<BeginToolLoopProviderRoundResult>;
+  cancelPendingToolLoopCalls(input: { runId: string; userId: string }): Promise<number>;
+  claimToolLoopCall(input: {
+    callId: string;
+    runId: string;
+    userId: string;
+  }): Promise<ClaimToolLoopCallResult>;
   sweepBootOrphanedRuns(input: { createdBefore: Date; liveRunIds: string[] }): Promise<number>;
   cancelRun(input: {
     payload: { code: string; message: string };
@@ -157,6 +197,7 @@ export type RunRepository = {
     content: { blocks: unknown[] };
     defaults: AcceptedRunDefaults;
     expectedActiveLeafId: string | null;
+    mcpBindings?: McpRunPlanBinding[];
     modelId: string;
     normalizedRequest: NormalizedRunRequest;
     provider: string;
@@ -170,6 +211,7 @@ export type RunRepository = {
   createRegenerationRun(input: {
     chatId: string;
     defaults: AcceptedRunDefaults;
+    mcpBindings?: McpRunPlanBinding[];
     modelId: string;
     normalizedRequest: NormalizedRunRequest;
     provider: string;
@@ -207,6 +249,11 @@ export type RunRepository = {
     staleBefore: Date;
     userId: string;
   }): Promise<StaleRunControlRecord[]>;
+  findInstallationRecoverableRuns?(input: {
+    bootedBefore: Date;
+    limit: number;
+    staleBefore: Date;
+  }): Promise<InstallationRecoverableRunRecord[]>;
   findRegenerationSource(
     assistantMessageId: string,
     userId: string
@@ -255,7 +302,16 @@ export type RunRepository = {
   loadEntitlements(userId: string): Promise<ResolvedEntitlements>;
   loadModelConfiguration(provider: string, modelId: string): Promise<RunModelConfiguration | null>;
   loadModelPricing(provider: string, modelId: string): Promise<ModelTokenPricing | null>;
+  loadRunUsageAttributions(input: {
+    runId: string;
+    userId: string;
+  }): Promise<RunUsageAttribution[]>;
+  loadCheckpointedToolLoopRun(input: {
+    runId: string;
+    userId: string;
+  }): Promise<CheckpointedToolLoopRun | null>;
   nextRunEventSequence(runId: string): Promise<number>;
+  persistToolLoopCallBatch(input: PersistToolLoopCallBatchInput): Promise<PersistToolLoopCallBatchResult>;
   recordRunUsageEvents(input: {
     chatId: string;
     runId: string;
@@ -268,6 +324,23 @@ export type RunRepository = {
     providerResponseId?: string;
     runId: string;
     usageAttributions: RunUsageAttribution[];
+    userId: string;
+  }): Promise<boolean>;
+  settleToolLoopCall(input: {
+    callId: string;
+    result: ToolLoopJsonValue;
+    runId: string;
+    state: "complete" | "error";
+    userId: string;
+  }): Promise<SettleToolLoopCallResult>;
+  /**
+   * A true result atomically persists `message_reset` at `sequence`; only then
+   * may the caller advance its existing in-memory sequence owner.
+   */
+  resetToolLoopAssistantDraft(input: {
+    roundIndex: number;
+    runId: string;
+    sequence: number;
     userId: string;
   }): Promise<boolean>;
   updateRunProviderResponseId(

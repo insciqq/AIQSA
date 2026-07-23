@@ -23,6 +23,7 @@ export type CatalogSettingsRecord = {
   defaultSearchStrategyId: string;
   showCitations: boolean;
   showReasoningBlocks: boolean;
+  showToolActivity: boolean;
 };
 
 export type CatalogData = {
@@ -106,7 +107,8 @@ export function buildCurrentUserCatalog(input: CatalogData): CurrentUserCatalogW
         input.settings.defaultSearchStrategyId
       ),
       showCitations: input.settings.showCitations,
-      showReasoningBlocks: input.settings.showReasoningBlocks
+      showReasoningBlocks: input.settings.showReasoningBlocks,
+      showToolActivity: input.settings.showToolActivity
     },
     models,
     promptPresets: input.promptPresets,

@@ -2,7 +2,8 @@ import {
   CitationBlock,
   ContextTruncationBlock,
   ReasoningBlock,
-  SearchSummaryBlock
+  SearchSummaryBlock,
+  ToolActivityBlock
 } from "@/components/app-shell/ThreadArtifacts";
 import { runActivityLabel, type PipelineSnapshot } from "@/components/app-shell/runState";
 import {
@@ -187,6 +188,7 @@ function ThreadMessageRowComponent({
   runWarnings = [],
   showCitations,
   showReasoningBlocks,
+  showToolActivity,
   streaming
 }: {
   answerModelLabel: string | null;
@@ -203,6 +205,7 @@ function ThreadMessageRowComponent({
   runWarnings?: string[];
   showCitations: boolean;
   showReasoningBlocks: boolean;
+  showToolActivity: boolean;
   streaming: boolean;
 }) {
   const disabledDescriptionId = `message-actions-disabled-${message.id}`;
@@ -379,6 +382,11 @@ function ThreadMessageRowComponent({
           {artifactSummary?.searchCount && runActivity?.search !== "active" ? (
             <div className={contentText || message.status !== "streaming" ? "mt-5" : undefined}>
               <SearchSummaryBlock summary={artifactSummary} />
+            </div>
+          ) : null}
+          {showToolActivity && artifactSummary?.toolCallCount ? (
+            <div className="mt-5">
+              <ToolActivityBlock summary={artifactSummary} />
             </div>
           ) : null}
           {showCitations && artifactSummary?.citationCount ? (

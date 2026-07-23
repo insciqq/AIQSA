@@ -177,7 +177,7 @@ describe("OpenAI Responses request builder", () => {
     expect(buildOpenAIResponsesRequestPreview(runRequest).body).toEqual(body);
   });
 
-  it("forces explicit and custom-tool requests into foreground non-streaming mode", () => {
+  it("forces only explicitly downgraded requests and preserves background streaming for tools", () => {
     const forced = buildOpenAIResponsesRequest(
       request({
         forceNonStreaming: true,
@@ -222,6 +222,13 @@ describe("OpenAI Responses request builder", () => {
     };
     const customToolBody = buildOpenAIResponsesRequest(
       request({
+        parallelToolCalls: true,
+        params: {
+          background: true,
+          maxOutputTokens: 64,
+          store: false,
+          stream: true
+        },
         providerToolMessages: [[functionCall, "ignored"], functionOutput, "ignored", [[functionCall]]],
         searchStrategy: "perplexity-tool-search",
         toolChoice: "none",
@@ -230,9 +237,10 @@ describe("OpenAI Responses request builder", () => {
     );
 
     expect(customToolBody).toMatchObject({
-      background: false,
-      parallel_tool_calls: false,
-      stream: false,
+      background: true,
+      parallel_tool_calls: true,
+      store: true,
+      stream: true,
       tool_choice: "none",
       tools: [
         {
@@ -246,6 +254,39 @@ describe("OpenAI Responses request builder", () => {
     });
     expect(customToolBody.input.slice(1)).toEqual([functionCall, functionOutput]);
     expect(customToolBody).not.toHaveProperty("include");
+  });
+
+  it("preserves parallel custom calls when hosted web search is present", () => {
+    const body = buildOpenAIResponsesRequest(
+      request({
+        parallelToolCalls: true,
+        tools: [perplexityWebSearchTool]
+      })
+    );
+
+    expect(body.parallel_tool_calls).toBe(true);
+    expect(body.tools).toEqual([
+      { type: "web_search" },
+      expect.objectContaining({ name: "search_via_perplexity", type: "function" })
+    ]);
+  });
+
+  it("continues a stored response with only the new function outputs", () => {
+    const functionOutput = {
+      call_id: "call-recovered-1",
+      output: "Recovered tool result",
+      type: "function_call_output"
+    };
+    const body = buildOpenAIResponsesRequest(
+      request({
+        previousProviderResponseId: "resp-background-1",
+        providerToolMessages: [functionOutput],
+        tools: [perplexityWebSearchTool]
+      })
+    );
+
+    expect(body.previous_response_id).toBe("resp-background-1");
+    expect(body.input).toEqual([functionOutput]);
   });
 
   it("replays ordered branch roles while using current content for the latest user input", () => {

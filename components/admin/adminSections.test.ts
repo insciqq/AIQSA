@@ -17,6 +17,7 @@ describe("adminSections", () => {
       { id: "usage", label: "Usage" },
       { id: "groups", label: "Groups" },
       { id: "model-access", label: "Model access" },
+      { id: "mcp", label: "MCP servers" },
       { id: "invites", label: "Invites" },
       { id: "access-rules", label: "Access rules" },
       { id: "safety", label: "Safety" }
@@ -29,6 +30,7 @@ describe("adminSections", () => {
   it("parses only known deep-linked sections and otherwise selects Users", () => {
     expect(parseAdminSection("")).toBe("users");
     expect(parseAdminSection("?section=invites")).toBe("invites");
+    expect(parseAdminSection("?section=mcp")).toBe("mcp");
     expect(parseAdminSection("?mode=compact&section=access-rules")).toBe("access-rules");
     expect(parseAdminSection("?section=unknown")).toBe("users");
     expect(parseAdminSection("?section=")).toBe("users");

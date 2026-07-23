@@ -33,7 +33,7 @@ export type OpenRouterChatRequestBody = Record<string, unknown> & {
   messages: OpenRouterMessage[];
   metadata: Record<string, string>;
   model: string;
-  parallel_tool_calls?: false;
+  parallel_tool_calls?: boolean;
   plugins?: unknown[];
   provider: Record<string, unknown>;
   reasoning?: Record<string, unknown>;
@@ -313,6 +313,7 @@ function buildOpenRouterBody(input: {
   metadata: Record<string, string>;
   modelId: string;
   nativePdfInput?: boolean;
+  parallelToolCalls?: boolean;
   params: OpenRouterParams;
   stream: boolean;
   toolChoice?: "auto" | "none";
@@ -361,7 +362,7 @@ function buildOpenRouterBody(input: {
   if (input.tools && input.tools.length > 0) {
     body.tools = input.tools;
     body.tool_choice = input.toolChoice ?? "auto";
-    body.parallel_tool_calls = false;
+    body.parallel_tool_calls = input.parallelToolCalls === true;
   }
 
   return body;
@@ -390,8 +391,9 @@ export function buildOpenRouterChatRequest(
     },
     modelId: request.modelId,
     nativePdfInput,
+    parallelToolCalls: request.parallelToolCalls,
     params,
-    stream: request.forceNonStreaming || serializedTools.length > 0 ? false : params.stream,
+    stream: request.forceNonStreaming ? false : params.stream,
     toolChoice: request.toolChoice,
     tools: serializedTools
   });

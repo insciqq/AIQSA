@@ -16,16 +16,22 @@ function parseArguments(value: unknown): Record<string, unknown> {
     return value;
   }
 
-  if (typeof value !== "string" || !value.trim()) {
+  if (value === undefined || value === null || (typeof value === "string" && !value.trim())) {
     return {};
   }
 
-  try {
-    const parsed = JSON.parse(value) as unknown;
-    return isRecord(parsed) ? parsed : {};
-  } catch {
-    return {};
+  if (typeof value === "string") {
+    try {
+      const parsed = JSON.parse(value) as unknown;
+      if (isRecord(parsed)) {
+        return parsed;
+      }
+    } catch {
+      // The provider completed a tool call with unusable arguments.
+    }
   }
+
+  throw new Error("provider_tool_arguments_invalid");
 }
 
 function textFromContent(content: ToolExecutionContent): string {
@@ -40,6 +46,11 @@ function toolResultText(result: ToolExecutionResult): string {
   return result.content.map(textFromContent).join("\n\n");
 }
 
+function suppliedProviderMessages(value: unknown): unknown[] | null {
+  if (Array.isArray(value)) return [...value];
+  return value === undefined ? null : [value];
+}
+
 function openAIFunctionTool(tool: RunTool): SerializedProviderTool {
   return {
     provider: "openai",
@@ -47,7 +58,7 @@ function openAIFunctionTool(tool: RunTool): SerializedProviderTool {
       description: tool.description,
       name: tool.name,
       parameters: tool.inputSchema,
-      strict: true,
+      ...(tool.strict !== undefined ? { strict: tool.strict } : {}),
       type: "function"
     }
   };
@@ -63,6 +74,18 @@ function openRouterFunctionTool(tool: RunTool): SerializedProviderTool {
         parameters: tool.inputSchema
       },
       type: "function"
+    }
+  };
+}
+
+function anthropicFunctionTool(tool: RunTool): SerializedProviderTool {
+  return {
+    provider: "anthropic",
+    tool: {
+      description: tool.description,
+      input_schema: tool.inputSchema,
+      name: tool.name,
+      ...(tool.strict !== undefined ? { strict: tool.strict } : {})
     }
   };
 }
@@ -99,6 +122,22 @@ export const openAIResponsesToolBridge: ProviderToolBridge = {
     });
   },
   provider: "openai",
+  serializeAssistantToolCalls({ calls, providerMessage }) {
+    return suppliedProviderMessages(providerMessage) ?? calls.map((call) =>
+      isRecord(call.raw) ? call.raw : {
+        arguments: JSON.stringify(call.arguments),
+        call_id: call.id,
+        name: call.name,
+        status: "completed",
+        type: "function_call"
+      }
+    );
+  },
+  serializeHostedTools(request) {
+    return request.searchStrategy === "openai-native-web-search"
+      ? [{ type: "web_search" }]
+      : [];
+  },
   serializeTool: openAIFunctionTool,
   supportsToolCalling(input) {
     return input.provider === "openai";
@@ -143,13 +182,82 @@ export const openRouterChatToolBridge: ProviderToolBridge = {
     });
   },
   provider: "openrouter",
+  serializeAssistantToolCalls({ calls, providerMessage }) {
+    return suppliedProviderMessages(providerMessage) ?? [{
+      content: null,
+      role: "assistant",
+      tool_calls: calls.map((call) => isRecord(call.raw) ? call.raw : {
+        function: { arguments: JSON.stringify(call.arguments), name: call.name },
+        id: call.id,
+        type: "function"
+      })
+    }];
+  },
   serializeTool: openRouterFunctionTool,
   supportsToolCalling(input) {
     return input.provider === "openrouter";
   }
 };
 
+export const anthropicMessagesToolBridge: ProviderToolBridge = {
+  appendToolResult(_request, result) {
+    return {
+      content: [
+        {
+          content: toolResultText(result),
+          ...(result.status === "error" ? { is_error: true } : {}),
+          tool_use_id: result.callId,
+          type: "tool_result"
+        }
+      ],
+      role: "user"
+    };
+  },
+  parseToolCalls(response) {
+    const content = isRecord(response) && Array.isArray(response.content) ? response.content : [];
+
+    return content.flatMap((block): ModelToolCall[] => {
+      if (
+        !isRecord(block) ||
+        block.type !== "tool_use" ||
+        typeof block.id !== "string" ||
+        !block.id ||
+        typeof block.name !== "string" ||
+        !block.name
+      ) {
+        return [];
+      }
+
+      return [
+        {
+          arguments: parseArguments(block.input),
+          id: block.id,
+          name: block.name,
+          raw: block
+        }
+      ];
+    });
+  },
+  provider: "anthropic",
+  serializeAssistantToolCalls({ calls, providerMessage }) {
+    return suppliedProviderMessages(providerMessage) ?? [{
+      content: calls.map((call) => isRecord(call.raw) ? call.raw : {
+        id: call.id,
+        input: call.arguments,
+        name: call.name,
+        type: "tool_use"
+      }),
+      role: "assistant"
+    }];
+  },
+  serializeTool: anthropicFunctionTool,
+  supportsToolCalling(input) {
+    return input.provider === "anthropic";
+  }
+};
+
 export const providerToolBridges = {
+  anthropic: anthropicMessagesToolBridge,
   openai: openAIResponsesToolBridge,
   openrouter: openRouterChatToolBridge
 } satisfies Record<string, ProviderToolBridge>;

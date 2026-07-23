@@ -337,32 +337,54 @@ describe("OpenRouter Chat facade", () => {
     });
   });
 
-  it("composes provider-neutral tools into the non-streaming continuation boundary", async () => {
-    const createChatCompletion = vi.fn<OpenRouterChatClient["createChatCompletion"]>(async () => ({
-      choices: [
-        {
-          finish_reason: "tool_calls",
-          message: {
-            content: null,
-            role: "assistant",
-            tool_calls: [
+  it("composes provider-neutral tools into the streaming continuation boundary", async () => {
+    const createChatCompletion = vi.fn<OpenRouterChatClient["createChatCompletion"]>();
+    const streamChatCompletion = vi.fn<NonNullable<OpenRouterChatClient["streamChatCompletion"]>>(
+      async () =>
+        sseResponse([
+          `data: ${JSON.stringify({
+            choices: [
               {
-                function: {
-                  arguments: '{"keyword":"latest Anthropic model"}',
-                  name: "search_via_perplexity"
+                delta: {
+                  role: "assistant",
+                  tool_calls: [
+                    {
+                      function: {
+                        arguments: '{"keyword":"latest ',
+                        name: "search_via_perplexity"
+                      },
+                      id: "call-1",
+                      index: 0,
+                      type: "function"
+                    }
+                  ]
                 },
-                id: "call-1",
-                type: "function"
+                finish_reason: null
               }
-            ]
-          }
-        }
-      ],
-      id: "or-tool-1",
-      model: "anthropic/claude-opus-4.8",
-      usage: {}
-    }));
-    const streamChatCompletion = vi.fn<NonNullable<OpenRouterChatClient["streamChatCompletion"]>>();
+            ],
+            id: "or-tool-1",
+            model: "anthropic/claude-opus-4.8"
+          })}\n\n`,
+          `data: ${JSON.stringify({
+            choices: [
+              {
+                delta: {
+                  tool_calls: [
+                    {
+                      function: { arguments: 'Anthropic model"}' },
+                      index: 0
+                    }
+                  ]
+                },
+                finish_reason: "tool_calls"
+              }
+            ],
+            id: "or-tool-1",
+            usage: {}
+          })}\n\n`,
+          "data: [DONE]\n\n"
+        ])
+    );
     const adapter = createOpenRouterChatAdapter({
       client: { createChatCompletion, streamChatCompletion }
     });
@@ -370,17 +392,18 @@ describe("OpenRouter Chat facade", () => {
     const collected = await collect(
       adapter.stream(
         request({
+          parallelToolCalls: true,
           toolChoice: "auto",
           tools: [perplexityWebSearchTool]
         })
       )
     );
 
-    expect(streamChatCompletion).not.toHaveBeenCalled();
-    expect(createChatCompletion).toHaveBeenCalledOnce();
-    expect(createChatCompletion.mock.calls[0]?.[0]).toMatchObject({
-      parallel_tool_calls: false,
-      stream: false,
+    expect(createChatCompletion).not.toHaveBeenCalled();
+    expect(streamChatCompletion).toHaveBeenCalledOnce();
+    expect(streamChatCompletion.mock.calls[0]?.[0]).toMatchObject({
+      parallel_tool_calls: true,
+      stream: true,
       tool_choice: "auto",
       tools: [
         {

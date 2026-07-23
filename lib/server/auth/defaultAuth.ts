@@ -7,6 +7,7 @@ import { createPrismaAuthRegistrationRepository } from "./registrationRepository
 import { createPrismaAuthSessionStore } from "./prismaSessions";
 import { createRequestAuthResolver } from "./requestAuth";
 import { prisma } from "../prisma";
+import { kickDefaultMcpRuntime } from "../mcp/defaultRuntime";
 
 export const authMailer = createAuthMailer(process.env);
 export const adminRepository = createPrismaAdminRepository(prisma);
@@ -17,5 +18,6 @@ export const authSessionStore = createPrismaAuthSessionStore(prisma);
 
 export const resolveRequestAuth = createRequestAuthResolver({
   getConfig: () => getAuthConfig(),
+  onAuthenticated: (session) => kickDefaultMcpRuntime(session.userId),
   sessions: authSessionStore
 });

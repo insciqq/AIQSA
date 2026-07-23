@@ -22,6 +22,7 @@ function run(id: string): PersistedRun {
     reasoningTokens: 0,
     searchRuns: [],
     status: "complete",
+    toolCalls: [],
     totalTokens: 3
   };
 }

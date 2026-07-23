@@ -10,6 +10,7 @@ AIQSA has one operator configuration regardless of where it runs. There is no na
 
 ```text
 AIQSA_AUTH_SESSION_SECRET=
+AIQSA_ENCRYPTION_KEY=
 AIQSA_INITIAL_ADMIN_EMAIL=
 AIQSA_INITIAL_ADMIN_PASSWORD=
 AIQSA_INITIAL_ADMIN_DISPLAY_NAME=Administrator
@@ -27,7 +28,7 @@ ANTHROPIC_API_KEY=
 OPENROUTER_API_KEY=
 ```
 
-`AIQSA_AUTH_SESSION_SECRET`, the PostgreSQL password, and the S3/MinIO secret must be deployment-specific high-entropy values. Generate the session secret with `openssl rand -hex 32` or stronger. Compose derives the internal `DATABASE_URL`, `POSTGRES_*`, `MINIO_ROOT_*`, and `S3_*` values from these canonical inputs; operators do not duplicate the connection string.
+`AIQSA_AUTH_SESSION_SECRET`, `AIQSA_ENCRYPTION_KEY`, the PostgreSQL password, and the S3/MinIO secret must be deployment-specific high-entropy values. Generate the session secret with `openssl rand -hex 32` or stronger and the MCP encryption key with `openssl rand -base64 32`. `AIQSA_ENCRYPTION_KEY` must decode to exactly 32 bytes; it encrypts MCP shared/personal configuration and MCP OAuth tokens and is never reused for sessions or flow signing. Back it up separately from Postgres. Changing or losing it requires an offline migration or re-entry of affected MCP credentials. Compose derives the internal `DATABASE_URL`, `POSTGRES_*`, `MINIO_ROOT_*`, and `S3_*` values from these canonical inputs; operators do not duplicate the connection string.
 
 Use URI-safe hexadecimal database/storage secrets because Compose constructs the internal database URL without percent-encoding. Once a persistent volume contains data, changing database initialization credentials does not rewrite that database, and changing the bucket/volume selection exposes a different empty namespace. Such changes require an explicit backed-up datastore migration, not an ordinary env edit.
 
@@ -67,6 +68,16 @@ AIQSA_OPENAI_BACKGROUND_POLL_TIMEOUT_MS=660000
 Blank base-URL overrides select the providers' standard endpoints. Provider keys and endpoints are server-only and must never use a `NEXT_PUBLIC_*` name. The response-size and timeout values bound untrusted buffered responses, complete non-streaming exchanges, streaming idle time, and the absolute OpenAI background polling lifecycle respectively.
 
 `AIQSA_DEFAULT_MODEL` and `AIQSA_DEFAULT_SEARCH_MODEL` are optional explicit provider-smoke inputs only. The application uses persisted catalog/settings choices. Provider-smoke permission is defined in `CRITICAL_INVARIANTS.md`; no routine test makes a paid external call.
+
+## MCP Runtime Wiring
+
+```text
+AIQSA_TOOLHIVE_URL=http://toolhive-runtime:8080
+```
+
+`AIQSA_TOOLHIVE_URL` is internal Compose wiring, not a normal operator endpoint override and not a browser-visible variable. Both Compose files hardcode it to the pinned ToolHive service on the private `mcp-control` network. ToolHive and its dynamic proxy endpoints are not published to the host. MCP server endpoints, source selectors, OAuth policy, shared values, and user values live in the administrator/user persistence model rather than `.env`.
+
+The long-running app and the maintenance service receive `AIQSA_ENCRYPTION_KEY`. The maintenance CLI derives the same opaque ToolHive ownership marker from that key; changing the key before exact-marker cleanup makes old workloads undiscoverable by the new installation identity.
 
 ## Optional SMTP
 
@@ -134,11 +145,12 @@ AIQSA_LOG_MAX_FILES=5
 AIQSA_LOG_MAX_SIZE=10m
 AIQSA_POSTGRES_VOLUME_NAME=aiqsa_postgres_data
 AIQSA_MINIO_VOLUME_NAME=aiqsa_minio_data
+AIQSA_TOOLHIVE_VOLUME_NAME=aiqsa_toolhive_data
 ```
 
 The app and tools images may be replaced by prebuilt commit-tagged images with `--no-build`. `AIQSA_APP_REVISION` is privacy-safe backup metadata for release trees without `.git`; it is not passed to the web runtime. CPU/memory values are hard container limits and JSON-file logs rotate at the documented bounds.
 
-Stable explicit volume names make normal rebuild/update operations independent of checkout-directory naming. The volume-name overrides exist only to adopt already-existing Docker volumes. Because explicit volume names do not follow `docker compose -p`, every disposable installation smoke must set two unique temporary override values; routine checks instead use the separate dev Compose file.
+Stable explicit volume names make normal rebuild/update operations independent of checkout-directory naming. The volume-name overrides exist only to adopt already-existing Docker volumes. ToolHive state is sensitive, disposable observed state and is never authoritative for MCP definitions or encrypted credentials. Because explicit volume names do not follow `docker compose -p`, every disposable installation smoke that starts this topology must set unique PostgreSQL, MinIO, and ToolHive volume overrides; routine checks instead use the separate dev Compose file.
 
 ## Emergency Recovery
 

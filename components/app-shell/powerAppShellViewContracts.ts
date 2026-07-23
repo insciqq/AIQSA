@@ -1,6 +1,7 @@
 import type { ComposerAttachment } from "@/components/chat/Composer";
 import type { CommandItem } from "@/components/command-palette/commandItems";
 import type { PromptSettingsActions } from "@/components/app-shell/promptSettingsActions";
+import type { SettingsSection } from "@/components/app-shell/promptSettingsStore";
 import type { PromptEditorDraft } from "@/components/app-shell/promptSettingsStore";
 import type { RunProfileId } from "@/components/app-shell/runProfiles";
 import type { ThemeId } from "@/components/app-shell/theme";
@@ -192,6 +193,7 @@ export type ShellComposerView = {
   selectedSearchStrategy: string;
   showCitations: boolean;
   showReasoningBlocks: boolean;
+  showToolActivity: boolean;
   stopCurrentRun(): Promise<void> | void;
   streamMode: boolean;
   submitComposer(): Promise<void> | void;
@@ -199,6 +201,7 @@ export type ShellComposerView = {
   toggleCitationsVisibility(): void;
   toggleNotificationSound(): void;
   toggleReasoningBlockVisibility(): void;
+  toggleToolActivityVisibility(): void;
   uploadFiles(files: FileList | readonly File[]): Promise<void> | void;
   uploading: boolean;
 };
@@ -222,10 +225,12 @@ export type ShellSettingsView = {
   dismissNotice(): void;
   notice: Notice | null;
   open(): void;
+  openMcp(): void;
   prompt: {
     deleteConfirmation: PromptPreset | null;
     editor: PromptEditorDraft;
     open: boolean;
+    section: SettingsSection;
     saving: boolean;
     themeId: ThemeId;
   };

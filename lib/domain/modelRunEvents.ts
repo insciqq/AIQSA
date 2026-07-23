@@ -63,6 +63,12 @@ export type ModelRunSseEvent =
       };
     }
   | {
+      type: "message_reset";
+      data: {
+        round: number;
+      };
+    }
+  | {
       type: "artifact";
       data: {
         artifactType: "citation" | "context_truncated" | "reasoning" | "search" | "summary" | "tool_call" | "tool_result";

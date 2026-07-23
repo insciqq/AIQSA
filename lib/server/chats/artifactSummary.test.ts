@@ -122,4 +122,64 @@ describe("summarizeMessageRunArtifacts", () => {
       }
     });
   });
+
+  it("projects durable MCP calls when artifact append was interrupted", () => {
+    const summary = summarizeMessageRunArtifacts({
+      events: [],
+      normalizedRequest: {
+        mcp: {
+          servers: [{
+            credentialSources: ["personal"],
+            externalAccountLabel: "Personal memory",
+            fingerprint: "a".repeat(64),
+            revisionId: "revision-1",
+            serverId: "server-1",
+            serverName: "Mem0"
+          }],
+          tools: [{
+            definitionHash: "b".repeat(64),
+            description: "Search memory",
+            inputSchema: { type: "object" },
+            name: "search",
+            namespacedName: "mcp_mem0_search_1234567890",
+            originalName: "search",
+            serverId: "server-1",
+            serverName: "Mem0"
+          }],
+          version: 1
+        }
+      },
+      searchRuns: [],
+      status: "complete",
+      toolCalls: [{
+        arguments: { apiKey: "sk-private-secret", query: "memory" },
+        completedAt: "2026-07-23T12:00:00.050Z",
+        mcpRunBindingId: "binding-1",
+        ordinal: 0,
+        providerCallId: "call-1",
+        result: {
+          callId: "call-1",
+          content: [{ text: "found", type: "text" }],
+          name: "mcp_mem0_search_1234567890",
+          status: "complete"
+        },
+        roundIndex: 1,
+        startedAt: "2026-07-23T12:00:00.000Z",
+        state: "complete",
+        toolName: "mcp_mem0_search_1234567890"
+      }]
+    });
+
+    expect(summary).toMatchObject({
+      toolCallCount: 1,
+      toolCalls: [{
+        argumentsPreview: { apiKey: "[redacted]", query: "memory" },
+        durationMs: 50,
+        serverName: "Mem0",
+        status: "complete",
+        toolName: "search"
+      }]
+    });
+    expect(JSON.stringify(summary)).not.toContain("private-secret");
+  });
 });

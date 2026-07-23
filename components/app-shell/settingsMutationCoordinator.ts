@@ -115,6 +115,9 @@ function requestBody(patch: SettingsDefaultsPatch): Record<string, unknown> {
     ...(Object.prototype.hasOwnProperty.call(patch, "showReasoningBlocks")
       ? { showReasoningBlocks: patch.showReasoningBlocks }
       : {}),
+    ...(Object.prototype.hasOwnProperty.call(patch, "showToolActivity")
+      ? { showToolActivity: patch.showToolActivity }
+      : {}),
     ...(patch.controlValues ? { defaultControlValues: patch.controlValues } : {})
   };
 }
@@ -166,6 +169,9 @@ function reconciledPatch(
   }
   if (Object.prototype.hasOwnProperty.call(sent, "showReasoningBlocks")) {
     patch.showReasoningBlocks = settings.showReasoningBlocks;
+  }
+  if (Object.prototype.hasOwnProperty.call(sent, "showToolActivity")) {
+    patch.showToolActivity = settings.showToolActivity;
   }
   if (sent.controlValues) {
     patch.controlValues = Object.fromEntries(

@@ -11,7 +11,6 @@ import {
   normalizeOpenRouterParams
 } from "../../domain/providerParams";
 import { validateRunAccess } from "../auth/entitlements";
-import { providerAttachmentBudgetTokens } from "../providers/attachmentPayload";
 import type {
   NormalizedRunRequest,
   ProviderAdapter,
@@ -23,7 +22,11 @@ import type {
   ProviderSearchPolicy
 } from "../providers/types";
 import type { StorageAdapter } from "../uploads/storage";
-import { applyRunContextBudget } from "./runContextBudget";
+import type { McpRunPlanBinding, McpRunPlanResult } from "../mcp/runPlan";
+import { mcpRunTools } from "../mcp/toolExecutor";
+import { providerToolBridges } from "../tools/bridges";
+import { perplexityWebSearchTool } from "../tools/perplexitySearch";
+import { applyProviderRequestContextBudget } from "./runContextBudget";
 import type {
   AcceptedRunDefaults,
   RunModelConfiguration,
@@ -49,6 +52,9 @@ type RunPreparationRepository = Pick<
 >;
 
 export type RunPreparationDeps = Readonly<{
+  mcp?: Readonly<{
+    prepare(userId: string): Promise<McpRunPlanResult>;
+  }>;
   providers: Readonly<Record<string, ProviderAdapter>>;
   repository: RunPreparationRepository;
   searchProviders?: Readonly<Record<string, ProviderSearchAdapter>>;
@@ -118,6 +124,7 @@ export type MaterializedPreparedRunData = {
   contextTruncation: ContextTruncationSummary | null;
   defaults: PreparedRunDefaultsData;
   expectedActiveLeafId: string | null;
+  mcpBindings?: McpRunPlanBinding[];
   normalizedRequest: NormalizedRunRequest;
   providerRequest: ProviderRunRequest;
   providerRequestPreview: Record<string, unknown>;
@@ -258,6 +265,9 @@ export function materializePreparedRunData(prepared: PreparedRun): MaterializedP
     contextTruncation: mutablePreparedData<ContextTruncationSummary | null>(prepared.contextTruncation),
     defaults: mutablePreparedData<PreparedRunDefaultsData>(prepared.defaults),
     expectedActiveLeafId: prepared.expectedActiveLeafId,
+    ...(prepared.mcpBindings
+      ? { mcpBindings: mutablePreparedData<McpRunPlanBinding[]>(prepared.mcpBindings) }
+      : {}),
     normalizedRequest: mutablePreparedData<NormalizedRunRequest>(prepared.normalizedRequest),
     providerRequest: mutablePreparedData<ProviderRunRequest>(prepared.providerRequest),
     providerRequestPreview: mutablePreparedData<Record<string, unknown>>(prepared.providerRequestPreview),
@@ -551,23 +561,6 @@ function hasRunnableContent(content: NormalizedRunRequest["content"]): boolean {
   return hasTextContent(content) || extractAttachmentIds(content).length > 0;
 }
 
-function attachmentExtraTokensForMessage(input: Readonly<{
-  attachments: ProviderAttachment[];
-  messageId: string | null | undefined;
-  modelCapabilities: ProviderModelCapabilities;
-}>): Record<string, number> | undefined {
-  if (!input.messageId || input.attachments.length === 0) {
-    return undefined;
-  }
-
-  const tokens = providerAttachmentBudgetTokens({
-    attachments: input.attachments,
-    modelCapabilities: input.modelCapabilities
-  });
-
-  return tokens > 0 ? { [input.messageId]: tokens } : undefined;
-}
-
 function validateAttachmentCapabilities(
   attachments: ProviderAttachment[],
   capabilities: ProviderModelCapabilities
@@ -613,12 +606,36 @@ function validateSearchStrategyForModel(
   return { code: "search_strategy_unknown", status: 400 };
 }
 
+function validateMcpCapabilities(input: Readonly<{
+  capabilities: ProviderModelCapabilities;
+  enabled: boolean;
+  params: Readonly<Record<string, unknown>>;
+  provider: string;
+}>): { code: string; status: 400 } | null {
+  if (!input.enabled) return null;
+  const bridge = providerToolBridges[input.provider as keyof typeof providerToolBridges];
+  if (!bridge || input.capabilities.toolCalling !== true) {
+    return { code: "mcp_tool_calling_not_supported", status: 400 };
+  }
+  if (input.params.background === true && input.capabilities.nativeBackground !== true) {
+    return { code: "mcp_background_not_supported", status: 400 };
+  }
+  if (input.params.background === true && input.params.stream === true &&
+    input.capabilities.backgroundStreaming !== true) {
+    return { code: "mcp_background_streaming_not_supported", status: 400 };
+  }
+  return null;
+}
+
 function objectToDataUrl(contentType: string, body: Buffer): string {
   return `data:${contentType};base64,${body.toString("base64")}`;
 }
 
-async function loadProviderAttachments(
-  deps: Pick<RunPreparationDeps, "repository" | "storage">,
+export async function loadProviderAttachments(
+  deps: Readonly<{
+    repository: Pick<RunRepository, "loadAttachments">;
+    storage?: Pick<StorageAdapter, "getObject">;
+  }>,
   userId: string,
   attachmentIds: string[],
   options: { loadNativePdfData: boolean } = { loadNativePdfData: false }
@@ -821,6 +838,23 @@ export async function prepareRun(
     return failure("search_provider_not_available", 400);
   }
 
+  const mcpPlan = deps.mcp ? await deps.mcp.prepare(input.userId) : null;
+  if (mcpPlan && !mcpPlan.ok) {
+    const affected = mcpPlan.issues.map((issue) => issue.name).join(", ");
+    return failure(
+      mcpPlan.code,
+      409,
+      affected ? `MCP tools are not ready: ${affected}.` : "MCP tools are not ready."
+    );
+  }
+  const mcpCompatibility = validateMcpCapabilities({
+    capabilities: modelCapabilities,
+    enabled: Boolean(mcpPlan?.ok && mcpPlan.snapshot.servers.length),
+    params: runParams,
+    provider
+  });
+  if (mcpCompatibility) return failure(mcpCompatibility.code, mcpCompatibility.status);
+
   const uniqueAttachmentIds = Array.from(new Set(attachmentIds));
   const attachments = await loadProviderAttachments(deps, input.userId, uniqueAttachmentIds, {
     loadNativePdfData: modelCapabilities.nativePdfInput
@@ -835,39 +869,45 @@ export async function prepareRun(
     return failure(attachmentAccess.code, attachmentAccess.status);
   }
 
-  const budgetedContext = applyRunContextBudget({
-    contextMessages,
-    messageExtraTokens: attachmentExtraTokensForMessage({
-      attachments,
-      messageId: input.source.kind === "send" ? currentSendMessageId : contextMessages.at(-1)?.id,
-      modelCapabilities
-    }),
-    modelCapabilities,
-    params: runParams,
-    prompt,
-    provider
-  });
-
-  if (!budgetedContext.ok) {
-    return failure(budgetedContext.error.code, budgetedContext.status, budgetedContext.error.message);
-  }
-
-  const normalizedRequest: NormalizedRunRequest = {
+  const unbudgetedNormalizedRequest: NormalizedRunRequest = {
     attachmentIds,
     chatId: chat.id,
     content,
-    context: budgetedContext.context,
+    context: { messages: contextMessages, mode: "branch_path" },
     modelCapabilities,
     modelId,
+    ...(mcpPlan?.ok && mcpPlan.snapshot.servers.length ? { mcp: mcpPlan.snapshot } : {}),
     params: runParams,
     prompt,
     provider,
     ...(searchPolicy ? { searchPolicy } : {}),
     searchStrategy
   };
+  const clientTools = [
+    ...(searchStrategy === perplexityToolSearchStrategyId ? [perplexityWebSearchTool] : []),
+    ...mcpRunTools(unbudgetedNormalizedRequest.mcp)
+  ];
+  const unbudgetedProviderRequest: ProviderRunRequest = {
+    ...unbudgetedNormalizedRequest,
+    attachments,
+    ...(clientTools.length > 0 ? { tools: clientTools } : {})
+  };
+  const toolBridge = providerToolBridges[provider as keyof typeof providerToolBridges];
+  const providerBudget = applyProviderRequestContextBudget({
+    ...(toolBridge ? { bridge: toolBridge } : {}),
+    request: unbudgetedProviderRequest
+  });
+  if (!providerBudget.ok) {
+    return failure(providerBudget.error.code, providerBudget.status, providerBudget.error.message);
+  }
+  const normalizedRequest: NormalizedRunRequest = {
+    ...unbudgetedNormalizedRequest,
+    context: providerBudget.request.context!
+  };
   const providerRequest: ProviderRunRequest = {
     ...normalizedRequest,
-    attachments
+    attachments,
+    ...(clientTools.length > 0 ? { tools: clientTools } : {})
   };
   const providerRequestPreview = adapter.buildRequestPreview(providerRequest);
   const defaults: PreparedRunDefaultsData = {
@@ -880,9 +920,10 @@ export async function prepareRun(
   };
 
   const prepared = immutablePreparedData<MaterializedPreparedRunData>({
-    contextTruncation: budgetedContext.contextTruncation,
+    contextTruncation: providerBudget.contextTruncation,
     defaults,
     expectedActiveLeafId: input.source.kind === "send" ? input.source.chat.activeLeafMessageId : null,
+    ...(mcpPlan?.ok ? { mcpBindings: [...mcpPlan.bindings] } : {}),
     normalizedRequest,
     providerRequest,
     providerRequestPreview,

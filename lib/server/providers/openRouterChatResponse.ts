@@ -311,6 +311,73 @@ function pushArray(target: unknown[], value: unknown) {
   }
 }
 
+type StreamedOpenRouterToolCall = {
+  arguments: Record<string, unknown> | string;
+  id?: string;
+  index: number;
+  name?: string;
+  type?: string;
+};
+
+function accumulateStreamedToolCalls(
+  target: Map<number, StreamedOpenRouterToolCall>,
+  value: unknown,
+  replaceArguments = false
+): void {
+  if (!Array.isArray(value)) {
+    return;
+  }
+
+  value.forEach((candidate, ordinal) => {
+    if (!isRecord(candidate)) {
+      return;
+    }
+
+    const index =
+      typeof candidate.index === "number" && Number.isInteger(candidate.index) && candidate.index >= 0
+        ? candidate.index
+        : ordinal;
+    const existing = target.get(index) ?? {
+      arguments: "",
+      index
+    };
+    const fn = isRecord(candidate.function) ? candidate.function : {};
+
+    if (typeof candidate.id === "string" && candidate.id) {
+      existing.id = candidate.id;
+    }
+    if (typeof candidate.type === "string" && candidate.type) {
+      existing.type = candidate.type;
+    }
+    if (typeof fn.name === "string" && fn.name) {
+      existing.name = fn.name;
+    }
+    if (isRecord(fn.arguments)) {
+      existing.arguments = fn.arguments;
+    } else if (typeof fn.arguments === "string") {
+      existing.arguments =
+        replaceArguments || typeof existing.arguments !== "string"
+          ? fn.arguments
+          : `${existing.arguments}${fn.arguments}`;
+    }
+
+    target.set(index, existing);
+  });
+}
+
+function streamedToolCalls(target: ReadonlyMap<number, StreamedOpenRouterToolCall>): Record<string, unknown>[] {
+  return [...target.values()]
+    .sort((left, right) => left.index - right.index)
+    .map((call) => ({
+      function: {
+        arguments: call.arguments,
+        name: call.name
+      },
+      id: call.id,
+      type: call.type ?? "function"
+    }));
+}
+
 export async function* streamOpenRouterJsonResponse(
   response: OpenRouterResponseRecord,
   request: OpenRouterResponseContext
@@ -392,6 +459,7 @@ export async function* streamOpenRouterSseResponse(
   const messageCitations: unknown[] = [];
   const annotations: unknown[] = [];
   const reasoningParts: unknown[] = [];
+  const toolCallParts = new Map<number, StreamedOpenRouterToolCall>();
 
   for await (const event of parseSseStream(response.body, {
     idleTimeoutMs,
@@ -459,6 +527,8 @@ export async function* streamOpenRouterSseResponse(
     finishReason = choice.finish_reason ?? finishReason;
     const delta = isRecord(choice.delta) ? choice.delta : {};
     const message = isRecord(choice.message) ? choice.message : {};
+    accumulateStreamedToolCalls(toolCallParts, delta.tool_calls);
+    accumulateStreamedToolCalls(toolCallParts, message.tool_calls, true);
     const text = deltaText(delta);
     if (text) {
       rawFinalText += text;
@@ -506,6 +576,7 @@ export async function* streamOpenRouterSseResponse(
       : reasoningParts.every((part) => typeof part === "string")
         ? reasoningParts.join("")
         : reasoningParts;
+  const rawToolCalls = streamedToolCalls(toolCallParts);
   const syntheticResponse = {
     citations,
     choices: [
@@ -514,9 +585,10 @@ export async function* streamOpenRouterSseResponse(
         message: {
           annotations,
           citations: messageCitations,
-          content: rawFinalText,
+          content: rawFinalText || null,
           ...(reasoning ? { reasoning } : {}),
-          role: "assistant"
+          role: "assistant",
+          ...(rawToolCalls.length > 0 ? { tool_calls: rawToolCalls } : {})
         }
       }
     ],
@@ -526,6 +598,11 @@ export async function* streamOpenRouterSseResponse(
     usage: rawUsage
   };
   const finalText = visibleAnswerText(rawFinalText);
+  const toolCalls = openRouterChatToolBridge.parseToolCalls(syntheticResponse);
+
+  if (rawToolCalls.length > 0 && toolCalls.length !== rawToolCalls.length) {
+    throw new Error(invalidOpenRouterTerminalResponseError);
+  }
 
   for (const artifact of extractOpenRouterArtifacts(syntheticResponse)) {
     yield artifact;
@@ -534,8 +611,11 @@ export async function* streamOpenRouterSseResponse(
   return {
     finalProviderResponsePreview: buildOpenRouterResponsePreview(syntheticResponse, finalText, rawFinalText),
     finalText,
+    ...(toolCalls.length > 0
+      ? { providerToolCallMessage: firstMessage(syntheticResponse) ?? undefined }
+      : {}),
     providerResponseId: responseId,
-    toolCalls: [],
+    toolCalls,
     usage
   };
 }

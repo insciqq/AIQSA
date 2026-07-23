@@ -39,7 +39,7 @@ import {
   UserCheck,
   UserX
 } from "lucide-react";
-import type { Ref } from "react";
+import type { ReactNode, Ref } from "react";
 
 export type AdminUsersData = Readonly<{
   adminUserId: string;
@@ -93,6 +93,7 @@ export type AdminUsersSectionProps = Readonly<{
   actions: AdminUsersActions;
   data: AdminUsersData;
   focus: AdminUsersFocus;
+  mcpAccess?: ReactNode;
   status: AdminUsersStatus;
   view: AdminUsersView;
 }>;
@@ -130,12 +131,14 @@ function AdminUserDetail({
   data,
   detailRef,
   groupsEditorRef,
+  mcpAccess,
   status
 }: Readonly<{
   actions: AdminUsersActions;
   data: AdminUsersData;
   detailRef: Ref<HTMLElement>;
   groupsEditorRef: Ref<HTMLDivElement>;
+  mcpAccess?: ReactNode;
   status: AdminUsersStatus;
 }>) {
   const { adminUserId, catalog, groups, selectedUser, selectedUserGroupIds } = data;
@@ -267,6 +270,8 @@ function AdminUserDetail({
         </div>
       </div>
 
+      {mcpAccess}
+
       <div className="mt-3 grid gap-2">
         {selectedUser.status !== "active" && !isSelf ? (
           <>
@@ -351,7 +356,7 @@ function AdminUserDetail({
   );
 }
 
-export function AdminUsersSection({ actions, data, focus, status, view }: AdminUsersSectionProps) {
+export function AdminUsersSection({ actions, data, focus, mcpAccess, status, view }: AdminUsersSectionProps) {
   return (
     <div className="grid min-h-[420px] lg:grid-cols-[minmax(0,1fr)_320px]">
       <div className="min-w-0">
@@ -615,6 +620,7 @@ export function AdminUsersSection({ actions, data, focus, status, view }: AdminU
         data={data}
         detailRef={focus.detail}
         groupsEditorRef={focus.groupsEditor}
+        mcpAccess={mcpAccess}
         status={status}
       />
     </div>

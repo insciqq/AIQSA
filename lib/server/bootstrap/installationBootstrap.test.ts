@@ -1,5 +1,6 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { defaultProviderModels, defaultSearchStrategies } from "@/lib/domain/catalog";
+import { LOCAL_ORDINARY_USERS } from "@/prisma/local-seed-fixtures";
 import { describe, expect, it, vi } from "vitest";
 import {
   bootstrapInstallationDatabase,
@@ -238,6 +239,8 @@ describe("installation bootstrap", () => {
     ]);
     expect(hashPassword).toHaveBeenCalledOnce();
     expect(hashPassword).toHaveBeenCalledWith(baseInput.password);
+    expect(fixture.spies.userCreate).toHaveBeenCalledOnce();
+    expect(fixture.spies.authIdentityCreate).toHaveBeenCalledOnce();
     expect(fixture.spies.userCreate).toHaveBeenCalledWith({
       data: {
         displayName: "Initial Admin",
@@ -276,6 +279,16 @@ describe("installation bootstrap", () => {
     });
     expect(fixture.spies.providerModelUpsert).toHaveBeenCalledTimes(defaultProviderModels.length);
     expect(fixture.spies.searchStrategyUpsert).toHaveBeenCalledTimes(defaultSearchStrategies.length);
+
+    const productionFoundationCalls = JSON.stringify({
+      identities: fixture.spies.authIdentityCreate.mock.calls,
+      users: fixture.spies.userCreate.mock.calls
+    });
+    for (const ordinaryFixture of LOCAL_ORDINARY_USERS) {
+      expect(productionFoundationCalls).not.toContain(ordinaryFixture.id);
+      expect(productionFoundationCalls).not.toContain(ordinaryFixture.email);
+      expect(productionFoundationCalls).not.toContain(ordinaryFixture.password);
+    }
 
     const grantCall = fixture.spies.accessGrantCreateMany.mock.calls[0]?.[0] as
       | { data: Array<Record<string, unknown>> }

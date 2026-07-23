@@ -27,6 +27,7 @@ import type {
 } from "@/components/app-shell/powerAppShellViewContracts";
 import { usePromptSettingsActions } from "@/components/app-shell/promptSettingsActions";
 import { usePromptSettingsStore } from "@/components/app-shell/promptSettingsStore";
+import { consumeMcpOAuthReturn, refreshMcpSettings } from "@/components/app-shell/mcpSettingsStore";
 import { useRunControlsActions } from "@/components/app-shell/runControlsActions";
 import {
   abortActiveStreamControllers,
@@ -175,6 +176,7 @@ export function PowerAppShell({
   const selectedSearchStrategy = useComposerControlStore((state) => state.selectedSearchStrategy);
   const showCitations = useComposerControlStore((state) => state.showCitations);
   const showReasoningBlocks = useComposerControlStore((state) => state.showReasoningBlocks);
+  const showToolActivity = useComposerControlStore((state) => state.showToolActivity);
   const streamMode = useComposerControlStore((state) => state.streamMode);
   const systemPrompt = useComposerControlStore((state) => state.systemPrompt);
   const temperature = useComposerControlStore((state) => state.temperature);
@@ -187,10 +189,13 @@ export function PowerAppShell({
   const setSelectedSearchStrategy = useComposerControlStore((state) => state.setSelectedSearchStrategy);
   const setShowCitations = useComposerControlStore((state) => state.setShowCitations);
   const setShowReasoningBlocks = useComposerControlStore((state) => state.setShowReasoningBlocks);
+  const setShowToolActivity = useComposerControlStore((state) => state.setShowToolActivity);
   const deletePromptConfirmation = usePromptSettingsStore((state) => state.deletePromptConfirmation);
   const promptSaving = usePromptSettingsStore((state) => state.promptSaving);
   const settingsOpen = usePromptSettingsStore((state) => state.settingsOpen);
+  const settingsSection = usePromptSettingsStore((state) => state.settingsSection);
   const settingsPromptEditor = usePromptSettingsStore((state) => state.settingsPromptEditor);
+  const openMcpSettings = usePromptSettingsStore((state) => state.openMcpSettings);
   const setSettingsPromptFromPreset = usePromptSettingsStore((state) => state.setSettingsPromptFromPreset);
   const appearance = useShellAppearanceController();
   const {
@@ -233,6 +238,16 @@ export function PowerAppShell({
   const currentRunId = activeChatStream?.runId ?? activeRunSurface.lastRun?.id ?? null;
   const { notificationSoundEnabled, notifyAnswerReady, primeAnswerSound, toggleNotificationSound } =
     useAnswerNotification();
+
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    const shouldOpenMcp = url.searchParams.get("settings") === "mcp";
+    consumeMcpOAuthReturn(url);
+    if (shouldOpenMcp) {
+      openMcpSettings();
+      void refreshMcpSettings(true).catch(() => undefined);
+    }
+  }, [openMcpSettings]);
   const activeChatIdRef = useRef<string | null>(null);
   const activeStreamAbortRef = useRef<Map<string, AbortController>>(new Map());
   const chatDetailRequestsRef = useRef<Map<string, Promise<ChatDetail | null>>>(new Map());
@@ -359,7 +374,8 @@ export function PowerAppShell({
     selectRunProfile,
     selectSearchStrategy,
     toggleCitationsVisibility,
-    toggleReasoningBlockVisibility
+    toggleReasoningBlockVisibility,
+    toggleToolActivityVisibility
   } = useRunControlsActions({
     catalog,
     currentModel,
@@ -512,6 +528,7 @@ export function PowerAppShell({
           setSettingsPromptFromPreset(prompt);
           setShowCitations(nextCatalog.defaults.showCitations);
           setShowReasoningBlocks(nextCatalog.defaults.showReasoningBlocks);
+          setShowToolActivity(nextCatalog.defaults.showToolActivity);
           if (defaultModel) {
             const defaults = resolveModelControlDefaults(defaultModel, nextCatalog.defaults.controlValues);
             applyControlDefaults(defaults);
@@ -819,6 +836,7 @@ export function PowerAppShell({
     selectedSearchStrategy,
     showCitations,
     showReasoningBlocks,
+    showToolActivity,
     stopCurrentRun,
     streamMode,
     submitComposer,
@@ -826,6 +844,7 @@ export function PowerAppShell({
     toggleCitationsVisibility,
     toggleNotificationSound,
     toggleReasoningBlockVisibility,
+    toggleToolActivityVisibility,
     uploadFiles,
     uploading
   } satisfies ShellComposerView;
@@ -849,10 +868,12 @@ export function PowerAppShell({
     dismissNotice: () => setSettingsNotice(null),
     notice: settingsNotice,
     open: openSettings,
+    openMcp: openMcpSettings,
     prompt: {
       deleteConfirmation: deletePromptConfirmation,
       editor: settingsPromptEditor,
       open: settingsOpen,
+      section: settingsSection,
       saving: promptSaving,
       themeId
     },

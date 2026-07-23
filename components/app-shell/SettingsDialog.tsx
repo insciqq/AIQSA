@@ -1,13 +1,16 @@
 import { DiscardChangesConfirmationDialog } from "@/components/app-shell/ConfirmationDialog";
+import { McpSettingsSection } from "@/components/app-shell/McpSettingsSection";
 import { ShellNotice } from "@/components/app-shell/ShellNotice";
-import { hasPromptEditorChanges, type PromptEditorDraft } from "@/components/app-shell/promptSettingsStore";
+import {
+  hasPromptEditorChanges,
+  type PromptEditorDraft,
+  type SettingsSection
+} from "@/components/app-shell/promptSettingsStore";
 import { AIQSA_THEMES, type ThemeId } from "@/components/app-shell/theme";
 import type { Notice, PromptPreset } from "@/components/app-shell/types";
-import { Check, Copy, FilePlus2, LoaderCircle, Palette, Plus, RotateCcw, Save, Star, Trash2, X } from "lucide-react";
+import { Check, Copy, FilePlus2, LoaderCircle, Palette, Plus, RotateCcw, Save, Star, Trash2, Wrench, X } from "lucide-react";
 import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { useDialogFocus } from "./useDialogFocus";
-
-type SettingsSection = "appearance" | "prompts";
 
 type DiscardIntent =
   | { kind: "close" }
@@ -30,6 +33,7 @@ export function SettingsDialog({
   currentPromptId,
   defaultPromptId,
   editor,
+  initialSection = "prompts",
   nestedDialogOpen = false,
   notice = null,
   promptCatalogError = null,
@@ -54,6 +58,7 @@ export function SettingsDialog({
   currentPromptId: string | null;
   defaultPromptId: string | null;
   editor: PromptEditorDraft;
+  initialSection?: SettingsSection;
   nestedDialogOpen?: boolean;
   notice?: Notice | null;
   promptCatalogError?: string | null;
@@ -75,7 +80,7 @@ export function SettingsDialog({
   saving: boolean;
   themeId: ThemeId;
 }) {
-  const [activeSection, setActiveSection] = useState<SettingsSection>("prompts");
+  const [activeSection, setActiveSection] = useState<SettingsSection>(initialSection);
   const [discardIntent, setDiscardIntent] = useState<DiscardIntent | null>(null);
   const promptCatalogHeadingRef = useRef<HTMLHeadingElement>(null);
   const promptNameRef = useRef<HTMLInputElement>(null);
@@ -289,7 +294,7 @@ export function SettingsDialog({
         <header className="relative z-10 flex min-h-16 shrink-0 items-center justify-between gap-4 border-b border-separator-subtle bg-surface-overlay px-4 sm:px-5">
           <div className="min-w-0">
             <h2 className="text-lg font-semibold text-content-primary">Settings</h2>
-            <p className="mt-0.5 truncate text-xs text-content-muted">Prompt presets and local appearance</p>
+            <p className="mt-0.5 truncate text-xs text-content-muted">Prompts, MCP tools, and local appearance</p>
           </div>
           <div className="flex shrink-0 items-center gap-2">
             {dirty ? (
@@ -345,6 +350,21 @@ export function SettingsDialog({
           >
             <Palette className="size-4 text-content-muted" aria-hidden="true" />
             Appearance
+          </button>
+          <button
+            className={[
+              `flex min-h-touch min-w-0 flex-1 items-center justify-center gap-2 rounded-control px-3 text-sm font-medium disabled:cursor-not-allowed disabled:text-content-disabled sm:min-h-control sm:flex-none sm:justify-start ${coarsePointerTarget} ${focusRing}`,
+              activeSection === "mcp"
+                ? "bg-surface-selected text-content-primary"
+                : "text-content-secondary hover:bg-surface-hover hover:text-content-primary"
+            ].join(" ")}
+            type="button"
+            aria-current={activeSection === "mcp" ? "page" : undefined}
+            disabled={saving && activeSection !== "mcp"}
+            onClick={() => requestSection("mcp")}
+          >
+            <Wrench className="size-4 text-content-muted" aria-hidden="true" />
+            MCP &amp; tools
           </button>
         </nav>
 
@@ -711,6 +731,8 @@ export function SettingsDialog({
             </section>
           </div>
           )
+        ) : activeSection === "mcp" ? (
+          <McpSettingsSection />
         ) : (
           <section
             className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-6 sm:px-6"

@@ -111,7 +111,8 @@ describe("useCommandPaletteActions", () => {
         provider: "openai",
         searchStrategyId: "openai-native-web-search",
         showCitations: true,
-        showReasoningBlocks: false
+        showReasoningBlocks: false,
+        showToolActivity: true,
       },
       models: [
         {

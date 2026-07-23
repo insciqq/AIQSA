@@ -103,6 +103,7 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
     deletePromptConfirmation: settingsPrompt.deleteConfirmation,
     editor: settingsPrompt.editor,
     open: settingsPrompt.open,
+    section: settingsPrompt.section,
     saving: settingsPrompt.saving,
     themeId: settingsPrompt.themeId
   };
@@ -344,6 +345,7 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
           creatingChat={workspace.pane.state.creatingChat}
           noticeSlot={persistentNoticeSlot}
           openDetails={openDetails}
+          openMcpSettings={settings.openMcp}
           openSettings={settings.open}
           pipeline={pipeline}
           retryWorkspace={workspace.pane.actions.retry}
@@ -475,6 +477,7 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
           currentPromptId={selectedPromptId}
           defaultPromptId={catalog?.defaults.promptPresetId ?? null}
           editor={promptSettings.editor}
+          initialSection={promptSettings.section}
           notice={settingsNotice}
           promptCatalogError={catalogError}
           promptCatalogState={catalog ? "ready" : catalogError ? "error" : "loading"}

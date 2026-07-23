@@ -50,7 +50,8 @@ export async function cleanupE2eWorkspace(page: Page): Promise<string> {
       defaultProvider: "openai",
       defaultSearchStrategyId: "search-disabled",
       showCitations: true,
-      showReasoningBlocks: false
+      showReasoningBlocks: false,
+      showToolActivity: true,
     }
   });
   if (preferredSettings.ok()) {
@@ -63,7 +64,8 @@ export async function cleanupE2eWorkspace(page: Page): Promise<string> {
       defaultProvider: "fake",
       defaultSearchStrategyId: "search-disabled",
       showCitations: true,
-      showReasoningBlocks: false
+      showReasoningBlocks: false,
+      showToolActivity: true,
     }
   });
   if (!fallbackSettings.ok()) {

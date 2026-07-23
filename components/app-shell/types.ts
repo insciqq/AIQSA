@@ -18,6 +18,8 @@ export type {
   ThreadCitation,
   ThreadMessage,
   ThreadSearchDetail,
+  ThreadToolActivity,
+  ThreadToolActivityStatus,
   WorkspaceChatSummary
 } from "@/lib/contracts/chats";
 

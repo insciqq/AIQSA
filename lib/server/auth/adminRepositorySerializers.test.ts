@@ -133,6 +133,7 @@ describe("admin repository serializers", () => {
         accessGrants: [disabledSearchGrant, modelGrant],
         archivedAt: new Date("2026-07-01T00:00:00.000Z"),
         id: "group-1",
+        mcpGrants: [],
         name: "Operators"
       })
     ).toEqual({

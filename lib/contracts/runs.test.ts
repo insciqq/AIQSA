@@ -13,9 +13,26 @@ function requiredRunFields(): Record<string, unknown> {
     inputTokens: 12,
     modelId: "gpt-5",
     provider: "openai",
-    status: "complete"
+    status: "complete",
+    toolCalls: []
   };
 }
+
+const toolActivity = {
+  argumentsPreview: { query: "memory" },
+  callId: "call-1",
+  capability: "mcp",
+  credentialSources: ["personal"],
+  durationMs: 42,
+  errorMessage: null,
+  externalAccountLabel: "Personal memory",
+  ordinal: 0,
+  resultPreview: { content: [{ text: "found", type: "text" }] },
+  round: 1,
+  serverName: "Mem0",
+  status: "complete",
+  toolName: "search"
+};
 
 describe("decodeCancelModelRunResponse", () => {
   it("distinguishes a cancellation winner from the current non-cancelable state", () => {
@@ -110,6 +127,7 @@ describe("decodeGetModelRunResponse", () => {
           reasoningTokens: 2,
           searchRuns: [searchRun],
           status: "complete",
+          toolCalls: [],
           totalTokens: 20
         }
       })
@@ -127,6 +145,7 @@ describe("decodeGetModelRunResponse", () => {
       reasoningTokens: 2,
       searchRuns: [searchRun],
       status: "complete",
+      toolCalls: [],
       totalTokens: 20
     });
   });
@@ -159,8 +178,34 @@ describe("decodeGetModelRunResponse", () => {
       reasoningTokens: 0,
       searchRuns: [],
       status: "complete",
+      toolCalls: [],
       totalTokens: 12
     });
+  });
+
+  it("decodes bounded tool activity and rejects malformed entries", () => {
+    expect(
+      decodeGetModelRunResponse({
+        run: { ...requiredRunFields(), toolCalls: [toolActivity] }
+      })?.toolCalls
+    ).toEqual([toolActivity]);
+
+    expect(
+      decodeGetModelRunResponse({
+        run: {
+          ...requiredRunFields(),
+          toolCalls: [{ ...toolActivity, serverName: null }]
+        }
+      })
+    ).toBeNull();
+    expect(
+      decodeGetModelRunResponse({
+        run: {
+          ...requiredRunFields(),
+          toolCalls: [{ ...toolActivity, resultPreview: "x".repeat(9_000) }]
+        }
+      })
+    ).toBeNull();
   });
 
   it("ignores additive envelope and run fields while preserving opaque entries", () => {
@@ -214,6 +259,7 @@ describe("decodeGetModelRunResponse", () => {
     { run: { ...requiredRunFields(), status: "" } },
     { run: { ...requiredRunFields(), status: "completed" } },
     { run: { ...requiredRunFields(), inputTokens: Number.NaN } },
+    { run: { ...requiredRunFields(), toolCalls: null } },
     { run: { ...requiredRunFields(), events: [null] } },
     { run: { ...requiredRunFields(), events: [{ eventType: "", sequence: 1 }] } },
     { run: { ...requiredRunFields(), events: [{ eventType: "token", sequence: "1" }] } },

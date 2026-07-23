@@ -129,11 +129,15 @@ describe("prisma catalog data loader", () => {
     );
 
     expect(entry.capabilities).toEqual({
+      backgroundStreaming: false,
+      nativeBackground: false,
       nativePdfInput: false,
       nativeSearch: false,
+      parallelToolCalls: false,
       pdf: true,
       reasoning: true,
       streaming: true,
+      toolCalling: false,
       vision: true
     });
     expect(entry.parameterControls).toMatchObject({
@@ -250,7 +254,8 @@ describe("prisma catalog data loader", () => {
             defaultProvider: "openai",
             defaultSearchStrategyId: "openai-native-web-search",
             showCitations: false,
-            showReasoningBlocks: true
+            showReasoningBlocks: true,
+            showToolActivity: true,
           }
         }))
       }
@@ -287,7 +292,8 @@ describe("prisma catalog data loader", () => {
       provider: "openai",
       searchStrategyId: "openai-native-web-search",
       showCitations: false,
-      showReasoningBlocks: true
+      showReasoningBlocks: true,
+      showToolActivity: true,
     });
     expect(catalog.models).toHaveLength(1);
     expect(catalog.searchStrategies.map((strategy) => strategy.strategyId)).toEqual([

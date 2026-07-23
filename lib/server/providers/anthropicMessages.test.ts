@@ -7,6 +7,20 @@ import {
   type AnthropicStreamEvent
 } from "./anthropicMessages";
 import type { ProviderRunRequest } from "./types";
+import type { RunTool } from "../tools/types";
+
+const mcpTool: RunTool = {
+  capability: "mcp",
+  description: "Search team memory.",
+  inputSchema: {
+    properties: {
+      query: { type: "string" }
+    },
+    required: ["query"],
+    type: "object"
+  },
+  name: "mem0__search"
+};
 
 function request(overrides: Partial<ProviderRunRequest> = {}): ProviderRunRequest {
   return {
@@ -325,6 +339,96 @@ describe("Anthropic Messages adapter", () => {
     expect(JSON.stringify(body.messages[0].content)).toContain("Answer briefly.");
   });
 
+  it("serializes tools and replays Anthropic tool_use/tool_result messages", () => {
+    const body = buildAnthropicMessagesRequest(
+      request({
+        parallelToolCalls: true,
+        providerToolMessages: [
+          {
+            content: [
+              {
+                id: "toolu-1",
+                input: { query: "ADR" },
+                name: "mem0__search",
+                type: "tool_use"
+              }
+            ],
+            role: "assistant"
+          },
+          {
+            content: [
+              {
+                content: "First result",
+                tool_use_id: "toolu-1",
+                type: "tool_result"
+              }
+            ],
+            role: "user"
+          },
+          {
+            content: [
+              {
+                content: "Second result",
+                tool_use_id: "toolu-2",
+                type: "tool_result"
+              }
+            ],
+            role: "user"
+          }
+        ],
+        toolChoice: "auto",
+        tools: [mcpTool]
+      })
+    ) as {
+      messages: Array<{ content: Array<Record<string, unknown>>; role: string }>;
+      tool_choice: Record<string, unknown>;
+      tools: Array<Record<string, unknown>>;
+    };
+
+    expect(body.tools).toEqual([
+      {
+        description: "Search team memory.",
+        input_schema: mcpTool.inputSchema,
+        name: "mem0__search"
+      }
+    ]);
+    expect(body.tool_choice).toEqual({ type: "auto" });
+    expect(body.messages.slice(-2)).toEqual([
+      {
+        content: [
+          {
+            id: "toolu-1",
+            input: { query: "ADR" },
+            name: "mem0__search",
+            type: "tool_use"
+          }
+        ],
+        role: "assistant"
+      },
+      {
+        content: [
+          {
+            content: "First result",
+            tool_use_id: "toolu-1",
+            type: "tool_result"
+          },
+          {
+            content: "Second result",
+            tool_use_id: "toolu-2",
+            type: "tool_result"
+          }
+        ],
+        role: "user"
+      }
+    ]);
+
+    const serialBody = buildAnthropicMessagesRequest(request({ tools: [mcpTool] }));
+    expect(serialBody.tool_choice).toEqual({
+      disable_parallel_tool_use: true,
+      type: "auto"
+    });
+  });
+
   it("redacts image bytes in request previews", () => {
     const client: AnthropicMessagesClient = {
       stream: () => events([])
@@ -456,6 +560,113 @@ describe("Anthropic Messages adapter", () => {
         reasoningTokens: 2,
         totalTokens: 27
       }
+    });
+  });
+
+  it("assembles multiple streamed tool_use blocks and exposes their continuation message", async () => {
+    const client: AnthropicMessagesClient = {
+      stream: () =>
+        events([
+          {
+            message: {
+              id: "msg-tools",
+              model: "claude-opus-4-8",
+              usage: { input_tokens: 9 }
+            },
+            type: "message_start"
+          },
+          {
+            content_block: { text: "", type: "text" },
+            index: 0,
+            type: "content_block_start"
+          },
+          {
+            delta: { text: "I will check.", type: "text_delta" },
+            index: 0,
+            type: "content_block_delta"
+          },
+          { index: 0, type: "content_block_stop" },
+          {
+            content_block: {
+              id: "toolu-mem0",
+              input: {},
+              name: "mem0__search",
+              type: "tool_use"
+            },
+            index: 1,
+            type: "content_block_start"
+          },
+          {
+            delta: { partial_json: '{"query":"A', type: "input_json_delta" },
+            index: 1,
+            type: "content_block_delta"
+          },
+          {
+            delta: { partial_json: 'DR"}', type: "input_json_delta" },
+            index: 1,
+            type: "content_block_delta"
+          },
+          { index: 1, type: "content_block_stop" },
+          {
+            content_block: {
+              id: "toolu-notion",
+              input: {},
+              name: "notion__fetch",
+              type: "tool_use"
+            },
+            index: 2,
+            type: "content_block_start"
+          },
+          {
+            delta: { partial_json: '{"page":42}', type: "input_json_delta" },
+            index: 2,
+            type: "content_block_delta"
+          },
+          { index: 2, type: "content_block_stop" },
+          {
+            delta: { stop_reason: "tool_use" },
+            type: "message_delta",
+            usage: { output_tokens: 12 }
+          },
+          { type: "message_stop" }
+        ])
+    };
+    const normalized = await (async () => {
+      const stream = createAnthropicMessagesAdapter({ client }).stream(
+        request({ tools: [mcpTool] })
+      );
+      const seen = [];
+      let next = await stream.next();
+      while (!next.done) {
+        seen.push(next.value);
+        next = await stream.next();
+      }
+      return { events: seen, result: next.value };
+    })();
+
+    expect(normalized.events).toContainEqual({
+      data: { delta: "I will check." },
+      type: "token"
+    });
+    expect(normalized.result.toolCalls).toMatchObject([
+      {
+        arguments: { query: "ADR" },
+        id: "toolu-mem0",
+        name: "mem0__search"
+      },
+      {
+        arguments: { page: 42 },
+        id: "toolu-notion",
+        name: "notion__fetch"
+      }
+    ]);
+    expect(normalized.result.providerToolCallMessage).toMatchObject({
+      content: [
+        { text: "I will check.", type: "text" },
+        { id: "toolu-mem0", input: { query: "ADR" }, type: "tool_use" },
+        { id: "toolu-notion", input: { page: 42 }, type: "tool_use" }
+      ],
+      role: "assistant"
     });
   });
 

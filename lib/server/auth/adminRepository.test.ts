@@ -1125,7 +1125,7 @@ describe("Prisma admin repository", () => {
     });
   });
 
-  it("blocks stale user deletion for UserSettings and direct AccessGrant ownership", async () => {
+  it("blocks stale user deletion for settings, grants, and current MCP configuration", async () => {
     await withAdminData(async ({ adminId, domain, repository }) => {
       const withSettings = await createPasswordUser({
         displayName: "Settings Delete Block User",
@@ -1139,44 +1139,105 @@ describe("Prisma admin repository", () => {
         emailLocalPart: "direct-grant-delete-block",
         status: "disabled"
       });
-
-      await prisma.userSettings.create({
+      const withMcpGrant = await createPasswordUser({
+        displayName: "MCP Grant Delete Block User",
+        domain,
+        emailLocalPart: "mcp-grant-delete-block",
+        status: "disabled"
+      });
+      const withMcpPreference = await createPasswordUser({
+        displayName: "MCP Preference Delete Block User",
+        domain,
+        emailLocalPart: "mcp-preference-delete-block",
+        status: "disabled"
+      });
+      const withMcpOAuth = await createPasswordUser({
+        displayName: "MCP OAuth Delete Block User",
+        domain,
+        emailLocalPart: "mcp-oauth-delete-block",
+        status: "disabled"
+      });
+      const mcpServer = await prisma.mcpServer.create({
         data: {
-          defaultControlValues: {},
-          defaultModelId: "gpt-5.5",
-          defaultProvider: "openai",
-          userId: withSettings.id
+          displayName: "Delete eligibility MCP",
+          namespace: `mcp-delete-${randomUUID()}`
         }
       });
-      await prisma.accessGrant.create({
-        data: {
-          enabled: true,
-          provider: "openai",
-          userId: withDirectGrant.id
-        }
-      });
 
-      await expect(
-        repository.deleteStaleUser({
-          actingAdminUserId: adminId,
-          userId: withSettings.id
-        })
-      ).resolves.toBe("user_has_owned_data");
-      await expect(
-        repository.deleteStaleUser({
-          actingAdminUserId: adminId,
-          userId: withDirectGrant.id
-        })
-      ).resolves.toBe("user_has_owned_data");
-      await expect(
-        prisma.user.count({
-          where: {
-            id: {
-              in: [withSettings.id, withDirectGrant.id]
-            }
+      try {
+        await prisma.userSettings.create({
+          data: {
+            defaultControlValues: {},
+            defaultModelId: "gpt-5.5",
+            defaultProvider: "openai",
+            userId: withSettings.id
           }
-        })
-      ).resolves.toBe(2);
+        });
+        await prisma.accessGrant.create({
+          data: {
+            enabled: true,
+            provider: "openai",
+            userId: withDirectGrant.id
+          }
+        });
+        await prisma.mcpGrant.create({
+          data: {
+            canUse: true,
+            serverId: mcpServer.id,
+            userId: withMcpGrant.id
+          }
+        });
+        await prisma.mcpUserServer.create({
+          data: {
+            serverId: mcpServer.id,
+            userId: withMcpPreference.id
+          }
+        });
+        await prisma.mcpOAuthConnection.create({
+          data: {
+            policyFingerprint: "delete-eligibility-test",
+            purpose: "user",
+            serverId: mcpServer.id,
+            userId: withMcpOAuth.id
+          }
+        });
+
+        for (const userId of [
+          withSettings.id,
+          withDirectGrant.id,
+          withMcpGrant.id,
+          withMcpPreference.id,
+          withMcpOAuth.id
+        ]) {
+          await expect(
+            repository.deleteStaleUser({
+              actingAdminUserId: adminId,
+              userId
+            })
+          ).resolves.toBe("user_has_owned_data");
+        }
+        await expect(
+          prisma.user.count({
+            where: {
+              id: {
+                in: [
+                  withSettings.id,
+                  withDirectGrant.id,
+                  withMcpGrant.id,
+                  withMcpPreference.id,
+                  withMcpOAuth.id
+                ]
+              }
+            }
+          })
+        ).resolves.toBe(5);
+      } finally {
+        await prisma.mcpServer.delete({
+          where: {
+            id: mcpServer.id
+          }
+        });
+      }
     });
   });
 
@@ -1190,6 +1251,9 @@ describe("Prisma admin repository", () => {
       });
       const withGrant = await repository.createGroup({
         name: `admin-test-grant-delete-${domain}`
+      });
+      const withMcpGrant = await repository.createGroup({
+        name: `mcp-delete-${domain}`
       });
       const user = await createPasswordUser({
         displayName: "Group Delete Member",
@@ -1207,17 +1271,40 @@ describe("Prisma admin repository", () => {
         groupId: withGrant!.id,
         provider: "openai"
       });
+      const mcpServer = await prisma.mcpServer.create({
+        data: {
+          displayName: "Group delete eligibility MCP",
+          namespace: `mcp-group-delete-${randomUUID()}`
+        }
+      });
 
-      await expect(repository.deleteEmptyGroup(empty!.id)).resolves.toBe("deleted");
-      await expect(repository.deleteEmptyGroup(withMember!.id)).resolves.toBe("group_has_members");
-      await expect(repository.deleteEmptyGroup(withGrant!.id)).resolves.toBe("group_has_grants");
-      await expect(
-        prisma.group.findUnique({
-          where: {
-            id: empty!.id
+      try {
+        await prisma.mcpGrant.create({
+          data: {
+            canUse: true,
+            groupId: withMcpGrant!.id,
+            serverId: mcpServer.id
           }
-        })
-      ).resolves.toBeNull();
+        });
+
+        await expect(repository.deleteEmptyGroup(empty!.id)).resolves.toBe("deleted");
+        await expect(repository.deleteEmptyGroup(withMember!.id)).resolves.toBe("group_has_members");
+        await expect(repository.deleteEmptyGroup(withGrant!.id)).resolves.toBe("group_has_grants");
+        await expect(repository.deleteEmptyGroup(withMcpGrant!.id)).resolves.toBe("group_has_grants");
+        await expect(
+          prisma.group.findUnique({
+            where: {
+              id: empty!.id
+            }
+          })
+        ).resolves.toBeNull();
+      } finally {
+        await prisma.mcpServer.delete({
+          where: {
+            id: mcpServer.id
+          }
+        });
+      }
     });
   });
 

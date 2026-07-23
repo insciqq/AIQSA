@@ -38,6 +38,8 @@ Streaming is a provider-neutral run capability. Catalog `capabilities.streaming`
    - citations/search artifacts when available, with citations optionally visible in the thread;
    - provider response preview available for inspection under the storage/logging limits in `agent_docs/CRITICAL_INVARIANTS.md`.
 
+MCP extends the middle of this pipeline with model-requested tools rather than adding a separate run mode. Every accepted run receives the complete immutable namespaced inventory from all of that user's enabled, entitled, ready MCP servers; granting a server grants all of its valid tools, and no enabled-but-unready server is silently omitted. The model may request zero, one, or several calls over multiple rounds, including calls whose arguments use conversation data or a prior enabled server's result. Requested batches are persisted before bounded parallel execution, results return in provider order, and provisional streamed text is reset before the tool round. Foreground, Stream, and provider-native Background remain available whenever the selected adapter/model capabilities advertise the combination. Durable recovery reuses settled calls and native provider handles, reloads provider attachment payloads, and replays the same persisted provider transcript and accepted chat context under the same budget; it never retries a crash-ambiguous external side effect.
+
 ## Transparency Contract
 
 For every model run, the app can show:
@@ -55,6 +57,7 @@ For every model run, the app can show:
 - final response preview;
 - normalized token usage metadata, including cached/total token fields when providers report them; tool-search `ModelRun` and chat counters keep end-to-end aggregate usage while `UsageEvent` attribution separates answer-model usage from OpenRouter/Perplexity usage; provider-reported usage already observed before a later failure remains operationally attributable; estimated-cost compatibility data stays out of the user-facing shell and is not billing truth;
 - tool-call and tool-result artifacts when an answer model actually invokes a backend tool;
+- accepted MCP server/revision/tool snapshots, runtime-generation fingerprints, safe credential-source tags, and optional external account/workspace labels without endpoints or credential values;
 - errors and retry/cancel state.
 
 The UI can keep the common path clean, but the API surface must remain inspectable.

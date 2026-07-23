@@ -230,11 +230,13 @@ Modal/inert/focus/Escape/replacement/dirty-confirmation and notice-ownership beh
 
 ### Settings Workspace
 
-Settings is a secondary workspace, not a dashboard of nested cards. Use one title/header and a compact Prompts/Appearance switch. Desktop may use a bounded editor/library split with independent local scrolling; narrow/short-height layouts become one safe-area-aware sheet flow.
+Settings is a secondary workspace, not a dashboard of nested cards. Use one title/header and a compact Prompts/Appearance/MCP switch. Desktop may use a bounded editor/library split with independent local scrolling; narrow/short-height layouts become one safe-area-aware sheet flow.
 
 The prompt editor gives labels/help deliberate space, puts validation beside its field, and keeps one Save/Create primary action. Dirty/saving/saved/error states include text. Library rows wrap names, clamp previews, and visually distinguish the edited preset, Next run choice, and User default without turning every fact into a chip.
 
 Appearance is a radiogroup of five semantic preview cards. Each preview renders in its own theme context, separates checked from focus state, names the palette/accent in text, and moves from one to two to five columns only when space permits. Mutation, keyboard, dirty-draft, loading, and persistence rules live in `FRONTEND.md`.
+
+MCP settings use one calm raised row per entitled server: identity and readiness first, then its enable action, authorization/personal fields, and current tools. Readiness always has text and uses semantic status color only as a secondary cue. Secret fields look like ordinary labeled inputs but remain write-only; OAuth account evidence is quiet metadata beside explicit Connect/Reconnect/Disconnect actions. The composer counterpart is one compact text summary/link, never a second MCP editor or a row of tool chips.
 
 ### Conversation Shell And Details
 
@@ -254,7 +256,7 @@ The admin console reuses the conversation palette/type/radius/focus/status syste
 
 Tables stay native-looking with quiet row separators, sentence-case headers, ordinary metadata, selected-row contrast, and one named focus-visible local horizontal-scroll surface. Long identities, ids, status/error text, and eligibility explanations wrap inside cells/details instead of widening the document.
 
-Routine actions are neutral; current/enabled state includes text; amber and rose are reserved for real consequence. Selected detail panes are named destinations and compact layouts preserve the matrices as locally scrollable data rather than ambiguous cards. Exact admin operations, authorization, focus, confirmation, and compact workflow behavior live in `FRONTEND.md`.
+Routine actions are neutral; current/enabled state includes text; amber and rose are reserved for real consequence. Selected detail panes are named destinations and compact layouts preserve the matrices as locally scrollable data rather than ambiguous cards. The MCP catalog follows the same list/detail density: a searchable server list, one normalized draft editor, readable validation/runtime evidence, and clearly separated routine Test/Update/Disable actions from trust-bearing Activate/rollback and confirmation-gated irreversible Delete. Exact admin operations, authorization, focus, confirmation, and compact workflow behavior live in `FRONTEND.md`.
 
 ### Tooltips
 
@@ -268,7 +270,7 @@ An empty state is part of its owning surface, not a floating marketing card. Use
 
 Assistant answers remain full-measure document flow with quiet provider/model metadata; user questions are compact right-aligned raised blocks. Whitespace and surface contrast separate turns—no role avatars, literal role labels, separator wall, or assistant card.
 
-Turn actions occupy a stable strip: neutral ghost presentation on precise-pointer hover/focus and persistent touch-safe presentation on no-hover input. Active run feedback uses one compact status line with a pulsing live dot and readable evidence-based text. It may say `Working…`, `Searching…`, or `Answering…`, but never lays out speculative waiting stages; errors pair rose emphasis with readable text. Search/citation/reasoning artifacts use calm border-led disclosures; context/run warnings use amber in-flow hints without turning the answer into an inspection panel.
+Turn actions occupy a stable strip: neutral ghost presentation on precise-pointer hover/focus and persistent touch-safe presentation on no-hover input. Active run feedback uses one compact status line with a pulsing live dot and readable evidence-based text. It may say `Working…`, `Searching…`, or `Answering…`, but never lays out speculative waiting stages; errors pair rose emphasis with readable text. Search/tool/citation/reasoning artifacts use calm border-led disclosures. Tool activity stays count-first and collapsed at rest; expansion groups rounds and uses compact nested call disclosures rather than turning the answer into a trace dashboard. Context/run warnings use amber in-flow hints without turning the answer into an inspection panel.
 
 Markdown uses the local semantic type/spacing system. Prose wraps; code, tables, and display math own focus-visible local horizontal scrolling. KaTeX inherits the current text color and stays in document flow without a decorative card; Shiki emits scheme-aware values inside the semantic code container, and Copy follows the same hover/focus/touch treatment. Exact action order, state wording, disclosure behavior, Markdown safety, and accessibility semantics live in `FRONTEND.md`.
 

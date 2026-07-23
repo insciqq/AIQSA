@@ -32,6 +32,7 @@ function serializeSettings(settings: {
   defaultSearchStrategyId: string;
   showCitations: boolean;
   showReasoningBlocks: boolean;
+  showToolActivity: boolean;
 }): UserSettingsRecord {
   return {
     defaultControlValues: settings.defaultControlValues,
@@ -40,7 +41,8 @@ function serializeSettings(settings: {
     defaultProvider: settings.defaultProvider,
     defaultSearchStrategyId: settings.defaultSearchStrategyId,
     showCitations: settings.showCitations,
-    showReasoningBlocks: settings.showReasoningBlocks
+    showReasoningBlocks: settings.showReasoningBlocks,
+    showToolActivity: settings.showToolActivity
   };
 }
 

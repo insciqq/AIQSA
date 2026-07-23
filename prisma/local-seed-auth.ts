@@ -19,9 +19,16 @@ export function assertLocalSeedRuntime(env: LocalSeedEnvironment = process.env):
 }
 
 export async function ensureLocalOperatorPasswordHash(existingHash: string | null | undefined): Promise<string> {
+  return ensureLocalFixturePasswordHash(LOCAL_OPERATOR_PASSWORD, existingHash);
+}
+
+export async function ensureLocalFixturePasswordHash(
+  password: string,
+  existingHash: string | null | undefined
+): Promise<string> {
   if (existingHash) {
     try {
-      if (await verifyPassword(LOCAL_OPERATOR_PASSWORD, existingHash)) {
+      if (await verifyPassword(password, existingHash)) {
         return existingHash;
       }
     } catch {
@@ -29,5 +36,5 @@ export async function ensureLocalOperatorPasswordHash(existingHash: string | nul
     }
   }
 
-  return hashPassword(LOCAL_OPERATOR_PASSWORD);
+  return hashPassword(password);
 }

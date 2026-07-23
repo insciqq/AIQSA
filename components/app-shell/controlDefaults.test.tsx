@@ -152,7 +152,8 @@ function catalog(
       provider: model.provider,
       searchStrategyId: "openai-native-web-search",
       showCitations: true,
-      showReasoningBlocks: false
+      showReasoningBlocks: false,
+      showToolActivity: true,
     },
     models,
     promptPresets: [],
@@ -199,7 +200,8 @@ function settingsFetchMock() {
     defaultProvider: model.provider,
     defaultSearchStrategyId: "openai-native-web-search",
     showCitations: true,
-    showReasoningBlocks: false
+    showReasoningBlocks: false,
+    showToolActivity: true,
   };
 
   return vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {

@@ -28,6 +28,7 @@ export default defineConfig({
       AIQSA_BOOTSTRAP_LOGIN_ENABLED: "",
       AIQSA_BOOTSTRAP_USER_ID: "00000000-0000-4000-8000-000000000001",
       AIQSA_COOKIE_SECURE: "0",
+      AIQSA_ENCRYPTION_KEY: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
       AIQSA_FAKE_PROVIDER_TOKEN_DELAY_MS: fakeProviderTokenDelayMs,
       AIQSA_TEST_MODE: "1",
       ANTHROPIC_API_KEY: "",
@@ -39,7 +40,7 @@ export default defineConfig({
       PLAYWRIGHT_TEST_AUTH: "1",
       S3_ENDPOINT: "http://minio:9000"
     },
-    reuseExistingServer: false,
+    reuseExistingServer: process.env.PLAYWRIGHT_REUSE_SERVER === "1",
     timeout: 120_000,
     url: baseURL
   },

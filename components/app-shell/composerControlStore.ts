@@ -24,6 +24,7 @@ export type ComposerControlSnapshot = {
   selectedSearchStrategy: string;
   showCitations: boolean;
   showReasoningBlocks: boolean;
+  showToolActivity: boolean;
   streamMode: boolean;
   systemPrompt: string;
   temperature: string;
@@ -44,6 +45,7 @@ export type ComposerControlStore = ComposerControlSnapshot & {
   setSelectedSearchStrategy(value: string): void;
   setShowCitations(update: StateUpdate<boolean>): void;
   setShowReasoningBlocks(update: StateUpdate<boolean>): void;
+  setShowToolActivity(update: StateUpdate<boolean>): void;
   setStreamMode(value: boolean): void;
   setSystemPrompt(value: string): void;
   setTemperature(value: string): void;
@@ -61,6 +63,7 @@ export const initialComposerControlSnapshot: ComposerControlSnapshot = {
   selectedSearchStrategy: "openai-native-web-search",
   showCitations: true,
   showReasoningBlocks: false,
+  showToolActivity: true,
   streamMode: false,
   systemPrompt: "",
   temperature: "1"
@@ -134,6 +137,9 @@ export const useComposerControlStore = create<ComposerControlStore>((set) => ({
   },
   setShowReasoningBlocks(update) {
     set((state) => ({ showReasoningBlocks: applyUpdate(state.showReasoningBlocks, update) }));
+  },
+  setShowToolActivity(update) {
+    set((state) => ({ showToolActivity: applyUpdate(state.showToolActivity, update) }));
   },
   setStreamMode(value) {
     set({ streamMode: value });

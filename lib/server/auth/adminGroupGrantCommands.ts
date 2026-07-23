@@ -33,17 +33,59 @@ function grantWhere(input: {
 export function createAdminGroupGrantCommands(prisma: PrismaClient): AdminGroupGrantCommands {
   return {
     async archiveGroup(groupId) {
-      const updated = await prisma.group.updateMany({
-        data: {
-          archivedAt: new Date()
-        },
-        where: {
-          archivedAt: null,
-          id: groupId
-        }
-      });
+      return prisma.$transaction(async (tx) => {
+        const group = await tx.group.findFirst({
+          select: {
+            mcpGrants: {
+              select: { serverId: true },
+              where: { canUse: true }
+            },
+            users: { select: { userId: true } }
+          },
+          where: { archivedAt: null, id: groupId }
+        });
+        if (!group) return false;
 
-      return updated.count === 1;
+        await tx.group.update({
+          data: { archivedAt: new Date() },
+          where: { id: groupId }
+        });
+
+        const serverIds = [...new Set(group.mcpGrants.map((grant) => grant.serverId))];
+        for (const membership of group.users) {
+          if (serverIds.length) {
+            await tx.mcpUserServer.updateMany({
+              data: { desiredRuntimeGenerationId: null },
+              where: { serverId: { in: serverIds }, userId: membership.userId }
+            });
+          }
+          for (const serverId of serverIds) {
+            const canStillUse = await tx.mcpGrant.count({
+              where: {
+                canUse: true,
+                serverId,
+                OR: [
+                  { userId: membership.userId },
+                  {
+                    group: {
+                      archivedAt: null,
+                      users: { some: { userId: membership.userId } }
+                    }
+                  }
+                ]
+              }
+            });
+            if (!canStillUse) {
+              await tx.mcpUserServer.updateMany({
+                data: { enabled: false },
+                where: { serverId, userId: membership.userId }
+              });
+            }
+          }
+        }
+
+        return true;
+      });
     },
     async createGroup(input) {
       const name = normalizeAdminGroupName(input.name);
@@ -79,7 +121,9 @@ export function createAdminGroupGrantCommands(prisma: PrismaClient): AdminGroupG
         }
 
         const deletionBlock = adminGroupDeletionBlock({
-          activeGrantCount: group.accessGrants.filter((grant) => grant.enabled).length,
+          activeGrantCount:
+            group.accessGrants.filter((grant) => grant.enabled).length +
+            group.mcpGrants.filter((grant) => grant.canUse).length,
           memberCount: group._count.users
         });
 
@@ -231,6 +275,22 @@ export function createAdminGroupGrantCommands(prisma: PrismaClient): AdminGroupG
       const activeGroupIds = new Set(activeGroups.map((group) => group.id));
 
       await prisma.$transaction(async (tx) => {
+        const currentMemberships = await tx.userGroup.findMany({
+          select: { groupId: true },
+          where: { group: { archivedAt: null }, userId: input.userId }
+        });
+        const affectedGroupIds = [...new Set([
+          ...currentMemberships.map((membership) => membership.groupId),
+          ...activeGroupIds
+        ])];
+        const affectedMcpServers = affectedGroupIds.length
+          ? await tx.mcpGrant.findMany({
+              distinct: ["serverId"],
+              select: { serverId: true },
+              where: { canUse: true, groupId: { in: affectedGroupIds } }
+            })
+          : [];
+
         await tx.userGroup.deleteMany({
           where: {
             group: {
@@ -248,6 +308,32 @@ export function createAdminGroupGrantCommands(prisma: PrismaClient): AdminGroupG
               userId: input.userId
             }
           });
+        }
+
+        const affectedServerIds = affectedMcpServers.map((grant) => grant.serverId);
+        if (affectedServerIds.length) {
+          await tx.mcpUserServer.updateMany({
+            data: { desiredRuntimeGenerationId: null },
+            where: { serverId: { in: affectedServerIds }, userId: input.userId }
+          });
+          for (const serverId of affectedServerIds) {
+            const canStillUse = await tx.mcpGrant.count({
+              where: {
+                canUse: true,
+                serverId,
+                OR: [
+                  { userId: input.userId },
+                  ...(activeGroupIds.size ? [{ groupId: { in: [...activeGroupIds] } }] : [])
+                ]
+              }
+            });
+            if (!canStillUse) {
+              await tx.mcpUserServer.updateMany({
+                data: { enabled: false },
+                where: { serverId, userId: input.userId }
+              });
+            }
+          }
         }
       });
 

@@ -27,6 +27,7 @@ import {
   ScrollText,
   Settings,
   SlidersHorizontal,
+  Wrench,
   X
 } from "lucide-react";
 import {
@@ -164,6 +165,7 @@ export function ComposerControls({
   onToggleNotificationSound,
   onToggleCitations,
   onToggleReasoningBlocks,
+  onToggleToolActivity,
   notificationSoundEnabled,
   reasoningEffort,
   reasoningMode,
@@ -175,6 +177,7 @@ export function ComposerControls({
   selectedSearchStrategy,
   showCitations,
   showReasoningBlocks,
+  showToolActivity,
   streamMode,
   streaming,
   temperature
@@ -203,6 +206,7 @@ export function ComposerControls({
   onToggleNotificationSound(): void;
   onToggleCitations(): void;
   onToggleReasoningBlocks(): void;
+  onToggleToolActivity(): void;
   notificationSoundEnabled: boolean;
   reasoningEffort: string;
   reasoningMode: string;
@@ -214,6 +218,7 @@ export function ComposerControls({
   selectedSearchStrategy: string;
   showCitations: boolean;
   showReasoningBlocks: boolean;
+  showToolActivity: boolean;
   streamMode: boolean;
   streaming: boolean;
   temperature: string;
@@ -714,6 +719,7 @@ export function ComposerControls({
                   notificationSoundEnabled={notificationSoundEnabled}
                   showCitations={showCitations}
                   showReasoningBlocks={showReasoningBlocks}
+                  showToolActivity={showToolActivity}
                   streamMode={streamMode}
                   streamSupported={currentParameterControls.stream.supported}
                   streaming={streaming || !currentModel}
@@ -722,6 +728,7 @@ export function ComposerControls({
                   onToggleCitations={onToggleCitations}
                   onToggleNotificationSound={onToggleNotificationSound}
                   onToggleReasoningBlocks={onToggleReasoningBlocks}
+                  onToggleToolActivity={onToggleToolActivity}
                 />
               </section>
             </div>
@@ -743,8 +750,10 @@ function ToggleSettings({
   onToggleCitations,
   onToggleNotificationSound,
   onToggleReasoningBlocks,
+  onToggleToolActivity,
   showCitations,
   showReasoningBlocks,
+  showToolActivity,
   streamMode,
   streamSupported,
   streaming
@@ -757,8 +766,10 @@ function ToggleSettings({
   onToggleCitations(): void;
   onToggleNotificationSound(): void;
   onToggleReasoningBlocks(): void;
+  onToggleToolActivity(): void;
   showCitations: boolean;
   showReasoningBlocks: boolean;
+  showToolActivity: boolean;
   streamMode: boolean;
   streamSupported: boolean;
   streaming: boolean;
@@ -802,6 +813,14 @@ function ToggleSettings({
         title={showReasoningBlocks ? "Hide reasoning blocks" : "Show reasoning blocks"}
         ariaLabel={showReasoningBlocks ? "Hide reasoning blocks" : "Show reasoning blocks"}
         onClick={onToggleReasoningBlocks}
+      />
+      <ToggleSetting
+        active={showToolActivity}
+        icon={<Wrench className="size-4" aria-hidden="true" />}
+        label="Show tool activity"
+        title={showToolActivity ? "Hide tool activity" : "Show tool activity"}
+        ariaLabel={showToolActivity ? "Hide tool activity" : "Show tool activity"}
+        onClick={onToggleToolActivity}
       />
       <ToggleSetting
         active={notificationSoundEnabled}

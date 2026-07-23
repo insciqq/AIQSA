@@ -1,5 +1,5 @@
 import type { ChatUpdateDataWire } from "../../contracts/chats";
-import { estimateApproxTokens, type ContextTruncationSummary } from "../../domain/contextBudget";
+import type { ContextTruncationSummary } from "../../domain/contextBudget";
 import {
   encodeSseEvent,
   type ModelRunChatUpdateData,
@@ -9,17 +9,23 @@ import {
 import { sumTokenUsage } from "../../domain/usage";
 import { validateRunAccess } from "../auth/entitlements";
 import { isProviderTimeoutError } from "../providers/network";
-import { providerAttachmentBudgetTokens } from "../providers/attachmentPayload";
 import type {
   ProviderAdapter,
   ProviderRunRequest,
   ProviderRunResult,
   ProviderSearchAdapter
 } from "../providers/types";
+import type { AiqsaMcpToolCallResult } from "../mcp/clientSession";
+import { getDefaultMcpRuntimeCoordinator } from "../mcp/defaultRuntime";
+import {
+  mcpRunTools,
+  mcpToolExecutionResult,
+  resolveMcpRunTool
+} from "../mcp/toolExecutor";
 import { providerToolBridges } from "../tools/bridges";
 import { createPerplexitySearchToolExecutor, perplexityWebSearchTool } from "../tools/perplexitySearch";
-import type { ModelToolCall, ToolExecutionResult } from "../tools/types";
-import { applyRunContextBudget } from "./runContextBudget";
+import type { ModelToolCall, RunTool, ToolExecutionResult } from "../tools/types";
+import { applyProviderRequestContextBudget } from "./runContextBudget";
 import {
   appendRunEventWithRetry,
   finalizeRunCompletion,
@@ -32,6 +38,23 @@ import type {
   RunRepository,
   RunUsageAttribution
 } from "./runRepositoryContract";
+import { runProviderToolLoop as continueProviderToolLoop } from "./providerToolLoop";
+import {
+  parsePersistedToolExecutionResult,
+  snapshotToolExecutionResult
+} from "./toolExecutionPersistence";
+import {
+  snapshotToolLoopJson,
+  toolLoopPersistenceLimits,
+  type PersistedToolLoopCall,
+  type ToolLoopJsonValue
+} from "./toolLoopPersistence";
+import {
+  persistedToolDurationMs,
+  toolCallInspectionArtifact,
+  toolLoopPhaseArtifact,
+  toolResultInspectionArtifact
+} from "./toolInspection";
 
 const tokenPersistenceFlushIntervalMs = 400;
 const tokenPersistenceMaxTokens = 32;
@@ -47,6 +70,10 @@ export type ActiveRunControllerRegistry = Readonly<{
   abort(runId: string): boolean;
   has(runId: string): boolean;
   ids(): readonly string[];
+  register(runId: string): Readonly<{
+    release(): void;
+    signal: AbortSignal;
+  }> | null;
 }>;
 
 export const activeRunControllerRegistry: ActiveRunControllerRegistry = Object.freeze({
@@ -67,6 +94,19 @@ export const activeRunControllerRegistry: ActiveRunControllerRegistry = Object.f
   },
   ids(): readonly string[] {
     return [...activeRunControllers.keys()];
+  },
+  register(runId: string) {
+    if (activeRunControllers.has(runId)) return null;
+    const controller = new AbortController();
+    activeRunControllers.set(runId, controller);
+    return Object.freeze({
+      release() {
+        if (activeRunControllers.get(runId) === controller) {
+          activeRunControllers.delete(runId);
+        }
+      },
+      signal: controller.signal
+    });
   }
 });
 
@@ -76,8 +116,12 @@ export function activeRunControllersForTest(): Map<string, AbortController> {
 
 export type RunExecutionRepository = Pick<
   RunRepository,
+  | "advanceToolLoopCallBatch"
   | "appendAssistantText"
   | "appendRunEvent"
+  | "beginToolLoopProviderRound"
+  | "cancelPendingToolLoopCalls"
+  | "claimToolLoopCall"
   | "completeRun"
   | "createSearchRun"
   | "failRun"
@@ -87,7 +131,10 @@ export type RunExecutionRepository = Pick<
   | "loadModelConfiguration"
   | "loadModelPricing"
   | "nextRunEventSequence"
+  | "persistToolLoopCallBatch"
   | "recordRunUsageEvents"
+  | "resetToolLoopAssistantDraft"
+  | "settleToolLoopCall"
   | "updateRunProviderRequestPreview"
   | "updateRunProviderResponseId"
 >;
@@ -101,12 +148,34 @@ export type RunExecutionInput = Readonly<{
   }>;
   prepared: MaterializedPreparedRunData;
   repository: RunExecutionRepository;
+  mcpRuntime?: Readonly<{
+    callTool(input: {
+      arguments: Record<string, unknown>;
+      generationId: string;
+      inputSchema: Record<string, unknown>;
+      name: string;
+      signal?: AbortSignal;
+    }): Promise<AiqsaMcpToolCallResult>;
+    ensureAcceptedGeneration(generationId: string): Promise<boolean>;
+  }>;
   searchAdapter?: ProviderSearchAdapter;
   userId: string;
 }>;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function modelToolCall(call: Readonly<{
+  arguments: unknown;
+  id: string;
+  name: string;
+}>): ModelToolCall {
+  return {
+    arguments: isRecord(call.arguments) ? call.arguments : {},
+    id: call.id,
+    name: call.name
+  };
 }
 
 function contextTruncationArtifact(summary: ContextTruncationSummary): ModelRunSseEvent {
@@ -268,6 +337,12 @@ function createTokenPersistenceBuffer(input: Readonly<{
       scheduleFlush();
       return Promise.resolve();
     },
+    resetLocal(): void {
+      clearFlushTimer();
+      assistantText = "";
+      pendingDelta = "";
+      pendingTokenCount = 0;
+    },
     throwIfFailed(): void {
       if (flushError) {
         throw flushError;
@@ -299,110 +374,6 @@ function throwIfAborted(signal: AbortSignal): void {
 
 function isAbortError(error: unknown): boolean {
   return error instanceof Error && (error.name === "AbortError" || error.message === "provider_run_aborted");
-}
-
-async function collectProviderRun(input: Readonly<{
-  adapter: ProviderAdapter;
-  observeEvent?: (event: ModelRunSseEvent) => void;
-  request: ProviderRunRequest;
-  signal: AbortSignal;
-}>): Promise<{ events: ModelRunSseEvent[]; result: ProviderRunResult }> {
-  const providerStream = input.adapter.stream(input.request, { signal: input.signal });
-  const events: ModelRunSseEvent[] = [];
-
-  let next = await providerStream.next();
-  while (!next.done) {
-    throwIfAborted(input.signal);
-    input.observeEvent?.(next.value);
-    if (next.value.type !== "usage") {
-      events.push(next.value);
-    }
-    next = await providerStream.next();
-  }
-
-  return {
-    events,
-    result: next.value
-  };
-}
-
-function fallbackProviderToolCallMessages(provider: string, calls: ModelToolCall[]): unknown[] {
-  if (provider === "openai") {
-    return calls.map((call) =>
-      isRecord(call.raw)
-        ? call.raw
-        : {
-            arguments: JSON.stringify(call.arguments),
-            call_id: call.id,
-            name: call.name,
-            status: "completed",
-            type: "function_call"
-          }
-    );
-  }
-
-  return [
-    {
-      content: null,
-      role: "assistant",
-      tool_calls: calls.map((call) =>
-        isRecord(call.raw)
-          ? call.raw
-          : {
-              function: {
-                arguments: JSON.stringify(call.arguments),
-                name: call.name
-              },
-              id: call.id,
-              type: "function"
-            }
-      )
-    }
-  ];
-}
-
-function providerToolCallMessages(provider: string, result: ProviderRunResult, calls: ModelToolCall[]): unknown[] {
-  const providerMessage = result.providerToolCallMessage;
-  if (Array.isArray(providerMessage)) {
-    return [...providerMessage];
-  }
-
-  if (providerMessage !== undefined) {
-    return [providerMessage];
-  }
-
-  return fallbackProviderToolCallMessages(provider, calls);
-}
-
-function toolCallArtifact(input: Readonly<{ call: ModelToolCall; round: number }>): ModelRunSseEvent {
-  return {
-    data: {
-      artifactType: "tool_call",
-      payload: {
-        arguments: input.call.arguments,
-        name: input.call.name,
-        round: input.round,
-        status: "requested"
-      }
-    },
-    type: "artifact"
-  };
-}
-
-function toolResultArtifact(
-  input: Readonly<{ call: ModelToolCall; result: ToolExecutionResult; round: number }>
-): ModelRunSseEvent {
-  return {
-    data: {
-      artifactType: "tool_result",
-      payload: {
-        name: input.call.name,
-        round: input.round,
-        status: input.result.status
-      }
-    },
-    type: "artifact"
-  };
 }
 
 class RunPipelineError extends Error {
@@ -464,27 +435,18 @@ function hasReportedUsage(usage: ModelRunUsage | undefined): usage is ModelRunUs
   );
 }
 
-function toolExecutionErrorResult(call: ModelToolCall, error: unknown): ToolExecutionResult {
-  const message = error instanceof Error ? error.message : "Search tool failed";
+function toolExecutionErrorResult(
+  call: ModelToolCall,
+  error: unknown,
+  label: "Search" | "Tool" = "Tool"
+): ToolExecutionResult {
+  const message = error instanceof Error ? error.message : `${label} execution failed`;
 
   return {
-    artifacts: [
-      {
-        data: {
-          artifactType: "tool_result",
-          payload: {
-            message,
-            name: call.name,
-            status: "error"
-          }
-        },
-        type: "artifact"
-      }
-    ],
     callId: call.id,
     content: [
       {
-        text: `Search failed: ${message}`,
+        text: `${label} failed: ${message}`,
         type: "text"
       }
     ],
@@ -506,79 +468,10 @@ function toolExecutionErrorResult(call: ModelToolCall, error: unknown): ToolExec
   };
 }
 
-function cumulativeTruncationSummary(
-  previous: ContextTruncationSummary | undefined,
-  current: ContextTruncationSummary
-): ContextTruncationSummary {
-  if (!previous) {
-    return current;
-  }
-
-  return {
-    ...current,
-    approxDroppedTokens: previous.approxDroppedTokens + current.approxDroppedTokens,
-    approxOriginalTokens: previous.approxDroppedTokens + current.approxOriginalTokens,
-    droppedMessages: previous.droppedMessages + current.droppedMessages
-  };
-}
-
-function applyToolRoundContextBudget(request: ProviderRunRequest): Readonly<{
-  contextTruncation: ContextTruncationSummary | null;
-  request: ProviderRunRequest;
-}> {
-  const contextMessages = request.context?.messages ?? [];
-  if (contextMessages.length === 0) {
-    return {
-      contextTruncation: null,
-      request
-    };
-  }
-
-  const currentMessageId = contextMessages[contextMessages.length - 1]?.id;
-  const attachmentTokens = providerAttachmentBudgetTokens({
-    attachments: request.attachments,
-    modelCapabilities: request.modelCapabilities
-  });
-  const toolMessagesTokens = estimateApproxTokens(request.providerToolMessages ?? []);
-  const currentMessageExtraTokens = attachmentTokens + toolMessagesTokens;
-  const budget = applyRunContextBudget({
-    contextMessages,
-    messageExtraTokens:
-      currentMessageId && currentMessageExtraTokens > 0
-        ? { [currentMessageId]: currentMessageExtraTokens }
-        : undefined,
-    modelCapabilities: request.modelCapabilities,
-    params: request.params,
-    prompt: request.prompt,
-    provider: request.provider
-  });
-
-  if (!budget.ok) {
-    throw new RunPipelineError("context_too_large", budget.error.message);
-  }
-
-  const previousTruncation = request.context?.summary?.truncation;
-  const contextTruncation = budget.contextTruncation
-    ? cumulativeTruncationSummary(previousTruncation, budget.contextTruncation)
-    : null;
-  const effectiveTruncation = contextTruncation ?? previousTruncation;
-
-  return {
-    contextTruncation,
-    request: {
-      ...request,
-      context: {
-        ...budget.context,
-        ...(effectiveTruncation
-          ? {
-              summary: {
-                truncation: effectiveTruncation
-              }
-            }
-          : {})
-      }
-    }
-  };
+function toolLoopJson(value: unknown, maxBytes: number, code: string): ToolLoopJsonValue {
+  const snapshot = snapshotToolLoopJson(value, maxBytes);
+  if (snapshot === null) throw new RunPipelineError(code, "Tool-loop state is invalid or too large");
+  return snapshot;
 }
 
 function providerRequestPreviewForToolRound(adapter: ProviderAdapter, request: ProviderRunRequest) {
@@ -692,30 +585,20 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
 
         await tokenBuffer.flush();
         const eventProviderResponseId = providerResponseIdFromEvent(event);
-        if (eventProviderResponseId && eventProviderResponseId !== persistedProviderResponseId) {
-          const publication = await input.repository.updateRunProviderResponseId(runId, eventProviderResponseId);
-          persistedProviderResponseId = eventProviderResponseId;
-          if (publication === "cancelled") {
-            await input.adapter.cancel?.(eventProviderResponseId).catch(() => undefined);
-            throw abortError();
-          }
-          if (publication === "terminal") {
-            throw abortError();
-          }
-        }
+        if (eventProviderResponseId) await publishProviderResponseId(eventProviderResponseId);
 
         await emit(controller, encoder, input.repository, runId, sequence, event);
       }
 
-      async function applyProviderEvents(
-        events: readonly ModelRunSseEvent[],
-        options: Readonly<{ includeTokenEvents?: boolean }> = {}
-      ): Promise<void> {
-        for (const event of events) {
-          tokenBuffer.throwIfFailed();
-          throwIfAborted(signal);
-          await applyProviderEvent(event, options);
+      async function publishProviderResponseId(providerResponseId: string): Promise<void> {
+        if (providerResponseId === persistedProviderResponseId) return;
+        const publication = await input.repository.updateRunProviderResponseId(runId, providerResponseId);
+        persistedProviderResponseId = providerResponseId;
+        if (publication === "cancelled") {
+          await input.adapter.cancel?.(providerResponseId).catch(() => undefined);
+          throw abortError();
         }
+        if (publication === "terminal") throw abortError();
       }
 
       async function streamProviderRequest(request: ProviderRunRequest): Promise<ProviderRunResult> {
@@ -750,159 +633,385 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
       async function runProviderToolLoop(
         request: ProviderRunRequest
       ): Promise<ProviderRunResult & { usageAttributions: RunUsageAttribution[] }> {
-        if (!input.searchAdapter) {
-          throw new Error("search_provider_not_available");
-        }
-
         const provider = normalizedRequest.provider;
-        const toolBridge =
-          provider === "openai" || provider === "openrouter" ? providerToolBridges[provider] : undefined;
+        const toolBridge = providerToolBridges[provider as keyof typeof providerToolBridges];
         if (!toolBridge?.supportsToolCalling({ modelId: normalizedRequest.modelId, provider })) {
-          throw new Error(`tool_calling_not_supported:${provider}`);
-        }
-
-        const searchPolicy = normalizedRequest.searchPolicy;
-        if (
-          !searchPolicy ||
-          searchPolicy.strategyId !== normalizedRequest.searchStrategy
-        ) {
-          throw new Error("search_policy_not_available");
-        }
-        const strategyId = searchPolicy.strategyId;
-        const searchModelId = searchPolicy.modelId;
-        const executor = createPerplexitySearchToolExecutor({
-          searchAdapter: input.searchAdapter,
-          searchPolicy
-        });
-        let roundRequest: ProviderRunRequest = {
-          ...request,
-          forceNonStreaming: true,
-          providerToolMessages: [],
-          toolChoice: "auto",
-          tools: [perplexityWebSearchTool]
-        };
-        let toolExecutions = 0;
-
-        await input.repository.updateRunProviderRequestPreview(
-          runId,
-          providerRequestPreviewForToolRound(input.adapter, roundRequest)
-        );
-
-        for (let round = 1; round <= maxToolRounds + 1; round += 1) {
-          if (toolExecutions >= maxToolRounds) {
-            roundRequest = {
-              ...roundRequest,
-              toolChoice: "none"
-            };
-          }
-
-          let lastReportedUsage: ModelRunUsage | null = null;
-          let collected: Awaited<ReturnType<typeof collectProviderRun>>;
-          try {
-            collected = await collectProviderRun({
-              adapter: input.adapter,
-              observeEvent(event) {
-                if (event.type === "usage") {
-                  lastReportedUsage = event.data;
-                }
-              },
-              request: roundRequest,
-              signal
-            });
-          } catch (error) {
-            if (lastReportedUsage) {
-              rememberReportedUsage(provider, normalizedRequest.modelId, lastReportedUsage);
-            }
-            throw error;
-          }
-          const { events, result } = collected;
-          rememberReportedUsage(provider, normalizedRequest.modelId, result.usage);
-          const toolCalls = result.toolCalls ?? [];
-
-          if (toolCalls.length === 0) {
-            await applyProviderEvents(events);
-            return {
-              ...result,
-              usage: sumTokenUsage(reportedUsageAttributions.map((attribution) => attribution.usage)),
-              usageAttributions: groupedUsageAttributions(reportedUsageAttributions)
-            };
-          }
-
-          const supportedCalls = toolCalls.filter((call) => call.name === executor.tool.name);
-          if (supportedCalls.length !== toolCalls.length) {
-            throw new Error(`unsupported_tool_call:${toolCalls.map((call) => call.name).join(",")}`);
-          }
-
-          if (toolExecutions + supportedCalls.length > maxToolRounds) {
-            throw new Error("tool_round_limit_exceeded");
-          }
-
-          await applyProviderEvents(events, { includeTokenEvents: false });
-          const providerToolMessages = providerToolCallMessages(provider, result, supportedCalls);
-
-          for (const call of supportedCalls) {
-            await emit(controller, encoder, input.repository, runId, sequence, toolCallArtifact({ call, round }));
-            let toolResult: ToolExecutionResult;
-            try {
-              toolResult = await executor.execute(call, { request: roundRequest, runId }, { signal });
-            } catch (error) {
-              if (signal.aborted || isAbortError(error)) {
-                throw error;
-              }
-
-              toolResult = toolExecutionErrorResult(call, error);
-            }
-
-            if (hasReportedUsage(toolResult.usage)) {
-              rememberReportedUsage("openrouter", searchModelId, toolResult.usage);
-            }
-            toolExecutions += 1;
-            await persistToolSearchRun({
-              call,
-              modelRunId: runId,
-              repository: input.repository,
-              result: toolResult,
-              searchModelId,
-              strategyId
-            });
-
-            for (const artifact of toolResult.artifacts ?? []) {
-              throwIfAborted(signal);
-              await emit(controller, encoder, input.repository, runId, sequence, artifact);
-            }
-            await emit(
-              controller,
-              encoder,
-              input.repository,
-              runId,
-              sequence,
-              toolResultArtifact({ call, result: toolResult, round })
-            );
-            providerToolMessages.push(toolBridge.appendToolResult(roundRequest, toolResult));
-          }
-
-          const budgetedToolRound = applyToolRoundContextBudget({
-            ...roundRequest,
-            providerToolMessages: [...(roundRequest.providerToolMessages ?? []), ...providerToolMessages]
-          });
-          roundRequest = budgetedToolRound.request;
-          if (budgetedToolRound.contextTruncation) {
-            await emit(
-              controller,
-              encoder,
-              input.repository,
-              runId,
-              sequence,
-              contextTruncationArtifact(budgetedToolRound.contextTruncation)
-            );
-          }
-          await input.repository.updateRunProviderRequestPreview(
-            runId,
-            providerRequestPreviewForToolRound(input.adapter, roundRequest)
+          throw new RunPipelineError(
+            "tool_calling_not_supported",
+            `Tool calling is not supported by provider ${provider}`
           );
         }
 
-        throw new Error("tool_round_limit_exceeded");
+        const searchPolicy = normalizedRequest.searchPolicy;
+        const searchEnabled = normalizedRequest.searchStrategy === "perplexity-tool-search";
+        if (searchEnabled && (!input.searchAdapter || !searchPolicy ||
+          searchPolicy.strategyId !== normalizedRequest.searchStrategy)) {
+          throw new RunPipelineError("search_policy_not_available", "Search policy is not available");
+        }
+        const searchExecutor = searchEnabled
+          ? createPerplexitySearchToolExecutor({
+              searchAdapter: input.searchAdapter!,
+              searchPolicy: searchPolicy!
+            })
+          : null;
+        const tools: RunTool[] = [
+          ...(searchExecutor ? [perplexityWebSearchTool] : []),
+          ...mcpRunTools(normalizedRequest.mcp)
+        ];
+        if (tools.length === 0) {
+          throw new RunPipelineError("tool_configuration_empty", "No run tools are configured");
+        }
+
+        const persistedCalls = new Map<string, PersistedToolLoopCall>();
+        const toolDurations = new Map<string, number>();
+        const hasMcpTools = tools.some((tool) => tool.capability === "mcp");
+        let mcpRuntime = input.mcpRuntime ?? null;
+        const runtime = () => {
+          mcpRuntime ??= getDefaultMcpRuntimeCoordinator();
+          return mcpRuntime;
+        };
+        const outcome = await continueProviderToolLoop({
+          adapter: input.adapter,
+          afterToolBatch: async ({ round }) => {
+            const advanced = await input.repository.advanceToolLoopCallBatch({
+              roundIndex: round,
+              runId,
+              userId: input.userId
+            });
+            if (advanced === "cancelled") throw abortError();
+            if (advanced !== "advanced") {
+              throw new RunPipelineError("tool_loop_checkpoint_conflict", "Tool batch could not advance");
+            }
+          },
+          onToolBatchSettled: async ({ results, round }) => {
+            for (const settled of results) {
+              const call = modelToolCall(settled.call);
+              const result = settled.result.status === "complete"
+                ? settled.result.value
+                : toolExecutionErrorResult(call, new Error(settled.result.error.message));
+              if (searchExecutor && call.name === searchExecutor.tool.name) {
+                if (hasReportedUsage(result.usage)) {
+                  rememberReportedUsage("openrouter", searchPolicy!.modelId, result.usage!);
+                }
+                await persistToolSearchRun({
+                  call,
+                  modelRunId: runId,
+                  repository: input.repository,
+                  result,
+                  searchModelId: searchPolicy!.modelId,
+                  strategyId: searchPolicy!.strategyId
+                });
+              }
+              for (const artifact of result.artifacts ?? []) {
+                await emit(controller, encoder, input.repository, runId, sequence, artifact);
+              }
+              await emit(
+                controller,
+                encoder,
+                input.repository,
+                runId,
+                sequence,
+                toolResultInspectionArtifact({
+                  call,
+                  durationMs: toolDurations.get(call.id) ??
+                    persistedToolDurationMs(persistedCalls.get(call.id)),
+                  mcp: normalizedRequest.mcp,
+                  ordinal: settled.ordinal,
+                  result,
+                  round
+                })
+              );
+            }
+            await persistReportedUsageForIncompleteRun();
+          },
+          beforeProviderRound: async ({ continuation, request: roundRequest, round }) => {
+            if (round === 1) {
+              const started = await input.repository.beginToolLoopProviderRound({
+                providerContinuation: toolLoopJson(
+                  continuation,
+                  toolLoopPersistenceLimits.checkpointBytes,
+                  "tool_loop_checkpoint_invalid"
+                ),
+                roundIndex: round,
+                runId,
+                userId: input.userId
+              });
+              if (started === "cancelled") throw abortError();
+              if (started !== "started" && started !== "reused") {
+                throw new RunPipelineError("tool_loop_checkpoint_conflict", "Provider round could not start");
+              }
+            }
+            await input.repository.updateRunProviderRequestPreview(
+              runId,
+              providerRequestPreviewForToolRound(input.adapter, roundRequest)
+            );
+            if (hasMcpTools) {
+              await emit(
+                controller,
+                encoder,
+                input.repository,
+                runId,
+                sequence,
+                toolLoopPhaseArtifact({ phase: "model", round })
+              );
+            }
+          },
+          bridge: toolBridge,
+          budgets: {
+            maxConcurrency: 4,
+            maxToolCalls: 16,
+            maxToolRounds
+          },
+          executeTool: async (call, context) => {
+            const startedAt = Date.now();
+            try {
+              const persisted = persistedCalls.get(call.id);
+              if (!persisted) {
+                return {
+                  error: {
+                    code: "tool_call_not_persisted",
+                    fatal: true,
+                    message: "Tool call was not durably persisted before dispatch."
+                  },
+                  status: "error"
+                };
+              }
+              const claim = await input.repository.claimToolLoopCall({
+                callId: persisted.id,
+                runId,
+                userId: input.userId
+              });
+              if (claim.kind === "ambiguous") {
+                return {
+                  error: {
+                    code: "tool_call_outcome_unknown",
+                    fatal: true,
+                    message: "The tool call may have completed before the process stopped and was not repeated."
+                  },
+                  status: "error"
+                };
+              }
+              if (claim.kind === "cancelled") {
+                return {
+                  error: { code: "tool_call_cancelled", fatal: true, message: "Tool call was cancelled." },
+                  status: "error"
+                };
+              }
+              if (claim.kind === "not_found") {
+                return {
+                  error: { code: "tool_call_not_found", fatal: true, message: "Persisted tool call was not found." },
+                  status: "error"
+                };
+              }
+              if (claim.kind === "settled") {
+                const stored = parsePersistedToolExecutionResult(call, claim.call.result);
+                const persistedDuration = persistedToolDurationMs(claim.call);
+                if (persistedDuration !== undefined) toolDurations.set(call.id, persistedDuration);
+                return stored
+                  ? { status: "complete", value: stored }
+                  : {
+                      error: {
+                        code: "tool_call_result_invalid",
+                        fatal: true,
+                        message: "Persisted tool result is invalid."
+                      },
+                      status: "error"
+                    };
+              }
+
+              let result: ToolExecutionResult;
+              try {
+                if (searchExecutor && call.name === searchExecutor.tool.name) {
+                  result = await searchExecutor.execute(call, { request, runId }, { signal: context.signal });
+                } else {
+                  const route = resolveMcpRunTool(normalizedRequest.mcp, call.name);
+                  const generationId = claim.call.mcpBinding?.runtimeGenerationId;
+                  if (!route || !generationId ||
+                    claim.call.mcpBinding?.runtimeGenerationFingerprint !== route.fingerprint) {
+                    throw new Error("mcp_run_binding_unavailable");
+                  }
+                  const activeRuntime = runtime();
+                  if (!(await activeRuntime.ensureAcceptedGeneration(generationId))) {
+                    throw new Error("mcp_runtime_not_ready");
+                  }
+                  result = mcpToolExecutionResult(call, await activeRuntime.callTool({
+                    arguments: call.arguments,
+                    generationId,
+                    inputSchema: route.tool.inputSchema,
+                    name: route.originalName,
+                    signal: context.signal
+                  }));
+                }
+              } catch (error) {
+                if (signal.aborted || isAbortError(error)) throw error;
+                result = toolExecutionErrorResult(
+                  call,
+                  error,
+                  searchExecutor && call.name === searchExecutor.tool.name ? "Search" : "Tool"
+                );
+              }
+              const storedResult = snapshotToolExecutionResult(
+                result,
+                toolLoopPersistenceLimits.resultBytes
+              );
+              if (storedResult === null) {
+                throw new RunPipelineError(
+                  "tool_call_result_invalid",
+                  "Tool result is invalid or too large"
+                );
+              }
+              const settled = await input.repository.settleToolLoopCall({
+                callId: claim.call.id,
+                result: storedResult,
+                runId,
+                state: result.status,
+                userId: input.userId
+              });
+              if (settled !== "settled" && settled !== "reused") {
+                return {
+                  error: {
+                    code: "tool_call_settle_conflict",
+                    fatal: true,
+                    message: "Tool result could not be durably settled."
+                  },
+                  status: "error"
+                };
+              }
+              return { status: "complete", value: result };
+            } finally {
+              if (!toolDurations.has(call.id)) {
+                toolDurations.set(call.id, Date.now() - startedAt);
+              }
+            }
+          },
+          initialRequest: request,
+          onEvent: applyProviderEvent,
+          onProviderResult: async ({ result }) => {
+            if (result.providerResponseId) await publishProviderResponseId(result.providerResponseId);
+          },
+          onSignal: async (toolSignal) => {
+            if (toolSignal.type === "text_delta") {
+              await applyProviderEvent({ data: { delta: toolSignal.delta }, type: "token" });
+              return;
+            }
+            await tokenBuffer.flush();
+            const reset = await input.repository.resetToolLoopAssistantDraft({
+              roundIndex: toolSignal.round,
+              runId,
+              sequence: sequence.value,
+              userId: input.userId
+            });
+            if (!reset) throw new RunPipelineError("tool_loop_reset_conflict", "Assistant draft could not reset");
+            sequence.value += 1;
+            tokenBuffer.resetLocal();
+            emitTransient(controller, encoder, {
+              data: { round: toolSignal.round },
+              type: "message_reset"
+            });
+          },
+          onUsage: async (usage, roundRequest) => {
+            rememberReportedUsage(roundRequest.provider, roundRequest.modelId, usage);
+            await persistReportedUsageForIncompleteRun();
+          },
+          parallelToolCalls: normalizedRequest.modelCapabilities.parallelToolCalls === true,
+          persistToolBatch: async ({ calls, continuation, round }) => {
+            const persisted = await input.repository.persistToolLoopCallBatch({
+              calls: calls.map((call, ordinal) => {
+                const route = resolveMcpRunTool(normalizedRequest.mcp, call.name);
+                if (!route && (!searchExecutor || call.name !== searchExecutor.tool.name)) {
+                  throw new RunPipelineError("unsupported_tool_call", `Unsupported tool ${call.name}`);
+                }
+                return {
+                  arguments: toolLoopJson(
+                    call.arguments,
+                    toolLoopPersistenceLimits.argumentsBytes,
+                    "tool_call_arguments_invalid"
+                  ) as Readonly<Record<string, ToolLoopJsonValue>>,
+                  ordinal,
+                  providerCallId: call.id,
+                  ...(route ? { runtimeGenerationFingerprint: route.fingerprint } : {}),
+                  toolName: call.name
+                };
+              }),
+              providerContinuation: toolLoopJson(
+                continuation,
+                toolLoopPersistenceLimits.checkpointBytes,
+                "tool_loop_checkpoint_invalid"
+              ),
+              roundIndex: round,
+              runId,
+              userId: input.userId
+            });
+            if (persisted.kind === "cancelled") throw abortError();
+            if (persisted.kind !== "persisted" && persisted.kind !== "reused") {
+              throw new RunPipelineError("tool_loop_checkpoint_conflict", "Tool batch could not persist");
+            }
+            for (const call of persisted.calls) persistedCalls.set(call.providerCallId, call);
+            await tokenBuffer.flush();
+            if (hasMcpTools) {
+              await emit(
+                controller,
+                encoder,
+                input.repository,
+                runId,
+                sequence,
+                toolLoopPhaseArtifact({ count: calls.length, phase: "tools", round })
+              );
+            }
+            for (const [ordinal, call] of calls.entries()) {
+              await emit(
+                controller,
+                encoder,
+                input.repository,
+                runId,
+                sequence,
+                toolCallInspectionArtifact({
+                  call: modelToolCall(call),
+                  mcp: normalizedRequest.mcp,
+                  ordinal,
+                  round
+                })
+              );
+            }
+          },
+          prepareRequest: async (roundRequest) => {
+            const budgeted = applyProviderRequestContextBudget({
+              bridge: toolBridge,
+              request: roundRequest
+            });
+            if (!budgeted.ok) {
+              throw new RunPipelineError("context_too_large", budgeted.error.message);
+            }
+            if (budgeted.contextTruncation) {
+              await emit(
+                controller,
+                encoder,
+                input.repository,
+                runId,
+                sequence,
+                contextTruncationArtifact(budgeted.contextTruncation)
+              );
+            }
+            return budgeted.request;
+          },
+          signal,
+          tools
+        });
+
+        if (outcome.status === "cancelled") throw abortError();
+        if (outcome.status === "failed") {
+          throw new RunPipelineError(
+            outcome.failure.code === "provider_round_failed"
+              ? "provider_stream_failed"
+              : outcome.failure.code,
+            outcome.failure.message
+          );
+        }
+        return {
+          ...outcome.final,
+          usage: sumTokenUsage(reportedUsageAttributions.map((attribution) => attribution.usage)),
+          usageAttributions: groupedUsageAttributions(reportedUsageAttributions)
+        };
       }
 
       try {
@@ -966,11 +1075,11 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
           );
         }
 
-        const providerResult =
-          (normalizedRequest.provider === "openai" || normalizedRequest.provider === "openrouter") &&
-          normalizedRequest.searchStrategy === "perplexity-tool-search"
-            ? await runProviderToolLoop(input.prepared.providerRequest)
-            : await streamProviderRequest(input.prepared.providerRequest);
+        const hasClientTools = normalizedRequest.searchStrategy === "perplexity-tool-search" ||
+          (normalizedRequest.mcp?.tools.length ?? 0) > 0;
+        const providerResult = hasClientTools
+          ? await runProviderToolLoop(input.prepared.providerRequest)
+          : await streamProviderRequest(input.prepared.providerRequest);
 
         await tokenBuffer.flush();
         throwIfAborted(signal);
@@ -1020,6 +1129,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
         });
       } catch (error) {
         if (abortController.signal.aborted || isAbortError(error)) {
+          await input.repository.cancelPendingToolLoopCalls({ runId, userId: input.userId }).catch(() => undefined);
           await tokenBuffer.flush().catch(() => undefined);
           await persistReportedUsageForIncompleteRun().catch(() => undefined);
           return;

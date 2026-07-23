@@ -15,6 +15,7 @@ services:
       AIQSA_BOOTSTRAP_LOGIN_ENABLED: ${AIQSA_BOOTSTRAP_LOGIN_ENABLED:-}
       AIQSA_BOOTSTRAP_USER_ID: ${AIQSA_BOOTSTRAP_USER_ID:-00000000-0000-4000-8000-000000000001}
       AIQSA_COOKIE_SECURE: "0"
+      AIQSA_ENCRYPTION_KEY: ${AIQSA_ENCRYPTION_KEY:-QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUE=}
       AIQSA_FAKE_PROVIDER_TOKEN_DELAY_MS: ${AIQSA_FAKE_PROVIDER_TOKEN_DELAY_MS:-}
       AIQSA_GOOGLE_OAUTH_CLIENT_ID: ""
       AIQSA_GOOGLE_OAUTH_CLIENT_SECRET: ""
@@ -35,6 +36,7 @@ services:
       AIQSA_TEST_MODE: "1"
       AIQSA_TRUST_PROXY_HEADERS: ${AIQSA_TRUST_PROXY_HEADERS:-}
       AIQSA_TRUSTED_PROXY_COUNT: ${AIQSA_TRUSTED_PROXY_COUNT:-}
+      AIQSA_TOOLHIVE_URL: http://toolhive-runtime:8080
       AIQSA_UPLOAD_MAX_BYTES: ${AIQSA_UPLOAD_MAX_BYTES:-25000000}
       AIQSA_UPLOAD_STORAGE_DIR: ${AIQSA_UPLOAD_STORAGE_DIR:-}
       AIQSA_YANDEX_OAUTH_CLIENT_ID: ""
@@ -57,6 +59,9 @@ services:
       S3_SECRET_ACCESS_KEY: aiqsa-development-password
     ports:
       - "127.0.0.1:${AIQSA_PORT:-3000}:3000"
+    networks:
+      - default
+      - mcp-control
     volumes:
       - .:/app
       - /app/node_modules
@@ -68,6 +73,32 @@ services:
         condition: service_completed_successfully
       postgres:
         condition: service_healthy
+
+  toolhive-runtime:
+    image: ghcr.io/stacklok/toolhive:v0.40.1@sha256:677dff9d73b33681f3d2c9b3c0b187e3210dc5ca3b8b326590d8db975f155578
+    command: ["serve", "--host", "0.0.0.0", "--port", "8080"]
+    cap_drop:
+      - ALL
+    environment:
+      HOME: /var/lib/toolhive
+      XDG_CACHE_HOME: /var/lib/toolhive/cache
+      XDG_CONFIG_HOME: /var/lib/toolhive/config
+      XDG_DATA_HOME: /var/lib/toolhive/data
+      XDG_STATE_HOME: /var/lib/toolhive/state
+    init: true
+    networks:
+      - mcp-control
+    read_only: true
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 30s
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec,size=256m
+    user: "0:0"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - toolhive_dev_data:/var/lib/toolhive
 
   postgres:
     image: postgres:16.14-alpine@sha256:16bc17c64a573ef34162af9298258d1aec548232985b33ed7b1eac33ba35c229
@@ -117,6 +148,11 @@ services:
         mc anonymous set private local/aiqsa-uploads
     restart: "no"
 
+networks:
+  mcp-control:
+    internal: true
+
 volumes:
   minio_dev_data:
   postgres_dev_data:
+  toolhive_dev_data:

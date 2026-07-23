@@ -20,6 +20,7 @@ docker compose up -d --build
 | Variable | Purpose |
 | --- | --- |
 | `AIQSA_AUTH_SESSION_SECRET` | High-entropy key used to sign browser sessions. Generate one with `openssl rand -hex 32`. |
+| `AIQSA_ENCRYPTION_KEY` | Base64-encoded 32-byte key for MCP shared/personal values and MCP OAuth tokens. Generate one with `openssl rand -base64 32`, back it up separately, and do not reuse the session secret. |
 | `AIQSA_INITIAL_ADMIN_EMAIL` | Email of the first administrator and the stable adoption key on later starts. |
 | `AIQSA_INITIAL_ADMIN_PASSWORD` | Initial password. Required only while the database is empty. |
 | `AIQSA_INITIAL_ADMIN_DISPLAY_NAME` | Optional display name; defaults to `Administrator`. |
@@ -74,6 +75,41 @@ Provider safety bounds are optional:
 | `AIQSA_PROVIDER_STREAM_IDLE_TIMEOUT_MS` | `30000` | Maximum pause between streaming chunks. |
 | `AIQSA_PROVIDER_RESPONSE_MAX_BYTES` | `16777216` | Maximum untrusted provider response body. |
 | `AIQSA_OPENAI_BACKGROUND_POLL_TIMEOUT_MS` | `660000` | Overall OpenAI background-response polling deadline. |
+
+## MCP servers
+
+MCP is installation-managed. An administrator uses `Admin -> MCP servers` to create a draft, test its exact configuration and discovered tools, activate it, and grant the whole server to users or groups. Direct user access can additionally permit specific administrator-declared personal fields. Ordinary users can only enable entitled servers, fill those fields, or connect their own external OAuth identity under `Settings -> MCP & tools`; they cannot change endpoints, packages, commands, scopes, or tool grants.
+
+The initial source matrix supports:
+
+- remote Streamable HTTP endpoints, with static headers or per-user OAuth;
+- npm packages materialized through an exact-version `npx://` image;
+- PyPI packages materialized through an exact-version `uvx://` image;
+- digest-pinned OCI stdio images using the image's declared entrypoint.
+
+`Paste MCP config` recognizes direct URLs and common `npx`, `uvx`/`pipx`, and `docker`/`podman` shapes, then shows the normalized draft before it is saved. Package selectors are resolved during draft testing; active revisions run the recorded artifact rather than resolving a mutable selector on every start. Updates are explicit. OCI command/entrypoint overrides and legacy HTTP+SSE are not part of the initial matrix.
+
+All valid tools exposed by a granted server are available; there is no per-tool allowlist or confirmation layer. A user may enable several servers at once, and the model may pass conversation-derived data or one tool's output into another enabled tool. Grant only servers whose complete behavior and external data policy you trust.
+
+Remote MCP traffic is sent directly by AIQSA through its reviewed client boundary. Local package/OCI servers run as ToolHive-managed sibling containers. ToolHive is pinned and reachable only on a private Compose network, but it receives `/var/run/docker.sock`; control of that socket is effectively control of the Docker host. The application can call ToolHive's private unauthenticated API, so an application compromise is transitively a host compromise. This is an accepted small-installation trust model, not a sandbox against a malicious administrator or MCP package.
+
+AIQSA encrypts shared values, personal values, and OAuth tokens in PostgreSQL with `AIQSA_ENCRYPTION_KEY`. For a local MCP, the exact effective values are then sent to ToolHive as ordinary environment variables and remain inspectable in ToolHive state and Docker container metadata by trusted application/host/Docker administrators. Docker does not encrypt those values. Remote static and OAuth credentials are not sent to ToolHive in normal operation.
+
+MCP failures do not make core application readiness fail. The user surface reports each server as disabled, needing setup/authorization, queued/starting, ready/idle, requiring reauthorization, or unavailable. Enabled but unready servers block a new run instead of being silently omitted. Startup and normal authenticated activity prewarm enabled servers; several ready servers contribute their complete current tool inventories to the same run. Settings prevents a known combined inventory above 128 tools, while Send performs the authoritative freshness/schema/context check.
+
+Dynamic MCP workload containers are not Compose project members. AIQSA normally reconciles and drains its exact opaque ownership group, while the maintenance command provides a planned uninstall/recovery path. Keep the stack running and preview first:
+
+```bash
+docker compose run --rm mcp-maintenance
+```
+
+Delete only exact AIQSA-owned ToolHive workloads and their empty ownership group with:
+
+```bash
+docker compose run --rm mcp-maintenance --execute
+```
+
+Both commands require the installation's current `AIQSA_ENCRYPTION_KEY`; a different key derives a different ownership marker and cannot identify the old workloads. The command never deletes an unknown group member. It does not remove cached local images, PostgreSQL records, or unrelated containers.
 
 ## Local address and cookies
 
@@ -132,7 +168,7 @@ AIQSA_YANDEX_OAUTH_CLIENT_SECRET=
 
 Register `${AIQSA_APP_BASE_URL}/api/auth/oauth/yandex/callback` and grant `login:info` plus `login:email`.
 
-OAuth is used only for sign-in. AIQSA does not retain provider access or refresh tokens. A public OAuth setup normally needs a domain and HTTPS, but neither is required when OAuth is disabled.
+These Google/Yandex credentials are used only for sign-in, and AIQSA does not retain those providers' access or refresh tokens. MCP OAuth is configured independently on each remote MCP server by an administrator; its per-user tokens are encrypted with `AIQSA_ENCRYPTION_KEY`. A public OAuth setup normally needs a domain and HTTPS, but neither is required when OAuth is disabled.
 
 ## Reverse proxy (optional)
 
@@ -158,8 +194,9 @@ The following advanced Compose settings have bounded defaults and normally need 
 | `AIQSA_LOG_MAX_FILES` / `AIQSA_LOG_MAX_SIZE` | `5` / `10m` |
 | `AIQSA_POSTGRES_VOLUME_NAME` | `aiqsa_postgres_data` |
 | `AIQSA_MINIO_VOLUME_NAME` | `aiqsa_minio_data` |
+| `AIQSA_TOOLHIVE_VOLUME_NAME` | `aiqsa_toolhive_data` |
 
-`AIQSA_APP_REVISION` is optional release metadata used by backup manifests when the checkout does not contain Git metadata; release automation must export it when invoking the backup helper. The volume-name overrides are for adopting existing Docker volumes during a migration; fresh installations should keep the stable defaults.
+`AIQSA_APP_REVISION` is optional release metadata used by backup manifests when the checkout does not contain Git metadata; release automation must export it when invoking the backup helper. The volume-name overrides are for adopting existing Docker volumes during a migration; fresh installations should keep the stable defaults. ToolHive state is disposable observed runtime state, not the source of MCP definitions or credentials.
 
 ## Emergency login
 

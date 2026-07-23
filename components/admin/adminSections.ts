@@ -6,6 +6,7 @@ import {
   ShieldAlert,
   SlidersHorizontal,
   Users,
+  Wrench,
   type LucideIcon
 } from "lucide-react";
 
@@ -13,6 +14,7 @@ export type AdminSectionId =
   | "access-rules"
   | "groups"
   | "invites"
+  | "mcp"
   | "model-access"
   | "safety"
   | "usage"
@@ -53,6 +55,12 @@ export const adminSections = [
     description: "Toggle provider, model, and search access for active groups.",
     id: "model-access",
     label: "Model access"
+  },
+  {
+    Icon: Wrench,
+    description: "Install, test, activate, update, and grant trusted MCP servers.",
+    id: "mcp",
+    label: "MCP servers"
   },
   {
     Icon: Link2,

@@ -10,9 +10,12 @@ export type PromptEditorDraft = {
   systemPrompt: string;
 };
 
+export type SettingsSection = "appearance" | "mcp" | "prompts";
+
 export type PromptSettingsSnapshot = {
   deletePromptConfirmation: PromptPreset | null;
   promptSaving: boolean;
+  settingsSection: SettingsSection;
   settingsOpen: boolean;
   settingsPromptEditor: PromptEditorDraft;
 };
@@ -21,6 +24,7 @@ export type PromptSettingsStore = PromptSettingsSnapshot & {
   closeSettings(): void;
   editSettingsPrompt(prompt: PromptPreset): void;
   newSettingsPrompt(): void;
+  openMcpSettings(): void;
   openSettings(prompt: PromptPreset | null): void;
   setDeletePromptConfirmation(prompt: PromptPreset | null): void;
   setPromptSaving(value: boolean): void;
@@ -53,6 +57,7 @@ export function hasPromptEditorChanges(editor: PromptEditorDraft, prompts: Promp
 export const initialPromptSettingsSnapshot: PromptSettingsSnapshot = {
   deletePromptConfirmation: null,
   promptSaving: false,
+  settingsSection: "prompts",
   settingsOpen: false,
   settingsPromptEditor: promptEditorFromPreset(null)
 };
@@ -72,9 +77,13 @@ export const usePromptSettingsStore = create<PromptSettingsStore>((set) => ({
   newSettingsPrompt() {
     set({ settingsPromptEditor: promptEditorFromPreset(null) });
   },
+  openMcpSettings() {
+    set({ settingsOpen: true, settingsSection: "mcp" });
+  },
   openSettings(prompt) {
     set({
       settingsOpen: true,
+      settingsSection: "prompts",
       settingsPromptEditor: promptEditorFromPreset(prompt)
     });
   },

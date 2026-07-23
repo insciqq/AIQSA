@@ -21,6 +21,7 @@ function renderRow(overrides: Partial<ComponentProps<typeof ThreadMessageRow>> =
     message: assistantMessage(),
     showCitations: true,
     showReasoningBlocks: false,
+    showToolActivity: true,
     streaming: false,
     onBranchFromMessage: vi.fn(),
     onCopyMessage: vi.fn(),
@@ -243,6 +244,7 @@ describe("ThreadMessageRow", () => {
         message={error}
         showCitations
         showReasoningBlocks={false}
+        showToolActivity
         streaming={false}
         onBranchFromMessage={vi.fn()}
         onCopyMessage={vi.fn()}
@@ -262,6 +264,7 @@ describe("ThreadMessageRow", () => {
         message={empty}
         showCitations
         showReasoningBlocks={false}
+        showToolActivity
         streaming={false}
         onBranchFromMessage={vi.fn()}
         onCopyMessage={vi.fn()}
@@ -321,6 +324,40 @@ describe("ThreadMessageRow", () => {
     expect(warnings).toHaveTextContent("Malformed provider event was skipped.");
     expect(warnings).toHaveTextContent("Search response was incomplete.");
     expect(warnings.querySelectorAll("li")).toHaveLength(2);
+  });
+
+  it("shows tool activity by default and hides only its inline projection", () => {
+    const artifactSummary = {
+      citationCount: 0,
+      citations: [],
+      reasoningCount: 0,
+      reasoningText: [],
+      searchCount: 0,
+      searchStrategy: null,
+      toolCallCount: 1,
+      toolCalls: [{
+        argumentsPreview: { query: "memory" },
+        callId: "call-1",
+        capability: "mcp" as const,
+        credentialSources: ["personal" as const],
+        durationMs: 42,
+        errorMessage: null,
+        externalAccountLabel: null,
+        ordinal: 0,
+        resultPreview: { content: [{ text: "found", type: "text" }] },
+        round: 1,
+        serverName: "Mem0",
+        status: "complete" as const,
+        toolName: "search"
+      }]
+    };
+    const { props, rerender } = renderRow({ artifactSummary });
+
+    expect(screen.getByTestId("thread-tool-activity")).toHaveTextContent("Mem0");
+
+    rerender(<ThreadMessageRow {...props} artifactSummary={artifactSummary} showToolActivity={false} />);
+    expect(screen.queryByTestId("thread-tool-activity")).not.toBeInTheDocument();
+    expect(screen.getByTestId("assistant-message-content")).toHaveTextContent("Answer");
   });
 
   it("renders attachment chips from structured user message content", () => {

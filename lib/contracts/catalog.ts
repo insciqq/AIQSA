@@ -107,6 +107,7 @@ export type CatalogDefaults = {
   searchStrategyId: string;
   showCitations: boolean;
   showReasoningBlocks: boolean;
+  showToolActivity: boolean;
 };
 
 export type CatalogProvider = {
@@ -356,6 +357,7 @@ export function decodeCatalogResponse(value: unknown): Catalog | null {
     !nonEmptyString(defaults.searchStrategyId) ||
     typeof defaults.showCitations !== "boolean" ||
     typeof defaults.showReasoningBlocks !== "boolean" ||
+    typeof defaults.showToolActivity !== "boolean" ||
     !Array.isArray(catalog.models) ||
     !Array.isArray(catalog.promptPresets) ||
     !Array.isArray(catalog.providers) ||
@@ -385,7 +387,8 @@ export function decodeCatalogResponse(value: unknown): Catalog | null {
       provider: defaults.provider,
       searchStrategyId: defaults.searchStrategyId,
       showCitations: defaults.showCitations,
-      showReasoningBlocks: defaults.showReasoningBlocks
+      showReasoningBlocks: defaults.showReasoningBlocks,
+      showToolActivity: defaults.showToolActivity
     },
     models: models.filter((model): model is CatalogModel => model !== null),
     promptPresets: promptPresets.filter((prompt): prompt is PromptPreset => prompt !== null),

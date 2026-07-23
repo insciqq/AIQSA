@@ -198,6 +198,7 @@ describe("OpenRouter request builders", () => {
             tool_call_id: "call-1"
           }
         ],
+        parallelToolCalls: true,
         toolChoice: "none",
         tools: [perplexityWebSearchTool]
       })
@@ -234,8 +235,8 @@ describe("OpenRouter request builders", () => {
       }
     ]);
     expect(body).toMatchObject({
-      parallel_tool_calls: false,
-      stream: false,
+      parallel_tool_calls: true,
+      stream: true,
       tool_choice: "none",
       tools: [
         {

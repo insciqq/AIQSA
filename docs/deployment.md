@@ -1,6 +1,6 @@
 # Deployment and updates
 
-AIQSA uses the same Compose stack for a laptop, a private server, or a server behind HTTPS. The default installation is local-only and needs neither a domain nor an SMTP server.
+AIQSA uses the same Compose stack for a laptop, a private server, or a server behind HTTPS. The default installation is local-only and needs neither a domain nor an SMTP server. The stack also includes a pinned ToolHive controller for administrator-managed local MCP workloads.
 
 ## Local installation
 
@@ -36,11 +36,13 @@ AIQSA_TRUST_PROXY_HEADERS=1
 AIQSA_TRUSTED_PROXY_COUNT=1
 ```
 
-Do not publish the database or object-storage service ports. If you intentionally bind AIQSA directly to a LAN address without HTTPS, update `AIQSA_APP_BASE_URL`, `AIQSA_BIND_ADDRESS`, and `AIQSA_COOKIE_SECURE` together and protect access with the host firewall.
+Do not publish the database, object-storage, ToolHive control, or MCP proxy ports. If you intentionally bind AIQSA directly to a LAN address without HTTPS, update `AIQSA_APP_BASE_URL`, `AIQSA_BIND_ADDRESS`, and `AIQSA_COOKIE_SECURE` together and protect access with the host firewall.
+
+ToolHive uses the host Docker socket to create separate sibling containers for npm, PyPI, and OCI stdio MCP servers. Only the ToolHive service receives the socket; the application and MCP workloads do not. Socket access is nevertheless root-equivalent host authority, and AIQSA can reach ToolHive's full unauthenticated API on their private internal network. Restrict host and Docker access, keep the pinned image, and treat administrator-installed MCP code plus its ordinary outbound network access as trusted. Remote Streamable HTTP MCPs run through AIQSA and do not create a ToolHive workload.
 
 ## Data persistence
 
-The default stack stores PostgreSQL and MinIO data in the externally named volumes `aiqsa_postgres_data` and `aiqsa_minio_data`. These commands preserve them:
+The default stack stores PostgreSQL, MinIO, and disposable ToolHive state in the externally named volumes `aiqsa_postgres_data`, `aiqsa_minio_data`, and `aiqsa_toolhive_data`. These commands preserve them:
 
 ```bash
 docker compose stop
@@ -48,7 +50,14 @@ docker compose down
 docker compose up -d --build
 ```
 
-`docker compose down -v` deletes those volumes and therefore the installation data. `AIQSA_POSTGRES_VOLUME_NAME` and `AIQSA_MINIO_VOLUME_NAME` can point a migrated installation at existing live volume names; leave them unset for a fresh installation.
+`docker compose down -v` deletes those volumes and therefore the installation data. It still does not reliably delete dynamic sibling MCP containers because they are not Compose project members. Before uninstalling, changing `AIQSA_ENCRYPTION_KEY`, or abandoning a host, preview and then execute exact-marker cleanup:
+
+```bash
+docker compose run --rm mcp-maintenance
+docker compose run --rm mcp-maintenance --execute
+```
+
+`AIQSA_POSTGRES_VOLUME_NAME`, `AIQSA_MINIO_VOLUME_NAME`, and `AIQSA_TOOLHIVE_VOLUME_NAME` can point a migrated installation at existing live volume names; leave them unset for a fresh installation. Normal startup/activity reconciliation repairs or drains AIQSA-owned MCP workloads after restarts.
 
 ## Backups
 
@@ -59,6 +68,8 @@ ops/backup/create.sh /secure/aiqsa-backups
 ```
 
 The backup script briefly stops the application writer, captures PostgreSQL and the private bundled MinIO bucket, verifies checksums, and starts the application again if it was previously running. It deliberately fails for an external S3 endpoint; use that provider's consistent backup/versioning procedure together with the PostgreSQL backup instead. Store completed bundles on encrypted, access-restricted storage and copy them off the host.
+
+Back up `AIQSA_ENCRYPTION_KEY` separately: the database copy cannot recover MCP shared/personal credentials or OAuth tokens without it. ToolHive state and generated local images are not authoritative backup data. Active revisions can be reconciled while their exact image remains cached; loss of a ToolHive-generated package image makes rollback best-effort and requires an explicit MCP rebuild/activation.
 
 Verify a bundle without contacting Docker:
 

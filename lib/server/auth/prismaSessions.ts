@@ -66,6 +66,21 @@ export function createPrismaAuthSessionStore(prisma: PrismaClient): AuthSessionS
       });
 
       return result.count;
+    },
+    async touchSessionActivity(input) {
+      await prisma.authSession.updateMany({
+        data: { lastSeenAt: input.lastSeenAt },
+        where: {
+          expiresAt: { gt: input.lastSeenAt },
+          id: input.sessionId,
+          OR: [
+            { lastSeenAt: null },
+            { lastSeenAt: { lt: input.staleBefore } }
+          ],
+          revokedAt: null,
+          userId: input.userId
+        }
+      });
     }
   };
 }

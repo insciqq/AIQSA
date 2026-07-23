@@ -48,7 +48,8 @@ function baseSettingsData(): SettingsHandlerData {
       defaultProvider: "openai",
       defaultSearchStrategyId: "openai-native-web-search",
       showCitations: true,
-      showReasoningBlocks: false
+      showReasoningBlocks: false,
+      showToolActivity: true,
     }
   };
 }
@@ -93,7 +94,8 @@ describe("settings handler", () => {
           defaultProvider: "openai",
           defaultSearchStrategyId: "openai-native-web-search",
           showCitations: false,
-          showReasoningBlocks: true
+          showReasoningBlocks: true,
+          showToolActivity: false
         }),
         headers: {
           cookie: authCookie()
@@ -118,7 +120,8 @@ describe("settings handler", () => {
       defaultProvider: "openai",
       defaultSearchStrategyId: "openai-native-web-search",
       showCitations: false,
-      showReasoningBlocks: true
+      showReasoningBlocks: true,
+      showToolActivity: false
     });
     expect(
       (capturedUpdate as { defaultControlValues: Record<string, unknown> }).defaultControlValues
@@ -134,7 +137,8 @@ describe("settings handler", () => {
       settings: {
         defaultSearchStrategyId: "openai-native-web-search",
         showCitations: false,
-        showReasoningBlocks: true
+        showReasoningBlocks: true,
+        showToolActivity: false
       }
     });
     expect(Object.keys(responseBody.settings)).toEqual([
@@ -144,8 +148,31 @@ describe("settings handler", () => {
       "defaultProvider",
       "defaultSearchStrategyId",
       "showCitations",
-      "showReasoningBlocks"
+      "showReasoningBlocks",
+      "showToolActivity"
     ]);
+  });
+
+  it("rejects a non-boolean tool activity preference", async () => {
+    const data = baseSettingsData();
+    const PATCH = createUpdateSettingsHandler({
+      resolveAuth: auth.resolveAuth,
+      loadSettingsData: async () => data,
+      updateSettings: async () => updated(data.settings)
+    });
+
+    const response = await PATCH(
+      new Request("http://app.local/api/me/settings", {
+        body: JSON.stringify({ showToolActivity: "yes" }),
+        headers: { cookie: authCookie() },
+        method: "PATCH"
+      })
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      error: "show_tool_activity_boolean_required"
+    });
   });
 
   it("drops invalid per-model search drafts without dropping valid draft fields", async () => {

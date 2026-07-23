@@ -25,6 +25,7 @@ export type AuthenticatedSession = {
 export type AuthSessionRecord = {
   expiresAt: Date | string;
   id: string;
+  lastSeenAt: Date | string | null;
   revokedAt: Date | string | null;
   user: AuthenticatedUser | null;
   userId: string;
@@ -45,6 +46,12 @@ export type AuthSessionStore = {
   findSessionByTokenHash(tokenHash: string): Promise<AuthSessionRecord | null>;
   revokeSessionByTokenHash(input: { revokedAt: Date; revokedReason: string; tokenHash: string }): Promise<number>;
   revokeUserSessions?(input: { revokedAt: Date; revokedReason: string; userId: string }): Promise<number>;
+  touchSessionActivity?(input: {
+    lastSeenAt: Date;
+    sessionId: string;
+    staleBefore: Date;
+    userId: string;
+  }): Promise<void>;
 };
 
 export type RequestAuthResolver = (request: Request) => Promise<AuthenticatedSession | null>;
@@ -124,6 +131,7 @@ export async function resolveAuthToken(
 export function createRequestAuthResolver(deps: {
   getConfig: () => AuthConfig;
   now?: () => Date;
+  onAuthenticated?(session: AuthenticatedSession): void;
   sessions: AuthSessionStore;
 }): RequestAuthResolver {
   return async (request) => {
@@ -133,10 +141,25 @@ export function createRequestAuthResolver(deps: {
       return null;
     }
 
-    return resolveAuthToken(getSessionFromRequest(request), {
-      now: deps.now?.(),
+    const now = deps.now?.() ?? new Date();
+    const auth = await resolveAuthToken(getSessionFromRequest(request), {
+      now,
       sessions: deps.sessions
     });
+    if (auth) {
+      await deps.sessions.touchSessionActivity?.({
+        lastSeenAt: now,
+        sessionId: auth.id,
+        staleBefore: new Date(now.getTime() - 60_000),
+        userId: auth.userId
+      });
+      try {
+        deps.onAuthenticated?.(auth);
+      } catch {
+        // Authentication must not depend on optional activity consumers.
+      }
+    }
+    return auth;
   };
 }
 

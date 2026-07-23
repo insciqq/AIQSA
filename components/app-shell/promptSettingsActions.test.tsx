@@ -45,7 +45,8 @@ function createCatalog(): Catalog {
       provider: "openai",
       searchStrategyId: "search-disabled",
       showCitations: true,
-      showReasoningBlocks: false
+      showReasoningBlocks: false,
+      showToolActivity: true,
     },
     models: [],
     promptPresets: [promptDefault, promptCustom],

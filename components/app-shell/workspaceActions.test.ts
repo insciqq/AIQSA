@@ -90,7 +90,8 @@ function useWorkspaceActionsForTest(input: {
       provider: "openai",
       searchStrategyId: "search-disabled",
       showCitations: true,
-      showReasoningBlocks: false
+      showReasoningBlocks: false,
+      showToolActivity: true,
     },
     models: [],
     promptPresets: [],
@@ -472,7 +473,8 @@ describe("workspace actions", () => {
         provider: "openai",
         searchStrategyId: "search-disabled",
         showCitations: true,
-        showReasoningBlocks: false
+        showReasoningBlocks: false,
+        showToolActivity: true,
       },
       models: [
         {

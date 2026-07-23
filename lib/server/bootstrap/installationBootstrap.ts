@@ -193,8 +193,18 @@ async function hasApplicationRows(tx: Prisma.TransactionClient): Promise<boolean
         UNION ALL SELECT 1 FROM "Message"
         UNION ALL SELECT 1 FROM "ModelRun"
         UNION ALL SELECT 1 FROM "ModelRunEvent"
+        UNION ALL SELECT 1 FROM "McpServer"
+        UNION ALL SELECT 1 FROM "McpRevision"
+        UNION ALL SELECT 1 FROM "McpGrant"
+        UNION ALL SELECT 1 FROM "McpUserServer"
+        UNION ALL SELECT 1 FROM "McpOAuthClient"
+        UNION ALL SELECT 1 FROM "McpOAuthConnection"
+        UNION ALL SELECT 1 FROM "McpRuntimeGeneration"
+        UNION ALL SELECT 1 FROM "McpRunBinding"
+        UNION ALL SELECT 1 FROM "ModelRunToolCall"
         UNION ALL SELECT 1 FROM "SearchRun"
         UNION ALL SELECT 1 FROM "Attachment"
+        UNION ALL SELECT 1 FROM "AttachmentDeletionJob"
         UNION ALL SELECT 1 FROM "SharedChatSnapshot"
         UNION ALL SELECT 1 FROM "UsageEvent"
       ) application_rows
@@ -404,6 +414,7 @@ async function createInitialAdminFoundation(
       defaultSearchStrategyId: "openai-native-web-search",
       showCitations: true,
       showReasoningBlocks: false,
+      showToolActivity: true,
       userId: input.userId
     }
   });

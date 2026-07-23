@@ -69,6 +69,7 @@ export function createMemoryAuthSessionStore(input: {
       const record = {
         expiresAt: sessionInput.expiresAt,
         id: `session-${records.size + 1}`,
+        lastSeenAt: sessionInput.lastSeenAt ?? null,
         revokedAt: null,
         tokenHash: sessionInput.tokenHash,
         user,
@@ -111,6 +112,16 @@ export function createMemoryAuthSessionStore(input: {
       }
 
       return revoked;
+    },
+    async touchSessionActivity(activity) {
+      for (const record of records.values()) {
+        const lastSeenAt = record.lastSeenAt ? new Date(record.lastSeenAt) : null;
+        if (record.id === activity.sessionId && record.userId === activity.userId &&
+          !record.revokedAt && new Date(record.expiresAt) > activity.lastSeenAt &&
+          (!lastSeenAt || lastSeenAt < activity.staleBefore)) {
+          record.lastSeenAt = activity.lastSeenAt;
+        }
+      }
     }
   };
 }

@@ -13,6 +13,7 @@ import type { RunEventView } from "@/components/app-shell/types";
 export type RunStreamTokenBuffer = {
   flush(): void;
   push(delta: string): void;
+  reset?(): void;
 };
 
 export type RunStreamMessageIds = {
@@ -77,6 +78,9 @@ export function useRunStream({
         }
 
         tokenBuffer.flush();
+        if (event.type === "message_reset") {
+          tokenBuffer.reset?.();
+        }
         appendRunEventView(event, chatId);
         receivedChatUpdate = applyChatUpdate(event, chatId) || receivedChatUpdate;
 

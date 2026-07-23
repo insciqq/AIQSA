@@ -287,7 +287,11 @@ function artifactTone(type: string, payload: unknown): InspectorEventTone {
 
 function stageFromText(value: string | null): string | null {
   const normalized = value?.toLowerCase() ?? "";
-  if (normalized.includes("search") || normalized.includes("tool")) {
+  if (normalized.includes("tool")) {
+    return "TOOL";
+  }
+
+  if (normalized.includes("search")) {
     return "S";
   }
 
@@ -303,7 +307,11 @@ function stageFromText(value: string | null): string | null {
 }
 
 function artifactStage(type: string, payload: unknown): string {
-  if (type === "search" || type === "citation" || type === "tool_call" || type === "tool_result") {
+  if (type === "tool_call" || type === "tool_result") {
+    return "TOOL";
+  }
+
+  if (type === "search" || type === "citation") {
     return "S";
   }
 
@@ -510,7 +518,7 @@ export function summarizeInspectorEvents(events: InspectorRunEvent[]): Inspector
       const nextStage = artifactStage(type, payload);
       const current = artifactGroups.get(type);
 
-      if (nextStage === "S" || nextStage === "A") {
+      if (nextStage === "S" || nextStage === "TOOL" || nextStage === "A") {
         currentStage = nextStage;
       }
 

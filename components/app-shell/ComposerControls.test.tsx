@@ -38,7 +38,8 @@ const catalog: Catalog = {
     provider: "fake",
     searchStrategyId: "search-disabled",
     showCitations: true,
-    showReasoningBlocks: false
+    showReasoningBlocks: false,
+    showToolActivity: true,
   },
   models: [model],
   promptPresets: [
@@ -161,6 +162,7 @@ function createControlsProps(overrides: Partial<ComposerControlsProps> = {}): Co
     selectedSearchStrategy: "search-disabled",
     showCitations: true,
     showReasoningBlocks: false,
+    showToolActivity: true,
     streamMode: true,
     streaming: false,
     temperature: "0.7",
@@ -180,6 +182,7 @@ function createControlsProps(overrides: Partial<ComposerControlsProps> = {}): Co
     onToggleCitations: vi.fn(),
     onToggleNotificationSound: vi.fn(),
     onToggleReasoningBlocks: vi.fn(),
+    onToggleToolActivity: vi.fn(),
     ...overrides
   };
 }
@@ -538,6 +541,7 @@ describe("ComposerControls", () => {
       notificationSoundEnabled: true,
       reasoningEffort: "medium",
       showReasoningBlocks: true,
+      showToolActivity: true,
       streamMode: false
     });
     const dialog = openRunSettings();
@@ -565,22 +569,26 @@ describe("ComposerControls", () => {
     const stream = within(dialog).getByRole("button", { name: "Stream response" });
     const citations = within(dialog).getByRole("button", { name: "Hide citations" });
     const reasoningBlocks = within(dialog).getByRole("button", { name: "Hide reasoning blocks" });
+    const toolActivity = within(dialog).getByRole("button", { name: "Hide tool activity" });
     const sound = within(dialog).getByRole("button", { name: "Mute answer sound" });
     expect(background).toHaveAttribute("aria-pressed", "true");
     expect(stream).toHaveAttribute("aria-pressed", "false");
     expect(citations).toHaveAttribute("aria-pressed", "true");
     expect(reasoningBlocks).toHaveAttribute("aria-pressed", "true");
+    expect(toolActivity).toHaveAttribute("aria-pressed", "true");
     expect(sound).toHaveAttribute("aria-pressed", "true");
 
     fireEvent.click(background);
     fireEvent.click(stream);
     fireEvent.click(citations);
     fireEvent.click(reasoningBlocks);
+    fireEvent.click(toolActivity);
     fireEvent.click(sound);
     expect(props.onBackgroundModeChange).toHaveBeenCalledWith(false);
     expect(props.onStreamModeChange).toHaveBeenCalledWith(true);
     expect(props.onToggleCitations).toHaveBeenCalledOnce();
     expect(props.onToggleReasoningBlocks).toHaveBeenCalledOnce();
+    expect(props.onToggleToolActivity).toHaveBeenCalledOnce();
     expect(props.onToggleNotificationSound).toHaveBeenCalledOnce();
 
     fireEvent.change(within(dialog).getByLabelText("Reasoning mode"), { target: { value: "pro" } });
@@ -667,6 +675,7 @@ describe("ComposerControls", () => {
     expect(within(dialog).getByRole("button", { name: "Stream response" })).toBeDisabled();
     expect(within(dialog).getByRole("button", { name: "Hide citations" })).toBeEnabled();
     expect(within(dialog).getByRole("button", { name: "Show reasoning blocks" })).toBeEnabled();
+    expect(within(dialog).getByRole("button", { name: "Hide tool activity" })).toBeEnabled();
     expect(within(dialog).getByRole("button", { name: "Enable answer sound" })).toBeEnabled();
   });
 

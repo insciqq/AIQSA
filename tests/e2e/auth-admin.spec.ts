@@ -26,6 +26,7 @@ const adminSections = [
   { id: "usage", label: "Usage" },
   { id: "groups", label: "Groups" },
   { id: "model-access", label: "Model access" },
+  { id: "mcp", label: "MCP servers" },
   { id: "invites", label: "Invites" },
   { id: "access-rules", label: "Access rules" },
   { id: "safety", label: "Safety" }
@@ -159,6 +160,35 @@ test("admin API rejects a direct self-disable attempt", async ({ page }) => {
       where: { id: DEFAULT_BOOTSTRAP_USER_ID }
     })
   ).resolves.toEqual({ status: "active" });
+});
+
+test("admin creates and deletes an installation-owned MCP draft", async ({ page }) => {
+  const serverName = `mem0-browser-${randomUUID().slice(0, 8)}`;
+
+  try {
+    await bootstrapAdmin(page);
+    await page.getByRole("tab", { exact: true, name: "MCP servers" }).click();
+    const section = page.getByTestId("admin-section-mcp");
+    await expect(section).toBeVisible();
+
+    await section.getByRole("button", { name: "New server" }).click();
+    await expect(section.getByRole("heading", { name: "Add an MCP server" })).toBeVisible();
+    await section.getByRole("button", { name: "Configure manually" }).click();
+    await section.getByLabel("Display name").fill(serverName);
+    await section.getByLabel("MCP endpoint URL").fill("https://mcp.example.com/mcp");
+    await section.getByLabel("Mode").selectOption("oauth");
+    await section.getByLabel("Allowed authorization server origins").fill("https://auth.example.com");
+    await section.getByRole("button", { name: "Create draft" }).click();
+
+    await expect(section.getByRole("heading", { name: serverName })).toBeVisible();
+    await expect(section.getByText("Activation trusts this server as one unit.", { exact: false })).toBeVisible();
+    await section.getByRole("button", { name: "Delete…" }).click();
+    await section.getByRole("button", { name: "Delete server" }).click();
+    await expect(section.getByText("MCP server deleted.")).toBeVisible();
+    await expect(section.getByRole("heading", { name: serverName })).toHaveCount(0);
+  } finally {
+    await prisma.mcpServer.deleteMany({ where: { displayName: serverName } });
+  }
 });
 
 test("admin manages approvals, rules, invites, session revocation, and disabling", async ({ browser, page }) => {

@@ -2,16 +2,33 @@ import { describe, expect, it } from "vitest";
 import { hashPassword, verifyPassword } from "../../lib/server/auth/password";
 import {
   assertLocalSeedRuntime,
+  ensureLocalFixturePasswordHash,
   ensureLocalOperatorPasswordHash,
   isLocalSeedRuntime,
   LOCAL_OPERATOR_EMAIL,
   LOCAL_OPERATOR_PASSWORD
 } from "../../prisma/local-seed-auth";
+import {
+  LOCAL_MCP_MEMBER,
+  LOCAL_ORDINARY_USERS,
+  LOCAL_RESTRICTED_MEMBER
+} from "../../prisma/local-seed-fixtures";
 
 describe("local seed auth", () => {
   it("keeps the documented disposable local credential stable", () => {
     expect(LOCAL_OPERATOR_EMAIL).toBe("operator@aiqsa.local");
     expect(LOCAL_OPERATOR_PASSWORD).toBe("AIQSA-local-2026!");
+  });
+
+  it("defines exactly two deterministic ordinary-user credentials for disposable seeds", () => {
+    expect(LOCAL_ORDINARY_USERS).toHaveLength(2);
+    expect(LOCAL_ORDINARY_USERS).toEqual([LOCAL_MCP_MEMBER, LOCAL_RESTRICTED_MEMBER]);
+    expect(LOCAL_ORDINARY_USERS.map((user) => user.email)).toEqual([
+      "mcp-member@aiqsa.local",
+      "restricted-member@aiqsa.local"
+    ]);
+    expect(new Set(LOCAL_ORDINARY_USERS.map((user) => user.id)).size).toBe(2);
+    expect(new Set(LOCAL_ORDINARY_USERS.map((user) => user.password)).size).toBe(2);
   });
 
   it("allows only an explicit non-production test runtime", () => {
@@ -33,6 +50,9 @@ describe("local seed auth", () => {
     expect(repairedWrongHash).not.toBe(wrongHash);
     await expect(verifyPassword(LOCAL_OPERATOR_PASSWORD, repairedWrongHash)).resolves.toBe(true);
     await expect(verifyPassword(LOCAL_OPERATOR_PASSWORD, repairedMalformedHash)).resolves.toBe(true);
+
+    const fixtureHash = await ensureLocalFixturePasswordHash(LOCAL_MCP_MEMBER.password, null);
+    await expect(verifyPassword(LOCAL_MCP_MEMBER.password, fixtureHash)).resolves.toBe(true);
   });
 
   it.each([
