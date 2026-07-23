@@ -25,7 +25,7 @@
 2. Update docs when changing architecture, env, tests, workflows, or product behavior.
 3. Keep `active_tasks/` and `done_tasks/` intact as harness state.
 4. Keep `done_tasks/` as a permanent significant-completion journal; remove stale narrative from living docs instead.
-5. Do not make routine UI verification depend on Playwright MCP.
+5. Keep routine UI verification in repository-owned Playwright CLI tests.
 6. Prefer deterministic mocks before real paid API calls.
 7. Do not commit secrets, API keys, database URLs with passwords, or private operator notes.
 8. Run app checks through Docker Compose.

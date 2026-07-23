@@ -26,4 +26,4 @@ Do not split a separate backend service until Next.js Route Handlers become a re
 - Shared TypeScript domain modules can be used by routes, providers, UI, and tests.
 - Docker Compose becomes the expected verification path after scaffold.
 - Provider SDK calls stay behind internal adapters.
-- The first implementation can be local-first and single-user while preserving `userId` in the schema for later auth.
+- The initial implementation preserved `userId` throughout the schema; ADR 0008 now owns shipped multi-user auth and ADR 0020 owns the persistent-installation versus disposable-development split.

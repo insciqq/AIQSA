@@ -2,13 +2,13 @@
 
 Entry point for agent-driven development in this repository.
 
-AIQSA is a self-hosted QSA web app: Question -> Search -> Answer with transparent provider/API control. The deployment target is a small multi-user installation (50+ users); the codebase is transitioning from its single-operator origin, with the transition tracked in `agent_docs/backlog/`. The harness is a living operating manual for the code that exists now. Keep it sharp: document current contracts, workflows, rules, and verification commands; remove stale narrative from living docs and resolved placeholders from active queues. `agent_docs/done_tasks/` is a permanent significant-completion journal, not stale material.
+AIQSA is a self-hosted QSA web app: Question -> Search -> Answer with transparent provider/API control. The core multi-user transition is shipped; remaining work for the small 50+ user target lives in `agent_docs/backlog/`. The harness is a living operating manual for the code that exists now. Keep it sharp: document current contracts, workflows, rules, and verification commands; remove stale narrative from living docs and resolved placeholders from active queues. `agent_docs/done_tasks/` is a permanent significant-completion journal, not stale material.
 
 ## Autonomy Trigger
 
 If the operator says "start implementation", "begin", "go ahead", "начинай реализацию", or an equivalent instruction, do not ask what to do next. Start the autonomous workflow:
 
-1. Read the required docs below.
+1. Follow the reading map below for the requested scope.
 2. Inspect repository state.
 3. Pick the first ready active task unless the operator requested specific scope.
 4. Implement it completely; keep task-ledger mutations with the root/integrating agent.
@@ -19,17 +19,21 @@ If the operator says "start implementation", "begin", "go ahead", "начина�
 
 Stop only for missing secrets, destructive operations not already requested, missing external services that cannot be mocked, or a real product decision not covered by the current docs. Provider-smoke permission is defined in `agent_docs/CRITICAL_INVARIANTS.md`. External dependency-security check permission is defined in `agent_docs/SECURITY.md`.
 
-## Read First
+## Reading Map
 
-1. `agent_docs/AUTONOMOUS_WORKFLOW.md`
-2. `agent_docs/AI_CONTEXT.md`
-3. `agent_docs/DECISION_DEFAULTS.md`
-4. `agent_docs/CRITICAL_INVARIANTS.md`
-5. `agent_docs/ADR/README.md`; read full ADRs only before work in their area, or all accepted ADRs before broad architecture work
-6. `agent_docs/ARCHITECTURE.md`
-7. `agent_docs/active_tasks/README.md`, then the selected active task
+Do not preload the whole harness. Start with:
 
-Conditional docs:
+1. `agent_docs/AI_CONTEXT.md` for product orientation and contract ownership.
+2. `agent_docs/CRITICAL_INVARIANTS.md` for the rules that every change must preserve.
+
+Then read only what the scope requires:
+
+- For autonomous task selection, read `agent_docs/AUTONOMOUS_WORKFLOW.md`, `agent_docs/active_tasks/README.md`, and the selected task.
+- When the operator left a product or implementation choice open, read `agent_docs/DECISION_DEFAULTS.md`.
+- Before topology, module-boundary, data-boundary, or deployment-shape work, read `agent_docs/ARCHITECTURE.md`.
+- Before a durable or cross-cutting decision, inspect `agent_docs/ADR/README.md` and read the ADRs for that area; read all accepted ADRs only for broad architecture work.
+
+Subject routes:
 
 - `agent_docs/QSA_PIPELINE.md` before run-pipeline, search, provider-run, or inspection work.
 - `agent_docs/FRONTEND.md` before UI behavior, state, accessibility, or shell work.
@@ -40,7 +44,7 @@ Conditional docs:
 - `agent_docs/SECURITY.md` before dependency or security work.
 - `agent_docs/TESTING.md` before changing behavior or tests.
 
-When docs conflict, use this precedence: `agent_docs/CRITICAL_INVARIANTS.md` > accepted ADRs > subject contracts (`ARCHITECTURE.md`, `BACKEND.md`, `FRONTEND.md`, `DESIGN_SYSTEM.md`, `QSA_PIPELINE.md`, `ENV_VARIABLES.md`, `SECURITY.md`, `TESTING.md`) > `README.md`.
+The operator's current request defines scope. Within repository guidance, use this precedence: `agent_docs/CRITICAL_INVARIANTS.md` > accepted ADRs > the owning subject contract (`ARCHITECTURE.md`, `BACKEND.md`, `FRONTEND.md`, `DESIGN_SYSTEM.md`, `QSA_PIPELINE.md`, `ENV_VARIABLES.md`, `SECURITY.md`, or `TESTING.md`) > `DECISION_DEFAULTS.md` > `README.md`. A task may narrow scope but does not silently override an accepted contract unless changing that contract is part of its goal.
 
 ## Repository State
 

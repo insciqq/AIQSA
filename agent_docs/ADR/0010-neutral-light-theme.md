@@ -5,7 +5,7 @@ Amends: 0009-conversation-first-ui-revamp
 
 ## Context
 
-Task 144 established semantic theme tokens and three persisted dark palettes. ADR 0009 deliberately kept the conversation-first revamp dark-first and deferred light mode until the shared shell no longer depended on hard-coded dark browser chrome, scrims, shadows, atmosphere, or syntax highlighting.
+The semantic theme-token foundation established three persisted dark palettes. ADR 0009 deliberately kept the conversation-first revamp dark-first and deferred light mode until the shared shell no longer depended on hard-coded dark browser chrome, scrims, shadows, atmosphere, or syntax highlighting.
 
 The operator first requested a familiar gray-and-white palette inspired by TypingMind's public product UI. The token audit found that a palette-only inversion would leave browser `color-scheme`, SSR markup, overlays, shadows, atmosphere, and Shiki output inconsistent. Light mode therefore became a declared design-system capability rather than an isolated CSS override.
 

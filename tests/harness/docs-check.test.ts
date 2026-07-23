@@ -7,16 +7,27 @@ const cli = path.resolve(process.cwd(), "scripts/docs-check.mjs");
 const roots: string[] = [];
 const required = [
   "AGENTS.md",
+  "CLAUDE.md",
   "README.md",
   "agent_docs/AUTONOMOUS_WORKFLOW.md",
+  "agent_docs/AI_CONTEXT.md",
   "agent_docs/ARCHITECTURE.md",
   "agent_docs/BACKEND.md",
+  "agent_docs/CRITICAL_INVARIANTS.md",
+  "agent_docs/DECISION_DEFAULTS.md",
+  "agent_docs/DESIGN_SYSTEM.md",
   "agent_docs/FRONTEND.md",
   "agent_docs/ENV_VARIABLES.md",
+  "agent_docs/PROVIDER_API_NOTES.md",
+  "agent_docs/QSA_PIPELINE.md",
+  "agent_docs/RISKS.md",
   "agent_docs/SECURITY.md",
   "agent_docs/TESTING.md",
   "agent_docs/TASK_TEMPLATE.md",
-  "agent_docs/ADR/README.md"
+  "agent_docs/ADR/README.md",
+  "agent_docs/active_tasks/README.md",
+  "agent_docs/backlog/README.md",
+  "agent_docs/done_tasks/README.md"
 ];
 
 function fixture() {
@@ -25,7 +36,12 @@ function fixture() {
   for (const filename of required) {
     const target = path.join(root, filename);
     mkdirSync(path.dirname(target), { recursive: true });
-    writeFileSync(target, filename === "agent_docs/ENV_VARIABLES.md" ? "# Environment\n\nEXAMPLE_KEY=\n" : `# ${filename}\n`);
+    const body = filename === "agent_docs/ENV_VARIABLES.md"
+      ? "# Environment\n\nEXAMPLE_KEY=\n"
+      : filename === "CLAUDE.md"
+        ? "# CLAUDE\n\nFollow [AGENTS.md](AGENTS.md).\n"
+        : `# ${filename}\n`;
+    writeFileSync(target, body);
   }
   for (const directory of ["active_tasks", "backlog", "done_tasks"]) {
     mkdirSync(path.join(root, "agent_docs", directory), { recursive: true });
@@ -81,6 +97,37 @@ describe("lean documentation sanity check", () => {
 
     expect(result.status).toBe(1);
     expect(result.stderr).toContain("broken local Markdown link");
+  });
+
+  it("checks the done-journal README without scanning immutable completion entries", () => {
+    const root = fixture();
+    writeFileSync(path.join(root, "agent_docs/done_tasks/README.md"), "[Missing](../missing.md)\n");
+
+    const result = check(root);
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("agent_docs/done_tasks/README.md: broken local Markdown link");
+  });
+
+  it("keeps root instruction files within their context budgets", () => {
+    const root = fixture();
+    writeFileSync(path.join(root, "AGENTS.md"), `# AGENTS\n${"instruction\n".repeat(201)}`);
+
+    const result = check(root);
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("AGENTS.md:");
+    expect(result.stderr).toContain("root-instruction budget");
+  });
+
+  it("keeps CLAUDE.md as a pointer to the canonical root instructions", () => {
+    const root = fixture();
+    writeFileSync(path.join(root, "CLAUDE.md"), "# CLAUDE\n\nDuplicated repository rules.\n");
+
+    const result = check(root);
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("CLAUDE.md: must route to AGENTS.md");
   });
 
   it("requires every example environment key to be documented", () => {

@@ -4,6 +4,7 @@ const baseURL = "http://127.0.0.1:3000";
 const fakeProviderTokenDelayMs = process.env.AIQSA_FAKE_PROVIDER_TOKEN_DELAY_MS?.trim() || "150";
 
 export default defineConfig({
+  forbidOnly: true,
   testDir: "./tests/e2e",
   outputDir: "test-results/playwright",
   timeout: 30_000,

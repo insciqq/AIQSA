@@ -17,81 +17,19 @@ Current responsibilities:
 - PDF/image/text-like document upload foundation;
 - anonymous sanitized share snapshots.
 
-## Current API Surface
+## API Ownership
 
-```text
-GET    /api/health/live
-GET    /api/health/ready
-POST   /api/auth/token
-POST   /api/auth/login
-GET    /api/auth/oauth/:provider
-GET    /api/auth/oauth/:provider/callback
-POST   /api/auth/register
-POST   /api/auth/invite/accept
-POST   /api/auth/verify-email
-POST   /api/auth/password-reset/request
-POST   /api/auth/password-reset/complete
-POST   /api/auth/logout
-GET    /api/admin
-POST   /api/admin/action
-GET    /api/admin/mcp
-POST   /api/admin/mcp
-PATCH  /api/admin/mcp/:serverId
-DELETE /api/admin/mcp/:serverId
-POST   /api/admin/mcp/:serverId/test
-POST   /api/admin/mcp/:serverId/activate
-POST   /api/admin/mcp/:serverId/check-update
-POST   /api/admin/mcp/:serverId/rebuild
-POST   /api/admin/mcp/:serverId/rollback
-PUT    /api/admin/mcp/:serverId/grants
-GET    /api/admin/mcp/:serverId/oauth/validation/connect
-GET    /api/admin/mcp/:serverId/oauth/validation/reconnect
-GET    /api/admin/mcp/:serverId/oauth/validation/callback
-POST   /api/admin/mcp/:serverId/oauth/validation/disconnect
-GET    /api/me
-GET    /api/me/catalog
-GET    /api/me/mcp
-PATCH  /api/me/mcp/:serverId
-GET    /api/me/mcp/:serverId/oauth/connect
-GET    /api/me/mcp/:serverId/oauth/reconnect
-GET    /api/me/mcp/:serverId/oauth/callback
-POST   /api/me/mcp/:serverId/oauth/disconnect
-PATCH  /api/me/settings
+The executable route inventory and HTTP methods live in `app/api/**/route.ts`; shared wire contracts and route tests own request/response shape. Do not maintain a second endpoint manifest in prose.
 
-GET    /api/chats
-POST   /api/chats
-GET    /api/chats/:chatId
-PATCH  /api/chats/:chatId
-DELETE /api/chats/:chatId
+The product route families are:
 
-POST   /api/folders
-PATCH  /api/folders/:folderId
-DELETE /api/folders/:folderId
+- liveness/readiness and password/OAuth/onboarding/recovery auth;
+- current-user identity, entitled catalog, settings, and MCP configuration/OAuth;
+- administrator user/group/grant/invite/rule operations and the installation MCP catalog;
+- folders, chats, message branches/regeneration, prompts, and model-run inspection/cancellation;
+- private uploads plus immutable public-share creation/read/revocation.
 
-POST   /api/prompts
-PATCH  /api/prompts/:promptId
-DELETE /api/prompts/:promptId
-POST   /api/prompts/:promptId/default
-
-POST   /api/chats/:chatId/messages
-PATCH  /api/messages/:messageId
-DELETE /api/messages/:messageId
-POST   /api/messages/:messageId/branch-chat
-POST   /api/messages/:messageId/regenerate
-
-GET    /api/model-runs/:runId
-POST   /api/model-runs/:runId/cancel
-
-POST   /api/uploads
-POST   /api/chats/:chatId/share
-POST   /api/shares/:shareId/revoke
-GET    /api/public-shares/:shareToken
-GET    /s/:shareToken
-```
-
-There are no standalone current routes for `/api/providers`, `/api/models`, `/api/settings`, or `/api/usage`; catalog and usage surfaces are delivered through the current chat/catalog/run APIs, while current-user default control updates use `/api/me/settings`.
-
-The local-only `/api/test/auth-mails` route is outside the product API list and returns `404` unless deterministic local test auth is allowed. Shared wire contracts and route tests, rather than a duplicated script manifest, own request/response semantics.
+There are no standalone current route families for providers, models, settings, or usage; those projections are delivered through current-user catalog/settings and chat/run APIs. The public share page under `app/s/` renders the sanitized snapshot contract. The local-only auth-mail test route returns `404` unless deterministic local test auth is allowed.
 
 The public operational health routes expose only `ok`, `ready`, or `not_ready`, never dependency errors or configuration values. Liveness checks the process. Readiness also rejects insecure non-local/test/recovery configuration and probes Postgres plus the configured private S3 bucket with a bounded storage request.
 
@@ -117,7 +55,7 @@ All private routes resolve an active current user through `lib/server/auth/reque
 - `GET /api/me/catalog` returns current-user entitled providers/models/search strategies/prompt presets plus saved default provider/model/search/prompt, citation/reasoning/tool-activity presentation toggles, and per-model run-control drafts. Search options are concrete strategies only: `search-disabled`, `openai-native-web-search`, and `perplexity-tool-search` where supported. Catalog and settings routes share `prismaCatalogData.ts` for exposure/loading and `currentUserCatalog.ts` for entitlement/default selection, so their eligibility rules cannot drift.
 - MCP catalog routes are deliberately separate from the provider catalog and broad admin dashboard. Active administrators own installation MCP drafts, shared write-only values, enable/disable state, irreversible deletion, and direct/group server grants through `/api/admin/mcp`; a group grant can authorize server use but never personal slots. DELETE first stores an internal tombstone, disables every preference, hides the server from both catalogs, and prevents new grants/runs. Accepted bindings may drain; the ordinary runtime reconciler then removes generations/workloads and physically deletes the OAuth/configuration/revision/server graph, while nullable run bindings, immutable run snapshots, events, and tool-call evidence remain. There is no administrator Archive/restore workflow. `/api/me/mcp` returns only enabled, non-tombstoned servers with an active revision and an effective direct-or-group `canUse` grant. A user may toggle only those servers and set only exact personal slot keys from that user's direct grant. Shared and sensitive personal values are returned only as configured/source metadata; non-sensitive personal values may be returned to their owner. Losing the final effective grant turns the saved preference off.
 - `POST /api/admin/mcp/:serverId/test` resolves the current draft's shared and one-time validation values and stores only draft-hash-bound sanitized evidence plus the discovered inventory. Remote Streamable HTTP uses the official SDK wrapper and SSRF-safe fetch; OAuth drafts use an explicit administrator validation connection. Before evidence is persisted, the complete serialized inventory is rejected if it contains any exact static or OAuth credential known to that session. Npm and PyPI selectors resolve to an exact registry version/integrity and ToolHive-generated image, while digest-pinned OCI stdio uses the image's declared entrypoint. A failed local startup may read at most the dedicated bounded ToolHive log response and convert an allowlisted pattern such as a missing uppercase environment variable into a stable validation issue; raw/unclassified output is discarded. `POST .../activate` requires that exact tested draft, creates or reuses an immutable revision, enables it, and invalidates enabled users' desired generations. Admin projections expose the canonical revision identity derived from draft, resolved artifact, sanitized evidence, and tool inventory, so a just-activated test is not offered again while a newly resolved artifact under the same selector remains activatable. `check-update` resolves the requested selector into the draft; the admin creation UI invokes it once after saving an ordinary non-OAuth import, without changing the separate API boundaries. Revision reads expose `available`, `missing`, `unknown`, or `not_applicable` artifact evidence; known-missing local artifacts cannot be rolled back and `rebuild` copies that revision into the draft for a fresh test/materialization/activation.
-- MCP OAuth start/callback uses Authorization Code with S256 PKCE and the official SDK discovery/registration helpers under administrator-owned resource, authorization-origin, scope, and redirect policy. Reusable client metadata and each user or explicit administrator-validation connection are installation records; tokens are encrypted with `AIQSA_ENCRYPTION_KEY`, refresh is serialized/CAS-settled, and a disconnect drains bound generations before best-effort external revocation cleanup. Callback settlement is part of the happy path: administrator validation rechecks the flow-bound draft hash, tests, and activates it; an entitled user connection enables that user's server preference and kicks reconciliation. The callback reports `connected` only after settlement succeeds and otherwise returns the existing generic failed outcome. Periodic reconciliation starts drain when the owner loses eligibility or when the active OAuth policy fingerprint changes; merely disabling a server or user preference preserves authorization. Callback query outcomes contain no code, verifier, access token, refresh token, raw validation output, or raw provider response.
+- MCP OAuth start/reconnect uses protected `POST`; the external callback uses `GET`. Authorization Code with S256 PKCE and the official SDK discovery/registration helpers run under administrator-owned resource, authorization-origin, scope, and redirect policy. Reusable client metadata and each user or explicit administrator-validation connection are installation records; tokens are encrypted with `AIQSA_ENCRYPTION_KEY`, refresh is serialized/CAS-settled, and a disconnect drains bound generations before best-effort external revocation cleanup. Callback settlement is part of the happy path: administrator validation rechecks the flow-bound draft hash, tests, and activates it; an entitled user connection enables that user's server preference and kicks reconciliation. The callback reports `connected` only after settlement succeeds and otherwise returns the existing generic failed outcome. Periodic reconciliation starts drain when the owner loses eligibility or when the active OAuth policy fingerprint changes; merely disabling a server or user preference preserves authorization. Callback query outcomes contain no code, verifier, access token, refresh token, raw validation output, or raw provider response.
 - The process-local MCP coordinator is kicked at node boot, after runtime-affecting MCP mutations, and after successful authenticated activity, and it also reconciles periodically. Session activity is persisted at most once per minute; the all-user sweep prewarms enabled servers only for active users seen within the last 15 minutes. Each effective user/server configuration gets a fingerprinted runtime generation and an official-SDK session: remote servers connect directly, while local npm/PyPI/OCI stdio sessions address a ToolHive-managed sibling workload through its private proxy. A generation records only safe `oauth`/`personal`/`shared` credential-source tags and an optional provider-supplied account/workspace label for later inspection. Readiness, sanitized errors, and bounded complete tool inventories are persisted for `/api/me/mcp`; the complete inventory is rejected if it reproduces an exact known effective credential. Live sessions remain process-local and stale or unreferenced generations are drained. MCP/ToolHive failure does not make core `/api/health/ready` fail.
 - `PATCH /api/me/settings` updates current-user defaults after validating selected provider/model/search/prompt and parameter drafts against that same backend-filtered catalog. Citation, reasoning-block, and tool-activity booleans are independent presentation settings; `showToolActivity` defaults true and never enters a normalized run request. Saved search preferences must be concrete strategies that the selected model catalog includes. Sanitized per-model control values remain patches until the repository transaction locks the current user's latest settings row; against that row it revalidates the resulting provider/model/search tuple, merges independent model keys and draft fields, applies scalar fields, and synchronizes prompt-default flags together. Concurrent accepted patches therefore cannot replace unrelated model drafts or leave a search choice attached to a concurrently superseded model.
 - `GET /api/chats` returns current-user folders and exact lightweight chat summaries; summary rows include `messageCount` and `pinned` but omit `messages` and `usageStats`, and the repository selects no message/run graph. With `q=<query>`, the route also returns up to 50 current-user, non-archived chat ids whose `Message.content` JSON text matches the query.
@@ -146,10 +84,13 @@ All private routes resolve an active current user through `lib/server/auth/reque
 AIQSA ships a manual/cron-friendly retention command:
 
 ```bash
-docker compose run --rm app npm run prune -- --dry-run
-docker compose run --rm app npm run prune -- --execute
-# persistent installation, after the tools image is built and migration/bootstrap succeeded
+# disposable development stack
+docker compose -f docker-compose.dev.yml run --rm app npm run prune -- --dry-run
+docker compose -f docker-compose.dev.yml run --rm app npm run prune -- --execute
+
+# persistent installation, after migration/bootstrap succeeds
 docker compose run --rm migrate-bootstrap npm run prune -- --dry-run
+docker compose run --rm migrate-bootstrap npm run prune -- --execute
 ```
 
 The installation tools image is the cron/manual owner when the standalone runtime is deployed; override its normal bootstrap command with the same `npm run prune -- ...` invocation. The command defaults to dry-run, 30-day terminal `ModelRunEvent` and auth-state retention windows, a 7-day orphaned-attachment window, a 15-minute deletion-job lease, and a 1,000-row batch. `--event-days`, `--auth-days`, `--orphan-attachment-days`, `--deletion-job-lease-minutes`, and `--batch-size` tune those values.
@@ -232,6 +173,8 @@ Provider HTTP transports keep `AIQSA_PROVIDER_TIMEOUT_MS` active through bounded
 `lib/server/providers/types.ts` is the code owner of the adapter boundary: `NormalizedRunRequest` is the normalized/persistable request shape and `ProviderRunRequest` adds resolved private attachments plus tool/streaming execution controls. Do not copy those interfaces into living prose; update the exported types and their tests together. Each adapter emits normalized events and returns a `ProviderRunResult` with safe provider-specific request/response previews, usage, and artifacts.
 
 OpenAI-style parameter metadata uses temperature `1` as the neutral default; `0` remains an explicit deterministic/focused choice. Accepted max-output aliases are canonicalized once before budgeting and provider serialization. For `perplexity-tool-search`, preparation snapshots the enabled strategy, configured search model and model limits, plus the server-owned routing/privacy policy; a request may override only canonical bounded `params.search.maxOutputTokens` and `temperature`. OpenAI and OpenRouter pass the selected model's parallel-tool capability through for provider-neutral custom tools, including MCP and `search_via_perplexity`; the presence of OpenAI native `web_search` does not disable parallel custom calls. The common loop preserves supported background/streaming behavior, executes provider-returned batches with bounded concurrency, allows at most three tool rounds and 16 total calls, reapplies the context budget after each batch, and forces a no-tool synthesis round when the round budget is exhausted.
+
+Current privacy limitation: the Perplexity tool executor inherits the accepted answer request's attachments, and its OpenRouter request builder appends up to 12,000 characters of extracted text from every PDF or text-like document even when the model supplied a standalone search query. The advertised `maxAttachmentTextChars` option does not currently narrow that fixed builder limit, and an empty tool query falls back to the original user content. Treat this as a pending query-only/fail-closed remediation, not as a safe attachment-search contract; request previews and logs still must not duplicate the private content.
 
 The model run input is created only after backend validation of provider, model, search strategy, provider parameters, and attachment content blocks against the current user's catalog. Preparation starts from the enabled `ProviderModel.defaultParams` stored on the server and recursively overlays only validated per-run controls; for OpenRouter the complete catalog `provider` routing/fallback/privacy object is server-authoritative and cannot be weakened by a direct request. Immediately before provider/tool dispatch, execution performs bounded fresh reads of the user's provider/model/search entitlements, the enabled model row, and the selected search-strategy row. Revocation or catalog disable in the preparation-to-dispatch interval therefore fails the durable run without a provider call, while unrelated chats remain independently executable. PDF validation accepts either extracted-PDF support or `nativePdfInput`; original PDF bytes are loaded from private storage only for selected models with `nativePdfInput`. Run-route parameter validation rejects out-of-range, unsupported, ambiguous alias, or unknown posted params with `400 { "error": "invalid_run_params" }`; settings drafts are the only path that clamps operator-entered control values before saving.
 
@@ -339,7 +282,7 @@ Tool-search `ModelRun` fields and completed lifetime `Chat.total*` counters keep
 
 `Chat.totalInputTokens`, `Chat.totalOutputTokens`, and `Chat.totalReasoningTokens` are lifetime completed-run counters for operational accounting. They intentionally count completed sibling/regenerated runs and are not the user-facing active-branch usage number. The shell's branch-aware Usage popover uses `summarizeChatUsageStats` over the active visible branch.
 
-Estimated cost is still computed and stored for compatibility from the current `ProviderModel.inputTokenPriceMicros` and `outputTokenPriceMicros`; reasoning tokens use the output-token price fallback until the schema grows separate reasoning pricing, and are not added on top of the output-token total. The user-facing shell does not render dollar costs or `est. cost n/a`; provider cost accounting is tracked separately in backlog task 127. Do not trust placeholder prices for billing. Treat model pricing as operator-maintained estimate data and verify before using it for real billing.
+Estimated cost is still computed and stored for compatibility from the current `ProviderModel.inputTokenPriceMicros` and `outputTokenPriceMicros`; reasoning tokens use the output-token price fallback until the schema grows separate reasoning pricing, and are not added on top of the output-token total. The user-facing shell does not render dollar costs or `est. cost n/a`; a separate backlog slice owns source-labeled provider cost accounting. Do not trust placeholder prices for billing. Treat model pricing as operator-maintained estimate data and verify before using it for real billing.
 
 ## Security
 

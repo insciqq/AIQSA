@@ -4,6 +4,38 @@ import type { AdminDashboard } from "@/lib/contracts/admin";
 import { StrictMode } from "react";
 import { AdminPanel } from "./AdminPanel";
 
+const adminMcpController = vi.hoisted(() => ({
+  actions: {
+    activate: vi.fn(async () => false),
+    checkUpdate: vi.fn(async () => false),
+    create: vi.fn(async () => null),
+    delete: vi.fn(async () => false),
+    disconnectValidationOAuth: vi.fn(async () => false),
+    dismissError: vi.fn(),
+    dismissNotice: vi.fn(),
+    grant: vi.fn(async () => false),
+    rebuild: vi.fn(async () => false),
+    refresh: vi.fn(async () => undefined),
+    rollback: vi.fn(async () => false),
+    select: vi.fn(),
+    test: vi.fn(async () => false),
+    update: vi.fn(async () => false)
+  },
+  state: {
+    busy: false,
+    error: null,
+    loaded: true,
+    loading: false,
+    notice: null,
+    selectedServer: null,
+    servers: []
+  }
+}));
+
+vi.mock("@/components/admin/useAdminMcpController", () => ({
+  useAdminMcpController: () => adminMcpController
+}));
+
 const dashboard: AdminDashboard = {
   accessRules: [
     {

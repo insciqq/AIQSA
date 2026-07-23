@@ -24,7 +24,7 @@ Use these defaults only when the operator has not decided the point. They route 
 ## Verification Defaults
 
 - Use the cheapest focused deterministic test while iterating, then run the one routine Compose check once near completion.
-- Use Docker Compose for application checks. Playwright CLI owns browser integration; Playwright MCP is targeted diagnosis only.
+- Use the explicit development Docker Compose file for application checks. Repository-owned Playwright CLI tests own browser integration.
 - Run destructive local Playwright only when the changed behavior crosses a browser/server boundary. For visual changes, inspect the affected states directly instead of maintaining a generated gallery.
 - Run the dependency audit for dependency changes and request external-provider authority exactly as routed by `SECURITY.md` and the critical invariants.
 

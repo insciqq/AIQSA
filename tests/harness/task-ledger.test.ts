@@ -43,6 +43,7 @@ describe("lean task ledger", () => {
     expect(result.stdout).toContain("Created 1000-next-task");
     const body = readFileSync(path.join(root, "agent_docs/backlog/1000-next-task.md"), "utf8");
     expect(body).toContain("Status: backlog");
+    expect(body).toContain("docker compose -f docker-compose.dev.yml exec -T app npm run check");
     expect(body).not.toContain("Claimed by:");
     expect(() => readFileSync(path.join(root, "agent_docs/backlog/README.md"))).toThrow();
   });

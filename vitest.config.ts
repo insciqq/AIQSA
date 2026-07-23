@@ -8,6 +8,7 @@ export default defineConfig({
     }
   },
   test: {
+    allowOnly: false,
     css: true,
     environment: "jsdom",
     exclude: ["node_modules/**", ".next/**", "tests/e2e/**"],

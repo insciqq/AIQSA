@@ -29,7 +29,7 @@ The observable outcome.
 ## Tests
 
 - Focused command or scenario.
-- Routine `docker compose exec -T app npm run check` near completion.
+- Routine `docker compose -f docker-compose.dev.yml exec -T app npm run check` near completion.
 
 ## Done Notes
 

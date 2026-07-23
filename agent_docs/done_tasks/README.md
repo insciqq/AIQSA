@@ -17,4 +17,4 @@ Each completed task note should include:
 
 Completion notes are a permanent significant-work journal. Do not rewrite or delete them merely because living contracts have changed; correct current behavior in the living docs instead.
 
-`FILEMAP.md` records this directory and README but intentionally does not enumerate every completion note. `docs:check` treats ledger contents as a directory contract, while Git history and this journal preserve the per-task record.
+`docs:check` validates the ledger contract and this README without treating historical code references inside completed entries as current documentation. Git history and this journal preserve the per-task record.

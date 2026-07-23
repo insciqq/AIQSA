@@ -1,5 +1,16 @@
 # TESTING
 
+## Verification Map
+
+| Layer | Tool | What it proves | When it runs |
+| --- | --- | --- | --- |
+| Documentation and static checks | docs-check, ESLint, TypeScript | Living-doc contracts, code quality, and type safety | Routine `npm run check` |
+| Server/API and UI behavior | Vitest and Testing Library | Business rules, handlers, permissions, adapters, stores, and components | Routine `npm run check` or a focused file set |
+| Browser integration | Playwright | The browser/server boundary, routing, sessions, responsive interaction, and seeded persistence | Only for changes that cross those boundaries |
+| Opt-in integration and smoke | Vitest and task-specific scripts | Prisma, MCP, ToolHive, migrations, installation, and real providers | Only when the changed boundary requires it |
+
+The executable command definitions remain in `package.json`; `vitest.config.ts`, `playwright.config.ts`, and the test tree remain authoritative for runner details and actual coverage. Do not copy volatile test counts or exhaustive file inventories into this document.
+
 ## Default Workflow
 
 AIQSA has one routine application check. Start the isolated development stack, then run:
@@ -9,7 +20,7 @@ docker compose -f docker-compose.dev.yml up -d
 docker compose -f docker-compose.dev.yml exec -T app npm run check
 ```
 
-`check` runs compact documentation sanity, ESLint, TypeScript, and the application Vitest suite. Run it once near task completion, not after every edit.
+`check` generates the Prisma client, then runs compact documentation sanity, ESLint, TypeScript, and the application Vitest suite. Run it once near task completion, not after every edit.
 
 While implementing, run only the smallest relevant test set:
 
@@ -98,6 +109,14 @@ docker compose -f docker-compose.dev.yml exec -T app npx vitest run \
   lib/server/mcp/remoteRuntime.integration.test.ts
 ```
 
+The Prisma MCP repository integration uses unique rows and cleans them from the disposable development database. It is opt-in so ordinary unit runs do not require Postgres:
+
+```bash
+docker compose -f docker-compose.dev.yml exec -T \
+  -e AIQSA_MCP_INTEGRATION_TEST=1 app \
+  npx vitest run lib/server/mcp/prismaRepository.integration.test.ts
+```
+
 The real ToolHive OCI stdio smoke is opt-in because it controls sibling Docker resources and may pull an image. Run it only against the disposable development ToolHive service, never the persistent installation:
 
 ```bash
@@ -106,7 +125,7 @@ docker compose -f docker-compose.dev.yml exec -T \
   npx vitest run lib/server/mcp/toolhive.integration.test.ts
 ```
 
-The test uses a random exact ownership group and cleans it after the run. Npm/PyPI materialization smokes may contact their registries and are task-specific rather than routine. A hosted Notion consent/token/tool-call smoke requires an explicitly authorized test workspace and is not part of automated verification; public metadata discovery alone must not be reported as end-to-end success.
+The test uses a random exact ownership group and cleans it after the run. Its default fixture is a digest-pinned public OCI image; `AIQSA_TOOLHIVE_OCI_SMOKE_IMAGE` may select another reviewed digest-pinned fixture. Npm/PyPI materialization smokes may contact their registries and are task-specific rather than routine. A hosted Notion consent/token/tool-call smoke requires an explicitly authorized test workspace and is not part of automated verification; public metadata discovery alone must not be reported as end-to-end success.
 
 For the provider-neutral durable tool loop, run the generic loop/persistence suites together with live/recovery and provider wire adapters:
 
@@ -146,6 +165,7 @@ Do not turn these into a cumulative local release pipeline. Exposed-installation
 
 - Test observable behavior and stable contracts, not implementation shape.
 - Add the cheapest deterministic regression test; add browser coverage only for a real cross-boundary risk.
+- Focused `.only` tests are forbidden in both Vitest and Playwright configuration; use an explicit focused command while iterating.
 - Prefer accessible roles and labels; use test ids only where semantics are insufficient.
 - Use fake providers in automated tests. Never make paid external calls from Vitest or routine Playwright.
 - Preserve explicit loading, error, empty, queued, streaming, cancelled, and terminal states when changing their owner.

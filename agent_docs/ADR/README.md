@@ -37,4 +37,4 @@ Every ADR also declares `Amends: none` or a comma-separated list of earlier ADR 
 - `0013-parallel-browser-verification-namespaces.md` - superseded by ADR 0015; historical invocation-isolation design.
 - `0014-provenance-bound-local-pollution-cleanup.md` - superseded by ADR 0015; historical local-pollution cleanup design.
 
-Agents should read this index before implementation. Read the full ADR before changing work in its area, and read all accepted ADRs before broad architecture work. Add a new ADR only when making or changing a durable architectural decision.
+Read this index before work that may change an accepted product or architecture decision. Read the full ADRs for the affected area, and all accepted ADRs only before broad architecture work. Add a new ADR only when making or changing a durable decision.

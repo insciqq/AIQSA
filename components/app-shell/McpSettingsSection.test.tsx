@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { McpSettingsSection } from "./McpSettingsSection";
 import { isMcpOAuthAuthorizing, resetMcpSettingsStoreForTest } from "./mcpSettingsStore";
@@ -38,6 +38,7 @@ function userServer(id: string, name: string): UserMcpServer {
 
 describe("McpSettingsSection", () => {
   afterEach(() => {
+    cleanup();
     resetMcpSettingsStoreForTest();
     vi.unstubAllGlobals();
   });

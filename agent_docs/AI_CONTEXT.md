@@ -18,6 +18,7 @@ The shipped product is a conversation-first workspace for explicit provider/mode
 - React, Tailwind CSS, Zustand, and `lucide-react` in the browser.
 - Postgres/Prisma plus S3-compatible storage, local MinIO, and a filesystem fallback.
 - Fake, OpenAI Responses, Anthropic Messages, and OpenRouter adapters behind server-only provider contracts.
+- Administrator-managed remote and local MCP servers through the official SDK, with ToolHive-isolated local workloads.
 - Default Docker Compose for the persistent installation; `docker-compose.dev.yml`, Vitest, Testing Library, and Playwright CLI for isolated development verification.
 
 ## Runtime Shape

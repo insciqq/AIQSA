@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { ComponentProps } from "react";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ChatDeleteConfirmationDialog,
   DiscardChangesConfirmationDialog,
@@ -10,7 +10,13 @@ import {
 } from "./ConfirmationDialog";
 import { MainThreadPane } from "./MainThreadPane";
 import { defaultParameterControls } from "./controlDefaults";
+import { resetMcpSettingsStoreForTest, useMcpSettingsStore } from "./mcpSettingsStore";
 import type { Catalog, CatalogModel, ChatSummary, FolderSummary, ThreadMessage } from "./types";
+
+beforeEach(() => {
+  resetMcpSettingsStoreForTest();
+  useMcpSettingsStore.setState({ loadState: "ready" });
+});
 
 const model: CatalogModel = {
   capabilities: {

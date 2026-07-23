@@ -26,7 +26,7 @@ AIQSA becomes a conversation-first, dark-first QSA workspace.
 
 ## Transition
 
-The ordered UI program was completed through tasks 175-200 and is preserved in `agent_docs/done_tasks/`. `agent_docs/FRONTEND.md` and `agent_docs/DESIGN_SYSTEM.md` now describe the shipped runtime; this ADR records the durable direction rather than an active transition queue.
+The transition is complete. `agent_docs/FRONTEND.md` and `agent_docs/DESIGN_SYSTEM.md` describe the shipped runtime; this ADR records the durable direction rather than an active queue or completion ledger.
 
 ADR 0009 supersedes only the fixed dense three-pane and terminal/trading-console UI clauses of ADR 0001. The Question -> Search -> Answer product direction and all other accepted ADRs remain in force.
 
@@ -36,5 +36,5 @@ ADR 0009 supersedes only the fixed dense three-pane and terminal/trading-console
 - Existing view modules and state stores remain behavior boundaries; visual slices should not migrate backend/server state merely to restyle a surface.
 - Details may be hidden by default without becoming second-class: contextual entry points, keyboard access, and optional pinning preserve power workflows.
 - The revamp shipped dark-first; ADR 0010 later added Classic Light and Classic Dark without changing `aiqsa` as the default.
-- The previous design-system recipes were migration input, not permanent constraints. Task 175 replaced the foundation before the later surface slices shipped.
+- The previous design-system recipes were migration input, not permanent constraints; the shipped semantic foundation replaced them before the later surface slices.
 - Final acceptance requires feature-inventory parity plus proportional accessibility, keyboard, responsive, and browser checks.

@@ -1,6 +1,7 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PromptEditorDraft } from "./promptSettingsStore";
+import { resetMcpSettingsStoreForTest, useMcpSettingsStore } from "./mcpSettingsStore";
 import { SettingsDialog } from "./SettingsDialog";
 
 const prompts = [
@@ -68,7 +69,14 @@ function confirmDiscard() {
 }
 
 describe("SettingsDialog", () => {
+  beforeEach(() => {
+    resetMcpSettingsStoreForTest();
+    useMcpSettingsStore.setState({ loadState: "ready" });
+  });
+
   afterEach(() => {
+    cleanup();
+    resetMcpSettingsStoreForTest();
     vi.restoreAllMocks();
   });
 

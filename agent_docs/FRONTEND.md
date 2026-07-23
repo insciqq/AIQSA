@@ -396,7 +396,7 @@ Server data:
 
 UI state:
 
-- login token draft;
+- authentication form drafts;
 - open menu/popover;
 - command palette query and selected index;
 - active Details tab and persisted manual Details mode;
@@ -412,9 +412,6 @@ UI state:
 - Zustand MCP-settings resource state for its coalesced catalog refresh, OAuth callback outcome, and server replacement after mutations; personal input drafts remain local to their server fields;
 - independent local general-shell and Settings-scoped notice channels, including background-run `Check run` recovery in the general channel;
 - folder collapse state;
-- citations visibility toggle;
-- reasoning visibility toggle;
-- API parameter draft for the next run;
 - selected local theme id.
 
 Startup loads the backend-filtered catalog before activating the remembered workspace chat so chat defaults win over user startup defaults. Catalog and workspace loaders retain one in-flight promise each; chat detail requests deduplicate per chat, populate a keyed cache, and merge stale responses over concurrent optimistic/token state without replacing newer summary metadata. Returning to a complete cached chat does not refetch detail. Catalog/workspace recovery remains independently retryable and reapplies active-chat defaults only when the active chat and complete next-run control fingerprint remain unchanged, so stale closures cannot overwrite an intervening user edit. The appearance controller reads the local theme preference and mirrors changes to `aiqsa.theme`; `app/layout.tsx` validates that cookie and server-renders both palette and scheme attributes to avoid a mismatched dark class or visible palette flash without making theme a server-side user setting. Dual-theme Shiki output follows later runtime switches without a second highlight pass.

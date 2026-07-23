@@ -243,7 +243,7 @@ export function createTask({ root = process.cwd(), slug, summary }) {
   const destination = path.join(directory, `${stem}.md`);
   if (existsSync(destination)) throw new Error(`${stem} already exists`);
   mkdirSync(directory, { recursive: true });
-  writeFileSync(destination, `# ${stem}\n\nStatus: backlog\nDepends on: none\n\n## Goal\n\n${summary.trim()}\n\n## Scope\n\n- Define the implementation slice.\n\n## Out Of Scope\n\n- Unrelated product changes.\n\n## Acceptance Criteria\n\n- The goal is observable and verified.\n\n## Tests\n\n- Focused checks for the changed behavior.\n- docker compose exec -T app npm run check.\n\n## Done Notes\n\n${DONE_SENTINEL}\n`, "utf8");
+  writeFileSync(destination, `# ${stem}\n\nStatus: backlog\nDepends on: none\n\n## Goal\n\n${summary.trim()}\n\n## Scope\n\n- Define the implementation slice.\n\n## Out Of Scope\n\n- Unrelated product changes.\n\n## Acceptance Criteria\n\n- The goal is observable and verified.\n\n## Tests\n\n- Focused checks for the changed behavior.\n- docker compose -f docker-compose.dev.yml exec -T app npm run check.\n\n## Done Notes\n\n${DONE_SENTINEL}\n`, "utf8");
   return stem;
 }
 

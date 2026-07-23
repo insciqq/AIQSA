@@ -37,7 +37,7 @@ There are deliberately no claim leases, recovery journals, verification receipts
 
 - Use `docker-compose.dev.yml` for application checks; never point routine checks at the default persistent installation.
 - Prefer focused Vitest files while implementing.
-- Run `docker compose exec -T app npm run check` once near task completion when the normal stack is running.
+- Run `docker compose -f docker-compose.dev.yml exec -T app npm run check` once near task completion when the development stack is running.
 - Run the destructive local Playwright command only for browser/server workflows or an explicit task requirement.
 - Development-stack data is disposable. Checks and E2E may mutate or reset only the `aiqsa-dev` database and object bucket.
 - Parallel local checks are unsupported. If an interrupted run leaves state behind, restart or wipe only `docker-compose.dev.yml` manually.

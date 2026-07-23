@@ -2,44 +2,47 @@
 
 ## Current Risks
 
-1. The current shell is interaction-heavy.
-   - Keyboard navigation, command palette, inspector modes, folders, and branch controls need focused tests when touched.
+1. The shell is interaction-heavy.
+   - Keyboard navigation, command palette, inspector modes, folders, branching, responsive disclosure, and async ownership need focused tests when touched.
 
 2. Provider APIs differ substantially.
-   - OpenAI Responses, Anthropic Messages, and OpenRouter expose different streaming, reasoning, search, background, and usage shapes.
+   - OpenAI Responses, Anthropic Messages, and OpenRouter expose different streaming, reasoning, search, background, tool, and usage shapes; keep those differences inside adapters.
 
-3. OpenAI background mode adds state-machine complexity.
-   - Polling, cancellation, recovery by response id, retryable retrieve failures, and provider-side retention must stay explicit.
+3. Native background mode adds state-machine complexity.
+   - Polling, cancellation, recovery by provider response id, retryable retrieval failures, tool continuation, and provider-side retention must stay explicit.
 
-4. Branching is a DAG, not a flat chat list.
-   - Edit/regenerate behavior depends on `parentMessageId` and `activeLeafMessageId`; code must avoid leaking sibling branches into context replay.
+4. A conversation is a message DAG, not a flat list.
+   - Edit/regenerate behavior depends on `parentMessageId` and `activeLeafMessageId`; context replay must never include sibling branches.
 
-5. Streaming can fail halfway.
-   - Partial messages, reconnects, background jobs, cancellation, and provider errors need durable statuses.
+5. Streaming and tool execution can fail after partial external work.
+   - Partial messages, durable tool-call rows, crash-ambiguous side effects, reconnect, cancellation, and provider errors need monotonic terminal settlement and inspectable evidence.
 
-6. Active run ownership is still single-process.
-   - The database now enforces one active run per chat at creation time, and boot orphan sweep clears active rows after restart. Live cancellation/progress ownership still depends on in-process controllers, so multi-replica deployments need durable run ownership before they are safe.
+6. Live run and MCP coordination is still process-local.
+   - Database guards prevent duplicate active runs and persist desired MCP generations, but live controllers, sessions, cancellation, and progress ownership are not safe for multiple app replicas without a durable ownership design.
 
-7. Model/pricing data is placeholder.
-   - Cost estimates are useful for UI plumbing but unsafe for billing until verified against provider documentation.
+7. Model pricing is operator-maintained estimate data.
+   - Stored estimates are useful for compatibility and planning but are unsafe for billing until provider/model prices and source labels are verified.
 
-8. Request/response inspection can expose sensitive content.
-   - Keep raw payload retention session-only by default and redact previews where needed.
+8. Inspection can expose sensitive content.
+   - Keep raw payload retention session-only by default and keep durable previews, errors, tool arguments/results, and account labels bounded and redacted.
 
-9. Uploads expand privacy and provider-surface risk.
-   - S3/MinIO storage, validation, file retention, PDF text extraction, image metadata, and provider capability gates must remain server-owned. The prune command now removes old orphaned upload rows/objects, but per-user quotas and automatic scheduling still belong to the multi-user hardening track.
+9. Uploads widen both storage and provider disclosure boundaries.
+   - Storage, validation, extraction, retention, capability gates, and resource limits must remain server-owned. Current Perplexity tool search also forwards bounded extracted PDF/document text to OpenRouter without separate attachment confirmation; avoid sensitive attachments on that strategy until query-only remediation lands.
 
-10. Auth and entitlements are intentionally simple.
-   - Session auth must still avoid plaintext token storage, UI-only enforcement, and confused user/group grants.
+10. Auth and entitlement transitions remain concurrency-sensitive.
+    - Password/reset/activation/admin decisions use explicit locks and transactions, but rate limiting is process-local and every new route still needs server-side ownership and effective-grant checks.
 
-11. Anonymous sharing can leak private context if widened casually.
-    - Current shares are immutable sanitized snapshots; do not turn them into live private-chat access.
+11. Administrator-selected MCP code is trusted infrastructure.
+    - Server grants authorize every exposed tool without per-call approval; local workloads have outbound network access, and ToolHive's Docker authority plus the app's private controller access make an app/controller compromise a host compromise.
 
-12. Browser visual testing can become expensive.
-    - Default to Playwright CLI and inspect rendered UI only when the DOM/test output is insufficient.
+12. Anonymous sharing can leak private context if widened casually.
+    - Current shares are immutable sanitized snapshots; do not turn them into live private-chat access or add attachment/provider internals to snapshots.
 
-13. Schema drift can destroy data if migrations are bypassed.
-    - Persistent Postgres volumes must use a coordinated database/object backup followed by committed Prisma migrations and `prisma migrate deploy`; `prisma db push` is only acceptable for disposable scratch databases. The installation bootstrap is not a replacement for migration rollback and must never be substituted with the demo seed.
+13. Browser visual testing can become expensive.
+    - Keep browser integration in focused Playwright CLI tests and inspect rendered states only when DOM/test evidence is insufficient.
 
-14. Compose service exposure is easy to misapply.
-    - The default stack is persistent and publishes only the application on `AIQSA_BIND_ADDRESS`; keep Postgres/MinIO internal and use the TLS proxy template for exposed installs. Run deterministic credentials, seed, Fake QSA, and host-published datastores only through `docker-compose.dev.yml`, never by adding those switches to the installation stack.
+14. Schema drift can destroy persistent data.
+    - Persistent installs require coordinated database/object backup plus committed Prisma migrations and `prisma migrate deploy`; `prisma db push` and the demo seed are disposable-development tools only.
+
+15. Compose targets are easy to confuse.
+    - Default Compose is the persistent installation. Deterministic credentials, Fake QSA, destructive checks, seed, and host-published datastores belong only to explicit `docker-compose.dev.yml` commands.

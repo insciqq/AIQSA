@@ -30,8 +30,8 @@ Keep this private/local first. Do not add public signup, billing enforcement, OA
 - Every model run must validate provider/model/search/attachment access on the backend.
 - Uploaded files remain private by default.
 - Public share links expose only sanitized snapshots and can be revoked.
-- Auth can later be replaced by Auth.js or Clerk without removing user/group entitlement concepts.
+- User/group entitlement concepts remain independent of the concrete authentication entry points.
 
-## Addendum (2026-06-10)
+## Addendum (2026-06-10, current state clarified 2026-07-23)
 
-Direction changed: a self-hosted multi-user deployment (50+ users) is now planned, so the "keep this private/local first" constraint is superseded. The foundations in this ADR stand; the explicit follow-up tasks this ADR required (real auth, quotas/billing controls, hardening) now exist in `agent_docs/backlog/`.
+The "keep this private/local first" constraint is superseded. The shipped application now has multi-user password and optional Google/Yandex OAuth auth, verified admission/invites, revocable sessions, administrator workflows, hardened single-host deployment, and the original entitlement/upload/share foundations. Resource quotas, cost controls, and multi-replica coordination remain separate backlog work; current behavior is owned by `BACKEND.md`, `SECURITY.md`, and `ENV_VARIABLES.md` rather than this historical rollout boundary.

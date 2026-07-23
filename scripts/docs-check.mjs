@@ -7,16 +7,27 @@ import { validateTaskLedger } from "./task-ledger.mjs";
 
 const REQUIRED_DOCS = [
   "AGENTS.md",
+  "CLAUDE.md",
   "README.md",
   "agent_docs/AUTONOMOUS_WORKFLOW.md",
+  "agent_docs/AI_CONTEXT.md",
   "agent_docs/ARCHITECTURE.md",
   "agent_docs/BACKEND.md",
+  "agent_docs/CRITICAL_INVARIANTS.md",
+  "agent_docs/DECISION_DEFAULTS.md",
+  "agent_docs/DESIGN_SYSTEM.md",
   "agent_docs/FRONTEND.md",
   "agent_docs/ENV_VARIABLES.md",
+  "agent_docs/PROVIDER_API_NOTES.md",
+  "agent_docs/QSA_PIPELINE.md",
+  "agent_docs/RISKS.md",
   "agent_docs/SECURITY.md",
   "agent_docs/TESTING.md",
   "agent_docs/TASK_TEMPLATE.md",
-  "agent_docs/ADR/README.md"
+  "agent_docs/ADR/README.md",
+  "agent_docs/active_tasks/README.md",
+  "agent_docs/backlog/README.md",
+  "agent_docs/done_tasks/README.md"
 ];
 
 function markdownFiles(root) {
@@ -30,8 +41,12 @@ function markdownFiles(root) {
   function walk(directory) {
     if (!existsSync(directory)) return;
     for (const entry of readdirSync(directory, { withFileTypes: true })) {
-      if (entry.name === "done_tasks") continue;
       const target = path.join(directory, entry.name);
+      if (entry.isDirectory() && entry.name === "done_tasks") {
+        const readme = path.join(target, "README.md");
+        if (existsSync(readme)) files.push(readme);
+        continue;
+      }
       if (entry.isDirectory()) walk(target);
       else if (entry.isFile() && entry.name.endsWith(".md")) files.push(target);
     }
@@ -100,6 +115,24 @@ function envErrors(root) {
   return errors;
 }
 
+function instructionErrors(root) {
+  const errors = [];
+  for (const [filename, maximum] of [["AGENTS.md", 200], ["CLAUDE.md", 80]]) {
+    const target = path.join(root, filename);
+    if (!existsSync(target)) continue;
+    const lines = readFileSync(target, "utf8").split(/\r?\n/).length;
+    if (lines > maximum) {
+      errors.push(`${filename}: ${lines} lines exceed the ${maximum}-line root-instruction budget; route details to agent_docs`);
+    }
+  }
+
+  const claudePath = path.join(root, "CLAUDE.md");
+  if (existsSync(claudePath) && !/AGENTS\.md/u.test(readFileSync(claudePath, "utf8"))) {
+    errors.push("CLAUDE.md: must route to AGENTS.md instead of duplicating repository instructions");
+  }
+  return errors;
+}
+
 export function checkDocs(root = process.cwd()) {
   root = path.resolve(root);
   const errors = [];
@@ -107,6 +140,7 @@ export function checkDocs(root = process.cwd()) {
     const target = path.join(root, filename);
     if (!existsSync(target) || !statSync(target).isFile()) errors.push(`missing required document: ${filename}`);
   }
+  errors.push(...instructionErrors(root));
   errors.push(...localLinkErrors(root));
   errors.push(...validateTaskLedger(root).errors);
   errors.push(...envErrors(root));
