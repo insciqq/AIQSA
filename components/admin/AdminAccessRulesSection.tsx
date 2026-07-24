@@ -148,51 +148,48 @@ export function AdminAccessRulesSection({ actions, data, state, status }: AdminA
             </tr>
           </thead>
           <tbody>
-            {data.rules.length ? (
-              data.rules.map((rule) => (
-                <tr className="border-b border-separator-subtle align-top last:border-b-0" key={rule.id}>
-                  <td className="px-3 py-3">
-                    <div className="flex min-w-0 items-center gap-2 text-content-primary">
-                      {rule.kind === "email" ? (
-                        <Mail className="size-3.5 shrink-0 text-accent-cyan" aria-hidden="true" />
-                      ) : (
-                        <Globe2 className="size-3.5 shrink-0 text-accent-cyan" aria-hidden="true" />
-                      )}
-                      <span className="break-words [overflow-wrap:anywhere]">{rule.value}</span>
-                    </div>
-                    <div className="mt-1 text-content-muted">Exact {rule.kind} match</div>
-                  </td>
-                  <td className="px-3 py-3 text-content-secondary">{groupLabel(rule.defaultGroups)}</td>
-                  <td className="px-3 py-3">
-                    <button
-                      className={dangerButton}
-                      disabled={status.actionsDisabled}
-                      onClick={() =>
-                        actions.requestDeleteRule({
-                          id: rule.id,
-                          kind: rule.kind,
-                          value: rule.value
-                        })
-                      }
-                      title="Delete access rule"
-                      type="button"
-                    >
-                      <Trash2 className="size-3.5" aria-hidden="true" />
-                      Delete
-                    </button>
-                  </td>
-                </tr>
-              ))
-            ) : (
-              <tr>
-                <td className="px-3 py-8 text-center text-content-muted" colSpan={3}>
-                  {data.totalRuleCount ? "No access rules match this view" : "No access rules"}
+            {data.rules.map((rule) => (
+              <tr className="border-b border-separator-subtle align-top last:border-b-0" key={rule.id}>
+                <td className="px-3 py-3">
+                  <div className="flex min-w-0 items-center gap-2 text-content-primary">
+                    {rule.kind === "email" ? (
+                      <Mail className="size-3.5 shrink-0 text-accent-cyan" aria-hidden="true" />
+                    ) : (
+                      <Globe2 className="size-3.5 shrink-0 text-accent-cyan" aria-hidden="true" />
+                    )}
+                    <span className="break-words [overflow-wrap:anywhere]">{rule.value}</span>
+                  </div>
+                  <div className="mt-1 text-content-muted">Exact {rule.kind} match</div>
+                </td>
+                <td className="px-3 py-3 text-content-secondary">{groupLabel(rule.defaultGroups)}</td>
+                <td className="px-3 py-3">
+                  <button
+                    className={dangerButton}
+                    disabled={status.actionsDisabled}
+                    onClick={() =>
+                      actions.requestDeleteRule({
+                        id: rule.id,
+                        kind: rule.kind,
+                        value: rule.value
+                      })
+                    }
+                    title="Delete access rule"
+                    type="button"
+                  >
+                    <Trash2 className="size-3.5" aria-hidden="true" />
+                    Delete
+                  </button>
                 </td>
               </tr>
-            )}
+            ))}
           </tbody>
         </table>
       </AdminTableRegion>
+      {!data.rules.length ? (
+        <div className="px-3 py-8 text-center text-xs text-content-muted" role="status">
+          {data.totalRuleCount ? "No access rules match this view" : "No access rules"}
+        </div>
+      ) : null}
     </>
   );
 }

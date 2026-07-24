@@ -55,7 +55,7 @@ export function AdminDashboardOverview({
     <>
       <section
         aria-label="Admin summary"
-        className={`mt-3 grid grid-flow-col auto-cols-[minmax(10rem,1fr)] gap-2 overflow-x-auto overscroll-x-contain pb-1 sm:grid-flow-row sm:grid-cols-2 sm:overflow-visible sm:pb-0 xl:grid-cols-4 ${focusRing}`}
+        className={`mt-3 grid min-w-0 grid-flow-col auto-cols-[minmax(10rem,1fr)] gap-2 overflow-x-auto overscroll-x-contain pb-1 sm:grid-flow-row sm:grid-cols-2 sm:overflow-visible sm:pb-0 xl:grid-cols-4 [@media(max-height:32rem)]:!grid-flow-col [@media(max-height:32rem)]:!grid-cols-none [@media(max-height:32rem)]:!overflow-x-auto [@media(max-height:32rem)]:!pb-1 ${focusRing}`}
         tabIndex={0}
       >
         <SummaryMetric
@@ -70,53 +70,50 @@ export function AdminDashboardOverview({
           value={overview.openInvites.length}
         />
         <SummaryMetric
-          detail={`${overview.grantableModels} models / ${overview.grantableSearch} search strategies`}
+          detail="Exact email and domain approval rules"
           label="Access rules"
           value={overview.accessRules}
         />
       </section>
 
-      <section
-        aria-label="Needs attention"
-        className="mt-3 grid gap-2 lg:grid-cols-3"
-        data-testid="admin-attention"
-      >
-        {overview.pendingUsers.length ? (
-          <AttentionButton
-            Icon={AlertTriangle}
-            detail="pending users"
-            label="Pending approval"
-            onClick={() => onSelectSection("users")}
-            tone="amber"
-            value={overview.pendingUsers.length}
-          />
-        ) : null}
-        {overview.noAccessUsers.length ? (
-          <AttentionButton
-            Icon={UserCog}
-            detail="active users without access"
-            label="No-access users"
-            onClick={() => onSelectSection("users")}
-            tone="amber"
-            value={overview.noAccessUsers.length}
-          />
-        ) : null}
-        {overview.openInvites.length ? (
-          <AttentionButton
-            Icon={Link2}
-            detail={`${overview.soonExpiringInvites.length} expiring soon`}
-            label="Open invites"
-            onClick={() => onSelectSection("invites")}
-            tone={overview.soonExpiringInvites.length ? "amber" : "cyan"}
-            value={overview.openInvites.length}
-          />
-        ) : null}
-        {!overview.hasAttention ? (
-          <p className="rounded-control bg-accent-green/10 px-3 py-2 text-sm text-accent-green" role="status">
-            No current approval, access, or invite issues need attention.
-          </p>
-        ) : null}
-      </section>
+      {overview.hasAttention ? (
+        <section
+          aria-label="Needs attention"
+          className="mt-3 grid min-w-0 gap-2 lg:grid-cols-3 [@media(max-height:32rem)]:!grid-flow-col [@media(max-height:32rem)]:!grid-cols-none [@media(max-height:32rem)]:auto-cols-[minmax(15rem,1fr)] [@media(max-height:32rem)]:!overflow-x-auto [@media(max-height:32rem)]:overscroll-x-contain [@media(max-height:32rem)]:pb-1"
+          data-testid="admin-attention"
+        >
+          {overview.pendingUsers.length ? (
+            <AttentionButton
+              Icon={AlertTriangle}
+              detail="pending users"
+              label="Pending approval"
+              onClick={() => onSelectSection("users")}
+              tone="amber"
+              value={overview.pendingUsers.length}
+            />
+          ) : null}
+          {overview.noAccessUsers.length ? (
+            <AttentionButton
+              Icon={UserCog}
+              detail="active users without access"
+              label="No-access users"
+              onClick={() => onSelectSection("users")}
+              tone="amber"
+              value={overview.noAccessUsers.length}
+            />
+          ) : null}
+          {overview.openInvites.length ? (
+            <AttentionButton
+              Icon={Link2}
+              detail={`${overview.soonExpiringInvites.length} expiring soon`}
+              label="Open invites"
+              onClick={() => onSelectSection("invites")}
+              tone={overview.soonExpiringInvites.length ? "amber" : "cyan"}
+              value={overview.openInvites.length}
+            />
+          ) : null}
+        </section>
+      ) : null}
     </>
   );
 }

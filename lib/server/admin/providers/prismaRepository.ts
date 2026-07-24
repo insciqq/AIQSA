@@ -135,7 +135,9 @@ function activeCheck(row: {
 function modelLegacyFields(configuration: ProviderModelConfiguration) {
   return {
     capabilities: json(configuration.capabilities),
-    contextWindow: configuration.capabilities.contextWindow ?? 1,
+    ...(configuration.capabilities.contextWindow === undefined
+      ? {}
+      : { contextWindow: configuration.capabilities.contextWindow }),
     defaultParams: json(configuration.defaultParams),
     modelId: configuration.upstreamModelId,
     supportsNativeSearch: configuration.capabilities.nativeSearch,
@@ -432,6 +434,7 @@ export function createPrismaAdminProviderRepository(
         data: {
           ...modelLegacyFields(input.configuration),
           connectionId: input.connectionId,
+          contextWindow: input.configuration.capabilities.contextWindow ?? 1,
           displayName: input.displayName,
           draftConfig: json(input.configuration),
           draftVersion: 1,

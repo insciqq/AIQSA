@@ -12,10 +12,26 @@ type WorkspaceBody = {
   }[];
 };
 
+type CatalogBody = {
+  catalog: {
+    models: {
+      displayName: string;
+      modelId: string;
+      provider: string;
+      providerFamily: string;
+      upstreamModelId: string;
+    }[];
+    providers: {
+      id: string;
+      name: string;
+    }[];
+  };
+};
+
 export async function cleanupE2eWorkspace(page: Page): Promise<string> {
   const response = await page.request.get("/api/chats");
   if (!response.ok()) {
-    return "Fake / Fake QSA";
+    throw new Error("Unable to load the E2E workspace");
   }
 
   const body = (await response.json()) as WorkspaceBody;
@@ -35,42 +51,34 @@ export async function cleanupE2eWorkspace(page: Page): Promise<string> {
     await page.request.delete(`/api/folders/${folder.id}`);
   }
 
-  const preferredSettings = await page.request.patch("/api/me/settings", {
-    data: {
-      defaultControlValues: {
-        "openai:gpt-5.5": {
-          backgroundMode: true,
-          maxOutputTokens: "128000",
-          reasoningEffort: "medium",
-          streamMode: false,
-          temperature: "1"
-        }
-      },
-      defaultModelId: "gpt-5.5",
-      defaultProvider: "openai",
-      defaultSearchStrategyId: "search-disabled",
-      showCitations: true,
-      showReasoningBlocks: false,
-      showToolActivity: true,
-    }
-  });
-  if (preferredSettings.ok()) {
-    return "OpenAI / GPT-5.5";
+  const catalogResponse = await page.request.get("/api/me/catalog");
+  if (!catalogResponse.ok()) {
+    throw new Error("Unable to load the E2E model catalog");
   }
 
-  const fallbackSettings = await page.request.patch("/api/me/settings", {
+  const { catalog } = (await catalogResponse.json()) as CatalogBody;
+  const fakeModel = catalog.models.find(
+    (model) => model.providerFamily === "fake" && model.upstreamModelId === "fake-qsa"
+  );
+  if (!fakeModel) {
+    throw new Error("Unable to find the deterministic Fake QSA model in the E2E catalog");
+  }
+
+  const settingsResponse = await page.request.patch("/api/me/settings", {
     data: {
-      defaultModelId: "fake-qsa",
-      defaultProvider: "fake",
+      defaultModelId: fakeModel.modelId,
+      defaultProvider: fakeModel.provider,
       defaultSearchStrategyId: "search-disabled",
       showCitations: true,
       showReasoningBlocks: false,
       showToolActivity: true,
     }
   });
-  if (!fallbackSettings.ok()) {
+  if (!settingsResponse.ok()) {
     throw new Error("Unable to reset E2E settings to an available deterministic model");
   }
 
-  return "Fake / Fake QSA";
+  const providerName =
+    catalog.providers.find((provider) => provider.id === fakeModel.provider)?.name ?? "Fake QSA";
+  return `${providerName} / ${fakeModel.displayName}`;
 }

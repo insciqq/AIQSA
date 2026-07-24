@@ -355,6 +355,7 @@ export function PowerAppShell({
     showJumpToLatest
   } = usePinnedScroll<HTMLDivElement>({
     followKey: threadFollowKey,
+    hasContent: visibleMessages.length > 0,
     readingAnchorKey: threadReadingAnchorKey,
     resetKey: activeChatId ?? "blank"
   });

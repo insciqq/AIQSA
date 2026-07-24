@@ -426,14 +426,29 @@ export function McpSettingsSection() {
           <div className="min-w-0">
             <h3 className="text-base font-semibold text-content-primary" id="mcp-settings-heading">MCP &amp; tools</h3>
             <p className="mt-1 max-w-3xl text-sm leading-6 text-content-secondary">
-              Enable any combination of servers your administrator granted. Every ready tool is automatically available to your normal AIQSA runs.
+              Enable any combination of servers your administrator granted.
             </p>
-            <p className="mt-2 max-w-3xl text-xs leading-5 text-content-muted">
-              The model may pass conversation-derived data to an enabled tool, and one tool’s output may influence a later call to another enabled server. Review the servers before enabling them.
+            <p className="mt-3 flex max-w-3xl items-start gap-2 rounded-control bg-accent-amber/[0.07] px-3 py-2 text-xs leading-5 text-content-secondary">
+              <CircleAlert className="mt-0.5 size-3.5 shrink-0 text-accent-amber" aria-hidden="true" />
+              <span>
+                The model may pass conversation-derived data to an enabled tool. Review the servers before enabling
+                them.
+              </span>
             </p>
-            <p className="mt-1 max-w-3xl text-xs leading-5 text-content-muted">
-              Up to {MCP_RUN_PLAN_LIMITS.maxEnabledServers} servers and {MCP_RUN_PLAN_LIMITS.maxTools} discovered tools can enter one run; exact schema and context fit is checked again before the model starts.
-            </p>
+            <details className="mt-2 max-w-3xl rounded-control border border-separator-subtle bg-surface-thread/45">
+              <summary className={`flex min-h-touch cursor-pointer list-none items-center gap-2 rounded-control px-3 text-xs font-medium text-content-secondary hover:bg-surface-hover hover:text-content-primary sm:min-h-control ${touchTarget} ${focusRing}`}>
+                <Wrench className="size-3.5 shrink-0" aria-hidden="true" />
+                How tools use data
+              </summary>
+              <div className="space-y-2 border-t border-separator-subtle px-3 py-3 text-xs leading-5 text-content-muted">
+                <p>Every ready tool is automatically available to your normal AIQSA runs.</p>
+                <p>One tool’s output may influence a later call to another enabled server.</p>
+                <p>
+                  Up to {MCP_RUN_PLAN_LIMITS.maxEnabledServers} servers and {MCP_RUN_PLAN_LIMITS.maxTools} discovered
+                  tools can enter one run; exact schema and context fit is checked again before the model starts.
+                </p>
+              </div>
+            </details>
           </div>
           <button className={neutralButton} disabled={loadState === "loading"} onClick={() => void refreshMcpSettings(true).catch(() => undefined)} type="button">
             <RefreshCw className={`size-4 ${loadState === "loading" ? "animate-spin" : ""}`} aria-hidden="true" />

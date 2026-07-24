@@ -83,8 +83,10 @@ export function SettingsDialog({
   const [activeSection, setActiveSection] = useState<SettingsSection>(initialSection);
   const [discardIntent, setDiscardIntent] = useState<DiscardIntent | null>(null);
   const promptCatalogHeadingRef = useRef<HTMLHeadingElement>(null);
+  const promptLibraryHeadingRef = useRef<HTMLHeadingElement>(null);
   const promptNameRef = useRef<HTMLInputElement>(null);
   const promptActionRegionRef = useRef<HTMLDivElement>(null);
+  const promptReadyEntryFocusedRef = useRef(false);
   const themeRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const editingPrompt = prompts.find((prompt) => prompt.id === editor.id) ?? null;
   const currentPrompt = prompts.find((prompt) => prompt.id === currentPromptId) ?? null;
@@ -117,12 +119,20 @@ export function SettingsDialog({
 
   useEffect(() => {
     if (activeSection !== "prompts") {
+      promptReadyEntryFocusedRef.current = false;
       return;
     }
 
     const timer = window.setTimeout(() => {
       if (promptCatalogState === "ready") {
-        promptNameRef.current?.focus();
+        const narrowLayout =
+          typeof window.matchMedia === "function" && window.matchMedia("(max-width: 1023px)").matches;
+        if (narrowLayout && !promptReadyEntryFocusedRef.current) {
+          promptLibraryHeadingRef.current?.focus();
+        } else {
+          promptNameRef.current?.focus();
+        }
+        promptReadyEntryFocusedRef.current = true;
       } else {
         promptCatalogHeadingRef.current?.focus();
       }
@@ -422,7 +432,7 @@ export function SettingsDialog({
             data-testid="settings-prompts-scroll"
           >
             <section
-              className="order-1 min-w-0 px-4 py-5 lg:order-2 lg:min-h-0 lg:overflow-y-auto lg:px-6"
+              className="order-2 min-w-0 px-4 py-5 lg:order-2 lg:min-h-0 lg:overflow-y-auto lg:px-6"
               aria-labelledby="prompt-editor-heading"
             >
               <div className="mx-auto max-w-3xl">
@@ -592,12 +602,19 @@ export function SettingsDialog({
             </section>
 
             <section
-              className="order-2 min-w-0 border-t border-separator-subtle bg-surface-thread px-3 py-5 lg:order-1 lg:min-h-0 lg:overflow-y-auto lg:border-r lg:border-t-0"
+              className="order-1 min-w-0 border-b border-separator-subtle bg-surface-thread px-3 py-5 lg:order-1 lg:min-h-0 lg:overflow-y-auto lg:border-b-0 lg:border-r"
               aria-labelledby="prompt-library-heading"
             >
               <div className="mb-4 flex items-start justify-between gap-3 px-1">
                 <div className="min-w-0">
-                  <h3 className="text-sm font-semibold text-content-primary" id="prompt-library-heading">Prompt library</h3>
+                  <h3
+                    ref={promptLibraryHeadingRef}
+                    className="text-sm font-semibold text-content-primary focus:outline-none"
+                    id="prompt-library-heading"
+                    tabIndex={-1}
+                  >
+                    Prompt library
+                  </h3>
                   <p className="mt-1 text-xs leading-5 text-content-muted">Select a prompt to edit it. Selection alone does not change the next run.</p>
                 </div>
                 <button
@@ -745,7 +762,7 @@ export function SettingsDialog({
                 Choose an AIQSA palette. The change applies immediately across this browser.
               </p>
               <p className="mt-2 max-w-2xl text-xs leading-5 text-content-muted">
-                Theme is a local UI preference saved in this browser and mirrored to a same-site cookie for first paint. It is not synced to your account or conversations.
+                This theme is saved only in this browser and does not follow your account.
               </p>
 
               <div className="mt-6 grid gap-3 sm:grid-cols-2 lg:grid-cols-5" role="radiogroup" aria-label="Theme">

@@ -21,6 +21,7 @@ import {
   normalizeProviderModelConfiguration,
   type ProviderModelConfiguration
 } from "@/lib/server/providers/providerConfiguration";
+import { resolveProviderModelCapabilities } from "@/lib/server/providers/providerModelCapabilities";
 import type {
   PrismaClient,
   ProviderConnection,
@@ -275,23 +276,30 @@ export function providerModelToCatalogEntry(
       entry.providerFamily === model.connection.family &&
       entry.upstreamModelId === configuration.upstreamModelId
   );
+  const resolvedCapabilities = resolveProviderModelCapabilities({
+    adapterKind: configuration.adapterKind,
+    capabilities: configuration.capabilities,
+    legacyContextWindow: model.contextWindow,
+    providerFamily: model.connection.family,
+    upstreamModelId: configuration.upstreamModelId
+  });
   const capabilities = {
-    backgroundStreaming: configuration.capabilities.backgroundStreaming ?? false,
-    nativeBackground: configuration.capabilities.nativeBackground ?? false,
-    nativePdfInput: configuration.capabilities.nativePdfInput,
-    nativeSearch: configuration.capabilities.nativeSearch,
-    parallelToolCalls: configuration.capabilities.parallelToolCalls ?? false,
-    pdf: configuration.capabilities.pdf,
-    reasoning: configuration.capabilities.reasoning,
-    streaming: configuration.capabilities.streaming ?? false,
-    toolCalling: configuration.capabilities.toolCalling ?? false,
-    vision: configuration.capabilities.vision
+    backgroundStreaming: resolvedCapabilities.backgroundStreaming ?? false,
+    nativeBackground: resolvedCapabilities.nativeBackground ?? false,
+    nativePdfInput: resolvedCapabilities.nativePdfInput,
+    nativeSearch: resolvedCapabilities.nativeSearch,
+    parallelToolCalls: resolvedCapabilities.parallelToolCalls ?? false,
+    pdf: resolvedCapabilities.pdf,
+    reasoning: resolvedCapabilities.reasoning,
+    streaming: resolvedCapabilities.streaming ?? false,
+    toolCalling: resolvedCapabilities.toolCalling ?? false,
+    vision: resolvedCapabilities.vision
   };
 
   return {
     adapterKind: configuration.adapterKind as CatalogAdapterKind,
     capabilities,
-    contextWindow: configuration.capabilities.contextWindow ?? model.contextWindow,
+    contextWindow: resolvedCapabilities.contextWindow ?? 0,
     defaultParams: configuration.defaultParams,
     displayName: model.displayName,
     inputTokenPriceMicros: model.inputTokenPriceMicros,

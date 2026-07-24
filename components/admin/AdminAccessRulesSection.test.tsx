@@ -144,7 +144,10 @@ describe("AdminAccessRulesSection", () => {
       />
     );
 
-    expect(screen.getByText("No access rules").closest("td")).toHaveAttribute("colspan", "3");
+    const tableRegion = screen.getByRole("region", { name: "Access rules table" });
+    expect(within(tableRegion).getByRole("table")).toHaveClass("min-w-[760px]");
+    expect(screen.getByRole("status")).toHaveTextContent("No access rules");
+    expect(screen.getByText("No access rules").closest("td")).toBeNull();
 
     rerender(
       <AdminAccessRulesSection
@@ -167,7 +170,8 @@ describe("AdminAccessRulesSection", () => {
       />
     );
 
-    expect(screen.getByText("No access rules match this view").closest("td")).toHaveAttribute("colspan", "3");
+    expect(screen.getByRole("status")).toHaveTextContent("No access rules match this view");
+    expect(screen.getByText("No access rules match this view").closest("td")).toBeNull();
   });
 
   it("renders the no-preview instruction and disables mutation actions", () => {

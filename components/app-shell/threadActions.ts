@@ -6,7 +6,13 @@ import {
   selectComposerSession,
   useComposerSessionStore
 } from "@/components/app-shell/composerSessionStore";
-import type { ChatDetail, ChatSummary, Notice, ThreadMessage } from "@/components/app-shell/types";
+import type {
+  ChatDetail,
+  ChatSummary,
+  Notice,
+  NoticeAction,
+  ThreadMessage
+} from "@/components/app-shell/types";
 import {
   selectThreadSnapshot,
   selectThreadVisibleMessages,
@@ -88,6 +94,18 @@ function ownsVisibleShare(coordinator: ShareMutationCoordinator, owner: ShareOwn
       visibleShare.generation === owner.generation &&
       visibleShare.shareId === owner.shareId &&
       visibleShare.href === owner.href
+  );
+}
+
+function canPublishShareCopyStatus(
+  coordinator: ShareMutationCoordinator,
+  owner: ShareOwner,
+  generation: number
+): boolean {
+  return (
+    coordinator.generation === generation &&
+    coordinator.mutation === null &&
+    ownsVisibleShare(coordinator, owner)
   );
 }
 
@@ -427,18 +445,59 @@ export function createThreadActions({
     }
   }
 
-  function showLiveShareNotice(owner: ShareOwner, text: string) {
+  function showLiveShareNotice(
+    owner: ShareOwner,
+    text: string,
+    options: {
+      copyDisabled?: boolean;
+      kind?: Notice["kind"];
+      primaryAction?: NoticeAction;
+    } = {}
+  ) {
     setNotice({
-      action: {
+      action: options.primaryAction ?? {
         label: "Revoke link",
         onClick: () => void revokeShare(owner),
         tone: "destructive"
       },
       href: owner.href,
-      kind: "success",
+      kind: options.kind ?? "success",
       persistent: true,
+      secondaryAction: {
+        disabled: options.copyDisabled,
+        label: "Copy link",
+        onClick: () => void copyVisibleShare(owner),
+        tone: "neutral"
+      },
       text
     });
+  }
+
+  async function copyVisibleShare(owner: ShareOwner) {
+    if (
+      shareMutationCoordinator.mutation ||
+      !ownsVisibleShare(shareMutationCoordinator, owner)
+    ) {
+      return;
+    }
+
+    const generation = shareMutationCoordinator.generation;
+    showLiveShareNotice(owner, "Copying share link…", { copyDisabled: true });
+
+    try {
+      await writeClipboardText(owner.href);
+    } catch {
+      if (canPublishShareCopyStatus(shareMutationCoordinator, owner, generation)) {
+        showLiveShareNotice(owner, "Copy failed. Try again or select the URL.", {
+          kind: "error"
+        });
+      }
+      return;
+    }
+
+    if (canPublishShareCopyStatus(shareMutationCoordinator, owner, generation)) {
+      showLiveShareNotice(owner, "Share link copied");
+    }
   }
 
   async function shareChat(chat: ChatSummary) {
@@ -492,11 +551,13 @@ export function createThreadActions({
 
       const shareId = body.share.id;
       const href = new URL(body.share.publicPath, window.location.origin).toString();
+      let noticeKind: Notice["kind"] = "success";
       let noticeText = "Share link copied";
       try {
         await writeClipboardText(href);
       } catch {
-        noticeText = "Share link created. Copy it from here.";
+        noticeKind = "error";
+        noticeText = "Share link created, but copying failed. Use Copy link to try again.";
       }
 
       if (!ownsShareMutation(shareMutationCoordinator, generation)) {
@@ -510,7 +571,7 @@ export function createThreadActions({
         shareId
       };
       shareMutationCoordinator.visibleShare = owner;
-      showLiveShareNotice(owner, noticeText);
+      showLiveShareNotice(owner, noticeText, { kind: noticeKind });
       closeChatActions();
     } catch (error) {
       if (ownsShareMutation(shareMutationCoordinator, generation)) {
@@ -544,17 +605,14 @@ export function createThreadActions({
       shareId: owner.shareId
     };
     setSharing(true);
-    setNotice({
-      action: {
+    showLiveShareNotice(owner, "Revoking public share link.", {
+      copyDisabled: true,
+      primaryAction: {
         disabled: true,
         label: "Revoking…",
         onClick: () => undefined,
         tone: "destructive"
-      },
-      href: owner.href,
-      kind: "success",
-      persistent: true,
-      text: "Revoking public share link."
+      }
     });
 
     try {
@@ -584,16 +642,13 @@ export function createThreadActions({
         ownsShareMutation(shareMutationCoordinator, generation) &&
         ownsVisibleShare(shareMutationCoordinator, owner)
       ) {
-        setNotice({
-          action: {
+        showLiveShareNotice(owner, errorMessage(error), {
+          kind: "error",
+          primaryAction: {
             label: "Retry revoke",
             onClick: () => void revokeShare(owner),
             tone: "destructive"
-          },
-          href: owner.href,
-          kind: "error",
-          persistent: true,
-          text: errorMessage(error)
+          }
         });
       }
     } finally {

@@ -105,13 +105,18 @@ describe("AdminUsageSection", () => {
   it("renders the complete read-only summary and native usage tables", () => {
     render(<AdminUsageSection catalog={catalog} usage={populatedUsage()} />);
 
-    expect(screen.getByRole("region", { name: "Usage summary" })).toHaveTextContent("1 users / 1 groups");
+    const summary = screen.getByRole("region", { name: "Usage summary" });
+    expect(summary).toHaveTextContent("1 users / 1 groups");
+    expect(summary).toHaveClass("min-w-0");
+    expect(summary.parentElement).toHaveClass("min-w-0", "grid-cols-[minmax(0,1fr)]");
     expect(screen.getByText(new Intl.NumberFormat(undefined).format(1000), { selector: ".text-lg" })).toBeVisible();
 
     const groupRegion = screen.getByRole("region", { name: "Group usage table" });
     const userRegion = screen.getByRole("region", { name: "User usage table" });
     expect(groupRegion).toHaveAttribute("tabindex", "0");
     expect(userRegion).toHaveAttribute("tabindex", "0");
+    expect(screen.getByTestId("admin-usage-groups")).toHaveClass("min-w-0");
+    expect(screen.getByTestId("admin-usage-users")).toHaveClass("min-w-0");
     expect(within(groupRegion).getByRole("table")).toBeVisible();
     expect(within(userRegion).getByRole("table")).toBeVisible();
     expect(within(groupRegion).getAllByRole("columnheader").map((header) => header.textContent)).toEqual([

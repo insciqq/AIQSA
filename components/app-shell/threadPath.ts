@@ -80,7 +80,7 @@ export function branchTreeNodes(messages: ThreadMessage[], activeLeafId: string 
     childCount: childCountById.get(message.id) ?? 0,
     depth: depthFor(message),
     message,
-    preview: firstLine(textFromThreadContent(message.content)) || message.status,
+    preview: plainTextPreview(textFromThreadContent(message.content)) || message.status,
     roleGlyph: message.role === "user" ? "Q" : "A"
   }));
 }
@@ -96,10 +96,25 @@ function childCounts(messages: ThreadMessage[]): Map<string, number> {
   return childCountById;
 }
 
-function firstLine(value: string): string {
-  return value
+function plainTextPreview(value: string): string {
+  const firstContentLine = value
     .trim()
     .split(/\r?\n/)
-    .find((line) => line.trim())?.trim()
-    .slice(0, 120) ?? "";
+    .find((line) => line.trim())?.trim() ?? "";
+
+  return firstContentLine
+    .replace(/^\s{0,3}>\s*/, "")
+    .replace(/^\s{0,3}#{1,6}\s+/, "")
+    .replace(/^\s{0,3}(?:[-+*]|\d+[.)])\s+/, "")
+    .replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/\*\*([^*]+)\*\*/g, "$1")
+    .replace(/__([^_]+)__/g, "$1")
+    .replace(/~~([^~]+)~~/g, "$1")
+    .replace(/(^|[\s([{])\*([^*\n]+)\*(?=$|[\s.,!?:;)\]}])/g, "$1$2")
+    .replace(/(^|[\s([{])_([^_\n]+)_(?=$|[\s.,!?:;)\]}])/g, "$1$2")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 120);
 }

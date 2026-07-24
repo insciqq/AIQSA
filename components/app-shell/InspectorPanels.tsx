@@ -271,14 +271,14 @@ function BranchTree({
       ) : null}
       {streaming && nodes.length > 0 ? (
         <p className="mt-3 rounded-control bg-accent-amber/[0.07] px-3 py-2 text-xs leading-5 text-accent-amber" id="branch-streaming-guidance" role="status">
-          Checkout is unavailable while a response is streaming. Stop or finish the response first.
+          You can’t open another version while a response is streaming. Stop or finish the response first.
         </p>
       ) : null}
 
       <div className="mt-4 space-y-1.5 text-xs">
         {nodes.map((node, index) => (
           <button
-            aria-label={`${node.active ? "Active" : "Checkout"} branch ${node.message.role} ${index + 1}`}
+            aria-label={`${node.active ? "Active branch" : "Open this version, branch"} ${node.message.role} ${index + 1}`}
             aria-disabled={node.active || streaming}
             aria-current={node.active ? "true" : undefined}
             aria-describedby={[
@@ -299,7 +299,7 @@ function BranchTree({
             key={node.message.id}
             title={
               streaming
-                ? "Branch checkout is disabled while a response is streaming"
+                ? "Opening another version is disabled while a response is streaming"
                 : node.active
                   ? "Current active leaf"
                   : node.preview
@@ -314,7 +314,9 @@ function BranchTree({
             <span className="sr-only" id={`branch-node-${index + 1}-description`}>
               {node.message.role === "user" ? "Question" : "Answer"}. {node.preview.replace(/[.!?]+$/, "")}.{" "}
               {node.childCount > 1 ? `Fork point with ${node.childCount} choices. ` : ""}
-              {node.active ? "Active leaf." : node.activePath ? "On the active path." : "Checkout available."}
+              {node.active
+                ? "Active leaf."
+                : `${node.activePath ? "On the active path. " : ""}Open this version.`}
             </span>
             <span className="flex min-w-0 items-start gap-2" style={{ paddingLeft: `${Math.min(node.depth, 6) * 12}px` }}>
               <span
@@ -345,7 +347,11 @@ function BranchTree({
               <span className="rounded-pill border border-accent-cyan/25 bg-accent-cyan/10 px-2 py-0.5 text-[11px] font-medium text-accent-cyan">
                 Active leaf
               </span>
-            ) : <span className="mt-0.5 text-[11px] font-medium text-content-muted">Checkout</span>}
+            ) : (
+              <span className="mt-0.5 max-w-24 rounded-control border border-separator-subtle bg-surface-thread px-2 py-1 text-center text-[11px] font-medium leading-4 text-content-secondary">
+                Open this version
+              </span>
+            )}
           </button>
         ))}
       </div>

@@ -194,6 +194,47 @@ describe("usePowerAppShellViewModel", () => {
     expect(result.current.composerDisabledHint).toBe("No model access. Ask an admin to grant model access.");
   });
 
+  it("does not present a one-token compatibility sentinel as model context", () => {
+    const catalog: Catalog = {
+      ...emptyCatalog,
+      models: [{
+        capabilities: {
+          background: false,
+          documentInputMode: "none",
+          imageInput: false,
+          nativeWebSearch: false,
+          openRouterPerplexitySearch: false,
+          reasoning: false,
+          streaming: true
+        },
+        contextWindow: 1,
+        defaultParams: {},
+        displayName: "Private model",
+        modelId: "private-model",
+        parameterControls: {
+          background: { defaultValue: false, supported: false },
+          maxOutputTokens: { defaultValue: 1024, maxValue: 1024 },
+          reasoningEffort: { defaultValue: "none", options: ["none"], supported: false },
+          stream: { defaultValue: true, supported: true },
+          temperature: { defaultValue: 1, maxValue: 2, minValue: 0, supported: true }
+        },
+        provider: "private-connection",
+        searchStrategyIds: ["search-disabled"]
+      }],
+      providers: [{ id: "private-connection", models: ["private-model"], name: "Private" }]
+    };
+    const { result } = renderViewModel({
+      catalog,
+      draft: "draft",
+      selectedModelId: "private-model",
+      selectedProvider: "private-connection"
+    });
+
+    expect(result.current.composerContextLine).toMatch(/^Approx\. input: ~/);
+    expect(result.current.composerContextLine).not.toContain("safe input");
+    expect(result.current.composerContextLine).not.toContain("total context");
+  });
+
   it("derives current context and active-chat usage stats", () => {
     const catalog: Catalog = {
       defaults: {
@@ -276,6 +317,68 @@ describe("usePowerAppShellViewModel", () => {
     expect(result.current.composerContextLine).toMatch(/^Approx\. input: ~/);
     expect(result.current.composerContextLine).toContain("/ 881k safe input · 1.05m total context");
     expect(result.current.composerUsageStats).toEqual(usageStats);
+  });
+
+  it("uses the provider family rather than its opaque connection id for context limits", () => {
+    const catalog: Catalog = {
+      defaults: {
+        controlValues: {},
+        modelId: "fake-model-id",
+        promptPresetId: null,
+        provider: "fake-connection-id",
+        searchStrategyId: "search-disabled",
+        showCitations: true,
+        showReasoningBlocks: false,
+        showToolActivity: true,
+      },
+      models: [
+        {
+          capabilities: {
+            background: false,
+            documentInputMode: "none",
+            imageInput: false,
+            nativeWebSearch: false,
+            openRouterPerplexitySearch: false,
+            reasoning: true,
+            streaming: true
+          },
+          contextWindow: 8192,
+          defaultParams: {},
+          displayName: "Fake QSA",
+          modelId: "fake-model-id",
+          parameterControls: {
+            background: { defaultValue: false, supported: false },
+            maxOutputTokens: { defaultValue: 8192, maxValue: 8192 },
+            reasoningEffort: { defaultValue: "medium", options: ["medium"], supported: true },
+            stream: { defaultValue: true, supported: false },
+            temperature: { defaultValue: 1, maxValue: 2, minValue: 0, supported: true }
+          },
+          provider: "fake-connection-id",
+          providerFamily: "fake",
+          searchStrategyIds: ["search-disabled"],
+          upstreamModelId: "fake-qsa"
+        }
+      ],
+      promptPresets: [],
+      providers: [
+        {
+          family: "fake",
+          id: "fake-connection-id",
+          models: ["fake-model-id"],
+          name: "Fake QSA"
+        }
+      ],
+      searchStrategies: [{ displayName: "No Search", kind: "none", strategyId: "search-disabled" }]
+    };
+
+    const { result } = renderViewModel({
+      catalog,
+      maxOutputTokens: "8192",
+      selectedModelId: "fake-model-id",
+      selectedProvider: "fake-connection-id"
+    });
+
+    expect(result.current.composerContextLine).toContain("/ 7.4k safe input · 8.2k total context");
   });
 
   it("adds native PDF text and page-image estimates to current context", () => {

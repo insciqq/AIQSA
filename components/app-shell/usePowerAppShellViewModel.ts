@@ -223,7 +223,10 @@ export function usePowerAppShellViewModel({
         ? "Select an available model before sending."
         : null;
   const projectMemory = folders.find((folder) => folder.id === activeChatFolderId)?.projectMemory?.trim() ?? "";
-  const currentContextWindow = currentModel?.contextWindow ?? 0;
+  const currentContextWindow =
+    currentModel && Number.isFinite(currentModel.contextWindow) && currentModel.contextWindow > 1
+      ? Math.floor(currentModel.contextWindow)
+      : 0;
   const selectedMaxOutputTokens = Math.round(
     clampedNumber(
       maxOutputTokens,
@@ -236,7 +239,7 @@ export function usePowerAppShellViewModel({
     ? calculateContextBudgetLimits({
         contextWindow: currentContextWindow,
         maxOutputTokens: selectedMaxOutputTokens,
-        provider: currentModel?.provider
+        provider: currentModel?.providerFamily
       }).budgetTokens
     : 0;
   const composerContextLine = useMemo(() => {

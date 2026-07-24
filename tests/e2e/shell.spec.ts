@@ -616,6 +616,9 @@ test("keeps searchable pickers and command palette keyboard-safe in the narrow s
   const modelSearch = modelPicker.getByLabel("Search models");
   await expect(modelSearch).toBeFocused();
   await expectWithinViewport(page, modelPicker);
+  await expect(page.getByTestId("model-picker-backdrop")).toBeVisible();
+  await expect(modelPicker.getByRole("button", { name: "Back to Run setup" })).toBeVisible();
+  await expect(modelPicker.getByRole("button", { name: "Close model picker" })).toHaveCount(0);
   const providerHeaders = modelPicker.locator("header");
   await expect(providerHeaders.first().getByText("Provider", { exact: true })).toBeVisible();
   await expect(providerHeaders.first()).toHaveClass(/bg-surface-raised/);
@@ -718,12 +721,17 @@ test("keeps Settings prompt and Appearance workflows safe in the narrow sheet la
   await signIn(page);
   const accountTrigger = await runAccountMenuAction(page, "Settings");
   let settingsDialog = page.getByTestId("settings-dialog");
+  const promptLibraryHeading = settingsDialog.getByRole("heading", { name: "Prompt library" });
   const promptName = settingsDialog.getByLabel("Prompt name");
   const closeSettings = settingsDialog.getByRole("button", { name: "Close settings" });
-  await expect(promptName).toBeFocused();
+  await expect(promptLibraryHeading).toBeFocused();
+  await expect(settingsDialog.getByRole("button", { name: "New prompt" })).toBeInViewport();
   await expectWithinViewport(page, settingsDialog);
   await expectNoHorizontalOverflow(page);
 
+  await settingsDialog.getByRole("button", { name: "Edit prompt Research Prompt" }).click();
+  await expect(settingsDialog.getByLabel("Prompt name")).toHaveValue("Research Prompt");
+  await expect(promptName).toBeFocused();
   await promptName.press("Shift+Tab");
   await expect
     .poll(() =>
@@ -733,8 +741,6 @@ test("keeps Settings prompt and Appearance workflows safe in the narrow sheet la
   await page.keyboard.press("Tab");
   await expect(promptName).toBeFocused();
 
-  await settingsDialog.getByRole("button", { name: "Edit prompt Research Prompt" }).click();
-  await expect(settingsDialog.getByLabel("Prompt name")).toHaveValue("Research Prompt");
   await settingsDialog.getByRole("button", { name: "Set selected prompt as default" }).click();
   await expect(page.getByTestId("shell-notice")).toContainText("Default prompt: Research Prompt");
   await expect(settingsDialog.getByRole("button", { name: "Delete selected prompt" })).toBeDisabled();
@@ -2841,7 +2847,7 @@ test("supports the default QSA chat and folder workflow", async ({ browser, page
   await expect(page.getByTestId("current-chat-title")).toHaveText("New chat");
   await expect(page.getByLabel("Chat folder")).toHaveCount(0);
 
-  await selectModel(page, "fake", "fake-qsa");
+  await selectModel(page, "fake", "Fake QSA", resetModelLabel.split(" / ").at(0) ?? "Fake QSA");
   await expect(page.getByRole("button", { name: "Select model" })).toContainText("Fake QSA");
   await expect(page.getByLabel("Developer prompt")).toHaveCount(0);
   const initialRunSettings = await openRunSettings(page);
@@ -2869,7 +2875,7 @@ test("supports the default QSA chat and folder workflow", async ({ browser, page
 
   await expect(assistantContentWithText(page, `Fake answer: ${prompt}`)).toBeVisible({ timeout: 20_000 });
   expect(activeChatDetailFetches).toBe(0);
-  await expect(page.getByTestId("thread")).toContainText("Fake / Fake QSA");
+  await expect(page.getByTestId("thread")).toContainText(resetModelLabel);
   await expect(page.getByTestId("streaming-cursor")).toHaveCount(0);
   await expect(page.getByTestId("pipeline-indicator")).toHaveCount(0);
   await expect(details.getByTestId("inspector-event-log")).toContainText("Done");
@@ -2954,7 +2960,7 @@ test("supports the default QSA chat and folder workflow", async ({ browser, page
   await expect(page.getByTestId("thread")).toContainText(`Context memory: ${prompt}`);
 
   await page.getByRole("tab", { name: "Branch" }).click();
-  await page.getByRole("button", { name: "Checkout branch assistant 2" }).click();
+  await page.getByRole("button", { name: "Open this version, branch assistant 2" }).click();
   const checkoutPrompt = `Branch checkout e2e ${suffix}`;
   await page.getByRole("textbox", { name: "Message" }).fill(checkoutPrompt);
   await page.getByRole("textbox", { name: "Message" }).press("Enter");
@@ -3008,7 +3014,7 @@ test("supports the default QSA chat and folder workflow", async ({ browser, page
         .filter({ hasText: `Fake answer: ${prompt}` })
     ).toBeVisible();
     await expect(anonymousPage.getByText("Visible answer contract")).toHaveCount(0);
-    await expect(anonymousPage.getByText("Fake / Fake QSA")).toHaveCount(0);
+    await expect(anonymousPage.getByText(resetModelLabel)).toHaveCount(0);
     await expect(anonymousPage.getByRole("button", { name: "Share anonymously" })).toHaveCount(0);
     await expect(anonymousPage.getByRole("button", { name: "Edit message" })).toHaveCount(0);
     await expect(anonymousPage.getByRole("button", { name: "Open details" })).toHaveCount(0);
@@ -3085,7 +3091,7 @@ test("manages prompt presets and left-pane folders", async ({ page }) => {
   await page.getByRole("button", { name: `Folder actions ${renamedFolderName}` }).click();
   await page.getByRole("button", { name: "Project settings" }).click();
   const projectDialog = page.getByRole("dialog", { name: `Project Settings ${renamedFolderName}` });
-  await projectDialog.getByLabel("Project memory").fill("Prefer terse E2E project memory.");
+  await projectDialog.getByLabel("Project instructions").fill("Prefer terse E2E project memory.");
   await projectDialog.getByRole("button", { name: "Save" }).click();
   await expect(page.getByTestId("shell-notice")).toContainText(`Project settings saved: ${renamedFolderName}`);
 

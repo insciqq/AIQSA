@@ -47,16 +47,19 @@ export type ChatContentMatch = {
   snippet: string | null;
 };
 
+export type NoticeAction = {
+  disabled?: boolean;
+  label: string;
+  onClick(): void;
+  tone?: "destructive" | "neutral";
+};
+
 export type Notice = {
-  action?: {
-    disabled?: boolean;
-    label: string;
-    onClick(): void;
-    tone?: "destructive" | "neutral";
-  };
+  action?: NoticeAction;
   href?: string;
   kind: "error" | "success";
   persistent?: boolean;
+  secondaryAction?: NoticeAction;
   scope?: "settings";
   text: string;
 };

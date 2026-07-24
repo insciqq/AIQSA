@@ -516,9 +516,7 @@ describe("MainThreadPane", () => {
     expect(emptyState).not.toHaveTextContent(
       "Ask a question, search when it helps, and build on the answer."
     );
-    expect(screen.getByLabelText("Question, optional Search, Answer")).toHaveTextContent(
-      "Question→Search when enabled→Answer"
-    );
+    expect(screen.queryByLabelText("Question, optional Search, Answer")).not.toBeInTheDocument();
     expect(emptyState.querySelector(".max-w-reading")).not.toBeNull();
     expect(screen.getByTestId("composer-form").querySelector(".max-w-reading")).not.toBeNull();
     expect(emptyState).not.toHaveTextContent("Ctrl/Cmd+K");

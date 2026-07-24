@@ -1,5 +1,8 @@
 import type { CommandItem } from "@/components/command-palette/commandItems";
-import { modelCapabilityLabel } from "@/components/app-shell/shellFormatting";
+import {
+  modelCapabilityDescription,
+  modelCapabilityLabel
+} from "@/components/app-shell/shellFormatting";
 import type {
   Catalog,
   CatalogModel,
@@ -131,14 +134,24 @@ export function useCommandPaletteActions({
     }
 
     for (const model of catalog?.models ?? []) {
-      const providerName = catalog?.providers.find((provider) => provider.id === model.provider)?.name ?? "Model";
+      const provider = catalog?.providers.find((candidate) => candidate.id === model.provider);
+      const providerName = provider?.name ?? "Model";
       items.push({
         current: model.provider === selectedProvider && model.modelId === selectedModelId,
         id: `model:${model.provider}:${model.modelId}`,
         kind: "model",
-        keywords: [model.provider, model.modelId, modelCapabilityLabel(model), ...model.searchStrategyIds],
+        keywords: [
+          model.provider,
+          provider?.family ?? "",
+          model.providerFamily ?? "",
+          model.modelId,
+          model.upstreamModelId ?? "",
+          modelCapabilityLabel(model),
+          modelCapabilityDescription(model),
+          ...model.searchStrategyIds
+        ],
         label: model.displayName,
-        subtitle: `${providerName} · ${modelCapabilityLabel(model)}`
+        subtitle: `${providerName} · ${modelCapabilityDescription(model)}`
       });
     }
 

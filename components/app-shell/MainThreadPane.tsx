@@ -468,16 +468,6 @@ export function MainThreadPane({
                   <p className="mt-2 max-w-xl text-sm leading-6 text-content-secondary">
                     Choose the model and search strategy below. Each run remains inspectable in Details.
                   </p>
-                  <div
-                    className="mt-5 flex flex-wrap items-center gap-2 text-xs text-content-muted"
-                    aria-label="Question, optional Search, Answer"
-                  >
-                    <span className="font-medium text-content-primary">Question</span>
-                    <span aria-hidden="true">→</span>
-                    <span>Search when enabled</span>
-                    <span aria-hidden="true">→</span>
-                    <span className="font-medium text-content-primary">Answer</span>
-                  </div>
                 </div>
               )}
             </div>

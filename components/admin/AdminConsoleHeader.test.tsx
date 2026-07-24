@@ -18,6 +18,13 @@ describe("AdminConsoleHeader", () => {
     expect(screen.getByText(/refreshing admin data/i)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Refresh admin overview" })).toBeDisabled();
     expect(screen.getByRole("link", { name: "Return to workspace" })).toHaveAttribute("href", "/");
+    expect(screen.getByRole("banner")).toHaveClass(
+      "sm:[@media(max-height:32rem)]:!flex-row",
+      "sm:[@media(max-height:32rem)]:!py-2"
+    );
+    expect(screen.getByText("Admin console").parentElement).toHaveClass(
+      "sm:[@media(max-height:32rem)]:!hidden"
+    );
 
     view.rerender(
       <AdminConsoleHeader

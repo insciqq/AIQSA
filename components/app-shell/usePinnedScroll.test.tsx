@@ -60,6 +60,32 @@ describe("usePinnedScroll", () => {
     expect(hasUnseenLatestMessageContent(element)).toBe(true);
   });
 
+  it("keeps an empty thread at its first-run heading instead of pinning its structural spacer", async () => {
+    const { result } = renderHook(() =>
+      usePinnedScroll<HTMLDivElement>({
+        followKey: "empty",
+        hasContent: false,
+        resetKey: "blank"
+      })
+    );
+    const element = scrollElement({ clientHeight: 147, scrollHeight: 300, scrollTop: 145 });
+
+    act(() => {
+      result.current.containerRef.current = element;
+    });
+    await waitForAnimationFrame();
+
+    expect(element.scrollTop).toBe(0);
+    expect(result.current.isPinned).toBe(true);
+    expect(result.current.showJumpToLatest).toBe(false);
+
+    act(() => {
+      element.scrollTop = 80;
+      result.current.handleScroll();
+    });
+    expect(element.scrollTop).toBe(0);
+  });
+
   it("keeps Latest hidden when only a spacer extends below the visible message", () => {
     const { result } = renderHook(() =>
       usePinnedScroll<HTMLDivElement>({ followKey: "initial", resetKey: "chat-1" })

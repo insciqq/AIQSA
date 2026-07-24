@@ -321,7 +321,10 @@ async function synchronizeCodeOwnedCatalog(tx: Prisma.TransactionClient): Promis
   }
   const fakeConfig = {
     adapterKind: "fake",
-    capabilities: fake.capabilities,
+    capabilities: {
+      ...fake.capabilities,
+      contextWindow: fake.contextWindow
+    },
     defaultParams: fake.defaultParams,
     upstreamModelId: fake.modelId
   };

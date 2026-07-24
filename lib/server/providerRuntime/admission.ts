@@ -5,6 +5,7 @@ import {
   normalizeProviderConnectionConfiguration,
   normalizeProviderModelConfiguration
 } from "../providers/providerConfiguration";
+import { resolveProviderModelCapabilities } from "../providers/providerModelCapabilities";
 import { normalizeProviderExecutionSnapshot, type ProviderExecutionSnapshot } from "../providers/runtimeFactory";
 import type { ProviderModelCapabilities } from "../providers/types";
 import type {
@@ -69,6 +70,25 @@ type ActiveMembership = Readonly<{ groupId: string }>;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function withResolvedModelCapabilities(
+  snapshot: ProviderExecutionSnapshot,
+  legacyContextWindow: number | null | undefined
+): ProviderExecutionSnapshot {
+  return normalizeProviderExecutionSnapshot({
+    ...snapshot,
+    model: {
+      ...snapshot.model,
+      capabilities: resolveProviderModelCapabilities({
+        adapterKind: snapshot.model.adapterKind,
+        capabilities: snapshot.model.capabilities,
+        legacyContextWindow,
+        providerFamily: snapshot.providerFamily,
+        upstreamModelId: snapshot.model.upstreamModelId
+      })
+    }
+  });
 }
 
 function canonicalJson(value: unknown): string {
@@ -166,18 +186,21 @@ async function loadRole(
     if (!isRecord(model.activeConfig) || model.activeConfig.adapterKind !== "fake") {
       throw new ProviderAdmissionError("model_not_available");
     }
-    const snapshot = normalizeProviderExecutionSnapshot({
-      connection: connectionConfig,
-      connectionDisplayName: model.connection.displayName,
-      connectionId: model.connectionId,
-      credentialId: null,
-      credentialVersionId: null,
-      model: model.activeConfig,
-      modelDisplayName: model.displayName,
-      providerFamily: model.connection.family,
-      providerModelId: model.id,
-      version: 1
-    });
+    const snapshot = withResolvedModelCapabilities(
+      normalizeProviderExecutionSnapshot({
+        connection: connectionConfig,
+        connectionDisplayName: model.connection.displayName,
+        connectionId: model.connectionId,
+        credentialId: null,
+        credentialVersionId: null,
+        model: model.activeConfig,
+        modelDisplayName: model.displayName,
+        providerFamily: model.connection.family,
+        providerModelId: model.id,
+        version: 1
+      }),
+      model.contextWindow
+    );
     const fakeModel = snapshot.model;
     if (fakeModel.adapterKind !== "fake") throw new ProviderAdmissionError("model_not_available");
     return {
@@ -241,25 +264,32 @@ async function loadRole(
   if (!check) throw new ProviderAdmissionError("model_not_available");
 
   const modelConfig = normalizeProviderModelConfiguration(model.activeConfig);
-  const snapshot = normalizeProviderExecutionSnapshot({
-    connection: connectionConfig,
-    connectionDisplayName: model.connection.displayName,
-    connectionId: model.connectionId,
-    credentialId: credential.credentialId,
-    credentialVersionId: credential.credentialVersionId,
-    model: modelConfig,
-    modelDisplayName: model.displayName,
-    providerFamily: model.connection.family,
-    providerModelId: model.id,
-    version: 1
-  });
+  const snapshot = withResolvedModelCapabilities(
+    normalizeProviderExecutionSnapshot({
+      connection: connectionConfig,
+      connectionDisplayName: model.connection.displayName,
+      connectionId: model.connectionId,
+      credentialId: credential.credentialId,
+      credentialVersionId: credential.credentialVersionId,
+      model: modelConfig,
+      modelDisplayName: model.displayName,
+      providerFamily: model.connection.family,
+      providerModelId: model.id,
+      version: 1
+    }),
+    model.contextWindow
+  );
+  const resolvedModel = snapshot.model;
+  if (resolvedModel.adapterKind === "fake") {
+    throw new ProviderAdmissionError("model_not_available");
+  }
 
   return {
     credentialSource: credential.source,
     modelConfiguration: {
-      adapterKind: modelConfig.adapterKind,
-      capabilities: modelConfig.capabilities,
-      defaultParams: modelConfig.defaultParams
+      adapterKind: resolvedModel.adapterKind,
+      capabilities: resolvedModel.capabilities,
+      defaultParams: resolvedModel.defaultParams
     },
     snapshot
   };

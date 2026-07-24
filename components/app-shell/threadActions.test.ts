@@ -428,7 +428,11 @@ describe("thread actions", () => {
       },
       href: "http://localhost:3000/s/share-token",
       kind: "success",
-      persistent: true
+      persistent: true,
+      secondaryAction: {
+        label: "Copy link",
+        tone: "neutral"
+      }
     });
     expect(writeText).toHaveBeenCalledWith("http://localhost:3000/s/share-token");
     expect(shareMutationCoordinator.visibleShare).toMatchObject({
@@ -498,6 +502,7 @@ describe("thread actions", () => {
       action: { label: "Revoke link" },
       href: "http://localhost:3000/s/share-token",
       persistent: true,
+      secondaryAction: { label: "Copy link" },
       text: "A public share link is already active. Revoke it before creating another."
     });
   });
@@ -603,15 +608,18 @@ describe("thread actions", () => {
     expect(notices.at(-1)).toMatchObject({
       action: { label: "Revoke link" },
       href: "http://localhost:3000/s/exact-token",
+      kind: "error",
       persistent: true,
-      text: "Share link created. Copy it from here."
+      secondaryAction: { label: "Copy link" },
+      text: "Share link created, but copying failed. Use Copy link to try again."
     });
     notices.at(-1)?.action?.onClick();
     await vi.waitFor(() =>
       expect(notices.at(-1)).toMatchObject({
         action: { label: "Retry revoke" },
         href: "http://localhost:3000/s/exact-token",
-        persistent: true
+        persistent: true,
+        secondaryAction: { label: "Copy link" }
       })
     );
 
@@ -622,5 +630,143 @@ describe("thread actions", () => {
       expect(shareMutationCoordinator.visibleShare).toBeNull();
       expect(shareButton).toHaveFocus();
     });
+  });
+
+  it("reports copy failure and lets the user retry the exact live share URL", async () => {
+    const writeText = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("initial_clipboard_denied"))
+      .mockRejectedValueOnce(new Error("retry_clipboard_denied"))
+      .mockResolvedValueOnce(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText }
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        Response.json({ share: { id: "share-1", publicPath: "/s/copy-retry-token" } })
+      )
+    );
+    const { actions, notices } = createActionsForTest();
+    const href = "http://localhost:3000/s/copy-retry-token";
+
+    await actions.shareChat(chatSummary());
+    notices.at(-1)?.secondaryAction?.onClick();
+
+    await vi.waitFor(() =>
+      expect(notices.at(-1)).toMatchObject({
+        action: { label: "Revoke link" },
+        href,
+        kind: "error",
+        persistent: true,
+        secondaryAction: { label: "Copy link" },
+        text: "Copy failed. Try again or select the URL."
+      })
+    );
+
+    notices.at(-1)?.secondaryAction?.onClick();
+    await vi.waitFor(() =>
+      expect(notices.at(-1)).toMatchObject({
+        action: { label: "Revoke link" },
+        href,
+        kind: "success",
+        persistent: true,
+        secondaryAction: { label: "Copy link" },
+        text: "Share link copied"
+      })
+    );
+    expect(writeText).toHaveBeenNthCalledWith(1, href);
+    expect(writeText).toHaveBeenNthCalledWith(2, href);
+    expect(writeText).toHaveBeenNthCalledWith(3, href);
+  });
+
+  it("does not let a late copy result overwrite revoking status", async () => {
+    let resolveCopy!: () => void;
+    let resolveRevoke!: (response: Response) => void;
+    const writeText = vi
+      .fn()
+      .mockResolvedValueOnce(undefined)
+      .mockImplementationOnce(
+        () =>
+          new Promise<void>((resolve) => {
+            resolveCopy = resolve;
+          })
+      );
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText }
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string | URL | Request, init?: RequestInit) => {
+        if (String(url) === "/api/chats/chat-b/share" && init?.method === "POST") {
+          return Promise.resolve(
+            Response.json({ share: { id: "share-1", publicPath: "/s/revoking-token" } })
+          );
+        }
+        return new Promise<Response>((resolve) => {
+          resolveRevoke = resolve;
+        });
+      })
+    );
+    const { actions, notices } = createActionsForTest();
+
+    await actions.shareChat(chatSummary());
+    notices.at(-1)?.secondaryAction?.onClick();
+    await vi.waitFor(() => expect(notices.at(-1)?.text).toBe("Copying share link…"));
+    notices.at(-1)?.action?.onClick();
+    await vi.waitFor(() => expect(notices.at(-1)?.text).toBe("Revoking public share link."));
+
+    resolveCopy();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(notices.at(-1)).toMatchObject({
+      action: { disabled: true, label: "Revoking…" },
+      secondaryAction: { disabled: true, label: "Copy link" },
+      text: "Revoking public share link."
+    });
+
+    resolveRevoke(Response.json({ share: { id: "share-1", revoked: true } }));
+    await vi.waitFor(() => expect(notices.at(-1)?.text).toBe("Public share link revoked"));
+  });
+
+  it("does not let a clipboard settlement resurrect a revoked share", async () => {
+    let resolveCopy!: () => void;
+    const writeText = vi
+      .fn()
+      .mockResolvedValueOnce(undefined)
+      .mockImplementationOnce(
+        () =>
+          new Promise<void>((resolve) => {
+            resolveCopy = resolve;
+          })
+      );
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText }
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+        if (String(url) === "/api/chats/chat-b/share" && init?.method === "POST") {
+          return Response.json({ share: { id: "share-1", publicPath: "/s/revoked-token" } });
+        }
+        return Response.json({ share: { id: "share-1", revoked: true } });
+      })
+    );
+    const { actions, notices, shareMutationCoordinator } = createActionsForTest();
+
+    await actions.shareChat(chatSummary());
+    notices.at(-1)?.secondaryAction?.onClick();
+    await vi.waitFor(() => expect(notices.at(-1)?.text).toBe("Copying share link…"));
+    notices.at(-1)?.action?.onClick();
+    await vi.waitFor(() => expect(notices.at(-1)?.text).toBe("Public share link revoked"));
+
+    resolveCopy();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(notices.at(-1)).toMatchObject({ text: "Public share link revoked" });
+    expect(shareMutationCoordinator.visibleShare).toBeNull();
   });
 });

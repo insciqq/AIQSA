@@ -75,17 +75,22 @@ export function ProjectSettingsDialog({
             <X className="size-4" aria-hidden="true" />
           </button>
         </div>
-        <label className="mb-1 block text-xs font-medium text-content-secondary" htmlFor="project-memory">
-          Memory
+        <label className="mb-1 block text-xs font-medium text-content-secondary" htmlFor="project-instructions">
+          Project instructions
         </label>
         <textarea
           className="h-40 min-h-28 w-full resize-none rounded-control border border-separator-subtle bg-surface-thread p-3 text-sm leading-6 text-content-primary outline-none focus-visible:border-accent-cyan focus-visible:ring-2 focus-visible:ring-accent-cyan/55"
-          id="project-memory"
-          aria-label="Project memory"
+          id="project-instructions"
+          aria-label="Project instructions"
+          aria-describedby="project-instructions-help"
           disabled={saving}
           value={memoryDraft}
           onChange={(event) => onMemoryDraftChange(event.target.value)}
         />
+        <p className="mt-2 text-xs leading-5 text-content-muted" id="project-instructions-help">
+          Sent to the model as context for future messages in every chat in this project. Existing messages and
+          replies are unchanged.
+        </p>
         <div className="mt-3 flex justify-end gap-2">
           <button
             className="h-touch rounded-control bg-surface-raised px-3 text-xs font-medium text-content-secondary outline-none hover:bg-surface-hover hover:text-content-primary focus-visible:ring-2 focus-visible:ring-accent-cyan/55 focus-visible:ring-offset-2 focus-visible:ring-offset-surface-overlay sm:h-control-sm [@media(hover:none)]:!h-touch [@media(pointer:coarse)]:!h-touch"

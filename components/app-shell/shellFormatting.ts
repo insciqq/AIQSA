@@ -73,7 +73,7 @@ export function humanizeErrorCode(code: string): string {
   const labels: Record<string, string> = {
     active_leaf_changed: "The active branch changed before send. Review the selected branch and retry",
     attachment_not_found: "Attachment not found",
-    branch_checkout_failed: "Branch checkout failed",
+    branch_checkout_failed: "Opening this version failed",
     catalog_malformed: "Catalog response was malformed",
     chat_detail_malformed: "Chat detail response was malformed",
     edit_malformed: "Message edit response was malformed",
@@ -93,7 +93,7 @@ export function humanizeErrorCode(code: string): string {
 function actionLabel(action: string): string {
   const labels: Record<string, string> = {
     branch_chat: "Branch creation",
-    branch_checkout: "Branch checkout",
+    branch_checkout: "Open version",
     chat_create: "Chat creation",
     chat_delete: "Chat deletion",
     chat_detail: "Chat detail load",
@@ -141,18 +141,70 @@ export async function responseErrorMessage(
   return humanizeErrorCode(fallback);
 }
 
-export function modelCapabilityLabel(model: CatalogModel): string {
-  const flags = [
-    model.capabilities.reasoning ? "reasoning" : null,
-    model.capabilities.imageInput ? "vision" : null,
-    model.capabilities.documentInputMode !== "none" ? "pdf" : null,
-    model.capabilities.nativeWebSearch || model.capabilities.openRouterPerplexitySearch
-      ? "search"
-      : null,
-    model.capabilities.streaming ? "stream" : null
-  ].filter(Boolean);
+const modelCapabilityDefinitions = [
+  {
+    alias: "reasoning",
+    label: "Reasoning",
+    supported: (model: CatalogModel) => model.capabilities.reasoning
+  },
+  {
+    alias: "vision",
+    label: "Images",
+    supported: (model: CatalogModel) => model.capabilities.imageInput
+  },
+  {
+    alias: "pdf",
+    label: "PDF and documents",
+    supported: (model: CatalogModel) => model.capabilities.documentInputMode !== "none"
+  },
+  {
+    alias: "search",
+    label: "Web search",
+    supported: (model: CatalogModel) =>
+      model.capabilities.nativeWebSearch || model.capabilities.openRouterPerplexitySearch
+  },
+  {
+    alias: "stream",
+    label: "Streaming",
+    supported: (model: CatalogModel) => model.capabilities.streaming
+  }
+] as const;
 
-  return flags.length > 0 ? flags.join(" / ") : "text";
+export function modelCapabilityLabels(model: CatalogModel): string[] {
+  const labels = modelCapabilityDefinitions
+    .filter((definition) => definition.supported(model))
+    .map((definition) => definition.label);
+
+  return labels.length > 0 ? labels : ["Text conversations"];
+}
+
+export function modelCapabilityLabel(model: CatalogModel): string {
+  const aliases = modelCapabilityDefinitions
+    .filter((definition) => definition.supported(model))
+    .map((definition) => definition.alias);
+
+  return aliases.length > 0 ? aliases.join(" / ") : "text";
+}
+
+export function modelCapabilityDescription(model: CatalogModel): string {
+  return modelCapabilityLabels(model).join(" · ");
+}
+
+export function modelDifferentiatingCapabilityLabels(
+  model: CatalogModel,
+  providerModels: readonly CatalogModel[]
+): string[] {
+  if (providerModels.length < 2) {
+    return [];
+  }
+
+  const supportedLabels = modelCapabilityDefinitions
+    .filter((definition) => definition.supported(model))
+    .map((definition) => definition.label);
+
+  return supportedLabels.filter((label) =>
+    providerModels.some((candidate) => !modelCapabilityLabels(candidate).includes(label))
+  );
 }
 
 export function searchStrategyDescription(strategyId: string): string {

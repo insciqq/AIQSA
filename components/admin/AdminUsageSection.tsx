@@ -30,8 +30,8 @@ export function AdminUsageSection({ catalog, usage }: AdminUsageSectionProps) {
   const groupsWithUsage = usage.byGroup.filter((group) => group.runCount > 0);
 
   return (
-    <div className="grid gap-3 p-3">
-      <section className="grid grid-cols-2 gap-2 xl:grid-cols-4" aria-label="Usage summary">
+    <div className="grid min-w-0 grid-cols-[minmax(0,1fr)] gap-3 p-3">
+      <section className="grid min-w-0 grid-cols-2 gap-2 xl:grid-cols-4" aria-label="Usage summary">
         <SummaryMetric
           detail={`${formatNumber(usage.totals.runCount)} linked runs with reported usage`}
           label="Total tokens"
@@ -56,15 +56,15 @@ export function AdminUsageSection({ catalog, usage }: AdminUsageSectionProps) {
         />
       </section>
 
-      <div className="rounded-panel bg-surface-raised/50 px-3 py-2 text-xs leading-5 text-content-muted">
+      <div className="min-w-0 break-words rounded-panel bg-surface-raised/50 px-3 py-2 text-xs leading-5 text-content-muted [overflow-wrap:anywhere]">
         This view uses provider-reported usage rows. Failed or cancelled runs appear only when the provider reported
         usage before termination. Run counts cover retained run records; token totals can also include older detached
         usage. Group totals are membership totals: a user in multiple groups is counted once in each current group, so
         group rows are for attribution, not billing reconciliation.
       </div>
 
-      <div className="grid gap-3 xl:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
-        <section className="rounded-panel bg-surface-raised/50" data-testid="admin-usage-groups">
+      <div className="grid min-w-0 grid-cols-[minmax(0,1fr)] gap-3 xl:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
+        <section className="min-w-0 rounded-panel bg-surface-raised/50" data-testid="admin-usage-groups">
           <div className="border-b border-separator-subtle px-3 py-2">
             <div className="text-xs font-medium text-content-secondary">Groups</div>
             <p className="mt-1 text-xs text-content-muted">Current group memberships with provider-reported token totals.</p>
@@ -109,7 +109,7 @@ export function AdminUsageSection({ catalog, usage }: AdminUsageSectionProps) {
           </AdminTableRegion>
         </section>
 
-        <section className="rounded-panel bg-surface-raised/50" data-testid="admin-usage-users">
+        <section className="min-w-0 rounded-panel bg-surface-raised/50" data-testid="admin-usage-users">
           <div className="border-b border-separator-subtle px-3 py-2">
             <div className="text-xs font-medium text-content-secondary">Users</div>
             <p className="mt-1 text-xs text-content-muted">Completed-run usage by user, sorted by total tokens.</p>

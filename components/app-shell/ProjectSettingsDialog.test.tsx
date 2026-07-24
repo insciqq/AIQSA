@@ -176,7 +176,7 @@ describe("ProjectSettingsDialog", () => {
     expect(closeProjectSettings).toHaveFocus();
   });
 
-  it("locks edits and every close path while project memory is saving", async () => {
+  it("labels and explains project instructions while locking every close path during save", async () => {
     const onCancel = vi.fn();
 
     render(
@@ -200,7 +200,11 @@ describe("ProjectSettingsDialog", () => {
     expect(dialog).toHaveAttribute("aria-busy", "true");
     expect(screen.getByRole("button", { name: "Close project settings" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Cancel" })).toBeDisabled();
-    expect(screen.getByLabelText("Project memory")).toBeDisabled();
+    const instructions = screen.getByLabelText("Project instructions");
+    expect(instructions).toBeDisabled();
+    expect(instructions).toHaveAccessibleDescription(
+      /Sent to the model as context for future messages in every chat in this project.*Existing messages and replies are unchanged/
+    );
 
     fireEvent.keyDown(document, { key: "Escape" });
     fireEvent.mouseDown(dialog.parentElement!);

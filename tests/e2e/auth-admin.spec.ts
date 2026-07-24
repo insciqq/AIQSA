@@ -942,3 +942,108 @@ test("admin console keeps every section touch-operable in the documented compact
     });
   }
 });
+
+test("admin compact usage and empty access-rule states stay in the visible workflow", async ({
+  baseURL,
+  browser
+}) => {
+  expect(baseURL).toBeTruthy();
+  const context = await browser.newContext({
+    baseURL,
+    colorScheme: "dark",
+    hasTouch: true,
+    isMobile: true,
+    locale: "en-US",
+    reducedMotion: "reduce",
+    timezoneId: "UTC",
+    viewport: { height: 844, width: 390 }
+  });
+  const page = await context.newPage();
+
+  try {
+    await bootstrapAdmin(page);
+
+    const usageTab = page.getByRole("tab", { exact: true, name: "Usage" });
+    await usageTab.click();
+    const usage = page.getByTestId("admin-section-usage");
+    const summary = usage.getByRole("region", { name: "Usage summary" });
+    await expect(summary).toBeVisible();
+    await summary.scrollIntoViewIfNeeded();
+    await expect(summary.getByText("Input tokens", { exact: true })).toBeInViewport();
+    await expect(summary.getByText("Last usage", { exact: true })).toBeInViewport();
+    await expect
+      .poll(() =>
+        summary.evaluate((element) => element.scrollWidth <= element.clientWidth)
+      )
+      .toBe(true);
+
+    const usageNote = usage.getByText(/This view uses provider-reported usage rows/);
+    await expect
+      .poll(() =>
+        usageNote.evaluate((element) => element.scrollWidth <= element.clientWidth)
+      )
+      .toBe(true);
+    await expectLocalHorizontalOverflow(usage.getByRole("table").last());
+    await expectNoPageOverflow(page);
+
+    const rulesTab = page.getByRole("tab", { exact: true, name: "Access rules" });
+    await rulesTab.scrollIntoViewIfNeeded();
+    await rulesTab.click();
+    const rules = page.getByTestId("admin-section-access-rules");
+    await rules.getByLabel("Search access rules").fill("definitely-no-matching-access-rule");
+    const emptyState = rules.getByRole("status");
+    await expect(emptyState).toContainText(/No access rules/);
+    await expect
+      .poll(() =>
+        emptyState.evaluate((element) => {
+          const owner = element.parentElement;
+          if (!owner) return false;
+          const elementRect = element.getBoundingClientRect();
+          const ownerRect = owner.getBoundingClientRect();
+          return elementRect.left >= ownerRect.left && elementRect.right <= ownerRect.right;
+        })
+      )
+      .toBe(true);
+    await expectLocalHorizontalOverflow(rules.getByRole("table"));
+    await expectNoPageOverflow(page);
+  } finally {
+    await context.close();
+  }
+});
+
+test("admin overview keeps the current workflow in the short-landscape viewport", async ({
+  baseURL,
+  browser
+}) => {
+  expect(baseURL).toBeTruthy();
+  const context = await browser.newContext({
+    baseURL,
+    colorScheme: "dark",
+    locale: "en-US",
+    reducedMotion: "reduce",
+    timezoneId: "UTC",
+    viewport: { height: 390, width: 844 }
+  });
+  const page = await context.newPage();
+
+  try {
+    await bootstrapAdmin(page);
+
+    const summary = page.getByRole("region", { name: "Admin summary" });
+    await expect
+      .poll(() =>
+        summary.evaluate((element) => ({
+          flow: getComputedStyle(element).gridAutoFlow,
+          overflowX: getComputedStyle(element).overflowX
+        }))
+      )
+      .toEqual({ flow: "column", overflowX: "auto" });
+    await expect(page.getByRole("tab", { exact: true, name: "Users" })).toBeInViewport();
+    const users = page.getByTestId("admin-section-users");
+    await expect(users.getByRole("heading", { exact: true, name: "Users" })).toBeInViewport();
+    await expect(users.getByLabel("Search users")).toBeInViewport();
+    await expectNoPageOverflow(page);
+  } finally {
+    await context.close();
+  }
+});

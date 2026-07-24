@@ -3,6 +3,79 @@ import { describe, expect, it, vi } from "vitest";
 import { loadProviderAdmissionPlan } from "./admission";
 
 describe("provider admission", () => {
+  it("resolves a verified model context before snapshotting a new run", async () => {
+    const db = {
+      accessGrant: { count: vi.fn(async () => 1) },
+      providerCredential: {
+        findMany: vi.fn(async () => [{
+          activeVersion: { id: "credential-version-1", revokedAt: null },
+          enabled: true,
+          id: "credential-1"
+        }])
+      },
+      providerGroupCredentialAssignment: { findMany: vi.fn(async () => []) },
+      providerModel: {
+        findFirst: vi.fn(async () => ({
+          activeConfig: {
+            adapterKind: "openai_responses_native",
+            capabilities: {
+              nativePdfInput: true,
+              nativeSearch: true,
+              pdf: true,
+              reasoning: true,
+              streaming: true,
+              vision: true
+            },
+            defaultParams: { maxOutputTokens: 128_000 },
+            upstreamModelId: "gpt-5.6-sol"
+          },
+          activeVersion: 1,
+          connection: {
+            activeConfig: {
+              allowPrivateNetwork: false,
+              apiRoot: "https://api.openai.com/v1"
+            },
+            activeVersion: 1,
+            defaultCredentialId: "credential-1",
+            displayName: "OpenAI",
+            enabled: true,
+            family: "openai",
+            id: "connection-1",
+            unassignedPolicy: "use_default"
+          },
+          connectionId: "connection-1",
+          contextWindow: 1,
+          displayName: "GPT-5.6 Sol",
+          enabled: true,
+          id: "deployment-1"
+        })),
+        findUnique: vi.fn()
+      },
+      providerModelCredentialCheck: { findFirst: vi.fn(async () => ({ id: "check-1" })) },
+      searchStrategy: {
+        findFirst: vi.fn(async () => ({
+          config: {},
+          enabled: true,
+          kind: "none",
+          providerModelId: null,
+          strategyId: "search-disabled"
+        }))
+      },
+      user: { findFirst: vi.fn(async () => ({ id: "user-1" })) },
+      userGroup: { findMany: vi.fn(async () => []) }
+    };
+
+    const plan = await loadProviderAdmissionPlan(db as unknown as Prisma.TransactionClient, {
+      providerConnectionId: "connection-1",
+      providerModelId: "deployment-1",
+      searchStrategyId: "search-disabled",
+      userId: "user-1"
+    });
+
+    expect(plan.answer.modelConfiguration.capabilities.contextWindow).toBe(1_050_000);
+    expect(plan.answer.snapshot.model.capabilities.contextWindow).toBe(1_050_000);
+  });
+
   it("does not authorize a provider-backed search deployment as its own answer model", async () => {
     const providerModelId = "opaque-search-deployment";
     const findUnique = vi.fn();

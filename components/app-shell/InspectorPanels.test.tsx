@@ -34,7 +34,7 @@ function message(
 }
 
 describe("DetailedInspector", () => {
-  it("disables branch checkout rows with explicit guidance while streaming", () => {
+  it("disables branch version rows with explicit guidance while streaming", () => {
     render(
       <DetailedInspector
         {...inspectorProps({
@@ -49,7 +49,7 @@ describe("DetailedInspector", () => {
     expect(activeBranch).toBeDisabled();
     expect(activeBranch.getAttribute("aria-describedby")).toContain("branch-streaming-guidance");
     expect(activeBranch).toHaveAccessibleDescription(/Question\. Question\. Active leaf/);
-    expect(screen.getByRole("status")).toHaveTextContent("Checkout is unavailable");
+    expect(screen.getByRole("status")).toHaveTextContent("can’t open another version");
     expect(screen.getByRole("tabpanel")).toHaveAttribute("id", "details-panel-branch");
     expect(screen.getByRole("tabpanel")).toHaveAttribute("tabindex", "0");
     for (const tab of screen.getAllByRole("tab")) {
@@ -76,13 +76,13 @@ describe("DetailedInspector", () => {
 
     expect(screen.getByTestId("branch-tree")).toHaveTextContent("2 messages on one linear path");
     expect(screen.getByTestId("branch-tree")).toHaveTextContent("single path");
-    expect(screen.getAllByRole("button", { name: /Checkout branch/ })).toHaveLength(1);
+    expect(screen.getAllByRole("button", { name: /Open this version, branch/ })).toHaveLength(1);
     expect(screen.getByRole("button", { name: "Active branch assistant 2" })).toHaveAttribute("aria-disabled", "true");
     expect(screen.getByText("Active leaf")).toBeVisible();
     expect(screen.queryByText(/Fork point/)).not.toBeInTheDocument();
   });
 
-  it("makes real forks, role excerpts, active path, leaf, and checkout unambiguous", () => {
+  it("makes real forks, role excerpts, active path, leaf, and version opening unambiguous", () => {
     const onSelectBranch = vi.fn();
     render(
       <DetailedInspector
@@ -113,7 +113,7 @@ describe("DetailedInspector", () => {
     fireEvent.click(activeLeaf!);
     expect(onSelectBranch).not.toHaveBeenCalled();
 
-    fireEvent.click(screen.getByRole("button", { name: "Checkout branch assistant 4" }));
+    fireEvent.click(screen.getByRole("button", { name: "Open this version, branch assistant 4" }));
     expect(onSelectBranch).toHaveBeenCalledWith("answer-a");
   });
 

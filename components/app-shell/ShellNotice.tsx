@@ -1,6 +1,34 @@
-import type { Notice } from "@/components/app-shell/types";
+import type { Notice, NoticeAction } from "@/components/app-shell/types";
 import { X } from "lucide-react";
 import { useEffect, useRef } from "react";
+
+function NoticeActionButton({
+  action,
+  noticeKind
+}: {
+  action: NoticeAction;
+  noticeKind: Notice["kind"];
+}) {
+  return (
+    <button
+      className={[
+        "inline-flex min-h-touch items-center rounded-control border px-2 font-medium outline-none hover:bg-surface-hover focus-visible:ring-2 focus-visible:ring-current/65 disabled:cursor-not-allowed disabled:opacity-60 sm:min-h-control-sm [@media(hover:none)]:!min-h-touch [@media(pointer:coarse)]:!min-h-touch",
+        action.tone === "destructive"
+          ? "border-accent-rose/30 text-accent-rose"
+          : action.tone === "neutral"
+            ? "border-separator-subtle text-content-primary"
+            : noticeKind === "success"
+              ? "border-accent-green/30"
+              : "border-accent-rose/30"
+      ].join(" ")}
+      disabled={action.disabled}
+      type="button"
+      onClick={action.onClick}
+    >
+      {action.label}
+    </button>
+  );
+}
 
 export function ShellNotice({
   interactive = true,
@@ -38,7 +66,7 @@ export function ShellNotice({
       ].join(" ")}
       role={notice.kind === "error" ? "alert" : "status"}
       aria-live={notice.kind === "error" ? "assertive" : "polite"}
-      aria-busy={notice.action?.disabled || undefined}
+      aria-busy={notice.action?.disabled || notice.secondaryAction?.disabled || undefined}
       data-testid={notice.href ? "share-link" : "shell-notice"}
     >
       <span className="inline-flex min-w-0 flex-wrap items-center gap-2">
@@ -50,22 +78,11 @@ export function ShellNotice({
         ) : notice.href ? (
           <span className="min-w-0 break-all">{notice.href}</span>
         ) : null}
+        {notice.secondaryAction && interactive ? (
+          <NoticeActionButton action={notice.secondaryAction} noticeKind={notice.kind} />
+        ) : null}
         {notice.action && interactive ? (
-          <button
-            className={[
-              "inline-flex min-h-touch items-center rounded-control border px-2 font-medium outline-none hover:bg-surface-hover focus-visible:ring-2 focus-visible:ring-current/65 disabled:cursor-not-allowed disabled:opacity-60 sm:min-h-control-sm [@media(hover:none)]:!min-h-touch [@media(pointer:coarse)]:!min-h-touch",
-              notice.action.tone === "destructive"
-                ? "border-accent-rose/30 text-accent-rose"
-                : notice.kind === "success"
-                  ? "border-accent-green/30"
-                  : "border-accent-rose/30"
-            ].join(" ")}
-            disabled={notice.action.disabled}
-            type="button"
-            onClick={notice.action.onClick}
-          >
-            {notice.action.label}
-          </button>
+          <NoticeActionButton action={notice.action} noticeKind={notice.kind} />
         ) : null}
       </span>
       {interactive ? (

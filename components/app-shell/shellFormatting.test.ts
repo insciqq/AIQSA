@@ -4,7 +4,10 @@ import {
   eventLabel,
   formatTokenCount,
   humanizeErrorCode,
+  modelCapabilityDescription,
   modelCapabilityLabel,
+  modelCapabilityLabels,
+  modelDifferentiatingCapabilityLabels,
   responseErrorMessage,
   safeDownloadName,
   searchStrategyDescription
@@ -20,6 +23,12 @@ describe("shell error formatting", () => {
     );
     expect(humanizeErrorCode("active_run_in_progress")).toContain(
       "(active_run_in_progress)"
+    );
+    expect(humanizeErrorCode("branch_checkout_failed")).toBe(
+      "Opening this version failed (branch_checkout_failed)"
+    );
+    expect(humanizeErrorCode("branch_checkout_failed_409")).toBe(
+      "Open version failed with HTTP 409 (branch_checkout_failed_409)"
     );
   });
 
@@ -86,6 +95,37 @@ describe("shell labels", () => {
 
   it("keeps capability ordering stable", () => {
     expect(modelCapabilityLabel(model)).toBe("reasoning / vision / pdf / search / stream");
+    expect(modelCapabilityDescription(model)).toBe(
+      "Reasoning · Images · PDF and documents · Web search · Streaming"
+    );
+    expect(modelCapabilityLabels(model)).toEqual([
+      "Reasoning",
+      "Images",
+      "PDF and documents",
+      "Web search",
+      "Streaming"
+    ]);
+  });
+
+  it("derives provider-local differences from the complete comparison group", () => {
+    const commonOnly: CatalogModel = {
+      ...model,
+      capabilities: {
+        ...model.capabilities,
+        documentInputMode: "none",
+        imageInput: false,
+        nativeWebSearch: false
+      },
+      displayName: "Common capabilities",
+      modelId: "common"
+    };
+
+    expect(modelDifferentiatingCapabilityLabels(model, [model, commonOnly])).toEqual([
+      "Images",
+      "PDF and documents",
+      "Web search"
+    ]);
+    expect(modelDifferentiatingCapabilityLabels(model, [model])).toEqual([]);
   });
 
   it("formats event state without exposing raw payloads", () => {

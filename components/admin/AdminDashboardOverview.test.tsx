@@ -8,8 +8,6 @@ const emptyOverview: AdminDashboardOverviewModel = {
   accessRules: 0,
   activeGroups: 0,
   activeUsers: 0,
-  grantableModels: 0,
-  grantableSearch: 0,
   hasAttention: false,
   inactiveUsers: 0,
   noAccessUsers: [],
@@ -26,9 +24,15 @@ describe("AdminDashboardOverview", () => {
   it("renders an empty canonical overview without action controls", () => {
     render(<AdminDashboardOverview onSelectSection={vi.fn()} overview={emptyOverview} />);
 
-    expect(screen.getByRole("region", { name: "Admin summary" })).toBeInTheDocument();
-    expect(screen.getByText(/no current .* need attention/i)).toBeInTheDocument();
-    expect(within(screen.getByRole("region", { name: "Needs attention" })).queryByRole("button")).not.toBeInTheDocument();
+    const summary = screen.getByRole("region", { name: "Admin summary" });
+    expect(summary).toHaveClass(
+      "[@media(max-height:32rem)]:!grid-flow-col",
+      "[@media(max-height:32rem)]:!overflow-x-auto"
+    );
+    expect(summary).toHaveTextContent("Exact email and domain approval rules");
+    expect(summary).not.toHaveTextContent(/models.*search strategies/i);
+    expect(screen.queryByRole("region", { name: "Needs attention" })).not.toBeInTheDocument();
+    expect(screen.queryByText(/no current .* need attention/i)).not.toBeInTheDocument();
   });
 
   it("routes attention actions through section navigation", () => {
@@ -56,6 +60,10 @@ describe("AdminDashboardOverview", () => {
       />
     );
 
+    expect(screen.getByRole("region", { name: "Needs attention" })).toHaveClass(
+      "[@media(max-height:32rem)]:!grid-flow-col",
+      "[@media(max-height:32rem)]:!overflow-x-auto"
+    );
     fireEvent.click(screen.getByRole("button", { name: /pending approval/i }));
     expect(onSelectSection).toHaveBeenCalledWith("users");
   });

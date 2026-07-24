@@ -43,6 +43,30 @@ describe("McpSettingsSection", () => {
     vi.unstubAllGlobals();
   });
 
+  it("keeps the data warning visible and collapses exact tool and run details until requested", async () => {
+    const todoist = userServer("todoist", "Todoist");
+    vi.stubGlobal("fetch", vi.fn(async () => response({ servers: [todoist] })));
+
+    render(<McpSettingsSection />);
+    await screen.findByRole("heading", { name: "Todoist" });
+
+    expect(
+      screen.getByText(/The model may pass conversation-derived data to an enabled tool/)
+    ).toBeVisible();
+    const disclosure = screen.getByText("How tools use data").closest("details");
+    expect(disclosure).not.toHaveAttribute("open");
+    expect(screen.getByRole("heading", { name: "Todoist" })).toBeVisible();
+
+    fireEvent.click(screen.getByText("How tools use data"));
+
+    expect(disclosure).toHaveAttribute("open");
+    expect(screen.getByText("Every ready tool is automatically available to your normal AIQSA runs.")).toBeVisible();
+    expect(screen.getByText("One tool’s output may influence a later call to another enabled server.")).toBeVisible();
+    expect(screen.getByText(
+      `Up to ${MCP_RUN_PLAN_LIMITS.maxEnabledServers} servers and ${MCP_RUN_PLAN_LIMITS.maxTools} discovered tools can enter one run; exact schema and context fit is checked again before the model starts.`
+    )).toBeVisible();
+  });
+
   it("lets a user independently enable multiple granted MCPs and save a write-only value", async () => {
     let servers = [userServer("mem0", "Mem0"), userServer("todoist", "Todoist")];
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {

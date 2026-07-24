@@ -59,9 +59,16 @@ function renderDialog(
     themeId: "aiqsa" as const
   };
 
-  const view = render(<SettingsDialog {...props} {...overrides} />);
+  const renderProps = { ...props, ...overrides };
+  const view = render(<SettingsDialog {...renderProps} />);
 
-  return { ...props, ...overrides, ...view };
+  return {
+    ...renderProps,
+    ...view,
+    rerenderEditor(nextEditor: PromptEditorDraft) {
+      view.rerender(<SettingsDialog {...renderProps} editor={nextEditor} />);
+    }
+  };
 }
 
 function confirmDiscard() {
@@ -78,6 +85,7 @@ describe("SettingsDialog", () => {
     cleanup();
     resetMcpSettingsStoreForTest();
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
   });
 
   it("opens directly on the MCP section when requested", () => {
@@ -183,6 +191,33 @@ describe("SettingsDialog", () => {
     props.unmount();
     expect(trigger).toHaveFocus();
     trigger.remove();
+  });
+
+  it("puts the prompt library and New before the editor on narrow layouts, then opens a selected editor", async () => {
+    vi.stubGlobal(
+      "matchMedia",
+      vi.fn((query: string) =>
+        ({
+          matches: query === "(max-width: 1023px)",
+          media: query
+        }) as MediaQueryList
+      )
+    );
+    const props = renderDialog();
+
+    const libraryHeading = screen.getByRole("heading", { name: "Prompt library" });
+    const editorHeading = screen.getByRole("heading", { name: "Helpful Assistant" });
+    expect(libraryHeading.closest("section")).toHaveClass("order-1", "lg:order-1");
+    expect(editorHeading.closest("section")).toHaveClass("order-2", "lg:order-2");
+    expect(screen.getByRole("button", { name: "New prompt" })).toBeVisible();
+    await waitFor(() => expect(libraryHeading).toHaveFocus());
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit prompt Research Prompt" }));
+    expect(props.onEditPrompt).toHaveBeenCalledWith(prompts[1]);
+    props.rerenderEditor(customEditor);
+
+    await waitFor(() => expect(screen.getByLabelText("Prompt name")).toHaveFocus());
+    expect(screen.getByLabelText("Prompt name")).toHaveValue("Research Prompt");
   });
 
   it("routes close, Escape, and backdrop dismissal through dirty confirmation", () => {
@@ -462,7 +497,8 @@ describe("SettingsDialog", () => {
     });
 
     fireEvent.click(screen.getByRole("button", { name: "Appearance" }));
-    expect(screen.getByText(/Theme is a local UI preference saved in this browser/)).toBeVisible();
+    expect(screen.getByText("This theme is saved only in this browser and does not follow your account.")).toBeVisible();
+    expect(screen.queryByText(/same-site cookie|first paint/i)).not.toBeInTheDocument();
     expect(screen.getByText(/Choose an AIQSA palette/)).toBeVisible();
 
     const graphite = screen.getByRole("radio", { name: /Use Graphite theme/ });

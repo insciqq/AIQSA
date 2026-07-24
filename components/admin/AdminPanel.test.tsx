@@ -591,9 +591,8 @@ describe("AdminPanel", () => {
     expect(screen.queryByText("Admin data unavailable")).not.toBeInTheDocument();
     const summary = screen.getByRole("region", { name: "Admin summary" });
     expect(within(summary).queryByRole("button")).not.toBeInTheDocument();
-    const attention = screen.getByRole("region", { name: "Needs attention" });
-    expect(within(attention).getByText(/no current .* need attention/i)).toBeInTheDocument();
-    expect(within(attention).queryByRole("button")).not.toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Needs attention" })).not.toBeInTheDocument();
+    expect(screen.queryByText(/no current .* need attention/i)).not.toBeInTheDocument();
   });
 
   it("keeps only the latest initial dashboard and modal focus behavior under Strict Mode", async () => {

@@ -46,4 +46,23 @@ describe("branch tree presentation", () => {
       ["q3", 1, true]
     ]);
   });
+
+  it("turns common Markdown syntax into compact plaintext branch previews", () => {
+    const messages: ThreadMessage[] = [
+      message({ id: "heading", parentMessageId: null, role: "assistant", content: "## Short answer" }),
+      message({
+        id: "list",
+        parentMessageId: "heading",
+        role: "assistant",
+        content: "1. **Get a [heat-loss calculation](https://example.com).**"
+      })
+    ];
+
+    expect(branchTreeNodes(messages, "list").map((node) => node.preview)).toEqual([
+      "Short answer",
+      "Get a heat-loss calculation."
+    ]);
+    expect(messages[0].content).toBe("## Short answer");
+    expect(messages[1].content).toContain("**Get a [heat-loss calculation]");
+  });
 });

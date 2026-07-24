@@ -8,8 +8,6 @@ export type AdminDashboardOverview = Readonly<{
   accessRules: number;
   activeGroups: number;
   activeUsers: number;
-  grantableModels: number;
-  grantableSearch: number;
   hasAttention: boolean;
   inactiveUsers: number;
   noAccessUsers: AdminUserRecord[];
@@ -41,8 +39,6 @@ export function deriveAdminDashboardOverview(
     accessRules: accessRules.length,
     activeGroups: activeGroups(groups).length,
     activeUsers: activeUsers.length,
-    grantableModels: dashboard?.catalog.models.length ?? 0,
-    grantableSearch: dashboard?.catalog.searchStrategies.length ?? 0,
     hasAttention: Boolean(pendingUsers.length || noAccessUsers.length || openInvites.length),
     inactiveUsers: users.filter((user) => user.status === "disabled" || user.status === "denied").length,
     noAccessUsers,

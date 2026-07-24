@@ -250,7 +250,7 @@ describe("Prisma admin provider repository", () => {
     const createVersion = vi.fn(async () => ({}));
     const updateCredential = vi.fn(async () => ({ count: 1 }));
     const updateConnection = vi.fn(async () => ({ count: 1 }));
-    const updateModel = vi.fn(async () => ({ count: 1 }));
+    const updateModel = vi.fn(async (_input: unknown) => ({ count: 1 }));
     const createChecks = vi.fn(async () => ({ count: 1 }));
     const db = transactional({
       providerConnection: {
@@ -361,6 +361,9 @@ describe("Prisma admin provider repository", () => {
         status: "available"
       })]
     });
+    expect(
+      (updateModel.mock.calls[0]?.[0] as { data?: object } | undefined)?.data
+    ).not.toHaveProperty("contextWindow");
   });
 
   it("deletes a disabled unreferenced credential by clearing its pointer before versions", async () => {

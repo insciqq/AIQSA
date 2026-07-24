@@ -33,11 +33,13 @@ export function hasUnseenLatestMessageContent(
 
 export function usePinnedScroll<T extends HTMLElement>({
   followKey,
+  hasContent = true,
   readingAnchorKey = null,
   resetKey,
   thresholdPx = defaultPinnedThresholdPx
 }: {
   followKey: unknown;
+  hasContent?: boolean;
   readingAnchorKey?: string | null;
   resetKey: unknown;
   thresholdPx?: number;
@@ -149,9 +151,29 @@ export function usePinnedScroll<T extends HTMLElement>({
     });
   }, [scheduleFrame, setPinnedState]);
 
+  const scheduleScrollToTop = useCallback(() => {
+    readingAnchorPendingRef.current = false;
+    readingAnswerRef.current = false;
+    readingAnchorPresentRef.current = false;
+    pinnedRef.current = true;
+    showJumpToLatestRef.current = false;
+    scheduleFrame((element) => {
+      element.scrollTop = 0;
+      setPinnedState(true);
+    });
+  }, [scheduleFrame, setPinnedState]);
+
   const handleScroll = useCallback(() => {
     const element = containerRef.current;
     if (!element) {
+      return;
+    }
+
+    if (!hasContent) {
+      if (element.scrollTop !== 0) {
+        element.scrollTop = 0;
+      }
+      setPinnedState(true);
       return;
     }
 
@@ -169,9 +191,14 @@ export function usePinnedScroll<T extends HTMLElement>({
 
     setPinnedState(false);
     setJumpToLatestState(hasUnseenLatestMessageContent(element));
-  }, [setJumpToLatestState, setPinnedState, thresholdPx]);
+  }, [hasContent, setJumpToLatestState, setPinnedState, thresholdPx]);
 
   useLayoutEffect(() => {
+    if (!hasContent) {
+      scheduleScrollToTop();
+      return;
+    }
+
     const resetState = resetStateRef.current;
     if (resetState.initialized && Object.is(resetState.value, resetKey)) {
       return;
@@ -185,9 +212,13 @@ export function usePinnedScroll<T extends HTMLElement>({
     } else {
       scheduleScrollToBottom();
     }
-  }, [readingAnchorKey, resetKey, scheduleAnswerStart, scheduleScrollToBottom]);
+  }, [hasContent, readingAnchorKey, resetKey, scheduleAnswerStart, scheduleScrollToBottom, scheduleScrollToTop]);
 
   useLayoutEffect(() => {
+    if (!hasContent) {
+      readingAnchorPresentRef.current = false;
+      return;
+    }
     if (!readingAnchorKey) {
       readingAnchorPresentRef.current = false;
       return;
@@ -200,9 +231,13 @@ export function usePinnedScroll<T extends HTMLElement>({
     if (pinnedRef.current) {
       scheduleAnswerStart(readingAnchorKey);
     }
-  }, [readingAnchorKey, scheduleAnswerStart]);
+  }, [hasContent, readingAnchorKey, scheduleAnswerStart]);
 
   useLayoutEffect(() => {
+    if (!hasContent) {
+      return;
+    }
+
     const element = containerRef.current;
     if (!element) {
       return;
@@ -217,7 +252,7 @@ export function usePinnedScroll<T extends HTMLElement>({
     } else if (!readingAnchorPendingRef.current) {
       scheduleJumpVisibility(hasUnseenLatestMessageContent(element));
     }
-  }, [followKey, readingAnchorKey, scheduleJumpVisibility, scheduleScrollToBottom, thresholdPx, updateReadingSpacer]);
+  }, [followKey, hasContent, readingAnchorKey, scheduleJumpVisibility, scheduleScrollToBottom, thresholdPx, updateReadingSpacer]);
 
   useEffect(() => {
     return () => {

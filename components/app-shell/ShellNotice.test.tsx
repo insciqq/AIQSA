@@ -53,6 +53,7 @@ describe("ShellNotice", () => {
   it("keeps a public share link and its destructive revoke action available until dismissal", () => {
     vi.useFakeTimers();
     const onDismiss = vi.fn();
+    const onCopy = vi.fn();
     const onRevoke = vi.fn();
 
     render(
@@ -66,6 +67,11 @@ describe("ShellNotice", () => {
           href: "https://app.local/s/share",
           kind: "success",
           persistent: true,
+          secondaryAction: {
+            label: "Copy link",
+            onClick: onCopy,
+            tone: "neutral"
+          },
           text: "Share link copied"
         }}
         onDismiss={onDismiss}
@@ -77,6 +83,13 @@ describe("ShellNotice", () => {
       "rounded-control",
       "text-accent-rose"
     );
+    expect(screen.getByRole("button", { name: "Copy link" })).toHaveClass(
+      "min-h-touch",
+      "border-separator-subtle",
+      "text-content-primary"
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Copy link" }));
+    expect(onCopy).toHaveBeenCalledOnce();
     fireEvent.click(screen.getByRole("button", { name: "Revoke link" }));
     expect(onRevoke).toHaveBeenCalledOnce();
 
@@ -112,6 +125,7 @@ describe("ShellNotice", () => {
           action: { label: "Retry", onClick: vi.fn() },
           href: "https://app.local/s/share",
           kind: "error",
+          secondaryAction: { label: "Copy link", onClick: vi.fn(), tone: "neutral" },
           text: "The modal action failed"
         }}
         onDismiss={vi.fn()}

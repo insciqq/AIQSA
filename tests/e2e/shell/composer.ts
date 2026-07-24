@@ -1,15 +1,21 @@
 import { expect, type Locator, type Page } from "@playwright/test";
 import { matrixCatalog } from "./catalog";
 
-export async function selectModel(page: Page, provider: string, modelId: string): Promise<void> {
-  const providerName = matrixCatalog.providers.find((candidate) => candidate.id === provider)?.name ?? provider;
+export async function selectModel(
+  page: Page,
+  provider: string,
+  modelQuery: string,
+  providerNameOverride?: string
+): Promise<void> {
+  const providerName =
+    providerNameOverride ?? matrixCatalog.providers.find((candidate) => candidate.id === provider)?.name ?? provider;
   const providerNamePattern = new RegExp(`^${providerName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "i");
   await closeRunSettings(page);
   const compact = await composerRunSummary(page).isVisible();
   const controls = compact ? await openRunSetup(page) : composerRestingControls(page);
   await controls.getByRole("button", { name: "Select model" }).click();
   await expect(page.getByLabel("Search models")).toBeFocused();
-  await page.getByLabel("Search models").fill(modelId);
+  await page.getByLabel("Search models").fill(modelQuery);
   const modelPicker = page.getByTestId("model-picker");
   const providerSection = modelPicker.locator("section").filter({
     has: page.getByRole("heading", { name: providerNamePattern })

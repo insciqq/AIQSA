@@ -5,6 +5,7 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 const TARGET_MIGRATION = "20260723230000_provider_control_plane_foundation";
+const CONTEXT_REPAIR_MIGRATION = "20260724120000_repair_provider_model_context_windows";
 const POSTGRES_USER = "aiqsa";
 const POSTGRES_SERVICE = "postgres";
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -297,6 +298,44 @@ function runValidMigrationAndLineageChecks(): void {
     requireSuccess(
       psql(
         database,
+        `UPDATE "ProviderModel"
+         SET
+           "activeConfig" = "draftConfig",
+           "activeVersion" = 1,
+           "activatedAt" = CURRENT_TIMESTAMP,
+           "contextWindow" = 1,
+           "enabled" = true,
+           "templateKey" = 'openai:gpt-5.5'
+         WHERE "id" = 'provider-model-openai';
+
+         UPDATE "ProviderModel"
+         SET "contextWindow" = 1, "templateKey" = NULL
+         WHERE "id" = 'provider-model-openrouter';`
+      ),
+      "prepare provider context repair fixture"
+    );
+    requireSuccess(
+      psql(database, migrationSql(CONTEXT_REPAIR_MIGRATION)),
+      "apply provider context repair migration"
+    );
+    assert.equal(
+      scalar(
+        database,
+        `SELECT concat_ws('|',
+          (SELECT "contextWindow"::text FROM "ProviderModel" WHERE "id" = 'provider-model-openai'),
+          (SELECT "draftConfig" #>> '{capabilities,contextWindow}' FROM "ProviderModel" WHERE "id" = 'provider-model-openai'),
+          (SELECT "activeConfig" #>> '{capabilities,contextWindow}' FROM "ProviderModel" WHERE "id" = 'provider-model-openai'),
+          (SELECT "draftConfig" #>> '{capabilities,contextWindow}' FROM "ProviderModel" WHERE "id" = 'provider-model-fake'),
+          (SELECT "activeConfig" #>> '{capabilities,contextWindow}' FROM "ProviderModel" WHERE "id" = 'provider-model-fake'),
+          COALESCE((SELECT "draftConfig" #>> '{capabilities,contextWindow}' FROM "ProviderModel" WHERE "id" = 'provider-model-openrouter'), 'null')
+        );`
+      ),
+      "1050000|1050000|1050000|8192|8192|null"
+    );
+
+    requireSuccess(
+      psql(
+        database,
         `INSERT INTO "ProviderCredential" (
           "id", "connectionId", "label", "enabled", "updatedAt"
         ) VALUES
@@ -447,7 +486,7 @@ function main(): void {
   }
 
   process.stdout.write(
-    "AIQSA provider migration contract ok: fail-closed legacy conversion and composite lineage verified.\n"
+    "AIQSA provider migration contract ok: fail-closed legacy conversion, context repair, and composite lineage verified.\n"
   );
 }
 

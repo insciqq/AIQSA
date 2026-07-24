@@ -95,6 +95,13 @@ const visionModel: CatalogModel = {
   provider: "openrouter"
 };
 
+const gatewayTextModel: CatalogModel = {
+  ...model,
+  displayName: "Gateway Text Model",
+  modelId: "gateway-text-model",
+  provider: "openrouter"
+};
+
 const profileParameterControls: ModelParameterControls = {
   ...capableParameterControls,
   reasoningEffort: {
@@ -355,9 +362,19 @@ describe("ComposerControls", () => {
     expect(within(sheet).getByRole("button", { name: "Show reasoning blocks" })).toBeVisible();
 
     fireEvent.click(within(sheet).getByRole("button", { name: "Select model" }));
-    expect(screen.getByTestId("model-picker")).toBeVisible();
+    expect(screen.getByTestId("model-picker")).toHaveClass(
+      "z-[90]",
+      "border-separator-strong"
+    );
+    expect(screen.getByTestId("model-picker-backdrop")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Back to Run setup" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Close model picker" })).not.toBeInTheDocument();
     expect(screen.getByRole("dialog", { name: "Run setup" })).toBeVisible();
-    fireEvent.click(screen.getByRole("button", { name: "Close model picker" }));
+    expect(screen.getByRole("dialog", { name: "Choose a model" })).toHaveAttribute(
+      "aria-modal",
+      "false"
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Back to Run setup" }));
     await waitFor(() => expect(within(sheet).getByRole("button", { name: "Select model" })).toHaveFocus());
 
     fireEvent.click(within(sheet).getByRole("button", { name: "Close run setup" }));
@@ -387,6 +404,30 @@ describe("ComposerControls", () => {
     fireEvent.keyDown(document, { key: "Escape" });
     expect(screen.queryByRole("dialog", { name: "Run setup" })).not.toBeInTheDocument();
     await waitFor(() => expect(trigger).toHaveFocus());
+  });
+
+  it("keeps nested model picker Escape and backdrop local to Run setup", async () => {
+    renderControls({
+      currentModel: visionModel,
+      currentParameterControls: capableParameterControls
+    });
+    const sheet = openRunSetup();
+    const modelTrigger = within(sheet).getByRole("button", { name: "Select model" });
+
+    fireEvent.click(modelTrigger);
+    const search = screen.getByLabelText("Search models");
+    await waitFor(() => expect(search).toHaveFocus());
+    fireEvent.keyDown(search, { key: "Escape" });
+    expect(screen.queryByTestId("model-picker")).not.toBeInTheDocument();
+    expect(screen.getByRole("dialog", { name: "Run setup" })).toBeVisible();
+    await waitFor(() => expect(modelTrigger).toHaveFocus());
+
+    fireEvent.click(modelTrigger);
+    expect(screen.getByTestId("model-picker-backdrop")).toBeVisible();
+    fireEvent.mouseDown(screen.getByTestId("model-picker-backdrop"));
+    expect(screen.queryByTestId("model-picker")).not.toBeInTheDocument();
+    expect(screen.getByRole("dialog", { name: "Run setup" })).toBeVisible();
+    await waitFor(() => expect(modelTrigger).toHaveFocus());
   });
 
   it("closes Run setup from its backdrop and restores the summary opener", async () => {
@@ -702,10 +743,14 @@ describe("ComposerControls", () => {
   it("searches models by readable context without exposing internal ids", async () => {
     const extendedCatalog: Catalog = {
       ...catalog,
-      models: [model, visionModel],
+      models: [model, visionModel, gatewayTextModel],
       providers: [
         ...catalog.providers,
-        { id: "openrouter", models: [visionModel.modelId], name: "OpenRouter Gateway" }
+        {
+          id: "openrouter",
+          models: [visionModel.modelId, gatewayTextModel.modelId],
+          name: "OpenRouter Gateway"
+        }
       ]
     };
     const onSelectModel = vi.fn();
@@ -741,7 +786,26 @@ describe("ComposerControls", () => {
     expect(visionRow).toHaveAccessibleDescription(
       "Reasoning · Images · PDF and documents · Web search · Streaming"
     );
+    expect(
+      within(visionRow).getByText("Reasoning · Images · PDF and documents · Web search")
+    ).toHaveClass("font-medium", "text-content-secondary");
+    expect(within(visionRow).getByText("Streaming")).toHaveClass("text-content-muted");
     expect(screen.queryByRole("button", { name: /Select model Fake Fake QSA/ })).not.toBeInTheDocument();
+
+    fireEvent.change(search, { target: { value: "pdf" } });
+    const capabilityFilteredRow = screen.getByRole("button", {
+      name: /Select model OpenRouter Gateway Vision Research Model/
+    });
+    expect(
+      within(capabilityFilteredRow).getByText(
+        "Reasoning · Images · PDF and documents · Web search"
+      )
+    ).toHaveClass("font-medium", "text-content-secondary");
+    expect(
+      screen.queryByRole("button", {
+        name: /Select model OpenRouter Gateway Gateway Text Model/
+      })
+    ).not.toBeInTheDocument();
 
     fireEvent.keyDown(search, { key: "End" });
     fireEvent.keyDown(search, { key: "Enter" });
@@ -923,6 +987,8 @@ describe("ComposerControls", () => {
     fireEvent.click(screen.getByRole("button", { name: "Select model" }));
     expect(screen.getByTestId("model-picker")).toBeVisible();
     expect(screen.getByRole("button", { name: "Close model picker" })).toHaveClass("size-11", "lg:size-8");
+    expect(screen.queryByRole("button", { name: "Back to Run setup" })).not.toBeInTheDocument();
+    expect(screen.queryByTestId("model-picker-backdrop")).not.toBeInTheDocument();
     await waitFor(() => expect(screen.getByLabelText("Search models")).toHaveFocus());
 
     fireEvent.click(screen.getByRole("button", { name: "Run settings" }));

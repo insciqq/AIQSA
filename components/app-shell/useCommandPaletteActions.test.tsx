@@ -193,9 +193,12 @@ describe("useCommandPaletteActions", () => {
       new Set(["action", "chat", "model", "prompt", "search"])
     );
     expect(result.current.commandItems.some((item) => item.id.startsWith("provider:"))).toBe(false);
-    expect(result.current.commandItems.find((item) => item.kind === "model")?.subtitle).toBe(
-      "OpenAI · reasoning / search / stream"
+    const modelCommand = result.current.commandItems.find((item) => item.kind === "model");
+    expect(modelCommand?.subtitle).toBe("OpenAI · Reasoning · Web search · Streaming");
+    expect(modelCommand?.keywords).toEqual(
+      expect.arrayContaining(["gpt-5.5", "reasoning / search / stream"])
     );
+    expect(modelCommand?.subtitle).not.toContain("/");
     expect(result.current.commandItems.find((item) => item.kind === "search")?.subtitle).toBe(
       "Provider-native web search"
     );

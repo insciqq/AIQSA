@@ -377,6 +377,31 @@ describe("prisma catalog data loader", () => {
     });
   });
 
+  it("never exposes the provider compatibility sentinel as a context window", () => {
+    const known = providerModelToCatalogEntry(providerModel({
+      activeConfig: {
+        adapterKind: "openai_responses_native",
+        capabilities,
+        defaultParams: {},
+        upstreamModelId: "gpt-5.6-sol"
+      },
+      model: { contextWindow: 1 }
+    }));
+    const unknown = providerModelToCatalogEntry(providerModel({
+      activeConfig: {
+        adapterKind: "openai_responses_compatible",
+        capabilities,
+        defaultParams: {},
+        upstreamModelId: "private/model"
+      },
+      connection: { family: "openai_compatible" },
+      model: { contextWindow: 1 }
+    }));
+
+    expect(known?.contextWindow).toBe(1_050_000);
+    expect(unknown?.contextWindow).toBe(0);
+  });
+
   it("fails closed on unreadable active model configuration", () => {
     const model = providerModel({
       activeConfig: {

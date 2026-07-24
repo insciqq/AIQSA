@@ -72,7 +72,10 @@ function providerModelDraftConfig(model: (typeof defaultProviderModels)[number])
 
   return {
     adapterKind,
-    capabilities: model.capabilities,
+    capabilities: {
+      ...model.capabilities,
+      contextWindow: model.contextWindow
+    },
     defaultParams: model.defaultParams,
     ...(model.provider === "openrouter"
       ? {

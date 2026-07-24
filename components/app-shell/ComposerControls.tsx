@@ -484,6 +484,7 @@ export function ComposerControls({
           catalogUnavailable={catalogUnavailable}
           currentModel={currentModel}
           disabled={disabled}
+          nestedInRunSetup={runSetupOpen}
           open={modelPickerOpen}
           selectedModelId={selectedModelId}
           selectedProvider={selectedProvider}

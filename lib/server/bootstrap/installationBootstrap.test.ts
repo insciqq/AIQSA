@@ -289,6 +289,16 @@ describe("installation bootstrap", () => {
       providerConnectionTemplates.length
     );
     expect(fixture.spies.providerModelUpsert).toHaveBeenCalledOnce();
+    expect(fixture.spies.providerModelUpsert.mock.calls[0]?.[0]).toMatchObject({
+      create: {
+        activeConfig: {
+          capabilities: { contextWindow: 8192 }
+        },
+        draftConfig: {
+          capabilities: { contextWindow: 8192 }
+        }
+      }
+    });
     expect(fixture.spies.searchStrategyUpsert).toHaveBeenCalledTimes(
       bootstrapSearchStrategies.length
     );
