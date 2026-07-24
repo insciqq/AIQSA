@@ -144,6 +144,11 @@ function catalog(
   controlValues: Record<string, unknown> = {},
   models: CatalogModel[] = [model, fakeModel]
 ): Catalog {
+  const profileInput = [
+    { description: "Simple, well-defined questions", id: "fast" as const, label: "Fast", model: gpt56LunaModel, reasoningEffort: "medium", reasoningMode: "standard" },
+    { description: "Most everyday questions", id: "balanced" as const, label: "Balanced", model: gpt56TerraModel, reasoningEffort: "medium", reasoningMode: "standard" },
+    { description: "Difficult or open-ended questions", id: "deep" as const, label: "Deep", model: gpt56Model, reasoningEffort: "max", reasoningMode: "pro" }
+  ];
   return {
     defaults: {
       controlValues,
@@ -169,6 +174,31 @@ function catalog(
         name: "OpenAI"
       }
     ],
+    runProfiles: profileInput.map((profile) => {
+      const available = models.some(
+        (candidate) => candidate.provider === profile.model.provider && candidate.modelId === profile.model.modelId
+      );
+      if (!available) {
+        return {
+          available: false as const,
+          description: profile.description,
+          id: profile.id,
+          label: profile.label,
+          unavailableReason: "model_unavailable" as const
+        };
+      }
+      return {
+        available: true as const,
+        configurationLabel: `${profile.model.displayName} · ${profile.reasoningMode === "pro" ? "Pro" : "Standard"} · ${profile.reasoningEffort === "max" ? "Maximum" : "Medium"}`,
+        description: profile.description,
+        id: profile.id,
+        label: profile.label,
+        modelId: profile.model.modelId,
+        provider: profile.model.provider,
+        reasoningEffort: profile.reasoningEffort,
+        reasoningMode: profile.reasoningMode
+      };
+    }),
     searchStrategies: [
       {
         displayName: "No Search",

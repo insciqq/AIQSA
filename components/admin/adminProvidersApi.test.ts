@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  adminProviderErrorMessage,
   createAdminProviderCredential,
   getAdminProviderConnections,
   testAdminProviderCredential
@@ -34,6 +35,14 @@ const safeConnection = {
 };
 
 describe("admin provider browser API", () => {
+  it("names a run-profile deletion blocker in readable administrator feedback", () => {
+    expect(adminProviderErrorMessage({
+      blockers: [{ count: 1, kind: "run_profiles" }],
+      code: "provider_delete_conflict",
+      resourceIds: []
+    })).toContain("run profiles: 1");
+  });
+
   it("sends credentials only in same-origin JSON mutation bodies", async () => {
     const fetcher = vi.fn(async () => Response.json({ connections: [safeConnection] }));
     await expect(createAdminProviderCredential(

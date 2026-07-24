@@ -111,7 +111,7 @@ const profileParameterControls: ModelParameterControls = {
   }
 };
 
-function profileModel(modelId: string, displayName: string): CatalogModel {
+function profileModel(modelId: string, upstreamModelId: string, displayName: string): CatalogModel {
   return {
     ...model,
     capabilities: {
@@ -122,14 +122,56 @@ function profileModel(modelId: string, displayName: string): CatalogModel {
     displayName,
     modelId,
     parameterControls: profileParameterControls,
-    provider: "openai",
-    searchStrategyIds: ["search-disabled", "web-search"]
+    provider: "connection-openai",
+    providerFamily: "openai",
+    searchStrategyIds: ["search-disabled", "web-search"],
+    upstreamModelId
   };
 }
 
-const lunaModel = profileModel("gpt-5.6-luna", "GPT-5.6 Luna");
-const terraModel = profileModel("gpt-5.6-terra", "GPT-5.6 Terra");
-const solModel = profileModel("gpt-5.6-sol", "GPT-5.6 Sol");
+const lunaModel = profileModel("deployment-luna", "gpt-5.6-luna", "GPT-5.6 Luna");
+const terraModel = profileModel("deployment-terra", "gpt-5.6-terra", "GPT-5.6 Terra");
+const solModel = profileModel("deployment-sol", "gpt-5.6-sol", "GPT-5.6 Sol");
+
+function projectedProfile(
+  id: "fast" | "balanced" | "deep",
+  profileModel: CatalogModel,
+  models: CatalogModel[],
+  reasoningEffort: string,
+  reasoningMode: string
+): NonNullable<Catalog["runProfiles"]>[number] {
+  const labels = { balanced: "Balanced", deep: "Deep", fast: "Fast" } as const;
+  const descriptions = {
+    balanced: "Most everyday questions",
+    deep: "Difficult or open-ended questions",
+    fast: "Simple, well-defined questions"
+  } as const;
+  if (!models.some(
+    (candidate) => candidate.provider === profileModel.provider && candidate.modelId === profileModel.modelId
+  )) {
+    return {
+      available: false,
+      description: descriptions[id],
+      id,
+      label: labels[id],
+      unavailableReason: "model_unavailable"
+    };
+  }
+  const readable = (value: string) => value === "max"
+    ? "Maximum"
+    : value.replace(/^./, (letter) => letter.toUpperCase());
+  return {
+    available: true,
+    configurationLabel: [profileModel.displayName, readable(reasoningMode), readable(reasoningEffort)].join(" · "),
+    description: descriptions[id],
+    id,
+    label: labels[id],
+    modelId: profileModel.modelId,
+    provider: profileModel.provider,
+    reasoningEffort,
+    reasoningMode
+  };
+}
 
 function profileCatalog(models: CatalogModel[] = [model, lunaModel, terraModel, solModel]): Catalog {
   return {
@@ -138,10 +180,15 @@ function profileCatalog(models: CatalogModel[] = [model, lunaModel, terraModel, 
     providers: [
       { id: "fake", models: [model.modelId], name: "Fake" },
       {
-        id: "openai",
-        models: models.filter((candidate) => candidate.provider === "openai").map((candidate) => candidate.modelId),
+        id: "connection-openai",
+        models: models.filter((candidate) => candidate.provider === "connection-openai").map((candidate) => candidate.modelId),
         name: "OpenAI"
       }
+    ],
+    runProfiles: [
+      projectedProfile("fast", lunaModel, models, "medium", "standard"),
+      projectedProfile("balanced", terraModel, models, "medium", "standard"),
+      projectedProfile("deep", solModel, models, "max", "pro")
     ]
   };
 }
@@ -290,7 +337,7 @@ describe("ComposerControls", () => {
       reasoningEffort: "max",
       reasoningMode: "pro",
       selectedModelId: solModel.modelId,
-      selectedProvider: "openai",
+      selectedProvider: solModel.provider,
       selectedProviderName: "OpenAI",
       selectedSearchStrategy: "web-search"
     });
@@ -325,7 +372,7 @@ describe("ComposerControls", () => {
       reasoningEffort: "high",
       reasoningMode: "standard",
       selectedModelId: terraModel.modelId,
-      selectedProvider: "openai",
+      selectedProvider: terraModel.provider,
       selectedProviderName: "OpenAI"
     });
     expect(screen.getByTestId("run-profile-summary")).toHaveTextContent("Custom");
@@ -339,7 +386,7 @@ describe("ComposerControls", () => {
       reasoningEffort: "max",
       reasoningMode: "pro",
       selectedModelId: solModel.modelId,
-      selectedProvider: "openai",
+      selectedProvider: solModel.provider,
       selectedProviderName: "OpenAI",
       selectedSearchStrategy: "web-search"
     });
@@ -499,7 +546,8 @@ describe("ComposerControls", () => {
     );
     const fastProfile = screen.getByRole("button", { name: "Use Fast run profile" });
     expect(fastProfile).toBeDisabled();
-    expect(fastProfile).toHaveAccessibleDescription(/GPT-5.6 Luna is not available/);
+    expect(fastProfile).toHaveAccessibleDescription(/Fast is not available with your model access/);
+    expect(fastProfile).not.toHaveAccessibleDescription(/GPT-5.6 Luna/);
 
     fireEvent.click(screen.getByRole("button", { name: "Select model" }));
     expect(screen.getByRole("button", { name: "Select model OpenAI GPT-5.6 Terra" })).toBeVisible();

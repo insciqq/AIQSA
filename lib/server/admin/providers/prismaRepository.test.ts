@@ -227,6 +227,7 @@ describe("Prisma admin provider repository", () => {
         count: vi.fn(async () => 1),
         updateMany: vi.fn(async () => ({ count: 0 }))
       },
+      runProfile: { count: vi.fn(async () => 1) },
       searchStrategy: { count: vi.fn(async () => 1) },
       userSettings: { count: vi.fn(async () => 1) }
     });
@@ -238,6 +239,7 @@ describe("Prisma admin provider repository", () => {
         { count: 1, kind: "user_defaults" },
         { count: 1, kind: "chat_defaults" },
         { count: 1, kind: "search_references" },
+        { count: 1, kind: "run_profiles" },
         { count: 1, kind: "run_bindings" }
       ],
       status: "conflict"

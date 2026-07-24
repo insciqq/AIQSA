@@ -1,4 +1,9 @@
 import type { ErrorResponse, SessionErrorCode } from "./http";
+import {
+  RUN_PROFILE_IDS,
+  type CatalogRunProfile,
+  type RunProfileId
+} from "./runProfiles";
 
 export type ReasoningEffort = string;
 export type ReasoningMode = string;
@@ -125,12 +130,14 @@ export type Catalog = {
   models: CatalogModel[];
   promptPresets: PromptPreset[];
   providers: CatalogProvider[];
+  runProfiles?: CatalogRunProfile[];
   searchStrategies: CatalogSearchStrategy[];
 };
 
-export type CurrentUserCatalogWire = Omit<Catalog, "models" | "providers" | "searchStrategies"> & {
+export type CurrentUserCatalogWire = Omit<Catalog, "models" | "providers" | "runProfiles" | "searchStrategies"> & {
   models: CatalogWireModel[];
   providers: CatalogWireProvider[];
+  runProfiles: CatalogRunProfile[];
   searchStrategies: CatalogWireSearchStrategy[];
 };
 
@@ -307,6 +314,54 @@ function decodeSearchStrategy(value: unknown): CatalogSearchStrategy | null {
   };
 }
 
+function decodeRunProfile(value: unknown): CatalogRunProfile | null {
+  if (
+    !isRecord(value) ||
+    !RUN_PROFILE_IDS.includes(value.id as RunProfileId) ||
+    !nonEmptyString(value.label) ||
+    !nonEmptyString(value.description) ||
+    typeof value.available !== "boolean"
+  ) {
+    return null;
+  }
+  const base = {
+    description: value.description,
+    id: value.id as RunProfileId,
+    label: value.label
+  };
+  if (value.available) {
+    if (
+      !nonEmptyString(value.configurationLabel) ||
+      !nonEmptyString(value.modelId) ||
+      !nonEmptyString(value.provider) ||
+      !nonEmptyString(value.reasoningEffort) ||
+      !nonEmptyString(value.reasoningMode)
+    ) {
+      return null;
+    }
+    return {
+      ...base,
+      available: true,
+      configurationLabel: value.configurationLabel,
+      modelId: value.modelId,
+      provider: value.provider,
+      reasoningEffort: value.reasoningEffort,
+      reasoningMode: value.reasoningMode
+    };
+  }
+  if (
+    value.unavailableReason !== "configuration_invalid" &&
+    value.unavailableReason !== "model_unavailable"
+  ) {
+    return null;
+  }
+  return {
+    ...base,
+    available: false,
+    unavailableReason: value.unavailableReason
+  };
+}
+
 export function decodeCatalogResponse(value: unknown): Catalog | null {
   if (!isRecord(value) || !isRecord(value.catalog)) {
     return null;
@@ -327,6 +382,7 @@ export function decodeCatalogResponse(value: unknown): Catalog | null {
     !Array.isArray(catalog.models) ||
     !Array.isArray(catalog.promptPresets) ||
     !Array.isArray(catalog.providers) ||
+    !Array.isArray(catalog.runProfiles) ||
     !Array.isArray(catalog.searchStrategies)
   ) {
     return null;
@@ -335,11 +391,17 @@ export function decodeCatalogResponse(value: unknown): Catalog | null {
   const models = catalog.models.map(decodeCatalogModel);
   const promptPresets = catalog.promptPresets.map(decodePromptPreset);
   const providers = catalog.providers.map(decodeCatalogProvider);
+  const runProfiles = catalog.runProfiles.map(decodeRunProfile);
   const searchStrategies = catalog.searchStrategies.map(decodeSearchStrategy);
+  const runProfileIds = new Set(
+    runProfiles.flatMap((profile) => profile ? [profile.id] : [])
+  );
   if (
     models.some((model) => model === null) ||
     promptPresets.some((prompt) => prompt === null) ||
     providers.some((provider) => provider === null) ||
+    runProfiles.some((profile) => profile === null) ||
+    runProfileIds.size !== runProfiles.length ||
     searchStrategies.some((strategy) => strategy === null)
   ) {
     return null;
@@ -359,6 +421,7 @@ export function decodeCatalogResponse(value: unknown): Catalog | null {
     models: models.filter((model): model is CatalogModel => model !== null),
     promptPresets: promptPresets.filter((prompt): prompt is PromptPreset => prompt !== null),
     providers: providers.filter((provider): provider is CatalogProvider => provider !== null),
+    runProfiles: runProfiles.filter((profile): profile is CatalogRunProfile => profile !== null),
     searchStrategies: searchStrategies.filter(
       (strategy): strategy is CatalogSearchStrategy => strategy !== null
     )

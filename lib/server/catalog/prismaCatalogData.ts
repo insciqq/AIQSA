@@ -1,6 +1,5 @@
 import {
-  defaultProviderModels,
-  fallbackParameterControls,
+  resolveProviderModelParameterControls,
   type CatalogAdapterKind,
   type ProviderModelCatalogEntry,
   type SearchStrategyCatalogEntry
@@ -14,6 +13,7 @@ import {
 import { isTestModeAllowedEnv } from "@/lib/server/auth/csrf";
 import { loadEntitlementsForUser } from "@/lib/server/auth/dbEntitlements";
 import type { CatalogData } from "@/lib/server/catalog/currentUserCatalog";
+import { isRunProfileId } from "@/lib/domain/runProfiles";
 import {
   normalizeProviderConnectionConfiguration,
   normalizeProviderDefaultParams,
@@ -33,7 +33,7 @@ import type {
   SearchStrategy
 } from "@prisma/client";
 
-type CatalogPrismaClient = Pick<PrismaClient, "providerModel" | "searchStrategy" | "user">;
+type CatalogPrismaClient = Pick<PrismaClient, "providerModel" | "runProfile" | "searchStrategy" | "user">;
 
 type PromptPresetRow = {
   developerPrompt: string | null;
@@ -270,12 +270,6 @@ export function providerModelToCatalogEntry(
     return null;
   }
 
-  const defaultEntry = defaultProviderModels.find(
-    (entry) =>
-      entry.adapterKind === configuration.adapterKind &&
-      entry.providerFamily === model.connection.family &&
-      entry.upstreamModelId === configuration.upstreamModelId
-  );
   const resolvedCapabilities = resolveProviderModelCapabilities({
     adapterKind: configuration.adapterKind,
     capabilities: configuration.capabilities,
@@ -305,15 +299,14 @@ export function providerModelToCatalogEntry(
     inputTokenPriceMicros: model.inputTokenPriceMicros,
     modelId: model.id,
     outputTokenPriceMicros: model.outputTokenPriceMicros,
-    parameterControls:
-      defaultEntry?.parameterControls ??
-      fallbackParameterControls({
-        adapterKind: configuration.adapterKind as CatalogAdapterKind,
-        defaultParams: configuration.defaultParams,
-        provider: model.connection.family,
-        supportsReasoning: capabilities.reasoning,
-        supportsStreaming: capabilities.streaming
-      }),
+    parameterControls: resolveProviderModelParameterControls({
+      adapterKind: configuration.adapterKind as CatalogAdapterKind,
+      defaultParams: configuration.defaultParams,
+      providerFamily: model.connection.family,
+      supportsReasoning: capabilities.reasoning,
+      supportsStreaming: capabilities.streaming,
+      upstreamModelId: configuration.upstreamModelId
+    }),
     provider: model.connectionId,
     providerDisplayName: model.connection.displayName,
     providerFamily: model.connection.family,
@@ -414,7 +407,7 @@ export function createPrismaCatalogDataLoader({
       return null;
     }
 
-    const [models, searchStrategies, entitlements] = await Promise.all([
+    const [models, runProfiles, searchStrategies, entitlements] = await Promise.all([
       prisma.providerModel.findMany({
         include: {
           activeCredentialChecks: {
@@ -459,6 +452,17 @@ export function createPrismaCatalogDataLoader({
           }
         }
       }),
+      prisma.runProfile.findMany({
+        orderBy: { id: "asc" },
+        select: {
+          description: true,
+          enabled: true,
+          id: true,
+          providerModelId: true,
+          reasoningEffort: true,
+          reasoningMode: true
+        }
+      }),
       prisma.searchStrategy.findMany({
         orderBy: {
           strategyId: "asc"
@@ -496,6 +500,9 @@ export function createPrismaCatalogDataLoader({
         name: preset.name,
         systemPrompt: preset.systemPrompt
       })),
+      runProfiles: runProfiles.flatMap((profile) => isRunProfileId(profile.id)
+        ? [{ ...profile, id: profile.id }]
+        : []),
       searchStrategies: exposedSearchStrategies
         .map(searchStrategyToCatalogEntry)
         .filter((strategy): strategy is SearchStrategyCatalogEntry => strategy !== null),

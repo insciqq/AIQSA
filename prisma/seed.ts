@@ -5,6 +5,10 @@ import {
   providerConnectionTemplates,
   providerTemplateIds
 } from "../lib/domain/providerTemplates";
+import {
+  DEFAULT_RUN_PROFILE_CONFIGURATIONS,
+  runProfileMetadata
+} from "../lib/domain/runProfiles";
 import { hashCanonicalMcpValue } from "../lib/server/mcp/definitions";
 import {
   assertLocalSeedRuntime,
@@ -186,6 +190,35 @@ async function synchronizeLocalProviderTemplates(): Promise<Map<string, string>>
   }
 
   return modelIds;
+}
+
+async function synchronizeRunProfiles(modelIds: Map<string, string>): Promise<void> {
+  for (const profile of DEFAULT_RUN_PROFILE_CONFIGURATIONS) {
+    const providerModelId = modelIds.get(profile.targetTemplateKey);
+    if (!providerModelId) {
+      throw new Error(`Missing run profile model template: ${profile.targetTemplateKey}`);
+    }
+    await prisma.runProfile.upsert({
+      create: {
+        description: runProfileMetadata(profile.id).defaultDescription,
+        enabled: true,
+        id: profile.id,
+        providerModelId,
+        reasoningEffort: profile.reasoningEffort,
+        reasoningMode: profile.reasoningMode
+      },
+      update: {
+        description: runProfileMetadata(profile.id).defaultDescription,
+        enabled: true,
+        providerModelId,
+        reasoningEffort: profile.reasoningEffort,
+        reasoningMode: profile.reasoningMode,
+        updatedByUserId: null,
+        version: 1
+      },
+      where: { id: profile.id }
+    });
+  }
 }
 
 async function seedLocalOrdinaryUser(user: (typeof LOCAL_ORDINARY_USERS)[number]) {
@@ -451,6 +484,7 @@ async function main() {
   }
 
   const providerModelIds = await synchronizeLocalProviderTemplates();
+  await synchronizeRunProfiles(providerModelIds);
   const fakeProviderModelId = providerModelIds.get("fake:fake-qsa");
   if (!fakeProviderModelId) {
     throw new Error("Fake provider model template was not seeded");

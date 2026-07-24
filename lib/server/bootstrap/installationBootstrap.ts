@@ -6,6 +6,10 @@ import {
   providerTemplateIds
 } from "@/lib/domain/providerTemplates";
 import {
+  DEFAULT_RUN_PROFILE_CONFIGURATIONS,
+  runProfileMetadata
+} from "@/lib/domain/runProfiles";
+import {
   hashPassword as hashAuthPassword,
   isPlausibleEmail,
   normalizeAuthEmail,
@@ -354,6 +358,21 @@ async function synchronizeCodeOwnedCatalog(tx: Prisma.TransactionClient): Promis
     update: {},
     where: { templateKey: "fake:fake-qsa" }
   });
+
+  for (const profile of DEFAULT_RUN_PROFILE_CONFIGURATIONS) {
+    await tx.runProfile.upsert({
+      create: {
+        description: runProfileMetadata(profile.id).defaultDescription,
+        enabled: false,
+        id: profile.id,
+        providerModelId: null,
+        reasoningEffort: profile.reasoningEffort,
+        reasoningMode: profile.reasoningMode
+      },
+      update: {},
+      where: { id: profile.id }
+    });
+  }
 
   for (const strategy of defaultSearchStrategies.filter(
     (candidate) => candidate.kind !== "perplexity_tool_search"

@@ -34,6 +34,14 @@ describe("catalog handler", () => {
             systemPrompt: "You are a helpful AI assistant. Today is {local_date}, local time is {local_time}."
           }
         ],
+        runProfiles: [{
+          description: "Simple, well-defined questions",
+          enabled: true,
+          id: "fast",
+          providerModelId: "gpt-5.5",
+          reasoningEffort: "medium",
+          reasoningMode: "standard"
+        }],
         searchStrategies: defaultSearchStrategies,
         settings: {
           defaultControlValues: {},
@@ -68,6 +76,7 @@ describe("catalog handler", () => {
       "models",
       "promptPresets",
       "providers",
+      "runProfiles",
       "searchStrategies"
     ]);
     expect(Object.keys(body.catalog.defaults)).toEqual([
@@ -107,6 +116,12 @@ describe("catalog handler", () => {
       "search-disabled",
       "openai-native-web-search"
     ]);
+    expect(catalog?.runProfiles).toEqual([expect.objectContaining({
+      available: true,
+      id: "fast",
+      modelId: "gpt-5.5",
+      provider: "openai"
+    })]);
   });
 
   it("exposes entitled OpenRouter Gemini models with model-specific controls", async () => {
@@ -119,6 +134,7 @@ describe("catalog handler", () => {
         },
         models: defaultProviderModels,
         promptPresets: [],
+        runProfiles: [],
         searchStrategies: defaultSearchStrategies,
         settings: {
           defaultControlValues: {},
@@ -179,6 +195,7 @@ describe("catalog handler", () => {
       },
       models: defaultProviderModels.filter((model) => model.provider === "openrouter"),
       promptPresets: [],
+      runProfiles: [],
       searchStrategies: defaultSearchStrategies,
       settings: {
         defaultControlValues: {},
@@ -210,6 +227,14 @@ describe("catalog handler", () => {
       },
       models: defaultProviderModels,
       promptPresets: [],
+      runProfiles: [{
+        description: "Simple questions",
+        enabled: true,
+        id: "fast",
+        providerModelId: "gpt-5.5",
+        reasoningEffort: "medium",
+        reasoningMode: "standard"
+      }],
       searchStrategies: defaultSearchStrategies,
       settings: {
         defaultControlValues: {},
@@ -228,6 +253,15 @@ describe("catalog handler", () => {
     expect(catalog.models).toEqual([]);
     expect(catalog.providers).toEqual([]);
     expect(catalog.searchStrategies.map((strategy) => strategy.strategyId)).toEqual(["search-disabled"]);
+    expect(catalog.runProfiles).toEqual([{
+      available: false,
+      description: "Simple questions",
+      id: "fast",
+      label: "Fast",
+      unavailableReason: "model_unavailable"
+    }]);
+    expect(JSON.stringify(catalog.runProfiles)).not.toContain("gpt-5.5");
+    expect(JSON.stringify(catalog.runProfiles)).not.toContain("openai");
   });
 
   it("rejects anonymous catalog requests", async () => {

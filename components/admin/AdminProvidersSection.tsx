@@ -4,6 +4,7 @@ import {
   AdminProviderModelEditor,
   adminProviderAdapterLabel
 } from "@/components/admin/AdminProviderModelEditor";
+import { AdminRunProfilesPanel } from "@/components/admin/AdminRunProfilesPanel";
 import {
   EmptyState,
   dangerButton,
@@ -1023,6 +1024,7 @@ export function AdminProvidersSection({
 
   return (
     <div className="min-w-0">
+      <AdminRunProfilesPanel active={active} />
       <div className="flex flex-col gap-3 border-b border-separator-subtle px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
         <p className="text-xs text-content-muted">
           {controller.state.loading && !controller.state.loaded

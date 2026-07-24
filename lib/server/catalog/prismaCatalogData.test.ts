@@ -455,6 +455,9 @@ describe("prisma catalog data loader", () => {
       providerModel: {
         findMany: vi.fn()
       },
+      runProfile: {
+        findMany: vi.fn()
+      },
       searchStrategy: {
         findMany: vi.fn()
       },
@@ -469,6 +472,7 @@ describe("prisma catalog data loader", () => {
 
     await expect(loader("missing-user")).resolves.toBeNull();
     expect(prisma.providerModel.findMany).not.toHaveBeenCalled();
+    expect(prisma.runProfile.findMany).not.toHaveBeenCalled();
     expect(prisma.searchStrategy.findMany).not.toHaveBeenCalled();
     expect(loadEntitlements).not.toHaveBeenCalled();
   });
@@ -487,6 +491,16 @@ describe("prisma catalog data loader", () => {
     const prisma = {
       providerModel: {
         findMany: vi.fn(async (_query?: unknown) => [answer, technicalSearch, providerModel({ fake: true })])
+      },
+      runProfile: {
+        findMany: vi.fn(async () => [{
+          description: "Most everyday questions",
+          enabled: true,
+          id: "balanced",
+          providerModelId: "deployment-answer",
+          reasoningEffort: "medium",
+          reasoningMode: "standard"
+        }])
       },
       searchStrategy: {
         findMany: vi.fn(async () => [
@@ -565,6 +579,12 @@ describe("prisma catalog data loader", () => {
       models: ["deployment-answer"],
       name: "Primary account"
     }]);
+    expect(catalog.runProfiles).toEqual([expect.objectContaining({
+      available: true,
+      id: "balanced",
+      modelId: "deployment-answer",
+      provider: "connection-answer"
+    })]);
   });
 
   it("does not silently replace an unavailable saved deployment with the first model", () => {
@@ -579,6 +599,7 @@ describe("prisma catalog data loader", () => {
       }),
       models: [available!],
       promptPresets: [],
+      runProfiles: [],
       searchStrategies: [],
       settings: {
         defaultControlValues: {},

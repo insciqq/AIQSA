@@ -533,6 +533,30 @@ export const defaultProviderModels: ProviderModelCatalogEntry[] =
     upstreamModelId: model.modelId
   }));
 
+export function resolveProviderModelParameterControls(input: {
+  adapterKind: CatalogAdapterKind;
+  defaultParams: Record<string, unknown>;
+  providerFamily: string;
+  supportsReasoning: boolean;
+  supportsStreaming: boolean;
+  upstreamModelId: string;
+}): ModelParameterControls {
+  const template = defaultProviderModels.find(
+    (model) =>
+      model.adapterKind === input.adapterKind &&
+      model.providerFamily === input.providerFamily &&
+      model.upstreamModelId === input.upstreamModelId
+  );
+
+  return template?.parameterControls ?? fallbackParameterControls({
+    adapterKind: input.adapterKind,
+    defaultParams: input.defaultParams,
+    provider: input.providerFamily,
+    supportsReasoning: input.supportsReasoning,
+    supportsStreaming: input.supportsStreaming
+  });
+}
+
 export function fallbackParameterControls(input: {
   adapterKind?: CatalogAdapterKind;
   defaultParams?: Record<string, unknown>;

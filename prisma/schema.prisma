@@ -135,6 +135,7 @@ model User {
   mcpUserServers         McpUserServer[]
   modelRuns              ModelRun[]
   promptPresets          PromptPreset[]
+  runProfileUpdates      RunProfile[]        @relation("RunProfileUpdater")
   settings               UserSettings?
   sharedSnapshots        SharedChatSnapshot[]
   smtpActivations        SmtpControl[]         @relation("SmtpControlActivator")
@@ -430,6 +431,7 @@ model ProviderModel {
   connection             ProviderConnection             @relation(fields: [connectionId], references: [id], onDelete: Restrict)
   draftChecks            ProviderDraftCheck[]
   providerRunBindings    ProviderRunBinding[]
+  runProfiles            RunProfile[]
   searchStrategies       SearchStrategy[]
   chatDefaults           Chat[]                         @relation("ChatDefaultProviderModel")
   userDefaults           UserSettings[]                 @relation("UserDefaultProviderModel")
@@ -438,6 +440,24 @@ model ProviderModel {
   @@index([provider, modelId])
   @@index([connectionId, enabled])
   @@index([provider, enabled])
+}
+
+model RunProfile {
+  id                String         @id
+  description       String
+  enabled           Boolean        @default(false)
+  providerModelId   String?
+  reasoningEffort   String         @default("medium")
+  reasoningMode     String         @default("standard")
+  version           Int            @default(1)
+  updatedByUserId   String?
+  createdAt         DateTime       @default(now())
+  updatedAt         DateTime       @updatedAt
+  providerModel     ProviderModel? @relation(fields: [providerModelId], references: [id], onDelete: Restrict)
+  updatedBy         User?          @relation("RunProfileUpdater", fields: [updatedByUserId], references: [id], onDelete: SetNull)
+
+  @@index([providerModelId])
+  @@index([updatedByUserId])
 }
 
 model ProviderConnection {

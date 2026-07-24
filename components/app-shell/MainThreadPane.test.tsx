@@ -67,7 +67,7 @@ const deepProfileModel: CatalogModel = {
     reasoning: true
   },
   displayName: "GPT-5.6 Sol",
-  modelId: "gpt-5.6-sol",
+  modelId: "deployment-sol",
   parameterControls: {
     ...model.parameterControls,
     reasoningEffort: {
@@ -81,7 +81,9 @@ const deepProfileModel: CatalogModel = {
       supported: true
     }
   },
-  provider: "openai"
+  provider: "connection-openai",
+  providerFamily: "openai",
+  upstreamModelId: "gpt-5.6-sol"
 };
 
 const deepProfileCatalog: Catalog = {
@@ -92,7 +94,34 @@ const deepProfileCatalog: Catalog = {
     provider: deepProfileModel.provider
   },
   models: [deepProfileModel],
-  providers: [{ id: "openai", models: [deepProfileModel.modelId], name: "OpenAI" }]
+  providers: [{ id: deepProfileModel.provider, models: [deepProfileModel.modelId], name: "OpenAI" }],
+  runProfiles: [
+    {
+      available: false,
+      description: "Simple, well-defined questions",
+      id: "fast",
+      label: "Fast",
+      unavailableReason: "model_unavailable"
+    },
+    {
+      available: false,
+      description: "Most everyday questions",
+      id: "balanced",
+      label: "Balanced",
+      unavailableReason: "model_unavailable"
+    },
+    {
+      available: true,
+      configurationLabel: "GPT-5.6 Sol · Pro · Maximum",
+      description: "Difficult or open-ended questions",
+      id: "deep",
+      label: "Deep",
+      modelId: deepProfileModel.modelId,
+      provider: deepProfileModel.provider,
+      reasoningEffort: "max",
+      reasoningMode: "pro"
+    }
+  ]
 };
 
 const readyComposerOverrides: Partial<ComponentProps<typeof MainThreadPane>> = {

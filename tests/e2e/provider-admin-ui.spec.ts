@@ -6,6 +6,7 @@ import type {
   AdminProviderDraftCheck,
   AdminProviderModelConfiguration
 } from "../../lib/contracts/adminProviders";
+import type { AdminRunProfileCatalog } from "../../lib/contracts/runProfiles";
 import { LOCAL_RESTRICTED_MEMBER } from "../../prisma/local-seed-fixtures";
 import { signInWithLocalToken } from "./support/localAuth";
 
@@ -444,19 +445,111 @@ test("administrator completes the OpenRouter key, model, route, check, and activ
   await expect(providerHeader.getByText("Active v1", { exact: true })).toBeVisible();
 });
 
+test("administrator remaps the three composer run profiles in one save", async ({ page }) => {
+  let submittedProfiles: Array<Record<string, unknown>> | null = null;
+  const runProfileCatalog: AdminRunProfileCatalog = {
+    models: [
+      {
+        connectionEnabled: true,
+        defaultReasoningEffort: "medium",
+        defaultReasoningMode: "standard",
+        displayName: "GPT-5.6 Luna",
+        id: "deployment-luna",
+        modelEnabled: true,
+        providerDisplayName: "Primary OpenAI",
+        reasoningEfforts: ["none", "medium", "high", "max"],
+        reasoningModes: ["standard", "pro"],
+        selectable: true
+      },
+      {
+        connectionEnabled: true,
+        defaultReasoningEffort: "max",
+        defaultReasoningMode: "pro",
+        displayName: "GPT-5.6 Sol",
+        id: "deployment-sol",
+        modelEnabled: true,
+        providerDisplayName: "Primary OpenAI",
+        reasoningEfforts: ["none", "medium", "high", "max"],
+        reasoningModes: ["standard", "pro"],
+        selectable: true
+      }
+    ],
+    profiles: [
+      { description: "Simple questions", enabled: true, id: "fast", label: "Fast", providerModelId: "deployment-luna", reasoningEffort: "medium", reasoningMode: "standard", updatedAt: now, version: 2 },
+      { description: "Everyday questions", enabled: true, id: "balanced", label: "Balanced", providerModelId: "deployment-luna", reasoningEffort: "medium", reasoningMode: "standard", updatedAt: now, version: 3 },
+      { description: "Difficult questions", enabled: true, id: "deep", label: "Deep", providerModelId: "deployment-sol", reasoningEffort: "max", reasoningMode: "pro", updatedAt: now, version: 4 }
+    ]
+  };
+
+  await page.route("**/api/admin/providers", async (route) => {
+    await route.fulfill({ contentType: "application/json", json: { connections: [] } });
+  });
+  await page.route("**/api/admin/run-profiles", async (route) => {
+    if (route.request().method() === "GET") {
+      await route.fulfill({ contentType: "application/json", json: runProfileCatalog });
+      return;
+    }
+    const body = route.request().postDataJSON() as { profiles: Array<Record<string, unknown>> };
+    submittedProfiles = body.profiles;
+    await route.fulfill({
+      contentType: "application/json",
+      json: {
+        models: runProfileCatalog.models,
+        profiles: body.profiles.map((profile) => ({
+          description: profile.description,
+          enabled: profile.enabled,
+          id: profile.id,
+          label: profile.id === "fast" ? "Fast" : profile.id === "balanced" ? "Balanced" : "Deep",
+          providerModelId: profile.providerModelId,
+          reasoningEffort: profile.reasoningEffort,
+          reasoningMode: profile.reasoningMode,
+          updatedAt: now,
+          version: Number(profile.expectedVersion) + 1
+        }))
+      }
+    });
+  });
+
+  await signInWithLocalToken(page);
+  await page.goto("/admin?section=providers");
+  const section = page.getByTestId("admin-section-providers");
+  await expect(section.getByRole("heading", { name: "Run profiles" })).toBeVisible();
+  await expect(section.getByLabel("Fast description")).toHaveValue("Simple questions");
+  await expect(section.getByLabel("Balanced description")).toHaveValue("Everyday questions");
+  await expect(section.getByLabel("Deep description")).toHaveValue("Difficult questions");
+
+  await section.getByLabel("Fast description").fill("Quick factual questions");
+  await section.getByLabel("Fast model deployment").selectOption("deployment-sol");
+  await expect(section.getByLabel("Fast reasoning mode")).toHaveValue("pro");
+  await expect(section.getByLabel("Fast reasoning effort")).toHaveValue("max");
+  await section.getByRole("button", { name: "Save profiles" }).click();
+
+  await expect(section.getByText("Run profiles saved for future messages.")).toBeVisible();
+  expect(submittedProfiles).toHaveLength(3);
+  expect(submittedProfiles?.[0]).toMatchObject({
+    description: "Quick factual questions",
+    expectedVersion: 2,
+    id: "fast",
+    providerModelId: "deployment-sol",
+    reasoningEffort: "max",
+    reasoningMode: "pro"
+  });
+});
+
 test("ordinary user receives real provider-admin denial without provider metadata", async ({ page }) => {
   await signInOrdinaryUser(page);
 
-  const [catalog, mutation] = await Promise.all([
+  const [catalog, mutation, runProfiles] = await Promise.all([
     page.request.get("/api/admin/providers"),
     page.request.post("/api/admin/providers/not-visible/actions", {
       data: {
         action: "discover_models",
         credentialId: "not-visible"
       }
-    })
+    }),
+    page.request.get("/api/admin/run-profiles")
   ]);
-  for (const response of [catalog, mutation]) {
+  for (const response of [catalog, mutation, runProfiles]) {
     expect(response.status()).toBe(403);
     const text = await response.text();
     expect(text).toBe('{"error":"forbidden"}');

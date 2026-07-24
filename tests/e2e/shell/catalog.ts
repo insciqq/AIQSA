@@ -218,6 +218,33 @@ export const matrixCatalog = {
       name: "OpenRouter"
     }
   ],
+  runProfiles: [
+    {
+      available: false,
+      description: "Simple, well-defined questions",
+      id: "fast",
+      label: "Fast",
+      unavailableReason: "model_unavailable"
+    },
+    {
+      available: false,
+      description: "Most everyday questions",
+      id: "balanced",
+      label: "Balanced",
+      unavailableReason: "model_unavailable"
+    },
+    {
+      available: true,
+      configurationLabel: "GPT-5.6 Sol · Pro · Maximum",
+      description: "Difficult or open-ended questions",
+      id: "deep",
+      label: "Deep",
+      modelId: "gpt-5.6-sol",
+      provider: "openai",
+      reasoningEffort: "max",
+      reasoningMode: "pro"
+    }
+  ],
   searchStrategies: [
     {
       config: {},

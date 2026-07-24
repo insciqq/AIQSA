@@ -159,6 +159,21 @@ docker compose -f docker-compose.dev.yml exec -T app npx vitest run \
   components/admin/useAdminOpenRouterDiscovery.test.tsx
 ```
 
+For ADR 0024 fixed run-profile persistence, catalog projection, administration, and composer behavior, use:
+
+```bash
+docker compose -f docker-compose.dev.yml exec -T app npx vitest run \
+  lib/server/admin/runProfiles \
+  lib/server/catalog/handlers.test.ts \
+  lib/server/catalog/prismaCatalogData.test.ts \
+  lib/contracts/catalog.test.ts \
+  components/admin/AdminRunProfilesPanel.test.tsx \
+  components/admin/adminRunProfilesApi.test.ts \
+  components/app-shell/ComposerControls.test.tsx \
+  components/app-shell/MainThreadPane.test.tsx \
+  components/app-shell/controlDefaults.test.tsx
+```
+
 For ADR 0023 runtime SMTP configuration and delivery semantics, use:
 
 ```bash
@@ -178,7 +193,7 @@ npx tsx prisma/scripts/tests/smtp-control-migration-contract.ts
 npx tsx prisma/scripts/tests/mcp-envelope-v2-cutover-contract.ts
 ```
 
-The Admin provider and email browser boundary can reuse the disposable development server:
+The Admin provider/run-profile and email browser boundary can reuse the disposable development server:
 
 ```bash
 docker compose -f docker-compose.dev.yml exec -T \
@@ -189,7 +204,7 @@ docker compose -f docker-compose.dev.yml exec -T \
     --project=chromium
 ```
 
-Those specs mock only each Admin resource boundary for the administrator workflow. The provider browser case proves automatic loading of a large account catalog into the sorted/searchable OpenRouter picker, capability/provider search, automatic endpoint loading after explicit manual-routing selection, ordered route tags, collapsed optional diagnostics, and contextual activation. Their ordinary-user cases exercise the real `403` routes; repository, service, route, transport, and runtime tests remain authoritative for RBAC, write-only unsaved-key preflight, discovery-cache races, one-catalog-request-per-referenced-key activation, group-key selection, revocation, SSRF/TLS rules, and delivery outcomes.
+Those specs mock only each Admin resource boundary for the administrator workflow. The provider browser case proves automatic loading of a large account catalog into the sorted/searchable OpenRouter picker, capability/provider search, automatic endpoint loading after explicit manual-routing selection, ordered route tags, collapsed optional diagnostics, contextual activation, and one atomic three-slot run-profile save. Their ordinary-user cases exercise the real provider and run-profile `403` routes; repository, service, route, transport, and runtime tests remain authoritative for RBAC, write-only unsaved-key preflight, profile CAS/target validation, discovery-cache races, one-catalog-request-per-referenced-key activation, group-key selection, revocation, SSRF/TLS rules, and delivery outcomes.
 
 MCP UI behavior has focused component/API/store coverage in `components/app-shell/*Mcp*.test.tsx`, `components/app-shell/mcpSettings*.test.ts`, and `components/admin/AdminMcp*.test.tsx`. Its deterministic browser boundary is:
 

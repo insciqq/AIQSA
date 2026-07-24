@@ -345,7 +345,10 @@ export function adminProviderErrorMessage(error: AdminProviderClientError): stri
     provider_refresh_failed: "The active refresh failed transiently. Prior matching availability was preserved and marked for attention.",
     unauthorized: "Your administrator session is no longer valid. Sign in again."
   };
+  const blockerLabels: Record<string, string> = {
+    run_profiles: "run profiles"
+  };
   const base = messages[error.code] ?? "The provider action could not be completed. Refresh and try again.";
   if (!error.blockers.length) return base;
-  return `${base} ${error.blockers.map(({ count, kind }) => `${kind}: ${count}`).join(", ")}.`;
+  return `${base} ${error.blockers.map(({ count, kind }) => `${blockerLabels[kind] ?? kind}: ${count}`).join(", ")}.`;
 }

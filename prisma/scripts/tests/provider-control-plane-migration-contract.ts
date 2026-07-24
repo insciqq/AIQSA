@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 
 const TARGET_MIGRATION = "20260723230000_provider_control_plane_foundation";
 const CONTEXT_REPAIR_MIGRATION = "20260724120000_repair_provider_model_context_windows";
+const RUN_PROFILE_MIGRATION = "20260724190000_admin_run_profiles";
 const POSTGRES_USER = "aiqsa";
 const POSTGRES_SERVICE = "postgres";
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -336,6 +337,79 @@ function runValidMigrationAndLineageChecks(): void {
     requireSuccess(
       psql(
         database,
+        `UPDATE "ProviderModel"
+         SET "templateKey" = 'openai:gpt-5.6-sol', "modelId" = 'gpt-5.6-sol',
+             "displayName" = 'GPT-5.6 Sol'
+         WHERE "id" = 'provider-model-openai';
+
+         INSERT INTO "ProviderModel" (
+           "id", "connectionId", "templateKey", "provider", "modelId", "displayName",
+           "contextWindow", "inputTokenPriceMicros", "outputTokenPriceMicros",
+           "supportsVision", "supportsPdf", "supportsReasoning", "supportsNativeSearch",
+           "enabled", "draftConfig", "draftVersion", "activeConfig", "activeVersion",
+           "activatedAt", "capabilities", "defaultParams", "createdAt", "updatedAt"
+         )
+         SELECT
+           variant."id", source."connectionId", variant."templateKey", source."provider",
+           variant."modelId", variant."displayName", source."contextWindow",
+           source."inputTokenPriceMicros", source."outputTokenPriceMicros",
+           source."supportsVision", source."supportsPdf", source."supportsReasoning",
+           source."supportsNativeSearch", source."enabled", source."draftConfig",
+           source."draftVersion", source."activeConfig", source."activeVersion",
+           source."activatedAt", source."capabilities", source."defaultParams",
+           CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+         FROM "ProviderModel" AS source
+         CROSS JOIN (VALUES
+           ('provider-model-luna', 'openai:gpt-5.6-luna', 'gpt-5.6-luna', 'GPT-5.6 Luna'),
+           ('provider-model-terra', 'openai:gpt-5.6-terra', 'gpt-5.6-terra', 'GPT-5.6 Terra')
+         ) AS variant("id", "templateKey", "modelId", "displayName")
+         WHERE source."id" = 'provider-model-openai';`
+      ),
+      "prepare run profile migration fixture"
+    );
+    requireSuccess(
+      psql(database, migrationSql(RUN_PROFILE_MIGRATION)),
+      "apply run profile migration"
+    );
+    assert.equal(
+      scalar(
+        database,
+        `SELECT string_agg(
+           "id" || ':' || "enabled"::text || ':' || "providerModelId" || ':' ||
+           "reasoningMode" || ':' || "reasoningEffort",
+           '|' ORDER BY CASE "id" WHEN 'fast' THEN 1 WHEN 'balanced' THEN 2 ELSE 3 END
+         ) FROM "RunProfile";`
+      ),
+      [
+        "fast:true:provider-model-luna:standard:medium",
+        "balanced:true:provider-model-terra:standard:medium",
+        "deep:true:provider-model-openai:pro:max"
+      ].join("|")
+    );
+    expectDatabaseRejection(
+      database,
+      "unknown run profile slot",
+      `INSERT INTO "RunProfile" (
+         "id", "description", "enabled", "providerModelId", "reasoningEffort", "reasoningMode"
+       ) VALUES ('custom', 'Custom', false, NULL, 'medium', 'standard');`,
+      /RunProfile_id_check/u
+    );
+    expectDatabaseRejection(
+      database,
+      "inconsistent run profile target",
+      `UPDATE "RunProfile" SET "enabled" = false WHERE "id" = 'fast';`,
+      /RunProfile_enabled_target_check/u
+    );
+    expectDatabaseRejection(
+      database,
+      "delete configured run profile model",
+      `DELETE FROM "ProviderModel" WHERE "id" = 'provider-model-luna';`,
+      /RunProfile_providerModelId_fkey/u
+    );
+
+    requireSuccess(
+      psql(
+        database,
         `INSERT INTO "ProviderCredential" (
           "id", "connectionId", "label", "enabled", "updatedAt"
         ) VALUES
@@ -486,7 +560,7 @@ function main(): void {
   }
 
   process.stdout.write(
-    "AIQSA provider migration contract ok: fail-closed legacy conversion, context repair, and composite lineage verified.\n"
+    "AIQSA provider migration contract ok: fail-closed legacy conversion, context repair, run-profile mapping, and composite lineage verified.\n"
   );
 }
 

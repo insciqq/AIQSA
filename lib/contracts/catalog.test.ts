@@ -66,6 +66,19 @@ function validResponse(): CatalogResponse {
         }
       ],
       providers: [{ family: "openai", id: "connection-test", models: ["deployment-test"], name: "OpenAI" }],
+      runProfiles: [
+        {
+          available: true,
+          configurationLabel: "GPT Test · Standard · Medium",
+          description: "Most everyday questions",
+          id: "balanced",
+          label: "Balanced",
+          modelId: "deployment-test",
+          provider: "connection-test",
+          reasoningEffort: "medium",
+          reasoningMode: "standard"
+        }
+      ],
       searchStrategies: [
         {
           displayName: "No Search",
@@ -92,6 +105,12 @@ describe("catalog wire contract", () => {
           upstreamModelId: "gpt-test"
         }
       ],
+      runProfiles: [
+        {
+          available: true,
+          id: "balanced"
+        }
+      ],
       searchStrategies: [
         {
           displayName: "No Search",
@@ -100,6 +119,19 @@ describe("catalog wire contract", () => {
         }
       ]
     });
+  });
+
+  it("rejects malformed or duplicate run-profile projections", () => {
+    const duplicate = validResponse();
+    duplicate.catalog.runProfiles.push({ ...duplicate.catalog.runProfiles[0] });
+    expect(decodeCatalogResponse(duplicate)).toBeNull();
+
+    const malformed = validResponse() as unknown as {
+      catalog: { runProfiles: Array<Record<string, unknown>> };
+    };
+    malformed.catalog.runProfiles[0]!.available = false;
+    malformed.catalog.runProfiles[0]!.unavailableReason = "private_target_missing";
+    expect(decodeCatalogResponse(malformed)).toBeNull();
   });
 
   it("rejects a malformed nested parameter control", () => {

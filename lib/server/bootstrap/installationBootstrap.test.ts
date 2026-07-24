@@ -1,5 +1,6 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { defaultSearchStrategies } from "@/lib/domain/catalog";
+import { RUN_PROFILE_IDS } from "@/lib/contracts/runProfiles";
 import { providerConnectionTemplates } from "@/lib/domain/providerTemplates";
 import { LOCAL_ORDINARY_USERS } from "@/prisma/local-seed-fixtures";
 import { describe, expect, it, vi } from "vitest";
@@ -70,6 +71,7 @@ function createBootstrapTransaction(input: {
     promptPresetCreate: record("promptPreset.create", { id: "prompt-id" }),
     providerConnectionUpsert: record("providerConnection.upsert", { id: "connection-id" }),
     providerModelUpsert: record("providerModel.upsert", { id: "model-id" }),
+    runProfileUpsert: record("runProfile.upsert", { id: "profile-id" }),
     searchStrategyUpsert: record("searchStrategy.upsert", { id: "strategy-id" }),
     userCreate: record("user.create", { id: USER_ID }),
     userFindUnique: record("user.findUnique", user),
@@ -99,6 +101,9 @@ function createBootstrapTransaction(input: {
     },
     providerModel: {
       upsert: spies.providerModelUpsert
+    },
+    runProfile: {
+      upsert: spies.runProfileUpsert
     },
     searchStrategy: {
       upsert: spies.searchStrategyUpsert
@@ -289,6 +294,13 @@ describe("installation bootstrap", () => {
       providerConnectionTemplates.length
     );
     expect(fixture.spies.providerModelUpsert).toHaveBeenCalledOnce();
+    expect(fixture.spies.runProfileUpsert).toHaveBeenCalledTimes(RUN_PROFILE_IDS.length);
+    expect(fixture.spies.runProfileUpsert.mock.calls.map(([args]) => (
+      args as { create: { enabled: boolean; id: string; providerModelId: string | null }; update: object }
+    ))).toEqual(expect.arrayContaining(RUN_PROFILE_IDS.map((id) => expect.objectContaining({
+      create: expect.objectContaining({ enabled: false, id, providerModelId: null }),
+      update: {}
+    }))));
     expect(fixture.spies.providerModelUpsert.mock.calls[0]?.[0]).toMatchObject({
       create: {
         activeConfig: {
@@ -398,6 +410,7 @@ describe("installation bootstrap", () => {
       providerConnectionTemplates.length
     );
     expect(fixture.spies.providerModelUpsert).toHaveBeenCalledOnce();
+    expect(fixture.spies.runProfileUpsert).toHaveBeenCalledTimes(RUN_PROFILE_IDS.length);
     expect(fixture.spies.searchStrategyUpsert).toHaveBeenCalledTimes(
       bootstrapSearchStrategies.length
     );

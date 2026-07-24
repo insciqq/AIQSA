@@ -1219,11 +1219,12 @@ export function createPrismaAdminProviderRepository(
         });
         if (!model) return { status: "not_found" } as const;
         await cleanupProviderReferences(tx, { providerModelId: modelId });
-        const [accessGrants, userDefaults, chatDefaults, searchReferences, runBindings] = await Promise.all([
+        const [accessGrants, userDefaults, chatDefaults, searchReferences, runProfiles, runBindings] = await Promise.all([
           tx.accessGrant.count({ where: { providerModelId: modelId } }),
           tx.userSettings.count({ where: { defaultProviderModelId: modelId } }),
           tx.chat.count({ where: { defaultProviderModelId: modelId } }),
           tx.searchStrategy.count({ where: { providerModelId: modelId } }),
+          tx.runProfile.count({ where: { providerModelId: modelId } }),
           tx.providerRunBinding.count({ where: { providerModelId: modelId } })
         ]);
         const blocked = blockers([
@@ -1233,6 +1234,7 @@ export function createPrismaAdminProviderRepository(
           userDefaults ? { count: userDefaults, kind: "user_defaults" } : null,
           chatDefaults ? { count: chatDefaults, kind: "chat_defaults" } : null,
           searchReferences ? { count: searchReferences, kind: "search_references" } : null,
+          runProfiles ? { count: runProfiles, kind: "run_profiles" } : null,
           runBindings ? { count: runBindings, kind: "run_bindings" } : null
         ]);
         const blockedResult = conflict(blocked);

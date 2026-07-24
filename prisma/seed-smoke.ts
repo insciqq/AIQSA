@@ -2,6 +2,10 @@ import { PrismaClient } from "@prisma/client";
 import { getVisibleMessagePath } from "../lib/domain/branching";
 import { defaultProviderModels, defaultSearchStrategies } from "../lib/domain/catalog";
 import { providerConnectionTemplates } from "../lib/domain/providerTemplates";
+import {
+  DEFAULT_RUN_PROFILE_CONFIGURATIONS,
+  runProfileMetadata
+} from "../lib/domain/runProfiles";
 import { verifyPassword } from "../lib/server/auth/password";
 import { LOCAL_OPERATOR_EMAIL, LOCAL_OPERATOR_PASSWORD } from "./local-seed-auth";
 import {
@@ -72,7 +76,7 @@ async function main() {
   const expectedModelTemplateKeys = defaultProviderModels.map(
     (model) => `${model.provider}:${model.modelId}`
   );
-  const [providerConnections, providerModels, searchStrategies] = await Promise.all([
+  const [providerConnections, providerModels, runProfiles, searchStrategies] = await Promise.all([
     prisma.providerConnection.findMany({
       where: {
         templateKey: { in: providerConnectionTemplates.map((template) => template.templateKey) }
@@ -81,6 +85,7 @@ async function main() {
     prisma.providerModel.findMany({
       where: { templateKey: { in: expectedModelTemplateKeys } }
     }),
+    prisma.runProfile.findMany({ orderBy: { id: "asc" } }),
     prisma.searchStrategy.findMany({
       where: {
         strategyId: { in: defaultSearchStrategies.map((strategy) => strategy.strategyId) }
@@ -141,6 +146,22 @@ async function main() {
   const modelIdByTemplate = new Map(
     providerModels.map((model) => [model.templateKey, model.id])
   );
+  if (runProfiles.length !== DEFAULT_RUN_PROFILE_CONFIGURATIONS.length) {
+    throw new Error("Seed smoke did not find exactly three run profiles");
+  }
+  for (const profileTemplate of DEFAULT_RUN_PROFILE_CONFIGURATIONS) {
+    const profile = runProfiles.find((candidate) => candidate.id === profileTemplate.id);
+    if (
+      !profile ||
+      !profile.enabled ||
+      profile.providerModelId !== modelIdByTemplate.get(profileTemplate.targetTemplateKey) ||
+      profile.reasoningEffort !== profileTemplate.reasoningEffort ||
+      profile.reasoningMode !== profileTemplate.reasoningMode ||
+      profile.description !== runProfileMetadata(profileTemplate.id).defaultDescription
+    ) {
+      throw new Error(`Seed smoke found invalid run profile: ${profileTemplate.id}`);
+    }
+  }
   for (const strategyTemplate of defaultSearchStrategies) {
     const strategy = searchStrategies.find(
       (candidate) => candidate.strategyId === strategyTemplate.strategyId
@@ -226,7 +247,7 @@ async function main() {
   }
 
   console.log(
-    `AIQSA seed smoke ok: chats=${user.chats.length}, visiblePath=${path.length}, models=${providerModels.length}, searchStrategies=${searchStrategies.length}, ordinaryUsers=${ordinaryUsers.length}`
+    `AIQSA seed smoke ok: chats=${user.chats.length}, visiblePath=${path.length}, models=${providerModels.length}, runProfiles=${runProfiles.length}, searchStrategies=${searchStrategies.length}, ordinaryUsers=${ordinaryUsers.length}`
   );
 }
 
