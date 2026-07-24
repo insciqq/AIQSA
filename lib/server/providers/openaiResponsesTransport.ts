@@ -38,26 +38,17 @@ class OpenAIHttpError extends Error {
   }
 }
 
-function valueAtPath(value: unknown, path: string[]): unknown {
-  return path.reduce<unknown>((current, key) => {
-    if (typeof current !== "object" || current === null || !(key in current)) {
-      return undefined;
-    }
-
-    return (current as Record<string, unknown>)[key];
-  }, value);
-}
-
-function stringValue(value: unknown): string | undefined {
-  return typeof value === "string" ? value : undefined;
-}
-
 async function parseOpenAIJsonResponse(
   response: Response,
   signal: AbortSignal
 ): Promise<OpenAIResponseObject> {
   const text = await readBoundedResponseText(response, { signal });
-  const parsed = text ? JSON.parse(text) : {};
+  let parsed: unknown;
+  try {
+    parsed = text ? JSON.parse(text) : {};
+  } catch {
+    throw new Error("openai_response_invalid_json");
+  }
 
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
     throw new Error("openai_response_not_object");
@@ -67,31 +58,18 @@ async function parseOpenAIJsonResponse(
 }
 
 async function throwOpenAIHttpError(response: Response, signal: AbortSignal): Promise<never> {
-  let message = `OpenAI request failed with status ${response.status}`;
-  let text = "";
-
   try {
-    text = await readBoundedResponseText(response, { signal });
+    await readBoundedResponseText(response, { signal });
   } catch (error) {
     if (!(error instanceof ProviderResponseTooLargeError)) {
       throw error;
     }
-    text = error.code;
   }
 
-  try {
-    const body = text ? (JSON.parse(text) as Record<string, unknown>) : {};
-    const providerMessage = stringValue(valueAtPath(body, ["error", "message"]));
-    if (providerMessage) {
-      message = providerHttpErrorMessage("OpenAI", response.status, providerMessage);
-    }
-  } catch {
-    if (text) {
-      message = providerHttpErrorMessage("OpenAI", response.status, text);
-    }
-  }
-
-  throw new OpenAIHttpError(message, response.status);
+  throw new OpenAIHttpError(
+    providerHttpErrorMessage("OpenAI", response.status),
+    response.status
+  );
 }
 
 export function openAIRetryableErrorPayload(error: unknown): OpenAIRetryableErrorPayload | null {

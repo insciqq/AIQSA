@@ -131,6 +131,8 @@ export type AdminCatalog = {
     displayName: string;
     modelId: string;
     provider: string;
+    providerFamily?: string;
+    upstreamModelId?: string;
   }[];
   providers: {
     id: string;

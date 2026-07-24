@@ -7,7 +7,7 @@ cp .env.example .env
 chmod 600 .env
 ```
 
-Fill every value marked required. Blank optional values disable the corresponding feature. Restart the stack after changing runtime settings:
+Fill every value marked required. LLM providers and email delivery are configured after sign-in and do not require a restart. Rebuild/restart the stack only after changing infrastructure or root-of-trust settings:
 
 ```bash
 docker compose up -d --build
@@ -20,7 +20,7 @@ docker compose up -d --build
 | Variable | Purpose |
 | --- | --- |
 | `AIQSA_AUTH_SESSION_SECRET` | High-entropy key used to sign browser sessions. Generate one with `openssl rand -hex 32`. |
-| `AIQSA_ENCRYPTION_KEY` | Base64-encoded 32-byte key for MCP shared/personal values and MCP OAuth tokens. Generate one with `openssl rand -base64 32`, back it up separately, and do not reuse the session secret. |
+| `AIQSA_ENCRYPTION_KEY` | Base64-encoded 32-byte key for purpose-bound MCP, provider, and SMTP secret envelopes. Generate one with `openssl rand -base64 32`, back it up separately, and do not reuse the session secret. |
 | `AIQSA_INITIAL_ADMIN_EMAIL` | Email of the first administrator and the stable adoption key on later starts. |
 | `AIQSA_INITIAL_ADMIN_PASSWORD` | Initial password. Required only while the database is empty. |
 | `AIQSA_INITIAL_ADMIN_DISPLAY_NAME` | Optional display name; defaults to `Administrator`. |
@@ -53,19 +53,13 @@ migration with a verified backup.
 
 PostgreSQL and MinIO data use named Docker volumes. Do not use `docker compose down -v` unless you intentionally want to delete the installation data.
 
-### AI provider
+### AI providers
 
-Configure at least one server-wide provider key:
+Sign in as the initial administrator and open `Admin -> Providers`. Connections, models, routing, credentials, group-specific credentials, activation evidence, and stored diagnostics live in PostgreSQL; the unsaved-key preflight persists neither the key nor its result. Configuration changes take effect for future runs without rebuilding or restarting AIQSA. Provider secrets are write-only in the UI.
 
-| Variable | Enables |
-| --- | --- |
-| `OPENAI_API_KEY` | Direct OpenAI models and OpenAI web search. |
-| `ANTHROPIC_API_KEY` | Direct Anthropic models. |
-| `OPENROUTER_API_KEY` | OpenRouter models and Perplexity search. |
+For the common OpenRouter path, enter and Test the installation-owned key, save it, load the account-filtered model list, choose a model, optionally choose ordered downstream providers, and Activate. Activation checks each referenced default/group key once against its account model catalog; there is no manual model-by-key test matrix. `Check model route` is an optional diagnostic. `Automatic` lets OpenRouter route with AIQSA's fixed privacy defaults; `Only selected providers` denies fallback outside the chosen list. Custom OpenAI-compatible deployments require an explicit `Responses` or `Chat Completions` protocol choice and a standard authenticated Models endpoint for key validation.
 
-These are installation-wide credentials, not per-user keys. Blank `OPENAI_BASE_URL`, `ANTHROPIC_BASE_URL`, and `OPENROUTER_BASE_URL` values use each provider's standard endpoint. A custom base URL must expose a compatible API.
-
-`OPENROUTER_HTTP_REFERER` identifies the AIQSA origin to OpenRouter; set it to the same public origin as `AIQSA_APP_BASE_URL` when the installation is no longer local. `OPENROUTER_APP_TITLE` defaults to `AIQSA`.
+Model/search grants and provider credentials are separate. `Model access` decides what a user may select. A connection may use one default administrator-owned credential, or administrators may assign different credentials to groups. Overlapping group assignments to different credentials fail closed instead of choosing one silently.
 
 Provider safety bounds are optional:
 
@@ -128,21 +122,22 @@ When `AIQSA_COOKIE_SECURE` is blank, AIQSA derives it from the base URL: HTTPS e
 
 ## Email (optional)
 
-SMTP is not needed for the initial administrator or normal local use. Without SMTP, password-reset and verification messages cannot be delivered, while an administrator can still copy newly created invitation links manually.
+SMTP is not needed for the initial administrator or normal local use. Open `Admin -> Email delivery`, save a draft, send its one-off test to an explicit recipient, and activate the tested version. Choose implicit TLS, required STARTTLS, or the explicitly warned credential-free internal plaintext mode. The password is write-only; saving an omitted password preserves it, replacement is explicit, and clearing is confirmation-gated.
 
-```dotenv
-AIQSA_SMTP_HOST=smtp.example.com
-AIQSA_SMTP_PORT=587
-AIQSA_SMTP_USER=example-user
-AIQSA_SMTP_PASSWORD=example-password
-AIQSA_SMTP_FROM=AIQSA <aiqsa@example.com>
-AIQSA_SMTP_SECURE=0
-AIQSA_SMTP_STARTTLS=1
-```
-
-`AIQSA_SMTP_SECURE=1` selects implicit TLS, normally on port 465. `AIQSA_SMTP_STARTTLS=1` requests a STARTTLS upgrade, normally on port 587. Certificate verification remains enabled.
+Activation and Disable affect the next send without restart. A failed draft test does not disturb the active version. Without active SMTP, password-reset and verification messages cannot be delivered, while an administrator can still copy newly created invitation links manually.
 
 The optional `AIQSA_SMTP_CONNECT_TIMEOUT_MS`, `AIQSA_SMTP_COMMAND_TIMEOUT_MS`, and `AIQSA_SMTP_TOTAL_TIMEOUT_MS` values default to 10,000, 15,000, and 60,000 milliseconds respectively.
+
+## Upgrading legacy provider/SMTP environment settings
+
+ADR 0022/0023 use a full stopped cutover, not a compatibility mode:
+
+1. Stop the old application and take a coordinated PostgreSQL/object-storage backup.
+2. Keep the old provider and SMTP variables in the private `.env` for the first upgraded `docker compose up -d --build` only. The one-shot tools container holds the installation lock, upgrades MCP envelopes, and imports complete legacy values as disabled, untested encrypted drafts. It performs no provider/SMTP network request.
+3. Sign in and review each imported draft in Admin. For providers, review the imported endpoint, models, and credential assignments, then Activate; activation validates every referenced imported key, while model/route diagnostics remain optional. For SMTP, run its exact-draft Test and Activate it.
+4. Remove the old provider keys/base URLs and SMTP connection/password variables from `.env`; they never enter the application container and are not a fallback.
+
+Partial or structurally invalid legacy input aborts the atomic cutover with a value-free field-class error. Recover by restoring the required pre-cutover backup, correcting the source values, and rerunning; mixed old/new authority is unsupported.
 
 ## Google and Yandex sign-in (optional)
 

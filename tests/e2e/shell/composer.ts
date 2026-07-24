@@ -3,19 +3,18 @@ import { matrixCatalog } from "./catalog";
 
 export async function selectModel(page: Page, provider: string, modelId: string): Promise<void> {
   const providerName = matrixCatalog.providers.find((candidate) => candidate.id === provider)?.name ?? provider;
+  const providerNamePattern = new RegExp(`^${providerName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "i");
   await closeRunSettings(page);
   const compact = await composerRunSummary(page).isVisible();
   const controls = compact ? await openRunSetup(page) : composerRestingControls(page);
   await controls.getByRole("button", { name: "Select model" }).click();
   await expect(page.getByLabel("Search models")).toBeFocused();
   await page.getByLabel("Search models").fill(modelId);
-  await page
-    .getByTestId("model-picker")
-    .locator("section")
-    .filter({ hasText: providerName })
-    .getByRole("button")
-    .filter({ hasText: `${provider}:${modelId}` })
-    .click();
+  const modelPicker = page.getByTestId("model-picker");
+  const providerSection = modelPicker.locator("section").filter({
+    has: page.getByRole("heading", { name: providerNamePattern })
+  });
+  await providerSection.getByRole("button", { name: /^Select model / }).first().click();
   if (compact) {
     await closeRunSetup(page);
   }

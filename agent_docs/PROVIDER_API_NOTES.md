@@ -4,7 +4,7 @@
 
 This conditional document owns externally verified provider constraints, documentation links, dated smoke observations, and provider-specific caveats. `BACKEND.md` owns AIQSA adapter behavior/defaults; `QSA_PIPELINE.md` owns product semantics; `ENV_VARIABLES.md` owns configuration names; executable adapter tests own exact request/response mapping.
 
-Provider documentation was checked on 2026-04-26 and the current search/upload/routing constraints were rechecked on 2026-06-14. GPT-5.5/GPT-5.6 context, OpenAI PDF token, and Anthropic usage contracts were rechecked on 2026-07-18. Reverify the affected source and update that date when a provider-facing change depends on mutable external behavior.
+Provider documentation was checked on 2026-04-26 and the current search/upload/routing constraints were rechecked on 2026-06-14. GPT-5.5/GPT-5.6 context, OpenAI PDF token, and Anthropic usage contracts were rechecked on 2026-07-18. The OpenAI Responses/Chat support direction and the OpenAI, Anthropic, and OpenRouter model-catalog contracts were rechecked on 2026-07-24 for ADR 0022 and the credential-test implementation. Reverify the affected source and update that date when a provider-facing change depends on mutable external behavior.
 
 Provider smokes require the standing permission and limits in `CRITICAL_INVARIANTS.md`. Default automation uses fake providers; never print, inspect, persist, or commit key values, and do not run large-context/deep-research/large-attachment/long-background calls without fresh approval.
 
@@ -13,6 +13,8 @@ Provider smokes require the standing permission and limits in `CRITICAL_INVARIAN
 Primary references:
 
 - `https://platform.openai.com/docs/api-reference/responses`
+- `https://platform.openai.com/docs/api-reference/models/list`
+- `https://developers.openai.com/api/docs/guides/migrate-to-responses`
 - `https://platform.openai.com/docs/guides/background`
 - `https://developers.openai.com/api/docs/guides/tools-web-search`
 - `https://developers.openai.com/api/docs/guides/prompt-caching`
@@ -26,6 +28,7 @@ Primary references:
 
 Externally constrained facts:
 
+- OpenAI recommends Responses for new projects while Chat Completions remains supported. They have different input/output, streaming, tool, structured-output, and state contracts; OpenAI compatibility alone does not establish which endpoint a third-party service implements.
 - Background Responses use `background: true`, are retrieved/cancelled by response id, and require stored provider state. This stored/background path is not Zero Data Retention compatible. OpenAI documents polling storage on roughly a ten-minute horizon, so late recovery must retain the response id and tolerate transient retrieve failures.
 - Background creation may also stream. Responses SSE and terminal payloads can expose output deltas, web-search lifecycle/source data, usage, and the response id.
 - Reasoning controls live under `reasoning`; `max_output_tokens` includes visible output and reasoning tokens. Reasoning summaries use `reasoning.summary`; older `generate_summary` is deprecated.
@@ -34,6 +37,8 @@ Externally constrained facts:
 - GPT-5.6 supports efforts `none`, `low`, `medium`, `high`, `xhigh`, and `max`. Its independent `reasoning.mode` is `standard` by default or `pro`; Pro is not a separate model slug and trades additional latency, tokens, and cost for more work.
 - The 2026-06-06 low-token `gpt-5.5` smoke rejected effort `minimal`. Current supported direct-model effort metadata must therefore not infer that value; the guide's default is `medium`.
 - Explicit effort `none` is materially different from omitting the reasoning object for a reasoning-default model. A terminal `status: incomplete` is not a complete answer.
+- Authenticated `GET /v1/models` returns the model identifiers available to the key. AIQSA uses that bounded read-only catalog for credential preflight and activation-time model-presence evidence; it does not treat catalog presence as a guarantee that a later generation will succeed.
+- A 2026-07-24 live `gpt-5.5` Responses diagnostic rejected `max_output_tokens: 1` but succeeded with `16` and `reasoning.effort: none`. AIQSA therefore reserves up to 16 output tokens for the explicitly confirmed tiny OpenAI/compatible diagnostic; this is not a provider-wide minimum claim.
 - Native `web_search` uses the Responses tool contract and may return call/action sources and/or message annotations. It does not require a backend regex intent gate.
 - A 2026-07-23 low-token Responses smoke combined native `web_search` with two custom functions and `parallel_tool_calls: true`; the API returned HTTP 200 and both function calls in one response. Merely offering native web search therefore must not make AIQSA serialize independent custom or MCP calls sequentially.
 - Prompt caching is automatic where eligible; `prompt_cache_key` and retention hints influence routing/retention and must not expose a raw local chat id. GPT-5.6 replaces the older `prompt_cache_retention` field with `prompt_cache_options`; its currently documented TTL is `30m`.
@@ -48,6 +53,7 @@ Primary references:
 - `https://platform.claude.com/docs/en/build-with-claude/streaming`
 - `https://docs.anthropic.com/en/api/messages`
 - `https://docs.anthropic.com/en/api/messages-examples`
+- `https://docs.anthropic.com/en/api/models-list`
 - `https://docs.anthropic.com/en/docs/build-with-claude/extended-thinking`
 - `https://platform.claude.com/docs/en/build-with-claude/pdf-support`
 
@@ -58,6 +64,7 @@ Externally constrained facts:
 - Total Anthropic input usage is `input_tokens + cache_creation_input_tokens + cache_read_input_tokens`; current thinking usage is reported as `output_tokens_details.thinking_tokens` when available.
 - Older manual thinking uses a token budget below `max_tokens`. Claude Opus 4.8+ uses adaptive thinking plus `output_config.effort`; its documented scale includes `low`, `medium`, `high`, `xhigh`, and `max`, with `high` as API default.
 - PDF/document and image support are model capabilities, not provider-wide assumptions. Direct native PDF input uses Messages document content; unsupported routes require the local extracted-text fallback.
+- Authenticated `GET /v1/models` uses `x-api-key` plus the Anthropic version header and returns model identifiers suitable for bounded credential validation and catalog-presence evidence.
 
 Current AIQSA defaults and request/event normalization live in `BACKEND.md` and adapter tests.
 
@@ -70,6 +77,9 @@ Primary references:
 - `https://openrouter.ai/docs/api/reference/streaming`
 - `https://openrouter.ai/docs/cookbook/administration/usage-accounting`
 - `https://openrouter.ai/docs/provider-routing`
+- `https://openrouter.ai/docs/api/api-reference/models/list-models-user`
+- `https://openrouter.ai/docs/api/api-reference/endpoints/list-endpoints`
+- `https://openrouter.ai/docs/api/reference/responses/overview`
 - `https://openrouter.ai/docs/use-cases/reasoning-tokens`
 - `https://openrouter.ai/docs/guides/features/server-tools/web-search`
 - `https://openrouter.ai/docs/guides/overview/multimodal/pdfs`
@@ -78,13 +88,17 @@ Primary references:
 Externally constrained facts:
 
 - Chat Completions is OpenAI-compatible but accepts additional provider-routing and model-specific fields. Streaming uses SSE data chunks plus possible comment keepalives; current usage accounting places usage in the final streaming chunk without the deprecated include-usage knobs.
+- Authenticated `GET /api/v1/models/user` filters model results through that OpenRouter account's provider preferences, privacy settings, and guardrails. A catalog observed with one API key is therefore not availability proof for another key.
+- A model result supplies request-facing id, canonical slug, modalities, context/pricing metadata, supported-parameter hints, and optional expiration evidence. Model-specific `GET /api/v1/models/:author/:slug/endpoints` supplies the downstream endpoint/provider choices used for explicit routing. These remote fields remain mutable operational metadata rather than AIQSA entitlement or billing authority.
 - Reasoning controls are model/route specific. OpenRouter Claude effort is represented through Claude-compatible effort/verbosity behavior, Gemini thinking uses mapped effort levels, and OpenAI routes use OpenAI-style effort. Do not expose one global effort list.
 - OpenRouter documents Gemini thinking levels through `minimal`, `low`, `medium`, and `high`; documented `xhigh` maps down to `high`, so it is not a distinct Gemini capability.
 - Provider routing supports `order`, `only`, `allow_fallbacks`, `require_parameters`, `data_collection`, `sort`, and `zdr`. Sticky `session_id` can improve cache routing; explicit `cache_control` support depends on the downstream provider/model.
+- OpenRouter's Responses API is currently labelled beta and stateless: every request supplies its full history and no server-side conversation state is persisted. AIQSA must not reuse native OpenAI stored-background/retrieve/cancel assumptions for that endpoint merely because its request surface is Responses-compatible.
 - The current catalog uses `google/gemini-3.5-flash` and the live `~google/gemini-pro-latest` alias. The removed `google/gemini-3-pro-preview` can return no endpoints and must not be inferred as available.
 - The 2026-06-06 tiny `perplexity/sonar-pro-search` smoke succeeded with denied data collection, Perplexity-only routing, throughput sort, and `require_parameters: false`; forcing `require_parameters: true` failed. This is a dated observation, not a provider-wide guarantee.
 - OpenRouter web-search server tools exist, but AIQSA's current Perplexity integration is an explicit provider-neutral tool executor rather than the removed regex pre-search path.
 - Native PDF routing is capability-dependent. OpenRouter file content plus its native PDF parser plugin avoids silently selecting a router-side parser/OCR fallback; unknown custom models must not be assumed native-capable.
+- A 2026-07-24 live check confirmed valid account catalogs for the configured OpenAI, Anthropic, and OpenRouter keys, successful tiny OpenAI/Anthropic generation diagnostics, and successful OpenRouter route discovery/generation. OpenRouter endpoint tags were canonical lowercase while the saved display-derived selection used title case, so AIQSA compares route tags case-insensitively while preserving the configured value in safe evidence.
 
 Current answer streaming/non-streaming behavior, routing defaults, Perplexity tool transcript/limits, PDF mapping, previews, and error normalization live in `BACKEND.md` and adapter tests.
 

@@ -126,6 +126,19 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
     () => (catalog ? new Set(catalog.models.map((model) => `${model.provider}:${model.modelId}`)) : null),
     [catalog]
   );
+  const chatModelLabels = useMemo(() => {
+    if (!catalog) {
+      return null;
+    }
+
+    const providerLabels = new Map(catalog.providers.map((provider) => [provider.id, provider.name]));
+    return new Map(
+      catalog.models.map((model) => [
+        `${model.provider}:${model.modelId}`,
+        `${providerLabels.get(model.provider) ?? "Provider"} · ${model.displayName}`
+      ])
+    );
+  }, [catalog]);
   const pipeline = useMemo(
     () =>
       pipelineStage({
@@ -334,6 +347,7 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
         <ShellLeftPane
           activeChatId={activeChatId}
           availableChatModelKeys={availableChatModelKeys}
+          chatModelLabels={chatModelLabels}
           pane={workspace.pane}
           sharing={sharing}
         />
@@ -446,6 +460,7 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
               <ShellLeftPane
                 activeChatId={activeChatId}
                 availableChatModelKeys={availableChatModelKeys}
+                chatModelLabels={chatModelLabels}
                 layout="mobile"
                 pane={mobileWorkspacePane}
                 scrollTopRef={mobileWorkspaceScrollTopRef}

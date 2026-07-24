@@ -53,7 +53,11 @@ export function AdminDashboardOverview({
 }>) {
   return (
     <>
-      <section aria-label="Admin summary" className="mt-3 grid grid-cols-2 gap-2 xl:grid-cols-4">
+      <section
+        aria-label="Admin summary"
+        className={`mt-3 grid grid-flow-col auto-cols-[minmax(10rem,1fr)] gap-2 overflow-x-auto overscroll-x-contain pb-1 sm:grid-flow-row sm:grid-cols-2 sm:overflow-visible sm:pb-0 xl:grid-cols-4 ${focusRing}`}
+        tabIndex={0}
+      >
         <SummaryMetric
           detail={`${overview.pendingUsers.length} pending / ${overview.inactiveUsers} disabled or denied`}
           label="Active users"

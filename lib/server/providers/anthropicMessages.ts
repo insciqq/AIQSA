@@ -618,8 +618,7 @@ export function createAnthropicMessagesAdapter(options: AnthropicMessagesAdapter
         }
 
         if (type === "error") {
-          const error = objectValue(event.error);
-          throw new Error(stringValue(error?.message) ?? stringValue(error?.type) ?? "anthropic_stream_error");
+          throw new Error("anthropic_stream_error");
         }
       }
 
@@ -655,30 +654,15 @@ export function createAnthropicMessagesAdapter(options: AnthropicMessagesAdapter
 }
 
 async function throwAnthropicHttpError(response: Response, signal: AbortSignal): Promise<never> {
-  let text: string;
   try {
-    text = await readBoundedResponseText(response, { signal });
+    await readBoundedResponseText(response, { signal });
   } catch (error) {
-    if (error instanceof ProviderResponseTooLargeError) {
-      throw new Error(`Anthropic request failed with status ${response.status}: ${error.code}`);
-    }
-    throw error;
-  }
-  let message = `Anthropic request failed with status ${response.status}`;
-
-  if (text) {
-    try {
-      const body = JSON.parse(text) as Record<string, unknown>;
-      const error = objectValue(body.error);
-      message = stringValue(error?.message)
-        ? providerHttpErrorMessage("Anthropic", response.status, stringValue(error?.message) ?? "")
-        : message;
-    } catch {
-      message = providerHttpErrorMessage("Anthropic", response.status, text);
+    if (!(error instanceof ProviderResponseTooLargeError)) {
+      throw error;
     }
   }
 
-  throw new Error(message);
+  throw new Error(providerHttpErrorMessage("Anthropic", response.status));
 }
 
 export function createFetchAnthropicMessagesClient(input: {

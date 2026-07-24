@@ -3,6 +3,8 @@ import {
   Boxes,
   Globe2,
   Link2,
+  Mail,
+  ServerCog,
   ShieldAlert,
   SlidersHorizontal,
   Users,
@@ -13,9 +15,11 @@ import {
 export type AdminSectionId =
   | "access-rules"
   | "groups"
+  | "email"
   | "invites"
   | "mcp"
   | "model-access"
+  | "providers"
   | "safety"
   | "usage"
   | "users";
@@ -57,10 +61,22 @@ export const adminSections = [
     label: "Model access"
   },
   {
+    Icon: ServerCog,
+    description: "Configure, test, activate, and assign server-owned LLM connections and keys.",
+    id: "providers",
+    label: "Providers"
+  },
+  {
     Icon: Wrench,
     description: "Install, test, activate, update, and grant trusted MCP servers.",
     id: "mcp",
     label: "MCP servers"
+  },
+  {
+    Icon: Mail,
+    description: "Configure, test, activate, and monitor installation email delivery.",
+    id: "email",
+    label: "Email delivery"
   },
   {
     Icon: Link2,

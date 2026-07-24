@@ -243,7 +243,7 @@ describe("OpenAI Responses adapter", () => {
 
   it.each([
     ["missing", { id: "resp-refresh" }, "unknown"],
-    ["unknown", { id: "resp-refresh", status: "future_status" }, "future_status"]
+    ["unknown", { id: "resp-refresh", status: "future_status" }, "unknown"]
   ])("fails closed for %s refresh status", async (_label, payload, status) => {
     const client = createFetchOpenAIResponsesClient({
       apiKey: "key",
@@ -479,7 +479,7 @@ describe("OpenAI Responses adapter", () => {
     });
   });
 
-  it("surfaces provider error frames from Responses streams", async () => {
+  it("collapses provider error frames from Responses streams", async () => {
     const client: OpenAIResponsesClient = {
       cancel: async () => ({}),
       create: async () => ({}),
@@ -496,7 +496,7 @@ describe("OpenAI Responses adapter", () => {
       })
     );
 
-    await expect(stream.next()).rejects.toThrow("Provider overloaded");
+    await expect(stream.next()).rejects.toThrow("openai_stream_error");
   });
 
   it("aborts Responses stream reads through the run abort signal", async () => {

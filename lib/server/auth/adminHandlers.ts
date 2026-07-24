@@ -10,7 +10,7 @@ import type {
 } from "@/lib/contracts/admin";
 import type { AuthConfig } from "./config";
 import type { AdminRepository } from "./adminRepositoryContract";
-import type { AuthMailer } from "./mailer";
+import { deliverAuthEmail, type AuthMailer } from "./mailer";
 import type { RequestAuthResolver } from "./requestAuth";
 import { createSessionToken } from "./session";
 import { hashToken } from "./token";
@@ -143,23 +143,21 @@ async function deliverInvitationEmail(input: {
     return "not_requested";
   }
 
-  if (!input.mailer.deliveryConfigured) {
-    return "unavailable";
-  }
-
-  try {
-    await input.mailer.send(
-      invitationEmail({
-        expiresAt: input.expiresAt,
-        inviteUrl: input.inviteUrl,
-        to: input.to
-      })
-    );
+  const delivery = await deliverAuthEmail(
+    input.mailer,
+    invitationEmail({
+      expiresAt: input.expiresAt,
+      inviteUrl: input.inviteUrl,
+      to: input.to
+    }),
+    "invitation"
+  );
+  if (delivery.kind === "accepted") {
     return "sent";
-  } catch {
-    console.error("invite_email_failed");
-    return "failed";
   }
+  if (delivery.kind === "unavailable") return "unavailable";
+  console.error("invite_email_failed");
+  return "failed";
 }
 
 async function requireAdmin(request: Request, deps: AdminHandlerDeps): Promise<{ response?: Response; userId?: string }> {

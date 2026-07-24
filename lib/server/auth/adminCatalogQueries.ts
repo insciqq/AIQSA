@@ -1,25 +1,49 @@
-import type { PrismaClient } from "@prisma/client";
+import { Prisma, type PrismaClient } from "@prisma/client";
 import type { AdminCatalog } from "@/lib/contracts/admin";
-import { adminProviderName } from "./adminRepositorySerializers";
+
+function configuredUpstreamModelId(value: unknown): string | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return null;
+  }
+
+  const upstreamModelId = (value as Record<string, unknown>).upstreamModelId;
+  return typeof upstreamModelId === "string" && upstreamModelId.trim()
+    ? upstreamModelId
+    : null;
+}
 
 export async function loadAdminGrantableCatalog(prisma: PrismaClient): Promise<AdminCatalog> {
   const [providerModels, searchStrategies] = await Promise.all([
     prisma.providerModel.findMany({
       orderBy: [
         {
-          provider: "asc"
+          connection: { displayName: "asc" }
         },
         {
           displayName: "asc"
         }
       ],
       select: {
+        connection: {
+          select: {
+            displayName: true,
+            family: true,
+            id: true
+          }
+        },
+        activeConfig: true,
         displayName: true,
-        modelId: true,
-        provider: true
+        id: true
       },
       where: {
-        enabled: true
+        activeConfig: { not: Prisma.DbNull },
+        activeVersion: { gt: 0 },
+        enabled: true,
+        connection: {
+          activeConfig: { not: Prisma.DbNull },
+          activeVersion: { gt: 0 },
+          enabled: true
+        }
       }
     }),
     prisma.searchStrategy.findMany({
@@ -38,14 +62,27 @@ export async function loadAdminGrantableCatalog(prisma: PrismaClient): Promise<A
       }
     })
   ]);
-  const providers = Array.from(new Set(providerModels.map((model) => model.provider))).sort();
+  const providers = new Map(
+    providerModels.map((model) => [model.connection.id, model.connection.displayName])
+  );
 
   return {
-    models: providerModels,
-    providers: providers.map((provider) => ({
-      id: provider,
-      name: adminProviderName(provider)
-    })),
+    models: providerModels.map((model) => {
+      const upstreamModelId = configuredUpstreamModelId(model.activeConfig);
+
+      return {
+        displayName: model.displayName,
+        modelId: model.id,
+        provider: model.connection.id,
+        ...(upstreamModelId
+          ? {
+              providerFamily: model.connection.family,
+              upstreamModelId
+            }
+          : {})
+      };
+    }),
+    providers: [...providers].map(([id, name]) => ({ id, name })),
     searchStrategies
   };
 }

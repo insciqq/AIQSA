@@ -426,7 +426,7 @@ describe("OpenRouter Chat facade", () => {
     });
   });
 
-  it("propagates provider error envelopes across the facade", async () => {
+  it("collapses provider error envelopes across the facade", async () => {
     const client: OpenRouterChatClient = {
       createChatCompletion: async () => ({
         error: {
@@ -437,7 +437,7 @@ describe("OpenRouter Chat facade", () => {
     };
     const adapter = createOpenRouterChatAdapter({ client });
 
-    await expect(adapter.stream(request()).next()).rejects.toThrow("No endpoints found");
+    await expect(adapter.stream(request()).next()).rejects.toThrow("openrouter_response_error");
   });
 
   it.each([

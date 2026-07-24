@@ -1,9 +1,11 @@
 import type { ChatUsageStats, ThreadArtifactSummary } from "../../contracts/chats";
+import type { CatalogAdapterKind } from "../../domain/catalog";
 import type { ModelRunResponseProjection, ModelRunStatus } from "../../contracts/runs";
 import type { ModelRunSseEvent, ModelRunUsage } from "../../domain/modelRunEvents";
 import type { ModelTokenPricing } from "../../domain/usage";
 import type { ResolvedEntitlements } from "../auth/entitlements";
 import type { McpRunPlanBinding } from "../mcp/runPlan";
+import type { ProviderAdmissionPlan } from "../providerRuntime/admission";
 import type {
   AdvanceToolLoopCallBatchResult,
   BeginToolLoopProviderRoundResult,
@@ -26,6 +28,7 @@ export type RunAttachmentRecord = ProviderAttachment & {
 };
 
 export type RunModelConfiguration = {
+  adapterKind?: CatalogAdapterKind;
   capabilities: ProviderModelCapabilities;
   defaultParams: Record<string, unknown>;
 };
@@ -119,6 +122,13 @@ export class McpRunPlanConflictError extends Error {
   }
 }
 
+export class ProviderAdmissionConflictError extends Error {
+  constructor() {
+    super("provider_admission_changed");
+    this.name = "ProviderAdmissionConflictError";
+  }
+}
+
 export type AcceptedRunDefaults = {
   controlDefaults: Record<string, boolean | string>;
   modelId: string;
@@ -200,6 +210,7 @@ export type RunRepository = {
     mcpBindings?: McpRunPlanBinding[];
     modelId: string;
     normalizedRequest: NormalizedRunRequest;
+    providerAdmissionPlan?: ProviderAdmissionPlan;
     provider: string;
     providerRequestPreview: Record<string, unknown>;
     userId: string;
@@ -214,6 +225,7 @@ export type RunRepository = {
     mcpBindings?: McpRunPlanBinding[];
     modelId: string;
     normalizedRequest: NormalizedRunRequest;
+    providerAdmissionPlan?: ProviderAdmissionPlan;
     provider: string;
     providerRequestPreview: Record<string, unknown>;
     userId: string;

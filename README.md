@@ -31,8 +31,7 @@ Edit `.env` and fill every value marked **required**. In particular, set:
 - a random `AIQSA_AUTH_SESSION_SECRET` (for example, from `openssl rand -hex 32`);
 - a base64 32-byte `AIQSA_ENCRYPTION_KEY` (for example, from `openssl rand -base64 32`);
 - the initial administrator email and password;
-- unique PostgreSQL and object-storage passwords;
-- at least one real provider key: `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, or `OPENROUTER_API_KEY`.
+- unique PostgreSQL and object-storage passwords.
 
 Then start AIQSA:
 
@@ -41,6 +40,8 @@ docker compose up -d --build
 ```
 
 Open [http://localhost:3000](http://localhost:3000) and sign in with the initial administrator account from `.env`.
+
+Then use Admin to add and test an LLM provider; provider keys and SMTP settings are database-managed and are not normal `.env` inputs.
 
 That is enough for local use. A domain, SMTP server, and OAuth credentials are optional. PostgreSQL and uploaded objects live in named Docker volumes, so a normal rebuild or update does not erase them.
 

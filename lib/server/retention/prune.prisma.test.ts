@@ -82,8 +82,6 @@ describe("Prisma attachment retention outbox", () => {
     const user = await createUser();
     const chat = await prisma.chat.create({
       data: {
-        defaultModelId: "fake-qsa",
-        defaultProvider: "fake",
         title: "Retention race",
         userId: user.id
       }

@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { Prisma, PrismaClient } from "@prisma/client";
+import { providerTemplateIds } from "../lib/domain/providerTemplates";
 
 const prisma = new PrismaClient();
 
@@ -77,8 +78,7 @@ async function createUserAndChats(tx: Prisma.TransactionClient, chatCount = 2) {
     chats.push(
       await tx.chat.create({
         data: {
-          defaultModelId: "fake-qsa",
-          defaultProvider: "fake",
+          defaultProviderModelId: providerTemplateIds.fakeModel,
           id: randomUUID(),
           title: `Integrity chat ${index + 1}`,
           userId: user.id
@@ -248,20 +248,29 @@ async function assertGrantShapes(): Promise<void> {
     const { user } = await createUserAndChats(tx, 0);
     const group = await tx.group.create({ data: { id: randomUUID(), name: `integrity-${randomUUID()}` } });
     await tx.accessGrant.create({
-      data: { groupId: group.id, id: randomUUID(), provider: "fake", userId: user.id }
+      data: {
+        groupId: group.id,
+        id: randomUUID(),
+        providerConnectionId: providerTemplateIds.fakeConnection,
+        userId: user.id
+      }
     });
   });
 
   await expectDatabaseRejection("grant without a principal", "AccessGrant_subject_check", async (tx) => {
-    await tx.accessGrant.create({ data: { id: randomUUID(), provider: "fake" } });
+    await tx.accessGrant.create({
+      data: { id: randomUUID(), providerConnectionId: providerTemplateIds.fakeConnection }
+    });
   });
 
   for (const [label, target] of [
     ["empty target", {}],
-    ["model without provider", { modelId: "fake-qsa" }],
-    ["provider plus search", { provider: "fake", searchStrategy: "search-disabled" }],
-    ["blank provider", { provider: "   " }],
-    ["blank model", { modelId: "   ", provider: "fake" }],
+    [
+      "provider plus search",
+      { providerConnectionId: providerTemplateIds.fakeConnection, searchStrategy: "search-disabled" }
+    ],
+    ["blank provider", { providerConnectionId: "   " }],
+    ["blank model", { providerModelId: "   " }],
     ["blank search", { searchStrategy: "   " }]
   ] as const) {
     await expectDatabaseRejection(`grant ${label}`, "AccessGrant_target_check", async (tx) => {
@@ -275,8 +284,8 @@ async function assertGrantShapes(): Promise<void> {
     const group = await tx.group.create({ data: { id: randomUUID(), name: `integrity-${randomUUID()}` } });
     for (const principal of [{ userId: user.id }, { groupId: group.id }]) {
       for (const target of [
-        { provider: "fake" },
-        { modelId: "fake-qsa", provider: "fake" },
+        { providerConnectionId: providerTemplateIds.fakeConnection },
+        { providerModelId: providerTemplateIds.fakeModel },
         { searchStrategy: "search-disabled" }
       ]) {
         await tx.accessGrant.create({ data: { id: randomUUID(), ...principal, ...target } });

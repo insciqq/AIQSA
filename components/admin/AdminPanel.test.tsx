@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AdminDashboard } from "@/lib/contracts/admin";
+import type { AdminEmailState } from "@/lib/contracts/email";
 import { StrictMode } from "react";
 import { AdminPanel } from "./AdminPanel";
 
@@ -499,6 +500,45 @@ describe("AdminPanel", () => {
     await screen.findByTestId("admin-section-users");
   });
 
+  it("opens the database-backed Email delivery section from shared navigation", async () => {
+    const email: AdminEmailState = {
+      active: {
+        activatedAt: null,
+        activatedByUserId: null,
+        configuration: null,
+        enabled: false,
+        passwordConfigured: false,
+        version: 0
+      },
+      configurationUpdatedAt: null,
+      configurationUpdatedByUserId: null,
+      draft: { configuration: null, passwordConfigured: false, test: null, version: 0 },
+      health: {
+        activeVersion: null,
+        degraded: false,
+        lastAcceptedAt: null,
+        lastAttemptAt: null,
+        lastFailureAt: null,
+        lastFailureCode: null
+      }
+    };
+    const fetch = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url === "/api/admin") return dashboardResponse();
+      if (url === "/api/admin/email") return dashboardResponse({ email });
+      return dashboardResponse({ error: "unexpected_request" }, 500);
+    });
+
+    render(<AdminPanel adminEmail="admin@example.com" adminUserId="admin-1" />);
+    await screen.findByTestId("admin-section-users");
+    fireEvent.click(screen.getByRole("tab", { name: "Email delivery" }));
+
+    const section = await screen.findByTestId("admin-section-email");
+    expect(within(section).getByText("SMTP draft")).toBeInTheDocument();
+    expect(within(section).getByText("Not configured")).toBeInTheDocument();
+    expect(fetch).toHaveBeenCalledWith("/api/admin/email", { method: "GET" });
+  });
+
   it("announces loading without presenting zero-value dashboard state as current data", async () => {
     const request = deferred<Response>();
     vi.spyOn(globalThis, "fetch").mockReturnValue(request.promise);
@@ -752,7 +792,7 @@ describe("AdminPanel", () => {
     fireEvent.change(screen.getByLabelText("Value"), { target: { value: "allowed-2@example.com" } });
     fireEvent.click(screen.getByRole("checkbox", { name: "reviewers" }));
 
-    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    fireEvent.click(screen.getByRole("button", { name: "Refresh admin overview" }));
     await waitFor(() => expect(screen.queryByRole("checkbox", { name: "reviewers" })).not.toBeInTheDocument());
 
     fireEvent.click(screen.getByRole("button", { name: "Save rule" }));
@@ -864,7 +904,7 @@ describe("AdminPanel", () => {
     expectKeyboardScrollableTable("Access rules table");
   });
 
-  it("moves focus into the selected model-access context", async () => {
+  it("keeps focus on the selected Model access group", async () => {
     mockAdminFetch();
     render(<AdminPanel adminEmail="admin@example.com" adminUserId="admin-1" />);
 
@@ -884,8 +924,10 @@ describe("AdminPanel", () => {
     const selectedContext = within(modelAccess).getByTestId("admin-model-access-group");
     expect(selectedContext).toHaveAttribute("aria-label", "Model access for reviewers");
     expect(within(selectedContext).getByText("reviewers")).toBeInTheDocument();
+    reviewersButton.focus();
     fireEvent.click(reviewersButton);
-    await waitFor(() => expect(selectedContext).toHaveFocus());
+    await waitFor(() => expect(reviewersButton).toHaveFocus());
+    expect(selectedContext).not.toHaveFocus();
   });
 
   it("approves a pending user with selected groups", async () => {
@@ -971,7 +1013,7 @@ describe("AdminPanel", () => {
 
     fireEvent.click(screen.getByRole("tab", { name: "Model access" }));
     const modelAccess = await screen.findByTestId("admin-section-model-access");
-    fireEvent.click(must(within(modelAccess).getAllByLabelText("Grant model openai / GPT 5.5")[0], "model grant"));
+    fireEvent.click(must(within(modelAccess).getAllByLabelText("Grant model OpenAI / GPT 5.5")[0], "model grant"));
     await waitFor(() => {
       expect(posts).toContainEqual({
         action: "set_group_grant",
@@ -1036,7 +1078,7 @@ describe("AdminPanel", () => {
 
     expect(within(modelAccess).getByText("Archived groups do not apply grants. Grant editing is disabled for this group.")).toBeInTheDocument();
     expect(within(modelAccess).getByLabelText("Grant provider OpenAI")).toBeDisabled();
-    expect(within(modelAccess).getByLabelText("Grant model openai / GPT 5.5")).toBeDisabled();
+    expect(within(modelAccess).getByLabelText("Grant model OpenAI / GPT 5.5")).toBeDisabled();
   });
 
   it("toggles provider-wide and search strategy grants for the selected group", async () => {
@@ -1096,7 +1138,7 @@ describe("AdminPanel", () => {
     });
   });
 
-  it("keeps long operational identifiers readable inside their local surfaces", async () => {
+  it("wraps long operator labels without exposing opaque model identifiers", async () => {
     const longEmail =
       "operator.with.a.deliberately.long.unbroken.identity.for.compact.admin.testing@subdomain.with-a-deliberately-long-name.example.com";
     const longGroupName =
@@ -1122,10 +1164,8 @@ describe("AdminPanel", () => {
       "break-words",
       "[overflow-wrap:anywhere]"
     );
-    expect(within(modelAccess).getByText(`openai:${longModelId}`)).toHaveClass(
-      "break-words",
-      "[overflow-wrap:anywhere]"
-    );
+    expect(within(modelAccess).getByText("GPT 5.5")).toBeVisible();
+    expect(within(modelAccess).queryByText(`openai:${longModelId}`)).not.toBeInTheDocument();
   });
 
   it("creates invites and shows the returned link", async () => {

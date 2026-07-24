@@ -85,6 +85,7 @@ export function useRunControlsActions({
     const selectedModel = selectedModelFromStore();
     const controls = defaultParameterControls(selectedModel);
     const baseParams = cloneRecord(selectedModel?.defaultParams ?? {});
+    const providerFamily = selectedModel?.providerFamily ?? selectedProvider;
     const maxTokens = Math.round(
       clampedNumber(
         maxOutputTokens,
@@ -102,7 +103,7 @@ export function useRunControlsActions({
     const effort = coerceReasoningEffort(reasoningEffort, controls);
     const mode = coerceReasoningMode(reasoningMode, controls);
 
-    if (selectedProvider === "openai") {
+    if (providerFamily === "openai" || providerFamily === "openai_compatible") {
       const reasoning: Record<string, unknown> = {
         ...recordValue(baseParams.reasoning),
         effort
@@ -113,17 +114,26 @@ export function useRunControlsActions({
         delete reasoning.mode;
       }
 
-      return {
+      const params: Record<string, unknown> = {
         ...baseParams,
-        background: controls.background.supported ? backgroundMode : false,
         maxOutputTokens: maxTokens,
         reasoning,
-        stream: controls.stream.supported ? streamMode : Boolean(baseParams.stream),
         temperature: temp
       };
+      if (controls.background.supported) {
+        params.background = backgroundMode;
+      } else {
+        delete params.background;
+      }
+      if (controls.stream.supported) {
+        params.stream = streamMode;
+      } else {
+        delete params.stream;
+      }
+      return params;
     }
 
-    if (selectedProvider === "anthropic") {
+    if (providerFamily === "anthropic") {
       const params: Record<string, unknown> = {
         ...baseParams,
         maxTokens,
@@ -148,7 +158,7 @@ export function useRunControlsActions({
       return params;
     }
 
-    if (selectedProvider === "openrouter") {
+    if (providerFamily === "openrouter") {
       const usesVerbosityEffort = typeof baseParams.verbosity === "string";
       const params: Record<string, unknown> = {
         ...baseParams,
@@ -157,9 +167,14 @@ export function useRunControlsActions({
           ...recordValue(baseParams.reasoning),
           enabled: controls.reasoningEffort.supported && effort !== "none",
           ...(usesVerbosityEffort || effort === "none" ? {} : { effort })
-        },
-        stream: controls.stream.supported ? streamMode : Boolean(baseParams.stream)
+        }
       };
+
+      if (controls.stream.supported) {
+        params.stream = streamMode;
+      } else {
+        delete params.stream;
+      }
 
       if (usesVerbosityEffort && effort !== "none") {
         params.verbosity = effort;

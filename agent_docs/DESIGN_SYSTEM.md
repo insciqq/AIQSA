@@ -204,7 +204,7 @@ Use chips for a compact choice, filter, capability summary, or binary state, not
 
 Menus use `rounded-panel border border-separator-subtle bg-surface-overlay p-2 shadow-overlay`. Rows use `rounded-control`, compact desktop height, and distinct hover, selected, keyboard-active, Current, Default, and disabled presentation. Focus remains independently visible when selection is also present.
 
-Searchable pickers add a visible heading/orientation, labeled search field, noninteractive provider headings where applicable, and one locally scrolling results region. Long names/descriptions wrap; raw ids remain secondary inspection text only. Empty/no-result state is in-flow and specific.
+Searchable pickers add a visible heading/orientation, labeled search field, and one locally scrolling results region. Noninteractive provider headings use a quiet raised band with an explicit sentence-case `Provider` eyebrow, the readable provider name, and muted model-count/current-group metadata so they cannot be mistaken for model rows. Long names/descriptions wrap. Internal ids are never row copy; upstream ids may be secondary text only in a technical configuration or inspection picker where they disambiguate the selected API resource. Empty/no-result state is in-flow and specific.
 
 Desktop surfaces anchor with purposeful width/max-height; narrow or short-height surfaces promote to safe-area-aware sheets with touch-sized rows. Search/filter semantics, keyboard algorithms, close/focus rules, and exact item inventories live in `FRONTEND.md`.
 

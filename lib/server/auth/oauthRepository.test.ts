@@ -90,8 +90,6 @@ describe("Prisma OAuth identity repository", () => {
       });
       const chat = await prisma.chat.create({
         data: {
-          defaultModelId: "gpt-5.5",
-          defaultProvider: "openai",
           title: "Existing chat",
           userId: user.id
         }

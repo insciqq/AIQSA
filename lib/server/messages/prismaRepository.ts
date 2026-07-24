@@ -29,9 +29,8 @@ function isActiveMessageStatus(status: MessageStatus): boolean {
 
 type LockedOwnedChat = {
   activeLeafMessageId: string | null;
-  defaultModelId: string;
+  defaultProviderModelId: string | null;
   defaultPromptPresetId: string | null;
-  defaultProvider: string;
   folderId: string | null;
   id: string;
   title: string;
@@ -44,9 +43,8 @@ async function lockOwnedChatForMessage(
   const chats = await tx.$queryRaw<LockedOwnedChat[]>`
     SELECT
       chat."activeLeafMessageId",
-      chat."defaultModelId",
+      chat."defaultProviderModelId",
       chat."defaultPromptPresetId",
-      chat."defaultProvider",
       chat."folderId",
       chat."id",
       chat."title"
@@ -196,9 +194,8 @@ export function createPrismaMessageBranchRepository(prismaClient = prisma): Mess
           select: {
             chatId: true,
             id: true,
-            modelId: true,
             promptPresetId: true,
-            provider: true,
+            role: true,
             status: true
           },
           where: {
@@ -250,6 +247,25 @@ export function createPrismaMessageBranchRepository(prismaClient = prisma): Mess
           throw new ActiveMessageMutationConflictError();
         }
 
+        const sourceAnswerBinding =
+          source.role === "assistant"
+            ? (
+                await tx.modelRun.findFirst({
+                  orderBy: { createdAt: "desc" },
+                  select: {
+                    providerRunBindings: {
+                      select: { providerModelId: true },
+                      where: { role: "answer" }
+                    }
+                  },
+                  where: {
+                    assistantMessageId: source.id,
+                    userId
+                  }
+                })
+              )?.providerRunBindings[0] ?? null
+            : null;
+
         const attachmentIdsByMessageId = new Map(
           path.map((message) => [
             message.id,
@@ -300,9 +316,9 @@ export function createPrismaMessageBranchRepository(prismaClient = prisma): Mess
 
         const chat = await tx.chat.create({
           data: {
-            defaultModelId: source.modelId ?? lockedChat.defaultModelId,
+            defaultProviderModelId:
+              sourceAnswerBinding?.providerModelId ?? lockedChat.defaultProviderModelId,
             defaultPromptPresetId,
-            defaultProvider: source.provider ?? lockedChat.defaultProvider,
             folderId: lockedChat.folderId,
             pinned: false,
             title: branchChatTitle(lockedChat.title),
@@ -384,9 +400,13 @@ export function createPrismaMessageBranchRepository(prismaClient = prisma): Mess
           select: {
             activeLeafMessageId: true,
             createdAt: true,
-            defaultModelId: true,
+            defaultProviderModel: {
+              select: {
+                connectionId: true,
+                id: true
+              }
+            },
             defaultPromptPresetId: true,
-            defaultProvider: true,
             folderId: true,
             id: true,
             pinned: true,
@@ -398,8 +418,12 @@ export function createPrismaMessageBranchRepository(prismaClient = prisma): Mess
           }
         });
 
+        const { defaultProviderModel, ...chatSummary } = updated;
+
         return {
-          ...updated,
+          ...chatSummary,
+          defaultModelId: defaultProviderModel?.id ?? "",
+          defaultProvider: defaultProviderModel?.connectionId ?? "",
           messageCount: path.length
         } satisfies BranchChatRecord;
       }),

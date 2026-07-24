@@ -44,6 +44,8 @@ function baseSettingsData(): SettingsHandlerData {
     settings: {
       defaultControlValues: {},
       defaultModelId: "gpt-5.5",
+      defaultProviderConnectionId: "openai",
+      defaultProviderModelId: "gpt-5.5",
       defaultPromptPresetId: "prompt-1",
       defaultProvider: "openai",
       defaultSearchStrategyId: "openai-native-web-search",
@@ -116,8 +118,7 @@ describe("settings handler", () => {
           temperature: "0.3"
         }
       },
-      defaultModelId: "gpt-5.5",
-      defaultProvider: "openai",
+      defaultProviderModelId: "gpt-5.5",
       defaultSearchStrategyId: "openai-native-web-search",
       showCitations: false,
       showReasoningBlocks: true,
@@ -126,6 +127,8 @@ describe("settings handler", () => {
     expect(
       (capturedUpdate as { defaultControlValues: Record<string, unknown> }).defaultControlValues
     ).not.toHaveProperty("fake:fake-qsa");
+    expect(capturedUpdate).not.toHaveProperty("defaultModelId");
+    expect(capturedUpdate).not.toHaveProperty("defaultProvider");
     expect(capturedValidationModels).toHaveLength(1);
     expect(capturedValidationModels[0]).toMatchObject({
       modelId: "gpt-5.5",
@@ -315,6 +318,40 @@ describe("settings handler", () => {
     expect(response.status).toBe(400);
     await expect(response.json()).resolves.toEqual({
       error: "default_search_unavailable"
+    });
+  });
+
+  it("keeps a legitimate empty default empty while updating an unrelated preference", async () => {
+    const data = baseSettingsData();
+    data.settings.defaultModelId = "";
+    data.settings.defaultProvider = "";
+    data.settings.defaultProviderConnectionId = null;
+    data.settings.defaultProviderModelId = null;
+    const PATCH = createUpdateSettingsHandler({
+      resolveAuth: auth.resolveAuth,
+      loadSettingsData: async () => data,
+      updateSettings: async (_userId, update) =>
+        updated({
+          ...data.settings,
+          ...update
+        })
+    });
+
+    const response = await PATCH(
+      new Request("http://app.local/api/me/settings", {
+        body: JSON.stringify({ showCitations: false }),
+        headers: { cookie: authCookie() },
+        method: "PATCH"
+      })
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      settings: {
+        defaultModelId: "",
+        defaultProvider: "",
+        showCitations: false
+      }
     });
   });
 

@@ -138,8 +138,11 @@ export async function listAdminDashboard(
         enabled: true,
         groupId: true,
         id: true,
-        modelId: true,
-        provider: true,
+        providerConnectionId: true,
+        providerModel: {
+          select: { connectionId: true }
+        },
+        providerModelId: true,
         searchStrategy: true,
         userId: true
       },

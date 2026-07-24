@@ -114,7 +114,7 @@ function dependencies() {
 }
 
 describe("useAdminGroupsController", () => {
-  it("shares requested selection while each surface keeps its own fallback and repeated focus intent", () => {
+  it("shares requested selection while Model access keeps focus on its group selector", () => {
     const deps = dependencies();
     const { result } = renderHook(() =>
       useAdminGroupsController({
@@ -132,8 +132,7 @@ describe("useAdminGroupsController", () => {
       requireModelAccessProps(result.current.modelAccess.sectionProps).actions.onSelectGroup(reviewers.id);
     });
     expect(requireGroupsProps(result.current.groups.sectionProps).data.selectedGroup?.id).toBe(reviewers.id);
-    expect(deps.requestFocus).toHaveBeenNthCalledWith(1, "model-access-detail");
-    expect(deps.requestFocus).toHaveBeenNthCalledWith(2, "model-access-detail");
+    expect(deps.requestFocus).not.toHaveBeenCalled();
 
     act(() => requireGroupsProps(result.current.groups.sectionProps).actions.onQueryChange("Operators"));
     expect(requireGroupsProps(result.current.groups.sectionProps).data.selectedGroup?.id).toBe(operators.id);

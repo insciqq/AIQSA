@@ -14,8 +14,8 @@ export type SettingsTransactionClient = Pick<
 
 type LockedSettingsRow = {
   defaultControlValues: unknown;
-  defaultModelId: string;
-  defaultProvider: string;
+  defaultProviderConnectionId: string | null;
+  defaultProviderModelId: string | null;
   defaultSearchStrategyId: string;
   id: string;
 };
@@ -26,19 +26,26 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function serializeSettings(settings: {
   defaultControlValues: unknown;
-  defaultModelId: string;
+  defaultProviderModel: {
+    connectionId: string;
+    id: string;
+  } | null;
   defaultPromptPresetId: string | null;
-  defaultProvider: string;
   defaultSearchStrategyId: string;
   showCitations: boolean;
   showReasoningBlocks: boolean;
   showToolActivity: boolean;
 }): UserSettingsRecord {
+  const defaultProviderConnectionId = settings.defaultProviderModel?.connectionId ?? null;
+  const defaultProviderModelId = settings.defaultProviderModel?.id ?? null;
+
   return {
     defaultControlValues: settings.defaultControlValues,
-    defaultModelId: settings.defaultModelId,
+    defaultModelId: defaultProviderModelId ?? "",
+    defaultProviderConnectionId,
+    defaultProviderModelId,
     defaultPromptPresetId: settings.defaultPromptPresetId,
-    defaultProvider: settings.defaultProvider,
+    defaultProvider: defaultProviderConnectionId ?? "",
     defaultSearchStrategyId: settings.defaultSearchStrategyId,
     showCitations: settings.showCitations,
     showReasoningBlocks: settings.showReasoningBlocks,
@@ -50,8 +57,17 @@ function settingsUpdateData(
   update: UserSettingsUpdate,
   currentControlValues: unknown
 ): Prisma.UserSettingsUpdateInput {
-  const { defaultControlValues, ...rest } = update;
-  const data: Prisma.UserSettingsUpdateInput = { ...rest };
+  const { defaultControlValues, defaultProviderModelId, ...rest } = update;
+  const data: Prisma.UserSettingsUpdateInput = {
+    ...rest,
+    ...(typeof defaultProviderModelId !== "undefined"
+      ? {
+          defaultProviderModel: defaultProviderModelId
+            ? { connect: { id: defaultProviderModelId } }
+            : { disconnect: true }
+        }
+      : {})
+  };
 
   if (defaultControlValues !== undefined) {
     const current = isRecord(currentControlValues) ? currentControlValues : {};
@@ -75,8 +91,7 @@ function settingsUpdateData(
 
 function changesDefaultSelection(update: UserSettingsUpdate): boolean {
   return (
-    Object.prototype.hasOwnProperty.call(update, "defaultModelId") ||
-    Object.prototype.hasOwnProperty.call(update, "defaultProvider") ||
+    Object.prototype.hasOwnProperty.call(update, "defaultProviderModelId") ||
     Object.prototype.hasOwnProperty.call(update, "defaultSearchStrategyId")
   );
 }
@@ -86,11 +101,19 @@ function validDefaultSelection(
   update: UserSettingsUpdate,
   validationModels: SettingsValidationModel[]
 ): boolean {
-  const provider = update.defaultProvider ?? current.defaultProvider;
-  const modelId = update.defaultModelId ?? current.defaultModelId;
+  const updatesModel = Object.prototype.hasOwnProperty.call(update, "defaultProviderModelId");
+  const modelId = updatesModel
+    ? update.defaultProviderModelId ?? null
+    : current.defaultProviderModelId;
+  if (!modelId) {
+    return updatesModel && !Object.prototype.hasOwnProperty.call(update, "defaultSearchStrategyId");
+  }
+
   const searchStrategyId = update.defaultSearchStrategyId ?? current.defaultSearchStrategyId;
   const model = validationModels.find(
-    (candidate) => candidate.provider === provider && candidate.modelId === modelId
+    (candidate) =>
+      candidate.modelId === modelId &&
+      (updatesModel || candidate.provider === current.defaultProviderConnectionId)
   );
 
   return Boolean(model?.searchStrategyIds.includes(searchStrategyId));
@@ -109,14 +132,16 @@ export async function applySettingsUpdateInTransaction(
 
   const [lockedSettings] = await tx.$queryRaw<LockedSettingsRow[]>`
     SELECT
-      "id",
-      "defaultControlValues",
-      "defaultModelId",
-      "defaultProvider",
-      "defaultSearchStrategyId"
-    FROM "UserSettings"
-    WHERE "userId" = ${userId}
-    FOR UPDATE
+      settings."id",
+      settings."defaultControlValues",
+      settings."defaultProviderModelId",
+      model."connectionId" AS "defaultProviderConnectionId",
+      settings."defaultSearchStrategyId"
+    FROM "UserSettings" AS settings
+    LEFT JOIN "ProviderModel" AS model
+      ON model."id" = settings."defaultProviderModelId"
+    WHERE settings."userId" = ${userId}
+    FOR UPDATE OF settings
   `;
   if (!lockedSettings) {
     return { kind: "not_found" };
@@ -171,6 +196,20 @@ export async function applySettingsUpdateInTransaction(
 
   const settings = await tx.userSettings.update({
     data: settingsUpdateData(update, lockedSettings.defaultControlValues),
+    select: {
+      defaultControlValues: true,
+      defaultPromptPresetId: true,
+      defaultProviderModel: {
+        select: {
+          connectionId: true,
+          id: true
+        }
+      },
+      defaultSearchStrategyId: true,
+      showCitations: true,
+      showReasoningBlocks: true,
+      showToolActivity: true
+    },
     where: {
       userId
     }

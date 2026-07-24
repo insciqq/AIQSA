@@ -3,7 +3,11 @@ import { PrismaClient } from "@prisma/client";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { McpDraftConfiguration } from "@/lib/contracts/mcp";
 import type { McpDraftValidator, McpDraftValidationInput } from "./draftValidator";
-import { decryptMcpEnvelope } from "./encryption";
+import {
+  decryptMcpEnvelope,
+  mcpPersonalConfigEnvelopeContext,
+  mcpSharedConfigEnvelopeContext
+} from "./encryption";
 import { createPrismaMcpRepository } from "./prismaRepository";
 import { createPrismaMcpRuntimeRepository } from "./runtimeRepository";
 
@@ -164,11 +168,21 @@ integration("Prisma MCP repository", () => {
     });
     expect(JSON.stringify(tested)).not.toContain(oneTimeSecret);
     const testedServer = await database.mcpServer.findUniqueOrThrow({
-      select: { draftTestEvidence: true, sharedConfigEnvelope: true, testedDraftHash: true },
+      select: {
+        draftTestEvidence: true,
+        id: true,
+        sharedConfigEnvelope: true,
+        sharedConfigVersion: true,
+        testedDraftHash: true
+      },
       where: { id: serverId }
     });
     expect(JSON.stringify(testedServer.draftTestEvidence)).not.toContain(oneTimeSecret);
-    expect(decryptMcpEnvelope<{ values: Record<string, string> }>(testedServer.sharedConfigEnvelope!, key)
+    expect(decryptMcpEnvelope<{ values: Record<string, string> }>(
+      testedServer.sharedConfigEnvelope!,
+      key,
+      mcpSharedConfigEnvelopeContext(testedServer.id, testedServer.sharedConfigVersion)
+    )
       .values["api-key"]).toBe("shared-secret");
 
     const leakingSecret = "validator-must-not-persist-this";
@@ -398,12 +412,43 @@ integration("Prisma MCP repository", () => {
     expect(JSON.stringify(updated)).not.toContain("personal-secret");
 
     const stored = await database.mcpUserServer.findUniqueOrThrow({
-      select: { id: true, personalConfigEnvelope: true },
+      select: { id: true, personalConfigEnvelope: true, personalConfigVersion: true },
       where: { userId_serverId: { serverId, userId } }
     });
     expect(stored.personalConfigEnvelope).not.toContain("personal-secret");
-    expect(decryptMcpEnvelope<{ values: Record<string, string> }>(stored.personalConfigEnvelope!, key)
+    expect(decryptMcpEnvelope<{ values: Record<string, string> }>(
+      stored.personalConfigEnvelope!,
+      key,
+      mcpPersonalConfigEnvelopeContext(stored.id, stored.personalConfigVersion)
+    )
       .values["api-key"]).toBe("personal-secret");
+
+    const sharedBeforeClear = await database.mcpServer.findUniqueOrThrow({
+      select: { sharedConfigVersion: true },
+      where: { id: serverId }
+    });
+    expect((await repository.updateServer({
+      serverId,
+      sharedValues: { "api-key": null }
+    })).kind).toBe("ok");
+    await expect(database.mcpServer.findUniqueOrThrow({
+      select: { sharedConfigVersion: true },
+      where: { id: serverId }
+    })).resolves.toMatchObject({
+      sharedConfigVersion: sharedBeforeClear.sharedConfigVersion + 1
+    });
+
+    expect((await repository.updateUserServer({
+      serverId,
+      userId,
+      values: { "api-key": null }
+    })).kind).toBe("ok");
+    await expect(database.mcpUserServer.findUniqueOrThrow({
+      select: { personalConfigVersion: true },
+      where: { id: stored.id }
+    })).resolves.toMatchObject({
+      personalConfigVersion: stored.personalConfigVersion + 1
+    });
 
     const missingGeneration = await database.mcpRuntimeGeneration.create({
       data: {
@@ -494,8 +539,6 @@ integration("Prisma MCP repository", () => {
 
     const chat = await database.chat.create({
       data: {
-        defaultModelId: "fake-qsa",
-        defaultProvider: "fake",
         title: "Deleted MCP evidence",
         userId
       }

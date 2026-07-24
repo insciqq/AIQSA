@@ -1,5 +1,6 @@
 import {
   clearTestAuthEmails,
+  createTestEmailCapture,
   createTestAuthMailer,
   listTestAuthEmails
 } from "./testMailer";
@@ -24,5 +25,14 @@ describe("test auth mailer", () => {
     expect(listTestAuthEmails()).toEqual([email, { ...email, to: "other@example.com" }]);
     clearTestAuthEmails();
     expect(listTestAuthEmails()).toEqual([]);
+  });
+
+  it("adapts the runtime dispatcher capture without exposing its internal message kind", async () => {
+    await createTestEmailCapture().capture({
+      ...email,
+      kind: "password_reset"
+    });
+
+    expect(listTestAuthEmails()).toEqual([email]);
   });
 });

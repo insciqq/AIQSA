@@ -271,7 +271,7 @@ function openRouterStreamError(response: OpenRouterResponseRecord): string | nul
     return null;
   }
 
-  return stringValue(response.error.message) ?? stringValue(response.error.code) ?? "OpenRouter stream error";
+  return "openrouter_response_error";
 }
 
 export function openRouterResponseError(response: OpenRouterResponseRecord): string | null {
@@ -282,12 +282,12 @@ export function openRouterResponseError(response: OpenRouterResponseRecord): str
 
   const choice = firstChoice(response);
   if (isRecord(choice?.error)) {
-    return stringValue(choice.error.message) ?? stringValue(choice.error.code) ?? "OpenRouter response error";
+    return "openrouter_response_error";
   }
 
   const message = isRecord(choice?.message) ? choice.message : null;
   if (isRecord(message?.error)) {
-    return stringValue(message.error.message) ?? stringValue(message.error.code) ?? "OpenRouter response error";
+    return "openrouter_response_error";
   }
 
   return null;
@@ -482,7 +482,7 @@ export async function* streamOpenRouterSseResponse(
 
     const streamError = openRouterResponseError(parsed);
     if (streamError) {
-      throw new Error(streamError);
+      throw new Error("openrouter_stream_error");
     }
 
     responseId = stringValue(parsed.id) ?? responseId;

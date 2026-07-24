@@ -19,9 +19,8 @@ export type SettingsHandlerData = CatalogSelectionData & {
 
 export type UserSettingsUpdate = Partial<{
   defaultControlValues: Record<string, unknown>;
-  defaultModelId: string;
+  defaultProviderModelId: string | null;
   defaultPromptPresetId: string | null;
-  defaultProvider: string;
   defaultSearchStrategyId: string;
   showCitations: boolean;
   showReasoningBlocks: boolean;
@@ -210,8 +209,7 @@ function buildSettingsUpdate(
     }
 
     defaultModel = model;
-    update.defaultProvider = model.provider;
-    update.defaultModelId = model.modelId;
+    update.defaultProviderModelId = model.modelId;
   }
 
   if ("defaultSearchStrategyId" in body) {

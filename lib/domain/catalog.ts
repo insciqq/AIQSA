@@ -9,9 +9,21 @@ import type { ModelParameterControls } from "../contracts/catalog";
 
 export type { ModelParameterControls } from "../contracts/catalog";
 
+export type CatalogAdapterKind =
+  | "anthropic_messages"
+  | "fake"
+  | "openai_chat_completions_compatible"
+  | "openai_responses_compatible"
+  | "openai_responses_native"
+  | "openrouter_chat_completions";
+
 export type ProviderModelCatalogEntry = {
-  provider: ProviderId;
+  adapterKind: CatalogAdapterKind;
+  provider: string;
+  providerDisplayName: string;
+  providerFamily: string;
   modelId: string;
+  upstreamModelId: string;
   displayName: string;
   contextWindow: number;
   inputTokenPriceMicros: number;
@@ -34,15 +46,24 @@ export type ProviderModelCatalogEntry = {
 
 export type SearchStrategyCatalogEntry = {
   strategyId: string;
-  provider: ProviderId | "system";
+  provider: string;
   modelId?: string;
+  providerModelId?: string;
   displayName: string;
   kind: "none" | "openai_native_web_search" | "perplexity_tool_search";
   description: string;
   config: Record<string, unknown>;
 };
 
+type ProviderModelTemplate = Omit<
+  ProviderModelCatalogEntry,
+  "adapterKind" | "providerDisplayName" | "providerFamily" | "upstreamModelId"
+> & {
+  provider: ProviderId;
+};
+
 const neutralTemperature = 1;
+const fallbackReasoningEfforts = ["none", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 const noReasoningControls: ModelParameterControls["reasoningEffort"] = {
   defaultValue: "none",
   options: ["none"],
@@ -87,7 +108,7 @@ const openAIResponsesParams = defaultOpenAIResponsesParams();
 const anthropicMessagesParams = defaultAnthropicMessagesParams();
 const openRouterParams = defaultOpenRouterParams();
 
-function openAIGpt56Model(modelId: string, displayName: string): ProviderModelCatalogEntry {
+function openAIGpt56Model(modelId: string, displayName: string): ProviderModelTemplate {
   return {
     provider: "openai",
     modelId,
@@ -147,7 +168,7 @@ function openAIGpt56Model(modelId: string, displayName: string): ProviderModelCa
   };
 }
 
-export const defaultProviderModels: ProviderModelCatalogEntry[] = [
+const defaultProviderModelTemplates: ProviderModelTemplate[] = [
   {
     provider: "fake",
     modelId: "fake-qsa",
@@ -305,7 +326,7 @@ export const defaultProviderModels: ProviderModelCatalogEntry[] = [
       provider: {
         ...openRouterParams.provider,
         order: ["anthropic"],
-        only: ["Anthropic"]
+        only: ["anthropic"]
       },
       reasoning: {
         ...openRouterParams.reasoning,
@@ -489,7 +510,31 @@ export const defaultProviderModels: ProviderModelCatalogEntry[] = [
   }
 ];
 
+const providerDisplayNames: Record<ProviderId, string> = {
+  anthropic: "Anthropic",
+  fake: "Fake",
+  openai: "OpenAI",
+  openrouter: "OpenRouter"
+};
+
+const providerAdapterKinds: Record<ProviderId, CatalogAdapterKind> = {
+  anthropic: "anthropic_messages",
+  fake: "fake",
+  openai: "openai_responses_native",
+  openrouter: "openrouter_chat_completions"
+};
+
+export const defaultProviderModels: ProviderModelCatalogEntry[] =
+  defaultProviderModelTemplates.map((model) => ({
+    ...model,
+    adapterKind: providerAdapterKinds[model.provider],
+    providerDisplayName: providerDisplayNames[model.provider],
+    providerFamily: model.provider,
+    upstreamModelId: model.modelId
+  }));
+
 export function fallbackParameterControls(input: {
+  adapterKind?: CatalogAdapterKind;
   defaultParams?: Record<string, unknown>;
   provider: string;
   supportsReasoning: boolean;
@@ -501,12 +546,20 @@ export function fallbackParameterControls(input: {
     numberValue(defaultParams.maxOutputTokens, 0) ||
     numberValue(defaultParams.maxTokens, 0) ||
     numberValue(defaultParams.max_output_tokens, 1024);
-  const streamDefault = booleanValue(defaultParams.stream, input.provider === "openrouter");
+  const nativeResponses = input.adapterKind === "openai_responses_native";
+  const openRouter = input.adapterKind === "openrouter_chat_completions";
+  const streamDefault = booleanValue(defaultParams.stream, openRouter);
+  const rawReasoningEffort = reasoning.effort;
+  const defaultReasoningEffort =
+    typeof rawReasoningEffort === "string" &&
+    fallbackReasoningEfforts.includes(rawReasoningEffort as (typeof fallbackReasoningEfforts)[number])
+      ? rawReasoningEffort
+      : "medium";
 
   return controls({
     background: {
-      defaultValue: input.provider === "openai",
-      supported: input.provider === "openai"
+      defaultValue: nativeResponses,
+      supported: nativeResponses
     },
     maxOutputTokens: {
       defaultValue: maxOutputTokens,
@@ -514,7 +567,7 @@ export function fallbackParameterControls(input: {
     },
     reasoningEffort: input.supportsReasoning
       ? {
-          defaultValue: typeof reasoning.effort === "string" ? reasoning.effort : "medium",
+          defaultValue: defaultReasoningEffort,
           options: ["none", "low", "medium", "high"],
           supported: true
         }
@@ -533,6 +586,7 @@ export function fallbackParameterControls(input: {
 }
 
 export function parameterControlsForModel(input: {
+  adapterKind?: CatalogAdapterKind;
   defaultParams?: Record<string, unknown>;
   modelCapabilities?: {
     defaultMaxOutputTokens?: number;
@@ -544,15 +598,16 @@ export function parameterControlsForModel(input: {
   supportsReasoning?: boolean;
 }): ModelParameterControls {
   const defaultEntry = defaultProviderModels.find(
-    (entry) => entry.provider === input.provider && entry.modelId === input.modelId
+    (entry) => entry.providerFamily === input.provider && entry.upstreamModelId === input.modelId
   );
 
   if (defaultEntry) {
     return defaultEntry.parameterControls;
   }
 
-  return fallbackParameterControls({
-    defaultParams:
+    return fallbackParameterControls({
+      adapterKind: input.adapterKind,
+      defaultParams:
       input.defaultParams ??
       (typeof input.modelCapabilities?.defaultMaxOutputTokens === "number"
         ? { maxOutputTokens: input.modelCapabilities.defaultMaxOutputTokens }
@@ -587,6 +642,7 @@ export const defaultSearchStrategies: SearchStrategyCatalogEntry[] = [
     strategyId: "perplexity-tool-search",
     provider: "openrouter",
     modelId: "perplexity/sonar-pro-search",
+    providerModelId: "perplexity/sonar-pro-search",
     displayName: "Perplexity tool",
     kind: "perplexity_tool_search",
     description: "Provider-neutral web-search tool backed by Perplexity through OpenRouter.",

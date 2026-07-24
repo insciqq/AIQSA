@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import type {
   McpCredentialSource,
@@ -12,7 +13,15 @@ import {
   type EffectiveMcpSlotPlanItem
 } from "./access";
 import { validateMcpDraft, validateMcpSlotValue } from "./definitions";
-import { decryptMcpEnvelope, encryptMcpEnvelope, getMcpEncryptionKey } from "./encryption";
+import {
+  decryptMcpEnvelope,
+  encryptMcpEnvelope,
+  getMcpEncryptionKey,
+  mcpPersonalConfigEnvelopeContext,
+  mcpRuntimeGenerationEnvelopeContext,
+  mcpSharedConfigEnvelopeContext,
+  type McpEnvelopeContext
+} from "./encryption";
 import { parseMcpLocalResolvedArtifact } from "./localArtifact";
 import { buildMcpOAuthPolicy, mcpOAuthPolicyFingerprint } from "./oauthPolicy";
 import type {
@@ -40,9 +49,14 @@ function isSlotValue(value: unknown): value is McpSlotValue {
     (typeof value === "number" && Number.isFinite(value));
 }
 
-function storedValues(envelope: string | null, key: Buffer): StoredValues {
+function storedValues(
+  envelope: string | null,
+  key: Buffer,
+  context?: McpEnvelopeContext
+): StoredValues {
   if (!envelope) return { values: {}, version: 1 };
-  const decoded = decryptMcpEnvelope<unknown>(envelope, key);
+  if (!context) throw new Error("mcp_values_invalid");
+  const decoded = decryptMcpEnvelope<unknown>(envelope, key, context);
   if (!decoded || typeof decoded !== "object" || Array.isArray(decoded) ||
     !("version" in decoded) || decoded.version !== 1 || !("values" in decoded) ||
     !decoded.values || typeof decoded.values !== "object" || Array.isArray(decoded.values)) {
@@ -56,9 +70,13 @@ function storedValues(envelope: string | null, key: Buffer): StoredValues {
   return { values, version: 1 };
 }
 
-function storedEffectiveSnapshot(envelope: string | null, key: Buffer): StoredEffectiveSnapshot {
+function storedEffectiveSnapshot(
+  envelope: string | null,
+  key: Buffer,
+  context: McpEnvelopeContext
+): StoredEffectiveSnapshot {
   if (!envelope) throw new Error("mcp_values_invalid");
-  const decoded = decryptMcpEnvelope<unknown>(envelope, key);
+  const decoded = decryptMcpEnvelope<unknown>(envelope, key, context);
   if (!decoded || typeof decoded !== "object" || Array.isArray(decoded) ||
     !("version" in decoded) || decoded.version !== 1 || !("values" in decoded) ||
     !decoded.values || typeof decoded.values !== "object" || Array.isArray(decoded.values) ||
@@ -211,8 +229,23 @@ function effectiveRuntimeCandidate(input: {
   const groups = input.record.server.grants.filter((grant) => grant.groupId && groupIds.includes(grant.groupId));
   const access = resolveEffectiveMcpGrant({ direct, groups });
   if (!access.canUse) return null;
-  const shared = storedValues(input.record.server.sharedConfigEnvelope, input.key);
-  const personal = storedValues(input.record.personalConfigEnvelope, input.key);
+  const shared = storedValues(
+    input.record.server.sharedConfigEnvelope,
+    input.key,
+    input.record.server.sharedConfigEnvelope
+      ? mcpSharedConfigEnvelopeContext(
+          input.record.server.id,
+          input.record.server.sharedConfigVersion
+        )
+      : undefined
+  );
+  const personal = storedValues(
+    input.record.personalConfigEnvelope,
+    input.key,
+    input.record.personalConfigEnvelope
+      ? mcpPersonalConfigEnvelopeContext(input.record.id, input.record.personalConfigVersion)
+      : undefined
+  );
   const effective = resolveEffectiveMcpValues({
     personalSlotKeys: access.personalSlotKeys,
     personalValues: personal.values,
@@ -352,12 +385,14 @@ function runtimeCandidate(input: {
 
 export function createPrismaMcpRuntimeRepository(input: {
   encryptionKey?: () => Buffer;
+  generationId?: () => string;
   oauthRedirectUri?: (serverId: string) => string;
   prisma?: PrismaClient;
   reconcileOAuthConnections?: () => Promise<void>;
 } = {}): McpRuntimeCoordinatorRepository {
   const client = input.prisma ?? prisma;
   const encryptionKey = input.encryptionKey ?? getMcpEncryptionKey;
+  const generationId = input.generationId ?? randomUUID;
 
   return {
     loadAcceptedGeneration: async (generationId, now) => {
@@ -383,7 +418,11 @@ export function createPrismaMcpRuntimeRepository(input: {
         return null;
       }
       try {
-        const snapshot = storedEffectiveSnapshot(generation.effectiveConfigEnvelope, encryptionKey());
+        const snapshot = storedEffectiveSnapshot(
+          generation.effectiveConfigEnvelope,
+          encryptionKey(),
+          mcpRuntimeGenerationEnvelopeContext(generation.id, generation.fingerprint)
+        );
         const configuredSlotKeys = new Set(configuration.slots.map((slot) => slot.slotKey));
         if (snapshot.plan.length !== configuration.slots.length ||
           Object.keys(snapshot.values).length !== configuration.slots.length ||
@@ -525,17 +564,22 @@ export function createPrismaMcpRuntimeRepository(input: {
           });
           continue;
         }
-        const encrypted = encryptMcpEnvelope(candidate.effectiveEnvelope, key);
         const generation = await client.$transaction(async (tx) => {
           const existing = await tx.mcpRuntimeGeneration.findUnique({
             where: { fingerprint: candidate.fingerprint }
           });
+          const selectedGenerationId = generationId();
           const selected = existing ?? await tx.mcpRuntimeGeneration.create({
             data: {
               credentialSources: [...candidate.credentialSources],
-              effectiveConfigEnvelope: encrypted,
+              effectiveConfigEnvelope: encryptMcpEnvelope(
+                candidate.effectiveEnvelope,
+                key,
+                mcpRuntimeGenerationEnvelopeContext(selectedGenerationId, candidate.fingerprint)
+              ),
               externalAccountLabel: candidate.externalAccountLabel,
               fingerprint: candidate.fingerprint,
+              id: selectedGenerationId,
               oauthConnectionId: candidate.oauthConnectionId ?? null,
               revisionId: candidate.revisionId,
               state: "starting",

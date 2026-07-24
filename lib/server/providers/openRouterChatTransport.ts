@@ -24,26 +24,17 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function stringValue(value: unknown): string | undefined {
-  return typeof value === "string" ? value : undefined;
-}
-
-function valueAtPath(value: unknown, path: string[]): unknown {
-  return path.reduce<unknown>((current, key) => {
-    if (!isRecord(current) || !(key in current)) {
-      return undefined;
-    }
-
-    return current[key];
-  }, value);
-}
-
 async function parseOpenRouterJsonResponse(
   response: Response,
   signal: AbortSignal
 ): Promise<Record<string, unknown>> {
   const text = await readBoundedResponseText(response, { signal });
-  const parsed = text ? JSON.parse(text) : {};
+  let parsed: unknown;
+  try {
+    parsed = text ? JSON.parse(text) : {};
+  } catch {
+    throw new Error("openrouter_response_invalid_json");
+  }
 
   if (!isRecord(parsed)) {
     throw new Error("openrouter_response_not_object");
@@ -53,31 +44,15 @@ async function parseOpenRouterJsonResponse(
 }
 
 async function throwOpenRouterHttpError(response: Response, signal: AbortSignal): Promise<never> {
-  let text = "";
-
   try {
-    text = await readBoundedResponseText(response, { signal });
+    await readBoundedResponseText(response, { signal });
   } catch (error) {
     if (!(error instanceof ProviderResponseTooLargeError)) {
       throw error;
     }
-    text = error.code;
-  }
-  let message = `OpenRouter request failed with status ${response.status}`;
-
-  if (text) {
-    try {
-      const body = JSON.parse(text) as unknown;
-      const providerMessage = stringValue(valueAtPath(body, ["error", "message"]));
-      message = providerMessage
-        ? providerHttpErrorMessage("OpenRouter", response.status, providerMessage)
-        : providerHttpErrorMessage("OpenRouter", response.status, text);
-    } catch {
-      message = providerHttpErrorMessage("OpenRouter", response.status, text);
-    }
   }
 
-  throw new Error(message);
+  throw new Error(providerHttpErrorMessage("OpenRouter", response.status));
 }
 
 export function createFetchOpenRouterChatClient(input: {

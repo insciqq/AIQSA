@@ -1,0 +1,264 @@
+import { createAnthropicMessagesAdapter, createFetchAnthropicMessagesClient } from "./anthropicMessages";
+import { createCompatibleResponsesAdapter } from "./compatibleResponses";
+import { createFakeProviderAdapter } from "./fakeProvider";
+import {
+  createOpenAICompatibleChatAdapter,
+  createFetchOpenAICompatibleChatClient
+} from "./openaiCompatibleChat";
+import {
+  createOpenAIResponsesAdapter,
+  createFetchOpenAIResponsesClient
+} from "./openaiResponses";
+import {
+  createFetchOpenRouterChatClient,
+  createOpenRouterChatAdapter,
+  createOpenRouterPerplexitySearchAdapter
+} from "./openRouterChat";
+import {
+  normalizeProviderConnectionConfiguration,
+  normalizeProviderDefaultParams,
+  normalizeProviderModelCapabilities,
+  normalizeProviderModelConfiguration,
+  type ProviderConnectionConfiguration,
+  type ProviderModelConfiguration
+} from "./providerConfiguration";
+import type { ProviderAdapter, ProviderSearchAdapter } from "./types";
+import {
+  assertProviderCredentialSource,
+  resolveProviderCredentialSource,
+  type ProviderCredentialSource
+} from "./providerCredentialSource";
+import {
+  anthropicMessagesToolBridge,
+  openAICompatibleChatToolBridge,
+  openAICompatibleResponsesToolBridge,
+  openAIResponsesToolBridge,
+  openRouterChatToolBridge
+} from "../tools/bridges";
+import type { ProviderToolBridge } from "../tools/types";
+
+const MAX_DISPLAY_TEXT = 256;
+const MAX_SNAPSHOT_BYTES = 96 * 1024;
+
+export type ProviderExecutionSnapshot = Readonly<{
+  connection: ProviderConnectionConfiguration;
+  connectionDisplayName: string;
+  connectionId: string;
+  credentialId: string | null;
+  credentialVersionId: string | null;
+  model: ProviderModelConfiguration | Readonly<{
+    adapterKind: "fake";
+    capabilities: ProviderModelConfiguration["capabilities"];
+    defaultParams: Record<string, unknown>;
+    upstreamModelId: string;
+  }>;
+  modelDisplayName: string;
+  providerFamily: string;
+  providerModelId: string;
+  version: 1;
+}>;
+
+export type ProviderRuntimeFactoryOptions = Readonly<{
+  allowFake: boolean;
+  fetchFn?: typeof fetch;
+}>;
+
+export type ProviderRuntimeBinding = Readonly<{
+  adapter: ProviderAdapter;
+  searchAdapter?: ProviderSearchAdapter;
+  toolBridge?: ProviderToolBridge;
+}>;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function boundedString(value: unknown, maxLength = MAX_DISPLAY_TEXT): value is string {
+  return (
+    typeof value === "string" &&
+    value.trim().length > 0 &&
+    value.length <= maxLength &&
+    !/[\u0000-\u001f\u007f]/u.test(value)
+  );
+}
+
+function snapshotSize(value: unknown): number {
+  try {
+    return Buffer.byteLength(JSON.stringify(value), "utf8");
+  } catch {
+    return Infinity;
+  }
+}
+
+export function normalizeProviderExecutionSnapshot(value: unknown): ProviderExecutionSnapshot {
+  if (
+    !isRecord(value) ||
+    value.version !== 1 ||
+    !boundedString(value.connectionId) ||
+    !boundedString(value.providerModelId) ||
+    !boundedString(value.connectionDisplayName) ||
+    !boundedString(value.modelDisplayName) ||
+    !boundedString(value.providerFamily) ||
+    snapshotSize(value) > MAX_SNAPSHOT_BYTES ||
+    (value.credentialId !== null && !boundedString(value.credentialId)) ||
+    (value.credentialVersionId !== null && !boundedString(value.credentialVersionId)) ||
+    (value.credentialId === null) !== (value.credentialVersionId === null)
+  ) {
+    throw new Error("provider_execution_snapshot_invalid");
+  }
+
+  const connection = normalizeProviderConnectionConfiguration(value.connection);
+  const model = isRecord(value.model) && value.model.adapterKind === "fake"
+    ? {
+        adapterKind: "fake" as const,
+        capabilities: normalizeProviderModelCapabilities(value.model.capabilities),
+        defaultParams: normalizeProviderDefaultParams(value.model.defaultParams),
+        upstreamModelId: boundedString(value.model.upstreamModelId)
+          ? value.model.upstreamModelId.trim()
+          : (() => { throw new Error("provider_execution_snapshot_invalid"); })()
+      }
+    : normalizeProviderModelConfiguration(value.model);
+
+  if (model.adapterKind === "fake" && (value.credentialId !== null || value.providerFamily !== "fake")) {
+    throw new Error("provider_execution_snapshot_invalid");
+  }
+  if (model.adapterKind !== "fake" && (!value.credentialId || !value.credentialVersionId)) {
+    throw new Error("provider_execution_snapshot_invalid");
+  }
+
+  return Object.freeze({
+    connection,
+    connectionDisplayName: value.connectionDisplayName.trim(),
+    connectionId: value.connectionId.trim(),
+    credentialId: value.credentialId,
+    credentialVersionId: value.credentialVersionId,
+    model,
+    modelDisplayName: value.modelDisplayName.trim(),
+    providerFamily: value.providerFamily.trim(),
+    providerModelId: value.providerModelId.trim(),
+    version: 1
+  });
+}
+
+function requiredFetch(options: ProviderRuntimeFactoryOptions): typeof fetch {
+  if (!options.fetchFn) {
+    throw new Error("provider_safe_fetch_required");
+  }
+  return options.fetchFn;
+}
+
+const PER_REQUEST_CREDENTIAL_PLACEHOLDER = "credential-resolved-per-request";
+
+function fetchWithPerRequestCredential(
+  fetchFn: typeof fetch,
+  adapterKind: Exclude<ProviderExecutionSnapshot["model"]["adapterKind"], "fake">,
+  source: ProviderCredentialSource
+): typeof fetch {
+  if (typeof source === "string") {
+    return fetchFn;
+  }
+
+  return async (request, init) => {
+    const secret = await resolveProviderCredentialSource(source, "provider_credential_missing");
+    const headers = new Headers(init?.headers);
+    if (adapterKind === "anthropic_messages") {
+      headers.set("x-api-key", secret);
+    } else {
+      headers.set("authorization", `Bearer ${secret}`);
+    }
+    return fetchFn(request, { ...init, headers });
+  };
+}
+
+export function createProviderRuntimeBinding(input: Readonly<{
+  options: ProviderRuntimeFactoryOptions;
+  secret: ProviderCredentialSource | null;
+  snapshot: ProviderExecutionSnapshot;
+}>): ProviderRuntimeBinding {
+  const snapshot = normalizeProviderExecutionSnapshot(input.snapshot);
+
+  if (snapshot.model.adapterKind === "fake") {
+    if (!input.options.allowFake) {
+      throw new Error("fake_provider_not_allowed");
+    }
+    if (input.secret !== null) {
+      throw new Error("provider_credential_unexpected");
+    }
+    return { adapter: createFakeProviderAdapter() };
+  }
+
+  if (!input.secret) {
+    throw new Error("provider_credential_missing");
+  }
+  assertProviderCredentialSource(input.secret, "provider_credential_missing");
+  const fetchFn = fetchWithPerRequestCredential(
+    requiredFetch(input.options),
+    snapshot.model.adapterKind,
+    input.secret
+  );
+  const clientSecret = typeof input.secret === "string"
+    ? input.secret.trim()
+    : PER_REQUEST_CREDENTIAL_PLACEHOLDER;
+  const baseUrl = snapshot.connection.apiRoot;
+
+  switch (snapshot.model.adapterKind) {
+    case "openai_responses_native":
+      return {
+        adapter: createOpenAIResponsesAdapter({
+          client: createFetchOpenAIResponsesClient({ apiKey: clientSecret, baseUrl, fetchFn })
+        }),
+        toolBridge: openAIResponsesToolBridge
+      };
+    case "openai_responses_compatible":
+      return {
+        adapter: createCompatibleResponsesAdapter({
+          client: createFetchOpenAIResponsesClient({ apiKey: clientSecret, baseUrl, fetchFn })
+        }),
+        toolBridge: openAICompatibleResponsesToolBridge
+      };
+    case "openai_chat_completions_compatible":
+      return {
+        adapter: createOpenAICompatibleChatAdapter({
+          client: createFetchOpenAICompatibleChatClient({
+            apiRoot: baseUrl,
+            bearerToken: clientSecret,
+            fetchFn
+          })
+        }),
+        toolBridge: openAICompatibleChatToolBridge
+      };
+    case "anthropic_messages":
+      return {
+        adapter: createAnthropicMessagesAdapter({
+          client: createFetchAnthropicMessagesClient({ apiKey: clientSecret, baseUrl, fetchFn })
+        }),
+        toolBridge: anthropicMessagesToolBridge
+      };
+    case "openrouter_chat_completions": {
+      const client = createFetchOpenRouterChatClient({ apiKey: clientSecret, baseUrl, fetchFn });
+      return {
+        adapter: createOpenRouterChatAdapter({ client }),
+        searchAdapter: createOpenRouterPerplexitySearchAdapter({ client }),
+        toolBridge: openRouterChatToolBridge
+      };
+    }
+  }
+}
+
+export function createProviderPreviewRuntimeBinding(
+  snapshot: ProviderExecutionSnapshot,
+  allowFake: boolean
+): ProviderRuntimeBinding {
+  const normalized = normalizeProviderExecutionSnapshot(snapshot);
+  const unavailableFetch: typeof fetch = async () => {
+    throw new Error("provider_preview_network_forbidden");
+  };
+  return createProviderRuntimeBinding({
+    options: {
+      allowFake,
+      ...(normalized.model.adapterKind === "fake" ? {} : { fetchFn: unavailableFetch })
+    },
+    secret: normalized.model.adapterKind === "fake" ? null : "preview-only",
+    snapshot: normalized
+  });
+}

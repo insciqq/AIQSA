@@ -1,80 +1,126 @@
-import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
+import {
+  decryptSecretEnvelope,
+  encryptSecretEnvelope,
+  getSecretEncryptionKey,
+  parseSecretEncryptionKey,
+  SecretEnvelopeError,
+  type SecretEnvelopeContext
+} from "@/lib/server/secrets/envelope";
 
-const ALGORITHM = "aes-256-gcm";
-const ENVELOPE_VERSION = "v1";
-const MAX_PLAINTEXT_BYTES = 1_048_576;
+export type McpEnvelopeContext = SecretEnvelopeContext;
+
+export type McpEncryptionErrorCode =
+  | "mcp_encryption_invalid_envelope"
+  | "mcp_encryption_invalid_key";
 
 export class McpEncryptionError extends Error {
-  constructor(code: "mcp_encryption_invalid_envelope" | "mcp_encryption_invalid_key") {
+  constructor(code: McpEncryptionErrorCode) {
     super(code);
     this.name = "McpEncryptionError";
   }
 }
 
+function mapSecretError(error: unknown): never {
+  if (error instanceof SecretEnvelopeError && error.message === "secret_encryption_invalid_key") {
+    throw new McpEncryptionError("mcp_encryption_invalid_key");
+  }
+  throw new McpEncryptionError("mcp_encryption_invalid_envelope");
+}
+
+function versionContext(
+  purpose: string,
+  ownerId: string,
+  generation: number,
+  valuePrefix: string
+): SecretEnvelopeContext {
+  if (!Number.isSafeInteger(generation) || generation <= 0) {
+    throw new McpEncryptionError("mcp_encryption_invalid_envelope");
+  }
+  return { ownerId, purpose, valueId: `${valuePrefix}:${generation}` };
+}
+
+export function mcpSharedConfigEnvelopeContext(
+  serverId: string,
+  sharedConfigVersion: number
+): SecretEnvelopeContext {
+  return versionContext("mcp_shared_config", serverId, sharedConfigVersion, "shared-config");
+}
+
+export function mcpPersonalConfigEnvelopeContext(
+  userServerId: string,
+  personalConfigVersion: number
+): SecretEnvelopeContext {
+  return versionContext("mcp_personal_config", userServerId, personalConfigVersion, "personal-config");
+}
+
+export function mcpOAuthClientSecretEnvelopeContext(
+  oauthClientId: string,
+  clientSecretGeneration: number
+): SecretEnvelopeContext {
+  return versionContext(
+    "mcp_oauth_client_secret",
+    oauthClientId,
+    clientSecretGeneration,
+    "client-secret"
+  );
+}
+
+export function mcpOAuthTokenEnvelopeContext(
+  connectionId: string,
+  tokenGeneration: number
+): SecretEnvelopeContext {
+  return versionContext("mcp_oauth_token", connectionId, tokenGeneration, "oauth-token");
+}
+
+export function mcpRuntimeGenerationEnvelopeContext(
+  generationId: string,
+  fingerprint: string
+): SecretEnvelopeContext {
+  return {
+    ownerId: generationId,
+    purpose: "mcp_runtime_generation_config",
+    valueId: `fingerprint:${fingerprint}`
+  };
+}
+
 export function parseMcpEncryptionKey(value: string | undefined): Buffer {
-  if (!value?.trim()) {
-    throw new McpEncryptionError("mcp_encryption_invalid_key");
-  }
-
-  let key: Buffer;
   try {
-    key = Buffer.from(value.trim(), "base64");
-  } catch {
-    throw new McpEncryptionError("mcp_encryption_invalid_key");
+    return parseSecretEncryptionKey(value);
+  } catch (error) {
+    return mapSecretError(error);
   }
-
-  if (key.length !== 32 || key.toString("base64").replace(/=+$/u, "") !== value.trim().replace(/=+$/u, "")) {
-    throw new McpEncryptionError("mcp_encryption_invalid_key");
-  }
-
-  return key;
 }
 
 export function getMcpEncryptionKey(
   env: Record<string, string | undefined> = process.env
 ): Buffer {
-  return parseMcpEncryptionKey(env.AIQSA_ENCRYPTION_KEY);
-}
-
-export function encryptMcpEnvelope(value: unknown, key: Buffer): string {
-  const plaintext = Buffer.from(JSON.stringify(value), "utf8");
-  if (plaintext.length > MAX_PLAINTEXT_BYTES) {
-    throw new McpEncryptionError("mcp_encryption_invalid_envelope");
-  }
-
-  const nonce = randomBytes(12);
-  const cipher = createCipheriv(ALGORITHM, key, nonce);
-  const ciphertext = Buffer.concat([cipher.update(plaintext), cipher.final()]);
-  const tag = cipher.getAuthTag();
-
-  return [
-    ENVELOPE_VERSION,
-    nonce.toString("base64url"),
-    ciphertext.toString("base64url"),
-    tag.toString("base64url")
-  ].join(".");
-}
-
-export function decryptMcpEnvelope<T>(envelope: string, key: Buffer): T {
   try {
-    const [version, nonceValue, ciphertextValue, tagValue, extra] = envelope.split(".");
-    if (version !== ENVELOPE_VERSION || !nonceValue || !ciphertextValue || !tagValue || extra) {
-      throw new Error("invalid");
-    }
+    return getSecretEncryptionKey(env);
+  } catch (error) {
+    return mapSecretError(error);
+  }
+}
 
-    const nonce = Buffer.from(nonceValue, "base64url");
-    const ciphertext = Buffer.from(ciphertextValue, "base64url");
-    const tag = Buffer.from(tagValue, "base64url");
-    if (nonce.length !== 12 || tag.length !== 16 || ciphertext.length > MAX_PLAINTEXT_BYTES) {
-      throw new Error("invalid");
-    }
+export function encryptMcpEnvelope(
+  value: unknown,
+  key: Buffer,
+  context: SecretEnvelopeContext
+): string {
+  try {
+    return encryptSecretEnvelope(value, key, context);
+  } catch (error) {
+    return mapSecretError(error);
+  }
+}
 
-    const decipher = createDecipheriv(ALGORITHM, key, nonce);
-    decipher.setAuthTag(tag);
-    const plaintext = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
-
-    return JSON.parse(plaintext.toString("utf8")) as T;
-  } catch {
-    throw new McpEncryptionError("mcp_encryption_invalid_envelope");
+export function decryptMcpEnvelope<T>(
+  envelope: string,
+  key: Buffer,
+  context: SecretEnvelopeContext
+): T {
+  try {
+    return decryptSecretEnvelope<T>(envelope, key, context);
+  } catch (error) {
+    return mapSecretError(error);
   }
 }

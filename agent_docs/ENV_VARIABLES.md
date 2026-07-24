@@ -23,16 +23,13 @@ AIQSA_S3_REGION=us-east-1
 AIQSA_S3_BUCKET=aiqsa-uploads
 AIQSA_S3_ACCESS_KEY_ID=aiqsa
 AIQSA_S3_SECRET_ACCESS_KEY=
-OPENAI_API_KEY=
-ANTHROPIC_API_KEY=
-OPENROUTER_API_KEY=
 ```
 
-`AIQSA_AUTH_SESSION_SECRET`, `AIQSA_ENCRYPTION_KEY`, the PostgreSQL password, and the S3/MinIO secret must be deployment-specific high-entropy values. Generate the session secret with `openssl rand -hex 32` or stronger and the MCP encryption key with `openssl rand -base64 32`. `AIQSA_ENCRYPTION_KEY` must decode to exactly 32 bytes; it encrypts MCP shared/personal configuration and MCP OAuth tokens and is never reused for sessions or flow signing. Back it up separately from Postgres. Changing or losing it requires an offline migration or re-entry of affected MCP credentials. Compose derives the internal `DATABASE_URL`, `POSTGRES_*`, `MINIO_ROOT_*`, and `S3_*` values from these canonical inputs; operators do not duplicate the connection string.
+`AIQSA_AUTH_SESSION_SECRET`, `AIQSA_ENCRYPTION_KEY`, the PostgreSQL password, and the S3/MinIO secret must be deployment-specific high-entropy values. Generate the session secret with `openssl rand -hex 32` or stronger and the encrypted-state key with `openssl rand -base64 32`. `AIQSA_ENCRYPTION_KEY` must decode to exactly 32 bytes; purpose/owner/value-bound envelopes use it for MCP values and OAuth tokens, administrator-owned provider credentials, and the SMTP password. It is never reused for sessions or flow signing. Back it up separately from Postgres. Changing or losing it requires an offline migration or re-entry of affected encrypted values. Compose derives the internal `DATABASE_URL`, `POSTGRES_*`, `MINIO_ROOT_*`, and `S3_*` values from these canonical inputs; operators do not duplicate the connection string.
 
 Use URI-safe hexadecimal database/storage secrets because Compose constructs the internal database URL without percent-encoding. Once a persistent volume contains data, changing database initialization credentials does not rewrite that database, and changing the bucket/volume selection exposes a different empty namespace. Such changes require an explicit backed-up datastore migration, not an ordinary env edit.
 
-At least one of `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, or `OPENROUTER_API_KEY` must be usable. Readiness fails when no real provider is configured; deterministic Fake QSA is a development/test facility, not an installation fallback.
+Fresh installation and core readiness do not require a real LLM provider or SMTP. The initial administrator configures them after sign-in.
 
 The installation bootstrap always requires a valid `AIQSA_INITIAL_ADMIN_EMAIL`. On an empty database it also requires `AIQSA_INITIAL_ADMIN_PASSWORD`, defaults the display name to `Administrator`, and generates a UUID when `AIQSA_INITIAL_ADMIN_USER_ID` is blank. It creates no demo chat. On every later start it adopts the exact verified password identity by normalized email, optionally enforces the explicit UUID, synchronizes only code-owned catalog metadata, and preserves users, passwords, status/role, settings, grants, chats, and attachments. Remove the plaintext initial password after first success but keep the email stable.
 
@@ -51,21 +48,16 @@ AIQSA_TRUSTED_PROXY_COUNT=
 
 `AIQSA_TRUST_PROXY_HEADERS=1` authorizes client rate-limit identity from forwarding headers only when a trusted proxy overwrites them. `AIQSA_TRUSTED_PROXY_COUNT` defaults to `1`, removes that many rightmost trusted `X-Forwarded-For` hops, and selects the next hop; leave both blank for direct access.
 
-## Provider Configuration
+## Provider Safety Bounds
 
 ```text
-OPENAI_BASE_URL=
-ANTHROPIC_BASE_URL=
-OPENROUTER_BASE_URL=
-OPENROUTER_HTTP_REFERER=http://localhost:3000
-OPENROUTER_APP_TITLE=AIQSA
 AIQSA_PROVIDER_RESPONSE_MAX_BYTES=16777216
 AIQSA_PROVIDER_TIMEOUT_MS=30000
 AIQSA_PROVIDER_STREAM_IDLE_TIMEOUT_MS=30000
 AIQSA_OPENAI_BACKGROUND_POLL_TIMEOUT_MS=660000
 ```
 
-Blank base-URL overrides select the providers' standard endpoints. Provider keys and endpoints are server-only and must never use a `NEXT_PUBLIC_*` name. The response-size and timeout values bound untrusted buffered responses, complete non-streaming exchanges, streaming idle time, and the absolute OpenAI background polling lifecycle respectively.
+Provider connections, endpoints, adapter protocols, models, routing, credentials, group assignments, activation evidence, stored diagnostics, and enabled state are database-owned and configured through `Admin -> Providers`. The unsaved-key preflight persists neither its key nor result. The long-running application receives no provider key/base-URL variables and has no environment fallback. The remaining response-size and timeout variables only bound untrusted buffered responses, complete non-streaming exchanges, streaming idle time, and the absolute OpenAI background polling lifecycle respectively.
 
 `AIQSA_DEFAULT_MODEL` and `AIQSA_DEFAULT_SEARCH_MODEL` are optional explicit provider-smoke inputs only. The application uses persisted catalog/settings choices. Provider-smoke permission is defined in `CRITICAL_INVARIANTS.md`; no routine test makes a paid external call.
 
@@ -79,24 +71,21 @@ AIQSA_TOOLHIVE_URL=http://toolhive-runtime:8080
 
 The long-running app and the maintenance service receive `AIQSA_ENCRYPTION_KEY`. The maintenance CLI derives the same opaque ToolHive ownership marker from that key; changing the key before exact-marker cleanup makes old workloads undiscoverable by the new installation identity.
 
-## Optional SMTP
+## SMTP Safety Bounds
 
 ```text
-AIQSA_SMTP_HOST=
-AIQSA_SMTP_PORT=587
-AIQSA_SMTP_USER=
-AIQSA_SMTP_PASSWORD=
-AIQSA_SMTP_FROM=
-AIQSA_SMTP_SECURE=0
-AIQSA_SMTP_STARTTLS=1
 AIQSA_SMTP_CONNECT_TIMEOUT_MS=10000
 AIQSA_SMTP_COMMAND_TIMEOUT_MS=15000
 AIQSA_SMTP_TOTAL_TIMEOUT_MS=60000
 ```
 
-SMTP is not required for the initial administrator or local use. It delivers registration-verification, password-reset, and explicitly requested invite mail. `AIQSA_SMTP_SECURE=1` means implicit TLS, normally port 465; `AIQSA_SMTP_STARTTLS=1` requests STARTTLS, normally port 587. Certificate validation is not bypassable through routine env. Missing host/from makes delivery unavailable while preserving the endpoint-specific truthful/generic response rules in `BACKEND.md`.
+SMTP host, port, sender, authentication, password, transport, test/active state, and health are database-owned and configured through `Admin -> Email delivery`. The long-running application receives no SMTP configuration variables and has no environment fallback. SMTP remains optional for bootstrap, login, manual invitation links, and core readiness.
 
 Timeouts are positive whole milliseconds capped at 600,000. Their defaults bound connection/TLS, each SMTP command, and the complete send. Failure output must never contain credentials, recipients, message bodies, server response bodies, or token-bearing URLs.
+
+## Stopped-Cutover Inputs
+
+The one-shot `migrate-bootstrap` tools boundary recognizes legacy `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `ANTHROPIC_API_KEY`, `ANTHROPIC_BASE_URL`, `OPENROUTER_API_KEY`, `OPENROUTER_BASE_URL`, and `AIQSA_SMTP_HOST`, `AIQSA_SMTP_PORT`, `AIQSA_SMTP_USER`, `AIQSA_SMTP_PASSWORD`, `AIQSA_SMTP_FROM`, `AIQSA_SMTP_SECURE`, `AIQSA_SMTP_STARTTLS` only to migrate an older stopped installation. It validates and imports complete values as disabled, untested encrypted drafts under the installation lock. These names are not normal runtime settings, are absent from `.env.example`, never reach `app`, and must be removed from the private `.env` after the successful cutover. Partial/invalid input aborts the atomic cutover with a value-free field-class error.
 
 ## Optional OAuth
 
@@ -175,7 +164,7 @@ AIQSA_FAKE_PROVIDER_TOKEN_DELAY_MS=
 
 Exact `AIQSA_TEST_MODE=1` plus non-production `NODE_ENV` authorizes the deterministic seed and Fake QSA adapter. Deterministic auth additionally requires exact `PLAYWRIGHT_TEST_AUTH=1`. The compiled runtime rejects these switches through readiness, and they are absent from `.env.example`. The seed restores the public fixture `operator@aiqsa.local` / `AIQSA-local-2026!` only inside disposable development volumes.
 
-The dev Compose service hardcodes loopback publication and blanks real provider/OAuth credentials even when the normal installation `.env` contains them. A deliberate one-off provider smoke must pass only the required key explicitly to `docker compose -f docker-compose.dev.yml run`.
+The dev Compose service hardcodes loopback publication and does not inject provider/SMTP or sign-in OAuth credentials from the normal installation `.env`. A deliberate one-off adapter smoke passes only the required key to the standalone smoke command; routine application runtime always resolves provider credentials from its disposable database.
 
 `NODE_ENV` remains a framework/container-owned value: the built standalone runtime uses `production`, while the supported localhost-vs-HTTPS policy comes from explicit URL/cookie settings rather than a named AIQSA environment tier.
 

@@ -540,7 +540,8 @@ export function createPasswordResetRequestHandler(deps: PasswordResetRequestHand
           passwordResetEmail({
             resetUrl: passwordResetUrl(config.appBaseUrl, token),
             to: identity.user.email ?? identity.normalizedEmail
-          })
+          }),
+          "password_reset"
         )
         .catch(() => undefined);
     }

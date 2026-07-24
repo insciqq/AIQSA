@@ -10,6 +10,8 @@ import type {
   ProviderRunResult,
   ProviderSearchAdapter
 } from "../providers/types";
+import type { ProviderRuntimeBinding } from "../providers/runtimeFactory";
+import type { ProviderRuntimeResolver } from "../providerRuntime/runtimeResolver";
 import { providerToolBridges } from "../tools/bridges";
 import { createPerplexitySearchToolExecutor, perplexityWebSearchTool } from "../tools/perplexitySearch";
 import type { ModelToolCall, RunTool, ToolExecutionResult } from "../tools/types";
@@ -94,12 +96,36 @@ export type RunRecoveryMcpRuntime = Readonly<{
 
 export type RunRecoveryDeps = Readonly<{
   mcpRuntime?: RunRecoveryMcpRuntime;
+  providerRuntime?: ProviderRuntimeResolver;
   providers: Readonly<Record<string, ProviderAdapter>>;
   registry: RunRecoveryRegistry;
   repository: RunRecoveryRepository;
   searchProviders?: Readonly<Record<string, ProviderSearchAdapter>>;
   storage?: Pick<StorageAdapter, "getObject">;
 }>;
+
+async function resolveAnswerRuntime(
+  deps: RunRecoveryDeps,
+  runId: string,
+  provider: string
+): Promise<ProviderRuntimeBinding | null> {
+  if (deps.providerRuntime) {
+    return deps.providerRuntime.resolve(runId, "answer");
+  }
+  const adapter = deps.providers[provider];
+  return adapter ? { adapter } : null;
+}
+
+async function resolveSearchRuntime(
+  deps: RunRecoveryDeps,
+  runId: string,
+  provider: string
+): Promise<ProviderSearchAdapter | undefined> {
+  if (deps.providerRuntime) {
+    return (await deps.providerRuntime.resolve(runId, "search")).searchAdapter;
+  }
+  return deps.searchProviders?.[provider];
+}
 
 type ProcessBootSweepState = {
   bootedAt: Date;
@@ -541,8 +567,10 @@ async function recoverCheckpointedToolLoop(
 ): Promise<void> {
   if (signal.aborted || run.status === "cancelled" || !run.assistantMessageId) return;
 
-  const adapter = deps.providers[run.provider];
-  const bridge = providerToolBridges[run.provider as keyof typeof providerToolBridges];
+  const runtime = await resolveAnswerRuntime(deps, run.id, run.provider);
+  const adapter = runtime?.adapter;
+  const bridge = runtime?.toolBridge ??
+    providerToolBridges[run.provider as keyof typeof providerToolBridges];
   const usageAttributions: RunUsageAttribution[] = [];
   const persistedUsageKeys = new Set<string>();
   let currentProviderResponseId = run.providerResponseId;
@@ -581,7 +609,9 @@ async function recoverCheckpointedToolLoop(
     };
     const searchEnabled = run.normalizedRequest.searchStrategy === "perplexity-tool-search";
     const searchPolicy = run.normalizedRequest.searchPolicy;
-    const searchAdapter = searchPolicy ? deps.searchProviders?.[searchPolicy.provider] : undefined;
+    const searchAdapter = searchPolicy
+      ? await resolveSearchRuntime(deps, run.id, searchPolicy.provider)
+      : undefined;
     if (searchEnabled && (!searchPolicy || !searchAdapter)) {
       throw new ToolLoopRecoveryError(
         "search_policy_not_available",
@@ -638,7 +668,7 @@ async function recoverCheckpointedToolLoop(
       );
       currentProviderResponseId = providerResponseId;
       if (publication === "cancelled") {
-        await adapter.cancel?.(providerResponseId).catch(() => undefined);
+        await adapter!.cancel?.(providerResponseId).catch(() => undefined);
         throw new ToolLoopRecoveryStopped();
       }
       if (publication === "terminal") throw new ToolLoopRecoveryStopped();
@@ -1120,7 +1150,7 @@ async function refreshProviderRunOnceRegistered(
 
   if (!control.providerResponseId) return;
 
-  const adapter = deps.providers[control.provider];
+  const adapter = (await resolveAnswerRuntime(deps, runId, control.provider))?.adapter;
   if (!adapter?.refresh) {
     return;
   }
@@ -1304,7 +1334,8 @@ export async function reconcileInstallationRuns(
       runId: run.id,
       userId: run.userId
     });
-    const adapter = deps.providers[run.provider];
+    const adapter = (await resolveAnswerRuntime(deps, run.id, run.provider).catch(() => null))
+      ?.adapter;
     if (checkpointed || (run.providerResponseId && adapter?.refresh)) {
       await refreshProviderRunIfNeeded(deps, run.id, run.userId);
       return;
@@ -1351,7 +1382,8 @@ export async function reconcileStaleRuns(
       continue;
     }
 
-    const adapter = deps.providers[run.provider];
+    const adapter = (await resolveAnswerRuntime(deps, run.id, run.provider).catch(() => null))
+      ?.adapter;
     if (run.providerResponseId && adapter?.refresh) {
       await refreshProviderRunIfNeeded(deps, run.id, input.userId);
       continue;

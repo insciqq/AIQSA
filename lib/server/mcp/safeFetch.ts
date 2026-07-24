@@ -30,6 +30,7 @@ export type McpPinnedHttpRequest = {
 };
 
 export type McpSafeFetchOptions = {
+  addressAllowed?: (address: McpResolvedAddress, url: URL) => boolean;
   allowInsecureHttp?: boolean;
   allowPrivateNetwork?: boolean;
   dispatch?: (request: McpPinnedHttpRequest) => Promise<Response>;
@@ -155,6 +156,15 @@ const BLOCKED_IPV6_CIDRS: readonly Ipv6Cidr[] = [
   ipv6Cidr("ff00::", 8)
 ];
 
+const PRIVATE_IPV4_CIDRS: readonly Ipv4Cidr[] = [
+  ipv4Cidr("10.0.0.0", 8),
+  ipv4Cidr("172.16.0.0", 12),
+  ipv4Cidr("192.168.0.0", 16)
+];
+const LOOPBACK_IPV4_CIDR = ipv4Cidr("127.0.0.0", 8);
+const PRIVATE_IPV6_CIDR = ipv6Cidr("fc00::", 7);
+const IPV4_MAPPED_IPV6_CIDR = ipv6Cidr("::ffff:0:0", 96);
+
 function inIpv4Cidr(address: number, [network, prefixLength]: Ipv4Cidr): boolean {
   const divisor = 2 ** (32 - prefixLength);
   return Math.floor(address / divisor) === Math.floor(network / divisor);
@@ -163,6 +173,48 @@ function inIpv4Cidr(address: number, [network, prefixLength]: Ipv4Cidr): boolean
 function inIpv6Cidr(address: bigint, [network, prefixLength]: Ipv6Cidr): boolean {
   const shift = BigInt(128 - prefixLength);
   return (address >> shift) === (network >> shift);
+}
+
+export type NetworkAddressScope = "forbidden" | "loopback" | "private" | "public";
+
+function ipv4AddressScope(address: number): NetworkAddressScope {
+  if (inIpv4Cidr(address, LOOPBACK_IPV4_CIDR)) {
+    return "loopback";
+  }
+  if (PRIVATE_IPV4_CIDRS.some((cidr) => inIpv4Cidr(address, cidr))) {
+    return "private";
+  }
+  return BLOCKED_IPV4_CIDRS.some((cidr) => inIpv4Cidr(address, cidr))
+    ? "forbidden"
+    : "public";
+}
+
+export function networkAddressScope(address: string): NetworkAddressScope {
+  const family = isIP(address);
+  if (family === 4) {
+    const parsed = parseIpv4(address);
+    return parsed === null ? "forbidden" : ipv4AddressScope(parsed);
+  }
+  if (family === 6) {
+    const parsed = parseIpv6(address);
+    if (parsed === null) {
+      return "forbidden";
+    }
+    if (parsed === 1n) {
+      return "loopback";
+    }
+    if (inIpv6Cidr(parsed, IPV4_MAPPED_IPV6_CIDR)) {
+      return ipv4AddressScope(Number(parsed & 0xffff_ffffn));
+    }
+    if (inIpv6Cidr(parsed, PRIVATE_IPV6_CIDR)) {
+      return "private";
+    }
+    return BLOCKED_IPV6_CIDRS.some((cidr) => inIpv6Cidr(parsed, cidr))
+      ? "forbidden"
+      : "public";
+  }
+
+  return "forbidden";
 }
 
 export function isBlockedMcpAddress(address: string): boolean {
@@ -224,7 +276,18 @@ async function resolvePinnedAddress(url: URL, options: McpSafeFetchOptions): Pro
   )) {
     throw new McpSafeFetchError("mcp_http_dns_failed");
   }
-  if (!options.allowPrivateNetwork && records.some((record) => isBlockedMcpAddress(record.address))) {
+  const addressPolicy = options.addressAllowed;
+  const addressForbidden = addressPolicy
+    ? records.some((record) => {
+        try {
+          return !addressPolicy(record, url);
+        } catch {
+          return true;
+        }
+      })
+    : !options.allowPrivateNetwork &&
+      records.some((record) => isBlockedMcpAddress(record.address));
+  if (addressForbidden) {
     throw new McpSafeFetchError("mcp_http_address_forbidden");
   }
   return records[0];

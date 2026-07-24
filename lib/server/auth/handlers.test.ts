@@ -359,7 +359,6 @@ describe("auth route handlers", () => {
     });
     const unknownRepository = createMemoryPasswordAuthRepository({ identity: null });
     const mailer = {
-      deliveryConfigured: true,
       send: vi.fn(() => pendingMail.promise)
     };
     const deps = {

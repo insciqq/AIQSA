@@ -6,7 +6,11 @@ import type { OAuthClientMetadata } from "@modelcontextprotocol/sdk/shared/auth.
 import { describe, expect, it, vi } from "vitest";
 import type { McpDraftConfiguration } from "@/lib/contracts/mcp";
 import { hashCanonicalMcpValue } from "./definitions";
-import { decryptMcpEnvelope } from "./encryption";
+import {
+  decryptMcpEnvelope,
+  mcpOAuthClientSecretEnvelopeContext,
+  mcpOAuthTokenEnvelopeContext
+} from "./encryption";
 import {
   buildMcpOAuthPolicy,
   mcpOAuthPolicyFingerprint,
@@ -62,6 +66,7 @@ type ClientRow = {
   clientId: string;
   clientMetadata: object;
   clientSecretEnvelope: string | null;
+  clientSecretGeneration: number;
   createdAt: Date;
   id: string;
   registrationKey: string;
@@ -81,6 +86,7 @@ type ConnectionRow = {
   serverId: string;
   state: "ready" | "reauthorization_required" | "disconnecting" | "disconnected";
   tokenEnvelope: string | null;
+  tokenGeneration: number;
   updatedAt: Date;
   userId: string;
 };
@@ -107,19 +113,27 @@ function fakePrisma() {
       if (!clientRow || clientRow.id !== input.where.id) throw new Error("not found");
       return clientRow;
     },
-    async upsert(input: {
-      create: Omit<ClientRow, "createdAt" | "id" | "updatedAt">;
-      update: Pick<ClientRow, "clientId" | "clientMetadata" | "clientSecretEnvelope">;
+    async create(input: {
+      data: Omit<ClientRow, "createdAt" | "updatedAt">;
     }) {
-      clientRow = clientRow
-        ? { ...clientRow, ...input.update, updatedAt: NOW }
-        : { ...input.create, createdAt: NOW, id: "oauth-client-1", updatedAt: NOW };
+      clientRow = { ...input.data, createdAt: NOW, updatedAt: NOW };
+      return clientRow;
+    },
+    async update(input: {
+      data: Pick<
+        ClientRow,
+        "clientId" | "clientMetadata" | "clientSecretEnvelope" | "clientSecretGeneration"
+      >;
+      where: { id: string };
+    }) {
+      if (!clientRow || clientRow.id !== input.where.id) throw new Error("not found");
+      clientRow = { ...clientRow, ...input.data, updatedAt: NOW };
       return clientRow;
     }
   };
   const mcpOAuthConnection = {
-    async create(input: { data: Omit<ConnectionRow, "createdAt" | "id" | "updatedAt"> }) {
-      connectionRow = { ...input.data, createdAt: NOW, id: "connection-1", updatedAt: NOW };
+    async create(input: { data: Omit<ConnectionRow, "createdAt" | "updatedAt"> }) {
+      connectionRow = { ...input.data, createdAt: NOW, updatedAt: NOW };
       return connectionRow;
     },
     async findUnique(input: { where: { id: string } }) {
@@ -142,6 +156,7 @@ function fakePrisma() {
         },
         serverId: connectionRow.serverId,
         tokenEnvelope: connectionRow.tokenEnvelope,
+        tokenGeneration: connectionRow.tokenGeneration,
         user: {
           groups: eligibility.groupIds.map((groupId) => ({ groupId })),
           role: eligibility.role,
@@ -151,8 +166,14 @@ function fakePrisma() {
       }];
     },
     async updateMany(input: {
-      data: Partial<ConnectionRow>;
-      where: { id?: string; tokenEnvelope?: string | { not: null } };
+      data: Partial<Omit<ConnectionRow, "tokenGeneration">> & {
+        tokenGeneration?: number | { increment: number };
+      };
+      where: {
+        id?: string;
+        tokenEnvelope?: string | { not: null };
+        tokenGeneration?: number;
+      };
     }) {
       if (!connectionRow) return { count: 0 };
       if (input.where.id && input.where.id !== connectionRow.id) return { count: 0 };
@@ -160,12 +181,24 @@ function fakePrisma() {
         input.where.tokenEnvelope !== connectionRow.tokenEnvelope) {
         return { count: 0 };
       }
-      connectionRow = { ...connectionRow, ...input.data, updatedAt: NOW };
+      if (input.where.tokenGeneration !== undefined &&
+        input.where.tokenGeneration !== connectionRow.tokenGeneration) return { count: 0 };
+      const { tokenGeneration: tokenGenerationUpdate, ...data } = input.data;
+      const nextTokenGeneration = typeof tokenGenerationUpdate === "object"
+        ? connectionRow.tokenGeneration + tokenGenerationUpdate.increment
+        : tokenGenerationUpdate;
+      connectionRow = {
+        ...connectionRow,
+        ...data,
+        ...(nextTokenGeneration !== undefined ? { tokenGeneration: nextTokenGeneration } : {}),
+        updatedAt: NOW
+      };
       return { count: 1 };
     }
   };
   const mcpUserServer = { updateMany: vi.fn(async () => ({ count: 1 })) };
   const dataClient = {
+    $queryRaw: vi.fn(async () => [{ lock: "" }]),
     $transaction: async (operation: (tx: unknown) => Promise<unknown>) => operation(dataClient),
     mcpOAuthClient,
     mcpOAuthConnection,
@@ -213,6 +246,7 @@ describe("Prisma MCP OAuth repository", () => {
       },
       serverId: SERVER_ID,
       tokenEnvelope: "encrypted",
+      tokenGeneration: 1,
       user: { groups: [], role: "user", status: "active" },
       userId: USER_ID,
       ...overrides
@@ -288,9 +322,14 @@ describe("Prisma MCP OAuth repository", () => {
       registrationKey
     });
     const rawClient = fake.getClientRow();
-    expect(rawClient?.clientSecretEnvelope).toMatch(/^v1\./u);
+    expect(rawClient?.clientSecretEnvelope).toMatch(/^v2\./u);
+    expect(rawClient?.clientSecretGeneration).toBe(1);
     expect(JSON.stringify(rawClient)).not.toContain("client-secret");
-    expect(decryptMcpEnvelope<{ clientSecret: string }>(rawClient!.clientSecretEnvelope!, KEY))
+    expect(decryptMcpEnvelope<{ clientSecret: string }>(
+      rawClient!.clientSecretEnvelope!,
+      KEY,
+      mcpOAuthClientSecretEnvelopeContext(rawClient!.id, rawClient!.clientSecretGeneration)
+    ))
       .toEqual(expect.objectContaining({ clientSecret: "client-secret" }));
     expect((await repository.findClient(registrationKey))?.clientInformation.client_secret)
       .toBe("client-secret");
@@ -317,13 +356,18 @@ describe("Prisma MCP OAuth repository", () => {
     expect(created.kind).toBe("ok");
     if (created.kind !== "ok") return;
     const rawConnection = fake.getConnectionRow();
-    expect(rawConnection?.tokenEnvelope).toMatch(/^v1\./u);
+    expect(rawConnection?.tokenEnvelope).toMatch(/^v2\./u);
+    expect(rawConnection?.tokenGeneration).toBe(1);
     expect(JSON.stringify(rawConnection)).not.toContain("access-secret");
     expect(JSON.stringify(rawConnection)).not.toContain("refresh-secret");
     const decoded = decryptMcpEnvelope<{
       policy: McpOAuthPolicy;
       tokens: { access_token: string; refresh_token: string };
-    }>(rawConnection!.tokenEnvelope!, KEY);
+    }>(
+      rawConnection!.tokenEnvelope!,
+      KEY,
+      mcpOAuthTokenEnvelopeContext(rawConnection!.id, rawConnection!.tokenGeneration)
+    );
     expect(decoded.tokens).toMatchObject({
       access_token: "access-secret",
       refresh_token: "refresh-secret"
@@ -344,6 +388,7 @@ describe("Prisma MCP OAuth repository", () => {
       access_token: "rotated-access-secret",
       refresh_token: "rotated-refresh-secret"
     });
+    expect(fake.getConnectionRow()?.tokenGeneration).toBe(2);
     expect(JSON.stringify(fake.getConnectionRow())).not.toContain("rotated-access-secret");
 
     fake.setConnectionState("reauthorization_required");
@@ -386,5 +431,28 @@ describe("Prisma MCP OAuth repository", () => {
       userId: USER_ID
     })).resolves.toEqual({ kind: "configuration_changed" });
     expect(JSON.stringify(fake.getConnectionRow())).not.toContain("must-not-persist");
+
+    await repository.saveClient({
+      clientInformation: {
+        client_id: "client-id",
+        redirect_uris: [REDIRECT_URI]
+      },
+      clientMetadata: metadata,
+      discoveryState,
+      registrationKey
+    });
+    expect(fake.getClientRow()).toMatchObject({
+      clientSecretEnvelope: null,
+      clientSecretGeneration: 2
+    });
+
+    fake.setConnectionState("disconnecting");
+    const tokenGenerationBeforeClear = fake.getConnectionRow()!.tokenGeneration;
+    await expect(repository.finalizeDisconnected(created.value.id)).resolves.toBe(true);
+    expect(fake.getConnectionRow()).toMatchObject({
+      state: "disconnected",
+      tokenEnvelope: null,
+      tokenGeneration: tokenGenerationBeforeClear + 1
+    });
   });
 });

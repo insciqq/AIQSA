@@ -38,6 +38,8 @@ describe("catalog handler", () => {
         settings: {
           defaultControlValues: {},
           defaultModelId: "gpt-5.5",
+          defaultProviderConnectionId: "openai",
+          defaultProviderModelId: "gpt-5.5",
           defaultPromptPresetId: "prompt-1",
           defaultProvider: "openai",
           defaultSearchStrategyId: "openai-native-web-search",
@@ -86,13 +88,15 @@ describe("catalog handler", () => {
       "modelId",
       "parameterControls",
       "provider",
-      "searchStrategyIds"
+      "providerFamily",
+      "searchStrategyIds",
+      "upstreamModelId"
     ]);
     expect(body.catalog.models[0].capabilities.text).toBe(true);
-    expect(body.catalog.searchStrategies[0]).toMatchObject({
-      config: {},
-      description: expect.any(String),
-      provider: "fake"
+    expect(body.catalog.searchStrategies[0]).toEqual({
+      displayName: "No Search",
+      kind: "none",
+      strategyId: "search-disabled"
     });
     expect(catalog?.models.map((model) => model.modelId)).toEqual(["gpt-5.5"]);
     expect(catalog?.searchStrategies.map((strategy) => strategy.strategyId)).toEqual([
@@ -119,6 +123,8 @@ describe("catalog handler", () => {
         settings: {
           defaultControlValues: {},
           defaultModelId: "gpt-5.5",
+          defaultProviderConnectionId: "openai",
+          defaultProviderModelId: "gpt-5.5",
           defaultPromptPresetId: null,
           defaultProvider: "openai",
           defaultSearchStrategyId: "openai-native-web-search",
@@ -164,7 +170,7 @@ describe("catalog handler", () => {
     });
   });
 
-  it("falls back catalog defaults when stored settings point at a filtered model", () => {
+  it("does not replace a filtered stable default with the first entitled model", () => {
     const catalog = buildCurrentUserCatalog({
       entitlements: {
         modelKeys: new Set(["openrouter:google/gemini-3.5-flash"]),
@@ -177,6 +183,8 @@ describe("catalog handler", () => {
       settings: {
         defaultControlValues: {},
         defaultModelId: "claude-opus-4-8",
+        defaultProviderConnectionId: "anthropic",
+        defaultProviderModelId: "claude-opus-4-8",
         defaultPromptPresetId: null,
         defaultProvider: "anthropic",
         defaultSearchStrategyId: "openai-native-web-search",
@@ -187,8 +195,8 @@ describe("catalog handler", () => {
     });
 
     expect(catalog.defaults).toMatchObject({
-      modelId: "google/gemini-3.5-flash",
-      provider: "openrouter",
+      modelId: "claude-opus-4-8",
+      provider: "anthropic",
       searchStrategyId: "search-disabled"
     });
   });
@@ -206,6 +214,8 @@ describe("catalog handler", () => {
       settings: {
         defaultControlValues: {},
         defaultModelId: "gpt-5.5",
+        defaultProviderConnectionId: null,
+        defaultProviderModelId: null,
         defaultPromptPresetId: null,
         defaultProvider: "openai",
         defaultSearchStrategyId: "openai-native-web-search",

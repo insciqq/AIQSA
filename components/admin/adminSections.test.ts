@@ -17,7 +17,9 @@ describe("adminSections", () => {
       { id: "usage", label: "Usage" },
       { id: "groups", label: "Groups" },
       { id: "model-access", label: "Model access" },
+      { id: "providers", label: "Providers" },
       { id: "mcp", label: "MCP servers" },
+      { id: "email", label: "Email delivery" },
       { id: "invites", label: "Invites" },
       { id: "access-rules", label: "Access rules" },
       { id: "safety", label: "Safety" }
@@ -25,12 +27,14 @@ describe("adminSections", () => {
     expect(adminSectionConfig("model-access").description).toBe(
       "Toggle provider, model, and search access for active groups."
     );
+    expect(adminSectionConfig("email").description).toContain("monitor installation email delivery");
   });
 
   it("parses only known deep-linked sections and otherwise selects Users", () => {
     expect(parseAdminSection("")).toBe("users");
     expect(parseAdminSection("?section=invites")).toBe("invites");
     expect(parseAdminSection("?section=mcp")).toBe("mcp");
+    expect(parseAdminSection("?section=email")).toBe("email");
     expect(parseAdminSection("?mode=compact&section=access-rules")).toBe("access-rules");
     expect(parseAdminSection("?section=unknown")).toBe("users");
     expect(parseAdminSection("?section=")).toBe("users");

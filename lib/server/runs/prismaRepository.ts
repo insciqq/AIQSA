@@ -3,7 +3,8 @@ import {
   Prisma,
   type MessageStatus,
   type ModelRunStatus,
-  type ModelRunToolCallState
+  type ModelRunToolCallState,
+  type PrismaClient
 } from "@prisma/client";
 import { textMessageContent } from "../../domain/content";
 import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
@@ -11,6 +12,13 @@ import { normalizeTokenUsage, sumTokenUsage } from "../../domain/usage";
 import { loadChatUsageStats, summarizeMessageRunArtifacts } from "../chats/prismaRepository";
 import { titleFromMessageContent } from "../chats/titlePolicy";
 import { loadEntitlementsForUser } from "../auth/dbEntitlements";
+import {
+  ProviderAdmissionError,
+  loadProviderAdmissionPlan,
+  sameProviderAdmissionPlan,
+  type ProviderAdmissionPlan,
+  type ProviderAdmissionRole
+} from "../providerRuntime/admission";
 import { prisma } from "../prisma";
 import type { ProviderConversationMessage } from "../providers/types";
 import {
@@ -22,6 +30,7 @@ import {
   ActiveRunConflictError,
   AttachmentLinkConflictError,
   McpRunPlanConflictError,
+  ProviderAdmissionConflictError,
   type AcceptedRunDefaults,
   type DurableRunControlRecord,
   type RunAttachmentRecord,
@@ -201,8 +210,7 @@ async function persistAcceptedRunDefaults(
       defaultControlValues: {
         [modelControlKey(defaults)]: { ...defaults.controlDefaults }
       },
-      defaultModelId: defaults.modelId,
-      defaultProvider: defaults.provider,
+      defaultProviderModelId: defaults.modelId,
       defaultSearchStrategyId: searchStrategyId
     },
     [
@@ -296,6 +304,96 @@ export async function insertAcceptedMcpRunBindings(
     `;
     if (inserted !== 1) throw new McpRunPlanConflictError();
   }
+}
+
+function providerRecoveryHorizon(
+  role: ProviderAdmissionRole,
+  nativeBackgroundRequested: boolean
+): Date | null {
+  if (
+    role.snapshot.model.adapterKind !== "openai_responses_native" ||
+    !nativeBackgroundRequested
+  ) {
+    return null;
+  }
+  return new Date(Date.now() + 24 * 60 * 60 * 1_000);
+}
+
+async function insertAcceptedProviderRunBindings(
+  tx: Prisma.TransactionClient,
+  input: {
+    nativeBackgroundRequested: boolean;
+    plan: ProviderAdmissionPlan | undefined;
+    runId: string;
+    userId: string;
+  }
+): Promise<void> {
+  if (!input.plan) return;
+  let current: ProviderAdmissionPlan;
+  try {
+    current = await loadProviderAdmissionPlan(tx, {
+      providerConnectionId: input.plan.selection.providerConnectionId,
+      providerModelId: input.plan.selection.providerModelId,
+      searchStrategyId: input.plan.requestedSearchStrategyId,
+      userId: input.userId
+    });
+  } catch (error) {
+    if (error instanceof ProviderAdmissionError) {
+      throw new ProviderAdmissionConflictError();
+    }
+    throw error;
+  }
+  if (!sameProviderAdmissionPlan(input.plan, current)) {
+    throw new ProviderAdmissionConflictError();
+  }
+
+  const roles: Array<{ role: "answer" | "search"; value: ProviderAdmissionRole }> = [
+    { role: "answer", value: current.answer },
+    ...(current.search ? [{ role: "search" as const, value: current.search }] : [])
+  ];
+  await tx.providerRunBinding.createMany({
+    data: roles.map(({ role, value }) => ({
+      connectionId: value.snapshot.connectionId,
+      credentialId: value.snapshot.credentialId,
+      credentialSource: value.credentialSource,
+      credentialVersionId: value.snapshot.credentialVersionId,
+      executionSnapshot: json(value.snapshot),
+      modelRunId: input.runId,
+      providerModelId: value.snapshot.providerModelId,
+      recoverableUntil: role === "answer"
+        ? providerRecoveryHorizon(value, input.nativeBackgroundRequested)
+        : null,
+      role
+    }))
+  });
+}
+
+async function repeatableReadTransaction<Value>(
+  prismaClient: PrismaClient,
+  operation: (tx: Prisma.TransactionClient) => Promise<Value>
+): Promise<Value> {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      return await prismaClient.$transaction(operation, {
+        isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead,
+        maxWait: 10_000,
+        timeout: 120_000
+      });
+    } catch (error) {
+      const serializationConflict =
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        (error.code === "P2034" ||
+          (error.code === "P2010" &&
+            isRecord(error.meta) &&
+            error.meta.code === "40001"));
+      if (serializationConflict) {
+        if (attempt < 2) continue;
+        throw new ProviderAdmissionConflictError();
+      }
+      throw error;
+    }
+  }
+  throw new ProviderAdmissionConflictError();
 }
 
 const activeModelRunStatuses: ModelRunStatus[] = ["streaming", "queued", "in_progress"];
@@ -980,7 +1078,7 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
     },
     createRun: async (input) => {
       return mapActiveRunConflict(() =>
-        prismaClient.$transaction(async (tx) => {
+        repeatableReadTransaction(prismaClient, async (tx) => {
           const lockedChats = await tx.$queryRaw<
             Array<{ activeLeafMessageId: string | null; archived: boolean; id: string }>
           >`
@@ -1087,6 +1185,13 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
             userId: input.userId
           });
 
+          await insertAcceptedProviderRunBindings(tx, {
+            nativeBackgroundRequested: input.normalizedRequest.params.background === true,
+            plan: input.providerAdmissionPlan,
+            runId: run.id,
+            userId: input.userId
+          });
+
           await persistAcceptedRunDefaults(tx, input.userId, input.defaults);
 
           await tx.chat.update({
@@ -1094,9 +1199,8 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
               activeLeafMessageId: assistantMessage.id,
               ...(chat._count.messages === 0
                 ? {
-                    defaultModelId: input.modelId,
+                    defaultProviderModelId: input.defaults.modelId,
                     defaultPromptPresetId: input.normalizedRequest.prompt.presetId ?? null,
-                    defaultProvider: input.provider
                   }
                 : {})
             },
@@ -1131,7 +1235,7 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
     },
     createRegenerationRun: async (input) => {
       return mapActiveRunConflict(() =>
-        prismaClient.$transaction(async (tx) => {
+        repeatableReadTransaction(prismaClient, async (tx) => {
           const lockedChats = await tx.$queryRaw<Array<{ archived: boolean; id: string }>>`
             SELECT "id", "archived"
             FROM "Chat"
@@ -1190,6 +1294,13 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
 
           await insertAcceptedMcpRunBindings(tx, {
             bindings: input.mcpBindings,
+            runId: run.id,
+            userId: input.userId
+          });
+
+          await insertAcceptedProviderRunBindings(tx, {
+            nativeBackgroundRequested: input.normalizedRequest.params.background === true,
+            plan: input.providerAdmissionPlan,
             runId: run.id,
             userId: input.userId
           });
@@ -1311,8 +1422,12 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
 	            }
 	          },
 	          activeLeafMessageId: true,
-	          defaultModelId: true,
-	          defaultProvider: true,
+	          defaultProviderModel: {
+	            select: {
+	              connectionId: true,
+	              id: true
+	            }
+	          },
 	          folder: {
 	            select: {
 	              projectMemory: true
@@ -1330,8 +1445,8 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
         chat
 	          ? {
 	              activeLeafMessageId: chat.activeLeafMessageId,
-	              defaultModelId: chat.defaultModelId,
-	              defaultProvider: chat.defaultProvider,
+	              defaultModelId: chat.defaultProviderModel?.id ?? "",
+	              defaultProvider: chat.defaultProviderModel?.connectionId ?? "",
 	              id: chat.id,
 	              messageCount: chat._count.messages,
 	              projectMemory: chat.folder?.projectMemory ?? null,
@@ -1422,8 +1537,12 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
         include: {
           chat: {
             select: {
-              defaultModelId: true,
-              defaultProvider: true,
+              defaultProviderModel: {
+                select: {
+                  connectionId: true,
+                  id: true
+                }
+              },
               folder: {
                 select: {
                   projectMemory: true
@@ -1454,15 +1573,33 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
         return null;
       }
 
+      const sourceRun = await prismaClient.modelRun.findFirst({
+        orderBy: { createdAt: "desc" },
+        select: {
+          providerRunBindings: {
+            select: {
+              connectionId: true,
+              providerModelId: true
+            },
+            where: { role: "answer" }
+          }
+        },
+        where: {
+          assistantMessageId: assistantMessage.id,
+          userId
+        }
+      });
+      const answerBinding = sourceRun?.providerRunBindings[0];
+
       return {
         assistantMessage: {
           id: assistantMessage.id,
-          modelId: assistantMessage.modelId,
-          provider: assistantMessage.provider
+          modelId: answerBinding?.providerModelId ?? null,
+          provider: answerBinding?.connectionId ?? null
         },
         chat: {
-          defaultModelId: assistantMessage.chat.defaultModelId,
-          defaultProvider: assistantMessage.chat.defaultProvider,
+          defaultModelId: assistantMessage.chat.defaultProviderModel?.id ?? "",
+          defaultProvider: assistantMessage.chat.defaultProviderModel?.connectionId ?? "",
           id: assistantMessage.chat.id,
           projectMemory: assistantMessage.chat.folder?.projectMemory ?? null
         },
@@ -1589,9 +1726,13 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
           },
           activeLeafMessageId: true,
           createdAt: true,
-          defaultModelId: true,
+          defaultProviderModel: {
+            select: {
+              connectionId: true,
+              id: true
+            }
+          },
           defaultPromptPresetId: true,
-          defaultProvider: true,
           folderId: true,
           id: true,
           messages: {
@@ -1677,9 +1818,9 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
         chat: {
           activeLeafMessageId: chat.activeLeafMessageId,
           createdAt: chat.createdAt,
-          defaultModelId: chat.defaultModelId,
+          defaultModelId: chat.defaultProviderModel?.id ?? "",
           defaultPromptPresetId: chat.defaultPromptPresetId,
-          defaultProvider: chat.defaultProvider,
+          defaultProvider: chat.defaultProviderModel?.connectionId ?? "",
           folderId: chat.folderId,
           id: chat.id,
           messageCount: chat._count.messages,
@@ -1871,25 +2012,21 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
       };
     },
     loadModelPricing: async (provider, modelId) => {
-      const model = await prismaClient.providerModel.findUnique({
+      const models = await prismaClient.providerModel.findMany({
         select: {
           inputTokenPriceMicros: true,
           outputTokenPriceMicros: true
         },
-        where: {
-          provider_modelId: {
-            modelId,
-            provider
-          }
-        }
+        take: 2,
+        where: { modelId, provider }
       });
 
-      return model
+      return models.length === 1
         ? {
-            inputTokenPriceMicros: model.inputTokenPriceMicros,
-            outputTokenPriceMicros: model.outputTokenPriceMicros
+            inputTokenPriceMicros: models[0].inputTokenPriceMicros,
+            outputTokenPriceMicros: models[0].outputTokenPriceMicros
           }
-          : null;
+        : null;
     },
     loadRunUsageAttributions: async (input) => {
       const rows = await prismaClient.usageEvent.findMany({

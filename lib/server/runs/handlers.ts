@@ -6,7 +6,9 @@ import type {
   ModelRunErrorResponse
 } from "../../contracts/runs";
 import type { RequestAuthResolver } from "../auth/requestAuth";
+import type { ProviderRuntimeResolver } from "../providerRuntime/runtimeResolver";
 import type { ProviderAdapter, ProviderSearchAdapter } from "../providers/types";
+import type { ProviderToolBridge } from "../tools/types";
 import type { StorageAdapter } from "../uploads/storage";
 import { activeRunControllerRegistry, createRunExecutionResponse } from "./runExecution";
 import {
@@ -25,7 +27,8 @@ import {
   ActiveLeafConflictError,
   ActiveRunConflictError,
   AttachmentLinkConflictError,
-  McpRunPlanConflictError
+  McpRunPlanConflictError,
+  ProviderAdmissionConflictError
 } from "./runRepositoryContract";
 import type { RunRepository } from "./runRepositoryContract";
 
@@ -40,8 +43,11 @@ export type {
 } from "./runRepositoryContract";
 
 export type RunHandlerDeps = {
+  allowFakeProvider?: boolean;
   getConfig?: () => AuthConfig;
   mcp?: RunPreparationDeps["mcp"];
+  providerAdmission?: RunPreparationDeps["providerAdmission"];
+  providerRuntime?: ProviderRuntimeResolver;
   providers: Record<string, ProviderAdapter>;
   repository: RunRepository;
   resolveAuth: RequestAuthResolver;
@@ -79,9 +85,13 @@ function modelRunJson(data: GetModelRunResponse, init?: ResponseInit): Response 
 }
 
 function recoveryDeps(
-  deps: Pick<RunHandlerDeps, "providers" | "repository" | "searchProviders" | "storage">
+  deps: Pick<
+    RunHandlerDeps,
+    "providerRuntime" | "providers" | "repository" | "searchProviders" | "storage"
+  >
 ) {
   return {
+    ...(deps.providerRuntime ? { providerRuntime: deps.providerRuntime } : {}),
     providers: deps.providers,
     registry: activeRunControllerRegistry,
     repository: deps.repository,
@@ -105,6 +115,44 @@ function isAttachmentLinkConflictError(error: unknown): error is AttachmentLinkC
 function isMcpRunPlanConflictError(error: unknown): error is McpRunPlanConflictError {
   return error instanceof McpRunPlanConflictError ||
     (error instanceof Error && error.name === "McpRunPlanConflictError");
+}
+
+function isProviderAdmissionConflictError(
+  error: unknown
+): error is ProviderAdmissionConflictError {
+  return error instanceof ProviderAdmissionConflictError ||
+    (error instanceof Error && error.name === "ProviderAdmissionConflictError");
+}
+
+async function acceptedRuntimeBinding(
+  deps: RunHandlerDeps,
+  runId: string,
+  hasProviderPlan: boolean
+): Promise<{
+  adapter: ProviderAdapter;
+  searchAdapter?: ProviderSearchAdapter;
+  toolBridge?: ProviderToolBridge;
+} | null> {
+  if (!hasProviderPlan) return null;
+  if (!deps.providerRuntime) {
+    throw new Error("provider_runtime_not_configured");
+  }
+
+  const answer = await deps.providerRuntime.resolve(runId, "answer");
+  let searchAdapter: ProviderSearchAdapter | undefined;
+  try {
+    searchAdapter = (await deps.providerRuntime.resolve(runId, "search")).searchAdapter;
+  } catch (error) {
+    if (!(error instanceof Error) || error.message !== "provider_run_binding_not_found") {
+      throw error;
+    }
+  }
+
+  return {
+    adapter: answer.adapter,
+    ...(searchAdapter ? { searchAdapter } : {}),
+    ...(answer.toolBridge ? { toolBridge: answer.toolBridge } : {})
+  };
 }
 
 function expectedActiveLeafFromBody(
@@ -229,6 +277,9 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
         },
         expectedActiveLeafId: preparedData.expectedActiveLeafId,
         ...(preparedData.mcpBindings ? { mcpBindings: preparedData.mcpBindings } : {}),
+        ...(preparedData.providerAdmissionPlan
+          ? { providerAdmissionPlan: preparedData.providerAdmissionPlan }
+          : {}),
         modelId: preparedData.normalizedRequest.modelId,
         normalizedRequest: preparedData.normalizedRequest,
         provider: preparedData.normalizedRequest.provider,
@@ -252,14 +303,24 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
         return Response.json({ error: "mcp_not_ready" }, { status: 409 });
       }
 
+      if (isProviderAdmissionConflictError(error)) {
+        return Response.json({ error: "provider_admission_changed" }, { status: 409 });
+      }
+
       throw error;
     }
+    const runtime = await acceptedRuntimeBinding(
+      deps,
+      created.runId,
+      Boolean(preparedData.providerAdmissionPlan)
+    );
     return createRunExecutionResponse({
-      adapter: preparation.adapter,
+      adapter: runtime?.adapter ?? preparation.adapter,
       created,
       prepared: preparedData,
       repository: deps.repository,
-      searchAdapter: preparation.searchAdapter,
+      searchAdapter: runtime?.searchAdapter ?? preparation.searchAdapter,
+      toolBridge: runtime?.toolBridge ?? preparation.toolBridge,
       userId: auth.userId
     });
   };
@@ -325,6 +386,9 @@ export function createRegenerateModelRunHandler(deps: RunHandlerDeps) {
           controlDefaults: { ...preparedData.defaults.controlDefaults }
         },
         ...(preparedData.mcpBindings ? { mcpBindings: preparedData.mcpBindings } : {}),
+        ...(preparedData.providerAdmissionPlan
+          ? { providerAdmissionPlan: preparedData.providerAdmissionPlan }
+          : {}),
         modelId: preparedData.normalizedRequest.modelId,
         normalizedRequest: preparedData.normalizedRequest,
         provider: preparedData.normalizedRequest.provider,
@@ -345,14 +409,24 @@ export function createRegenerateModelRunHandler(deps: RunHandlerDeps) {
         return Response.json({ error: "mcp_not_ready" }, { status: 409 });
       }
 
+      if (isProviderAdmissionConflictError(error)) {
+        return Response.json({ error: "provider_admission_changed" }, { status: 409 });
+      }
+
       throw error;
     }
+    const runtime = await acceptedRuntimeBinding(
+      deps,
+      created.runId,
+      Boolean(preparedData.providerAdmissionPlan)
+    );
     return createRunExecutionResponse({
-      adapter: preparation.adapter,
+      adapter: runtime?.adapter ?? preparation.adapter,
       created,
       prepared: preparedData,
       repository: deps.repository,
-      searchAdapter: preparation.searchAdapter,
+      searchAdapter: runtime?.searchAdapter ?? preparation.searchAdapter,
+      toolBridge: runtime?.toolBridge ?? preparation.toolBridge,
       userId: auth.userId
     });
   };
@@ -361,7 +435,13 @@ export function createRegenerateModelRunHandler(deps: RunHandlerDeps) {
 export function createGetModelRunHandler(
   deps: Pick<
     RunHandlerDeps,
-    "getConfig" | "providers" | "repository" | "resolveAuth" | "searchProviders" | "storage"
+    | "getConfig"
+    | "providerRuntime"
+    | "providers"
+    | "repository"
+    | "resolveAuth"
+    | "searchProviders"
+    | "storage"
   >
 ) {
   return async function GET(
@@ -382,7 +462,7 @@ export function createGetModelRunHandler(
     // The installation scheduler is the primary recovery owner. A GET may provide
     // a low-latency assist only when it has the complete provider-neutral adapter
     // set; otherwise it must remain a read and leave the checkpoint untouched.
-    if (deps.searchProviders) {
+    if (deps.providerRuntime || deps.searchProviders) {
       const recovery = recoveryDeps(deps);
       await refreshProviderRunIfNeeded(recovery, params.runId, auth.userId).catch(() => undefined);
       await reconcileStaleRuns(recovery, {
@@ -444,17 +524,21 @@ export function createCancelModelRunHandler(deps: RunHandlerDeps) {
     }
 
     const run = cancellation.run;
-    const adapter = deps.providers[run.provider];
     activeRunControllerRegistry.abort(run.id);
 
     let providerCancelPreview: Record<string, unknown> | undefined;
-    if (adapter?.cancel && run.providerResponseId) {
+    if (run.providerResponseId) {
       try {
-        await adapter.cancel(run.providerResponseId);
-        providerCancelPreview = {
-          provider: run.provider,
-          status: "provider_cancel_succeeded"
-        };
+        const adapter = deps.providerRuntime
+          ? (await deps.providerRuntime.resolve(run.id, "answer")).adapter
+          : deps.providers[run.provider];
+        if (adapter?.cancel) {
+          await adapter.cancel(run.providerResponseId);
+          providerCancelPreview = {
+            provider: run.provider,
+            status: "provider_cancel_succeeded"
+          };
+        }
       } catch {
         providerCancelPreview = {
           error: "Provider cancellation failed",

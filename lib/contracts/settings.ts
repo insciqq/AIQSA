@@ -21,6 +21,10 @@ function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.length > 0;
 }
 
+function isString(value: unknown): value is string {
+  return typeof value === "string";
+}
+
 function isNullableString(value: unknown): value is string | null {
   return value === null || isNonEmptyString(value);
 }
@@ -33,9 +37,9 @@ export function decodeUpdateSettingsResponse(value: unknown): UpdateSettingsResp
   const settings = value.settings;
   if (
     !isRecord(settings.defaultControlValues) ||
-    !isNonEmptyString(settings.defaultModelId) ||
+    !isString(settings.defaultModelId) ||
     !isNullableString(settings.defaultPromptPresetId) ||
-    !isNonEmptyString(settings.defaultProvider) ||
+    !isString(settings.defaultProvider) ||
     !isNonEmptyString(settings.defaultSearchStrategyId) ||
     typeof settings.showCitations !== "boolean" ||
     typeof settings.showReasoningBlocks !== "boolean" ||

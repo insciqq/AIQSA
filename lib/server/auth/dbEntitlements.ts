@@ -15,6 +15,13 @@ export async function loadEntitlementsForUser(userId: string) {
   });
   const groupIds = memberships.map((membership) => membership.groupId);
   const grants = await prisma.accessGrant.findMany({
+    include: {
+      providerModel: {
+        select: {
+          connectionId: true
+        }
+      }
+    },
     where: {
       OR: [
         {
@@ -29,5 +36,12 @@ export async function loadEntitlementsForUser(userId: string) {
     }
   });
 
-  return resolveEntitlements(userId, groupIds, grants);
+  return resolveEntitlements(
+    userId,
+    groupIds,
+    grants.map((grant) => ({
+      ...grant,
+      providerModelConnectionId: grant.providerModel?.connectionId ?? null
+    }))
+  );
 }

@@ -148,21 +148,6 @@ export async function readBoundedResponseText(
   }
 }
 
-export function sanitizeProviderErrorText(text: string, maxLength = 240): string {
-  const cleaned = text
-    .replace(/<script[\s\S]*?<\/script>/gi, " ")
-    .replace(/<style[\s\S]*?<\/style>/gi, " ")
-    .replace(/<[^>]+>/g, " ")
-    .replace(/[\u0000-\u001F\u007F]+/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-
-  return cleaned.length > maxLength ? `${cleaned.slice(0, maxLength - 3)}...` : cleaned;
-}
-
-export function providerHttpErrorMessage(provider: string, status: number, bodyText: string): string {
-  const sanitized = sanitizeProviderErrorText(bodyText);
-  const prefix = `${provider} request failed with status ${status}`;
-
-  return sanitized ? `${prefix}: ${sanitized}` : prefix;
+export function providerHttpErrorMessage(provider: string, status: number): string {
+  return `${provider} request failed with status ${status}`;
 }

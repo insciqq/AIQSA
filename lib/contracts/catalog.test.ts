@@ -1,14 +1,18 @@
 import { describe, expect, it } from "vitest";
-import { decodeCatalogResponse, type CatalogResponse } from "./catalog";
+import {
+  decodeCatalogResponse,
+  type CatalogResponse,
+  type OpenRouterRoutePreferences
+} from "./catalog";
 
 function validResponse(): CatalogResponse {
   return {
     catalog: {
       defaults: {
         controlValues: {},
-        modelId: "gpt-test",
+        modelId: "deployment-test",
         promptPresetId: "prompt-1",
-        provider: "openai",
+        provider: "connection-test",
         searchStrategyId: "search-disabled",
         showCitations: true,
         showReasoningBlocks: false,
@@ -29,7 +33,7 @@ function validResponse(): CatalogResponse {
           contextWindow: 128_000,
           defaultParams: {},
           displayName: "GPT Test",
-          modelId: "gpt-test",
+          modelId: "deployment-test",
           parameterControls: {
             background: { defaultValue: true, supported: true },
             maxOutputTokens: { defaultValue: 1024, maxValue: 4096 },
@@ -46,8 +50,10 @@ function validResponse(): CatalogResponse {
             stream: { defaultValue: false, supported: true },
             temperature: { defaultValue: 1, maxValue: 2, minValue: 0, supported: true }
           },
-          provider: "openai",
-          searchStrategyIds: ["search-disabled"]
+          provider: "connection-test",
+          providerFamily: "openai",
+          searchStrategyIds: ["search-disabled"],
+          upstreamModelId: "gpt-test"
         }
       ],
       promptPresets: [
@@ -59,14 +65,11 @@ function validResponse(): CatalogResponse {
           systemPrompt: "Help"
         }
       ],
-      providers: [{ id: "openai", models: ["gpt-test"], name: "OpenAI" }],
+      providers: [{ family: "openai", id: "connection-test", models: ["deployment-test"], name: "OpenAI" }],
       searchStrategies: [
         {
-          config: {},
-          description: "Direct answer",
           displayName: "No Search",
           kind: "none",
-          provider: "system",
           strategyId: "search-disabled"
         }
       ]
@@ -83,7 +86,10 @@ describe("catalog wire contract", () => {
           capabilities: {
             documentInputMode: "none"
           },
-          modelId: "gpt-test"
+          modelId: "deployment-test",
+          provider: "connection-test",
+          providerFamily: "openai",
+          upstreamModelId: "gpt-test"
         }
       ],
       searchStrategies: [
@@ -147,8 +153,14 @@ describe("catalog wire contract", () => {
     expect(decodeCatalogResponse(response)).toBeNull();
   });
 
-  it("validates provider routing data while keeping the shell projection narrow", () => {
-    const response = validResponse();
+  it("keeps unexpected provider routing data out of the shell projection", () => {
+    const response = validResponse() as unknown as {
+      catalog: CatalogResponse["catalog"] & {
+        models: Array<CatalogResponse["catalog"]["models"][number] & {
+          routeProviderPreferences: OpenRouterRoutePreferences;
+        }>;
+      };
+    };
     response.catalog.models[0].routeProviderPreferences = {
       allowFallbacks: false,
       dataCollection: "deny",
@@ -181,6 +193,19 @@ describe("catalog wire contract", () => {
       models: [],
       providers: [],
       searchStrategies: []
+    });
+  });
+
+  it("accepts an explicit empty selection when no deployment is available", () => {
+    const response = validResponse();
+    response.catalog.defaults.modelId = "";
+    response.catalog.defaults.provider = "";
+    response.catalog.models = [];
+    response.catalog.providers = [];
+
+    expect(decodeCatalogResponse(response)?.defaults).toMatchObject({
+      modelId: "",
+      provider: ""
     });
   });
 
@@ -231,7 +256,7 @@ describe("catalog wire contract", () => {
     expect(decodeCatalogResponse(malformedResponse)).toBeNull();
   });
 
-  it("rejects malformed optional search-strategy wire data", () => {
+  it("keeps unexpected technical search-strategy data out of the decoded projection", () => {
     const response = validResponse();
     const malformedResponse = {
       catalog: {
@@ -245,11 +270,14 @@ describe("catalog wire contract", () => {
       }
     };
 
-    expect(decodeCatalogResponse(malformedResponse)).toBeNull();
+    expect(decodeCatalogResponse(malformedResponse)?.searchStrategies[0]).toEqual({
+      displayName: "No Search",
+      kind: "none",
+      strategyId: "search-disabled"
+    });
   });
 
   it.each([
-    ["default model", (response: CatalogResponse) => (response.catalog.defaults.modelId = "")],
     ["model id", (response: CatalogResponse) => (response.catalog.models[0].modelId = "")],
     ["prompt name", (response: CatalogResponse) => (response.catalog.promptPresets[0].name = "")],
     ["provider id", (response: CatalogResponse) => (response.catalog.providers[0].id = "")],

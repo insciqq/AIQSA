@@ -3,6 +3,7 @@ import { textMessageContent } from "../../domain/content";
 import { invalidRunParamsError } from "../../domain/runParams";
 import type { ResolvedEntitlements } from "../auth/entitlements";
 import type { McpRunPlanResult } from "../mcp/runPlan";
+import type { ProviderAdmissionPlan } from "../providerRuntime/admission";
 import type {
   NormalizedRunRequest,
   ProviderAdapter,
@@ -110,6 +111,57 @@ function readyMcpPlan(): McpRunPlanResult {
       }],
       version: 1
     }
+  };
+}
+
+function compatibleAdmissionPlan(
+  adapterKind: "openai_chat_completions_compatible" | "openai_responses_compatible"
+): ProviderAdmissionPlan {
+  const capabilities: ProviderModelCapabilities = {
+    ...baseCapabilities,
+    nativeSearch: false,
+    toolCalling: true
+  };
+  const defaultParams = {
+    background: false,
+    manualContextReplay: true,
+    maxOutputTokens: 512,
+    store: false,
+    stream: false,
+    temperature: 1
+  };
+  return {
+    answer: {
+      credentialSource: "default",
+      modelConfiguration: { adapterKind, capabilities, defaultParams },
+      snapshot: {
+        connection: {
+          allowPrivateNetwork: false,
+          apiRoot: "https://compatible.example.test/v1"
+        },
+        connectionDisplayName: "Compatible endpoint",
+        connectionId: "connection-compatible",
+        credentialId: "credential-compatible",
+        credentialVersionId: "credential-version-compatible",
+        model: {
+          adapterKind,
+          capabilities,
+          defaultParams,
+          upstreamModelId: "vendor/model"
+        },
+        modelDisplayName: "Vendor model",
+        providerFamily: "openai_compatible",
+        providerModelId: "deployment-compatible",
+        version: 1
+      }
+    },
+    fingerprint: "a".repeat(64),
+    requestedSearchStrategyId: "search-disabled",
+    selection: {
+      providerConnectionId: "connection-compatible",
+      providerModelId: "deployment-compatible"
+    },
+    userId: "user-1"
   };
 }
 
@@ -984,6 +1036,41 @@ describe("run preparation", () => {
 
     expect(prepared.normalizedRequest.mcp).toEqual(mcpPlan.ok ? mcpPlan.snapshot : undefined);
     expect(prepared.mcpBindings).toEqual(mcpPlan.ok ? mcpPlan.bindings : undefined);
+  });
+
+  it.each([
+    "openai_responses_compatible",
+    "openai_chat_completions_compatible"
+  ] as const)("keeps the accepted %s tool bridge with the opaque deployment", async (adapterKind) => {
+    const plan = compatibleAdmissionPlan(adapterKind);
+    const harness = createHarness({ mcpPlan: readyMcpPlan() });
+    const result = await prepareRun(
+      {
+        ...harness.deps,
+        allowFakeProvider: false,
+        providerAdmission: { async load() { return plan; } }
+      },
+      sendInput(successBody({
+        modelId: plan.selection.providerModelId,
+        provider: plan.selection.providerConnectionId
+      }))
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.code);
+    const prepared = materializePreparedRunData(result.prepared);
+    expect(result.toolBridge?.provider).toBe("openai_compatible");
+    expect(result.toolBridge?.supportsToolCalling({
+      modelId: prepared.normalizedRequest.modelId,
+      provider: prepared.normalizedRequest.provider
+    })).toBe(true);
+    expect(prepared.normalizedRequest).toMatchObject({
+      modelId: "vendor/model",
+      provider: "openai_compatible"
+    });
+    expect(prepared.providerRequest.tools?.map((tool) => tool.name)).toEqual([
+      "mcp_team_lookup_1"
+    ]);
   });
 
   it("rejects an initial MCP request when its exact provider tool schema exceeds context", async () => {

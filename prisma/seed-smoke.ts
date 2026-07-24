@@ -1,5 +1,7 @@
 import { PrismaClient } from "@prisma/client";
 import { getVisibleMessagePath } from "../lib/domain/branching";
+import { defaultProviderModels, defaultSearchStrategies } from "../lib/domain/catalog";
+import { providerConnectionTemplates } from "../lib/domain/providerTemplates";
 import { verifyPassword } from "../lib/server/auth/password";
 import { LOCAL_OPERATOR_EMAIL, LOCAL_OPERATOR_PASSWORD } from "./local-seed-auth";
 import {
@@ -67,8 +69,89 @@ async function main() {
     chat.activeLeafMessageId
   );
 
-  const providerModelCount = await prisma.providerModel.count();
-  const searchStrategyCount = await prisma.searchStrategy.count();
+  const expectedModelTemplateKeys = defaultProviderModels.map(
+    (model) => `${model.provider}:${model.modelId}`
+  );
+  const [providerConnections, providerModels, searchStrategies] = await Promise.all([
+    prisma.providerConnection.findMany({
+      where: {
+        templateKey: { in: providerConnectionTemplates.map((template) => template.templateKey) }
+      }
+    }),
+    prisma.providerModel.findMany({
+      where: { templateKey: { in: expectedModelTemplateKeys } }
+    }),
+    prisma.searchStrategy.findMany({
+      where: {
+        strategyId: { in: defaultSearchStrategies.map((strategy) => strategy.strategyId) }
+      }
+    })
+  ]);
+  const fakeModel = providerModels.find((model) => model.templateKey === "fake:fake-qsa");
+
+  if (
+    providerConnections.length !== providerConnectionTemplates.length ||
+    providerModels.length !== defaultProviderModels.length ||
+    searchStrategies.length !== defaultSearchStrategies.length ||
+    !fakeModel ||
+    !fakeModel.enabled ||
+    fakeModel.activeVersion !== 1 ||
+    !fakeModel.activeConfig ||
+    !fakeModel.activatedAt
+  ) {
+    throw new Error("Seed smoke did not find the complete provider template catalog");
+  }
+  if (
+    user.settings.defaultProviderModelId !== fakeModel.id ||
+    user.settings.defaultSearchStrategyId !== "search-disabled" ||
+    chat.defaultProviderModelId !== fakeModel.id
+  ) {
+    throw new Error("Seed smoke found inconsistent stable Fake defaults");
+  }
+
+  for (const template of providerConnectionTemplates) {
+    const connection = providerConnections.find(
+      (candidate) => candidate.templateKey === template.templateKey
+    );
+    const active = template.family === "fake";
+    if (
+      !connection ||
+      connection.enabled !== active ||
+      connection.activeVersion !== (active ? 1 : 0) ||
+      Boolean(connection.activeConfig) !== active ||
+      Boolean(connection.activatedAt) !== active ||
+      connection.defaultCredentialId !== null
+    ) {
+      throw new Error(`Seed smoke found invalid provider connection state: ${template.templateKey}`);
+    }
+  }
+
+  for (const model of providerModels) {
+    const active = model.templateKey === "fake:fake-qsa";
+    if (
+      model.enabled !== active ||
+      model.activeVersion !== (active ? 1 : 0) ||
+      Boolean(model.activeConfig) !== active ||
+      Boolean(model.activatedAt) !== active
+    ) {
+      throw new Error(`Seed smoke found invalid provider model state: ${model.templateKey}`);
+    }
+  }
+
+  const modelIdByTemplate = new Map(
+    providerModels.map((model) => [model.templateKey, model.id])
+  );
+  for (const strategyTemplate of defaultSearchStrategies) {
+    const strategy = searchStrategies.find(
+      (candidate) => candidate.strategyId === strategyTemplate.strategyId
+    );
+    const expectedProviderModelId = strategyTemplate.kind === "perplexity_tool_search"
+      ? modelIdByTemplate.get(`${strategyTemplate.provider}:${strategyTemplate.modelId}`)
+      : null;
+    if (!strategy || strategy.providerModelId !== expectedProviderModelId) {
+      throw new Error(`Seed smoke found invalid search deployment: ${strategyTemplate.strategyId}`);
+    }
+  }
 
   const ordinaryUsers = await prisma.user.findMany({
     include: {
@@ -91,7 +174,7 @@ async function main() {
     );
     if (!ordinary || ordinary.email !== fixture.email || ordinary.role !== "user" ||
       ordinary.status !== "active" || !ordinary.settings ||
-      ordinary.settings.defaultProvider !== "fake" || ordinary.settings.defaultModelId !== "fake-qsa" ||
+      ordinary.settings.defaultProviderModelId !== fakeModel.id ||
       ordinary.settings.defaultSearchStrategyId !== "search-disabled" ||
       !ordinary.groups.some((membership) => membership.groupId === LOCAL_MCP_FIXTURE_GROUP.id) ||
       !identity || !await verifyPassword(fixture.password, identity.passwordHash)) {
@@ -120,8 +203,9 @@ async function main() {
       where: {
         enabled: true,
         groupId: LOCAL_MCP_FIXTURE_GROUP.id,
-        modelId: "fake-qsa",
-        provider: "fake"
+        providerConnectionId: null,
+        providerModelId: fakeModel.id,
+        searchStrategy: null
       }
     })
   ]);
@@ -137,12 +221,12 @@ async function main() {
     throw new Error("Seed smoke did not find the expected ordinary-user MCP grant matrix");
   }
 
-  if (path.length < 2 || providerModelCount < 5 || searchStrategyCount < 3) {
+  if (path.length < 2) {
     throw new Error("Seed smoke did not find the expected demo data");
   }
 
   console.log(
-    `AIQSA seed smoke ok: chats=${user.chats.length}, visiblePath=${path.length}, models=${providerModelCount}, searchStrategies=${searchStrategyCount}, ordinaryUsers=${ordinaryUsers.length}`
+    `AIQSA seed smoke ok: chats=${user.chats.length}, visiblePath=${path.length}, models=${providerModels.length}, searchStrategies=${searchStrategies.length}, ordinaryUsers=${ordinaryUsers.length}`
   );
 }
 

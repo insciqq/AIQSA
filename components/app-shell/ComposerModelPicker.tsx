@@ -74,9 +74,9 @@ export function ComposerModelPicker({
           }
 
           return [
-            provider.id,
+            provider.family ?? provider.id,
             provider.name,
-            candidate.modelId,
+            candidate.upstreamModelId ?? candidate.modelId,
             candidate.displayName,
             modelCapabilityLabel(candidate),
             modelCapabilityDescription(candidate)
@@ -238,7 +238,7 @@ export function ComposerModelPicker({
             {filteredModelGroups.length === 0 ? (
               <div className="rounded-control bg-surface-thread px-4 py-6 text-center" role="status">
                 <p className="text-sm font-medium text-content-primary">No models match {query.trim() ? `“${query.trim()}”` : "this search"}.</p>
-                <p className="mt-1 text-xs text-content-muted">Try a provider, model name, raw id, or capability.</p>
+                <p className="mt-1 text-xs text-content-muted">Try a provider, model name, or capability.</p>
               </div>
             ) : null}
             {filteredModelGroups.map((provider, providerIndex) => {
@@ -247,15 +247,23 @@ export function ComposerModelPicker({
 
               return (
                 <section key={provider.id} aria-labelledby={providerHeadingId}>
-                  <div className="mb-1 flex items-center justify-between gap-3 px-3 py-2 text-content-secondary">
+                  <header className="mb-1 grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 rounded-control bg-surface-raised px-3 py-2">
                     <span className="min-w-0">
+                      <span
+                        className="block text-[11px] font-medium leading-4 text-content-muted"
+                        aria-hidden="true"
+                      >
+                        Provider
+                      </span>
                       <h3 className="truncate text-sm font-semibold text-content-primary" id={providerHeadingId}>{provider.name}</h3>
-                      <span className="block text-xs text-content-muted">
+                    </span>
+                    <span className="flex shrink-0 flex-col items-end gap-0.5 text-xs text-content-muted">
+                      <span>
                         {provider.models.length} {provider.models.length === 1 ? "model" : "models"}
                       </span>
+                      {currentProvider ? <span>Current group</span> : null}
                     </span>
-                    {currentProvider ? <span className="shrink-0 text-xs text-content-muted">Current group</span> : null}
-                  </div>
+                  </header>
                   <div className="space-y-1">
                     {provider.models.map((model) => {
                       const active = model.provider === selectedProvider && model.modelId === selectedModelId;
@@ -280,27 +288,20 @@ export function ComposerModelPicker({
                           aria-current={active ? "true" : undefined}
                           aria-label={`Select model ${provider.name} ${model.displayName}`}
                           aria-describedby={[
-                            `model-picker-model-${actionIndex}-identity`,
                             `model-picker-model-${actionIndex}-capabilities`,
                             active ? `model-picker-model-${actionIndex}-current` : null,
                             isDefault ? `model-picker-model-${actionIndex}-default` : null
                           ]
                             .filter((id): id is string => Boolean(id))
                             .join(" ")}
-                          title={`${provider.name} / ${model.displayName}\n${model.provider}:${model.modelId}\n${modelCapabilityDescription(model)}`}
+                          title={`${provider.name} / ${model.displayName}\n${modelCapabilityDescription(model)}`}
                         >
                           <span className="min-w-0 flex-1">
                             <span className="block break-words text-sm font-semibold leading-5 text-content-primary [overflow-wrap:anywhere]">
                               {model.displayName}
                             </span>
                             <span
-                              className="mt-0.5 block break-all font-mono text-xs text-content-muted"
-                              id={`model-picker-model-${actionIndex}-identity`}
-                            >
-                              {model.provider}:{model.modelId}
-                            </span>
-                            <span
-                              className="mt-1 block text-xs leading-5 text-content-secondary"
+                              className="mt-0.5 block text-xs leading-5 text-content-secondary"
                               id={`model-picker-model-${actionIndex}-capabilities`}
                             >
                               {modelCapabilityDescription(model)}

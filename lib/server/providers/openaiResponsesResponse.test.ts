@@ -58,8 +58,11 @@ async function collectSse(input: ParseOpenAIResponsesSseInput): Promise<{
 }
 
 describe("OpenAI Responses response normalization", () => {
+  const remoteSecret = "sk-aiqsa-remote-error-regression-123456789";
+
   it("classifies polling, terminal, failed, missing, and unknown response statuses", () => {
     expect(openAIResponseStatus({})).toBe("unknown");
+    expect(openAIResponseStatus({ status: remoteSecret })).toBe("unknown");
     expect(shouldPollOpenAIResponse({ status: "queued" })).toBe(true);
     expect(shouldPollOpenAIResponse({ status: "in_progress" })).toBe(true);
     expect(shouldPollOpenAIResponse({ status: "completed" })).toBe(false);
@@ -108,6 +111,7 @@ describe("OpenAI Responses response normalization", () => {
 
   it("normalizes completed text, usage, search, reasoning, citations, and tool continuation", () => {
     const response = {
+      error: { code: remoteSecret, message: `must not persist ${remoteSecret}` },
       id: "resp-complete",
       model: "gpt-5.5",
       output: [
@@ -219,6 +223,7 @@ describe("OpenAI Responses response normalization", () => {
         totalTokens: 16
       }
     });
+    expect(JSON.stringify(normalized.result.finalProviderResponsePreview)).not.toContain(remoteSecret);
   });
 
   it("sanitizes visible debug templates while retaining raw text in the provider preview", () => {
@@ -364,16 +369,23 @@ describe("OpenAI Responses response normalization", () => {
     await expect(empty.next()).rejects.toThrow("openai_stream_truncated");
   });
 
-  it("preserves stream error precedence", async () => {
+  it("collapses remote stream error details to a stable local code", async () => {
     const errorStream = parseOpenAIResponsesSse(
-      sseInput(['event: error\ndata: {"error":{"code":"overloaded","message":"Provider overloaded"}}\n\n'])
+      sseInput([`event: error\ndata: {"error":{"code":"overloaded","message":"${remoteSecret}"}}\n\n`])
     );
-    await expect(errorStream.next()).rejects.toThrow("Provider overloaded");
+    let failure: unknown;
+    try {
+      await errorStream.next();
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toMatchObject({ message: "openai_stream_error" });
+    expect((failure as Error).message).not.toContain(remoteSecret);
 
     const codeOnlyStream = parseOpenAIResponsesSse(
       sseInput(['event: response.in_progress\ndata: {"error":{"code":"temporary_failure"}}\n\n'])
     );
-    await expect(codeOnlyStream.next()).rejects.toThrow("temporary_failure");
+    await expect(codeOnlyStream.next()).rejects.toThrow("openai_stream_error");
   });
 
   it.each([

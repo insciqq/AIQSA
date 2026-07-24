@@ -1,7 +1,4 @@
-import {
-  createProviderAdaptersFromEnv,
-  createSearchProviderAdaptersFromEnv
-} from "../providers/registry";
+import { providerRuntimeResolver } from "../providerRuntime/defaultRuntime";
 import { createS3StorageAdapter } from "../uploads/storage";
 import { activeRunControllerRegistry } from "./runExecution";
 import { createPrismaRunRepository } from "./prismaRepository";
@@ -15,10 +12,10 @@ const globalForRecoveryScheduler = globalThis as unknown as {
 export function getDefaultRunRecoveryScheduler(): RunRecoveryScheduler {
   if (!globalForRecoveryScheduler.__aiqsaRunRecoveryScheduler) {
     const deps = {
-      providers: createProviderAdaptersFromEnv(),
+      providerRuntime: providerRuntimeResolver,
+      providers: {},
       registry: activeRunControllerRegistry,
       repository: createPrismaRunRepository(),
-      searchProviders: createSearchProviderAdaptersFromEnv(),
       storage: createS3StorageAdapter()
     };
     globalForRecoveryScheduler.__aiqsaRunRecoveryScheduler = new RunRecoveryScheduler({

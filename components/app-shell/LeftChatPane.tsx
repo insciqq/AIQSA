@@ -1,4 +1,3 @@
-import { providerDisplayName } from "@/components/app-shell/providerDisplay";
 import { isImeCompositionEvent } from "@/components/keyboard";
 import type { ChatGroup, ChatSummary, FolderSummary } from "@/components/app-shell/types";
 import {
@@ -25,6 +24,7 @@ type LeftChatPaneProps = {
   activeChatId: string | null;
   activeRunChatIds: ReadonlySet<string>;
   availableChatModelKeys: ReadonlySet<string> | null;
+  chatModelLabels: ReadonlyMap<string, string> | null;
   chatActionId: string | null;
   chatContentMatchIds: ReadonlySet<string>;
   chatContentSearchError: string | null;
@@ -141,6 +141,7 @@ function LeftChatPaneComponent({
   activeChatId,
   activeRunChatIds,
   availableChatModelKeys,
+  chatModelLabels,
   chatActionId,
   chatContentMatchIds,
   chatContentSearchError,
@@ -886,7 +887,12 @@ function LeftChatPaneComponent({
                     const favorite = Boolean(chat.pinned);
                     const contentMatched = chatContentMatchIds.has(chat.id);
                     const titleMatched = queryActive && normalizedTitle(chat.title).includes(query);
-                    const modelMetadata = `${chat.defaultProvider} ${chat.defaultModelId}`.toLocaleLowerCase();
+                    const modelKey = chatModelKey(chat);
+                    const modelMetadata = [
+                      chat.defaultProvider,
+                      chat.defaultModelId,
+                      chatModelLabels?.get(modelKey) ?? ""
+                    ].join(" ").toLocaleLowerCase();
                     const modelMatched = queryActive && !titleMatched && modelMetadata.includes(query);
                     const matchLabel = titleMatched
                       ? "Title match"
@@ -897,9 +903,9 @@ function LeftChatPaneComponent({
                           : null;
                     const duplicate = (duplicateTitleCounts.get(normalizedTitle(chat.title)) ?? 0) > 1;
                     const unavailable =
-                      availableChatModelKeys !== null && !availableChatModelKeys.has(chatModelKey(chat));
+                      availableChatModelKeys !== null && !availableChatModelKeys.has(modelKey);
                     const showMetadata = duplicate || modelMatched || unavailable;
-                    const providerModel = `${providerDisplayName(chat.defaultProvider)} · ${chat.defaultModelId}`;
+                    const providerModel = chatModelLabels?.get(modelKey) ?? "Unavailable model";
                     const updated = formatChatDate(chat.updatedAt);
                     const activationLabel = duplicate
                       ? `${chat.title}, ${providerModel}, updated ${updated}`
@@ -1192,6 +1198,7 @@ function sameLeftPaneData(prev: LeftChatPaneProps, next: LeftChatPaneProps): boo
     prev.activeChatId === next.activeChatId &&
     prev.activeRunChatIds === next.activeRunChatIds &&
     prev.availableChatModelKeys === next.availableChatModelKeys &&
+    prev.chatModelLabels === next.chatModelLabels &&
     prev.chatActionId === next.chatActionId &&
     prev.chatContentMatchIds === next.chatContentMatchIds &&
     prev.chatContentSearchError === next.chatContentSearchError &&

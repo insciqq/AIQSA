@@ -90,6 +90,26 @@ enum ModelRunToolCallState {
   cancelled
 }
 
+enum ProviderUnassignedPolicy {
+  use_default
+  require_assignment
+}
+
+enum ProviderCredentialCheckStatus {
+  available
+  unavailable
+}
+
+enum ProviderRunRole {
+  answer
+  search
+}
+
+enum ProviderCredentialSource {
+  default
+  group
+}
+
 model User {
   id                     String               @id @default(uuid())
   email                  String?              @unique
@@ -117,7 +137,39 @@ model User {
   promptPresets          PromptPreset[]
   settings               UserSettings?
   sharedSnapshots        SharedChatSnapshot[]
+  smtpActivations        SmtpControl[]         @relation("SmtpControlActivator")
+  smtpConfigurationEdits SmtpControl[]         @relation("SmtpControlUpdater")
   usageEvents            UsageEvent[]
+}
+
+model SmtpControl {
+  id                           String    @id
+  draftConfig                  Json?
+  draftPasswordEnvelope        String?
+  draftSecretGeneration        Int?
+  draftVersion                 Int       @default(0)
+  testedDraftVersion           Int?
+  draftTestVersion             Int?
+  draftTestAt                  DateTime?
+  draftTestCode                String?
+  activeConfig                 Json?
+  activePasswordEnvelope       String?
+  activeSecretGeneration       Int?
+  activeVersion                Int       @default(0)
+  enabled                      Boolean   @default(false)
+  secretGenerationCounter      Int       @default(0)
+  healthActiveVersion          Int?
+  lastAttemptAt                DateTime?
+  lastAcceptedAt               DateTime?
+  lastFailureAt                DateTime?
+  lastFailureCode              String?
+  configurationUpdatedAt       DateTime?
+  configurationUpdatedByUserId String?
+  activatedAt                  DateTime?
+  activatedByUserId            String?
+  createdAt                    DateTime  @default(now())
+  activatedBy                  User?     @relation("SmtpControlActivator", fields: [activatedByUserId], references: [id], onDelete: SetNull)
+  configurationUpdatedBy       User?     @relation("SmtpControlUpdater", fields: [configurationUpdatedByUserId], references: [id], onDelete: SetNull)
 }
 
 model AuthIdentity {
@@ -247,16 +299,17 @@ model AuthFlowToken {
 }
 
 model Group {
-  id                     String                @id @default(uuid())
-  name                   String                @unique
-  archivedAt             DateTime?
-  createdAt              DateTime              @default(now())
-  updatedAt              DateTime              @updatedAt
-  accessGrants           AccessGrant[]
-  authAccessRuleDefaults AuthAccessRuleGroup[]
-  authInviteDefaults     AuthInviteGroup[]
-  mcpGrants              McpGrant[]
-  users                  UserGroup[]
+  id                            String                              @id @default(uuid())
+  name                          String                              @unique
+  archivedAt                    DateTime?
+  createdAt                     DateTime                            @default(now())
+  updatedAt                     DateTime                            @updatedAt
+  accessGrants                  AccessGrant[]
+  authAccessRuleDefaults        AuthAccessRuleGroup[]
+  authInviteDefaults            AuthInviteGroup[]
+  mcpGrants                     McpGrant[]
+  providerCredentialAssignments ProviderGroupCredentialAssignment[]
+  users                         UserGroup[]
 
   @@index([archivedAt])
 }
@@ -273,37 +326,42 @@ model UserGroup {
 }
 
 model UserSettings {
-  id                      String   @id @default(uuid())
-  userId                  String   @unique
-  defaultProvider         String
-  defaultModelId          String
+  id                      String         @id @default(uuid())
+  userId                  String         @unique
+  defaultProviderModelId  String?
   defaultPromptPresetId   String?
   defaultFolderId         String?
-  defaultSearchStrategyId String   @default("openai-native-web-search")
-  defaultControlValues    Json     @default("{}")
-  showCitations           Boolean  @default(true)
-  showReasoningBlocks     Boolean  @default(false)
-  showToolActivity        Boolean  @default(true)
-  createdAt               DateTime @default(now())
-  updatedAt               DateTime @updatedAt
-  user                    User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  defaultSearchStrategyId String         @default("openai-native-web-search")
+  defaultControlValues    Json           @default("{}")
+  showCitations           Boolean        @default(true)
+  showReasoningBlocks     Boolean        @default(false)
+  showToolActivity        Boolean        @default(true)
+  createdAt               DateTime       @default(now())
+  updatedAt               DateTime       @updatedAt
+  user                    User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  defaultProviderModel    ProviderModel? @relation("UserDefaultProviderModel", fields: [defaultProviderModelId], references: [id], onDelete: Restrict)
+
+  @@index([defaultProviderModelId])
 }
 
 model AccessGrant {
-  id             String   @id @default(uuid())
-  userId         String?
-  groupId        String?
-  provider       String?
-  modelId        String?
-  searchStrategy String?
-  enabled        Boolean  @default(true)
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
-  group          Group?   @relation(fields: [groupId], references: [id], onDelete: Cascade)
-  user           User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id                   String              @id @default(uuid())
+  userId               String?
+  groupId              String?
+  providerConnectionId String?
+  providerModelId      String?
+  searchStrategy       String?
+  enabled              Boolean             @default(true)
+  createdAt            DateTime            @default(now())
+  updatedAt            DateTime            @updatedAt
+  group                Group?              @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  providerConnection   ProviderConnection? @relation(fields: [providerConnectionId], references: [id], onDelete: Restrict)
+  providerModel        ProviderModel?      @relation(fields: [providerModelId], references: [id], onDelete: Restrict)
+  user                 User?               @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([groupId])
-  @@index([provider, modelId])
+  @@index([providerConnectionId])
+  @@index([providerModelId])
   @@index([searchStrategy])
   @@index([userId])
 }
@@ -344,66 +402,242 @@ model PromptPreset {
 }
 
 model ProviderModel {
-  id                     String   @id @default(uuid())
+  id                     String                         @id @default(uuid())
+  connectionId           String
+  templateKey            String?                        @unique
   provider               String
   modelId                String
   displayName            String
   contextWindow          Int
-  inputTokenPriceMicros  Int      @default(0)
-  outputTokenPriceMicros Int      @default(0)
-  supportsVision         Boolean  @default(false)
-  supportsPdf            Boolean  @default(false)
-  supportsReasoning      Boolean  @default(false)
-  supportsNativeSearch   Boolean  @default(false)
-  enabled                Boolean  @default(true)
+  inputTokenPriceMicros  Int                            @default(0)
+  outputTokenPriceMicros Int                            @default(0)
+  supportsVision         Boolean                        @default(false)
+  supportsPdf            Boolean                        @default(false)
+  supportsReasoning      Boolean                        @default(false)
+  supportsNativeSearch   Boolean                        @default(false)
+  enabled                Boolean                        @default(true)
+  draftConfig            Json                           @default("{}")
+  draftVersion           Int                            @default(1)
+  activeConfig           Json?
+  activeVersion          Int                            @default(0)
+  activatedAt            DateTime?
   capabilities           Json
   defaultParams          Json
-  createdAt              DateTime @default(now())
-  updatedAt              DateTime @updatedAt
+  createdAt              DateTime                       @default(now())
+  updatedAt              DateTime                       @updatedAt
+  accessGrants           AccessGrant[]
+  activeCredentialChecks ProviderModelCredentialCheck[]
+  connection             ProviderConnection             @relation(fields: [connectionId], references: [id], onDelete: Restrict)
+  draftChecks            ProviderDraftCheck[]
+  providerRunBindings    ProviderRunBinding[]
+  searchStrategies       SearchStrategy[]
+  chatDefaults           Chat[]                         @relation("ChatDefaultProviderModel")
+  userDefaults           UserSettings[]                 @relation("UserDefaultProviderModel")
 
-  @@unique([provider, modelId])
+  @@unique([connectionId, id])
+  @@index([provider, modelId])
+  @@index([connectionId, enabled])
   @@index([provider, enabled])
 }
 
+model ProviderConnection {
+  id                  String                   @id @default(uuid())
+  templateKey         String?                  @unique
+  displayName         String
+  family              String
+  enabled             Boolean                  @default(false)
+  unassignedPolicy    ProviderUnassignedPolicy @default(use_default)
+  defaultCredentialId String?
+  draftConfig         Json                     @default("{}")
+  draftVersion        Int                      @default(1)
+  activeConfig        Json?
+  activeVersion       Int                      @default(0)
+  activatedAt         DateTime?
+  createdAt           DateTime                 @default(now())
+  updatedAt           DateTime                 @updatedAt
+  accessGrants        AccessGrant[]
+  credentials         ProviderCredential[]     @relation("ProviderConnectionCredentials")
+  defaultCredential   ProviderCredential?      @relation("ProviderConnectionDefaultCredential", fields: [id, defaultCredentialId], references: [connectionId, id], onDelete: Restrict, onUpdate: Restrict, map: "ProviderConnection_defaultCredential_fkey")
+  models              ProviderModel[]
+
+  @@index([enabled])
+}
+
+model ProviderCredential {
+  id                     String                              @id @default(uuid())
+  connectionId           String
+  label                  String
+  enabled                Boolean                             @default(false)
+  draftSecretEnvelope    String?
+  draftVersion           Int                                 @default(0)
+  activeVersionId        String?
+  testedAt               DateTime?
+  activatedAt            DateTime?
+  createdAt              DateTime                            @default(now())
+  updatedAt              DateTime                            @updatedAt
+  activeCredentialChecks ProviderModelCredentialCheck[]
+  activeVersion          ProviderCredentialVersion?          @relation("ProviderCredentialActiveVersion", fields: [id, activeVersionId], references: [credentialId, id], onDelete: Restrict, onUpdate: Restrict, map: "ProviderCredential_activeVersion_fkey")
+  connection             ProviderConnection                  @relation("ProviderConnectionCredentials", fields: [connectionId], references: [id], onDelete: Restrict)
+  defaultForConnections  ProviderConnection[]                @relation("ProviderConnectionDefaultCredential")
+  draftChecks            ProviderDraftCheck[]
+  groupAssignments       ProviderGroupCredentialAssignment[]
+  providerRunBindings    ProviderRunBinding[]
+  versions               ProviderCredentialVersion[]         @relation("ProviderCredentialVersions")
+
+  @@unique([connectionId, id])
+  @@unique([connectionId, label])
+  @@unique([id, activeVersionId])
+  @@index([connectionId, enabled])
+}
+
+model ProviderCredentialVersion {
+  id                     String                         @id @default(uuid())
+  credentialId           String
+  version                Int
+  secretEnvelope         String?
+  testEvidence           Json
+  testedAt               DateTime
+  activatedAt            DateTime
+  revokedAt              DateTime?
+  createdAt              DateTime                       @default(now())
+  activeFor              ProviderCredential?            @relation("ProviderCredentialActiveVersion")
+  activeCredentialChecks ProviderModelCredentialCheck[]
+  credential             ProviderCredential             @relation("ProviderCredentialVersions", fields: [credentialId], references: [id], onDelete: Restrict)
+  draftChecks            ProviderDraftCheck[]
+  providerRunBindings    ProviderRunBinding[]
+
+  @@unique([credentialId, id])
+  @@unique([credentialId, version])
+  @@index([revokedAt])
+}
+
+model ProviderGroupCredentialAssignment {
+  connectionId String
+  groupId      String
+  credentialId String
+  createdAt    DateTime           @default(now())
+  updatedAt    DateTime           @updatedAt
+  credential   ProviderCredential @relation(fields: [connectionId, credentialId], references: [connectionId, id], onDelete: Restrict, onUpdate: Restrict, map: "ProviderGroupAssignment_credential_fkey")
+  group        Group              @relation(fields: [groupId], references: [id], onDelete: Restrict, map: "ProviderGroupAssignment_group_fkey")
+
+  @@id([connectionId, groupId])
+  @@index([credentialId])
+  @@index([groupId])
+}
+
+model ProviderDraftCheck {
+  id                     String                        @id @default(uuid())
+  fingerprint            String                        @unique
+  connectionId           String
+  providerModelId        String
+  credentialId           String
+  credentialVersionId    String?
+  credentialDraftVersion Int?
+  connectionDraftVersion Int
+  modelDraftVersion      Int
+  status                 ProviderCredentialCheckStatus
+  evidence               Json?
+  checkedAt              DateTime
+  createdAt              DateTime                      @default(now())
+  credential             ProviderCredential            @relation(fields: [connectionId, credentialId], references: [connectionId, id], onDelete: Cascade, onUpdate: Restrict, map: "ProviderDraftCheck_credential_fkey")
+  credentialVersion      ProviderCredentialVersion?    @relation(fields: [credentialId, credentialVersionId], references: [credentialId, id], onDelete: Cascade, onUpdate: Restrict, map: "ProviderDraftCheck_version_fkey")
+  model                  ProviderModel                 @relation(fields: [connectionId, providerModelId], references: [connectionId, id], onDelete: Cascade, onUpdate: Restrict, map: "ProviderDraftCheck_model_fkey")
+
+  @@index([connectionId, providerModelId])
+  @@index([credentialId, credentialVersionId])
+}
+
+model ProviderModelCredentialCheck {
+  id                  String                        @id @default(uuid())
+  connectionId        String
+  providerModelId     String
+  credentialId        String
+  credentialVersionId String
+  connectionVersion   Int
+  modelVersion        Int
+  status              ProviderCredentialCheckStatus
+  evidence            Json?
+  latestRefreshError  Json?
+  checkedAt           DateTime
+  refreshFailedAt     DateTime?
+  createdAt           DateTime                      @default(now())
+  updatedAt           DateTime                      @updatedAt
+  credential          ProviderCredential            @relation(fields: [connectionId, credentialId], references: [connectionId, id], onDelete: Cascade, onUpdate: Restrict, map: "ProviderModelCredentialCheck_credential_fkey")
+  credentialVersion   ProviderCredentialVersion     @relation(fields: [credentialId, credentialVersionId], references: [credentialId, id], onDelete: Cascade, onUpdate: Restrict, map: "ProviderModelCredentialCheck_version_fkey")
+  model               ProviderModel                 @relation(fields: [connectionId, providerModelId], references: [connectionId, id], onDelete: Cascade, onUpdate: Restrict, map: "ProviderModelCredentialCheck_model_fkey")
+
+  @@unique([providerModelId, credentialVersionId, connectionVersion, modelVersion], map: "ProviderModelCredentialCheck_tuple_key")
+  @@index([connectionId, providerModelId], map: "ProviderModelCredentialCheck_connection_model_idx")
+  @@index([credentialId, credentialVersionId], map: "ProviderModelCredentialCheck_credential_version_idx")
+}
+
+model ProviderRunBinding {
+  id                  String                     @id @default(uuid())
+  modelRunId          String
+  role                ProviderRunRole
+  connectionId        String?
+  providerModelId     String?
+  credentialId        String?
+  credentialVersionId String?
+  credentialSource    ProviderCredentialSource
+  executionSnapshot   Json
+  recoverableUntil    DateTime?
+  createdAt           DateTime                   @default(now())
+  credential          ProviderCredential?        @relation(fields: [connectionId, credentialId], references: [connectionId, id], onDelete: Restrict, onUpdate: Restrict, map: "ProviderRunBinding_credential_fkey")
+  credentialVersion   ProviderCredentialVersion? @relation(fields: [credentialId, credentialVersionId], references: [credentialId, id], onDelete: Restrict, onUpdate: Restrict, map: "ProviderRunBinding_version_fkey")
+  model               ProviderModel?             @relation(fields: [connectionId, providerModelId], references: [connectionId, id], onDelete: Restrict, onUpdate: Restrict, map: "ProviderRunBinding_model_fkey")
+  modelRun            ModelRun                   @relation(fields: [modelRunId], references: [id], onDelete: Cascade)
+
+  @@unique([modelRunId, role])
+  @@index([connectionId, providerModelId], map: "ProviderRunBinding_connection_model_idx")
+  @@index([credentialId, credentialVersionId], map: "ProviderRunBinding_credential_version_idx")
+  @@index([recoverableUntil])
+}
+
 model SearchStrategy {
-  id          String   @id @default(uuid())
-  strategyId  String   @unique
-  provider    String
-  modelId     String?
-  displayName String
-  kind        String
-  description String
-  enabled     Boolean  @default(true)
-  config      Json
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id              String         @id @default(uuid())
+  strategyId      String         @unique
+  provider        String
+  modelId         String?
+  providerModelId String?
+  displayName     String
+  kind            String
+  description     String
+  enabled         Boolean        @default(true)
+  config          Json
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+  providerModel   ProviderModel? @relation(fields: [providerModelId], references: [id], onDelete: Restrict)
+
+  @@index([providerModelId])
 }
 
 model Chat {
-  id                    String       @id @default(uuid())
-  userId                String
-  folderId              String?
-  title                 String
-  activeLeafMessageId   String?
-  defaultProvider       String
-  defaultModelId        String
-  defaultPromptPresetId String?
-  pinned                Boolean      @default(false)
-  archived              Boolean      @default(false)
-  totalInputTokens      Int          @default(0)
-  totalOutputTokens     Int          @default(0)
-  totalReasoningTokens  Int          @default(0)
-  createdAt             DateTime     @default(now())
-  updatedAt             DateTime     @updatedAt
+  id                     String         @id @default(uuid())
+  userId                 String
+  folderId               String?
+  title                  String
+  activeLeafMessageId    String?
+  defaultProviderModelId String?
+  defaultPromptPresetId  String?
+  pinned                 Boolean        @default(false)
+  archived               Boolean        @default(false)
+  totalInputTokens       Int            @default(0)
+  totalOutputTokens      Int            @default(0)
+  totalReasoningTokens   Int            @default(0)
+  createdAt              DateTime       @default(now())
+  updatedAt              DateTime       @updatedAt
   /// The migration uses PostgreSQL's column-scoped SET NULL so deleting the leaf clears only activeLeafMessageId, never Chat.id.
-  activeLeafMessage     Message?     @relation("ChatActiveLeaf", fields: [id, activeLeafMessageId], references: [chatId, id], onDelete: SetNull, onUpdate: Restrict, map: "Chat_id_activeLeafMessageId_fkey")
-  attachments           Attachment[]
-  folder                Folder?      @relation(fields: [folderId], references: [id], onDelete: SetNull)
-  messages              Message[]    @relation("ChatMessages")
-  modelRuns             ModelRun[]
-  user                  User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  activeLeafMessage      Message?       @relation("ChatActiveLeaf", fields: [id, activeLeafMessageId], references: [chatId, id], onDelete: SetNull, onUpdate: Restrict, map: "Chat_id_activeLeafMessageId_fkey")
+  attachments            Attachment[]
+  folder                 Folder?        @relation(fields: [folderId], references: [id], onDelete: SetNull)
+  defaultProviderModel   ProviderModel? @relation("ChatDefaultProviderModel", fields: [defaultProviderModelId], references: [id], onDelete: Restrict)
+  messages               Message[]      @relation("ChatMessages")
+  modelRuns              ModelRun[]
+  user                   User           @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([activeLeafMessageId])
+  @@index([defaultProviderModelId])
   @@index([userId, archived, updatedAt])
 }
 
@@ -437,7 +671,7 @@ model Message {
 }
 
 model ModelRun {
-  id                           String             @id @default(uuid())
+  id                           String               @id @default(uuid())
   chatId                       String
   userId                       String
   userMessageId                String
@@ -449,25 +683,26 @@ model ModelRun {
   providerRequestPreview       Json?
   providerResponseId           String?
   finalProviderResponsePreview Json?
-  inputTokens                  Int                @default(0)
-  cachedInputTokens            Int                @default(0)
-  cacheWriteInputTokens        Int                @default(0)
-  outputTokens                 Int                @default(0)
-  reasoningTokens              Int                @default(0)
-  totalTokens                  Int                @default(0)
-  estimatedCostMicros          Int                @default(0)
+  inputTokens                  Int                  @default(0)
+  cachedInputTokens            Int                  @default(0)
+  cacheWriteInputTokens        Int                  @default(0)
+  outputTokens                 Int                  @default(0)
+  reasoningTokens              Int                  @default(0)
+  totalTokens                  Int                  @default(0)
+  estimatedCostMicros          Int                  @default(0)
   errorPayload                 Json?
   toolLoopState                Json?
-  createdAt                    DateTime           @default(now())
-  updatedAt                    DateTime           @updatedAt
-  assistantMessage             Message?           @relation("AssistantMessageRun", fields: [assistantMessageId], references: [id], onDelete: SetNull)
-  chat                         Chat               @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  createdAt                    DateTime             @default(now())
+  updatedAt                    DateTime             @updatedAt
+  assistantMessage             Message?             @relation("AssistantMessageRun", fields: [assistantMessageId], references: [id], onDelete: SetNull)
+  chat                         Chat                 @relation(fields: [chatId], references: [id], onDelete: Cascade)
   events                       ModelRunEvent[]
   mcpRunBindings               McpRunBinding[]
+  providerRunBindings          ProviderRunBinding[]
   searchRuns                   SearchRun[]
   toolCalls                    ModelRunToolCall[]
-  user                         User               @relation(fields: [userId], references: [id], onDelete: Cascade)
-  userMessage                  Message            @relation("UserMessageRun", fields: [userMessageId], references: [id], onDelete: Restrict)
+  user                         User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userMessage                  Message              @relation("UserMessageRun", fields: [userMessageId], references: [id], onDelete: Restrict)
   usageEvents                  UsageEvent[]
 
   @@index([chatId, createdAt])
@@ -571,14 +806,15 @@ model McpUserServer {
 }
 
 model McpOAuthClient {
-  id                   String               @id @default(uuid())
-  registrationKey      String               @unique
-  clientId             String
-  clientMetadata       Json
-  clientSecretEnvelope String?
-  createdAt            DateTime             @default(now())
-  updatedAt            DateTime             @updatedAt
-  connections          McpOAuthConnection[]
+  id                     String               @id @default(uuid())
+  registrationKey        String               @unique
+  clientId               String
+  clientMetadata         Json
+  clientSecretEnvelope   String?
+  clientSecretGeneration Int                  @default(0)
+  createdAt              DateTime             @default(now())
+  updatedAt              DateTime             @updatedAt
+  connections            McpOAuthConnection[]
 }
 
 model McpOAuthConnection {
@@ -590,6 +826,7 @@ model McpOAuthConnection {
   policyFingerprint     String
   state                 McpOAuthConnectionState @default(ready)
   tokenEnvelope         String?
+  tokenGeneration       Int                     @default(0)
   externalAccountLabel  String?
   scopes                String[]                @default([])
   expiresAt             DateTime?

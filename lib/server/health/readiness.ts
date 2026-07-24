@@ -25,10 +25,6 @@ export function runtimeConfigurationIssues(
     issues.push("database_url");
   }
 
-  if (![env.OPENAI_API_KEY, env.ANTHROPIC_API_KEY, env.OPENROUTER_API_KEY].some(usable)) {
-    issues.push("provider_api_key");
-  }
-
   let secureBaseUrl = false;
   try {
     const baseUrl = new URL(auth.appBaseUrl);
@@ -50,9 +46,7 @@ export function runtimeConfigurationIssues(
 
   if (
     enabled(env.AIQSA_TEST_MODE) ||
-    enabled(env.PLAYWRIGHT_TEST_AUTH) ||
-    enabled(env.AIQSA_FAKE_PROVIDER) ||
-    enabled(env.AIQSA_SHOW_FAKE_PROVIDER)
+    enabled(env.PLAYWRIGHT_TEST_AUTH)
   ) {
     issues.push("test_runtime");
   }

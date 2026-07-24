@@ -35,6 +35,8 @@ function delayedResponse(input: {
 }
 
 describe("OpenAI Responses transport", () => {
+  const remoteSecret = "sk-aiqsa-remote-error-regression-123456789";
+
   it("preserves the Responses endpoints, methods, headers, bodies, and custom base URL", async () => {
     const calls: Array<{ init?: RequestInit; url: string }> = [];
     const client = createFetchOpenAIResponsesClient({
@@ -89,11 +91,11 @@ describe("OpenAI Responses transport", () => {
     expect(urls).toEqual(["https://api.openai.com/v1/responses/resp-official"]);
   });
 
-  it("keeps the existing empty, non-object, and malformed JSON behavior", async () => {
+  it("keeps empty and non-object behavior while collapsing malformed remote JSON", async () => {
     const responses = [
       new Response("", { status: 200 }),
       new Response("[]", { status: 200 }),
-      new Response("{", { status: 200 })
+      new Response(`{"broken":"${remoteSecret}`, { status: 200 })
     ];
     const client = createFetchOpenAIResponsesClient({
       apiKey: "key",
@@ -102,12 +104,12 @@ describe("OpenAI Responses transport", () => {
 
     await expect(client.create({})).resolves.toEqual({});
     await expect(client.create({})).rejects.toThrow("openai_response_not_object");
-    await expect(client.create({})).rejects.toBeInstanceOf(SyntaxError);
+    await expect(client.create({})).rejects.toThrow("openai_response_invalid_json");
   });
 
-  it("sanitizes provider errors and classifies only transport-created retryable errors", async () => {
+  it("drops provider error bodies and classifies only transport-created retryable errors", async () => {
     const responses = [
-      new Response(JSON.stringify({ error: { message: "<script>bad()</script> Temporarily unavailable" } }), {
+      new Response(JSON.stringify({ error: { message: `${remoteSecret} Temporarily unavailable` } }), {
         status: 503
       }),
       new Response("<html><body>Unauthorized\u0000 request</body></html>", { status: 401 })
@@ -125,11 +127,11 @@ describe("OpenAI Responses transport", () => {
     }
 
     expect(retryableError).toBeInstanceOf(Error);
-    expect((retryableError as Error).message).toBe(
-      "OpenAI request failed with status 503: Temporarily unavailable"
-    );
+    expect((retryableError as Error).message).toBe("OpenAI request failed with status 503");
+    expect((retryableError as Error).message).not.toContain(remoteSecret);
+    expect((retryableError as Error).message).not.toContain("Temporarily unavailable");
     expect(openAIRetryableErrorPayload(retryableError)).toEqual({
-      message: "OpenAI request failed with status 503: Temporarily unavailable",
+      message: "OpenAI request failed with status 503",
       retryable: true,
       status: 503
     });
@@ -141,7 +143,7 @@ describe("OpenAI Responses transport", () => {
       nonRetryableError = error;
     }
 
-    expect((nonRetryableError as Error).message).toBe("OpenAI request failed with status 401: Unauthorized request");
+    expect((nonRetryableError as Error).message).toBe("OpenAI request failed with status 401");
     expect(openAIRetryableErrorPayload(nonRetryableError)).toBeNull();
     expect(openAIRetryableErrorPayload({ retryable: true, status: 503 })).toBeNull();
   });
@@ -249,11 +251,11 @@ describe("OpenAI Responses transport", () => {
       }
 
       expect(error).toMatchObject({
-        message: "OpenAI request failed with status 503: provider_response_too_large",
+        message: "OpenAI request failed with status 503",
         name: "OpenAIHttpError"
       });
       expect(openAIRetryableErrorPayload(error)).toEqual({
-        message: "OpenAI request failed with status 503: provider_response_too_large",
+        message: "OpenAI request failed with status 503",
         retryable: true,
         status: 503
       });

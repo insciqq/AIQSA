@@ -1,6 +1,6 @@
 import { getAuthConfig } from "@/lib/server/auth/config";
 import { resolveRequestAuth } from "@/lib/server/auth/defaultAuth";
-import { createProviderAdaptersFromEnv } from "@/lib/server/providers/registry";
+import { providerRuntimeResolver } from "@/lib/server/providerRuntime/defaultRuntime";
 import { createCancelModelRunHandler } from "@/lib/server/runs/handlers";
 import { createPrismaRunRepository } from "@/lib/server/runs/prismaRepository";
 
@@ -10,7 +10,8 @@ const repository = createPrismaRunRepository();
 
 export const POST = createCancelModelRunHandler({
   getConfig: () => getAuthConfig(),
-  providers: createProviderAdaptersFromEnv(),
+  providerRuntime: providerRuntimeResolver,
+  providers: {},
   repository,
   resolveAuth: resolveRequestAuth
 });

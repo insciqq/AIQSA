@@ -295,7 +295,11 @@ describe("registration auth handlers", () => {
     const repository = createMemoryRegistrationRepository();
     const POST = createRegisterHandler({
       getConfig: () => getAuthConfig({ AIQSA_AUTH_SESSION_SECRET: "test-secret" }),
-      mailer: createNoopAuthMailer(),
+      mailer: {
+        async send() {
+          return { kind: "unavailable" } as const;
+        }
+      },
       repository
     });
 
@@ -317,9 +321,8 @@ describe("registration auth handlers", () => {
     const POST = createRegisterHandler({
       getConfig: () => getAuthConfig({ AIQSA_AUTH_SESSION_SECRET: "test-secret" }),
       mailer: {
-        deliveryConfigured: true,
         async send() {
-          throw new Error("smtp down");
+          return { code: "smtp_tls_failed", kind: "failed" } as const;
         }
       },
       repository

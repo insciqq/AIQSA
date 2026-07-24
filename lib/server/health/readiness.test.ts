@@ -7,7 +7,6 @@ function productionEnv(): Record<string, string> {
     AIQSA_COOKIE_SECURE: "1",
     AIQSA_AUTH_SESSION_SECRET: "an-installation-session-secret",
     DATABASE_URL: "postgresql://user:password@postgres:5432/aiqsa",
-    OPENAI_API_KEY: "openai-key",
     S3_ACCESS_KEY_ID: "access-key",
     S3_BUCKET: "private-uploads",
     S3_ENDPOINT: "http://minio:9000",
@@ -31,13 +30,11 @@ describe("runtimeConfigurationIssues", () => {
         AIQSA_TEST_MODE: "1",
         AIQSA_AUTH_SESSION_SECRET: "",
         DATABASE_URL: "",
-        OPENAI_API_KEY: "",
         S3_BUCKET: ""
       })
     ).toEqual([
       "session_secret",
       "database_url",
-      "provider_api_key",
       "app_base_url",
       "bootstrap_login",
       "test_runtime",

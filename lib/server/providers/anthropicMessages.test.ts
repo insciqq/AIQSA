@@ -81,6 +81,8 @@ function responseBody(chunks: readonly string[]): ReadableStream<Uint8Array> {
 }
 
 describe("Anthropic Messages adapter", () => {
+  const remoteSecret = "sk-aiqsa-remote-error-regression-123456789";
+
   it("falls back to the official base URL when baseUrl is blank", async () => {
     const urls: string[] = [];
     const client = createFetchAnthropicMessagesClient({
@@ -106,14 +108,25 @@ describe("Anthropic Messages adapter", () => {
     expect(urls).toEqual(["https://api.anthropic.com/v1/messages"]);
   });
 
-  it("sanitizes non-JSON provider error bodies", async () => {
+  it("drops non-JSON provider error bodies", async () => {
     const client = createFetchAnthropicMessagesClient({
       apiKey: "key",
-      fetchFn: async () => new Response("<html><body><h1>Service unavailable</h1></body></html>", { status: 503 })
+      fetchFn: async () =>
+        new Response(`<html><body>${remoteSecret} Service unavailable</body></html>`, {
+          status: 503
+        })
     });
     const stream = client.stream({});
 
-    await expect(stream.next()).rejects.toThrow("Anthropic request failed with status 503: Service unavailable");
+    let failure: unknown;
+    try {
+      await stream.next();
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toMatchObject({ message: "Anthropic request failed with status 503" });
+    expect((failure as Error).message).not.toContain(remoteSecret);
+    expect((failure as Error).message).not.toContain("Service unavailable");
   });
 
   it("bounds non-2xx provider bodies by the request deadline and byte limit", async () => {
@@ -160,7 +173,7 @@ describe("Anthropic Messages adapter", () => {
       });
 
       await expect(oversizedClient.stream({}).next()).rejects.toThrow(
-        "Anthropic request failed with status 503: provider_response_too_large"
+        "Anthropic request failed with status 503"
       );
       expect(oversizedBodyCancelled).toBe(true);
     } finally {
@@ -727,11 +740,18 @@ describe("Anthropic Messages adapter", () => {
 
     const explicitError = createAnthropicMessagesAdapter({
       client: {
-        stream: () => events([{ error: { message: "Anthropic overloaded" }, type: "error" }])
+        stream: () => events([{ error: { message: remoteSecret }, type: "error" }])
       }
     }).stream(request());
     await expect(explicitError.next()).resolves.toMatchObject({ done: false });
-    await expect(explicitError.next()).rejects.toThrow("Anthropic overloaded");
+    let failure: unknown;
+    try {
+      await explicitError.next();
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toMatchObject({ message: "anthropic_stream_error" });
+    expect((failure as Error).message).not.toContain(remoteSecret);
   });
 
   it("accepts message_stop split across transport chunks", async () => {

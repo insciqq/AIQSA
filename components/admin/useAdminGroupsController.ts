@@ -357,7 +357,7 @@ export function useAdminGroupsController({
     return {
       actions: {
         onQueryChange: setModelAccessQuery,
-        onSelectGroup: (groupId) => selectGroup(groupId, "model-access-detail"),
+        onSelectGroup: setRequestedSelectedGroupId,
         onToggleGrant: (group, target, enabled) => void setGroupGrant(group, target, enabled),
         onToggleProviderModels: (group, providerId, enabled) =>
           void setProviderModelGrants(group, providerId, enabled)
@@ -381,7 +381,6 @@ export function useAdminGroupsController({
     dashboard,
     focus.modelAccess,
     modelAccessQuery,
-    selectGroup,
     selectedModelAccessGroup,
     setGroupGrant,
     setProviderModelGrants,

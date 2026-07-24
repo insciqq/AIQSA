@@ -1,7 +1,13 @@
 import type { PrismaClient } from "@prisma/client";
 import type { McpDraftConfiguration, McpSlotValue } from "@/lib/contracts/mcp";
 import { describe, expect, it, vi } from "vitest";
-import { decryptMcpEnvelope, encryptMcpEnvelope } from "./encryption";
+import {
+  decryptMcpEnvelope,
+  encryptMcpEnvelope,
+  mcpPersonalConfigEnvelopeContext,
+  mcpRuntimeGenerationEnvelopeContext,
+  mcpSharedConfigEnvelopeContext
+} from "./encryption";
 import {
   buildMcpOAuthPolicy,
   mcpOAuthPolicyFingerprint
@@ -141,10 +147,6 @@ const localArtifact = {
   toolhiveVersion: "v0.40.1"
 };
 
-function envelope(values: Record<string, McpSlotValue>): string {
-  return encryptMcpEnvelope({ values, version: 1 }, KEY);
-}
-
 function grant(input: GrantFixture, index: number) {
   return {
     ...input,
@@ -180,14 +182,20 @@ function runtimeRecord(options: RecordOptions = {}): RuntimeRecord {
     authorization: "Bearer personal-secret",
     workspace: "workspace-a"
   };
+  const personalVersion = options.personalVersion ?? 9;
+  const sharedVersion = options.sharedVersion ?? 4;
 
   return {
     createdAt: NOW,
     desiredRuntimeGenerationId: null,
     enabled: options.enabled ?? true,
     id: USER_SERVER_ID,
-    personalConfigEnvelope: envelope(personalValues),
-    personalConfigVersion: options.personalVersion ?? 9,
+    personalConfigEnvelope: encryptMcpEnvelope(
+      { values: personalValues, version: 1 },
+      KEY,
+      mcpPersonalConfigEnvelopeContext(USER_SERVER_ID, personalVersion)
+    ),
+    personalConfigVersion: personalVersion,
     server: {
       activeRevision: hasRevision ? {
         configuration: selectedConfiguration,
@@ -210,8 +218,12 @@ function runtimeRecord(options: RecordOptions = {}): RuntimeRecord {
       grants: grants.map(grant),
       id: SERVER_ID,
       namespace: "remote-mcp",
-      sharedConfigEnvelope: envelope(sharedValues),
-      sharedConfigVersion: options.sharedVersion ?? 4,
+      sharedConfigEnvelope: encryptMcpEnvelope(
+        { values: sharedValues, version: 1 },
+        KEY,
+        mcpSharedConfigEnvelopeContext(SERVER_ID, sharedVersion)
+      ),
+      sharedConfigVersion: sharedVersion,
       testedDraftHash: "draft-hash",
       updatedAt: NOW
     },
@@ -610,6 +622,7 @@ describe("Prisma MCP runtime desired-state snapshots", () => {
     } as unknown as PrismaClient;
     const repository = createPrismaMcpRuntimeRepository({
       encryptionKey: () => KEY,
+      generationId: () => "generation-1",
       prisma: client
     });
 
@@ -636,7 +649,11 @@ describe("Prisma MCP runtime desired-state snapshots", () => {
     expect(generationData.oauthConnectionId).toBeNull();
     expect(JSON.stringify(generationData)).not.toContain("personal-secret");
     expect(JSON.stringify(generationData)).not.toContain("shared-secret");
-    expect(decryptMcpEnvelope(persistedEnvelope as string, KEY)).toEqual(expected?.effectiveEnvelope);
+    expect(decryptMcpEnvelope(
+      persistedEnvelope as string,
+      KEY,
+      mcpRuntimeGenerationEnvelopeContext("generation-1", expected!.fingerprint)
+    )).toEqual(expected?.effectiveEnvelope);
     expect(transactionUserUpdate).toHaveBeenCalledWith({
       data: { desiredRuntimeGenerationId: "generation-1" },
       where: {
@@ -655,7 +672,11 @@ describe("Prisma MCP runtime desired-state snapshots", () => {
     const expected = remoteRuntimeCandidate({ key: KEY, record: runtimeRecord() });
     if (!expected) throw new Error("expected runtime candidate");
     const findFirst = vi.fn(async () => ({
-      effectiveConfigEnvelope: encryptMcpEnvelope(expected.effectiveEnvelope, KEY),
+      effectiveConfigEnvelope: encryptMcpEnvelope(
+        expected.effectiveEnvelope,
+        KEY,
+        mcpRuntimeGenerationEnvelopeContext("generation-accepted", expected.fingerprint)
+      ),
       fingerprint: expected.fingerprint,
       id: "generation-accepted",
       inventoryUpdatedAt: new Date(NOW.getTime() - 10 * 60_000),
@@ -724,7 +745,11 @@ describe("Prisma MCP runtime desired-state snapshots", () => {
     const client = {
       mcpRuntimeGeneration: {
         findFirst: vi.fn(async () => ({
-          effectiveConfigEnvelope: encryptMcpEnvelope(expected.effectiveEnvelope, KEY),
+          effectiveConfigEnvelope: encryptMcpEnvelope(
+            expected.effectiveEnvelope,
+            KEY,
+            mcpRuntimeGenerationEnvelopeContext("generation-local", expected.fingerprint)
+          ),
           fingerprint: expected.fingerprint,
           id: "generation-local",
           inventoryUpdatedAt: null,
@@ -764,7 +789,11 @@ describe("Prisma MCP runtime desired-state snapshots", () => {
     const client = {
       mcpRuntimeGeneration: {
         findFirst: vi.fn(async () => ({
-          effectiveConfigEnvelope: encryptMcpEnvelope(expected.effectiveEnvelope, KEY),
+          effectiveConfigEnvelope: encryptMcpEnvelope(
+            expected.effectiveEnvelope,
+            KEY,
+            mcpRuntimeGenerationEnvelopeContext("generation-tampered", "0".repeat(64))
+          ),
           fingerprint: "0".repeat(64),
           id: "generation-tampered",
           inventoryUpdatedAt: null,

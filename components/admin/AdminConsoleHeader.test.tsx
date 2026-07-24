@@ -16,7 +16,7 @@ describe("AdminConsoleHeader", () => {
     );
 
     expect(screen.getByText(/refreshing admin data/i)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Refresh" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Refresh admin overview" })).toBeDisabled();
     expect(screen.getByRole("link", { name: "Return to workspace" })).toHaveAttribute("href", "/");
 
     view.rerender(
@@ -28,7 +28,7 @@ describe("AdminConsoleHeader", () => {
         submitting
       />
     );
-    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    fireEvent.click(screen.getByRole("button", { name: "Refresh admin overview" }));
 
     expect(screen.getByText(/saving admin changes/i)).toBeInTheDocument();
     expect(onRefresh).toHaveBeenCalledOnce();

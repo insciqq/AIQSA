@@ -699,7 +699,7 @@ describe("ComposerControls", () => {
     await waitFor(() => expect(prompt).toHaveFocus());
   });
 
-  it("searches models by provider display name and exposes readable current, default, id, and capabilities", async () => {
+  it("searches models by readable context without exposing internal ids", async () => {
     const extendedCatalog: Catalog = {
       ...catalog,
       models: [model, visionModel],
@@ -719,20 +719,27 @@ describe("ComposerControls", () => {
     const search = screen.getByLabelText("Search models");
     await waitFor(() => expect(search).toHaveFocus());
     const currentModelRow = screen.getByRole("button", { name: "Select model Fake Fake QSA" });
-    expect(screen.getByRole("heading", { name: "Fake" })).toBeVisible();
+    const providerHeading = screen.getByRole("heading", { name: "Fake" });
+    const providerHeader = providerHeading.closest("header");
+    expect(providerHeading).toBeVisible();
+    expect(providerHeader).not.toBeNull();
+    expect(providerHeader).toHaveClass("rounded-control", "bg-surface-raised");
+    expect(within(providerHeader!).getByText("Provider")).toBeVisible();
+    expect(within(providerHeader!).getByText("1 model")).toBeVisible();
+    expect(within(providerHeader!).getByText("Current group")).toBeVisible();
     expect(screen.queryByRole("button", { name: "Provider Fake" })).not.toBeInTheDocument();
     expect(within(currentModelRow).getByText("Current")).toBeVisible();
     expect(within(currentModelRow).getByText("Default")).toBeVisible();
     expect(currentModelRow).toHaveAccessibleDescription(
-      "fake:fake-qsa Streaming Current Default"
+      "Streaming Current Default"
     );
 
     fireEvent.change(search, { target: { value: "Gateway" } });
     const visionRow = screen.getByRole("button", { name: /Select model OpenRouter Gateway Vision Research Model/ });
-    expect(visionRow).toHaveTextContent("openrouter:vendor/vision-research-model-with-a-deliberately-long-id");
+    expect(visionRow).not.toHaveTextContent("openrouter:vendor/vision-research-model-with-a-deliberately-long-id");
     expect(visionRow).toHaveTextContent("Reasoning · Images · PDF and documents · Web search · Streaming");
     expect(visionRow).toHaveAccessibleDescription(
-      "openrouter:vendor/vision-research-model-with-a-deliberately-long-id Reasoning · Images · PDF and documents · Web search · Streaming"
+      "Reasoning · Images · PDF and documents · Web search · Streaming"
     );
     expect(screen.queryByRole("button", { name: /Select model Fake Fake QSA/ })).not.toBeInTheDocument();
 

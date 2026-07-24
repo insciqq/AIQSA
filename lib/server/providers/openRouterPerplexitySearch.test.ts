@@ -299,25 +299,23 @@ describe("OpenRouter Perplexity search adapter", () => {
   });
 
   it.each([
-    ["top-level", { error: { code: "provider_error", message: "Top-level failure" } }, "Top-level failure"],
+    ["top-level", { error: { code: "provider_error", message: "Top-level failure" } }],
     [
       "choice",
-      { choices: [{ error: { code: "choice_error", message: "Choice failure" } }] },
-      "Choice failure"
+      { choices: [{ error: { code: "choice_error", message: "Choice failure" } }] }
     ],
     [
       "message",
-      { choices: [{ message: { error: { code: "message_error", message: "Message failure" } } }] },
-      "Message failure"
+      { choices: [{ message: { error: { code: "message_error", message: "Message failure" } } }] }
     ]
-  ])("rejects HTTP-200 %s error objects", async (_location, response, expectedMessage) => {
+  ])("rejects HTTP-200 %s error objects without exposing remote detail", async (_location, response) => {
     const adapter = createOpenRouterPerplexitySearchAdapter({
       client: {
         createChatCompletion: async () => response
       }
     });
 
-    await expect(adapter.search(searchRequest())).rejects.toThrow(expectedMessage);
+    await expect(adapter.search(searchRequest())).rejects.toThrow("openrouter_response_error");
   });
 
   it.each([

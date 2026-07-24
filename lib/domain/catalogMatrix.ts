@@ -74,7 +74,7 @@ export function availableSearchStrategiesForModel(
 
     if (
       strategy.kind === "openai_native_web_search" &&
-      model.provider === "openai" &&
+      model.adapterKind === "openai_responses_native" &&
       model.capabilities.nativeSearch
     ) {
       strategyIds.add(strategy.strategyId);
@@ -82,9 +82,9 @@ export function availableSearchStrategiesForModel(
     }
 
     if (strategy.kind === "perplexity_tool_search") {
-      const isAnswerModel = model.modelId !== strategy.modelId;
+      const isAnswerModel = model.modelId !== strategy.providerModelId;
 
-      if (isAnswerModel && (model.provider === "openai" || model.provider === "openrouter")) {
+      if (isAnswerModel && model.capabilities.toolCalling) {
         strategyIds.add(strategy.strategyId);
       }
       continue;
@@ -118,6 +118,41 @@ export function buildCatalogModel(
 ): CatalogModel {
   const searchStrategyIds = availableSearchStrategiesForModel(model, entitledStrategies);
   const openRouterPerplexitySearch = searchStrategyIds.includes("perplexity-tool-search");
+  const controls = model.parameterControls;
+  const reasoningDefaults = controls.reasoningEffort.supported
+    ? {
+        effort: controls.reasoningEffort.defaultValue,
+        ...(controls.reasoningMode?.supported
+          ? { mode: controls.reasoningMode.defaultValue }
+          : {})
+      }
+    : undefined;
+  const defaultParams: Record<string, unknown> = {
+    ...(model.adapterKind === "anthropic_messages" ||
+    model.adapterKind === "openrouter_chat_completions"
+      ? { maxTokens: controls.maxOutputTokens.defaultValue }
+      : { maxOutputTokens: controls.maxOutputTokens.defaultValue }),
+    ...(controls.background.supported
+      ? { background: controls.background.defaultValue }
+      : {}),
+    ...(reasoningDefaults ? { reasoning: reasoningDefaults } : {}),
+    ...(controls.stream.supported ? { stream: controls.stream.defaultValue } : {}),
+    ...(controls.temperature.supported
+      ? { temperature: controls.temperature.defaultValue }
+      : {})
+  };
+
+  // `defaultParams` in the active provider model is server-owned execution
+  // configuration and may contain vendor extensions. The ordinary catalog
+  // publishes only the small UI-control projection above. `verbosity` is the
+  // one shape marker needed to choose OpenRouter's supported effort control.
+  if (
+    model.adapterKind === "openrouter_chat_completions" &&
+    typeof model.defaultParams.verbosity === "string" &&
+    controls.reasoningEffort.supported
+  ) {
+    defaultParams.verbosity = controls.reasoningEffort.defaultValue;
+  }
 
   return {
     capabilities: {
@@ -128,32 +163,29 @@ export function buildCatalogModel(
           ? "pdf_text_extraction"
           : "none",
       imageInput: model.capabilities.vision,
-      nativeWebSearch: model.provider === "openai" && model.capabilities.nativeSearch,
+      nativeWebSearch:
+        model.adapterKind === "openai_responses_native" && model.capabilities.nativeSearch,
       openRouterPerplexitySearch,
       reasoning: model.capabilities.reasoning,
       streaming: model.capabilities.streaming,
       text: true
     },
     contextWindow: model.contextWindow,
-    defaultParams: model.defaultParams,
+    defaultParams,
     displayName: model.displayName,
     modelId: model.modelId,
     parameterControls: model.parameterControls,
     provider: model.provider,
-    routeProviderPreferences:
-      model.provider === "openrouter" ? normalizeOpenRouterRoutePreferences(model.defaultParams) : undefined,
-    searchStrategyIds
+    providerFamily: model.providerFamily,
+    searchStrategyIds,
+    upstreamModelId: model.upstreamModelId
   };
 }
 
 export function toCatalogSearchStrategy(strategy: SearchStrategyCatalogEntry): CatalogSearchStrategy {
   return {
-    config: strategy.config,
-    description: strategy.description,
     displayName: strategy.displayName,
     kind: strategy.kind,
-    modelId: strategy.modelId,
-    provider: strategy.provider,
     strategyId: strategy.strategyId
   };
 }

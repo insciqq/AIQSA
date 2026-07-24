@@ -53,6 +53,8 @@ async function collect(
 }
 
 describe("OpenRouter Chat response normalization", () => {
+  const remoteSecret = "sk-aiqsa-remote-error-regression-123456789";
+
   it("extracts first-choice text, provider id, usage aliases, and response preview fields", () => {
     const response = {
       choices: [
@@ -286,23 +288,27 @@ describe("OpenRouter Chat response normalization", () => {
 
   it.each([
     {
-      expected: "Top-level failure",
-      response: { error: { code: "top_code", message: "Top-level failure" } }
+      response: { error: { code: "top_code", message: remoteSecret } }
     },
     {
-      expected: "choice_code",
       response: { choices: [{ error: { code: "choice_code" } }] }
     },
     {
-      expected: "OpenRouter response error",
       response: { choices: [{ message: { error: {} } }] }
     }
-  ] satisfies readonly { expected: string; response: OpenRouterResponseRecord }[])(
-    "detects a successful HTTP response error at every supported location: $expected",
-    async ({ expected, response }) => {
-      expect(openRouterResponseError(response)).toBe(expected);
+  ] satisfies readonly { response: OpenRouterResponseRecord }[])(
+    "collapses a successful HTTP response error at every supported location",
+    async ({ response }) => {
+      expect(openRouterResponseError(response)).toBe("openrouter_response_error");
       const stream = streamOpenRouterJsonResponse(response, responseContext);
-      await expect(stream.next()).rejects.toThrow(expected);
+      let failure: unknown;
+      try {
+        await stream.next();
+      } catch (error) {
+        failure = error;
+      }
+      expect(failure).toMatchObject({ message: "openrouter_response_error" });
+      expect((failure as Error).message).not.toContain(remoteSecret);
     }
   );
 
@@ -657,20 +663,26 @@ describe("OpenRouter Chat response normalization", () => {
   });
 
   it.each([
-    ["top-level", { error: { message: "stream-top" } }, "stream-top"],
-    ["choice", { choices: [{ error: { code: "stream-choice" } }] }, "stream-choice"],
+    ["top-level", { error: { message: remoteSecret } }],
+    ["choice", { choices: [{ error: { code: "stream-choice" } }] }],
     [
       "message",
-      { choices: [{ message: { error: { message: "stream-message" } } }] },
-      "stream-message"
+      { choices: [{ message: { error: { message: "stream-message" } } }] }
     ]
-  ])("rejects %s mid-stream error frames", async (_location, payload, expectedMessage) => {
+  ])("rejects %s mid-stream error frames without remote details", async (_location, payload) => {
     const stream = streamOpenRouterSseResponse(
       sseResponse([`data: ${JSON.stringify(payload)}\n\n`]),
       responseContext
     );
 
-    await expect(stream.next()).rejects.toThrow(expectedMessage);
+    let failure: unknown;
+    try {
+      await stream.next();
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toMatchObject({ message: "openrouter_stream_error" });
+    expect((failure as Error).message).not.toContain(remoteSecret);
   });
 
   it("rejects missing bodies and malformed JSON frames", async () => {

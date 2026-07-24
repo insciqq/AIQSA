@@ -5,20 +5,7 @@ import { prisma } from "../prisma";
 import type { SettingsValidationModel, UserSettingsUpdate } from "./handlers";
 import { createPrismaSettingsRepository } from "./prismaRepository";
 
-const validationModels: SettingsValidationModel[] = [
-  {
-    modelId: "fake-qsa",
-    provider: "fake",
-    searchStrategyIds: ["search-disabled"]
-  },
-  {
-    modelId: "next-model",
-    provider: "next-provider",
-    searchStrategyIds: ["next-search"]
-  }
-];
-
-function createTestSettingsRepository() {
+function createTestSettingsRepository(validationModels: SettingsValidationModel[]) {
   const repository = createPrismaSettingsRepository(prisma);
 
   return {
@@ -28,8 +15,44 @@ function createTestSettingsRepository() {
   };
 }
 
-async function withSettingsUser<T>(run: (input: { userId: string }) => Promise<T>): Promise<T> {
+type SettingsUserFixture = {
+  fakeModel: { connectionId: string; id: string };
+  nextModel: { connectionId: string; id: string };
+  userId: string;
+  validationModels: SettingsValidationModel[];
+};
+
+async function withSettingsUser<T>(run: (input: SettingsUserFixture) => Promise<T>): Promise<T> {
   const userId = `settings-prompt-test-${randomUUID()}`;
+  const models = await prisma.providerModel.findMany({
+    select: {
+      connectionId: true,
+      id: true,
+      templateKey: true
+    },
+    where: {
+      templateKey: {
+        in: ["fake:fake-qsa", "openai:gpt-5.5"]
+      }
+    }
+  });
+  const fakeModel = models.find((model) => model.templateKey === "fake:fake-qsa");
+  const nextModel = models.find((model) => model.templateKey === "openai:gpt-5.5");
+  if (!fakeModel || !nextModel) {
+    throw new Error("Provider model fixtures are not seeded");
+  }
+  const validationModels: SettingsValidationModel[] = [
+    {
+      modelId: fakeModel.id,
+      provider: fakeModel.connectionId,
+      searchStrategyIds: ["search-disabled"]
+    },
+    {
+      modelId: nextModel.id,
+      provider: nextModel.connectionId,
+      searchStrategyIds: ["next-search"]
+    }
+  ];
 
   await prisma.user.create({
     data: {
@@ -38,8 +61,7 @@ async function withSettingsUser<T>(run: (input: { userId: string }) => Promise<T
       settings: {
         create: {
           defaultControlValues: {},
-          defaultModelId: "fake-qsa",
-          defaultProvider: "fake",
+          defaultProviderModelId: fakeModel.id,
           defaultSearchStrategyId: "search-disabled"
         }
       }
@@ -47,7 +69,7 @@ async function withSettingsUser<T>(run: (input: { userId: string }) => Promise<T
   });
 
   try {
-    return await run({ userId });
+    return await run({ fakeModel, nextModel, userId, validationModels });
   } finally {
     await prisma.user.deleteMany({
       where: {
@@ -106,10 +128,74 @@ describe("Prisma settings repository", () => {
     await prisma.$disconnect();
   });
 
+  it("persists and returns opaque relation identifiers", async () => {
+    await withSettingsUser(async ({ nextModel, userId, validationModels }) => {
+      const settingsRepository = createTestSettingsRepository(validationModels);
+
+      await expect(
+        settingsRepository.updateSettings(userId, {
+          defaultProviderModelId: nextModel.id,
+          defaultSearchStrategyId: "next-search",
+          showCitations: false
+        })
+      ).resolves.toMatchObject({
+        kind: "updated",
+        settings: {
+          defaultModelId: nextModel.id,
+          defaultProvider: nextModel.connectionId,
+          defaultProviderConnectionId: nextModel.connectionId,
+          defaultProviderModelId: nextModel.id,
+          defaultSearchStrategyId: "next-search",
+          showCitations: false
+        }
+      });
+      await expect(
+        prisma.userSettings.findUniqueOrThrow({
+          select: {
+            defaultProviderModel: {
+              select: {
+                connectionId: true,
+                id: true
+              }
+            }
+          },
+          where: { userId }
+        })
+      ).resolves.toEqual({
+        defaultProviderModel: {
+          connectionId: nextModel.connectionId,
+          id: nextModel.id
+        }
+      });
+    });
+  });
+
+  it("preserves an empty relation default", async () => {
+    await withSettingsUser(async ({ userId, validationModels }) => {
+      const settingsRepository = createTestSettingsRepository(validationModels);
+
+      await expect(
+        settingsRepository.updateSettings(userId, {
+          defaultProviderModelId: null,
+          showToolActivity: false
+        })
+      ).resolves.toMatchObject({
+        kind: "updated",
+        settings: {
+          defaultModelId: "",
+          defaultProvider: "",
+          defaultProviderConnectionId: null,
+          defaultProviderModelId: null,
+          showToolActivity: false
+        }
+      });
+    });
+  });
+
   it("moves prompt default flags when settings select a prompt id", async () => {
-    await withSettingsUser(async ({ userId }) => {
+    await withSettingsUser(async ({ userId, validationModels }) => {
       const { first, second } = await createPromptDefaults(userId);
-      const settingsRepository = createTestSettingsRepository();
+      const settingsRepository = createTestSettingsRepository(validationModels);
 
       await expect(
         settingsRepository.updateSettings(userId, {
@@ -146,9 +232,9 @@ describe("Prisma settings repository", () => {
   });
 
   it("clears prompt default flags when settings clear the prompt id", async () => {
-    await withSettingsUser(async ({ userId }) => {
+    await withSettingsUser(async ({ userId, validationModels }) => {
       await createPromptDefaults(userId);
-      const settingsRepository = createTestSettingsRepository();
+      const settingsRepository = createTestSettingsRepository(validationModels);
 
       await expect(
         settingsRepository.updateSettings(userId, {
@@ -185,8 +271,8 @@ describe("Prisma settings repository", () => {
   });
 
   it("merges concurrent control patches against the latest settings row", async () => {
-    await withSettingsUser(async ({ userId }) => {
-      const settingsRepository = createTestSettingsRepository();
+    await withSettingsUser(async ({ userId, validationModels }) => {
+      const settingsRepository = createTestSettingsRepository(validationModels);
 
       await Promise.all([
         settingsRepository.updateSettings(userId, {
@@ -228,8 +314,8 @@ describe("Prisma settings repository", () => {
   });
 
   it("rejects a stale search patch waiting behind a concurrent model change", async () => {
-    await withSettingsUser(async ({ userId }) => {
-      const settingsRepository = createTestSettingsRepository();
+    await withSettingsUser(async ({ nextModel, userId, validationModels }) => {
+      const settingsRepository = createTestSettingsRepository(validationModels);
       let staleSearchPatch: ReturnType<typeof settingsRepository.updateSettings> | undefined;
 
       await prisma.$transaction(async (tx) => {
@@ -244,8 +330,11 @@ describe("Prisma settings repository", () => {
         });
         await tx.userSettings.update({
           data: {
-            defaultModelId: "next-model",
-            defaultProvider: "next-provider",
+            defaultProviderModel: {
+              connect: {
+                id: nextModel.id
+              }
+            },
             defaultSearchStrategyId: "next-search"
           },
           where: {
@@ -261,8 +350,12 @@ describe("Prisma settings repository", () => {
       await expect(
         prisma.userSettings.findUniqueOrThrow({
           select: {
-            defaultModelId: true,
-            defaultProvider: true,
+            defaultProviderModel: {
+              select: {
+                connectionId: true,
+                id: true
+              }
+            },
             defaultSearchStrategyId: true
           },
           where: {
@@ -270,15 +363,17 @@ describe("Prisma settings repository", () => {
           }
         })
       ).resolves.toEqual({
-        defaultModelId: "next-model",
-        defaultProvider: "next-provider",
+        defaultProviderModel: {
+          connectionId: nextModel.connectionId,
+          id: nextModel.id
+        },
         defaultSearchStrategyId: "next-search"
       });
     });
   });
 
   it("keeps repeated concurrent settings prompt writes to one default flag", async () => {
-    await withSettingsUser(async ({ userId }) => {
+    await withSettingsUser(async ({ userId, validationModels }) => {
       const { second } = await createPromptDefaults(userId);
       const third = await prisma.promptPreset.create({
         data: {
@@ -288,7 +383,7 @@ describe("Prisma settings repository", () => {
           userId
         }
       });
-      const settingsRepository = createTestSettingsRepository();
+      const settingsRepository = createTestSettingsRepository(validationModels);
 
       const results = await Promise.all([
         settingsRepository.updateSettings(userId, {

@@ -7,7 +7,6 @@ import { useCompactComposerReadingMode } from "@/components/app-shell/useCompact
 import { ThreadMessageRow } from "@/components/app-shell/ThreadMessageRow";
 import type { PipelineSnapshot } from "@/components/app-shell/runState";
 import { resolveRunProfiles, type RunProfileId } from "@/components/app-shell/runProfiles";
-import { providerDisplayName } from "@/components/app-shell/providerDisplay";
 import type { InspectorTabId } from "@/components/inspector/InspectorTabs";
 import type {
   Catalog,
@@ -203,8 +202,29 @@ export function MainThreadPane({
   workspaceReady
 }: MainThreadPaneProps) {
   const modelLabels = useMemo(
-    () =>
-      new Map((catalog?.models ?? []).map((model) => [`${model.provider}:${model.modelId}`, model.displayName])),
+    () => {
+      const providerLabels = new Map(
+        (catalog?.providers ?? []).map((provider) => [provider.id, provider.name])
+      );
+      const labels = new Map<string, string>();
+      const runtimeLabels = new Map<string, string | null>();
+
+      for (const model of catalog?.models ?? []) {
+        const label = `${providerLabels.get(model.provider) ?? "Provider"} / ${model.displayName}`;
+        labels.set(`${model.provider}:${model.modelId}`, label);
+        if (model.providerFamily && model.upstreamModelId) {
+          const key = `${model.providerFamily}:${model.upstreamModelId}`;
+          const existing = runtimeLabels.get(key);
+          runtimeLabels.set(key, !runtimeLabels.has(key) || existing === label ? label : null);
+        }
+      }
+
+      for (const [key, label] of runtimeLabels) {
+        labels.set(key, label ?? "Model unavailable");
+      }
+
+      return labels;
+    },
     [catalog]
   );
   const attachmentPolicy = useMemo(
@@ -476,14 +496,7 @@ export function MainThreadPane({
             const artifactSummary = liveSummary ?? message.artifactSummary;
             const answerModelLabel =
               message.role === "assistant" && (message.provider || message.modelId)
-                ? [
-                    message.provider ? providerDisplayName(message.provider) : null,
-                    message.modelId
-                      ? modelLabels.get(`${message.provider ?? ""}:${message.modelId}`) ?? message.modelId
-                      : null
-                  ]
-                    .filter(Boolean)
-                    .join(" / ")
+                ? modelLabels.get(`${message.provider ?? ""}:${message.modelId ?? ""}`) ?? "Model unavailable"
                 : null;
 
             const justCompleted =

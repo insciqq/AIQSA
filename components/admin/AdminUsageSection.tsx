@@ -6,8 +6,7 @@ import {
 import {
   formatDate,
   formatNumber,
-  modelDisplayName,
-  providerDisplayName
+  providerModelDisplayName
 } from "@/components/admin/adminViewUtils";
 import type {
   AdminCatalog,
@@ -23,7 +22,7 @@ export type AdminUsageSectionProps = Readonly<{
 }>;
 
 function usageProviderModelLabel(catalog: AdminUsageCatalog, usage: AdminUsageProviderModelRecord): string {
-  return `${providerDisplayName(catalog, usage.provider)} / ${modelDisplayName(catalog, usage)}`;
+  return providerModelDisplayName(catalog, usage);
 }
 
 export function AdminUsageSection({ catalog, usage }: AdminUsageSectionProps) {

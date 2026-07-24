@@ -306,6 +306,7 @@ function shellLeftPaneProps(
   return {
     activeChatId: null,
     availableChatModelKeys: new Set<string>(),
+    chatModelLabels: new Map(),
     pane: {
       actions: {
         activateChat,
@@ -492,6 +493,80 @@ describe("control default freshness", () => {
       reasoningEffort: "max",
       reasoningMode: "pro"
     });
+  });
+
+  it("builds params from provider family when the catalog uses opaque connection ids", () => {
+    const openRouterModel: CatalogModel = {
+      ...model,
+      defaultParams: {
+        maxTokens: 4096,
+        reasoning: { effort: "medium" },
+        stream: true,
+        temperature: 1
+      },
+      displayName: "Opaque OpenRouter model",
+      modelId: "deployment-router",
+      parameterControls: {
+        ...model.parameterControls,
+        background: { defaultValue: false, supported: false },
+        maxOutputTokens: { defaultValue: 4096, maxValue: 4096 },
+        stream: { defaultValue: true, supported: true }
+      },
+      provider: "connection-router-uuid",
+      providerFamily: "openrouter"
+    };
+    const harness = createRunControlsHarness(
+      openRouterModel,
+      catalog({}, [model, openRouterModel])
+    );
+    useComposerControlStore.getState().setSelectedProvider(openRouterModel.provider);
+    useComposerControlStore.getState().setSelectedModelId(openRouterModel.modelId);
+    harness.actions().applyModelControlDefaults(openRouterModel);
+
+    expect(harness.actions().buildParams()).toMatchObject({
+      maxTokens: 4096,
+      reasoning: { effort: "medium", enabled: true },
+      stream: true,
+      temperature: 1
+    });
+    expect(harness.actions().buildParams()).not.toHaveProperty("maxOutputTokens");
+
+    const compatibleModel: CatalogModel = {
+      ...openRouterModel,
+      defaultParams: {
+        maxOutputTokens: 2048,
+        temperature: 0.5
+      },
+      modelId: "deployment-compatible",
+      parameterControls: {
+        ...openRouterModel.parameterControls,
+        maxOutputTokens: { defaultValue: 2048, maxValue: 2048 },
+        reasoningEffort: {
+          defaultValue: "none",
+          options: ["none"],
+          supported: false
+        },
+        stream: { defaultValue: false, supported: false },
+        temperature: { defaultValue: 0.5, maxValue: 2, minValue: 0, supported: true }
+      },
+      provider: "connection-compatible-uuid",
+      providerFamily: "openai_compatible"
+    };
+    const compatibleHarness = createRunControlsHarness(
+      compatibleModel,
+      catalog({}, [model, compatibleModel])
+    );
+    useComposerControlStore.getState().setSelectedProvider(compatibleModel.provider);
+    useComposerControlStore.getState().setSelectedModelId(compatibleModel.modelId);
+    compatibleHarness.actions().applyModelControlDefaults(compatibleModel);
+
+    expect(compatibleHarness.actions().buildParams()).toMatchObject({
+      maxOutputTokens: 2048,
+      reasoning: { effort: "none" },
+      temperature: 0.5
+    });
+    expect(compatibleHarness.actions().buildParams()).not.toHaveProperty("background");
+    expect(compatibleHarness.actions().buildParams()).not.toHaveProperty("stream");
   });
 
   it("applies a Deep profile atomically and persists one complete target-model draft", async () => {

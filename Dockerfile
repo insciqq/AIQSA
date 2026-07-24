@@ -98,4 +98,4 @@ COPY --chown=node:node . .
 
 USER node
 
-CMD ["sh", "-c", "npm run db:migrate:deploy && npm run db:bootstrap"]
+CMD ["sh", "-c", "npm run db:migrate:deploy && npm run db:cutover && npm run db:bootstrap"]

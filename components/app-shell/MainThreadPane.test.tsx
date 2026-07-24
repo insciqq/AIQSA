@@ -231,6 +231,50 @@ function installCompactComposerViewport() {
 }
 
 describe("MainThreadPane", () => {
+  it("resolves runtime model identities to display names and uses a neutral missing-model fallback", () => {
+    const runtimeModel: CatalogModel = {
+      ...model,
+      displayName: "Claude Opus 4.8",
+      modelId: "018f47a0-opaque-deployment-id",
+      provider: "018f47a0-opaque-connection-id",
+      providerFamily: "anthropic",
+      upstreamModelId: "claude-opus-4-8-20260701"
+    };
+    const runtimeCatalog: Catalog = {
+      ...catalog,
+      models: [runtimeModel],
+      providers: [{
+        family: "anthropic",
+        id: runtimeModel.provider,
+        models: [runtimeModel.modelId],
+        name: "Anthropic production"
+      }]
+    };
+    const view = renderPane({
+      ...readyComposerOverrides,
+      catalog: runtimeCatalog,
+      visibleMessages: [assistantMessage("answer-runtime", {
+        modelId: runtimeModel.upstreamModelId,
+        provider: runtimeModel.providerFamily
+      })]
+    });
+
+    expect(screen.getByText("Anthropic production / Claude Opus 4.8")).toBeVisible();
+    expect(screen.queryByText(runtimeModel.upstreamModelId!)).not.toBeInTheDocument();
+
+    view.rerender(
+      <MainThreadPane
+        {...view.props}
+        visibleMessages={[assistantMessage("answer-missing", {
+          modelId: "long-upstream-model-id-that-is-no-longer-available",
+          provider: "anthropic"
+        })]}
+      />
+    );
+    expect(screen.getByText("Model unavailable")).toBeVisible();
+    expect(screen.queryByText("long-upstream-model-id-that-is-no-longer-available")).not.toBeInTheDocument();
+  });
+
   it.each([
     {
       hint: "Loading models…",

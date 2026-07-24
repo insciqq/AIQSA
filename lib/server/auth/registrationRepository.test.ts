@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { PrismaClient } from "@prisma/client";
 import { afterAll, describe, expect, it } from "vitest";
+import { providerTemplateIds } from "../../domain/providerTemplates";
 import { prisma } from "../prisma";
 import { loadEntitlementsForUser } from "./dbEntitlements";
 import { hashPassword, verifyPassword } from "./password";
@@ -29,8 +30,7 @@ async function withRegistrationData<T>(
     data: [
       {
         groupId: group.id,
-        provider: "openai",
-        modelId: "gpt-5.5"
+        providerModelId: providerTemplateIds.fakeModel
       },
       {
         groupId: group.id,
@@ -212,12 +212,16 @@ describe("Prisma registration repository", () => {
       });
       expect(user.status).toBe("active");
       expect(user.groups).toHaveLength(1);
-      expect(user.settings?.defaultProvider).toBe("openai");
+      expect(user.settings?.defaultProviderModelId).toBeNull();
       expect(user.settings?.defaultFolderId).toBeNull();
       expect(user.settings?.defaultPromptPresetId).toBeTruthy();
       expect(user.promptPresets.some((prompt) => prompt.isDefault)).toBe(true);
       expect(user.folders).toHaveLength(0);
-      expect(entitlements.modelKeys.has("openai:gpt-5.5")).toBe(true);
+      expect(
+        entitlements.modelKeys.has(
+          `${providerTemplateIds.fakeConnection}:${providerTemplateIds.fakeModel}`
+        )
+      ).toBe(true);
       expect(entitlements.searchStrategies.has("openai-native-web-search")).toBe(true);
       expect(identity.emailVerifiedAt).toBeInstanceOf(Date);
       await expect(verifyPassword("chosen-password", identity.passwordHash)).resolves.toBe(true);

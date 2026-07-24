@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { PrismaClient } from "@prisma/client";
 import { expect, test, type APIRequestContext, type Locator, type Page } from "@playwright/test";
+import { providerTemplateIds } from "../../lib/domain/providerTemplates";
 import { DEFAULT_BOOTSTRAP_USER_ID } from "../../lib/server/auth/config";
 import { hashPassword } from "../../lib/server/auth/password";
 
@@ -26,7 +27,9 @@ const adminSections = [
   { id: "usage", label: "Usage" },
   { id: "groups", label: "Groups" },
   { id: "model-access", label: "Model access" },
+  { id: "providers", label: "Providers" },
   { id: "mcp", label: "MCP servers" },
+  { id: "email", label: "Email delivery" },
   { id: "invites", label: "Invites" },
   { id: "access-rules", label: "Access rules" },
   { id: "safety", label: "Safety" }
@@ -216,13 +219,11 @@ test("admin manages approvals, rules, invites, session revocation, and disabling
     data: [
       {
         groupId: group.id,
-        provider: "openai",
-        modelId: "gpt-5.5"
+        providerConnectionId: providerTemplateIds.openAiConnection
       },
       {
         groupId: group.id,
-        provider: "fake",
-        modelId: "fake-qsa"
+        providerModelId: providerTemplateIds.fakeModel
       },
       {
         groupId: group.id,
@@ -356,8 +357,7 @@ test("admin manages approvals, rules, invites, session revocation, and disabling
           where: {
             enabled: true,
             groupId: group.id,
-            modelId: "fake-qsa",
-            provider: "fake"
+            providerModelId: providerTemplateIds.fakeModel
           }
         });
 
@@ -391,8 +391,8 @@ test("admin manages approvals, rules, invites, session revocation, and disabling
     const created = (await createChat.json()) as { chat: { id: string } };
     const staleRun = await userPage.request.post(`/api/chats/${created.chat.id}/messages`, {
       data: {
-        modelId: "fake-qsa",
-        provider: "fake",
+        modelId: providerTemplateIds.fakeModel,
+        provider: providerTemplateIds.fakeConnection,
         searchStrategy: "search-disabled",
         text: "stale entitlement check"
       }
@@ -569,8 +569,8 @@ test("admin console keeps all redesigned sections operable end to end", async ({
           where: {
             enabled: true,
             groupId: groupId!,
-            modelId: null,
-            provider: "openai",
+            providerConnectionId: providerTemplateIds.openAiConnection,
+            providerModelId: null,
             searchStrategy: null
           }
         })
@@ -584,10 +584,12 @@ test("admin console keeps all redesigned sections operable end to end", async ({
           where: {
             enabled: true,
             groupId: groupId!,
-            modelId: {
+            providerModelId: {
               not: null
             },
-            provider: "fake"
+            providerModel: {
+              connectionId: providerTemplateIds.fakeConnection
+            }
           }
         })
       )
@@ -604,8 +606,8 @@ test("admin console keeps all redesigned sections operable end to end", async ({
           where: {
             enabled: true,
             groupId: groupId!,
-            modelId: null,
-            provider: null,
+            providerConnectionId: null,
+            providerModelId: null,
             searchStrategy: "openai-native-web-search"
           }
         })
@@ -619,10 +621,12 @@ test("admin console keeps all redesigned sections operable end to end", async ({
           where: {
             enabled: true,
             groupId: groupId!,
-            modelId: {
+            providerModelId: {
               not: null
             },
-            provider: "fake"
+            providerModel: {
+              connectionId: providerTemplateIds.fakeConnection
+            }
           }
         })
       )
@@ -880,7 +884,11 @@ test("admin console keeps every section touch-operable in the documented compact
     await modelGroupSearch.fill(compactGroupName);
     const modelGroupSelect = modelAccess.getByRole("button", { name: `Select ${compactGroupName}` });
     await expectTouchTarget(modelGroupSelect);
+    await modelGroupSelect.scrollIntoViewIfNeeded();
+    const modelAccessScrollY = await page.evaluate(() => window.scrollY);
     await modelGroupSelect.click();
+    await expect(modelGroupSelect).toBeFocused();
+    await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(modelAccessScrollY);
     await expectTouchTarget(modelAccess.getByRole("button", { name: /Grant provider / }).first());
     await expectNoPageOverflow(page);
 

@@ -9,6 +9,29 @@ import {
   serializeAdminRule
 } from "./adminRepositorySerializers";
 
+function stableGrant(input: {
+  enabled: boolean;
+  groupId: string | null;
+  id: string;
+  modelId: string | null;
+  provider: string | null;
+  searchStrategy: string | null;
+  userId: string | null;
+}) {
+  return {
+    enabled: input.enabled,
+    groupId: input.groupId,
+    id: input.id,
+    providerConnectionId: input.modelId ? null : input.provider,
+    providerModel: input.modelId && input.provider
+      ? { connectionId: input.provider }
+      : null,
+    providerModelId: input.modelId,
+    searchStrategy: input.searchStrategy,
+    userId: input.userId
+  };
+}
+
 describe("admin repository serializers", () => {
   it("serializes rules with exact fields and membership fallback semantics", () => {
     expect(
@@ -107,7 +130,26 @@ describe("admin repository serializers", () => {
   });
 
   it("preserves every grant field and grant order in serialized groups", () => {
-    const disabledSearchGrant = {
+    const disabledSearchGrant = stableGrant({
+      enabled: false,
+      groupId: "group-1",
+      id: "grant-search",
+      modelId: null,
+      provider: null,
+      searchStrategy: "web-search",
+      userId: null
+    });
+    const modelGrant = stableGrant({
+      enabled: true,
+      groupId: "group-1",
+      id: "grant-model",
+      modelId: "gpt-5.5",
+      provider: "openai",
+      searchStrategy: null,
+      userId: null
+    });
+
+    const disabledSearchWire = {
       enabled: false,
       groupId: "group-1",
       id: "grant-search",
@@ -116,7 +158,7 @@ describe("admin repository serializers", () => {
       searchStrategy: "web-search",
       userId: null
     };
-    const modelGrant = {
+    const modelWire = {
       enabled: true,
       groupId: "group-1",
       id: "grant-model",
@@ -126,7 +168,7 @@ describe("admin repository serializers", () => {
       userId: null
     };
 
-    expect(serializeAdminGrant(disabledSearchGrant)).toEqual(disabledSearchGrant);
+    expect(serializeAdminGrant(disabledSearchGrant)).toEqual(disabledSearchWire);
     expect(
       serializeAdminGroup({
         _count: { users: 0 },
@@ -137,7 +179,7 @@ describe("admin repository serializers", () => {
         name: "Operators"
       })
     ).toEqual({
-      accessGrants: [disabledSearchGrant, modelGrant],
+      accessGrants: [disabledSearchWire, modelWire],
       archivedAt: "2026-07-01T00:00:00.000Z",
       deletion: {
         canDelete: false,
@@ -153,7 +195,7 @@ describe("admin repository serializers", () => {
   it("combines only applicable enabled entitlements and emits exact lexical order", () => {
     const entitlements = serializeAdminEntitlements({
       grants: [
-        {
+        stableGrant({
           enabled: true,
           groupId: "group-current",
           id: "grant-model-anthropic",
@@ -161,8 +203,8 @@ describe("admin repository serializers", () => {
           provider: "anthropic",
           searchStrategy: null,
           userId: null
-        },
-        {
+        }),
+        stableGrant({
           enabled: true,
           groupId: null,
           id: "grant-model-openai",
@@ -170,8 +212,8 @@ describe("admin repository serializers", () => {
           provider: "openai",
           searchStrategy: null,
           userId: "user-1"
-        },
-        {
+        }),
+        stableGrant({
           enabled: true,
           groupId: null,
           id: "grant-provider-openrouter",
@@ -179,8 +221,8 @@ describe("admin repository serializers", () => {
           provider: "openrouter",
           searchStrategy: null,
           userId: "user-1"
-        },
-        {
+        }),
+        stableGrant({
           enabled: true,
           groupId: "group-current",
           id: "grant-provider-anthropic",
@@ -188,8 +230,8 @@ describe("admin repository serializers", () => {
           provider: "anthropic",
           searchStrategy: null,
           userId: null
-        },
-        {
+        }),
+        stableGrant({
           enabled: true,
           groupId: "group-current",
           id: "grant-search-z",
@@ -197,8 +239,8 @@ describe("admin repository serializers", () => {
           provider: null,
           searchStrategy: "z-search",
           userId: null
-        },
-        {
+        }),
+        stableGrant({
           enabled: true,
           groupId: null,
           id: "grant-search-a",
@@ -206,8 +248,8 @@ describe("admin repository serializers", () => {
           provider: null,
           searchStrategy: "a-search",
           userId: "user-1"
-        },
-        {
+        }),
+        stableGrant({
           enabled: true,
           groupId: "group-current",
           id: "grant-model-duplicate",
@@ -215,8 +257,8 @@ describe("admin repository serializers", () => {
           provider: "anthropic",
           searchStrategy: null,
           userId: null
-        },
-        {
+        }),
+        stableGrant({
           enabled: false,
           groupId: null,
           id: "grant-disabled",
@@ -224,8 +266,8 @@ describe("admin repository serializers", () => {
           provider: "disabled-provider",
           searchStrategy: "disabled-search",
           userId: "user-1"
-        },
-        {
+        }),
+        stableGrant({
           enabled: true,
           groupId: "group-other",
           id: "grant-unrelated",
@@ -233,7 +275,7 @@ describe("admin repository serializers", () => {
           provider: "other-provider",
           searchStrategy: "other-search",
           userId: null
-        }
+        })
       ],
       groupIds: ["group-current"],
       userId: "user-1"

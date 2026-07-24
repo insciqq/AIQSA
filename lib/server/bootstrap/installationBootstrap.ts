@@ -2,6 +2,10 @@ import { randomUUID as randomNodeUuid } from "node:crypto";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { defaultProviderModels, defaultSearchStrategies } from "@/lib/domain/catalog";
 import {
+  providerConnectionTemplates,
+  providerTemplateIds
+} from "@/lib/domain/providerTemplates";
+import {
   hashPassword as hashAuthPassword,
   isPlausibleEmail,
   normalizeAuthEmail,
@@ -188,6 +192,10 @@ async function hasApplicationRows(tx: Prisma.TransactionClient): Promise<boolean
         UNION ALL SELECT 1 FROM "Folder"
         UNION ALL SELECT 1 FROM "PromptPreset"
         UNION ALL SELECT 1 FROM "ProviderModel"
+        UNION ALL SELECT 1 FROM "ProviderCredential"
+        UNION ALL SELECT 1 FROM "ProviderCredentialVersion"
+        UNION ALL SELECT 1 FROM "ProviderGroupCredentialAssignment"
+        UNION ALL SELECT 1 FROM "ProviderRunBinding"
         UNION ALL SELECT 1 FROM "SearchStrategy"
         UNION ALL SELECT 1 FROM "Chat"
         UNION ALL SELECT 1 FROM "Message"
@@ -288,45 +296,65 @@ async function inspectBootstrapState(
 }
 
 async function synchronizeCodeOwnedCatalog(tx: Prisma.TransactionClient): Promise<void> {
-  for (const model of defaultProviderModels) {
-    await tx.providerModel.upsert({
+  for (const template of providerConnectionTemplates) {
+    const active = template.family === "fake";
+    await tx.providerConnection.upsert({
       create: {
-        capabilities: json(model.capabilities),
-        contextWindow: model.contextWindow,
-        defaultParams: json(model.defaultParams),
-        displayName: model.displayName,
-        enabled: true,
-        inputTokenPriceMicros: model.inputTokenPriceMicros,
-        modelId: model.modelId,
-        outputTokenPriceMicros: model.outputTokenPriceMicros,
-        provider: model.provider,
-        supportsNativeSearch: model.capabilities.nativeSearch,
-        supportsPdf: model.capabilities.pdf,
-        supportsReasoning: model.capabilities.reasoning,
-        supportsVision: model.capabilities.vision
+        activeConfig: active ? json(template.config) : undefined,
+        activeVersion: active ? 1 : 0,
+        activatedAt: active ? new Date() : undefined,
+        displayName: template.displayName,
+        draftConfig: json(template.config),
+        enabled: template.enabled,
+        family: template.family,
+        id: template.id,
+        templateKey: template.templateKey
       },
-      update: {
-        capabilities: json(model.capabilities),
-        contextWindow: model.contextWindow,
-        defaultParams: json(model.defaultParams),
-        displayName: model.displayName,
-        inputTokenPriceMicros: model.inputTokenPriceMicros,
-        outputTokenPriceMicros: model.outputTokenPriceMicros,
-        supportsNativeSearch: model.capabilities.nativeSearch,
-        supportsPdf: model.capabilities.pdf,
-        supportsReasoning: model.capabilities.reasoning,
-        supportsVision: model.capabilities.vision
-      },
-      where: {
-        provider_modelId: {
-          modelId: model.modelId,
-          provider: model.provider
-        }
-      }
+      update: {},
+      where: { id: template.id }
     });
   }
 
-  for (const strategy of defaultSearchStrategies) {
+  const fake = defaultProviderModels.find((model) => model.provider === "fake");
+  if (!fake) {
+    throw new InstallationBootstrapError("preflight_failed", "Fake provider template is missing.");
+  }
+  const fakeConfig = {
+    adapterKind: "fake",
+    capabilities: fake.capabilities,
+    defaultParams: fake.defaultParams,
+    upstreamModelId: fake.modelId
+  };
+  await tx.providerModel.upsert({
+    create: {
+      activeConfig: json(fakeConfig),
+      activeVersion: 1,
+      activatedAt: new Date(),
+      capabilities: json(fake.capabilities),
+      connectionId: providerTemplateIds.fakeConnection,
+      contextWindow: fake.contextWindow,
+      defaultParams: json(fake.defaultParams),
+      displayName: fake.displayName,
+      draftConfig: json(fakeConfig),
+      enabled: true,
+      id: providerTemplateIds.fakeModel,
+      inputTokenPriceMicros: fake.inputTokenPriceMicros,
+      modelId: fake.modelId,
+      outputTokenPriceMicros: fake.outputTokenPriceMicros,
+      provider: fake.provider,
+      supportsNativeSearch: fake.capabilities.nativeSearch,
+      supportsPdf: fake.capabilities.pdf,
+      supportsReasoning: fake.capabilities.reasoning,
+      supportsVision: fake.capabilities.vision,
+      templateKey: "fake:fake-qsa"
+    },
+    update: {},
+    where: { templateKey: "fake:fake-qsa" }
+  });
+
+  for (const strategy of defaultSearchStrategies.filter(
+    (candidate) => candidate.kind !== "perplexity_tool_search"
+  )) {
     await tx.searchStrategy.upsert({
       create: {
         config: json(strategy.config),
@@ -408,10 +436,9 @@ async function createInitialAdminFoundation(
     data: {
       defaultControlValues: json({}),
       defaultFolderId: null,
-      defaultModelId: "gpt-5.5",
+      defaultProviderModelId: null,
       defaultPromptPresetId: prompt.id,
-      defaultProvider: "openai",
-      defaultSearchStrategyId: "openai-native-web-search",
+      defaultSearchStrategyId: "search-disabled",
       showCitations: true,
       showReasoningBlocks: false,
       showToolActivity: true,
@@ -419,25 +446,6 @@ async function createInitialAdminFoundation(
     }
   });
 
-  await tx.accessGrant.createMany({
-    data: [
-      ...defaultProviderModels
-        .filter((model) => model.provider !== "fake")
-        .map((model) => ({
-          enabled: true,
-          groupId: group.id,
-          modelId: model.modelId,
-          provider: model.provider
-        })),
-      ...defaultSearchStrategies
-        .filter((strategy) => strategy.strategyId !== "search-disabled")
-        .map((strategy) => ({
-          enabled: true,
-          groupId: group.id,
-          searchStrategy: strategy.strategyId
-        }))
-    ]
-  });
 }
 
 export async function bootstrapInstallationDatabase(
@@ -473,8 +481,10 @@ export async function bootstrapInstallationDatabase(
         await synchronizeCodeOwnedCatalog(tx);
 
         return {
-          catalogModelCount: defaultProviderModels.length,
-          catalogSearchStrategyCount: defaultSearchStrategies.length,
+          catalogModelCount: 1,
+          catalogSearchStrategyCount: defaultSearchStrategies.filter(
+            (strategy) => strategy.kind !== "perplexity_tool_search"
+          ).length,
           status: "already_adopted"
         };
       }
@@ -499,8 +509,10 @@ export async function bootstrapInstallationDatabase(
       await createInitialAdminFoundation(tx, { ...input, userId }, passwordHash, now());
 
       return {
-        catalogModelCount: defaultProviderModels.length,
-        catalogSearchStrategyCount: defaultSearchStrategies.length,
+        catalogModelCount: 1,
+        catalogSearchStrategyCount: defaultSearchStrategies.filter(
+          (strategy) => strategy.kind !== "perplexity_tool_search"
+        ).length,
         status: "created"
       };
     },

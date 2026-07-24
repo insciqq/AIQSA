@@ -1,8 +1,9 @@
 export type AccessGrantLike = {
   enabled: boolean;
   groupId?: string | null;
-  modelId?: string | null;
-  provider?: string | null;
+  providerConnectionId?: string | null;
+  providerModelConnectionId?: string | null;
+  providerModelId?: string | null;
   searchStrategy?: string | null;
   userId?: string | null;
 };
@@ -56,10 +57,10 @@ export function resolveEntitlements(
       continue;
     }
 
-    if (grant.provider && grant.modelId) {
-      entitlements.modelKeys.add(modelKey(grant.provider, grant.modelId));
-    } else if (grant.provider) {
-      entitlements.providerKeys.add(grant.provider);
+    if (grant.providerModelConnectionId && grant.providerModelId) {
+      entitlements.modelKeys.add(modelKey(grant.providerModelConnectionId, grant.providerModelId));
+    } else if (grant.providerConnectionId) {
+      entitlements.providerKeys.add(grant.providerConnectionId);
     }
 
     if (grant.searchStrategy) {

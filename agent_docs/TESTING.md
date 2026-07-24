@@ -142,6 +142,55 @@ docker compose -f docker-compose.dev.yml exec -T app npx vitest run \
   lib/server/providers/anthropicMessages.test.ts
 ```
 
+For ADR 0022 provider control-plane, stable-ID admission/runtime, and Admin UI behavior, use the deterministic focused suites below. They use encrypted fixture keys and fake fetches; they make no paid provider call:
+
+```bash
+docker compose -f docker-compose.dev.yml exec -T app npx vitest run \
+  lib/server/admin/providers \
+  lib/server/providerRuntime \
+  lib/server/providers/providerConfiguration.test.ts \
+  lib/server/providers/providerSafeFetch.test.ts \
+  lib/server/providers/runtimeFactory.test.ts \
+  app/api/admin/providers \
+  components/admin/AdminSearchablePicker.test.tsx \
+  components/admin/AdminProvidersSection.test.tsx \
+  components/admin/adminProvidersApi.test.ts \
+  components/admin/providerUiState.test.ts \
+  components/admin/useAdminOpenRouterDiscovery.test.tsx
+```
+
+For ADR 0023 runtime SMTP configuration and delivery semantics, use:
+
+```bash
+docker compose -f docker-compose.dev.yml exec -T app npx vitest run \
+  lib/server/email \
+  app/api/admin/email \
+  components/admin/AdminEmailSection.test.tsx \
+  components/admin/adminEmailApi.test.ts
+```
+
+The stopped control-plane migration has four deterministic contracts. They create only temporary databases or in-memory fixtures and do not contact providers or SMTP:
+
+```bash
+npm run db:control-plane:migration:contract
+npx tsx prisma/scripts/tests/provider-control-plane-migration-contract.ts
+npx tsx prisma/scripts/tests/smtp-control-migration-contract.ts
+npx tsx prisma/scripts/tests/mcp-envelope-v2-cutover-contract.ts
+```
+
+The Admin provider and email browser boundary can reuse the disposable development server:
+
+```bash
+docker compose -f docker-compose.dev.yml exec -T \
+  -e PLAYWRIGHT_REUSE_SERVER=1 app \
+  npx playwright test \
+    tests/e2e/provider-admin-ui.spec.ts \
+    tests/e2e/admin-email-ui.spec.ts \
+    --project=chromium
+```
+
+Those specs mock only each Admin resource boundary for the administrator workflow. The provider browser case proves automatic loading of a large account catalog into the sorted/searchable OpenRouter picker, capability/provider search, automatic endpoint loading after explicit manual-routing selection, ordered route tags, collapsed optional diagnostics, and contextual activation. Their ordinary-user cases exercise the real `403` routes; repository, service, route, transport, and runtime tests remain authoritative for RBAC, write-only unsaved-key preflight, discovery-cache races, one-catalog-request-per-referenced-key activation, group-key selection, revocation, SSRF/TLS rules, and delivery outcomes.
+
 MCP UI behavior has focused component/API/store coverage in `components/app-shell/*Mcp*.test.tsx`, `components/app-shell/mcpSettings*.test.ts`, and `components/admin/AdminMcp*.test.tsx`. Its deterministic browser boundary is:
 
 ```bash

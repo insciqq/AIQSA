@@ -25,7 +25,14 @@ import {
 } from "./definitions";
 import type { McpDraftValidator } from "./draftValidator";
 import { unavailableMcpDraftValidator } from "./draftValidator";
-import { decryptMcpEnvelope, encryptMcpEnvelope, getMcpEncryptionKey } from "./encryption";
+import {
+  decryptMcpEnvelope,
+  encryptMcpEnvelope,
+  getMcpEncryptionKey,
+  mcpPersonalConfigEnvelopeContext,
+  mcpSharedConfigEnvelopeContext,
+  type McpEnvelopeContext
+} from "./encryption";
 import { buildMcpOAuthPolicy, mcpOAuthPolicyFingerprint } from "./oauthPolicy";
 import { parseMcpLocalResolvedArtifact } from "./localArtifact";
 import type { McpRepository, McpRepositoryResult } from "./repositoryContract";
@@ -108,9 +115,14 @@ function isSlotValue(value: unknown): value is McpSlotValue {
     (typeof value === "number" && Number.isFinite(value));
 }
 
-function readStoredValues(envelope: string | null, key: Buffer): StoredValues {
+function readStoredValues(
+  envelope: string | null,
+  key: Buffer,
+  context?: McpEnvelopeContext
+): StoredValues {
   if (!envelope) return emptyStoredValues();
-  const decoded = decryptMcpEnvelope<unknown>(envelope, key);
+  if (!context) throw new Error("mcp_values_invalid");
+  const decoded = decryptMcpEnvelope<unknown>(envelope, key, context);
   if (!decoded || typeof decoded !== "object" || Array.isArray(decoded)) {
     throw new Error("mcp_values_invalid");
   }
@@ -334,7 +346,13 @@ function serializeAdminServer(
   const draft = draftFrom(record.draft);
   const draftHash = hashCanonicalMcpValue(draft);
   const draftTest = draftTestFrom(record.draftTestEvidence, record.testedDraftHash);
-  const stored = readStoredValues(record.sharedConfigEnvelope, key);
+  const stored = readStoredValues(
+    record.sharedConfigEnvelope,
+    key,
+    record.sharedConfigEnvelope
+      ? mcpSharedConfigEnvelopeContext(record.id, record.sharedConfigVersion)
+      : undefined
+  );
   let validationOAuth: AdminServerRecord["oauthConnections"][number] | null =
     record.oauthConnections[0] ?? null;
   if (draft.auth.mode === "oauth" && oauthValidationRedirectUri) {
@@ -495,8 +513,20 @@ function serializeUserServer(input: {
 
   const draft = draftFrom(input.record.activeRevision.configuration);
   const preference = input.record.userServers[0] ?? null;
-  const shared = readStoredValues(input.record.sharedConfigEnvelope, input.key);
-  const personal = readStoredValues(preference?.personalConfigEnvelope ?? null, input.key);
+  const shared = readStoredValues(
+    input.record.sharedConfigEnvelope,
+    input.key,
+    input.record.sharedConfigEnvelope
+      ? mcpSharedConfigEnvelopeContext(input.record.id, input.record.sharedConfigVersion)
+      : undefined
+  );
+  const personal = readStoredValues(
+    preference?.personalConfigEnvelope ?? null,
+    input.key,
+    preference?.personalConfigEnvelope
+      ? mcpPersonalConfigEnvelopeContext(preference.id, preference.personalConfigVersion)
+      : undefined
+  );
   const resolved = resolveEffectiveMcpValues({
     personalSlotKeys: grant.personalSlotKeys,
     personalValues: personal.values,
@@ -822,14 +852,23 @@ export function createPrismaMcpRepository(input: {
       const key = encryptionKey();
       const now = new Date();
       const stored = applyStoredValuePatch(emptyStoredValues(), sharedValues, now);
+      const serverId = randomUUID();
+      const sharedConfigVersion = Object.keys(sharedValues).length ? 1 : 0;
       const server = await client.mcpServer.create({
         data: {
           description,
           displayName: name,
           draft: draft as Prisma.InputJsonValue,
+          id: serverId,
           namespace: namespace(),
-          sharedConfigEnvelope: Object.keys(stored.values).length ? encryptMcpEnvelope(stored, key) : null,
-          sharedConfigVersion: Object.keys(sharedValues).length ? 1 : 0
+          sharedConfigEnvelope: Object.keys(stored.values).length
+            ? encryptMcpEnvelope(
+                stored,
+                key,
+                mcpSharedConfigEnvelopeContext(serverId, sharedConfigVersion)
+              )
+            : null,
+          sharedConfigVersion
         },
         select: { id: true }
       });
@@ -1004,7 +1043,8 @@ export function createPrismaMcpRepository(input: {
           draft: true,
           id: true,
           revisions: { select: { configuration: true } },
-          sharedConfigEnvelope: true
+          sharedConfigEnvelope: true,
+          sharedConfigVersion: true
         },
         where: { archivedAt: null, id: serverId }
       });
@@ -1018,7 +1058,13 @@ export function createPrismaMcpRepository(input: {
       if (lineageIssues.length) {
         return { issues: lineageIssues, kind: "draft_validation_failed" as const };
       }
-      const sharedValues = readStoredValues(server.sharedConfigEnvelope, key);
+      const sharedValues = readStoredValues(
+        server.sharedConfigEnvelope,
+        key,
+        server.sharedConfigEnvelope
+          ? mcpSharedConfigEnvelopeContext(server.id, server.sharedConfigVersion)
+          : undefined
+      );
       const validationInput = draftValidationValues({
         draft,
         oneTimeValues,
@@ -1091,6 +1137,7 @@ export function createPrismaMcpRepository(input: {
     updateServer: async ({ description, draft, enabled, name, serverId, sharedValues }) => {
       const key = encryptionKey();
       return client.$transaction(async (tx) => {
+        if (!await lockMcpServer(tx, serverId)) return { kind: "not_found" as const };
         const existing = await tx.mcpServer.findFirst({ where: { archivedAt: null, id: serverId } });
         if (!existing) return { kind: "not_found" as const };
         if (enabled === true && !existing.activeRevisionId) return { kind: "revision_required" as const };
@@ -1109,13 +1156,26 @@ export function createPrismaMcpRepository(input: {
           data.testedDraftHash = null;
         }
         if (sharedValues && Object.keys(sharedValues).length) {
+          const sharedConfigVersion = existing.sharedConfigVersion + 1;
           const stored = applyStoredValuePatch(
-            readStoredValues(existing.sharedConfigEnvelope, key),
+            readStoredValues(
+              existing.sharedConfigEnvelope,
+              key,
+              existing.sharedConfigEnvelope
+                ? mcpSharedConfigEnvelopeContext(existing.id, existing.sharedConfigVersion)
+                : undefined
+            ),
             sharedValues,
             new Date()
           );
-          data.sharedConfigEnvelope = Object.keys(stored.values).length ? encryptMcpEnvelope(stored, key) : null;
-          data.sharedConfigVersion = { increment: 1 };
+          data.sharedConfigEnvelope = Object.keys(stored.values).length
+            ? encryptMcpEnvelope(
+                stored,
+                key,
+                mcpSharedConfigEnvelopeContext(existing.id, sharedConfigVersion)
+              )
+            : null;
+          data.sharedConfigVersion = sharedConfigVersion;
         }
         if (Object.keys(data).length) await tx.mcpServer.update({ data, where: { id: serverId } });
         if (enabled === false) {
@@ -1136,6 +1196,7 @@ export function createPrismaMcpRepository(input: {
     updateUserServer: async ({ enabled, serverId, userId, values }) => {
       const key = encryptionKey();
       return client.$transaction(async (tx) => {
+        if (!await lockMcpServer(tx, serverId)) return { kind: "not_found" as const };
         const groupIds = await groupIdsForUser(tx, userId);
         if (!groupIds) return { kind: "not_found" as const };
         const [record] = await listUserServerRecords(tx, userId, groupIds, serverId);
@@ -1152,12 +1213,24 @@ export function createPrismaMcpRepository(input: {
         }
         const preference = record.userServers[0] ?? null;
         const personal = applyStoredValuePatch(
-          readStoredValues(preference?.personalConfigEnvelope ?? null, key),
+          readStoredValues(
+            preference?.personalConfigEnvelope ?? null,
+            key,
+            preference?.personalConfigEnvelope
+              ? mcpPersonalConfigEnvelopeContext(preference.id, preference.personalConfigVersion)
+              : undefined
+          ),
           values ?? {},
           new Date()
         );
         if (enabled === true) {
-          const shared = readStoredValues(record.sharedConfigEnvelope, key);
+          const shared = readStoredValues(
+            record.sharedConfigEnvelope,
+            key,
+            record.sharedConfigEnvelope
+              ? mcpSharedConfigEnvelopeContext(record.id, record.sharedConfigVersion)
+              : undefined
+          );
           const resolved = resolveEffectiveMcpValues({
             personalSlotKeys: grant.personalSlotKeys,
             personalValues: personal.values,
@@ -1185,11 +1258,21 @@ export function createPrismaMcpRepository(input: {
           }
         }
         const hasValuesPatch = Boolean(values && Object.keys(values).length);
+        const preferenceId = preference?.id ?? randomUUID();
+        const personalConfigVersion = (preference?.personalConfigVersion ?? 0) + (hasValuesPatch ? 1 : 0);
+        const personalConfigEnvelope = Object.keys(personal.values).length
+          ? encryptMcpEnvelope(
+              personal,
+              key,
+              mcpPersonalConfigEnvelopeContext(preferenceId, personalConfigVersion)
+            )
+          : null;
         await tx.mcpUserServer.upsert({
           create: {
             enabled: enabled ?? false,
-            personalConfigEnvelope: Object.keys(personal.values).length ? encryptMcpEnvelope(personal, key) : null,
-            personalConfigVersion: hasValuesPatch ? 1 : 0,
+            id: preferenceId,
+            personalConfigEnvelope,
+            personalConfigVersion,
             serverId,
             userId
           },
@@ -1197,8 +1280,8 @@ export function createPrismaMcpRepository(input: {
             desiredRuntimeGenerationId: null,
             ...(enabled !== undefined ? { enabled } : {}),
             ...(hasValuesPatch ? {
-              personalConfigEnvelope: Object.keys(personal.values).length ? encryptMcpEnvelope(personal, key) : null,
-              personalConfigVersion: { increment: 1 }
+              personalConfigEnvelope,
+              personalConfigVersion
             } : {})
           },
           where: { userId_serverId: { serverId, userId } }

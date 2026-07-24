@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   anthropicMessagesToolBridge,
+  openAICompatibleChatToolBridge,
+  openAICompatibleResponsesToolBridge,
   openAIResponsesToolBridge,
   openRouterChatToolBridge
 } from "./bridges";
@@ -48,6 +50,21 @@ const mcpTool: RunTool = {
 };
 
 describe("provider tool bridges", () => {
+  it("selects the explicit compatible wire protocol without treating it as OpenRouter", () => {
+    const input = { modelId: "deployment-1", provider: "openai_compatible" };
+
+    expect(openAICompatibleResponsesToolBridge.supportsToolCalling(input)).toBe(true);
+    expect(openAICompatibleChatToolBridge.supportsToolCalling(input)).toBe(true);
+    expect(openAICompatibleResponsesToolBridge.serializeTool(searchTool).tool).toHaveProperty(
+      "name",
+      "search_via_perplexity"
+    );
+    expect(openAICompatibleChatToolBridge.serializeTool(searchTool).tool).toHaveProperty(
+      "function.name",
+      "search_via_perplexity"
+    );
+  });
+
   it("owns provider-specific assistant continuation serialization", () => {
     const calls = [{ arguments: { content: "Review" }, id: "call-1", name: mcpTool.name }];
 

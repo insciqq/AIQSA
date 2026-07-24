@@ -1,4 +1,4 @@
-import type { PrismaClient } from "@prisma/client";
+import { Prisma, type PrismaClient } from "@prisma/client";
 import { adminGroupDeletionBlock } from "./adminDeletionMetadata";
 import { adminGroupRecordInclude } from "./adminPrismaRecords";
 import type { AdminRepository } from "./adminRepositoryContract";
@@ -23,8 +23,8 @@ function grantWhere(input: {
 }) {
   return {
     groupId: input.groupId,
-    modelId: input.modelId ?? null,
-    provider: input.provider ?? null,
+    providerConnectionId: input.modelId ? null : input.provider ?? null,
+    providerModelId: input.modelId ?? null,
     searchStrategy: input.searchStrategy ?? null,
     userId: null
   };
@@ -123,7 +123,8 @@ export function createAdminGroupGrantCommands(prisma: PrismaClient): AdminGroupG
         const deletionBlock = adminGroupDeletionBlock({
           activeGrantCount:
             group.accessGrants.filter((grant) => grant.enabled).length +
-            group.mcpGrants.filter((grant) => grant.canUse).length,
+            group.mcpGrants.filter((grant) => grant.canUse).length +
+            group._count.providerCredentialAssignments,
           memberCount: group._count.users
         });
 
@@ -200,9 +201,16 @@ export function createAdminGroupGrantCommands(prisma: PrismaClient): AdminGroupG
       } else if (provider && modelId) {
         const model = await prisma.providerModel.findFirst({
           where: {
+            activeConfig: { not: Prisma.DbNull },
+            activeVersion: { gt: 0 },
+            connectionId: provider,
             enabled: true,
-            modelId,
-            provider
+            id: modelId,
+            connection: {
+              activeConfig: { not: Prisma.DbNull },
+              activeVersion: { gt: 0 },
+              enabled: true
+            }
           }
         });
 
@@ -212,8 +220,15 @@ export function createAdminGroupGrantCommands(prisma: PrismaClient): AdminGroupG
       } else if (provider) {
         const providerModels = await prisma.providerModel.count({
           where: {
+            activeConfig: { not: Prisma.DbNull },
+            activeVersion: { gt: 0 },
+            connectionId: provider,
+            connection: {
+              activeConfig: { not: Prisma.DbNull },
+              activeVersion: { gt: 0 },
+              enabled: true
+            },
             enabled: true,
-            provider
           }
         });
 

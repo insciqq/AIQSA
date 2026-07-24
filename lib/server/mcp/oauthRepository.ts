@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import {
   Prisma,
   type McpOAuthConnectionState,
@@ -20,7 +20,9 @@ import { hashCanonicalMcpValue, validateMcpDraft } from "./definitions";
 import {
   decryptMcpEnvelope,
   encryptMcpEnvelope,
-  getMcpEncryptionKey
+  getMcpEncryptionKey,
+  mcpOAuthClientSecretEnvelopeContext,
+  mcpOAuthTokenEnvelopeContext
 } from "./encryption";
 import {
   buildMcpOAuthPolicy,
@@ -165,6 +167,7 @@ const oauthEligibilitySelect = {
   },
   serverId: true,
   tokenEnvelope: true,
+  tokenGeneration: true,
   user: {
     select: {
       groups: {
@@ -198,7 +201,12 @@ function hasCurrentMcpOAuthPolicy(record: OAuthEligibilityRecord, key: Buffer): 
   if (!record.oauthClient || !record.tokenEnvelope) return false;
   let storedPolicy: McpOAuthPolicy;
   try {
-    storedPolicy = parseTokenEnvelope(record.tokenEnvelope, key).policy;
+    storedPolicy = parseTokenEnvelope(
+      record.tokenEnvelope,
+      key,
+      record.id,
+      record.tokenGeneration
+    ).policy;
   } catch {
     return false;
   }
@@ -249,8 +257,8 @@ function jsonClone<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
 }
 
-function tokenVersion(envelope: string): string {
-  return createHash("sha256").update(envelope).digest("hex");
+function tokenVersion(tokenGeneration: number): string {
+  return String(tokenGeneration);
 }
 
 function parseClientInformation(value: unknown): OAuthClientInformationMixed | null {
@@ -278,10 +286,16 @@ function withClientSecret(
   metadata: StoredClientMetadata,
   clientId: string,
   clientSecretEnvelope: string | null,
+  clientSecretGeneration: number,
+  oauthClientId: string,
   key: Buffer
 ): OAuthClientInformationMixed {
   const secret = clientSecretEnvelope
-    ? decryptMcpEnvelope<{ clientSecret: string; version: 1 }>(clientSecretEnvelope, key)
+    ? decryptMcpEnvelope<{ clientSecret: string; version: 1 }>(
+        clientSecretEnvelope,
+        key,
+        mcpOAuthClientSecretEnvelopeContext(oauthClientId, clientSecretGeneration)
+      )
     : null;
   const parsed = parseClientInformation({
     ...metadata.clientInformation,
@@ -297,6 +311,7 @@ function serializeClient(
     clientId: string;
     clientMetadata: Prisma.JsonValue;
     clientSecretEnvelope: string | null;
+    clientSecretGeneration: number;
     id: string;
     registrationKey: string;
   }>,
@@ -305,7 +320,14 @@ function serializeClient(
   const metadata = parseStoredClientMetadata(record.clientMetadata);
   if (!metadata) throw new Error("mcp_oauth_client_invalid");
   return {
-    clientInformation: withClientSecret(metadata, record.clientId, record.clientSecretEnvelope, key),
+    clientInformation: withClientSecret(
+      metadata,
+      record.clientId,
+      record.clientSecretEnvelope,
+      record.clientSecretGeneration,
+      record.id,
+      key
+    ),
     clientMetadata: metadata.clientMetadata,
     discoveryState: metadata.discoveryState,
     id: record.id,
@@ -313,8 +335,17 @@ function serializeClient(
   };
 }
 
-function parseTokenEnvelope(envelope: string, key: Buffer): StoredTokenEnvelope {
-  const decoded = decryptMcpEnvelope<unknown>(envelope, key);
+function parseTokenEnvelope(
+  envelope: string,
+  key: Buffer,
+  connectionId: string,
+  tokenGeneration: number
+): StoredTokenEnvelope {
+  const decoded = decryptMcpEnvelope<unknown>(
+    envelope,
+    key,
+    mcpOAuthTokenEnvelopeContext(connectionId, tokenGeneration)
+  );
   const record = jsonRecord(decoded);
   const parsedTokens = OAuthTokensSchema.safeParse(record?.tokens);
   if (
@@ -441,10 +472,16 @@ export function createPrismaMcpOAuthRepository(input: Readonly<{
     scopes: string[];
     state: McpOAuthConnectionState;
     tokenEnvelope: string | null;
+    tokenGeneration: number;
     userId: string;
   }>): Promise<McpOAuthStoredConnection | null> {
     if (!record.oauthClientId || !record.tokenEnvelope) return null;
-    const envelope = parseTokenEnvelope(record.tokenEnvelope, encryptionKey());
+    const envelope = parseTokenEnvelope(
+      record.tokenEnvelope,
+      encryptionKey(),
+      record.id,
+      record.tokenGeneration
+    );
     return {
       client: await storedClient(record.oauthClientId),
       expiresAt: record.expiresAt,
@@ -455,7 +492,7 @@ export function createPrismaMcpOAuthRepository(input: Readonly<{
       purpose: record.purpose,
       scopes: record.scopes,
       state: record.state,
-      tokenVersion: tokenVersion(record.tokenEnvelope),
+      tokenVersion: tokenVersion(record.tokenGeneration),
       tokens: envelope.tokens,
       userId: record.userId
     };
@@ -485,12 +522,18 @@ export function createPrismaMcpOAuthRepository(input: Readonly<{
         });
         if (!oauthClient || oauthClient.clientId !== inputValue.clientId) return { kind: "not_found" as const };
 
-        const envelope = encryptMcpEnvelope({
-          issuedAt: now.toISOString(),
-          policy,
-          tokens,
-          version: 1
-        } satisfies StoredTokenEnvelope, key);
+        const connectionId = randomUUID();
+        const tokenGeneration = 1;
+        const envelope = encryptMcpEnvelope(
+          {
+            issuedAt: now.toISOString(),
+            policy,
+            tokens,
+            version: 1
+          } satisfies StoredTokenEnvelope,
+          key,
+          mcpOAuthTokenEnvelopeContext(connectionId, tokenGeneration)
+        );
         await tx.mcpOAuthConnection.updateMany({
           data: { disconnectRequestedAt: now, state: "disconnecting" },
           where: {
@@ -504,6 +547,7 @@ export function createPrismaMcpOAuthRepository(input: Readonly<{
           data: {
             expiresAt: tokenExpiry(tokens, now),
             externalAccountLabel: inputValue.externalAccountLabel,
+            id: connectionId,
             oauthClientId: oauthClient.id,
             policyFingerprint: inputValue.policyFingerprint,
             purpose: inputValue.purpose,
@@ -511,6 +555,7 @@ export function createPrismaMcpOAuthRepository(input: Readonly<{
             serverId: inputValue.serverId,
             state: "ready",
             tokenEnvelope: envelope,
+            tokenGeneration,
             userId: inputValue.userId
           }
         });
@@ -527,7 +572,12 @@ export function createPrismaMcpOAuthRepository(input: Readonly<{
 
     async finalizeDisconnected(connectionId) {
       const result = await client.mcpOAuthConnection.updateMany({
-        data: { expiresAt: null, state: "disconnected", tokenEnvelope: null },
+        data: {
+          expiresAt: null,
+          state: "disconnected",
+          tokenEnvelope: null,
+          tokenGeneration: { increment: 1 }
+        },
         where: {
           id: connectionId,
           runtimeGenerations: {
@@ -689,14 +739,24 @@ export function createPrismaMcpOAuthRepository(input: Readonly<{
 
     async markReauthorizationRequired({ connectionId, tokenVersion: expectedVersion }) {
       const record = await client.mcpOAuthConnection.findUnique({
-        select: { serverId: true, state: true, tokenEnvelope: true, userId: true },
+        select: {
+          serverId: true,
+          state: true,
+          tokenEnvelope: true,
+          tokenGeneration: true,
+          userId: true
+        },
         where: { id: connectionId }
       });
-      if (!record?.tokenEnvelope || tokenVersion(record.tokenEnvelope) !== expectedVersion) return false;
+      if (!record?.tokenEnvelope || tokenVersion(record.tokenGeneration) !== expectedVersion) return false;
       return client.$transaction(async (tx) => {
         const updated = await tx.mcpOAuthConnection.updateMany({
           data: { state: "reauthorization_required" },
-          where: { id: connectionId, state: { in: ["ready", "disconnecting"] }, tokenEnvelope: record.tokenEnvelope }
+          where: {
+            id: connectionId,
+            state: { in: ["ready", "disconnecting"] },
+            tokenGeneration: record.tokenGeneration
+          }
         });
         if (updated.count !== 1) return false;
         await tx.mcpUserServer.updateMany({
@@ -732,11 +792,16 @@ export function createPrismaMcpOAuthRepository(input: Readonly<{
 
     async rotateTokens({ connectionId, expectedTokenVersion, tokens: inputTokens }) {
       const record = await client.mcpOAuthConnection.findUnique({ where: { id: connectionId } });
-      if (!record?.tokenEnvelope || tokenVersion(record.tokenEnvelope) !== expectedTokenVersion) {
+      if (!record?.tokenEnvelope || tokenVersion(record.tokenGeneration) !== expectedTokenVersion) {
         return loadConnection(connectionId);
       }
       const key = encryptionKey();
-      const prior = parseTokenEnvelope(record.tokenEnvelope, key);
+      const prior = parseTokenEnvelope(
+        record.tokenEnvelope,
+        key,
+        record.id,
+        record.tokenGeneration
+      );
       const tokens = checkedTokens({
         ...inputTokens,
         ...(inputTokens.refresh_token || !prior.tokens.refresh_token
@@ -744,22 +809,28 @@ export function createPrismaMcpOAuthRepository(input: Readonly<{
           : { refresh_token: prior.tokens.refresh_token })
       });
       const now = new Date();
-      const envelope = encryptMcpEnvelope({
-        issuedAt: now.toISOString(),
-        policy: prior.policy,
-        tokens,
-        version: 1
-      } satisfies StoredTokenEnvelope, key);
+      const tokenGeneration = record.tokenGeneration + 1;
+      const envelope = encryptMcpEnvelope(
+        {
+          issuedAt: now.toISOString(),
+          policy: prior.policy,
+          tokens,
+          version: 1
+        } satisfies StoredTokenEnvelope,
+        key,
+        mcpOAuthTokenEnvelopeContext(record.id, tokenGeneration)
+      );
       const updated = await client.mcpOAuthConnection.updateMany({
         data: {
           expiresAt: tokenExpiry(tokens, now),
           scopes: tokenScopes(tokens, record.scopes),
-          tokenEnvelope: envelope
+          tokenEnvelope: envelope,
+          tokenGeneration
         },
         where: {
           id: connectionId,
           state: { in: ["ready", "disconnecting"] },
-          tokenEnvelope: record.tokenEnvelope
+          tokenGeneration: record.tokenGeneration
         }
       });
       if (updated.count !== 1) return loadConnection(connectionId);
@@ -780,19 +851,42 @@ export function createPrismaMcpOAuthRepository(input: Readonly<{
       if (Buffer.byteLength(JSON.stringify(metadata), "utf8") > MAX_OAUTH_ENVELOPE_JSON_BYTES) {
         throw new Error("mcp_oauth_client_invalid");
       }
-      const data = {
-        clientId: information.client_id,
-        clientMetadata: metadata as unknown as Prisma.InputJsonValue,
-        clientSecretEnvelope: clientSecret
-          ? encryptMcpEnvelope({ clientSecret, version: 1 }, key)
-          : null
-      };
-      const record = await client.mcpOAuthClient.upsert({
-        create: { ...data, registrationKey: inputValue.registrationKey },
-        update: data,
-        where: { registrationKey: inputValue.registrationKey }
+      return client.$transaction(async (tx) => {
+        await tx.$queryRaw`
+          SELECT pg_advisory_xact_lock(
+            hashtextextended(${`aiqsa:mcp-oauth-client:${inputValue.registrationKey}`}, 0)
+          )::text AS "lock"
+        `;
+        const existing = await tx.mcpOAuthClient.findUnique({
+          where: { registrationKey: inputValue.registrationKey }
+        });
+        const oauthClientId = existing?.id ?? randomUUID();
+        const clientSecretGeneration = existing
+          ? existing.clientSecretGeneration + 1
+          : clientSecret ? 1 : 0;
+        const data = {
+          clientId: information.client_id,
+          clientMetadata: metadata as unknown as Prisma.InputJsonValue,
+          clientSecretEnvelope: clientSecret
+            ? encryptMcpEnvelope(
+                { clientSecret, version: 1 },
+                key,
+                mcpOAuthClientSecretEnvelopeContext(oauthClientId, clientSecretGeneration)
+              )
+            : null,
+          clientSecretGeneration
+        };
+        const record = existing
+          ? await tx.mcpOAuthClient.update({ data, where: { id: existing.id } })
+          : await tx.mcpOAuthClient.create({
+              data: {
+                ...data,
+                id: oauthClientId,
+                registrationKey: inputValue.registrationKey
+              }
+            });
+        return serializeClient(record, key);
       });
-      return serializeClient(record, key);
     }
   };
 }

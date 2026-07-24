@@ -7,6 +7,7 @@ import { useWorkspaceStore } from "@/components/app-shell/workspaceStore";
 export type ShellLeftPaneProps = {
   activeChatId: string | null;
   availableChatModelKeys: ReadonlySet<string> | null;
+  chatModelLabels: ReadonlyMap<string, string> | null;
   layout?: "desktop" | "mobile";
   pane: ShellWorkspacePaneView;
   scrollTopRef?: { current: number | undefined };
@@ -16,6 +17,7 @@ export type ShellLeftPaneProps = {
 export function ShellLeftPane({
   activeChatId,
   availableChatModelKeys,
+  chatModelLabels,
   layout = "desktop",
   pane,
   scrollTopRef,
@@ -34,6 +36,7 @@ export function ShellLeftPane({
       activeChatId={activeChatId}
       activeRunChatIds={state.activeRunChatIds}
       availableChatModelKeys={availableChatModelKeys}
+      chatModelLabels={chatModelLabels}
       chatActionId={state.chatActionId}
       chatContentMatchIds={state.chatContentMatchIds}
       chatContentSearchError={state.chatContentSearchError}

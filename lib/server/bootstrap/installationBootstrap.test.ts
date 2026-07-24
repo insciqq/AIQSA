@@ -1,5 +1,6 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
-import { defaultProviderModels, defaultSearchStrategies } from "@/lib/domain/catalog";
+import { defaultSearchStrategies } from "@/lib/domain/catalog";
+import { providerConnectionTemplates } from "@/lib/domain/providerTemplates";
 import { LOCAL_ORDINARY_USERS } from "@/prisma/local-seed-fixtures";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -12,6 +13,9 @@ import {
 
 const USER_ID = "7e6db97e-d8a9-4e94-b03c-6df0f1df44a1";
 const NOW = new Date("2026-07-14T16:00:00.000Z");
+const bootstrapSearchStrategies = defaultSearchStrategies.filter(
+  (strategy) => strategy.kind !== "perplexity_tool_search"
+);
 
 const baseInput: InstallationBootstrapInput = {
   displayName: "Initial Admin",
@@ -64,6 +68,7 @@ function createBootstrapTransaction(input: {
     folderCreate: record("folder.create", { id: "folder-id" }),
     groupCreate: record("group.create", { id: "group-id" }),
     promptPresetCreate: record("promptPreset.create", { id: "prompt-id" }),
+    providerConnectionUpsert: record("providerConnection.upsert", { id: "connection-id" }),
     providerModelUpsert: record("providerModel.upsert", { id: "model-id" }),
     searchStrategyUpsert: record("searchStrategy.upsert", { id: "strategy-id" }),
     userCreate: record("user.create", { id: USER_ID }),
@@ -88,6 +93,9 @@ function createBootstrapTransaction(input: {
     },
     promptPreset: {
       create: spies.promptPresetCreate
+    },
+    providerConnection: {
+      upsert: spies.providerConnectionUpsert
     },
     providerModel: {
       upsert: spies.providerModelUpsert
@@ -223,8 +231,8 @@ describe("installation bootstrap", () => {
         randomUUID: () => USER_ID
       })
     ).resolves.toEqual({
-      catalogModelCount: defaultProviderModels.length,
-      catalogSearchStrategyCount: defaultSearchStrategies.length,
+      catalogModelCount: 1,
+      catalogSearchStrategyCount: bootstrapSearchStrategies.length,
       status: "created"
     });
 
@@ -271,14 +279,19 @@ describe("installation bootstrap", () => {
     expect(fixture.spies.userSettingsCreate).toHaveBeenCalledWith({
       data: expect.objectContaining({
         defaultFolderId: null,
-        defaultModelId: "gpt-5.5",
+        defaultProviderModelId: null,
         defaultPromptPresetId: "prompt-id",
-        defaultProvider: "openai",
+        defaultSearchStrategyId: "search-disabled",
         userId: USER_ID
       })
     });
-    expect(fixture.spies.providerModelUpsert).toHaveBeenCalledTimes(defaultProviderModels.length);
-    expect(fixture.spies.searchStrategyUpsert).toHaveBeenCalledTimes(defaultSearchStrategies.length);
+    expect(fixture.spies.providerConnectionUpsert).toHaveBeenCalledTimes(
+      providerConnectionTemplates.length
+    );
+    expect(fixture.spies.providerModelUpsert).toHaveBeenCalledOnce();
+    expect(fixture.spies.searchStrategyUpsert).toHaveBeenCalledTimes(
+      bootstrapSearchStrategies.length
+    );
 
     const productionFoundationCalls = JSON.stringify({
       identities: fixture.spies.authIdentityCreate.mock.calls,
@@ -290,18 +303,7 @@ describe("installation bootstrap", () => {
       expect(productionFoundationCalls).not.toContain(ordinaryFixture.password);
     }
 
-    const grantCall = fixture.spies.accessGrantCreateMany.mock.calls[0]?.[0] as
-      | { data: Array<Record<string, unknown>> }
-      | undefined;
-    const grantData = grantCall?.data;
-
-    expect(grantData).toBeDefined();
-    expect(grantData).toHaveLength(
-      defaultProviderModels.filter((model) => model.provider !== "fake").length +
-        defaultSearchStrategies.filter((strategy) => strategy.strategyId !== "search-disabled").length
-    );
-    expect(grantData).not.toContainEqual(expect.objectContaining({ provider: "fake" }));
-    expect(grantData).not.toContainEqual(expect.objectContaining({ searchStrategy: "search-disabled" }));
+    expect(fixture.spies.accessGrantCreateMany).not.toHaveBeenCalled();
   });
 
   it("fails a fresh database without a password before catalog or foundation mutation", async () => {
@@ -382,8 +384,16 @@ describe("installation bootstrap", () => {
     });
 
     expect(hashPassword).not.toHaveBeenCalled();
-    expect(fixture.spies.providerModelUpsert).toHaveBeenCalledTimes(defaultProviderModels.length);
-    expect(fixture.spies.searchStrategyUpsert).toHaveBeenCalledTimes(defaultSearchStrategies.length);
+    expect(fixture.spies.providerConnectionUpsert).toHaveBeenCalledTimes(
+      providerConnectionTemplates.length
+    );
+    expect(fixture.spies.providerModelUpsert).toHaveBeenCalledOnce();
+    expect(fixture.spies.searchStrategyUpsert).toHaveBeenCalledTimes(
+      bootstrapSearchStrategies.length
+    );
+    for (const [args] of fixture.spies.providerConnectionUpsert.mock.calls) {
+      expect(args).toEqual(expect.objectContaining({ update: {} }));
+    }
     for (const [args] of fixture.spies.providerModelUpsert.mock.calls) {
       expect(args).toEqual(expect.objectContaining({ update: expect.any(Object) }));
       expect((args as { update: object }).update).not.toHaveProperty("enabled");

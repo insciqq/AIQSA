@@ -169,6 +169,18 @@ describe("admin deletion metadata", () => {
 
     expect(
       adminGroupDeletionInfo({
+        _count: { providerCredentialAssignments: 2, users: 0 },
+        accessGrants: [],
+        mcpGrants: []
+      })
+    ).toEqual({
+      canDelete: false,
+      reason: "group_has_grants",
+      summary: "Remove 2 provider credential assignments before deleting this group."
+    });
+
+    expect(
+      adminGroupDeletionInfo({
         _count: { users: 0 },
         accessGrants: [{ enabled: false }],
         mcpGrants: []
@@ -176,7 +188,7 @@ describe("admin deletion metadata", () => {
     ).toEqual({
       canDelete: true,
       reason: null,
-      summary: "No members or active grants; this group can be deleted."
+      summary: "No members, active grants, or provider credential assignments; this group can be deleted."
     });
   });
 

@@ -20,6 +20,8 @@
     "docs:check": "node scripts/docs-check.mjs",
     "db:generate": "prisma generate",
     "db:bootstrap": "tsx prisma/bootstrap.ts",
+    "db:control-plane:migration:contract": "tsx prisma/scripts/tests/control-plane-cutover-contract.ts",
+    "db:cutover": "tsx prisma/scripts/control-plane-cutover.ts",
     "db:migrate:deploy": "prisma migrate deploy",
     "db:migrate:dev": "prisma migrate dev",
     "db:migrate:resolve": "prisma migrate resolve",

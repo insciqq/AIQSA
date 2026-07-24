@@ -199,6 +199,29 @@ export const openRouterChatToolBridge: ProviderToolBridge = {
   }
 };
 
+function forProviderFamily(
+  bridge: ProviderToolBridge,
+  provider: string
+): ProviderToolBridge {
+  return {
+    ...bridge,
+    provider,
+    supportsToolCalling(input) {
+      return input.provider === provider;
+    }
+  };
+}
+
+export const openAICompatibleResponsesToolBridge = forProviderFamily(
+  openAIResponsesToolBridge,
+  "openai_compatible"
+);
+
+export const openAICompatibleChatToolBridge = forProviderFamily(
+  openRouterChatToolBridge,
+  "openai_compatible"
+);
+
 export const anthropicMessagesToolBridge: ProviderToolBridge = {
   appendToolResult(_request, result) {
     return {

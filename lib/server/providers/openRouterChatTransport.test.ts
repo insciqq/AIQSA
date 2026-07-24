@@ -32,6 +32,8 @@ function delayedResponse(input: {
 }
 
 describe("OpenRouter Chat transport", () => {
+  const remoteSecret = "sk-aiqsa-remote-error-regression-123456789";
+
   it("preserves the endpoint, method, body, headers, and normalized custom base URL", async () => {
     const calls: Array<{ init?: RequestInit; url: string }> = [];
     const client = createFetchOpenRouterChatClient({
@@ -98,13 +100,13 @@ describe("OpenRouter Chat transport", () => {
     });
   });
 
-  it("keeps the existing empty, non-object, and malformed JSON behavior", async () => {
+  it("keeps empty and non-object behavior while collapsing malformed remote JSON", async () => {
     const responses = [
       new Response("", { status: 200 }),
       new Response("[]", { status: 200 }),
       new Response("null", { status: 200 }),
       new Response('"text"', { status: 200 }),
-      new Response("{", { status: 200 })
+      new Response(`{"broken":"${remoteSecret}`, { status: 200 })
     ];
     const client = createFetchOpenRouterChatClient({
       apiKey: "key",
@@ -115,13 +117,13 @@ describe("OpenRouter Chat transport", () => {
     await expect(client.createChatCompletion({})).rejects.toThrow("openrouter_response_not_object");
     await expect(client.createChatCompletion({})).rejects.toThrow("openrouter_response_not_object");
     await expect(client.createChatCompletion({})).rejects.toThrow("openrouter_response_not_object");
-    await expect(client.createChatCompletion({})).rejects.toBeInstanceOf(SyntaxError);
+    await expect(client.createChatCompletion({})).rejects.toThrow("openrouter_response_invalid_json");
   });
 
-  it("sanitizes JSON and non-JSON HTTP error bodies for regular and streaming calls", async () => {
+  it("drops JSON and non-JSON HTTP error bodies for regular and streaming calls", async () => {
     const responses = [
       new Response(
-        JSON.stringify({ error: { message: "<script>bad()</script> Temporarily unavailable\u0000" } }),
+        JSON.stringify({ error: { message: `${remoteSecret} Temporarily unavailable` } }),
         { status: 503 }
       ),
       new Response("<html><body><style>p{}</style><p>Gateway down</p></body></html>", {
@@ -135,14 +137,20 @@ describe("OpenRouter Chat transport", () => {
       fetchFn: async () => responses.shift() ?? new Response("{}", { status: 200 })
     });
 
-    await expect(client.createChatCompletion({})).rejects.toThrow(
-      "OpenRouter request failed with status 503: Temporarily unavailable"
-    );
+    let failure: unknown;
+    try {
+      await client.createChatCompletion({});
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toMatchObject({ message: "OpenRouter request failed with status 503" });
+    expect((failure as Error).message).not.toContain(remoteSecret);
+    expect((failure as Error).message).not.toContain("Temporarily unavailable");
     await expect(client.streamChatCompletion!({ stream: true })).rejects.toThrow(
-      "OpenRouter request failed with status 502: Gateway down"
+      "OpenRouter request failed with status 502"
     );
     await expect(client.createChatCompletion({})).rejects.toThrow(
-      'OpenRouter request failed with status 429: {"error":{"code":"rate_limited"}}'
+      "OpenRouter request failed with status 429"
     );
     await expect(client.createChatCompletion({})).rejects.toThrow(
       "OpenRouter request failed with status 504"
@@ -276,7 +284,7 @@ describe("OpenRouter Chat transport", () => {
         ProviderResponseTooLargeError
       );
       await expect(client.streamChatCompletion!({ stream: true })).rejects.toThrow(
-        "OpenRouter request failed with status 503: provider_response_too_large"
+        "OpenRouter request failed with status 503"
       );
     } finally {
       if (typeof previousMaxBytes === "undefined") {

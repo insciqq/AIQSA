@@ -1,9 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, describe, expect, it } from "vitest";
 import { textMessageContent } from "../../domain/content";
+import { providerTemplateIds } from "../../domain/providerTemplates";
 import { loadAdminUsageQueryRows } from "../auth/adminUsageQueries";
 import { mcpRuntimeFingerprint } from "../mcp/access";
-import { encryptMcpEnvelope } from "../mcp/encryption";
+import {
+  encryptMcpEnvelope,
+  mcpRuntimeGenerationEnvelopeContext
+} from "../mcp/encryption";
 import { createPrismaMcpRuntimeRepository } from "../mcp/runtimeRepository";
 import { prisma } from "../prisma";
 import { createPrismaSettingsRepository } from "../settings/prismaRepository";
@@ -18,6 +22,7 @@ import {
 } from "./runRepositoryContract";
 
 const TEST_MCP_KEY = Buffer.alloc(32, 0x61);
+const fakeControlKey = `${providerTemplateIds.fakeConnection}:${providerTemplateIds.fakeModel}`;
 
 async function withRunUser<T>(run: (input: { userId: string }) => Promise<T>): Promise<T> {
   const userId = `run-repository-test-${randomUUID()}`;
@@ -29,8 +34,7 @@ async function withRunUser<T>(run: (input: { userId: string }) => Promise<T>): P
       settings: {
         create: {
           defaultControlValues: {},
-          defaultModelId: "fake-qsa",
-          defaultProvider: "fake",
+          defaultProviderModelId: providerTemplateIds.fakeModel,
           defaultSearchStrategyId: "search-disabled"
         }
       }
@@ -86,15 +90,22 @@ async function createReadyMcpBinding(userId: string) {
   const preference = await prisma.mcpUserServer.create({
     data: { enabled: true, serverId: server.id, userId }
   });
+  const generationId = randomUUID();
+  const fingerprint = mcpRuntimeFingerprint({
+    oauthConnectionRevision: null,
+    plan: [],
+    revisionId: revision.id,
+    userId
+  });
   const generation = await prisma.mcpRuntimeGeneration.create({
     data: {
-      effectiveConfigEnvelope: encryptMcpEnvelope({ plan: [], values: {}, version: 1 }, TEST_MCP_KEY),
-      fingerprint: mcpRuntimeFingerprint({
-        oauthConnectionRevision: null,
-        plan: [],
-        revisionId: revision.id,
-        userId
-      }),
+      effectiveConfigEnvelope: encryptMcpEnvelope(
+        { plan: [], values: {}, version: 1 },
+        TEST_MCP_KEY,
+        mcpRuntimeGenerationEnvelopeContext(generationId, fingerprint)
+      ),
+      fingerprint,
+      id: generationId,
       inventory: {
         tools: [{
           definitionHash: "a".repeat(64),
@@ -162,9 +173,9 @@ function createRunInput(input: {
   const content = textMessageContent(input.question);
   const defaults: AcceptedRunDefaults = {
     controlDefaults: input.defaults?.controlDefaults ?? {},
-    modelId: "fake-qsa",
+    modelId: providerTemplateIds.fakeModel,
     promptPresetId: null,
-    provider: "fake",
+    provider: providerTemplateIds.fakeConnection,
     searchStrategy: "search-disabled",
     userId: input.userId,
     ...input.defaults
@@ -241,9 +252,8 @@ function storedDefaults(userId: string) {
   return prisma.userSettings.findUnique({
     select: {
       defaultControlValues: true,
-      defaultModelId: true,
       defaultPromptPresetId: true,
-      defaultProvider: true,
+      defaultProviderModelId: true,
       defaultSearchStrategyId: true
     },
     where: {
@@ -255,8 +265,7 @@ function storedDefaults(userId: string) {
 async function createActiveRun(repository: RunRepository, userId: string, title: string) {
   const chat = await prisma.chat.create({
     data: {
-      defaultModelId: "fake-qsa",
-      defaultProvider: "fake",
+      defaultProviderModelId: providerTemplateIds.fakeModel,
       title,
       userId
     }
@@ -381,8 +390,7 @@ describe("Prisma run repository", () => {
       await prisma.user.update({ data: { status: "active" }, where: { id: userId } });
       const chat = await prisma.chat.create({
         data: {
-          defaultModelId: "fake-qsa",
-          defaultProvider: "fake",
+          defaultProviderModelId: providerTemplateIds.fakeModel,
           title: "Durable tool loop",
           userId
         }
@@ -623,8 +631,7 @@ describe("Prisma run repository", () => {
       await prisma.user.update({ data: { status: "active" }, where: { id: userId } });
       const chat = await prisma.chat.create({
         data: {
-          defaultModelId: "fake-qsa",
-          defaultProvider: "fake",
+          defaultProviderModelId: providerTemplateIds.fakeModel,
           title: "MCP acceptance",
           userId
         }
@@ -677,8 +684,7 @@ describe("Prisma run repository", () => {
       await prisma.user.update({ data: { status: "active" }, where: { id: userId } });
       const chat = await prisma.chat.create({
         data: {
-          defaultModelId: "fake-qsa",
-          defaultProvider: "fake",
+          defaultProviderModelId: providerTemplateIds.fakeModel,
           title: "Accepted generation recovery",
           userId
         }
@@ -743,8 +749,7 @@ describe("Prisma run repository", () => {
       await prisma.user.update({ data: { status: "active" }, where: { id: userId } });
       const chat = await prisma.chat.create({
         data: {
-          defaultModelId: "fake-qsa",
-          defaultProvider: "fake",
+          defaultProviderModelId: providerTemplateIds.fakeModel,
           title: "MCP race rollback",
           userId
         }
@@ -782,8 +787,7 @@ describe("Prisma run repository", () => {
     await withRunUser(async ({ userId }) => {
       const chat = await prisma.chat.create({
         data: {
-          defaultModelId: "fake-qsa",
-          defaultProvider: "fake",
+          defaultProviderModelId: providerTemplateIds.fakeModel,
           title: "Branched context",
           userId
         }
@@ -880,8 +884,7 @@ describe("Prisma run repository", () => {
         const [emptyChat, archivedChat, otherChat] = await Promise.all([
           prisma.chat.create({
             data: {
-              defaultModelId: "fake-qsa",
-              defaultProvider: "fake",
+              defaultProviderModelId: providerTemplateIds.fakeModel,
               title: "Empty context",
               userId
             }
@@ -889,16 +892,14 @@ describe("Prisma run repository", () => {
           prisma.chat.create({
             data: {
               archived: true,
-              defaultModelId: "fake-qsa",
-              defaultProvider: "fake",
+              defaultProviderModelId: providerTemplateIds.fakeModel,
               title: "Archived context",
               userId
             }
           }),
           prisma.chat.create({
             data: {
-              defaultModelId: "fake-qsa",
-              defaultProvider: "fake",
+              defaultProviderModelId: providerTemplateIds.fakeModel,
               title: "Foreign context",
               userId: otherUserId
             }
@@ -936,8 +937,7 @@ describe("Prisma run repository", () => {
     await withRunUser(async ({ userId }) => {
       const chat = await prisma.chat.create({
         data: {
-          defaultModelId: "fake-qsa",
-          defaultProvider: "fake",
+          defaultProviderModelId: providerTemplateIds.fakeModel,
           title: "Cyclic context",
           userId
         }
@@ -1000,12 +1000,20 @@ describe("Prisma run repository", () => {
     const provider = `repo-test-${randomUUID()}`;
     const enabledModelId = "enabled-model";
     const disabledModelId = "disabled-model";
+    const connection = await prisma.providerConnection.create({
+      data: {
+        displayName: provider,
+        family: provider,
+        id: provider
+      }
+    });
     await prisma.providerModel.createMany({
       data: [
         {
           capabilities: {
             streaming: true
           },
+          connectionId: connection.id,
           contextWindow: 12345,
           defaultParams: {
             maxOutputTokens: 512
@@ -1023,6 +1031,7 @@ describe("Prisma run repository", () => {
           capabilities: {
             streaming: true
           },
+          connectionId: connection.id,
           contextWindow: 12345,
           defaultParams: {},
           displayName: "Disabled Model",
@@ -1062,6 +1071,69 @@ describe("Prisma run repository", () => {
           provider
         }
       });
+      await prisma.providerConnection.delete({ where: { id: connection.id } });
+    }
+  });
+
+  it("fails closed when historical provider and model identities have ambiguous pricing", async () => {
+    const provider = `repo-pricing-${randomUUID()}`;
+    const modelId = "shared-model";
+    const connectionIds = [`${provider}-first`, `${provider}-second`];
+    const modelIds = [`${provider}-model-first`, `${provider}-model-second`];
+
+    await prisma.providerConnection.createMany({
+      data: connectionIds.map((id, index) => ({
+        displayName: `Pricing connection ${index + 1}`,
+        family: provider,
+        id
+      }))
+    });
+    await prisma.providerModel.create({
+      data: {
+        capabilities: {},
+        connectionId: connectionIds[0],
+        contextWindow: 4096,
+        defaultParams: {},
+        displayName: "First pricing model",
+        id: modelIds[0],
+        inputTokenPriceMicros: 11,
+        modelId,
+        outputTokenPriceMicros: 12,
+        provider
+      }
+    });
+
+    try {
+      const repository = createPrismaRunRepository(prisma);
+
+      await expect(repository.loadModelPricing(provider, modelId)).resolves.toEqual({
+        inputTokenPriceMicros: 11,
+        outputTokenPriceMicros: 12
+      });
+
+      await prisma.providerModel.create({
+        data: {
+          capabilities: {},
+          connectionId: connectionIds[1],
+          contextWindow: 4096,
+          defaultParams: {},
+          displayName: "Second pricing model",
+          id: modelIds[1],
+          inputTokenPriceMicros: 21,
+          modelId,
+          outputTokenPriceMicros: 22,
+          provider
+        }
+      });
+
+      await expect(repository.loadModelPricing(provider, modelId)).resolves.toBeNull();
+    } finally {
+      await prisma.providerModel.deleteMany({
+        where: { id: { in: modelIds } }
+      });
+      await prisma.providerConnection.deleteMany({
+        where: { id: { in: connectionIds } }
+      });
     }
   });
 
@@ -1074,7 +1146,7 @@ describe("Prisma run repository", () => {
           config: { policy: "server-owned" },
           description: "Enabled run admission fixture",
           displayName: "Enabled run admission fixture",
-          kind: "fixture",
+          kind: "openai_native_web_search",
           modelId: "fixture-search-model",
           provider: "system",
           strategyId: enabledStrategyId
@@ -1084,7 +1156,7 @@ describe("Prisma run repository", () => {
           description: "Disabled run admission fixture",
           displayName: "Disabled run admission fixture",
           enabled: false,
-          kind: "fixture",
+          kind: "openai_native_web_search",
           provider: "system",
           strategyId: disabledStrategyId
         }
@@ -1101,7 +1173,7 @@ describe("Prisma run repository", () => {
         repository.loadSearchStrategyConfiguration(enabledStrategyId)
       ).resolves.toEqual({
         config: { policy: "server-owned" },
-        kind: "fixture",
+        kind: "openai_native_web_search",
         modelId: "fixture-search-model",
         provider: "system",
         strategyId: enabledStrategyId
@@ -1127,8 +1199,7 @@ describe("Prisma run repository", () => {
     await withRunUser(async ({ userId }) => {
       const chat = await prisma.chat.create({
         data: {
-          defaultModelId: "fake-qsa",
-          defaultProvider: "fake",
+          defaultProviderModelId: providerTemplateIds.fakeModel,
           title: "Branch conflict",
           userId
         }
@@ -1205,16 +1276,14 @@ describe("Prisma run repository", () => {
       const [targetChat, otherChat] = await Promise.all([
         prisma.chat.create({
           data: {
-            defaultModelId: "fake-qsa",
-            defaultProvider: "fake",
+            defaultProviderModelId: providerTemplateIds.fakeModel,
             title: "Attachment target",
             userId
           }
         }),
         prisma.chat.create({
           data: {
-            defaultModelId: "fake-qsa",
-            defaultProvider: "fake",
+            defaultProviderModelId: providerTemplateIds.fakeModel,
             title: "Attachment winner",
             userId
           }
@@ -1290,7 +1359,7 @@ describe("Prisma run repository", () => {
       await prisma.userSettings.update({
         data: {
           defaultControlValues: {
-            "fake:fake-qsa": {
+            [fakeControlKey]: {
               maxOutputTokens: "1024"
             },
             "other:model": {
@@ -1305,8 +1374,7 @@ describe("Prisma run repository", () => {
       });
       const chat = await prisma.chat.create({
         data: {
-          defaultModelId: "fake-qsa",
-          defaultProvider: "fake",
+          defaultProviderModelId: providerTemplateIds.fakeModel,
           title: "New Chat",
           userId
         }
@@ -1333,7 +1401,7 @@ describe("Prisma run repository", () => {
 
       expect(afterSend).toMatchObject({
         defaultControlValues: {
-          "fake:fake-qsa": {
+          [fakeControlKey]: {
             maxOutputTokens: "1024",
             temperature: "0.2"
           },
@@ -1402,7 +1470,7 @@ describe("Prisma run repository", () => {
 
       expect(afterRegeneration).toMatchObject({
         defaultControlValues: {
-          "fake:fake-qsa": {
+          [fakeControlKey]: {
             maxOutputTokens: "1024",
             reasoningEffort: "high",
             temperature: "0.2"
@@ -1469,16 +1537,14 @@ describe("Prisma run repository", () => {
         const [sendChat, regenerationChat] = await Promise.all([
           prisma.chat.create({
             data: {
-              defaultModelId: "fake-qsa",
-              defaultProvider: "fake",
+              defaultProviderModelId: providerTemplateIds.fakeModel,
               title: "New Chat",
               userId
             }
           }),
           prisma.chat.create({
             data: {
-              defaultModelId: "fake-qsa",
-              defaultProvider: "fake",
+              defaultProviderModelId: providerTemplateIds.fakeModel,
               title: "Regeneration source",
               userId
             }
@@ -1593,7 +1659,7 @@ describe("Prisma run repository", () => {
       await prisma.userSettings.update({
         data: {
           defaultControlValues: {
-            "fake:fake-qsa": {
+            [fakeControlKey]: {
               maxOutputTokens: "1024"
             }
           }
@@ -1604,8 +1670,7 @@ describe("Prisma run repository", () => {
       });
       const chat = await prisma.chat.create({
         data: {
-          defaultModelId: "fake-qsa",
-          defaultProvider: "fake",
+          defaultProviderModelId: providerTemplateIds.fakeModel,
           title: "Concurrent settings",
           userId
         }
@@ -1659,7 +1724,7 @@ describe("Prisma run repository", () => {
       ]);
       await expect(storedDefaults(userId)).resolves.toMatchObject({
         defaultControlValues: {
-          "fake:fake-qsa": {
+          [fakeControlKey]: {
             maxOutputTokens: "1024",
             temperature: "0.2"
           },
@@ -1675,8 +1740,7 @@ describe("Prisma run repository", () => {
     await withRunUser(async ({ userId }) => {
       const chat = await prisma.chat.create({
         data: {
-          defaultModelId: "fake-qsa",
-          defaultProvider: "fake",
+          defaultProviderModelId: providerTemplateIds.fakeModel,
           title: "Run projection chat",
           userId
         }
@@ -1770,24 +1834,21 @@ describe("Prisma run repository", () => {
       const [newChat, legacyPlaceholderChat, namedChat] = await Promise.all([
         prisma.chat.create({
           data: {
-            defaultModelId: "fake-qsa",
-            defaultProvider: "fake",
+            defaultProviderModelId: providerTemplateIds.fakeModel,
             title: "New Chat",
             userId
           }
         }),
         prisma.chat.create({
           data: {
-            defaultModelId: "fake-qsa",
-            defaultProvider: "fake",
+            defaultProviderModelId: providerTemplateIds.fakeModel,
             title: "Untitled QSA",
             userId
           }
         }),
         prisma.chat.create({
           data: {
-            defaultModelId: "fake-qsa",
-            defaultProvider: "fake",
+            defaultProviderModelId: providerTemplateIds.fakeModel,
             title: "Operator title",
             userId
           }
@@ -1845,8 +1906,7 @@ describe("Prisma run repository", () => {
     await withRunUser(async ({ userId }) => {
       const chat = await prisma.chat.create({
         data: {
-          defaultModelId: "fake-qsa",
-          defaultProvider: "fake",
+          defaultProviderModelId: providerTemplateIds.fakeModel,
           title: "Run conflict chat",
           userId
         }
@@ -2398,8 +2458,7 @@ describe("Prisma run repository", () => {
     await withRunUser(async ({ userId }) => {
       const chat = await prisma.chat.create({
         data: {
-          defaultModelId: "fake-qsa",
-          defaultProvider: "fake",
+          defaultProviderModelId: providerTemplateIds.fakeModel,
           title: "Run chat",
           userId
         }

@@ -6,8 +6,23 @@ import { createPrismaRunRepository } from "../runs/prismaRepository";
 import { ActiveLeafConflictError, ActiveRunConflictError } from "../runs/runRepositoryContract";
 import { createPrismaChatRepository } from "./prismaRepository";
 
-async function withFolderUser<T>(run: (input: { userId: string }) => Promise<T>): Promise<T> {
+type FolderUserFixture = {
+  fakeProviderConnectionId: string;
+  fakeProviderModelId: string;
+  userId: string;
+};
+
+async function withFolderUser<T>(run: (input: FolderUserFixture) => Promise<T>): Promise<T> {
   const userId = `folder-test-${randomUUID()}`;
+  const fakeModel = await prisma.providerModel.findUniqueOrThrow({
+    select: {
+      connectionId: true,
+      id: true
+    },
+    where: {
+      templateKey: "fake:fake-qsa"
+    }
+  });
 
   await prisma.user.create({
     data: {
@@ -16,8 +31,7 @@ async function withFolderUser<T>(run: (input: { userId: string }) => Promise<T>)
       settings: {
         create: {
           defaultControlValues: {},
-          defaultModelId: "fake-qsa",
-          defaultProvider: "fake",
+          defaultProviderModelId: fakeModel.id,
           defaultSearchStrategyId: "search-disabled"
         }
       }
@@ -25,7 +39,11 @@ async function withFolderUser<T>(run: (input: { userId: string }) => Promise<T>)
   });
 
   try {
-    return await run({ userId });
+    return await run({
+      fakeProviderConnectionId: fakeModel.connectionId,
+      fakeProviderModelId: fakeModel.id,
+      userId
+    });
   } finally {
     await prisma.user.deleteMany({
       where: {
@@ -41,13 +59,29 @@ describe("Prisma chat repository", () => {
   });
 
   it("keeps create and update records summary-only while detail hydrates the thread", async () => {
-    await withFolderUser(async ({ userId }) => {
+    await withFolderUser(async ({ fakeProviderConnectionId, fakeProviderModelId, userId }) => {
       const repository = createPrismaChatRepository(prisma);
       const created = await repository.createChat({ title: "Summary chat", userId });
 
-      expect(created).toMatchObject({ messageCount: 0, pinned: false, title: "Summary chat" });
+      expect(created).toMatchObject({
+        defaultModelId: fakeProviderModelId,
+        defaultProvider: fakeProviderConnectionId,
+        messageCount: 0,
+        pinned: false,
+        title: "Summary chat"
+      });
       expect(created).not.toHaveProperty("messages");
       expect(created).not.toHaveProperty("usageStats");
+      await expect(
+        prisma.chat.findUniqueOrThrow({
+          select: {
+            defaultProviderModelId: true
+          },
+          where: { id: created?.id ?? "" }
+        })
+      ).resolves.toEqual({
+        defaultProviderModelId: fakeProviderModelId
+      });
 
       const userMessage = await prisma.message.create({
         data: {
@@ -90,6 +124,37 @@ describe("Prisma chat repository", () => {
         usageStats: {
           activeBranchMessageCount: 2
         }
+      });
+    });
+  });
+
+  it("creates an empty chat default when user settings have no model relation", async () => {
+    await withFolderUser(async ({ userId }) => {
+      await prisma.userSettings.update({
+        data: {
+          defaultProviderModel: {
+            disconnect: true
+          }
+        },
+        where: { userId }
+      });
+      const repository = createPrismaChatRepository(prisma);
+
+      const created = await repository.createChat({ userId });
+
+      expect(created).toMatchObject({
+        defaultModelId: "",
+        defaultProvider: ""
+      });
+      await expect(
+        prisma.chat.findUniqueOrThrow({
+          select: {
+            defaultProviderModelId: true
+          },
+          where: { id: created?.id ?? "" }
+        })
+      ).resolves.toEqual({
+        defaultProviderModelId: null
       });
     });
   });
@@ -239,12 +304,11 @@ describe("Prisma chat repository", () => {
   });
 
   it("hydrates token usage stats from the active branch only", async () => {
-    await withFolderUser(async ({ userId }) => {
+    await withFolderUser(async ({ fakeProviderModelId, userId }) => {
       const repository = createPrismaChatRepository(prisma);
       const chat = await prisma.chat.create({
         data: {
-          defaultModelId: "fake-qsa",
-          defaultProvider: "fake",
+          defaultProviderModelId: fakeProviderModelId,
           title: "Usage chat",
           userId
         }
@@ -336,12 +400,11 @@ describe("Prisma chat repository", () => {
   });
 
   it("blocks active-leaf checkout and archive while allowing non-branch metadata updates during a run", async () => {
-    await withFolderUser(async ({ userId }) => {
+    await withFolderUser(async ({ fakeProviderModelId, userId }) => {
       const repository = createPrismaChatRepository(prisma);
       const chat = await prisma.chat.create({
         data: {
-          defaultModelId: "fake-qsa",
-          defaultProvider: "fake",
+          defaultProviderModelId: fakeProviderModelId,
           title: "Active mutation gate",
           userId
         }
@@ -425,11 +488,14 @@ describe("Prisma chat repository", () => {
   });
 
   it("serializes concurrent archive and prepared run creation without an archived active run", async () => {
-    await withFolderUser(async ({ userId }) => {
+    await withFolderUser(async ({
+      fakeProviderConnectionId,
+      fakeProviderModelId,
+      userId
+    }) => {
       const chat = await prisma.chat.create({
         data: {
-          defaultModelId: "fake-qsa",
-          defaultProvider: "fake",
+          defaultProviderModelId: fakeProviderModelId,
           title: "Archive versus run",
           userId
         }
@@ -444,9 +510,9 @@ describe("Prisma chat repository", () => {
           content,
           defaults: {
             controlDefaults: {},
-            modelId: "fake-qsa",
+            modelId: fakeProviderModelId,
             promptPresetId: null,
-            provider: "fake",
+            provider: fakeProviderConnectionId,
             searchStrategy: "search-disabled",
             userId
           },

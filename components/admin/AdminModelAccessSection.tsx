@@ -124,6 +124,7 @@ export function AdminModelAccessSection({
 
               return (
                 <button
+                  aria-controls="admin-model-access-selected-group"
                   aria-label={`Select ${candidate.name}`}
                   aria-pressed={active}
                   className={[
@@ -163,7 +164,9 @@ export function AdminModelAccessSection({
           aria-label={`Model access for ${group.name}`}
           className={`min-w-0 ${focusRing}`}
           data-testid="admin-model-access-group"
+          id="admin-model-access-selected-group"
           ref={detailRef}
+          role="region"
           tabIndex={-1}
         >
           <div className="flex flex-col gap-3 border-b border-separator-subtle px-3 py-3 xl:flex-row xl:items-start xl:justify-between">
@@ -299,11 +302,10 @@ export function AdminModelAccessSection({
                         </div>
                       </div>
                       <AdminTableRegion label={`${provider.name} model grants`}>
-                        <table className="w-full min-w-[680px] border-collapse text-left text-xs">
+                        <table className="w-full min-w-[560px] border-collapse text-left text-xs">
                           <thead className="bg-surface-raised/40 text-content-muted">
                             <tr>
                               <th className="px-3 py-2 font-medium">Model</th>
-                              <th className="px-3 py-2 font-medium">API id</th>
                               <th className="px-3 py-2 font-medium">Grant</th>
                             </tr>
                           </thead>
@@ -321,14 +323,11 @@ export function AdminModelAccessSection({
                                     key={`${group.id}:model:${model.provider}:${model.modelId}`}
                                   >
                                     <td className="px-3 py-3 text-content-primary">{model.displayName}</td>
-                                    <td className="break-words px-3 py-3 font-mono text-[11px] text-content-muted [overflow-wrap:anywhere]">
-                                      {model.provider}:{model.modelId}
-                                    </td>
                                     <td className="px-3 py-3">
                                       <GrantToggle
                                         checked={checked}
                                         disabled={archived || status.actionsDisabled}
-                                        label={`Grant model ${model.provider} / ${model.displayName}`}
+                                        label={`Grant model ${provider.name} / ${model.displayName}`}
                                         onToggle={(enabled) =>
                                           actions.onToggleGrant(
                                             group,
@@ -346,7 +345,7 @@ export function AdminModelAccessSection({
                               })
                             ) : (
                               <tr>
-                                <td className="px-3 py-6 text-center text-content-muted" colSpan={3}>
+                                <td className="px-3 py-6 text-center text-content-muted" colSpan={2}>
                                   No models for this provider
                                 </td>
                               </tr>

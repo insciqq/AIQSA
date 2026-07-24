@@ -175,7 +175,7 @@ describe("Prisma admin repository", () => {
       expect(approved.groups[0]?.groupId).toBe(groupId);
       expect(approved.folders).toHaveLength(0);
       expect(approved.promptPresets.some((prompt) => prompt.isDefault)).toBe(true);
-      expect(approved.settings?.defaultProvider).toBe("openai");
+      expect(approved.settings?.defaultProviderModelId).toBeNull();
       expect(approved.settings?.defaultFolderId).toBeNull();
     });
   });
@@ -754,8 +754,6 @@ describe("Prisma admin repository", () => {
           await waitForStart();
           return prisma.chat.create({
             data: {
-              defaultModelId: "gpt-5.5",
-              defaultProvider: "openai",
               title: "Concurrent owned chat",
               userId: target.id
             }
@@ -982,6 +980,10 @@ describe("Prisma admin repository", () => {
       const group = await repository.createGroup({
         name: `admin-test-extra-${domain}`
       });
+      const fakeModel = await prisma.providerModel.findFirstOrThrow({
+        select: { connectionId: true, id: true },
+        where: { enabled: true, connection: { enabled: true, family: "fake" } }
+      });
 
       expect(group).toMatchObject({
         archivedAt: null,
@@ -1004,8 +1006,8 @@ describe("Prisma admin repository", () => {
         repository.setGroupGrant({
           enabled: true,
           groupId: group!.id,
-          modelId: "gpt-5.5",
-          provider: "openai"
+          modelId: fakeModel.id,
+          provider: fakeModel.connectionId
         })
       ).resolves.toBe(true);
       await expect(
@@ -1017,15 +1019,15 @@ describe("Prisma admin repository", () => {
       ).resolves.toBe(true);
 
       const entitled = await loadEntitlementsForUser(user.id);
-      expect(entitled.modelKeys.has("openai:gpt-5.5")).toBe(true);
+      expect(entitled.modelKeys.has(`${fakeModel.connectionId}:${fakeModel.id}`)).toBe(true);
       expect(entitled.searchStrategies.has("openai-native-web-search")).toBe(true);
 
       const dashboard = await repository.listDashboard();
       const dashboardUser = dashboard.users.find((candidate) => candidate.id === user.id);
       expect(dashboard.groups.find((candidate) => candidate.id === group!.id)?.accessGrants).toHaveLength(2);
       expect(dashboardUser?.effectiveEntitlements.models).toContainEqual({
-        modelId: "gpt-5.5",
-        provider: "openai"
+        modelId: fakeModel.id,
+        provider: fakeModel.connectionId
       });
 
       await expect(repository.archiveGroup(group!.id)).resolves.toBe(true);
@@ -1036,7 +1038,7 @@ describe("Prisma admin repository", () => {
         repository.setGroupGrant({
           enabled: true,
           groupId: group!.id,
-          provider: "openai"
+          provider: fakeModel.connectionId
         })
       ).resolves.toBe(false);
     });
@@ -1066,8 +1068,6 @@ describe("Prisma admin repository", () => {
 
       await prisma.chat.create({
         data: {
-          defaultModelId: "gpt-5.5",
-          defaultProvider: "openai",
           title: "Deletion blocker",
           userId: withData.id
         }
@@ -1163,20 +1163,23 @@ describe("Prisma admin repository", () => {
           namespace: `mcp-delete-${randomUUID()}`
         }
       });
+      const fakeConnection = await prisma.providerConnection.findFirstOrThrow({
+        select: { id: true },
+        where: { enabled: true, family: "fake" }
+      });
 
       try {
         await prisma.userSettings.create({
           data: {
             defaultControlValues: {},
-            defaultModelId: "gpt-5.5",
-            defaultProvider: "openai",
+            defaultProviderModelId: null,
             userId: withSettings.id
           }
         });
         await prisma.accessGrant.create({
           data: {
             enabled: true,
-            provider: "openai",
+            providerConnectionId: fakeConnection.id,
             userId: withDirectGrant.id
           }
         });
@@ -1255,11 +1258,18 @@ describe("Prisma admin repository", () => {
       const withMcpGrant = await repository.createGroup({
         name: `mcp-delete-${domain}`
       });
+      const withProviderCredential = await repository.createGroup({
+        name: `pc-${domain}`
+      });
       const user = await createPasswordUser({
         displayName: "Group Delete Member",
         domain,
         emailLocalPart: "group-delete-member",
         status: "active"
+      });
+      const fakeConnection = await prisma.providerConnection.findFirstOrThrow({
+        select: { id: true },
+        where: { enabled: true, family: "fake" }
       });
 
       await repository.setUserGroups({
@@ -1269,12 +1279,22 @@ describe("Prisma admin repository", () => {
       await repository.setGroupGrant({
         enabled: true,
         groupId: withGrant!.id,
-        provider: "openai"
+        provider: fakeConnection.id
       });
       const mcpServer = await prisma.mcpServer.create({
         data: {
           displayName: "Group delete eligibility MCP",
           namespace: `mcp-group-delete-${randomUUID()}`
+        }
+      });
+      const providerConnection = await prisma.providerConnection.findFirstOrThrow({
+        select: { id: true },
+        where: { family: "openai" }
+      });
+      const providerCredential = await prisma.providerCredential.create({
+        data: {
+          connectionId: providerConnection.id,
+          label: `Group delete ${domain}`
         }
       });
 
@@ -1286,11 +1306,19 @@ describe("Prisma admin repository", () => {
             serverId: mcpServer.id
           }
         });
+        await prisma.providerGroupCredentialAssignment.create({
+          data: {
+            connectionId: providerConnection.id,
+            credentialId: providerCredential.id,
+            groupId: withProviderCredential!.id
+          }
+        });
 
         await expect(repository.deleteEmptyGroup(empty!.id)).resolves.toBe("deleted");
         await expect(repository.deleteEmptyGroup(withMember!.id)).resolves.toBe("group_has_members");
         await expect(repository.deleteEmptyGroup(withGrant!.id)).resolves.toBe("group_has_grants");
         await expect(repository.deleteEmptyGroup(withMcpGrant!.id)).resolves.toBe("group_has_grants");
+        await expect(repository.deleteEmptyGroup(withProviderCredential!.id)).resolves.toBe("group_has_grants");
         await expect(
           prisma.group.findUnique({
             where: {
@@ -1299,6 +1327,12 @@ describe("Prisma admin repository", () => {
           })
         ).resolves.toBeNull();
       } finally {
+        await prisma.providerGroupCredentialAssignment.deleteMany({
+          where: { credentialId: providerCredential.id }
+        });
+        await prisma.providerCredential.delete({
+          where: { id: providerCredential.id }
+        });
         await prisma.mcpServer.delete({
           where: {
             id: mcpServer.id

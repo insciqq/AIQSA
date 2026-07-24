@@ -714,32 +714,30 @@ describe("admin route handlers", () => {
   it("keeps the one-time link when invite email is not requested, unavailable, or fails", async () => {
     const notRequestedSend = vi.fn(async () => undefined);
     const omittedSend = vi.fn(async () => undefined);
-    const unavailableSend = vi.fn(async () => undefined);
-    const failedSend = vi.fn(async () => {
-      throw new Error("unsafe injected detail");
-    });
+    const unavailableSend = vi.fn(async () => ({ kind: "unavailable" as const }));
+    const failedSend = vi.fn(async () => ({ code: "smtp_tls_failed" as const, kind: "failed" as const }));
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
 
     try {
       const cases = [
         {
           expected: "not_requested",
-          mailer: { deliveryConfigured: true, send: notRequestedSend },
+          mailer: { send: notRequestedSend },
           sendEmail: false
         },
         {
           expected: "not_requested",
-          mailer: { deliveryConfigured: true, send: omittedSend },
+          mailer: { send: omittedSend },
           sendEmail: undefined
         },
         {
           expected: "unavailable",
-          mailer: { deliveryConfigured: false, send: unavailableSend },
+          mailer: { send: unavailableSend },
           sendEmail: true
         },
         {
           expected: "failed",
-          mailer: { deliveryConfigured: true, send: failedSend },
+          mailer: { send: failedSend },
           sendEmail: true
         }
       ] as const;
@@ -767,11 +765,11 @@ describe("admin route handlers", () => {
 
       expect(notRequestedSend).not.toHaveBeenCalled();
       expect(omittedSend).not.toHaveBeenCalled();
-      expect(unavailableSend).not.toHaveBeenCalled();
+      expect(unavailableSend).toHaveBeenCalledOnce();
       expect(failedSend).toHaveBeenCalledOnce();
       expect(consoleError).toHaveBeenCalledOnce();
       expect(consoleError).toHaveBeenCalledWith("invite_email_failed");
-      expect(JSON.stringify(consoleError.mock.calls)).not.toContain("unsafe injected detail");
+      expect(JSON.stringify(consoleError.mock.calls)).not.toContain("smtp_tls_failed");
     } finally {
       consoleError.mockRestore();
     }
@@ -782,7 +780,7 @@ describe("admin route handlers", () => {
     const send = vi.fn(async () => undefined);
     const POST = createAdminActionHandler({
       getConfig: () => ({ appBaseUrl: "https://aiqsa.local" }),
-      mailer: { deliveryConfigured: true, send },
+      mailer: { send },
       repository: createRepository({ createInvite }),
       resolveAuth: admin.resolveAuth
     });

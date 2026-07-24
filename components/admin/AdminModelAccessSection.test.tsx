@@ -81,6 +81,10 @@ describe("AdminModelAccessSection", () => {
 
     const list = screen.getByTestId("admin-model-access-group-list");
     expect(within(list).getByRole("button", { name: "Select Operators" })).toHaveAttribute("aria-pressed", "true");
+    expect(within(list).getByRole("button", { name: "Select Operators" })).toHaveAttribute(
+      "aria-controls",
+      "admin-model-access-selected-group"
+    );
     expect(within(list).getByRole("button", { name: "Select Former operators" })).toHaveAttribute(
       "aria-pressed",
       "false"
@@ -89,7 +93,9 @@ describe("AdminModelAccessSection", () => {
     const detail = screen.getByTestId("admin-model-access-group");
     expect(detailRef.current).toBe(detail);
     expect(detail.tagName).toBe("DIV");
+    expect(detail).toHaveAttribute("id", "admin-model-access-selected-group");
     expect(detail).toHaveAttribute("aria-label", "Model access for Operators");
+    expect(detail).toHaveAttribute("role", "region");
     expect(detail).toHaveAttribute("tabindex", "-1");
 
     for (const name of ["Provider-wide access grants", "OpenAI model grants", "Search strategy grants"]) {
@@ -97,6 +103,9 @@ describe("AdminModelAccessSection", () => {
       expect(region).toHaveAttribute("tabindex", "0");
       expect(within(region).getByRole("table")).toBeVisible();
     }
+    const modelGrants = screen.getByRole("region", { name: "OpenAI model grants" });
+    expect(within(modelGrants).queryByRole("columnheader", { name: "API id" })).not.toBeInTheDocument();
+    expect(within(modelGrants).queryByText("openai:gpt-5.5")).not.toBeInTheDocument();
 
     fireEvent.change(screen.getByLabelText("Search model access groups"), { target: { value: "former" } });
     expect(actions.onQueryChange).toHaveBeenCalledWith("former");
@@ -108,7 +117,7 @@ describe("AdminModelAccessSection", () => {
     fireEvent.click(providerGrant);
     expect(actions.onToggleGrant).toHaveBeenCalledWith(activeGroup, { provider: "openai" }, false);
 
-    fireEvent.click(screen.getByRole("button", { name: "Grant model openai / GPT 5.5" }));
+    fireEvent.click(screen.getByRole("button", { name: "Grant model OpenAI / GPT 5.5" }));
     expect(actions.onToggleGrant).toHaveBeenCalledWith(
       activeGroup,
       { modelId: "gpt-5.5", provider: "openai" },
@@ -203,7 +212,7 @@ describe("AdminModelAccessSection", () => {
     ).toBeVisible();
     const archivedMutationButtons = [
       screen.getByRole("button", { name: "Grant provider OpenAI" }),
-      screen.getByRole("button", { name: "Grant model openai / GPT 5.5" }),
+      screen.getByRole("button", { name: "Grant model OpenAI / GPT 5.5" }),
       screen.getByRole("button", { name: "Grant search OpenAI web search" }),
       screen.getByRole("button", { name: "Grant all OpenAI models to Former operators" }),
       screen.getByRole("button", { name: "Clear OpenAI models from Former operators" })
@@ -230,7 +239,7 @@ describe("AdminModelAccessSection", () => {
 
     expect(screen.queryByText("Archived groups do not apply grants. Grant editing is disabled for this group.")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Grant provider OpenAI" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Grant model openai / GPT 5.5" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Grant model OpenAI / GPT 5.5" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Grant search OpenAI web search" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Grant all OpenAI models to Operators" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Clear OpenAI models from Operators" })).toBeDisabled();

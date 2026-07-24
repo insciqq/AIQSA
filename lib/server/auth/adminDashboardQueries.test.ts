@@ -62,6 +62,13 @@ async function withAdminQueryData<T>(
         }
       }
     });
+    await prisma.providerConnection.deleteMany({
+      where: {
+        family: {
+          startsWith: marker
+        }
+      }
+    });
     await prisma.searchStrategy.deleteMany({
       where: {
         strategyId: {
@@ -104,39 +111,84 @@ describe("admin dashboard queries", () => {
           }
         })
       ]);
+      await prisma.providerConnection.createMany({
+        data: [
+          {
+            activeConfig: {},
+            activeVersion: 1,
+            activatedAt: now,
+            displayName: providerAlpha,
+            enabled: true,
+            family: `${providerAlpha}-family`,
+            id: providerAlpha
+          },
+          {
+            activeConfig: {},
+            activeVersion: 1,
+            activatedAt: now,
+            displayName: providerBeta,
+            enabled: true,
+            family: `${providerBeta}-family`,
+            id: providerBeta
+          },
+          {
+            displayName: providerDisabled,
+            enabled: false,
+            family: `${providerDisabled}-family`,
+            id: providerDisabled
+          }
+        ]
+      });
 
       await prisma.providerModel.createMany({
         data: [
           {
+            activeConfig: {},
+            activeVersion: 1,
+            activatedAt: now,
             capabilities: {},
+            connectionId: providerAlpha,
             contextWindow: 128_000,
             defaultParams: {},
             displayName: "Zulu enabled",
+            id: `${marker}-model-zulu`,
             modelId: `${marker}-model-zulu`,
             provider: providerAlpha
           },
           {
+            activeConfig: { upstreamModelId: `${marker}-upstream-alpha` },
+            activeVersion: 1,
+            activatedAt: now,
             capabilities: {},
+            connectionId: providerAlpha,
             contextWindow: 128_000,
             defaultParams: {},
             displayName: "Alpha enabled",
+            id: `${marker}-model-alpha`,
             modelId: `${marker}-model-alpha`,
             provider: providerAlpha
           },
           {
+            activeConfig: {},
+            activeVersion: 1,
+            activatedAt: now,
             capabilities: {},
+            connectionId: providerBeta,
             contextWindow: 128_000,
             defaultParams: {},
             displayName: "Beta enabled",
+            id: `${marker}-model-beta`,
             modelId: `${marker}-model-beta`,
             provider: providerBeta
           },
           {
             capabilities: {},
+            connectionId: providerDisabled,
             contextWindow: 128_000,
             defaultParams: {},
             displayName: "Disabled",
             enabled: false,
+            id: `${marker}-model-disabled`,
             modelId: `${marker}-model-disabled`,
             provider: providerDisabled
           }
@@ -148,7 +200,7 @@ describe("admin dashboard queries", () => {
             config: {},
             description: "Fixture enabled strategy Z",
             displayName: "Zulu strategy",
-            kind: "fixture",
+            kind: "openai_native_web_search",
             provider: providerAlpha,
             strategyId: strategyZulu
           },
@@ -156,7 +208,7 @@ describe("admin dashboard queries", () => {
             config: {},
             description: "Fixture enabled strategy A",
             displayName: "Alpha strategy",
-            kind: "fixture",
+            kind: "openai_native_web_search",
             provider: providerAlpha,
             strategyId: strategyAlpha
           },
@@ -165,7 +217,7 @@ describe("admin dashboard queries", () => {
             description: "Fixture disabled strategy",
             displayName: "Disabled strategy",
             enabled: false,
-            kind: "fixture",
+            kind: "openai_native_web_search",
             provider: providerAlpha,
             strategyId: `${marker}-strategy-disabled`
           }
@@ -196,8 +248,7 @@ describe("admin dashboard queries", () => {
           settings: {
             create: {
               defaultControlValues: {},
-              defaultModelId: `${marker}-model-alpha`,
-              defaultProvider: providerAlpha
+              defaultProviderModelId: `${marker}-model-alpha`
             }
           },
           status: "active"
@@ -263,22 +314,20 @@ describe("admin dashboard queries", () => {
         prisma.accessGrant.create({
           data: {
             groupId: groupAlpha.id,
-            modelId: `${marker}-model-zulu`,
-            provider: providerAlpha
+            providerModelId: `${marker}-model-zulu`
           }
         }),
         prisma.accessGrant.create({
           data: {
             groupId: groupAlpha.id,
-            modelId: `${marker}-model-alpha`,
-            provider: providerAlpha
+            providerModelId: `${marker}-model-alpha`
           }
         }),
         prisma.accessGrant.create({
           data: {
             enabled: false,
             groupId: groupAlpha.id,
-            provider: providerBeta
+            providerConnectionId: providerBeta
           }
         }),
         prisma.accessGrant.create({
@@ -289,7 +338,7 @@ describe("admin dashboard queries", () => {
         }),
         prisma.accessGrant.create({
           data: {
-            provider: providerBeta,
+            providerConnectionId: providerBeta,
             userId: activeUser.id
           }
         })
@@ -382,7 +431,9 @@ describe("admin dashboard queries", () => {
         {
           displayName: "Alpha enabled",
           modelId: `${marker}-model-alpha`,
-          provider: providerAlpha
+          provider: providerAlpha,
+          providerFamily: `${providerAlpha}-family`,
+          upstreamModelId: `${marker}-upstream-alpha`
         },
         {
           displayName: "Zulu enabled",
@@ -524,9 +575,9 @@ describe("admin dashboard queries", () => {
         userCount: 1
       });
       expect(serializedAlphaGroup?.accessGrants.map((grant) => grant.id)).toEqual([
+        grants[2].id,
         grants[1].id,
         grants[0].id,
-        grants[2].id,
         grants[3].id
       ]);
       expect(serializedZuluGroup).toMatchObject({
@@ -616,6 +667,38 @@ describe("admin dashboard queries", () => {
         }
       });
 
+      await prisma.providerConnection.createMany({
+        data: [activeProvider, archivedProvider, directProvider].map((id) => ({
+          displayName: id,
+          family: `${id}-family`,
+          id
+        }))
+      });
+      await prisma.providerModel.createMany({
+        data: [
+          {
+            capabilities: {},
+            connectionId: archivedProvider,
+            contextWindow: 1,
+            defaultParams: {},
+            displayName: `${marker}-archived-model`,
+            id: `${marker}-archived-model`,
+            modelId: `${marker}-archived-model`,
+            provider: archivedProvider
+          },
+          {
+            capabilities: {},
+            connectionId: directProvider,
+            contextWindow: 1,
+            defaultParams: {},
+            displayName: `${marker}-direct-model`,
+            id: `${marker}-direct-model`,
+            modelId: `${marker}-direct-model`,
+            provider: directProvider
+          }
+        ]
+      });
+
       await prisma.userGroup.createMany({
         data: [
           { groupId: activeAlpha.id, role: "member", userId: user.id },
@@ -627,7 +710,7 @@ describe("admin dashboard queries", () => {
         data: [
           {
             groupId: activeAlpha.id,
-            provider: activeProvider
+            providerConnectionId: activeProvider
           },
           {
             groupId: activeBeta.id,
@@ -635,12 +718,10 @@ describe("admin dashboard queries", () => {
           },
           {
             groupId: archivedGroup.id,
-            modelId: `${marker}-archived-model`,
-            provider: archivedProvider
+            providerModelId: `${marker}-archived-model`
           },
           {
-            modelId: `${marker}-direct-model`,
-            provider: directProvider,
+            providerModelId: `${marker}-direct-model`,
             userId: user.id
           }
         ]

@@ -1,6 +1,6 @@
 import type { AuthConfig } from "./config";
 import { getLoginRateLimitKey } from "./handlers";
-import type { AuthMailer } from "./mailer";
+import { deliverAuthEmail, type AuthMailer } from "./mailer";
 import { hashPassword as hashPasswordDefault, isPlausibleEmail, normalizeAuthEmail, validatePassword } from "./password";
 import type { AuthRegistrationRepository } from "./registrationRepository";
 import { createFixedWindowLoginRateLimiter, type LoginRateLimiter } from "./rateLimit";
@@ -353,19 +353,19 @@ export function createRegisterHandler(deps: RegisterHandlerDeps) {
     }
 
     if (result.sentToEmail) {
-      if (!deps.mailer.deliveryConfigured) {
+      const delivery = await deliverAuthEmail(
+        deps.mailer,
+        verificationEmail({
+          to: result.sentToEmail,
+          verificationUrl: verificationUrl(config.appBaseUrl, token)
+        }),
+        "verification"
+      );
+      if (delivery.kind === "unavailable") {
         return json({ error: "verification_email_unavailable" }, { status: 503 });
       }
-
-      try {
-        await deps.mailer.send(
-          verificationEmail({
-            to: result.sentToEmail,
-            verificationUrl: verificationUrl(config.appBaseUrl, token)
-          })
-        );
-      } catch (error) {
-        console.error("verification_email_failed", error);
+      if (delivery.kind === "failed") {
+        console.error("verification_email_failed", delivery.error);
         return json({ error: "verification_email_failed" }, { status: 502 });
       }
     }

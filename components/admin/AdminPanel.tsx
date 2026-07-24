@@ -6,11 +6,13 @@ import { AdminConsoleHeader } from "@/components/admin/AdminConsoleHeader";
 import { AdminDashboardOverview } from "@/components/admin/AdminDashboardOverview";
 import { AdminDashboardUnavailable } from "@/components/admin/AdminDashboardUnavailable";
 import { AdminFeedbackMessages } from "@/components/admin/AdminFeedbackMessages";
+import { AdminEmailSection } from "@/components/admin/AdminEmailSection";
 import { AdminGroupsSection } from "@/components/admin/AdminGroupsSection";
 import { AdminInvitesSection } from "@/components/admin/AdminInvitesSection";
 import { AdminModelAccessSection } from "@/components/admin/AdminModelAccessSection";
 import { AdminMcpGroupAccessPanel, AdminMcpUserAccessPanel } from "@/components/admin/AdminMcpGrantPanels";
 import { AdminMcpServersSection } from "@/components/admin/AdminMcpServersSection";
+import { AdminProvidersSection } from "@/components/admin/AdminProvidersSection";
 import { AdminSafetySection } from "@/components/admin/AdminSafetySection";
 import { AdminSectionFrame } from "@/components/admin/AdminSectionFrame";
 import { AdminUsageSection } from "@/components/admin/AdminUsageSection";
@@ -137,6 +139,10 @@ function AdminSectionContent({
       ) : null;
     case "mcp":
       return <AdminMcpServersSection controller={mcp} section={mcpSection} />;
+    case "email":
+      return <AdminEmailSection />;
+    case "providers":
+      return <AdminProvidersSection active groups={dashboard.groups} />;
     case "invites":
       return invites.sectionProps ? <AdminInvitesSection {...invites.sectionProps} /> : null;
     case "access-rules":

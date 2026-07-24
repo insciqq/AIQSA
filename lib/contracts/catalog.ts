@@ -63,25 +63,24 @@ export type CatalogWireModel = {
   modelId: string;
   parameterControls: ModelParameterControls;
   provider: string;
-  routeProviderPreferences?: OpenRouterRoutePreferences;
+  providerFamily: string;
   searchStrategyIds: string[];
+  upstreamModelId: string;
 };
 
 export type CatalogWireSearchStrategy = {
-  config: Record<string, unknown>;
-  description: string;
   displayName: string;
   kind: "none" | "openai_native_web_search" | "perplexity_tool_search";
-  modelId?: string;
-  provider: string;
   strategyId: string;
 };
 
 export type CatalogModel = Omit<
   CatalogWireModel,
-  "capabilities" | "routeProviderPreferences"
+  "capabilities" | "providerFamily" | "upstreamModelId"
 > & {
   capabilities: Omit<CatalogWireModel["capabilities"], "text">;
+  providerFamily?: string;
+  upstreamModelId?: string;
 };
 
 export type CatalogSearchStrategy = Pick<
@@ -111,9 +110,14 @@ export type CatalogDefaults = {
 };
 
 export type CatalogProvider = {
+  family?: string;
   id: string;
   models: string[];
   name: string;
+};
+
+export type CatalogWireProvider = CatalogProvider & {
+  family: string;
 };
 
 export type Catalog = {
@@ -124,8 +128,9 @@ export type Catalog = {
   searchStrategies: CatalogSearchStrategy[];
 };
 
-export type CurrentUserCatalogWire = Omit<Catalog, "models" | "searchStrategies"> & {
+export type CurrentUserCatalogWire = Omit<Catalog, "models" | "providers" | "searchStrategies"> & {
   models: CatalogWireModel[];
+  providers: CatalogWireProvider[];
   searchStrategies: CatalogWireSearchStrategy[];
 };
 
@@ -187,34 +192,6 @@ function isModelParameterControls(value: unknown): value is ModelParameterContro
   );
 }
 
-function decodeRoutePreferences(value: unknown): OpenRouterRoutePreferences | null {
-  if (!isRecord(value)) {
-    return null;
-  }
-
-  if (
-    typeof value.allowFallbacks !== "boolean" ||
-    (value.dataCollection !== "allow" && value.dataCollection !== "deny") ||
-    !stringArray(value.order) ||
-    !stringArray(value.only) ||
-    typeof value.requireParameters !== "boolean" ||
-    (value.sort !== "latency" && value.sort !== "price" && value.sort !== "throughput") ||
-    typeof value.zdr !== "boolean"
-  ) {
-    return null;
-  }
-
-  return {
-    allowFallbacks: value.allowFallbacks,
-    dataCollection: value.dataCollection,
-    order: value.order,
-    only: value.only,
-    requireParameters: value.requireParameters,
-    sort: value.sort,
-    zdr: value.zdr
-  };
-}
-
 function decodeCatalogModel(value: unknown): CatalogModel | null {
   if (
     !isRecord(value) ||
@@ -223,6 +200,8 @@ function decodeCatalogModel(value: unknown): CatalogModel | null {
     !nonEmptyString(value.displayName) ||
     !nonEmptyString(value.modelId) ||
     !nonEmptyString(value.provider) ||
+    !nonEmptyString(value.providerFamily) ||
+    !nonEmptyString(value.upstreamModelId) ||
     !finiteNumber(value.contextWindow) ||
     !stringArray(value.searchStrategyIds) ||
     !isModelParameterControls(value.parameterControls)
@@ -247,14 +226,6 @@ function decodeCatalogModel(value: unknown): CatalogModel | null {
     return null;
   }
 
-  const routeProviderPreferences =
-    "routeProviderPreferences" in value
-      ? decodeRoutePreferences(value.routeProviderPreferences)
-      : undefined;
-  if (routeProviderPreferences === null) {
-    return null;
-  }
-
   return {
     capabilities: {
       background: capabilities.background,
@@ -271,7 +242,9 @@ function decodeCatalogModel(value: unknown): CatalogModel | null {
     modelId: value.modelId,
     parameterControls: value.parameterControls,
     provider: value.provider,
-    searchStrategyIds: value.searchStrategyIds
+    providerFamily: value.providerFamily,
+    searchStrategyIds: value.searchStrategyIds,
+    upstreamModelId: value.upstreamModelId
   };
 }
 
@@ -299,6 +272,7 @@ function decodePromptPreset(value: unknown): PromptPreset | null {
 function decodeCatalogProvider(value: unknown): CatalogProvider | null {
   if (
     !isRecord(value) ||
+    !nonEmptyString(value.family) ||
     !nonEmptyString(value.id) ||
     !stringArray(value.models) ||
     !nonEmptyString(value.name)
@@ -307,6 +281,7 @@ function decodeCatalogProvider(value: unknown): CatalogProvider | null {
   }
 
   return {
+    family: value.family,
     id: value.id,
     models: value.models,
     name: value.name
@@ -321,15 +296,6 @@ function decodeSearchStrategy(value: unknown): CatalogSearchStrategy | null {
       value.kind !== "openai_native_web_search" &&
       value.kind !== "perplexity_tool_search") ||
     !nonEmptyString(value.strategyId)
-  ) {
-    return null;
-  }
-
-  if (
-    ("config" in value && !isRecord(value.config)) ||
-    ("description" in value && typeof value.description !== "string") ||
-    ("modelId" in value && typeof value.modelId !== "string") ||
-    ("provider" in value && typeof value.provider !== "string")
   ) {
     return null;
   }
@@ -351,9 +317,9 @@ export function decodeCatalogResponse(value: unknown): Catalog | null {
   if (
     !isRecord(defaults) ||
     !isRecord(defaults.controlValues) ||
-    !nonEmptyString(defaults.modelId) ||
+    typeof defaults.modelId !== "string" ||
     (defaults.promptPresetId !== null && typeof defaults.promptPresetId !== "string") ||
-    !nonEmptyString(defaults.provider) ||
+    typeof defaults.provider !== "string" ||
     !nonEmptyString(defaults.searchStrategyId) ||
     typeof defaults.showCitations !== "boolean" ||
     typeof defaults.showReasoningBlocks !== "boolean" ||

@@ -40,6 +40,8 @@ Streaming is a provider-neutral run capability. Catalog `capabilities.streaming`
 
 MCP extends the middle of this pipeline with model-requested tools rather than adding a separate run mode. Every accepted run receives the complete immutable namespaced inventory from all of that user's enabled, entitled, ready MCP servers; granting a server grants all of its valid tools, and no enabled-but-unready server is silently omitted. The model may request zero, one, or several calls over multiple rounds, including calls whose arguments use conversation data or a prior enabled server's result. Requested batches are persisted before bounded parallel execution, results return in provider order, and provisional streamed text is reset before the tool round. Foreground, Stream, and provider-native Background remain available whenever the selected adapter/model capabilities advertise the combination. Durable recovery reuses settled calls and native provider handles, reloads provider attachment payloads, and replays the same persisted provider transcript and accepted chat context under the same budget; it never retries a crash-ambiguous external side effect.
 
+Model selection carries opaque database deployment IDs, not trusted provider/upstream strings. The run-creation transaction resolves current grants plus one effective administrator-owned default/group credential, rechecks exact deployment compatibility, and persists immutable answer/search provider bindings before any network call. Later ordinary provider/RBAC changes affect future runs only; continuation, cancellation, and recovery retain the accepted endpoint, protocol, routing, model, and credential version.
+
 ## Transparency Contract
 
 For every model run, the app can show:
@@ -69,10 +71,11 @@ Details Events reduces the already-consumed normalized event stream into a chron
 Current providers:
 
 - fake provider for deterministic tests;
-- OpenAI Responses API as the default provider path;
+- native OpenAI Responses as the first-class OpenAI path;
+- custom OpenAI-compatible Responses and Chat Completions as separate explicit protocols;
 - Anthropic Messages API;
 - OpenRouter Chat Completions-compatible API;
-- Perplexity Search model `perplexity/sonar-pro-search` through OpenRouter.
+- administrator-selected OpenRouter search deployments for provider-neutral search tools;
 - Provider-neutral run-tool contracts for web search, with OpenAI Responses and OpenRouter Chat Completions bridge boundaries.
 
 Adapter defaults and cache/wire details live in `BACKEND.md`; externally verified constraints live in `PROVIDER_API_NOTES.md`.

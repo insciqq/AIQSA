@@ -4,7 +4,8 @@ import {
   availableSearchStrategiesForModel,
   buildCatalogModel,
   normalizeOpenRouterRoutePreferences,
-  resolveSearchStrategyId
+  resolveSearchStrategyId,
+  toCatalogSearchStrategy
 } from "./catalogMatrix";
 
 describe("catalog capability matrix", () => {
@@ -17,6 +18,30 @@ describe("catalog capability matrix", () => {
       "perplexity-tool-search",
       "search-disabled"
     ]);
+  });
+
+  it("derives search compatibility from adapter kind and capabilities, not opaque ids or family labels", () => {
+    const template = defaultProviderModels.find(
+      (entry) => entry.providerFamily === "openai" && entry.upstreamModelId === "gpt-5.5"
+    );
+    expect(template).toBeDefined();
+
+    const opaqueNative = {
+      ...template!,
+      modelId: "deployment-opaque",
+      provider: "connection-opaque"
+    };
+    expect(availableSearchStrategiesForModel(opaqueNative, defaultSearchStrategies)).toContain(
+      "openai-native-web-search"
+    );
+
+    const compatible = {
+      ...opaqueNative,
+      adapterKind: "openai_responses_compatible" as const
+    };
+    expect(availableSearchStrategiesForModel(compatible, defaultSearchStrategies)).not.toContain(
+      "openai-native-web-search"
+    );
   });
 
   it("keeps gpt-5.5 reasoning options aligned with accepted OpenAI effort values", () => {
@@ -97,11 +122,14 @@ describe("catalog capability matrix", () => {
     );
   });
 
-  it("does not expose native Claude search for direct Anthropic models", () => {
+  it("lets a tool-capable Anthropic answer use Perplexity without native web search", () => {
     const model = defaultProviderModels.find((entry) => entry.provider === "anthropic");
 
     expect(model).toBeDefined();
-    expect(availableSearchStrategiesForModel(model!, defaultSearchStrategies).sort()).toEqual(["search-disabled"]);
+    expect(availableSearchStrategiesForModel(model!, defaultSearchStrategies).sort()).toEqual([
+      "perplexity-tool-search",
+      "search-disabled"
+    ]);
   });
 
   it("lets Claude-through-OpenRouter use Perplexity without native web search", () => {
@@ -110,6 +138,47 @@ describe("catalog capability matrix", () => {
 
     expect(catalogModel.searchStrategyIds).toContain("perplexity-tool-search");
     expect(catalogModel.searchStrategyIds).not.toContain("openai-native-web-search");
+  });
+
+  it("projects only UI-safe defaults and search metadata into the ordinary catalog", () => {
+    const template = defaultProviderModels.find(
+      (entry) => entry.modelId === "anthropic/claude-opus-4.8"
+    );
+    expect(template).toBeDefined();
+
+    const model = buildCatalogModel(
+      {
+        ...template!,
+        defaultParams: {
+          authorization: "Bearer admin-secret",
+          provider: {
+            order: ["private-route"],
+            token: "admin-secret"
+          },
+          secretExtension: { value: "admin-secret" },
+          verbosity: "high"
+        }
+      },
+      defaultSearchStrategies
+    );
+
+    expect(model.defaultParams).toEqual({
+      maxTokens: 128_000,
+      reasoning: { effort: "high" },
+      stream: true,
+      verbosity: "high"
+    });
+    expect(JSON.stringify(model)).not.toContain("admin-secret");
+    expect(model).not.toHaveProperty("routeProviderPreferences");
+
+    const strategy = toCatalogSearchStrategy(defaultSearchStrategies[2]!);
+    expect(strategy).toEqual({
+      displayName: "Perplexity tool",
+      kind: "perplexity_tool_search",
+      strategyId: "perplexity-tool-search"
+    });
+    expect(strategy).not.toHaveProperty("config");
+    expect(strategy).not.toHaveProperty("providerModelId");
   });
 
   it("resolves selected search strategy by saved default, disabled search, then fallback", () => {

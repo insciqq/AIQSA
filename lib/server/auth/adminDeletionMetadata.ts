@@ -7,6 +7,7 @@ export type AdminUserDeletionSource = Readonly<{
 
 export type AdminGroupDeletionSource = Readonly<{
   _count: Readonly<{
+    providerCredentialAssignments?: number;
     users: number;
   }>;
   accessGrants: readonly Readonly<{
@@ -119,8 +120,9 @@ export function adminGroupDeletionInfo(group: AdminGroupDeletionSource): AdminDe
   const activeGrantCount =
     group.accessGrants.filter((grant) => grant.enabled).length +
     group.mcpGrants.filter((grant) => grant.canUse).length;
+  const credentialAssignmentCount = group._count.providerCredentialAssignments ?? 0;
   const block = adminGroupDeletionBlock({
-    activeGrantCount,
+    activeGrantCount: activeGrantCount + credentialAssignmentCount,
     memberCount: group._count.users
   });
 
@@ -133,17 +135,25 @@ export function adminGroupDeletionInfo(group: AdminGroupDeletionSource): AdminDe
   }
 
   if (block === "group_has_grants") {
+    const accessSummary = [
+      activeGrantCount
+        ? `${activeGrantCount} active grant${activeGrantCount === 1 ? "" : "s"}`
+        : null,
+      credentialAssignmentCount
+        ? `${credentialAssignmentCount} provider credential assignment${credentialAssignmentCount === 1 ? "" : "s"}`
+        : null
+    ].filter((part): part is string => Boolean(part)).join(" and ");
     return {
       canDelete: false,
       reason: "group_has_grants",
-      summary: `Remove ${activeGrantCount} active grant${activeGrantCount === 1 ? "" : "s"} before deleting this group.`
+      summary: `Remove ${accessSummary} before deleting this group.`
     };
   }
 
   return {
     canDelete: true,
     reason: null,
-    summary: "No members or active grants; this group can be deleted."
+    summary: "No members, active grants, or provider credential assignments; this group can be deleted."
   };
 }
 

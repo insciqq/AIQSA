@@ -6,6 +6,14 @@ import { parseSseStream } from "./sse";
 import type { ProviderRunResult } from "./types";
 import { visibleAnswerText } from "./visibleAnswer";
 
+const responseStatuses = new Set([
+  "cancelled",
+  "completed",
+  "failed",
+  "in_progress",
+  "incomplete",
+  "queued"
+]);
 const terminalStatuses = new Set(["cancelled", "completed", "failed", "incomplete"]);
 
 type OpenAIResponseRecord = Readonly<Record<string, unknown>>;
@@ -55,7 +63,8 @@ function numberValue(value: unknown): number {
 }
 
 export function openAIResponseStatus(response: OpenAIResponseRecord): string {
-  return stringValue(response.status) ?? "unknown";
+  const status = stringValue(response.status);
+  return status && responseStatuses.has(status) ? status : "unknown";
 }
 
 export function shouldPollOpenAIResponse(response: OpenAIResponseRecord): boolean {
@@ -215,7 +224,6 @@ function buildResponsePreview(
   rawText = finalText
 ): Record<string, unknown> {
   return {
-    error: response.error,
     id: response.id,
     model: response.model,
     output: summarizeOutput(response),
@@ -313,20 +321,14 @@ function providerResponseIdFromStreamPayload(
   );
 }
 
-function streamErrorMessage(eventType: string, payload: Record<string, unknown>): string | null {
+function streamErrorCode(eventType: string, payload: Record<string, unknown>): string | null {
   if (eventType === "error") {
-    const error = recordValue(payload.error);
-    return (
-      stringValue(error?.message) ??
-      stringValue(error?.code) ??
-      stringValue(payload.message) ??
-      "OpenAI stream error"
-    );
+    return "openai_stream_error";
   }
 
   const error = recordValue(payload.error);
   if (error && !eventType.startsWith("response.completed")) {
-    return stringValue(error.message) ?? stringValue(error.code) ?? "OpenAI stream error";
+    return "openai_stream_error";
   }
 
   return null;
@@ -404,9 +406,9 @@ export async function* parseOpenAIResponsesSse(
       };
     }
 
-    const errorMessage = streamErrorMessage(eventType, parsed);
-    if (errorMessage) {
-      throw new Error(errorMessage);
+    const errorCode = streamErrorCode(eventType, parsed);
+    if (errorCode) {
+      throw new Error(errorCode);
     }
 
     if (eventType === "response.completed") {

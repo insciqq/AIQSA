@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { PrismaClient } from "@prisma/client";
 import { expect, test, type Page } from "@playwright/test";
+import { providerTemplateIds } from "../../lib/domain/providerTemplates";
 import { hashPassword } from "../../lib/server/auth/password";
 import { provisionActiveUser } from "../../lib/server/auth/provisioning";
 
@@ -78,8 +79,7 @@ test("keeps two active password users in isolated workspaces", async ({ browser 
     data: [
       {
         groupId: group.id,
-        provider: "openai",
-        modelId: "gpt-5.5"
+        providerModelId: providerTemplateIds.fakeModel
       },
       {
         groupId: group.id,

@@ -43,7 +43,9 @@ export type MatrixModel = {
     };
   };
   provider: string;
+  providerFamily: string;
   searchStrategyIds: string[];
+  upstreamModelId: string;
 };
 
 function matrixModel(input: {
@@ -115,7 +117,9 @@ function matrixModel(input: {
       }
     },
     provider: input.provider,
-    searchStrategyIds: ["search-disabled", "perplexity-tool-search"]
+    providerFamily: input.provider,
+    searchStrategyIds: ["search-disabled", "perplexity-tool-search"],
+    upstreamModelId: input.modelId
   };
 }
 
@@ -196,16 +200,19 @@ export const matrixCatalog = {
   ],
   providers: [
     {
+      family: "openai",
       id: "openai",
       models: ["gpt-5.5", "gpt-5.6-sol"],
       name: "OpenAI"
     },
     {
+      family: "anthropic",
       id: "anthropic",
       models: ["claude-opus-4-8"],
       name: "Anthropic"
     },
     {
+      family: "openrouter",
       id: "openrouter",
       models: ["anthropic/claude-opus-4.8", "google/gemini-3.5-flash", "~google/gemini-pro-latest"],
       name: "OpenRouter"

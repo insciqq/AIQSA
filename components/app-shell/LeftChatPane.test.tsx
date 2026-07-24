@@ -45,6 +45,10 @@ function renderPane(overrides: Partial<ComponentProps<typeof LeftChatPane>> = {}
     activeChatId: "chat-1",
     activeRunChatIds: new Set(),
     availableChatModelKeys: new Set(["fake:fake-qsa"]),
+    chatModelLabels: new Map([
+      ["fake:fake-qsa", "Fake · Fake QSA"],
+      ["openai:other-model", "OpenAI · Other model"]
+    ]),
     chatActionId: null,
     chatContentMatchIds: new Set(),
     chatContentSearchError: null,
@@ -482,8 +486,9 @@ describe("LeftChatPane", () => {
       chatGroups: [{ ...chatGroups[0]!, chats: [chatGroups[0]!.chats[0]!, duplicate] }]
     });
 
-    expect(screen.getByText(/Fake · fake-qsa/)).toBeVisible();
-    expect(screen.getByText(/OpenAI · other-model/)).toBeVisible();
+    expect(screen.getByText(/Fake · Fake QSA/)).toBeVisible();
+    expect(screen.getByText(/OpenAI · Other model/)).toBeVisible();
+    expect(screen.queryByText(/fake-qsa|other-model/)).not.toBeInTheDocument();
     expect(screen.getAllByRole("button", { name: /Planning, .* updated/ })).toHaveLength(2);
   });
 

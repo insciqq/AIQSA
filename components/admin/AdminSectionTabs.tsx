@@ -6,6 +6,7 @@ import {
 } from "@/components/admin/adminSections";
 import { focusRing, touchTarget } from "@/components/admin/adminPrimitives";
 import type { AdminSectionNavigation } from "@/components/admin/useAdminSectionNavigation";
+import { useEffect, useRef } from "react";
 
 type AdminSectionTabsProps = Readonly<{
   navigation: Pick<
@@ -15,10 +16,36 @@ type AdminSectionTabsProps = Readonly<{
 }>;
 
 export function AdminSectionTabs({ navigation }: AdminSectionTabsProps) {
+  const activeTabRef = useRef<HTMLButtonElement | null>(null);
+  const tablistRef = useRef<HTMLElement | null>(null);
+
+  useEffect(() => {
+    const activeTab = activeTabRef.current;
+    if (!activeTab) {
+      return;
+    }
+
+    const frame = window.requestAnimationFrame(() => {
+      const tablist = tablistRef.current;
+      if (!tablist) return;
+
+      const tablistRect = tablist.getBoundingClientRect();
+      const tabRect = activeTab.getBoundingClientRect();
+      if (tabRect.left < tablistRect.left) {
+        tablist.scrollLeft -= tablistRect.left - tabRect.left;
+      } else if (tabRect.right > tablistRect.right) {
+        tablist.scrollLeft += tabRect.right - tablistRect.right;
+      }
+    });
+
+    return () => window.cancelAnimationFrame(frame);
+  }, [navigation.activeSection]);
+
   return (
     <nav
       aria-label="Admin sections"
       className="mt-3 flex gap-1 overflow-x-auto border-b border-separator-subtle pb-2"
+      ref={tablistRef}
       role="tablist"
     >
       {adminSections.map((section) => {
@@ -40,7 +67,12 @@ export function AdminSectionTabs({ navigation }: AdminSectionTabsProps) {
             key={section.id}
             onClick={() => navigation.selectSection(section.id)}
             onKeyDown={(event) => navigation.onTabKeyDown(event, section.id)}
-            ref={(node) => navigation.registerTab(section.id, node)}
+            ref={(node) => {
+              navigation.registerTab(section.id, node);
+              if (active) {
+                activeTabRef.current = node;
+              }
+            }}
             role="tab"
             tabIndex={active ? 0 : -1}
             type="button"

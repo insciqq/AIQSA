@@ -4,8 +4,14 @@ import type { AdminCatalog, AdminUsageDashboard } from "@/lib/contracts/admin";
 import { AdminUsageSection } from "./AdminUsageSection";
 
 const catalog: AdminCatalog = {
-  models: [{ displayName: "GPT 5.5", modelId: "gpt-5.5", provider: "openai" }],
-  providers: [{ id: "openai", name: "OpenAI" }],
+  models: [{
+    displayName: "GPT 5.5",
+    modelId: "opaque-model-id",
+    provider: "opaque-connection-id",
+    providerFamily: "openai",
+    upstreamModelId: "gpt-5.5"
+  }],
+  providers: [{ id: "opaque-connection-id", name: "OpenAI" }],
   searchStrategies: []
 };
 
@@ -146,7 +152,7 @@ describe("AdminUsageSection", () => {
     expect(screen.getByRole("region", { name: "User usage table" })).toBeVisible();
   });
 
-  it("preserves archived, missing-identity, no-group, and raw catalog fallbacks", () => {
+  it("preserves archived, missing-identity, and no-group context without raw catalog fallbacks", () => {
     const usage = populatedUsage();
     usage.byUser[1] = {
       ...usage.byUser[1],
@@ -167,6 +173,7 @@ describe("AdminUsageSection", () => {
     expect(screen.getByText("Archived group")).toBeVisible();
     expect(screen.getByText("No email")).toBeVisible();
     expect(screen.getByText("No groups")).toBeVisible();
-    expect(screen.getByText("unknown-provider / unknown-model")).toBeVisible();
+    expect(screen.getByText("Unavailable model")).toBeVisible();
+    expect(screen.queryByText(/unknown-provider|unknown-model/)).not.toBeInTheDocument();
   });
 });

@@ -20,6 +20,12 @@ import type {
 import { defaultChatTitle } from "./titlePolicy";
 
 const chatDetailInclude = {
+  defaultProviderModel: {
+    select: {
+      connectionId: true,
+      id: true
+    }
+  },
   messages: {
     include: {
       assistantModelRuns: {
@@ -92,9 +98,13 @@ const chatSummarySelect = {
   },
   activeLeafMessageId: true,
   createdAt: true,
-  defaultModelId: true,
+  defaultProviderModel: {
+    select: {
+      connectionId: true,
+      id: true
+    }
+  },
   defaultPromptPresetId: true,
-  defaultProvider: true,
   folderId: true,
   id: true,
   pinned: true,
@@ -209,9 +219,9 @@ function serializeChatDetail(chat: ChatDetailRow): ChatDetailRecord {
   return {
     activeLeafMessageId: chat.activeLeafMessageId,
     createdAt: chat.createdAt,
-    defaultModelId: chat.defaultModelId,
+    defaultModelId: chat.defaultProviderModel?.id ?? "",
     defaultPromptPresetId: chat.defaultPromptPresetId,
-    defaultProvider: chat.defaultProvider,
+    defaultProvider: chat.defaultProviderModel?.connectionId ?? "",
     folderId: chat.folderId,
     id: chat.id,
     messageCount: chat.messages.length,
@@ -243,9 +253,9 @@ function serializeChatSummary(chat: ChatSummaryRow): ChatSummaryRecord {
   return {
     activeLeafMessageId: chat.activeLeafMessageId,
     createdAt: chat.createdAt,
-    defaultModelId: chat.defaultModelId,
+    defaultModelId: chat.defaultProviderModel?.id ?? "",
     defaultPromptPresetId: chat.defaultPromptPresetId,
-    defaultProvider: chat.defaultProvider,
+    defaultProvider: chat.defaultProviderModel?.connectionId ?? "",
     folderId: chat.folderId,
     id: chat.id,
     messageCount: chat._count.messages,
@@ -610,6 +620,15 @@ export function createPrismaChatRepository(prismaClient = prisma): ChatRepositor
         await lockUserPromptDefaultsShared(tx, userId);
         const [settings, folder] = await Promise.all([
           tx.userSettings.findUnique({
+            select: {
+              defaultFolderId: true,
+              defaultPromptPresetId: true,
+              defaultProviderModel: {
+                select: {
+                  id: true
+                }
+              }
+            },
             where: {
               userId
             }
@@ -634,9 +653,8 @@ export function createPrismaChatRepository(prismaClient = prisma): ChatRepositor
 
         const chat = await tx.chat.create({
           data: {
-            defaultModelId: settings.defaultModelId,
+            defaultProviderModelId: settings.defaultProviderModel?.id ?? null,
             defaultPromptPresetId,
-            defaultProvider: settings.defaultProvider,
             folderId: resolvedFolderId,
             title: title?.trim() || defaultChatTitle,
             userId

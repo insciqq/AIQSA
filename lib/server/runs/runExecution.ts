@@ -24,7 +24,12 @@ import {
 } from "../mcp/toolExecutor";
 import { providerToolBridges } from "../tools/bridges";
 import { createPerplexitySearchToolExecutor, perplexityWebSearchTool } from "../tools/perplexitySearch";
-import type { ModelToolCall, RunTool, ToolExecutionResult } from "../tools/types";
+import type {
+  ModelToolCall,
+  ProviderToolBridge,
+  RunTool,
+  ToolExecutionResult
+} from "../tools/types";
 import { applyProviderRequestContextBudget } from "./runContextBudget";
 import {
   appendRunEventWithRetry,
@@ -159,6 +164,7 @@ export type RunExecutionInput = Readonly<{
     ensureAcceptedGeneration(generationId: string): Promise<boolean>;
   }>;
   searchAdapter?: ProviderSearchAdapter;
+  toolBridge?: ProviderToolBridge;
   userId: string;
 }>;
 
@@ -634,7 +640,8 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
         request: ProviderRunRequest
       ): Promise<ProviderRunResult & { usageAttributions: RunUsageAttribution[] }> {
         const provider = normalizedRequest.provider;
-        const toolBridge = providerToolBridges[provider as keyof typeof providerToolBridges];
+        const toolBridge = input.toolBridge ??
+          providerToolBridges[provider as keyof typeof providerToolBridges];
         if (!toolBridge?.supportsToolCalling({ modelId: normalizedRequest.modelId, provider })) {
           throw new RunPipelineError(
             "tool_calling_not_supported",
@@ -1043,36 +1050,41 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
           );
         }
 
-        const selectedSearchStrategy = normalizedRequest.searchStrategy ?? "search-disabled";
-        const [entitlements, modelConfiguration, searchStrategyEnabled] = await Promise.all([
-          input.repository.loadEntitlements(input.userId),
-          input.repository.loadModelConfiguration(normalizedRequest.provider, normalizedRequest.modelId),
-          input.repository.isSearchStrategyEnabled(selectedSearchStrategy)
-        ]);
-        const dispatchAccess = validateRunAccess(entitlements, {
-          modelId: normalizedRequest.modelId,
-          provider: normalizedRequest.provider,
-          searchStrategy: selectedSearchStrategy
-        });
-        if (!dispatchAccess.ok) {
-          throw new RunPipelineError(
-            dispatchAccess.code,
-            dispatchAccess.code === "model_not_available"
-              ? "The selected model is no longer available"
-              : "The selected search strategy is no longer available"
-          );
-        }
-        if (!modelConfiguration) {
-          throw new RunPipelineError(
-            "model_not_available",
-            "The selected model is no longer available"
-          );
-        }
-        if (!searchStrategyEnabled) {
-          throw new RunPipelineError(
-            "search_strategy_not_available",
-            "The selected search strategy is no longer available"
-          );
+        // A provider admission plan was revalidated and bound atomically with
+        // the run. Later ordinary RBAC/config changes affect future runs only.
+        // The legacy injected test path retains its pre-dispatch guard.
+        if (!input.prepared.providerAdmissionPlan) {
+          const selectedSearchStrategy = normalizedRequest.searchStrategy ?? "search-disabled";
+          const [entitlements, modelConfiguration, searchStrategyEnabled] = await Promise.all([
+            input.repository.loadEntitlements(input.userId),
+            input.repository.loadModelConfiguration(normalizedRequest.provider, normalizedRequest.modelId),
+            input.repository.isSearchStrategyEnabled(selectedSearchStrategy)
+          ]);
+          const dispatchAccess = validateRunAccess(entitlements, {
+            modelId: normalizedRequest.modelId,
+            provider: normalizedRequest.provider,
+            searchStrategy: selectedSearchStrategy
+          });
+          if (!dispatchAccess.ok) {
+            throw new RunPipelineError(
+              dispatchAccess.code,
+              dispatchAccess.code === "model_not_available"
+                ? "The selected model is no longer available"
+                : "The selected search strategy is no longer available"
+            );
+          }
+          if (!modelConfiguration) {
+            throw new RunPipelineError(
+              "model_not_available",
+              "The selected model is no longer available"
+            );
+          }
+          if (!searchStrategyEnabled) {
+            throw new RunPipelineError(
+              "search_strategy_not_available",
+              "The selected search strategy is no longer available"
+            );
+          }
         }
 
         const hasClientTools = normalizedRequest.searchStrategy === "perplexity-tool-search" ||

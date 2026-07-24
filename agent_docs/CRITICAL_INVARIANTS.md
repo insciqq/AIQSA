@@ -14,7 +14,7 @@
 10. AIQSA is a QSA client, not an agent builder, plugin marketplace, visual workflow graph, or generic tool-constructor UI.
 11. Search is selected as an explicit backend-catalog strategy.
 12. Raw user request/response logs are not persisted locally by default.
-13. OpenAI integration uses Responses API with background-capable, stored, manual context replay. Specific default model ids live in the backend catalog/env/provider notes, not in durable invariants.
+13. Native OpenAI integration uses Responses API with background-capable, stored, manual context replay. Administrator-managed compatible endpoints select Responses or Chat Completions explicitly; deployment IDs and upstream model names are not durable invariants.
 14. Available providers, models, and search strategies are loaded from the backend catalog for the current user.
 15. `Share (anonymously)` creates a sanitized immutable snapshot, not public access to a private live chat.
 16. Uploaded attachments are private and are not exposed by public share snapshots.

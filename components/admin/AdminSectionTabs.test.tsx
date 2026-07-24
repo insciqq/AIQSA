@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { adminSectionPanelId, adminSections, adminSectionTabId } from "./adminSections";
 import { AdminInactiveSectionPanels, AdminSectionTabs } from "./AdminSectionTabs";
@@ -60,5 +60,25 @@ describe("AdminSectionTabs", () => {
     const eventAccepted = fireEvent.keyDown(screen.getByRole("tab", { name: "Users" }), { key: "ArrowRight" });
     expect(eventAccepted).toBe(true);
     expect(tabs.onTabKeyDown).toHaveBeenCalledWith(expect.objectContaining({ key: "ArrowRight" }), "users");
+  });
+
+  it("keeps a newly active compact tab visible by scrolling only its tablist", async () => {
+    const view = render(<AdminSectionTabs navigation={navigation("users")} />);
+    const tablist = screen.getByRole("tablist", { name: "Admin sections" });
+    const providers = screen.getByRole("tab", { name: "Providers" });
+    tablist.scrollLeft = 0;
+    vi.spyOn(tablist, "getBoundingClientRect").mockReturnValue({
+      left: 0,
+      right: 300
+    } as DOMRect);
+    vi.spyOn(providers, "getBoundingClientRect").mockReturnValue({
+      left: 380,
+      right: 480
+    } as DOMRect);
+
+    view.rerender(<AdminSectionTabs navigation={navigation("providers")} />);
+
+    await waitFor(() => expect(tablist.scrollLeft).toBe(180));
+    expect(providers).not.toHaveFocus();
   });
 });

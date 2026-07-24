@@ -581,8 +581,16 @@ test("verifies provider controls, prompt preview, Gemini preview, and hidden una
 
   await page.getByRole("button", { name: "Select model" }).click();
   const modelPicker = page.getByTestId("model-picker");
-  await expect(modelPicker.getByRole("heading", { name: "Anthropic" })).toBeVisible();
-  await expect(modelPicker.getByRole("heading", { name: "OpenRouter" })).toBeVisible();
+  const anthropicProviderHeader = modelPicker.locator("header").filter({
+    has: page.getByRole("heading", { name: "Anthropic" })
+  });
+  const openRouterProviderHeader = modelPicker.locator("header").filter({
+    has: page.getByRole("heading", { name: "OpenRouter" })
+  });
+  await expect(anthropicProviderHeader).toBeVisible();
+  await expect(openRouterProviderHeader).toBeVisible();
+  await expect(anthropicProviderHeader.getByText("Provider", { exact: true })).toBeVisible();
+  await expect(openRouterProviderHeader.getByText("Provider", { exact: true })).toBeVisible();
   await expect(modelPicker.getByRole("button", { name: /Provider / })).toHaveCount(0);
   await page.keyboard.press("Escape");
   await expect(page.getByRole("button", { name: "Select model" })).toContainText("Gemini Pro Latest");
@@ -608,6 +616,9 @@ test("keeps searchable pickers and command palette keyboard-safe in the narrow s
   const modelSearch = modelPicker.getByLabel("Search models");
   await expect(modelSearch).toBeFocused();
   await expectWithinViewport(page, modelPicker);
+  const providerHeaders = modelPicker.locator("header");
+  await expect(providerHeaders.first().getByText("Provider", { exact: true })).toBeVisible();
+  await expect(providerHeaders.first()).toHaveClass(/bg-surface-raised/);
   await modelSearch.press("End");
   await modelSearch.press("Tab");
   await expect(modelPicker.locator("button:focus")).toContainText("Gemini Pro Latest");

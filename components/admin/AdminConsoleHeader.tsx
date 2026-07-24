@@ -45,7 +45,13 @@ export function AdminConsoleHeader({
               ? "Saving admin changes…"
               : `Last refresh ${formatTime(lastLoadedAt)}`}
         </span>
-        <button className={quietButton} disabled={loading} onClick={() => onRefresh()} type="button">
+        <button
+          aria-label="Refresh admin overview"
+          className={quietButton}
+          disabled={loading}
+          onClick={() => onRefresh()}
+          type="button"
+        >
           <RefreshCw className="size-3.5" aria-hidden="true" />
           Refresh
         </button>

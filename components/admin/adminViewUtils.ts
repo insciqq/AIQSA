@@ -27,17 +27,44 @@ export function formatNumber(value: number): string {
 }
 
 export function providerDisplayName(catalog: Pick<AdminCatalog, "providers">, providerId: string): string {
-  return catalog.providers.find((provider) => provider.id === providerId)?.name ?? providerId;
+  return catalog.providers.find((provider) => provider.id === providerId)?.name ?? "Unavailable provider";
+}
+
+function catalogModel(
+  catalog: Pick<AdminCatalog, "models">,
+  model: { modelId: string; provider: string }
+) {
+  const exact = catalog.models.find(
+    (candidate) => candidate.provider === model.provider && candidate.modelId === model.modelId
+  );
+  if (exact) {
+    return exact;
+  }
+
+  const runtimeMatches = catalog.models.filter(
+    (candidate) =>
+      candidate.providerFamily === model.provider && candidate.upstreamModelId === model.modelId
+  );
+  return runtimeMatches.length === 1 ? runtimeMatches[0] : undefined;
 }
 
 export function modelDisplayName(
   catalog: Pick<AdminCatalog, "models">,
   model: { modelId: string; provider: string }
 ): string {
-  return (
-    catalog.models.find((candidate) => candidate.provider === model.provider && candidate.modelId === model.modelId)
-      ?.displayName ?? model.modelId
-  );
+  return catalogModel(catalog, model)?.displayName ?? "Unavailable model";
+}
+
+export function providerModelDisplayName(
+  catalog: Pick<AdminCatalog, "models" | "providers">,
+  model: { modelId: string; provider: string }
+): string {
+  const candidate = catalogModel(catalog, model);
+  if (!candidate) {
+    return "Unavailable model";
+  }
+
+  return `${providerDisplayName(catalog, candidate.provider)} / ${candidate.displayName}`;
 }
 
 export function searchStrategyDisplayName(catalog: Pick<AdminCatalog, "searchStrategies">, strategyId: string): string {

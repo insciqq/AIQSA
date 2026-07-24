@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { PrismaClient } from "@prisma/client";
 import { expect, test, type APIRequestContext, type Locator, type Page } from "@playwright/test";
+import { providerTemplateIds } from "../../lib/domain/providerTemplates";
 import { LOCAL_OPERATOR_EMAIL, LOCAL_OPERATOR_PASSWORD } from "../../prisma/local-seed-auth";
 
 test.describe.configure({ mode: "serial" });
@@ -181,8 +182,7 @@ test("registers, verifies, logs in, and sees an isolated workspace", async ({ pa
     data: [
       {
         groupId: group.id,
-        provider: "openai",
-        modelId: "gpt-5.5"
+        providerModelId: providerTemplateIds.fakeModel
       },
       {
         groupId: group.id,

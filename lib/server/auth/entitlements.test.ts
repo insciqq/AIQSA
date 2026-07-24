@@ -6,8 +6,8 @@ describe("entitlement resolver", () => {
     const entitlements = resolveEntitlements("user-1", ["group-1"], [
       {
         enabled: true,
-        modelId: "gpt-5.5",
-        provider: "openai",
+        providerModelConnectionId: "openai-connection",
+        providerModelId: "gpt-deployment",
         userId: "user-1"
       },
       {
@@ -17,7 +17,7 @@ describe("entitlement resolver", () => {
       }
     ]);
 
-    expect(canAccessModel(entitlements, "openai", "gpt-5.5")).toBe(true);
+    expect(canAccessModel(entitlements, "openai-connection", "gpt-deployment")).toBe(true);
     expect(canAccessSearchStrategy(entitlements, "openai-native-web-search")).toBe(true);
   });
 
@@ -25,8 +25,8 @@ describe("entitlement resolver", () => {
     const entitlements = resolveEntitlements("user-1", ["group-1"], [
       {
         enabled: false,
-        modelId: "claude-opus-4-8",
-        provider: "anthropic",
+        providerModelConnectionId: "anthropic-connection",
+        providerModelId: "claude-deployment",
         userId: "user-1"
       },
       {
@@ -36,7 +36,7 @@ describe("entitlement resolver", () => {
       }
     ]);
 
-    expect(canAccessModel(entitlements, "anthropic", "claude-opus-4-8")).toBe(false);
+    expect(canAccessModel(entitlements, "anthropic-connection", "claude-deployment")).toBe(false);
     expect(canAccessSearchStrategy(entitlements, "unsupported-search")).toBe(false);
   });
 
@@ -44,16 +44,16 @@ describe("entitlement resolver", () => {
     const entitlements = resolveEntitlements("user-1", [], [
       {
         enabled: true,
-        modelId: "gpt-5.5",
-        provider: "openai",
+        providerModelConnectionId: "openai-connection",
+        providerModelId: "gpt-deployment",
         userId: "user-1"
       }
     ]);
 
     expect(
       validateRunAccess(entitlements, {
-        modelId: "claude-opus-4-8",
-        provider: "anthropic"
+        modelId: "claude-deployment",
+        provider: "anthropic-connection"
       })
     ).toEqual({
       code: "model_not_available",
@@ -61,8 +61,8 @@ describe("entitlement resolver", () => {
     });
     expect(
       validateRunAccess(entitlements, {
-        modelId: "gpt-5.5",
-        provider: "openai",
+        modelId: "gpt-deployment",
+        provider: "openai-connection",
         searchStrategy: "unsupported-search"
       })
     ).toEqual({

@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { Prisma } from "@prisma/client";
 import { afterAll, describe, expect, it } from "vitest";
 import { textMessageContent } from "../../domain/content";
+import { providerTemplateIds } from "../../domain/providerTemplates";
 import { createPrismaChatRepository } from "../chats/prismaRepository";
 import { createPrismaMessageBranchRepository } from "../messages/prismaRepository";
 import { prisma } from "../prisma";
@@ -17,8 +18,7 @@ async function withPromptUser<T>(run: (input: { userId: string }) => Promise<T>)
       settings: {
         create: {
           defaultControlValues: {},
-          defaultModelId: "fake-qsa",
-          defaultProvider: "fake",
+          defaultProviderModelId: providerTemplateIds.fakeModel,
           defaultSearchStrategyId: "search-disabled"
         }
       }
@@ -220,8 +220,7 @@ describe("prompt default concurrency", () => {
         const prompt = await createPrompt(userId, `Branch race ${first}`);
         const sourceChat = await prisma.chat.create({
           data: {
-            defaultModelId: "fake-qsa",
-            defaultProvider: "fake",
+            defaultProviderModelId: providerTemplateIds.fakeModel,
             title: "Branch source",
             userId
           }
@@ -300,8 +299,7 @@ describe("prompt default concurrency", () => {
       });
       const sourceChat = await prisma.chat.create({
         data: {
-          defaultModelId: "fake-qsa",
-          defaultProvider: "fake",
+          defaultProviderModelId: providerTemplateIds.fakeModel,
           title: "Independent branch source",
           userId
         }

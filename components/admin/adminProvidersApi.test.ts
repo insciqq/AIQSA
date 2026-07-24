@@ -1,0 +1,103 @@
+import { describe, expect, it, vi } from "vitest";
+import {
+  createAdminProviderCredential,
+  getAdminProviderConnections,
+  testAdminProviderCredential
+} from "./adminProvidersApi";
+
+const safeConnection = {
+  activatedAt: null,
+  activeChecks: [],
+  activeConfig: null,
+  activeVersion: 0,
+  assignments: [],
+  createdAt: "2026-07-23T00:00:00.000Z",
+  credentials: [{
+    activeVersion: null,
+    draftSecretConfigured: true,
+    draftVersion: 1,
+    enabled: true,
+    id: "credential-1",
+    label: "Primary"
+  }],
+  defaultCredentialId: null,
+  displayName: "OpenRouter",
+  draftChecks: [],
+  draftConfig: { allowPrivateNetwork: false, apiRoot: "https://openrouter.ai/api/v1" },
+  draftVersion: 1,
+  enabled: false,
+  family: "openrouter",
+  id: "connection-1",
+  models: [],
+  unassignedPolicy: "use_default",
+  updatedAt: "2026-07-23T00:00:00.000Z"
+};
+
+describe("admin provider browser API", () => {
+  it("sends credentials only in same-origin JSON mutation bodies", async () => {
+    const fetcher = vi.fn(async () => Response.json({ connections: [safeConnection] }));
+    await expect(createAdminProviderCredential(
+      "connection/one",
+      { label: "Primary", secret: "write-only-key" },
+      fetcher
+    )).resolves.toMatchObject({ ok: true });
+    expect(fetcher).toHaveBeenCalledWith(
+      "/api/admin/providers/connection%2Fone/credentials",
+      expect.objectContaining({
+        body: JSON.stringify({ label: "Primary", secret: "write-only-key" }),
+        credentials: "same-origin",
+        headers: { "content-type": "application/json" },
+        method: "POST"
+      })
+    );
+  });
+
+  it("fails closed if a catalog response contains secret material", async () => {
+    const fetcher = vi.fn(async () => Response.json({
+      connections: [{
+        ...safeConnection,
+        credentials: [{
+          ...safeConnection.credentials[0],
+          secretEnvelope: "must-not-reach-browser-state"
+        }]
+      }]
+    }));
+    const result = await getAdminProviderConnections(fetcher);
+    expect(result).toEqual({
+      error: { blockers: [], code: "provider_admin_response_invalid", resourceIds: [] },
+      ok: false
+    });
+  });
+
+  it("decodes only bounded safe credential-test metadata", async () => {
+    const fetcher = vi.fn(async () => Response.json({
+      test: {
+        checkedAt: "2026-07-24T00:00:00.000Z",
+        connectionDraftVersion: 2,
+        modelCount: 12,
+        status: "valid"
+      }
+    }));
+    await expect(testAdminProviderCredential(
+      "connection/one",
+      { expectedConnectionDraftVersion: 2, secret: "write-only-key" },
+      fetcher
+    )).resolves.toEqual({
+      data: {
+        checkedAt: "2026-07-24T00:00:00.000Z",
+        connectionDraftVersion: 2,
+        modelCount: 12,
+        status: "valid"
+      },
+      ok: true
+    });
+    expect(fetcher).toHaveBeenCalledWith(
+      "/api/admin/providers/connection%2Fone/credential-tests",
+      expect.objectContaining({
+        body: JSON.stringify({ expectedConnectionDraftVersion: 2, secret: "write-only-key" }),
+        credentials: "same-origin",
+        method: "POST"
+      })
+    );
+  });
+});

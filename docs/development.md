@@ -21,7 +21,7 @@ The disposable development logins are:
 
 The two ordinary accounts make permission checks reproducible. Both see the group-granted `Fixture Shared MCP`; only MCP Member may edit its `Fixture workspace` field and see the directly granted `Fixture Private MCP`. These known credentials and fixed MCP definitions are repaired by the guarded local seed and must never be used for an exposed installation.
 
-Source code is bind-mounted into the application container, so normal edits are picked up by Next.js. The dev service blanks provider and sign-in OAuth credentials even when the normal installation `.env` contains them. It uses a deterministic development-only MCP encryption key and a separate ToolHive volume/private network; ToolHive still receives the host Docker socket, so this stack can create real sibling containers. For an intentional one-off adapter smoke, pass only the required key explicitly, for example `docker compose -f docker-compose.dev.yml run -e OPENAI_API_KEY ...`; routine automated tests use Fake QSA and never make paid calls.
+Source code is bind-mounted into the application container, so normal edits are picked up by Next.js. The dev service does not inject legacy provider/SMTP or sign-in OAuth credentials from the normal installation `.env`. It uses a deterministic development-only encrypted-state key and a separate ToolHive volume/private network; ToolHive still receives the host Docker socket, so this stack can create real sibling containers. Intentional adapter smokes are standalone commands with an explicitly supplied key; routine application tests use Fake QSA and never make paid calls.
 
 ## Checks
 

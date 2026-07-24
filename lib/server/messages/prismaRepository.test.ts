@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, describe, expect, it } from "vitest";
 import { textMessageContent } from "../../domain/content";
+import { providerTemplateIds } from "../../domain/providerTemplates";
 import { prisma } from "../prisma";
 import { createPrismaRunRepository } from "../runs/prismaRepository";
 import { ActiveLeafConflictError, type RunRepository } from "../runs/runRepositoryContract";
@@ -18,8 +19,7 @@ async function withMessageBranchUser<T>(run: (input: { userId: string }) => Prom
       settings: {
         create: {
           defaultControlValues: {},
-          defaultModelId: "fake-qsa",
-          defaultProvider: "fake",
+          defaultProviderModelId: providerTemplateIds.fakeModel,
           defaultSearchStrategyId: "search-disabled"
         }
       }
@@ -49,9 +49,9 @@ function createRunInput(input: {
     content,
     defaults: {
       controlDefaults: {},
-      modelId: "fake-qsa",
+      modelId: providerTemplateIds.fakeModel,
       promptPresetId: null,
-      provider: "fake",
+      provider: providerTemplateIds.fakeConnection,
       searchStrategy: "search-disabled",
       userId: input.userId
     },
@@ -111,8 +111,7 @@ describe("Prisma message branch repository", () => {
     await withMessageBranchUser(async ({ userId }) => {
       const sourceChat = await prisma.chat.create({
         data: {
-          defaultModelId: "fake-qsa",
-          defaultProvider: "fake",
+          defaultProviderModelId: providerTemplateIds.fakeModel,
           title: "Source chat",
           userId
         }
@@ -198,8 +197,7 @@ describe("Prisma message branch repository", () => {
     await withMessageBranchUser(async ({ userId }) => {
       const chat = await prisma.chat.create({
         data: {
-          defaultModelId: "fake-qsa",
-          defaultProvider: "fake",
+          defaultProviderModelId: providerTemplateIds.fakeModel,
           title: "Run wins",
           userId
         }
@@ -323,8 +321,7 @@ describe("Prisma message branch repository", () => {
     await withMessageBranchUser(async ({ userId }) => {
       const chat = await prisma.chat.create({
         data: {
-          defaultModelId: "fake-qsa",
-          defaultProvider: "fake",
+          defaultProviderModelId: providerTemplateIds.fakeModel,
           title: "Mutation wins",
           userId
         }
@@ -392,8 +389,7 @@ describe("Prisma message branch repository", () => {
         ["A", "B"].map((suffix) =>
           prisma.chat.create({
             data: {
-              defaultModelId: "fake-qsa",
-              defaultProvider: "fake",
+              defaultProviderModelId: providerTemplateIds.fakeModel,
               title: `Chat ${suffix}`,
               userId
             }
@@ -436,8 +432,7 @@ describe("Prisma message branch repository", () => {
     await withMessageBranchUser(async ({ userId }) => {
       const sourceChat = await prisma.chat.create({
         data: {
-          defaultModelId: "fake-qsa",
-          defaultProvider: "fake",
+          defaultProviderModelId: providerTemplateIds.fakeModel,
           title: "Source chat",
           userId
         }
@@ -487,8 +482,7 @@ describe("Prisma message branch repository", () => {
     await withMessageBranchUser(async ({ userId }) => {
       const sourceChat = await prisma.chat.create({
         data: {
-          defaultModelId: "fake-qsa",
-          defaultProvider: "fake",
+          defaultProviderModelId: providerTemplateIds.fakeModel,
           title: "Source chat",
           userId
         }
@@ -569,8 +563,7 @@ describe("Prisma message branch repository", () => {
     await withMessageBranchUser(async ({ userId }) => {
       const sourceChat = await prisma.chat.create({
         data: {
-          defaultModelId: "fake-qsa",
-          defaultProvider: "fake",
+          defaultProviderModelId: providerTemplateIds.fakeModel,
           title: "Source chat",
           userId
         }
@@ -633,8 +626,7 @@ describe("Prisma message branch repository", () => {
     await withMessageBranchUser(async ({ userId }) => {
       const sourceChat = await prisma.chat.create({
         data: {
-          defaultModelId: "fake-qsa",
-          defaultProvider: "fake",
+          defaultProviderModelId: providerTemplateIds.fakeModel,
           title: "Source chat",
           userId
         }
@@ -710,8 +702,7 @@ describe("Prisma message branch repository", () => {
       const documentStorageKey = `${userId}/branch-document-${randomUUID()}`;
       const sourceChat = await prisma.chat.create({
         data: {
-          defaultModelId: "fake-qsa",
-          defaultProvider: "fake",
+          defaultProviderModelId: providerTemplateIds.fakeModel,
           title: "Attachment source",
           userId
         }
@@ -876,8 +867,7 @@ describe("Prisma message branch repository", () => {
       await withMessageBranchUser(async ({ userId }) => {
         const sourceChat = await prisma.chat.create({
           data: {
-            defaultModelId: "fake-qsa",
-            defaultProvider: "fake",
+            defaultProviderModelId: providerTemplateIds.fakeModel,
             title: "Invalid attachment source",
             userId
           }
@@ -886,8 +876,7 @@ describe("Prisma message branch repository", () => {
         if (referenceKind === "other-chat") {
           const otherChat = await prisma.chat.create({
             data: {
-              defaultModelId: "fake-qsa",
-              defaultProvider: "fake",
+              defaultProviderModelId: providerTemplateIds.fakeModel,
               title: "Other chat",
               userId
             }
@@ -959,9 +948,9 @@ describe("Prisma message branch repository", () => {
       ]);
       const sourceChat = await prisma.chat.create({
         data: {
-          defaultModelId: "fake-qsa",
+          defaultProviderModelId: providerTemplateIds.fakeModel,
           defaultPromptPresetId: chatDefaultPrompt.id,
-          defaultProvider: "fake",
+
           title: "Prompt source",
           userId
         }
@@ -1028,8 +1017,7 @@ describe("Prisma message branch repository", () => {
     await withMessageBranchUser(async ({ userId }) => {
       const sourceChat = await prisma.chat.create({
         data: {
-          defaultModelId: "fake-qsa",
-          defaultProvider: "fake",
+          defaultProviderModelId: providerTemplateIds.fakeModel,
           title: "Source chat",
           userId
         }

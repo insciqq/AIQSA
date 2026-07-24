@@ -3,16 +3,17 @@ import type { Prisma } from "@prisma/client";
 export const adminGroupRecordInclude = {
   _count: {
     select: {
+      providerCredentialAssignments: true,
       users: true
     }
   },
   accessGrants: {
     orderBy: [
       {
-        provider: "asc"
+        providerConnectionId: "asc"
       },
       {
-        modelId: "asc"
+        providerModelId: "asc"
       },
       {
         searchStrategy: "asc"
@@ -22,8 +23,11 @@ export const adminGroupRecordInclude = {
       enabled: true,
       groupId: true,
       id: true,
-      modelId: true,
-      provider: true,
+      providerConnectionId: true,
+      providerModel: {
+        select: { connectionId: true }
+      },
+      providerModelId: true,
       searchStrategy: true,
       userId: true
     },

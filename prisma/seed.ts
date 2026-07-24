@@ -1,6 +1,10 @@
 import { Prisma, PrismaClient } from "@prisma/client";
 import { defaultProviderModels, defaultSearchStrategies } from "../lib/domain/catalog";
 import { textMessageContent } from "../lib/domain/content";
+import {
+  providerConnectionTemplates,
+  providerTemplateIds
+} from "../lib/domain/providerTemplates";
 import { hashCanonicalMcpValue } from "../lib/server/mcp/definitions";
 import {
   assertLocalSeedRuntime,
@@ -32,6 +36,154 @@ const ids = {
 };
 
 const asJson = (value: unknown) => value as Prisma.InputJsonValue;
+
+const providerModelTemplateIds: Record<string, string> = {
+  "anthropic:claude-opus-4-8": "00000000-0000-4000-8000-000000001206",
+  "fake:fake-qsa": providerTemplateIds.fakeModel,
+  "openai:gpt-5.5": "00000000-0000-4000-8000-000000001202",
+  "openai:gpt-5.6-luna": "00000000-0000-4000-8000-000000001205",
+  "openai:gpt-5.6-sol": "00000000-0000-4000-8000-000000001203",
+  "openai:gpt-5.6-terra": "00000000-0000-4000-8000-000000001204",
+  "openrouter:anthropic/claude-opus-4.8": "00000000-0000-4000-8000-000000001207",
+  "openrouter:google/gemini-3.5-flash": "00000000-0000-4000-8000-000000001208",
+  "openrouter:perplexity/sonar-pro-search": "00000000-0000-4000-8000-000000001210",
+  "openrouter:~google/gemini-pro-latest": "00000000-0000-4000-8000-000000001209"
+};
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function providerModelDraftConfig(model: (typeof defaultProviderModels)[number]) {
+  const adapterKind = {
+    anthropic: "anthropic_messages",
+    fake: "fake",
+    openai: "openai_responses_native",
+    openrouter: "openrouter_chat_completions"
+  }[model.provider];
+  const routeProvider = isRecord(model.defaultParams.provider)
+    ? model.defaultParams.provider
+    : {};
+  const selectedProviders = Array.isArray(routeProvider.only)
+    ? [...new Set(routeProvider.only.filter((value): value is string =>
+        typeof value === "string" && Boolean(value.trim())
+      ).map((value) => value.trim()))]
+    : [];
+
+  return {
+    adapterKind,
+    capabilities: model.capabilities,
+    defaultParams: model.defaultParams,
+    ...(model.provider === "openrouter"
+      ? {
+          openRouterRouting: selectedProviders.length > 0
+            ? { mode: "only_selected", providers: selectedProviders }
+            : { mode: "automatic", providers: [] }
+        }
+      : {}),
+    upstreamModelId: model.modelId
+  };
+}
+
+async function synchronizeLocalProviderTemplates(): Promise<Map<string, string>> {
+  const connectionIds = new Map<string, string>();
+  for (const template of providerConnectionTemplates) {
+    const active = template.family === "fake";
+    const row = await prisma.providerConnection.upsert({
+      create: {
+        activeConfig: active ? asJson(template.config) : undefined,
+        activeVersion: active ? 1 : 0,
+        activatedAt: active ? new Date() : undefined,
+        defaultCredentialId: null,
+        displayName: template.displayName,
+        draftConfig: asJson(template.config),
+        draftVersion: 1,
+        enabled: active,
+        family: template.family,
+        id: template.id,
+        templateKey: template.templateKey,
+        unassignedPolicy: "use_default"
+      },
+      update: {
+        activeConfig: active ? asJson(template.config) : Prisma.DbNull,
+        activeVersion: active ? 1 : 0,
+        activatedAt: active ? new Date() : null,
+        defaultCredentialId: null,
+        displayName: template.displayName,
+        draftConfig: asJson(template.config),
+        draftVersion: 1,
+        enabled: active,
+        family: template.family,
+        unassignedPolicy: "use_default"
+      },
+      where: { templateKey: template.templateKey }
+    });
+    connectionIds.set(template.family, row.id);
+  }
+
+  const modelIds = new Map<string, string>();
+
+  for (const model of defaultProviderModels) {
+    const templateKey = `${model.provider}:${model.modelId}`;
+    const id = providerModelTemplateIds[templateKey];
+    const connectionId = connectionIds.get(model.provider);
+    if (!id || !connectionId) {
+      throw new Error(`Missing local provider template identity: ${templateKey}`);
+    }
+    const active = model.provider === "fake";
+    const draftConfig = providerModelDraftConfig(model);
+    const row = await prisma.providerModel.upsert({
+      create: {
+        activeConfig: active ? asJson(draftConfig) : undefined,
+        activeVersion: active ? 1 : 0,
+        activatedAt: active ? new Date() : undefined,
+        capabilities: asJson(model.capabilities),
+        connectionId,
+        contextWindow: model.contextWindow,
+        defaultParams: asJson(model.defaultParams),
+        displayName: model.displayName,
+        draftConfig: asJson(draftConfig),
+        draftVersion: 1,
+        enabled: active,
+        id,
+        inputTokenPriceMicros: model.inputTokenPriceMicros,
+        modelId: model.modelId,
+        outputTokenPriceMicros: model.outputTokenPriceMicros,
+        provider: model.provider,
+        supportsNativeSearch: model.capabilities.nativeSearch,
+        supportsPdf: model.capabilities.pdf,
+        supportsReasoning: model.capabilities.reasoning,
+        supportsVision: model.capabilities.vision,
+        templateKey
+      },
+      update: {
+        activeConfig: active ? asJson(draftConfig) : Prisma.DbNull,
+        activeVersion: active ? 1 : 0,
+        activatedAt: active ? new Date() : null,
+        capabilities: asJson(model.capabilities),
+        connectionId,
+        contextWindow: model.contextWindow,
+        defaultParams: asJson(model.defaultParams),
+        displayName: model.displayName,
+        draftConfig: asJson(draftConfig),
+        draftVersion: 1,
+        enabled: active,
+        inputTokenPriceMicros: model.inputTokenPriceMicros,
+        modelId: model.modelId,
+        outputTokenPriceMicros: model.outputTokenPriceMicros,
+        provider: model.provider,
+        supportsNativeSearch: model.capabilities.nativeSearch,
+        supportsPdf: model.capabilities.pdf,
+        supportsReasoning: model.capabilities.reasoning,
+        supportsVision: model.capabilities.vision
+      },
+      where: { templateKey }
+    });
+    modelIds.set(templateKey, row.id);
+  }
+
+  return modelIds;
+}
 
 async function seedLocalOrdinaryUser(user: (typeof LOCAL_ORDINARY_USERS)[number]) {
   const [emailOwner, emailIdentity, passwordIdentities] = await Promise.all([
@@ -295,6 +447,12 @@ async function main() {
     await seedLocalOrdinaryUser(user);
   }
 
+  const providerModelIds = await synchronizeLocalProviderTemplates();
+  const fakeProviderModelId = providerModelIds.get("fake:fake-qsa");
+  if (!fakeProviderModelId) {
+    throw new Error("Fake provider model template was not seeded");
+  }
+
   await prisma.group.upsert({
     create: {
       id: ids.group,
@@ -388,16 +546,18 @@ async function main() {
       create: {
         defaultControlValues: {},
         defaultFolderId: null,
-        defaultModelId: "fake-qsa",
         defaultPromptPresetId: user.promptPresetId,
-        defaultProvider: "fake",
+        defaultProviderModelId: fakeProviderModelId,
         defaultSearchStrategyId: "search-disabled",
         showCitations: true,
         showReasoningBlocks: false,
         showToolActivity: true,
         userId: user.id
       },
-      update: {},
+      update: {
+        defaultProviderModelId: fakeProviderModelId,
+        defaultSearchStrategyId: "search-disabled"
+      },
       where: { userId: user.id }
     });
   }
@@ -462,74 +622,22 @@ async function main() {
     }
   });
 
-  for (const model of defaultProviderModels) {
-    await prisma.providerModel.upsert({
-      create: {
-        capabilities: asJson(model.capabilities),
-        contextWindow: model.contextWindow,
-        defaultParams: asJson(model.defaultParams),
-        displayName: model.displayName,
-        inputTokenPriceMicros: model.inputTokenPriceMicros,
-        modelId: model.modelId,
-        outputTokenPriceMicros: model.outputTokenPriceMicros,
-        provider: model.provider,
-        supportsNativeSearch: model.capabilities.nativeSearch,
-        supportsPdf: model.capabilities.pdf,
-        supportsReasoning: model.capabilities.reasoning,
-        supportsVision: model.capabilities.vision
-      },
-      update: {
-        capabilities: asJson(model.capabilities),
-        contextWindow: model.contextWindow,
-        defaultParams: asJson(model.defaultParams),
-        displayName: model.displayName,
-        inputTokenPriceMicros: model.inputTokenPriceMicros,
-        outputTokenPriceMicros: model.outputTokenPriceMicros,
-        supportsNativeSearch: model.capabilities.nativeSearch,
-        supportsPdf: model.capabilities.pdf,
-        supportsReasoning: model.capabilities.reasoning,
-        supportsVision: model.capabilities.vision
-      },
-      where: {
-        provider_modelId: {
-          modelId: model.modelId,
-          provider: model.provider
-        }
-      }
-    });
-  }
-
-  await prisma.providerModel.updateMany({
-    data: {
-      enabled: false
-    },
-    where: {
-      OR: [
-        {
-          provider: "anthropic",
-          modelId: "claude-opus-4-7"
-        },
-        {
-          provider: "openrouter",
-          modelId: "anthropic/claude-opus-4.7"
-        },
-        {
-          provider: "openrouter",
-          modelId: "google/gemini-3-pro-preview"
-        }
-      ]
-    }
-  });
-
   for (const strategy of defaultSearchStrategies) {
+    const providerModelId = strategy.kind === "perplexity_tool_search"
+      ? providerModelIds.get(`${strategy.provider}:${strategy.modelId}`) ?? null
+      : null;
+    if (strategy.kind === "perplexity_tool_search" && !providerModelId) {
+      throw new Error(`Missing seeded search deployment: ${strategy.strategyId}`);
+    }
     await prisma.searchStrategy.upsert({
       create: {
         config: asJson(strategy.config),
         description: strategy.description,
         displayName: strategy.displayName,
         kind: strategy.kind,
-        modelId: strategy.modelId,
+        modelId: strategy.modelId ?? null,
         provider: strategy.provider,
+        providerModelId,
         strategyId: strategy.strategyId
       },
       update: {
@@ -537,8 +645,9 @@ async function main() {
         description: strategy.description,
         displayName: strategy.displayName,
         kind: strategy.kind,
-        modelId: strategy.modelId,
-        provider: strategy.provider
+        modelId: strategy.modelId ?? null,
+        provider: strategy.provider,
+        providerModelId
       },
       where: {
         strategyId: strategy.strategyId
@@ -550,71 +659,78 @@ async function main() {
     create: {
       defaultControlValues: {},
       defaultFolderId: null,
-      defaultModelId: "gpt-5.5",
       defaultPromptPresetId: ids.promptPreset,
-      defaultProvider: "openai",
-      defaultSearchStrategyId: "openai-native-web-search",
+      defaultProviderModelId: fakeProviderModelId,
+      defaultSearchStrategyId: "search-disabled",
       showCitations: true,
       showReasoningBlocks: false,
       showToolActivity: true,
       userId: ids.user
     },
-    update: {},
+    update: {
+      defaultProviderModelId: fakeProviderModelId,
+      defaultSearchStrategyId: "search-disabled"
+    },
     where: {
       userId: ids.user
     }
   });
 
-  const grants = [
-    { id: "00000000-0000-4000-8000-000000000401", groupId: ids.group, provider: "fake", modelId: "fake-qsa" },
-    { id: "00000000-0000-4000-8000-000000000402", groupId: ids.group, provider: "openai", modelId: "gpt-5.5" },
+  const grants: {
+    groupId: string;
+    id: string;
+    modelTemplateKey?: string;
+    searchStrategy?: string;
+  }[] = [
+    {
+      groupId: ids.group,
+      id: "00000000-0000-4000-8000-000000000401",
+      modelTemplateKey: "fake:fake-qsa"
+    },
+    {
+      groupId: ids.group,
+      id: "00000000-0000-4000-8000-000000000402",
+      modelTemplateKey: "openai:gpt-5.5"
+    },
     {
       id: "00000000-0000-4000-8000-000000000412",
       groupId: ids.group,
-      provider: "openai",
-      modelId: "gpt-5.6-sol"
+      modelTemplateKey: "openai:gpt-5.6-sol"
     },
     {
       id: "00000000-0000-4000-8000-000000000413",
       groupId: ids.group,
-      provider: "openai",
-      modelId: "gpt-5.6-terra"
+      modelTemplateKey: "openai:gpt-5.6-terra"
     },
     {
       id: "00000000-0000-4000-8000-000000000414",
       groupId: ids.group,
-      provider: "openai",
-      modelId: "gpt-5.6-luna"
+      modelTemplateKey: "openai:gpt-5.6-luna"
     },
     {
       id: "00000000-0000-4000-8000-000000000403",
       groupId: ids.group,
-      provider: "anthropic",
-      modelId: "claude-opus-4-8"
+      modelTemplateKey: "anthropic:claude-opus-4-8"
     },
     {
       id: "00000000-0000-4000-8000-000000000404",
       groupId: ids.group,
-      provider: "openrouter",
-      modelId: "perplexity/sonar-pro-search"
+      modelTemplateKey: "openrouter:perplexity/sonar-pro-search"
     },
     {
       id: "00000000-0000-4000-8000-000000000407",
       groupId: ids.group,
-      provider: "openrouter",
-      modelId: "anthropic/claude-opus-4.8"
+      modelTemplateKey: "openrouter:anthropic/claude-opus-4.8"
     },
     {
       id: "00000000-0000-4000-8000-000000000408",
       groupId: ids.group,
-      provider: "openrouter",
-      modelId: "google/gemini-3.5-flash"
+      modelTemplateKey: "openrouter:google/gemini-3.5-flash"
     },
     {
       id: "00000000-0000-4000-8000-000000000409",
       groupId: ids.group,
-      provider: "openrouter",
-      modelId: "~google/gemini-pro-latest"
+      modelTemplateKey: "openrouter:~google/gemini-pro-latest"
     },
     {
       id: "00000000-0000-4000-8000-000000000405",
@@ -629,21 +745,27 @@ async function main() {
   ];
 
   for (const grant of grants) {
+    const providerModelId = grant.modelTemplateKey
+      ? providerModelIds.get(grant.modelTemplateKey) ?? null
+      : null;
+    if (grant.modelTemplateKey && !providerModelId) {
+      throw new Error(`Missing seeded grant deployment: ${grant.modelTemplateKey}`);
+    }
     await prisma.accessGrant.upsert({
       create: {
         enabled: true,
         groupId: grant.groupId,
         id: grant.id,
-        modelId: grant.modelId ?? null,
-        provider: grant.provider ?? null,
+        providerConnectionId: null,
+        providerModelId,
         searchStrategy: grant.searchStrategy ?? null,
         userId: null
       },
       update: {
         enabled: true,
         groupId: grant.groupId,
-        modelId: grant.modelId ?? null,
-        provider: grant.provider ?? null,
+        providerConnectionId: null,
+        providerModelId,
         searchStrategy: grant.searchStrategy ?? null,
         userId: null
       },
@@ -658,14 +780,18 @@ async function main() {
       enabled: true,
       groupId: LOCAL_MCP_FIXTURE_GROUP.id,
       id: "00000000-0000-4000-8000-000000000421",
-      modelId: "fake-qsa",
-      provider: "fake"
+      providerConnectionId: null,
+      providerModelId: fakeProviderModelId,
+      searchStrategy: null,
+      userId: null
     },
     update: {
       enabled: true,
       groupId: LOCAL_MCP_FIXTURE_GROUP.id,
-      modelId: "fake-qsa",
-      provider: "fake"
+      providerConnectionId: null,
+      providerModelId: fakeProviderModelId,
+      searchStrategy: null,
+      userId: null
     },
     where: { id: "00000000-0000-4000-8000-000000000421" }
   });
@@ -722,18 +848,16 @@ async function main() {
 
   await prisma.chat.upsert({
     create: {
-      defaultModelId: "gpt-5.5",
       defaultPromptPresetId: ids.promptPreset,
-      defaultProvider: "openai",
+      defaultProviderModelId: fakeProviderModelId,
       folderId: null,
       id: ids.chat,
       title: "OpenAI web search shape",
       userId: ids.user
     },
     update: {
-      defaultModelId: "gpt-5.5",
       defaultPromptPresetId: ids.promptPreset,
-      defaultProvider: "openai",
+      defaultProviderModelId: fakeProviderModelId,
       title: "OpenAI web search shape"
     },
     where: {

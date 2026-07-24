@@ -88,10 +88,9 @@ export async function provisionActiveUser(
     create: {
       defaultControlValues: json({}),
       defaultFolderId: null,
-      defaultModelId: "gpt-5.5",
+      defaultProviderModelId: null,
       defaultPromptPresetId: prompt.id,
-      defaultProvider: "openai",
-      defaultSearchStrategyId: "openai-native-web-search",
+      defaultSearchStrategyId: "search-disabled",
       showCitations: true,
       showReasoningBlocks: false,
       showToolActivity: true,

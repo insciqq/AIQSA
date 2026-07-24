@@ -42,8 +42,9 @@ export type AdminGrantSource = Readonly<{
   enabled: boolean;
   groupId: string | null;
   id: string;
-  modelId: string | null;
-  provider: string | null;
+  providerConnectionId: string | null;
+  providerModel: { connectionId: string } | null;
+  providerModelId: string | null;
   searchStrategy: string | null;
   userId: string | null;
 }>;
@@ -102,8 +103,8 @@ export function serializeAdminGrant(grant: AdminGrantSource): AdminAccessGrantRe
     enabled: grant.enabled,
     groupId: grant.groupId,
     id: grant.id,
-    modelId: grant.modelId,
-    provider: grant.provider,
+    modelId: grant.providerModelId,
+    provider: grant.providerConnectionId ?? grant.providerModel?.connectionId ?? null,
     searchStrategy: grant.searchStrategy,
     userId: grant.userId
   };
@@ -121,7 +122,14 @@ export function serializeAdminGroup(group: AdminGroupSource): AdminGroupRecord {
 }
 
 export function serializeAdminEntitlements(input: AdminEntitlementSource): AdminEntitlementSummary {
-  const entitlements = resolveEntitlements(input.userId, [...input.groupIds], [...input.grants]);
+  const entitlements = resolveEntitlements(
+    input.userId,
+    [...input.groupIds],
+    input.grants.map((grant) => ({
+      ...grant,
+      providerModelConnectionId: grant.providerModel?.connectionId ?? null
+    }))
+  );
 
   return {
     models: Array.from(entitlements.modelKeys)

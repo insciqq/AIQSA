@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, describe, expect, it } from "vitest";
 import { textMessageContent } from "../../domain/content";
+import { providerTemplateIds } from "../../domain/providerTemplates";
 import { prisma } from "../prisma";
 import { createPrismaPromptRepository } from "./prismaRepository";
 
@@ -18,8 +19,7 @@ describe("Prisma prompt repository", () => {
         settings: {
           create: {
             defaultControlValues: {},
-            defaultModelId: "fake-qsa",
-            defaultProvider: "fake",
+            defaultProviderModelId: providerTemplateIds.fakeModel,
             defaultSearchStrategyId: "search-disabled"
           }
         }
@@ -36,9 +36,8 @@ describe("Prisma prompt repository", () => {
       });
       const chat = await prisma.chat.create({
         data: {
-          defaultModelId: "fake-qsa",
+          defaultProviderModelId: providerTemplateIds.fakeModel,
           defaultPromptPresetId: prompt.id,
-          defaultProvider: "fake",
           title: "Prompt cleanup",
           userId
         }
