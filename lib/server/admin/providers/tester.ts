@@ -68,12 +68,9 @@ function executionSnapshot(input: AdminProviderDraftTesterInput): ProviderExecut
 }
 
 function tinyGenerationRequest(input: AdminProviderDraftTesterInput): ProviderRunRequest {
-  const openAIAdapter = input.model.adapterKind === "openai_responses_native" ||
-    input.model.adapterKind === "openai_responses_compatible" ||
-    input.model.adapterKind === "openai_chat_completions_compatible";
   const responsesAdapter = input.model.adapterKind === "openai_responses_native" ||
     input.model.adapterKind === "openai_responses_compatible";
-  const maxOutputTokens = openAIAdapter ? 16 : 1;
+  const maxOutputTokens = 1_000;
 
   return {
     attachmentIds: [],

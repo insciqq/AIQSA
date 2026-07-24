@@ -188,7 +188,47 @@ describe("admin provider draft tester", () => {
     expect(endpoint).toBe("https://compatible.example.test/v1/chat/completions");
     expect(request).toMatchObject({ method: "POST", redirect: "error" });
     expect(JSON.parse(String(request?.body))).toMatchObject({
-      max_completion_tokens: 16,
+      max_completion_tokens: 1_000,
+      stream: false
+    });
+  });
+
+  it("gives an OpenRouter reasoning diagnostic the standard output budget", async () => {
+    const fetchFn = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({
+      choices: [{ finish_reason: "stop", message: { content: "private output", role: "assistant" } }],
+      usage: { completion_tokens: 1, prompt_tokens: 2, total_tokens: 3 }
+    }), {
+      headers: { "content-type": "application/json" },
+      status: 200
+    }));
+    const providerTester = createAdminProviderDraftTester({ createFetch: () => fetchFn });
+    const openRouter = input({
+      mode: "tiny_generation",
+      model: {
+        ...input().model,
+        capabilities: {
+          ...input().model.capabilities,
+          reasoning: true
+        },
+        defaultParams: {
+          reasoning: {
+            effort: "medium",
+            enabled: true,
+            exclude: false,
+            maxTokens: 0
+          }
+        }
+      }
+    });
+
+    await expect(providerTester.test(openRouter)).resolves.toMatchObject({
+      evidence: { detail: "ok", method: "tiny_generation" },
+      status: "available"
+    });
+    const [, request] = fetchFn.mock.calls[0] ?? [];
+    expect(JSON.parse(String(request?.body))).toMatchObject({
+      max_completion_tokens: 1_000,
+      reasoning: { effort: "medium", enabled: true },
       stream: false
     });
   });
@@ -196,7 +236,7 @@ describe("admin provider draft tester", () => {
   it.each([
     ["openai_responses_native", "openai"],
     ["openai_responses_compatible", "openai_compatible"]
-  ] as const)("uses a valid minimal Responses budget for %s", async (adapterKind, providerFamily) => {
+  ] as const)("uses the standard diagnostic output budget for %s", async (adapterKind, providerFamily) => {
     const fetchFn = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({
       id: "response-1",
       output: [{ content: [{ text: "private output", type: "output_text" }], type: "message" }],
@@ -232,14 +272,14 @@ describe("admin provider draft tester", () => {
     expect(endpoint).toBe("https://responses.example.test/v1/responses");
     expect(JSON.parse(String(request?.body))).toMatchObject({
       background: false,
-      max_output_tokens: 16,
+      max_output_tokens: 1_000,
       reasoning: { effort: "none" },
       store: false,
       stream: false
     });
   });
 
-  it("keeps the one-token Anthropic connectivity request valid", async () => {
+  it("uses the standard diagnostic output budget for Anthropic", async () => {
     const body = [
       'data: {"type":"message_start","message":{"id":"message-1","model":"claude-test","usage":{"input_tokens":2}}}',
       "",
@@ -280,7 +320,7 @@ describe("admin provider draft tester", () => {
     const [endpoint, request] = fetchFn.mock.calls[0] ?? [];
     expect(endpoint).toBe("https://api.anthropic.test/v1/messages");
     expect(JSON.parse(String(request?.body))).toMatchObject({
-      max_tokens: 1,
+      max_tokens: 1_000,
       stream: true
     });
   });
