@@ -12,41 +12,41 @@ export type ThemeOption = {
   name: string;
 };
 
-export const DEFAULT_THEME_ID: ThemeId = "aiqsa";
+export const DEFAULT_THEME_ID: ThemeId = "neutral";
 
 export const AIQSA_THEMES: ThemeOption[] = [
   {
     accentLabel: "Teal",
     colorScheme: "dark",
-    description: "Original dark palette",
+    description: "Warm dark research palette",
     id: "aiqsa",
     name: "AIQSA"
   },
   {
     accentLabel: "Blue steel",
     colorScheme: "dark",
-    description: "Cool graphite palette",
+    description: "Cool dark research palette",
     id: "graphite",
     name: "Graphite"
   },
   {
     accentLabel: "Mint",
     colorScheme: "dark",
-    description: "Green-black palette",
+    description: "Green-black research palette",
     id: "verdant",
     name: "Verdant"
   },
   {
     accentLabel: "Blue",
     colorScheme: "dark",
-    description: "Neutral charcoal palette",
+    description: "Charcoal dark research palette",
     id: "classic-dark",
     name: "Classic Dark"
   },
   {
-    accentLabel: "Blue",
+    accentLabel: "Teal",
     colorScheme: "light",
-    description: "Neutral gray and white palette",
+    description: "Quiet neutral light palette",
     id: "neutral",
     name: "Classic Light"
   }

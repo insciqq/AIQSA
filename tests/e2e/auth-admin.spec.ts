@@ -23,15 +23,15 @@ async function listAuthEmails(request: APIRequestContext): Promise<TestEmail[]> 
 }
 
 const adminSections = [
-  { id: "users", label: "Users" },
+  { id: "providers", label: "Providers" },
   { id: "usage", label: "Usage" },
+  { id: "users", label: "Users" },
   { id: "groups", label: "Groups" },
   { id: "model-access", label: "Model access" },
-  { id: "providers", label: "Providers" },
-  { id: "mcp", label: "MCP servers" },
-  { id: "email", label: "Email delivery" },
   { id: "invites", label: "Invites" },
   { id: "access-rules", label: "Access rules" },
+  { id: "mcp", label: "MCP servers" },
+  { id: "email", label: "Email delivery" },
   { id: "safety", label: "Safety" }
 ] as const;
 
@@ -116,7 +116,7 @@ async function bootstrapAdmin(page: Page) {
   });
   expect(response.ok()).toBe(true);
   await page.goto("/admin");
-  await expect(page.getByRole("heading", { name: "Operations control" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Control Center" })).toBeVisible();
   await expect(page.getByTestId("admin-section-users")).toBeVisible();
 }
 
@@ -336,7 +336,7 @@ test("admin manages approvals, rules, invites, session revocation, and disabling
     await loginWithPassword(userPage, approvedEmail, approvedPassword);
     await expect(userPage.getByTestId("app-shell")).toBeVisible();
     await userPage.getByRole("button", { name: "Account menu" }).click();
-    await expect(userPage.getByRole("menu", { name: "Account" }).getByRole("menuitem", { name: "Admin console" })).toHaveCount(0);
+    await expect(userPage.getByRole("menu", { name: "Account" }).getByRole("menuitem", { name: "Control Center" })).toHaveCount(0);
     await userPage.keyboard.press("Escape");
     await expect.poll(() => browserFetchStatus(userPage!, "/api/admin")).toBe(403);
     await userPage.goto("/admin");
@@ -506,11 +506,11 @@ test("admin console keeps all redesigned sections operable end to end", async ({
     await expect(page.getByTestId("app-shell")).toBeVisible();
     await page.getByRole("button", { name: "Account menu" }).click();
     const adminEntry = page.getByRole("menu", { name: "Account" }).getByRole("menuitem", {
-      name: "Admin console"
+      name: "Control Center"
     });
     await expect(adminEntry).toHaveAttribute("href", "/admin");
     await adminEntry.click();
-    await expect(page.getByRole("heading", { name: "Operations control" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Control Center" })).toBeVisible();
 
     for (const section of adminSections) {
       const tab = page.getByRole("tab", { exact: true, name: section.label });
@@ -1011,7 +1011,7 @@ test("admin compact usage and empty access-rule states stay in the visible workf
   }
 });
 
-test("admin overview keeps the current workflow in the short-landscape viewport", async ({
+test("Control Center keeps the current workflow in the short-landscape viewport", async ({
   baseURL,
   browser
 }) => {
@@ -1029,15 +1029,15 @@ test("admin overview keeps the current workflow in the short-landscape viewport"
   try {
     await bootstrapAdmin(page);
 
-    const summary = page.getByRole("region", { name: "Admin summary" });
+    const navigation = page.getByRole("tablist", { name: "Control Center sections" });
     await expect
       .poll(() =>
-        summary.evaluate((element) => ({
-          flow: getComputedStyle(element).gridAutoFlow,
+        navigation.evaluate((element) => ({
+          direction: getComputedStyle(element).flexDirection,
           overflowX: getComputedStyle(element).overflowX
         }))
       )
-      .toEqual({ flow: "column", overflowX: "auto" });
+      .toEqual({ direction: "row", overflowX: "auto" });
     await expect(page.getByRole("tab", { exact: true, name: "Users" })).toBeInViewport();
     const users = page.getByTestId("admin-section-users");
     await expect(users.getByRole("heading", { exact: true, name: "Users" })).toBeInViewport();

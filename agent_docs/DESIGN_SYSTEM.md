@@ -4,6 +4,8 @@ This is the binding visual contract for AIQSA's clean-slate Research Chat and Co
 
 During the in-place migration, old and new renderers may coexist only at explicit slice boundaries recorded in `FRONTEND_REVAMP_PARITY.md`. New UI uses this system. Existing visual recipes are not a compatibility target, and a verified slice removes the legacy renderer and tokens it replaced.
 
+During that migration, `globals.css` and Tailwind may retain one centralized compatibility mapping from legacy `surface-*`, `content-*`, `separator-*`, and `accent-*` names to the new semantic tokens. These aliases exist only for renderers that have not cut over, are forbidden in new or converted components, and disappear with their final legacy consumer. They are not part of the new component API.
+
 ## Product Character
 
 AIQSA should feel like a quiet research instrument: familiar enough to understand immediately, precise enough to trust, and calm enough to read for a long time. It is not a generic admin dashboard and not a decorative AI demo.
@@ -44,11 +46,11 @@ Components consume semantic tokens only. Raw product colors, palette-specific Ta
 | Token family | Role |
 |---|---|
 | `research-canvas` | Page and application background. |
-| `workspace-rail` | Persistent navigation and compact shell chrome. |
-| `answer-paper` | Conversation/read plane; not a card around each answer. |
+| `workspace-rail` | Workspace and Control Center navigation plus the compact Workspace drawer. |
+| `answer-paper` | Conversation column, its local top rail, and document plane; not a card around each answer. |
 | `composer-surface` | Composer and focused editing surfaces. |
 | `control-surface` | Inputs, quiet buttons, and repeated interactive rows. |
-| `overlay-surface` | Menus, dialogs, drawers, sheets, and popovers. |
+| `overlay-surface` | Menus, dialogs, sheets, and the Details inspection plane in overlay or pinned form. |
 | `control-hover`, `control-pressed`, `control-selected` | Interaction states, never resting decoration. |
 | `trace-subtle`, `trace-strong` | Structural separators and high-contrast boundaries. |
 | `ink`, `ink-secondary`, `ink-muted`, `ink-disabled` | Text hierarchy. |
@@ -60,25 +62,25 @@ Names may receive a CSS/Tailwind prefix, but their semantic role must stay recog
 
 ### Reference neutral palette
 
-The `neutral` theme is the first-use default and the reference against which hierarchy is reviewed.
+The `neutral` theme is the first-use default, the only light registry theme, and the reference against which hierarchy is reviewed. Each dark theme owns its concrete values in `globals.css` while preserving this semantic ordering; there is no `neutral-dark` theme.
 
-| Role | Light reference | Dark reference |
-|---|---:|---:|
-| Research canvas | `#fbfcfb` | `#101413` |
-| Workspace rail | `#f3f5f3` | `#151a18` |
-| Answer paper | `#ffffff` | `#1b211f` |
-| Composer surface | `#ffffff` | `#202725` |
-| Control surface | `#f4f6f5` | `#242c29` |
-| Overlay surface | `#ffffff` | `#202725` |
-| Trace subtle | `#e0e5e2` | `#303936` |
-| Trace strong | `#b8c1bd` | `#56615d` |
-| Ink | `#1c211f` | `#e8ecea` |
-| Ink secondary | `#454d49` | `#c5ceca` |
-| Ink muted | `#67706c` | `#a2aca7` |
-| Proof | `#176f65` | `#51b8a9` |
-| Proof contrast | `#ffffff` | `#081411` |
+| Role | Light `neutral` reference |
+|---|---:|
+| Research canvas | `#fbfcfb` |
+| Workspace rail | `#f3f5f3` |
+| Answer paper | `#ffffff` |
+| Composer surface | `#ffffff` |
+| Control surface | `#f4f6f5` |
+| Overlay surface | `#ffffff` |
+| Trace subtle | `#e0e5e2` |
+| Trace strong | `#b8c1bd` |
+| Ink | `#1c211f` |
+| Ink secondary | `#454d49` |
+| Ink muted | `#67706c` |
+| Proof | `#176f65` |
+| Proof contrast | `#ffffff` |
 
-The table is a visual reference. Review normal text, muted text, controls, and status colors for ordinary readability in both schemes; this revamp does not claim formal contrast conformance. Muted text is not a substitute for tiny type.
+The table is a visual reference. Review normal text, muted text, controls, and status colors for ordinary readability in every theme; this revamp does not claim formal contrast conformance. Muted text is not a substitute for tiny type.
 
 ### Theme compatibility
 
@@ -114,8 +116,10 @@ The answer is a readable document, not a chat bubble stack. Use a 46-48rem answe
 
 Use a 4px base rhythm with primary steps of 4, 8, 12, 16, 24, 32, and 48px. Related controls stay closer than adjacent groups. Large empty areas belong around the answer and composer, not inside padded cards.
 
-- Workspace rail: approximately 15.5-16.5rem when persistent.
-- Control Center navigation: approximately 14-15rem when persistent.
+- Workspace rail: 16rem when persistent.
+- Control Center navigation: 15rem when persistent.
+- Conversation top rail: 3.5rem in compact composition and 4rem at desktop, plus the applicable top safe-area inset. It belongs to the answer-paper column and does not span Workspace.
+- Pinned Details: 23rem, available only at `>=1440px`.
 - Answer column: max 46-48rem with responsive inline padding.
 - Dense list rows: 36-44px for precise pointers; at least 44px for coarse pointers.
 - Ordinary control radius: 8px; panels and composer: 12-16px.
@@ -129,7 +133,7 @@ Avoid isolated floating rectangles when a plain section, row, or disclosure comm
 
 ### Shell and workspace
 
-The conversation and composer dominate. A persistent workspace rail appears only when available inline space supports it; below that, Workspace is a modal drawer. The shell exposes New chat, search/history, account, Settings, Share, and Details without a second permanent action bar.
+The conversation and composer dominate. A persistent Workspace rail appears at `>=1024px`; below that, Workspace is a modal drawer. The conversation column owns its local top rail. Share and Details remain direct at every width; compact Copy thread and Branch tree share one secondary menu, while desktop exposes them directly in the same rail. There is no second permanent action bar.
 
 Chat and folder rows use quiet selected/hover states, stable action space, and text labels where consequence matters. Active-run state is a small factual cue. Nested folders must retain readable indentation without causing page-level horizontal overflow.
 
@@ -169,7 +173,7 @@ Settings is a bounded workspace for Prompts, Appearance, and MCP & tools. On com
 
 ## Control Center Composition
 
-The Control Center is an operational workspace, not a dashboard landing page. Navigation exposes only real destinations: Providers, Users, Groups, Model access, Invites, Access rules, Email delivery, MCP servers, Usage, and Safety. `Personal`, `Team`, and `Advanced` are disclosure/group headings; they are not plans, modes, entitlements, or synthetic routes.
+The Control Center is an operational workspace, not a dashboard landing page. Navigation exposes only real destinations in this exact order: Personal — Providers, Usage; Team — Users, Groups, Model access, Invites, Access rules; Advanced — MCP servers, Email delivery, Safety. `Personal`, `Team`, and `Advanced` are visual group headings; they are not plans, modes, entitlements, disclosures, or synthetic routes.
 
 The active destination owns the page title, short scope description, primary action, status/feedback, and content. Do not repeat a global metric-card strip above every task. Important counts belong beside the relevant navigation item or section heading.
 
@@ -225,7 +229,7 @@ Motion communicates state change, spatial origin, and live work; it does not dec
 - Drawers/sheets: 160-220ms.
 - Completion emphasis: one restrained settle, no looping celebration.
 
-Animate opacity and transform where possible. Never animate layout during token streaming. Keep the existing deterministic test motion-off mode; no new reduced-motion work is required in this revamp.
+Do not animate shell entrance or idle/settled pipeline chrome. Running activity may pulse, answer completion may settle once, and overlays may use one short entrance. Animate opacity and transform where possible. Never animate layout during token streaming. Keep the existing deterministic test motion-off mode; no new reduced-motion work is required in this revamp.
 
 ## Performance And Rendering
 

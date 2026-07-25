@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   adminSectionConfig,
+  adminSectionGroups,
   adminSectionMoveForKey,
   adminSectionPanelId,
   adminSectionPath,
@@ -11,18 +12,28 @@ import {
 } from "./adminSections";
 
 describe("adminSections", () => {
-  it("keeps the documented section order and semantic labels", () => {
-    expect(adminSections.map(({ id, label }) => ({ id, label }))).toEqual([
-      { id: "users", label: "Users" },
-      { id: "usage", label: "Usage" },
-      { id: "groups", label: "Groups" },
-      { id: "model-access", label: "Model access" },
-      { id: "providers", label: "Providers" },
-      { id: "mcp", label: "MCP servers" },
-      { id: "email", label: "Email delivery" },
-      { id: "invites", label: "Invites" },
-      { id: "access-rules", label: "Access rules" },
-      { id: "safety", label: "Safety" }
+  it("groups the real destinations under Personal, Team, and Advanced", () => {
+    expect(adminSections.map(({ group, id, label }) => ({ group, id, label }))).toEqual([
+      { group: "personal", id: "providers", label: "Providers" },
+      { group: "personal", id: "usage", label: "Usage" },
+      { group: "team", id: "users", label: "Users" },
+      { group: "team", id: "groups", label: "Groups" },
+      { group: "team", id: "model-access", label: "Model access" },
+      { group: "team", id: "invites", label: "Invites" },
+      { group: "team", id: "access-rules", label: "Access rules" },
+      { group: "advanced", id: "mcp", label: "MCP servers" },
+      { group: "advanced", id: "email", label: "Email delivery" },
+      { group: "advanced", id: "safety", label: "Safety" }
+    ]);
+    expect(
+      adminSectionGroups.map((group) => ({
+        label: group.label,
+        sections: adminSections.filter((section) => section.group === group.id).map((section) => section.label)
+      }))
+    ).toEqual([
+      { label: "Personal", sections: ["Providers", "Usage"] },
+      { label: "Team", sections: ["Users", "Groups", "Model access", "Invites", "Access rules"] },
+      { label: "Advanced", sections: ["MCP servers", "Email delivery", "Safety"] }
     ]);
     expect(adminSectionConfig("model-access").description).toBe(
       "Toggle provider, model, and search access for active groups."
@@ -61,9 +72,9 @@ describe("adminSections", () => {
     expect(adminSectionMoveForKey("End")).toBe("last");
     expect(adminSectionMoveForKey("PageDown")).toBeNull();
 
-    expect(moveAdminSection("users", "previous")).toBe("safety");
-    expect(moveAdminSection("safety", "next")).toBe("users");
-    expect(moveAdminSection("groups", "first")).toBe("users");
+    expect(moveAdminSection("providers", "previous")).toBe("safety");
+    expect(moveAdminSection("safety", "next")).toBe("providers");
+    expect(moveAdminSection("groups", "first")).toBe("providers");
     expect(moveAdminSection("groups", "last")).toBe("safety");
   });
 

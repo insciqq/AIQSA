@@ -492,11 +492,12 @@ describe("AdminPanel", () => {
     window.history.replaceState(null, "", "/");
   });
 
-  it("provides an explicit direct return to the authenticated workspace", async () => {
+  it("provides an explicit direct return to the authenticated chat", async () => {
     mockAdminFetch();
     render(<AdminPanel adminEmail="admin@example.com" adminUserId="admin-1" />);
 
-    expect(screen.getByRole("link", { name: "Return to workspace" })).toHaveAttribute("href", "/");
+    expect(screen.getByRole("heading", { name: "Control Center" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Return to chat" })).toHaveAttribute("href", "/");
     await screen.findByTestId("admin-section-users");
   });
 
@@ -546,10 +547,10 @@ describe("AdminPanel", () => {
     render(<AdminPanel adminEmail="admin@example.com" adminUserId="admin-1" />);
 
     const main = screen.getByRole("main");
-    const activity = screen.getByText(/refreshing admin data/i).closest('[role="status"]');
+    const activity = screen.getByText("Refreshing…").closest('[role="status"]');
     expect(main).toHaveAttribute("aria-busy", "true");
     expect(activity).toHaveAttribute("aria-live", "polite");
-    expect(activity).toHaveTextContent(/loading admin data|refreshing/i);
+    expect(activity).toHaveTextContent("Refreshing…");
     expect(screen.getByText("Loading admin data")).toBeInTheDocument();
     expect(screen.queryByRole("region", { name: "Admin summary" })).not.toBeInTheDocument();
     expect(screen.queryByRole("region", { name: "Needs attention" })).not.toBeInTheDocument();
@@ -561,7 +562,8 @@ describe("AdminPanel", () => {
 
     expect((await screen.findAllByText("Active User")).length).toBeGreaterThan(0);
     await waitFor(() => expect(main).toHaveAttribute("aria-busy", "false"));
-    expect(screen.getByRole("region", { name: "Admin summary" })).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Admin summary" })).not.toBeInTheDocument();
+    expect(screen.getByRole("tablist", { name: "Control Center sections" })).toBeInTheDocument();
   });
 
   it("distinguishes an unavailable dashboard from an intentional empty dashboard", async () => {
@@ -589,8 +591,7 @@ describe("AdminPanel", () => {
 
     expect(await screen.findByText("No users yet")).toBeInTheDocument();
     expect(screen.queryByText("Admin data unavailable")).not.toBeInTheDocument();
-    const summary = screen.getByRole("region", { name: "Admin summary" });
-    expect(within(summary).queryByRole("button")).not.toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Admin summary" })).not.toBeInTheDocument();
     expect(screen.queryByRole("region", { name: "Needs attention" })).not.toBeInTheDocument();
     expect(screen.queryByText(/no current .* need attention/i)).not.toBeInTheDocument();
   });
@@ -651,9 +652,9 @@ describe("AdminPanel", () => {
     expect(window.location.search).toBe("?section=access-rules");
 
     fireEvent.keyDown(screen.getByRole("tab", { name: "Access rules" }), { key: "Home" });
-    await waitFor(() => expect(screen.getByRole("tab", { name: "Users" })).toHaveFocus());
-    expect(screen.getByRole("tab", { name: "Users" })).toHaveAttribute("aria-selected", "true");
-    expect(window.location.search).toBe("");
+    await waitFor(() => expect(screen.getByRole("tab", { name: "Providers" })).toHaveFocus());
+    expect(screen.getByRole("tab", { name: "Providers" })).toHaveAttribute("aria-selected", "true");
+    expect(window.location.search).toBe("?section=providers");
 
     window.history.pushState(null, "", "/admin?section=safety");
     fireEvent.popState(window);
@@ -791,7 +792,7 @@ describe("AdminPanel", () => {
     fireEvent.change(screen.getByLabelText("Value"), { target: { value: "allowed-2@example.com" } });
     fireEvent.click(screen.getByRole("checkbox", { name: "reviewers" }));
 
-    fireEvent.click(screen.getByRole("button", { name: "Refresh admin overview" }));
+    fireEvent.click(screen.getByRole("button", { name: "Refresh Control Center" }));
     await waitFor(() => expect(screen.queryByRole("checkbox", { name: "reviewers" })).not.toBeInTheDocument());
 
     fireEvent.click(screen.getByRole("button", { name: "Save rule" }));
@@ -1296,20 +1297,23 @@ describe("AdminPanel", () => {
     expect(within(users).queryByText("Paged User 01")).not.toBeInTheDocument();
   });
 
-  it("separates actionable attention from passive summary metrics", async () => {
+  it("keeps actionable attention in its owning destinations without a global metric strip", async () => {
     mockAdminFetch();
     render(<AdminPanel adminEmail="admin@example.com" adminUserId="admin-1" />);
 
-    await screen.findByTestId("admin-section-users");
-    const summary = screen.getByRole("region", { name: "Admin summary" });
-    expect(within(summary).getByText("Active users")).toBeInTheDocument();
-    expect(within(summary).queryByRole("button")).not.toBeInTheDocument();
-    expect(within(summary).queryByRole("link")).not.toBeInTheDocument();
+    const users = await screen.findByTestId("admin-section-users");
+    expect(screen.queryByRole("region", { name: "Admin summary" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Needs attention" })).not.toBeInTheDocument();
+    const pendingReview = within(findTableRowByText(users, "pending@example.com")).getByRole("button", {
+      name: "Review"
+    });
+    expect(pendingReview).toBeInTheDocument();
+    fireEvent.click(pendingReview);
+    expect(within(users).getByText("No model access")).toBeInTheDocument();
 
-    const attention = screen.getByRole("region", { name: "Needs attention" });
-    expect(within(attention).getByRole("button", { name: /pending approval/i })).toBeInTheDocument();
-    expect(within(attention).getByRole("button", { name: /no-access users/i })).toBeInTheDocument();
-    expect(within(attention).queryByRole("button", { name: /approvals clear|access assigned|no open invites/i })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("tab", { name: "Invites" }));
+    const invites = await screen.findByTestId("admin-section-invites");
+    expect(within(findTableRowByText(invites, "open@example.com")).getByRole("button", { name: "Revoke" })).toBeInTheDocument();
   });
 
   it("translates local validation and API failures without exposing raw error codes", async () => {

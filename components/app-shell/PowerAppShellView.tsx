@@ -28,7 +28,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 export type { PowerAppShellViewProps } from "@/components/app-shell/powerAppShellViewContracts";
 
-const shellRevealDurationMs = 700;
 export const mobileWorkspaceDesktopMediaQuery = "(min-width: 1024px)";
 
 function warningText(event: RunEventView): string | null {
@@ -38,22 +37,6 @@ function warningText(event: RunEventView): string | null {
 
   const message = (event.data as Record<string, unknown>).message;
   return typeof message === "string" && message.trim() ? message.trim() : "The run reported a warning.";
-}
-
-/**
- * One-time login/reload reveal gate: the class only exists for the first
- * moments after the authenticated shell mounts, so pane remounts later
- * (Details mode toggles, chat switches) never replay the entrance.
- */
-function useShellRevealClass(): string {
-  const [revealing, setRevealing] = useState(true);
-
-  useEffect(() => {
-    const timer = window.setTimeout(() => setRevealing(false), shellRevealDurationMs);
-    return () => window.clearTimeout(timer);
-  }, []);
-
-  return revealing ? " shell-reveal" : "";
 }
 
 export function PowerAppShellView(props: PowerAppShellViewProps) {
@@ -67,7 +50,8 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
     shareActiveBranch,
     sharing
   } = session;
-  const { activeChatStreaming, currentRunId } = thread;
+  const { copyVisibleThread, ...threadPane } = thread;
+  const { activeChatStreaming, currentRunId } = threadPane;
   const {
     activeLeafId: renderActiveLeafId,
     activeTab: inspectorActiveTab,
@@ -150,18 +134,17 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
   );
   const runWarnings = useMemo(
     () => {
-      if (!thread.currentRunId) {
+      if (!currentRunId) {
         return [];
       }
 
       return runEvents
         .map(warningText)
         .filter((warning): warning is string => Boolean(warning))
-        .map((text) => ({ runId: thread.currentRunId!, text }));
+        .map((text) => ({ runId: currentRunId, text }));
     },
-    [runEvents, thread.currentRunId]
+    [currentRunId, runEvents]
   );
-  const shellRevealClass = useShellRevealClass();
   const [signingOut, setSigningOut] = useState(false);
   const [signOutError, setSignOutError] = useState<string | null>(null);
   const mobileWorkspaceScrollTopRef = useRef<number | undefined>(undefined);
@@ -262,7 +245,7 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
   const shellNotice = notice;
   const persistentNoticeSlot = shellNotice?.persistent ? (
     <div
-      className="shrink-0 border-b border-separator-subtle bg-surface-thread px-3 py-2"
+      className="shrink-0 border-b border-trace-subtle bg-answer-paper px-3 py-2"
       data-testid="persistent-notice-region"
     >
       <div className="mx-auto flex w-full max-w-reading justify-center">
@@ -292,7 +275,7 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
 
   return (
     <main
-      className={`relative flex h-dvh min-h-0 flex-col overflow-hidden bg-surface-canvas text-content-primary${shellRevealClass}`}
+      className="relative flex h-dvh min-h-0 flex-col overflow-hidden bg-research-canvas text-ink"
       data-testid="app-shell"
     >
       {signOutError ? (
@@ -301,78 +284,88 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
         </p>
       ) : null}
       <div
-        className="relative flex min-h-0 flex-1 flex-col"
+        className="relative min-h-0 flex-1"
         data-testid="shell-primary-content"
         aria-hidden={primaryContentInert || undefined}
         inert={primaryContentInert || undefined}
       >
-        <TopRail
-          accountEmail={accountEmail}
-          activeChatId={activeChatId}
-          activeChatTitle={activeChatTitle}
-          adminHref={adminEntryVisible ? "/admin" : null}
-          detailsOpen={inspectorMode !== "closed"}
-          newChatDisabled={!workspace.pane.state.workspaceReady || workspace.pane.state.creatingChat}
-          pipeline={pipeline}
-          sharing={sharing}
-          onCopyThread={() => void thread.copyVisibleThread()}
-          onOpenDetails={() => {
-            if (inspectorMode === "closed") {
-              setInspectorMode("overlay");
-            } else {
-              closeDetails();
-            }
-          }}
-          onOpenBranches={() => openDetails("branch")}
-          onOpenPalette={palette.show}
-          onOpenPipeline={() => openDetails("events")}
-          onOpenSettings={settings.open}
-          onOpenWorkspace={workspace.mobile.show}
-          onShare={() => void shareActiveBranch()}
-          onSignOut={() => void handleSignOut()}
-          onStartNewChat={() => void workspace.pane.actions.createChat()}
-          signOutError={signOutError}
-          signingOut={signingOut}
-        />
         <div
           className={[
-            "grid min-h-0 flex-1 grid-cols-1 overflow-hidden lg:grid-cols-[240px_minmax(0,1fr)]",
+            "grid h-full min-h-0 grid-cols-1 overflow-hidden bg-research-canvas lg:grid-cols-[16rem_minmax(0,1fr)]",
             inspectorMode === "pinned"
-              ? "min-[1440px]:grid-cols-[240px_minmax(0,1fr)_360px]"
+              ? "min-[1440px]:grid-cols-[16rem_minmax(0,1fr)_23rem]"
               : ""
           ].join(" ")}
           data-details-presentation={inspectorMode}
           data-testid="shell-workspace-grid"
         >
-        <ShellLeftPane
-          activeChatId={activeChatId}
-          availableChatModelKeys={availableChatModelKeys}
-          chatModelLabels={chatModelLabels}
-          pane={workspace.pane}
-          sharing={sharing}
-        />
+          <div
+            className="hidden min-h-0 min-w-0 bg-workspace-rail lg:grid lg:grid-rows-[minmax(0,1fr)] lg:pl-[env(safe-area-inset-left)] lg:pt-[env(safe-area-inset-top)]"
+            data-testid="workspace-rail"
+          >
+            <ShellLeftPane
+              activeChatId={activeChatId}
+              availableChatModelKeys={availableChatModelKeys}
+              chatModelLabels={chatModelLabels}
+              pane={workspace.pane}
+              sharing={sharing}
+            />
+          </div>
 
-        <MainThreadPane
-          {...thread}
-          {...composer}
-          activeChatId={activeChatId}
-          creatingChat={workspace.pane.state.creatingChat}
-          noticeSlot={persistentNoticeSlot}
-          openDetails={openDetails}
-          openMcpSettings={settings.openMcp}
-          openSettings={settings.open}
-          pipeline={pipeline}
-          retryWorkspace={workspace.pane.actions.retry}
-          runWarnings={runWarnings}
-          workspaceError={workspace.pane.state.workspaceError}
-          workspaceLoading={workspace.pane.state.workspaceLoading}
-          workspaceReady={workspace.pane.state.workspaceReady}
-        />
+          <div
+            className="flex min-h-0 min-w-0 flex-col bg-answer-paper"
+            data-testid="conversation-column"
+          >
+            <TopRail
+              accountEmail={accountEmail}
+              activeChatId={activeChatId}
+              activeChatTitle={activeChatTitle}
+              adminHref={adminEntryVisible ? "/admin" : null}
+              detailsOpen={inspectorMode !== "closed"}
+              newChatDisabled={!workspace.pane.state.workspaceReady || workspace.pane.state.creatingChat}
+              pipeline={pipeline}
+              sharing={sharing}
+              onCopyThread={() => void copyVisibleThread()}
+              onOpenDetails={() => {
+                if (inspectorMode === "closed") {
+                  setInspectorMode("overlay");
+                } else {
+                  closeDetails();
+                }
+              }}
+              onOpenBranches={() => openDetails("branch")}
+              onOpenPalette={palette.show}
+              onOpenPipeline={() => openDetails("events")}
+              onOpenSettings={settings.open}
+              onOpenWorkspace={workspace.mobile.show}
+              onShare={() => void shareActiveBranch()}
+              onSignOut={() => void handleSignOut()}
+              onStartNewChat={() => void workspace.pane.actions.createChat()}
+              signOutError={signOutError}
+              signingOut={signingOut}
+            />
+
+            <MainThreadPane
+              {...threadPane}
+              {...composer}
+              activeChatId={activeChatId}
+              creatingChat={workspace.pane.state.creatingChat}
+              noticeSlot={persistentNoticeSlot}
+              openMcpSettings={settings.openMcp}
+              openSettings={settings.open}
+              pipeline={pipeline}
+              retryWorkspace={workspace.pane.actions.retry}
+              runWarnings={runWarnings}
+              workspaceError={workspace.pane.state.workspaceError}
+              workspaceLoading={workspace.pane.state.workspaceLoading}
+              workspaceReady={workspace.pane.state.workspaceReady}
+            />
+          </div>
 
           {inspectorMode === "pinned" ? (
             <aside
               ref={detailsSurfaceRef}
-              className="hidden min-h-0 min-w-0 border-l border-separator-subtle bg-surface-navigation min-[1440px]:block"
+              className="hidden min-h-0 min-w-0 border-l border-trace-subtle bg-overlay-surface min-[1440px]:flex min-[1440px]:flex-col"
               id="details-pane"
               aria-label="Details"
               data-presentation="pinned"
@@ -400,14 +393,14 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
       {inspectorMode === "overlay" ? (
         <>
           <div
-            className="fixed inset-0 z-40 bg-scrim/55 backdrop-blur-sm"
+            className="fixed inset-0 z-40 bg-scrim/55"
             data-testid="details-pane-backdrop"
             role="presentation"
             onMouseDown={closeDetails}
           />
           <aside
             ref={detailsSurfaceRef}
-            className="pop-enter fixed bottom-[max(0.5rem,env(safe-area-inset-bottom))] right-[max(0.5rem,env(safe-area-inset-right))] top-[max(0.5rem,env(safe-area-inset-top))] z-50 flex w-[min(28rem,calc(100vw-1rem))] min-w-0 flex-col overflow-hidden rounded-panel border border-separator-subtle bg-surface-overlay shadow-overlay max-sm:inset-0 max-sm:w-auto max-sm:rounded-none max-sm:border-0 max-sm:pb-[env(safe-area-inset-bottom)] max-sm:pl-[env(safe-area-inset-left)] max-sm:pr-[env(safe-area-inset-right)] max-sm:pt-[env(safe-area-inset-top)]"
+            className="pop-enter fixed bottom-[max(0.5rem,env(safe-area-inset-bottom))] right-[max(0.5rem,env(safe-area-inset-right))] top-[max(0.5rem,env(safe-area-inset-top))] z-50 flex w-[min(28rem,calc(100vw-1rem))] min-w-0 flex-col overflow-hidden rounded-panel border border-trace-subtle bg-overlay-surface shadow-overlay max-sm:inset-0 max-sm:w-auto max-sm:rounded-none max-sm:border-0 max-sm:pb-[env(safe-area-inset-bottom)] max-sm:pl-[env(safe-area-inset-left)] max-sm:pr-[env(safe-area-inset-right)] max-sm:pt-[env(safe-area-inset-top)]"
             id="details-pane"
             role="dialog"
             aria-labelledby="details-heading"
@@ -423,14 +416,14 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
       {mobileWorkspaceOpen ? (
         <>
           <div
-            className="fixed inset-0 z-40 bg-scrim/55 backdrop-blur-sm lg:hidden"
+            className="fixed inset-0 z-40 bg-scrim/55 lg:hidden"
             data-testid="workspace-pane-mobile-backdrop"
             role="presentation"
             onMouseDown={closeMobileWorkspace}
           />
           <div
             ref={mobileWorkspaceDialogRef}
-            className="pop-enter fixed bottom-[max(0.5rem,env(safe-area-inset-bottom))] left-[max(0.5rem,env(safe-area-inset-left))] top-[max(0.5rem,env(safe-area-inset-top))] z-50 flex flex-col overflow-hidden rounded-panel border border-separator-subtle bg-surface-navigation shadow-overlay lg:hidden"
+            className="pop-enter fixed bottom-[max(0.5rem,env(safe-area-inset-bottom))] left-[max(0.5rem,env(safe-area-inset-left))] top-[max(0.5rem,env(safe-area-inset-top))] z-50 flex flex-col overflow-hidden rounded-panel border border-trace-subtle bg-workspace-rail shadow-overlay lg:hidden"
             data-testid="workspace-pane-mobile"
             role="dialog"
             aria-modal="true"
@@ -442,12 +435,12 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
                 "min(22rem, calc(100vw - 1rem - env(safe-area-inset-left) - env(safe-area-inset-right)))"
             }}
           >
-            <div className="flex min-h-touch shrink-0 items-center justify-between gap-3 border-b border-separator-subtle px-3">
-              <h2 className="text-sm font-semibold text-content-primary" id="workspace-pane-mobile-heading">
+            <div className="flex min-h-touch shrink-0 items-center justify-between gap-3 border-b border-trace-subtle px-3">
+              <h2 className="text-sm font-semibold text-ink" id="workspace-pane-mobile-heading">
                 Workspace
               </h2>
               <button
-                className="inline-flex size-11 shrink-0 items-center justify-center rounded-control text-content-muted hover:bg-surface-hover hover:text-content-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-cyan/55"
+                className="inline-flex size-11 shrink-0 items-center justify-center rounded-control text-ink-muted hover:bg-control-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-proof/55"
                 type="button"
                 aria-label="Close workspace"
                 title="Close workspace"

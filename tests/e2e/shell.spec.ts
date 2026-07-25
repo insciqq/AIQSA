@@ -1715,7 +1715,9 @@ test("opens a contained full-height branch details sheet from the thread header 
   await expect(page.getByTestId("details-pane")).toHaveCount(0);
   await expect(detailsTrigger).toBeFocused();
 
-  const branchTrigger = page.getByRole("button", { name: "Branch tree" });
+  const conversationActions = page.getByRole("button", { name: "Conversation actions" });
+  await conversationActions.click();
+  const branchTrigger = page.getByRole("menuitem", { name: "Branch tree" });
   await branchTrigger.click();
   mobileDetails = page.getByTestId("details-pane");
   await expect(mobileDetails).toBeVisible();
@@ -1724,7 +1726,7 @@ test("opens a contained full-height branch details sheet from the thread header 
 
   await page.getByTestId("details-pane-backdrop").dispatchEvent("mousedown");
   await expect(page.getByTestId("details-pane")).toHaveCount(0);
-  await expect(branchTrigger).toBeFocused();
+  await expect(conversationActions).toBeFocused();
   await expectNoHorizontalOverflow(page);
 });
 
@@ -3419,7 +3421,7 @@ for (const viewport of responsiveTouchViewports) {
       const accountEmail = accountMenu.getByText("operator@aiqsa.local");
       await expect(accountEmail).toBeVisible();
       await expectWithinViewport(page, accountEmail);
-      for (const name of ["Command palette", "Settings", "Admin console", "Sign out"]) {
+      for (const name of ["Command palette", "Settings", "Control Center", "Sign out"]) {
         const action = accountMenu.getByRole("menuitem", { name });
         await expectTouchSafe(action);
         await expectWithinViewport(page, action);

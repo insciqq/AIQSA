@@ -1,4 +1,5 @@
 import {
+  adminSectionGroups,
   adminSectionPanelId,
   adminSections,
   adminSectionTabId,
@@ -36,6 +37,12 @@ export function AdminSectionTabs({ navigation }: AdminSectionTabsProps) {
       } else if (tabRect.right > tablistRect.right) {
         tablist.scrollLeft += tabRect.right - tablistRect.right;
       }
+
+      if (tabRect.top < tablistRect.top) {
+        tablist.scrollTop -= tablistRect.top - tabRect.top;
+      } else if (tabRect.bottom > tablistRect.bottom) {
+        tablist.scrollTop += tabRect.bottom - tablistRect.bottom;
+      }
     });
 
     return () => window.cancelAnimationFrame(frame);
@@ -43,45 +50,59 @@ export function AdminSectionTabs({ navigation }: AdminSectionTabsProps) {
 
   return (
     <nav
-      aria-label="Admin sections"
-      className="mt-3 flex gap-1 overflow-x-auto border-b border-separator-subtle pb-2"
+      aria-label="Control Center sections"
+      className="flex min-w-0 gap-4 overflow-x-auto px-4 py-3 lg:sticky lg:top-0 lg:h-[100dvh] lg:flex-col lg:gap-5 lg:overflow-x-hidden lg:overflow-y-auto lg:px-3 lg:py-5"
       ref={tablistRef}
       role="tablist"
     >
-      {adminSections.map((section) => {
-        const active = section.id === navigation.activeSection;
-        const SectionIcon = section.Icon;
+      {adminSectionGroups.map((group) => (
+        <div className="flex shrink-0 flex-col gap-1.5 lg:w-full" key={group.id} role="presentation">
+          <p className="px-2.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-ink-muted">
+            {group.label}
+          </p>
+          <div className="flex gap-1 lg:flex-col" role="presentation">
+            {adminSections
+              .filter((section) => section.group === group.id)
+              .map((section) => {
+                const active = section.id === navigation.activeSection;
+                const SectionIcon = section.Icon;
 
-        return (
-          <button
-            aria-controls={adminSectionPanelId(section.id)}
-            aria-selected={active}
-            className={[
-              `flex min-h-control shrink-0 items-center gap-1.5 rounded-control px-3 text-xs font-medium ${focusRing} ${touchTarget}`,
-              active
-                ? "bg-surface-selected text-accent-cyan"
-                : "bg-transparent text-content-secondary hover:bg-surface-hover hover:text-content-primary"
-            ].join(" ")}
-            data-testid={adminSectionTabId(section.id)}
-            id={adminSectionTabId(section.id)}
-            key={section.id}
-            onClick={() => navigation.selectSection(section.id)}
-            onKeyDown={(event) => navigation.onTabKeyDown(event, section.id)}
-            ref={(node) => {
-              navigation.registerTab(section.id, node);
-              if (active) {
-                activeTabRef.current = node;
-              }
-            }}
-            role="tab"
-            tabIndex={active ? 0 : -1}
-            type="button"
-          >
-            <SectionIcon aria-hidden="true" className="size-3.5" />
-            {section.label}
-          </button>
-        );
-      })}
+                return (
+                  <button
+                    aria-controls={adminSectionPanelId(section.id)}
+                    aria-selected={active}
+                    className={[
+                      `group/nav-item flex min-h-control shrink-0 items-center gap-2 rounded-control px-2.5 py-2 text-left text-sm font-medium transition-colors lg:w-full ${focusRing} ${touchTarget}`,
+                      active
+                        ? "bg-control-selected text-ink"
+                        : "bg-transparent text-ink-secondary hover:bg-control-hover hover:text-ink active:bg-control-pressed"
+                    ].join(" ")}
+                    data-testid={adminSectionTabId(section.id)}
+                    id={adminSectionTabId(section.id)}
+                    key={section.id}
+                    onClick={() => navigation.selectSection(section.id)}
+                    onKeyDown={(event) => navigation.onTabKeyDown(event, section.id)}
+                    ref={(node) => {
+                      navigation.registerTab(section.id, node);
+                      if (active) {
+                        activeTabRef.current = node;
+                      }
+                    }}
+                    role="tab"
+                    tabIndex={active ? 0 : -1}
+                    type="button"
+                  >
+                    <SectionIcon
+                      aria-hidden="true"
+                      className={`size-4 shrink-0 ${active ? "text-proof" : "text-ink-muted group-hover/nav-item:text-ink-secondary"}`}
+                    />
+                    {section.label}
+                  </button>
+                );
+              })}
+          </div>
+        </div>
+      ))}
     </nav>
   );
 }

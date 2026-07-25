@@ -7,7 +7,6 @@ import { useCompactComposerReadingMode } from "@/components/app-shell/useCompact
 import { ThreadMessageRow } from "@/components/app-shell/ThreadMessageRow";
 import type { PipelineSnapshot } from "@/components/app-shell/runState";
 import { resolveRunProfiles, type RunProfileId } from "@/components/app-shell/runProfiles";
-import type { InspectorTabId } from "@/components/inspector/InspectorTabs";
 import type {
   Catalog,
   CatalogModel,
@@ -18,7 +17,7 @@ import type {
   ThreadArtifactSummary,
   ThreadMessage
 } from "@/components/app-shell/types";
-import { ArrowDown, CircleAlert, Copy, GitBranch, LoaderCircle, RotateCcw } from "lucide-react";
+import { ArrowDown, CircleAlert, LoaderCircle, RotateCcw } from "lucide-react";
 import type { ReactNode, RefObject } from "react";
 import { useMemo } from "react";
 
@@ -56,7 +55,6 @@ export type MainThreadPaneProps = {
   composerSessionKey: string;
   composerActions: MainThreadPaneComposerActions;
   composerUsageStats: ChatUsageStats | null;
-  copyVisibleThread(): Promise<void> | void;
   creatingChat: boolean;
   currentModel: CatalogModel | undefined;
   currentParameterControls: ModelParameterControls;
@@ -77,7 +75,6 @@ export type MainThreadPaneProps = {
   maxOutputTokens: string;
   notificationSoundEnabled: boolean;
   operationError: string | null;
-  openDetails(tab?: InspectorTabId): void;
   openMcpSettings?(): void;
   openSettings(): void;
   pipeline?: PipelineSnapshot | null;
@@ -139,7 +136,6 @@ export function MainThreadPane({
   composerSessionKey,
   composerActions,
   composerUsageStats,
-  copyVisibleThread,
   creatingChat,
   currentModel,
   currentParameterControls,
@@ -160,7 +156,6 @@ export function MainThreadPane({
   maxOutputTokens,
   notificationSoundEnabled,
   operationError,
-  openDetails,
   openMcpSettings,
   openSettings,
   pipeline = null,
@@ -290,32 +285,7 @@ export function MainThreadPane({
   });
 
   return (
-    <section className="flex min-h-0 min-w-0 flex-col" data-testid="main-thread-pane">
-      <div
-        className="hidden h-10 shrink-0 items-center justify-end gap-1.5 border-b border-separator-subtle bg-surface-thread pl-[max(1rem,env(safe-area-inset-left))] pr-[max(1rem,env(safe-area-inset-right))] lg:flex"
-        aria-label="Chat actions"
-        role="toolbar"
-      >
-          <button
-            className="grid size-9 place-items-center rounded-control text-content-muted hover:bg-surface-hover hover:text-content-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-cyan/55 max-lg:size-11 [@media(hover:none)]:!size-11 [@media(pointer:coarse)]:!size-11"
-            type="button"
-            aria-label="Copy thread"
-            title="Copy thread"
-            onClick={() => void copyVisibleThread()}
-          >
-            <Copy className="size-3.5" aria-hidden="true" />
-          </button>
-          <button
-            className="grid size-9 place-items-center rounded-control text-content-muted hover:bg-surface-hover hover:text-content-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-cyan/55 max-lg:size-11 [@media(hover:none)]:!size-11 [@media(pointer:coarse)]:!size-11"
-            type="button"
-            aria-label="Branch tree"
-            title="Branch tree"
-            onClick={() => openDetails("branch")}
-          >
-            <GitBranch className="size-3.5" aria-hidden="true" />
-          </button>
-      </div>
-
+    <section className="flex min-h-0 min-w-0 flex-1 flex-col bg-answer-paper" data-testid="main-thread-pane">
       {noticeSlot}
 
       <div className="flex min-h-0 flex-1 flex-col">
@@ -561,11 +531,11 @@ export function MainThreadPane({
         </div>
         {showJumpToLatest ? (
           <div
-            className="pointer-events-none flex shrink-0 justify-center bg-surface-thread px-4 py-1.5"
+            className="pointer-events-none flex shrink-0 justify-center bg-answer-paper px-4 py-1.5"
             data-testid="jump-to-latest-region"
           >
             <button
-              className="pointer-events-auto inline-flex h-touch items-center gap-2 rounded-pill border border-separator-subtle bg-surface-overlay px-4 text-xs font-medium text-content-primary shadow-float outline-none hover:bg-surface-hover focus-visible:ring-2 focus-visible:ring-accent-cyan/55 sm:h-control [@media(hover:none)]:!h-touch [@media(pointer:coarse)]:!h-touch"
+              className="pointer-events-auto inline-flex h-touch items-center gap-2 rounded-pill border border-trace-subtle bg-overlay-surface px-4 text-xs font-medium text-ink shadow-float outline-none hover:bg-control-hover focus-visible:ring-2 focus-visible:ring-proof/55 sm:h-control [@media(hover:none)]:!h-touch [@media(pointer:coarse)]:!h-touch"
               type="button"
               aria-label="Jump to latest message"
               data-testid="jump-to-latest"
@@ -574,7 +544,7 @@ export function MainThreadPane({
                 jumpToLatest();
               }}
             >
-              <ArrowDown className="size-3.5 text-accent-cyan" aria-hidden="true" />
+              <ArrowDown className="size-3.5 text-proof" aria-hidden="true" />
               Latest
             </button>
           </div>

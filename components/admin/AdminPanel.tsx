@@ -3,7 +3,6 @@
 import { AdminAccessRulesSection } from "@/components/admin/AdminAccessRulesSection";
 import { AdminConfirmationHost } from "@/components/admin/AdminConfirmationHost";
 import { AdminConsoleHeader } from "@/components/admin/AdminConsoleHeader";
-import { AdminDashboardOverview } from "@/components/admin/AdminDashboardOverview";
 import { AdminDashboardUnavailable } from "@/components/admin/AdminDashboardUnavailable";
 import { AdminFeedbackMessages } from "@/components/admin/AdminFeedbackMessages";
 import { AdminEmailSection } from "@/components/admin/AdminEmailSection";
@@ -15,9 +14,9 @@ import { AdminMcpServersSection } from "@/components/admin/AdminMcpServersSectio
 import { AdminProvidersSection } from "@/components/admin/AdminProvidersSection";
 import { AdminSafetySection } from "@/components/admin/AdminSafetySection";
 import { AdminSectionFrame } from "@/components/admin/AdminSectionFrame";
+import { AdminSectionTabs } from "@/components/admin/AdminSectionTabs";
 import { AdminUsageSection } from "@/components/admin/AdminUsageSection";
 import { AdminUsersSection } from "@/components/admin/AdminUsersSection";
-import { deriveAdminDashboardOverview } from "@/components/admin/adminDashboardView";
 import { primaryButton } from "@/components/admin/adminPrimitives";
 import type { AdminSectionId } from "@/components/admin/adminSections";
 import { formatTime } from "@/components/admin/adminViewUtils";
@@ -36,7 +35,7 @@ import { useAdminSectionNavigation } from "@/components/admin/useAdminSectionNav
 import { useAdminUsersController, type AdminUsersController } from "@/components/admin/useAdminUsersController";
 import type { AdminDashboard } from "@/lib/contracts/admin";
 import { Link2, Plus } from "lucide-react";
-import { useCallback, useMemo } from "react";
+import { useCallback } from "react";
 
 type AdminPanelProps = Readonly<{
   adminEmail: string;
@@ -229,10 +228,6 @@ export function AdminPanel({ adminEmail, adminUserId }: AdminPanelProps) {
     active: Boolean(resource.dashboard) && ["mcp", "model-access", "users"].includes(navigation.activeSection)
   });
   const mcpSection = useAdminMcpSectionState();
-  const overview = useMemo(
-    () => deriveAdminDashboardOverview(resource.dashboard, nowMs),
-    [nowMs, resource.dashboard]
-  );
   const { requestConfirmedAction } = confirmation;
   const requestRevokeAllSessions = useCallback(() => {
     requestConfirmedAction({
@@ -254,26 +249,32 @@ export function AdminPanel({ adminEmail, adminUserId }: AdminPanelProps) {
   return (
     <main
       aria-busy={isBusy}
-      className="min-h-[100dvh] overflow-x-hidden pb-[max(1rem,env(safe-area-inset-bottom))] pl-[max(1rem,env(safe-area-inset-left))] pr-[max(1rem,env(safe-area-inset-right))] pt-[max(1rem,env(safe-area-inset-top))] text-content-primary"
+      className="min-h-[100dvh] overflow-x-hidden bg-research-canvas pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)] pt-[env(safe-area-inset-top)] text-ink"
     >
       <div
         aria-hidden={confirmation.confirmation ? true : undefined}
-        className="mx-auto min-w-0 max-w-[1600px]"
+        className="mx-auto grid min-h-[100dvh] min-w-0 max-w-[1680px] bg-answer-paper lg:grid-cols-[15rem_minmax(0,1fr)] lg:grid-rows-[auto_1fr]"
         data-testid="admin-console-workspace"
         inert={confirmation.confirmation ? true : undefined}
       >
-        <AdminConsoleHeader
-          adminEmail={adminEmail}
-          lastLoadedAt={resource.lastLoadedAt}
-          loading={resource.loading}
-          onRefresh={() => void resource.refresh()}
-          submitting={actionsDisabled}
-        />
-        <AdminFeedbackMessages error={feedback.error} notice={feedback.notice} />
+        <div className="min-w-0 lg:col-start-2 lg:row-start-1">
+          <AdminConsoleHeader
+            adminEmail={adminEmail}
+            lastLoadedAt={resource.lastLoadedAt}
+            loading={resource.loading}
+            onRefresh={() => void resource.refresh()}
+            submitting={actionsDisabled}
+          />
+        </div>
+        <aside className="min-w-0 border-b border-trace-subtle bg-workspace-rail lg:col-start-1 lg:row-span-2 lg:row-start-1 lg:border-b-0 lg:border-r">
+          <AdminSectionTabs navigation={navigation} />
+        </aside>
+        <div className="min-h-0 min-w-0 bg-answer-paper lg:col-start-2 lg:row-start-2">
+          <div className="px-4 sm:px-6 lg:px-8">
+            <AdminFeedbackMessages error={feedback.error} notice={feedback.notice} />
+          </div>
 
-        {resource.dashboard ? (
-          <>
-            <AdminDashboardOverview onSelectSection={navigation.selectSection} overview={overview} />
+          {resource.dashboard ? (
             <AdminSectionFrame
               headerActions={
                 <AdminHeaderAction
@@ -300,12 +301,12 @@ export function AdminPanel({ adminEmail, adminUserId }: AdminPanelProps) {
                 users={users}
               />
             </AdminSectionFrame>
-          </>
-        ) : (
-          <section aria-label="Admin data state" className="mt-3 rounded-panel bg-surface-navigation/90">
-            <AdminDashboardUnavailable loading={resource.loading} />
-          </section>
-        )}
+          ) : (
+            <section aria-label="Admin data state" className="min-h-full bg-answer-paper">
+              <AdminDashboardUnavailable loading={resource.loading} />
+            </section>
+          )}
+        </div>
       </div>
       <AdminConfirmationHost controller={confirmation} onClosed={navigation.restoreFocusAfterMutation} />
     </main>

@@ -30,7 +30,10 @@ describe("AdminSectionTabs", () => {
       </>
     );
 
-    expect(screen.getByRole("tablist", { name: "Admin sections" })).toBeVisible();
+    expect(screen.getByRole("tablist", { name: "Control Center sections" })).toBeVisible();
+    expect(screen.getByText("Personal")).toBeInTheDocument();
+    expect(screen.getByText("Team")).toBeInTheDocument();
+    expect(screen.getByText("Advanced")).toBeInTheDocument();
     expect(screen.getAllByRole("tab").map((tab) => tab.textContent)).toEqual(adminSections.map((section) => section.label));
     expect(screen.getByRole("tab", { name: "Invites" })).toHaveAttribute("aria-selected", "true");
     expect(screen.getByRole("tab", { name: "Invites" })).toHaveAttribute("tabindex", "0");
@@ -64,7 +67,7 @@ describe("AdminSectionTabs", () => {
 
   it("keeps a newly active compact tab visible by scrolling only its tablist", async () => {
     const view = render(<AdminSectionTabs navigation={navigation("users")} />);
-    const tablist = screen.getByRole("tablist", { name: "Admin sections" });
+    const tablist = screen.getByRole("tablist", { name: "Control Center sections" });
     const providers = screen.getByRole("tab", { name: "Providers" });
     tablist.scrollLeft = 0;
     vi.spyOn(tablist, "getBoundingClientRect").mockReturnValue({

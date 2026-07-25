@@ -90,16 +90,16 @@ describe("useAdminSectionNavigation", () => {
       expect(scrollIntoView).not.toHaveBeenCalled();
     }
 
-    await press("Users", "ArrowLeft", "Safety");
-    await press("Safety", "ArrowRight", "Users");
-    await press("Users", "ArrowDown", "Usage");
-    await press("Usage", "ArrowUp", "Users");
+    await press("Users", "ArrowLeft", "Usage");
+    await press("Usage", "ArrowRight", "Users");
+    await press("Users", "ArrowDown", "Groups");
+    await press("Groups", "ArrowUp", "Users");
     await press("Users", "End", "Safety");
-    await press("Safety", "Home", "Users");
+    await press("Safety", "Home", "Providers");
 
-    const accepted = fireEvent.keyDown(screen.getByRole("tab", { name: "Users" }), { key: "PageDown" });
+    const accepted = fireEvent.keyDown(screen.getByRole("tab", { name: "Providers" }), { key: "PageDown" });
     expect(accepted).toBe(true);
-    expect(screen.getByRole("tab", { name: "Users" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("tab", { name: "Providers" })).toHaveAttribute("aria-selected", "true");
   });
 
   it("does not steal valid focus and restores the active operational tab after an opener disappears", async () => {

@@ -183,7 +183,6 @@ function renderPane(overrides: Partial<ComponentProps<typeof MainThreadPane>> = 
     composerDisabledHint: null,
     composerSessionKey: "chat:chat-1",
     composerUsageStats: null,
-    copyVisibleThread: vi.fn(),
     creatingChat: false,
     currentModel: undefined,
     currentParameterControls: defaultParameterControls(null),
@@ -204,7 +203,6 @@ function renderPane(overrides: Partial<ComponentProps<typeof MainThreadPane>> = 
     maxOutputTokens: "1024",
     notificationSoundEnabled: false,
     operationError: null,
-    openDetails: vi.fn(),
     openSettings: vi.fn(),
     reasoningEffort: "none",
     reasoningMode: "standard",
@@ -901,27 +899,21 @@ describe("MainThreadPane", () => {
     expect(screen.queryByTestId("thread-reading-spacer")).not.toBeInTheDocument();
   });
 
-  it("keeps thread toolbar and jump-to-latest actions wired", () => {
-    const copyVisibleThread = vi.fn();
+  it("keeps the conversation body free of duplicate header actions and wires jump-to-latest", () => {
     const jumpToLatest = vi.fn();
-    const openDetails = vi.fn();
     renderPane({
       ...readyComposerOverrides,
-      copyVisibleThread,
       jumpToLatest,
-      openDetails,
       showJumpToLatest: true
     });
 
-    fireEvent.click(screen.getByRole("button", { name: "Copy thread" }));
-    fireEvent.click(screen.getByRole("button", { name: "Branch tree" }));
     fireEvent.click(screen.getByRole("button", { name: "Jump to latest message" }));
 
     expect(screen.getByTestId("jump-to-latest-region")).not.toHaveClass("absolute");
     expect(screen.getByTestId("thread")).toHaveClass("min-h-0", "flex-1", "[overflow-anchor:none]");
-    expect(screen.getByRole("toolbar", { name: "Chat actions" })).toHaveClass("hidden", "lg:flex");
-    expect(copyVisibleThread).toHaveBeenCalledOnce();
-    expect(openDetails).toHaveBeenCalledWith("branch");
+    expect(screen.queryByRole("toolbar", { name: "Chat actions" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Copy thread" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Branch tree" })).not.toBeInTheDocument();
     expect(screen.queryByRole("combobox", { name: "Chat folder" })).not.toBeInTheDocument();
     expect(jumpToLatest).toHaveBeenCalledOnce();
   });

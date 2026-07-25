@@ -40,12 +40,11 @@ const expectedFeatureKeys = [
 ] as const;
 
 type MainThreadProjectionKeys =
-  | keyof ShellThreadView
+  | Exclude<keyof ShellThreadView, "copyVisibleThread">
   | keyof ShellComposerView
   | "activeChatId"
   | "creatingChat"
   | "noticeSlot"
-  | "openDetails"
   | "openMcpSettings"
   | "openSettings"
   | "pipeline"
@@ -574,12 +573,22 @@ describe("PowerAppShellView Details composition", () => {
   it("defaults to navigation plus an unsqueezed conversation with Details absent", () => {
     render(<StatefulView />);
 
-    expect(screen.getByTestId("left-chat-pane")).toBeVisible();
-    expect(screen.getByTestId("main-thread-pane")).toBeVisible();
+    const shell = screen.getByTestId("app-shell");
+    const grid = screen.getByTestId("shell-workspace-grid");
+    const rail = screen.getByTestId("workspace-rail");
+    const conversation = screen.getByTestId("conversation-column");
+
+    expect(shell).toHaveClass("h-dvh", "bg-research-canvas", "text-ink");
+    expect(shell).not.toHaveClass("shell-reveal");
+    expect(rail).toHaveClass("bg-workspace-rail", "lg:grid");
+    expect(rail).toContainElement(screen.getByTestId("left-chat-pane"));
+    expect(conversation).toHaveClass("bg-answer-paper", "flex-col");
+    expect(conversation).toContainElement(screen.getByTestId("top-rail"));
+    expect(conversation).toContainElement(screen.getByTestId("main-thread-pane"));
     expect(screen.queryByTestId("details-pane")).not.toBeInTheDocument();
-    expect(screen.getByTestId("shell-workspace-grid")).toHaveAttribute("data-details-presentation", "closed");
-    expect(screen.getByTestId("shell-workspace-grid").className).toContain("minmax(0,1fr)");
-    expect(screen.getByTestId("shell-workspace-grid").className).not.toContain("minmax(480px");
+    expect(grid).toHaveAttribute("data-details-presentation", "closed");
+    expect(grid).toHaveClass("lg:grid-cols-[16rem_minmax(0,1fr)]");
+    expect(grid.className).not.toContain("minmax(480px");
     expect(screen.getByTestId("shell-primary-content")).not.toHaveAttribute("inert");
   });
 
@@ -596,6 +605,7 @@ describe("PowerAppShellView Details composition", () => {
     expect(drawer.className).toContain("right-[max(0.5rem,env(safe-area-inset-right))]");
     expect(drawer.className).toContain("max-sm:pl-[env(safe-area-inset-left)]");
     expect(drawer.className).toContain("max-sm:pr-[env(safe-area-inset-right)]");
+    expect(screen.getByTestId("details-pane-backdrop")).not.toHaveClass("backdrop-blur-sm");
     expect(screen.getByTestId("shell-primary-content")).toHaveAttribute("inert");
     await waitFor(() => expect(screen.getByRole("button", { name: "Close details" })).toHaveFocus());
 
@@ -632,9 +642,13 @@ describe("PowerAppShellView Details composition", () => {
 
     const pinned = screen.getByTestId("details-pane");
     expect(pinned).toHaveAttribute("data-presentation", "pinned");
+    expect(pinned).toHaveClass("border-trace-subtle", "bg-overlay-surface", "min-[1440px]:flex");
     expect(pinned).not.toHaveAttribute("role", "dialog");
     expect(screen.queryByTestId("details-pane-backdrop")).not.toBeInTheDocument();
     expect(screen.getByTestId("shell-primary-content")).not.toHaveAttribute("inert");
+    expect(screen.getByTestId("shell-workspace-grid")).toHaveClass(
+      "min-[1440px]:grid-cols-[16rem_minmax(0,1fr)_23rem]"
+    );
     expect(trigger).not.toHaveFocus();
 
     fireEvent.click(pinned.querySelector("button[aria-label='Close details']") as HTMLButtonElement);
@@ -823,6 +837,8 @@ describe("PowerAppShellView mobile Workspace composition", () => {
     expect(workspace.className).toContain("top-[max(0.5rem,env(safe-area-inset-top))]");
     expect(workspace.className).toContain("bottom-[max(0.5rem,env(safe-area-inset-bottom))]");
     expect(workspace.style.width).toContain("env(safe-area-inset-right)");
+    expect(workspace).toHaveClass("border-trace-subtle", "bg-workspace-rail");
+    expect(screen.getByTestId("workspace-pane-mobile-backdrop")).not.toHaveClass("backdrop-blur-sm");
     expect(close.className).toContain("size-11");
     expect(screen.getByTestId("shell-primary-content")).toHaveAttribute("inert");
 

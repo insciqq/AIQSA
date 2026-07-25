@@ -20,30 +20,37 @@ describe("theme preferences", () => {
   });
 
   it("validates stored theme ids with the default as fallback", () => {
-    expect(DEFAULT_THEME_ID).toBe("aiqsa");
+    expect(DEFAULT_THEME_ID).toBe("neutral");
     expect(AIQSA_THEMES.find((theme) => theme.id === "neutral")).toEqual(
       expect.objectContaining({
+        accentLabel: "Teal",
         colorScheme: "light",
-        description: "Neutral gray and white palette",
+        description: "Quiet neutral light palette",
         name: "Classic Light"
       })
     );
     expect(AIQSA_THEMES.find((theme) => theme.id === "classic-dark")).toEqual(
       expect.objectContaining({
         colorScheme: "dark",
-        description: "Neutral charcoal palette",
+        description: "Charcoal dark research palette",
         name: "Classic Dark"
       })
     );
-    expect(AIQSA_THEMES).toHaveLength(5);
+    expect(AIQSA_THEMES.map((theme) => theme.id)).toEqual([
+      "aiqsa",
+      "graphite",
+      "verdant",
+      "classic-dark",
+      "neutral"
+    ]);
     expect(resolveThemeId("classic-dark")).toBe("classic-dark");
     expect(resolveThemeId("graphite")).toBe("graphite");
     expect(resolveThemeId("neutral")).toBe("neutral");
     expect(resolveThemeId("unknown")).toBe(DEFAULT_THEME_ID);
-    expect(resolveThemeColorScheme(DEFAULT_THEME_ID)).toBe("dark");
+    expect(resolveThemeColorScheme(DEFAULT_THEME_ID)).toBe("light");
     expect(resolveThemeColorScheme("classic-dark")).toBe("dark");
     expect(resolveThemeColorScheme("neutral")).toBe("light");
-    expect(resolveThemeColorScheme("unknown")).toBe("dark");
+    expect(resolveThemeColorScheme("unknown")).toBe("light");
   });
 
   it("stores and applies the selected theme locally", () => {

@@ -15,15 +15,16 @@ describe("AdminConsoleHeader", () => {
       />
     );
 
-    expect(screen.getByText(/refreshing admin data/i)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Refresh admin overview" })).toBeDisabled();
-    expect(screen.getByRole("link", { name: "Return to workspace" })).toHaveAttribute("href", "/");
+    expect(screen.getByRole("heading", { name: "Control Center" })).toBeInTheDocument();
+    expect(screen.getByText("admin@example.com")).toBeInTheDocument();
+    expect(screen.getByText("Refreshing…")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Refresh Control Center" })).toBeDisabled();
+    expect(screen.getByRole("link", { name: "Return to chat" })).toHaveAttribute("href", "/");
     expect(screen.getByRole("banner")).toHaveClass(
+      "bg-answer-paper",
+      "border-trace-subtle",
       "sm:[@media(max-height:32rem)]:!flex-row",
       "sm:[@media(max-height:32rem)]:!py-2"
-    );
-    expect(screen.getByText("Admin console").parentElement).toHaveClass(
-      "sm:[@media(max-height:32rem)]:!hidden"
     );
 
     view.rerender(
@@ -35,9 +36,9 @@ describe("AdminConsoleHeader", () => {
         submitting
       />
     );
-    fireEvent.click(screen.getByRole("button", { name: "Refresh admin overview" }));
+    fireEvent.click(screen.getByRole("button", { name: "Refresh Control Center" }));
 
-    expect(screen.getByText(/saving admin changes/i)).toBeInTheDocument();
+    expect(screen.getByText("Saving changes…")).toBeInTheDocument();
     expect(onRefresh).toHaveBeenCalledOnce();
     expect(onRefresh).toHaveBeenCalledWith();
   });

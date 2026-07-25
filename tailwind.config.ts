@@ -5,6 +5,37 @@ const config = {
   theme: {
     extend: {
       colors: {
+        "research-canvas": "rgb(var(--research-canvas) / <alpha-value>)",
+        "workspace-rail": "rgb(var(--workspace-rail) / <alpha-value>)",
+        "answer-paper": "rgb(var(--answer-paper) / <alpha-value>)",
+        "composer-surface": "rgb(var(--composer-surface) / <alpha-value>)",
+        control: {
+          surface: "rgb(var(--control-surface) / <alpha-value>)",
+          hover: "rgb(var(--control-hover) / <alpha-value>)",
+          pressed: "rgb(var(--control-pressed) / <alpha-value>)",
+          selected: "rgb(var(--control-selected) / <alpha-value>)"
+        },
+        "overlay-surface": "rgb(var(--overlay-surface) / <alpha-value>)",
+        trace: {
+          subtle: "rgb(var(--trace-subtle) / <alpha-value>)",
+          strong: "rgb(var(--trace-strong) / <alpha-value>)"
+        },
+        ink: {
+          DEFAULT: "rgb(var(--ink) / <alpha-value>)",
+          secondary: "rgb(var(--ink-secondary) / <alpha-value>)",
+          muted: "rgb(var(--ink-muted) / <alpha-value>)",
+          disabled: "rgb(var(--ink-disabled) / <alpha-value>)"
+        },
+        proof: {
+          DEFAULT: "rgb(var(--proof) / <alpha-value>)",
+          hover: "rgb(var(--proof-hover) / <alpha-value>)",
+          contrast: "rgb(var(--proof-contrast) / <alpha-value>)"
+        },
+        positive: "rgb(var(--positive) / <alpha-value>)",
+        caution: "rgb(var(--caution) / <alpha-value>)",
+        critical: "rgb(var(--critical) / <alpha-value>)",
+        scrim: "rgb(var(--scrim) / <alpha-value>)",
+        /* Temporary class aliases for legacy renderers during the in-place revamp. */
         surface: {
           canvas: "rgb(var(--surface-canvas) / <alpha-value>)",
           navigation: "rgb(var(--surface-navigation) / <alpha-value>)",
@@ -31,8 +62,7 @@ const config = {
           green: "rgb(var(--accent-green) / <alpha-value>)",
           amber: "rgb(var(--accent-amber) / <alpha-value>)",
           rose: "rgb(var(--accent-rose) / <alpha-value>)"
-        },
-        scrim: "rgb(var(--overlay-scrim) / <alpha-value>)"
+        }
       },
       fontFamily: {
         sans: [

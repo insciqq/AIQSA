@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { ComponentProps } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PipelineSnapshot } from "./runState";
@@ -50,10 +50,16 @@ describe("TopRail", () => {
   it("renders the current chat title once and gives a blank workspace an unambiguous title", () => {
     const { rerender, props } = renderTopRail();
 
+    expect(screen.getByTestId("top-rail")).toHaveClass(
+      "border-trace-subtle",
+      "bg-answer-paper"
+    );
     expect(screen.getByRole("heading", { level: 1, name: "Research notes" })).toBeVisible();
     expect(screen.getByTestId("current-chat-title")).toHaveTextContent("Research notes");
-    expect(screen.getByTestId("current-chat-title")).toHaveClass("sr-only", "lg:not-sr-only");
+    expect(screen.getByTestId("current-chat-title")).toHaveClass("truncate", "text-ink");
+    expect(screen.getByTestId("current-chat-title")).not.toHaveClass("sr-only");
     expect(screen.getAllByText("Research notes")).toHaveLength(1);
+    expect(screen.queryByLabelText("AIQSA")).not.toBeInTheDocument();
 
     rerender(<TopRail {...props} activeChatId={null} activeChatTitle="Ignored title" />);
 
@@ -171,13 +177,13 @@ describe("TopRail", () => {
     expect(screen.getByRole("button", { name: "Open details" })).toBeEnabled();
   });
 
-  it("shows the admin console entry only inside an entitled account menu", () => {
+  it("shows the Control Center entry only inside an entitled account menu", () => {
     const { props, rerender } = renderTopRail();
     const trigger = screen.getByRole("button", { name: "Account menu" });
     expect(trigger).not.toHaveAttribute("aria-controls");
     fireEvent.click(trigger);
     expect(trigger).toHaveAttribute("aria-controls", "account-menu");
-    expect(screen.queryByRole("menuitem", { name: "Admin console" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("menuitem", { name: "Control Center" })).not.toBeInTheDocument();
 
     fireEvent.click(trigger);
     expect(trigger).not.toHaveAttribute("aria-controls");
@@ -185,7 +191,7 @@ describe("TopRail", () => {
     rerender(<TopRail {...props} adminHref="/admin" />);
     fireEvent.click(screen.getByRole("button", { name: "Account menu" }));
 
-    expect(screen.getByRole("menuitem", { name: "Admin console" })).toHaveAttribute("href", "/admin");
+    expect(screen.getByRole("menuitem", { name: "Control Center" })).toHaveAttribute("href", "/admin");
   });
 
   it("shows the canonical account email as contained noninteractive identity text", () => {
@@ -216,7 +222,7 @@ describe("TopRail", () => {
 
     fireEvent.click(trigger);
     expect(screen.getByRole("menu", { name: "Account" })).toBeVisible();
-    expect(screen.getByRole("menuitem", { name: "Admin console" })).toHaveAttribute("href", "/admin");
+    expect(screen.getByRole("menuitem", { name: "Control Center" })).toHaveAttribute("href", "/admin");
 
     fireEvent.click(screen.getByRole("menuitem", { name: "Settings" }));
     expect(trigger).toHaveFocus();
@@ -334,25 +340,28 @@ describe("TopRail", () => {
     expect(screen.queryByRole("menu", { name: "Account" })).not.toBeInTheDocument();
   });
 
-  it("keeps narrow touch chrome reachable without exposing the decorative brand", () => {
-    renderTopRail({
+  it("keeps narrow touch chrome reachable and moves conversation actions into one menu", async () => {
+    const { callbacks } = renderTopRail({
       adminHref: "/admin",
       pipeline: { answer: "active", phase: "running", question: "done", search: "done" }
     });
 
-    expect(screen.getByLabelText("AIQSA")).toHaveClass("hidden", "sm:flex");
+    expect(screen.queryByLabelText("AIQSA")).not.toBeInTheDocument();
+    expect(screen.getByTestId("current-chat-title")).toHaveClass("truncate", "text-ink");
     expect(screen.getByRole("button", { name: "Open workspace" })).toHaveClass(
       "[@media(hover:none)]:!size-11"
     );
     const newChat = screen.getByRole("button", { name: "Start new chat" });
     expect(newChat).toHaveClass("lg:hidden", "[@media(hover:none)]:!size-11");
-    expect(newChat.parentElement).toHaveClass("gap-0", "sm:gap-2");
+    expect(newChat.parentElement).toHaveClass("gap-0", "sm:gap-1.5");
     expect(screen.getByRole("button", { name: "Copy thread" })).toHaveClass(
-      "lg:hidden",
+      "hidden",
+      "lg:grid",
       "[@media(hover:none)]:!size-11"
     );
     expect(screen.getByRole("button", { name: "Branch tree" })).toHaveClass(
-      "lg:hidden",
+      "hidden",
+      "lg:grid",
       "[@media(pointer:coarse)]:!size-11"
     );
     expect(screen.getByTestId("pipeline-indicator")).toHaveClass(
@@ -360,8 +369,30 @@ describe("TopRail", () => {
       "[@media(hover:none)]:!min-w-touch"
     );
     expect(screen.getByRole("button", { name: "Share anonymously" })).toHaveClass(
-      "[@media(pointer:coarse)]:!min-w-touch"
+      "inline-flex",
+      "size-11",
+      "lg:h-9",
+      "[@media(pointer:coarse)]:!size-11"
     );
+    expect(screen.getByRole("button", { name: "Open details" })).toHaveClass(
+      "inline-flex",
+      "size-11",
+      "lg:h-9"
+    );
+    const conversationActions = screen.getByRole("button", { name: "Conversation actions" });
+    expect(conversationActions.parentElement).toHaveClass("lg:hidden");
+    fireEvent.click(conversationActions);
+
+    const menu = screen.getByRole("menu", { name: "Conversation actions" });
+    expect(menu).toHaveClass("border-trace-subtle", "bg-overlay-surface");
+    expect(within(menu).getByRole("menuitem", { name: "Copy thread" })).toBeVisible();
+    expect(within(menu).getByRole("menuitem", { name: "Branch tree" })).toBeVisible();
+    expect(within(menu).queryByRole("menuitem", { name: "Share anonymously" })).not.toBeInTheDocument();
+    expect(within(menu).queryByRole("menuitem", { name: "Open details" })).not.toBeInTheDocument();
+
+    fireEvent.click(within(menu).getByRole("menuitem", { name: "Copy thread" }));
+    expect(conversationActions).toHaveFocus();
+    await waitFor(() => expect(callbacks.onCopyThread).toHaveBeenCalledOnce());
     expect(screen.getByRole("button", { name: "Account menu" })).toHaveClass(
       "[@media(pointer:coarse)]:!size-11"
     );

@@ -1,4 +1,4 @@
-import { AdminInactiveSectionPanels, AdminSectionTabs } from "@/components/admin/AdminSectionTabs";
+import { AdminInactiveSectionPanels } from "@/components/admin/AdminSectionTabs";
 import { SectionHeader } from "@/components/admin/adminPrimitives";
 import { adminSectionPanelId, adminSectionTabId } from "@/components/admin/adminSections";
 import type { AdminSectionNavigation } from "@/components/admin/useAdminSectionNavigation";
@@ -17,10 +17,9 @@ export function AdminSectionFrame({
 
   return (
     <>
-      <AdminSectionTabs navigation={navigation} />
       <section
         aria-labelledby={adminSectionTabId(activeSection)}
-        className="mt-3 overflow-hidden rounded-panel bg-surface-navigation/90"
+        className="min-h-full min-w-0 bg-answer-paper"
         data-testid={`admin-section-${activeSection}`}
         id={adminSectionPanelId(activeSection)}
         role="tabpanel"

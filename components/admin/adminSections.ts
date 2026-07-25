@@ -25,74 +25,92 @@ export type AdminSectionId =
   | "users";
 
 export type AdminSectionMove = "first" | "last" | "next" | "previous";
+export type AdminSectionGroupId = "advanced" | "personal" | "team";
 
 export type AdminSection = Readonly<{
   Icon: LucideIcon;
   description: string;
+  group: AdminSectionGroupId;
   id: AdminSectionId;
   label: string;
 }>;
 
 export const defaultAdminSection: AdminSectionId = "users";
 
+export const adminSectionGroups = [
+  { id: "personal", label: "Personal" },
+  { id: "team", label: "Team" },
+  { id: "advanced", label: "Advanced" }
+] as const satisfies readonly Readonly<{ id: AdminSectionGroupId; label: string }>[];
+
 export const adminSections = [
   {
-    Icon: Users,
-    description: "Review accounts, approvals, memberships, and user session actions.",
-    id: "users",
-    label: "Users"
+    Icon: ServerCog,
+    description: "Configure, test, activate, and assign server-owned LLM connections and keys.",
+    group: "personal",
+    id: "providers",
+    label: "Providers"
   },
   {
     Icon: BarChart3,
     description: "Review provider-reported token usage by group and user.",
+    group: "personal",
     id: "usage",
     label: "Usage"
   },
   {
+    Icon: Users,
+    description: "Review accounts, approvals, memberships, and user session actions.",
+    group: "team",
+    id: "users",
+    label: "Users"
+  },
+  {
     Icon: Boxes,
     description: "Create, rename, archive, and inspect operational groups.",
+    group: "team",
     id: "groups",
     label: "Groups"
   },
   {
     Icon: SlidersHorizontal,
     description: "Toggle provider, model, and search access for active groups.",
+    group: "team",
     id: "model-access",
     label: "Model access"
   },
   {
-    Icon: ServerCog,
-    description: "Configure, test, activate, and assign server-owned LLM connections and keys.",
-    id: "providers",
-    label: "Providers"
-  },
-  {
-    Icon: Wrench,
-    description: "Install, test, activate, update, and grant trusted MCP servers.",
-    id: "mcp",
-    label: "MCP servers"
-  },
-  {
-    Icon: Mail,
-    description: "Configure, test, activate, and monitor installation email delivery.",
-    id: "email",
-    label: "Email delivery"
-  },
-  {
     Icon: Link2,
     description: "Create one-off invitations and revoke open invite links.",
+    group: "team",
     id: "invites",
     label: "Invites"
   },
   {
     Icon: Globe2,
     description: "Approve exact emails or domains and assign their default groups.",
+    group: "team",
     id: "access-rules",
     label: "Access rules"
   },
   {
+    Icon: Wrench,
+    description: "Install, test, activate, update, and grant trusted MCP servers.",
+    group: "advanced",
+    id: "mcp",
+    label: "MCP servers"
+  },
+  {
+    Icon: Mail,
+    description: "Configure, test, activate, and monitor installation email delivery.",
+    group: "advanced",
+    id: "email",
+    label: "Email delivery"
+  },
+  {
     Icon: ShieldAlert,
     description: "High-risk session controls live here instead of the main header.",
+    group: "advanced",
     id: "safety",
     label: "Safety"
   }
@@ -162,5 +180,8 @@ export function adminSectionPanelId(section: AdminSectionId): string {
 }
 
 export function adminSectionConfig(section: AdminSectionId): AdminSection {
-  return adminSections.find((candidate) => candidate.id === section) ?? adminSections[0];
+  return (
+    adminSections.find((candidate) => candidate.id === section) ??
+    adminSections.find((candidate) => candidate.id === defaultAdminSection)!
+  );
 }
