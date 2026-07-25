@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  changeMcpRemoteSource,
   defaultMcpDraft,
   diffMcpToolInventory,
-  normalizeMcpImport
+  normalizeMcpImport,
+  preparedMcpOAuthPolicy
 } from "./adminMcpDraft";
 
 describe("adminMcpDraft", () => {
@@ -54,7 +56,14 @@ describe("adminMcpDraft", () => {
 
   it("normalizes direct URLs and common uvx and OCI launch shapes", () => {
     expect(normalizeMcpImport("https://mcp.notion.com/mcp")).toMatchObject({
-      draft: { source: { kind: "remote", url: "https://mcp.notion.com/mcp" } },
+      draft: {
+        auth: {
+          allowedAuthorizationServerOrigins: ["https://mcp.notion.com"],
+          mode: "oauth",
+          scopes: []
+        },
+        source: { kind: "remote", url: "https://mcp.notion.com/mcp" }
+      },
       name: "mcp.notion.com"
     });
     expect(normalizeMcpImport(JSON.stringify({
@@ -75,6 +84,83 @@ describe("adminMcpDraft", () => {
       image: "ghcr.io/team/mcp@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       kind: "oci"
     });
+  });
+
+  it("prepares the official hosted Notion JSON for same-origin OAuth", () => {
+    const normalized = normalizeMcpImport(JSON.stringify({
+      mcpServers: {
+        notion: { url: "https://mcp.notion.com/mcp" }
+      }
+    }));
+
+    expect(normalized).toMatchObject({
+      name: "notion",
+      draft: {
+        auth: {
+          allowedAuthorizationServerOrigins: ["https://mcp.notion.com"],
+          mode: "oauth",
+          scopes: []
+        },
+        source: { kind: "remote", url: "https://mcp.notion.com/mcp" }
+      }
+    });
+  });
+
+  it("keeps generic URL imports unauthenticated while preparing explicit same-origin OAuth", () => {
+    const generic = normalizeMcpImport(JSON.stringify({
+      mcpServers: { example: { url: "https://mcp.example.test/mcp" } }
+    }));
+    const oauth = normalizeMcpImport(JSON.stringify({
+      mcpServers: { example: { auth: "oauth", url: "https://mcp.example.test/mcp" } }
+    }));
+
+    expect(generic.draft.auth).toEqual({ mode: "none" });
+    expect(oauth.draft.auth).toEqual({
+      allowedAuthorizationServerOrigins: ["https://mcp.example.test"],
+      mode: "oauth",
+      scopes: []
+    });
+  });
+
+  it("prepares and follows a remote endpoint origin without replacing reviewed external origins", () => {
+    expect(preparedMcpOAuthPolicy({ kind: "remote", url: "https://mcp.example.test/path" }))
+      .toEqual({
+        allowedAuthorizationServerOrigins: ["https://mcp.example.test"],
+        mode: "oauth",
+        scopes: []
+      });
+    expect(preparedMcpOAuthPolicy({ kind: "remote", url: "not a URL" }))
+      .toEqual({ allowedAuthorizationServerOrigins: [], mode: "oauth", scopes: [] });
+
+    const sameOriginDraft = {
+      ...defaultMcpDraft("remote"),
+      auth: {
+        allowedAuthorizationServerOrigins: ["https://old.example.test"],
+        mode: "oauth" as const,
+        scopes: []
+      },
+      source: { kind: "remote" as const, url: "https://old.example.test/mcp" }
+    };
+    expect(changeMcpRemoteSource(
+      sameOriginDraft,
+      { kind: "remote", url: "https://new.example.test/mcp" }
+    ).auth).toEqual({
+      allowedAuthorizationServerOrigins: ["https://new.example.test"],
+      mode: "oauth",
+      scopes: []
+    });
+
+    const reviewed = {
+      ...sameOriginDraft,
+      auth: {
+        ...sameOriginDraft.auth,
+        allowedAuthorizationServerOrigins: ["https://login.example.test"]
+      }
+    };
+    expect(changeMcpRemoteSource(
+      reviewed,
+      { kind: "remote", url: "https://new.example.test/mcp" }
+    ).auth).toEqual(reviewed.auth);
   });
 
   it("normalizes familiar pasted launch and install commands without executing shell", () => {

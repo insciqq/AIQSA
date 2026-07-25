@@ -189,6 +189,42 @@ describe("AdminMcpServersSection", () => {
     }));
   });
 
+  it("prepares the official hosted Notion snippet for same-origin OAuth", async () => {
+    const view = viewController();
+    render(<TestSection controller={view.controller} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "New server" }));
+    fireEvent.change(screen.getByLabelText("Configuration JSON, URL, or install command"), {
+      target: {
+        value: JSON.stringify({
+          mcpServers: {
+            notion: { url: "https://mcp.notion.com/mcp" }
+          }
+        })
+      }
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Normalize and review" }));
+
+    expect(screen.getByLabelText("Display name")).toHaveValue("notion");
+    expect(screen.getByLabelText("Mode")).toHaveValue("oauth");
+    expect(screen.getByLabelText("Allowed authorization server origins"))
+      .toHaveValue("https://mcp.notion.com");
+    expect(screen.getByText(/pre-fills the MCP endpoint origin/i)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Create draft" }));
+    await waitFor(() => expect(view.actions.create).toHaveBeenCalledTimes(1));
+    expect(view.actions.create).toHaveBeenCalledWith(expect.objectContaining({
+      draft: expect.objectContaining({
+        auth: {
+          allowedAuthorizationServerOrigins: ["https://mcp.notion.com"],
+          mode: "oauth",
+          scopes: []
+        }
+      }),
+      name: "notion"
+    }));
+  });
+
   it("uses an in-flow irreversible confirmation before deleting", () => {
     const view = viewController();
     render(<TestSection controller={view.controller} />);

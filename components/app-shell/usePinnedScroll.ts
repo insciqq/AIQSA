@@ -2,6 +2,9 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 
 const defaultPinnedThresholdPx = 96;
 const defaultUnseenLatestThresholdPx = 48;
+const defaultReadingContextMinPx = 48;
+const defaultReadingContextMaxPx = 112;
+const defaultReadingContextViewportRatio = 0.18;
 
 type ScrollMetrics = Pick<HTMLElement, "clientHeight" | "scrollHeight" | "scrollTop">;
 
@@ -49,7 +52,7 @@ export function usePinnedScroll<T extends HTMLElement>({
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
   const pinnedRef = useRef(true);
   const readingAnchorPendingRef = useRef(false);
-  const readingAnswerRef = useRef(false);
+  const readingAnchorActiveRef = useRef(false);
   const readingAnchorPresentRef = useRef(false);
   const resetStateRef = useRef<{ initialized: boolean; value: unknown }>({
     initialized: false,
@@ -105,7 +108,8 @@ export function usePinnedScroll<T extends HTMLElement>({
   }, [setJumpToLatestState]);
 
   const updateReadingSpacer = useCallback((element: T, anchorKey: string) => {
-    const target = Array.from(element.querySelectorAll<HTMLElement>(threadMessageSelector)).find(
+    const messages = Array.from(element.querySelectorAll<HTMLElement>(threadMessageSelector));
+    const target = messages.find(
       (candidate) => candidate.dataset.messageId === anchorKey
     );
     const spacer = element.querySelector<HTMLElement>(readingSpacerSelector);
@@ -113,27 +117,45 @@ export function usePinnedScroll<T extends HTMLElement>({
       return null;
     }
 
-    const targetHeight = target.getBoundingClientRect().height;
-    spacer.style.height = `${Math.max(0, element.clientHeight - targetHeight)}px`;
-    return target;
+    const liveAnswer = messages.at(-1) ?? target;
+    const liveAnswerHeight = Math.max(0, liveAnswer.getBoundingClientRect().height);
+    spacer.style.height = `${Math.max(0, element.clientHeight - liveAnswerHeight)}px`;
+
+    const targetHeight = Math.max(0, target.getBoundingClientRect().height);
+    const preferredContext = Math.min(
+      defaultReadingContextMaxPx,
+      Math.max(
+        defaultReadingContextMinPx,
+        element.clientHeight * defaultReadingContextViewportRatio
+      )
+    );
+    const contextOffset = Math.min(
+      preferredContext,
+      Math.max(0, element.clientHeight - targetHeight)
+    );
+
+    return { contextOffset, target };
   }, []);
 
-  const scheduleAnswerStart = useCallback((anchorKey: string) => {
+  const scheduleReadingAnchor = useCallback((anchorKey: string) => {
     readingAnchorPendingRef.current = true;
-    readingAnswerRef.current = true;
+    readingAnchorActiveRef.current = true;
     pinnedRef.current = false;
     showJumpToLatestRef.current = false;
 
     scheduleFrame((element) => {
-      const target = updateReadingSpacer(element, anchorKey);
-      if (!target) {
+      const anchor = updateReadingSpacer(element, anchorKey);
+      if (!anchor) {
         readingAnchorPendingRef.current = false;
         return;
       }
 
       const containerTop = element.getBoundingClientRect().top;
-      const targetTop = target.getBoundingClientRect().top;
-      element.scrollTop += targetTop - containerTop;
+      const targetTop = anchor.target.getBoundingClientRect().top;
+      element.scrollTop = Math.max(
+        0,
+        element.scrollTop + targetTop - containerTop - anchor.contextOffset
+      );
       readingAnchorPendingRef.current = false;
       setPinnedState(false);
       setJumpToLatestState(false);
@@ -142,7 +164,7 @@ export function usePinnedScroll<T extends HTMLElement>({
 
   const scheduleScrollToBottom = useCallback(() => {
     readingAnchorPendingRef.current = false;
-    readingAnswerRef.current = false;
+    readingAnchorActiveRef.current = false;
     pinnedRef.current = true;
     showJumpToLatestRef.current = false;
     scheduleFrame((element) => {
@@ -153,7 +175,7 @@ export function usePinnedScroll<T extends HTMLElement>({
 
   const scheduleScrollToTop = useCallback(() => {
     readingAnchorPendingRef.current = false;
-    readingAnswerRef.current = false;
+    readingAnchorActiveRef.current = false;
     readingAnchorPresentRef.current = false;
     pinnedRef.current = true;
     showJumpToLatestRef.current = false;
@@ -183,8 +205,8 @@ export function usePinnedScroll<T extends HTMLElement>({
       setJumpToLatestState(false);
       return;
     }
-    if (nextPinned && (!readingAnswerRef.current || showJumpToLatestRef.current)) {
-      readingAnswerRef.current = false;
+    if (nextPinned && (!readingAnchorActiveRef.current || showJumpToLatestRef.current)) {
+      readingAnchorActiveRef.current = false;
       setPinnedState(true);
       return;
     }
@@ -208,11 +230,11 @@ export function usePinnedScroll<T extends HTMLElement>({
     readingAnchorPresentRef.current = Boolean(readingAnchorKey);
     if (readingAnchorKey) {
       pinnedRef.current = true;
-      scheduleAnswerStart(readingAnchorKey);
+      scheduleReadingAnchor(readingAnchorKey);
     } else {
       scheduleScrollToBottom();
     }
-  }, [hasContent, readingAnchorKey, resetKey, scheduleAnswerStart, scheduleScrollToBottom, scheduleScrollToTop]);
+  }, [hasContent, readingAnchorKey, resetKey, scheduleReadingAnchor, scheduleScrollToBottom, scheduleScrollToTop]);
 
   useLayoutEffect(() => {
     if (!hasContent) {
@@ -229,9 +251,9 @@ export function usePinnedScroll<T extends HTMLElement>({
 
     readingAnchorPresentRef.current = true;
     if (pinnedRef.current) {
-      scheduleAnswerStart(readingAnchorKey);
+      scheduleReadingAnchor(readingAnchorKey);
     }
-  }, [hasContent, readingAnchorKey, scheduleAnswerStart]);
+  }, [hasContent, readingAnchorKey, scheduleReadingAnchor]);
 
   useLayoutEffect(() => {
     if (!hasContent) {

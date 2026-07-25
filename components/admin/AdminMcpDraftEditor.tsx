@@ -3,7 +3,9 @@
 import {
   type AdminMcpSharedValueDraft,
   changeMcpSourceKind,
+  changeMcpRemoteSource,
   joinMcpArguments,
+  preparedMcpOAuthPolicy,
   splitMcpArguments,
   splitMcpList
 } from "@/components/admin/adminMcpDraft";
@@ -106,7 +108,9 @@ function SourceEditor({
   onChange
 }: Pick<AdminMcpDraftEditorProps, "disabled" | "draft" | "onChange">) {
   const source = draft.source;
-  const setSource = (next: McpSource) => onChange({ ...draft, source: next });
+  const setSource = (next: McpSource) => onChange(
+    next.kind === "remote" ? changeMcpRemoteSource(draft, next) : { ...draft, source: next }
+  );
 
   return (
     <section className="grid min-w-0 gap-3 rounded-panel bg-surface-raised/55 p-3">
@@ -252,9 +256,10 @@ function AuthEditor({
 }: Pick<AdminMcpDraftEditorProps, "disabled" | "draft" | "onChange">) {
   const setMode = (mode: "none" | "oauth" | "static") => {
     if (mode === "oauth") {
+      if (draft.source.kind !== "remote") return;
       onChange({
         ...draft,
-        auth: { allowedAuthorizationServerOrigins: [], mode, scopes: [] }
+        auth: preparedMcpOAuthPolicy(draft.source)
       });
     } else {
       onChange({ ...draft, auth: { mode } });
@@ -327,6 +332,8 @@ function AuthEditor({
           <label>
             <span className={fieldLabel}>Allowed authorization server origins</span>
             <textarea
+              aria-describedby="mcp-oauth-origins-help"
+              aria-label="Allowed authorization server origins"
               className={`${inputClass} min-h-20 py-2`}
               disabled={disabled}
               onChange={(event) => onChange({
@@ -339,6 +346,7 @@ function AuthEditor({
               placeholder="https://auth.example.com"
               value={oauth.allowedAuthorizationServerOrigins.join("\n")}
             />
+            <span className={helpText} id="mcp-oauth-origins-help">AIQSA pre-fills the MCP endpoint origin. Add another exact origin only when reviewed OAuth discovery delegates authorization to a different host; do not include a path.</span>
           </label>
         </div>
       ) : null}

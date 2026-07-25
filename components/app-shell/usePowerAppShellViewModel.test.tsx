@@ -166,6 +166,36 @@ describe("usePowerAppShellViewModel", () => {
     expect(result.current.activeChatStreaming).toBe(true);
   });
 
+  it("uses the user message as the reading anchor for a streaming turn", () => {
+    const { result } = renderViewModel({
+      visibleMessages: [
+        {
+          content: "Previous answer",
+          id: "assistant-previous",
+          parentMessageId: null,
+          role: "assistant",
+          status: "complete"
+        },
+        {
+          content: "New question",
+          id: "user-current",
+          parentMessageId: "assistant-previous",
+          role: "user",
+          status: "complete"
+        },
+        {
+          content: "",
+          id: "assistant-current",
+          parentMessageId: "user-current",
+          role: "assistant",
+          status: "streaming"
+        }
+      ]
+    });
+
+    expect(result.current.threadReadingAnchorKey).toBe("user-current");
+  });
+
   it("derives Details errors only from the selected chat run surface", () => {
     const idleB = renderViewModel({
       activeChatId: "chat-b",

@@ -31,6 +31,17 @@ function sortedUnique(values: readonly string[]): string[] {
   return [...new Set(values)].sort((left, right) => left.localeCompare(right));
 }
 
+function effectiveAuthorizationServerOrigins(draft: McpDraftConfiguration): string[] {
+  if (draft.auth.mode !== "oauth" || draft.source.kind !== "remote") {
+    throw new Error("mcp_oauth_policy_invalid");
+  }
+  return sortedUnique(
+    draft.auth.allowedAuthorizationServerOrigins.length
+      ? draft.auth.allowedAuthorizationServerOrigins
+      : [new URL(draft.source.url).origin]
+  );
+}
+
 export function buildMcpOAuthPolicy(input: Readonly<{
   configurationIdentity: string;
   draft: McpDraftConfiguration;
@@ -44,9 +55,7 @@ export function buildMcpOAuthPolicy(input: Readonly<{
   }
   return {
     allowPrivateNetwork: input.draft.source.allowPrivateNetwork === true,
-    allowedAuthorizationServerOrigins: sortedUnique(
-      input.draft.auth.allowedAuthorizationServerOrigins
-    ),
+    allowedAuthorizationServerOrigins: effectiveAuthorizationServerOrigins(input.draft),
     configurationIdentity: input.configurationIdentity,
     purpose: input.purpose,
     redirectUri: new URL(input.redirectUri).toString(),

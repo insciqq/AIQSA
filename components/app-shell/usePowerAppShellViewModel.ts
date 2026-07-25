@@ -177,7 +177,17 @@ export function usePowerAppShellViewModel({
   }, [activeChatId, renderActiveLeafId, runEvents.length, visibleMessages]);
   const threadReadingAnchorKey = useMemo(() => {
     const tail = visibleMessages.at(-1);
-    return tail?.role === "assistant" && tail.status === "streaming" ? tail.id : null;
+    if (tail?.role !== "assistant" || tail.status !== "streaming") {
+      return null;
+    }
+
+    const userTurnStart = tail.parentMessageId
+      ? visibleMessages.find(
+          (message) => message.id === tail.parentMessageId && message.role === "user"
+        )
+      : null;
+
+    return userTurnStart?.id ?? tail.id;
   }, [visibleMessages]);
   const activeChat = useMemo(() => chats.find((chat) => chat.id === activeChatId) ?? null, [activeChatId, chats]);
   const chatGroups = useMemo(

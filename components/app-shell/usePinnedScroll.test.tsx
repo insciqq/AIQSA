@@ -153,9 +153,9 @@ describe("usePinnedScroll", () => {
     expect(result.current.showJumpToLatest).toBe(false);
   });
 
-  it("anchors a new answer at its start without following later token growth", async () => {
+  it("anchors a streamed turn at its user message with prior-answer context", async () => {
     let scrollHeight = 1000;
-    let targetHeight = 120;
+    let answerHeight = 60;
     const element = scrollElement({
       clientHeight: 300,
       scrollHeight,
@@ -168,13 +168,17 @@ describe("usePinnedScroll", () => {
     element.getBoundingClientRect = () =>
       ({ bottom: 300, height: 300, top: 0 } as DOMRect);
 
+    const question = document.createElement("article");
+    question.dataset.messageId = "user-1";
+    question.getBoundingClientRect = () =>
+      ({ bottom: 200, height: 120, top: 80 } as DOMRect);
     const answer = document.createElement("article");
     answer.dataset.messageId = "assistant-1";
     answer.getBoundingClientRect = () =>
-      ({ bottom: 80 + targetHeight, height: targetHeight, top: 80 } as DOMRect);
+      ({ bottom: 200 + answerHeight, height: answerHeight, top: 200 } as DOMRect);
     const spacer = document.createElement("div");
     spacer.dataset.threadReadingSpacer = "true";
-    element.append(answer, spacer);
+    element.append(question, answer, spacer);
 
     const { rerender, result } = renderHook(
       ({ followKey, readingAnchorKey }) =>
@@ -199,25 +203,25 @@ describe("usePinnedScroll", () => {
 
     rerender({
       followKey: "assistant-started",
-      readingAnchorKey: "assistant-1"
+      readingAnchorKey: "user-1"
     });
     await waitForAnimationFrame();
 
-    expect(spacer.style.height).toBe("180px");
-    expect(element.scrollTop).toBe(780);
+    expect(spacer.style.height).toBe("240px");
+    expect(element.scrollTop).toBe(726);
     expect(result.current.isPinned).toBe(false);
     expect(result.current.showJumpToLatest).toBe(false);
 
-    targetHeight = 500;
+    answerHeight = 500;
     scrollHeight = 1400;
     rerender({
       followKey: "more-answer-text",
-      readingAnchorKey: "assistant-1"
+      readingAnchorKey: "user-1"
     });
     await waitForAnimationFrame();
 
     expect(spacer.style.height).toBe("0px");
-    expect(element.scrollTop).toBe(780);
+    expect(element.scrollTop).toBe(726);
     expect(result.current.showJumpToLatest).toBe(true);
 
     act(() => result.current.jumpToLatest());
@@ -227,7 +231,7 @@ describe("usePinnedScroll", () => {
     scrollHeight = 1600;
     rerender({
       followKey: "tail-following-resumed",
-      readingAnchorKey: "assistant-1"
+      readingAnchorKey: "user-1"
     });
     await waitForAnimationFrame();
     expect(element.scrollTop).toBe(1600);

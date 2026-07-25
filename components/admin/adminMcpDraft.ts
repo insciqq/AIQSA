@@ -30,6 +30,73 @@ export type McpToolInventoryDiff = Readonly<{
   unchanged: McpToolInventoryEntry[];
 }>;
 
+type RemoteMcpSource = Extract<McpSource, { kind: "remote" }>;
+type McpOAuthAuthPolicy = Extract<McpDraftConfiguration["auth"], { mode: "oauth" }>;
+
+const HOSTED_NOTION_MCP_ORIGIN = "https://mcp.notion.com";
+const HOSTED_NOTION_MCP_PATH = "/mcp";
+
+function remoteSourceOrigin(source: RemoteMcpSource): string | null {
+  try {
+    const url = new URL(source.url);
+    return ["http:", "https:"].includes(url.protocol) ? url.origin : null;
+  } catch {
+    return null;
+  }
+}
+
+function isHostedNotionMcp(source: RemoteMcpSource): boolean {
+  try {
+    const url = new URL(source.url);
+    return url.origin === HOSTED_NOTION_MCP_ORIGIN &&
+      url.pathname.replace(/\/+$/u, "") === HOSTED_NOTION_MCP_PATH &&
+      !url.search &&
+      !url.hash &&
+      !url.username &&
+      !url.password;
+  } catch {
+    return false;
+  }
+}
+
+export function preparedMcpOAuthPolicy(
+  source: RemoteMcpSource,
+  current?: McpOAuthAuthPolicy
+): McpOAuthAuthPolicy {
+  const sourceOrigin = remoteSourceOrigin(source);
+  return {
+    ...(current ?? {}),
+    allowedAuthorizationServerOrigins: current?.allowedAuthorizationServerOrigins.length
+      ? current.allowedAuthorizationServerOrigins
+      : sourceOrigin ? [sourceOrigin] : [],
+    mode: "oauth",
+    scopes: current?.scopes ?? []
+  };
+}
+
+export function changeMcpRemoteSource(
+  draft: McpDraftConfiguration,
+  source: RemoteMcpSource
+): McpDraftConfiguration {
+  if (draft.source.kind !== "remote" || draft.auth.mode !== "oauth") {
+    return { ...draft, source };
+  }
+  const previousOrigin = remoteSourceOrigin(draft.source);
+  const origins = draft.auth.allowedAuthorizationServerOrigins;
+  const sourceOwnedOrigins = origins.length === 0 ||
+    (origins.length === 1 && origins[0] === previousOrigin);
+  return {
+    ...draft,
+    auth: sourceOwnedOrigins
+      ? preparedMcpOAuthPolicy(source, {
+          ...draft.auth,
+          allowedAuthorizationServerOrigins: []
+        })
+      : draft.auth,
+    source
+  };
+}
+
 export function defaultMcpDraft(kind: McpSource["kind"] = "remote"): McpDraftConfiguration {
   const source: McpSource = kind === "remote"
     ? { kind: "remote", url: "" }
@@ -61,9 +128,14 @@ export function blankMcpServerForm(): AdminMcpServerForm {
 }
 
 export function editableMcpServerForm(server: AdminMcpServer): AdminMcpServerForm {
+  const draft = structuredClone(server.draft);
+  if (draft.source.kind === "remote" && draft.auth.mode === "oauth" &&
+    draft.auth.allowedAuthorizationServerOrigins.length === 0) {
+    draft.auth = preparedMcpOAuthPolicy(draft.source, draft.auth);
+  }
   return {
     description: server.description,
-    draft: structuredClone(server.draft),
+    draft,
     name: server.name,
     sharedValues: {}
   };
@@ -447,6 +519,9 @@ export function normalizeMcpImport(raw: string): NormalizedMcpImport {
   if (/^https?:\/\//iu.test(text)) {
     const draft = defaultMcpDraft("remote");
     draft.source = { kind: "remote", url: text };
+    if (isHostedNotionMcp(draft.source)) {
+      draft.auth = preparedMcpOAuthPolicy(draft.source);
+    }
     return { description: "", draft, name: importedName("", draft.source), sharedValues: {} };
   }
 
@@ -480,12 +555,8 @@ export function normalizeMcpImport(raw: string): NormalizedMcpImport {
   const draft = defaultMcpDraft(source.kind);
   draft.source = source;
   draft.slots = boundValues.slots;
-  if (source.kind === "remote" && config.auth === "oauth") {
-    draft.auth = {
-      allowedAuthorizationServerOrigins: [],
-      mode: "oauth",
-      scopes: []
-    };
+  if (source.kind === "remote" && (config.auth === "oauth" || isHostedNotionMcp(source))) {
+    draft.auth = preparedMcpOAuthPolicy(source);
   } else if (boundValues.slots.length) {
     draft.auth = { mode: "static" };
   }

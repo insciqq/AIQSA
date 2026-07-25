@@ -44,7 +44,7 @@ import { cleanupE2eWorkspace } from "./shell/workspace";
 
 test.describe.configure({ mode: "serial" });
 
-test("moves explicit mobile sends to the latest turn and keeps long answers anchored at their start", async ({ page }) => {
+test("anchors explicit mobile sends on the user turn and keeps long answers stable", async ({ page }) => {
   await page.setViewportSize({ height: 844, width: 390 });
   const messages: ReturnType<typeof scrollMessage>[] = [];
   let parentMessageId: string | null = null;
@@ -58,7 +58,7 @@ test("moves explicit mobile sends to the latest turn and keeps long answers anch
       scrollMessage(
         assistantId,
         "assistant",
-        `Scroll answer ${index}${index === 18 ? " bottom marker" : ""}\n\n${"Detail line. ".repeat(8)}`,
+        `Scroll answer ${index}${index === 18 ? " bottom marker" : ""}\n\n${"Detail line. ".repeat(8)}${index === 18 ? "\n\nPrevious answer tail marker" : ""}`,
         userId
       )
     );
@@ -250,6 +250,8 @@ test("moves explicit mobile sends to the latest turn and keeps long answers anch
 
   await page.getByRole("textbox", { name: "Message" }).fill("Pinned stream question");
   await page.getByRole("textbox", { name: "Message" }).press("Enter");
+  await expectThreadTextInViewport(page, "Pinned stream question");
+  await expectThreadTextInViewport(page, "Previous answer tail marker");
   const liveActivity = page.getByTestId("pipeline-indicator");
   await expect(liveActivity).toHaveAttribute("data-phase", "running");
   await expect(liveActivity).toContainText("Working…");
@@ -278,6 +280,7 @@ test("moves explicit mobile sends to the latest turn and keeps long answers anch
   await expect(page.getByTestId("thread-run-warnings")).toContainText("Skipped malformed stream frame");
   await expect(assistantContentWithText(page, "Anchored answer tail marker")).toBeVisible();
   const thread = page.getByTestId("thread");
+  expect(await threadTextIsInViewport(page, "Pinned stream question")).toBe(true);
   expect(await threadTextIsInViewport(page, "Anchored answer start marker")).toBe(true);
   expect(await threadTextIsInViewport(page, "Anchored answer tail marker")).toBe(false);
 
