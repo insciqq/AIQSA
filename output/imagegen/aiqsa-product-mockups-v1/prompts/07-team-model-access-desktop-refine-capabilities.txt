@@ -1,0 +1,16 @@
+Use case: ui-mockup
+Asset type: targeted capability-label correction of an existing desktop AIQSA Model access mockup
+
+Edit only the transparent masked capability rows in the main detail pane. Preserve every unmasked pixel exactly, especially the corrected real global sidebar, group list, provider-wide access, MCP server grants, header, typography, spacing, palette, and all surrounding layout.
+
+Within the masked region keep the existing section hierarchy but use only real AIQSA catalog concepts:
+- heading "Explicit model grants" with quiet actions "Grant all models" and "Clear models";
+- expanded OpenAI provider group with "GPT-5.6 Terra" enabled, "GPT-5.6 Luna" disabled, and "GPT-5.6 Sol" disabled;
+- collapsed provider rows "Anthropic" and "OpenRouter";
+- heading "Search strategy grants";
+- row "OpenAI web_search" enabled;
+- row "Perplexity tool" disabled.
+
+Do not show "Knowledge search", generic "Web search", GPT-5, GPT-4o, knowledge bases, connected sources, direct user overrides, billing, audit, or a Save button. Toggles settle individually.
+
+Constraints: exact legible English text; change only the masked capability rows; no invented feature, competitor branding, gradient, watermark, or browser chrome.

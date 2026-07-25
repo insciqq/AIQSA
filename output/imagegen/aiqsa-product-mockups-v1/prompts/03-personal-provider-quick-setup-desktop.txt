@@ -1,0 +1,30 @@
+Use case: ui-mockup
+Asset type: shippable desktop AIQSA Admin console mockup
+Input image: Image 1 is a visual-style reference only. Preserve its light paper/mineral palette, charcoal type, oxidized-teal primary action, flat separators, restrained radii, compact enterprise typography, and precise modern product feel. Rebuild navigation and content exactly as specified.
+
+Create a front-on 2048x1152 AIQSA Admin console screen for a fresh single-member installation. No browser chrome. Use no global destination that is not listed below.
+
+Left grouped navigation:
+- identity exactly "AIQSA" and "Admin console";
+- group "AI setup" with destination "Providers" selected;
+- one collapsed disclosure "Team & access" with quiet summary "Users, Groups, Model access, Invites, Access rules, Email delivery";
+- group "Advanced infrastructure" with "MCP servers";
+- group "Operations" with "Usage";
+- group "Security" with "Safety";
+- bottom link "Return to workspace".
+
+Do not add Overview, Models, Run profiles, Tools, Delivery, Applications, Evaluations, Datasets, Policies, Monitoring, Audit, API Keys, Governance, admin Settings, or organization switcher.
+
+Main header exactly "Providers" with quiet context "Personal setup · 1 member". Show a flat provider selector with only these real families: "OpenAI", "Anthropic", "OpenRouter", "OpenAI-compatible". OpenAI is selected.
+
+Focused setup area:
+- heading exactly "Connect OpenAI";
+- sentence exactly "Paste your API key. AIQSA will test it, enable the recommended model, and make it available to you.";
+- one write-only field labelled exactly "API key" with placeholder "Paste API key";
+- helper exactly "Stored encrypted. The full key is never shown again.";
+- one dominant button exactly "Test & Save";
+- quiet disclosure exactly "Advanced configuration" with description "Custom endpoint, credentials, models and routing".
+
+Right explanation titled "What happens next" with exactly: "Test key", "Activate recommended model", "Grant access to you". Do not mention groups.
+
+Constraints: no endpoint/protocol/key-label/group/model-matrix/routing/activation-version/diagnostic fields in Quick setup; no wizard stepper; no gradients, glassmorphism, card grid, horizontal tabs, invented sections, competitor branding, or watermark.

@@ -1,0 +1,32 @@
+Use case: ui-mockup
+Asset type: shippable desktop AIQSA product mockup
+Input image: Image 1 is a visual-style reference only. Preserve its calm paper-white canvas, pale mineral gray-green navigation, charcoal typography, oxidized-teal action accent, subtle separators, restrained radii, reading-first spacing, and mature ChatGPT/Claude-like product polish. Rebuild the screen content to match this specification; do not preserve invented labels from the reference.
+
+Create a front-on 2048x1152 desktop AIQSA conversation screen with no browser chrome. Use only real AIQSA capabilities and labels.
+
+Left workspace rail, approximately 240 px:
+- AIQSA identity.
+- Primary button exactly "New Chat".
+- Secondary action exactly "New folder".
+- Search field exactly "Search chats".
+- A folder "Climate research" with two nested chat rows and one top-level chat. Do not add a Recent section label.
+- One quiet favorite star and one live-run cue are allowed.
+- Do not place account controls in this rail.
+
+Top application bar:
+- active title "Urban heat mitigation";
+- quiet actions "Share", "Details", and an Account icon/menu;
+- no second icon carpet.
+
+Conversation:
+- compact right-aligned user question;
+- flat document-flow assistant answer, not a card and no avatars;
+- quiet metadata exactly "OpenAI / GPT-5.6 Terra";
+- inline collapsed evidence rows exactly "2 search calls", "Used 2 tools", "Citations 8", and "Reasoning 1";
+- compact response actions "Regenerate", "Copy", and "More".
+
+Show the real Details drawer open on the right, approximately 360 px. It has exactly two tabs in this order: "Branch" and "Events". Select "Events". Heading "Run events". Show a restrained chronological digest with rows "Provider request", "Search calls", "Tool calls", "Citations", "Usage", and "Completed". Do not create Sources, Sources & activity, Tools, Activity, Request, or audit tabs.
+
+At the bottom use one coherent raised composer at the reading measure. Show the actual controls: Fast, Balanced, Deep; "Model · GPT-5.6 Terra"; "Reasoning · Medium"; "Search · Off"; "Run settings". Field label "Message", placeholder exactly "Ask AIQSA…", attachment action, quiet "Usage", and primary "Send". Keep the composer compact and writing-first.
+
+Constraints: realistic product UI, accurate legible labels, no gradients, no glassmorphism, no avatars, no marketing copy, no card grid, no decorative charts, no fake tools, no competitor branding, no watermark.

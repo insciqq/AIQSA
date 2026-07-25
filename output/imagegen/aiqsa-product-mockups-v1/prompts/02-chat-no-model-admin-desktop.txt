@@ -1,0 +1,19 @@
+Use case: ui-mockup
+Asset type: shippable desktop AIQSA empty-state mockup
+Input image: Image 1 is a visual-style reference only. Preserve its calm paper-white canvas, mineral gray-green navigation, charcoal typography, oxidized-teal accent, restrained borders/radii, and mature conversation-product polish. Rebuild all content according to this specification.
+
+Create a front-on 2048x1152 desktop AIQSA workspace for the real no-model-access state when the signed-in user is the installation administrator. No browser chrome.
+
+Left rail uses only real controls: AIQSA, "New Chat", "New folder", "Search chats", two folders with chat rows, no Recent heading, no account block.
+
+Top bar shows title "New chat", quiet "Settings", "Details", and Account. Details is closed.
+
+The main canvas is mostly empty and calm. Center one grounded empty state:
+- heading exactly "Connect a provider to ask your first question";
+- supporting sentence exactly "Add an OpenAI, Anthropic, or OpenRouter key in Admin console. AIQSA will configure a recommended model for you.";
+- one primary button exactly "Connect provider";
+- one quiet secondary link exactly "Open Admin console".
+
+Below, show a disabled coherent composer with field label "Message", placeholder "No models available", disabled Send, and a short hint "Chat history, Settings, and Appearance are still available." Do not show provider, group, model-access, revision, validation, or onboarding steps in this empty state.
+
+Constraints: actual app screen, not marketing; no feature tiles, illustration, giant logo, avatars, gradients, glassmorphism, card wall, fake global tabs, competitor branding, or watermark.

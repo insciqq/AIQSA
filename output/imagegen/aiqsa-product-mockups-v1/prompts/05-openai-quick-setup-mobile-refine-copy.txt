@@ -1,0 +1,11 @@
+Use case: ui-mockup
+Asset type: targeted correction of an existing mobile AIQSA provider setup mockup
+
+Edit only the transparent masked bottom "Advanced configuration" row. Preserve every unmasked pixel exactly, including all setup copy, field, primary action, checklist, icons, spacing, and palette.
+
+Keep the row title exactly "Advanced configuration". Replace its description with exactly:
+"Profiles, credentials, key assignment, models and diagnostics"
+
+This is a collapsed disclosure to the real provider controls. Do not mention OpenAI-compatible endpoints on the OpenAI screen. Do not add a new row, navigation, wizard step, provider, group, revision, activity, or audit concept.
+
+Constraints: exact legible English text; change only the masked bottom row; preserve touch-friendly layout; no competitor branding, gradient, watermark, phone frame, or browser chrome.

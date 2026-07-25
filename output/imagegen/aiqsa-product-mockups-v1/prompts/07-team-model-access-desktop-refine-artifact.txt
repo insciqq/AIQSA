@@ -1,0 +1,8 @@
+Use case: ui-mockup
+Asset type: targeted raster-artifact removal in an existing desktop AIQSA Model access mockup
+
+Edit only the transparent masked rectangle. Remove the solid black rectangle completely and continue the same clean paper-white content background visible immediately around it. This region is intentionally empty breathing space between the informational notice above and the existing "MCP server grants" section below.
+
+Preserve every unmasked pixel exactly. Do not add text, controls, images, cards, shadows, separators, charts, metrics, or illustrations inside the masked area. Do not move, duplicate, crop, or redraw the informational notice or MCP section.
+
+Constraints: clean uniform product canvas; exact surrounding white/mineral tone; change only the masked artifact; no new content, gradient, watermark, or browser chrome.

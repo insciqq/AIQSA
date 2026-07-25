@@ -2,8 +2,8 @@
 
 ## Product Invariants
 
-1. ADRs 0009-0011 and 0016 define the shipped conversation-first UI direction. Presentation and progressive disclosure may evolve only while preserving the complete product capability surface and explicit control ownership.
-2. The default `aiqsa` theme remains dark. Shipped themes declare a dark or light scheme, and shared components must render through semantic, scheme-aware color recipes.
+1. ADR 0025 defines the binding clean-slate Research Chat and Control Center direction while retaining the capability-preservation and explicit-control-ownership requirements of ADRs 0009 and 0011. A presentation slice is not complete until its applicable capability, state, responsive, and persistence parity is verified and its replaced renderer is removed. WCAG conformance and dedicated accessibility work are explicitly deferred for this revamp.
+2. First use defaults to the light `neutral` theme. Existing `aiqsa`, `graphite`, `verdant`, `classic-dark`, and `neutral` theme IDs and stored preferences remain valid; every theme must render the same semantic hierarchy with declared light/dark scheme metadata and complete dark-mode parity.
 3. Provider, model, prompt, search, and parameter changes affect future messages only.
 4. Existing message content with descendants is not edited in place; edits create branches.
 5. Regeneration creates a sibling assistant branch through the model-run pipeline.
@@ -49,12 +49,12 @@
 
 ## Frontend Invariants
 
-1. The conversation and composer must remain primary at desktop widths. Workspace navigation stays usable, while Details remains fully accessible on demand and optionally pinnable instead of being a mandatory permanent column.
+1. The conversation and composer must remain primary at desktop widths. Workspace navigation stays usable, while Details remains available on demand and optionally pinnable instead of being a mandatory permanent column.
 2. Keyboard shortcuts must not break text entry.
-3. All critical controls need accessible labels or stable test anchors.
+3. All critical controls need clear visible labels or stable test anchors.
 4. UI state and server data should not be mixed into one untestable object.
 5. Provider identity remains legible through the grouped entitled model catalog and selected model; choosing a concrete model applies its provider atomically, with no provider-only action.
 6. Model/search selectors must use the backend-filtered current-user catalog.
 7. Theme selection is a local UI preference only; it must not affect server data, shared chat state, or cross-device user defaults.
 8. Users select concrete models from the entitled catalog; provider labels may group and describe models but must not silently choose a remembered/default/first model.
-9. At `sm` and wider with more than 32rem of viewport height, Reasoning effort is a direct composer control when catalog state is available. In narrower or short-height composition, exact Reasoning plus Model/Profile/Search state remains legible in the text-backed Run summary, entitled Fast/Balanced/Deep profiles remain directly switchable, and the complete Run setup stays one tap away in its responsive sheet whenever the composer is engaged. An empty idle compact composer may temporarily collapse those Run/profile/action regions only after recent deliberate direction-consistent scroll intent; Message remains visible, a completed Message tap or keyboard focus restores the controls without activating newly revealed controls, composition/error states force expansion, and an addressable Stop action remains visible during streaming. The composer control owner remains the single UI editor for disclosed next-run parameters, and Details contains no duplicate draft editor.
+9. Composer composition adapts to available inline/block space and input capability instead of a device-name breakpoint. Its resting surface keeps attachment/tools, Message, a text-backed Run summary, Send, and an addressable Stop during streaming; the exact Model/Profile/Reasoning/Search state remains legible and the complete Run setup stays one action away. Wider compositions may disclose direct controls without creating a second owner. The composer control owner remains the single UI editor for next-run parameters, while Details contains Branch and Events inspection only.

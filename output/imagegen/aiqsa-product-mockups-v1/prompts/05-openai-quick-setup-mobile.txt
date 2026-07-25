@@ -1,0 +1,15 @@
+Use case: ui-mockup
+Asset type: shippable mobile AIQSA Admin console mockup
+Input image: Image 1 is a visual-style reference only. Preserve its paper-white canvas, charcoal typography, mineral surface tint, oxidized-teal primary action, touch-friendly spacing, restrained radii, and mature mobile product feel. Rebuild all content to this specification.
+
+Create a front-on 1024x1536 portrait mobile app screen with no phone frame and no browser chrome. Top bar: back arrow and title exactly "OpenAI". Then:
+- quiet context "Personal setup";
+- heading exactly "Connect OpenAI" at an app-like 28–32 px scale, not an oversized hero;
+- sentence exactly "Paste your API key. AIQSA will test it, enable the recommended model, and make it available to you.";
+- large touch-friendly write-only field labelled "API key" with placeholder "Paste API key" and visibility control;
+- helper "Stored encrypted. The full key is never shown again.";
+- full-width primary button exactly "Test & Save";
+- compact list "Test key", "Activate recommended model", "Grant access to you";
+- collapsed row exactly "Advanced configuration" with description "OpenAI-compatible endpoints, credentials and models".
+
+No bottom navigation. The button must remain reachable with a software keyboard and every target at least 44 px. Do not show desktop sidebar, groups, model access, wizard steps, API root, protocol, revisions, diagnostics, gradients, glassmorphism, competitor branding, or watermark.

@@ -2,15 +2,25 @@
 
 ## Current Product Contract
 
-ADR 0009's conversation-first workspace is the shipped UI direction, ADR 0010 adds optional Classic Light and Classic Dark palettes, ADR 0011 assigns one explicit owner to model choice, Reasoning, chat moves, next-run editing, and Details inspection, ADR 0016 refines composer disclosure for narrow and short-height composition, ADR 0018 adds intent-gated compact reading chrome, ADR 0021 adds admin-managed MCP plus persistent user enablement/configuration, ADRs 0022-0023 add administrator-managed LLM providers and runtime email delivery, and ADR 0024 makes the three semantic run-profile mappings administrator-owned. Presentation and progressive disclosure may evolve only while server contracts, entitlements, run semantics, store/action ownership, and the complete capability inventory below remain reachable.
+ADR 0025 is the binding target for the clean-slate Research Chat and Control Center presentation. It retains ADR 0009's complete capability requirement and ADR 0011's explicit control ownership while amending earlier presentation, theme-default, and compact-composition decisions. ADR 0026 adds the Personal Provider Quick setup path without replacing the advanced provider control plane. ADR 0021 still owns admin-managed MCP plus persistent user enablement/configuration, ADRs 0022-0023 own administrator-managed LLM providers and runtime email delivery, and ADR 0024 owns the three semantic run-profile mappings. Presentation may change only while server contracts, entitlements, run semantics, store/action ownership, and the complete capability inventory below remain reachable.
+
+## Revamp Migration Boundary
+
+The revamp replaces the presentation layer in place. Existing Next.js routes, backend APIs, client contracts, domain modules, actions, and the focused workspace/thread/composer/run stores remain the only runtime owners unless a separately accepted decision changes them. There is no permanent `/v2`, parallel API client, classic/new preference, or duplicate product state.
+
+The source map and behavioral detail below describe the currently shipped implementation until each slice cuts over. New slices consume the existing feature contracts, prove applicable entries in `FRONTEND_REVAMP_PARITY.md`, become the default at their existing route, and remove the renderer, styles, and tests they replace. Target layouts must not be documented here as current merely because a mockup or component exists. `DESIGN_SYSTEM.md` is binding for new visual work during the migration; this file remains binding for behavior, state ownership, and responsive access.
+
+## Deferred Accessibility Scope
+
+By operator decision on 2026-07-26, WCAG conformance and dedicated accessibility work are not part of the clean-slate revamp. Do not add screen-reader, forced-colors, keyboard-only, contrast-compliance, focus-management, or accessibility-audit work to the active plan, parity ledger, or cutover gates. Existing semantic, focus, and keyboard details later in this file describe the currently shipped implementation; they may survive through reused modules but are not revamp parity requirements. Device responsiveness, touch usability, software-keyboard clearance, safe areas, readable content, and ordinary browser behavior remain product UX scope. Accessibility can return only as a separately approved task.
 
 ## Primary UI
 
-The first screen is the usable conversation-first QSA workspace; there is no landing-page product. ADR 0009 owns that direction, ADR 0010 owns the optional Classic palettes, ADR 0011 owns control placement, ADR 0016 owns narrow responsive control disclosure, and ADR 0018 owns the compact reading state and one-rail mobile header. This file takes precedence over visual inspiration for behavior/state/accessibility; `DESIGN_SYSTEM.md` owns appearance.
+The first screen is the usable Research Chat workspace; there is no landing-page product. ADR 0025 owns its clean-slate composition and adaptive disclosure, ADR 0011 continues to own control placement, and ADR 0026 owns the Personal Provider Quick setup path. This file takes precedence over visual inspiration for behavior, state, and responsive UX; `DESIGN_SYSTEM.md` owns appearance.
 
 ## Capability Inventory
 
-This is the current capability ledger. A slice is not complete if it removes, hides without a discoverable path, or breaks keyboard/touch access to any applicable line.
+This is the current capability ledger. A slice is not complete if it removes an applicable line or hides it without a discoverable product path. Dedicated accessibility parity is excluded by the deferral above.
 
 - **Workspace:** create and switch chats; blank first-send creation; search titles/provider/model and server-side message content; favorites; nested folders/projects; collapse, create, rename, move, delete, and project memory/settings; per-chat active-run cues.
 - **Catalog and next-run selection:** backend-entitled concrete-model selection grouped by provider, administrator-mapped Fast/Balanced/Deep model-and-reasoning profiles, explicit search strategy, prompt preset selection, prompt management, and per-model draft restoration/clamping.
@@ -22,7 +32,7 @@ This is the current capability ledger. A slice is not complete if it removes, hi
 - **Message and branch actions:** regenerate, edit, copy, delete subtree, Branch from here, branch checkout/active leaf, Copy thread, confirmations, and mid-stream mutation gates.
 - **Details and inspection:** closed-by-default contextual Branch and Events access; readable run/status/error display; chronological grouped event meaning and counts; and true-fork/active-leaf checkout. The composer controls through desktop Run settings or responsive Run setup remain the only next-run parameter editor, while immutable model-run request/response inspection remains available through APIs.
 - **Sharing:** Share anonymously, a visible/copyable secret link, immediate revocation for the just-created link, immutable sanitized public snapshots, and no private attachments/provider payloads/internal ids/user-group data. There is no durable share-history UI.
-- **Keyboard and overlays:** Ctrl/Cmd+K command palette across actions/chats/models/search/prompts, shortcut safety in text entry, picker/menu/tab navigation, Escape/outside-click/backdrop behavior, focus containment, and opener focus restoration.
+- **Command palette and overlays:** command palette across actions/chats/models/search/prompts, shortcut safety in text entry, picker/menu/tab interaction, close/cancel/backdrop behavior, and single-modal ownership. Dedicated keyboard/focus parity is excluded by the deferral above.
 - **Settings and appearance:** prompt create/edit/duplicate/delete/default/use-next-run flows, entitled MCP server enablement/readiness/personal fields/OAuth identity, dirty-close protection, five local palettes (AIQSA, Graphite, Verdant, Classic Dark, Classic Light), scheme-aware cookie-backed first paint, and project settings.
 - **Auth and public access:** email/password sign in, configured-only Google/Yandex OAuth sign in with same-email account merge, verified allowlisted access requests, direct one-time invite onboarding, verification, reset request/completion, readable generic failures, recovery-token UI absence, route guards, and public-share invalid/revoked states.
 - **Responsive access:** workspace and Details drawers, complete core workflow at 384-390x844, short-landscape operation at 844x390, deliberate tablet composition at 768x1024, touch-visible actions, safe overlays, no required hover, and no page-level horizontal overflow.
@@ -107,28 +117,28 @@ Main areas:
 
 ## Presentation And Runtime State
 
-Palette values, typography, geometry, component appearance, responsive density, and visual hard rules live only in `agent_docs/DESIGN_SYSTEM.md`. The behavior/state contracts that styling must preserve are:
+Palette values, typography, geometry, component appearance, responsive density, and visual hard rules live only in `agent_docs/DESIGN_SYSTEM.md`. The behavior/state contracts that styling must preserve are listed below, except that any screen-reader, ARIA, focus-management, keyboard-only, forced-colors, contrast-conformance, reflow-audit, or reduced-motion detail is current-state documentation rather than revamp parity under the explicit deferral above:
 
 - Run activity presents only already-consumed evidence. The application bar and active assistant tail use one shared status: `Working…` while the exact provider stage is unknown, `Searching…` only after a search/citation event, `Answering…` only after answer tokens, and a readable run-error state on failure. They never render speculative waiting stages. Idle/settled decoration is absent; the application-bar action opens Details Events and never auto-opens Details. Selected-off versus backend-skipped Search remains inspectable through run data and completed artifacts rather than a fabricated live sequence.
 - The application bar keeps Workspace first, direct compact New chat beside it, the sole current-chat/New chat semantic heading, Share, state-aware Details, and Account. Account is always present, identifies the current canonical account email as noninteractive wrapped text, and owns Sign out plus entitled Admin; below `lg` it also owns Command palette and Settings. Model stays in composer/answer metadata. Below `lg`, the heading is visually hidden and Copy thread/Branch tree join the application rail while the second toolbar is hidden; desktop keeps the visible heading and thread-toolbar actions.
-- Active-chat detail loading renders a named status skeleton rather than the blank-chat state; reduced-motion/test mode freezes its shimmer.
+- Active-chat detail loading renders a status skeleton rather than the blank-chat state; deterministic test mode freezes its shimmer.
 - Initial catalog/workspace bootstrap has explicit pending/error/ready ownership with one actionable Retry surface and disabled dependent mutations. Later refresh failure preserves usable hydrated data. Catalog/workspace retries deduplicate.
 - A persisted chat with no default provider model is a valid workspace row. The wire contract uses paired nullable model/provider values, while the shell normalizes absence into its existing empty local selection and may render an available catalog fallback for the composer without silently persisting that fallback. Legacy paired empty-string responses remain readable during the compatibility window; half-populated pairs fail closed.
 - Active-chat detail failure has one in-thread Retry owner and keeps the composer disabled; it never produces a duplicate shell notice or masquerades as a new chat.
 - The blank-chat and zero-model states appear only after bootstrap readiness and truthfully distinguish an available empty workspace from missing administrator-granted access. The available blank state uses the concise `Ask anything.` invitation without turning the thread into marketing copy.
 - Thread activation lands on the active leaf. A valid explicit Send in the still-active source chat reclaims scroll ownership after its optimistic user/assistant rows appear and brings that newest turn into view, even when the user had been reading older messages; empty/blocked sends and navigation-owned source mismatch do not move another chat. While the assistant is pending or streaming, the turn is anchored on the user message with a small viewport-bounded slice of the preceding answer left above it; the pending state remains below instead of becoming the scroll target. Temporary reading space below the live answer shrinks as it grows, and token growth preserves that turn-start anchor instead of pulling the viewport to the tail. A thread already unpinned by the user keeps its position for passive updates. The dedicated touch-safe Latest row appears only when more than 48px of the last real message extends below the thread viewport; temporary reading space and terminal answer spacers never create it by themselves. Activating Latest or deliberately returning to the bottom hides the row and resumes tail following.
-- Queued, live, cancelled, failed, complete-without-text, and normally complete assistant tails remain visually and programmatically distinct.
+- Queued, live, cancelled, failed, complete-without-text, and normally complete assistant tails remain visually distinct.
 - Token-only updates repaint the live tail, not memoized historical rows, Markdown/artifact blocks, or the sidebar projection.
 - The composer shows ADR 0017 approximate current input against the safe input budget after output reserve and margin, names the full model context separately, and shows active-branch provider-reported usage statistics; it never renders estimated dollar costs.
 - Answer completion may use the local oscillator/favicon alert, with the hidden-tab favicon signal ending when the user returns.
 - General-shell and Settings notices have independent owners. Persistent workflow notices remain in flow; transient notices stay bounded; both allow manual dismissal and ordinary success auto-clears. Settings never transplants a general notice and closing it clears only its own channel. General transient notices may stay readable but noninteractive above non-Settings backdrops; Account is the higher active layer.
-- Sign-out timeout/failure has one live announcement outside inert primary content, a visible/programmatic error cue on the closed Account trigger, and a non-live full detail plus Retry when the menu reopens.
+- Sign-out timeout/failure has a visible error cue on the closed Account trigger and full detail plus Retry when the menu reopens.
 - Readable errors retain stable backend codes when present. Malformed stream frames are skipped without aborting later frames and create one visible/Details warning.
 - Foreground token deltas are coalesced for React updates while Details retains the aggregated provider chunk count.
 
 ## Motion
 
-CSS-only — no animation library dependency. Keyframes and shared utilities are centralized in `app/globals.css`. `html[data-motion="off"]` (set by `app/layout.tsx` for allowed local deterministic test auth) and `prefers-reduced-motion` kill every animation/transition globally, so every state must read correctly as a static style; animations only ever decorate state changes that already happened.
+This section records the currently shipped legacy motion registry, not a revamp parity requirement. New motion follows `DESIGN_SYSTEM.md`; reduced-motion expansion or certification is deferred. CSS-only — no animation library dependency. Keyframes and shared utilities are centralized in `app/globals.css`. `html[data-motion="off"]` remains the deterministic test switch.
 
 Sanctioned moments — no decorative motion outside this list:
 
@@ -442,7 +452,7 @@ State ownership:
 
 ## Testability Rules
 
-- Prefer accessible roles/labels; add stable `data-testid` only when a critical anchor has no semantic locator.
+- Prefer clear visible labels and stable `data-testid` anchors for critical behavior; dedicated accessibility work is deferred by the scope above.
 - Every state must remain understandable with nonessential motion disabled and deterministic fake data/providers.
 - Keep layout ownership stable enough for targeted visual comparison. Use focused browser behavior tests and inspect the affected desktop/mobile states directly for material visual changes.
 - Select proportional checks through `TESTING.md`; do not create exhaustive screenshot inventories for routine slices.

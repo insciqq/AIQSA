@@ -1,0 +1,17 @@
+Use case: ui-mockup
+Asset type: targeted correction of an existing desktop AIQSA provider success mockup
+
+Edit only the transparent masked left global sidebar. Preserve every unmasked pixel, including the complete OpenAI success surface, header, actions, result rows, typography, spacing, and palette.
+
+Replace the sidebar with the real Personal setup navigation, using only these labels and this hierarchy:
+- "AIQSA" with small subtitle "Admin console";
+- section "AI setup" with "Providers" selected;
+- collapsed disclosure "Team & access" with a quiet two-line summary: "Users, Groups, Model access," then "Invites, Access rules, Email delivery";
+- section "Advanced infrastructure" with "MCP servers";
+- section "Operations" with "Usage";
+- section "Security" with "Safety";
+- bottom action "Return to workspace".
+
+There must be no Overview, Members, Roles, SSO & SCIM, API Keys, Models, Applications, Activity, Audit, Settings, or other global destination. Match the light mineral sidebar, charcoal labels, oxidized-teal selection, simple line icons, and density of the existing screen.
+
+Constraints: exact legible English text; change only the masked sidebar; no invented navigation, competitor branding, gradient, watermark, or browser chrome.

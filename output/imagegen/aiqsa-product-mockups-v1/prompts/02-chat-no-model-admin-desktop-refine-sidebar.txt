@@ -1,0 +1,16 @@
+Use case: ui-mockup
+Asset type: targeted correction of an existing desktop AIQSA empty-state mockup
+
+Edit only the transparent masked left sidebar. Preserve every unmasked pixel, including the top bar, central empty state, buttons, disabled composer, typography, spacing, and palette.
+
+The left sidebar must represent a true fresh installation. Keep exactly:
+- AIQSA wordmark;
+- collapse control;
+- primary action "New chat";
+- secondary action "New folder";
+- search control "Search chats";
+- otherwise empty quiet space.
+
+Remove all folders and chat rows because a fresh bootstrap contains no demo chats or folders. Do not add Recent, onboarding steps, provider names, account controls, sample history, illustrations, or any new destination. Match the existing light mineral sidebar and precise line icons.
+
+Constraints: exact legible English text; change only the masked sidebar; no invented content, competitor branding, gradient, watermark, or browser chrome.

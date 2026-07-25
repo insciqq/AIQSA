@@ -1,0 +1,17 @@
+Use case: ui-mockup
+Asset type: targeted correction of an existing desktop AIQSA Model access mockup
+
+Edit only the transparent masked left global sidebar. Preserve every unmasked pixel, including the complete group list, Model access matrices, toggles, notice, headings, typography, spacing, and palette.
+
+Replace the sidebar with the real grouped Team navigation, using only these labels and this hierarchy:
+- "AIQSA" with small subtitle "Admin console";
+- section "AI setup" with "Providers";
+- expanded section "Team & access" containing "Users", "Groups", "Model access" selected, "Invites", "Access rules", and "Email delivery";
+- section "Advanced infrastructure" with "MCP servers";
+- section "Operations" with "Usage";
+- section "Security" with "Safety";
+- bottom action "Return to workspace".
+
+There must be no Overview, People, Access parent, Tools, Delivery, Run profiles as a global destination, Models as a global destination, Settings, Activity, or Audit. Match the light mineral sidebar, charcoal labels, oxidized-teal selection, simple line icons, and compact operational density of the existing screen.
+
+Constraints: exact legible English text; change only the masked sidebar; no invented navigation, competitor branding, gradient, watermark, or browser chrome.

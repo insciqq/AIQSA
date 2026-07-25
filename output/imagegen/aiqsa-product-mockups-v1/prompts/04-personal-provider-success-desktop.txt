@@ -1,0 +1,19 @@
+Use case: ui-mockup
+Asset type: shippable desktop AIQSA Admin console success-state mockup
+Input image: Image 1 is a visual-style reference only. Preserve its light paper/mineral palette, charcoal typography, oxidized-teal action accent, flat structure, subtle separators, restrained radii, and modern precise product polish. Rebuild all content to this specification.
+
+Create a front-on 2048x1152 AIQSA Admin console screen immediately after successful single-member OpenAI Quick setup. Use the exact grouped navigation from the Personal setup mockup: Providers selected; Team & access collapsed with its six real destinations summarized; MCP servers; Usage; Safety; Return to workspace. No invented global destinations.
+
+Main header "Providers" and context "Personal setup · 1 member". Center a calm success surface, not a celebratory marketing card:
+- small success check;
+- heading exactly "OpenAI is ready";
+- sentence exactly "Your key was tested and GPT-5.6 Terra is available to you.";
+- result rows exactly "Default credential · Primary", "Active model · GPT-5.6 Terra", "Your access · Granted", "Balanced profile · Configured";
+- security row exactly "Key configured · just now" with no secret fragment;
+- primary action exactly "Start chatting";
+- quiet actions exactly "Add another provider" and "Advanced configuration";
+- note exactly "Existing model and profile choices were not changed.".
+
+Do not show model sync counts, groups, model access, revisions, activity, audit, rollback, or a required follow-up step.
+
+Constraints: realistic operational UI, exact legible labels, no gradient, confetti, giant illustration, KPI cards, wizard, hidden secret, invented nav, competitor branding, or watermark.

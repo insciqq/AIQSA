@@ -1,0 +1,23 @@
+Edit this UI concept with high input fidelity. Preserve the entire main content area from the breadcrumb through the Connect OpenAI form, Test & Save button, What happens next rail, spacing, typography, colors, and Advanced configuration disclosure. Change only the left global navigation so it matches the AIQSA Control Center information architecture and the quiet light style of the rest of the product.
+
+The left rail must use a pale mineral gray-green background, not dark navy. At the top show exactly:
+AIQSA
+Control Center
+
+Then show this exact grouped navigation, with no other items:
+Overview
+PEOPLE
+People
+ACCESS
+Access
+AI INFRASTRUCTURE
+Providers
+Run profiles
+Tools
+DELIVERY
+Delivery
+SAFETY
+Safety
+
+Providers is the only selected row, using a restrained oxidized-teal highlight. Remove Evaluations, Datasets, Tests, Results, Monitoring, Policies, Users, Teams, Settings, Models, Applications, Guardrails, Audit log, and any other invented navigation entries. Keep the result a front-on high-fidelity desktop product screenshot. Do not alter the central quick setup into a wizard. Do not reveal a real API key. No gradients, watermark, browser chrome, competitor UI clone, or extra panels.
+Refinement pass for 03-provider-quick-setup-desktop.png using gpt-image-2 edit.

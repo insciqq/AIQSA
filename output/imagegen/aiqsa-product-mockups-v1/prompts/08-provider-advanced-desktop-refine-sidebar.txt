@@ -1,0 +1,17 @@
+Use case: ui-mockup
+Asset type: targeted correction of an existing desktop AIQSA advanced provider mockup
+
+Edit only the transparent masked far-left global sidebar. Preserve every unmasked pixel, including the Providers connection list, provider-local section index, Credentials detail, all statuses/actions, typography, spacing, and palette.
+
+Replace the dark invented navigation with a compact real AIQSA Admin console sidebar using only:
+- "AIQSA" with small subtitle "Admin console";
+- section "AI setup" with "Providers" selected;
+- collapsed disclosure "Team & access";
+- "MCP servers";
+- "Usage";
+- "Safety";
+- bottom action "Return to workspace".
+
+Use the light mineral sidebar and oxidized-teal selection language of the rest of the new mockup set. There must be no Overview, Applications, Models, Guardrails, Evaluations, Datasets, Policies, Monitoring, Audit log, Settings, Users, organization switcher, or account block. The provider-local sections visible to the right remain untouched and are not global destinations.
+
+Constraints: exact legible English text; change only the masked far-left sidebar; no invented navigation, competitor branding, gradient, watermark, or browser chrome.
