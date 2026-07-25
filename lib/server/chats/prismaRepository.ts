@@ -219,9 +219,9 @@ function serializeChatDetail(chat: ChatDetailRow): ChatDetailRecord {
   return {
     activeLeafMessageId: chat.activeLeafMessageId,
     createdAt: chat.createdAt,
-    defaultModelId: chat.defaultProviderModel?.id ?? "",
+    defaultModelId: chat.defaultProviderModel?.id ?? null,
     defaultPromptPresetId: chat.defaultPromptPresetId,
-    defaultProvider: chat.defaultProviderModel?.connectionId ?? "",
+    defaultProvider: chat.defaultProviderModel?.connectionId ?? null,
     folderId: chat.folderId,
     id: chat.id,
     messageCount: chat.messages.length,
@@ -253,9 +253,9 @@ function serializeChatSummary(chat: ChatSummaryRow): ChatSummaryRecord {
   return {
     activeLeafMessageId: chat.activeLeafMessageId,
     createdAt: chat.createdAt,
-    defaultModelId: chat.defaultProviderModel?.id ?? "",
+    defaultModelId: chat.defaultProviderModel?.id ?? null,
     defaultPromptPresetId: chat.defaultPromptPresetId,
-    defaultProvider: chat.defaultProviderModel?.connectionId ?? "",
+    defaultProvider: chat.defaultProviderModel?.connectionId ?? null,
     folderId: chat.folderId,
     id: chat.id,
     messageCount: chat._count.messages,

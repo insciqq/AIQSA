@@ -1818,9 +1818,9 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
         chat: {
           activeLeafMessageId: chat.activeLeafMessageId,
           createdAt: chat.createdAt,
-          defaultModelId: chat.defaultProviderModel?.id ?? "",
+          defaultModelId: chat.defaultProviderModel?.id ?? null,
           defaultPromptPresetId: chat.defaultPromptPresetId,
-          defaultProvider: chat.defaultProviderModel?.connectionId ?? "",
+          defaultProvider: chat.defaultProviderModel?.connectionId ?? null,
           folderId: chat.folderId,
           id: chat.id,
           messageCount: chat._count.messages,

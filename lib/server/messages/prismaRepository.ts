@@ -422,8 +422,8 @@ export function createPrismaMessageBranchRepository(prismaClient = prisma): Mess
 
         return {
           ...chatSummary,
-          defaultModelId: defaultProviderModel?.id ?? "",
-          defaultProvider: defaultProviderModel?.connectionId ?? "",
+          defaultModelId: defaultProviderModel?.id ?? null,
+          defaultProvider: defaultProviderModel?.connectionId ?? null,
           messageCount: path.length
         } satisfies BranchChatRecord;
       }),

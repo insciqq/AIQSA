@@ -21,9 +21,9 @@ export type BranchMessageRecord = {
 export type BranchChatRecord = {
   activeLeafMessageId: string | null;
   createdAt: Date | string;
-  defaultModelId: string;
+  defaultModelId: string | null;
   defaultPromptPresetId: string | null;
-  defaultProvider: string;
+  defaultProvider: string | null;
   folderId: string | null;
   id: string;
   messageCount: number;

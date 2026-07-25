@@ -80,10 +80,10 @@ async function prepareFakeBlankChat(page: Page) {
   await page.getByRole("button", { name: "Select model" }).click();
   await page
     .getByTestId("model-picker")
-    .getByRole("button", { name: "Select model Fake Fake QSA" })
+    .getByRole("button", { name: "Select model Fake QSA Fake QSA" })
     .click();
   await expect(page.getByRole("button", { name: "Select model" })).toContainText("Fake QSA");
-  await expect(page.getByRole("button", { name: "Select model" })).toHaveAttribute("title", "Fake / Fake QSA");
+  await expect(page.getByRole("button", { name: "Select model" })).toHaveAttribute("title", "Fake QSA / Fake QSA");
 
   await page.getByRole("button", { name: "Search strategy" }).click();
   await page.getByTestId("search-select-options").locator('[data-option-value="search-disabled"]').click();

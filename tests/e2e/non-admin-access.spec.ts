@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import type { McpErrorResponse, UserMcpCatalogResponse } from "../../lib/contracts/mcp";
+import { providerTemplateIds } from "../../lib/domain/providerTemplates";
 import {
   LOCAL_MCP_MEMBER,
   LOCAL_PRIVATE_MCP_FIXTURE,
@@ -146,7 +147,16 @@ test.describe("seeded ordinary-user MCP access", () => {
 
     const modelCatalog = await page.request.get("/api/me/catalog");
     expect(modelCatalog.status()).toBe(200);
-    await expect(modelCatalog.text()).resolves.toContain('"modelId":"fake-qsa"');
+    await expect(modelCatalog.json()).resolves.toMatchObject({
+      catalog: {
+        models: [
+          expect.objectContaining({
+            modelId: providerTemplateIds.fakeModel,
+            upstreamModelId: "fake-qsa"
+          })
+        ]
+      }
+    });
 
     await page.goto("/?settings=mcp");
     const settings = page.getByTestId("settings-dialog");

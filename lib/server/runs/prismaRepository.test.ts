@@ -385,6 +385,52 @@ describe("Prisma run repository", () => {
     await prisma.$disconnect();
   });
 
+  it("serializes a missing chat default as a paired null run update", async () => {
+    await withRunUser(async ({ userId }) => {
+      const chat = await prisma.chat.create({
+        data: {
+          title: "Run update without a chat default",
+          userId
+        }
+      });
+      const userMessage = await prisma.message.create({
+        data: {
+          chatId: chat.id,
+          content: textMessageContent("Question"),
+          role: "user"
+        }
+      });
+      const assistantMessage = await prisma.message.create({
+        data: {
+          chatId: chat.id,
+          content: textMessageContent("Answer"),
+          modelId: "fake-qsa",
+          parentMessageId: userMessage.id,
+          provider: "fake",
+          role: "assistant"
+        }
+      });
+      await prisma.chat.update({
+        data: { activeLeafMessageId: assistantMessage.id },
+        where: { id: chat.id }
+      });
+
+      const update = await createPrismaRunRepository(prisma).getChatUpdateForRun({
+        assistantMessageId: assistantMessage.id,
+        chatId: chat.id,
+        userId,
+        userMessageId: userMessage.id
+      });
+
+      expect(update?.chat).toMatchObject({
+        defaultModelId: null,
+        defaultProvider: null,
+        id: chat.id,
+        messageCount: 2
+      });
+    });
+  });
+
   it("checkpoints tool batches before dispatch and resumes every call state deterministically", async () => {
     await withRunUser(async ({ userId }) => {
       await prisma.user.update({ data: { status: "active" }, where: { id: userId } });

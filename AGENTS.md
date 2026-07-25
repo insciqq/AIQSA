@@ -58,7 +58,7 @@ If Git reports that this is not a repository, record that in the final response 
 
 ## Repository Publication
 
-The maintainer checkout keeps `origin` as the private GitLab development remote and `github` as the public GitHub release remote. Normal development pushes go only to `origin`. Push reviewed release refs to `github` only after an explicit operator request and a fresh public-release privacy check; never mirror the private repository. Public clone links point to GitHub.
+The maintainer checkout keeps `origin` as the private GitLab development remote and `github` as the GitHub release remote. GitHub is temporarily private while unresolved release-blocking bugs are being fixed; a public release is premature until those fixes are verified. Normal development pushes go only to `origin`. Do not change GitHub visibility or push release refs to `github` without an explicit operator request and fresh release-readiness and public-release privacy checks; never mirror the private repository. After publication, public clone links point to GitHub.
 
 ## Product And Implementation Contract
 

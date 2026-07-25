@@ -20,6 +20,14 @@ const summary = {
   updatedAt: "2026-07-14T08:01:00.000Z"
 };
 
+const nullDefaultSummary = {
+  ...summary,
+  defaultModelId: null,
+  defaultProvider: null,
+  id: "chat-without-default",
+  title: "Choose a model when ready"
+};
+
 const message = {
   artifactSummary: null,
   content: { blocks: [{ text: "Answer", type: "text" }] },
@@ -78,9 +86,69 @@ describe("chat wire contracts", () => {
     expect(mutation).not.toHaveProperty("usageStats");
   });
 
+  it("keeps a paired absent chat default readable across every chat response", () => {
+    expect(
+      decodeWorkspaceChatsResponse({
+        chats: [summary, nullDefaultSummary],
+        contentMatches: [],
+        folders: []
+      })
+    ).toEqual({
+      chats: [summary, nullDefaultSummary],
+      contentMatches: [],
+      folders: []
+    });
+    expect(decodeChatSummaryResponse({ chat: nullDefaultSummary })).toEqual(
+      nullDefaultSummary
+    );
+    expect(
+      decodeChatDetailResponse({
+        chat: { ...nullDefaultSummary, messages: [message], usageStats: null }
+      })
+    ).toEqual({ ...nullDefaultSummary, messages: [message], usageStats: null });
+    expect(
+      decodeChatUpdateData({
+        chat: { ...nullDefaultSummary, usageStats: null },
+        messages: [message]
+      })
+    ).toEqual({
+      chat: { ...nullDefaultSummary, usageStats: null },
+      messages: [message]
+    });
+  });
+
+  it("normalizes the legacy paired empty chat default and rejects inconsistent pairs", () => {
+    expect(
+      decodeChatSummaryResponse({
+        chat: { ...summary, defaultModelId: "", defaultProvider: "" }
+      })
+    ).toEqual({
+      ...summary,
+      defaultModelId: null,
+      defaultProvider: null
+    });
+
+    for (const [defaultModelId, defaultProvider] of [
+      [null, "openai"],
+      ["gpt-5.5", null],
+      ["", "openai"],
+      ["gpt-5.5", ""],
+      ["", null],
+      [null, ""]
+    ]) {
+      expect(
+        decodeChatSummaryResponse({
+          chat: { ...summary, defaultModelId, defaultProvider }
+        })
+      ).toBeNull();
+    }
+  });
+
   it("rejects missing or malformed required summary fields", () => {
     for (const malformed of [
       { ...summary, activeLeafMessageId: undefined },
+      { ...summary, defaultModelId: undefined },
+      { ...summary, defaultProvider: undefined },
       { ...summary, defaultPromptPresetId: undefined },
       { ...summary, folderId: undefined },
       { ...summary, messageCount: -1 },

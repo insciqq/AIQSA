@@ -626,7 +626,6 @@ describe("Prisma message branch repository", () => {
     await withMessageBranchUser(async ({ userId }) => {
       const sourceChat = await prisma.chat.create({
         data: {
-          defaultProviderModelId: providerTemplateIds.fakeModel,
           title: "Source chat",
           userId
         }
@@ -669,6 +668,8 @@ describe("Prisma message branch repository", () => {
 
       expect(branched).toMatchObject({
         activeLeafMessageId: expect.any(String),
+        defaultModelId: null,
+        defaultProvider: null,
         messageCount: 2,
         pinned: false
       });

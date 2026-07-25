@@ -148,9 +148,9 @@ export function chatSummaryFromApi(chat: WorkspaceChatSummaryWire): ChatSummary 
   return {
     activeLeafMessageId: chat.activeLeafMessageId,
     createdAt: chat.createdAt,
-    defaultModelId: chat.defaultModelId,
+    defaultModelId: chat.defaultModelId ?? "",
     defaultPromptPresetId: chat.defaultPromptPresetId,
-    defaultProvider: chat.defaultProvider,
+    defaultProvider: chat.defaultProvider ?? "",
     folderId: chat.folderId,
     id: chat.id,
     messageCount: chat.messageCount,

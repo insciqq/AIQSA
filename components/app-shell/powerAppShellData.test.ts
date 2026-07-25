@@ -78,6 +78,27 @@ describe("chat wire decoding", () => {
     expect(summary).not.toHaveProperty("usageStats");
   });
 
+  it("normalizes an absent wire default into the existing empty client selection", () => {
+    const decoded = decodeWorkspaceChatsResponse({
+      chats: [
+        {
+          ...summaryWire,
+          defaultModelId: null,
+          defaultProvider: null
+        }
+      ],
+      contentMatches: [],
+      folders: []
+    });
+
+    expect(decoded).not.toBeNull();
+    expect(chatSummaryFromApi(decoded!.chats[0]!)).toMatchObject({
+      defaultModelId: "",
+      defaultProvider: "",
+      id: summaryWire.id
+    });
+  });
+
   it("requires messages for chat detail and preserves decoded detail for its converter", () => {
     const malformedMessageWire = {
       ...detailWire,

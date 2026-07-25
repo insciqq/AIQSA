@@ -13,7 +13,21 @@ describe("useChatContentSearch", () => {
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response(
         JSON.stringify({
-          chats: [],
+          chats: [
+            {
+              activeLeafMessageId: null,
+              createdAt: "2026-06-10T00:00:00.000Z",
+              defaultModelId: null,
+              defaultPromptPresetId: null,
+              defaultProvider: null,
+              folderId: null,
+              id: "chat-2",
+              messageCount: 1,
+              pinned: false,
+              title: "Chat without a default model",
+              updatedAt: "2026-06-10T00:00:01.000Z"
+            }
+          ],
           contentMatches: [{ chatId: "chat-2", snippet: "buried phrase" }],
           folders: []
         }),

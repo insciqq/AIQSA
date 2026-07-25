@@ -350,7 +350,7 @@ test("admin manages approvals, rules, invites, session revocation, and disabling
     const modelAccess = page.getByTestId("admin-section-model-access");
     await modelAccess.getByTestId("admin-model-access-group-list").getByRole("button", { name: `Select ${group.name}` }).click();
     const groupCard = modelAccess.getByTestId("admin-model-access-group").filter({ hasText: group.name });
-    await groupCard.getByLabel("Grant model fake / Fake QSA").click();
+    await groupCard.getByLabel("Grant model Fake QSA / Fake QSA").click();
     await expect
       .poll(async () => {
         const grant = await prisma.accessGrant.findFirst({
@@ -562,14 +562,14 @@ test("admin console keeps all redesigned sections operable end to end", async ({
     await modelAccess.getByLabel("Search model access groups").fill(renamedGroupName);
     await modelAccess.getByRole("button", { name: `Select ${renamedGroupName}` }).click();
     const modelGroup = modelAccess.getByTestId("admin-model-access-group").filter({ hasText: renamedGroupName });
-    await modelGroup.getByLabel("Grant provider OpenAI").click();
+    await modelGroup.getByLabel("Grant provider Fake QSA").click();
     await expect
       .poll(async () =>
         prisma.accessGrant.findFirst({
           where: {
             enabled: true,
             groupId: groupId!,
-            providerConnectionId: providerTemplateIds.openAiConnection,
+            providerConnectionId: providerTemplateIds.fakeConnection,
             providerModelId: null,
             searchStrategy: null
           }
@@ -577,7 +577,7 @@ test("admin console keeps all redesigned sections operable end to end", async ({
       )
       .not.toBeNull();
 
-    await modelGroup.getByRole("button", { name: `Grant all Fake models to ${renamedGroupName}` }).click();
+    await modelGroup.getByRole("button", { name: `Grant all Fake QSA models to ${renamedGroupName}` }).click();
     await expect
       .poll(() =>
         prisma.accessGrant.count({
@@ -614,7 +614,7 @@ test("admin console keeps all redesigned sections operable end to end", async ({
       )
       .not.toBeNull();
 
-    await modelGroup.getByRole("button", { name: `Clear Fake models from ${renamedGroupName}` }).click();
+    await modelGroup.getByRole("button", { name: `Clear Fake QSA models from ${renamedGroupName}` }).click();
     await expect
       .poll(() =>
         prisma.accessGrant.count({
@@ -720,7 +720,7 @@ test("admin console keeps all redesigned sections operable end to end", async ({
     await expect(
       archivedModelAccess.getByText("Archived groups do not apply grants. Grant editing is disabled for this group.")
     ).toBeVisible();
-    await expect(archivedModelAccess.getByLabel("Grant provider OpenAI")).toBeDisabled();
+    await expect(archivedModelAccess.getByLabel("Grant provider Fake QSA")).toBeDisabled();
 
     await page.screenshot({
       fullPage: true,

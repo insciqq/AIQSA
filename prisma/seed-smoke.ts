@@ -1,5 +1,4 @@
 import { PrismaClient } from "@prisma/client";
-import { getVisibleMessagePath } from "../lib/domain/branching";
 import { defaultProviderModels, defaultSearchStrategies } from "../lib/domain/catalog";
 import { providerConnectionTemplates } from "../lib/domain/providerTemplates";
 import {
@@ -18,16 +17,14 @@ import {
 } from "./local-seed-fixtures";
 
 const prisma = new PrismaClient();
+const expectEmptyWorkspace = process.argv.includes("--expect-empty-workspace");
 
 async function main() {
   const user = await prisma.user.findUnique({
     include: {
       authIdentities: true,
-      chats: {
-        include: {
-          messages: true
-        }
-      },
+      chats: { select: { id: true } },
+      folders: { select: { id: true } },
       settings: true
     },
     where: {
@@ -57,21 +54,6 @@ async function main() {
   ) {
     throw new Error("Seeded local operator credential was not found");
   }
-
-  const chat = user.chats.find((candidate) => candidate.id === "00000000-0000-4000-8000-000000000200");
-
-  if (!chat?.activeLeafMessageId) {
-    throw new Error("Seeded chat or active leaf was not found");
-  }
-
-  const path = getVisibleMessagePath(
-    chat.messages.map((message) => ({
-      id: message.id,
-      parentMessageId: message.parentMessageId,
-      role: message.role as "assistant" | "system" | "tool" | "user"
-    })),
-    chat.activeLeafMessageId
-  );
 
   const expectedModelTemplateKeys = defaultProviderModels.map(
     (model) => `${model.provider}:${model.modelId}`
@@ -108,8 +90,7 @@ async function main() {
   }
   if (
     user.settings.defaultProviderModelId !== fakeModel.id ||
-    user.settings.defaultSearchStrategyId !== "search-disabled" ||
-    chat.defaultProviderModelId !== fakeModel.id
+    user.settings.defaultSearchStrategyId !== "search-disabled"
   ) {
     throw new Error("Seed smoke found inconsistent stable Fake defaults");
   }
@@ -176,6 +157,12 @@ async function main() {
 
   const ordinaryUsers = await prisma.user.findMany({
     include: {
+      _count: {
+        select: {
+          chats: true,
+          folders: true
+        }
+      },
       authIdentities: true,
       groups: true,
       mcpGrants: true,
@@ -186,6 +173,23 @@ async function main() {
   });
   if (ordinaryUsers.length !== 2) {
     throw new Error("Seed smoke did not find exactly two ordinary-user fixtures");
+  }
+
+  if (
+    expectEmptyWorkspace &&
+    (
+      user.chats.length !== 0 ||
+      user.folders.length !== 0 ||
+      user.settings.defaultFolderId !== null ||
+      ordinaryUsers.some(
+        (ordinary) =>
+          ordinary._count.chats !== 0 ||
+          ordinary._count.folders !== 0 ||
+          ordinary.settings?.defaultFolderId !== null
+      )
+    )
+  ) {
+    throw new Error("Fresh seed unexpectedly created workspace folders or chats");
   }
   for (const fixture of LOCAL_ORDINARY_USERS) {
     const ordinary = ordinaryUsers.find((candidate) => candidate.id === fixture.id);
@@ -242,12 +246,8 @@ async function main() {
     throw new Error("Seed smoke did not find the expected ordinary-user MCP grant matrix");
   }
 
-  if (path.length < 2) {
-    throw new Error("Seed smoke did not find the expected demo data");
-  }
-
   console.log(
-    `AIQSA seed smoke ok: chats=${user.chats.length}, visiblePath=${path.length}, models=${providerModels.length}, runProfiles=${runProfiles.length}, searchStrategies=${searchStrategies.length}, ordinaryUsers=${ordinaryUsers.length}`
+    `AIQSA seed smoke ok: chats=${user.chats.length}, folders=${user.folders.length}, models=${providerModels.length}, runProfiles=${runProfiles.length}, searchStrategies=${searchStrategies.length}, ordinaryUsers=${ordinaryUsers.length}`
   );
 }
 

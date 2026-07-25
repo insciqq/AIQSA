@@ -100,7 +100,12 @@ export type ChatMessageWire = {
   status: string;
 };
 
-export type WorkspaceChatSummaryWire = Omit<WorkspaceChatSummary, "pinned"> & {
+export type WorkspaceChatSummaryWire = Omit<
+  WorkspaceChatSummary,
+  "defaultModelId" | "defaultProvider" | "pinned"
+> & {
+  defaultModelId: string | null;
+  defaultProvider: string | null;
   pinned: boolean;
 };
 
@@ -423,6 +428,30 @@ function decodeChatMessageWire(value: unknown): ChatMessageWire | null {
   };
 }
 
+function decodeChatDefaultSelection(
+  modelValue: unknown,
+  providerValue: unknown
+): Pick<WorkspaceChatSummaryWire, "defaultModelId" | "defaultProvider"> | null {
+  if (
+    (modelValue === null && providerValue === null) ||
+    (modelValue === "" && providerValue === "")
+  ) {
+    return {
+      defaultModelId: null,
+      defaultProvider: null
+    };
+  }
+
+  const defaultModelId = requiredString(modelValue);
+  const defaultProvider = requiredString(providerValue);
+  return defaultModelId && defaultProvider
+    ? {
+        defaultModelId,
+        defaultProvider
+      }
+    : null;
+}
+
 function decodeWorkspaceChatSummaryWire(value: unknown): WorkspaceChatSummaryWire | null {
   if (!isRecord(value)) {
     return null;
@@ -431,9 +460,11 @@ function decodeWorkspaceChatSummaryWire(value: unknown): WorkspaceChatSummaryWir
   const activeLeafMessageId = nullableId(value.activeLeafMessageId);
   const id = requiredString(value.id);
   const createdAt = requiredString(value.createdAt);
-  const defaultModelId = requiredString(value.defaultModelId);
+  const defaultSelection = decodeChatDefaultSelection(
+    value.defaultModelId,
+    value.defaultProvider
+  );
   const defaultPromptPresetId = nullableId(value.defaultPromptPresetId);
-  const defaultProvider = requiredString(value.defaultProvider);
   const folderId = nullableId(value.folderId);
   const messageCount = nonNegativeInteger(value.messageCount);
   const title = requiredString(value.title);
@@ -442,9 +473,8 @@ function decodeWorkspaceChatSummaryWire(value: unknown): WorkspaceChatSummaryWir
     activeLeafMessageId === undefined ||
     !id ||
     !createdAt ||
-    !defaultModelId ||
+    !defaultSelection ||
     defaultPromptPresetId === undefined ||
-    !defaultProvider ||
     folderId === undefined ||
     messageCount === null ||
     typeof value.pinned !== "boolean" ||
@@ -457,9 +487,9 @@ function decodeWorkspaceChatSummaryWire(value: unknown): WorkspaceChatSummaryWir
   return {
     activeLeafMessageId,
     createdAt,
-    defaultModelId,
+    defaultModelId: defaultSelection.defaultModelId,
     defaultPromptPresetId,
-    defaultProvider,
+    defaultProvider: defaultSelection.defaultProvider,
     folderId,
     id,
     messageCount,

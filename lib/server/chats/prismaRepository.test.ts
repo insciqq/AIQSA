@@ -128,7 +128,7 @@ describe("Prisma chat repository", () => {
     });
   });
 
-  it("creates an empty chat default when user settings have no model relation", async () => {
+  it("preserves an absent chat default across create, workspace, and detail reads", async () => {
     await withFolderUser(async ({ userId }) => {
       await prisma.userSettings.update({
         data: {
@@ -143,8 +143,8 @@ describe("Prisma chat repository", () => {
       const created = await repository.createChat({ userId });
 
       expect(created).toMatchObject({
-        defaultModelId: "",
-        defaultProvider: ""
+        defaultModelId: null,
+        defaultProvider: null
       });
       await expect(
         prisma.chat.findUniqueOrThrow({
@@ -155,6 +155,22 @@ describe("Prisma chat repository", () => {
         })
       ).resolves.toEqual({
         defaultProviderModelId: null
+      });
+      await expect(repository.listWorkspace(userId)).resolves.toMatchObject({
+        chats: [
+          {
+            defaultModelId: null,
+            defaultProvider: null,
+            id: created?.id
+          }
+        ]
+      });
+      await expect(
+        repository.getChat({ chatId: created?.id ?? "", userId })
+      ).resolves.toMatchObject({
+        defaultModelId: null,
+        defaultProvider: null,
+        id: created?.id
       });
     });
   });

@@ -72,4 +72,4 @@ The separate Compose project and encryption key keep this reset away from the pe
 
 ## Public releases
 
-The public repository is [GitHub](https://github.com/insciqq/AIQSA). Maintainer development happens in a private GitLab repository, and reviewed public snapshots are published to GitHub deliberately rather than through an automatic mirror.
+The GitHub release repository is temporarily private while unresolved release-blocking bugs are being fixed; no public release is currently available. Maintainer development happens in a private GitLab repository. After explicit operator approval and fresh release-readiness and privacy checks, reviewed release snapshots are published deliberately to GitHub rather than through an automatic mirror.

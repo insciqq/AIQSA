@@ -37,9 +37,9 @@ describe("chat route handlers", () => {
         return {
           activeLeafMessageId: null,
           createdAt: "2026-06-09T00:00:00.000Z",
-          defaultModelId: "gpt-5.5",
+          defaultModelId: null,
           defaultPromptPresetId: null,
-          defaultProvider: "openai",
+          defaultProvider: null,
           folderId: input.folderId ?? null,
           id: `chat-${createInputs.length}`,
           messageCount: 0,
@@ -84,7 +84,12 @@ describe("chat route handlers", () => {
     expect(createInputs.map((input) => input.folderId)).toEqual([null, "folder-1"]);
     for (const response of [genericResponse, folderResponse]) {
       const chat = (await response.json()).chat as Record<string, unknown>;
-      expect(chat).toMatchObject({ messageCount: 0, pinned: false });
+      expect(chat).toMatchObject({
+        defaultModelId: null,
+        defaultProvider: null,
+        messageCount: 0,
+        pinned: false
+      });
       expect(chat).not.toHaveProperty("messages");
       expect(chat).not.toHaveProperty("usageStats");
     }

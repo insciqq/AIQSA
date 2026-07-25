@@ -1,6 +1,5 @@
 import { Prisma, PrismaClient } from "@prisma/client";
 import { defaultProviderModels, defaultSearchStrategies } from "../lib/domain/catalog";
-import { textMessageContent } from "../lib/domain/content";
 import {
   providerConnectionTemplates,
   providerTemplateIds
@@ -30,13 +29,9 @@ import {
 const prisma = new PrismaClient();
 
 const ids = {
-  assistantMessage: "00000000-0000-4000-8000-000000000202",
-  chat: "00000000-0000-4000-8000-000000000200",
-  folderResearch: "00000000-0000-4000-8000-000000000101",
   group: "00000000-0000-4000-8000-000000000010",
   promptPreset: "00000000-0000-4000-8000-000000000300",
-  user: "00000000-0000-4000-8000-000000000001",
-  userMessage: "00000000-0000-4000-8000-000000000201"
+  user: "00000000-0000-4000-8000-000000000001"
 };
 
 const asJson = (value: unknown) => value as Prisma.InputJsonValue;
@@ -599,21 +594,6 @@ async function main() {
     });
   }
 
-  await prisma.folder.upsert({
-    create: {
-      id: ids.folderResearch,
-      name: "Research",
-      sortOrder: 20,
-      userId: ids.user
-    },
-    update: {
-      sortOrder: 20
-    },
-    where: {
-      id: ids.folderResearch
-    }
-  });
-
   const existingSettings = await prisma.userSettings.findUnique({
     select: {
       defaultPromptPresetId: true
@@ -883,81 +863,6 @@ async function main() {
     });
   }
 
-  await prisma.chat.upsert({
-    create: {
-      defaultPromptPresetId: ids.promptPreset,
-      defaultProviderModelId: fakeProviderModelId,
-      folderId: null,
-      id: ids.chat,
-      title: "OpenAI web search shape",
-      userId: ids.user
-    },
-    update: {
-      defaultPromptPresetId: ids.promptPreset,
-      defaultProviderModelId: fakeProviderModelId,
-      title: "OpenAI web search shape"
-    },
-    where: {
-      id: ids.chat
-    }
-  });
-
-  await prisma.message.upsert({
-    create: {
-      chatId: ids.chat,
-      content: asJson(
-        textMessageContent(
-          "Compare native web search with the OpenRouter Perplexity route for a short technical answer."
-        )
-      ),
-      id: ids.userMessage,
-      modelId: "gpt-5.5",
-      provider: "openai",
-      role: "user",
-      status: "complete"
-    },
-    update: {},
-    where: {
-      id: ids.userMessage
-    }
-  });
-
-  await prisma.message.upsert({
-    create: {
-      chatId: ids.chat,
-      content: asJson(
-        textMessageContent(
-          "Native search keeps the OpenAI response and citations in one provider run. OpenRouter Perplexity keeps search explicit as a separate strategy for cross-provider QSA."
-        )
-      ),
-      id: ids.assistantMessage,
-      inputTokens: 18,
-      modelId: "gpt-5.5",
-      outputTokens: 28,
-      parentMessageId: ids.userMessage,
-      provider: "openai",
-      role: "assistant",
-      status: "complete"
-    },
-    update: {
-      parentMessageId: ids.userMessage
-    },
-    where: {
-      id: ids.assistantMessage
-    }
-  });
-
-  await prisma.chat.update({
-    data: {
-      activeLeafMessageId: ids.assistantMessage,
-      totalInputTokens: 18,
-      totalOutputTokens: 28,
-      totalReasoningTokens: 0
-    },
-    where: {
-      id: ids.chat
-    }
-  });
 }
 
 main()

@@ -603,7 +603,15 @@ describe("workspace actions", () => {
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(Response.json({ chat: { id: "malformed-chat" } }))
-      .mockResolvedValueOnce(Response.json({ chat: apiChatSummary(created) }));
+      .mockResolvedValueOnce(
+        Response.json({
+          chat: {
+            ...apiChatSummary(created),
+            defaultModelId: null,
+            defaultProvider: null
+          }
+        })
+      );
     vi.stubGlobal("fetch", fetchMock);
 
     await expect(state.actions.createChat("folder-1", sourceKey)).resolves.toBeNull();
@@ -615,6 +623,8 @@ describe("workspace actions", () => {
     });
 
     await expect(state.actions.createChat("folder-1", sourceKey)).resolves.toMatchObject({
+      defaultModelId: "",
+      defaultProvider: "",
       id: "chat-created"
     });
     const targetKey = composerSessionKey("chat-created");
@@ -1154,6 +1164,46 @@ describe("workspace actions", () => {
       kind: "error",
       text: "Workspace load failed with HTTP 502 (workspace_failed_502)"
     });
+  });
+
+  it("hydrates a workspace containing a chat without a default model", async () => {
+    const state = useWorkspaceActionsForTest({
+      activeChatId: null,
+      attachments: [],
+      draft: ""
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        Response.json({
+          chats: [
+            {
+              ...apiChatSummary(state.chatA),
+              defaultModelId: null,
+              defaultProvider: null
+            }
+          ],
+          contentMatches: [],
+          folders: []
+        })
+      )
+    );
+
+    await state.actions.refreshWorkspace(null);
+
+    expect(useWorkspaceStore.getState()).toMatchObject({
+      chats: [
+        expect.objectContaining({
+          defaultModelId: "",
+          defaultProvider: "",
+          id: state.chatA.id
+        })
+      ],
+      workspaceError: null,
+      workspaceLoading: false,
+      workspaceReady: true
+    });
+    expect(state.setNotice).not.toHaveBeenCalled();
   });
 
   it("deduplicates concurrent workspace retries and marks the first successful load ready", async () => {

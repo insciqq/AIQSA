@@ -1525,6 +1525,44 @@ test("shows a readable recovery state for malformed workspace payloads", async (
   await expect(page.getByTestId("shell-notice")).toHaveCount(0);
 });
 
+test("keeps chats without a persisted default model accessible", async ({ page }) => {
+  const chatWithoutDefaultModel = {
+    activeLeafMessageId: null,
+    createdAt: "2026-06-10T13:00:00.000Z",
+    defaultModelId: null,
+    defaultPromptPresetId: null,
+    defaultProvider: null,
+    folderId: null,
+    id: "chat-without-default-model",
+    messageCount: 0,
+    messages: [],
+    pinned: false,
+    title: "Chat without a default model",
+    updatedAt: "2026-06-10T13:00:02.000Z",
+    usageStats: null
+  };
+
+  await page.addInitScript(() => {
+    window.localStorage.setItem("aiqsa.activeChatId", "chat-without-default-model");
+  });
+  await installMatrixCatalogFixture(page, {
+    chats: [chatWithoutDefaultModel],
+    folders: []
+  });
+  await signIn(page);
+
+  await expect(page.getByTestId("workspace-error-state")).toHaveCount(0);
+  await expect(page.getByTestId("current-chat-title")).toHaveText(chatWithoutDefaultModel.title);
+  await expect(page.getByRole("textbox", { name: "Message" })).toBeEnabled();
+
+  const workspace = page.getByTestId("left-chat-pane");
+  await expect(workspace).toContainText(chatWithoutDefaultModel.title);
+  await workspace
+    .getByRole("button", { name: `Chat actions ${chatWithoutDefaultModel.title}` })
+    .click();
+  await expect(workspace.getByRole("button", { name: "Delete chat" })).toBeVisible();
+});
+
 test("finds never-opened chats through server-side content search", async ({ page }) => {
   const hiddenContentChat = {
     activeLeafMessageId: null,

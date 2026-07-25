@@ -8,9 +8,9 @@ export type ModelRunChatUpdateData = {
   chat: {
     activeLeafMessageId: string | null;
     createdAt: string;
-    defaultModelId: string;
+    defaultModelId: string | null;
     defaultPromptPresetId: string | null;
-    defaultProvider: string;
+    defaultProvider: string | null;
     folderId: string | null;
     id: string;
     messageCount: number;
