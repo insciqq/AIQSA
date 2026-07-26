@@ -10,7 +10,7 @@ export function AdminFeedbackMessages({
       {notice ? (
         <p
           aria-live="polite"
-          className="mt-3 break-words rounded-control bg-accent-green/10 px-3 py-2 text-sm text-accent-green [overflow-wrap:anywhere]"
+          className="mt-3 break-words border-l-2 border-positive bg-positive/10 px-3 py-2 text-sm text-positive [overflow-wrap:anywhere]"
           role="status"
         >
           {notice}
@@ -19,7 +19,7 @@ export function AdminFeedbackMessages({
 
       {error ? (
         <p
-          className="mt-3 break-words rounded-control bg-accent-rose/10 px-3 py-2 text-sm text-accent-rose [overflow-wrap:anywhere]"
+          className="mt-3 break-words border-l-2 border-critical bg-critical/10 px-3 py-2 text-sm text-critical [overflow-wrap:anywhere]"
           role="alert"
         >
           {error}

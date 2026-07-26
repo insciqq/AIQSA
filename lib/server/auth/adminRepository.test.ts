@@ -970,7 +970,7 @@ describe("Prisma admin repository", () => {
   });
 
   it("manages groups, memberships, grants, and archived entitlement cutoff", async () => {
-    await withAdminData(async ({ domain, groupId, repository }) => {
+    await withAdminData(async ({ adminId, domain, groupId, repository }) => {
       const user = await createPasswordUser({
         displayName: "Entitlement Admin Test User",
         domain,
@@ -1022,7 +1022,7 @@ describe("Prisma admin repository", () => {
       expect(entitled.modelKeys.has(`${fakeModel.connectionId}:${fakeModel.id}`)).toBe(true);
       expect(entitled.searchStrategies.has("openai-native-web-search")).toBe(true);
 
-      const dashboard = await repository.listDashboard();
+      const dashboard = await repository.listDashboard(adminId);
       const dashboardUser = dashboard.users.find((candidate) => candidate.id === user.id);
       expect(dashboard.groups.find((candidate) => candidate.id === group!.id)?.accessGrants).toHaveLength(2);
       expect(dashboardUser?.effectiveEntitlements.models).toContainEqual({

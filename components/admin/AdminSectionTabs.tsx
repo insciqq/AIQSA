@@ -3,22 +3,48 @@ import {
   adminSectionPanelId,
   adminSections,
   adminSectionTabId,
+  type AdminSectionGroupId,
   type AdminSectionId
 } from "@/components/admin/adminSections";
 import { focusRing, touchTarget } from "@/components/admin/adminPrimitives";
 import type { AdminSectionNavigation } from "@/components/admin/useAdminSectionNavigation";
-import { useEffect, useRef } from "react";
+import type { AdminDashboard } from "@/lib/contracts/admin";
+import { ChevronDown } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 type AdminSectionTabsProps = Readonly<{
   navigation: Pick<
     AdminSectionNavigation,
-    "activeSection" | "onTabKeyDown" | "registerTab" | "selectSection"
+    "activeSection" | "closeSectionIndex" | "onTabKeyDown" | "registerTab" | "selectSection"
   >;
+  summary?: AdminDashboard["navigation"] | null;
 }>;
 
-export function AdminSectionTabs({ navigation }: AdminSectionTabsProps) {
+type DisclosureGroupId = Exclude<AdminSectionGroupId, "personal">;
+
+function sectionAttention(
+  section: AdminSectionId,
+  attention: AdminDashboard["navigation"]["attention"] | null
+): number {
+  if (!attention) return 0;
+  if (section === "users") {
+    return attention.pendingUsers + attention.activeUsersWithoutModelAccess;
+  }
+  return section === "invites" ? attention.openInvites : 0;
+}
+
+function initialDisclosure(summary: AdminDashboard["navigation"] | null | undefined) {
+  return {
+    advanced: summary?.advancedConfigured ?? true,
+    team: summary?.teamConfigured ?? true
+  } satisfies Record<DisclosureGroupId, boolean>;
+}
+
+export function AdminSectionTabs({ navigation, summary = null }: AdminSectionTabsProps) {
   const activeTabRef = useRef<HTMLButtonElement | null>(null);
   const tablistRef = useRef<HTMLElement | null>(null);
+  const [disclosureOverride, setDisclosureOverride] = useState<Partial<Record<DisclosureGroupId, boolean>>>({});
+  const disclosureDefaults = useMemo(() => initialDisclosure(summary), [summary]);
 
   useEffect(() => {
     const activeTab = activeTabRef.current;
@@ -32,12 +58,6 @@ export function AdminSectionTabs({ navigation }: AdminSectionTabsProps) {
 
       const tablistRect = tablist.getBoundingClientRect();
       const tabRect = activeTab.getBoundingClientRect();
-      if (tabRect.left < tablistRect.left) {
-        tablist.scrollLeft -= tablistRect.left - tabRect.left;
-      } else if (tabRect.right > tablistRect.right) {
-        tablist.scrollLeft += tabRect.right - tablistRect.right;
-      }
-
       if (tabRect.top < tablistRect.top) {
         tablist.scrollTop -= tablistRect.top - tabRect.top;
       } else if (tabRect.bottom > tablistRect.bottom) {
@@ -49,61 +69,133 @@ export function AdminSectionTabs({ navigation }: AdminSectionTabsProps) {
   }, [navigation.activeSection]);
 
   return (
-    <nav
-      aria-label="Control Center sections"
-      className="flex min-w-0 gap-4 overflow-x-auto px-4 py-3 lg:sticky lg:top-0 lg:h-[100dvh] lg:flex-col lg:gap-5 lg:overflow-x-hidden lg:overflow-y-auto lg:px-3 lg:py-5"
-      ref={tablistRef}
-      role="tablist"
-    >
-      {adminSectionGroups.map((group) => (
-        <div className="flex shrink-0 flex-col gap-1.5 lg:w-full" key={group.id} role="presentation">
-          <p className="px-2.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-ink-muted">
-            {group.label}
-          </p>
-          <div className="flex gap-1 lg:flex-col" role="presentation">
-            {adminSections
-              .filter((section) => section.group === group.id)
-              .map((section) => {
-                const active = section.id === navigation.activeSection;
-                const SectionIcon = section.Icon;
+    <div className="flex min-h-full min-w-0 flex-col">
+      <div className="flex items-center justify-between border-b border-trace-subtle px-4 py-4 lg:hidden">
+        <div>
+          <p className="text-sm font-semibold text-ink">Sections</p>
+          <p className="mt-0.5 text-xs text-ink-muted">Choose one Control Center task.</p>
+        </div>
+        <button
+          className={`min-h-control-sm rounded-control px-3 text-xs font-medium text-ink-secondary hover:bg-control-hover ${focusRing} ${touchTarget}`}
+          onClick={navigation.closeSectionIndex}
+          type="button"
+        >
+          Back
+        </button>
+      </div>
 
-                return (
+      <nav
+        aria-label="Control Center sections"
+        className="min-h-0 min-w-0 flex-1 overflow-y-auto px-3 py-4 lg:sticky lg:top-0 lg:h-[100dvh] lg:py-5"
+        data-testid="admin-section-index"
+        ref={tablistRef}
+        role="tablist"
+      >
+        <div className="flex min-w-0 flex-col gap-5">
+          {adminSectionGroups.map((group) => {
+            const sections = adminSections.filter((section) => section.group === group.id);
+            const activeInGroup = sections.find((section) => section.id === navigation.activeSection) ?? null;
+            const disclosureId = group.id === "personal" ? null : group.id;
+            const expanded = disclosureId
+              ? disclosureOverride[disclosureId] ?? disclosureDefaults[disclosureId]
+              : true;
+            const visibleSections = expanded ? sections : activeInGroup ? [activeInGroup] : [];
+            const groupAttention = group.id === "team"
+              ? (summary?.attention.pendingUsers ?? 0) +
+                (summary?.attention.activeUsersWithoutModelAccess ?? 0) +
+                (summary?.attention.openInvites ?? 0)
+              : 0;
+
+            return (
+              <div className="min-w-0" data-expanded={expanded} data-testid={`admin-nav-group-${group.id}`} key={group.id} role="presentation">
+                {disclosureId ? (
                   <button
-                    aria-controls={adminSectionPanelId(section.id)}
-                    aria-selected={active}
-                    className={[
-                      `group/nav-item flex min-h-control shrink-0 items-center gap-2 rounded-control px-2.5 py-2 text-left text-sm font-medium transition-colors lg:w-full ${focusRing} ${touchTarget}`,
-                      active
-                        ? "bg-control-selected text-ink"
-                        : "bg-transparent text-ink-secondary hover:bg-control-hover hover:text-ink active:bg-control-pressed"
-                    ].join(" ")}
-                    data-testid={adminSectionTabId(section.id)}
-                    id={adminSectionTabId(section.id)}
-                    key={section.id}
-                    onClick={() => navigation.selectSection(section.id)}
-                    onKeyDown={(event) => navigation.onTabKeyDown(event, section.id)}
-                    ref={(node) => {
-                      navigation.registerTab(section.id, node);
-                      if (active) {
-                        activeTabRef.current = node;
-                      }
+                    aria-expanded={expanded}
+                    className={`flex min-h-control-sm w-full min-w-0 items-center gap-2 rounded-control px-2.5 text-left text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-muted hover:bg-control-hover hover:text-ink-secondary ${focusRing} ${touchTarget}`}
+                    onClick={() => {
+                      setDisclosureOverride((current) => ({
+                        ...current,
+                        [disclosureId]: !(current[disclosureId] ?? disclosureDefaults[disclosureId])
+                      }));
                     }}
-                    role="tab"
-                    tabIndex={active ? 0 : -1}
                     type="button"
                   >
-                    <SectionIcon
+                    <span className="min-w-0 flex-1 truncate">{group.label}</span>
+                    {groupAttention > 0 ? (
+                      <span
+                        aria-hidden="true"
+                        className="shrink-0 font-mono text-[10px] normal-case tracking-normal text-caution"
+                      >
+                        {groupAttention} {groupAttention === 1 ? "item" : "items"}
+                      </span>
+                    ) : null}
+                    <ChevronDown
                       aria-hidden="true"
-                      className={`size-4 shrink-0 ${active ? "text-proof" : "text-ink-muted group-hover/nav-item:text-ink-secondary"}`}
+                      className={`size-3.5 shrink-0 transition-transform ${expanded ? "rotate-180" : ""}`}
                     />
-                    {section.label}
                   </button>
-                );
-              })}
-          </div>
+                ) : (
+                  <p className="px-2.5 text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-muted">
+                    {group.label}
+                  </p>
+                )}
+
+                {visibleSections.length ? (
+                  <div className="mt-1 flex min-w-0 flex-col gap-1" role="presentation">
+                    {visibleSections.map((section) => {
+                      const active = section.id === navigation.activeSection;
+                      const SectionIcon = section.Icon;
+                      const attention = sectionAttention(section.id, summary?.attention ?? null);
+
+                      return (
+                        <button
+                          aria-controls={adminSectionPanelId(section.id)}
+                          aria-selected={active}
+                          className={[
+                            `group/nav-item flex min-h-control w-full min-w-0 items-center gap-2 rounded-control px-2.5 py-2 text-left text-sm font-medium transition-colors ${focusRing} ${touchTarget}`,
+                            active
+                              ? "bg-control-selected text-ink"
+                              : "bg-transparent text-ink-secondary hover:bg-control-hover hover:text-ink active:bg-control-pressed"
+                          ].join(" ")}
+                          data-testid={adminSectionTabId(section.id)}
+                          id={adminSectionTabId(section.id)}
+                          key={section.id}
+                          onClick={() => navigation.selectSection(section.id)}
+                          onKeyDown={(event) => navigation.onTabKeyDown(event, section.id)}
+                          ref={(node) => {
+                            navigation.registerTab(section.id, node);
+                            if (active) {
+                              activeTabRef.current = node;
+                            }
+                          }}
+                          role="tab"
+                          tabIndex={active ? 0 : -1}
+                          type="button"
+                        >
+                          <SectionIcon
+                            aria-hidden="true"
+                            className={`size-4 shrink-0 ${active ? "text-proof" : "text-ink-muted group-hover/nav-item:text-ink-secondary"}`}
+                          />
+                          <span className="min-w-0 flex-1 truncate">{section.label}</span>
+                          {attention > 0 ? (
+                            <span
+                              aria-hidden="true"
+                              className="shrink-0 rounded-pill bg-caution/10 px-1.5 py-0.5 font-mono text-[10px] text-caution"
+                            >
+                              {attention}
+                            </span>
+                          ) : null}
+                        </button>
+                      );
+                    })}
+                  </div>
+                ) : null}
+              </div>
+            );
+          })}
         </div>
-      ))}
-    </nav>
+      </nav>
+    </div>
   );
 }
 

@@ -2,6 +2,7 @@ import type {
   AdminAccessRuleKind,
   AdminAccessRuleRecord,
   AdminDashboard as AdminDashboardWire,
+  AdminDashboardNavigation,
   AdminDeletionInfo,
   AdminGroup as AdminGroupWire,
   AdminInviteRecord as AdminInviteWire,
@@ -11,6 +12,7 @@ import type {
 export type {
   AdminAccessGrantRecord,
   AdminAccessRuleRecord,
+  AdminDashboardNavigation,
   AdminDeletionBlockReason,
   AdminDeletionInfo,
   AdminEntitlementSummary,
@@ -130,7 +132,7 @@ export type AdminRepository = {
   deleteStaleUser(input: AdminDeleteStaleUserInput): Promise<AdminDeleteUserResult>;
   disableUser(input: AdminRevokeUserSessionsInput): Promise<AdminDisableUserResult>;
   findAdminUser(userId: string): Promise<AdminActorRecord | null>;
-  listDashboard(): Promise<AdminDashboard>;
+  listDashboard(actingAdminUserId: string): Promise<AdminDashboard>;
   rejectUser(input: AdminRevokeUserSessionsInput): Promise<AdminRejectUserResult>;
   renameGroup(input: AdminRenameGroupInput): Promise<AdminGroupRecord | null>;
   revokeAllSessions(input: AdminRevokeAllSessionsInput): Promise<number>;

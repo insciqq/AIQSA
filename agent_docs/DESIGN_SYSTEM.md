@@ -179,7 +179,7 @@ Public share is a reading surface, not a reduced private shell. A quiet workspac
 
 ## Control Center Composition
 
-The Control Center is an operational workspace, not a dashboard landing page. Navigation exposes only real destinations in this exact order: Personal — Providers, Usage; Team — Users, Groups, Model access, Invites, Access rules; Advanced — MCP servers, Email delivery, Safety. `Personal`, `Team`, and `Advanced` are visual group headings; they are not plans, modes, entitlements, disclosures, or synthetic routes.
+The Control Center is an operational workspace, not a dashboard landing page. Navigation exposes only real destinations in this exact order: Personal — Providers, Usage; Team — Users, Groups, Model access, Invites, Access rules; Advanced — MCP servers, Email delivery, Safety. `Personal`, `Team`, and `Advanced` are progressive navigation disclosures; they are not plans, modes, roles, entitlements, or synthetic routes. Personal remains first and open. Team and Advanced derive their initial disclosure from a secret-free server projection of actual installation configuration, fail open when uncertain, and never hide a directly opened destination.
 
 The active destination owns the page title, short scope description, primary action, status/feedback, and content. Do not repeat a global metric-card strip above every task. Important counts belong beside the relevant navigation item or section heading.
 

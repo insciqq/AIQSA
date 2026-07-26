@@ -1,7 +1,11 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type { AdminGroup } from "@/lib/contracts/admin";
-import { AdminGroupOptions } from "./adminPrimitives";
+import {
+  AdminGroupOptions,
+  AdminResourceDetailPane,
+  AdminResourceIndexPane
+} from "./adminPrimitives";
 
 const activeGroup: AdminGroup = {
   accessGrants: [],
@@ -51,5 +55,26 @@ describe("AdminGroupOptions", () => {
 
     expect(screen.getByRole("group", { name: "Default groups" })).toHaveTextContent("No groups");
     expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
+  });
+});
+
+describe("admin resource task panes", () => {
+  it("keeps index and detail mounted while switching the compact task owner", () => {
+    render(
+      <>
+        <AdminResourceIndexPane compactVisible testId="resource-index">
+          Resource index
+        </AdminResourceIndexPane>
+        <AdminResourceDetailPane compactVisible={false} testId="resource-detail">
+          Resource detail
+        </AdminResourceDetailPane>
+      </>
+    );
+
+    expect(screen.getByTestId("resource-index")).toHaveAttribute("data-admin-task-view", "index");
+    expect(screen.getByTestId("resource-index")).toHaveClass("block", "lg:block");
+    expect(screen.getByTestId("resource-detail")).toHaveAttribute("data-admin-task-view", "detail");
+    expect(screen.getByTestId("resource-detail")).toHaveClass("hidden", "lg:block");
+    expect(screen.getByText("Resource detail")).toBeInTheDocument();
   });
 });

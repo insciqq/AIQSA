@@ -63,7 +63,13 @@ export type AdminMcpController = Readonly<{
 export type UseAdminMcpControllerOptions = Readonly<{
   active: boolean;
   fetcher?: Fetcher;
+  onMutationCommitted?(): void | Promise<unknown>;
 }>;
+
+function notifyMutationCommitted(callback: UseAdminMcpControllerOptions["onMutationCommitted"]): void {
+  if (!callback) return;
+  void Promise.resolve().then(callback).catch(() => undefined);
+}
 
 function sortServers(servers: readonly AdminMcpServer[]): AdminMcpServer[] {
   return [...servers].sort((left, right) => {
@@ -74,7 +80,8 @@ function sortServers(servers: readonly AdminMcpServer[]): AdminMcpServer[] {
 
 export function useAdminMcpController({
   active,
-  fetcher = fetch
+  fetcher = fetch,
+  onMutationCommitted
 }: UseAdminMcpControllerOptions): AdminMcpController {
   const [servers, setServers] = useState<AdminMcpServer[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -142,8 +149,9 @@ export function useAdminMcpController({
     }
     replaceServer(result.data);
     setNotice(success);
+    notifyMutationCommitted(onMutationCommitted);
     return result.data;
-  }, [replaceServer]);
+  }, [onMutationCommitted, replaceServer]);
 
   const create = useCallback(async (body: AdminMcpCreateRequest) => {
     if (busyRef.current) return null;
@@ -159,6 +167,7 @@ export function useAdminMcpController({
       }
       replaceServer(created.data);
       setSelectedId(created.data.id);
+      notifyMutationCommitted(onMutationCommitted);
 
       if (body.draft.auth.mode === "oauth") {
         setNotice("MCP server draft created. Connect OAuth; AIQSA will then test and activate it automatically.");
@@ -178,7 +187,7 @@ export function useAdminMcpController({
       busyRef.current = false;
       setBusy(false);
     }
-  }, [fetcher, replaceServer]);
+  }, [fetcher, onMutationCommitted, replaceServer]);
 
   const booleanMutation = useCallback(async (
     operation: () => Promise<AdminMcpClientResult<AdminMcpServer>>,
@@ -235,8 +244,9 @@ export function useAdminMcpController({
       return false;
     }
     setNotice("Validation OAuth connection disconnected.");
+    notifyMutationCommitted(onMutationCommitted);
     return true;
-  }, [fetcher]);
+  }, [fetcher, onMutationCommitted]);
 
   const selectedServer = useMemo(() => {
     return servers.find((server) => server.id === selectedId) ?? servers[0] ?? null;

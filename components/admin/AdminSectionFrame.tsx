@@ -1,7 +1,8 @@
 import { AdminInactiveSectionPanels } from "@/components/admin/AdminSectionTabs";
-import { SectionHeader } from "@/components/admin/adminPrimitives";
+import { quietButton, SectionHeader } from "@/components/admin/adminPrimitives";
 import { adminSectionPanelId, adminSectionTabId } from "@/components/admin/adminSections";
 import type { AdminSectionNavigation } from "@/components/admin/useAdminSectionNavigation";
+import { ListTree } from "lucide-react";
 import type { ReactNode } from "react";
 
 export function AdminSectionFrame({
@@ -25,7 +26,19 @@ export function AdminSectionFrame({
         role="tabpanel"
       >
         <SectionHeader
-          actions={headerActions}
+          actions={
+            <>
+              <button
+                className={`${quietButton} lg:hidden`}
+                onClick={navigation.openSectionIndex}
+                type="button"
+              >
+                <ListTree aria-hidden="true" className="size-3.5" />
+                All sections
+              </button>
+              {headerActions}
+            </>
+          }
           description={activeSectionConfig.description}
           Icon={activeSectionConfig.Icon}
           title={activeSectionConfig.label}

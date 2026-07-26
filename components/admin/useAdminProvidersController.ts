@@ -28,7 +28,19 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 type CatalogOperation = () => Promise<AdminProviderClientResult<AdminProviderConnection[]>>;
 
-export function useAdminProvidersController(active: boolean) {
+export type UseAdminProvidersControllerOptions = Readonly<{
+  onMutationCommitted?(): void | Promise<unknown>;
+}>;
+
+function notifyMutationCommitted(callback: UseAdminProvidersControllerOptions["onMutationCommitted"]): void {
+  if (!callback) return;
+  void Promise.resolve().then(callback).catch(() => undefined);
+}
+
+export function useAdminProvidersController(
+  active: boolean,
+  options: UseAdminProvidersControllerOptions = {}
+) {
   const [connections, setConnections] = useState<AdminProviderConnection[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
@@ -124,8 +136,9 @@ export function useAdminProvidersController(active: boolean) {
         : null
     );
     setNotice(success);
+    notifyMutationCommitted(options.onMutationCommitted);
     return true;
-  }, [applyConnections]);
+  }, [applyConnections, options.onMutationCommitted]);
 
   const runDiscovery = useCallback(async <T,>(
     operation: () => Promise<AdminProviderClientResult<T>>,

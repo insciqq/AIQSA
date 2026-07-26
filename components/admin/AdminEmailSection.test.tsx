@@ -55,6 +55,7 @@ describe("AdminEmailSection", () => {
 
   it("keeps passwords write-only and supports save, exact test, activation, disable, and clear", async () => {
     let current = emailState();
+    const onMutationCommitted = vi.fn(() => Promise.reject(new Error("dashboard refresh failed")));
     const requests: Array<{ body: Record<string, unknown> | null; method: string }> = [];
     const fetcher = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
       const method = init?.method ?? "GET";
@@ -129,7 +130,7 @@ describe("AdminEmailSection", () => {
     });
     vi.stubGlobal("fetch", fetcher);
 
-    render(<AdminEmailSection />);
+    render(<AdminEmailSection onMutationCommitted={onMutationCommitted} />);
 
     const host = await screen.findByLabelText("SMTP host");
     await waitFor(() => expect(host).toHaveValue("smtp.example.com"));
@@ -153,6 +154,7 @@ describe("AdminEmailSection", () => {
       passwordAction: { kind: "replace", password: "new-write-only-password" }
     });
     await screen.findByText("Email draft saved. Test it before activation.");
+    await waitFor(() => expect(onMutationCommitted).toHaveBeenCalledTimes(1));
     await waitFor(() => {
       expect(screen.queryByDisplayValue("new-write-only-password")).not.toBeInTheDocument();
     });
@@ -170,6 +172,7 @@ describe("AdminEmailSection", () => {
     await screen.findByText(/now active/i);
     fireEvent.click(screen.getByRole("button", { name: "Disable" }));
     await screen.findByText("Email delivery disabled.");
+    expect(onMutationCommitted).toHaveBeenCalledTimes(1);
 
     const clearButton = screen.getByRole("button", { name: "Clear email delivery" });
     expect(clearButton).toBeDisabled();
@@ -177,6 +180,7 @@ describe("AdminEmailSection", () => {
     expect(clearButton).toBeEnabled();
     fireEvent.click(clearButton);
     await screen.findByText("Email delivery configuration cleared.");
+    await waitFor(() => expect(onMutationCommitted).toHaveBeenCalledTimes(2));
     expect(requests.find(({ method }) => method === "DELETE")?.body).toMatchObject({
       confirm: true,
       expectedActiveVersion: 3,

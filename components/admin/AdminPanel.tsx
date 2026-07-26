@@ -17,7 +17,11 @@ import { AdminSectionFrame } from "@/components/admin/AdminSectionFrame";
 import { AdminSectionTabs } from "@/components/admin/AdminSectionTabs";
 import { AdminUsageSection } from "@/components/admin/AdminUsageSection";
 import { AdminUsersSection } from "@/components/admin/AdminUsersSection";
-import { primaryButton } from "@/components/admin/adminPrimitives";
+import {
+  AdminResourceDetailPane,
+  AdminResourceIndexPane,
+  primaryButton
+} from "@/components/admin/adminPrimitives";
 import type { AdminSectionId } from "@/components/admin/adminSections";
 import { formatTime } from "@/components/admin/adminViewUtils";
 import { useAdminAccessRulesController, type AdminAccessRulesController } from "@/components/admin/useAdminAccessRulesController";
@@ -104,6 +108,7 @@ function AdminSectionContent({
   lastLoadedAt,
   mcp,
   mcpSection,
+  onMutationCommitted,
   onRequestRevokeAllSessions,
   submitting,
   users
@@ -117,6 +122,7 @@ function AdminSectionContent({
   lastLoadedAt: Date | null;
   mcp: AdminMcpController;
   mcpSection: AdminMcpSectionState;
+  onMutationCommitted(): void | Promise<unknown>;
   onRequestRevokeAllSessions(): void;
   submitting: boolean;
   users: AdminUsersController;
@@ -139,9 +145,15 @@ function AdminSectionContent({
     case "mcp":
       return <AdminMcpServersSection controller={mcp} section={mcpSection} />;
     case "email":
-      return <AdminEmailSection />;
+      return <AdminEmailSection onMutationCommitted={onMutationCommitted} />;
     case "providers":
-      return <AdminProvidersSection active groups={dashboard.groups} />;
+      return (
+        <AdminProvidersSection
+          active
+          groups={dashboard.groups}
+          onMutationCommitted={onMutationCommitted}
+        />
+      );
     case "invites":
       return invites.sectionProps ? <AdminInvitesSection {...invites.sectionProps} /> : null;
     case "access-rules":
@@ -225,7 +237,8 @@ export function AdminPanel({ adminEmail, adminUserId }: AdminPanelProps) {
     runAction: actionRunner.runAction
   });
   const mcp = useAdminMcpController({
-    active: Boolean(resource.dashboard) && ["mcp", "model-access", "users"].includes(navigation.activeSection)
+    active: Boolean(resource.dashboard) && ["mcp", "model-access", "users"].includes(navigation.activeSection),
+    onMutationCommitted: resource.refresh
   });
   const mcpSection = useAdminMcpSectionState();
   const { requestConfirmedAction } = confirmation;
@@ -266,10 +279,18 @@ export function AdminPanel({ adminEmail, adminUserId }: AdminPanelProps) {
             submitting={actionsDisabled}
           />
         </div>
-        <aside className="min-w-0 border-b border-trace-subtle bg-workspace-rail lg:col-start-1 lg:row-span-2 lg:row-start-1 lg:border-b-0 lg:border-r">
-          <AdminSectionTabs navigation={navigation} />
-        </aside>
-        <div className="min-h-0 min-w-0 bg-answer-paper lg:col-start-2 lg:row-start-2">
+        <AdminResourceIndexPane
+          className="border-b border-trace-subtle bg-workspace-rail lg:col-start-1 lg:row-span-2 lg:row-start-1 lg:border-b-0 lg:border-r"
+          compactVisible={navigation.sectionIndexOpen}
+          testId="admin-section-index-pane"
+        >
+          <AdminSectionTabs navigation={navigation} summary={resource.dashboard?.navigation ?? null} />
+        </AdminResourceIndexPane>
+        <AdminResourceDetailPane
+          className="bg-answer-paper lg:col-start-2 lg:row-start-2"
+          compactVisible={!navigation.sectionIndexOpen}
+          testId="admin-active-task-pane"
+        >
           <div className="px-4 sm:px-6 lg:px-8">
             <AdminFeedbackMessages error={feedback.error} notice={feedback.notice} />
           </div>
@@ -286,27 +307,36 @@ export function AdminPanel({ adminEmail, adminUserId }: AdminPanelProps) {
               }
               navigation={navigation}
             >
-              <AdminSectionContent
-                accessRules={accessRules}
-                activeSection={navigation.activeSection}
-                adminEmail={adminEmail}
-                dashboard={resource.dashboard}
-                groups={groups}
-                invites={invites}
-                lastLoadedAt={resource.lastLoadedAt}
-                mcp={mcp}
-                mcpSection={mcpSection}
-                onRequestRevokeAllSessions={requestRevokeAllSessions}
-                submitting={actionsDisabled}
-                users={users}
-              />
+              <div
+                data-admin-renderer={
+                  navigation.activeSection === "usage" || navigation.activeSection === "safety"
+                    ? "replacement"
+                    : "legacy-embedded"
+                }
+              >
+                <AdminSectionContent
+                  accessRules={accessRules}
+                  activeSection={navigation.activeSection}
+                  adminEmail={adminEmail}
+                  dashboard={resource.dashboard}
+                  groups={groups}
+                  invites={invites}
+                  lastLoadedAt={resource.lastLoadedAt}
+                  mcp={mcp}
+                  mcpSection={mcpSection}
+                  onMutationCommitted={resource.refresh}
+                  onRequestRevokeAllSessions={requestRevokeAllSessions}
+                  submitting={actionsDisabled}
+                  users={users}
+                />
+              </div>
             </AdminSectionFrame>
           ) : (
             <section aria-label="Admin data state" className="min-h-full bg-answer-paper">
               <AdminDashboardUnavailable loading={resource.loading} />
             </section>
           )}
-        </div>
+        </AdminResourceDetailPane>
       </div>
       <AdminConfirmationHost controller={confirmation} onClosed={navigation.restoreFocusAfterMutation} />
     </main>

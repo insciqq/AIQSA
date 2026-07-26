@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import { prisma } from "../prisma";
-import { listAdminDashboard } from "./adminDashboardQueries";
+import { listAdminDashboard, summarizeAdminNavigation } from "./adminDashboardQueries";
 import { loadAdminUsageQueryRows } from "./adminUsageQueries";
 
 async function withAdminQueryData<T>(
@@ -86,6 +86,91 @@ describe("admin dashboard queries", () => {
 
   afterAll(async () => {
     await prisma.$disconnect();
+  });
+
+  it("derives authoritative personal/team, advanced, and attention navigation state", () => {
+    const actingAdmin = {
+      effectiveEntitlements: {
+        models: [],
+        providers: [],
+        searchStrategies: ["search-only"]
+      },
+      id: "admin-1",
+      role: "admin" as const,
+      status: "active" as const
+    };
+    const personal = {
+      actingAdminUserId: actingAdmin.id,
+      hasAccessRules: false,
+      hasEnabledGroupAccessGrants: false,
+      hasMcpGroupGrants: false,
+      hasMcpServers: false,
+      hasProviderGroupCredentialAssignments: false,
+      hasSmtpConfiguration: false,
+      invites: [],
+      users: [actingAdmin]
+    };
+
+    expect(summarizeAdminNavigation(personal)).toEqual({
+      advancedConfigured: false,
+      attention: {
+        activeUsersWithoutModelAccess: 0,
+        openInvites: 0,
+        pendingUsers: 0
+      },
+      teamConfigured: false
+    });
+
+    const pendingUser = {
+      effectiveEntitlements: {
+        models: [],
+        providers: [],
+        searchStrategies: []
+      },
+      id: "pending-1",
+      role: "user" as const,
+      status: "pending" as const
+    };
+    const openInvite = {
+      deletion: {
+        canDelete: false,
+        reason: "invite_open" as const,
+        summary: "Revoke this open invite before deleting it."
+      }
+    };
+
+    expect(summarizeAdminNavigation({
+      ...personal,
+      hasMcpServers: true,
+      invites: [openInvite],
+      users: [actingAdmin, pendingUser]
+    })).toEqual({
+      advancedConfigured: true,
+      attention: {
+        activeUsersWithoutModelAccess: 0,
+        openInvites: 1,
+        pendingUsers: 1
+      },
+      teamConfigured: true
+    });
+
+    for (const signal of [
+      "hasAccessRules",
+      "hasEnabledGroupAccessGrants",
+      "hasMcpGroupGrants",
+      "hasProviderGroupCredentialAssignments"
+    ] as const) {
+      expect(summarizeAdminNavigation({ ...personal, [signal]: true }).teamConfigured).toBe(true);
+    }
+    expect(summarizeAdminNavigation({ ...personal, hasSmtpConfiguration: true }).advancedConfigured).toBe(true);
+    expect(summarizeAdminNavigation({
+      ...personal,
+      actingAdminUserId: "unknown-admin"
+    }).teamConfigured).toBe(true);
+    expect(summarizeAdminNavigation({
+      ...personal,
+      users: [actingAdmin, { ...pendingUser, id: "active-1", status: "active" }]
+    }).attention.activeUsersWithoutModelAccess).toBe(1);
   });
 
   it("preserves query ordering, catalog filters, captured invite time, and secret redaction", async () => {
@@ -419,7 +504,12 @@ describe("admin dashboard queries", () => {
 
       const userFindMany = vi.spyOn(prisma.user, "findMany");
       const inviteFindMany = vi.spyOn(prisma.authInvite, "findMany");
-      const dashboard = await listAdminDashboard(prisma, { now });
+      const mcpServerFindFirst = vi.spyOn(prisma.mcpServer, "findFirst");
+      const smtpControlFindFirst = vi.spyOn(prisma.smtpControl, "findFirst");
+      const dashboard = await listAdminDashboard(prisma, {
+        actingAdminUserId: activeUser.id,
+        now
+      });
       const catalog = dashboard.catalog;
       const fixtureModels = catalog.models.filter((model) => model.provider.startsWith(marker));
       const fixtureProviders = catalog.providers.filter((provider) => provider.id.startsWith(marker));
@@ -490,6 +580,19 @@ describe("admin dashboard queries", () => {
         }
       });
       expect(inviteFindMany).toHaveBeenCalledOnce();
+      expect(mcpServerFindFirst).toHaveBeenCalledWith({
+        select: { id: true },
+        where: { archivedAt: null }
+      });
+      expect(smtpControlFindFirst).toHaveBeenCalledWith({
+        select: { id: true },
+        where: {
+          OR: [
+            { activeConfig: { not: expect.anything() } },
+            { draftConfig: { not: expect.anything() } }
+          ]
+        }
+      });
       expect(inviteFindMany.mock.calls[0]?.[0]).toMatchObject({
         select: {
           acceptedAt: true,
@@ -508,11 +611,14 @@ describe("admin dashboard queries", () => {
       });
       const serializedQueryShapes = JSON.stringify({
         invites: inviteFindMany.mock.calls[0]?.[0],
+        mcpServer: mcpServerFindFirst.mock.calls[0]?.[0],
+        smtp: smtpControlFindFirst.mock.calls[0]?.[0],
         users: userFindMany.mock.calls[0]?.[0]
       });
       expect(serializedQueryShapes).not.toContain("passwordHash");
       expect(serializedQueryShapes).not.toContain("tokenHash");
       expect(serializedQueryShapes).not.toContain("flowTokens");
+      expect(serializedQueryShapes).not.toContain("PasswordEnvelope");
 
       expect(
         dashboard.users
@@ -793,6 +899,7 @@ describe("admin dashboard queries", () => {
       );
 
       const dashboard = await listAdminDashboard(prisma, {
+        actingAdminUserId: user.id,
         now: new Date("2026-07-12T12:00:00.000Z")
       });
       const dashboardUser = dashboard.users.find((candidate) => candidate.id === user.id);

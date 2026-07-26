@@ -36,6 +36,15 @@ const baseDashboard = {
     }
   ],
   invites: [],
+  navigation: {
+    advancedConfigured: false,
+    attention: {
+      activeUsersWithoutModelAccess: 0,
+      openInvites: 0,
+      pendingUsers: 0
+    },
+    teamConfigured: false
+  },
   usage: {
     byGroup: [],
     byUser: [],
@@ -198,7 +207,7 @@ describe("admin route handlers", () => {
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual(baseDashboard);
     expect(listDashboard).toHaveBeenCalledOnce();
-    expect(listDashboard).toHaveBeenCalledWith();
+    expect(listDashboard).toHaveBeenCalledWith(admin.session.userId);
   });
 
   it("preserves request-format and action-discriminant errors", async () => {

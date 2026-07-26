@@ -19,6 +19,12 @@ function renderNavigation() {
         <button data-testid="stable-focus" type="button">
           Stable focus
         </button>
+        <button data-testid="open-section-index" onClick={navigation.openSectionIndex} type="button">
+          Open sections
+        </button>
+        <output data-testid="section-index-state">
+          {navigation.sectionIndexOpen ? "open" : "closed"}
+        </output>
         <AdminSectionTabs navigation={navigation} />
         <section
           aria-labelledby={adminSectionTabId(navigation.activeSection)}
@@ -52,8 +58,12 @@ describe("useAdminSectionNavigation", () => {
     window.history.replaceState(null, "", "/");
   });
 
-  it("restores deep links, replaces only the section query, and follows popstate", async () => {
-    window.history.replaceState(null, "", "/admin?mode=compact&section=invites#current");
+  it("restores deep links, pushes section history, and preserves unrelated URL and state", async () => {
+    window.history.replaceState(
+      { nextRouter: { marker: "keep" } },
+      "",
+      "/admin?mode=compact&section=invites#current"
+    );
     renderNavigation();
 
     await waitFor(() => expect(screen.getByRole("tab", { name: "Invites" })).toHaveAttribute("aria-selected", "true"));
@@ -63,15 +73,43 @@ describe("useAdminSectionNavigation", () => {
     expect(window.location.pathname).toBe("/admin");
     expect(window.location.search).toBe("?mode=compact&section=groups");
     expect(window.location.hash).toBe("#current");
+    expect(window.history.state).toMatchObject({ nextRouter: { marker: "keep" } });
 
     fireEvent.click(screen.getByRole("tab", { name: "Users" }));
     expect(window.location.search).toBe("?mode=compact");
     expect(window.location.hash).toBe("#current");
 
-    window.history.pushState(null, "", "/admin?mode=compact&section=safety#external");
-    fireEvent.popState(window);
-    await waitFor(() => expect(screen.getByRole("tab", { name: "Safety" })).toHaveAttribute("aria-selected", "true"));
-    expect(screen.getByTestId("active-panel")).toHaveTextContent("Safety");
+    act(() => window.history.back());
+    await waitFor(() => expect(window.location.search).toBe("?mode=compact&section=groups"));
+    expect(screen.getByRole("tab", { name: "Groups" })).toHaveAttribute("aria-selected", "true");
+
+    act(() => window.history.back());
+    await waitFor(() => expect(window.location.search).toBe("?mode=compact&section=invites"));
+    expect(screen.getByTestId("active-panel")).toHaveTextContent("Invites");
+
+    act(() => window.history.forward());
+    await waitFor(() => expect(window.location.search).toBe("?mode=compact&section=groups"));
+    expect(screen.getByTestId("active-panel")).toHaveTextContent("Groups");
+  });
+
+  it("models the compact section index as a history entry without inventing a route", async () => {
+    window.history.replaceState({ retained: true }, "", "/admin?section=usage#current");
+    renderNavigation();
+    await waitFor(() => expect(screen.getByTestId("active-panel")).toHaveTextContent("Usage"));
+
+    fireEvent.click(screen.getByTestId("open-section-index"));
+    expect(screen.getByTestId("section-index-state")).toHaveTextContent("open");
+    expect(window.location.pathname + window.location.search + window.location.hash).toBe(
+      "/admin?section=usage#current"
+    );
+    expect(window.history.state).toMatchObject({
+      aiqsaControlCenter: { view: "section-index" },
+      retained: true
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Back" }));
+    await waitFor(() => expect(screen.getByTestId("section-index-state")).toHaveTextContent("closed"));
+    expect(screen.getByTestId("active-panel")).toHaveTextContent("Usage");
   });
 
   it("implements Arrow, Home, and End roving navigation with wraparound", async () => {

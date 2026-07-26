@@ -46,6 +46,15 @@ const dashboard: AdminDashboard = {
   },
   groups: [archived, operators, reviewers],
   invites: [],
+  navigation: {
+    advancedConfigured: false,
+    attention: {
+      activeUsersWithoutModelAccess: 0,
+      openInvites: 0,
+      pendingUsers: 0
+    },
+    teamConfigured: false
+  },
   usage: {
     byGroup: [],
     byUser: [],

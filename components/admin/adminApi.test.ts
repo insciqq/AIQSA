@@ -19,6 +19,15 @@ function emptyDashboard(): AdminDashboard {
     },
     groups: [],
     invites: [],
+    navigation: {
+      advancedConfigured: false,
+      attention: {
+        activeUsersWithoutModelAccess: 0,
+        openInvites: 0,
+        pendingUsers: 0
+      },
+      teamConfigured: false
+    },
     usage: {
       byGroup: [],
       byUser: [],
@@ -73,6 +82,25 @@ describe("admin API client", () => {
     ],
     ["groups", { ...emptyDashboard(), groups: null }],
     ["invites", { ...emptyDashboard(), invites: null }],
+    ["navigation", { ...emptyDashboard(), navigation: null }],
+    [
+      "navigation attention",
+      { ...emptyDashboard(), navigation: { ...emptyDashboard().navigation, attention: null } }
+    ],
+    [
+      "navigation disclosure booleans",
+      { ...emptyDashboard(), navigation: { ...emptyDashboard().navigation, teamConfigured: null } }
+    ],
+    [
+      "navigation attention counts",
+      {
+        ...emptyDashboard(),
+        navigation: {
+          ...emptyDashboard().navigation,
+          attention: { ...emptyDashboard().navigation.attention, pendingUsers: -1 }
+        }
+      }
+    ],
     ["usage groups", { ...emptyDashboard(), usage: { ...emptyDashboard().usage, byGroup: null } }],
     ["usage users", { ...emptyDashboard(), usage: { ...emptyDashboard().usage, byUser: null } }],
     ["usage totals", { ...emptyDashboard(), usage: { byGroup: [], byUser: [] } }],

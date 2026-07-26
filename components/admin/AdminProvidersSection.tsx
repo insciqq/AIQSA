@@ -51,6 +51,7 @@ import { useRef, useState } from "react";
 export type AdminProvidersSectionProps = Readonly<{
   active: boolean;
   groups: AdminGroup[];
+  onMutationCommitted?(): void | Promise<unknown>;
 }>;
 
 const fieldLabel = "mb-1 block text-xs font-medium text-content-secondary";
@@ -1004,9 +1005,10 @@ function MobileConnectionSwitcher({
 
 export function AdminProvidersSection({
   active,
-  groups
+  groups,
+  onMutationCommitted
 }: AdminProvidersSectionProps) {
-  const controller = useAdminProvidersController(active);
+  const controller = useAdminProvidersController(active, { onMutationCommitted });
   const discovery = useAdminOpenRouterDiscovery({
     loadEndpoints: controller.actions.discoverEndpoints,
     loadModels: controller.actions.discoverModels

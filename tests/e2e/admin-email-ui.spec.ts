@@ -38,6 +38,15 @@ function emptyAdminDashboard(): AdminDashboard {
     catalog: { models: [], providers: [], searchStrategies: [] },
     groups: [],
     invites: [],
+    navigation: {
+      advancedConfigured: false,
+      attention: {
+        activeUsersWithoutModelAccess: 0,
+        openInvites: 0,
+        pendingUsers: 0
+      },
+      teamConfigured: false
+    },
     usage: {
       byGroup: [],
       byUser: [],
@@ -54,6 +63,29 @@ function emptyAdminDashboard(): AdminDashboard {
     },
     users: []
   };
+}
+
+async function openEmailDelivery(page: Page) {
+  const section = page.getByTestId("admin-section-email");
+  if (await section.isVisible().catch(() => false)) {
+    return section;
+  }
+
+  const allSections = page.getByRole("button", { name: "All sections" });
+  if (await allSections.isVisible().catch(() => false)) {
+    await allSections.click();
+    await expect(page.getByTestId("admin-section-index-pane")).toBeVisible();
+  }
+
+  let emailTab = page.getByRole("tab", { exact: true, name: "Email delivery" });
+  if ((await emailTab.count()) === 0) {
+    await page.getByRole("button", { exact: true, name: "Advanced" }).click();
+    emailTab = page.getByRole("tab", { exact: true, name: "Email delivery" });
+  }
+
+  await emailTab.click();
+  await expect(section).toBeVisible();
+  return section;
 }
 
 async function signInOrdinaryUser(page: Page): Promise<void> {
@@ -154,8 +186,7 @@ test("admin saves, tests, and activates a write-only SMTP draft without network 
 
   await signInWithLocalToken(page);
   await page.goto("/admin");
-  await page.getByRole("tab", { name: "Email delivery" }).click();
-  const section = page.getByTestId("admin-section-email");
+  const section = await openEmailDelivery(page);
   await expect(section.getByText("SMTP draft")).toBeVisible();
 
   const secret = "playwright-write-only-smtp-password";

@@ -41,10 +41,18 @@ export type AdminEmailController = Readonly<{
   }>;
 }>;
 
-export function useAdminEmailController(input: {
+type UseAdminEmailControllerOptions = Readonly<{
   active: boolean;
   fetcher?: Fetcher;
-}): AdminEmailController {
+  onMutationCommitted?(): void | Promise<unknown>;
+}>;
+
+function notifyMutationCommitted(callback: UseAdminEmailControllerOptions["onMutationCommitted"]): void {
+  if (!callback) return;
+  void Promise.resolve().then(callback).catch(() => undefined);
+}
+
+export function useAdminEmailController(input: UseAdminEmailControllerOptions): AdminEmailController {
   const fetcher = input.fetcher ?? fetch;
   const [email, setEmail] = useState<AdminEmailState | null>(null);
   const [loading, setLoading] = useState(false);
@@ -141,10 +149,14 @@ export function useAdminEmailController(input: {
         expectedActiveVersion,
         expectedDraftVersion
       }, "The tested email draft is now active."),
-      clear: async (body: AdminEmailClearRequest) => Boolean(await mutate(
-        () => clearAdminEmail(body, fetcher),
-        "Email delivery configuration cleared."
-      )),
+      clear: async (body: AdminEmailClearRequest) => {
+        const committed = Boolean(await mutate(
+          () => clearAdminEmail(body, fetcher),
+          "Email delivery configuration cleared."
+        ));
+        if (committed) notifyMutationCommitted(input.onMutationCommitted);
+        return committed;
+      },
       disable: (expectedActiveVersion: number) => simpleAction({
         action: "disable",
         expectedActiveVersion
@@ -156,12 +168,29 @@ export function useAdminEmailController(input: {
         expectedActiveVersion
       }, "Email delivery enabled."),
       refresh,
-      save: async (body: AdminEmailSaveRequest) => Boolean(await mutate(
-        () => saveAdminEmail(body, fetcher),
-        "Email draft saved. Test it before activation."
-      )),
+      save: async (body: AdminEmailSaveRequest) => {
+        const committed = Boolean(await mutate(
+          () => saveAdminEmail(body, fetcher),
+          "Email draft saved. Test it before activation."
+        ));
+        if (committed) notifyMutationCommitted(input.onMutationCommitted);
+        return committed;
+      },
       test
     },
     state: { busy, email, error, loaded, loading, notice }
-  }), [busy, email, error, fetcher, loaded, loading, mutate, notice, refresh, simpleAction, test]);
+  }), [
+    busy,
+    email,
+    error,
+    fetcher,
+    input.onMutationCommitted,
+    loaded,
+    loading,
+    mutate,
+    notice,
+    refresh,
+    simpleAction,
+    test
+  ]);
 }

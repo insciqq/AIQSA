@@ -321,7 +321,7 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
               accountEmail={accountEmail}
               activeChatId={activeChatId}
               activeChatTitle={activeChatTitle}
-              adminHref={adminEntryVisible ? "/admin" : null}
+              adminHref={adminEntryVisible ? "/admin?section=providers" : null}
               detailsOpen={inspectorMode !== "closed"}
               newChatDisabled={!workspace.pane.state.workspaceReady || workspace.pane.state.creatingChat}
               pipeline={pipeline}

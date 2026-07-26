@@ -144,11 +144,22 @@ export type AdminCatalog = {
   }[];
 };
 
+export type AdminDashboardNavigation = {
+  advancedConfigured: boolean;
+  attention: {
+    activeUsersWithoutModelAccess: number;
+    openInvites: number;
+    pendingUsers: number;
+  };
+  teamConfigured: boolean;
+};
+
 export type AdminDashboard = {
   accessRules: AdminAccessRuleRecord[];
   catalog: AdminCatalog;
   groups: AdminGroup[];
   invites: AdminInviteRecord[];
+  navigation: AdminDashboardNavigation;
   usage: AdminUsageDashboard;
   users: AdminUserRecord[];
 };
@@ -301,8 +312,14 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function isNonNegativeInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0;
+}
+
 export function isAdminDashboard(value: unknown): value is AdminDashboard {
   const catalog = isRecord(value) && isRecord(value.catalog) ? value.catalog : null;
+  const navigation = isRecord(value) && isRecord(value.navigation) ? value.navigation : null;
+  const attention = navigation && isRecord(navigation.attention) ? navigation.attention : null;
 
   return Boolean(
     isRecord(value) &&
@@ -313,6 +330,13 @@ export function isAdminDashboard(value: unknown): value is AdminDashboard {
       Array.isArray(catalog.searchStrategies) &&
       Array.isArray(value.groups) &&
       Array.isArray(value.invites) &&
+      navigation &&
+      typeof navigation.advancedConfigured === "boolean" &&
+      attention &&
+      isNonNegativeInteger(attention.activeUsersWithoutModelAccess) &&
+      isNonNegativeInteger(attention.openInvites) &&
+      isNonNegativeInteger(attention.pendingUsers) &&
+      typeof navigation.teamConfigured === "boolean" &&
       isRecord(value.usage) &&
       Array.isArray(value.usage.byGroup) &&
       Array.isArray(value.usage.byUser) &&

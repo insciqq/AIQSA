@@ -53,10 +53,15 @@ describe("useAdminMcpController", () => {
   it("reconciles mutation responses without exposing stale success", async () => {
     const original = mcpServer();
     const enabled = mcpServer({ enabled: true, updatedAt: "2026-07-22T01:00:00.000Z" });
+    const onMutationCommitted = vi.fn(() => Promise.reject(new Error("dashboard refresh failed")));
     const fetcher = vi.fn()
       .mockResolvedValueOnce(response({ servers: [original] }))
       .mockResolvedValueOnce(response({ server: enabled }));
-    const { result } = renderHook(() => useAdminMcpController({ active: true, fetcher }));
+    const { result } = renderHook(() => useAdminMcpController({
+      active: true,
+      fetcher,
+      onMutationCommitted
+    }));
     await waitFor(() => expect(result.current.state.loaded).toBe(true));
 
     await act(async () => {
@@ -64,6 +69,7 @@ describe("useAdminMcpController", () => {
     });
     expect(result.current.state.selectedServer?.enabled).toBe(true);
     expect(result.current.state.notice).toBe("MCP server draft saved.");
+    await waitFor(() => expect(onMutationCommitted).toHaveBeenCalledOnce());
     expect(fetcher).toHaveBeenLastCalledWith("/api/admin/mcp/server-1", expect.objectContaining({
       body: JSON.stringify({ enabled: true }),
       method: "PATCH"

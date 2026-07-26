@@ -102,14 +102,21 @@ function populatedUsage(): AdminUsageDashboard {
 }
 
 describe("AdminUsageSection", () => {
-  it("renders the complete read-only summary and native usage tables", () => {
-    render(<AdminUsageSection catalog={catalog} usage={populatedUsage()} />);
+  it("renders the complete read-only usage ledger and native comparison tables", () => {
+    const { container } = render(<AdminUsageSection catalog={catalog} usage={populatedUsage()} />);
 
     const summary = screen.getByRole("region", { name: "Usage summary" });
-    expect(summary).toHaveTextContent("1 users / 1 groups");
-    expect(summary).toHaveClass("min-w-0");
-    expect(summary.parentElement).toHaveClass("min-w-0", "grid-cols-[minmax(0,1fr)]");
-    expect(screen.getByText(new Intl.NumberFormat(undefined).format(1000), { selector: ".text-lg" })).toBeVisible();
+    expect(summary).toHaveClass("min-w-0", "border-y", "border-trace-subtle");
+    expect(within(summary).getByTestId("usage-total-tokens")).toHaveTextContent(
+      new Intl.NumberFormat(undefined).format(1000)
+    );
+    expect(summary).toHaveTextContent("2 retained runs with reported usage across 1 user and 1 group");
+    expect(summary).toHaveTextContent("Input tokens600");
+    expect(summary).toHaveTextContent("Cached input120");
+    expect(summary).toHaveTextContent("Cache write30");
+    expect(summary).toHaveTextContent("Output tokens400");
+    expect(summary).toHaveTextContent("Reasoning tokens100");
+    expect(screen.getByText("How to read these numbers")).toBeVisible();
 
     const groupRegion = screen.getByRole("region", { name: "Group usage table" });
     const userRegion = screen.getByRole("region", { name: "User usage table" });
@@ -135,11 +142,18 @@ describe("AdminUsageSection", () => {
       "Top model",
       "Last usage"
     ]);
-    expect(screen.getByText("OpenAI / GPT 5.5")).toBeVisible();
-    expect(screen.getByText("No reported usage")).toBeVisible();
+    expect(within(userRegion).getByText("OpenAI / GPT 5.5")).toBeVisible();
+    expect(within(userRegion).getByText("No reported usage")).toBeVisible();
+    const mobileGroups = screen.getByTestId("admin-usage-groups-mobile");
+    const mobileUsers = screen.getByTestId("admin-usage-users-mobile");
+    expect(mobileGroups).toHaveClass("lg:hidden");
+    expect(mobileUsers).toHaveClass("lg:hidden");
+    expect(within(mobileGroups).getByText("Operators")).toBeVisible();
+    expect(within(mobileUsers).getByText(/OpenAI \/ GPT 5\.5/)).toBeVisible();
     expect(screen.queryByRole("button")).not.toBeInTheDocument();
     expect(screen.queryByRole("form")).not.toBeInTheDocument();
     expect(screen.queryByText(/cost/i)).not.toBeInTheDocument();
+    expect(container.innerHTML).not.toMatch(/(?:surface-|content-|separator-|accent-)/);
   });
 
   it("keeps both table regions and deliberate empty rows mounted", () => {
@@ -150,11 +164,13 @@ describe("AdminUsageSection", () => {
     };
     render(<AdminUsageSection catalog={catalog} usage={usage} />);
 
-    expect(screen.getByText("Never", { selector: ".text-lg" })).toBeVisible();
-    expect(screen.getByText("No groups").closest("td")).toHaveAttribute("colspan", "5");
-    expect(screen.getByText("No users").closest("td")).toHaveAttribute("colspan", "7");
-    expect(screen.getByRole("region", { name: "Group usage table" })).toBeVisible();
-    expect(screen.getByRole("region", { name: "User usage table" })).toBeVisible();
+    expect(within(screen.getByRole("region", { name: "Usage summary" })).getByText("Never")).toBeVisible();
+    const groupTable = screen.getByRole("region", { name: "Group usage table" });
+    const userTable = screen.getByRole("region", { name: "User usage table" });
+    expect(within(groupTable).getByText("No groups in this installation").closest("td")).toHaveAttribute("colspan", "5");
+    expect(within(userTable).getByText("No users in this installation").closest("td")).toHaveAttribute("colspan", "7");
+    expect(within(screen.getByTestId("admin-usage-groups-mobile")).getByText("No groups in this installation")).toBeVisible();
+    expect(within(screen.getByTestId("admin-usage-users-mobile")).getByText("No users in this installation")).toBeVisible();
   });
 
   it("preserves archived, missing-identity, and no-group context without raw catalog fallbacks", () => {
@@ -175,10 +191,10 @@ describe("AdminUsageSection", () => {
     };
     render(<AdminUsageSection catalog={catalog} usage={usage} />);
 
-    expect(screen.getByText("Archived group")).toBeVisible();
-    expect(screen.getByText("No email")).toBeVisible();
-    expect(screen.getByText("No groups")).toBeVisible();
-    expect(screen.getByText("Unavailable model")).toBeVisible();
+    expect(screen.getAllByText("Archived group")).toHaveLength(2);
+    expect(screen.getAllByText("No email")).toHaveLength(2);
+    expect(screen.getAllByText("No groups")).toHaveLength(2);
+    expect(screen.getAllByText(/Unavailable model/)).toHaveLength(2);
     expect(screen.queryByText(/unknown-provider|unknown-model/)).not.toBeInTheDocument();
   });
 });

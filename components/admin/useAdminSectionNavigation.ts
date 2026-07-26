@@ -13,12 +13,46 @@ import { type KeyboardEvent, useCallback, useEffect, useMemo, useRef, useState }
 export type AdminSectionNavigation = Readonly<{
   activeSection: AdminSectionId;
   activeSectionConfig: AdminSection;
+  closeSectionIndex(): void;
   focusActiveTab(): void;
+  openSectionIndex(): void;
   onTabKeyDown(event: KeyboardEvent<HTMLButtonElement>, section: AdminSectionId): void;
   registerTab(section: AdminSectionId, node: HTMLButtonElement | null): void;
   restoreFocusAfterMutation(): void;
+  sectionIndexOpen: boolean;
   selectSection(section: AdminSectionId): void;
 }>;
+
+const ADMIN_HISTORY_STATE_KEY = "aiqsaControlCenter";
+
+type AdminHistoryView = Readonly<{
+  view: "section-index" | "section";
+}>;
+
+function historyStateWithAdminView(current: unknown, view: AdminHistoryView): Record<string, unknown> {
+  const base = current && typeof current === "object" && !Array.isArray(current)
+    ? current as Record<string, unknown>
+    : {};
+
+  return {
+    ...base,
+    [ADMIN_HISTORY_STATE_KEY]: view
+  };
+}
+
+function adminHistoryView(value: unknown): AdminHistoryView | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+
+  const candidate = (value as Record<string, unknown>)[ADMIN_HISTORY_STATE_KEY];
+  if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
+    return null;
+  }
+
+  const view = (candidate as Record<string, unknown>).view;
+  return view === "section-index" || view === "section" ? { view } : null;
+}
 
 function focusElement(element: HTMLElement | null) {
   if (!element) {
@@ -48,12 +82,18 @@ function hasStableDocumentFocus(): boolean {
 
 export function useAdminSectionNavigation(): AdminSectionNavigation {
   const [activeSection, setActiveSection] = useState<AdminSectionId>(defaultAdminSection);
+  const [sectionIndexOpen, setSectionIndexOpen] = useState(false);
   const activeSectionRef = useRef(activeSection);
+  const sectionIndexOpenRef = useRef(sectionIndexOpen);
   const tabRefs = useRef(new Map<AdminSectionId, HTMLButtonElement>());
 
   useEffect(() => {
     activeSectionRef.current = activeSection;
   }, [activeSection]);
+
+  useEffect(() => {
+    sectionIndexOpenRef.current = sectionIndexOpen;
+  }, [sectionIndexOpen]);
 
   const registerTab = useCallback((section: AdminSectionId, node: HTMLButtonElement | null) => {
     if (node) {
@@ -65,13 +105,57 @@ export function useAdminSectionNavigation(): AdminSectionNavigation {
   }, []);
 
   const selectSection = useCallback((section: AdminSectionId) => {
+    const changedSection = section !== activeSectionRef.current;
+    const selectedFromIndex = sectionIndexOpenRef.current;
     setActiveSection(section);
+    setSectionIndexOpen(false);
 
     if (typeof window === "undefined") {
       return;
     }
 
-    window.history.replaceState(null, "", adminSectionPath(window.location.href, section));
+    if (!changedSection && !selectedFromIndex) {
+      return;
+    }
+
+    window.history.pushState(
+      historyStateWithAdminView(window.history.state, { view: "section" }),
+      "",
+      adminSectionPath(window.location.href, section)
+    );
+  }, []);
+
+  const openSectionIndex = useCallback(() => {
+    if (sectionIndexOpenRef.current) {
+      return;
+    }
+
+    setSectionIndexOpen(true);
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    window.history.pushState(
+      historyStateWithAdminView(window.history.state, { view: "section-index" }),
+      "",
+      `${window.location.pathname}${window.location.search}${window.location.hash}`
+    );
+  }, []);
+
+  const closeSectionIndex = useCallback(() => {
+    if (!sectionIndexOpenRef.current) {
+      return;
+    }
+
+    if (
+      typeof window !== "undefined" &&
+      adminHistoryView(window.history.state)?.view === "section-index"
+    ) {
+      window.history.back();
+      return;
+    }
+
+    setSectionIndexOpen(false);
   }, []);
 
   const focusTab = useCallback((section: AdminSectionId) => {
@@ -127,7 +211,10 @@ export function useAdminSectionNavigation(): AdminSectionNavigation {
   }, [focusActiveTab]);
 
   useEffect(() => {
-    const syncSection = () => setActiveSection(parseAdminSection(window.location.search));
+    const syncSection = () => {
+      setActiveSection(parseAdminSection(window.location.search));
+      setSectionIndexOpen(adminHistoryView(window.history.state)?.view === "section-index");
+    };
 
     syncSection();
     window.addEventListener("popstate", syncSection);
@@ -139,12 +226,25 @@ export function useAdminSectionNavigation(): AdminSectionNavigation {
     () => ({
       activeSection,
       activeSectionConfig: adminSectionConfig(activeSection),
+      closeSectionIndex,
       focusActiveTab,
+      openSectionIndex,
       onTabKeyDown,
       registerTab,
       restoreFocusAfterMutation,
+      sectionIndexOpen,
       selectSection
     }),
-    [activeSection, focusActiveTab, onTabKeyDown, registerTab, restoreFocusAfterMutation, selectSection]
+    [
+      activeSection,
+      closeSectionIndex,
+      focusActiveTab,
+      openSectionIndex,
+      onTabKeyDown,
+      registerTab,
+      restoreFocusAfterMutation,
+      sectionIndexOpen,
+      selectSection
+    ]
   );
 }

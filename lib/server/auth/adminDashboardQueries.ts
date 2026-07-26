@@ -1,8 +1,8 @@
-import type { Prisma, PrismaClient } from "@prisma/client";
+import { Prisma, type PrismaClient } from "@prisma/client";
 import { adminUserDeletionInfo, adminUserOwnedDataCount } from "./adminDeletionMetadata";
 import { loadAdminGrantableCatalog } from "./adminCatalogQueries";
 import { adminGroupRecordInclude } from "./adminPrismaRecords";
-import type { AdminDashboard } from "./adminRepositoryContract";
+import type { AdminDashboard, AdminDashboardNavigation } from "./adminRepositoryContract";
 import {
   serializeAdminEntitlements,
   serializeAdminGroup,
@@ -70,15 +70,71 @@ const adminDashboardUserSelect = {
 } satisfies Prisma.UserSelect;
 
 export type AdminDashboardQueryOptions = Readonly<{
+  actingAdminUserId: string;
   now?: Date;
 }>;
 
+type AdminNavigationSummaryInput = Readonly<{
+  actingAdminUserId: string;
+  hasAccessRules: boolean;
+  hasEnabledGroupAccessGrants: boolean;
+  hasMcpGroupGrants: boolean;
+  hasMcpServers: boolean;
+  hasProviderGroupCredentialAssignments: boolean;
+  hasSmtpConfiguration: boolean;
+  invites: readonly Pick<AdminDashboard["invites"][number], "deletion">[];
+  users: readonly Pick<
+    AdminDashboard["users"][number],
+    "effectiveEntitlements" | "id" | "role" | "status"
+  >[];
+}>;
+
+export function summarizeAdminNavigation(
+  input: AdminNavigationSummaryInput
+): AdminDashboardNavigation {
+  const onlyUser = input.users[0];
+  const actingAdminIsOnlyUser = input.users.length === 1 &&
+    onlyUser?.id === input.actingAdminUserId &&
+    onlyUser.role === "admin" &&
+    onlyUser.status === "active";
+  const teamSignals = input.hasAccessRules ||
+    input.hasEnabledGroupAccessGrants ||
+    input.hasMcpGroupGrants ||
+    input.hasProviderGroupCredentialAssignments ||
+    input.invites.length > 0;
+
+  return {
+    advancedConfigured: input.hasMcpServers || input.hasSmtpConfiguration,
+    attention: {
+      activeUsersWithoutModelAccess: input.users.filter(
+        (user) => user.id !== input.actingAdminUserId &&
+          user.status === "active" &&
+          user.effectiveEntitlements.models.length === 0 &&
+          user.effectiveEntitlements.providers.length === 0
+      ).length,
+      openInvites: input.invites.filter((invite) => invite.deletion.reason === "invite_open").length,
+      pendingUsers: input.users.filter((user) => user.status === "pending").length
+    },
+    teamConfigured: !actingAdminIsOnlyUser || teamSignals
+  };
+}
+
 export async function listAdminDashboard(
   prisma: PrismaClient,
-  options: AdminDashboardQueryOptions = {}
+  options: AdminDashboardQueryOptions
 ): Promise<AdminDashboard> {
   const now = options.now ?? new Date();
-  const [users, groups, accessRules, invites, catalog, grants, usageRows] = await Promise.all([
+  const [
+    users,
+    groups,
+    accessRules,
+    invites,
+    catalog,
+    grants,
+    usageRows,
+    mcpServer,
+    smtpConfiguration
+  ] = await Promise.all([
     prisma.user.findMany({
       orderBy: {
         createdAt: "desc"
@@ -150,7 +206,30 @@ export async function listAdminDashboard(
         enabled: true
       }
     }),
-    loadAdminUsageQueryRows(prisma)
+    loadAdminUsageQueryRows(prisma),
+    prisma.mcpServer.findFirst({
+      select: { id: true },
+      where: { archivedAt: null }
+    }),
+    prisma.smtpControl.findFirst({
+      select: {
+        id: true
+      },
+      where: {
+        OR: [
+          {
+            activeConfig: {
+              not: Prisma.DbNull
+            }
+          },
+          {
+            draftConfig: {
+              not: Prisma.DbNull
+            }
+          }
+        ]
+      }
+    })
   ]);
   const groupNamesById = new Map(groups.map((group) => [group.id, { name: group.name }]));
   const usage = serializeAdminUsageDashboard({
@@ -159,37 +238,57 @@ export async function listAdminDashboard(
     userRows: usageRows.userRows,
     users
   });
+  const serializedAccessRules = accessRules.map((rule) => serializeAdminRule(rule, groupNamesById));
+  const serializedGroups = groups.map(serializeAdminGroup);
+  const serializedInvites = invites.map((invite) => serializeAdminInvite(invite, groupNamesById, now));
+  const serializedUsers = users.map((user) => {
+    const activeGroupIds = user.groups
+      .filter((membership) => !membership.group.archivedAt)
+      .map((membership) => membership.groupId);
+
+    return {
+      deletion: adminUserDeletionInfo({
+        ownedDataCount: adminUserOwnedDataCount(user),
+        status: user.status
+      }),
+      displayName: user.displayName,
+      effectiveEntitlements: serializeAdminEntitlements({
+        grants,
+        groupIds: activeGroupIds,
+        userId: user.id
+      }),
+      email: user.email,
+      groups: serializeAdminMemberships(user.groups),
+      hasVerifiedIdentity: user.authIdentities.some((identity) => Boolean(identity.emailVerifiedAt)),
+      id: user.id,
+      lastSessionAt: serializeAdminLastSession(user.authSessions),
+      role: user.role,
+      status: user.status
+    };
+  });
+  const navigation = summarizeAdminNavigation({
+    actingAdminUserId: options.actingAdminUserId,
+    hasAccessRules: accessRules.length > 0,
+    hasEnabledGroupAccessGrants: groups.some((group) =>
+      group.accessGrants.some((grant) => grant.enabled)
+    ),
+    hasMcpGroupGrants: groups.some((group) => group.mcpGrants.some((grant) => grant.canUse)),
+    hasMcpServers: Boolean(mcpServer),
+    hasProviderGroupCredentialAssignments: groups.some(
+      (group) => group._count.providerCredentialAssignments > 0
+    ),
+    hasSmtpConfiguration: Boolean(smtpConfiguration),
+    invites: serializedInvites,
+    users: serializedUsers
+  });
 
   return {
-    accessRules: accessRules.map((rule) => serializeAdminRule(rule, groupNamesById)),
+    accessRules: serializedAccessRules,
     catalog,
-    groups: groups.map(serializeAdminGroup),
-    invites: invites.map((invite) => serializeAdminInvite(invite, groupNamesById, now)),
+    groups: serializedGroups,
+    invites: serializedInvites,
+    navigation,
     usage,
-    users: users.map((user) => {
-      const activeGroupIds = user.groups
-        .filter((membership) => !membership.group.archivedAt)
-        .map((membership) => membership.groupId);
-
-      return {
-        deletion: adminUserDeletionInfo({
-          ownedDataCount: adminUserOwnedDataCount(user),
-          status: user.status
-        }),
-        displayName: user.displayName,
-        effectiveEntitlements: serializeAdminEntitlements({
-          grants,
-          groupIds: activeGroupIds,
-          userId: user.id
-        }),
-        email: user.email,
-        groups: serializeAdminMemberships(user.groups),
-        hasVerifiedIdentity: user.authIdentities.some((identity) => Boolean(identity.emailVerifiedAt)),
-        id: user.id,
-        lastSessionAt: serializeAdminLastSession(user.authSessions),
-        role: user.role,
-        status: user.status
-      };
-    })
+    users: serializedUsers
   };
 }

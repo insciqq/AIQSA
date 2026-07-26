@@ -759,6 +759,25 @@ describe("PowerAppShellView Details composition", () => {
     expect(screen.getByRole("menuitem", { name: "Sign out" })).toBeEnabled();
   });
 
+  it("opens the entitled Control Center entry on the Personal provider task", () => {
+    const props = baseProps();
+    render(
+      <PowerAppShellView
+        {...props}
+        session={{
+          ...props.session,
+          adminEntryVisible: true
+        }}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Account menu" }));
+    expect(screen.getByRole("menuitem", { name: "Control Center" })).toHaveAttribute(
+      "href",
+      "/admin?section=providers"
+    );
+  });
+
   it("keeps the sign-out failure announcement outside inert shell content", async () => {
     let rejectSignOut!: (reason?: unknown) => void;
     vi.spyOn(globalThis, "fetch").mockImplementation(

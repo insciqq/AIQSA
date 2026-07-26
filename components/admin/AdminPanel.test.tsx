@@ -177,6 +177,15 @@ const dashboard: AdminDashboard = {
       revokedAt: "2026-06-02T00:00:00.000Z"
     }
   ],
+  navigation: {
+    advancedConfigured: true,
+    attention: {
+      activeUsersWithoutModelAccess: 0,
+      openInvites: 1,
+      pendingUsers: 1
+    },
+    teamConfigured: true
+  },
   usage: {
     byGroup: [
       {
@@ -352,6 +361,15 @@ const emptyDashboard: AdminDashboard = {
   accessRules: [],
   groups: [],
   invites: [],
+  navigation: {
+    advancedConfigured: false,
+    attention: {
+      activeUsersWithoutModelAccess: 0,
+      openInvites: 0,
+      pendingUsers: 0
+    },
+    teamConfigured: false
+  },
   usage: {
     byGroup: [],
     byUser: [],
@@ -665,6 +683,27 @@ describe("AdminPanel", () => {
     expect(window.location.search).toBe("?section=safety");
   });
 
+  it("switches compact composition between one active task and the grouped section index", async () => {
+    mockAdminFetch();
+    render(<AdminPanel adminEmail="admin@example.com" adminUserId="admin-1" />);
+
+    const users = await screen.findByTestId("admin-section-users");
+    expect(screen.getByTestId("admin-section-index-pane")).toHaveClass("hidden");
+    expect(screen.getByTestId("admin-active-task-pane")).toHaveClass("block");
+    expect(within(users).getByTestId("admin-user-detail")).toBeInTheDocument();
+    expect(users.querySelector('[data-admin-renderer="legacy-embedded"]')).toBeInTheDocument();
+
+    fireEvent.click(within(users).getByRole("button", { name: "All sections" }));
+    expect(screen.getByTestId("admin-section-index-pane")).toHaveClass("block");
+    expect(screen.getByTestId("admin-active-task-pane")).toHaveClass("hidden");
+
+    fireEvent.click(screen.getByRole("tab", { name: "Usage" }));
+    const usage = await screen.findByTestId("admin-section-usage");
+    expect(screen.getByTestId("admin-section-index-pane")).toHaveClass("hidden");
+    expect(screen.getByTestId("admin-active-task-pane")).toHaveClass("block");
+    expect(usage.querySelector('[data-admin-renderer="replacement"]')).toBeInTheDocument();
+  });
+
   it("preserves operational drafts, filters, and selections across section round trips", async () => {
     mockAdminFetch();
     render(<AdminPanel adminEmail="admin@example.com" adminUserId="admin-1" />);
@@ -850,13 +889,15 @@ describe("AdminPanel", () => {
     const usage = await screen.findByTestId("admin-section-usage");
     const groups = within(usage).getByTestId("admin-usage-groups");
     const users = within(usage).getByTestId("admin-usage-users");
+    const mobileGroups = within(groups).getByTestId("admin-usage-groups-mobile");
+    const mobileUsers = within(users).getByTestId("admin-usage-users-mobile");
 
     expect(within(usage).getByText("Total tokens")).toBeInTheDocument();
-    expect(within(groups).getByText("operators")).toBeInTheDocument();
-    expect(within(groups).getByText("reviewers")).toBeInTheDocument();
-    expect(within(users).getByText("Active User")).toBeInTheDocument();
-    expect(within(users).getByText("OpenAI / GPT 5.5")).toBeInTheDocument();
-    expect(within(users).getByText("No reported usage")).toBeInTheDocument();
+    expect(within(mobileGroups).getByText("operators")).toBeInTheDocument();
+    expect(within(mobileGroups).getByText("reviewers")).toBeInTheDocument();
+    expect(within(mobileUsers).getByText("Active User")).toBeInTheDocument();
+    expect(within(mobileUsers).getByText(/OpenAI \/ GPT 5\.5/)).toBeInTheDocument();
+    expect(within(mobileUsers).getByText("No reported usage")).toBeInTheDocument();
     expect(within(usage).queryByText(/cost/i)).not.toBeInTheDocument();
   });
 
@@ -1304,6 +1345,9 @@ describe("AdminPanel", () => {
     const users = await screen.findByTestId("admin-section-users");
     expect(screen.queryByRole("region", { name: "Admin summary" })).not.toBeInTheDocument();
     expect(screen.queryByRole("region", { name: "Needs attention" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Team" })).toHaveTextContent("2 items");
+    expect(screen.getByRole("tab", { name: "Users" })).toHaveTextContent("1");
+    expect(screen.getByRole("tab", { name: "Invites" })).toHaveTextContent("1");
     const pendingReview = within(findTableRowByText(users, "pending@example.com")).getByRole("button", {
       name: "Review"
     });

@@ -90,14 +90,15 @@ Providers → provider → API key → Test & Save → Ready to chat
 
 Если deterministic recommended model недоступна для этого key, единственный дополнительный шаг — компактный model picker. Нельзя автоматически брать первый элемент удалённого каталога, отправлять пользователя в общий Models/Groups workflow или сохранять частично настроенный graph.
 
-### 3. Team и Advanced — disclosure levels, не обязательный onboarding
+### 3. Personal, Team и Advanced — navigation groups, не обязательный onboarding
 
 Не вводятся искусственные коммерческие планы `Personal`, `Team`, `Enterprise`. Это уровни раскрытия одного Control Center:
 
-- **Personal setup** — providers, собственная доступная модель и первый чат;
-- **Team & access** — реальные Users, Groups, Model access, Invites, Access rules и Email delivery;
-- **Advanced infrastructure** — сложная provider configuration и MCP servers;
-- **Operations/Security** — Usage и Safety.
+- **Personal** — Providers и Usage;
+- **Team** — реальные Users, Groups, Model access, Invites и Access rules;
+- **Advanced** — MCP servers, Email delivery и Safety.
+
+Полная provider configuration — не четвёртая navigation group: это explicit subview внутри Personal → Providers рядом с Quick setup.
 
 Single-member installation сворачивает team и advanced groups по умолчанию. Existing team installations раскрывают их автоматически. Это presentation rule; admin authorization и прямые URL не меняются и capabilities не лицензируются.
 
@@ -207,21 +208,19 @@ AIQSA
 │   │   └── MCP & tools
 │   └── Account / sharing
 └── Control Center
-    ├── AI setup
-    │   └── Providers
-    │       └── Run profiles
-    ├── Team & access [collapsed for single-member]
+    ├── Personal
+    │   ├── Providers
+    │   │   └── Run profiles
+    │   └── Usage
+    ├── Team [collapsed for single-member]
     │   ├── Users
     │   ├── Groups
     │   ├── Model access
     │   ├── Invites
-    │   ├── Access rules
-    │   └── Email delivery
-    ├── Advanced infrastructure
-    │   └── MCP servers
-    ├── Operations
-    │   └── Usage
-    └── Security
+    │   └── Access rules
+    └── Advanced [collapsed until configured]
+        ├── MCP servers
+        ├── Email delivery
         └── Safety
 ```
 
@@ -301,11 +300,15 @@ Settings становится нормальной destination/sheet с усто
 
 Control Center определяет presentation state из реальной установки, а не из тарифного плана:
 
-- **Personal:** один active admin, нет meaningful team users/invites/rules/grants/credential assignments. Primary destination — `Providers`; `Team & access` свёрнут.
-- **Team:** существуют другие users, invites/access rules, meaningful group grants или group credential assignments. `Team & access` раскрыт.
-- **Advanced detected:** custom API root, OpenAI-compatible protocol, несколько credentials, `require_assignment`, routing/capability overrides или незавершённый advanced draft. Provider открывается в полной configuration view и не упрощается автоматически.
+- **Personal:** один active admin, нет meaningful team users/invites/rules/grants/credential assignments. Primary destination — `Providers`; `Team` свёрнут.
+- **Team:** существуют другие users, invites/access rules, meaningful group grants или group credential assignments. `Team` раскрыт.
+- **Advanced navigation:** существующая MCP- или SMTP-конфигурация раскрывает группу `Advanced`; при неизвестном состоянии она раскрывается fail-open, а direct route всегда остаётся видимым.
+
+Это не то же самое, что advanced configuration внутри Personal → Providers. Там custom API root, OpenAI-compatible protocol, несколько credentials, `require_assignment`, routing/capability overrides или незавершённый advanced draft переводят только выбранного provider из Quick setup в полную configuration view и не раскрывают navigation-группу `Advanced`.
 
 Bootstrap `private-operators` с единственным acting admin и без grants/assignments не считается Team setup. Нельзя связывать presentation с mutable group name. При сомнении существующая конфигурация раскрывается, чтобы интерфейс не скрывал действующее policy.
+
+Эта классификация приходит в shell как secret-free `AdminDashboard.navigation`: сервер учитывает acting admin, users, invite/rule history, enabled group access, group MCP grants, group credential assignments и наличие MCP/SMTP configuration. Frontend не загружает полные Providers/MCP/Email resources ради навигации и не пытается угадать состояние по названиям или скрытым lifecycle-полям. Обычный вход из Account использует существующий `?section=providers`; bare `/admin` по принятому compatibility-контракту остаётся Users.
 
 ### Common resource pattern
 
@@ -369,7 +372,7 @@ Quick setup требует отдельного backend endpoint/orchestrator; �
 
 ### MCP servers
 
-`MCP servers` остаётся отдельной Advanced infrastructure destination. Реальные import/normalize, definition/auth configuration, validation/tool inventory, activate/update, revision, best-effort rollback и rebuild capabilities оформляются как scoped tasks вокруг выбранного server. Нельзя добавлять выдуманную global `Activity`/audit поверхность. Whole-server trust warning, OAuth settlement и external/runtime effects остаются explicit, но revision mechanics не показываются в Personal provider setup.
+`MCP servers` остаётся отдельной destination в navigation-группе Advanced. Реальные import/normalize, definition/auth configuration, validation/tool inventory, activate/update, revision, best-effort rollback и rebuild capabilities оформляются как scoped tasks вокруг выбранного server. Нельзя добавлять выдуманную global `Activity`/audit поверхность. Whole-server trust warning, OAuth settlement и external/runtime effects остаются explicit, но revision mechanics не показываются в Personal provider setup.
 
 ### Email delivery
 
@@ -381,7 +384,7 @@ One-off invite и durable access rule остаются разными concepts. 
 
 ### Usage and Safety
 
-Usage — read-only analytical document с local comparison tables. Mobile использует summary rows и dedicated drill-down, а не squeezed wide table.
+Usage — read-only analytical document с local comparison tables на desktop. В compact/tablet/short-landscape все факты остаются inline в native rows без squeezed wide table и без выдуманного drill-down.
 
 Safety — самостоятельная section с acting-admin context, последствиями, guardrails и confirmation-gated destructive actions.
 
@@ -567,14 +570,14 @@ Behavioral owners such as `workspaceStore`, `threadStore`, `composerSessionStore
 - contextual attention summaries inside real destinations, without a new `Overview` route;
 - shared resource index/detail patterns;
 - mobile list/detail routing.
+- Usage factual ledger and isolated Safety workflow.
 
 ### Phase 6 — complex admin workflows
 
 - Users, Groups, Model access, Invites, Access rules and Email delivery;
 - provider Quick setup orchestration, failure recovery and non-destructive defaults;
 - Advanced provider Run profiles, Connection, Credentials, Key assignment, Models and Diagnostics lifecycle;
-- MCP lifecycle;
-- Usage/Safety.
+- MCP lifecycle.
 
 ### Phase 7 — parity audit and retirement
 

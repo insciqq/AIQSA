@@ -421,8 +421,14 @@ function AdminEmailContent({ controller }: Readonly<{ controller: AdminEmailCont
   );
 }
 
-export function AdminEmailSection({ active = true }: Readonly<{ active?: boolean }>) {
-  const controller = useAdminEmailController({ active });
+export function AdminEmailSection({
+  active = true,
+  onMutationCommitted
+}: Readonly<{
+  active?: boolean;
+  onMutationCommitted?(): void | Promise<unknown>;
+}>) {
+  const controller = useAdminEmailController({ active, onMutationCommitted });
   const email = controller.state.email;
 
   if (!controller.state.loaded && controller.state.loading) {

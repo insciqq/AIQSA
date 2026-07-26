@@ -36,6 +36,44 @@ const adminSections = [
   { id: "safety", label: "Safety" }
 ] as const;
 
+type AdminSection = (typeof adminSections)[number];
+
+const adminSectionGroup = {
+  "access-rules": "Team",
+  email: "Advanced",
+  groups: "Team",
+  invites: "Team",
+  mcp: "Advanced",
+  "model-access": "Team",
+  providers: "Personal",
+  safety: "Advanced",
+  usage: "Personal",
+  users: "Team"
+} as const satisfies Record<AdminSection["id"], "Advanced" | "Personal" | "Team">;
+
+async function openAdminSection(page: Page, section: AdminSection): Promise<void> {
+  const current = page.getByTestId(`admin-section-${section.id}`);
+  if (await current.isVisible().catch(() => false)) return;
+
+  const allSections = page.getByRole("button", { name: "All sections" });
+  if (await allSections.isVisible().catch(() => false)) {
+    await allSections.click();
+    await expect(page.getByTestId("admin-section-index-pane")).toBeVisible();
+  }
+
+  let tab = page.getByRole("tab", { exact: true, name: section.label });
+  if ((await tab.count()) === 0) {
+    const group = adminSectionGroup[section.id];
+    if (group !== "Personal") {
+      await page.getByRole("button", { exact: true, name: group }).click();
+      tab = page.getByRole("tab", { exact: true, name: section.label });
+    }
+  }
+
+  await tab.click();
+  await expect(current).toBeVisible();
+}
+
 async function expectNoPageOverflow(page: Page) {
   await expect
     .poll(() =>
@@ -53,35 +91,6 @@ async function expectTouchTarget(locator: Locator) {
   expect(box).not.toBeNull();
   expect(box!.width).toBeGreaterThanOrEqual(43);
   expect(box!.height).toBeGreaterThanOrEqual(43);
-}
-
-async function expectLocalHorizontalOverflow(locator: Locator) {
-  await expect(locator).toBeVisible();
-  const result = await locator.evaluate((element) => {
-    let owner = element.parentElement;
-
-    while (owner && owner !== document.body && owner !== document.documentElement) {
-      const overflowX = getComputedStyle(owner).overflowX;
-
-      if ((overflowX === "auto" || overflowX === "scroll") && owner.scrollWidth > owner.clientWidth) {
-        owner.scrollLeft = Math.min(80, owner.scrollWidth - owner.clientWidth);
-        return {
-          local: true,
-          scrollLeft: owner.scrollLeft
-        };
-      }
-
-      owner = owner.parentElement;
-    }
-
-    return {
-      local: false,
-      scrollLeft: 0
-    };
-  });
-
-  expect(result.local).toBe(true);
-  expect(result.scrollLeft).toBeGreaterThan(0);
 }
 
 async function createPasswordUser(input: {
@@ -171,7 +180,7 @@ test("admin creates and deletes an installation-owned MCP draft", async ({ page 
 
   try {
     await bootstrapAdmin(page);
-    await page.getByRole("tab", { exact: true, name: "MCP servers" }).click();
+    await openAdminSection(page, adminSections[7]);
     const section = page.getByTestId("admin-section-mcp");
     await expect(section).toBeVisible();
 
@@ -260,7 +269,7 @@ test("admin manages approvals, rules, invites, session revocation, and disabling
     await confirmAdminDialog(page, "admin-confirm-reject-user", /confirm reject user/i);
     await expect(rejectedRow.getByText("denied")).toBeVisible();
 
-    await page.getByRole("tab", { name: "Access rules" }).click();
+    await openAdminSection(page, adminSections[6]);
     const rules = page.getByTestId("admin-section-access-rules");
     await rules.getByRole("button", { name: "New rule" }).click();
     await rules.getByLabel("Value").fill(ruleEmail);
@@ -268,7 +277,7 @@ test("admin manages approvals, rules, invites, session revocation, and disabling
     await rules.getByRole("button", { name: "Save rule" }).click();
     await expect(rules.getByText(ruleEmail)).toBeVisible();
 
-    await page.getByRole("tab", { name: "Invites" }).click();
+    await openAdminSection(page, adminSections[5]);
     const invites = page.getByTestId("admin-section-invites");
     await invites.getByRole("button", { name: "New invite" }).click();
     await invites.getByLabel("Email", { exact: true }).fill(inviteEmail);
@@ -350,7 +359,7 @@ test("admin manages approvals, rules, invites, session revocation, and disabling
     await userPage.keyboard.press("Escape");
     await closeRunSetup(userPage);
 
-    await page.getByRole("tab", { name: "Model access" }).click();
+    await openAdminSection(page, adminSections[4]);
     const modelAccess = page.getByTestId("admin-section-model-access");
     await modelAccess.getByTestId("admin-model-access-group-list").getByRole("button", { name: `Select ${group.name}` }).click();
     const groupCard = modelAccess.getByTestId("admin-model-access-group").filter({ hasText: group.name });
@@ -409,7 +418,7 @@ test("admin manages approvals, rules, invites, session revocation, and disabling
       error: "model_not_available"
     });
 
-    await page.getByRole("tab", { name: "Users" }).click();
+    await openAdminSection(page, adminSections[2]);
     await approvedRow.getByRole("button", { name: "Details" }).click();
     await expect(page.getByTestId("admin-user-detail").getByText("Disable this user before deletion can be considered.")).toBeVisible();
     await approvedRow.getByRole("button", { name: "Revoke" }).click();
@@ -515,17 +524,36 @@ test("admin console keeps all redesigned sections operable end to end", async ({
     const adminEntry = page.getByRole("menu", { name: "Account" }).getByRole("menuitem", {
       name: "Control Center"
     });
-    await expect(adminEntry).toHaveAttribute("href", "/admin");
+    await expect(adminEntry).toHaveAttribute("href", "/admin?section=providers");
     await adminEntry.click();
     await expect(page.getByRole("heading", { name: "Control Center" })).toBeVisible();
+    await expect(page.getByTestId("admin-section-providers")).toBeVisible();
 
     for (const section of adminSections) {
-      const tab = page.getByRole("tab", { exact: true, name: section.label });
-      await tab.click();
-      await expect(tab).toHaveAttribute("aria-selected", "true");
-      await expect(page.getByTestId(`admin-section-${section.id}`)).toBeVisible();
+      await openAdminSection(page, section);
       await expectNoPageOverflow(page);
     }
+
+    await page.goto("/admin?section=providers");
+    await openAdminSection(page, adminSections[1]);
+    await openAdminSection(page, adminSections[3]);
+    await page.goBack();
+    await expect(page.getByTestId("admin-section-usage")).toBeVisible();
+    await page.goBack();
+    await expect(page.getByTestId("admin-section-providers")).toBeVisible();
+    await page.goForward();
+    await expect(page.getByTestId("admin-section-usage")).toBeVisible();
+
+    for (const section of adminSections) {
+      const path = section.id === "users" ? "/admin" : `/admin?section=${section.id}`;
+      await page.goto(path);
+      await expect(page.getByTestId(`admin-section-${section.id}`)).toBeVisible();
+      await page.reload();
+      await expect(page.getByTestId(`admin-section-${section.id}`)).toBeVisible();
+    }
+
+    await page.goto("/admin?section=not-a-real-section");
+    await expect(page.getByTestId("admin-section-users")).toBeVisible();
 
     await page.goto("/admin?section=groups");
     await expect(page.getByTestId("admin-section-groups")).toBeVisible();
@@ -564,7 +592,7 @@ test("admin console keeps all redesigned sections operable end to end", async ({
     await groups.getByLabel("Search groups").fill(renamedGroupName);
     await expect(groups.locator("tr").filter({ hasText: renamedGroupName })).toBeVisible();
 
-    await page.getByRole("tab", { name: "Model access" }).click();
+    await openAdminSection(page, adminSections[4]);
     const modelAccess = page.getByTestId("admin-section-model-access");
     await modelAccess.getByLabel("Search model access groups").fill(renamedGroupName);
     await modelAccess.getByRole("button", { name: `Select ${renamedGroupName}` }).click();
@@ -639,7 +667,7 @@ test("admin console keeps all redesigned sections operable end to end", async ({
       )
       .toBe(0);
 
-    await page.getByRole("tab", { name: "Access rules" }).click();
+    await openAdminSection(page, adminSections[6]);
     const rules = page.getByTestId("admin-section-access-rules");
     await rules.getByRole("button", { name: "New rule" }).click();
     await rules.getByLabel("Kind").selectOption("domain");
@@ -651,7 +679,7 @@ test("admin console keeps all redesigned sections operable end to end", async ({
     await rules.getByLabel("Search access rules").fill(domain);
     await expect(rules.getByText(domain)).toBeVisible();
 
-    await page.getByRole("tab", { name: "Invites" }).click();
+    await openAdminSection(page, adminSections[5]);
     const invites = page.getByTestId("admin-section-invites");
     await invites.getByRole("button", { name: "New invite" }).click();
     await invites.getByLabel("Email", { exact: true }).fill(inviteEmail);
@@ -669,7 +697,7 @@ test("admin console keeps all redesigned sections operable end to end", async ({
     await confirmAdminDialog(page, "admin-confirm-delete-invite", /confirm delete invite/i);
     await expect(invites.locator("tr").filter({ hasText: inviteEmail })).toHaveCount(0);
 
-    await page.getByRole("tab", { name: "Users" }).click();
+    await openAdminSection(page, adminSections[2]);
     const users = page.getByTestId("admin-section-users");
     await users.getByLabel("Search users").fill("operator@aiqsa.local");
     const selfRow = users.locator("tr").filter({ hasText: "operator@aiqsa.local" });
@@ -687,14 +715,14 @@ test("admin console keeps all redesigned sections operable end to end", async ({
     await confirmAdminDialog(page, "admin-confirm-delete-user", /confirm delete user/i);
     await expect(staleUserRow).toHaveCount(0);
 
-    await page.getByRole("tab", { name: "Access rules" }).click();
+    await openAdminSection(page, adminSections[6]);
     const ruleRow = page.getByTestId("admin-section-access-rules").locator("tr").filter({ hasText: domain });
     await expect(ruleRow).toBeVisible();
     await ruleRow.getByRole("button", { name: "Delete" }).click();
     await confirmAdminDialog(page, "admin-confirm-delete-access-rule", /confirm delete rule/i);
     await expect(ruleRow).toHaveCount(0);
 
-    await page.getByRole("tab", { name: "Groups" }).click();
+    await openAdminSection(page, adminSections[3]);
     const groupsAfterDelete = page.getByTestId("admin-section-groups");
     await groupsAfterDelete.getByLabel("Search groups").fill(renamedGroupName);
     const renamedGroupRow = groupsAfterDelete.locator("tr").filter({ hasText: renamedGroupName });
@@ -720,7 +748,7 @@ test("admin console keeps all redesigned sections operable end to end", async ({
     await groupsAfterDelete.getByRole("button", { name: "archived" }).click();
     await expect(groupsAfterDelete.locator("tr").filter({ hasText: renamedGroupName })).toBeVisible();
 
-    await page.getByRole("tab", { name: "Model access" }).click();
+    await openAdminSection(page, adminSections[4]);
     const archivedModelAccess = page.getByTestId("admin-section-model-access");
     await archivedModelAccess.getByLabel("Search model access groups").fill(renamedGroupName);
     await archivedModelAccess.getByRole("button", { name: `Select ${renamedGroupName}` }).click();
@@ -744,7 +772,7 @@ test("admin console keeps all redesigned sections operable end to end", async ({
       path: testInfo.outputPath("admin-compact.png")
     });
 
-    await page.getByRole("tab", { name: "Safety" }).click();
+    await openAdminSection(page, adminSections[9]);
     await page.getByRole("button", { name: "Revoke all sessions" }).click();
     await confirmAdminDialog(page, "admin-confirm-revoke-all-sessions", /confirm revoke all sessions/i);
     await expect.poll(() => browserFetchStatus(page, "/api/me")).toBe(401);
@@ -839,11 +867,7 @@ test("admin console keeps every section touch-operable in the documented compact
       .toEqual({ coarse: true, hoverNone: true, width: 390 });
 
     for (const section of adminSections) {
-      const tab = page.getByRole("tab", { exact: true, name: section.label });
-      await tab.scrollIntoViewIfNeeded();
-      await expectTouchTarget(tab);
-      await tab.click();
-      await expect(tab).toHaveAttribute("aria-selected", "true");
+      await openAdminSection(page, section);
       await expect(page.getByTestId(`admin-section-${section.id}`)).toBeVisible();
       await expect
         .poll(() => page.evaluate(() => new URL(window.location.href).searchParams.get("section")))
@@ -851,13 +875,11 @@ test("admin console keeps every section touch-operable in the documented compact
       await expectNoPageOverflow(page);
     }
 
-    const usersTab = page.getByRole("tab", { exact: true, name: "Users" });
-    await usersTab.scrollIntoViewIfNeeded();
-    await usersTab.click();
+    await openAdminSection(page, adminSections[2]);
     const users = page.getByTestId("admin-section-users");
     await expectTouchTarget(users.getByLabel("Search users"));
     await expectTouchTarget(users.getByRole("button", { exact: true, name: "all" }));
-    await expectLocalHorizontalOverflow(users.locator("table").first());
+    await expect(users.locator('[data-admin-renderer="legacy-embedded"]')).toBeVisible();
 
     await users.getByLabel("Search users").fill("operator@aiqsa.local");
     const operatorRow = users.locator("tr").filter({ hasText: "operator@aiqsa.local" });
@@ -870,9 +892,7 @@ test("admin console keeps every section touch-operable in the documented compact
     await expect(selectedDetail).toContainText("Acting admin");
     await expectNoPageOverflow(page);
 
-    const groupsTab = page.getByRole("tab", { exact: true, name: "Groups" });
-    await groupsTab.scrollIntoViewIfNeeded();
-    await groupsTab.click();
+    await openAdminSection(page, adminSections[3]);
     const groups = page.getByTestId("admin-section-groups");
     const newGroup = groups.getByRole("button", { exact: true, name: "New group" });
     await expectTouchTarget(newGroup);
@@ -882,9 +902,7 @@ test("admin console keeps every section touch-operable in the documented compact
     await expectNoPageOverflow(page);
     await groups.getByRole("button", { exact: true, name: "Hide form" }).click();
 
-    const modelAccessTab = page.getByRole("tab", { exact: true, name: "Model access" });
-    await modelAccessTab.scrollIntoViewIfNeeded();
-    await modelAccessTab.click();
+    await openAdminSection(page, adminSections[4]);
     const modelAccess = page.getByTestId("admin-section-model-access");
     const modelGroupSearch = modelAccess.getByLabel("Search model access groups");
     await expectTouchTarget(modelGroupSearch);
@@ -899,9 +917,7 @@ test("admin console keeps every section touch-operable in the documented compact
     await expectTouchTarget(modelAccess.getByRole("button", { name: /Grant provider / }).first());
     await expectNoPageOverflow(page);
 
-    const invitesTab = page.getByRole("tab", { exact: true, name: "Invites" });
-    await invitesTab.scrollIntoViewIfNeeded();
-    await invitesTab.click();
+    await openAdminSection(page, adminSections[5]);
     const invites = page.getByTestId("admin-section-invites");
     const newInvite = invites.getByRole("button", { exact: true, name: "New invite" });
     await expectTouchTarget(newInvite);
@@ -912,9 +928,7 @@ test("admin console keeps every section touch-operable in the documented compact
     await expectNoPageOverflow(page);
     await invites.getByRole("button", { exact: true, name: "Hide form" }).click();
 
-    const rulesTab = page.getByRole("tab", { exact: true, name: "Access rules" });
-    await rulesTab.scrollIntoViewIfNeeded();
-    await rulesTab.click();
+    await openAdminSection(page, adminSections[6]);
     const rules = page.getByTestId("admin-section-access-rules");
     const newRule = rules.getByRole("button", { exact: true, name: "New rule" });
     await expectTouchTarget(newRule);
@@ -926,9 +940,7 @@ test("admin console keeps every section touch-operable in the documented compact
     await expectNoPageOverflow(page);
     await rules.getByRole("button", { exact: true, name: "Hide form" }).click();
 
-    const safetyTab = page.getByRole("tab", { exact: true, name: "Safety" });
-    await safetyTab.scrollIntoViewIfNeeded();
-    await safetyTab.click();
+    await openAdminSection(page, adminSections[9]);
     const revokeAll = page.getByRole("button", { exact: true, name: "Revoke all sessions" });
     await expectTouchTarget(revokeAll);
     await revokeAll.click();
@@ -970,8 +982,7 @@ test("admin compact usage and empty access-rule states stay in the visible workf
   try {
     await bootstrapAdmin(page);
 
-    const usageTab = page.getByRole("tab", { exact: true, name: "Usage" });
-    await usageTab.click();
+    await openAdminSection(page, adminSections[1]);
     const usage = page.getByTestId("admin-section-usage");
     const summary = usage.getByRole("region", { name: "Usage summary" });
     await expect(summary).toBeVisible();
@@ -990,12 +1001,13 @@ test("admin compact usage and empty access-rule states stay in the visible workf
         usageNote.evaluate((element) => element.scrollWidth <= element.clientWidth)
       )
       .toBe(true);
-    await expectLocalHorizontalOverflow(usage.getByRole("table").last());
+    await expect(usage.getByTestId("admin-usage-groups-mobile")).toBeVisible();
+    await expect(usage.getByTestId("admin-usage-users-mobile")).toBeVisible();
+    await expect(usage.getByRole("table")).toHaveCount(0);
+    await expect(usage.locator('[data-admin-renderer="replacement"]')).toBeVisible();
     await expectNoPageOverflow(page);
 
-    const rulesTab = page.getByRole("tab", { exact: true, name: "Access rules" });
-    await rulesTab.scrollIntoViewIfNeeded();
-    await rulesTab.click();
+    await openAdminSection(page, adminSections[6]);
     const rules = page.getByTestId("admin-section-access-rules");
     await rules.getByLabel("Search access rules").fill("definitely-no-matching-access-rule");
     const emptyState = rules.getByRole("status");
@@ -1011,7 +1023,6 @@ test("admin compact usage and empty access-rule states stay in the visible workf
         })
       )
       .toBe(true);
-    await expectLocalHorizontalOverflow(rules.getByRole("table"));
     await expectNoPageOverflow(page);
   } finally {
     await context.close();
@@ -1036,19 +1047,75 @@ test("Control Center keeps the current workflow in the short-landscape viewport"
   try {
     await bootstrapAdmin(page);
 
-    const navigation = page.getByRole("tablist", { name: "Control Center sections" });
-    await expect
-      .poll(() =>
-        navigation.evaluate((element) => ({
-          direction: getComputedStyle(element).flexDirection,
-          overflowX: getComputedStyle(element).overflowX
-        }))
-      )
-      .toEqual({ direction: "row", overflowX: "auto" });
-    await expect(page.getByRole("tab", { exact: true, name: "Users" })).toBeInViewport();
     const users = page.getByTestId("admin-section-users");
     await expect(users.getByRole("heading", { exact: true, name: "Users" })).toBeInViewport();
     await expect(users.getByLabel("Search users")).toBeInViewport();
+    await expect(page.getByTestId("admin-section-index-pane")).toBeHidden();
+
+    await page.getByRole("button", { name: "All sections" }).click();
+    const navigation = page.getByRole("tablist", { name: "Control Center sections" });
+    await expect(page.getByTestId("admin-section-index-pane")).toBeVisible();
+    await expect(page.getByTestId("admin-active-task-pane")).toBeHidden();
+    await expect(navigation).toBeVisible();
+    await expect
+      .poll(() => navigation.evaluate((element) => getComputedStyle(element).overflowY))
+      .toBe("auto");
+    await expect(page.getByRole("tab", { exact: true, name: "Providers" })).toBeInViewport();
+
+    await page.goBack();
+    await expect(users).toBeVisible();
+    await expect(page.getByTestId("admin-section-index-pane")).toBeHidden();
+    await page.goForward();
+    await expect(page.getByTestId("admin-section-index-pane")).toBeVisible();
+    await page.getByRole("button", { name: "Back" }).click();
+    await expect(users).toBeVisible();
+
+    await openAdminSection(page, adminSections[1]);
+    const usage = page.getByTestId("admin-section-usage");
+    await expect(usage.getByTestId("admin-usage-groups-mobile")).toBeVisible();
+    await expect(usage.getByTestId("admin-usage-users-mobile")).toBeVisible();
+    await expect(usage.getByRole("table")).toHaveCount(0);
+    await expectNoPageOverflow(page);
+  } finally {
+    await context.close();
+  }
+});
+
+test("Control Center uses the compact section-index task model at tablet width", async ({
+  baseURL,
+  browser
+}) => {
+  expect(baseURL).toBeTruthy();
+  const context = await browser.newContext({
+    baseURL,
+    colorScheme: "light",
+    hasTouch: true,
+    locale: "en-US",
+    reducedMotion: "reduce",
+    timezoneId: "UTC",
+    viewport: { height: 1024, width: 768 }
+  });
+  const page = await context.newPage();
+
+  try {
+    await bootstrapAdmin(page);
+    await expect(page.getByTestId("admin-active-task-pane")).toBeVisible();
+    await expect(page.getByTestId("admin-section-index-pane")).toBeHidden();
+    await expect(page.getByRole("button", { name: "All sections" })).toBeVisible();
+
+    await page.getByRole("button", { name: "All sections" }).click();
+    await expect(page.getByTestId("admin-section-index-pane")).toBeVisible();
+    await expect(page.getByTestId("admin-active-task-pane")).toBeHidden();
+    await expect(page.getByRole("tab", { exact: true, name: "Providers" })).toBeVisible();
+    await expect(page.getByRole("tab", { exact: true, name: "Usage" })).toBeVisible();
+
+    await page.getByRole("tab", { exact: true, name: "Usage" }).click();
+    const usage = page.getByTestId("admin-section-usage");
+    await expect(usage).toBeVisible();
+    await expect(usage.getByRole("region", { name: "Usage summary" })).toBeVisible();
+    await expect(usage.getByTestId("admin-usage-groups-mobile")).toBeVisible();
+    await expect(usage.getByTestId("admin-usage-users-mobile")).toBeVisible();
+    await expect(usage.getByRole("table")).toHaveCount(0);
     await expectNoPageOverflow(page);
   } finally {
     await context.close();

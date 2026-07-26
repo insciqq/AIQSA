@@ -15,6 +15,7 @@ export type {
   AdminCreateGroupInput,
   AdminCreateInviteInput,
   AdminDashboard,
+  AdminDashboardNavigation,
   AdminDeleteGroupResult,
   AdminDeleteInviteResult,
   AdminDeleteStaleInviteInput,
@@ -58,8 +59,8 @@ export function createPrismaAdminRepository(prisma: PrismaClient): AdminReposito
         }
       });
     },
-    async listDashboard() {
-      return listAdminDashboard(prisma);
+    async listDashboard(actingAdminUserId) {
+      return listAdminDashboard(prisma, { actingAdminUserId });
     }
   };
 }

@@ -90,24 +90,6 @@ export function GroupChips({ groups }: { groups: AdminMembership[] }) {
   );
 }
 
-export function SummaryMetric({
-  detail,
-  label,
-  value
-}: {
-  detail: string;
-  label: string;
-  value: number | string;
-}) {
-  return (
-    <div className="min-w-0 rounded-control bg-control-surface px-3 py-2.5">
-      <div className={fieldLabelClass}>{label}</div>
-      <div className="mt-1 font-mono text-lg font-semibold text-ink">{value}</div>
-      <div className="mt-1 break-words text-[11px] leading-4 text-ink-muted [overflow-wrap:anywhere]">{detail}</div>
-    </div>
-  );
-}
-
 export function SectionHeader({
   actions,
   description,
@@ -170,6 +152,50 @@ export function AdminTableRegion({
       className={`overflow-x-auto overscroll-x-contain ${focusRing}`}
       role="region"
       tabIndex={0}
+    >
+      {children}
+    </div>
+  );
+}
+
+export function AdminResourceIndexPane({
+  children,
+  className = "",
+  compactVisible,
+  testId
+}: Readonly<{
+  children: ReactNode;
+  className?: string;
+  compactVisible: boolean;
+  testId: string;
+}>) {
+  return (
+    <aside
+      className={`${compactVisible ? "block" : "hidden"} min-h-0 min-w-0 lg:block ${className}`}
+      data-admin-task-view="index"
+      data-testid={testId}
+    >
+      {children}
+    </aside>
+  );
+}
+
+export function AdminResourceDetailPane({
+  children,
+  className = "",
+  compactVisible,
+  testId
+}: Readonly<{
+  children: ReactNode;
+  className?: string;
+  compactVisible: boolean;
+  testId: string;
+}>) {
+  return (
+    <div
+      className={`${compactVisible ? "block" : "hidden"} min-h-0 min-w-0 lg:block ${className}`}
+      data-admin-task-view="detail"
+      data-testid={testId}
     >
       {children}
     </div>

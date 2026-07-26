@@ -58,7 +58,8 @@ describe("useAdminProvidersController", () => {
       finishAction = resolve;
     }));
 
-    const { result } = renderHook(() => useAdminProvidersController(true));
+    const onMutationCommitted = vi.fn();
+    const { result } = renderHook(() => useAdminProvidersController(true, { onMutationCommitted }));
     await waitFor(() => expect(result.current.state.loaded).toBe(true));
 
     let pending!: Promise<boolean>;
@@ -89,5 +90,29 @@ describe("useAdminProvidersController", () => {
       "provider_activation_unavailable_confirmation_required"
     );
     expect(result.current.state.feedbackConnectionId).toBe(first.id);
+    expect(onMutationCommitted).not.toHaveBeenCalled();
+  });
+
+  it("notifies the dashboard after a successful catalog mutation without awaiting refresh", async () => {
+    const original = connection("connection-a", "Provider A");
+    const updated = { ...original, displayName: "Provider A updated" };
+    const onMutationCommitted = vi.fn(() => new Promise<never>(() => undefined));
+    api.getConnections.mockResolvedValue({ data: [original], ok: true });
+    api.runConnectionAction.mockResolvedValue({ data: [updated], ok: true });
+
+    const { result } = renderHook(() => useAdminProvidersController(true, { onMutationCommitted }));
+    await waitFor(() => expect(result.current.state.loaded).toBe(true));
+
+    await act(async () => {
+      await expect(result.current.actions.connectionAction(
+        original.id,
+        { action: "assign_group_credential", credentialId: "credential-1", groupId: "group-1" },
+        "Group credential assignment saved."
+      )).resolves.toBe(true);
+    });
+
+    expect(result.current.state.selectedConnection?.displayName).toBe("Provider A updated");
+    expect(result.current.state.notice).toBe("Group credential assignment saved.");
+    await waitFor(() => expect(onMutationCommitted).toHaveBeenCalledOnce());
   });
 });

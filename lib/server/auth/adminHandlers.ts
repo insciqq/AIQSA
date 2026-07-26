@@ -198,7 +198,7 @@ export function createAdminDashboardHandler(deps: AdminHandlerDeps) {
       return admin.response;
     }
 
-    return dashboardJson(await deps.repository.listDashboard());
+    return dashboardJson(await deps.repository.listDashboard(admin.userId!));
   };
 }
 
