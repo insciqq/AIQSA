@@ -3,6 +3,8 @@
 Status: Accepted
 Amends: 0009-conversation-first-ui-revamp, 0010-neutral-light-theme, 0016-responsive-composer-disclosure, 0018-intent-gated-mobile-reading-mode
 
+Amendment note: ADR 0028 replaces this ADR's Personal/Team/Advanced navigation, bare `/admin` default, separate Groups/Model access destinations, inherited resource split panes, and bottom-only blank-chat composer. Its capability-preservation, single-view-layer, adaptive Research Chat, theme, and migration decisions remain current.
+
 ## Context
 
 AIQSA's routes, authentication, provider control plane, run pipeline, stores, client-safe contracts, and multi-user capabilities are already the product foundation. The remaining problem is not missing visual polish. The shipped presentation grew through successive local improvements and still makes first use, ordinary research, and administrator setup feel like operating an internal console. Its component hierarchy, density recipes, and responsive choreography are therefore poor constraints for another incremental restyle.
@@ -66,9 +68,9 @@ Clean slate applies to the view layer. It does not authorize a second applicatio
 24. Run receipt is a view projection, not a new database resource, API, event type, or client. Its disclosure may lead to the existing citation/tool artifacts or Events inspection without duplicating those sources.
 25. Details contains exactly two destinations: **Branch** and **Events**. It remains an inspection surface, not a next-run editor. No `API params`, `Request`, settings, receipt, or draft tab is added. Branch retains true-fork navigation and checkout; Events retains chronological run evidence. ADR 0011 continues to own this boundary.
 
-### Deferred accessibility, performance, and content gates
+### Deferred scope, performance, and content gates
 
-26. WCAG conformance and dedicated accessibility implementation are explicitly outside the current revamp scope by operator decision. The rewrite does not add accessibility audits, screen-reader/forced-colors remediation, keyboard-only parity work, dedicated accessibility tests, or accessibility-based cutover gates. Existing native semantics and already-working interaction behavior may remain when reused, but preserving or expanding them is not a condition for completing a presentation slice. A future accessibility phase requires a new active task and may amend this decision.
+26. Dedicated accessibility implementation and conformance are outside the current product scope and require a separately approved future task.
 27. Responsive acceptance still includes representative narrow portrait, short landscape, tablet, desktop, and wide pinned-Details states with real long titles, model names, code, tables, errors, loading, streaming, and software-keyboard conditions. No primary touch workflow may depend on hover.
 28. Performance parity requires that the new view not duplicate API requests, subscriptions, streaming consumers, Markdown work, or store ownership. Nonessential heavy panels load on demand; opening drawers or changing presentation must not remount an active run, lose drafts, disturb established scroll ownership, or block streaming updates. Each slice records a before/after production-build and representative interaction baseline; a material regression requires explicit review rather than being hidden by the visual rewrite.
 29. Content is part of the gate. Labels name the action or user-recognizable object in sentence case; the same action name is used through trigger, progress, success, and failure. Empty and error states explain the next available action. Production concepts and fixtures use real routes, destinations, capabilities, and state vocabulary. Invented analytics, plan language, fake collaboration features, vague technical copy, and decorative status claims are prohibited.
@@ -92,26 +94,26 @@ Clean slate applies to the view layer. It does not authorize a second applicatio
 - This ADR replaces ADR 0009's opening `dark-first` default with light-first `neutral` first use while retaining complete dark-theme parity.
 - ADR 0009 decision 2's general conversation-first and on-demand Details ownership remains, but its presentation is refined by the `1024px` desktop rail and `1440px` optional pin thresholds above.
 - ADR 0009 decision 3's requirement that Model and Search be legible remains, but the old permanent composer composition is replaced by the exact Run summary plus one-activation full setup.
-- ADR 0009 decision 6 no longer requires continuity with the shipped view hierarchy, density recipes, or typography placement. Its restrained hierarchy, semantic status, safe rendering, and theme registry remain; its accessibility-specific acceptance clauses are deferred by decision 26 above.
+- ADR 0009 decision 6 no longer requires continuity with the shipped view hierarchy, density recipes, or typography placement. Its restrained hierarchy, semantic status, safe rendering, and theme registry remain.
 - ADR 0009 decisions 1, 4, 5, and 7 remain fully accepted: conversation focus, capability parity, selective power-user density, and no clone target are not reopened.
 
 ### ADR 0010
 
 - This ADR amends ADR 0010 decision 4 and its consequence that first-run appearance does not change: `neutral`, not `aiqsa`, is now the fallback only when no preference exists.
-- All five ids and every persisted preference remain stable. ADR 0010's scheme metadata, semantic surfaces, Classic palette definitions, and cross-theme capability requirements remain accepted; formal contrast conformance is deferred by decision 26 above.
+- All five ids and every persisted preference remain stable. ADR 0010's scheme metadata, semantic surfaces, Classic palette definitions, and cross-theme capability requirements remain accepted.
 
 ### ADR 0016
 
 - This ADR replaces ADR 0016 decisions 2 and 3's width/height-specific split between permanent desktop controls and compact Run summary with one adaptive resting-composer hierarchy at all sizes.
 - It replaces decision 5's phone-specific setup ownership with the same one-activation Run setup disclosure wherever space or input mode calls for it, and replaces decision 7 plus the 2026-07-19 direct-profile-footer addendum's required footer composition. Profiles remain one tap away and exactly legible in the resting Run summary rather than occupying a mandatory compact footer.
-- ADR 0016 decision 1 remains controlling: state, persistence, entitlement filtering, action ownership, and next-run semantics do not change. Its software-keyboard and coarse-pointer layout outcomes remain, while its accessibility-specific acceptance clauses are deferred by decision 26 above.
+- ADR 0016 decision 1 remains controlling: state, persistence, entitlement filtering, action ownership, and next-run semantics do not change. Its software-keyboard and coarse-pointer layout outcomes remain.
 
 ### ADR 0018
 
 - This ADR replaces ADR 0018 decision 1's fixed desktop/mobile rail composition with the adaptive rail/drawer rules above while preserving clear current-page context and direct access to Workspace, New chat, Copy thread, and Branch tree.
 - ADR 0018 decisions 2 through 7 and their 48px scroll-intent addendum are no longer required presentation behavior. The clean-slate resting composer is compact without depending on scroll-triggered collapse or gesture-direction accumulation.
 - The direct compact New chat addendum's placement recipe is replaced, but its top-level blank-workspace ownership, first-send persistence, keyed drafts, background-run independence, readiness guard, touch target, and containment requirements remain.
-- Message availability, an independently addressable Stop action, and protection from programmatic-scroll surprises remain mandatory outcomes; accessibility-specific acceptance clauses are deferred by decision 26 above.
+- Message availability, an independently addressable Stop action, and protection from programmatic-scroll surprises remain mandatory outcomes.
 
 ADR 0011 is not amended. Concrete models remain the selectable identity; providers remain grouping context; next-run controls retain one composer owner; the exact Model/Profile/Reasoning/Search state remains legible; and Details remains Branch/Events inspection only.
 

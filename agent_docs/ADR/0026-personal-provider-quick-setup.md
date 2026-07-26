@@ -3,6 +3,8 @@
 Status: Accepted
 Amends: 0022-admin-managed-llm-provider-control-plane, 0024-admin-managed-run-profiles
 
+Amendment note: ADR 0028 retains the one-key Quick workflow but replaces its isolated Primary/default-credential graph with an actor-relative direct-user credential assignment. Existing team/custom state is nonblocking, and `advanced_required` is now limited to a canonical identity/configuration collision that Quick cannot reconcile losslessly.
+
 ## Context
 
 ADR 0022 deliberately exposes the full provider control plane: connections, credentials, model deployments, checks, assignments, drafts, and activation. That surface is necessary for team and enterprise installations, but it makes the first-run path needlessly indirect for an administrator running AIQSA for themselves.
@@ -185,7 +187,7 @@ The synchronous browser request has one truthful pending label, **Testing & savi
 
 Quick success invalidates the secret-free Control Center summary and the lazy Advanced provider/profile projections. Opening Advanced after success fetches canonical persisted state; Quick and Advanced never keep competing live owners for the same resource.
 
-WCAG conformance, dedicated accessibility implementation/audits, and accessibility acceptance gates are outside this revamp slice. Responsive/mobile/touch behavior, safe-area and software-keyboard clearance, readable state/action copy, and overflow containment remain ordinary product behavior.
+Dedicated accessibility implementation and conformance are outside this revamp slice. Responsive/mobile/touch behavior, safe-area and software-keyboard clearance, readable state/action copy, and overflow containment remain ordinary product behavior.
 
 ## Amendments to earlier decisions
 

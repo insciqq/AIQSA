@@ -41,7 +41,12 @@ export type AdminDeleteUserResult =
   | "self_delete_forbidden"
   | "user_active"
   | "user_has_owned_data";
-export type AdminDeleteGroupResult = "deleted" | "group_has_grants" | "group_has_members" | "not_found";
+export type AdminDeleteGroupResult =
+  | "deleted"
+  | "group_has_grants"
+  | "group_has_members"
+  | "not_found"
+  | "system_group_forbidden";
 export type AdminDeleteInviteResult = "deleted" | "invite_accepted" | "invite_open" | "not_found";
 export type AdminApproveUserResult = "approved" | "not_found" | "not_verified";
 export type AdminDisableUserResult =

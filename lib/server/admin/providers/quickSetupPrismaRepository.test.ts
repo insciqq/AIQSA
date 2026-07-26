@@ -16,6 +16,7 @@ function canonicalConnection(overrides: Record<string, unknown> = {}) {
     activeConfig: null,
     activeVersion: 0,
     activatedAt: null,
+    connectionId: policy.connection.id,
     credentials: [],
     defaultCredentialId: null,
     displayName: policy.connection.displayName,
@@ -38,6 +39,7 @@ function canonicalModel(overrides: Record<string, unknown> = {}) {
     activeCredentialChecks: [],
     activeVersion: 0,
     activatedAt: null,
+    connectionId: policy.connection.id,
     displayName: terra.displayName,
     draftChecks: [],
     draftConfig: terra.configuration,
@@ -87,9 +89,15 @@ function readyGraph(
     enabled: true,
     groupAssignments: [],
     id: credentialId,
-    label: "Primary",
+    label: `Quick setup · ${credentialId}`,
     testedAt: now,
     updatedAt: now,
+    userAssignments: [{
+      connectionId: policy.connection.id,
+      credentialId,
+      updatedAt: now,
+      userId: "admin"
+    }],
     versions: [{
       ...activeVersion,
       activatedAt: now,
@@ -120,7 +128,7 @@ function readyGraph(
       activeVersion: 1,
       activatedAt: now,
       credentials: [credential],
-      defaultCredentialId: credentialId,
+      defaultCredentialId: null,
       enabled: true,
       models: [model]
     }),
@@ -132,6 +140,7 @@ function readyGraph(
 function inspectionRepository(input: Readonly<{
   connections?: unknown[];
   grants?: unknown[];
+  memberships?: unknown[];
   profiles?: unknown[];
 }> = {}) {
   const db = {
@@ -162,6 +171,9 @@ function inspectionRepository(input: Readonly<{
         id: "settings-admin",
         updatedAt: now
       }))
+    },
+    userGroup: {
+      findMany: vi.fn(async () => input.memberships ?? [])
     }
   };
   return {
@@ -288,7 +300,7 @@ describe("Prisma provider Quick setup repository transaction boundary", () => {
 });
 
 describe("Prisma provider Quick setup eligibility", () => {
-  it("treats any additional same-family connection as Advanced", async () => {
+  it("keeps an additional same-family connection nonblocking", async () => {
     const customConnection = canonicalConnection({
       displayName: "Custom OpenAI",
       id: "custom-openai",
@@ -302,7 +314,50 @@ describe("Prisma provider Quick setup eligibility", () => {
       provider: "openai",
       sessionId: "session-admin",
       userId: "admin"
-    })).resolves.toMatchObject({ mode: null, state: "advanced_required" });
+    })).resolves.toMatchObject({ mode: "recovery", state: "not_configured" });
+  });
+
+  it("accepts the normalized code-owned OpenRouter seed configuration", async () => {
+    const openrouter = adminProviderQuickSetupPolicy("openrouter");
+    const connection = {
+      activeConfig: null,
+      activeVersion: 0,
+      activatedAt: null,
+      credentials: [],
+      defaultCredentialId: null,
+      displayName: openrouter.connection.displayName,
+      draftConfig: openrouter.connection.configuration,
+      draftVersion: 1,
+      enabled: false,
+      family: openrouter.provider,
+      id: openrouter.connection.id,
+      models: openrouter.candidates.map((candidate) => ({
+        activeConfig: null,
+        activeCredentialChecks: [],
+        activeVersion: 0,
+        activatedAt: null,
+        displayName: candidate.displayName,
+        draftChecks: [],
+        draftConfig: candidate.configuration,
+        draftVersion: 1,
+        enabled: false,
+        id: candidate.modelId,
+        provider: openrouter.provider,
+        templateKey: candidate.templateKey,
+        updatedAt: now
+      })),
+      templateKey: openrouter.connection.templateKey,
+      unassignedPolicy: "use_default",
+      updatedAt: now
+    };
+    const { repository } = inspectionRepository({ connections: [connection] });
+
+    await expect(repository.inspect({
+      now,
+      provider: "openrouter",
+      sessionId: "session-admin",
+      userId: "admin"
+    })).resolves.toMatchObject({ mode: "initial", state: "not_configured" });
   });
 
   it.each([
@@ -312,18 +367,20 @@ describe("Prisma provider Quick setup eligibility", () => {
     ["connection-wide", [exactGrant({ providerConnectionId: policy.connection.id })]],
     ["another model", [exactGrant({ providerModelId: policy.candidates[1].modelId })]],
     ["mixed search target", [exactGrant({ searchStrategy: "openai-native-web-search" })]]
-  ])("requires Advanced for an %s acting-user grant shape", async (_label, grants) => {
+  ])("keeps an %s acting-user grant shape repairable", async (_label, grants) => {
     const graph = readyGraph();
     const { repository } = inspectionRepository({
       connections: [graph.connection],
       grants
     });
-    await expect(repository.inspect({
+    const inspection = await repository.inspect({
       now,
       provider: "openai",
       sessionId: "session-admin",
       userId: "admin"
-    })).resolves.toMatchObject({ mode: null, state: "advanced_required" });
+    });
+    expect(inspection.mode).not.toBeNull();
+    expect(inspection.state).not.toBe("advanced_required");
   });
 
   it.each([
@@ -355,7 +412,7 @@ describe("Prisma provider Quick setup eligibility", () => {
         status: "available"
       }]
     }]
-  ])("does not treat a disabled seed model with a %s check as pristine", async (_label, modelState) => {
+  ])("preserves a disabled seed model with a %s check without blocking Quick setup", async (_label, modelState) => {
     const { repository } = inspectionRepository({
       connections: [canonicalConnection({ models: [canonicalModel(modelState)] })]
     });
@@ -364,7 +421,7 @@ describe("Prisma provider Quick setup eligibility", () => {
       provider: "openai",
       sessionId: "session-admin",
       userId: "admin"
-    })).resolves.toMatchObject({ mode: null, state: "advanced_required" });
+    })).resolves.toMatchObject({ mode: "recovery", state: "not_configured" });
   });
 
   it("fences active secret-envelope changes without exposing the envelope", async () => {
@@ -393,6 +450,32 @@ describe("Prisma provider Quick setup eligibility", () => {
     expect(first.fingerprint).not.toContain("envelope-one");
   });
 
+  it("treats a full-access member as ready without a materialized model grant", async () => {
+    const graph = readyGraph();
+    const { repository } = inspectionRepository({
+      connections: [graph.connection],
+      grants: [],
+      memberships: [{
+        group: { archivedAt: null, systemRole: "full_access" },
+        groupId: "full-access",
+        userId: "admin"
+      }]
+    });
+
+    const inspection = await repository.inspect({
+      now,
+      provider: "openai",
+      sessionId: "session-admin",
+      userId: "admin"
+    });
+
+    expect(inspection).toMatchObject({ mode: "replacement", state: "ready" });
+    expect(inspection.preservedModels).toEqual([{
+      id: terra.modelId,
+      upstreamModelId: terra.configuration.upstreamModelId
+    }]);
+  });
+
   it("distinguishes untouched initial state from canonical recovery", async () => {
     const initial = inspectionRepository();
     await expect(initial.repository.inspect({
@@ -415,7 +498,7 @@ describe("Prisma provider Quick setup eligibility", () => {
       provider: "openai",
       sessionId: "session-admin",
       userId: "admin"
-    })).resolves.toMatchObject({ mode: "recovery", state: "needs_attention" });
+    })).resolves.toMatchObject({ mode: "recovery", state: "not_configured" });
   });
 
   it("does not advertise Ready without a canonical connection activation time", async () => {
@@ -430,7 +513,7 @@ describe("Prisma provider Quick setup eligibility", () => {
       provider: "openai",
       sessionId: "session-admin",
       userId: "admin"
-    })).resolves.toMatchObject({ mode: "recovery", state: "needs_attention" });
+    })).resolves.toMatchObject({ mode: null, state: "advanced_required" });
   });
 
   it("requires Advanced for an impossible inactive connection tuple", async () => {
@@ -445,7 +528,7 @@ describe("Prisma provider Quick setup eligibility", () => {
     })).resolves.toMatchObject({ mode: null, state: "advanced_required" });
   });
 
-  it("requires Advanced when the active credential version trails its draft version", async () => {
+  it("uses a fresh Quick credential when the assigned credential is not safely reusable", async () => {
     const graph = readyGraph();
     graph.credential.draftVersion = 2;
     graph.credential.versions.push({
@@ -457,15 +540,38 @@ describe("Prisma provider Quick setup eligibility", () => {
       connections: [graph.connection],
       grants: [exactGrant()]
     });
-    await expect(repository.inspect({
+    const inspection = await repository.inspect({
       now,
       provider: "openai",
       sessionId: "session-admin",
       userId: "admin"
-    })).resolves.toMatchObject({ mode: null, state: "advanced_required" });
+    });
+    expect(inspection).toMatchObject({ mode: "replacement", state: "ready" });
+    expect(inspection.quickSetupAssignment).toEqual({ credentialId: graph.credential.id });
+    expect(inspection.quickSetupCredential).toBeNull();
   });
 
-  it("requires Advanced when version history exists without an active version", async () => {
+  it("does not adopt a renamed assigned credential for Quick replacement", async () => {
+    const graph = readyGraph();
+    graph.credential.label = "Enterprise administrator credential";
+    const { repository } = inspectionRepository({
+      connections: [graph.connection],
+      grants: [exactGrant()]
+    });
+
+    const inspection = await repository.inspect({
+      now,
+      provider: "openai",
+      sessionId: "session-admin",
+      userId: "admin"
+    });
+
+    expect(inspection).toMatchObject({ mode: "replacement", state: "ready" });
+    expect(inspection.quickSetupAssignment).toEqual({ credentialId: graph.credential.id });
+    expect(inspection.quickSetupCredential).toBeNull();
+  });
+
+  it("keeps missing active credential state repairable", async () => {
     const graph = readyGraph();
     const credential = graph.credential as unknown as {
       activeVersion: null;
@@ -482,13 +588,13 @@ describe("Prisma provider Quick setup eligibility", () => {
       provider: "openai",
       sessionId: "session-admin",
       userId: "admin"
-    })).resolves.toMatchObject({ mode: null, state: "advanced_required" });
+    })).resolves.toMatchObject({ mode: "recovery", state: "needs_attention" });
   });
 
   it.each([
     ["a version number beyond the draft", readyGraph()],
     ["a null immutable envelope", readyGraph("active-envelope", null)]
-  ])("requires Advanced for credential history with %s", async (label, graph) => {
+  ])("does not flatten credential history with %s", async (label, graph) => {
     if (label === "a version number beyond the draft") {
       graph.credential.versions.push({
         ...graph.credential.versions[0],
@@ -500,12 +606,14 @@ describe("Prisma provider Quick setup eligibility", () => {
       connections: [graph.connection],
       grants: [exactGrant()]
     });
-    await expect(repository.inspect({
+    const inspection = await repository.inspect({
       now,
       provider: "openai",
       sessionId: "session-admin",
       userId: "admin"
-    })).resolves.toMatchObject({ mode: null, state: "advanced_required" });
+    });
+    expect(inspection.state).not.toBe("advanced_required");
+    expect(inspection.quickSetupCredential).toBeNull();
   });
 });
 

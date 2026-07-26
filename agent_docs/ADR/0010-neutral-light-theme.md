@@ -19,11 +19,11 @@ The operator then clarified that the familiar TypingMind dark treatment is also 
 4. `aiqsa` remains the default theme. Existing `aiqsa`, `graphite`, `verdant`, and `neutral` preferences keep their ids and behavior; no migration or server-side user preference is introduced.
 5. Shared overlays, shadows, atmosphere, status colors, and syntax highlighting use semantic or scheme-aware recipes. Components must not assume that black overlays, black shadows, dark browser chrome, or `github-dark` are universally correct.
 6. TypingMind is an inspiration for palette familiarity only. AIQSA does not copy its assets, brand, layout, sidebar variants, or interaction model.
-7. Every palette must preserve the same conversation-first hierarchy, compact power-user density, keyboard behavior, responsive composition, and accessible contrast.
+7. Every palette must preserve the same conversation-first hierarchy, compact power-user density, responsive composition, and readable text/status/action hierarchy.
 
 ## Consequences
 
 - Both Classic palettes can ship without changing server data, shares, chats, provider behavior, or the default first-run appearance.
-- Theme tests and direct visual inspection must cover affected scheme persistence, SSR/hydration agreement, contrast, overlays, Markdown/code, auth/share, and representative workspace surfaces.
+- Theme tests and direct visual inspection must cover affected scheme persistence, SSR/hydration agreement, readability, overlays, Markdown/code, auth/share, and representative workspace surfaces.
 - New shared components must be checked in the default dark theme and one relevant Classic palette when their rendering changes. Raw color utilities require a documented local reason.
 - This ADR supersedes ADR 0009's dark-first release limitation and the dark-only clause of `CRITICAL_INVARIANTS.md`. All other ADR 0009 decisions remain accepted.

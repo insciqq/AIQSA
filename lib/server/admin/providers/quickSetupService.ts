@@ -5,6 +5,8 @@ import {
 } from "node:crypto";
 import {
   ADMIN_PROVIDER_QUICK_SETUP_PROVIDERS,
+  type AdminProviderQuickSetupClearRequest,
+  type AdminProviderQuickSetupClearResult,
   type AdminProviderQuickSetupErrorCode,
   type AdminProviderQuickSetupRequest,
   type AdminProviderQuickSetupResult,
@@ -74,6 +76,7 @@ function providerSnapshot(
       : {}),
     provider: inspection.provider,
     providerDisplayName: policy.connection.displayName,
+    quickSetupAssigned: inspection.quickSetupAssignment !== null,
     state: inspection.state,
     stateToken: stateToken(key, inspection)
   };
@@ -105,6 +108,48 @@ export function createAdminProviderQuickSetupService(input: Readonly<{
   const stateTokenKey = input.stateTokenKey;
 
   return {
+    async clearAssignment(inputValue: Readonly<{
+      actor: AdminProviderQuickSetupActor;
+      request: AdminProviderQuickSetupClearRequest;
+    }>): Promise<AdminProviderQuickSetupClearResult> {
+      const policy = adminProviderQuickSetupPolicy(inputValue.request.provider);
+      const inspectedAt = now();
+      const inspection = await input.repository.inspect({
+        ...inputValue.actor,
+        now: inspectedAt,
+        provider: inputValue.request.provider
+      });
+      if (!inspection.authorized) {
+        throw new AdminProviderQuickSetupServiceError(
+          "provider_quick_setup_advanced_required"
+        );
+      }
+      if (!sameToken(inputValue.request.expectedState, stateToken(stateTokenKey(), inspection)) ||
+        !inspection.quickSetupAssignment) {
+        throw new AdminProviderQuickSetupServiceError("provider_draft_stale");
+      }
+      const commit = await input.repository.clearAssignment({
+        actor: inputValue.actor,
+        expectedFingerprint: inspection.fingerprint,
+        now: now(),
+        provider: policy.provider
+      });
+      if (commit === "stale") {
+        throw new AdminProviderQuickSetupServiceError("provider_draft_stale");
+      }
+      if (commit === "advanced_required") {
+        throw new AdminProviderQuickSetupServiceError(
+          "provider_quick_setup_advanced_required"
+        );
+      }
+      return {
+        credentialRetained: true,
+        outcome: "assignment_cleared",
+        provider: policy.provider,
+        providerDisplayName: policy.connection.displayName
+      };
+    },
+
     async getSnapshot(actor: AdminProviderQuickSetupActor): Promise<AdminProviderQuickSetupSnapshot> {
       const inspectedAt = now();
       const inspections = await Promise.all(ADMIN_PROVIDER_QUICK_SETUP_PROVIDERS.map((provider) =>
@@ -192,6 +237,14 @@ export function createAdminProviderQuickSetupService(input: Readonly<{
         throw new AdminProviderQuickSetupServiceError("provider_credential_test_failed");
       }
       const checkedAt = now();
+      const remotelyAvailableModelIds = new Set(modelIds);
+      if (inspection.preservedModels.some(
+        ({ upstreamModelId }) => !remotelyAvailableModelIds.has(upstreamModelId)
+      )) {
+        throw new AdminProviderQuickSetupServiceError(
+          "provider_quick_setup_unsupported_catalog"
+        );
+      }
 
       let candidate: AdminProviderQuickSetupPolicyCandidate;
       if (existingCandidate) {
@@ -233,9 +286,9 @@ export function createAdminProviderQuickSetupService(input: Readonly<{
         candidate = decision.candidate;
       }
 
-      const credentialId = inspection.primaryCredential?.id ?? idFactory();
-      const draftVersion = inspection.primaryCredential
-        ? inspection.primaryCredential.draftVersion + 1
+      const credentialId = inspection.quickSetupCredential?.id ?? idFactory();
+      const draftVersion = inspection.quickSetupCredential
+        ? inspection.quickSetupCredential.draftVersion + 1
         : 1;
       if (!Number.isSafeInteger(draftVersion) || draftVersion < 1) {
         throw new AdminProviderQuickSetupServiceError("provider_draft_stale");
@@ -248,7 +301,7 @@ export function createAdminProviderQuickSetupService(input: Readonly<{
         credential: {
           draftVersion,
           id: credentialId,
-          isNew: inspection.primaryCredential === null,
+          isNew: inspection.quickSetupCredential === null,
           versionEnvelope: encryptProviderCredentialSecret({
             credentialId,
             key: encryptionKey(),
@@ -261,6 +314,7 @@ export function createAdminProviderQuickSetupService(input: Readonly<{
         grantId: idFactory(),
         mode: inspection.mode,
         now: now(),
+        preservedModels: inspection.preservedModels,
         provider: policy.provider
       });
       if (commit === "stale") {

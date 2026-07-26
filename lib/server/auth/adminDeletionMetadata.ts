@@ -16,6 +16,7 @@ export type AdminGroupDeletionSource = Readonly<{
   mcpGrants: readonly Readonly<{
     canUse: boolean;
   }>[];
+  systemRole: "full_access" | null;
 }>;
 
 export type AdminInviteDeletionSource = Readonly<{
@@ -117,6 +118,14 @@ export function adminUserDeletionInfo(input: AdminUserDeletionSource): AdminDele
 }
 
 export function adminGroupDeletionInfo(group: AdminGroupDeletionSource): AdminDeletionInfo {
+  if (group.systemRole === "full_access") {
+    return {
+      canDelete: false,
+      reason: "system_group_forbidden",
+      summary: "Full access is built in and cannot be deleted."
+    };
+  }
+
   const activeGrantCount =
     group.accessGrants.filter((grant) => grant.enabled).length +
     group.mcpGrants.filter((grant) => grant.canUse).length;

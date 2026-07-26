@@ -65,18 +65,17 @@ export function useAdminUsersController({
     [dashboard?.users, pageIndex, query, requestedSelectedUserId, sortDirection, sortKey, statusFilter]
   );
 
-  const selectUser = useCallback(
-    (userId: string, target: "user-detail" | "user-groups" = "user-detail") => {
-      requestFocus(target);
-      setRequestedSelectedUserId(userId);
-      setCompactDetailOpen(true);
-    },
-    [requestFocus]
-  );
+  const selectUser = useCallback((userId: string) => {
+    requestFocus("user-detail");
+    setRequestedSelectedUserId(userId);
+    setCompactDetailOpen(true);
+  }, [requestFocus]);
 
   const changeQuery = useCallback((value: string) => {
     setQuery(value);
     setPageIndex(0);
+    setRequestedSelectedUserId(null);
+    setCompactDetailOpen(false);
   }, []);
 
   const changeStatusFilter = useCallback((value: AdminUserStatusFilter) => {
@@ -229,8 +228,10 @@ export function useAdminUsersController({
     return {
       actions: {
         onApprove: (user) => void approveUser(user),
-        onBackToList: () => setCompactDetailOpen(false),
-        onEditUserGroups: (userId) => selectUser(userId, "user-groups"),
+        onBackToList: () => {
+          setRequestedSelectedUserId(null);
+          setCompactDetailOpen(false);
+        },
         onNextPage: () => setPageIndex((current) => Math.min(viewModel.pageCount - 1, current + 1)),
         onPreviousPage: () => setPageIndex((current) => Math.max(0, current - 1)),
         onQueryChange: changeQuery,

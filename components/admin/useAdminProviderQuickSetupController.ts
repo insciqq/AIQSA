@@ -2,6 +2,7 @@
 
 import {
   adminProviderQuickSetupErrorMessage,
+  clearAdminProviderQuickSetupAssignment,
   getAdminProviderQuickSetup,
   submitAdminProviderQuickSetup,
   type AdminProviderQuickSetupId,
@@ -45,6 +46,7 @@ export function useAdminProviderQuickSetupController(
   const [refreshError, setRefreshError] = useState<string | null>(null);
   const [refreshErrorCode, setRefreshErrorCode] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [clearing, setClearing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [errorCode, setErrorCode] = useState<string | null>(null);
 
@@ -70,6 +72,7 @@ export function useAdminProviderQuickSetupController(
     submitAbortRef.current = null;
     submittingRef.current = false;
     setSubmitting(false);
+    setClearing(false);
   }, []);
 
   const cancelSnapshot = useCallback(() => {
@@ -243,7 +246,7 @@ export function useAdminProviderQuickSetupController(
   const submit = useCallback(async () => {
     const provider = selectedProvider;
     const candidateSecret = secret;
-    if (!provider || provider.state === "advanced_required" || !candidateSecret.trim() ||
+    if (!provider || !candidateSecret.trim() ||
       submittingRef.current || snapshotLoadingRef.current || reconciliationRequiredRef.current) {
       return false;
     }
@@ -263,6 +266,7 @@ export function useAdminProviderQuickSetupController(
     submitAbortRef.current = abort;
     submittingRef.current = true;
     setSubmitting(true);
+    setClearing(false);
     setError(null);
     setErrorCode(null);
     const result = await submitAdminProviderQuickSetup({
@@ -331,7 +335,61 @@ export function useAdminProviderQuickSetupController(
   }, [onMutationCommitted, onQuickSetupCommitted, reconcileSnapshot, replacing, secret,
     selectedCandidateId, selectedProvider, selection]);
 
-  const formLocked = submitting || loading || reconciliationRequired;
+  const clearAssignment = useCallback(async () => {
+    const provider = selectedProvider;
+    if (!provider?.quickSetupAssigned || submittingRef.current || snapshotLoadingRef.current ||
+      reconciliationRequiredRef.current) {
+      return false;
+    }
+    const mutationGeneration = ++submitGenerationRef.current;
+    const formGeneration = formGenerationRef.current;
+    const abort = new AbortController();
+    submitAbortRef.current?.abort();
+    submitAbortRef.current = abort;
+    submittingRef.current = true;
+    setClearing(true);
+    setSubmitting(false);
+    setError(null);
+    setErrorCode(null);
+    const result = await clearAdminProviderQuickSetupAssignment({
+      expectedState: provider.stateToken,
+      provider: provider.provider
+    }, fetch, abort.signal);
+    if (mutationGeneration !== submitGenerationRef.current ||
+      formGeneration !== formGenerationRef.current) {
+      if (mutationGeneration === submitGenerationRef.current) {
+        submitAbortRef.current = null;
+        submittingRef.current = false;
+        setClearing(false);
+      }
+      return false;
+    }
+    submitAbortRef.current = null;
+    submittingRef.current = false;
+    setClearing(false);
+    if (!result.ok) {
+      setError(adminProviderQuickSetupErrorMessage(result.error));
+      setErrorCode(result.error.code);
+      if (result.error.code === "provider_draft_stale") void reconcileSnapshot();
+      return false;
+    }
+    if (result.data.provider !== provider.provider || !result.data.credentialRetained) {
+      setError(adminProviderQuickSetupErrorMessage({
+        code: "provider_quick_setup_response_invalid"
+      }));
+      setErrorCode("provider_quick_setup_response_invalid");
+      return false;
+    }
+    setReadyResult(null);
+    setReadyConfirmation(null);
+    setReplacing(false);
+    onQuickSetupCommitted?.();
+    notifyMutationCommitted(onMutationCommitted);
+    void reconcileSnapshot();
+    return true;
+  }, [onMutationCommitted, onQuickSetupCommitted, reconcileSnapshot, selectedProvider]);
+
+  const formLocked = submitting || clearing || loading || reconciliationRequired;
 
   return {
     actions: {
@@ -347,6 +405,7 @@ export function useAdminProviderQuickSetupController(
       },
       cancelReplacement: clearForm,
       changeSecret,
+      clearAssignment,
       chooseModel: (candidateId: string) => {
         if (submittingRef.current || snapshotLoadingRef.current ||
           reconciliationRequiredRef.current) return;
@@ -366,6 +425,7 @@ export function useAdminProviderQuickSetupController(
     state: {
       error,
       errorCode,
+      clearing,
       formLocked,
       loaded,
       loading,

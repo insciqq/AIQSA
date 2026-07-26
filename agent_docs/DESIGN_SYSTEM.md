@@ -78,7 +78,7 @@ The `neutral` theme is the first-use default and the reference against which hie
 | Proof | `#176f65` |
 | Proof contrast | `#ffffff` |
 
-The table is a visual reference. Review normal text, muted text, controls, and status colors for ordinary readability in every theme; the product does not claim formal contrast conformance. Muted text is not a substitute for tiny type.
+The table is a visual reference. Review normal text, muted text, controls, and status colors for ordinary readability in every theme. Muted text is not a substitute for tiny type.
 
 ### Theme compatibility
 
@@ -132,7 +132,7 @@ Avoid isolated floating rectangles when a plain section, row, or disclosure comm
 
 ### Shell and workspace
 
-The conversation and composer dominate. A persistent Workspace rail appears at `>=1024px`; below that, Workspace is a modal drawer. The conversation column owns its local top rail. Share and Details remain direct at every width; Copy thread and Branch tree live in one `Conversation actions` menu at every width, while Command palette and Settings live in Account. There is no second permanent action bar.
+The conversation and composer dominate. A persistent Workspace rail appears at `>=1024px`; below that, Workspace is a modal drawer. The conversation column owns its local top rail. Once a conversation exists, Share and Details remain direct at every width; Copy thread and Branch tree live in one `Conversation actions` menu at every width, while Command palette and Settings live in Account. A blank `New chat` omits those object-specific actions so the prompt is the only dominant task. There is no second permanent action bar.
 
 Chat and folder rows use quiet selected/hover states, stable action space, and text labels where consequence matters. Active-run state is a small factual cue. Nested folders must retain readable indentation without causing page-level horizontal overflow.
 
@@ -164,6 +164,8 @@ The Run summary states exact Model, derived Profile or Custom/unavailable, Reaso
 
 Attachment progress, partial failure, edit-branch intent, context warning, unavailable catalog, and send/run errors appear next to the control that can resolve them. The composer remains reachable above the software keyboard and safe-area inset.
 
+In a ready blank chat, that one composer and a short orientation line are centered as one group in the available conversation stage. This prompt-first variant visually removes the redundant Message label and separate Usage line, compresses Run to a one-line model summary, and may render Attach without text at compact width; it still uses the same controls and disclosures. Once first-send creation begins or any message exists, the same composer occupies the thread tail and restores the ordinary conversation/action composition. Do not render a second start composer, suggestion-card dashboard, or different empty-state control hierarchy.
+
 ### Details and settings
 
 Details is closed by default, opens as an overlay at all widths, and may be pinned only when at least 1440px of useful width remains. It contains Branch and Events inspection, never duplicated next-run editing.
@@ -178,19 +180,21 @@ Public share is a reading surface, not a reduced private shell. A quiet workspac
 
 ## Control Center Composition
 
-The Control Center is an operational workspace, not a dashboard landing page. Navigation exposes only real destinations in this exact order: Personal — Providers, Usage; Team — Users, Groups, Model access, Invites, Access rules; Advanced — MCP servers, Email delivery, Safety. `Personal`, `Team`, and `Advanced` are progressive navigation disclosures; they are not plans, modes, roles, entitlements, or synthetic routes. Personal remains first and open. Team and Advanced derive their initial disclosure from a secret-free server projection of actual installation configuration, fail open when uncertain, and never hide a directly opened destination.
+The Control Center is an operational workspace, not a dashboard landing page. Navigation exposes only real destinations under stable subject headings in this order: AI setup — Providers; Team & access — Users, Access & groups, Invites, Access rules; Operations — Usage; Infrastructure — MCP servers, Email delivery; Safety — Safety. Headings are visible orientation text, never plans, modes, roles, routes, collapsible setup stages, or status classifiers. Providers is the initial destination.
 
 The active destination owns the page title, short scope description, primary action, status/feedback, and content. Do not repeat a global metric-card strip above every task. Important counts belong beside the relevant navigation item or section heading.
 
-### Personal provider Quick setup
+### Provider Quick setup
 
-The default simple flow is Provider -> API key -> Test & Save -> Ready. Use one focused setup surface with provider choices, a write-only key field, one primary action, one truthful **Testing & saving…** pending state, and a factual success result. Do not animate or label unobservable server phases. Advanced configuration is a secondary disclosure/link and lazy-loaded subview, not a wall of fields or background resource load before the key.
+The default flow is Provider -> API key -> Test & Save -> Ready. Use one focused setup surface with three provider choices, a write-only key field, one primary action, one truthful **Testing & saving…** pending state, and a factual success result. On compact screens, keep provider choices as one three-column strip and keep the key plus primary action in the first task viewport; the explanatory guide is optional large-screen context. Existing custom/team configuration may appear as quiet nonblocking context, never as an `Advanced` provider-card status or a gate before key entry. Do not animate or label unobservable server phases. Advanced configuration is a secondary disclosure/link and lazy-loaded subview, not a wall of fields or background resource load before the key.
 
-Never imply that a successful catalog check guarantees future generation or billing. Ready identifies the exact selected answer model and only factual default/profile effects. Key replacement identifies the currently active configuration and makes it clear that a failed test/save leaves it unchanged and never silently changes models. Secret fields clear on success, provider/subview change, and close; they never echo a saved value.
+Never imply that a successful catalog check guarantees future generation or billing. Ready identifies the exact selected answer model and only factual default/profile effects. Key replacement identifies the currently active configuration and makes it clear that a failed test/save leaves it unchanged; every previously available entitled canonical model must remain available under the replacement or the operation fails without writes. Removing the actor's Quick assignment is confirmation-gated, explicitly retains the stored credential and team configuration, and warns that access may stop. Secret fields clear on success, provider/subview change, and close; they never echo a saved value.
 
-### Team and Advanced work
+### Resource and Advanced work
 
-Team workflows use list/detail composition, explicit selection context, filters next to their list, and a deliberate edit surface. Advanced provider, MCP, and email lifecycle controls use progressive disclosure with draft/test/activate state visible near the action that advances it. Revision, validation, routing, credential assignment, and destructive operations remain reachable without contaminating the Personal path.
+Users and Access & groups use a full-width directory with the complete row as the selection target and no automatic first selection. One selected resource replaces the index with a dedicated Back-connected detail page. Group detail owns Overview, Members, Models & search, and Tools as peer tasks. `Full access` uses the same row/detail composition with one quiet `Built-in` marker and factual positive state; do not turn it into a promotional card, warning, or matrix of disabled toggles. Its Members task stays operational while lifecycle and automatic current/future resource coverage read as stable facts. A persistent desktop master/detail split is not the default composition.
+
+Advanced provider, MCP, and email lifecycle controls use progressive disclosure with draft/test/activate state visible near the action that advances it. Advanced provider configuration first shows a full-width connection index, then a full-width connection detail with horizontal peer tasks; it does not add a second vertical rail beside the global Control Center rail. A virgin `Not configured` connection uses neutral setup language and color instead of warning decoration. Revision, validation, routing, credential assignment, and destructive operations remain reachable without contaminating Quick setup.
 
 At compact widths, list and detail are separate states with an explicit Back action and preserved list query/scroll/selection. Tables may own local horizontal scrolling for comparison data, but a primary workflow must not require dragging a desktop table sideways to reach its action.
 
@@ -200,10 +204,10 @@ Each reusable control defines rest, hover, active, selected, disabled, busy, inv
 
 - **Buttons:** one primary action per local decision. Secondary and quiet actions rely on type/surface, not arbitrary colors. Destructive styling appears only at the point of consequence.
 - **Fields:** persistent label, optional help, input, and associated error. Placeholder is example text, never the only label. Secret fields state write-only/preserve/replace behavior.
-- **Menus/listboxes:** use native controls when they fit. Reuse existing interaction logic where practical; dedicated accessibility implementation remains deferred.
+- **Menus/listboxes:** use native controls when they fit. Reuse existing interaction logic where practical.
 - **Tabs:** represent peer panels only and keep one obvious selected state.
 - **Disclosures:** have a visible summary and expanded state. They do not hide the only path to a frequent action.
-- **Dialogs/drawers/sheets:** isolate the background, support an explicit Close, and keep one local scroll owner. Existing Escape/focus behavior may remain through reused primitives but is not a dedicated accessibility claim.
+- **Dialogs/drawers/sheets:** isolate the background, support an explicit Close, and keep one local scroll owner.
 - **Empty/error states:** explain the resource and give the next valid action. Loading failure must not masquerade as a true empty result.
 - **Skeletons:** approximate stable content geometry and avoid shifting the eventual content.
 - **Confirmations:** name the affected resource and consequence. Typed confirmation is reserved for exceptional irreversible scope, not ordinary deletion.
@@ -223,7 +227,7 @@ Composition follows available space, content, and input capability. Media querie
 
 ## Deferred Accessibility Scope
 
-WCAG conformance and dedicated accessibility implementation are intentionally outside the current product scope. Do not schedule or block ordinary UI delivery on screen-reader semantics, forced-colors support, keyboard-only parity, formal focus management, contrast certification, reduced-motion remediation, reflow audits, or dedicated accessibility tests. Existing native semantics and interaction behavior may remain when they come from reused controls, but the product does not certify them. Accessibility requires a separately approved future task.
+Dedicated accessibility implementation and conformance are not part of the current product scope. They require a separately approved future task.
 
 ## Motion
 
@@ -234,7 +238,7 @@ Motion communicates state change, spatial origin, and live work; it does not dec
 - Drawers/sheets: 160-220ms.
 - Completion emphasis: one restrained settle, no looping celebration.
 
-Do not animate shell entrance or idle/settled pipeline chrome. Running activity may pulse, answer completion may settle once, and overlays may use one short entrance. Animate opacity and transform where possible. Never animate layout during token streaming. Keep the existing deterministic test motion-off mode; dedicated reduced-motion work remains deferred.
+Do not animate shell entrance or idle/settled pipeline chrome. Running activity may pulse, answer completion may settle once, and overlays may use one short entrance. Animate opacity and transform where possible. Never animate layout during token streaming. Keep the existing deterministic test motion-off mode.
 
 ## Performance And Rendering
 

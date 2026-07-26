@@ -9,17 +9,20 @@ import {
 } from "@/components/admin/adminPrimitives";
 import type { AdminProviderQuickSetupController } from "@/components/admin/useAdminProviderQuickSetupController";
 import type { AdminProviderQuickSetupProvider } from "@/components/admin/adminProviderQuickSetupApi";
+import type { AdminConfirmationController } from "@/components/admin/useAdminConfirmationController";
 import Link from "next/link";
+import { CheckCircle2, KeyRound, ShieldCheck, UserRound } from "lucide-react";
 
 export type AdminProviderQuickSetupProps = Readonly<{
   controller: AdminProviderQuickSetupController;
   onOpenAdvanced(): void;
+  requestConfirmation: AdminConfirmationController["requestConfirmation"];
 }>;
 
 function stateLabel(provider: AdminProviderQuickSetupProvider): string {
   if (provider.state === "ready") return "Ready";
   if (provider.state === "needs_attention") return "Needs attention";
-  if (provider.state === "advanced_required") return "Advanced";
+  if (provider.state === "advanced_required") return "Custom setup exists";
   return "Not connected";
 }
 
@@ -120,7 +123,7 @@ function ModelChoice({
               checked={controller.state.selectedCandidateId === candidate.candidateId}
               className="size-4 shrink-0 accent-proof"
               disabled={controller.state.formLocked}
-              name="personal-provider-model"
+              name="provider-quick-model"
               onChange={() => controller.actions.chooseModel(candidate.candidateId)}
               type="radio"
               value={candidate.candidateId}
@@ -164,7 +167,7 @@ function KeyForm({
         <div className="min-w-0">
           <label
             className="mb-1 block text-xs font-medium text-ink-secondary"
-            htmlFor="personal-provider-api-key"
+            htmlFor="provider-quick-api-key"
           >
             API key
           </label>
@@ -172,7 +175,7 @@ function KeyForm({
             autoComplete="new-password"
             className={inputClass}
             disabled={controller.state.formLocked}
-            id="personal-provider-api-key"
+            id="provider-quick-api-key"
             name="provider-api-key"
             onChange={(event) => controller.actions.changeSecret(event.currentTarget.value)}
             placeholder={replacement ? "Enter replacement key" : "Paste provider key"}
@@ -184,7 +187,7 @@ function KeyForm({
           </span>
         </div>
         <button
-          className={`${primaryButton} w-full sm:w-auto`}
+          className={`${primaryButton} w-full sm:min-w-40`}
           disabled={submitDisabled}
           type="submit"
         >
@@ -207,14 +210,54 @@ function KeyForm({
   );
 }
 
+function QuickAssignmentControl({
+  controller,
+  provider,
+  requestConfirmation
+}: {
+  controller: AdminProviderQuickSetupController;
+  provider: AdminProviderQuickSetupProvider;
+  requestConfirmation: AdminConfirmationController["requestConfirmation"];
+}) {
+  if (!provider.quickSetupAssigned) return null;
+  return (
+    <div className="mt-5 border-t border-trace-subtle pt-4">
+      <p className="max-w-xl text-xs leading-5 text-ink-muted">
+        Remove this Quick setup key assignment from your account. Model access may stop unless an applicable team or default credential is already configured. The stored credential and all team settings stay unchanged; the credential remains manageable in Advanced configuration.
+      </p>
+      <button
+        className={`${quietButton} mt-2`}
+        disabled={controller.state.formLocked}
+        onClick={() => requestConfirmation({
+          body: "AIQSA will remove only your direct Quick setup key assignment. Model access may stop unless an applicable team or default credential is already configured. The stored credential, grants, and team settings will remain unchanged.",
+          confirmLabel: "Remove key assignment",
+          dialogLabel: `Remove ${provider.providerDisplayName} Quick key assignment`,
+          icon: "x",
+          onConfirm: async () => {
+            await controller.actions.clearAssignment();
+          },
+          testId: "admin-confirm-clear-provider-quick-assignment",
+          title: "Remove your Quick key assignment?",
+          tone: "warning"
+        })}
+        type="button"
+      >
+        {controller.state.clearing ? "Removing assignment…" : "Remove my key assignment"}
+      </button>
+    </div>
+  );
+}
+
 function ReadyProvider({
   controller,
   onOpenAdvanced,
-  provider
+  provider,
+  requestConfirmation
 }: {
   controller: AdminProviderQuickSetupController;
   onOpenAdvanced(): void;
   provider: AdminProviderQuickSetupProvider;
+  requestConfirmation: AdminConfirmationController["requestConfirmation"];
 }) {
   const confirmation = controller.state.readyConfirmation?.provider === provider.provider
     ? controller.state.readyConfirmation
@@ -270,6 +313,11 @@ function ReadyProvider({
           <div className="mt-4">
             <AdvancedLink onOpenAdvanced={onOpenAdvanced} />
           </div>
+          <QuickAssignmentControl
+            controller={controller}
+            provider={provider}
+            requestConfirmation={requestConfirmation}
+          />
           <SetupFeedback controller={controller} onOpenAdvanced={onOpenAdvanced} />
         </>
       )}
@@ -280,29 +328,22 @@ function ReadyProvider({
 function SelectedProviderTask({
   controller,
   onOpenAdvanced,
-  provider
+  provider,
+  requestConfirmation
 }: {
   controller: AdminProviderQuickSetupController;
   onOpenAdvanced(): void;
   provider: AdminProviderQuickSetupProvider;
+  requestConfirmation: AdminConfirmationController["requestConfirmation"];
 }) {
   if (provider.state === "ready") {
-    return <ReadyProvider controller={controller} onOpenAdvanced={onOpenAdvanced} provider={provider} />;
-  }
-  if (provider.state === "advanced_required") {
     return (
-      <section className="mt-6 border-t border-caution pt-5">
-        <p className="text-[11px] font-semibold uppercase tracking-[0.1em] text-caution">
-          Advanced configuration required
-        </p>
-        <h3 className="mt-2 text-lg font-semibold text-ink">Keep the existing setup intact</h3>
-        <p className="mt-2 max-w-xl text-sm leading-6 text-ink-secondary">
-          This provider has custom or team configuration that Personal setup cannot safely replace.
-        </p>
-        <button className={`${primaryButton} mt-5`} onClick={onOpenAdvanced} type="button">
-          Open Advanced configuration
-        </button>
-      </section>
+      <ReadyProvider
+        controller={controller}
+        onOpenAdvanced={onOpenAdvanced}
+        provider={provider}
+        requestConfirmation={requestConfirmation}
+      />
     );
   }
   return (
@@ -315,93 +356,151 @@ function SelectedProviderTask({
             Setup needs attention
           </p>
           <p className="mt-2 max-w-xl text-sm leading-6 text-ink-secondary">
-            Test and save a key again to restore a proven personal setup. Existing active configuration is not changed unless this succeeds.
+            Test and save a key again to restore a proven setup for your account. Existing active configuration is not changed unless this succeeds.
           </p>
         </>
       ) : (
-        <p className="max-w-xl text-sm leading-6 text-ink-secondary">
-          Paste a key from {provider.providerDisplayName}. AIQSA will check the account catalog and configure one supported model.
-        </p>
+        <>
+          <h3 className="text-lg font-semibold tracking-tight text-ink">
+            Connect {provider.providerDisplayName}
+          </h3>
+          <p className="mt-2 max-w-xl text-sm leading-6 text-ink-secondary">
+            Paste a key. AIQSA will verify it and make one supported model available to your account.
+          </p>
+          {provider.state === "advanced_required" ? (
+            <p className="mt-3 max-w-xl border-l-2 border-proof/40 pl-3 text-xs leading-5 text-ink-muted">
+              Existing team or custom configuration will stay unchanged.
+            </p>
+          ) : null}
+        </>
       )}
       <KeyForm controller={controller} onOpenAdvanced={onOpenAdvanced} />
       <div className="mt-4">
         <AdvancedLink onOpenAdvanced={onOpenAdvanced} />
       </div>
+      <QuickAssignmentControl
+        controller={controller}
+        provider={provider}
+        requestConfirmation={requestConfirmation}
+      />
     </section>
+  );
+}
+
+function SetupGuide() {
+  const steps = [
+    {
+      detail: "The candidate key is checked against the provider before anything is saved.",
+      Icon: ShieldCheck,
+      title: "Verify the key"
+    },
+    {
+      detail: "AIQSA activates one supported answer model, or asks you to choose from known compatible models.",
+      Icon: CheckCircle2,
+      title: "Prepare a model"
+    },
+    {
+      detail: "The key and model access are assigned directly to your administrator account.",
+      Icon: UserRound,
+      title: "Give your account access"
+    }
+  ];
+  return (
+    <aside className="hidden border-l border-trace-subtle pl-8 xl:block">
+      <h3 className="text-sm font-semibold text-ink">What AIQSA will do</h3>
+      <ol className="mt-5 grid gap-6">
+        {steps.map(({ detail, Icon, title }) => (
+          <li className="grid grid-cols-[2rem_minmax(0,1fr)] gap-3" key={title}>
+            <span className="grid size-8 place-items-center rounded-full bg-proof/10 text-proof">
+              <Icon aria-hidden="true" className="size-4" />
+            </span>
+            <span>
+              <span className="block text-sm font-medium text-ink">{title}</span>
+              <span className="mt-1 block text-xs leading-5 text-ink-muted">{detail}</span>
+            </span>
+          </li>
+        ))}
+      </ol>
+      <div className="mt-7 border-t border-trace-subtle pt-5">
+        <p className="flex items-start gap-2 text-xs leading-5 text-ink-muted">
+          <KeyRound aria-hidden="true" className="mt-0.5 size-3.5 shrink-0" />
+          Keys are encrypted at rest and remain write-only after saving.
+        </p>
+      </div>
+    </aside>
   );
 }
 
 export function AdminProviderQuickSetup({
   controller,
-  onOpenAdvanced
+  onOpenAdvanced,
+  requestConfirmation
 }: AdminProviderQuickSetupProps) {
   const providers = controller.state.snapshot?.providers ?? [];
   return (
-    <div className="min-w-0 px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
-      <div className="mx-auto max-w-[44rem] lg:mx-0">
-        <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-muted">
-          Personal setup
-        </p>
-        <h2 className="mt-2 text-xl font-semibold tracking-tight text-ink">Connect a provider</h2>
-        <p className="mt-2 max-w-xl text-sm leading-6 text-ink-secondary">
-          Choose a provider, paste its API key, then test and save. Team assignments and custom routing stay in Advanced configuration.
-        </p>
+    <div className="min-w-0 px-4 py-4 sm:px-6 lg:px-8 lg:py-7">
+      <div className="max-w-6xl">
+        <h2 className="sr-only">Provider quick setup</h2>
 
         {!controller.state.snapshot && (!controller.state.loaded || controller.state.loading) ? (
-          <p className="mt-8 text-sm text-ink-muted">Loading provider setup…</p>
+          <p className="py-8 text-sm text-ink-muted">Loading provider setup…</p>
         ) : controller.state.snapshot && providers.length ? (
-          <>
-            <div
-              className="mt-6 grid min-w-0 divide-y divide-trace-subtle border-y border-trace-subtle sm:grid-cols-3 sm:divide-x sm:divide-y-0"
-              data-testid="provider-quick-choice-strip"
-            >
-              {providers.map((provider) => {
-                const selected = controller.state.selectedProviderId === provider.provider;
-                return (
-                  <button
-                    className={`min-w-0 px-3 py-3 text-left ${focusRing} ${touchTarget} ${
-                      selected ? "bg-proof/10 text-proof" : "text-ink hover:bg-control-hover"
-                    }`}
-                    disabled={controller.state.formLocked}
-                    key={provider.provider}
-                    onClick={() => {
-                      if (!selected) controller.actions.selectProvider(provider.provider);
-                    }}
-                    type="button"
-                  >
-                    <span className="block break-words text-sm font-medium [overflow-wrap:anywhere]">
-                      {provider.providerDisplayName}
-                    </span>
-                    <span className={`mt-1 block text-[11px] ${
-                      provider.state === "ready"
-                        ? "text-positive"
-                        : provider.state === "needs_attention" || provider.state === "advanced_required"
-                          ? "text-caution"
-                          : "text-ink-muted"
-                    }`}>
-                      {stateLabel(provider)}
-                    </span>
-                  </button>
-                );
-              })}
-            </div>
-
-            <SnapshotFeedback controller={controller} />
-
-            {controller.state.selectedProvider ? (
-              <SelectedProviderTask
-                controller={controller}
-                onOpenAdvanced={onOpenAdvanced}
-                provider={controller.state.selectedProvider}
-              />
-            ) : (
-              <div className="mt-6 border-t border-trace-subtle pt-5">
-                <p className="text-sm text-ink-secondary">Choose a provider to continue.</p>
-                <SetupFeedback controller={controller} onOpenAdvanced={onOpenAdvanced} />
-                <div className="mt-4"><AdvancedLink onOpenAdvanced={onOpenAdvanced} /></div>
+          <div className="grid gap-8 xl:grid-cols-[minmax(0,1fr)_20rem] xl:gap-10">
+            <div className="min-w-0">
+              <div
+                className="grid min-w-0 grid-cols-3 overflow-hidden rounded-panel border border-trace-subtle"
+                data-testid="provider-quick-choice-strip"
+              >
+                {providers.map((provider, index) => {
+                  const selected = controller.state.selectedProviderId === provider.provider;
+                  return (
+                    <button
+                      className={`min-w-0 border-trace-subtle px-2 py-3 text-left sm:px-4 sm:py-4 ${focusRing} ${touchTarget} ${
+                        index > 0 ? "border-l" : ""
+                      } ${selected ? "bg-proof/10 text-proof" : "text-ink hover:bg-control-hover"}`}
+                      disabled={controller.state.formLocked}
+                      key={provider.provider}
+                      onClick={() => {
+                        if (!selected) controller.actions.selectProvider(provider.provider);
+                      }}
+                      type="button"
+                    >
+                      <span className="block break-words text-sm font-semibold sm:text-base [overflow-wrap:anywhere]">
+                        {provider.providerDisplayName}
+                      </span>
+                      <span className={`mt-1 block text-[11px] ${
+                        provider.state === "ready"
+                          ? "text-positive"
+                          : provider.state === "needs_attention"
+                            ? "text-caution"
+                            : "text-ink-muted"
+                      }`}>
+                        {stateLabel(provider)}
+                      </span>
+                    </button>
+                  );
+                })}
               </div>
-            )}
-          </>
+
+              <SnapshotFeedback controller={controller} />
+
+              {controller.state.selectedProvider ? (
+                <SelectedProviderTask
+                  controller={controller}
+                  onOpenAdvanced={onOpenAdvanced}
+                  provider={controller.state.selectedProvider}
+                  requestConfirmation={requestConfirmation}
+                />
+              ) : (
+                <div className="mt-6 border-t border-trace-subtle pt-5">
+                  <p className="text-sm text-ink-secondary">Choose a provider to continue.</p>
+                  <SetupFeedback controller={controller} onOpenAdvanced={onOpenAdvanced} />
+                  <div className="mt-4"><AdvancedLink onOpenAdvanced={onOpenAdvanced} /></div>
+                </div>
+              )}
+            </div>
+            <SetupGuide />
+          </div>
         ) : (
           <>
             <SnapshotFeedback controller={controller} />

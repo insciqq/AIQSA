@@ -585,7 +585,7 @@ function RuntimeTask({ controller, server }: Readonly<{
     <div className="grid gap-6">
       <section>
         <h4 className="text-sm font-semibold text-ink">Availability to users</h4>
-        <p className="mt-1 max-w-3xl text-xs leading-5 text-ink-muted">Enable or disable whether the active installation revision is offered to users who already have MCP access. Access assignments remain in Users and Model access.</p>
+        <p className="mt-1 max-w-3xl text-xs leading-5 text-ink-muted">Enable or disable whether the active installation revision is offered to users who already have MCP access. Access assignments remain in Users and Access & groups.</p>
         <div className="mt-4 flex flex-wrap items-center gap-3">
           <span className={`font-mono text-xs font-medium ${archived ? "text-critical" : server.enabled ? "text-positive" : "text-caution"}`}>
             {archived ? "LEGACY ARCHIVED" : server.enabled ? "ENABLED" : "DISABLED"}

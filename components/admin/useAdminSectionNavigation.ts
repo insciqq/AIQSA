@@ -4,6 +4,7 @@ import {
   adminSectionPath,
   defaultAdminSection,
   moveAdminSection,
+  normalizeAdminSectionPath,
   parseAdminSection,
   type AdminSection,
   type AdminSectionId
@@ -214,6 +215,12 @@ export function useAdminSectionNavigation(): AdminSectionNavigation {
     const syncSection = () => {
       setActiveSection(parseAdminSection(window.location.search));
       setSectionIndexOpen(adminHistoryView(window.history.state)?.view === "section-index");
+
+      const normalizedPath = normalizeAdminSectionPath(window.location.href);
+      const currentPath = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+      if (normalizedPath !== currentPath) {
+        window.history.replaceState(window.history.state, "", normalizedPath);
+      }
     };
 
     syncSection();

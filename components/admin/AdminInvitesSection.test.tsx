@@ -4,7 +4,7 @@ import type { AdminGroup, AdminInviteRecord } from "@/lib/contracts/admin";
 import { AdminInvitesSection, type AdminInvitesSectionActions, type AdminInvitesSectionProps } from "./AdminInvitesSection";
 
 const nowMs = Date.parse("2026-07-12T00:00:00.000Z");
-const groups: AdminGroup[] = [{ accessGrants: [], archivedAt: null, id: "group-1", name: "operators", userCount: 1 }];
+const groups: AdminGroup[] = [{ accessGrants: [], archivedAt: null, id: "group-1", name: "operators", systemRole: null, userCount: 1 }];
 
 const openInvite: AdminInviteRecord = {
   acceptedAt: null,

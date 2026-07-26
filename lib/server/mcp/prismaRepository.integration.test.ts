@@ -129,6 +129,32 @@ integration("Prisma MCP repository", () => {
     expect(JSON.stringify(created.value)).not.toContain("shared-secret");
     expect(created.value.sharedValues["api-key"]?.configured).toBe(true);
 
+    const fullAccessGroup = await database.group.findUniqueOrThrow({
+      where: { systemRole: "full_access" }
+    });
+    await expect(database.mcpGrant.findUniqueOrThrow({
+      where: { serverId_groupId: { groupId: fullAccessGroup.id, serverId } }
+    })).resolves.toMatchObject({
+      canUse: true,
+      personalSlotKeys: []
+    });
+    await expect(repository.setGrant({
+      canUse: false,
+      groupId: fullAccessGroup.id,
+      personalSlotKeys: [],
+      serverId,
+      userId: null
+    })).resolves.toEqual({
+      issues: [{ code: "system_group_grant_immutable", path: "groupId" }],
+      kind: "invalid_grant"
+    });
+    await expect(database.mcpGrant.findUniqueOrThrow({
+      where: { serverId_groupId: { groupId: fullAccessGroup.id, serverId } }
+    })).resolves.toMatchObject({
+      canUse: true,
+      personalSlotKeys: []
+    });
+
     await expect(database.mcpGrant.create({
       data: { canUse: true, groupId, serverId, userId }
     })).rejects.toThrow(/McpGrant_subject_check/u);

@@ -2,6 +2,86 @@ import type { Prisma } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
 import { loadProviderAdmissionPlan } from "./admission";
 
+function fullAccessAdmissionDb(input: Readonly<{
+  directCredential?: boolean;
+}> = {}) {
+  const accessGrantCount = vi.fn(async () => 0);
+  const credentialId = "credential-1";
+  const db = {
+    accessGrant: { count: accessGrantCount },
+    providerCredential: {
+      findMany: vi.fn(async () => [{
+        activeVersion: { id: "credential-version-1", revokedAt: null },
+        enabled: true,
+        id: credentialId
+      }])
+    },
+    providerGroupCredentialAssignment: { findMany: vi.fn(async () => []) },
+    providerUserCredentialAssignment: {
+      findUnique: vi.fn(async () => input.directCredential === false
+        ? null
+        : { credentialId })
+    },
+    providerModel: {
+      findFirst: vi.fn(async () => ({
+        activeConfig: {
+          adapterKind: "openai_responses_native",
+          capabilities: {
+            nativePdfInput: true,
+            nativeSearch: true,
+            pdf: true,
+            reasoning: true,
+            streaming: true,
+            toolCalling: true,
+            vision: true
+          },
+          defaultParams: { maxOutputTokens: 128_000 },
+          upstreamModelId: "gpt-future"
+        },
+        activeVersion: 1,
+        connection: {
+          activeConfig: {
+            allowPrivateNetwork: false,
+            apiRoot: "https://api.openai.com/v1"
+          },
+          activeVersion: 1,
+          defaultCredentialId: null,
+          displayName: "OpenAI",
+          enabled: true,
+          family: "openai",
+          id: "connection-future",
+          unassignedPolicy: "use_default"
+        },
+        connectionId: "connection-future",
+        contextWindow: 128_000,
+        displayName: "Future model",
+        enabled: true,
+        id: "deployment-future"
+      })),
+      findUnique: vi.fn()
+    },
+    providerModelCredentialCheck: { findFirst: vi.fn(async () => ({ id: "check-1" })) },
+    searchStrategy: {
+      findFirst: vi.fn(async () => ({
+        config: {},
+        enabled: true,
+        kind: "openai_native_web_search",
+        providerModelId: null,
+        strategyId: "future-native-search"
+      }))
+    },
+    user: { findFirst: vi.fn(async () => ({ id: "user-1" })) },
+    userGroup: {
+      findMany: vi.fn(async () => [{
+        group: { systemRole: "full_access" },
+        groupId: "full-access"
+      }])
+    }
+  };
+
+  return { accessGrantCount, db };
+}
+
 describe("provider admission", () => {
   it("resolves a verified model context before snapshotting a new run", async () => {
     const db = {
@@ -14,6 +94,9 @@ describe("provider admission", () => {
         }])
       },
       providerGroupCredentialAssignment: { findMany: vi.fn(async () => []) },
+      providerUserCredentialAssignment: {
+        findUnique: vi.fn(async () => ({ credentialId: "credential-1" }))
+      },
       providerModel: {
         findFirst: vi.fn(async () => ({
           activeConfig: {
@@ -74,6 +157,40 @@ describe("provider admission", () => {
 
     expect(plan.answer.modelConfiguration.capabilities.contextWindow).toBe(1_050_000);
     expect(plan.answer.snapshot.model.capabilities.contextWindow).toBe(1_050_000);
+    expect(plan.answer.credentialSource).toBe("user");
+  });
+
+  it("admits future model and search ids through full access without grant rows", async () => {
+    const { accessGrantCount, db } = fullAccessAdmissionDb();
+
+    const plan = await loadProviderAdmissionPlan(
+      db as unknown as Prisma.TransactionClient,
+      {
+        providerConnectionId: "connection-future",
+        providerModelId: "deployment-future",
+        searchStrategyId: "future-native-search",
+        userId: "user-1"
+      }
+    );
+
+    expect(plan.answer.credentialSource).toBe("user");
+    expect(plan.requestedSearchStrategyId).toBe("future-native-search");
+    expect(accessGrantCount).not.toHaveBeenCalled();
+  });
+
+  it("does not let full access bypass credential selection", async () => {
+    const { accessGrantCount, db } = fullAccessAdmissionDb({ directCredential: false });
+
+    await expect(loadProviderAdmissionPlan(
+      db as unknown as Prisma.TransactionClient,
+      {
+        providerConnectionId: "connection-future",
+        providerModelId: "deployment-future",
+        searchStrategyId: "future-native-search",
+        userId: "user-1"
+      }
+    )).rejects.toMatchObject({ code: "credential_default_missing" });
+    expect(accessGrantCount).not.toHaveBeenCalled();
   });
 
   it("does not authorize a provider-backed search deployment as its own answer model", async () => {
@@ -83,6 +200,7 @@ describe("provider admission", () => {
       accessGrant: { count: vi.fn(async () => 1) },
       providerCredential: { findMany: vi.fn(async () => []) },
       providerGroupCredentialAssignment: { findMany: vi.fn(async () => []) },
+      providerUserCredentialAssignment: { findUnique: vi.fn(async () => null) },
       providerModel: {
         findFirst: vi.fn(async () => ({
           activeConfig: {

@@ -287,7 +287,7 @@ async function installQuickChatFixture(apiRoot: string): Promise<QuickChatFixtur
         draftVersion: 1,
         enabled: true,
         id: fixture.credentialId,
-        label: "Primary",
+        label: `Quick setup · ${fixture.credentialId}`,
         testedAt: checkedAt
       }
     });
@@ -306,9 +306,12 @@ async function installQuickChatFixture(apiRoot: string): Promise<QuickChatFixtur
       data: { activeVersionId: fixture.credentialVersionId },
       where: { id: fixture.credentialId }
     });
-    await tx.providerConnection.update({
-      data: { defaultCredentialId: fixture.credentialId },
-      where: { id: fixture.connectionId }
+    await tx.providerUserCredentialAssignment.create({
+      data: {
+        connectionId: fixture.connectionId,
+        credentialId: fixture.credentialId,
+        userId: fixture.userId
+      }
     });
     await tx.providerModelCredentialCheck.create({
       data: {
@@ -427,6 +430,9 @@ async function cleanupQuickChatFixture(
     });
     await tx.providerDraftCheck.deleteMany({ where: { connectionId: fixture.connectionId } });
     await tx.providerModelCredentialCheck.deleteMany({ where: { connectionId: fixture.connectionId } });
+    await tx.providerUserCredentialAssignment.deleteMany({
+      where: { connectionId: fixture.connectionId, userId: fixture.userId }
+    });
     await tx.providerConnection.updateMany({
       data: { defaultCredentialId: null },
       where: { id: fixture.connectionId }
@@ -566,7 +572,7 @@ async function expectNoPageOverflow(page: Page): Promise<void> {
   })).toBe(true);
 }
 
-test("personal administrator completes the Quick picker, retry, Ready, and safe replacement journey", async ({ page }) => {
+test("administrator completes the Quick direct-user picker, retry, Ready, and safe replacement journey", async ({ page }) => {
   const upstream = await startLocalResponsesServer();
   const fixtureState: { current: QuickChatFixture | null } = { current: null };
   const trackedChatIds: string[] = [];
@@ -607,11 +613,12 @@ test("personal administrator completes the Quick picker, retry, Ready, and safe 
               ...(configured ? { model: { displayName: "GPT-5.6 Sol" } } : {}),
               provider: "openai",
               providerDisplayName: "OpenAI",
+              quickSetupAssigned: configured,
               state: configured ? "ready" : "not_configured",
               stateToken: configured ? "state-openai-ready" : "state-openai-fresh"
             },
-            { provider: "anthropic", providerDisplayName: "Anthropic", state: "not_configured", stateToken: "state-anthropic" },
-            { provider: "openrouter", providerDisplayName: "OpenRouter", state: "not_configured", stateToken: "state-openrouter" }
+            { provider: "anthropic", providerDisplayName: "Anthropic", quickSetupAssigned: false, state: "not_configured", stateToken: "state-anthropic" },
+            { provider: "openrouter", providerDisplayName: "OpenRouter", quickSetupAssigned: false, state: "not_configured", stateToken: "state-openrouter" }
           ],
           suggestedProvider: configured ? "openai" : null
         }
@@ -626,7 +633,7 @@ test("personal administrator completes the Quick picker, retry, Ready, and safe 
       expect(body).toEqual({
         expectedState: "state-openai-fresh",
         provider: "openai",
-        secret: "e2e-personal-write-only-key"
+        secret: "e2e-quick-write-only-key"
       });
       await route.fulfill({
         contentType: "application/json",
@@ -649,7 +656,7 @@ test("personal administrator completes the Quick picker, retry, Ready, and safe 
       expect(body).toEqual({
         expectedState: "state-openai-picker",
         provider: "openai",
-        secret: "e2e-personal-write-only-key",
+        secret: "e2e-quick-write-only-key",
         selectedModel: { candidateId: "p1-o3", policyVersion: 1 }
       });
       if (postNumber === 2) {
@@ -693,14 +700,14 @@ test("personal administrator completes the Quick picker, retry, Ready, and safe 
 
   await page.setViewportSize({ height: 844, width: 390 });
   await signInWithLocalToken(page);
-  await page.goto("/admin?section=providers");
+  await page.goto("/admin");
   const section = page.getByTestId("admin-section-providers");
-  await expect(section.getByRole("heading", { name: "Connect a provider" })).toBeVisible();
+  await expect(section.getByRole("heading", { exact: true, name: "Providers" }).last()).toBeVisible();
   await expect(section.getByLabel("API key")).toHaveCount(0);
   await expect(section.getByTestId("provider-advanced-workspace")).toHaveCount(0);
 
   await section.getByRole("button", { name: /OpenAI Not connected/ }).click();
-  await section.getByLabel("API key").fill("e2e-personal-write-only-key");
+  await section.getByLabel("API key").fill("e2e-quick-write-only-key");
   const keyBox = await section.getByLabel("API key").boundingBox();
   const saveBox = await section.getByRole("button", { name: "Test & Save" }).boundingBox();
   expect(keyBox).toBeTruthy();
@@ -709,7 +716,7 @@ test("personal administrator completes the Quick picker, retry, Ready, and safe 
   await expectNoPageOverflow(page);
   await section.getByRole("button", { name: "Test & Save" }).click();
   await expect(section.getByText("Choose a model available to this key")).toBeVisible();
-  await expect(section.getByLabel("API key")).toHaveValue("e2e-personal-write-only-key");
+  await expect(section.getByLabel("API key")).toHaveValue("e2e-quick-write-only-key");
   await section.getByLabel("GPT-5.6 Sol").click();
   await section.getByRole("button", { name: "Test & Save" }).click();
   await expect(section.getByRole("button", { name: "Testing & saving…" })).toBeVisible();
@@ -721,7 +728,7 @@ test("personal administrator completes the Quick picker, retry, Ready, and safe 
   await expect(section.getByText(
     "The provider rejected the key or its account catalog could not be reached."
   )).toBeVisible();
-  await expect(section.getByLabel("API key")).toHaveValue("e2e-personal-write-only-key");
+  await expect(section.getByLabel("API key")).toHaveValue("e2e-quick-write-only-key");
   await section.getByRole("button", { name: "Test & Save" }).click();
   await expect(section.getByText("Ready to chat")).toBeVisible();
   await expect(section.getByRole("heading", { name: "GPT-5.6 Sol" })).toBeVisible();
@@ -732,7 +739,7 @@ test("personal administrator completes the Quick picker, retry, Ready, and safe 
   await expect(readyReceipt).toContainText("Default model: updated.");
   await expect(readyReceipt).toContainText("Run profiles filled: Deep.");
   await expect(section.getByRole("link", { name: "Start chatting" })).toHaveAttribute("href", "/");
-  await expect(section.getByText("e2e-personal-write-only-key")).toHaveCount(0);
+  await expect(section.getByText("e2e-quick-write-only-key")).toHaveCount(0);
 
   await expect(section.getByRole("button", { name: /OpenAI Ready/ })).toBeVisible();
   await section.getByRole("button", { name: "Replace API key" }).click();
@@ -771,7 +778,7 @@ test("personal administrator completes the Quick picker, retry, Ready, and safe 
     const columns = await section.getByTestId("provider-quick-choice-strip").evaluate((element) =>
       getComputedStyle(element).gridTemplateColumns.split(" ").filter(Boolean).length
     );
-    expect(columns).toBe(viewport.width === 390 ? 1 : 3);
+    expect(columns).toBe(3);
   }
 
   const catalogResponse = page.waitForResponse((response) =>
@@ -869,6 +876,7 @@ test("personal administrator completes the Quick picker, retry, Ready, and safe 
   await expect(prisma.providerRunBinding.findUnique({
     select: {
       connectionId: true,
+      credentialSource: true,
       credentialId: true,
       credentialVersionId: true,
       providerModelId: true
@@ -876,6 +884,7 @@ test("personal administrator completes the Quick picker, retry, Ready, and safe 
     where: { modelRunId_role: { modelRunId: runId, role: "answer" } }
   })).resolves.toEqual({
     connectionId: installedFixture.connectionId,
+    credentialSource: "user",
     credentialId: installedFixture.credentialId,
     credentialVersionId: installedFixture.credentialVersionId,
     providerModelId: installedFixture.modelId
@@ -913,9 +922,9 @@ test("administrator completes the OpenRouter key, model, route, check, and activ
         contentType: "application/json",
         json: {
           providers: [
-            { provider: "openai", providerDisplayName: "OpenAI", state: "not_configured", stateToken: "state-openai" },
-            { provider: "anthropic", providerDisplayName: "Anthropic", state: "not_configured", stateToken: "state-anthropic" },
-            { provider: "openrouter", providerDisplayName: "OpenRouter", state: "not_configured", stateToken: "state-openrouter" }
+            { provider: "openai", providerDisplayName: "OpenAI", quickSetupAssigned: false, state: "not_configured", stateToken: "state-openai" },
+            { provider: "anthropic", providerDisplayName: "Anthropic", quickSetupAssigned: false, state: "not_configured", stateToken: "state-anthropic" },
+            { provider: "openrouter", providerDisplayName: "OpenRouter", quickSetupAssigned: false, state: "not_configured", stateToken: "state-openrouter" }
           ],
           suggestedProvider: null
         }
@@ -1090,7 +1099,7 @@ test("administrator completes the OpenRouter key, model, route, check, and activ
   });
 
   await signInWithLocalToken(page);
-  await page.goto("/admin?section=providers");
+  await page.goto("/admin");
   const section = page.getByTestId("admin-section-providers");
   await expect(section.getByRole("heading", { exact: true, name: "Providers" })).toBeVisible();
   await section.getByRole("button", { name: /OpenRouter Not connected/ }).click();
@@ -1098,10 +1107,15 @@ test("administrator completes the OpenRouter key, model, route, check, and activ
   const advancedWorkspace = section.getByTestId("provider-advanced-workspace");
   await expect(advancedWorkspace).toBeVisible();
 
+  const connectionIndex = section.getByTestId("provider-connection-index");
+  await expect(connectionIndex).toBeVisible();
+  await connectionIndex.getByRole("button", { name: "New" }).click();
   await expect(section.getByRole("heading", { name: "New provider connection" })).toBeVisible();
   await expect(section.getByLabel("Provider family")).toHaveValue("openrouter");
   await section.getByLabel("Display name").fill("E2E OpenRouter");
   await section.getByRole("button", { name: "Save connection" }).click();
+  await expect(connectionIndex).toBeVisible();
+  await connectionIndex.getByRole("button", { name: /E2E OpenRouter/ }).click();
   await expect(section.getByRole("heading", { name: "E2E OpenRouter" })).toBeVisible();
 
   await advancedWorkspace.getByLabel("API key").fill("e2e-write-only-provider-key");
@@ -1231,7 +1245,6 @@ test("administrator completes the OpenRouter key, model, route, check, and activ
   await expect(providerHeader.getByText("Enabled", { exact: true })).toBeVisible();
   await expect(providerHeader.getByText("Active v1", { exact: true })).toBeVisible();
 
-  const connectionIndex = section.getByTestId("provider-connection-index");
   const connectionDetail = section.getByTestId("provider-connection-task-detail");
   for (const viewport of [
     { height: 900, width: 1440 },
@@ -1240,16 +1253,13 @@ test("administrator completes the OpenRouter key, model, route, check, and activ
     { height: 390, width: 844 }
   ]) {
     await page.setViewportSize(viewport);
-    if (viewport.width >= 1024) {
-      await expect(connectionIndex).toBeVisible();
-      await expect(connectionDetail).toBeVisible();
-      await expect(section.getByRole("button", { name: "Back to connections" })).toBeHidden();
-      await expectNoPageOverflow(page);
-      continue;
-    }
-
     const back = section.getByRole("button", { name: "Back to connections" });
-    if (await back.isVisible()) await back.click();
+    await expect(connectionIndex).toBeHidden();
+    await expect(connectionDetail).toBeVisible();
+    await expect(back).toBeVisible();
+    await expectNoPageOverflow(page);
+
+    await back.click();
     await expect(connectionIndex).toBeVisible();
     await expect(connectionDetail).toBeHidden();
     await expectNoPageOverflow(page);
@@ -1259,10 +1269,6 @@ test("administrator completes the OpenRouter key, model, route, check, and activ
     await expect(connectionDetail).toBeVisible();
     await expect(connectionDetail.getByRole("heading", { name: "E2E OpenRouter" })).toBeVisible();
     await expectNoPageOverflow(page);
-
-    await back.click();
-    await expect(connectionIndex).toBeVisible();
-    await expect(connectionDetail).toBeHidden();
   }
 });
 
@@ -1310,9 +1316,9 @@ test("administrator remaps the three composer run profiles in one save", async (
       contentType: "application/json",
       json: {
         providers: [
-          { provider: "openai", providerDisplayName: "OpenAI", state: "not_configured", stateToken: "state-openai" },
-          { provider: "anthropic", providerDisplayName: "Anthropic", state: "not_configured", stateToken: "state-anthropic" },
-          { provider: "openrouter", providerDisplayName: "OpenRouter", state: "not_configured", stateToken: "state-openrouter" }
+          { provider: "openai", providerDisplayName: "OpenAI", quickSetupAssigned: false, state: "not_configured", stateToken: "state-openai" },
+          { provider: "anthropic", providerDisplayName: "Anthropic", quickSetupAssigned: false, state: "not_configured", stateToken: "state-anthropic" },
+          { provider: "openrouter", providerDisplayName: "OpenRouter", quickSetupAssigned: false, state: "not_configured", stateToken: "state-openrouter" }
         ],
         suggestedProvider: null
       }
@@ -1345,7 +1351,7 @@ test("administrator remaps the three composer run profiles in one save", async (
   });
 
   await signInWithLocalToken(page);
-  await page.goto("/admin?section=providers");
+  await page.goto("/admin");
   const section = page.getByTestId("admin-section-providers");
   await section.getByRole("button", { name: "Advanced configuration" }).click();
   await section.getByRole("tab", { name: "Run profiles" }).click();
@@ -1403,7 +1409,7 @@ test("ordinary user receives real provider-admin denial without provider metadat
     expect(text).not.toMatch(/apiRoot|credential|model|openrouter|providerModelId|secret/iu);
   }
 
-  await page.goto("/admin?section=providers");
+  await page.goto("/admin");
   await expect(page.getByTestId("admin-denied")).toContainText("Admin access required");
   await expect(page.getByRole("tab", { name: "Providers" })).toHaveCount(0);
 });

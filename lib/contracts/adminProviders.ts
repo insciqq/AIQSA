@@ -171,6 +171,7 @@ export type AdminProviderDeleteBlocker = {
     | "run_profiles"
     | "run_bindings"
     | "search_references"
+    | "user_assignments"
     | "user_defaults";
 };
 

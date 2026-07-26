@@ -30,6 +30,7 @@ import type {
   ProviderGroupCredentialAssignment,
   ProviderModel,
   ProviderModelCredentialCheck,
+  ProviderUserCredentialAssignment,
   SearchStrategy
 } from "@prisma/client";
 
@@ -68,6 +69,7 @@ type CatalogUserRow = {
 type CatalogCredentialRow = Pick<ProviderCredential, "enabled" | "id"> & {
   activeVersion: Pick<ProviderCredentialVersion, "id" | "revokedAt"> | null;
   groupAssignments: Pick<ProviderGroupCredentialAssignment, "credentialId" | "groupId">[];
+  userAssignments?: Pick<ProviderUserCredentialAssignment, "credentialId" | "userId">[];
 };
 
 type CatalogConnectionRow = Pick<
@@ -198,6 +200,7 @@ function isProviderModelAvailable(input: {
   exposeFake: boolean;
   memberships: CatalogMembershipRow[];
   model: CatalogProviderModelRow;
+  userId?: string;
 }): boolean {
   const configuration = activeModelConfiguration(input.model);
   if (!configuration) {
@@ -209,6 +212,10 @@ function isProviderModelAvailable(input: {
   }
 
   const credentials = input.model.connection.credentials;
+  const directAssignmentCredentialId = input.userId
+    ? credentials.flatMap((credential) => credential.userAssignments ?? [])
+        .find((assignment) => assignment.userId === input.userId)?.credentialId ?? null
+    : null;
   const resolution = resolveProviderCredential({
     assignments: credentials.flatMap((credential) => credential.groupAssignments),
     credentials: credentials.map((credential) => ({
@@ -222,6 +229,7 @@ function isProviderModelAvailable(input: {
       id: credential.id
     })),
     defaultCredentialId: input.model.connection.defaultCredentialId,
+    directAssignmentCredentialId,
     memberships: input.memberships.map((membership) => ({
       archived: Boolean(membership.group.archivedAt),
       groupId: membership.groupId
@@ -243,12 +251,14 @@ export function filterAvailableProviderModels(input: {
   exposeFake: boolean;
   memberships: CatalogMembershipRow[];
   models: CatalogProviderModelRow[];
+  userId?: string;
 }): CatalogProviderModelRow[] {
   return input.models.filter((model) =>
     isProviderModelAvailable({
       exposeFake: input.exposeFake,
       memberships: input.memberships,
-      model
+      model,
+      userId: input.userId
     })
   );
 }
@@ -438,7 +448,14 @@ export function createPrismaCatalogDataLoader({
                       groupId: true
                     }
                   },
-                  id: true
+                  id: true,
+                  userAssignments: {
+                    select: {
+                      credentialId: true,
+                      userId: true
+                    },
+                    where: { userId }
+                  }
                 }
               }
             }
@@ -476,7 +493,8 @@ export function createPrismaCatalogDataLoader({
     const availableModels = filterAvailableProviderModels({
       exposeFake: exposeFakeProvider(env),
       memberships: user.groups,
-      models: models as CatalogProviderModelRow[]
+      models: models as CatalogProviderModelRow[],
+      userId
     });
     const exposedModels = filterExposedProviderModels({
       entitlements,

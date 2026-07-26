@@ -9,9 +9,6 @@ import { AdminProviderModelsTask } from "@/components/admin/AdminProviderModelsT
 import { AdminRunProfilesPanel } from "@/components/admin/AdminRunProfilesPanel";
 import {
   AdminTaskBackButton,
-  AdminTaskDetailPane,
-  AdminTaskIndexPane,
-  AdminTaskWorkspace,
   EmptyState,
   dangerButton,
   inputClass,
@@ -26,7 +23,6 @@ import {
 import {
   PROVIDER_ADVANCED_TASK_LABELS,
   PROVIDER_ADVANCED_TASKS,
-  preferredProviderConnectionId,
   presentProviderConnection,
   providerDeleteBlockerLabel,
   providerFamilyLabel,
@@ -61,7 +57,7 @@ export type AdminProvidersSectionProps = Readonly<{
   active: boolean;
   advancedEntryProvider?: AdminProviderQuickSetupId | null;
   groups: AdminGroup[];
-  onBackToPersonal?(): void;
+  onBackToQuickSetup?(): void;
   onMutationCommitted?(): void | Promise<unknown>;
   refreshRevision?: number;
   requestConfirmation?: AdminConfirmationController["requestConfirmation"];
@@ -119,21 +115,22 @@ function Feedback({ controller }: Readonly<{ controller: AdminProvidersControlle
 }
 
 function ConnectionIndex({
-  compactDetailOpen,
   connections,
   controller,
   onCreate,
+  onQueryChange,
   onSelect,
-  preferredFamily
+  preferredFamily,
+  query
 }: Readonly<{
-  compactDetailOpen: boolean;
   connections: AdminProviderConnection[];
   controller: AdminProvidersController;
   onCreate(): void;
+  onQueryChange(value: string): void;
   onSelect(id: string): void;
   preferredFamily?: AdminProviderQuickSetupId | null;
+  query: string;
 }>) {
-  const [query, setQuery] = useState("");
   const normalizedQuery = query.trim().toLocaleLowerCase();
   const filtered = connections.filter((connection) => !normalizedQuery || [
     connection.displayName,
@@ -142,12 +139,12 @@ function ConnectionIndex({
   ].join(" ").toLocaleLowerCase().includes(normalizedQuery));
 
   return (
-    <AdminTaskIndexPane
-      className="lg:max-h-[calc(100dvh-12rem)] lg:overflow-y-auto lg:overscroll-contain"
-      compactDetailOpen={compactDetailOpen}
-      testId="provider-connection-index"
+    <section
+      aria-label="Provider connections"
+      className="min-w-0"
+      data-testid="provider-connection-index"
     >
-      <div className="sticky top-0 z-10 border-b border-trace-subtle bg-workspace-rail px-3 py-3">
+      <div className="border-b border-trace-subtle px-4 py-4 sm:px-6">
         <div className="flex items-center justify-between gap-2">
           <div>
             <h3 className="text-sm font-semibold text-ink">Connections</h3>
@@ -165,7 +162,7 @@ function ConnectionIndex({
             <span className="sr-only">Search provider connections</span>
             <input
               className={inputClass}
-              onChange={(event) => setQuery(event.currentTarget.value)}
+              onChange={(event) => onQueryChange(event.currentTarget.value)}
               placeholder="Search connections"
               type="search"
               value={query}
@@ -175,21 +172,19 @@ function ConnectionIndex({
       </div>
 
       {filtered.length ? (
-        <ul aria-label="Provider connections" className="divide-y divide-trace-subtle">
+        <ul className="divide-y divide-trace-subtle border-b border-trace-subtle">
           {filtered.map((connection) => {
             const presentation = presentProviderConnection(connection);
-            const current = connection.id === controller.state.selectedConnection?.id;
             const preferred = preferredFamily === connection.family;
             return (
               <li key={connection.id}>
                 <button
-                  aria-current={current ? "page" : undefined}
-                  className={`flex min-h-touch w-full min-w-0 items-center gap-3 px-4 py-3 text-left hover:bg-control-hover ${current ? "bg-control-selected" : ""}`}
+                  className="flex min-h-touch w-full min-w-0 items-center gap-3 px-4 py-3 text-left hover:bg-control-hover"
                   onClick={() => onSelect(connection.id)}
                   type="button"
                 >
                   <span className="min-w-0 flex-1">
-                    <span className={`block break-words text-sm font-medium [overflow-wrap:anywhere] ${current ? "text-proof" : "text-ink"}`}>
+                    <span className="block break-words text-sm font-medium text-ink [overflow-wrap:anywhere]">
                       {connection.displayName}
                     </span>
                     <span className="mt-1 block text-xs leading-5 text-ink-muted">
@@ -215,7 +210,7 @@ function ConnectionIndex({
           title={normalizedQuery ? "No matching connections" : "No provider connections"}
         />
       )}
-    </AdminTaskIndexPane>
+    </section>
   );
 }
 
@@ -281,11 +276,18 @@ function ConnectionDetail({
   const activationNeedsOverride =
     controller.state.feedbackConnectionId === connection.id &&
     controller.state.errorCode === "provider_activation_unavailable_confirmation_required";
+  const firstSetupHasBlockers =
+    ui.publication.kind === "not_configured" && ui.readiness.blockers.length > 0;
+  const readinessTone = ui.readiness.blockers.length === 0
+    ? "ready"
+    : firstSetupHasBlockers
+      ? "setup"
+      : "attention";
 
   return (
     <div className="min-w-0" data-testid="provider-connection-detail">
       <div className="border-b border-trace-subtle px-4 py-4 sm:px-6">
-        <AdminTaskBackButton label="Back to connections" onClick={onBack} />
+        <AdminTaskBackButton alwaysVisible label="Back to connections" onClick={onBack} />
         <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
           <div className="min-w-0">
             <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
@@ -361,11 +363,13 @@ function ConnectionDetail({
           </div>
         </div>
 
-        <div className={`mt-4 flex flex-col gap-3 border-l-2 pl-3 sm:flex-row sm:items-center sm:justify-between ${ui.readiness.blockers.length ? "border-caution" : "border-positive"}`}>
+        <div className={`mt-4 flex flex-col gap-3 border-l-2 pl-3 sm:flex-row sm:items-center sm:justify-between ${readinessTone === "ready" ? "border-positive" : readinessTone === "attention" ? "border-caution" : "border-trace-strong"}`}>
           <div className="min-w-0">
-            <p className={`text-sm font-medium ${ui.readiness.blockers.length ? "text-caution" : "text-positive"}`}>
-              {ui.readiness.blockers.length
-                ? ui.readiness.summary
+            <p className={`text-sm font-medium ${readinessTone === "ready" ? "text-positive" : readinessTone === "attention" ? "text-caution" : "text-ink-secondary"}`}>
+              {firstSetupHasBlockers
+                ? "Complete setup before activation."
+                : ui.readiness.blockers.length
+                  ? ui.readiness.summary
                 : ui.publication.kind === "active" && connection.enabled
                   ? "Provider is active and ready for new runs."
                   : "Ready to activate."}
@@ -484,7 +488,7 @@ export function AdminProvidersSection({
   active,
   advancedEntryProvider = null,
   groups,
-  onBackToPersonal,
+  onBackToQuickSetup,
   onMutationCommitted,
   refreshRevision = 0,
   requestConfirmation: externalRequestConfirmation
@@ -495,12 +499,12 @@ export function AdminProvidersSection({
     loadModels: controller.actions.discoverModels
   });
   const [peer, setPeer] = useState<AdvancedPeer>("connections");
+  const [connectionQuery, setConnectionQuery] = useState("");
   const [creating, setCreating] = useState(false);
   const [editingConnectionId, setEditingConnectionId] = useState<string | null>(null);
-  const [compactDetailOpen, setCompactDetailOpen] = useState(false);
+  const [connectionTaskOpen, setConnectionTaskOpen] = useState(false);
   const [localConfirmation, setLocalConfirmation] = useState<AdminConfirmationRequest | null>(null);
   const refreshRevisionRef = useRef(refreshRevision);
-  const entryAppliedRef = useRef<string | null>(null);
   const selected = controller.state.selectedConnection;
   const requestConfirmation = externalRequestConfirmation ?? setLocalConfirmation;
 
@@ -510,37 +514,11 @@ export function AdminProvidersSection({
     void controller.actions.refresh();
   }, [active, controller.actions, refreshRevision]);
 
-  useEffect(() => {
-    if (!active || !controller.state.loaded || !advancedEntryProvider) return;
-    const entryKey = `${advancedEntryProvider}:${refreshRevision}`;
-    if (entryAppliedRef.current === entryKey) return;
-    entryAppliedRef.current = entryKey;
-    const preferredId = preferredProviderConnectionId(
-      controller.state.connections,
-      advancedEntryProvider
-    );
-    const matchingConnections = controller.state.connections.filter(
-      (connection) => connection.family === advancedEntryProvider
-    );
-    let cancelled = false;
-    queueMicrotask(() => {
-      if (cancelled) return;
-      if (preferredId) controller.actions.select(preferredId);
-      setCreating(!preferredId && matchingConnections.length === 0);
-      setEditingConnectionId(null);
-      setCompactDetailOpen(Boolean(preferredId) || matchingConnections.length === 0);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [active, advancedEntryProvider, controller.actions, controller.state.connections,
-    controller.state.loaded, refreshRevision]);
-
   const selectConnection = (id: string) => {
     setCreating(false);
     setEditingConnectionId(null);
     controller.actions.select(id);
-    setCompactDetailOpen(true);
+    setConnectionTaskOpen(true);
   };
 
   return (
@@ -553,10 +531,10 @@ export function AdminProvidersSection({
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-1">
-          {onBackToPersonal ? (
-            <button className={quietButton} onClick={onBackToPersonal} type="button">
+          {onBackToQuickSetup ? (
+            <button className={quietButton} onClick={onBackToQuickSetup} type="button">
               <ArrowLeft aria-hidden="true" className="size-3.5" />
-              Back to Personal setup
+              Back to quick setup
             </button>
           ) : null}
           <div className="flex flex-wrap gap-1" role="tablist" aria-label="Advanced provider views">
@@ -608,31 +586,16 @@ export function AdminProvidersSection({
         ) : (
           <>
             <Feedback controller={controller} />
-            <AdminTaskWorkspace indexWidth="18rem">
-              <ConnectionIndex
-                compactDetailOpen={compactDetailOpen}
-                connections={controller.state.connections}
-                controller={controller}
-                onCreate={() => {
-                  setCreating(true);
-                  setEditingConnectionId(null);
-                  setCompactDetailOpen(true);
-                }}
-                onSelect={selectConnection}
-                preferredFamily={advancedEntryProvider}
-              />
-              <AdminTaskDetailPane
-                className="min-w-0"
-                compactDetailOpen={compactDetailOpen}
-                testId="provider-connection-task-detail"
-              >
+            {connectionTaskOpen ? (
+              <div className="min-w-0" data-testid="provider-connection-task-detail">
                 {creating ? (
                   <div className="px-4 pt-4 sm:px-6">
                     <AdminTaskBackButton
+                      alwaysVisible
                       label="Back to connections"
                       onClick={() => {
                         setCreating(false);
-                        setCompactDetailOpen(false);
+                        setConnectionTaskOpen(false);
                       }}
                     />
                     <AdminProviderConnectionEditor
@@ -641,7 +604,7 @@ export function AdminProvidersSection({
                       initialFamily={advancedEntryProvider}
                       onClose={() => {
                         setCreating(false);
-                        setCompactDetailOpen(false);
+                        setConnectionTaskOpen(false);
                       }}
                     />
                   </div>
@@ -650,6 +613,7 @@ export function AdminProvidersSection({
                     <div hidden={editingConnectionId !== selected.id}>
                       <div className="px-4 pt-4 sm:px-6">
                         <AdminTaskBackButton
+                          alwaysVisible
                           label="Back to connection"
                           onClick={() => setEditingConnectionId(null)}
                         />
@@ -667,17 +631,31 @@ export function AdminProvidersSection({
                         discovery={discovery}
                         groups={groups}
                         key={selected.id}
-                        onBack={() => setCompactDetailOpen(false)}
+                        onBack={() => setConnectionTaskOpen(false)}
                         onEdit={() => setEditingConnectionId(selected.id)}
                         requestConfirmation={requestConfirmation}
                       />
                     </div>
                   </>
                 ) : (
-                  <EmptyState detail="Choose a connection from the list or create one." title="No connection selected" />
+                  <EmptyState detail="Return to connections and choose one." title="Connection unavailable" />
                 )}
-              </AdminTaskDetailPane>
-            </AdminTaskWorkspace>
+              </div>
+            ) : (
+              <ConnectionIndex
+                connections={controller.state.connections}
+                controller={controller}
+                onCreate={() => {
+                  setCreating(true);
+                  setEditingConnectionId(null);
+                  setConnectionTaskOpen(true);
+                }}
+                onQueryChange={setConnectionQuery}
+                onSelect={selectConnection}
+                preferredFamily={advancedEntryProvider}
+                query={connectionQuery}
+              />
+            )}
           </>
         )}
       </div>

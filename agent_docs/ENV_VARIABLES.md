@@ -57,7 +57,7 @@ AIQSA_PROVIDER_STREAM_IDLE_TIMEOUT_MS=30000
 AIQSA_OPENAI_BACKGROUND_POLL_TIMEOUT_MS=660000
 ```
 
-Provider connections, endpoints, adapter protocols, models, routing, credentials, group assignments, activation evidence, stored diagnostics, and enabled state are database-owned and configured through `Control Center -> Providers`. The Personal Quick setup preflight persists neither an unsuccessful key nor its validation result. The long-running application receives no provider key/base-URL variables and has no environment fallback. The remaining response-size and timeout variables only bound untrusted buffered responses, complete non-streaming exchanges, streaming idle time, and the absolute OpenAI background polling lifecycle respectively.
+Provider connections, endpoints, adapter protocols, models, routing, credentials, direct-user/group assignments, activation evidence, stored diagnostics, and enabled state are database-owned and configured through `Control Center -> Providers`. The Quick setup preflight persists neither an unsuccessful key nor its validation result. The long-running application receives no provider key/base-URL variables and has no environment fallback. The remaining response-size and timeout variables only bound untrusted buffered responses, complete non-streaming exchanges, streaming idle time, and the absolute OpenAI background polling lifecycle respectively.
 
 `AIQSA_DEFAULT_MODEL` and `AIQSA_DEFAULT_SEARCH_MODEL` are optional explicit provider-smoke inputs only. The application uses persisted catalog/settings choices. Provider-smoke permission is defined in `CRITICAL_INVARIANTS.md`; no routine test makes a paid external call.
 

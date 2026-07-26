@@ -124,6 +124,39 @@ describe("catalog handler", () => {
     })]);
   });
 
+  it("projects every supplied current and future catalog item for full access", () => {
+    const catalog = buildCurrentUserCatalog({
+      entitlements: {
+        fullAccess: true,
+        modelKeys: new Set(),
+        providerKeys: new Set(),
+        searchStrategies: new Set()
+      },
+      models: defaultProviderModels,
+      promptPresets: [],
+      runProfiles: [],
+      searchStrategies: defaultSearchStrategies,
+      settings: {
+        defaultControlValues: {},
+        defaultModelId: "gpt-5.5",
+        defaultProviderConnectionId: "openai",
+        defaultProviderModelId: "gpt-5.5",
+        defaultPromptPresetId: null,
+        defaultProvider: "openai",
+        defaultSearchStrategyId: "openai-native-web-search",
+        showCitations: true,
+        showReasoningBlocks: false,
+        showToolActivity: true
+      }
+    });
+
+    expect(catalog.models).toHaveLength(defaultProviderModels.length);
+    expect(catalog.searchStrategies).toHaveLength(defaultSearchStrategies.length);
+    expect(catalog.providers.map((provider) => provider.id)).toEqual(
+      [...new Set(defaultProviderModels.map((model) => model.provider))]
+    );
+  });
+
   it("exposes entitled OpenRouter Gemini models with model-specific controls", async () => {
     const GET = createCatalogHandler({
       loadCatalogData: async () => ({

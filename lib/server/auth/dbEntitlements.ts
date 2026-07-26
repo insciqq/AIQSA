@@ -1,9 +1,21 @@
+import type { PrismaClient } from "@prisma/client";
 import { prisma } from "../prisma";
 import { resolveEntitlements } from "./entitlements";
+import { FULL_ACCESS_GROUP_SYSTEM_ROLE } from "./fullAccessGroup";
 
-export async function loadEntitlementsForUser(userId: string) {
-  const memberships = await prisma.userGroup.findMany({
+type EntitlementPrisma = Pick<PrismaClient, "accessGrant" | "userGroup">;
+
+export async function loadEntitlementsForUser(
+  userId: string,
+  db: EntitlementPrisma = prisma
+) {
+  const memberships = await db.userGroup.findMany({
     select: {
+      group: {
+        select: {
+          systemRole: true
+        }
+      },
       groupId: true
     },
     where: {
@@ -14,7 +26,7 @@ export async function loadEntitlementsForUser(userId: string) {
     }
   });
   const groupIds = memberships.map((membership) => membership.groupId);
-  const grants = await prisma.accessGrant.findMany({
+  const grants = await db.accessGrant.findMany({
     include: {
       providerModel: {
         select: {
@@ -42,6 +54,11 @@ export async function loadEntitlementsForUser(userId: string) {
     grants.map((grant) => ({
       ...grant,
       providerModelConnectionId: grant.providerModel?.connectionId ?? null
-    }))
+    })),
+    {
+      fullAccess: memberships.some(
+        (membership) => membership.group.systemRole === FULL_ACCESS_GROUP_SYSTEM_ROLE
+      )
+    }
   );
 }

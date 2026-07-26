@@ -288,6 +288,9 @@ describe("Prisma admin provider repository", () => {
       providerGroupCredentialAssignment: {
         findMany: vi.fn(async () => [])
       },
+      providerUserCredentialAssignment: {
+        findMany: vi.fn(async () => [])
+      },
       providerModel: {
         findMany: vi.fn(async () => [{ draftVersion: 4, id: "model-1" }]),
         updateMany: updateModel
@@ -382,6 +385,7 @@ describe("Prisma admin provider repository", () => {
         deleteMany: vi.fn(async () => { operations.push("versions"); return { count: 2 }; })
       },
       providerGroupCredentialAssignment: { count: vi.fn(async () => 0) },
+      providerUserCredentialAssignment: { count: vi.fn(async () => 0) },
       providerRunBinding: {
         count: vi.fn(async () => 0),
         updateMany: detach
@@ -413,6 +417,31 @@ describe("Prisma admin provider repository", () => {
         ]
       }
     });
+  });
+
+  it("reports a direct user assignment before deleting a credential", async () => {
+    const deleteCredential = vi.fn();
+    const db = transactional({
+      providerConnection: { count: vi.fn(async () => 0) },
+      providerCredential: {
+        delete: deleteCredential,
+        findUnique: vi.fn(async () => ({ enabled: false }))
+      },
+      providerCredentialVersion: { deleteMany: vi.fn(async () => ({ count: 0 })) },
+      providerGroupCredentialAssignment: { count: vi.fn(async () => 0) },
+      providerUserCredentialAssignment: { count: vi.fn(async () => 1) },
+      providerRunBinding: {
+        count: vi.fn(async () => 0),
+        updateMany: vi.fn(async () => ({ count: 0 }))
+      }
+    });
+    const repository = createPrismaAdminProviderRepository(db as unknown as PrismaClient);
+
+    await expect(repository.deleteCredential("credential-1")).resolves.toEqual({
+      blockers: [{ count: 1, kind: "user_assignments" }],
+      status: "conflict"
+    });
+    expect(deleteCredential).not.toHaveBeenCalled();
   });
 
   it("serializes emergency revocation with the same credential-version row lock", async () => {

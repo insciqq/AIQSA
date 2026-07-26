@@ -27,6 +27,7 @@ import {
   Radio,
   ScrollText,
   Settings,
+  SlidersHorizontal,
   Wrench,
   X
 } from "lucide-react";
@@ -83,6 +84,7 @@ export function ComposerControls({
   backgroundMode,
   catalog,
   catalogUnavailable = false,
+  compact = false,
   contextLine = null,
   currentModel,
   currentParameterControls,
@@ -126,6 +128,7 @@ export function ComposerControls({
   backgroundMode: boolean;
   catalog: Catalog | null;
   catalogUnavailable?: boolean;
+  compact?: boolean;
   contextLine?: string | null;
   currentModel?: CatalogModel;
   currentParameterControls: ModelParameterControls;
@@ -250,7 +253,9 @@ export function ComposerControls({
     <div className="relative min-w-0 flex-1" data-layout="coherent" data-testid="composer-control-bar">
       <button
         ref={runSetupTriggerRef}
-        className="grid min-h-touch w-full min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-2 rounded-control px-2.5 py-1.5 text-left text-ink outline-none hover:bg-control-hover focus-visible:ring-2 focus-visible:ring-proof/55 disabled:cursor-not-allowed disabled:text-ink-disabled disabled:opacity-65"
+        className={compact
+          ? "inline-flex min-h-touch min-w-0 max-w-full items-center gap-1.5 rounded-control px-2.5 text-left text-xs text-ink outline-none hover:bg-control-hover focus-visible:ring-2 focus-visible:ring-proof/55 disabled:cursor-not-allowed disabled:text-ink-disabled disabled:opacity-65"
+          : "grid min-h-touch w-full min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-2 rounded-control px-2.5 py-1.5 text-left text-ink outline-none hover:bg-control-hover focus-visible:ring-2 focus-visible:ring-proof/55 disabled:cursor-not-allowed disabled:text-ink-disabled disabled:opacity-65"}
         type="button"
         aria-label={summaryDescription}
         aria-controls="composer-run-setup-panel"
@@ -266,7 +271,25 @@ export function ComposerControls({
           setRunSetupOpen(true);
         }}
       >
-        <span className="min-w-0">
+        {compact ? (
+          <>
+            <SlidersHorizontal className="size-3.5 shrink-0 text-ink-muted" aria-hidden="true" />
+            <span className="shrink-0 font-medium text-ink-secondary">Run</span>
+            <span
+              className="min-w-0 truncate font-medium text-ink"
+              data-testid="run-model-summary"
+              title={modelLabel}
+            >
+              {modelLabel}
+            </span>
+            <span className="sr-only" data-testid="run-profile-summary">Profile: {profileLabel}</span>
+            <span className="sr-only" data-testid="run-reasoning-summary">Reasoning: {reasoningSummary}</span>
+            <span className="sr-only" data-testid="run-search-summary">Search: {searchSummary}</span>
+            <ChevronRight className="size-3.5 shrink-0 text-ink-muted" aria-hidden="true" />
+          </>
+        ) : (
+          <>
+          <span className="min-w-0">
           <span className="flex min-w-0 items-baseline gap-2">
             <span className="shrink-0 text-[11px] font-semibold uppercase tracking-[0.1em] text-ink-muted">Run</span>
             <span
@@ -288,8 +311,10 @@ export function ComposerControls({
               Search: <span className="font-medium text-ink">{searchSummary}</span>
             </span>
           </span>
-        </span>
-        <ChevronRight className="size-4 shrink-0 text-ink-muted" aria-hidden="true" />
+          </span>
+          <ChevronRight className="size-4 shrink-0 text-ink-muted" aria-hidden="true" />
+          </>
+        )}
       </button>
 
       {runSetupOpen ? (

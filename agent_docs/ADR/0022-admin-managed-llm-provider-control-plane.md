@@ -3,6 +3,8 @@
 Status: Accepted
 Amends: 0004-private-auth-entitlements-uploads-and-sharing, 0020-unified-installation-and-isolated-development, 0021-admin-managed-mcp-tools-and-isolated-runtime
 
+Amendment note: ADR 0028 implements the reserved direct-user credential resolver seam with a separate `ProviderUserCredentialAssignment`, gives it precedence over group/default selection, and moves the visible model/search entitlement workflow from the retired `Model access` destination into `Access & groups`.
+
 ## Context
 
 AIQSA already stores its model catalog, model/search entitlements, user defaults, and run evidence in Postgres. Real provider clients are still assembled from `OPENAI_*`, `ANTHROPIC_*`, and `OPENROUTER_*` environment variables, and several routes capture that registry at module load. Adding or rotating an account, changing an endpoint, importing a model, or disabling a provider therefore requires deployment edits and a restart.

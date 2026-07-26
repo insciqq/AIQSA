@@ -25,6 +25,7 @@ async function main() {
       authIdentities: true,
       chats: { select: { id: true } },
       folders: { select: { id: true } },
+      groups: { include: { group: true } },
       settings: true
     },
     where: {
@@ -53,6 +54,17 @@ async function main() {
     !hasLocalOperatorPassword
   ) {
     throw new Error("Seeded local operator credential was not found");
+  }
+  const fullAccessMembership = user.groups.find(
+    (membership) => membership.group.systemRole === "full_access"
+  );
+  if (
+    !fullAccessMembership ||
+    fullAccessMembership.group.name !== "Full access" ||
+    fullAccessMembership.group.archivedAt ||
+    fullAccessMembership.role !== "owner"
+  ) {
+    throw new Error("Seeded local operator is not an owner of the active Full access group");
   }
 
   const expectedModelTemplateKeys = defaultProviderModels.map(
@@ -207,7 +219,7 @@ async function main() {
     }
   }
 
-  const [sharedServer, privateServer, groupGrant, modelGrant] = await Promise.all([
+  const [sharedServer, privateServer, groupGrant, modelGrant, fullAccessMcpGrants] = await Promise.all([
     prisma.mcpServer.findUnique({
       include: { grants: true },
       where: { id: LOCAL_SHARED_MCP_FIXTURE.id }
@@ -232,6 +244,10 @@ async function main() {
         providerModelId: fakeModel.id,
         searchStrategy: null
       }
+    }),
+    prisma.mcpGrant.findMany({
+      where: { groupId: fullAccessMembership.groupId },
+      orderBy: { serverId: "asc" }
     })
   ]);
   const member = ordinaryUsers.find((candidate) => candidate.id === LOCAL_MCP_MEMBER.id)!;
@@ -241,6 +257,8 @@ async function main() {
 
   if (!sharedServer?.enabled || !sharedServer.activeRevisionId || !privateServer?.enabled ||
     !privateServer.activeRevisionId || !groupGrant?.canUse || groupGrant.personalSlotKeys.length !== 0 ||
+    fullAccessMcpGrants.length < 2 ||
+    fullAccessMcpGrants.some((grant) => !grant.canUse || grant.personalSlotKeys.length !== 0) ||
     memberSharedGrant?.canUse !== false || memberSharedGrant.personalSlotKeys.join(",") !== "workspace" ||
     !memberPrivateGrant?.canUse || restricted.mcpGrants.length !== 0 || !modelGrant) {
     throw new Error("Seed smoke did not find the expected ordinary-user MCP grant matrix");

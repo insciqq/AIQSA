@@ -38,6 +38,7 @@ function credential(
     enabled?: boolean;
     groupIds?: string[];
     revoked?: boolean;
+    userIds?: string[];
     versionId?: string | null;
   } = {}
 ): CatalogProviderModelRow["connection"]["credentials"][number] {
@@ -55,7 +56,11 @@ function credential(
       credentialId: id,
       groupId
     })),
-    id
+    id,
+    userAssignments: (options.userIds ?? []).map((userId) => ({
+      credentialId: id,
+      userId
+    }))
   };
 }
 
@@ -174,10 +179,12 @@ function providerBackedSearchModel(id = "technical-search-deployment") {
 
 function entitlements(input: {
   connections?: string[];
+  fullAccess?: boolean;
   models?: Array<[string, string]>;
   searches?: string[];
 } = {}) {
   return {
+    fullAccess: input.fullAccess === true,
     modelKeys: new Set((input.models ?? []).map(([connectionId, modelId]) => `${connectionId}:${modelId}`)),
     providerKeys: new Set(input.connections ?? []),
     searchStrategies: new Set(input.searches ?? [])
@@ -242,6 +249,10 @@ describe("prisma catalog data loader", () => {
       entitlements: entitlements({ connections: ["connection-b"] }),
       models: [first, second]
     })).toEqual([second]);
+    expect(filterExposedProviderModels({
+      entitlements: entitlements({ fullAccess: true }),
+      models: [first, second]
+    })).toEqual([first, second]);
   });
 
   it("requires one effective credential and an exact current AVAILABLE tuple", () => {
@@ -286,6 +297,42 @@ describe("prisma catalog data loader", () => {
       exposeFake: false,
       memberships: [],
       models: [staleCheck, unavailableCheck]
+    })).toEqual([]);
+  });
+
+  it("uses the current user's direct credential before conflicting group assignments", () => {
+    const direct = credential("credential-user", { userIds: ["user-1"] });
+    const model = providerModel({
+      activeCredentialChecks: [{
+        connectionId: "connection-openai",
+        connectionVersion: 5,
+        credentialId: direct.id,
+        credentialVersionId: direct.activeVersion!.id,
+        modelVersion: 7,
+        providerModelId: "deployment-answer",
+        status: "available"
+      }],
+      credentials: [
+        credential("credential-default"),
+        credential("credential-a", { groupIds: ["group-a"] }),
+        credential("credential-b", { groupIds: ["group-b"] }),
+        direct
+      ]
+    });
+
+    expect(filterAvailableProviderModels({
+      exposeFake: false,
+      memberships: [membership("group-a"), membership("group-b")],
+      models: [model],
+      userId: "user-1"
+    })).toEqual([model]);
+
+    direct.enabled = false;
+    expect(filterAvailableProviderModels({
+      exposeFake: false,
+      memberships: [membership("group-a")],
+      models: [model],
+      userId: "user-1"
     })).toEqual([]);
   });
 

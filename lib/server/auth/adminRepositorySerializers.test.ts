@@ -176,7 +176,8 @@ describe("admin repository serializers", () => {
         archivedAt: new Date("2026-07-01T00:00:00.000Z"),
         id: "group-1",
         mcpGrants: [],
-        name: "Operators"
+        name: "Operators",
+        systemRole: null
       })
     ).toEqual({
       accessGrants: [disabledSearchWire, modelWire],
@@ -188,12 +189,37 @@ describe("admin repository serializers", () => {
       },
       id: "group-1",
       name: "Operators",
+      systemRole: null,
       userCount: 0
+    });
+  });
+
+  it("serializes authoritative deletion metadata for the built-in group", () => {
+    expect(
+      serializeAdminGroup({
+        _count: { providerCredentialAssignments: 1, users: 1 },
+        accessGrants: [],
+        archivedAt: null,
+        id: "full-access",
+        mcpGrants: [{ canUse: true }],
+        name: "Full access",
+        systemRole: "full_access"
+      }).deletion
+    ).toEqual({
+      canDelete: false,
+      reason: "system_group_forbidden",
+      summary: "Full access is built in and cannot be deleted."
     });
   });
 
   it("combines only applicable enabled entitlements and emits exact lexical order", () => {
     const entitlements = serializeAdminEntitlements({
+      catalog: {
+        models: [],
+        providers: [],
+        searchStrategies: []
+      },
+      fullAccess: false,
       grants: [
         stableGrant({
           enabled: true,
@@ -294,6 +320,38 @@ describe("admin repository serializers", () => {
       ],
       providers: ["anthropic", "openrouter"],
       searchStrategies: ["a-search", "z-search"]
+    });
+  });
+
+  it("projects the full-access wildcard as every current grantable catalog item", () => {
+    const entitlements = serializeAdminEntitlements({
+      catalog: {
+        models: [
+          { displayName: "Future", modelId: "future-model", provider: "provider-z" },
+          { displayName: "Current", modelId: "current-model", provider: "provider-a" }
+        ],
+        providers: [
+          { id: "provider-z", name: "Provider Z" },
+          { id: "provider-a", name: "Provider A" }
+        ],
+        searchStrategies: [
+          { displayName: "Future search", strategyId: "future-search" },
+          { displayName: "Current search", strategyId: "current-search" }
+        ]
+      },
+      fullAccess: true,
+      grants: [],
+      groupIds: ["full-access"],
+      userId: "user-1"
+    });
+
+    expect(entitlements).toEqual({
+      models: [
+        { modelId: "current-model", provider: "provider-a" },
+        { modelId: "future-model", provider: "provider-z" }
+      ],
+      providers: ["provider-a", "provider-z"],
+      searchStrategies: ["current-search", "future-search"]
     });
   });
 

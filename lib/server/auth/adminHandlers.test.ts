@@ -32,6 +32,7 @@ const baseDashboard = {
       },
       id: "group-1",
       name: "operators",
+      systemRole: null,
       userCount: 0
     }
   ],
@@ -116,6 +117,7 @@ function createRepository(
       },
       id: "group-created",
       name: input.name,
+      systemRole: null,
       userCount: 0
     }),
     deleteAccessRule: async () => true,
@@ -140,6 +142,7 @@ function createRepository(
       },
       id: input.groupId,
       name: input.name,
+      systemRole: null,
       userCount: 0
     }),
     revokeAllSessions: async () => 3,
@@ -559,6 +562,7 @@ describe("admin route handlers", () => {
             },
             id: "group-created",
             name: input.name,
+            systemRole: null,
             userCount: 0
           };
         },
@@ -574,6 +578,7 @@ describe("admin route handlers", () => {
             },
             id: input.groupId,
             name: input.name,
+            systemRole: null,
             userCount: 0
           };
         },

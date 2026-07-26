@@ -266,14 +266,16 @@ export function AdminTaskDetailPane({
 }
 
 export function AdminTaskBackButton({
+  alwaysVisible = false,
   label,
   onClick
 }: Readonly<{
+  alwaysVisible?: boolean;
   label: string;
   onClick(): void;
 }>) {
   return (
-    <button className={`${quietButton} mb-4 lg:hidden`} onClick={onClick} type="button">
+    <button className={`${quietButton} mb-4 ${alwaysVisible ? "" : "lg:hidden"}`} onClick={onClick} type="button">
       <ArrowLeft aria-hidden="true" className="size-3.5" />
       {label}
     </button>

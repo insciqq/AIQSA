@@ -37,6 +37,7 @@ export type AdminDeletionBlockReason =
   | "group_has_members"
   | "invite_accepted"
   | "invite_open"
+  | "system_group_forbidden"
   | "user_has_owned_data";
 
 export type AdminDeletionInfo = {
@@ -51,6 +52,7 @@ export type AdminGroup = {
   deletion?: AdminDeletionInfo;
   id: string;
   name: string;
+  systemRole: "full_access" | null;
   userCount: number;
 };
 
@@ -273,6 +275,7 @@ type AdminActionDomainErrorCode =
   | "group_invalid"
   | "group_not_found"
   | "group_required"
+  | "system_group_forbidden"
   | "invite_accepted"
   | "invite_email_delivery_invalid"
   | "invite_not_found"

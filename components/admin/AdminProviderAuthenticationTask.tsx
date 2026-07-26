@@ -41,7 +41,7 @@ export function AdminProviderAuthenticationTask({
       <div className="border-b border-trace-subtle px-4 py-5 sm:px-6">
         <h3 className="text-base font-semibold text-ink">Authentication policy</h3>
         <p className="mt-1 max-w-3xl text-sm leading-6 text-ink-muted">
-          This chooses which administrator-owned account authenticates a run. It never grants model access; entitlements remain in Team → Model access.
+          This chooses which administrator-owned account authenticates a run. It never grants model access; group entitlements remain in Access & groups.
         </p>
       </div>
 

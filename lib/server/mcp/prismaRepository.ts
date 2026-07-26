@@ -1002,8 +1002,17 @@ export function createPrismaMcpRepository(input: {
           const user = await tx.user.findUnique({ select: { id: true }, where: { id: userId } });
           if (!user) return { issues: [{ code: "user_not_found", path: "userId" }], kind: "invalid_grant" as const };
         } else if (groupId) {
-          const group = await tx.group.findUnique({ select: { id: true }, where: { id: groupId } });
+          const group = await tx.group.findUnique({
+            select: { id: true, systemRole: true },
+            where: { id: groupId }
+          });
           if (!group) return { issues: [{ code: "group_not_found", path: "groupId" }], kind: "invalid_grant" as const };
+          if (group.systemRole === "full_access") {
+            return {
+              issues: [{ code: "system_group_grant_immutable", path: "groupId" }],
+              kind: "invalid_grant" as const
+            };
+          }
         }
 
         const where = userId ? { serverId_userId: { serverId, userId } } : { serverId_groupId: { groupId: groupId!, serverId } };

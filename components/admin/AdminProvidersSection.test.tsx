@@ -146,7 +146,17 @@ function controller() {
   return { actions, state };
 }
 
+function openConnection(name = "OpenRouter") {
+  const index = screen.queryByTestId("provider-connection-index");
+  if (!index) return;
+  const connectionButton = within(index).getAllByRole("button").find((button) =>
+    button.textContent?.startsWith(name));
+  if (!connectionButton) throw new Error(`Provider connection not found: ${name}`);
+  fireEvent.click(connectionButton);
+}
+
 function openTask(name: "Authentication" | "Credentials" | "Diagnostics" | "Models") {
+  openConnection();
   fireEvent.click(screen.getByRole("tab", { name }));
 }
 
@@ -155,15 +165,15 @@ describe("AdminProvidersSection", () => {
     mocks.useController.mockReset();
   });
 
-  it("owns the Advanced navigation header and delegates return to Personal setup", () => {
+  it("owns the Advanced navigation header and delegates return to Quick setup", () => {
     const view = controller();
-    const onBackToPersonal = vi.fn();
+    const onBackToQuickSetup = vi.fn();
     mocks.useController.mockReturnValue(view);
     render(
       <AdminProvidersSection
         active
         groups={[]}
-        onBackToPersonal={onBackToPersonal}
+        onBackToQuickSetup={onBackToQuickSetup}
       />
     );
 
@@ -180,8 +190,8 @@ describe("AdminProvidersSection", () => {
       name: "Refresh provider connections"
     })).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "Back to Personal setup" }));
-    expect(onBackToPersonal).toHaveBeenCalledOnce();
+    fireEvent.click(screen.getByRole("button", { name: "Back to quick setup" }));
+    expect(onBackToQuickSetup).toHaveBeenCalledOnce();
   });
 
   it("does not offer Configure credential while the empty key form is already open", () => {
@@ -196,6 +206,7 @@ describe("AdminProvidersSection", () => {
     mocks.useController.mockReturnValue(view);
     render(<AdminProvidersSection active groups={[]} />);
 
+    openConnection();
     expect(screen.getByLabelText("API key")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Close key form" })).toHaveAttribute(
       "aria-expanded",
@@ -305,6 +316,7 @@ describe("AdminProvidersSection", () => {
     mocks.useController.mockReturnValue(view);
     render(<AdminProvidersSection active groups={[]} />);
 
+    openConnection();
     const addModelActions = screen.getAllByRole("button", { name: "Add model" });
     expect(addModelActions).toHaveLength(2);
     expect(addModelActions[1]).toHaveAttribute("aria-expanded", "false");
@@ -318,7 +330,7 @@ describe("AdminProvidersSection", () => {
     expect(screen.getByRole("heading", { name: "Add model" })).toBeInTheDocument();
   });
 
-  it("keeps compact list/detail navigation independent from the selected connection", () => {
+  it("uses a full-width index and opens one dedicated connection detail", () => {
     const secondConnection: AdminProviderConnection = {
       ...connection,
       displayName: "OpenRouter backup",
@@ -330,19 +342,17 @@ describe("AdminProvidersSection", () => {
     render(<AdminProvidersSection active groups={[]} />);
 
     const index = screen.getByTestId("provider-connection-index");
-    const detail = screen.getByTestId("provider-connection-task-detail");
-    expect(index).toHaveClass("block");
-    expect(detail).toHaveClass("hidden");
+    expect(screen.queryByTestId("provider-connection-task-detail")).not.toBeInTheDocument();
     fireEvent.click(within(index).getByRole("button", {
       name: /OpenRouter backup/
     }));
 
     expect(view.actions.select).toHaveBeenCalledWith(secondConnection.id);
-    expect(index).toHaveClass("hidden");
-    expect(detail).toHaveClass("block");
+    expect(screen.queryByTestId("provider-connection-index")).not.toBeInTheDocument();
+    expect(screen.getByTestId("provider-connection-task-detail")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Back to connections" }));
-    expect(index).toHaveClass("block");
-    expect(detail).toHaveClass("hidden");
+    expect(screen.getByTestId("provider-connection-index")).toBeInTheDocument();
+    expect(screen.queryByTestId("provider-connection-task-detail")).not.toBeInTheDocument();
   });
 
   it("does not expose an activation override on a different connection", () => {
@@ -366,6 +376,7 @@ describe("AdminProvidersSection", () => {
     mocks.useController.mockReturnValue(view);
     render(<AdminProvidersSection active groups={[]} />);
 
+    openConnection("OpenRouter backup");
     expect(screen.queryByRole("button", { name: "Review override" })).not.toBeInTheDocument();
     expect(screen.queryByText("Confirmation required.")).not.toBeInTheDocument();
   });
@@ -376,6 +387,7 @@ describe("AdminProvidersSection", () => {
       archivedAt: null,
       id: "group-1",
       name: "Researchers",
+      systemRole: null,
       userCount: 4
     };
     const view = controller();
@@ -418,6 +430,7 @@ describe("AdminProvidersSection", () => {
     mocks.useController.mockReturnValue(view);
     const rendered = render(<AdminProvidersSection active groups={[]} />);
 
+    openConnection();
     fireEvent.click(screen.getByRole("button", { name: "Edit" }));
     const refreshedConnection: AdminProviderConnection = {
       ...connection,
@@ -628,6 +641,7 @@ describe("AdminProvidersSection", () => {
       archivedAt: null,
       id: "group-1",
       name: "Researchers",
+      systemRole: null,
       userCount: 4
     }]} />);
 
@@ -670,6 +684,7 @@ describe("AdminProvidersSection", () => {
 
     const rendered = render(<AdminProvidersSection active groups={[]} />);
 
+    openConnection();
     const connectionHeading = screen.getByRole("heading", {
       level: 2,
       name: "OpenRouter"
@@ -684,6 +699,8 @@ describe("AdminProvidersSection", () => {
     const blockedView = controller();
     mocks.useController.mockReturnValue(blockedView);
     rendered.rerender(<AdminProvidersSection active groups={[]} />);
+    expect(screen.getByText("Complete setup before activation.")).toBeInTheDocument();
+    expect(screen.queryByText(/setup items need attention/i)).not.toBeInTheDocument();
     expect(screen.getAllByText("Add and enable at least one model.").length).toBeGreaterThan(0);
     expect(screen.getByRole("button", { name: "Add model" })).toBeInTheDocument();
   });
@@ -792,9 +809,11 @@ describe("AdminProvidersSection", () => {
     mocks.useController.mockReturnValue(view);
     render(<AdminProvidersSection active groups={[]} />);
 
-    expect(screen.queryByText("Available · refresh needs attention")).not.toBeVisible();
+    expect(screen.queryByText("Available · refresh needs attention")).not.toBeInTheDocument();
     expect(screen.queryByRole("table")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Check model route" })).not.toBeInTheDocument();
+    openConnection();
+    expect(screen.queryByText("Available · refresh needs attention")).not.toBeVisible();
     openTask("Diagnostics");
     expect(screen.getByText("Available · refresh needs attention")).toBeVisible();
     expect(screen.getByRole("button", { name: "Check model route" })).toBeVisible();
@@ -832,7 +851,7 @@ describe("AdminProvidersSection", () => {
     expect(view.actions.refresh).toHaveBeenCalledOnce();
   });
 
-  it("prefills a new advanced connection from the Quick provider family", async () => {
+  it("opens the advanced index first and prefills a new connection from the Quick provider family", async () => {
     const view = controller();
     view.state.connections = [];
     view.state.selectedConnection = null;
@@ -840,6 +859,9 @@ describe("AdminProvidersSection", () => {
 
     render(<AdminProvidersSection active advancedEntryProvider="openai" groups={[]} />);
 
+    const index = await screen.findByTestId("provider-connection-index");
+    expect(screen.queryByRole("heading", { name: "New provider connection" })).not.toBeInTheDocument();
+    fireEvent.click(within(index).getByRole("button", { name: "New" }));
     expect(await screen.findByRole("heading", { name: "New provider connection" })).toBeInTheDocument();
     expect(screen.getByLabelText("Provider family")).toHaveValue("openai");
     expect(screen.getByRole("textbox", { name: /API root/ })).toHaveValue("https://api.openai.com/v1");

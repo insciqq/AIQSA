@@ -1,5 +1,6 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { adminGroupDeletionBlock } from "./adminDeletionMetadata";
+import { FULL_ACCESS_GROUP_NAME } from "./fullAccessGroup";
 import { adminGroupRecordInclude } from "./adminPrismaRecords";
 import type { AdminRepository } from "./adminRepositoryContract";
 import { normalizeAdminGroupName } from "./adminRepositoryInputs";
@@ -30,6 +31,10 @@ function grantWhere(input: {
   };
 }
 
+function reservedFullAccessName(name: string): boolean {
+  return name.toLowerCase() === FULL_ACCESS_GROUP_NAME.toLowerCase();
+}
+
 export function createAdminGroupGrantCommands(prisma: PrismaClient): AdminGroupGrantCommands {
   return {
     async archiveGroup(groupId) {
@@ -40,11 +45,12 @@ export function createAdminGroupGrantCommands(prisma: PrismaClient): AdminGroupG
               select: { serverId: true },
               where: { canUse: true }
             },
+            systemRole: true,
             users: { select: { userId: true } }
           },
           where: { archivedAt: null, id: groupId }
         });
-        if (!group) return false;
+        if (!group || group.systemRole === "full_access") return false;
 
         await tx.group.update({
           data: { archivedAt: new Date() },
@@ -90,7 +96,7 @@ export function createAdminGroupGrantCommands(prisma: PrismaClient): AdminGroupG
     async createGroup(input) {
       const name = normalizeAdminGroupName(input.name);
 
-      if (!name) {
+      if (!name || reservedFullAccessName(name)) {
         return null;
       }
 
@@ -120,6 +126,10 @@ export function createAdminGroupGrantCommands(prisma: PrismaClient): AdminGroupG
           return "not_found";
         }
 
+        if (group.systemRole === "full_access") {
+          return "system_group_forbidden";
+        }
+
         const deletionBlock = adminGroupDeletionBlock({
           activeGrantCount:
             group.accessGrants.filter((grant) => grant.enabled).length +
@@ -144,11 +154,23 @@ export function createAdminGroupGrantCommands(prisma: PrismaClient): AdminGroupG
     async renameGroup(input) {
       const name = normalizeAdminGroupName(input.name);
 
-      if (!name) {
+      if (!name || reservedFullAccessName(name)) {
         return null;
       }
 
       try {
+        const group = await prisma.group.findFirst({
+          select: { id: true },
+          where: {
+            id: input.groupId,
+            systemRole: null
+          }
+        });
+
+        if (!group) {
+          return null;
+        }
+
         return serializeAdminGroup(
           await prisma.group.update({
             data: {
@@ -156,7 +178,7 @@ export function createAdminGroupGrantCommands(prisma: PrismaClient): AdminGroupG
             },
             include: adminGroupRecordInclude,
             where: {
-              id: input.groupId
+              id: group.id
             }
           })
         );
@@ -168,14 +190,15 @@ export function createAdminGroupGrantCommands(prisma: PrismaClient): AdminGroupG
       const group = await prisma.group.findUnique({
         select: {
           archivedAt: true,
-          id: true
+          id: true,
+          systemRole: true
         },
         where: {
           id: input.groupId
         }
       });
 
-      if (!group || group.archivedAt) {
+      if (!group || group.archivedAt || group.systemRole === "full_access") {
         return false;
       }
 
@@ -262,38 +285,46 @@ export function createAdminGroupGrantCommands(prisma: PrismaClient): AdminGroupG
       return true;
     },
     async setUserGroups(input) {
-      const user = await prisma.user.findUnique({
-        select: {
-          id: true
-        },
-        where: {
-          id: input.userId
-        }
-      });
-
-      if (!user) {
-        return false;
-      }
-
       const groupIds = [...new Set(input.groupIds)];
-      const activeGroups = await prisma.group.findMany({
-        select: {
-          id: true
-        },
-        where: {
-          archivedAt: null,
-          id: {
-            in: groupIds
+      return prisma.$transaction(async (tx) => {
+        const user = await tx.user.findUnique({
+          select: {
+            id: true
+          },
+          where: {
+            id: input.userId
           }
-        }
-      });
-      const activeGroupIds = new Set(activeGroups.map((group) => group.id));
+        });
 
-      await prisma.$transaction(async (tx) => {
+        if (!user) {
+          return false;
+        }
+
+        const activeGroups = await tx.group.findMany({
+          select: {
+            id: true
+          },
+          where: {
+            archivedAt: null,
+            id: {
+              in: groupIds
+            }
+          }
+        });
+        const activeGroupIds = new Set(activeGroups.map((group) => group.id));
         const currentMemberships = await tx.userGroup.findMany({
           select: { groupId: true },
           where: { group: { archivedAt: null }, userId: input.userId }
         });
+        const currentGroupIds = new Set(
+          currentMemberships.map((membership) => membership.groupId)
+        );
+        const removedGroupIds = [...currentGroupIds].filter(
+          (groupId) => !activeGroupIds.has(groupId)
+        );
+        const addedGroupIds = [...activeGroupIds].filter(
+          (groupId) => !currentGroupIds.has(groupId)
+        );
         const affectedGroupIds = [...new Set([
           ...currentMemberships.map((membership) => membership.groupId),
           ...activeGroupIds
@@ -306,16 +337,16 @@ export function createAdminGroupGrantCommands(prisma: PrismaClient): AdminGroupG
             })
           : [];
 
-        await tx.userGroup.deleteMany({
-          where: {
-            group: {
-              archivedAt: null
-            },
-            userId: input.userId
-          }
-        });
+        if (removedGroupIds.length) {
+          await tx.userGroup.deleteMany({
+            where: {
+              groupId: { in: removedGroupIds },
+              userId: input.userId
+            }
+          });
+        }
 
-        for (const groupId of activeGroupIds) {
+        for (const groupId of addedGroupIds) {
           await tx.userGroup.create({
             data: {
               groupId,
@@ -350,9 +381,9 @@ export function createAdminGroupGrantCommands(prisma: PrismaClient): AdminGroupG
             }
           }
         }
-      });
 
-      return true;
+        return true;
+      });
     }
   };
 }

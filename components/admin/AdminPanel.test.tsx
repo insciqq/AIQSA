@@ -1,5 +1,5 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AdminDashboard } from "@/lib/contracts/admin";
 import type { AdminEmailState } from "@/lib/contracts/email";
 import { StrictMode } from "react";
@@ -90,6 +90,7 @@ const dashboard: AdminDashboard = {
       },
       id: "group-1",
       name: "operators",
+      systemRole: null,
       userCount: 1
     },
     {
@@ -102,6 +103,7 @@ const dashboard: AdminDashboard = {
       },
       id: "group-2",
       name: "reviewers",
+      systemRole: null,
       userCount: 0
     },
     {
@@ -124,6 +126,7 @@ const dashboard: AdminDashboard = {
       },
       id: "group-archived",
       name: "legacy-archive",
+      systemRole: null,
       userCount: 0
     }
   ],
@@ -448,9 +451,9 @@ function mockAdminFetch() {
     if (url === "/api/admin/providers/quick-setup" && (init?.method ?? "GET") === "GET") {
       return dashboardResponse({
         providers: [
-          { provider: "openai", providerDisplayName: "OpenAI", state: "not_configured", stateToken: "state-openai" },
-          { provider: "anthropic", providerDisplayName: "Anthropic", state: "not_configured", stateToken: "state-anthropic" },
-          { provider: "openrouter", providerDisplayName: "OpenRouter", state: "not_configured", stateToken: "state-openrouter" }
+          { provider: "openai", providerDisplayName: "OpenAI", quickSetupAssigned: false, state: "not_configured", stateToken: "state-openai" },
+          { provider: "anthropic", providerDisplayName: "Anthropic", quickSetupAssigned: false, state: "not_configured", stateToken: "state-anthropic" },
+          { provider: "openrouter", providerDisplayName: "OpenRouter", quickSetupAssigned: false, state: "not_configured", stateToken: "state-openrouter" }
         ],
         suggestedProvider: null
       });
@@ -506,7 +509,7 @@ function findResourceListItem(scope: HTMLElement, text: string): HTMLElement {
     .getAllByText(text)
     .map((match) => match.closest<HTMLElement>([
       '[data-testid="admin-user-row"]',
-      '[data-testid="admin-group"]',
+      '[data-testid="admin-access-group-row"]',
       '[data-testid="admin-invite-row"]',
       '[data-testid="admin-access-rule-row"]'
     ].join(",")))
@@ -520,6 +523,10 @@ function findResourceListItem(scope: HTMLElement, text: string): HTMLElement {
 }
 
 describe("AdminPanel", () => {
+  beforeEach(() => {
+    window.history.replaceState(null, "", "/admin?section=users");
+  });
+
   afterEach(() => {
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
@@ -528,11 +535,12 @@ describe("AdminPanel", () => {
 
   it("provides an explicit direct return to the authenticated chat", async () => {
     mockAdminFetch();
+    window.history.replaceState(null, "", "/admin");
     render(<AdminPanel adminEmail="admin@example.com" adminUserId="admin-1" />);
 
     expect(screen.getByRole("heading", { name: "Control Center" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Return to chat" })).toHaveAttribute("href", "/");
-    await screen.findByTestId("admin-section-users");
+    await screen.findByTestId("admin-section-providers");
   });
 
   it("opens the database-backed Email delivery section from shared navigation", async () => {
@@ -652,7 +660,7 @@ describe("AdminPanel", () => {
     expect(screen.queryByText("No users yet")).not.toBeInTheDocument();
 
     const row = await findUserListItem("Active User");
-    fireEvent.click(within(row).getByRole("button", { name: "Details" }));
+    fireEvent.click(row);
     const detail = await screen.findByTestId("admin-user-detail");
     await waitFor(() => expect(detail).toHaveFocus());
     const opener = within(detail).getByRole("button", { name: "Disable user" });
@@ -671,8 +679,9 @@ describe("AdminPanel", () => {
     expect(await screen.findByTestId("admin-section-invites")).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Users" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Usage" })).toBeInTheDocument();
-    expect(screen.getByRole("tab", { name: "Groups" })).toBeInTheDocument();
-    expect(screen.getByRole("tab", { name: "Model access" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Access & groups" })).toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: "Groups" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: "Model access" })).not.toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "MCP servers" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Invites" })).toHaveAttribute("aria-selected", "true");
     expect(screen.getByRole("tab", { name: "Invites" })).toHaveAttribute("tabindex", "0");
@@ -692,7 +701,7 @@ describe("AdminPanel", () => {
     fireEvent.keyDown(screen.getByRole("tab", { name: "Access rules" }), { key: "Home" });
     await waitFor(() => expect(screen.getByRole("tab", { name: "Providers" })).toHaveFocus());
     expect(screen.getByRole("tab", { name: "Providers" })).toHaveAttribute("aria-selected", "true");
-    expect(window.location.search).toBe("?section=providers");
+    expect(window.location.search).toBe("");
 
     window.history.pushState(null, "", "/admin?section=safety");
     fireEvent.popState(window);
@@ -710,7 +719,8 @@ describe("AdminPanel", () => {
     const users = await screen.findByTestId("admin-section-users");
     expect(screen.getByTestId("admin-section-index-pane")).toHaveClass("hidden");
     expect(screen.getByTestId("admin-active-task-pane")).toHaveClass("block");
-    expect(within(users).getByTestId("admin-user-detail")).toBeInTheDocument();
+    expect(within(users).getByTestId("admin-users-index")).toBeInTheDocument();
+    expect(within(users).queryByTestId("admin-user-detail")).not.toBeInTheDocument();
 
     fireEvent.click(within(users).getByRole("button", { name: "All sections" }));
     expect(screen.getByTestId("admin-section-index-pane")).toHaveClass("block");
@@ -736,31 +746,27 @@ describe("AdminPanel", () => {
     fireEvent.change(within(users).getByLabelText("Search users"), { target: { value: "user" } });
     fireEvent.click(within(users).getByRole("button", { name: "active" }));
     const activeUserRow = findResourceListItem(users, "active@example.com");
-    fireEvent.click(within(activeUserRow).getByRole("button", { name: "Details" }));
+    fireEvent.click(activeUserRow);
 
-    fireEvent.click(screen.getByRole("tab", { name: "Groups" }));
-    const groups = await screen.findByTestId("admin-section-groups");
-    fireEvent.change(within(groups).getByLabelText("Search groups"), { target: { value: "er" } });
-    fireEvent.click(within(groups).getByRole("button", { name: "all" }));
-    const reviewersRow = findResourceListItem(groups, "reviewers");
-    fireEvent.click(within(reviewersRow).getByRole("button", { name: "Details" }));
-    fireEvent.click(within(screen.getByTestId("admin-group-detail")).getByRole("button", { name: "Rename group" }));
-    fireEvent.change(within(groups).getByLabelText("Rename group"), { target: { value: "Operators draft" } });
-    fireEvent.click(within(groups).getByRole("button", { name: "New group" }));
-    fireEvent.change(within(groups).getByLabelText("Group name"), { target: { value: "Draft group" } });
+    fireEvent.click(screen.getByRole("tab", { name: "Access & groups" }));
+    const access = await screen.findByTestId("admin-section-access");
+    fireEvent.change(within(access).getByLabelText("Search access groups"), { target: { value: "er" } });
+    fireEvent.click(within(access).getByRole("button", { name: "all" }));
+    const reviewersRow = findResourceListItem(access, "reviewers");
+    fireEvent.click(reviewersRow);
+    const accessDetail = await screen.findByTestId("admin-access-group-detail");
+    fireEvent.click(within(accessDetail).getByRole("button", { name: "Rename group" }));
+    fireEvent.change(within(accessDetail).getByLabelText("Rename group"), { target: { value: "Operators draft" } });
+    fireEvent.click(within(accessDetail).getByRole("button", { name: "Models & search" }));
 
     fireEvent.click(screen.getByRole("tab", { name: "Usage" }));
-    fireEvent.click(screen.getByRole("tab", { name: "Groups" }));
-    expect(screen.getByLabelText("Group name")).toHaveValue("Draft group");
-    fireEvent.click(within(screen.getByTestId("admin-section-groups")).getByRole("button", { name: "Back to groups" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Access & groups" }));
+    expect(screen.getByRole("button", { name: "Models & search" })).toHaveAttribute("aria-pressed", "true");
+    fireEvent.click(screen.getByRole("button", { name: "Overview" }));
     expect(screen.getByLabelText("Rename group")).toHaveValue("Operators draft");
-
-    fireEvent.click(screen.getByRole("tab", { name: "Model access" }));
-    const modelAccess = await screen.findByTestId("admin-section-model-access");
-    fireEvent.change(within(modelAccess).getByLabelText("Search model access groups"), {
-      target: { value: "er" }
-    });
-    fireEvent.click(within(modelAccess).getByRole("button", { name: "Select reviewers" }));
+    fireEvent.click(within(screen.getByTestId("admin-section-access")).getByRole("button", { name: "Back to access groups" }));
+    fireEvent.click(within(screen.getByTestId("admin-section-access")).getByRole("button", { name: "New group" }));
+    fireEvent.change(screen.getByLabelText("Group name"), { target: { value: "Draft group" } });
 
     fireEvent.click(screen.getByRole("tab", { name: "Invites" }));
     const invites = await screen.findByTestId("admin-section-invites");
@@ -779,21 +785,16 @@ describe("AdminPanel", () => {
     fireEvent.change(within(rules).getByLabelText("Search access rules"), { target: { value: "allowed" } });
 
     fireEvent.click(screen.getByRole("tab", { name: "Users" }));
+    expect(within(screen.getByTestId("admin-user-detail")).getByText("active@example.com")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Back to users" }));
     expect(screen.getByLabelText("Search users")).toHaveValue("user");
     expect(screen.getByRole("button", { name: "active" })).toHaveAttribute("aria-pressed", "true");
-    expect(within(screen.getByTestId("admin-user-detail")).getByText("active@example.com")).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("tab", { name: "Groups" }));
-    expect(screen.getByLabelText("Search groups")).toHaveValue("er");
-    expect(screen.getByRole("button", { name: "all" })).toHaveAttribute("aria-pressed", "true");
-    expect(within(screen.getByTestId("admin-group-detail")).getByText("reviewers")).toBeInTheDocument();
-    expect(screen.getByLabelText("Rename group")).toHaveValue("Operators draft");
-    fireEvent.click(within(screen.getByTestId("admin-section-groups")).getByRole("button", { name: "New group" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Access & groups" }));
     expect(screen.getByLabelText("Group name")).toHaveValue("Draft group");
-
-    fireEvent.click(screen.getByRole("tab", { name: "Model access" }));
-    expect(screen.getByLabelText("Search model access groups")).toHaveValue("er");
-    expect(screen.getByRole("button", { name: "Select reviewers" })).toHaveAttribute("aria-pressed", "true");
+    fireEvent.click(screen.getByRole("button", { name: "Back to access groups" }));
+    expect(screen.getByLabelText("Search access groups")).toHaveValue("er");
+    expect(screen.getByRole("button", { name: "all" })).toHaveAttribute("aria-pressed", "true");
 
     fireEvent.click(screen.getByRole("tab", { name: "Invites" }));
     expect(screen.getByLabelText("Email")).toHaveValue("draft@example.com");
@@ -842,7 +843,7 @@ describe("AdminPanel", () => {
     render(<AdminPanel adminEmail="admin@example.com" adminUserId="admin-1" />);
 
     const pendingRow = await findUserListItem("Pending User");
-    fireEvent.click(within(pendingRow).getByRole("button", { name: "Review" }));
+    fireEvent.click(pendingRow);
     fireEvent.click(screen.getByRole("checkbox", { name: "reviewers" }));
 
     fireEvent.click(screen.getByRole("tab", { name: "Invites" }));
@@ -951,13 +952,9 @@ describe("AdminPanel", () => {
     expectBoundedComparisonTable("Group usage table");
     expectBoundedComparisonTable("User usage table");
 
-    fireEvent.click(screen.getByRole("tab", { name: "Groups" }));
-    expect(screen.getByTestId("admin-groups-index")).toBeInTheDocument();
-    expect(screen.getByTestId("admin-groups-detail-pane")).toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole("tab", { name: "Model access" }));
-    expect(screen.getByTestId("admin-model-access-group-list")).toBeInTheDocument();
-    expect(screen.getByTestId("admin-model-access-detail-pane")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("tab", { name: "Access & groups" }));
+    expect(screen.getByTestId("admin-access-groups-index")).toBeInTheDocument();
+    expect(screen.queryByTestId("admin-access-group-detail")).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("tab", { name: "Invites" }));
     expect(screen.getByTestId("admin-invites-index")).toBeInTheDocument();
@@ -968,30 +965,29 @@ describe("AdminPanel", () => {
     expect(screen.getByTestId("admin-access-rules-detail-pane")).toBeInTheDocument();
   });
 
-  it("keeps focus on the selected Model access group", async () => {
+  it("opens one explicit access group as a dedicated focused detail", async () => {
     mockAdminFetch();
     render(<AdminPanel adminEmail="admin@example.com" adminUserId="admin-1" />);
 
     await screen.findByTestId("admin-section-users");
-    fireEvent.click(screen.getByRole("tab", { name: "Model access" }));
-    const modelAccess = await screen.findByTestId("admin-section-model-access");
-    const list = within(modelAccess).getByTestId("admin-model-access-group-list");
-    expect(within(list).getByRole("button", { name: "Select operators" })).toHaveAttribute("aria-pressed", "true");
-    fireEvent.change(within(list).getByLabelText("Search model access groups"), {
+    fireEvent.click(screen.getByRole("tab", { name: "Access & groups" }));
+    const access = await screen.findByTestId("admin-section-access");
+    expect(within(access).queryByTestId("admin-access-group-detail")).not.toBeInTheDocument();
+    fireEvent.change(within(access).getByLabelText("Search access groups"), {
       target: {
         value: "reviewers"
       }
     });
-    const reviewersButton = within(list).getByRole("button", { name: "Select reviewers" });
-    expect(reviewersButton).toHaveAttribute("aria-pressed", "true");
-
-    const selectedContext = within(modelAccess).getByTestId("admin-model-access-group");
-    expect(selectedContext).toHaveAttribute("aria-label", "Model access for reviewers");
-    expect(within(selectedContext).getByText("reviewers")).toBeInTheDocument();
-    reviewersButton.focus();
+    const reviewersButton = within(access).getByRole("button", { name: "Open reviewers" });
     fireEvent.click(reviewersButton);
-    await waitFor(() => expect(reviewersButton).toHaveFocus());
-    expect(selectedContext).not.toHaveFocus();
+
+    const selectedContext = within(access).getByTestId("admin-access-group-detail");
+    expect(selectedContext).toHaveAttribute("aria-label", "Access group reviewers");
+    expect(within(selectedContext).getByText("reviewers")).toBeInTheDocument();
+    await waitFor(() => expect(selectedContext).toHaveFocus());
+    expect(within(access).queryByTestId("admin-access-groups-index")).not.toBeInTheDocument();
+    fireEvent.click(within(selectedContext).getByRole("button", { name: "Back to access groups" }));
+    expect(within(access).getByTestId("admin-access-groups-index")).toBeInTheDocument();
   });
 
   it("approves a pending user with selected groups", async () => {
@@ -999,7 +995,7 @@ describe("AdminPanel", () => {
     render(<AdminPanel adminEmail="admin@example.com" adminUserId="admin-1" />);
 
     const row = await findUserListItem("Pending User");
-    fireEvent.click(within(row).getByRole("button", { name: "Review" }));
+    fireEvent.click(row);
     const detail = await screen.findByTestId("admin-user-detail");
     fireEvent.click(within(detail).getByLabelText("operators"));
     fireEvent.click(within(detail).getByRole("button", { name: "Approve user" }));
@@ -1018,7 +1014,7 @@ describe("AdminPanel", () => {
     render(<AdminPanel adminEmail="admin@example.com" adminUserId="admin-1" />);
 
     const row = await findUserListItem("Active User");
-    fireEvent.click(within(row).getByRole("button", { name: "Details" }));
+    fireEvent.click(row);
     const detail = await screen.findByTestId("admin-user-detail");
     await waitFor(() => {
       expect(detail).toHaveFocus();
@@ -1040,7 +1036,7 @@ describe("AdminPanel", () => {
     render(<AdminPanel adminEmail="admin@example.com" adminUserId="admin-1" />);
 
     const row = await findUserListItem("Active User");
-    fireEvent.click(within(row).getByRole("button", { name: "Details" }));
+    fireEvent.click(row);
 
     const detail = await screen.findByTestId("admin-user-detail");
     expect(within(detail).getByText("Active User")).toBeInTheDocument();
@@ -1048,8 +1044,8 @@ describe("AdminPanel", () => {
       expect(detail).toHaveFocus();
     });
     fireEvent.click(within(detail).getByRole("button", { name: "Back to users" }));
-    expect(screen.getByTestId("admin-users-index")).toHaveClass("block");
-    expect(screen.getByTestId("admin-users-detail-pane")).toHaveClass("hidden");
+    expect(screen.getByTestId("admin-users-index")).toBeInTheDocument();
+    expect(screen.queryByTestId("admin-users-detail-pane")).not.toBeInTheDocument();
   });
 
   it("creates groups and toggles group grants", async () => {
@@ -1057,15 +1053,15 @@ describe("AdminPanel", () => {
     render(<AdminPanel adminEmail="admin@example.com" adminUserId="admin-1" />);
 
     await screen.findByTestId("admin-section-users");
-    fireEvent.click(screen.getByRole("tab", { name: "Groups" }));
-    const groups = await screen.findByTestId("admin-section-groups");
-    fireEvent.click(within(groups).getByRole("button", { name: "New group" }));
-    fireEvent.change(within(groups).getByLabelText("Group name"), {
+    fireEvent.click(screen.getByRole("tab", { name: "Access & groups" }));
+    const access = await screen.findByTestId("admin-section-access");
+    fireEvent.click(within(access).getByRole("button", { name: "New group" }));
+    fireEvent.change(within(access).getByLabelText("Group name"), {
       target: {
         value: "review team"
       }
     });
-    fireEvent.click(within(groups).getByRole("button", { name: "Create" }));
+    fireEvent.click(within(access).getByRole("button", { name: "Create" }));
 
     await waitFor(() => {
       expect(posts).toContainEqual({
@@ -1077,9 +1073,9 @@ describe("AdminPanel", () => {
     const liveNotice = successNotice.closest('[role="status"]');
     expect(liveNotice).toHaveAttribute("aria-live", "polite");
 
-    fireEvent.click(screen.getByRole("tab", { name: "Model access" }));
-    const modelAccess = await screen.findByTestId("admin-section-model-access");
-    fireEvent.click(must(within(modelAccess).getAllByLabelText("Grant model OpenAI / GPT 5.5")[0], "model grant"));
+    fireEvent.click(within(access).getByRole("button", { name: "Open operators" }));
+    fireEvent.click(within(access).getByRole("button", { name: "Models & search" }));
+    fireEvent.click(within(access).getByLabelText("Grant model OpenAI / GPT 5.5"));
     await waitFor(() => {
       expect(posts).toContainEqual({
         action: "set_group_grant",
@@ -1096,23 +1092,23 @@ describe("AdminPanel", () => {
     render(<AdminPanel adminEmail="admin@example.com" adminUserId="admin-1" />);
 
     await screen.findByTestId("admin-section-users");
-    fireEvent.click(screen.getByRole("tab", { name: "Groups" }));
-    const groups = await screen.findByTestId("admin-section-groups");
-    fireEvent.change(within(groups).getByLabelText("Search groups"), {
+    fireEvent.click(screen.getByRole("tab", { name: "Access & groups" }));
+    const access = await screen.findByTestId("admin-section-access");
+    fireEvent.change(within(access).getByLabelText("Search access groups"), {
       target: {
         value: "reviewers"
       }
     });
-    const row = findResourceListItem(groups, "reviewers");
-    fireEvent.click(within(row).getByRole("button", { name: "Details" }));
+    const row = findResourceListItem(access, "reviewers");
+    fireEvent.click(row);
 
-    const detail = await screen.findByTestId("admin-group-detail");
+    const detail = await screen.findByTestId("admin-access-group-detail");
     expect(within(detail).getByText("reviewers")).toBeInTheDocument();
     expect(within(detail).getByText("No provider, model, or search access.")).toBeInTheDocument();
     await waitFor(() => {
       expect(detail).toHaveFocus();
     });
-    expect(within(groups).queryByText("operators")).not.toBeInTheDocument();
+    expect(within(access).queryByTestId("admin-access-groups-index")).not.toBeInTheDocument();
   });
 
   it("shows archived groups as non-editable in group and grant surfaces", async () => {
@@ -1120,24 +1116,20 @@ describe("AdminPanel", () => {
     render(<AdminPanel adminEmail="admin@example.com" adminUserId="admin-1" />);
 
     await screen.findByTestId("admin-section-users");
-    fireEvent.click(screen.getByRole("tab", { name: "Groups" }));
-    const groups = await screen.findByTestId("admin-section-groups");
-    fireEvent.click(within(groups).getByRole("button", { name: "all" }));
-    const archivedRow = findResourceListItem(groups, "legacy-archive");
-    fireEvent.click(within(archivedRow).getByRole("button", { name: "Details" }));
-    const detail = await screen.findByTestId("admin-group-detail");
+    fireEvent.click(screen.getByRole("tab", { name: "Access & groups" }));
+    const access = await screen.findByTestId("admin-section-access");
+    fireEvent.click(within(access).getByRole("button", { name: "all" }));
+    const archivedRow = findResourceListItem(access, "legacy-archive");
+    fireEvent.click(archivedRow);
+    const detail = await screen.findByTestId("admin-access-group-detail");
 
     expect(within(detail).getByText("Archived groups remain visible for history. Their grants no longer apply, and grant editing is disabled.")).toBeInTheDocument();
     expect(within(detail).queryByRole("button", { name: "Archive group" })).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("tab", { name: "Model access" }));
-    const modelAccess = await screen.findByTestId("admin-section-model-access");
-    const list = within(modelAccess).getByTestId("admin-model-access-group-list");
-    fireEvent.click(within(list).getByRole("button", { name: "Select legacy-archive" }));
-
-    expect(within(modelAccess).getByText("Archived groups do not apply grants. Grant editing is disabled for this group.")).toBeInTheDocument();
-    expect(within(modelAccess).getByLabelText("Grant provider OpenAI")).toBeDisabled();
-    expect(within(modelAccess).getByLabelText("Grant model OpenAI / GPT 5.5")).toBeDisabled();
+    fireEvent.click(within(detail).getByRole("button", { name: "Models & search" }));
+    expect(within(detail).getByText("Archived groups do not apply grants. Access editing is disabled for this group.")).toBeInTheDocument();
+    expect(within(detail).getByLabelText("Grant provider OpenAI")).toBeDisabled();
+    expect(within(detail).getByLabelText("Grant model OpenAI / GPT 5.5")).toBeDisabled();
   });
 
   it("toggles provider-wide and search strategy grants for the selected group", async () => {
@@ -1145,9 +1137,11 @@ describe("AdminPanel", () => {
     render(<AdminPanel adminEmail="admin@example.com" adminUserId="admin-1" />);
 
     await screen.findByTestId("admin-section-users");
-    fireEvent.click(screen.getByRole("tab", { name: "Model access" }));
-    const modelAccess = await screen.findByTestId("admin-section-model-access");
-    fireEvent.click(within(modelAccess).getByLabelText("Grant provider OpenAI"));
+    fireEvent.click(screen.getByRole("tab", { name: "Access & groups" }));
+    const access = await screen.findByTestId("admin-section-access");
+    fireEvent.click(within(access).getByRole("button", { name: "Open operators" }));
+    fireEvent.click(within(access).getByRole("button", { name: "Models & search" }));
+    fireEvent.click(within(access).getByLabelText("Grant provider OpenAI"));
 
     await waitFor(() => {
       expect(posts).toContainEqual({
@@ -1158,7 +1152,7 @@ describe("AdminPanel", () => {
       });
     });
 
-    fireEvent.click(within(modelAccess).getByLabelText("Grant search OpenAI web search"));
+    fireEvent.click(within(access).getByLabelText("Grant search OpenAI web search"));
 
     await waitFor(() => {
       expect(posts).toContainEqual({
@@ -1175,9 +1169,11 @@ describe("AdminPanel", () => {
     render(<AdminPanel adminEmail="admin@example.com" adminUserId="admin-1" />);
 
     await screen.findByTestId("admin-section-users");
-    fireEvent.click(screen.getByRole("tab", { name: "Model access" }));
-    const modelAccess = await screen.findByTestId("admin-section-model-access");
-    fireEvent.click(within(modelAccess).getByRole("button", { name: "Grant all OpenAI models to operators" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Access & groups" }));
+    const access = await screen.findByTestId("admin-section-access");
+    fireEvent.click(within(access).getByRole("button", { name: "Open operators" }));
+    fireEvent.click(within(access).getByRole("button", { name: "Models & search" }));
+    fireEvent.click(within(access).getByRole("button", { name: "Grant all OpenAI models to operators" }));
 
     await waitFor(() => {
       expect(posts).toContainEqual({
@@ -1216,15 +1212,17 @@ describe("AdminPanel", () => {
     const email = within(usersList).getByText(longEmail);
     expect(email).toHaveClass("break-words", "[overflow-wrap:anywhere]");
 
-    fireEvent.click(screen.getByRole("tab", { name: "Model access" }));
-    const modelAccess = await screen.findByTestId("admin-section-model-access");
-    const selectedContext = within(modelAccess).getByTestId("admin-model-access-group");
+    fireEvent.click(screen.getByRole("tab", { name: "Access & groups" }));
+    const access = await screen.findByTestId("admin-section-access");
+    fireEvent.click(within(access).getByRole("button", { name: `Open ${longGroupName}` }));
+    fireEvent.click(within(access).getByRole("button", { name: "Models & search" }));
+    const selectedContext = within(access).getByTestId("admin-access-group-detail");
     expect(within(selectedContext).getByRole("heading", { name: longGroupName })).toHaveClass(
       "break-words",
       "[overflow-wrap:anywhere]"
     );
-    expect(within(modelAccess).getByText("GPT 5.5")).toBeVisible();
-    expect(within(modelAccess).queryByText(`openai:${longModelId}`)).not.toBeInTheDocument();
+    expect(within(access).getByText("GPT 5.5")).toBeVisible();
+    expect(within(access).queryByText(`openai:${longModelId}`)).not.toBeInTheDocument();
   });
 
   it("creates invites and shows the returned link", async () => {
@@ -1320,15 +1318,19 @@ describe("AdminPanel", () => {
       }
     });
 
-    expect(await findUserListItem("Admin User")).toBeInTheDocument();
+    const adminRow = await findUserListItem("Admin User");
+    expect(adminRow).toBeInTheDocument();
     expect(screen.queryByText("Active User")).not.toBeInTheDocument();
     expect(screen.getByText("You")).toBeInTheDocument();
-    const detail = screen.getByTestId("admin-user-detail");
+    expect(screen.queryByTestId("admin-user-detail")).not.toBeInTheDocument();
+
+    fireEvent.click(adminRow);
+    const detail = await screen.findByTestId("admin-user-detail");
     expect(within(detail).getByText(/Self-disable and self-delete are not exposed/)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Disable user" })).not.toBeInTheDocument();
   });
 
-  it("keeps the selected user detail on the visible pagination page", async () => {
+  it("paginates the user directory without auto-opening a detail", async () => {
     const paginatedDashboard = structuredClone(dashboard);
     const userTemplate = structuredClone(must(dashboard.users[2], "pagination user template"));
     paginatedDashboard.users = Array.from({ length: 27 }, (_, index) => {
@@ -1345,15 +1347,16 @@ describe("AdminPanel", () => {
     render(<AdminPanel adminEmail="admin@example.com" adminUserId="admin-1" />);
 
     const users = await screen.findByTestId("admin-section-users");
-    expect(within(screen.getByTestId("admin-user-detail")).getByText("Paged User 01")).toBeInTheDocument();
+    expect(within(users).queryByTestId("admin-user-detail")).not.toBeInTheDocument();
     fireEvent.click(within(users).getByRole("button", { name: "Next users page" }));
 
     const visibleRow = await findUserListItem("Paged User 26");
-    await waitFor(() =>
-      expect(within(screen.getByTestId("admin-user-detail")).getByText("Paged User 26")).toBeInTheDocument()
-    );
     expect(visibleRow).toBeInTheDocument();
     expect(within(users).queryByText("Paged User 01")).not.toBeInTheDocument();
+    expect(within(users).queryByTestId("admin-user-detail")).not.toBeInTheDocument();
+
+    fireEvent.click(visibleRow);
+    expect(await within(screen.getByTestId("admin-user-detail")).findByText("Paged User 26")).toBeInTheDocument();
   });
 
   it("keeps actionable attention in its owning destinations without a global metric strip", async () => {
@@ -1363,14 +1366,12 @@ describe("AdminPanel", () => {
     const users = await screen.findByTestId("admin-section-users");
     expect(screen.queryByRole("region", { name: "Admin summary" })).not.toBeInTheDocument();
     expect(screen.queryByRole("region", { name: "Needs attention" })).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Team" })).toHaveTextContent("2 items");
+    expect(screen.getByText("Team & access")).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Users" })).toHaveTextContent("1");
     expect(screen.getByRole("tab", { name: "Invites" })).toHaveTextContent("1");
-    const pendingReview = within(findResourceListItem(users, "pending@example.com")).getByRole("button", {
-      name: "Review"
-    });
-    expect(pendingReview).toBeInTheDocument();
-    fireEvent.click(pendingReview);
+    const pendingRow = findResourceListItem(users, "pending@example.com");
+    expect(pendingRow).toHaveAccessibleName("Open Pending User");
+    fireEvent.click(pendingRow);
     expect(within(users).getByText("No model access")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("tab", { name: "Invites" }));
@@ -1398,23 +1399,23 @@ describe("AdminPanel", () => {
     render(<AdminPanel adminEmail="admin@example.com" adminUserId="admin-1" />);
 
     await screen.findByTestId("admin-section-users");
-    fireEvent.click(screen.getByRole("tab", { name: "Groups" }));
-    const groups = await screen.findByTestId("admin-section-groups");
-    fireEvent.click(within(groups).getByRole("button", { name: "New group" }));
-    fireEvent.click(within(groups).getByRole("button", { name: "Create" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Access & groups" }));
+    const access = await screen.findByTestId("admin-section-access");
+    fireEvent.click(within(access).getByRole("button", { name: "New group" }));
+    fireEvent.click(within(access).getByRole("button", { name: "Create" }));
 
     let failure = await screen.findByRole("alert");
     expect(failure).toHaveTextContent(/enter a group name/i);
     expect(failure).not.toHaveTextContent("group_required");
-    const groupName = within(groups).getByLabelText("Group name");
+    const groupName = within(access).getByLabelText("Group name");
     expect(groupName).toHaveAttribute("aria-invalid", "true");
     expect(groupName).toHaveAccessibleDescription(/enter a group name/i);
     await waitFor(() => expect(groupName).toHaveFocus());
 
-    fireEvent.click(within(groups).getByRole("button", { name: "Back to groups" }));
-    const reviewersRow = findResourceListItem(groups, "reviewers");
-    fireEvent.click(within(reviewersRow).getByRole("button", { name: "Details" }));
-    const groupDetail = await screen.findByTestId("admin-group-detail");
+    fireEvent.click(within(access).getByRole("button", { name: "Back to access groups" }));
+    const reviewersRow = findResourceListItem(access, "reviewers");
+    fireEvent.click(reviewersRow);
+    const groupDetail = await screen.findByTestId("admin-access-group-detail");
     fireEvent.click(within(groupDetail).getByRole("button", { name: "Delete group" }));
     const confirmation = await screen.findByTestId("admin-confirm-delete-group");
     fireEvent.click(within(confirmation).getByRole("button", { name: /confirm delete group/i }));
@@ -1449,11 +1450,11 @@ describe("AdminPanel", () => {
     expect(ruleValue).toHaveAccessibleDescription(/email or domain/i);
     await waitFor(() => expect(ruleValue).toHaveFocus());
 
-    fireEvent.click(screen.getByRole("tab", { name: "Groups" }));
-    const groups = await screen.findByTestId("admin-section-groups");
-    const reviewersRow = findResourceListItem(groups, "reviewers");
-    fireEvent.click(within(reviewersRow).getByRole("button", { name: "Details" }));
-    const groupDetail = await screen.findByTestId("admin-group-detail");
+    fireEvent.click(screen.getByRole("tab", { name: "Access & groups" }));
+    const access = await screen.findByTestId("admin-section-access");
+    const reviewersRow = findResourceListItem(access, "reviewers");
+    fireEvent.click(reviewersRow);
+    const groupDetail = await screen.findByTestId("admin-access-group-detail");
     fireEvent.click(within(groupDetail).getByRole("button", { name: "Rename group" }));
     const renameInput = within(groupDetail).getByLabelText("Rename group");
     fireEvent.change(renameInput, { target: { value: "" } });
@@ -1528,7 +1529,7 @@ describe("AdminPanel", () => {
     render(<AdminPanel adminEmail="admin@example.com" adminUserId="admin-1" />);
 
     const row = await findUserListItem("Active User");
-    fireEvent.click(within(row).getByRole("button", { name: "Details" }));
+    fireEvent.click(row);
     const detail = await screen.findByTestId("admin-user-detail");
     fireEvent.click(within(detail).getByRole("button", { name: "Disable user" }));
     const confirmation = await screen.findByTestId("admin-confirm-disable-user");
@@ -1548,7 +1549,7 @@ describe("AdminPanel", () => {
     render(<AdminPanel adminEmail="admin@example.com" adminUserId="admin-1" />);
 
     const row = await findUserListItem("Active User");
-    fireEvent.click(within(row).getByRole("button", { name: "Details" }));
+    fireEvent.click(row);
     const detail = await screen.findByTestId("admin-user-detail");
     await waitFor(() => expect(detail).toHaveFocus());
     const opener = within(detail).getByRole("button", { name: "Disable user" });
@@ -1581,7 +1582,7 @@ describe("AdminPanel", () => {
     render(<AdminPanel adminEmail="admin@example.com" adminUserId="admin-1" />);
 
     const row = await findUserListItem("Active User");
-    fireEvent.click(within(row).getByRole("button", { name: "Details" }));
+    fireEvent.click(row);
     const detail = await screen.findByTestId("admin-user-detail");
     fireEvent.click(within(detail).getByRole("button", { name: "Disable user" }));
     const confirmation = await screen.findByTestId("admin-confirm-disable-user");
@@ -1620,7 +1621,7 @@ describe("AdminPanel", () => {
     render(<AdminPanel adminEmail="admin@example.com" adminUserId="admin-1" />);
 
     const row = await findUserListItem("Pending User");
-    fireEvent.click(within(row).getByRole("button", { name: "Review" }));
+    fireEvent.click(row);
     const detail = await screen.findByTestId("admin-user-detail");
     await waitFor(() => expect(detail).toHaveFocus());
     const opener = within(detail).getByRole("button", { name: "Delete stale user" });
@@ -1679,7 +1680,7 @@ describe("AdminPanel", () => {
     render(<AdminPanel adminEmail="admin@example.com" adminUserId="admin-1" />);
 
     const pendingRow = await findUserListItem("Pending User");
-    fireEvent.click(within(pendingRow).getByRole("button", { name: "Review" }));
+    fireEvent.click(pendingRow);
     const pendingDetail = await screen.findByTestId("admin-user-detail");
     fireEvent.click(within(pendingDetail).getByRole("button", { name: "Delete stale user" }));
     let confirmation = await screen.findByTestId("admin-confirm-delete-user");
@@ -1692,16 +1693,16 @@ describe("AdminPanel", () => {
       });
     });
 
-    fireEvent.click(screen.getByRole("tab", { name: "Groups" }));
-    const groups = await screen.findByTestId("admin-section-groups");
-    fireEvent.change(within(groups).getByLabelText("Search groups"), {
+    fireEvent.click(screen.getByRole("tab", { name: "Access & groups" }));
+    const access = await screen.findByTestId("admin-section-access");
+    fireEvent.change(within(access).getByLabelText("Search access groups"), {
       target: {
         value: "reviewers"
       }
     });
-    const groupRow = findResourceListItem(groups, "reviewers");
-    fireEvent.click(within(groupRow).getByRole("button", { name: "Details" }));
-    const groupDetail = await screen.findByTestId("admin-group-detail");
+    const groupRow = findResourceListItem(access, "reviewers");
+    fireEvent.click(groupRow);
+    const groupDetail = await screen.findByTestId("admin-access-group-detail");
     await waitFor(() => {
       expect(groupDetail).toHaveFocus();
     });
@@ -1737,14 +1738,14 @@ describe("AdminPanel", () => {
     render(<AdminPanel adminEmail="admin@example.com" adminUserId="admin-1" />);
 
     const activeRow = await findUserListItem("Active User");
-    fireEvent.click(within(activeRow).getByRole("button", { name: "Details" }));
+    fireEvent.click(activeRow);
     expect(await screen.findByText("Disable this user before deletion can be considered.")).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("tab", { name: "Groups" }));
-    const groups = await screen.findByTestId("admin-section-groups");
-    const operatorsRow = findResourceListItem(groups, "operators");
-    fireEvent.click(within(operatorsRow).getByRole("button", { name: "Details" }));
-    expect(await within(screen.getByTestId("admin-group-detail")).findByText("Remove 1 member before deleting this group.")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("tab", { name: "Access & groups" }));
+    const access = await screen.findByTestId("admin-section-access");
+    const operatorsRow = findResourceListItem(access, "operators");
+    fireEvent.click(operatorsRow);
+    expect(await within(screen.getByTestId("admin-access-group-detail")).findByText("Remove 1 member before deleting this group.")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("tab", { name: "Invites" }));
     const invites = await screen.findByTestId("admin-section-invites");

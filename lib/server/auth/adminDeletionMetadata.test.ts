@@ -123,7 +123,8 @@ describe("admin deletion metadata", () => {
       adminGroupDeletionInfo({
         _count: { users: 2 },
         accessGrants: [{ enabled: true }, { enabled: true }],
-        mcpGrants: []
+        mcpGrants: [],
+        systemRole: null
       })
     ).toEqual({
       canDelete: false,
@@ -135,7 +136,8 @@ describe("admin deletion metadata", () => {
       adminGroupDeletionInfo({
         _count: { users: 1 },
         accessGrants: [],
-        mcpGrants: []
+        mcpGrants: [],
+        systemRole: null
       })
     ).toEqual({
       canDelete: false,
@@ -147,7 +149,8 @@ describe("admin deletion metadata", () => {
       adminGroupDeletionInfo({
         _count: { users: 0 },
         accessGrants: [{ enabled: true }, { enabled: false }],
-        mcpGrants: [{ canUse: true }]
+        mcpGrants: [{ canUse: true }],
+        systemRole: null
       })
     ).toEqual({
       canDelete: false,
@@ -159,7 +162,8 @@ describe("admin deletion metadata", () => {
       adminGroupDeletionInfo({
         _count: { users: 0 },
         accessGrants: [],
-        mcpGrants: [{ canUse: true }]
+        mcpGrants: [{ canUse: true }],
+        systemRole: null
       })
     ).toEqual({
       canDelete: false,
@@ -171,7 +175,8 @@ describe("admin deletion metadata", () => {
       adminGroupDeletionInfo({
         _count: { providerCredentialAssignments: 2, users: 0 },
         accessGrants: [],
-        mcpGrants: []
+        mcpGrants: [],
+        systemRole: null
       })
     ).toEqual({
       canDelete: false,
@@ -183,12 +188,28 @@ describe("admin deletion metadata", () => {
       adminGroupDeletionInfo({
         _count: { users: 0 },
         accessGrants: [{ enabled: false }],
-        mcpGrants: []
+        mcpGrants: [],
+        systemRole: null
       })
     ).toEqual({
       canDelete: true,
       reason: null,
       summary: "No members, active grants, or provider credential assignments; this group can be deleted."
+    });
+  });
+
+  it("reports the built-in lifecycle block before ordinary member and grant blockers", () => {
+    expect(
+      adminGroupDeletionInfo({
+        _count: { providerCredentialAssignments: 1, users: 2 },
+        accessGrants: [{ enabled: true }],
+        mcpGrants: [{ canUse: true }],
+        systemRole: "full_access"
+      })
+    ).toEqual({
+      canDelete: false,
+      reason: "system_group_forbidden",
+      summary: "Full access is built in and cannot be deleted."
     });
   });
 

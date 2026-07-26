@@ -37,41 +37,13 @@ export function filterAdminGroups(
   });
 }
 
-export function filterAdminModelAccessGroups(
-  groups: readonly AdminGroup[],
-  catalog: AdminCatalog,
-  query: string
-): AdminGroup[] {
-  const normalizedQuery = query.trim().toLowerCase();
-
-  return groups.filter((group) => {
-    const haystack = [group.name, groupAccessSummary(catalog, group)].join(" ").toLowerCase();
-
-    return !normalizedQuery || haystack.includes(normalizedQuery);
-  });
-}
-
 export function resolveAdminGroupSelection(
-  visibleGroups: readonly AdminGroup[],
+  groups: readonly AdminGroup[],
   selectedGroupId: string | null
 ): AdminGroup | null {
-  return (
-    (selectedGroupId ? visibleGroups.find((group) => group.id === selectedGroupId) : null) ??
-    visibleGroups[0] ??
-    null
-  );
-}
-
-export function resolveAdminModelAccessGroupSelection(
-  visibleGroups: readonly AdminGroup[],
-  selectedGroupId: string | null
-): AdminGroup | null {
-  return (
-    (selectedGroupId ? visibleGroups.find((group) => group.id === selectedGroupId) : null) ??
-    activeGroups(visibleGroups)[0] ??
-    visibleGroups[0] ??
-    null
-  );
+  return selectedGroupId
+    ? groups.find((group) => group.id === selectedGroupId) ?? null
+    : null;
 }
 
 function enabledGrants(group: AdminGroup): AdminAccessGrantRecord[] {
@@ -93,6 +65,13 @@ export function grantCounts(group: AdminGroup): { models: number; providers: num
 }
 
 export function groupAccessState(group: AdminGroup): { className: string; label: string } {
+  if (group.systemRole === "full_access") {
+    return {
+      className: "border-positive/25 bg-positive/10 text-positive",
+      label: "full access"
+    };
+  }
+
   if (group.archivedAt) {
     return {
       className: "border-trace-subtle bg-control-surface text-ink-secondary",
@@ -123,6 +102,10 @@ export function groupAccessState(group: AdminGroup): { className: string; label:
 }
 
 export function groupAccessSummary(catalog: AdminCatalog, group: AdminGroup): string {
+  if (group.systemRole === "full_access") {
+    return "Automatic entitlement to all current and future providers, models, search strategies, and MCP servers.";
+  }
+
   const counts = grantCounts(group);
 
   if (group.archivedAt) {
@@ -160,16 +143,26 @@ export function grantEnabled(group: AdminGroup, target: AdminGrantTarget): boole
 }
 
 export function groupDeletionInfo(group: AdminGroup): AdminDeletionInfo {
-  return (
-    group.deletion ?? {
-      canDelete: group.userCount === 0 && enabledGrantCount(group) === 0,
-      reason: group.userCount > 0 ? "group_has_members" : enabledGrantCount(group) > 0 ? "group_has_grants" : null,
-      summary:
-        group.userCount > 0
-          ? "Remove members before deleting this group."
-          : enabledGrantCount(group) > 0
-            ? "Remove active grants before deleting this group."
-            : "No members or active grants; this group can be deleted."
-    }
-  );
+  if (group.deletion) {
+    return group.deletion;
+  }
+
+  if (group.systemRole === "full_access") {
+    return {
+      canDelete: false,
+      reason: "system_group_forbidden",
+      summary: "Built-in groups cannot be renamed, archived, or deleted."
+    };
+  }
+
+  return {
+    canDelete: group.userCount === 0 && enabledGrantCount(group) === 0,
+    reason: group.userCount > 0 ? "group_has_members" : enabledGrantCount(group) > 0 ? "group_has_grants" : null,
+    summary:
+      group.userCount > 0
+        ? "Remove members before deleting this group."
+        : enabledGrantCount(group) > 0
+          ? "Remove active grants before deleting this group."
+          : "No members or active grants; this group can be deleted."
+  };
 }

@@ -638,6 +638,34 @@ describe("MCP handler input validation", () => {
     ]);
   });
 
+  it("returns the repository refusal when a system-group MCP grant is immutable", async () => {
+    const repository = new MemoryMcpRepository();
+    repository.nextError = {
+      issues: [{ code: "system_group_grant_immutable", path: "groupId" }],
+      kind: "invalid_grant"
+    };
+    const grant = createAdminMcpGrantHandler(deps(repository));
+    const response = await grant(request({
+      body: { canUse: false, groupId: "group-full-access" },
+      contentType: "application/json",
+      method: "PUT",
+      user: "admin"
+    }), routeContext);
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      error: "invalid_grant",
+      issues: [{ code: "system_group_grant_immutable", path: "groupId" }]
+    });
+    expect(repository.grants).toEqual([{
+      canUse: false,
+      groupId: "group-full-access",
+      personalSlotKeys: [],
+      serverId: SERVER_ID,
+      userId: null
+    }]);
+  });
+
   it("forwards optional one-time draft-test values without echoing them", async () => {
     const repository = new MemoryMcpRepository();
     const testDraft = createAdminMcpDraftTestHandler(deps(repository));

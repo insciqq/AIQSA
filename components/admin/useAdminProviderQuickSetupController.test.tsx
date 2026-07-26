@@ -4,12 +4,14 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useAdminProviderQuickSetupController } from "./useAdminProviderQuickSetupController";
 
 const api = vi.hoisted(() => ({
+  clear: vi.fn(),
   get: vi.fn(),
   submit: vi.fn()
 }));
 
 vi.mock("./adminProviderQuickSetupApi", () => ({
   adminProviderQuickSetupErrorMessage: (error: { code: string }) => error.code,
+  clearAdminProviderQuickSetupAssignment: api.clear,
   getAdminProviderQuickSetup: api.get,
   submitAdminProviderQuickSetup: api.submit
 }));
@@ -20,18 +22,21 @@ function snapshot(stateToken = "state-openai") {
       {
         provider: "openai" as const,
         providerDisplayName: "OpenAI",
+        quickSetupAssigned: false,
         state: "not_configured" as const,
         stateToken
       },
       {
         provider: "anthropic" as const,
         providerDisplayName: "Anthropic",
+        quickSetupAssigned: false,
         state: "not_configured" as const,
         stateToken: "state-anthropic"
       },
       {
         provider: "openrouter" as const,
         providerDisplayName: "OpenRouter",
+        quickSetupAssigned: false,
         state: "not_configured" as const,
         stateToken: "state-openrouter"
       }
@@ -47,6 +52,7 @@ function readySnapshot(stateToken = "state-openai-ready") {
       ? {
           ...provider,
           model: { displayName: "GPT-5.6 Terra" },
+          quickSetupAssigned: true,
           state: "ready" as const
         }
       : provider),
@@ -80,6 +86,7 @@ function deferred<T>() {
 describe("useAdminProviderQuickSetupController", () => {
   beforeEach(() => {
     api.get.mockReset();
+    api.clear.mockReset();
     api.submit.mockReset();
     api.get.mockResolvedValue({ data: snapshot(), ok: true });
   });
@@ -458,6 +465,38 @@ describe("useAdminProviderQuickSetupController", () => {
     await waitFor(() => expect(result.current.state.loaded).toBe(true));
     expect(api.get).toHaveBeenCalledOnce();
     expect(result.current.state.snapshot?.providers[0]?.stateToken).toBe("state-openai");
+  });
+
+  it("clears the fenced Quick assignment and reconciles without deleting the credential", async () => {
+    api.get
+      .mockResolvedValueOnce({ data: readySnapshot(), ok: true })
+      .mockResolvedValue({ data: snapshot("state-after-clear"), ok: true });
+    api.clear.mockResolvedValueOnce({
+      data: {
+        credentialRetained: true,
+        outcome: "assignment_cleared",
+        provider: "openai",
+        providerDisplayName: "OpenAI"
+      },
+      ok: true
+    });
+    const onMutationCommitted = vi.fn();
+    const { result } = renderHook(() => useAdminProviderQuickSetupController(true, {
+      onMutationCommitted
+    }));
+    await waitFor(() => expect(result.current.state.selectedProvider?.state).toBe("ready"));
+
+    await act(async () => {
+      await result.current.actions.clearAssignment();
+    });
+
+    expect(api.clear).toHaveBeenCalledWith({
+      expectedState: "state-openai-ready",
+      provider: "openai"
+    }, expect.any(Function), expect.any(AbortSignal));
+    await waitFor(() => expect(result.current.state.reconciliationRequired).toBe(false));
+    await waitFor(() => expect(onMutationCommitted).toHaveBeenCalledOnce());
+    expect(result.current.state.selectedProvider?.quickSetupAssigned).toBe(false);
   });
 
   it("clears and aborts browser-only form state when the Quick surface becomes inactive", async () => {

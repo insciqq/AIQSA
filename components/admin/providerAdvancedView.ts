@@ -105,7 +105,9 @@ export function presentProviderConnection(
 ): ProviderConnectionPresentation {
   const ui = deriveProviderUiState(connection);
   return {
-    attention: ui.readiness.blockers.length ? ui.readiness.summary : null,
+    attention: ui.publication.kind !== "not_configured" && ui.readiness.blockers.length
+      ? ui.readiness.summary
+      : null,
     credentialCount: connection.credentials.length,
     defaultTask: providerTaskForPrimaryAction(ui.primaryAction),
     modelCount: connection.models.length,
@@ -205,6 +207,7 @@ const blockerLabels: Record<AdminProviderDeleteBlocker["kind"], string> = {
   run_bindings: "active or recoverable runs",
   run_profiles: "run profiles",
   search_references: "search references",
+  user_assignments: "user assignments",
   user_defaults: "user defaults"
 };
 

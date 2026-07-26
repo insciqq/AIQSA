@@ -551,21 +551,53 @@ describe("MainThreadPane", () => {
     expect(retryActiveChatDetail).toHaveBeenCalledOnce();
   });
 
-  it("aligns the simplified empty state and composer to the same readable measure", () => {
-    renderPane(readyComposerOverrides);
+  it("centers one composer for a ready empty chat and moves that same composer to the thread tail on submit", () => {
+    const { props, rerender } = renderPane(readyComposerOverrides);
 
     const emptyState = screen.getByTestId("thread-empty-state");
-    expect(emptyState).toHaveTextContent("New research");
-    expect(emptyState).toHaveTextContent("Ask anything.");
-    expect(emptyState).not.toHaveTextContent(
-      "Ask a question, search when it helps, and build on the answer."
+    const layout = screen.getByTestId("thread-composer-layout");
+    const composer = screen.getByTestId("composer-form");
+
+    expect(layout).toHaveAttribute("data-composer-placement", "centered");
+    expect(emptyState).toHaveTextContent("What do you want to investigate?");
+    expect(emptyState).toHaveTextContent(
+      "Ask a question. Search, tools, and every provider run stays inspectable."
     );
+    expect(emptyState).not.toHaveTextContent("New research");
     expect(screen.queryByLabelText("Question, optional Search, Answer")).not.toBeInTheDocument();
     expect(emptyState.querySelector(".max-w-reading")).not.toBeNull();
-    expect(screen.getByTestId("composer-form").querySelector(".max-w-reading")).not.toBeNull();
+    expect(composer.querySelector(".max-w-reading")).not.toBeNull();
+    expect(screen.getAllByTestId("composer-form")).toHaveLength(1);
     expect(emptyState).not.toHaveTextContent("Ctrl/Cmd+K");
     expect(emptyState).not.toHaveTextContent("Enter / Shift+Enter");
     expect(emptyState).not.toHaveTextContent("New Chat");
+
+    rerender(<MainThreadPane {...props} creatingChat />);
+
+    expect(screen.getByTestId("thread-composer-layout")).toHaveAttribute(
+      "data-composer-placement",
+      "thread-tail"
+    );
+    expect(screen.getAllByTestId("composer-form")).toHaveLength(1);
+    expect(screen.getByTestId("composer-form")).toBe(composer);
+
+    rerender(
+      <MainThreadPane
+        {...props}
+        visibleMessages={[
+          userMessage("question-1", "First question"),
+          assistantMessage("answer-1", { status: "streaming" })
+        ]}
+      />
+    );
+
+    expect(screen.getByTestId("thread-composer-layout")).toHaveAttribute(
+      "data-composer-placement",
+      "thread-tail"
+    );
+    expect(screen.queryByTestId("thread-empty-state")).not.toBeInTheDocument();
+    expect(screen.getAllByTestId("composer-form")).toHaveLength(1);
+    expect(screen.getByTestId("composer-form")).toBe(composer);
   });
 
   it("gives catalog recovery one deliberate owner and blocks sending until retry", () => {
@@ -972,7 +1004,8 @@ describe("MainThreadPane", () => {
     renderPane({
       ...readyComposerOverrides,
       jumpToLatest,
-      showJumpToLatest: true
+      showJumpToLatest: true,
+      visibleMessages: [userMessage("question-1")]
     });
 
     fireEvent.click(screen.getByRole("button", { name: "Jump to latest message" }));

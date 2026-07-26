@@ -1,5 +1,6 @@
 import {
   ADMIN_PROVIDER_QUICK_SETUP_PROVIDERS,
+  type AdminProviderQuickSetupClearRequest,
   type AdminProviderQuickSetupProviderId,
   type AdminProviderQuickSetupRequest,
   type AdminProviderQuickSetupSelection
@@ -136,6 +137,42 @@ export function createAdminProviderQuickSetupMutationHandler(
       actor: auth.actor,
       request: quickSetupRequest,
       signal: request.signal
+    })));
+  };
+}
+
+export function createAdminProviderQuickSetupClearHandler(
+  deps: AdminProviderQuickSetupHandlerDeps
+) {
+  return async function DELETE(request: Request): Promise<Response> {
+    if (!hasJsonContentType(request)) return errorJson("json_required", 415);
+    const auth = await requireAdmin(request, deps);
+    if (auth.response || !auth.actor) return auth.response ?? errorJson("unauthorized", 401);
+    let body: unknown;
+    try {
+      body = await request.json();
+    } catch {
+      return errorJson("provider_configuration_invalid", 400);
+    }
+    if (!body || typeof body !== "object" || Array.isArray(body)) {
+      return errorJson("provider_configuration_invalid", 400);
+    }
+    const record = body as Record<string, unknown>;
+    if (Object.keys(record).some((key) => key !== "expectedState" && key !== "provider")) {
+      return errorJson("provider_configuration_invalid", 400);
+    }
+    const providerId = provider(record.provider);
+    const expectedState = boundedText(record.expectedState, 128);
+    if (!providerId || !expectedState) {
+      return errorJson("provider_configuration_invalid", 400);
+    }
+    const clearRequest: AdminProviderQuickSetupClearRequest = {
+      expectedState,
+      provider: providerId
+    };
+    return safely(async () => Response.json(await deps.service.clearAssignment({
+      actor: auth.actor,
+      request: clearRequest
     })));
   };
 }

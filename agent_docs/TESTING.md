@@ -11,7 +11,7 @@
 
 The executable command definitions remain in `package.json`; `vitest.config.ts`, `playwright.config.ts`, and the test tree remain authoritative for runner details and actual coverage. Do not copy volatile test counts or exhaustive file inventories into this document.
 
-WCAG conformance and dedicated accessibility work are outside the current product scope by operator decision. Do not add accessibility audits, screen-reader or forced-colors cases, keyboard-only parity, formal focus-management proof, contrast thresholds, or dedicated accessibility tests to routine acceptance without a separately approved task. Existing role-based selectors and incidental browser semantics may remain where they already make a functional test stable; they do not certify or expand accessibility scope. Responsive layout, touch use, safe areas, software-keyboard clearance, readable content, and overflow remain ordinary product verification.
+Dedicated accessibility implementation and conformance are outside the current product scope and require a separately approved future task. Responsive layout, touch use, safe areas, software-keyboard clearance, readable content, and overflow remain ordinary product verification.
 
 ## Default Workflow
 
@@ -188,7 +188,7 @@ docker compose -f docker-compose.dev.yml exec -T app npx vitest run \
   components/admin/adminEmailApi.test.ts
 ```
 
-For ADR 0026 Personal Provider Quick setup policy, service, route/repository contracts, and UI state, use:
+For the ADR 0026/0028 Provider Quick setup policy, direct-user persistence, route/repository contracts, and UI state, use:
 
 ```bash
 docker compose -f docker-compose.dev.yml exec -T app npx vitest run \
@@ -202,6 +202,8 @@ docker compose -f docker-compose.dev.yml exec -T app npx vitest run \
   components/admin/AdminProvidersExperience.test.tsx
 ```
 
+That focused set must cover replacement preservation for every currently available entitled canonical model, the 64-model Quick bound, no-write behavior when the replacement catalog loses one preserved upstream ID, and actor-only assignment clearing through the DELETE contract. Clearing must prove that the credential/version, checks, grants, defaults, and team configuration are retained.
+
 The repository also has an opt-in rollback-only Prisma integration case. Run it only in the disposable development stack; its outer serializable transaction always rolls back:
 
 ```bash
@@ -209,6 +211,28 @@ docker compose -f docker-compose.dev.yml exec -T \
   -e AIQSA_PROVIDER_QUICK_SETUP_INTEGRATION_TEST=1 app \
   npx vitest run lib/server/admin/providers/quickSetupPrismaRepository.integration.test.ts
 ```
+
+For ADR 0029 built-in `Full access`, run the pure entitlement/admission, bootstrap/admin, MCP, and presentation coverage plus the disposable migration contract:
+
+```bash
+docker compose -f docker-compose.dev.yml exec -T app npx vitest run \
+  lib/server/auth/entitlements.test.ts \
+  lib/server/auth/dbEntitlements.test.ts \
+  lib/server/auth/fullAccessGroup.test.ts \
+  lib/server/auth/adminDashboardQueries.test.ts \
+  lib/server/auth/adminRepository.test.ts \
+  lib/server/auth/adminRepositorySerializers.test.ts \
+  lib/server/admin/providers/quickSetupPrismaRepository.test.ts \
+  lib/server/catalog/prismaCatalogData.test.ts \
+  lib/server/providerRuntime/admission.test.ts \
+  lib/server/bootstrap/installationBootstrap.test.ts \
+  lib/server/mcp/handlers.test.ts \
+  components/admin/AdminAccessGroupsSection.test.tsx \
+  components/admin/AdminMcpGrantPanels.test.tsx
+npm run db:full-access:migration:contract
+```
+
+The contract covers an empty migrated database that remains available for first bootstrap, isolation and lossless collision-safe renaming of every legacy reserved-name group, earliest-existing-admin membership, group/grant-id collision handling, current/future MCP grants, ordinary-group deletion, and database identity/lifecycle protection. Repository integration remains authoritative for the generated MCP grant's mutation refusal and cascade behavior. The provider cases must prove that wildcard entitlement reaches catalog/Quick preservation and atomic admission without materialized provider grants, while credential selection still follows its independent direct/group/default fail-closed policy.
 
 The stopped control-plane migration has four deterministic contracts. They create only temporary databases or in-memory fixtures and do not contact providers or SMTP:
 
@@ -231,7 +255,9 @@ docker compose -f docker-compose.dev.yml exec -T \
     --project=chromium
 ```
 
-Those specs mock only each Admin resource boundary for the administrator workflow. The provider browser case mocks only the Quick endpoint for its Personal setup state machine; after Ready it installs a disposable persisted graph and uses the real current-user catalog, chat/message routes, OpenAI Responses SSE runtime, saved answer, ModelRun API, and exact ProviderRunBinding before restoring the prior user defaults and removing every fixture row. The same spec proves default lazy Quick setup, picker resubmission, retry/reconciliation, replacement preservation, compact states, automatic loading of a large account catalog into the sorted/searchable OpenRouter picker after Advanced disclosure, capability/provider search, automatic endpoint loading after explicit manual-routing selection, ordered route tags, collapsed optional diagnostics, contextual activation, and one atomic three-slot run-profile save. Its ordinary-user case exercises the real Quick, provider, and run-profile `403` routes; repository, service, route, transport, and runtime tests remain authoritative for RBAC, write-only secret handling, atomic initial/recovery/replacement persistence, profile constraints, catalog visibility, discovery-cache races, group-key selection, revocation, SSRF/TLS rules, and delivery outcomes.
+Those specs mock only each Admin resource boundary for the administrator workflow. The provider browser case mocks only the Quick endpoint for its actor-relative setup state machine; after Ready it installs a disposable persisted graph and uses the real current-user catalog, chat/message routes, OpenAI Responses SSE runtime, saved answer, ModelRun API, and exact ProviderRunBinding before restoring the prior user defaults and removing every fixture row. The same spec proves default lazy Quick setup, picker resubmission, retry/reconciliation, replacement preservation, confirmation-gated actor-assignment removal, the three-column compact provider strip, first-screen key/action placement, Advanced index-first navigation with always-visible Back, automatic loading of a large account catalog into the sorted/searchable OpenRouter picker, capability/provider search, automatic endpoint loading after explicit manual-routing selection, ordered route tags, collapsed optional diagnostics, contextual activation, and one atomic three-slot run-profile save. Its ordinary-user case exercises the real Quick, provider, and run-profile `403` routes; repository, service, route, transport, and runtime tests remain authoritative for RBAC, write-only secret handling, atomic direct-user initial/recovery/replacement persistence, profile constraints, catalog visibility, discovery-cache races, direct/group/default credential selection, revocation, SSRF/TLS rules, and delivery outcomes.
+
+`tests/e2e/auth-admin.spec.ts` uses the real admin action route and Prisma state for Users and Access & groups. Its group-detail membership case adds and removes a member from the local Members task, proves unrelated active and archived memberships survive the complete replacement payload, verifies archived groups expose no mutation controls, and checks that Back preserves the group-directory query. The same real-data boundary verifies that `Full access` is visible as built-in, contains the seeded first administrator, leaves Members editable, and exposes no rename/archive/delete or per-resource grant controls.
 
 MCP UI behavior has focused component/API/store coverage in `components/app-shell/*Mcp*.test.tsx`, `components/app-shell/mcpSettings*.test.ts`, and `components/admin/AdminMcp*.test.tsx`. Its deterministic browser boundary is:
 
@@ -257,7 +283,7 @@ Do not turn these into a cumulative local release pipeline. Exposed-installation
 - Test observable behavior and stable contracts, not implementation shape.
 - Add the cheapest deterministic regression test; add browser coverage only for a real cross-boundary risk.
 - Focused `.only` tests are forbidden in both Vitest and Playwright configuration; use an explicit focused command while iterating.
-- Prefer stable visible roles and labels when they already describe product behavior; use test ids where they are clearer or more durable. Selector choice is not accessibility acceptance.
+- Prefer stable visible roles and labels when they already describe product behavior; use test ids where they are clearer or more durable.
 - Use fake providers in automated tests. Never make paid external calls from Vitest or routine Playwright.
 - Preserve explicit loading, error, empty, queued, streaming, cancelled, and terminal states when changing their owner.
 - Keep fixtures small and avoid broad snapshots or duplicated governance assertions.

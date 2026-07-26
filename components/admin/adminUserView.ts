@@ -114,10 +114,9 @@ export function deriveAdminUsersView(input: AdminUsersViewInput): AdminUsersView
   const pageCount = Math.max(1, Math.ceil(filteredUsers.length / input.pageSize));
   const pageIndex = Math.min(input.pageIndex, pageCount - 1);
   const pageUsers = filteredUsers.slice(pageIndex * input.pageSize, (pageIndex + 1) * input.pageSize);
-  const selectedUser =
-    (input.selectedUserId ? pageUsers.find((user) => user.id === input.selectedUserId) : null) ??
-    pageUsers[0] ??
-    null;
+  const selectedUser = input.selectedUserId
+    ? input.users.find((user) => user.id === input.selectedUserId) ?? null
+    : null;
 
   return {
     filteredUsers,

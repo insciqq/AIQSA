@@ -42,6 +42,7 @@ const group: AdminGroup = {
   archivedAt: null,
   id: "group-1",
   name: "operators",
+  systemRole: null,
   userCount: 2
 };
 
@@ -77,7 +78,7 @@ function controller(selectedServer: AdminMcpServer = server) {
 }
 
 describe("Admin MCP grant ownership", () => {
-  it("edits whole-server group grants in Model access without personal slots", () => {
+  it("edits whole-server group grants in Access & groups without personal slots", () => {
     const view = controller();
     render(<AdminMcpGroupAccessPanel controller={view.controller} group={group} />);
 
@@ -87,6 +88,30 @@ describe("Admin MCP grant ownership", () => {
       groupId: "group-1"
     });
     expect(screen.queryByText("API key")).not.toBeInTheDocument();
+  });
+
+  it("renders full-access MCP coverage as automatic and never offers a grant mutation", () => {
+    const view = controller({
+      ...server,
+      grants: [{
+        canUse: true,
+        groupId: "group-full-access",
+        groupName: "full-access",
+        id: "grant-system",
+        personalSlotKeys: [],
+        userId: null,
+        userName: null
+      }]
+    });
+    render(<AdminMcpGroupAccessPanel
+      controller={view.controller}
+      group={{ ...group, id: "group-full-access", name: "full-access", systemRole: "full_access" }}
+    />);
+
+    expect(screen.getByText("Included automatically")).toBeInTheDocument();
+    expect(screen.getByText(/every current and future MCP server/u)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Memory for group full-access/u })).not.toBeInTheDocument();
+    expect(view.grant).not.toHaveBeenCalled();
   });
 
   it("keeps direct use and exact personal-field grants in selected user details", () => {

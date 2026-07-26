@@ -68,6 +68,10 @@ function createBootstrapTransaction(input: {
     authIdentityFindFirst: record("authIdentity.findFirst", identity),
     folderCreate: record("folder.create", { id: "folder-id" }),
     groupCreate: record("group.create", { id: "group-id" }),
+    groupFindUnique: record("group.findUnique", null),
+    groupUpdate: record("group.update", { id: "group-id" }),
+    mcpGrantUpsert: record("mcpGrant.upsert", { id: "mcp-grant-id" }),
+    mcpServerFindMany: record("mcpServer.findMany", []),
     promptPresetCreate: record("promptPreset.create", { id: "prompt-id" }),
     providerConnectionUpsert: record("providerConnection.upsert", { id: "connection-id" }),
     providerModelUpsert: record("providerModel.upsert", { id: "model-id" }),
@@ -75,7 +79,7 @@ function createBootstrapTransaction(input: {
     searchStrategyUpsert: record("searchStrategy.upsert", { id: "strategy-id" }),
     userCreate: record("user.create", { id: USER_ID }),
     userFindUnique: record("user.findUnique", user),
-    userGroupCreate: record("userGroup.create", {}),
+    userGroupUpsert: record("userGroup.upsert", {}),
     userSettingsCreate: record("userSettings.create", {})
   };
   const tx = {
@@ -91,7 +95,15 @@ function createBootstrapTransaction(input: {
       create: spies.folderCreate
     },
     group: {
-      create: spies.groupCreate
+      create: spies.groupCreate,
+      findUnique: spies.groupFindUnique,
+      update: spies.groupUpdate
+    },
+    mcpGrant: {
+      upsert: spies.mcpGrantUpsert
+    },
+    mcpServer: {
+      findMany: spies.mcpServerFindMany
     },
     promptPreset: {
       create: spies.promptPresetCreate
@@ -113,7 +125,7 @@ function createBootstrapTransaction(input: {
       findUnique: spies.userFindUnique
     },
     userGroup: {
-      create: spies.userGroupCreate
+      upsert: spies.userGroupUpsert
     },
     userSettings: {
       create: spies.userSettingsCreate
@@ -154,7 +166,9 @@ function allFoundationMutationSpies(fixture: BootstrapTransactionFixture) {
     fixture.spies.userCreate,
     fixture.spies.authIdentityCreate,
     fixture.spies.groupCreate,
-    fixture.spies.userGroupCreate,
+    fixture.spies.groupUpdate,
+    fixture.spies.userGroupUpsert,
+    fixture.spies.mcpGrantUpsert,
     fixture.spies.folderCreate,
     fixture.spies.promptPresetCreate,
     fixture.spies.userSettingsCreate,
@@ -273,6 +287,27 @@ describe("installation bootstrap", () => {
         userId: USER_ID
       }
     });
+    expect(fixture.spies.groupCreate).toHaveBeenCalledWith({
+      data: {
+        name: "Full access",
+        systemRole: "full_access"
+      },
+      select: { id: true }
+    });
+    expect(fixture.spies.userGroupUpsert).toHaveBeenCalledWith({
+      create: {
+        groupId: "group-id",
+        role: "owner",
+        userId: USER_ID
+      },
+      update: { role: "owner" },
+      where: {
+        userId_groupId: {
+          groupId: "group-id",
+          userId: USER_ID
+        }
+      }
+    });
     expect(fixture.spies.folderCreate).not.toHaveBeenCalled();
     expect(fixture.spies.promptPresetCreate).toHaveBeenCalledWith({
       data: expect.objectContaining({
@@ -375,7 +410,7 @@ describe("installation bootstrap", () => {
     }
   });
 
-  it("refreshes only code-owned metadata for the exact adopted identity", async () => {
+  it("refreshes code-owned metadata and repairs Full access for the exact adopted identity", async () => {
     const fixture = createBootstrapTransaction({
       adopted: {
         identity: {
@@ -425,7 +460,16 @@ describe("installation bootstrap", () => {
       expect(args).toEqual(expect.objectContaining({ update: expect.any(Object) }));
       expect((args as { update: object }).update).not.toHaveProperty("enabled");
     }
-    for (const mutation of allFoundationMutationSpies(fixture)) {
+    expect(fixture.spies.groupCreate).toHaveBeenCalledOnce();
+    expect(fixture.spies.userGroupUpsert).toHaveBeenCalledOnce();
+    for (const mutation of [
+      fixture.spies.userCreate,
+      fixture.spies.authIdentityCreate,
+      fixture.spies.folderCreate,
+      fixture.spies.promptPresetCreate,
+      fixture.spies.userSettingsCreate,
+      fixture.spies.accessGrantCreateMany
+    ]) {
       expect(mutation).not.toHaveBeenCalled();
     }
   });

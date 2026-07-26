@@ -40,6 +40,24 @@ describe("entitlement resolver", () => {
     expect(canAccessSearchStrategy(entitlements, "unsupported-search")).toBe(false);
   });
 
+  it("treats full access as a semantic wildcard for present and future catalog ids", () => {
+    const entitlements = resolveEntitlements("user-1", ["full-access"], [], {
+      fullAccess: true
+    });
+
+    expect(entitlements.fullAccess).toBe(true);
+    expect(entitlements.modelKeys).toEqual(new Set());
+    expect(entitlements.providerKeys).toEqual(new Set());
+    expect(entitlements.searchStrategies).toEqual(new Set());
+    expect(canAccessModel(entitlements, "future-provider", "future-model")).toBe(true);
+    expect(canAccessSearchStrategy(entitlements, "future-search")).toBe(true);
+    expect(validateRunAccess(entitlements, {
+      modelId: "future-model",
+      provider: "future-provider",
+      searchStrategy: "future-search"
+    })).toEqual({ ok: true });
+  });
+
   it("rejects unavailable model and search combinations", () => {
     const entitlements = resolveEntitlements("user-1", [], [
       {

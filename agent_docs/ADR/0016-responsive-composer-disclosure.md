@@ -15,8 +15,8 @@ The operator approved responsive progressive disclosure and a text-backed visual
 2. At `sm` and wider with more than 32rem of viewport height, ADR 0011's direct Model, Reasoning effort, Search strategy, and Run settings controls remain. The compact profile group remains directly above them when available.
 3. Below `sm`, or in a viewport at most 32rem high, one labeled `Run` summary replaces the permanent profile group and individual control row. Without opening it, the summary exposes the current concrete model, derived Profile or `Custom`/unavailable state, exact Reasoning mode and effort or unsupported state, and Search strategy or `Off` state in text.
 4. The narrow summary may pair Profile and Reasoning with one changing meter each to speed scanning, but the meter never replaces its readable value and selection never depends on color alone.
-5. The summary opens one safe-area-aware, locally scrolling `Run setup` sheet backed by the same composer controls. The sheet gives discoverable edit paths to Profile, Model, Reasoning, Search, Prompt, generation controls, response behavior, display preferences, and sound. It has an explicit Close action, contains focus, keeps nested picker Escape local, and restores focus to the summary.
-6. The message draft remains inside the coherent composer frame but becomes a visibly labeled and bounded input plane. Draft focus belongs to that input plane rather than visually merging the settings region into the field. In a short-height viewport only, the visible label and textarea share one row so the conversation keeps useful height without shrinking the 44px input target.
+5. The summary opens one safe-area-aware, locally scrolling `Run setup` sheet backed by the same composer controls. The sheet gives discoverable edit paths to Profile, Model, Reasoning, Search, Prompt, generation controls, response behavior, display preferences, and sound. It has an explicit Close action and keeps nested picker Escape behavior local.
+6. The message draft remains inside the coherent composer frame as a visibly labeled and bounded input plane rather than visually merging the settings region into the field. In a short-height viewport only, the visible label and textarea share one row so the conversation keeps useful height without shrinking the 44px input target.
 7. Context/usage, attachment, and Send/Stop share one compact action footer at narrow widths. Capability, autosave and numeric-flush behavior, keyboard access, software-keyboard viewport behavior, and 44px coarse-input targets remain unchanged.
 
 ## Consequences
@@ -31,12 +31,10 @@ The operator approved responsive progressive disclosure and a text-backed visual
 Software-keyboard evidence on a 6.7-inch phone showed that clause 6's short-height
 side-by-side visible label consumed the start of the only writing row and pushed
 the caret/placeholder toward the middle of the field. Narrow (`< sm`) or
-short-height (`<= 32rem`) composition now keeps the real `Message` label
-associated with the textarea as screen-reader text while hiding only its visual
-copy; the bounded draft plane, focus treatment, and `Ask AIQSA…` guidance remain
-visible. Wider/taller composition still shows the external label. This amends
-only clause 6's responsive label presentation, not draft semantics, accessible
-naming, focus ownership, or the 44px target.
+short-height (`<= 32rem`) composition hides the external `Message` copy while
+keeping the bounded draft plane and `Ask AIQSA…` guidance visible. Wider/taller
+composition still shows the external label. This amends only clause 6's
+responsive label presentation, not draft semantics or the 44px target.
 
 ## Addendum (2026-07-19)
 

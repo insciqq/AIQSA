@@ -262,17 +262,41 @@ export function MainThreadPane({
     !workspaceReady ||
     !currentModel;
 
+  const centeredEmptyConversation =
+    visibleMessages.length === 0 &&
+    Boolean(catalog) &&
+    Boolean(catalog?.models.length) &&
+    workspaceReady &&
+    !creatingChat &&
+    !activeChatDetailLoading &&
+    !activeChatDetailError &&
+    !catalogError &&
+    !workspaceError;
+
   return (
     <section className="flex min-h-0 min-w-0 flex-1 flex-col bg-answer-paper" data-testid="main-thread-pane">
       {noticeSlot}
 
-      <div className="flex min-h-0 flex-1 flex-col">
-        <div
-          ref={threadScrollRef}
-          className="min-h-0 flex-1 overflow-y-auto overscroll-contain [overflow-anchor:none]"
-          data-testid="thread"
-          onScroll={handleThreadScroll}
-        >
+      <div
+        className={
+          centeredEmptyConversation
+            ? "grid min-h-0 flex-1 content-center [@media(max-height:32rem)]:overflow-y-auto"
+            : "flex min-h-0 flex-1 flex-col"
+        }
+        data-composer-placement={centeredEmptyConversation ? "centered" : "thread-tail"}
+        data-testid="thread-composer-layout"
+      >
+        <div className={centeredEmptyConversation ? "flex shrink-0 flex-col" : "flex min-h-0 flex-1 flex-col"}>
+          <div
+            ref={threadScrollRef}
+            className={
+              centeredEmptyConversation
+                ? "shrink-0 [overflow-anchor:none]"
+                : "min-h-0 flex-1 overflow-y-auto overscroll-contain [overflow-anchor:none]"
+            }
+            data-testid="thread"
+            onScroll={handleThreadScroll}
+          >
           {catalogError ? (
             <div className="grid min-h-[260px] place-items-center px-4 py-10" data-testid="catalog-error-state" role="alert">
               <div className="w-full max-w-sm text-center">
@@ -386,7 +410,14 @@ export function MainThreadPane({
           !activeChatDetailError &&
           !catalogError &&
           !workspaceError ? (
-            <div className="grid min-h-[300px] place-items-center px-4 py-10" data-testid="thread-empty-state">
+            <div
+              className={
+                centeredEmptyConversation
+                  ? "px-4 pb-3 pt-2 sm:pb-4 [@media(max-height:32rem)]:hidden"
+                  : "grid min-h-[300px] place-items-center px-4 py-10"
+              }
+              data-testid="thread-empty-state"
+            >
               {catalog && catalog.models.length === 0 ? (
                 <div className="w-full max-w-reading" data-testid="no-model-empty-state">
                   <p className="text-xs font-medium text-ink-muted">Model access required</p>
@@ -399,13 +430,12 @@ export function MainThreadPane({
                   </p>
                 </div>
               ) : (
-                <div className="w-full max-w-reading">
-                  <p className="text-xs font-medium text-ink-muted">New research</p>
-                  <h2 className="mt-2 max-w-xl text-2xl font-semibold leading-8 text-ink">
-                    Ask anything.
+                <div className="mx-auto w-full max-w-reading sm:text-center">
+                  <h2 className="text-2xl font-semibold leading-8 tracking-[-0.025em] text-ink sm:text-3xl sm:leading-9">
+                    What do you want to investigate?
                   </h2>
-                  <p className="mt-2 max-w-xl text-sm leading-6 text-ink-secondary">
-                    Set up the run below when you need to change the model, reasoning, or search.
+                  <p className="mt-2 text-sm leading-6 text-ink-secondary">
+                    Ask a question. Search, tools, and every provider run stays inspectable.
                   </p>
                 </div>
               )}
@@ -502,35 +532,36 @@ export function MainThreadPane({
               }
             />
           ) : null}
-        </div>
-        {showJumpToLatest ? (
-          <div
-            className="pointer-events-none flex shrink-0 justify-center bg-answer-paper px-4 py-1.5"
-            data-testid="jump-to-latest-region"
-          >
-            <button
-              className="pointer-events-auto inline-flex h-touch items-center gap-2 rounded-pill border border-trace-subtle bg-overlay-surface px-4 text-xs font-medium text-ink shadow-float outline-none hover:bg-control-hover focus-visible:ring-2 focus-visible:ring-proof/55 sm:h-control [@media(hover:none)]:!h-touch [@media(pointer:coarse)]:!h-touch"
-              type="button"
-              aria-label="Jump to latest message"
-              data-testid="jump-to-latest"
-              onClick={jumpToLatest}
-            >
-              <ArrowDown className="size-3.5 text-proof" aria-hidden="true" />
-              Latest
-            </button>
           </div>
-        ) : null}
-      </div>
+          {showJumpToLatest ? (
+            <div
+              className="pointer-events-none flex shrink-0 justify-center bg-answer-paper px-4 py-1.5"
+              data-testid="jump-to-latest-region"
+            >
+              <button
+                className="pointer-events-auto inline-flex h-touch items-center gap-2 rounded-pill border border-trace-subtle bg-overlay-surface px-4 text-xs font-medium text-ink shadow-float outline-none hover:bg-control-hover focus-visible:ring-2 focus-visible:ring-proof/55 sm:h-control [@media(hover:none)]:!h-touch [@media(pointer:coarse)]:!h-touch"
+                type="button"
+                aria-label="Jump to latest message"
+                data-testid="jump-to-latest"
+                onClick={jumpToLatest}
+              >
+                <ArrowDown className="size-3.5 text-proof" aria-hidden="true" />
+                Latest
+              </button>
+            </div>
+          ) : null}
+        </div>
 
-      <Composer
-        attachmentPolicy={attachmentPolicy}
-        attachments={attachments}
-        controls={
-          <>
-            <ComposerControls
+        <Composer
+          attachmentPolicy={attachmentPolicy}
+          attachments={attachments}
+          controls={
+            <>
+              <ComposerControls
               backgroundMode={backgroundMode}
               catalog={catalog}
               catalogUnavailable={Boolean(catalogError)}
+              compact={centeredEmptyConversation}
               contextLine={composerContextLine}
               currentModel={currentModel}
               currentParameterControls={currentParameterControls}
@@ -571,38 +602,40 @@ export function MainThreadPane({
               temperature={temperature}
               usageStats={composerUsageStats}
             />
-            <McpComposerSummary onOpenSettings={openMcpSettings ?? openSettings} />
-          </>
-        }
-        disabled={composerUnavailable}
-        disabledHint={activeDisabledHint}
-        disabledHintLive={
-          !catalogError &&
-          Boolean(catalog) &&
-          workspaceReady &&
-          !activeChatDetailLoading &&
-          !activeChatDetailError
-        }
-        editing={Boolean(editingMessageId)}
-        editPending={editingMessagePending}
-        operationError={operationError}
-        onChange={composerActions.changeDraft}
-        onCancelEdit={composerActions.cancelMessageEdit}
-        onRemoveAttachment={composerActions.removeAttachment}
-        onRejectedFiles={(files) =>
-          composerActions.rejectAttachments(files.map((file) => file.name))
-        }
-        onSend={submitComposer}
-        onStop={() => void stopCurrentRun()}
-        onUploadFiles={uploadFiles}
-        sendDisabled={activeChatStreaming || uploading || creatingChat || editingMessagePending}
-        stopDisabled={!currentRunId}
-        streaming={activeChatStreaming}
-        uploading={uploading}
-        contextLine={composerContextLine}
-        usageStats={composerUsageStats}
-        value={draft}
-      />
+              <McpComposerSummary onOpenSettings={openMcpSettings ?? openSettings} />
+            </>
+          }
+          disabled={composerUnavailable}
+          disabledHint={activeDisabledHint}
+          disabledHintLive={
+            !catalogError &&
+            Boolean(catalog) &&
+            workspaceReady &&
+            !activeChatDetailLoading &&
+            !activeChatDetailError
+          }
+          editing={Boolean(editingMessageId)}
+          editPending={editingMessagePending}
+          operationError={operationError}
+          promptFirst={centeredEmptyConversation}
+          onChange={composerActions.changeDraft}
+          onCancelEdit={composerActions.cancelMessageEdit}
+          onRemoveAttachment={composerActions.removeAttachment}
+          onRejectedFiles={(files) =>
+            composerActions.rejectAttachments(files.map((file) => file.name))
+          }
+          onSend={submitComposer}
+          onStop={() => void stopCurrentRun()}
+          onUploadFiles={uploadFiles}
+          sendDisabled={activeChatStreaming || uploading || creatingChat || editingMessagePending}
+          stopDisabled={!currentRunId}
+          streaming={activeChatStreaming}
+          uploading={uploading}
+          contextLine={composerContextLine}
+          usageStats={composerUsageStats}
+          value={draft}
+        />
+      </div>
     </section>
   );
 }

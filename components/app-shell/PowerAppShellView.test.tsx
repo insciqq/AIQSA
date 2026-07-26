@@ -12,7 +12,7 @@ import type {
   ShellWorkspacePaneView
 } from "./powerAppShellViewContracts";
 import type { ShellLeftPaneProps } from "./ShellLeftPane";
-import type { ChatSummary, FolderSummary, InspectorMode } from "./types";
+import type { ChatSummary, FolderSummary, InspectorMode, ThreadMessage } from "./types";
 import {
   mobileWorkspaceDesktopMediaQuery,
   PowerAppShellView,
@@ -384,6 +384,14 @@ function baseProps(): PowerAppShellViewProps {
   };
 }
 
+const detailsTestMessage: ThreadMessage = {
+  content: "How does the details panel behave?",
+  id: "details-test-message",
+  parentMessageId: null,
+  role: "user",
+  status: "complete"
+};
+
 function StatefulView({
   flushPendingModelControlDefaults,
   initialMode = "closed",
@@ -405,9 +413,15 @@ function StatefulView({
       }}
       details={{
         ...props.details,
+        activeLeafId: detailsTestMessage.id,
         changeMode: setMode,
+        messages: [detailsTestMessage],
         mode,
         pinningAvailable
+      }}
+      thread={{
+        ...props.thread,
+        visibleMessages: [detailsTestMessage]
       }}
     />
   );
@@ -538,6 +552,16 @@ describe("PowerAppShellView feature boundary", () => {
 });
 
 describe("PowerAppShellView compact New chat", () => {
+  it("hides conversation-only actions while the prompt-first state has no messages", () => {
+    render(<PowerAppShellView {...baseProps()} />);
+
+    expect(screen.queryByRole("button", { name: "Share anonymously" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Open details" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Conversation actions" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Start new chat" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Account menu" })).toBeVisible();
+  });
+
   it("routes the hydrated top-rail action through the existing blank workspace owner", () => {
     const props = baseProps();
     const createChat = vi.fn();
@@ -758,7 +782,7 @@ describe("PowerAppShellView Details composition", () => {
     expect(screen.getByRole("menuitem", { name: "Sign out" })).toBeEnabled();
   });
 
-  it("opens the entitled Control Center entry on the Personal provider task", () => {
+  it("opens the entitled Control Center entry at the default Providers task", () => {
     const props = baseProps();
     render(
       <PowerAppShellView
@@ -773,7 +797,7 @@ describe("PowerAppShellView Details composition", () => {
     fireEvent.click(screen.getByRole("button", { name: "Account menu" }));
     expect(screen.getByRole("menuitem", { name: "Control Center" })).toHaveAttribute(
       "href",
-      "/admin?section=providers"
+      "/admin"
     );
   });
 

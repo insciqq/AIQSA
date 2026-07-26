@@ -1,5 +1,7 @@
 import {
   ADMIN_PROVIDER_QUICK_SETUP_PROVIDERS,
+  type AdminProviderQuickSetupClearRequest,
+  type AdminProviderQuickSetupClearResult,
   type AdminProviderQuickSetupCandidate,
   type AdminProviderQuickSetupModelDisplay,
   type AdminProviderQuickSetupProviderId,
@@ -18,7 +20,9 @@ export type AdminProviderQuickSetupProvider = AdminProviderQuickSetupProviderSna
 export type AdminProviderQuickSetupSelectionResult =
   AdminProviderQuickSetupSelectionRequiredResult;
 export type AdminProviderQuickSetupSubmit = AdminProviderQuickSetupRequest;
+export type AdminProviderQuickSetupClearSubmit = AdminProviderQuickSetupClearRequest;
 export type {
+  AdminProviderQuickSetupClearResult,
   AdminProviderQuickSetupReadyResult,
   AdminProviderQuickSetupResult,
   AdminProviderQuickSetupSnapshot
@@ -110,10 +114,12 @@ function provider(value: unknown): AdminProviderQuickSetupProvider | null {
   if (!record(value) || !exactKeys(value, [
     "provider",
     "providerDisplayName",
+    "quickSetupAssigned",
     "state",
     "stateToken",
     ...(value.model === undefined ? [] : ["model"])
   ]) || !providerId(value.provider) || !safeText(value.providerDisplayName, 80) ||
+    typeof value.quickSetupAssigned !== "boolean" ||
     !safeText(value.stateToken, 512) ||
     (value.state !== "advanced_required" && value.state !== "needs_attention" &&
       value.state !== "not_configured" && value.state !== "ready") ||
@@ -124,6 +130,7 @@ function provider(value: unknown): AdminProviderQuickSetupProvider | null {
     ...(value.model === undefined ? {} : { model: value.model as AdminProviderQuickSetupModel }),
     provider: value.provider,
     providerDisplayName: value.providerDisplayName,
+    quickSetupAssigned: value.quickSetupAssigned,
     state: value.state,
     stateToken: value.stateToken
   };
@@ -190,6 +197,18 @@ function result(value: unknown): AdminProviderQuickSetupResult | null {
   return null;
 }
 
+function clearResult(value: unknown): AdminProviderQuickSetupClearResult | null {
+  return record(value) && !containsForbiddenMaterial(value) && exactKeys(value, [
+    "credentialRetained",
+    "outcome",
+    "provider",
+    "providerDisplayName"
+  ]) && value.credentialRetained === true && value.outcome === "assignment_cleared" &&
+    providerId(value.provider) && safeText(value.providerDisplayName, 80)
+    ? value as AdminProviderQuickSetupClearResult
+    : null;
+}
+
 function errorCode(value: unknown, fallback: string): string {
   return record(value) && exactKeys(value, ["error"]) && safeText(value.error, 128)
     ? value.error
@@ -242,6 +261,19 @@ export function submitAdminProviderQuickSetup(
   }, result, fetcher);
 }
 
+export function clearAdminProviderQuickSetupAssignment(
+  body: AdminProviderQuickSetupClearSubmit,
+  fetcher: Fetcher = fetch,
+  signal?: AbortSignal
+) {
+  return request({
+    body: JSON.stringify(body),
+    headers: { "content-type": "application/json" },
+    method: "DELETE",
+    signal
+  }, clearResult, fetcher);
+}
+
 export function adminProviderQuickSetupErrorMessage(
   error: AdminProviderQuickSetupClientError
 ): string {
@@ -254,7 +286,7 @@ export function adminProviderQuickSetupErrorMessage(
     provider_quick_setup_advanced_required: "This provider has configuration that must be managed in Advanced configuration.",
     provider_quick_setup_response_invalid: "The provider setup API returned an unexpected response. Refresh and try again.",
     provider_quick_setup_selection_invalid: "That model choice is no longer available. Test the key again.",
-    provider_quick_setup_unsupported_catalog: "No supported personal model is available for this key. Continue in Advanced configuration.",
+    provider_quick_setup_unsupported_catalog: "No supported answer model is available for this key. Continue in Advanced configuration.",
     unauthorized: "Your administrator session is no longer valid. Sign in again."
   };
   return messages[error.code] ?? messages.provider_admin_action_failed!;

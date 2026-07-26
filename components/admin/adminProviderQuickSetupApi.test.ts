@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  clearAdminProviderQuickSetupAssignment,
   getAdminProviderQuickSetup,
   submitAdminProviderQuickSetup
 } from "./adminProviderQuickSetupApi";
@@ -12,6 +13,7 @@ function snapshot() {
       {
         provider: "openai",
         providerDisplayName: "OpenAI",
+        quickSetupAssigned: false,
         state: "not_configured",
         stateToken: "state-openai"
       },
@@ -19,12 +21,14 @@ function snapshot() {
         model: { displayName: "Claude Opus 4.8" },
         provider: "anthropic",
         providerDisplayName: "Anthropic",
+        quickSetupAssigned: true,
         state: "ready",
         stateToken: "state-anthropic"
       },
       {
         provider: "openrouter",
         providerDisplayName: "OpenRouter",
+        quickSetupAssigned: false,
         state: "needs_attention",
         stateToken: "state-openrouter"
       }
@@ -109,6 +113,29 @@ describe("admin provider Quick setup API", () => {
     }, fetcher);
     expect(result).toEqual({ data: selection, ok: true });
     expect(JSON.stringify(result)).not.toContain("write-only-key");
+  });
+
+  it("sends a fenced clear request and decodes credential retention", async () => {
+    const cleared = {
+      credentialRetained: true,
+      outcome: "assignment_cleared",
+      provider: "openai",
+      providerDisplayName: "OpenAI"
+    };
+    const fetcher = vi.fn(async () => response(cleared));
+    const request = { expectedState: "state-openai", provider: "openai" as const };
+
+    await expect(clearAdminProviderQuickSetupAssignment(request, fetcher)).resolves.toEqual({
+      data: cleared,
+      ok: true
+    });
+    expect(fetcher).toHaveBeenCalledWith("/api/admin/providers/quick-setup", {
+      body: JSON.stringify(request),
+      credentials: "same-origin",
+      headers: { "content-type": "application/json" },
+      method: "DELETE",
+      signal: undefined
+    });
   });
 
   it.each([

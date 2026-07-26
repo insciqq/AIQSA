@@ -22,7 +22,7 @@ AIQSA becomes a conversation-first, dark-first QSA workspace.
 5. **Power-user does not mean permanently dense.** Fast switching, keyboard access, transparency, and inspectability remain first-class. Density is applied where scanning benefits from it, while reading, composing, onboarding, and destructive decisions receive space and hierarchy.
 6. **Visual identity is restrained but not mechanical.** Keep the dark palettes, Golos Text/JetBrains Mono pairing, one brand accent, semantic status colors, safe markdown, and reduced-motion support. Replace the legacy border grid, pervasive micro-labels, tiny controls, and terminal/trading-console framing with a calmer layered surface system, clearer typography, and fewer simultaneous emphasis cues.
 7. **No clone target.** TypingMind and chatgpt.com remain workflow references, not visual specifications. AIQSA should be recognizable through its provider/search transparency and QSA run language without making the pipeline indicator decorative chrome at idle.
-8. **Observable checks drive completion.** Visual slices receive focused behavior/accessibility coverage and direct inspection of the affected desktop/mobile states. Exhaustive generated screenshot galleries are not required.
+8. **Observable checks drive completion.** Visual slices receive focused behavior coverage and direct inspection of the affected desktop/mobile states. Exhaustive generated screenshot galleries are not required.
 
 ## Transition
 
@@ -37,4 +37,4 @@ ADR 0009 supersedes only the fixed dense three-pane and terminal/trading-console
 - Details may be hidden by default without becoming second-class: contextual entry points, keyboard access, and optional pinning preserve power workflows.
 - The revamp shipped dark-first; ADR 0010 later added Classic Light and Classic Dark without changing `aiqsa` as the default.
 - The previous design-system recipes were migration input, not permanent constraints; the shipped semantic foundation replaced them before the later surface slices.
-- Final acceptance requires feature-inventory parity plus proportional accessibility, keyboard, responsive, and browser checks.
+- Final acceptance requires feature-inventory parity plus proportional responsive and browser checks.

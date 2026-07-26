@@ -132,6 +132,7 @@ export function adminActionErrorMessage(code: AdminActionClientErrorCode | (stri
     network_error: "Could not reach the admin API.",
     self_disable_forbidden: "Your current administrator account cannot disable itself.",
     self_delete_forbidden: "Your current admin account cannot delete itself.",
+    system_group_forbidden: "Full access is built in and cannot be renamed, archived, deleted, or edited with ordinary grants.",
     unauthorized: "Your admin session is no longer valid. Sign in again to continue.",
     user_active: "Disable this user before deleting it.",
     user_has_owned_data: "This user owns app data and must remain disabled until a purge flow exists.",

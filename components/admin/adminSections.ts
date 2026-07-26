@@ -6,7 +6,6 @@ import {
   Mail,
   ServerCog,
   ShieldAlert,
-  SlidersHorizontal,
   Users,
   Wrench,
   type LucideIcon
@@ -14,18 +13,17 @@ import {
 
 export type AdminSectionId =
   | "access-rules"
-  | "groups"
+  | "access"
   | "email"
   | "invites"
   | "mcp"
-  | "model-access"
   | "providers"
   | "safety"
   | "usage"
   | "users";
 
 export type AdminSectionMove = "first" | "last" | "next" | "previous";
-export type AdminSectionGroupId = "advanced" | "personal" | "team";
+export type AdminSectionGroupId = "ai-setup" | "infrastructure" | "operations" | "safety" | "team-access";
 
 export type AdminSection = Readonly<{
   Icon: LucideIcon;
@@ -35,88 +33,87 @@ export type AdminSection = Readonly<{
   label: string;
 }>;
 
-export const defaultAdminSection: AdminSectionId = "users";
+export const defaultAdminSection: AdminSectionId = "providers";
 
 export const adminSectionGroups = [
-  { id: "personal", label: "Personal" },
-  { id: "team", label: "Team" },
-  { id: "advanced", label: "Advanced" }
+  { id: "ai-setup", label: "AI setup" },
+  { id: "team-access", label: "Team & access" },
+  { id: "operations", label: "Operations" },
+  { id: "infrastructure", label: "Infrastructure" },
+  { id: "safety", label: "Safety" }
 ] as const satisfies readonly Readonly<{ id: AdminSectionGroupId; label: string }>[];
 
 export const adminSections = [
   {
     Icon: ServerCog,
-    description: "Configure, test, activate, and assign server-owned LLM connections and keys.",
-    group: "personal",
+    description: "Connect a provider for your account, or open advanced team and custom configuration.",
+    group: "ai-setup",
     id: "providers",
     label: "Providers"
   },
   {
-    Icon: BarChart3,
-    description: "Review provider-reported token usage by group and user.",
-    group: "personal",
-    id: "usage",
-    label: "Usage"
-  },
-  {
     Icon: Users,
     description: "Review accounts, approvals, memberships, and user session actions.",
-    group: "team",
+    group: "team-access",
     id: "users",
     label: "Users"
   },
   {
     Icon: Boxes,
-    description: "Create, rename, archive, and inspect operational groups.",
-    group: "team",
-    id: "groups",
-    label: "Groups"
-  },
-  {
-    Icon: SlidersHorizontal,
-    description: "Toggle provider, model, and search access for active groups.",
-    group: "team",
-    id: "model-access",
-    label: "Model access"
+    description: "Manage access groups, memberships, model and search entitlements, and MCP tools.",
+    group: "team-access",
+    id: "access",
+    label: "Access & groups"
   },
   {
     Icon: Link2,
     description: "Create one-off invitations and revoke open invite links.",
-    group: "team",
+    group: "team-access",
     id: "invites",
     label: "Invites"
   },
   {
     Icon: Globe2,
     description: "Approve exact emails or domains and assign their default groups.",
-    group: "team",
+    group: "team-access",
     id: "access-rules",
     label: "Access rules"
   },
   {
+    Icon: BarChart3,
+    description: "Review provider-reported token usage by group and user.",
+    group: "operations",
+    id: "usage",
+    label: "Usage"
+  },
+  {
     Icon: Wrench,
     description: "Install, test, activate, update, and grant trusted MCP servers.",
-    group: "advanced",
+    group: "infrastructure",
     id: "mcp",
     label: "MCP servers"
   },
   {
     Icon: Mail,
     description: "Configure, test, activate, and monitor installation email delivery.",
-    group: "advanced",
+    group: "infrastructure",
     id: "email",
     label: "Email delivery"
   },
   {
     Icon: ShieldAlert,
     description: "High-risk session controls live here instead of the main header.",
-    group: "advanced",
+    group: "safety",
     id: "safety",
     label: "Safety"
   }
 ] as const satisfies readonly AdminSection[];
 
 const adminSectionIds = new Set<AdminSectionId>(adminSections.map((section) => section.id));
+const legacyAdminSectionAliases = new Map<string, AdminSectionId>([
+  ["groups", "access"],
+  ["model-access", "access"]
+]);
 
 export function isAdminSectionId(value: string | null): value is AdminSectionId {
   return value !== null && adminSectionIds.has(value as AdminSectionId);
@@ -125,7 +122,20 @@ export function isAdminSectionId(value: string | null): value is AdminSectionId 
 export function parseAdminSection(search: string): AdminSectionId {
   const section = new URLSearchParams(search).get("section");
 
-  return isAdminSectionId(section) ? section : defaultAdminSection;
+  return isAdminSectionId(section)
+    ? section
+    : legacyAdminSectionAliases.get(section ?? "") ?? defaultAdminSection;
+}
+
+export function normalizeAdminSectionPath(currentHref: string): string {
+  const url = new URL(currentHref, "http://localhost");
+  const rawSection = url.searchParams.get("section");
+
+  if (rawSection === null || isAdminSectionId(rawSection)) {
+    return `${url.pathname}${url.search}${url.hash}`;
+  }
+
+  return adminSectionPath(currentHref, parseAdminSection(url.search));
 }
 
 export function adminSectionPath(currentHref: string, section: AdminSectionId): string {

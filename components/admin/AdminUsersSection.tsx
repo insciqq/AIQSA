@@ -1,9 +1,6 @@
 import {
   AdminGroupOptions,
   AdminTaskBackButton,
-  AdminTaskDetailPane,
-  AdminTaskIndexPane,
-  AdminTaskWorkspace,
   dangerButton,
   DeletionHint,
   EmptyState,
@@ -76,7 +73,6 @@ export type AdminUsersFocus = Readonly<{
 export type AdminUsersActions = Readonly<{
   onApprove(user: AdminUserRecord): void;
   onBackToList(): void;
-  onEditUserGroups(userId: string): void;
   onNextPage(): void;
   onPreviousPage(): void;
   onQueryChange(value: string): void;
@@ -110,12 +106,10 @@ const sortOptions: ReadonlyArray<Readonly<{ key: AdminUserSortKey; label: string
 ];
 
 function UserListRow({
-  active,
   adminUserId,
   onSelect,
   user
 }: Readonly<{
-  active: boolean;
   adminUserId: string;
   onSelect(): void;
   user: AdminUserRecord;
@@ -123,36 +117,46 @@ function UserListRow({
   const isSelf = user.id === adminUserId;
 
   return (
-    <article
-      className={`min-w-0 border-b border-trace-subtle px-4 py-3 last:border-b-0 ${active ? "bg-control-selected" : "bg-transparent"}`}
+    <button
+      aria-label={`Open ${user.displayName}`}
+      className="group/user-row grid w-full min-w-0 gap-3 border-b border-trace-subtle bg-transparent px-4 py-3 text-left transition-colors last:border-b-0 hover:bg-control-hover active:bg-control-pressed sm:px-5 md:grid-cols-[minmax(13rem,1.5fr)_minmax(9rem,1fr)_minmax(8rem,0.8fr)_minmax(8rem,0.8fr)_auto] md:items-center"
       data-testid="admin-user-row"
+      onClick={onSelect}
+      type="button"
     >
-      <div className="flex min-w-0 items-start justify-between gap-3">
-        <div className="min-w-0">
-          <p className="break-words text-sm font-medium text-ink [overflow-wrap:anywhere]">
-            {user.displayName}
-            {isSelf ? <span className="ml-2 text-[11px] font-medium text-proof">You</span> : null}
-          </p>
-          <p className="mt-0.5 break-words text-xs text-ink-muted [overflow-wrap:anywhere]">
-            {user.email ?? "No email"}
-          </p>
-        </div>
+      <span className="flex min-w-0 items-start justify-between gap-3 md:block">
+        <span className="min-w-0">
+          <span className="block break-words text-sm font-medium text-ink [overflow-wrap:anywhere]">
+            {user.displayName}{isSelf ? <span className="ml-2 text-[11px] font-medium text-proof">You</span> : null}
+          </span>
+          <span className="mt-0.5 block break-words text-xs text-ink-muted [overflow-wrap:anywhere]">{user.email ?? "No email"}</span>
+        </span>
         <span className={`shrink-0 rounded-pill border px-2 py-0.5 text-[11px] capitalize ${userStatusClass(user.status)}`}>
           {user.status}
         </span>
-      </div>
-      <div className="mt-2 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-ink-muted">
-        <span className="capitalize">{user.role}</span>
-        <span>{entitlementCountLabel(user.effectiveEntitlements)}</span>
-        <span>{formatDate(user.lastSessionAt)}</span>
-      </div>
-      <div className="mt-2 flex min-w-0 items-end justify-between gap-3">
-        <GroupChips groups={user.groups} />
-        <button className={quietButton} onClick={onSelect} type="button">
-          {user.status === "pending" ? "Review" : "Details"}
-        </button>
-      </div>
-    </article>
+      </span>
+      <span className="grid min-w-0 grid-cols-2 gap-2 md:contents">
+        <span className="block min-w-0">
+          <span className="mb-1 block text-[10px] font-medium uppercase tracking-[0.08em] text-ink-muted md:hidden">Groups</span>
+          <GroupChips groups={user.groups} />
+        </span>
+        <span className="block text-xs capitalize text-ink-secondary">
+          <span className="mb-1 block text-[10px] font-medium uppercase tracking-[0.08em] text-ink-muted md:hidden">Role</span>
+          {user.role}
+        </span>
+        <span className="block text-xs text-ink-secondary">
+          <span className="mb-1 block text-[10px] font-medium uppercase tracking-[0.08em] text-ink-muted md:hidden">Access</span>
+          {entitlementCountLabel(user.effectiveEntitlements)}
+        </span>
+        <span className="flex items-end justify-between gap-3 text-xs text-ink-muted md:items-center">
+          <span>
+            <span className="mb-1 block text-[10px] font-medium uppercase tracking-[0.08em] text-ink-muted md:hidden">Last session</span>
+            {formatDate(user.lastSessionAt)}
+          </span>
+          <ChevronRight aria-hidden="true" className="mb-0.5 size-4 shrink-0 text-ink-muted transition-transform group-hover/user-row:translate-x-0.5 group-hover/user-row:text-ink-secondary md:mb-0" />
+        </span>
+      </span>
+    </button>
   );
 }
 
@@ -244,7 +248,7 @@ function AdminUserDetail({ actions, data, detailRef, groupsEditorRef, mcpAccess,
   if (!selectedUser) {
     return (
       <div className="p-4 sm:p-6 lg:p-8">
-        <AdminTaskBackButton label="Back to users" onClick={actions.onBackToList} />
+        <AdminTaskBackButton alwaysVisible label="Back to users" onClick={actions.onBackToList} />
         <EmptyState detail="Select a user to review groups, access, and account actions." title="No user selected" />
       </div>
     );
@@ -256,12 +260,12 @@ function AdminUserDetail({ actions, data, detailRef, groupsEditorRef, mcpAccess,
   return (
     <article
       aria-label={`Selected user ${selectedUser.displayName}`}
-      className="min-w-0 px-4 py-5 outline-none sm:px-6 lg:px-8 lg:py-7"
+      className="mx-auto min-w-0 max-w-5xl px-4 py-5 outline-none sm:px-6 lg:px-8 lg:py-7"
       data-testid="admin-user-detail"
       ref={detailRef}
       tabIndex={-1}
     >
-      <AdminTaskBackButton label="Back to users" onClick={actions.onBackToList} />
+      <AdminTaskBackButton alwaysVisible label="Back to users" onClick={actions.onBackToList} />
       <div className="flex min-w-0 items-start justify-between gap-4 border-b border-trace-subtle pb-5">
         <div className="min-w-0">
           <p className="text-[11px] font-semibold uppercase tracking-[0.1em] text-ink-muted">Selected user</p>
@@ -375,22 +379,39 @@ function AdminUserDetail({ actions, data, detailRef, groupsEditorRef, mcpAccess,
 }
 
 export function AdminUsersSection({ actions, data, focus, mcpAccess, status, view }: AdminUsersSectionProps) {
+  if (view.compactDetailOpen) {
+    return (
+      <div data-testid="admin-users-detail-pane">
+        <AdminUserDetail
+          actions={actions}
+          data={data}
+          detailRef={focus.detail}
+          groupsEditorRef={focus.groupsEditor}
+          mcpAccess={mcpAccess}
+          status={status}
+        />
+      </div>
+    );
+  }
+
   return (
-    <AdminTaskWorkspace indexWidth="23rem">
-      <AdminTaskIndexPane compactDetailOpen={view.compactDetailOpen} testId="admin-users-index">
-        <div className="border-b border-trace-subtle p-3">
-          <label className="block text-xs font-medium text-ink-secondary" htmlFor="admin-users-search">Search users</label>
-          <div className="relative mt-1.5">
-            <Search aria-hidden="true" className="pointer-events-none absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-ink-muted" />
-            <input
-              className={`${inputClass} pl-9`}
-              id="admin-users-search"
-              onChange={(event) => actions.onQueryChange(event.currentTarget.value)}
-              placeholder="Name, email, role, or group"
-              value={view.query}
-            />
+    <div className="min-w-0 px-4 pb-8 sm:px-6 lg:px-8" data-testid="admin-users-index">
+      <div className="mx-auto max-w-7xl">
+        <div className="grid gap-3 border-b border-trace-subtle py-4 lg:grid-cols-[minmax(18rem,1fr)_auto_auto] lg:items-end">
+          <div>
+            <label className="block text-xs font-medium text-ink-secondary" htmlFor="admin-users-search">Search users</label>
+            <div className="relative mt-1.5">
+              <Search aria-hidden="true" className="pointer-events-none absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-ink-muted" />
+              <input
+                className={`${inputClass} pl-9`}
+                id="admin-users-search"
+                onChange={(event) => actions.onQueryChange(event.currentTarget.value)}
+                placeholder="Name, email, role, or group"
+                value={view.query}
+              />
+            </div>
           </div>
-          <div className="mt-3 flex flex-wrap gap-1.5" role="group" aria-label="User status filters">
+          <div className="flex flex-wrap gap-1.5 lg:col-start-2 lg:row-start-1 lg:self-end" role="group" aria-label="User status filters">
             {(["all", "pending", "active", "disabled", "denied"] as const).map((userStatus) => (
               <button
                 aria-pressed={view.statusFilter === userStatus}
@@ -403,7 +424,7 @@ export function AdminUsersSection({ actions, data, focus, mcpAccess, status, vie
               </button>
             ))}
           </div>
-          <div className="mt-3 grid grid-cols-[minmax(0,1fr)_auto] gap-2">
+          <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-2 lg:col-start-3 lg:row-start-1">
             <label className="min-w-0 text-xs font-medium text-ink-secondary">
               Sort by
               <select
@@ -421,7 +442,7 @@ export function AdminUsersSection({ actions, data, focus, mcpAccess, status, vie
           </div>
         </div>
 
-        <div className="flex items-center justify-between gap-3 border-b border-trace-subtle px-4 py-2 text-xs text-ink-muted">
+        <div className="flex items-center justify-between gap-3 py-3 text-xs text-ink-muted">
           <span>
             <span className="font-mono text-ink-secondary">{view.pageStart}-{view.pageEnd}</span> of{" "}
             <span className="font-mono text-ink-secondary">{view.filteredCount}</span>
@@ -437,10 +458,14 @@ export function AdminUsersSection({ actions, data, focus, mcpAccess, status, vie
           </div>
         </div>
 
-        <div className="min-w-0" data-testid="admin-users-list">
+        <div className="min-w-0 overflow-hidden rounded-panel border border-trace-subtle" data-testid="admin-users-list">
+          {data.pageUsers.length ? (
+            <div className="hidden grid-cols-[minmax(13rem,1.5fr)_minmax(9rem,1fr)_minmax(8rem,0.8fr)_minmax(8rem,0.8fr)_auto] gap-3 border-b border-trace-subtle bg-control-surface px-5 py-2 text-[11px] font-medium uppercase tracking-[0.08em] text-ink-muted md:grid">
+              <span>User</span><span>Groups</span><span>Role</span><span>Access</span><span>Last session</span>
+            </div>
+          ) : null}
           {data.pageUsers.length ? data.pageUsers.map((user) => (
             <UserListRow
-              active={data.selectedUser?.id === user.id}
               adminUserId={data.adminUserId}
               key={user.id}
               onSelect={() => actions.onSelectUser(user.id)}
@@ -453,18 +478,7 @@ export function AdminUsersSection({ actions, data, focus, mcpAccess, status, vie
             />
           )}
         </div>
-      </AdminTaskIndexPane>
-
-      <AdminTaskDetailPane compactDetailOpen={view.compactDetailOpen} testId="admin-users-detail-pane">
-        <AdminUserDetail
-          actions={actions}
-          data={data}
-          detailRef={focus.detail}
-          groupsEditorRef={focus.groupsEditor}
-          mcpAccess={mcpAccess}
-          status={status}
-        />
-      </AdminTaskDetailPane>
-    </AdminTaskWorkspace>
+      </div>
+    </div>
   );
 }

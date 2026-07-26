@@ -9,10 +9,15 @@ export type AccessGrantLike = {
 };
 
 export type ResolvedEntitlements = {
+  fullAccess?: boolean;
   modelKeys: Set<string>;
   providerKeys: Set<string>;
   searchStrategies: Set<string>;
 };
+
+export type EntitlementResolutionOptions = Readonly<{
+  fullAccess?: boolean;
+}>;
 
 export type RunAccessRequest = {
   modelId: string;
@@ -36,10 +41,12 @@ export function modelKey(provider: string, modelId: string): string {
 export function resolveEntitlements(
   userId: string,
   groupIds: string[],
-  grants: AccessGrantLike[]
+  grants: AccessGrantLike[],
+  options: EntitlementResolutionOptions = {}
 ): ResolvedEntitlements {
   const groupIdSet = new Set(groupIds);
   const entitlements: ResolvedEntitlements = {
+    fullAccess: options.fullAccess === true,
     modelKeys: new Set(),
     providerKeys: new Set(),
     searchStrategies: new Set()
@@ -76,14 +83,17 @@ export function canAccessModel(
   provider: string,
   modelId: string
 ): boolean {
-  return entitlements.providerKeys.has(provider) || entitlements.modelKeys.has(modelKey(provider, modelId));
+  return entitlements.fullAccess === true ||
+    entitlements.providerKeys.has(provider) ||
+    entitlements.modelKeys.has(modelKey(provider, modelId));
 }
 
 export function canAccessSearchStrategy(
   entitlements: ResolvedEntitlements,
   searchStrategy: string | null | undefined
 ): boolean {
-  return !searchStrategy || searchStrategy === "search-disabled" || entitlements.searchStrategies.has(searchStrategy);
+  return !searchStrategy || searchStrategy === "search-disabled" ||
+    entitlements.fullAccess === true || entitlements.searchStrategies.has(searchStrategy);
 }
 
 export function validateRunAccess(

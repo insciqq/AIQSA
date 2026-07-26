@@ -2,6 +2,7 @@ import type {
   AdminAccessGrantRecord,
   AdminAccessRuleKind,
   AdminAccessRuleRecord,
+  AdminCatalog,
   AdminEntitlementSummary
 } from "@/lib/contracts/admin";
 import {
@@ -55,9 +56,12 @@ export type AdminGroupSource = AdminGroupDeletionSource &
     archivedAt: Date | null;
     id: string;
     name: string;
+    systemRole: "full_access" | null;
   }>;
 
 export type AdminEntitlementSource = Readonly<{
+  catalog: Pick<AdminCatalog, "models" | "providers" | "searchStrategies">;
+  fullAccess: boolean;
   grants: readonly AdminGrantSource[];
   groupIds: readonly string[];
   userId: string;
@@ -117,6 +121,7 @@ export function serializeAdminGroup(group: AdminGroupSource): AdminGroupRecord {
     deletion: adminGroupDeletionInfo(group),
     id: group.id,
     name: group.name,
+    systemRole: group.systemRole,
     userCount: group._count.users
   };
 }
@@ -128,8 +133,28 @@ export function serializeAdminEntitlements(input: AdminEntitlementSource): Admin
     input.grants.map((grant) => ({
       ...grant,
       providerModelConnectionId: grant.providerModel?.connectionId ?? null
-    }))
+    })),
+    { fullAccess: input.fullAccess }
   );
+
+  if (entitlements.fullAccess) {
+    const models = new Map(
+      input.catalog.models.map((model) => [
+        `${model.provider}:${model.modelId}`,
+        { modelId: model.modelId, provider: model.provider }
+      ])
+    );
+
+    return {
+      models: [...models.values()].sort((left, right) =>
+        left.provider.localeCompare(right.provider) || left.modelId.localeCompare(right.modelId)
+      ),
+      providers: [...new Set(input.catalog.providers.map((provider) => provider.id))].sort(),
+      searchStrategies: [
+        ...new Set(input.catalog.searchStrategies.map((strategy) => strategy.strategyId))
+      ].sort()
+    };
+  }
 
   return {
     models: Array.from(entitlements.modelKeys)

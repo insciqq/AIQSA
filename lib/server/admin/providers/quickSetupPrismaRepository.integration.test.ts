@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { Prisma, PrismaClient, type PrismaClient as PrismaClientType } from "@prisma/client";
 import { afterAll, describe, expect, it } from "vitest";
 import { createPrismaCatalogDataLoader } from "../../catalog/prismaCatalogData";
+import { loadEntitlementsForUser } from "../../auth/dbEntitlements";
 import { resolveEntitlements } from "../../auth/entitlements";
 import { adminProviderQuickSetupPolicy } from "./quickSetupPolicy";
 import { createPrismaAdminProviderQuickSetupRepository } from "./quickSetupPrismaRepository";
@@ -12,6 +13,7 @@ const integration = enabled ? describe : describe.skip;
 const database = new PrismaClient();
 const policy = adminProviderQuickSetupPolicy("openai");
 const terra = policy.candidates[0];
+const luna = policy.candidates[1];
 
 class RollbackFixture extends Error {}
 class InjectedBoundaryFailure extends Error {}
@@ -22,7 +24,7 @@ const INITIAL_WRITE_BOUNDARIES = [
   "providerCredential.create#1",
   "providerCredentialVersion.create#1",
   "providerCredential.update#1",
-  "providerConnection.update#2",
+  "providerUserCredentialAssignment.upsert#1",
   "providerModelCredentialCheck.create#1",
   "accessGrant.create#1",
   "userSettings.update#1",
@@ -32,6 +34,7 @@ const INITIAL_WRITE_BOUNDARIES = [
 const REPLACEMENT_WRITE_BOUNDARIES = [
   "providerCredentialVersion.create#1",
   "providerCredential.update#1",
+  "providerUserCredentialAssignment.upsert#1",
   "providerModelCredentialCheck.create#1"
 ] as const;
 
@@ -43,6 +46,7 @@ const WRITE_DELEGATES = new Set([
   "providerDraftCheck",
   "providerModel",
   "providerModelCredentialCheck",
+  "providerUserCredentialAssignment",
   "runProfile",
   "userSettings"
 ]);
@@ -206,6 +210,7 @@ async function quickGraphSnapshot(
     credentialVersions,
     activeChecks,
     draftChecks,
+    credentialAssignments,
     accessGrants,
     settings,
     profiles,
@@ -246,6 +251,10 @@ async function quickGraphSnapshot(
       orderBy: { id: "asc" },
       where: { connectionId: policy.connection.id }
     }),
+    transaction.providerUserCredentialAssignment.findMany({
+      orderBy: [{ connectionId: "asc" }, { userId: "asc" }],
+      where: { connectionId: policy.connection.id }
+    }),
     transaction.accessGrant.findMany({
       orderBy: { id: "asc" },
       where: {
@@ -263,6 +272,7 @@ async function quickGraphSnapshot(
     accessGrants,
     activeChecks,
     connections,
+    credentialAssignments,
     credentialVersions,
     credentials,
     draftChecks,
@@ -304,6 +314,9 @@ async function resetOpenAiToInitial(transaction: Prisma.TransactionClient): Prom
     where: { connectionId: policy.connection.id }
   });
   await transaction.providerGroupCredentialAssignment.deleteMany({
+    where: { connectionId: policy.connection.id }
+  });
+  await transaction.providerUserCredentialAssignment.deleteMany({
     where: { connectionId: policy.connection.id }
   });
   await transaction.accessGrant.deleteMany({
@@ -382,10 +395,12 @@ async function createActor(transaction: Prisma.TransactionClient, suffix: string
 function plan(input: Readonly<{
   actor: Readonly<{ sessionId: string; userId: string }>;
   credentialId: string;
+  credentialIsNew?: boolean;
   credentialVersion: number;
   expectedFingerprint: string;
   grantId: string;
   mode: "initial" | "recovery" | "replacement";
+  preservedModels: AdminProviderQuickSetupCommitPlan["preservedModels"];
   versionId: string;
 }>): AdminProviderQuickSetupCommitPlan {
   return {
@@ -395,7 +410,7 @@ function plan(input: Readonly<{
     credential: {
       draftVersion: input.credentialVersion,
       id: input.credentialId,
-      isNew: input.mode === "initial",
+      isNew: input.credentialIsNew ?? input.mode === "initial",
       versionEnvelope: `v2.integration.${input.credentialVersion}`,
       versionId: input.versionId
     },
@@ -403,6 +418,7 @@ function plan(input: Readonly<{
     grantId: input.grantId,
     mode: input.mode,
     now: new Date("2026-07-26T10:00:02.000Z"),
+    preservedModels: input.preservedModels,
     provider: "openai"
   };
 }
@@ -416,6 +432,7 @@ const ISOLATED_TABLES = [
   "ProviderCredentialVersion",
   "ProviderDraftCheck",
   "ProviderGroupCredentialAssignment",
+  "ProviderUserCredentialAssignment",
   "ProviderModel",
   "ProviderModelCredentialCheck",
   "RunProfile",
@@ -567,6 +584,7 @@ integration("Prisma provider Quick setup atomic graph", () => {
         expectedFingerprint: initial.fingerprint,
         grantId: `quick-grant-${suffix}`,
         mode: "initial",
+        preservedModels: initial.preservedModels,
         versionId: firstVersionId
       }))).resolves.toEqual({
         defaultChanged: true,
@@ -594,6 +612,17 @@ integration("Prisma provider Quick setup atomic graph", () => {
         providerConnectionId: null,
         searchStrategy: null
       });
+      expect(await transaction.providerUserCredentialAssignment.findUnique({
+        where: {
+          connectionId_userId: {
+            connectionId: policy.connection.id,
+            userId: actor.userId
+          }
+        }
+      })).toMatchObject({ credentialId });
+      expect(await transaction.providerConnection.findUniqueOrThrow({
+        where: { id: policy.connection.id }
+      })).toMatchObject({ defaultCredentialId: null });
       expect(await groupGraphSnapshot(transaction)).toEqual(groupGraphBefore);
 
       const entitlementRows = await transaction.accessGrant.findMany({
@@ -641,6 +670,7 @@ integration("Prisma provider Quick setup atomic graph", () => {
         expectedFingerprint: ready.fingerprint,
         grantId: `unused-grant-${suffix}`,
         mode: "replacement",
+        preservedModels: ready.preservedModels,
         versionId: secondVersionId
       }))).resolves.toEqual({ defaultChanged: false, profilesFilled: [], status: "ready" });
 
@@ -677,6 +707,285 @@ integration("Prisma provider Quick setup atomic graph", () => {
     );
   });
 
+  it("keeps the Quick model grant while wildcard-preserving every credential-available model", async () => {
+    await expect(database.$transaction(async (transaction) => {
+      await resetOpenAiToInitial(transaction);
+      const suffix = randomUUID();
+      const actor = await createActor(transaction, suffix);
+      const fullAccessGroup = await transaction.group.upsert({
+        create: {
+          name: `full-access-${suffix}`,
+          systemRole: "full_access"
+        },
+        update: {},
+        where: { systemRole: "full_access" }
+      });
+      await transaction.userGroup.create({
+        data: {
+          groupId: fullAccessGroup.id,
+          userId: actor.userId
+        }
+      });
+      const repository = createPrismaAdminProviderQuickSetupRepository(
+        transactionBackedClient(transaction)
+      );
+      const initial = await repository.inspect({
+        ...actor,
+        now: new Date("2026-07-26T10:00:00.000Z"),
+        provider: "openai"
+      });
+      expect(initial).toMatchObject({ mode: "initial", state: "not_configured" });
+
+      const credentialId = `quick-full-access-credential-${suffix}`;
+      const firstVersionId = `quick-full-access-version-one-${suffix}`;
+      await expect(repository.commit(plan({
+        actor,
+        credentialId,
+        credentialVersion: 1,
+        expectedFingerprint: initial.fingerprint,
+        grantId: `quick-full-access-grant-${suffix}`,
+        mode: "initial",
+        preservedModels: initial.preservedModels,
+        versionId: firstVersionId
+      }))).resolves.toMatchObject({ status: "ready" });
+      expect(await transaction.accessGrant.findMany({
+        select: { providerModelId: true },
+        where: { userId: actor.userId }
+      })).toEqual([{ providerModelId: terra.modelId }]);
+
+      await transaction.providerModel.update({
+        data: {
+          activeConfig: luna.configuration as Prisma.InputJsonValue,
+          activeVersion: 1,
+          activatedAt: new Date("2026-07-26T10:00:03.000Z"),
+          enabled: true
+        },
+        where: { id: luna.modelId }
+      });
+      await transaction.providerModelCredentialCheck.create({
+        data: {
+          checkedAt: new Date("2026-07-26T10:00:03.000Z"),
+          connectionId: policy.connection.id,
+          connectionVersion: 1,
+          credentialId,
+          credentialVersionId: firstVersionId,
+          evidence: { method: "models_catalog", upstreamModelId: luna.configuration.upstreamModelId },
+          modelVersion: 1,
+          providerModelId: luna.modelId,
+          status: "available"
+        }
+      });
+
+      const twoModelsReady = await repository.inspect({
+        ...actor,
+        now: new Date("2026-07-26T10:00:04.000Z"),
+        provider: "openai"
+      });
+      expect(twoModelsReady).toMatchObject({ mode: "replacement", state: "ready" });
+      expect(twoModelsReady.preservedModels).toEqual([
+        { id: terra.modelId, upstreamModelId: terra.configuration.upstreamModelId },
+        { id: luna.modelId, upstreamModelId: luna.configuration.upstreamModelId }
+      ].sort((left, right) => left.id.localeCompare(right.id)));
+
+      const secondVersionId = `quick-full-access-version-two-${suffix}`;
+      await expect(repository.commit(plan({
+        actor,
+        credentialId,
+        credentialVersion: 2,
+        expectedFingerprint: twoModelsReady.fingerprint,
+        grantId: `unused-full-access-grant-${suffix}`,
+        mode: "replacement",
+        preservedModels: twoModelsReady.preservedModels,
+        versionId: secondVersionId
+      }))).resolves.toMatchObject({ status: "ready" });
+      expect(await transaction.accessGrant.findMany({
+        select: { providerModelId: true },
+        where: { userId: actor.userId }
+      })).toEqual([{ providerModelId: terra.modelId }]);
+      expect(await transaction.providerModelCredentialCheck.findMany({
+        orderBy: { providerModelId: "asc" },
+        select: { providerModelId: true },
+        where: { credentialVersionId: secondVersionId }
+      })).toEqual([
+        { providerModelId: terra.modelId },
+        { providerModelId: luna.modelId }
+      ].sort((left, right) => left.providerModelId.localeCompare(right.providerModelId)));
+
+      await transaction.userGroup.delete({
+        where: {
+          userId_groupId: {
+            groupId: fullAccessGroup.id,
+            userId: actor.userId
+          }
+        }
+      });
+      const afterMembershipRemoval = await createPrismaCatalogDataLoader({
+        env: {},
+        loadEntitlements: (userId) => loadEntitlementsForUser(userId, transaction),
+        prisma: transaction as unknown as PrismaClientType
+      })(actor.userId);
+      expect(afterMembershipRemoval?.models.map((model) => model.modelId)).toContain(terra.modelId);
+      expect(afterMembershipRemoval?.models.map((model) => model.modelId)).not.toContain(luna.modelId);
+
+      const replaced = await repository.inspect({
+        ...actor,
+        now: new Date("2026-07-26T10:00:05.000Z"),
+        provider: "openai"
+      });
+      await expect(repository.clearAssignment({
+        actor,
+        expectedFingerprint: replaced.fingerprint,
+        now: new Date("2026-07-26T10:00:06.000Z"),
+        provider: "openai"
+      })).resolves.toEqual({ status: "cleared" });
+
+      const catalog = await createPrismaCatalogDataLoader({
+        env: {},
+        loadEntitlements: (userId) => loadEntitlementsForUser(userId, transaction),
+        prisma: transaction as unknown as PrismaClientType
+      })(actor.userId);
+      expect(catalog?.models.some((model) =>
+        model.modelId === terra.modelId || model.modelId === luna.modelId
+      )).toBe(false);
+
+      throw new RollbackFixture("full_access_fixture_complete");
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable })).rejects.toBeInstanceOf(
+      RollbackFixture
+    );
+  });
+
+  it("preserves two available models on replacement and clears only the Quick assignment", async () => {
+    await expect(database.$transaction(async (transaction) => {
+      await resetOpenAiToInitial(transaction);
+      const suffix = randomUUID();
+      const actor = await createActor(transaction, suffix);
+      const repository = createPrismaAdminProviderQuickSetupRepository(
+        transactionBackedClient(transaction)
+      );
+      const initial = await repository.inspect({
+        ...actor,
+        now: new Date("2026-07-26T10:00:00.000Z"),
+        provider: "openai"
+      });
+      const credentialId = `quick-multi-credential-${suffix}`;
+      const firstVersionId = `quick-multi-version-one-${suffix}`;
+      await expect(repository.commit(plan({
+        actor,
+        credentialId,
+        credentialVersion: 1,
+        expectedFingerprint: initial.fingerprint,
+        grantId: `quick-multi-terra-grant-${suffix}`,
+        mode: "initial",
+        preservedModels: initial.preservedModels,
+        versionId: firstVersionId
+      }))).resolves.toMatchObject({ status: "ready" });
+
+      await transaction.providerModel.update({
+        data: {
+          activeConfig: luna.configuration as Prisma.InputJsonValue,
+          activeVersion: 1,
+          activatedAt: new Date("2026-07-26T10:00:03.000Z"),
+          enabled: true
+        },
+        where: { id: luna.modelId }
+      });
+      await transaction.accessGrant.create({
+        data: {
+          enabled: true,
+          id: `quick-multi-luna-grant-${suffix}`,
+          providerModelId: luna.modelId,
+          userId: actor.userId
+        }
+      });
+      await transaction.providerModelCredentialCheck.create({
+        data: {
+          checkedAt: new Date("2026-07-26T10:00:03.000Z"),
+          connectionId: policy.connection.id,
+          connectionVersion: 1,
+          credentialId,
+          credentialVersionId: firstVersionId,
+          evidence: { method: "models_catalog", upstreamModelId: luna.configuration.upstreamModelId },
+          modelVersion: 1,
+          providerModelId: luna.modelId,
+          status: "available"
+        }
+      });
+
+      const twoModelsReady = await repository.inspect({
+        ...actor,
+        now: new Date("2026-07-26T10:00:04.000Z"),
+        provider: "openai"
+      });
+      expect(twoModelsReady.preservedModels).toEqual([
+        { id: terra.modelId, upstreamModelId: terra.configuration.upstreamModelId },
+        { id: luna.modelId, upstreamModelId: luna.configuration.upstreamModelId }
+      ].sort((left, right) => left.id.localeCompare(right.id)));
+
+      const secondVersionId = `quick-multi-version-two-${suffix}`;
+      await expect(repository.commit(plan({
+        actor,
+        credentialId,
+        credentialVersion: 2,
+        expectedFingerprint: twoModelsReady.fingerprint,
+        grantId: `unused-quick-multi-grant-${suffix}`,
+        mode: "replacement",
+        preservedModels: twoModelsReady.preservedModels,
+        versionId: secondVersionId
+      }))).resolves.toMatchObject({ status: "ready" });
+      expect(await transaction.providerModelCredentialCheck.findMany({
+        orderBy: { providerModelId: "asc" },
+        select: { providerModelId: true, status: true },
+        where: { credentialVersionId: secondVersionId }
+      })).toEqual([
+        { providerModelId: terra.modelId, status: "available" },
+        { providerModelId: luna.modelId, status: "available" }
+      ].sort((left, right) => left.providerModelId.localeCompare(right.providerModelId)));
+
+      const replaced = await repository.inspect({
+        ...actor,
+        now: new Date("2026-07-26T10:00:05.000Z"),
+        provider: "openai"
+      });
+      expect(replaced.preservedModels).toHaveLength(2);
+      const [credentialBefore, grantsBefore, groupsBefore] = await Promise.all([
+        transaction.providerCredential.findUniqueOrThrow({ where: { id: credentialId } }),
+        transaction.accessGrant.findMany({
+          orderBy: { id: "asc" },
+          where: { userId: actor.userId }
+        }),
+        groupGraphSnapshot(transaction)
+      ]);
+      await expect(repository.clearAssignment({
+        actor,
+        expectedFingerprint: replaced.fingerprint,
+        now: new Date("2026-07-26T10:00:06.000Z"),
+        provider: "openai"
+      })).resolves.toEqual({ status: "cleared" });
+      expect(await transaction.providerUserCredentialAssignment.findUnique({
+        where: {
+          connectionId_userId: {
+            connectionId: policy.connection.id,
+            userId: actor.userId
+          }
+        }
+      })).toBeNull();
+      expect(await transaction.providerCredential.findUniqueOrThrow({
+        where: { id: credentialId }
+      })).toEqual(credentialBefore);
+      expect(await transaction.providerCredentialVersion.count({
+        where: { credentialId }
+      })).toBe(2);
+      expect(await transaction.accessGrant.findMany({
+        orderBy: { id: "asc" },
+        where: { userId: actor.userId }
+      })).toEqual(grantsBefore);
+      expect(await groupGraphSnapshot(transaction)).toEqual(groupsBefore);
+      throw new RollbackFixture("multi_model_and_clear_fixture_complete");
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable })).rejects.toBeInstanceOf(
+      RollbackFixture
+    );
+  });
+
   it("repairs only a bounded personal graph and leaves profiles and groups untouched", async () => {
     await expect(database.$transaction(async (transaction) => {
       await resetOpenAiToInitial(transaction);
@@ -708,6 +1017,7 @@ integration("Prisma provider Quick setup atomic graph", () => {
         expectedFingerprint: initial.fingerprint,
         grantId: `quick-recovery-grant-${suffix}`,
         mode: "initial",
+        preservedModels: initial.preservedModels,
         versionId: firstVersionId
       }))).resolves.toMatchObject({ status: "ready" });
 
@@ -755,6 +1065,7 @@ integration("Prisma provider Quick setup atomic graph", () => {
         expectedFingerprint: recovery.fingerprint,
         grantId: `unused-recovery-grant-${suffix}`,
         mode: "recovery",
+        preservedModels: recovery.preservedModels,
         versionId: secondVersionId
       }))).resolves.toEqual({
         defaultChanged: true,
@@ -812,6 +1123,7 @@ integration("Prisma provider Quick setup atomic graph", () => {
         expectedFingerprint: initial.fingerprint,
         grantId: `quick-boundary-grant-${suffix}`,
         mode: "initial",
+        preservedModels: initial.preservedModels,
         versionId: `quick-boundary-version-one-${suffix}`
       });
       const initialGraph = await quickGraphSnapshot(transaction, actor.userId);
@@ -848,6 +1160,7 @@ integration("Prisma provider Quick setup atomic graph", () => {
         expectedFingerprint: ready.fingerprint,
         grantId: `unused-boundary-grant-${suffix}`,
         mode: "replacement",
+        preservedModels: ready.preservedModels,
         versionId: `quick-boundary-version-two-${suffix}`
       });
       const replacementGraph = await quickGraphSnapshot(transaction, actor.userId);
@@ -906,6 +1219,7 @@ integration("Prisma provider Quick setup atomic graph", () => {
         expectedFingerprint: initial.fingerprint,
         grantId: `quick-recovery-rollback-grant-${suffix}`,
         mode: "initial",
+        preservedModels: initial.preservedModels,
         versionId: `quick-recovery-rollback-version-one-${suffix}`
       }))).resolves.toMatchObject({ status: "ready" });
       await Promise.all([
@@ -931,6 +1245,7 @@ integration("Prisma provider Quick setup atomic graph", () => {
         expectedFingerprint: recovery.fingerprint,
         grantId: `unused-recovery-rollback-grant-${suffix}`,
         mode: "recovery",
+        preservedModels: recovery.preservedModels,
         versionId: `quick-recovery-rollback-version-two-${suffix}`
       });
       const graphBefore = await quickGraphSnapshot(transaction, actor.userId);
@@ -946,10 +1261,9 @@ integration("Prisma provider Quick setup atomic graph", () => {
       });
       expect(trace).toEqual([
         "providerConnection.update#1",
-        "providerModel.update#1",
         "providerCredentialVersion.create#1",
         "providerCredential.update#1",
-        "providerConnection.update#2",
+        "providerUserCredentialAssignment.upsert#1",
         "providerModelCredentialCheck.create#1",
         "userSettings.update#1"
       ]);
@@ -996,6 +1310,7 @@ integration("Prisma provider Quick setup atomic graph", () => {
         expectedFingerprint: initial.fingerprint,
         grantId: `quick-unavailable-grant-${suffix}`,
         mode: "initial",
+        preservedModels: initial.preservedModels,
         versionId: `quick-unavailable-version-${suffix}`
       }))).resolves.toBe("catalog_unavailable");
       expect(catalogReads).toBe(1);
@@ -1006,7 +1321,7 @@ integration("Prisma provider Quick setup atomic graph", () => {
     );
   }, 30_000);
 
-  it("performs no Quick writes when an Advanced team edit wins after inspection", async () => {
+  it("fences a raced team edit, then preserves it on a fresh Quick commit", async () => {
     await expect(database.$transaction(async (transaction) => {
       await resetOpenAiToInitial(transaction);
       const suffix = randomUUID();
@@ -1081,8 +1396,9 @@ integration("Prisma provider Quick setup atomic graph", () => {
         expectedFingerprint: initial.fingerprint,
         grantId: quickGrantId,
         mode: "initial",
+        preservedModels: initial.preservedModels,
         versionId: quickVersionId
-      }))).resolves.toBe("advanced_required");
+      }))).resolves.toBe("stale");
       expect(await quickGraphSnapshot(transaction, actor.userId)).toEqual(advancedGraph);
       expect(await transaction.providerCredential.count({
         where: { id: quickCredentialId }
@@ -1091,6 +1407,32 @@ integration("Prisma provider Quick setup atomic graph", () => {
         where: { id: quickVersionId }
       })).toBe(0);
       expect(await transaction.accessGrant.count({ where: { id: quickGrantId } })).toBe(0);
+      const fresh = await repository.inspect({
+        ...actor,
+        now: new Date("2026-07-26T10:00:03.000Z"),
+        provider: "openai"
+      });
+      expect(fresh).toMatchObject({ mode: "recovery", state: "not_configured" });
+      await expect(repository.commit(plan({
+        actor,
+        credentialId: quickCredentialId,
+        credentialIsNew: true,
+        credentialVersion: 1,
+        expectedFingerprint: fresh.fingerprint,
+        grantId: quickGrantId,
+        mode: "recovery",
+        preservedModels: fresh.preservedModels,
+        versionId: quickVersionId
+      }))).resolves.toMatchObject({ status: "ready" });
+      expect(await groupGraphSnapshot(transaction)).toEqual(advancedGroups);
+      expect(await transaction.providerUserCredentialAssignment.findUnique({
+        where: {
+          connectionId_userId: {
+            connectionId: policy.connection.id,
+            userId: actor.userId
+          }
+        }
+      })).toMatchObject({ credentialId: quickCredentialId });
       throw new RollbackFixture("advanced_winner_fixture_complete");
     }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable })).rejects.toBeInstanceOf(
       RollbackFixture
@@ -1128,6 +1470,7 @@ integration("Prisma provider Quick setup atomic graph", () => {
         expectedFingerprint: initial.fingerprint,
         grantId: `quick-concurrent-grant-one-${suffix}`,
         mode: "initial",
+        preservedModels: initial.preservedModels,
         versionId: `quick-concurrent-version-one-${suffix}`
       });
       const secondPlan = plan({
@@ -1137,6 +1480,7 @@ integration("Prisma provider Quick setup atomic graph", () => {
         expectedFingerprint: initial.fingerprint,
         grantId: `quick-concurrent-grant-two-${suffix}`,
         mode: "initial",
+        preservedModels: initial.preservedModels,
         versionId: `quick-concurrent-version-two-${suffix}`
       });
       const outcomes = await Promise.all([

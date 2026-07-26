@@ -1,8 +1,9 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AdminProvidersExperience } from "./AdminProvidersExperience";
 
 const api = vi.hoisted(() => ({
+  clear: vi.fn(),
   get: vi.fn(),
   submit: vi.fn()
 }));
@@ -12,7 +13,7 @@ const advanced = vi.hoisted(() => ({
   props: null as null | {
     active: boolean;
     advancedEntryProvider?: "anthropic" | "openai" | "openrouter" | null;
-    onBackToPersonal(): void;
+    onBackToQuickSetup(): void;
     onMutationCommitted?(): void | Promise<unknown>;
   }
 }));
@@ -24,6 +25,7 @@ vi.mock("./adminProviderQuickSetupApi", () => ({
     }
     return error.code;
   },
+  clearAdminProviderQuickSetupAssignment: api.clear,
   getAdminProviderQuickSetup: api.get,
   submitAdminProviderQuickSetup: api.submit
 }));
@@ -34,7 +36,7 @@ vi.mock("./AdminProvidersSection", async () => {
     AdminProvidersSection: (props: typeof advanced.props extends infer _Ignored ? {
       active: boolean;
       advancedEntryProvider?: "anthropic" | "openai" | "openrouter" | null;
-      onBackToPersonal(): void;
+      onBackToQuickSetup(): void;
       onMutationCommitted?(): void | Promise<unknown>;
     } : never) => {
       const [draft, setDraft] = React.useState("");
@@ -53,8 +55,8 @@ vi.mock("./AdminProvidersSection", async () => {
           <button onClick={() => void props.onMutationCommitted?.()} type="button">
             Simulate Advanced mutation
           </button>
-          <button onClick={props.onBackToPersonal} type="button">
-            Back to Personal setup
+          <button onClick={props.onBackToQuickSetup} type="button">
+            Back to quick setup
           </button>
         </div>
       );
@@ -77,6 +79,7 @@ function provider(
     ...(state === "ready" ? { model: { displayName: modelName ?? models[id] } } : {}),
     provider: id,
     providerDisplayName: names[id],
+    quickSetupAssigned: state === "ready",
     state,
     stateToken: `state-${id}`
   };
@@ -120,6 +123,7 @@ function deferred<T>() {
 
 describe("AdminProvidersExperience", () => {
   beforeEach(() => {
+    api.clear.mockReset();
     api.get.mockReset();
     api.submit.mockReset();
     advanced.mounts = 0;
@@ -291,7 +295,7 @@ describe("AdminProvidersExperience", () => {
     expect(screen.queryByText("Choose a model available to this key")).not.toBeInTheDocument();
   });
 
-  it("renders attention and server-authoritative Advanced states without exposing the simple form", async () => {
+  it("keeps the key form primary when existing custom configuration is present", async () => {
     api.get.mockResolvedValue({
       data: snapshot({
         anthropic: "advanced_required",
@@ -303,11 +307,55 @@ describe("AdminProvidersExperience", () => {
     render(<AdminProvidersExperience active groups={[]} />);
     await screen.findByText("Setup needs attention");
     expect(screen.getByLabelText("API key")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: /Anthropic Advanced/ }));
-    expect(screen.getByText("Advanced configuration required")).toBeInTheDocument();
-    expect(screen.queryByLabelText("API key")).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Open Advanced configuration" }));
+    fireEvent.click(screen.getByRole("button", { name: /Anthropic Custom setup exists/ }));
+    expect(screen.getByRole("heading", { name: "Connect Anthropic" })).toBeInTheDocument();
+    expect(screen.getByText("Existing team or custom configuration will stay unchanged.")).toBeInTheDocument();
+    expect(screen.getByLabelText("API key")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Advanced configuration" }));
     expect(await screen.findByTestId("advanced-provider-workspace")).toBeInTheDocument();
+  });
+
+  it("confirms a truthful Quick assignment removal without promising fallback access", async () => {
+    api.get
+      .mockResolvedValueOnce({
+        data: snapshot({ openai: "ready", suggestedProvider: "openai" }),
+        ok: true
+      })
+      .mockResolvedValue({ data: snapshot(), ok: true });
+    api.clear.mockResolvedValueOnce({
+      data: {
+        credentialRetained: true,
+        outcome: "assignment_cleared",
+        provider: "openai",
+        providerDisplayName: "OpenAI"
+      },
+      ok: true
+    });
+    render(<AdminProvidersExperience active groups={[]} />);
+
+    await screen.findByText("Ready to chat");
+    expect(screen.getByText(/model access may stop unless an applicable team or default credential/i))
+      .toBeInTheDocument();
+    expect(screen.getByText(/stored credential and all team settings stay unchanged/i))
+      .toBeInTheDocument();
+    expect(screen.getByText(/credential remains manageable in Advanced configuration/i))
+      .toBeInTheDocument();
+    expect(screen.queryByText(/fall back to the applicable/i)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Remove my key assignment" }));
+
+    const confirmation = await screen.findByTestId(
+      "admin-confirm-clear-provider-quick-assignment"
+    );
+    expect(confirmation).toHaveTextContent("Model access may stop");
+    expect(api.clear).not.toHaveBeenCalled();
+    fireEvent.click(within(confirmation).getByRole("button", {
+      name: "Confirm remove key assignment"
+    }));
+
+    await waitFor(() => expect(api.clear).toHaveBeenCalledWith({
+      expectedState: "state-openai",
+      provider: "openai"
+    }, expect.any(Function), expect.any(AbortSignal)));
   });
 
   it("unmounts Advanced with its drafts and refetches Quick only on return", async () => {
@@ -334,11 +382,11 @@ describe("AdminProvidersExperience", () => {
     expect(await screen.findByTestId("advanced-provider-workspace")).toBeInTheDocument();
     expect(screen.getByText("Entry provider: openai")).toBeInTheDocument();
     expect(advanced.props?.advancedEntryProvider).toBe("openai");
-    expect(advanced.props?.onBackToPersonal).toEqual(expect.any(Function));
-    expect(screen.getAllByRole("button", { name: "Back to Personal setup" })).toHaveLength(1);
+    expect(advanced.props?.onBackToQuickSetup).toEqual(expect.any(Function));
+    expect(screen.getAllByRole("button", { name: "Back to quick setup" })).toHaveLength(1);
     await waitFor(() => expect(advanced.mounts).toBe(1));
     fireEvent.change(screen.getByLabelText("Advanced draft"), { target: { value: "preserved draft" } });
-    fireEvent.click(screen.getByRole("button", { name: "Back to Personal setup" }));
+    fireEvent.click(screen.getByRole("button", { name: "Back to quick setup" }));
     await screen.findByText("Ready to chat");
     expect(screen.queryByTestId("advanced-provider-workspace")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Advanced draft")).not.toBeInTheDocument();
@@ -353,7 +401,7 @@ describe("AdminProvidersExperience", () => {
     fireEvent.click(screen.getByRole("button", { name: "Simulate Advanced mutation" }));
     await waitFor(() => expect(onMutationCommitted).toHaveBeenCalledOnce());
     expect(api.get).toHaveBeenCalledTimes(refreshesBeforeMutation);
-    fireEvent.click(screen.getByRole("button", { name: "Back to Personal setup" }));
+    fireEvent.click(screen.getByRole("button", { name: "Back to quick setup" }));
     expect(await screen.findByText("Ready to chat")).toBeInTheDocument();
     expect(api.get).toHaveBeenCalledTimes(refreshesBeforeMutation + 1);
   });
@@ -372,7 +420,7 @@ describe("AdminProvidersExperience", () => {
     const advancedButton = await screen.findByRole("button", { name: "Open Advanced configuration" });
     fireEvent.click(advancedButton);
     expect(await screen.findByTestId("advanced-provider-workspace")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Back to Personal setup" }));
+    fireEvent.click(screen.getByRole("button", { name: "Back to quick setup" }));
     expect(await screen.findByLabelText("API key")).toHaveValue("");
   });
 
@@ -397,7 +445,7 @@ describe("AdminProvidersExperience", () => {
     expect(screen.getByLabelText("API key")).toBeEnabled();
     fireEvent.click(screen.getByRole("button", { name: "Open Advanced configuration" }));
     expect(await screen.findByTestId("advanced-provider-workspace")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Back to Personal setup" }));
+    fireEvent.click(screen.getByRole("button", { name: "Back to quick setup" }));
     await screen.findByText("Ready to chat");
     fireEvent.click(screen.getByRole("button", { name: "Replace API key" }));
     expect(screen.getByLabelText("API key")).toHaveValue("");
@@ -468,7 +516,7 @@ describe("AdminProvidersExperience", () => {
     await screen.findByText("Choose a provider to continue.");
     fireEvent.click(screen.getByRole("button", { name: "Advanced configuration" }));
     await screen.findByTestId("advanced-provider-workspace");
-    fireEvent.click(screen.getByRole("button", { name: "Back to Personal setup" }));
+    fireEvent.click(screen.getByRole("button", { name: "Back to quick setup" }));
     await screen.findByText("Choose a provider to continue.");
     fireEvent.click(screen.getByRole("button", { name: /OpenAI Not connected/ }));
     fireEvent.change(screen.getByLabelText("API key"), { target: { value: "one-key" } });

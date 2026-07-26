@@ -1,14 +1,13 @@
 "use client";
 
 import { AdminAccessRulesSection } from "@/components/admin/AdminAccessRulesSection";
+import { AdminAccessGroupsSection } from "@/components/admin/AdminAccessGroupsSection";
 import { AdminConfirmationHost } from "@/components/admin/AdminConfirmationHost";
 import { AdminConsoleHeader } from "@/components/admin/AdminConsoleHeader";
 import { AdminDashboardUnavailable } from "@/components/admin/AdminDashboardUnavailable";
 import { AdminFeedbackMessages } from "@/components/admin/AdminFeedbackMessages";
 import { AdminEmailSection } from "@/components/admin/AdminEmailSection";
-import { AdminGroupsSection } from "@/components/admin/AdminGroupsSection";
 import { AdminInvitesSection } from "@/components/admin/AdminInvitesSection";
-import { AdminModelAccessSection } from "@/components/admin/AdminModelAccessSection";
 import { AdminMcpGroupAccessPanel, AdminMcpUserAccessPanel } from "@/components/admin/AdminMcpGrantPanels";
 import { AdminMcpServersSection } from "@/components/admin/AdminMcpServersSection";
 import { AdminProvidersExperience } from "@/components/admin/AdminProvidersExperience";
@@ -65,12 +64,12 @@ function AdminHeaderAction({
   invites: AdminInvitesController;
 }>) {
   const form =
-    activeSection === "groups"
+    activeSection === "access" && !groups.access.sectionProps?.draft.detailOpen
       ? {
           Icon: Plus,
           label: "group",
-          open: groups.groups.sectionProps?.draft.createFormOpen ?? false,
-          toggle: groups.groups.toggleCreateForm
+          open: groups.access.sectionProps?.draft.createFormOpen ?? false,
+          toggle: groups.access.toggleCreateForm
         }
       : activeSection === "invites"
         ? {
@@ -133,16 +132,14 @@ function AdminSectionContent({
   users: AdminUsersController;
 }>) {
   switch (activeSection) {
-    case "groups":
-      return groups.groups.sectionProps ? <AdminGroupsSection {...groups.groups.sectionProps} /> : null;
-    case "model-access":
-      return groups.modelAccess.sectionProps ? (
-        <AdminModelAccessSection
-          {...groups.modelAccess.sectionProps}
-          mcpAccess={groups.modelAccess.sectionProps.data.selectedGroup ? (
+    case "access":
+      return groups.access.sectionProps ? (
+        <AdminAccessGroupsSection
+          {...groups.access.sectionProps}
+          mcpAccess={groups.access.sectionProps.data.selectedGroup ? (
             <AdminMcpGroupAccessPanel
               controller={mcp}
-              group={groups.modelAccess.sectionProps.data.selectedGroup}
+              group={groups.access.sectionProps.data.selectedGroup}
             />
           ) : null}
         />
@@ -243,7 +240,7 @@ export function AdminPanel({ adminEmail, adminUserId }: AdminPanelProps) {
     runAction: actionRunner.runAction
   });
   const mcp = useAdminMcpController({
-    active: Boolean(resource.dashboard) && ["mcp", "model-access", "users"].includes(navigation.activeSection),
+    active: Boolean(resource.dashboard) && ["mcp", "access", "users"].includes(navigation.activeSection),
     onMutationCommitted: resource.refresh
   });
   const mcpSection = useAdminMcpSectionState();

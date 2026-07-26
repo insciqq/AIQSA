@@ -451,6 +451,7 @@ export function TopRail({
   activeChatId,
   activeChatTitle,
   adminHref,
+  conversationActionsAvailable = true,
   detailsOpen,
   newChatDisabled,
   onCopyThread,
@@ -472,6 +473,7 @@ export function TopRail({
   activeChatId: string | null;
   activeChatTitle: string;
   adminHref?: string | null;
+  conversationActionsAvailable?: boolean;
   detailsOpen: boolean;
   newChatDisabled: boolean;
   onCopyThread(): void;
@@ -534,7 +536,7 @@ export function TopRail({
 
       <div className="flex min-w-0 items-center justify-end gap-0.5 sm:gap-1">
         <PipelineIndicator pipeline={pipeline} onOpen={onOpenPipeline} />
-        <button
+        {conversationActionsAvailable ? <button
           className={[
             "inline-flex size-11 shrink-0 items-center justify-center rounded-control text-ink-muted hover:bg-control-hover hover:text-ink disabled:cursor-not-allowed disabled:text-ink-disabled disabled:opacity-60 lg:h-9 lg:w-auto lg:min-w-9 lg:gap-2 lg:px-3 lg:text-xs lg:font-medium lg:text-ink-secondary [@media(hover:none)]:!size-11 [@media(pointer:coarse)]:!size-11",
             actionFocusClass
@@ -548,8 +550,8 @@ export function TopRail({
         >
           <Share2 className="size-4" aria-hidden="true" />
           <span className="hidden lg:inline">Share</span>
-        </button>
-        <button
+        </button> : null}
+        {conversationActionsAvailable ? <button
           className={[
             "inline-flex size-11 shrink-0 items-center justify-center rounded-control lg:h-9 lg:w-auto lg:min-w-9 lg:gap-2 lg:px-3 lg:text-xs lg:font-medium [@media(hover:none)]:!size-11 [@media(pointer:coarse)]:!size-11",
             detailsOpen
@@ -566,8 +568,10 @@ export function TopRail({
         >
           <PanelRight className="size-4" aria-hidden="true" />
           <span className="hidden lg:inline">Details</span>
-        </button>
-        <ConversationActionsMenu onCopyThread={onCopyThread} onOpenBranches={onOpenBranches} />
+        </button> : null}
+        {conversationActionsAvailable ? (
+          <ConversationActionsMenu onCopyThread={onCopyThread} onOpenBranches={onOpenBranches} />
+        ) : null}
         <AccountMenu
           accountEmail={accountEmail}
           adminHref={adminHref}

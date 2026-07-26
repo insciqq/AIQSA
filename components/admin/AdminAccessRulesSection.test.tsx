@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { AdminAccessRuleRecord, AdminGroup } from "@/lib/contracts/admin";
 import { AdminAccessRulesSection, type AdminAccessRulesSectionActions, type AdminAccessRulesSectionProps } from "./AdminAccessRulesSection";
 
-const groups: AdminGroup[] = [{ accessGrants: [], archivedAt: null, id: "group-1", name: "operators", userCount: 1 }];
+const groups: AdminGroup[] = [{ accessGrants: [], archivedAt: null, id: "group-1", name: "operators", systemRole: null, userCount: 1 }];
 const rule: AdminAccessRuleRecord = {
   defaultGroups: [{ groupId: "group-1", name: "operators", role: "member" }],
   enabled: true,

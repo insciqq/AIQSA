@@ -16,6 +16,7 @@ const activeGroup: AdminGroup = {
   archivedAt: null,
   id: "group-active",
   name: "Operators",
+  systemRole: null,
   userCount: 1
 };
 

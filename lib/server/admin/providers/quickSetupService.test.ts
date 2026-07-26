@@ -29,7 +29,9 @@ function inspection(
     fingerprint: `fence-${provider}`,
     mode: "initial",
     model: null,
-    primaryCredential: null,
+    preservedModels: [],
+    quickSetupAssignment: null,
+    quickSetupCredential: null,
     provider,
     state: "not_configured",
     ...overrides
@@ -53,6 +55,7 @@ function fixture(input: {
     return { defaultChanged: true, profilesFilled: [], status: "ready" as const };
   }));
   const repository: AdminProviderQuickSetupRepository = {
+    clearAssignment: vi.fn(async () => ({ status: "cleared" as const })),
     commit,
     inspect: vi.fn(async (
       value: Parameters<AdminProviderQuickSetupRepository["inspect"]>[0]
@@ -239,7 +242,11 @@ describe("provider Quick setup service", () => {
         id: "00000000-0000-4000-8000-000000001205",
         templateKey: "openai:gpt-5.6-luna"
       },
-      primaryCredential: { draftVersion: 4, id: "credential-primary" },
+      quickSetupCredential: { draftVersion: 4, id: "credential-primary" },
+      preservedModels: [{
+        id: "00000000-0000-4000-8000-000000001205",
+        upstreamModelId: "gpt-5.6-luna"
+      }],
       state: "ready"
     });
     const value = fixture({
@@ -261,6 +268,128 @@ describe("provider Quick setup service", () => {
     });
   });
 
+  it("preserves every currently available model on replacement", async () => {
+    const replacement = inspection("openai", {
+      configured: true,
+      mode: "replacement",
+      model: {
+        checkedAt,
+        displayName: "GPT-5.6 Luna",
+        id: "00000000-0000-4000-8000-000000001205",
+        templateKey: "openai:gpt-5.6-luna"
+      },
+      preservedModels: [
+        {
+          id: "00000000-0000-4000-8000-000000001205",
+          upstreamModelId: "gpt-5.6-luna"
+        },
+        { id: "custom-openai-model", upstreamModelId: "gpt-team-custom" }
+      ],
+      quickSetupCredential: { draftVersion: 2, id: "credential-primary" },
+      state: "ready"
+    });
+    const value = fixture({
+      inspections: { openai: replacement },
+      modelIds: ["gpt-5.6-luna", "gpt-team-custom"]
+    });
+
+    await value.service.setup({
+      actor,
+      request: {
+        expectedState: await expectedState(value.service, "openai"),
+        provider: "openai",
+        secret: "sk-preserves-two"
+      }
+    });
+
+    expect(value.commit.mock.calls[0][0].preservedModels).toEqual(
+      replacement.preservedModels
+    );
+  });
+
+  it("does not write when replacement would remove a currently available model", async () => {
+    const replacement = inspection("openai", {
+      configured: true,
+      mode: "replacement",
+      model: {
+        checkedAt,
+        displayName: "GPT-5.6 Luna",
+        id: "00000000-0000-4000-8000-000000001205",
+        templateKey: "openai:gpt-5.6-luna"
+      },
+      preservedModels: [
+        {
+          id: "00000000-0000-4000-8000-000000001205",
+          upstreamModelId: "gpt-5.6-luna"
+        },
+        { id: "custom-openai-model", upstreamModelId: "gpt-team-custom" }
+      ],
+      quickSetupCredential: { draftVersion: 2, id: "credential-primary" },
+      state: "ready"
+    });
+    const value = fixture({
+      inspections: { openai: replacement },
+      modelIds: ["gpt-5.6-luna"]
+    });
+
+    await expect(value.service.setup({
+      actor,
+      request: {
+        expectedState: await expectedState(value.service, "openai"),
+        provider: "openai",
+        secret: "sk-would-lose-model"
+      }
+    })).rejects.toMatchObject({ code: "provider_quick_setup_unsupported_catalog" });
+    expect(value.commit).not.toHaveBeenCalled();
+  });
+
+  it("clears only the fenced Quick assignment and reports credential retention", async () => {
+    const ready = inspection("openai", {
+      configured: true,
+      mode: "replacement",
+      quickSetupAssignment: { credentialId: "credential-primary" },
+      quickSetupCredential: { draftVersion: 1, id: "credential-primary" },
+      state: "ready"
+    });
+    const value = fixture({ inspections: { openai: ready } });
+    const clearAssignment = vi.mocked(value.repository.clearAssignment);
+
+    await expect(value.service.clearAssignment({
+      actor,
+      request: {
+        expectedState: await expectedState(value.service, "openai"),
+        provider: "openai"
+      }
+    })).resolves.toEqual({
+      credentialRetained: true,
+      outcome: "assignment_cleared",
+      provider: "openai",
+      providerDisplayName: "OpenAI"
+    });
+    expect(clearAssignment).toHaveBeenCalledWith(expect.objectContaining({
+      actor,
+      expectedFingerprint: ready.fingerprint,
+      provider: "openai"
+    }));
+  });
+
+  it("rejects a stale clear fence without a repository write", async () => {
+    const ready = inspection("openai", {
+      configured: true,
+      mode: "replacement",
+      quickSetupAssignment: { credentialId: "credential-primary" },
+      quickSetupCredential: { draftVersion: 1, id: "credential-primary" },
+      state: "ready"
+    });
+    const value = fixture({ inspections: { openai: ready } });
+
+    await expect(value.service.clearAssignment({
+      actor,
+      request: { expectedState: "stale", provider: "openai" }
+    })).rejects.toMatchObject({ code: "provider_draft_stale" });
+    expect(value.repository.clearAssignment).not.toHaveBeenCalled();
+  });
+
   it("leaves replacement untouched when the old model is absent remotely", async () => {
     const replacement = inspection("openai", {
       configured: true,
@@ -271,7 +400,7 @@ describe("provider Quick setup service", () => {
         id: "00000000-0000-4000-8000-000000001205",
         templateKey: "openai:gpt-5.6-luna"
       },
-      primaryCredential: { draftVersion: 1, id: "credential-primary" },
+      quickSetupCredential: { draftVersion: 1, id: "credential-primary" },
       state: "ready"
     });
     const value = fixture({ inspections: { openai: replacement }, modelIds: ["gpt-5.6-terra"] });
@@ -296,7 +425,7 @@ describe("provider Quick setup service", () => {
         id: "00000000-0000-4000-8000-000000001205",
         templateKey: "openai:gpt-5.6-luna"
       },
-      primaryCredential: { draftVersion: 2, id: "credential-primary" },
+      quickSetupCredential: { draftVersion: 2, id: "credential-primary" },
       state: "needs_attention"
     });
     const value = fixture({

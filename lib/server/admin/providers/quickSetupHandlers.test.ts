@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  createAdminProviderQuickSetupClearHandler,
   createAdminProviderQuickSetupMutationHandler,
   createAdminProviderQuickSetupSnapshotHandler
 } from "./quickSetupHandlers";
@@ -23,6 +24,12 @@ const session = {
 
 function service(overrides: Partial<AdminProviderQuickSetupService> = {}): AdminProviderQuickSetupService {
   return {
+    clearAssignment: vi.fn(async () => ({
+      credentialRetained: true as const,
+      outcome: "assignment_cleared" as const,
+      provider: "openai" as const,
+      providerDisplayName: "OpenAI"
+    })),
     getSnapshot: vi.fn(async () => ({ providers: [], suggestedProvider: null })),
     setup: vi.fn(async () => ({
       checkedAt: "2026-07-26T10:00:00.000Z",
@@ -38,7 +45,7 @@ function service(overrides: Partial<AdminProviderQuickSetupService> = {}): Admin
 }
 
 describe("provider Quick setup handlers", () => {
-  it("requires an active administrator for GET and POST", async () => {
+  it("requires an active administrator for GET, POST, and DELETE", async () => {
     const deps = { resolveAuth: vi.fn(async () => null), service: service() };
     const getResponse = await createAdminProviderQuickSetupSnapshotHandler(deps)(
       new Request("http://localhost/api/admin/providers/quick-setup")
@@ -50,14 +57,22 @@ describe("provider Quick setup handlers", () => {
         method: "POST"
       })
     );
+    const deleteResponse = await createAdminProviderQuickSetupClearHandler(deps)(
+      new Request("http://localhost/api/admin/providers/quick-setup", {
+        body: JSON.stringify({ expectedState: "state-token", provider: "openai" }),
+        headers: { "content-type": "application/json" },
+        method: "DELETE"
+      })
+    );
     expect(getResponse.status).toBe(401);
     expect(postResponse.status).toBe(401);
+    expect(deleteResponse.status).toBe(401);
   });
 
   it.each([
     ["active ordinary user", { role: "user", status: "active" }],
     ["inactive administrator", { role: "admin", status: "disabled" }]
-  ] as const)("rejects an %s for GET and POST", async (_label, userState) => {
+  ] as const)("rejects an %s for GET, POST, and DELETE", async (_label, userState) => {
     const deniedSession = {
       ...session,
       user: { ...session.user, ...userState }
@@ -81,10 +96,19 @@ describe("provider Quick setup handlers", () => {
         method: "POST"
       })
     );
+    const deleteResponse = await createAdminProviderQuickSetupClearHandler(deps as never)(
+      new Request("http://localhost/api/admin/providers/quick-setup", {
+        body: JSON.stringify({ expectedState: "state-token", provider: "openai" }),
+        headers: { "content-type": "application/json" },
+        method: "DELETE"
+      })
+    );
     expect(getResponse.status).toBe(403);
     expect(postResponse.status).toBe(403);
+    expect(deleteResponse.status).toBe(403);
     expect(deniedService.getSnapshot).not.toHaveBeenCalled();
     expect(deniedService.setup).not.toHaveBeenCalled();
+    expect(deniedService.clearAssignment).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -139,6 +163,57 @@ describe("provider Quick setup handlers", () => {
       request: expect.objectContaining({ expectedState: "state-token", provider: "openai" })
     }));
     expect(JSON.stringify(await response.json())).not.toContain("sk-write-only");
+  });
+
+  it("clears only a validated provider assignment for the authenticated actor", async () => {
+    const clearAssignment = vi.fn(async () => ({
+      credentialRetained: true as const,
+      outcome: "assignment_cleared" as const,
+      provider: "openai" as const,
+      providerDisplayName: "OpenAI"
+    }));
+    const handler = createAdminProviderQuickSetupClearHandler({
+      resolveAuth: vi.fn(async () => session),
+      service: service({ clearAssignment })
+    });
+    const response = await handler(new Request(
+      "http://localhost/api/admin/providers/quick-setup",
+      {
+        body: JSON.stringify({ expectedState: "state-token", provider: "openai" }),
+        headers: { "content-type": "application/json" },
+        method: "DELETE"
+      }
+    ));
+
+    expect(response.status).toBe(200);
+    expect(clearAssignment).toHaveBeenCalledWith({
+      actor: { sessionId: "session-admin", userId: "admin" },
+      request: { expectedState: "state-token", provider: "openai" }
+    });
+    expect(await response.json()).toEqual({
+      credentialRetained: true,
+      outcome: "assignment_cleared",
+      provider: "openai",
+      providerDisplayName: "OpenAI"
+    });
+  });
+
+  it("rejects extra fields in a clear-assignment request", async () => {
+    const quickService = service();
+    const response = await createAdminProviderQuickSetupClearHandler({
+      resolveAuth: vi.fn(async () => session),
+      service: quickService
+    })(new Request("http://localhost/api/admin/providers/quick-setup", {
+      body: JSON.stringify({
+        expectedState: "state-token",
+        provider: "openai",
+        credentialId: "must-not-be-accepted"
+      }),
+      headers: { "content-type": "application/json" },
+      method: "DELETE"
+    }));
+    expect(response.status).toBe(400);
+    expect(quickService.clearAssignment).not.toHaveBeenCalled();
   });
 
   it.each([

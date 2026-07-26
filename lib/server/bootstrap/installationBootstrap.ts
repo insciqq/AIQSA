@@ -15,9 +15,9 @@ import {
   normalizeAuthEmail,
   validatePassword
 } from "@/lib/server/auth/password";
+import { ensureFullAccessGroup } from "@/lib/server/auth/fullAccessGroup";
 
 const BOOTSTRAP_LOCK_KEY = "aiqsa:installation-bootstrap:v1";
-const INITIAL_ADMIN_GROUP_NAME = "private-operators";
 const INITIAL_PROMPT_NAME = "Helpful Assistant";
 const INITIAL_SYSTEM_PROMPT =
   "You are a helpful AI assistant. Today is {local_date}, local time is {local_time}.";
@@ -199,6 +199,7 @@ async function hasApplicationRows(tx: Prisma.TransactionClient): Promise<boolean
         UNION ALL SELECT 1 FROM "ProviderCredential"
         UNION ALL SELECT 1 FROM "ProviderCredentialVersion"
         UNION ALL SELECT 1 FROM "ProviderGroupCredentialAssignment"
+        UNION ALL SELECT 1 FROM "ProviderUserCredentialAssignment"
         UNION ALL SELECT 1 FROM "ProviderRunBinding"
         UNION ALL SELECT 1 FROM "SearchStrategy"
         UNION ALL SELECT 1 FROM "Chat"
@@ -430,19 +431,7 @@ async function createInitialAdminFoundation(
     }
   });
 
-  const group = await tx.group.create({
-    data: {
-      name: INITIAL_ADMIN_GROUP_NAME
-    }
-  });
-
-  await tx.userGroup.create({
-    data: {
-      groupId: group.id,
-      role: "owner",
-      userId: input.userId
-    }
-  });
+  await ensureFullAccessGroup(tx, input.userId);
 
   const prompt = await tx.promptPreset.create({
     data: {
@@ -501,6 +490,7 @@ export async function bootstrapInstallationDatabase(
 
       if (state.adoptedUserId) {
         await synchronizeCodeOwnedCatalog(tx);
+        await ensureFullAccessGroup(tx, state.adoptedUserId);
 
         return {
           catalogModelCount: 1,

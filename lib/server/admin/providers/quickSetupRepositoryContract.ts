@@ -23,7 +23,14 @@ export type AdminProviderQuickSetupInspection = Readonly<{
     id: string;
     templateKey: ProviderModelTemplateKey;
   }>;
-  primaryCredential: null | Readonly<{
+  preservedModels: ReadonlyArray<Readonly<{
+    id: string;
+    upstreamModelId: string;
+  }>>;
+  quickSetupAssignment: null | Readonly<{
+    credentialId: string;
+  }>;
+  quickSetupCredential: null | Readonly<{
     draftVersion: number;
     id: string;
   }>;
@@ -46,6 +53,7 @@ export type AdminProviderQuickSetupCommitPlan = Readonly<{
   grantId: string;
   mode: "initial" | "recovery" | "replacement";
   now: Date;
+  preservedModels: AdminProviderQuickSetupInspection["preservedModels"];
   provider: AdminProviderQuickSetupProviderId;
 }>;
 
@@ -59,7 +67,22 @@ export type AdminProviderQuickSetupCommitResult =
       status: "ready";
     }>;
 
+export type AdminProviderQuickSetupClearPlan = Readonly<{
+  actor: AdminProviderQuickSetupActor;
+  expectedFingerprint: string;
+  now: Date;
+  provider: AdminProviderQuickSetupProviderId;
+}>;
+
+export type AdminProviderQuickSetupClearCommitResult =
+  | "advanced_required"
+  | "stale"
+  | Readonly<{ status: "cleared" }>;
+
 export type AdminProviderQuickSetupRepository = Readonly<{
+  clearAssignment(
+    plan: AdminProviderQuickSetupClearPlan
+  ): Promise<AdminProviderQuickSetupClearCommitResult>;
   commit(plan: AdminProviderQuickSetupCommitPlan): Promise<AdminProviderQuickSetupCommitResult>;
   inspect(input: AdminProviderQuickSetupActor & Readonly<{
     now: Date;

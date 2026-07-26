@@ -69,27 +69,27 @@ describe("useAdminSectionNavigation", () => {
     await waitFor(() => expect(screen.getByRole("tab", { name: "Invites" })).toHaveAttribute("aria-selected", "true"));
     expect(screen.getByTestId("active-panel")).toHaveTextContent("Invites");
 
-    fireEvent.click(screen.getByRole("tab", { name: "Groups" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Access & groups" }));
     expect(window.location.pathname).toBe("/admin");
-    expect(window.location.search).toBe("?mode=compact&section=groups");
+    expect(window.location.search).toBe("?mode=compact&section=access");
     expect(window.location.hash).toBe("#current");
     expect(window.history.state).toMatchObject({ nextRouter: { marker: "keep" } });
 
-    fireEvent.click(screen.getByRole("tab", { name: "Users" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Providers" }));
     expect(window.location.search).toBe("?mode=compact");
     expect(window.location.hash).toBe("#current");
 
     act(() => window.history.back());
-    await waitFor(() => expect(window.location.search).toBe("?mode=compact&section=groups"));
-    expect(screen.getByRole("tab", { name: "Groups" })).toHaveAttribute("aria-selected", "true");
+    await waitFor(() => expect(window.location.search).toBe("?mode=compact&section=access"));
+    expect(screen.getByRole("tab", { name: "Access & groups" })).toHaveAttribute("aria-selected", "true");
 
     act(() => window.history.back());
     await waitFor(() => expect(window.location.search).toBe("?mode=compact&section=invites"));
     expect(screen.getByTestId("active-panel")).toHaveTextContent("Invites");
 
     act(() => window.history.forward());
-    await waitFor(() => expect(window.location.search).toBe("?mode=compact&section=groups"));
-    expect(screen.getByTestId("active-panel")).toHaveTextContent("Groups");
+    await waitFor(() => expect(window.location.search).toBe("?mode=compact&section=access"));
+    expect(screen.getByTestId("active-panel")).toHaveTextContent("Access & groups");
   });
 
   it("models the compact section index as a history entry without inventing a route", async () => {
@@ -115,7 +115,7 @@ describe("useAdminSectionNavigation", () => {
   it("implements Arrow, Home, and End roving navigation with wraparound", async () => {
     window.history.replaceState(null, "", "/admin");
     renderNavigation();
-    await waitFor(() => expect(screen.getByRole("tab", { name: "Users" })).toHaveAttribute("aria-selected", "true"));
+    await waitFor(() => expect(screen.getByRole("tab", { name: "Providers" })).toHaveAttribute("aria-selected", "true"));
 
     async function press(from: string, key: string, to: string) {
       const target = screen.getByRole("tab", { name: to });
@@ -128,11 +128,11 @@ describe("useAdminSectionNavigation", () => {
       expect(scrollIntoView).not.toHaveBeenCalled();
     }
 
-    await press("Users", "ArrowLeft", "Usage");
-    await press("Usage", "ArrowRight", "Users");
-    await press("Users", "ArrowDown", "Groups");
-    await press("Groups", "ArrowUp", "Users");
-    await press("Users", "End", "Safety");
+    await press("Providers", "ArrowLeft", "Safety");
+    await press("Safety", "ArrowRight", "Providers");
+    await press("Providers", "ArrowDown", "Users");
+    await press("Users", "ArrowUp", "Providers");
+    await press("Providers", "End", "Safety");
     await press("Safety", "Home", "Providers");
 
     const accepted = fireEvent.keyDown(screen.getByRole("tab", { name: "Providers" }), { key: "PageDown" });
@@ -163,8 +163,9 @@ describe("useAdminSectionNavigation", () => {
   it("treats focus inside hidden or inert content as unstable", async () => {
     window.history.replaceState(null, "", "/admin?section=groups");
     const harness = renderNavigation();
-    const activeTab = await screen.findByRole("tab", { name: "Groups" });
+    const activeTab = await screen.findByRole("tab", { name: "Access & groups" });
     await waitFor(() => expect(activeTab).toHaveAttribute("aria-selected", "true"));
+    expect(window.location.search).toBe("?section=access");
 
     const hiddenOwner = document.createElement("div");
     hiddenOwner.setAttribute("aria-hidden", "true");

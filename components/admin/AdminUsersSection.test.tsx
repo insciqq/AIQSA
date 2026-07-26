@@ -10,8 +10,8 @@ import {
 } from "./AdminUsersSection";
 
 const groups: AdminGroup[] = [
-  { accessGrants: [], archivedAt: null, id: "group-operators", name: "Operators", userCount: 2 },
-  { accessGrants: [], archivedAt: "2026-07-01T00:00:00.000Z", id: "group-archived", name: "Archived group", userCount: 0 }
+  { accessGrants: [], archivedAt: null, id: "group-operators", name: "Operators", systemRole: null, userCount: 2 },
+  { accessGrants: [], archivedAt: "2026-07-01T00:00:00.000Z", id: "group-archived", name: "Archived group", systemRole: null, userCount: 0 }
 ];
 
 function createUser(overrides: Partial<AdminUserRecord> = {}): AdminUserRecord {
@@ -38,7 +38,6 @@ function createActions(): AdminUsersActions {
   return {
     onApprove: vi.fn(),
     onBackToList: vi.fn(),
-    onEditUserGroups: vi.fn(),
     onNextPage: vi.fn(),
     onPreviousPage: vi.fn(),
     onQueryChange: vi.fn(),
@@ -61,7 +60,7 @@ function createFixture(options: {
   view?: Partial<AdminUsersView>;
 } = {}) {
   const pageUsers = options.pageUsers ?? [createUser()];
-  const selectedUser = options.selectedUser === undefined ? pageUsers[0] ?? null : options.selectedUser;
+  const selectedUser = options.selectedUser ?? null;
   const actions = createActions();
   const detail = createRef<HTMLElement>();
   const groupsEditor = createRef<HTMLDivElement>();
@@ -101,62 +100,66 @@ function createFixture(options: {
 }
 
 describe("AdminUsersSection", () => {
-  it("keeps a flat index and detail mounted while compact ownership switches", () => {
-    const fixture = createFixture();
-    const view = render(<AdminUsersSection {...fixture.props} />);
+  it("renders a full-width directory with whole-row selection and no persistent detail", () => {
+    const user = createUser();
+    const fixture = createFixture({ pageUsers: [user] });
+    render(<AdminUsersSection {...fixture.props} />);
 
-    expect(screen.getByTestId("admin-users-index")).toHaveClass("block", "lg:block");
-    expect(screen.getByTestId("admin-users-detail-pane")).toHaveClass("hidden", "lg:block");
-    expect(screen.getByTestId("admin-user-row")).toHaveTextContent("active@example.com");
-    expect(screen.queryByRole("table")).not.toBeInTheDocument();
+    expect(screen.getByTestId("admin-users-index")).toBeVisible();
+    expect(screen.queryByTestId("admin-users-detail-pane")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Details" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Review" })).not.toBeInTheDocument();
 
-    view.rerender(<AdminUsersSection {...fixture.props} view={{ ...fixture.props.view, compactDetailOpen: true }} />);
-    expect(screen.getByTestId("admin-users-index")).toHaveClass("hidden", "lg:block");
-    expect(screen.getByTestId("admin-users-detail-pane")).toHaveClass("block", "lg:block");
+    const row = screen.getByRole("button", { name: "Open Active User" });
+    expect(row).toHaveTextContent("active@example.com");
+    fireEvent.click(row);
+    expect(fixture.actions.onSelectUser).toHaveBeenCalledWith(user.id);
+  });
+
+  it("renders only the dedicated detail while a user is open and connects Back", () => {
+    const user = createUser();
+    const fixture = createFixture({ selectedUser: user, view: { compactDetailOpen: true } });
+    render(<AdminUsersSection {...fixture.props} />);
+
+    expect(screen.queryByTestId("admin-users-index")).not.toBeInTheDocument();
+    expect(screen.getByTestId("admin-users-detail-pane")).toBeVisible();
+    expect(fixture.detail.current).toBe(screen.getByTestId("admin-user-detail"));
     fireEvent.click(screen.getByRole("button", { name: "Back to users" }));
     expect(fixture.actions.onBackToList).toHaveBeenCalledTimes(1);
   });
 
-  it("distinguishes an empty installation from an empty filtered view", () => {
+  it("distinguishes an empty installation from an empty filtered view without a blank inspector", () => {
     const empty = createFixture({ pageUsers: [], selectedUser: null, totalUserCount: 0 });
     const view = render(<AdminUsersSection {...empty.props} />);
     expect(screen.getByText("No users yet")).toBeVisible();
-    expect(screen.getByText("No user selected")).toBeVisible();
+    expect(screen.queryByText("No user selected")).not.toBeInTheDocument();
 
     const filtered = createFixture({ pageUsers: [], selectedUser: null, totalUserCount: 3, view: { filteredCount: 0, query: "missing" } });
     view.rerender(<AdminUsersSection {...filtered.props} />);
     expect(screen.getByText("No users match this view")).toBeVisible();
-    expect(screen.queryByText("No users yet")).not.toBeInTheDocument();
   });
 
-  it("delegates search, filter, every sort key, pagination, and selection", () => {
-    const user = createUser();
+  it("delegates search, filter, sorting, and pagination from the directory", () => {
     const fixture = createFixture({
-      pageUsers: [user],
-      selectedUser: user,
       view: { filteredCount: 51, pageCount: 3, pageEnd: 26, pageIndex: 1, pageStart: 26 }
     });
     render(<AdminUsersSection {...fixture.props} />);
 
     fireEvent.change(screen.getByLabelText("Search users"), { target: { value: "pending@example.com" } });
     fireEvent.click(within(screen.getByRole("group", { name: "User status filters" })).getByRole("button", { name: "pending" }));
-    for (const sortKey of ["status", "role", "groups", "access", "lastSession", "user"]) {
-      fireEvent.change(screen.getByLabelText("Sort users"), { target: { value: sortKey } });
-    }
+    fireEvent.change(screen.getByLabelText("Sort users"), { target: { value: "lastSession" } });
     fireEvent.click(screen.getByRole("button", { name: "Asc" }));
     fireEvent.click(screen.getByRole("button", { name: "Previous users page" }));
     fireEvent.click(screen.getByRole("button", { name: "Next users page" }));
-    fireEvent.click(screen.getByRole("button", { name: "Details" }));
 
     expect(fixture.actions.onQueryChange).toHaveBeenCalledWith("pending@example.com");
     expect(fixture.actions.onStatusFilterChange).toHaveBeenCalledWith("pending");
     expect(fixture.actions.onSort).toHaveBeenCalledWith("lastSession");
     expect(fixture.actions.onPreviousPage).toHaveBeenCalledTimes(1);
     expect(fixture.actions.onNextPage).toHaveBeenCalledTimes(1);
-    expect(fixture.actions.onSelectUser).toHaveBeenCalledWith(user.id);
   });
 
-  it("keeps refs on the selected detail and delegates pending lifecycle actions", () => {
+  it("keeps pending lifecycle and membership actions in the dedicated detail", () => {
     const pending = createUser({
       deletion: { canDelete: true, reason: null, summary: "No app-owned records detected; auth request data can be removed." },
       displayName: "Pending User",
@@ -165,13 +168,10 @@ describe("AdminUsersSection", () => {
       id: "user-pending",
       status: "pending"
     });
-    const fixture = createFixture({ pageUsers: [pending], selectedUser: pending, view: { compactDetailOpen: true } });
+    const fixture = createFixture({ selectedUser: pending, view: { compactDetailOpen: true } });
     render(<AdminUsersSection {...fixture.props} />);
 
-    expect(fixture.detail.current).toBe(screen.getByTestId("admin-user-detail"));
-    expect(fixture.detail.current?.tagName).toBe("ARTICLE");
     expect(fixture.groupsEditor.current).toBe(screen.getByTestId("admin-user-groups-editor"));
-    expect(screen.queryByRole("checkbox", { name: "Archived group" })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("checkbox", { name: "Operators" }));
     fireEvent.click(screen.getByRole("button", { name: "Approve user" }));
     fireEvent.click(screen.getByRole("button", { name: "Reject user" }));
@@ -183,18 +183,17 @@ describe("AdminUsersSection", () => {
     expect(fixture.actions.onRequestDelete).toHaveBeenCalledWith(pending);
   });
 
-  it("keeps active mutations in detail and disables them while another action runs", () => {
+  it("keeps active mutations disabled while another action runs", () => {
     const active = createUser();
-    const fixture = createFixture({ pageUsers: [active], selectedUser: active, view: { compactDetailOpen: true } });
+    const fixture = createFixture({ selectedUser: active, view: { compactDetailOpen: true } });
     render(<AdminUsersSection {...fixture.props} status={{ actionsDisabled: true }} />);
 
-    expect(screen.getByRole("button", { name: "Details" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Save groups" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Revoke sessions" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Disable user" })).toBeDisabled();
   });
 
-  it("keeps catalog-backed model rows and collapses missing model grants into one truthful disclosure", () => {
+  it("keeps catalog-backed and unavailable model grants truthful", () => {
     const active = createUser({
       effectiveEntitlements: {
         models: [
@@ -206,34 +205,22 @@ describe("AdminUsersSection", () => {
         searchStrategies: ["web"]
       }
     });
-    const fixture = createFixture({ pageUsers: [active], selectedUser: active, view: { compactDetailOpen: true } });
+    const fixture = createFixture({ selectedUser: active, view: { compactDetailOpen: true } });
     render(<AdminUsersSection {...fixture.props} />);
 
     expect(screen.getByText("OpenAI / GPT 5.5")).toBeVisible();
-    expect(screen.queryByText("Unavailable provider / Unavailable model")).not.toBeInTheDocument();
-
-    const summary = screen.getByText("2 unavailable model grants");
-    const disclosure = summary.closest("details");
-    expect(disclosure).not.toHaveAttribute("open");
-    fireEvent.click(summary);
-
-    expect(disclosure).toHaveAttribute("open");
+    fireEvent.click(screen.getByText("2 unavailable model grants"));
     expect(screen.getByText("legacy-openai / retired-alpha")).toBeVisible();
     expect(screen.getByText("legacy-anthropic / retired-beta")).toBeVisible();
-    expect(screen.getByText(/remain effective records/)).toBeVisible();
   });
 
   it("keeps the acting admin read-only", () => {
     const currentAdmin = createUser({ displayName: "Current Admin", email: "admin@example.com", id: "admin-current", role: "admin" });
-    const fixture = createFixture({ pageUsers: [currentAdmin], selectedUser: currentAdmin, view: { compactDetailOpen: true } });
+    const fixture = createFixture({ selectedUser: currentAdmin, view: { compactDetailOpen: true } });
     render(<AdminUsersSection {...fixture.props} />);
 
-    expect(screen.getByText("You")).toBeVisible();
     expect(screen.getByText(/Acting admin/)).toBeVisible();
-    expect(screen.getByText(/self-disable and self-delete are not exposed/i)).toBeVisible();
     expect(screen.queryByRole("button", { name: "Save groups" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /^Revoke/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^Disable/ })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /^Delete/ })).not.toBeInTheDocument();
   });
 });

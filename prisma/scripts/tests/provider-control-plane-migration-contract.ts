@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 const TARGET_MIGRATION = "20260723230000_provider_control_plane_foundation";
 const CONTEXT_REPAIR_MIGRATION = "20260724120000_repair_provider_model_context_windows";
 const RUN_PROFILE_MIGRATION = "20260724190000_admin_run_profiles";
+const USER_ASSIGNMENT_MIGRATION = "20260726140000_provider_user_credential_assignments";
 const POSTGRES_USER = "aiqsa";
 const POSTGRES_SERVICE = "postgres";
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -408,6 +409,26 @@ function runValidMigrationAndLineageChecks(): void {
     );
 
     requireSuccess(
+      psql(database, migrationSql(USER_ASSIGNMENT_MIGRATION)),
+      "apply provider user credential assignment migration"
+    );
+    assert.equal(
+      scalar(
+        database,
+        `SELECT concat_ws('|',
+          to_regclass('public."ProviderUserCredentialAssignment"')::text,
+          EXISTS (
+            SELECT 1 FROM pg_enum AS enum_value
+            JOIN pg_type AS enum_type ON enum_type.oid = enum_value.enumtypid
+            WHERE enum_type.typname = 'ProviderCredentialSource'
+              AND enum_value.enumlabel = 'user'
+          )::text
+        );`
+      ),
+      `"ProviderUserCredentialAssignment"|true`
+    );
+
+    requireSuccess(
       psql(
         database,
         `INSERT INTO "ProviderCredential" (
@@ -428,6 +449,30 @@ function runValidMigrationAndLineageChecks(): void {
         WHERE "id" = 'credential-openai';`
       ),
       "create valid credential lineage fixture"
+    );
+
+    expectDatabaseRejection(
+      database,
+      "cross-connection user assignment",
+      `INSERT INTO "ProviderUserCredentialAssignment" (
+         "connectionId", "userId", "credentialId", "updatedAt"
+       ) VALUES (
+         '00000000-0000-4000-8000-000000001102', 'provider-user',
+         'credential-openrouter', CURRENT_TIMESTAMP
+       );`,
+      /ProviderUserAssignment_credential_fkey/u
+    );
+    requireSuccess(
+      psql(
+        database,
+        `INSERT INTO "ProviderUserCredentialAssignment" (
+           "connectionId", "userId", "credentialId", "updatedAt"
+         ) VALUES (
+           '00000000-0000-4000-8000-000000001102', 'provider-user',
+           'credential-openai', CURRENT_TIMESTAMP
+         );`
+      ),
+      "create valid direct user credential assignment"
     );
 
     expectDatabaseRejection(

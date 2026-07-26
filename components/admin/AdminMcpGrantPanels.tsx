@@ -64,13 +64,16 @@ export function AdminMcpGroupAccessPanel({
   group: AdminGroup;
 }>) {
   const servers = controller.state.servers.filter((server) => !server.archivedAt);
+  const systemFullAccess = group.systemRole === "full_access";
   const disabled = controller.state.busy || Boolean(group.archivedAt);
   return (
     <section className="border-b border-trace-subtle py-5" data-testid="admin-group-mcp-access">
       <div>
         <div className="text-sm font-semibold text-ink">MCP server grants</div>
         <p className="mt-1 text-xs leading-5 text-ink-muted">
-          A grant unlocks every valid current and future tool from that installation-owned server. Personal fields are never granted through a group.
+          {systemFullAccess
+            ? "Full access automatically includes every current and future MCP server. Personal fields remain direct-user permissions."
+            : "A grant unlocks every valid current and future tool from that installation-owned server. Personal fields are never granted through a group."}
         </p>
       </div>
       <div className="mt-4 divide-y divide-trace-subtle border-y border-trace-subtle">
@@ -88,15 +91,25 @@ export function AdminMcpGroupAccessPanel({
                   {server.enabled ? "Enabled installation-wide" : "Currently disabled installation-wide"}
                 </p>
               </div>
-              <GrantToggle
-                checked={grant?.canUse === true}
-                disabled={disabled}
-                label={`${grant?.canUse ? "Revoke" : "Grant"} ${server.name} for group ${group.name}`}
-                onClick={() => void controller.actions.grant(server.id, {
-                  canUse: grant?.canUse !== true,
-                  groupId: group.id
-                })}
-              />
+              {systemFullAccess ? (
+                <span
+                  className="inline-flex min-h-control-sm items-center gap-1.5 rounded-control bg-proof/[0.08] px-3 text-xs font-medium text-proof"
+                  data-testid={`system-mcp-grant-${server.id}`}
+                >
+                  <Check aria-hidden="true" className="size-3.5" />
+                  Included automatically
+                </span>
+              ) : (
+                <GrantToggle
+                  checked={grant?.canUse === true}
+                  disabled={disabled}
+                  label={`${grant?.canUse ? "Revoke" : "Grant"} ${server.name} for group ${group.name}`}
+                  onClick={() => void controller.actions.grant(server.id, {
+                    canUse: grant?.canUse !== true,
+                    groupId: group.id
+                  })}
+                />
+              )}
             </div>
           );
         })}

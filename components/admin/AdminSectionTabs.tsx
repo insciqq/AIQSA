@@ -3,14 +3,12 @@ import {
   adminSectionPanelId,
   adminSections,
   adminSectionTabId,
-  type AdminSectionGroupId,
   type AdminSectionId
 } from "@/components/admin/adminSections";
 import { focusRing, touchTarget } from "@/components/admin/adminPrimitives";
 import type { AdminSectionNavigation } from "@/components/admin/useAdminSectionNavigation";
 import type { AdminDashboard } from "@/lib/contracts/admin";
-import { ChevronDown } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 
 type AdminSectionTabsProps = Readonly<{
   navigation: Pick<
@@ -19,8 +17,6 @@ type AdminSectionTabsProps = Readonly<{
   >;
   summary?: AdminDashboard["navigation"] | null;
 }>;
-
-type DisclosureGroupId = Exclude<AdminSectionGroupId, "personal">;
 
 function sectionAttention(
   section: AdminSectionId,
@@ -33,18 +29,9 @@ function sectionAttention(
   return section === "invites" ? attention.openInvites : 0;
 }
 
-function initialDisclosure(summary: AdminDashboard["navigation"] | null | undefined) {
-  return {
-    advanced: summary?.advancedConfigured ?? true,
-    team: summary?.teamConfigured ?? true
-  } satisfies Record<DisclosureGroupId, boolean>;
-}
-
 export function AdminSectionTabs({ navigation, summary = null }: AdminSectionTabsProps) {
   const activeTabRef = useRef<HTMLButtonElement | null>(null);
   const tablistRef = useRef<HTMLElement | null>(null);
-  const [disclosureOverride, setDisclosureOverride] = useState<Partial<Record<DisclosureGroupId, boolean>>>({});
-  const disclosureDefaults = useMemo(() => initialDisclosure(summary), [summary]);
 
   useEffect(() => {
     const activeTab = activeTabRef.current;
@@ -94,55 +81,16 @@ export function AdminSectionTabs({ navigation, summary = null }: AdminSectionTab
         <div className="flex min-w-0 flex-col gap-5">
           {adminSectionGroups.map((group) => {
             const sections = adminSections.filter((section) => section.group === group.id);
-            const activeInGroup = sections.find((section) => section.id === navigation.activeSection) ?? null;
-            const disclosureId = group.id === "personal" ? null : group.id;
-            const expanded = disclosureId
-              ? disclosureOverride[disclosureId] ?? disclosureDefaults[disclosureId]
-              : true;
-            const visibleSections = expanded ? sections : activeInGroup ? [activeInGroup] : [];
-            const groupAttention = group.id === "team"
-              ? (summary?.attention.pendingUsers ?? 0) +
-                (summary?.attention.activeUsersWithoutModelAccess ?? 0) +
-                (summary?.attention.openInvites ?? 0)
-              : 0;
 
             return (
-              <div className="min-w-0" data-expanded={expanded} data-testid={`admin-nav-group-${group.id}`} key={group.id} role="presentation">
-                {disclosureId ? (
-                  <button
-                    aria-expanded={expanded}
-                    className={`flex min-h-control-sm w-full min-w-0 items-center gap-2 rounded-control px-2.5 text-left text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-muted hover:bg-control-hover hover:text-ink-secondary ${focusRing} ${touchTarget}`}
-                    onClick={() => {
-                      setDisclosureOverride((current) => ({
-                        ...current,
-                        [disclosureId]: !(current[disclosureId] ?? disclosureDefaults[disclosureId])
-                      }));
-                    }}
-                    type="button"
-                  >
-                    <span className="min-w-0 flex-1 truncate">{group.label}</span>
-                    {groupAttention > 0 ? (
-                      <span
-                        aria-hidden="true"
-                        className="shrink-0 font-mono text-[10px] normal-case tracking-normal text-caution"
-                      >
-                        {groupAttention} {groupAttention === 1 ? "item" : "items"}
-                      </span>
-                    ) : null}
-                    <ChevronDown
-                      aria-hidden="true"
-                      className={`size-3.5 shrink-0 transition-transform ${expanded ? "rotate-180" : ""}`}
-                    />
-                  </button>
-                ) : (
-                  <p className="px-2.5 text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-muted">
-                    {group.label}
-                  </p>
-                )}
+              <div className="min-w-0" data-testid={`admin-nav-group-${group.id}`} key={group.id} role="presentation">
+                <p className="px-2.5 text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-muted">
+                  {group.label}
+                </p>
 
-                {visibleSections.length ? (
+                {sections.length ? (
                   <div className="mt-1 flex min-w-0 flex-col gap-1" role="presentation">
-                    {visibleSections.map((section) => {
+                    {sections.map((section) => {
                       const active = section.id === navigation.activeSection;
                       const SectionIcon = section.Icon;
                       const attention = sectionAttention(section.id, summary?.attention ?? null);

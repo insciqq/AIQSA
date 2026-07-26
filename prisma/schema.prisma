@@ -108,39 +108,41 @@ enum ProviderRunRole {
 enum ProviderCredentialSource {
   default
   group
+  user
 }
 
 model User {
-  id                     String               @id @default(uuid())
-  email                  String?              @unique
-  displayName            String
-  role                   UserRole             @default(user)
-  status                 UserStatus           @default(pending)
-  createdAt              DateTime             @default(now())
-  updatedAt              DateTime             @updatedAt
-  accessGrants           AccessGrant[]
-  attachments            Attachment[]
-  authAccessRulesCreated AuthAccessRule[]     @relation("AuthAccessRuleCreator")
-  authFlowTokens         AuthFlowToken[]
-  authIdentities         AuthIdentity[]
-  authInvitesAccepted    AuthInvite[]         @relation("AuthInviteAcceptedUser")
-  authInvitesCreated     AuthInvite[]         @relation("AuthInviteCreator")
-  authSessions           AuthSession[]
-  authSessionsRevoked    AuthSession[]        @relation("AuthSessionRevoker")
-  chats                  Chat[]
-  folders                Folder[]
-  groups                 UserGroup[]
-  mcpGrants              McpGrant[]
-  mcpOAuthConnections    McpOAuthConnection[]
-  mcpUserServers         McpUserServer[]
-  modelRuns              ModelRun[]
-  promptPresets          PromptPreset[]
-  runProfileUpdates      RunProfile[]        @relation("RunProfileUpdater")
-  settings               UserSettings?
-  sharedSnapshots        SharedChatSnapshot[]
-  smtpActivations        SmtpControl[]         @relation("SmtpControlActivator")
-  smtpConfigurationEdits SmtpControl[]         @relation("SmtpControlUpdater")
-  usageEvents            UsageEvent[]
+  id                            String                             @id @default(uuid())
+  email                         String?                            @unique
+  displayName                   String
+  role                          UserRole                           @default(user)
+  status                        UserStatus                         @default(pending)
+  createdAt                     DateTime                           @default(now())
+  updatedAt                     DateTime                           @updatedAt
+  accessGrants                  AccessGrant[]
+  attachments                   Attachment[]
+  authAccessRulesCreated        AuthAccessRule[]                   @relation("AuthAccessRuleCreator")
+  authFlowTokens                AuthFlowToken[]
+  authIdentities                AuthIdentity[]
+  authInvitesAccepted           AuthInvite[]                       @relation("AuthInviteAcceptedUser")
+  authInvitesCreated            AuthInvite[]                       @relation("AuthInviteCreator")
+  authSessions                  AuthSession[]
+  authSessionsRevoked           AuthSession[]                      @relation("AuthSessionRevoker")
+  chats                         Chat[]
+  folders                       Folder[]
+  groups                        UserGroup[]
+  mcpGrants                     McpGrant[]
+  mcpOAuthConnections           McpOAuthConnection[]
+  mcpUserServers                McpUserServer[]
+  modelRuns                     ModelRun[]
+  promptPresets                 PromptPreset[]
+  providerCredentialAssignments ProviderUserCredentialAssignment[]
+  runProfileUpdates             RunProfile[]                       @relation("RunProfileUpdater")
+  settings                      UserSettings?
+  sharedSnapshots               SharedChatSnapshot[]
+  smtpActivations               SmtpControl[]                      @relation("SmtpControlActivator")
+  smtpConfigurationEdits        SmtpControl[]                      @relation("SmtpControlUpdater")
+  usageEvents                   UsageEvent[]
 }
 
 model SmtpControl {
@@ -302,6 +304,7 @@ model AuthFlowToken {
 model Group {
   id                            String                              @id @default(uuid())
   name                          String                              @unique
+  systemRole                    GroupSystemRole?                    @unique
   archivedAt                    DateTime?
   createdAt                     DateTime                            @default(now())
   updatedAt                     DateTime                            @updatedAt
@@ -313,6 +316,10 @@ model Group {
   users                         UserGroup[]
 
   @@index([archivedAt])
+}
+
+enum GroupSystemRole {
+  full_access
 }
 
 model UserGroup {
@@ -443,18 +450,18 @@ model ProviderModel {
 }
 
 model RunProfile {
-  id                String         @id
-  description       String
-  enabled           Boolean        @default(false)
-  providerModelId   String?
-  reasoningEffort   String         @default("medium")
-  reasoningMode     String         @default("standard")
-  version           Int            @default(1)
-  updatedByUserId   String?
-  createdAt         DateTime       @default(now())
-  updatedAt         DateTime       @updatedAt
-  providerModel     ProviderModel? @relation(fields: [providerModelId], references: [id], onDelete: Restrict)
-  updatedBy         User?          @relation("RunProfileUpdater", fields: [updatedByUserId], references: [id], onDelete: SetNull)
+  id              String         @id
+  description     String
+  enabled         Boolean        @default(false)
+  providerModelId String?
+  reasoningEffort String         @default("medium")
+  reasoningMode   String         @default("standard")
+  version         Int            @default(1)
+  updatedByUserId String?
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+  providerModel   ProviderModel? @relation(fields: [providerModelId], references: [id], onDelete: Restrict)
+  updatedBy       User?          @relation("RunProfileUpdater", fields: [updatedByUserId], references: [id], onDelete: SetNull)
 
   @@index([providerModelId])
   @@index([updatedByUserId])
@@ -501,6 +508,7 @@ model ProviderCredential {
   defaultForConnections  ProviderConnection[]                @relation("ProviderConnectionDefaultCredential")
   draftChecks            ProviderDraftCheck[]
   groupAssignments       ProviderGroupCredentialAssignment[]
+  userAssignments        ProviderUserCredentialAssignment[]
   providerRunBindings    ProviderRunBinding[]
   versions               ProviderCredentialVersion[]         @relation("ProviderCredentialVersions")
 
@@ -543,6 +551,20 @@ model ProviderGroupCredentialAssignment {
   @@id([connectionId, groupId])
   @@index([credentialId])
   @@index([groupId])
+}
+
+model ProviderUserCredentialAssignment {
+  connectionId String
+  userId       String
+  credentialId String
+  createdAt    DateTime           @default(now())
+  updatedAt    DateTime           @updatedAt
+  credential   ProviderCredential @relation(fields: [connectionId, credentialId], references: [connectionId, id], onDelete: Restrict, onUpdate: Restrict, map: "ProviderUserAssignment_credential_fkey")
+  user         User               @relation(fields: [userId], references: [id], onDelete: Cascade, map: "ProviderUserAssignment_user_fkey")
+
+  @@id([connectionId, userId])
+  @@index([credentialId])
+  @@index([userId])
 }
 
 model ProviderDraftCheck {

@@ -13,6 +13,7 @@ import {
 import { serializeAdminMemberships } from "./adminSerializationPrimitives";
 import { serializeAdminUsageDashboard } from "./adminUsageAggregation";
 import { loadAdminUsageQueryRows } from "./adminUsageQueries";
+import { FULL_ACCESS_GROUP_SYSTEM_ROLE } from "./fullAccessGroup";
 
 const adminDashboardUserSelect = {
   _count: {
@@ -52,7 +53,8 @@ const adminDashboardUserSelect = {
       group: {
         select: {
           archivedAt: true,
-          name: true
+          name: true,
+          systemRole: true
         }
       },
       groupId: true,
@@ -88,6 +90,18 @@ type AdminNavigationSummaryInput = Readonly<{
     "effectiveEntitlements" | "id" | "role" | "status"
   >[];
 }>;
+
+export function hasTeamMcpGroupGrants(
+  groups: readonly Readonly<{
+    mcpGrants: readonly Readonly<{ canUse: boolean }>[];
+    systemRole: typeof FULL_ACCESS_GROUP_SYSTEM_ROLE | null;
+  }>[]
+): boolean {
+  return groups.some(
+    (group) => group.systemRole !== FULL_ACCESS_GROUP_SYSTEM_ROLE &&
+      group.mcpGrants.some((grant) => grant.canUse)
+  );
+}
 
 export function summarizeAdminNavigation(
   input: AdminNavigationSummaryInput
@@ -242,9 +256,10 @@ export async function listAdminDashboard(
   const serializedGroups = groups.map(serializeAdminGroup);
   const serializedInvites = invites.map((invite) => serializeAdminInvite(invite, groupNamesById, now));
   const serializedUsers = users.map((user) => {
-    const activeGroupIds = user.groups
-      .filter((membership) => !membership.group.archivedAt)
-      .map((membership) => membership.groupId);
+    const activeMemberships = user.groups.filter(
+      (membership) => !membership.group.archivedAt
+    );
+    const activeGroupIds = activeMemberships.map((membership) => membership.groupId);
 
     return {
       deletion: adminUserDeletionInfo({
@@ -253,6 +268,10 @@ export async function listAdminDashboard(
       }),
       displayName: user.displayName,
       effectiveEntitlements: serializeAdminEntitlements({
+        catalog,
+        fullAccess: activeMemberships.some(
+          (membership) => membership.group.systemRole === FULL_ACCESS_GROUP_SYSTEM_ROLE
+        ),
         grants,
         groupIds: activeGroupIds,
         userId: user.id
@@ -272,7 +291,9 @@ export async function listAdminDashboard(
     hasEnabledGroupAccessGrants: groups.some((group) =>
       group.accessGrants.some((grant) => grant.enabled)
     ),
-    hasMcpGroupGrants: groups.some((group) => group.mcpGrants.some((grant) => grant.canUse)),
+    // Generated Full access grants are installation foundation, not evidence
+    // that the operator configured a multi-user/team policy.
+    hasMcpGroupGrants: hasTeamMcpGroupGrants(groups),
     hasMcpServers: Boolean(mcpServer),
     hasProviderGroupCredentialAssignments: groups.some(
       (group) => group._count.providerCredentialAssignments > 0

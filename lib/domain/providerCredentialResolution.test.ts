@@ -29,6 +29,27 @@ function credential(
 const activeMembership = { archived: false, groupId: "group-a" } as const;
 
 describe("provider credential resolution", () => {
+  it("uses a direct user assignment before conflicting groups and the default", () => {
+    expect(
+      resolveProviderCredential({
+        assignments: [
+          { credentialId: "group-a-key", groupId: "group-a" },
+          { credentialId: "group-b-key", groupId: "group-b" }
+        ],
+        credentials: [credential("user-key", { versionId: "user-v3" })],
+        defaultCredentialId: "default-key",
+        directAssignmentCredentialId: "user-key",
+        memberships: [activeMembership, { archived: false, groupId: "group-b" }],
+        policy: "require_assignment"
+      })
+    ).toEqual({
+      credentialId: "user-key",
+      credentialVersionId: "user-v3",
+      ok: true,
+      source: "user"
+    });
+  });
+
   it("uses the enabled active default under use_default", () => {
     expect(
       resolveProviderCredential({
@@ -126,6 +147,28 @@ describe("provider credential resolution", () => {
         assignments: [{ credentialId: "selected", groupId: "group-a" }],
         credentials: [...credentials, credential("default-key")],
         defaultCredentialId: "default-key",
+        memberships: [activeMembership],
+        policy: "use_default"
+      })
+    ).toEqual({ code, ok: false });
+  });
+
+  it.each([
+    ["missing", [], "credential_not_found"],
+    ["disabled", [credential("selected", { enabled: false })], "credential_disabled"],
+    [
+      "without an active version",
+      [credential("selected", { versionId: null })],
+      "credential_active_version_missing"
+    ],
+    ["with a revoked version", [credential("selected", { revoked: true })], "credential_revoked"]
+  ] as const)("never falls back from a direct assignment that is %s", (_label, credentials, code) => {
+    expect(
+      resolveProviderCredential({
+        assignments: [{ credentialId: "group-key", groupId: "group-a" }],
+        credentials: [...credentials, credential("group-key"), credential("default-key")],
+        defaultCredentialId: "default-key",
+        directAssignmentCredentialId: "selected",
         memberships: [activeMembership],
         policy: "use_default"
       })

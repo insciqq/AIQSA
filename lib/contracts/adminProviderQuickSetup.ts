@@ -23,6 +23,7 @@ export type AdminProviderQuickSetupProviderSnapshot = Readonly<{
   model?: AdminProviderQuickSetupModelDisplay;
   provider: AdminProviderQuickSetupProviderId;
   providerDisplayName: string;
+  quickSetupAssigned: boolean;
   state: AdminProviderQuickSetupState;
   stateToken: string;
 }>;
@@ -43,6 +44,11 @@ export type AdminProviderQuickSetupRequest = Readonly<{
   provider: AdminProviderQuickSetupProviderId;
   secret: string;
   selectedModel?: AdminProviderQuickSetupSelection;
+}>;
+
+export type AdminProviderQuickSetupClearRequest = Readonly<{
+  expectedState: string;
+  provider: AdminProviderQuickSetupProviderId;
 }>;
 
 export type AdminProviderQuickSetupCandidate = Readonly<{
@@ -73,6 +79,13 @@ export type AdminProviderQuickSetupSelectionRequiredResult = Readonly<{
 export type AdminProviderQuickSetupResult =
   | AdminProviderQuickSetupReadyResult
   | AdminProviderQuickSetupSelectionRequiredResult;
+
+export type AdminProviderQuickSetupClearResult = Readonly<{
+  credentialRetained: true;
+  outcome: "assignment_cleared";
+  provider: AdminProviderQuickSetupProviderId;
+  providerDisplayName: string;
+}>;
 
 export type AdminProviderQuickSetupErrorCode =
   | "provider_credential_test_failed"

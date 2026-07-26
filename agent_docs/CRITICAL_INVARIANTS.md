@@ -2,7 +2,7 @@
 
 ## Product Invariants
 
-1. ADR 0025 defines the shipped Research Chat and Control Center presentation while retaining the capability-preservation and explicit-control-ownership requirements of ADRs 0009 and 0011. The existing routes have one presentation tree and one state owner; parallel classic/new renderers and legacy visual-token aliases must not return. WCAG conformance and dedicated accessibility work remain explicitly deferred.
+1. ADRs 0025 and 0028 define the shipped Research Chat and task-first Control Center presentation while retaining the capability-preservation and explicit-control-ownership requirements of ADRs 0009 and 0011. The existing routes have one presentation tree and one state owner; parallel classic/new renderers and legacy visual-token aliases must not return. WCAG conformance and dedicated accessibility work remain explicitly deferred.
 2. First use defaults to the light `neutral` theme. Existing `aiqsa`, `graphite`, `verdant`, `classic-dark`, and `neutral` theme IDs and stored preferences remain valid; the appended light `paper` id is equally stable. Every theme must render the same semantic hierarchy with declared light/dark scheme metadata and complete dark-mode parity.
 3. Provider, model, prompt, search, and parameter changes affect future messages only.
 4. Existing message content with descendants is not edited in place; edits create branches.
@@ -46,6 +46,8 @@
 8. Model-run request/response inspection is product-critical, but raw user content logs are session-only unless explicitly saved.
 9. Backend entitlement checks are required before every model run, even when the frontend catalog already filtered unavailable models.
 10. Share snapshots must strip raw provider payloads, private attachment URLs, API keys, internal run ids, and private user/group metadata.
+11. Provider entitlement and credential selection are independent. Credential precedence is direct user, then one unambiguous active-group assignment, then an allowed default; once a tier selects a credential, an unusable selection fails closed without fallback.
+12. Every bootstrapped or adopted installation has exactly one lifecycle-immutable built-in `full_access` group. Its explicit active members inherit all current and future provider/model/search and MCP entitlements, but never inherit provider key selection or MCP personal-slot secrets from that wildcard. A legacy ordinary group with the reserved name is preserved under a collision-safe custom name, never promoted with its members or policy references. A just-migrated empty database may remain group-free only until first installation bootstrap.
 
 ## Frontend Invariants
 

@@ -14,6 +14,7 @@ const activeGroup: AdminGroup = {
   archivedAt: null,
   id: "group-active",
   name: "Active group",
+  systemRole: null,
   userCount: 1
 };
 
@@ -75,7 +76,7 @@ describe("adminUserView", () => {
     });
   });
 
-  it("filters, sorts, and clamps pagination without overwriting the requested selection", () => {
+  it("filters and clamps the directory while preserving an explicit dedicated-detail selection", () => {
     const alpha = user({ displayName: "Alpha User", email: "alpha@example.com", id: "user-alpha" });
     const beta = user({ displayName: "Beta User", email: "beta@example.com", id: "user-beta" });
     const pending = user({
@@ -102,11 +103,12 @@ describe("adminUserView", () => {
     expect(lastPage.pageStart).toBe(3);
     expect(lastPage.pageEnd).toBe(3);
     expect(lastPage.pageUsers.map((record) => record.id)).toEqual([pending.id]);
-    expect(lastPage.selectedUser?.id).toBe(pending.id);
+    expect(lastPage.selectedUser?.id).toBe(beta.id);
     expect(input.selectedUserId).toBe(beta.id);
 
     const selectedPage = deriveAdminUsersView({ ...input, pageIndex: 0 });
     expect(selectedPage.selectedUser?.id).toBe(beta.id);
+    expect(deriveAdminUsersView({ ...input, pageIndex: 0, selectedUserId: null }).selectedUser).toBeNull();
   });
 
   it("matches user status and searchable identity, role, status, and group text", () => {

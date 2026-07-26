@@ -12,6 +12,7 @@ import type {
   RunModelConfiguration,
   RunSearchStrategyConfiguration
 } from "../runs/runRepositoryContract";
+import { FULL_ACCESS_GROUP_SYSTEM_ROLE } from "../auth/fullAccessGroup";
 
 export type ProviderAdmissionErrorCode =
   | "credential_active_version_missing"
@@ -36,7 +37,7 @@ export class ProviderAdmissionError extends Error {
 }
 
 export type ProviderAdmissionRole = Readonly<{
-  credentialSource: "default" | "group";
+  credentialSource: "default" | "group" | "user";
   modelConfiguration: RunModelConfiguration;
   snapshot: ProviderExecutionSnapshot;
 }>;
@@ -61,12 +62,16 @@ type AdmissionPrisma = Pick<
   | "providerGroupCredentialAssignment"
   | "providerModel"
   | "providerModelCredentialCheck"
+  | "providerUserCredentialAssignment"
   | "searchStrategy"
   | "user"
   | "userGroup"
 >;
 
-type ActiveMembership = Readonly<{ groupId: string }>;
+type ActiveMembership = Readonly<{
+  group: Readonly<{ systemRole: "full_access" | null }>;
+  groupId: string;
+}>;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -108,11 +113,13 @@ async function hasModelEntitlement(
   db: AdmissionPrisma,
   input: {
     connectionId: string;
+    fullAccess: boolean;
     groupIds: string[];
     modelId: string;
     userId: string;
   }
 ): Promise<boolean> {
+  if (input.fullAccess) return true;
   const count = await db.accessGrant.count({
     where: {
       enabled: true,
@@ -133,9 +140,10 @@ async function hasModelEntitlement(
 
 async function hasSearchEntitlement(
   db: AdmissionPrisma,
-  input: { groupIds: string[]; strategyId: string; userId: string }
+  input: { fullAccess: boolean; groupIds: string[]; strategyId: string; userId: string }
 ): Promise<boolean> {
   if (input.strategyId === "search-disabled") return true;
+  if (input.fullAccess) return true;
   return (await db.accessGrant.count({
     where: {
       enabled: true,
@@ -152,6 +160,7 @@ async function loadRole(
   db: AdmissionPrisma,
   input: {
     connectionId: string;
+    fullAccess: boolean;
     groupIds: string[];
     modelId: string;
     requireEntitlement: boolean;
@@ -214,7 +223,7 @@ async function loadRole(
     };
   }
 
-  const [credentials, assignments] = await Promise.all([
+  const [credentials, assignments, directAssignment] = await Promise.all([
     db.providerCredential.findMany({
       include: {
         activeVersion: {
@@ -232,6 +241,15 @@ async function loadRole(
         connectionId: model.connectionId,
         groupId: { in: input.groupIds }
       }
+    }),
+    db.providerUserCredentialAssignment.findUnique({
+      select: { credentialId: true },
+      where: {
+        connectionId_userId: {
+          connectionId: model.connectionId,
+          userId: input.userId
+        }
+      }
     })
   ]);
   const credential = resolveProviderCredential({
@@ -244,6 +262,7 @@ async function loadRole(
       id: candidate.id
     })),
     defaultCredentialId: model.connection.defaultCredentialId,
+    directAssignmentCredentialId: directAssignment?.credentialId ?? null,
     memberships: input.groupIds.map((groupId) => ({ archived: false, groupId })),
     policy: model.connection.unassignedPolicy
   });
@@ -330,15 +349,24 @@ export async function loadProviderAdmissionPlan(
   if (!user) throw new ProviderAdmissionError("user_not_available");
 
   const memberships: ActiveMembership[] = await db.userGroup.findMany({
-    select: { groupId: true },
+    select: {
+      group: {
+        select: { systemRole: true }
+      },
+      groupId: true
+    },
     where: {
       group: { archivedAt: null },
       userId: input.userId
     }
   });
   const groupIds = memberships.map((membership) => membership.groupId);
+  const fullAccess = memberships.some(
+    (membership) => membership.group.systemRole === FULL_ACCESS_GROUP_SYSTEM_ROLE
+  );
   const answer = await loadRole(db, {
     connectionId: input.providerConnectionId,
+    fullAccess,
     groupIds,
     modelId: input.providerModelId,
     requireEntitlement: true,
@@ -356,6 +384,7 @@ export async function loadProviderAdmissionPlan(
     where: { enabled: true, strategyId: input.searchStrategyId }
   });
   if (!strategy || !(await hasSearchEntitlement(db, {
+    fullAccess,
     groupIds,
     strategyId: input.searchStrategyId,
     userId: input.userId
@@ -387,6 +416,7 @@ export async function loadProviderAdmissionPlan(
     if (!technicalModel) throw new ProviderAdmissionError("search_strategy_not_available");
     search = await loadRole(db, {
       connectionId: technicalModel.connectionId,
+      fullAccess,
       groupIds,
       modelId: strategy.providerModelId,
       requireEntitlement: false,

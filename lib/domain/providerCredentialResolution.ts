@@ -24,7 +24,7 @@ export type ProviderCredentialResolution =
       credentialId: string;
       credentialVersionId: string;
       ok: true;
-      source: "default" | "group";
+      source: "default" | "group" | "user";
     }>
   | Readonly<{
       code:
@@ -42,6 +42,7 @@ export function resolveProviderCredential(input: Readonly<{
   assignments: readonly ProviderGroupCredentialAssignment[];
   credentials: readonly ProviderCredentialState[];
   defaultCredentialId: string | null;
+  directAssignmentCredentialId?: string | null;
   memberships: readonly ProviderGroupMembership[];
   policy: ProviderCredentialPolicy;
 }>): ProviderCredentialResolution {
@@ -56,14 +57,17 @@ export function resolveProviderCredential(input: Readonly<{
       .map((assignment) => assignment.credentialId)
   );
 
-  if (assignedCredentialIds.size > 1) {
+  if (!input.directAssignmentCredentialId && assignedCredentialIds.size > 1) {
     return { code: "credential_assignment_ambiguous", ok: false };
   }
 
   let credentialId: string;
-  let source: "default" | "group";
+  let source: "default" | "group" | "user";
 
-  if (assignedCredentialIds.size === 1) {
+  if (input.directAssignmentCredentialId) {
+    credentialId = input.directAssignmentCredentialId;
+    source = "user";
+  } else if (assignedCredentialIds.size === 1) {
     credentialId = assignedCredentialIds.values().next().value as string;
     source = "group";
   } else {

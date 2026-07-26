@@ -16,6 +16,7 @@ import {
   type CatalogProviderModelRow
 } from "../../catalog/prismaCatalogData";
 import { resolveEntitlements } from "../../auth/entitlements";
+import { FULL_ACCESS_GROUP_SYSTEM_ROLE } from "../../auth/fullAccessGroup";
 import {
   normalizeProviderConnectionConfiguration,
   normalizeProviderModelConfiguration,
@@ -27,6 +28,7 @@ import {
 } from "./quickSetupPolicy";
 import type {
   AdminProviderQuickSetupActor,
+  AdminProviderQuickSetupClearPlan,
   AdminProviderQuickSetupCommitPlan,
   AdminProviderQuickSetupCommitResult,
   AdminProviderQuickSetupInspection,
@@ -43,6 +45,7 @@ type QuickSetupDb = Pick<
   | "providerDraftCheck"
   | "providerModel"
   | "providerModelCredentialCheck"
+  | "providerUserCredentialAssignment"
   | "runProfile"
   | "user"
   | "userGroup"
@@ -54,6 +57,8 @@ type QuickSetupRepositoryOptions = Readonly<{
 }>;
 
 class QuickSetupCatalogUnavailableError extends Error {}
+
+const MAX_QUICK_SETUP_PRESERVED_MODELS = 64;
 
 function isSerializationConflict(error: Prisma.PrismaClientKnownRequestError): boolean {
   return error.code === "P2034" || (
@@ -98,7 +103,10 @@ function canonicalConnectionConfig(value: unknown, expected: unknown): boolean {
 
 function canonicalModelConfig(value: unknown, expected: ProviderModelConfiguration): boolean {
   try {
-    return sameJson(normalizeProviderModelConfiguration(value), expected);
+    return sameJson(
+      normalizeProviderModelConfiguration(value),
+      normalizeProviderModelConfiguration(expected)
+    );
   } catch {
     return false;
   }
@@ -133,6 +141,10 @@ function modelLegacyFields(configuration: ProviderModelConfiguration) {
     supportsReasoning: configuration.capabilities.reasoning,
     supportsVision: configuration.capabilities.vision
   };
+}
+
+function quickSetupCredentialLabel(credentialId: string): string {
+  return `Quick setup · ${credentialId}`;
 }
 
 type QuickSetupProfileFill = Readonly<{
@@ -179,7 +191,7 @@ async function loadQuickSetupState(
   }>
 ) {
   const policy = adminProviderQuickSetupPolicy(input.provider);
-  const [actor, session, settings, profiles, connections, grants] = await Promise.all([
+  const [actor, session, settings, profiles, connections, grants, memberships] = await Promise.all([
     db.user.findUnique({
       select: { id: true, role: true, status: true, updatedAt: true },
       where: { id: input.userId }
@@ -209,6 +221,10 @@ async function loadQuickSetupState(
             groupAssignments: {
               orderBy: [{ groupId: "asc" }, { credentialId: "asc" }],
               select: { connectionId: true, credentialId: true, groupId: true, updatedAt: true }
+            },
+            userAssignments: {
+              orderBy: [{ userId: "asc" }, { credentialId: "asc" }],
+              select: { connectionId: true, credentialId: true, updatedAt: true, userId: true }
             },
             versions: {
               orderBy: [{ version: "asc" }, { id: "asc" }],
@@ -279,76 +295,101 @@ async function loadQuickSetupState(
           { providerModel: { connection: { family: policy.provider } } }
         ]
       }
+    }),
+    db.userGroup.findMany({
+      include: { group: { select: { archivedAt: true, systemRole: true } } },
+      orderBy: [{ groupId: "asc" }, { userId: "asc" }],
+      where: { userId: input.userId }
     })
   ]);
 
-  const canonicalConnections = connections.filter((candidate) =>
+  const canonicalMatches = connections.filter((candidate) =>
     candidate.id === policy.connection.id ||
     candidate.templateKey === policy.connection.templateKey
   );
-  const connection = canonicalConnections.length === 1 ? canonicalConnections[0] : null;
-  let advancedReason: "ambiguous" | "custom" | "team" | null =
-    connections.length > 1 || canonicalConnections.length > 1
+  const exactCanonicalConnections = canonicalMatches.filter((candidate) =>
+    candidate.id === policy.connection.id &&
+    candidate.templateKey === policy.connection.templateKey &&
+    candidate.family === policy.provider
+  );
+  const connection = exactCanonicalConnections.length === 1
+    ? exactCanonicalConnections[0]
+    : null;
+  let advancedReason: "ambiguous" | "custom" | null =
+    canonicalMatches.length !== exactCanonicalConnections.length ||
+    exactCanonicalConnections.length > 1
       ? "ambiguous"
-      : connections.length === 1 && canonicalConnections.length === 0
-        ? "custom"
-        : null;
+      : null;
+
+  const connectionHasActiveTuple = Boolean(
+    connection?.activeConfig !== null ||
+    connection?.activeVersion !== 0 ||
+    connection?.activatedAt !== null
+  );
+  const connectionActiveCanonical = Boolean(
+    connection && connection.activeConfig !== null && connection.activeVersion > 0 &&
+    connection.activatedAt !== null &&
+    canonicalConnectionConfig(connection.activeConfig, policy.connection.configuration)
+  );
   if (connection && (
-    connection.id !== policy.connection.id ||
-    connection.templateKey !== policy.connection.templateKey ||
-    connection.family !== policy.provider ||
-    connection.displayName !== policy.connection.displayName ||
-    connection.unassignedPolicy !== "use_default" ||
-    connection.draftVersion !== 1 ||
-    !canonicalConnectionConfig(connection.draftConfig, policy.connection.configuration) ||
-    (connection.activeConfig === null && (
-      connection.activeVersion !== 0 || connection.activatedAt !== null
-    )) ||
-    (connection.activeConfig !== null && (
-      connection.activeVersion !== connection.draftVersion ||
-      !canonicalConnectionConfig(connection.activeConfig, policy.connection.configuration)
-    ))
+    (connectionHasActiveTuple && !connectionActiveCanonical) ||
+    (!connectionHasActiveTuple &&
+      !canonicalConnectionConfig(connection.draftConfig, policy.connection.configuration))
   )) {
     advancedReason = "custom";
   }
 
   const credentials = connection?.credentials ?? [];
-  if (credentials.length > 1) advancedReason = "ambiguous";
-  const primary = credentials.length === 1 ? credentials[0] : null;
-  const canonicalVersionHistory = !primary || (
-    Number.isSafeInteger(primary.draftVersion) && primary.draftVersion >= 0 &&
-    primary.versions.length === primary.draftVersion &&
-    primary.versions.every((version, index) =>
-      version.credentialId === primary.id &&
-      version.version === index + 1 &&
-      version.secretEnvelope !== null &&
-      version.revokedAt === null
+  const actorAssignments = credentials.flatMap((credential) =>
+    (credential.userAssignments ?? []).filter(
+      (assignment) => assignment.userId === input.userId
     )
   );
-  const canonicalActiveVersion = !primary
-    ? true
-    : primary.activeVersion === null
-      ? primary.activeVersionId === null && primary.draftVersion === 0
-      : primary.activeVersionId === primary.activeVersion.id &&
-        primary.activeVersion.version === primary.draftVersion &&
-        primary.activeVersion.secretEnvelope !== null &&
-        primary.activeVersion.revokedAt === null;
-  if (primary && (
-    primary.label !== "Primary" ||
-    primary.draftSecretEnvelope !== null ||
-    primary.groupAssignments.length > 0 ||
-    !canonicalVersionHistory ||
-    !canonicalActiveVersion ||
-    (connection?.defaultCredentialId !== null && connection?.defaultCredentialId !== primary.id)
-  )) {
-    advancedReason = primary.groupAssignments.length > 0 ? "team" : "custom";
-  }
+  if (actorAssignments.length > 1) advancedReason = "ambiguous";
+  const actorAssignment = actorAssignments.length === 1 ? actorAssignments[0] : null;
+  const assignedCredential = actorAssignment
+    ? credentials.find((credential) => credential.id === actorAssignment.credentialId) ?? null
+    : null;
 
-  if (grants.some((grant) => grant.groupId !== null || grant.userId !== input.userId)) {
-    advancedReason = "team";
-  }
+  const reusableQuickSetupCredential = assignedCredential &&
+    assignedCredential.label === quickSetupCredentialLabel(assignedCredential.id) &&
+    assignedCredential.groupAssignments.length === 0 &&
+    (assignedCredential.userAssignments ?? []).length === 1 &&
+    assignedCredential.userAssignments?.[0]?.userId === input.userId &&
+    connection?.defaultCredentialId !== assignedCredential.id &&
+    assignedCredential.draftSecretEnvelope === null &&
+    Number.isSafeInteger(assignedCredential.draftVersion) &&
+    assignedCredential.draftVersion >= 0 &&
+    assignedCredential.versions.length === assignedCredential.draftVersion &&
+    assignedCredential.versions.every((version, index) =>
+      version.credentialId === assignedCredential.id &&
+      version.version === index + 1 &&
+      version.secretEnvelope !== null
+    ) && (
+      assignedCredential.activeVersion === null
+        ? assignedCredential.activeVersionId === null && assignedCredential.draftVersion === 0
+        : assignedCredential.activeVersionId === assignedCredential.activeVersion.id &&
+          assignedCredential.activeVersion.version === assignedCredential.draftVersion
+    )
+      ? assignedCredential
+      : null;
 
-  const activeModels = [] as Array<{
+  const candidateByIdentity = new Map(
+    policy.candidates.flatMap((candidate) => [
+      [candidate.modelId, candidate] as const,
+      [candidate.templateKey, candidate] as const
+    ])
+  );
+  for (const candidateConnection of connections) {
+    if (candidateConnection.id === policy.connection.id) continue;
+    if (candidateConnection.models.some((model) =>
+      candidateByIdentity.has(model.id) ||
+      Boolean(model.templateKey && candidateByIdentity.has(model.templateKey))
+    )) {
+      advancedReason = "ambiguous";
+    }
+  }
+  const activePolicyModels = [] as Array<{
     checkedAt: Date | null;
     displayName: string;
     enabled: boolean;
@@ -356,89 +397,142 @@ async function loadQuickSetupState(
     templateKey: ProviderModelTemplateKey;
   }>;
   for (const model of connection?.models ?? []) {
-    const canonical = model.templateKey
-      ? codeOwnedModel(model.templateKey, policy.provider)
-      : null;
+    const candidate = candidateByIdentity.get(model.id) ??
+      (model.templateKey ? candidateByIdentity.get(model.templateKey) : undefined);
+    if (!candidate) continue;
     if (
-      !canonical || model.id !== canonical.id || model.provider !== policy.provider ||
-      model.displayName !== canonical.model.displayName || model.draftVersion !== 1 ||
-      !canonicalModelConfig(model.draftConfig, canonical.configuration)
+      model.id !== candidate.modelId || model.templateKey !== candidate.templateKey ||
+      model.provider !== policy.provider
+    ) {
+      advancedReason = "ambiguous";
+      continue;
+    }
+    const hasActiveTuple = model.activeConfig !== null || model.activeVersion !== 0 ||
+      model.activatedAt !== null;
+    const activeCanonical = model.activeConfig !== null && model.activeVersion > 0 &&
+      model.activatedAt !== null &&
+      canonicalModelConfig(model.activeConfig, candidate.configuration);
+    if (
+      (hasActiveTuple && !activeCanonical) ||
+      (!hasActiveTuple && !canonicalModelConfig(model.draftConfig, candidate.configuration))
     ) {
       advancedReason = "custom";
       continue;
     }
-    if (model.draftChecks.length > 0) {
-      advancedReason = "custom";
-    }
-    const pristine = !model.enabled && model.activeVersion === 0 &&
-      model.activeConfig === null && model.activatedAt === null &&
-      model.activeCredentialChecks.length === 0 && model.draftChecks.length === 0;
-    if (pristine) continue;
-    const activeCanonical = model.activeVersion === model.draftVersion &&
-      model.activeVersion > 0 && model.activeConfig !== null &&
-      model.activatedAt !== null && canonicalModelConfig(model.activeConfig, canonical.configuration);
-    const policyCandidate = policy.candidates.some(
-      (candidate) => candidate.templateKey === canonical.templateKey
-    );
-    if (!activeCanonical || !policyCandidate) {
-      advancedReason = "custom";
-      continue;
-    }
-    const activeVersionId = primary?.activeVersion?.id ?? null;
-    const matchingCheck = activeVersionId
+    if (!activeCanonical) continue;
+    const matchingCheck = assignedCredential?.activeVersion
       ? model.activeCredentialChecks.find((check) =>
           check.status === "available" &&
           check.connectionId === connection?.id &&
           check.providerModelId === model.id &&
-          check.credentialId === primary?.id &&
-          check.credentialVersionId === activeVersionId &&
+          check.credentialId === assignedCredential.id &&
+          check.credentialVersionId === assignedCredential.activeVersion?.id &&
           check.connectionVersion === connection?.activeVersion &&
           check.modelVersion === model.activeVersion
         )
       : null;
-    activeModels.push({
+    activePolicyModels.push({
       checkedAt: matchingCheck?.checkedAt ?? null,
       displayName: model.displayName,
       enabled: model.enabled,
       id: model.id,
-      templateKey: canonical.templateKey
+      templateKey: candidate.templateKey
     });
   }
-  if (activeModels.length > 1) advancedReason = "ambiguous";
-  const selectedModel = activeModels.length === 1 ? activeModels[0] : null;
 
+  const activeMemberships = memberships.filter(
+    (membership) => !membership.group.archivedAt
+  );
+  const groupIds = activeMemberships.map((membership) => membership.groupId);
+  const fullAccess = activeMemberships.some(
+    (membership) => membership.group.systemRole === FULL_ACCESS_GROUP_SYSTEM_ROLE
+  );
   const actingUserGrants = grants.filter(
     (grant) => grant.userId === input.userId && grant.groupId === null
   );
+  const directGrantedModelIds = new Set(
+    actingUserGrants
+      .filter((grant) => grant.providerModelId !== null)
+      .map((grant) => grant.providerModelId as string)
+  );
+  const fullAccessModel = fullAccess
+    ? policy.candidates.map((candidate) =>
+        activePolicyModels.find((model) =>
+          model.id === candidate.modelId && model.enabled && model.checkedAt
+        )
+      ).find((model) => Boolean(model)) ??
+      activePolicyModels.find((model) => model.enabled && model.checkedAt) ??
+      activePolicyModels.find((model) => model.enabled) ??
+      activePolicyModels[0] ?? null
+    : null;
+  const selectedModel = activePolicyModels.find(
+    (model) => model.id === settings?.defaultProviderModelId &&
+      directGrantedModelIds.has(model.id)
+  ) ?? policy.candidates.map((candidate) =>
+    activePolicyModels.find((model) =>
+      model.id === candidate.modelId && directGrantedModelIds.has(model.id)
+    )
+  ).find((model) => Boolean(model)) ??
+    activePolicyModels.find((model) => model.id === settings?.defaultProviderModelId) ??
+    fullAccessModel;
   const directModelGrants = selectedModel
     ? actingUserGrants.filter((grant) => grant.providerModelId === selectedModel.id)
     : [];
-  if (
-    actingUserGrants.some((grant) =>
-      grant.providerConnectionId !== null ||
-      grant.searchStrategy !== null ||
-      !selectedModel || grant.providerModelId !== selectedModel.id
-    ) ||
-    (selectedModel && (
-      directModelGrants.length !== 1 || !directModelGrants[0]?.enabled
-    ))
-  ) {
-    advancedReason = directModelGrants.length > 1 ? "ambiguous" : "custom";
-  }
-  const directGrantReady = directModelGrants.length === 1 && directModelGrants[0].enabled;
+  const directGrantReady = directModelGrants.some((grant) => grant.enabled);
   const credentialReady = Boolean(
-    primary?.enabled && primary.activeVersion && !primary.activeVersion.revokedAt &&
-    primary.activeVersion.secretEnvelope
+    assignedCredential?.enabled && assignedCredential.activeVersion &&
+    !assignedCredential.activeVersion.revokedAt && assignedCredential.activeVersion.secretEnvelope
   );
   const ready = Boolean(
-    connection?.enabled && connection.activeConfig && connection.activeVersion > 0 &&
-    connection.activatedAt &&
-    connection.defaultCredentialId === primary?.id && selectedModel && selectedModel.checkedAt &&
-    selectedModel.enabled && credentialReady && directGrantReady
+    connection?.enabled && connectionActiveCanonical && selectedModel?.checkedAt &&
+    selectedModel.enabled && credentialReady && (fullAccess || directGrantReady)
   );
-  const configured = Boolean(
-    connection && (connection.enabled || connection.activeVersion > 0 || primary || selectedModel)
+  const configured = Boolean(actorAssignment || selectedModel || directModelGrants.length);
+  const actorAuthorized = actor?.role === "admin" && actor.status === "active" &&
+    session?.userId === input.userId && !session.revokedAt && session.expiresAt > input.now;
+  const modelConnectionIds = new Map(connections.flatMap((candidateConnection) =>
+    candidateConnection.models.map((model) => [model.id, candidateConnection.id] as const)
+  ));
+  const entitlements = resolveEntitlements(input.userId, groupIds, grants.map((grant) => ({
+    ...grant,
+    providerModelConnectionId: grant.providerModelId
+      ? modelConnectionIds.get(grant.providerModelId) ?? null
+      : null
+  })), { fullAccess });
+  const catalogRows = connections.flatMap((candidateConnection) =>
+    candidateConnection.models.map((model) => ({
+      ...model,
+      connection: candidateConnection
+    } as unknown as CatalogProviderModelRow))
   );
+  const exposedModels = filterExposedProviderModels({
+    entitlements,
+    models: filterAvailableProviderModels({
+      exposeFake: false,
+      memberships,
+      models: catalogRows,
+      userId: input.userId
+    })
+  });
+  const availableCanonicalModels = exposedModels.filter(
+    (model) => model.connectionId === policy.connection.id
+  );
+  if (availableCanonicalModels.length > MAX_QUICK_SETUP_PRESERVED_MODELS) {
+    advancedReason = "custom";
+  }
+  const preservedModels = availableCanonicalModels
+    .slice(0, MAX_QUICK_SETUP_PRESERVED_MODELS)
+    .flatMap((model) => {
+      try {
+        return [{
+          id: model.id,
+          upstreamModelId: normalizeProviderModelConfiguration(model.activeConfig).upstreamModelId
+        }];
+      } catch {
+        return [];
+      }
+    })
+    .sort((left, right) => left.id.localeCompare(right.id));
   const state = advancedReason
     ? "advanced_required" as const
     : ready
@@ -447,15 +541,21 @@ async function loadQuickSetupState(
         ? "needs_attention" as const
         : "not_configured" as const;
 
-  const actorAuthorized = actor?.role === "admin" && actor.status === "active" &&
-    session?.userId === input.userId && !session.revokedAt && session.expiresAt > input.now;
+  const globallyPristine = !connections.some((candidate) =>
+    candidate.id !== policy.connection.id ||
+    candidate.enabled || candidate.activeVersion > 0 || candidate.credentials.length > 0 ||
+    candidate.models.some((model) =>
+      model.enabled || model.activeVersion > 0 || model.activeCredentialChecks.length > 0 ||
+      model.draftChecks.length > 0
+    )
+  ) && grants.length === 0;
   const mode = advancedReason || !actorAuthorized || !settings
     ? null
     : ready
       ? "replacement" as const
-      : configured
-        ? "recovery" as const
-        : "initial" as const;
+      : globallyPristine
+        ? "initial" as const
+        : "recovery" as const;
 
   const safeFingerprint = fingerprint({
     actor: actor ? {
@@ -486,6 +586,7 @@ async function loadQuickSetupState(
         id: credential.id,
         label: credential.label,
         updatedAt: credential.updatedAt,
+        userAssignments: credential.userAssignments ?? [],
         versions: credential.versions.map((version) => ({
           activatedAt: version.activatedAt,
           credentialId: version.credentialId,
@@ -545,6 +646,13 @@ async function loadQuickSetupState(
       updatedAt: grant.updatedAt,
       userId: grant.userId
     })),
+    memberships: memberships.map((membership) => ({
+      archivedAt: membership.group.archivedAt,
+      groupId: membership.groupId,
+      systemRole: membership.group.systemRole,
+      userId: membership.userId
+    })),
+    preservedModels,
     profiles: mode === "initial"
       ? profiles.map((profile) => ({
           description: profile.description,
@@ -569,7 +677,7 @@ async function loadQuickSetupState(
       defaultProviderModelId: settings.defaultProviderModelId,
       id: settings.id
     } : null,
-    version: 1
+    version: 3
   });
 
   const inspection: AdminProviderQuickSetupInspection = {
@@ -579,7 +687,16 @@ async function loadQuickSetupState(
     fingerprint: safeFingerprint,
     mode,
     model: selectedModel,
-    primaryCredential: primary ? { draftVersion: primary.draftVersion, id: primary.id } : null,
+    preservedModels,
+    quickSetupAssignment: actorAssignment
+      ? { credentialId: actorAssignment.credentialId }
+      : null,
+    quickSetupCredential: reusableQuickSetupCredential
+      ? {
+          draftVersion: reusableQuickSetupCredential.draftVersion,
+          id: reusableQuickSetupCredential.id
+        }
+      : null,
     provider: input.provider,
     state: advancedReason || !actorAuthorized || !settings ? "advanced_required" : state
   };
@@ -588,7 +705,7 @@ async function loadQuickSetupState(
 
 export async function lockAdminProviderQuickSetupState(
   tx: Prisma.TransactionClient,
-  plan: AdminProviderQuickSetupCommitPlan
+  plan: AdminProviderQuickSetupCommitPlan | AdminProviderQuickSetupClearPlan
 ): Promise<void> {
   const policy = adminProviderQuickSetupPolicy(plan.provider);
   await tx.$queryRaw(Prisma.sql`
@@ -647,6 +764,14 @@ export async function lockAdminProviderQuickSetupState(
     FOR UPDATE OF assignment
   `);
   await tx.$queryRaw(Prisma.sql`
+    SELECT assignment."connectionId", assignment."userId"
+    FROM "ProviderUserCredentialAssignment" AS assignment
+    JOIN "ProviderConnection" AS connection ON connection."id" = assignment."connectionId"
+    WHERE connection."family" = ${policy.provider}
+    ORDER BY assignment."connectionId", assignment."userId"
+    FOR UPDATE OF assignment
+  `);
+  await tx.$queryRaw(Prisma.sql`
     SELECT grant_row."id" FROM "AccessGrant" AS grant_row
     LEFT JOIN "ProviderModel" AS model ON model."id" = grant_row."providerModelId"
     LEFT JOIN "ProviderConnection" AS connection
@@ -657,7 +782,7 @@ export async function lockAdminProviderQuickSetupState(
        )
     ORDER BY grant_row."id" FOR UPDATE OF grant_row
   `);
-  if (plan.mode === "initial") {
+  if ("mode" in plan && plan.mode === "initial") {
     await tx.$queryRaw(Prisma.sql`
       SELECT "id" FROM "RunProfile"
       ORDER BY CASE "id"
@@ -678,7 +803,7 @@ async function eligibleProviderModelIds(
 ): Promise<Set<string>> {
   const [memberships, grants, models] = await Promise.all([
     tx.userGroup.findMany({
-      include: { group: { select: { archivedAt: true } } },
+      include: { group: { select: { archivedAt: true, systemRole: true } } },
       where: { userId }
     }),
     tx.accessGrant.findMany({
@@ -710,7 +835,11 @@ async function eligibleProviderModelIds(
                 activeVersion: { select: { id: true, revokedAt: true } },
                 enabled: true,
                 groupAssignments: { select: { credentialId: true, groupId: true } },
-                id: true
+                id: true,
+                userAssignments: {
+                  select: { credentialId: true, userId: true },
+                  where: { userId }
+                }
               }
             }
           }
@@ -719,17 +848,22 @@ async function eligibleProviderModelIds(
       where: { enabled: true, connection: { enabled: true } }
     })
   ]);
-  const groupIds = memberships
-    .filter((membership) => !membership.group.archivedAt)
-    .map((membership) => membership.groupId);
+  const activeMemberships = memberships.filter(
+    (membership) => !membership.group.archivedAt
+  );
+  const groupIds = activeMemberships.map((membership) => membership.groupId);
+  const fullAccess = activeMemberships.some(
+    (membership) => membership.group.systemRole === FULL_ACCESS_GROUP_SYSTEM_ROLE
+  );
   const entitlements = resolveEntitlements(userId, groupIds, grants.map((grant) => ({
     ...grant,
     providerModelConnectionId: grant.providerModel?.connectionId ?? null
-  })));
+  })), { fullAccess });
   const available = filterAvailableProviderModels({
     exposeFake,
     memberships,
-    models: models as CatalogProviderModelRow[]
+    models: models as CatalogProviderModelRow[],
+    userId
   });
   return new Set(filterExposedProviderModels({ entitlements, models: available }).map(({ id }) => id));
 }
@@ -752,15 +886,43 @@ async function applyQuickSetupPlan(
   if (current.inspection.fingerprint !== plan.expectedFingerprint) return "stale";
   if (
     current.inspection.mode !== plan.mode ||
-    (current.inspection.primaryCredential === null) !== plan.credential.isNew ||
+    (current.inspection.quickSetupCredential === null) !== plan.credential.isNew ||
     (!plan.credential.isNew && (
-      current.inspection.primaryCredential?.id !== plan.credential.id ||
-      current.inspection.primaryCredential.draftVersion + 1 !== plan.credential.draftVersion
+      current.inspection.quickSetupCredential?.id !== plan.credential.id ||
+      current.inspection.quickSetupCredential.draftVersion + 1 !== plan.credential.draftVersion
     )) ||
     (current.inspection.mode !== "initial" && current.inspection.model &&
       current.inspection.model?.templateKey !== plan.candidate.templateKey)
   ) {
     return "stale";
+  }
+  if (plan.preservedModels.length > MAX_QUICK_SETUP_PRESERVED_MODELS ||
+    new Set(plan.preservedModels.map(({ id }) => id)).size !== plan.preservedModels.length ||
+    canonicalJson(plan.preservedModels) !== canonicalJson(current.inspection.preservedModels)) {
+    return "stale";
+  }
+
+  const preservedTargets = new Map<string, Readonly<{
+    configuration: ProviderModelConfiguration;
+    modelVersion: number;
+  }>>();
+  for (const preserved of plan.preservedModels) {
+    const model = current.connection?.models.find(({ id }) => id === preserved.id);
+    if (!model || !model.enabled || model.activeVersion < 1 || !model.activatedAt ||
+      model.activeConfig === null) {
+      return "stale";
+    }
+    let configuration: ProviderModelConfiguration;
+    try {
+      configuration = normalizeProviderModelConfiguration(model.activeConfig);
+    } catch {
+      return "stale";
+    }
+    if (configuration.upstreamModelId !== preserved.upstreamModelId) return "stale";
+    preservedTargets.set(model.id, {
+      configuration,
+      modelVersion: model.activeVersion
+    });
   }
 
   const directGrants = await tx.accessGrant.findMany({
@@ -772,79 +934,87 @@ async function applyQuickSetupPlan(
       userId: plan.actor.userId
     }
   });
-  if (directGrants.length > 1) return "advanced_required";
-
   const policy = adminProviderQuickSetupPolicy(plan.provider);
-  if (plan.mode !== "replacement") {
-    if (!current.connection) {
-      await tx.providerConnection.create({
-        data: {
-          activeConfig: json(policy.connection.configuration),
-          activeVersion: 1,
-          activatedAt: plan.now,
-          defaultCredentialId: null,
-          displayName: policy.connection.displayName,
-          draftConfig: json(policy.connection.configuration),
-          draftVersion: 1,
-          enabled: true,
-          family: policy.provider,
-          id: policy.connection.id,
-          templateKey: policy.connection.templateKey,
-          unassignedPolicy: "use_default"
-        }
-      });
-    } else {
-      await tx.providerConnection.update({
-        data: {
-          activeConfig: json(policy.connection.configuration),
-          activeVersion: current.connection.draftVersion,
-          activatedAt: plan.now,
-          enabled: true,
-          unassignedPolicy: "use_default"
-        },
-        where: { id: policy.connection.id }
-      });
-    }
+  if (!current.connection) {
+    await tx.providerConnection.create({
+      data: {
+        activeConfig: json(policy.connection.configuration),
+        activeVersion: 1,
+        activatedAt: plan.now,
+        defaultCredentialId: null,
+        displayName: policy.connection.displayName,
+        draftConfig: json(policy.connection.configuration),
+        draftVersion: 1,
+        enabled: true,
+        family: policy.provider,
+        id: policy.connection.id,
+        templateKey: policy.connection.templateKey,
+        unassignedPolicy: "use_default"
+      }
+    });
+  } else if (current.connection.activeConfig === null) {
+    await tx.providerConnection.update({
+      data: {
+        activeConfig: json(policy.connection.configuration),
+        activeVersion: current.connection.draftVersion,
+        activatedAt: plan.now,
+        enabled: true
+      },
+      where: { id: policy.connection.id }
+    });
+  } else if (!current.connection.enabled) {
+    await tx.providerConnection.update({
+      data: { enabled: true },
+      where: { id: policy.connection.id }
+    });
   }
+  const connectionVersion = current.connection?.activeConfig === null
+    ? current.connection.draftVersion
+    : current.connection?.activeVersion ?? 1;
 
   const existingModel = await tx.providerModel.findUnique({
     where: { id: plan.candidate.modelId }
   });
   if (plan.mode === "replacement" && !existingModel) return "stale";
-  if (plan.mode !== "replacement") {
-    if (!existingModel) {
-      await tx.providerModel.create({
-        data: {
-          activeConfig: json(plan.candidate.configuration),
-          activeVersion: 1,
-          activatedAt: plan.now,
-          connectionId: policy.connection.id,
-          displayName: plan.candidate.displayName,
-          draftConfig: json(plan.candidate.configuration),
-          draftVersion: 1,
-          enabled: true,
-          id: plan.candidate.modelId,
-          inputTokenPriceMicros: plan.candidate.model.inputTokenPriceMicros,
-          outputTokenPriceMicros: plan.candidate.model.outputTokenPriceMicros,
-          provider: policy.provider,
-          templateKey: plan.candidate.templateKey,
-          ...modelLegacyFields(plan.candidate.configuration)
-        }
-      });
-    } else {
-      await tx.providerModel.update({
-        data: {
-          activeConfig: json(plan.candidate.configuration),
-          activeVersion: existingModel.draftVersion,
-          activatedAt: plan.now,
-          enabled: true,
-          ...modelLegacyFields(plan.candidate.configuration)
-        },
-        where: { id: plan.candidate.modelId }
-      });
-    }
+  if (!existingModel) {
+    await tx.providerModel.create({
+      data: {
+        activeConfig: json(plan.candidate.configuration),
+        activeVersion: 1,
+        activatedAt: plan.now,
+        connectionId: policy.connection.id,
+        displayName: plan.candidate.displayName,
+        draftConfig: json(plan.candidate.configuration),
+        draftVersion: 1,
+        enabled: true,
+        id: plan.candidate.modelId,
+        inputTokenPriceMicros: plan.candidate.model.inputTokenPriceMicros,
+        outputTokenPriceMicros: plan.candidate.model.outputTokenPriceMicros,
+        provider: policy.provider,
+        templateKey: plan.candidate.templateKey,
+        ...modelLegacyFields(plan.candidate.configuration)
+      }
+    });
+  } else if (existingModel.activeConfig === null) {
+    await tx.providerModel.update({
+      data: {
+        activeConfig: json(plan.candidate.configuration),
+        activeVersion: existingModel.draftVersion,
+        activatedAt: plan.now,
+        enabled: true,
+        ...modelLegacyFields(plan.candidate.configuration)
+      },
+      where: { id: plan.candidate.modelId }
+    });
+  } else if (!existingModel.enabled) {
+    await tx.providerModel.update({
+      data: { enabled: true },
+      where: { id: plan.candidate.modelId }
+    });
   }
-  const modelVersion = existingModel?.draftVersion ?? 1;
+  const modelVersion = existingModel?.activeConfig === null
+    ? existingModel.draftVersion
+    : existingModel?.activeVersion ?? 1;
 
   if (plan.credential.isNew) {
     await tx.providerCredential.create({
@@ -854,7 +1024,7 @@ async function applyQuickSetupPlan(
         draftVersion: plan.credential.draftVersion,
         enabled: true,
         id: plan.credential.id,
-        label: "Primary"
+        label: quickSetupCredentialLabel(plan.credential.id)
       }
     });
   }
@@ -884,33 +1054,54 @@ async function applyQuickSetupPlan(
     },
     where: { id: plan.credential.id }
   });
-  const connectionVersion = current.connection?.draftVersion ?? 1;
-  if (plan.mode !== "replacement") {
-    await tx.providerConnection.update({
-      data: { defaultCredentialId: plan.credential.id },
-      where: { id: policy.connection.id }
-    });
-  }
-  await tx.providerModelCredentialCheck.create({
-    data: {
-      checkedAt: plan.checkedAt,
+  await tx.providerUserCredentialAssignment.upsert({
+    create: {
       connectionId: policy.connection.id,
-      connectionVersion,
       credentialId: plan.credential.id,
-      credentialVersionId: plan.credential.versionId,
-      evidence: json({
-        detail: "ok",
-        method: "models_catalog",
-        selectedProviders: plan.candidate.configuration.openRouterRouting?.providers ?? [],
-        upstreamModelId: plan.candidate.configuration.upstreamModelId
-      }),
-      modelVersion,
-      providerModelId: plan.candidate.modelId,
-      status: "available"
+      userId: plan.actor.userId
+    },
+    update: { credentialId: plan.credential.id },
+    where: {
+      connectionId_userId: {
+        connectionId: policy.connection.id,
+        userId: plan.actor.userId
+      }
     }
   });
+  preservedTargets.set(plan.candidate.modelId, {
+    configuration: plan.candidate.configuration,
+    modelVersion
+  });
+  for (const [providerModelId, target] of [...preservedTargets.entries()].sort(
+    ([left], [right]) => left.localeCompare(right)
+  )) {
+    await tx.providerModelCredentialCheck.create({
+      data: {
+        checkedAt: plan.checkedAt,
+        connectionId: policy.connection.id,
+        connectionVersion,
+        credentialId: plan.credential.id,
+        credentialVersionId: plan.credential.versionId,
+        evidence: json({
+          detail: "ok",
+          method: "models_catalog",
+          selectedProviders: target.configuration.openRouterRouting?.providers ?? [],
+          upstreamModelId: target.configuration.upstreamModelId
+        }),
+        modelVersion: target.modelVersion,
+        providerModelId,
+        status: "available"
+      }
+    });
+  }
 
-  if (!directGrants[0]) {
+  const enabledDirectGrant = directGrants.find((grant) => grant.enabled);
+  if (!enabledDirectGrant && directGrants[0]) {
+    await tx.accessGrant.update({
+      data: { enabled: true },
+      where: { id: directGrants[0].id }
+    });
+  } else if (!enabledDirectGrant) {
     await tx.accessGrant.create({
       data: {
         enabled: true,
@@ -925,7 +1116,9 @@ async function applyQuickSetupPlan(
   }
 
   const eligibleModelIds = await eligibleProviderModelIds(tx, plan.actor.userId, exposeFake);
-  if (!eligibleModelIds.has(plan.candidate.modelId)) {
+  if (![plan.candidate.modelId, ...plan.preservedModels.map(({ id }) => id)].every(
+    (modelId) => eligibleModelIds.has(modelId)
+  )) {
     throw new QuickSetupCatalogUnavailableError();
   }
   const priorDefault = current.settings?.defaultProviderModelId ?? null;
@@ -962,12 +1155,65 @@ async function applyQuickSetupPlan(
   return { defaultChanged, profilesFilled, status: "ready" };
 }
 
+async function applyQuickSetupClearPlan(
+  tx: Prisma.TransactionClient,
+  plan: AdminProviderQuickSetupClearPlan
+) {
+  await lockAdminProviderQuickSetupState(tx, plan);
+  const current = await loadQuickSetupState(tx, {
+    ...plan.actor,
+    now: plan.now,
+    provider: plan.provider
+  });
+  if (!current.inspection.authorized) return "advanced_required" as const;
+  if (current.inspection.fingerprint !== plan.expectedFingerprint ||
+    !current.inspection.quickSetupAssignment) {
+    return "stale" as const;
+  }
+  const deleted = await tx.providerUserCredentialAssignment.deleteMany({
+    where: {
+      connectionId: adminProviderQuickSetupPolicy(plan.provider).connection.id,
+      credentialId: current.inspection.quickSetupAssignment.credentialId,
+      userId: plan.actor.userId
+    }
+  });
+  return deleted.count === 1
+    ? { status: "cleared" as const }
+    : "stale" as const;
+}
+
 export function createPrismaAdminProviderQuickSetupRepository(
   prisma: PrismaClient,
   options: QuickSetupRepositoryOptions = {}
 ): AdminProviderQuickSetupRepository {
   const exposeFake = options.exposeFake ?? false;
   return {
+    async clearAssignment(plan) {
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        try {
+          return await prisma.$transaction(
+            (tx) => applyQuickSetupClearPlan(tx, plan),
+            {
+              isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+              maxWait: 10_000,
+              timeout: 30_000
+            }
+          );
+        } catch (error) {
+          if (
+            error instanceof Prisma.PrismaClientKnownRequestError &&
+            (error.code === "P2002" || error.code === "P2025" ||
+              isSerializationConflict(error))
+          ) {
+            if (isSerializationConflict(error) && attempt < 2) continue;
+            return "stale";
+          }
+          throw error;
+        }
+      }
+      return "stale";
+    },
+
     async inspect(input) {
       return (await loadQuickSetupState(prisma as unknown as QuickSetupDb, input)).inspection;
     },

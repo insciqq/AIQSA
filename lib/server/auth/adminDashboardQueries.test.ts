@@ -1,7 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import { prisma } from "../prisma";
-import { listAdminDashboard, summarizeAdminNavigation } from "./adminDashboardQueries";
+import {
+  hasTeamMcpGroupGrants,
+  listAdminDashboard,
+  summarizeAdminNavigation
+} from "./adminDashboardQueries";
 import { loadAdminUsageQueryRows } from "./adminUsageQueries";
 
 async function withAdminQueryData<T>(
@@ -171,6 +175,21 @@ describe("admin dashboard queries", () => {
       ...personal,
       users: [actingAdmin, { ...pendingUser, id: "active-1", status: "active" }]
     }).attention.activeUsersWithoutModelAccess).toBe(1);
+  });
+
+  it("does not treat built-in Full access MCP coverage as team configuration", () => {
+    expect(hasTeamMcpGroupGrants([
+      {
+        mcpGrants: [{ canUse: true }],
+        systemRole: "full_access"
+      }
+    ])).toBe(false);
+    expect(hasTeamMcpGroupGrants([
+      {
+        mcpGrants: [{ canUse: true }],
+        systemRole: null
+      }
+    ])).toBe(true);
   });
 
   it("preserves query ordering, catalog filters, captured invite time, and secret redaction", async () => {

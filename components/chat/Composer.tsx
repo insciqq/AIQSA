@@ -67,6 +67,7 @@ export type ComposerProps = {
   onStop?(): void;
   onUploadFiles?(files: FileList | readonly File[]): void;
   operationError?: string | null;
+  promptFirst?: boolean;
   sendDisabled?: boolean;
   stopDisabled?: boolean;
   streaming?: boolean;
@@ -114,6 +115,7 @@ export function Composer({
   onStop,
   onUploadFiles,
   operationError = null,
+  promptFirst = false,
   sendDisabled = false,
   stopDisabled = false,
   streaming = false,
@@ -454,11 +456,11 @@ export function Composer({
           ) : null}
 
           <div className="px-4 pb-2 pt-3 [@media(max-height:32rem)]:!px-3 [@media(max-height:32rem)]:!pb-1 [@media(max-height:32rem)]:!pt-1" data-testid="composer-message-field">
-            <label className="block text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-muted" htmlFor="composer">
+            <label className={promptFirst ? "sr-only" : "block text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-muted"} htmlFor="composer">
               Message
             </label>
             <textarea
-              className="mt-1 block max-h-[200px] min-h-14 w-full min-w-0 resize-none bg-transparent text-[15px] leading-7 text-ink outline-none placeholder:text-ink-muted disabled:cursor-not-allowed disabled:text-ink-disabled sm:min-h-[72px] [@media(max-height:32rem)]:!max-h-20 [@media(max-height:32rem)]:!min-h-10 [@media(max-height:32rem)]:!leading-6 [@media(hover:none)]:!min-h-touch [@media(pointer:coarse)]:!min-h-touch"
+              className={`${promptFirst ? "" : "mt-1"} block max-h-[200px] min-h-14 w-full min-w-0 resize-none bg-transparent text-[15px] leading-7 text-ink outline-none placeholder:text-ink-muted disabled:cursor-not-allowed disabled:text-ink-disabled sm:min-h-[72px] [@media(max-height:32rem)]:!max-h-20 [@media(max-height:32rem)]:!min-h-10 [@media(max-height:32rem)]:!leading-6 [@media(hover:none)]:!min-h-touch [@media(pointer:coarse)]:!min-h-touch`}
               aria-describedby={disabledHint ? "composer-disabled-hint" : undefined}
               disabled={disabled}
               id="composer"
@@ -483,12 +485,14 @@ export function Composer({
           </div>
 
           <div
-            className="flex min-w-0 flex-wrap items-center gap-2 border-t border-trace-subtle px-2 py-2 sm:px-3 [@media(max-height:32rem)]:!py-1"
+            className={`flex min-w-0 items-center border-t border-trace-subtle px-2 py-2 sm:px-3 [@media(max-height:32rem)]:!py-1 ${promptFirst ? "flex-nowrap gap-1" : "flex-wrap gap-2"}`}
             data-testid="composer-action-footer"
           >
             {controls ? (
               <div
-                className="flex min-w-[min(100%,19rem)] flex-[1_1_22rem] items-center gap-1"
+                className={promptFirst
+                  ? "flex min-w-0 flex-[1_1_auto] items-center gap-0.5"
+                  : "flex min-w-[min(100%,19rem)] flex-[1_1_22rem] items-center gap-1"}
                 data-testid="composer-controls-slot"
               >
                 {controls}
@@ -496,10 +500,12 @@ export function Composer({
             ) : null}
 
             <div
-              className="flex min-w-0 flex-[1_1_auto] items-center justify-end gap-1.5"
+                className={promptFirst
+                  ? "flex min-w-0 shrink-0 items-center justify-end gap-0.5"
+                  : "flex min-w-0 flex-[1_1_auto] items-center justify-end gap-1.5"}
               data-testid="composer-primary-actions"
             >
-              {contextLine ? (
+              {contextLine && !promptFirst ? (
                 <div
                   className="relative flex min-w-0 items-center gap-1 text-[11px] text-ink-muted"
                   data-testid="composer-usage-line"
@@ -597,7 +603,7 @@ export function Composer({
                 ) : (
                   <Paperclip className="size-4" aria-hidden="true" />
                 )}
-                <span>{uploading ? "Uploading" : "Attach"}</span>
+                <span className={promptFirst ? "hidden sm:inline" : undefined}>{uploading ? "Uploading" : "Attach"}</span>
                 <input
                   className="sr-only"
                   type="file"

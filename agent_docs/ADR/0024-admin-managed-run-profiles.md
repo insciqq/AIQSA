@@ -3,6 +3,8 @@
 Status: Accepted
 Amends: 0016-responsive-composer-disclosure, 0022-admin-managed-llm-provider-control-plane
 
+Amendment note: ADR 0028 keeps Run profiles inside Advanced Providers but moves the visible group-owned entitlement workflow named below from the retired `Model access` destination into `Access & groups`.
+
 ## Context
 
 Fast, Balanced, and Deep were browser-owned shortcuts identified by provider family and upstream model strings. ADR 0022 replaced those strings as runtime identities with opaque `ProviderConnection.id` and `ProviderModel.id`. The shortcuts therefore stopped resolving even though the Luna, Terra, and Sol deployments still existed. Keeping another frontend identity table would repeat that coupling and could not represent administrator-created deployments safely.

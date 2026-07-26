@@ -12,6 +12,7 @@ const activeGroup: AdminGroup = {
   archivedAt: null,
   id: "group-active",
   name: "Active group",
+  systemRole: null,
   userCount: 2
 };
 
@@ -20,6 +21,7 @@ const archivedGroup: AdminGroup = {
   archivedAt: "2026-07-01T00:00:00.000Z",
   id: "group-archived",
   name: "Archived group",
+  systemRole: null,
   userCount: 0
 };
 
@@ -121,6 +123,7 @@ describe("useAdminUsersController", () => {
       }
     );
 
+    act(() => requireSectionProps(result.current.sectionProps).actions.onSelectUser(pending.id));
     act(() => {
       requireSectionProps(result.current.sectionProps).actions.onSelectedUserGroupsChange(pending.id, [
         activeGroup.id,
@@ -155,7 +158,7 @@ describe("useAdminUsersController", () => {
     );
   });
 
-  it("preserves requested selection through page fallback and issues repeated semantic focus requests", () => {
+  it("never auto-selects across pagination and issues semantic focus only for explicit rows", () => {
     const users = Array.from({ length: 27 }, (_, index) => user(String(index + 1).padStart(2, "0")));
     const deps = dependencies();
     const { result } = renderHook(() =>
@@ -169,7 +172,7 @@ describe("useAdminUsersController", () => {
 
     act(() => requireSectionProps(result.current.sectionProps).actions.onNextPage());
     const pageTwo = requireSectionProps(result.current.sectionProps);
-    expect(pageTwo.data.selectedUser?.id).toBe("26");
+    expect(pageTwo.data.selectedUser).toBeNull();
 
     act(() => {
       pageTwo.actions.onSelectUser("27");
@@ -182,9 +185,35 @@ describe("useAdminUsersController", () => {
     act(() => requireSectionProps(result.current.sectionProps).actions.onQueryChange("missing"));
     expect(requireSectionProps(result.current.sectionProps).data.selectedUser).toBeNull();
     act(() => requireSectionProps(result.current.sectionProps).actions.onQueryChange(""));
-    expect(requireSectionProps(result.current.sectionProps).data.selectedUser?.id).toBe("01");
+    expect(requireSectionProps(result.current.sectionProps).data.selectedUser).toBeNull();
     act(() => requireSectionProps(result.current.sectionProps).actions.onNextPage());
-    expect(requireSectionProps(result.current.sectionProps).data.selectedUser?.id).toBe("27");
+    expect(requireSectionProps(result.current.sectionProps).data.selectedUser).toBeNull();
+  });
+
+  it("keeps an open user detail when a refresh moves the user outside the preserved status filter", () => {
+    const selected = user("selected");
+    const deps = dependencies();
+    const { result, rerender } = renderHook(
+      ({ value }: { value: AdminDashboard }) =>
+        useAdminUsersController({
+          actionsDisabled: false,
+          adminUserId: "admin-current",
+          dashboard: value,
+          ...deps
+        }),
+      { initialProps: { value: dashboard([selected]) } }
+    );
+
+    act(() => requireSectionProps(result.current.sectionProps).actions.onStatusFilterChange("active"));
+    act(() => requireSectionProps(result.current.sectionProps).actions.onSelectUser(selected.id));
+
+    const disabled = { ...selected, status: "disabled" as const };
+    rerender({ value: dashboard([disabled]) });
+
+    const refreshed = requireSectionProps(result.current.sectionProps);
+    expect(refreshed.data.pageUsers).toEqual([]);
+    expect(refreshed.data.selectedUser).toBe(disabled);
+    expect(refreshed.view).toMatchObject({ compactDetailOpen: true, statusFilter: "active" });
   });
 
   it("maps confirmations and clears the requested selection only after successful deletion", () => {
@@ -218,6 +247,7 @@ describe("useAdminUsersController", () => {
     expect(requireSectionProps(result.current.sectionProps).data.selectedUser?.id).toBe(second.id);
 
     act(() => request?.onSuccess?.());
-    expect(requireSectionProps(result.current.sectionProps).data.selectedUser?.id).toBe(first.id);
+    expect(requireSectionProps(result.current.sectionProps).data.selectedUser).toBeNull();
+    expect(requireSectionProps(result.current.sectionProps).view.compactDetailOpen).toBe(false);
   });
 });

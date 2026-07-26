@@ -10,6 +10,7 @@ import {
   runProfileMetadata
 } from "../lib/domain/runProfiles";
 import { hashCanonicalMcpValue } from "../lib/server/mcp/definitions";
+import { ensureFullAccessGroup } from "../lib/server/auth/fullAccessGroup";
 import {
   assertLocalSeedRuntime,
   ensureLocalFixturePasswordHash,
@@ -500,6 +501,8 @@ async function main() {
       }
     }
   });
+
+  await ensureFullAccessGroup(prisma, ids.user);
 
   await prisma.group.upsert({
     create: LOCAL_MCP_FIXTURE_GROUP,

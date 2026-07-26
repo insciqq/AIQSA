@@ -4,6 +4,7 @@ import { exposeFakeProvider } from "../../catalog/prismaCatalogData";
 import { prisma } from "../../prisma";
 import { createAdminProviderCredentialTester } from "./credentialTester";
 import {
+  createAdminProviderQuickSetupClearHandler,
   createAdminProviderQuickSetupMutationHandler,
   createAdminProviderQuickSetupSnapshotHandler
 } from "./quickSetupHandlers";
@@ -32,3 +33,4 @@ const deps = {
 
 export const adminProviderQuickSetupGET = createAdminProviderQuickSetupSnapshotHandler(deps);
 export const adminProviderQuickSetupPOST = createAdminProviderQuickSetupMutationHandler(deps);
+export const adminProviderQuickSetupDELETE = createAdminProviderQuickSetupClearHandler(deps);

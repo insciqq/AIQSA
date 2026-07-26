@@ -240,10 +240,15 @@ function sourceMatches(
 }
 
 async function currentReferencedCredentialIds(
-  db: Pick<Prisma.TransactionClient, "providerConnection" | "providerGroupCredentialAssignment">,
+  db: Pick<
+    Prisma.TransactionClient,
+    | "providerConnection"
+    | "providerGroupCredentialAssignment"
+    | "providerUserCredentialAssignment"
+  >,
   connectionId: string
 ): Promise<string[] | null> {
-  const [connection, assignments] = await Promise.all([
+  const [connection, groupAssignments, userAssignments] = await Promise.all([
     db.providerConnection.findUnique({
       select: { defaultCredentialId: true },
       where: { id: connectionId }
@@ -251,12 +256,17 @@ async function currentReferencedCredentialIds(
     db.providerGroupCredentialAssignment.findMany({
       select: { credentialId: true },
       where: { connectionId, group: { archivedAt: null } }
+    }),
+    db.providerUserCredentialAssignment.findMany({
+      select: { credentialId: true },
+      where: { connectionId, user: { status: "active" } }
     })
   ]);
   if (!connection) return null;
   return [...new Set([
     ...(connection.defaultCredentialId ? [connection.defaultCredentialId] : []),
-    ...assignments.map(({ credentialId }) => credentialId)
+    ...groupAssignments.map(({ credentialId }) => credentialId),
+    ...userAssignments.map(({ credentialId }) => credentialId)
   ])].sort();
 }
 
@@ -1252,15 +1262,17 @@ export function createPrismaAdminProviderRepository(
         });
         if (!credential) return { status: "not_found" } as const;
         await cleanupProviderReferences(tx, { credentialId });
-        const [connectionDefault, groupAssignments, runBindings] = await Promise.all([
+        const [connectionDefault, groupAssignments, userAssignments, runBindings] = await Promise.all([
           tx.providerConnection.count({ where: { defaultCredentialId: credentialId } }),
           tx.providerGroupCredentialAssignment.count({ where: { credentialId } }),
+          tx.providerUserCredentialAssignment.count({ where: { credentialId } }),
           tx.providerRunBinding.count({ where: { credentialId } })
         ]);
         const blocked = blockers([
           credential.enabled ? { count: 1, kind: "resource_enabled" } : null,
           connectionDefault ? { count: connectionDefault, kind: "connection_default" } : null,
           groupAssignments ? { count: groupAssignments, kind: "group_assignments" } : null,
+          userAssignments ? { count: userAssignments, kind: "user_assignments" } : null,
           runBindings ? { count: runBindings, kind: "run_bindings" } : null
         ]);
         const blockedResult = conflict(blocked);

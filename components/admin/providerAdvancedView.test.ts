@@ -76,9 +76,9 @@ function connection(id = "connection-1"): AdminProviderConnection {
 }
 
 describe("providerAdvancedView", () => {
-  it("projects connection attention and the next focused task without moving state ownership", () => {
+  it("keeps virgin connections neutral while projecting the next focused task", () => {
     expect(presentProviderConnection(connection())).toMatchObject({
-      attention: "Add and enable at least one model.",
+      attention: null,
       credentialCount: 1,
       defaultTask: "models",
       modelCount: 0,
@@ -124,6 +124,8 @@ describe("providerAdvancedView", () => {
     })).toBe("Available · refresh needs attention");
     expect(providerDeleteBlockerLabel({ count: 2, kind: "run_profiles" }))
       .toBe("run profiles: 2");
+    expect(providerDeleteBlockerLabel({ count: 1, kind: "user_assignments" }))
+      .toBe("user assignments: 1");
   });
 
   it("uses a Quick family hint only when it identifies one real connection", () => {

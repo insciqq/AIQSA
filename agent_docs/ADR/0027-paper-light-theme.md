@@ -14,7 +14,7 @@ The operator requested an additional light color scheme alongside the five retai
 3. `neutral` remains the no-preference and invalid-value fallback. Adding `paper` does not silently migrate any browser.
 4. `Paper` uses a paper-white canvas, a whisper-gray workspace rail and controls, graphite ink, quiet gray traces, and a near-black proof/action color. Positive, caution, and critical remain semantic rather than decorative.
 5. The palette is conversation-product familiar but is not a ChatGPT clone. No OpenAI name, logo, asset, layout, or branded color is copied into AIQSA.
-6. The same semantic tokens, responsive composition, safe rendering, and functionality apply across all six themes. Formal WCAG/accessibility certification remains deferred by ADR 0025.
+6. The same semantic tokens, responsive composition, safe rendering, and functionality apply across all six themes.
 
 ## Consequences
 
