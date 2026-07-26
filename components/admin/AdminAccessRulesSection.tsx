@@ -1,5 +1,6 @@
 import {
   AdminAvailabilityStatus,
+  adminAvailabilityRowClass,
   AdminGroupOptions,
   AdminTaskBackButton,
   AdminTaskDetailPane,
@@ -193,7 +194,14 @@ export function AdminAccessRulesSection(props: AdminAccessRulesSectionProps) {
         </div>
         <div className="min-w-0 divide-y divide-trace-subtle" data-testid="admin-access-rules-list">
           {data.rules.length ? data.rules.map((rule) => (
-            <article className={`min-w-0 px-4 py-3 ${data.selectedRule?.id === rule.id ? "bg-control-selected" : "bg-transparent"}`} data-testid="admin-access-rule-row" key={rule.id}>
+            <article
+              className={`min-w-0 px-4 py-3 ${adminAvailabilityRowClass(rule.enabled)} ${
+                data.selectedRule?.id === rule.id ? "ring-1 ring-inset ring-proof/45" : ""
+              }`}
+              data-resource-availability-row={rule.enabled ? "enabled" : "disabled"}
+              data-testid="admin-access-rule-row"
+              key={rule.id}
+            >
               <div className="flex min-w-0 items-start gap-3">
                 {rule.kind === "email" ? <Mail aria-hidden="true" className="mt-0.5 size-3.5 shrink-0 text-proof" /> : <Globe2 aria-hidden="true" className="mt-0.5 size-3.5 shrink-0 text-proof" />}
                 <div className="min-w-0 flex-1">

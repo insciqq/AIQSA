@@ -1,6 +1,7 @@
 import type { AdminDeletionInfo, AdminGroup, AdminMembership } from "@/lib/contracts/admin";
 import {
   AvailabilityStatus,
+  availabilityRowClass,
   availabilityStatusClass,
   enableActionTone
 } from "@/components/resource-lifecycle/AvailabilityStatus";
@@ -20,6 +21,7 @@ export const inputClass =
 const fieldLabelClass = "text-xs font-medium text-ink-secondary";
 
 export const adminAvailabilityStatusClass = availabilityStatusClass;
+export const adminAvailabilityRowClass = availabilityRowClass;
 export const AdminAvailabilityStatus = AvailabilityStatus;
 
 export function AdminGroupOptions({

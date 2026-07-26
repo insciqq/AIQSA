@@ -18,6 +18,52 @@ function grantForUser(server: AdminMcpServer, userId: string): AdminMcpGrant | u
   return server.grants.find((grant) => grant.userId === userId);
 }
 
+function inheritedMcpAccessGroups(
+  server: AdminMcpServer,
+  user: AdminUserRecord,
+  groups: readonly AdminGroup[]
+): AdminGroup[] {
+  const memberships = new Set(user.groups.map((membership) => membership.groupId));
+  return groups.filter((group) =>
+    memberships.has(group.id) &&
+    !group.archivedAt &&
+    (group.systemRole === "full_access" || grantForGroup(server, group.id)?.canUse === true)
+  );
+}
+
+function EffectiveAccessFact({ accountActive, direct, inheritedGroups }: Readonly<{
+  accountActive: boolean;
+  direct: boolean;
+  inheritedGroups: readonly AdminGroup[];
+}>) {
+  const fullAccess = inheritedGroups.find((group) => group.systemRole === "full_access");
+  const label = !accountActive
+    ? "Unavailable while account is inactive"
+    : fullAccess
+      ? "Included via Full access"
+      : inheritedGroups.length
+        ? `Included via ${inheritedGroups[0]!.name}${inheritedGroups.length > 1 ? ` +${inheritedGroups.length - 1}` : ""}`
+        : direct
+          ? "Granted directly"
+          : "No access";
+  const effective = accountActive && Boolean(fullAccess || inheritedGroups.length || direct);
+
+  return (
+    <span
+      className={[
+        "inline-flex min-h-control-sm items-center gap-1.5 rounded-control border px-3 text-xs font-medium",
+        effective
+          ? "border-proof/25 bg-proof/[0.08] text-proof"
+          : "border-trace-strong bg-control-surface text-ink"
+      ].join(" ")}
+      data-effective-mcp-access={effective ? "granted" : "not-granted"}
+    >
+      {effective ? <Check aria-hidden="true" className="size-3.5" /> : null}
+      {label}
+    </span>
+  );
+}
+
 function GrantToggle({
   checked,
   disabled,
@@ -43,6 +89,35 @@ function GrantToggle({
     >
       {checked ? <Check aria-hidden="true" className="size-3.5" /> : null}
       {checked ? "Granted" : "Not granted"}
+    </button>
+  );
+}
+
+function DirectGrantAction({
+  direct,
+  disabled,
+  label,
+  onClick
+}: Readonly<{
+  direct: boolean;
+  disabled: boolean;
+  label: string;
+  onClick(): void;
+}>) {
+  return (
+    <button
+      aria-label={label}
+      className={[
+        `inline-flex min-h-control-sm items-center justify-center rounded-control border px-3 text-xs font-medium ${focusRing} ${touchTarget} disabled:cursor-not-allowed disabled:opacity-50`,
+        direct
+          ? "border-transparent bg-control-surface text-ink-secondary hover:bg-control-hover hover:text-ink"
+          : "border-proof/25 bg-proof/[0.08] text-proof hover:border-proof/40 hover:bg-proof/[0.14]"
+      ].join(" ")}
+      disabled={disabled}
+      onClick={onClick}
+      type="button"
+    >
+      {direct ? "Revoke direct grant" : "Grant directly"}
     </button>
   );
 }
@@ -122,9 +197,11 @@ export function AdminMcpGroupAccessPanel({
 
 export function AdminMcpUserAccessPanel({
   controller,
+  groups,
   user
 }: Readonly<{
   controller: AdminMcpController;
+  groups: readonly AdminGroup[];
   user: AdminUserRecord;
 }>) {
   const servers = controller.state.servers.filter((server) => !server.archivedAt);
@@ -142,6 +219,8 @@ export function AdminMcpUserAccessPanel({
       <div className="mt-4 divide-y divide-trace-subtle border-y border-trace-subtle">
       {servers.map((server) => {
         const grant = grantForUser(server, user.id);
+        const direct = grant?.canUse === true;
+        const inheritedGroups = inheritedMcpAccessGroups(server, user, groups);
         const grantedSlots = new Set(grant?.personalSlotKeys ?? []);
         const personalSlots = server.activePersonalSlots;
         const activeSlotKeys = new Set(personalSlots.map((slot) => slot.slotKey));
@@ -156,16 +235,29 @@ export function AdminMcpUserAccessPanel({
                   <AdminAvailabilityStatus enabled={server.enabled} />
                 </div>
               </div>
-              <GrantToggle
-                checked={grant?.canUse === true}
-                disabled={disabled}
-                label={`${grant?.canUse ? "Revoke" : "Grant"} ${server.name} directly for ${user.displayName}`}
-                onClick={() => void controller.actions.grant(server.id, {
-                  canUse: grant?.canUse !== true,
-                  personalSlotKeys: [...grantedSlots],
-                  userId: user.id
-                })}
-              />
+              <div className="flex flex-wrap items-end gap-2 sm:justify-end">
+                <div className="grid gap-1">
+                  <span className="text-[10px] font-medium uppercase tracking-[0.08em] text-ink-muted">Effective access</span>
+                  <EffectiveAccessFact
+                    accountActive={user.status === "active"}
+                    direct={direct}
+                    inheritedGroups={inheritedGroups}
+                  />
+                </div>
+                <div className="grid gap-1">
+                  <span className="text-[10px] font-medium uppercase tracking-[0.08em] text-ink-muted">Direct assignment</span>
+                  <DirectGrantAction
+                    direct={direct}
+                    disabled={disabled}
+                    label={`${direct ? "Revoke" : "Grant"} ${server.name} directly for ${user.displayName}`}
+                    onClick={() => void controller.actions.grant(server.id, {
+                      canUse: !direct,
+                      personalSlotKeys: [...grantedSlots],
+                      userId: user.id
+                    })}
+                  />
+                </div>
+              </div>
             </div>
             {personalSlots.length ? (
               <fieldset className="min-w-0 border-t border-trace-subtle pt-2">

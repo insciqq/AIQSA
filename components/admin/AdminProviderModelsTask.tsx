@@ -6,6 +6,7 @@ import {
 } from "@/components/admin/AdminProviderModelEditor";
 import {
   AdminAvailabilityStatus,
+  adminAvailabilityRowClass,
   EmptyState,
   dangerButton,
   enableButton,
@@ -94,7 +95,8 @@ export function AdminProviderModelsTask({
                   : adminProviderAdapterLabel(model.draftConfig.adapterKind);
               return (
                 <div
-                  className="flex flex-col gap-3 px-4 py-4 sm:flex-row sm:items-center sm:justify-between"
+                  className={`flex flex-col gap-3 px-4 py-4 sm:flex-row sm:items-center sm:justify-between ${adminAvailabilityRowClass(model.enabled)}`}
+                  data-resource-availability-row={model.enabled ? "enabled" : "disabled"}
                   key={model.id}
                   role="listitem"
                 >

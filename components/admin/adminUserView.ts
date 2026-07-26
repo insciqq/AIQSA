@@ -131,10 +131,21 @@ export function deriveAdminUsersView(input: AdminUsersViewInput): AdminUsersView
 
 export function userStatusClass(status: AdminUserRecord["status"]): string {
   const classes: Record<AdminUserRecord["status"], string> = {
-    active: "border-positive/25 bg-positive/10 text-positive",
-    denied: "border-critical/25 bg-critical/10 text-critical",
+    active: "border-positive/35 bg-positive/[0.12] text-positive",
+    denied: "border-critical/35 bg-critical/10 text-critical",
     disabled: "border-trace-strong bg-control-surface text-ink",
-    pending: "border-caution/25 bg-caution/10 text-caution"
+    pending: "border-caution/35 bg-caution/10 text-caution"
+  };
+
+  return classes[status];
+}
+
+export function userStatusRowClass(status: AdminUserRecord["status"]): string {
+  const classes: Record<AdminUserRecord["status"], string> = {
+    active: "border-l-2 border-l-positive/55 bg-positive/5",
+    denied: "border-l-2 border-l-critical/55 bg-critical/5",
+    disabled: "border-l-2 border-l-trace-strong bg-control-surface",
+    pending: "border-l-2 border-l-caution/55 bg-caution/5"
   };
 
   return classes[status];

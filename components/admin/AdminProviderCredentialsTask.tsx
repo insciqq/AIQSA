@@ -2,6 +2,7 @@
 
 import {
   AdminAvailabilityStatus,
+  adminAvailabilityRowClass,
   EmptyState,
   dangerButton,
   enableButton,
@@ -182,7 +183,12 @@ export function AdminProviderCredentialsTask({
                     ? "warning"
                     : "neutral";
               return (
-                <div className="px-4 py-4" key={credential.id} role="listitem">
+                <div
+                  className={`px-4 py-4 ${adminAvailabilityRowClass(credential.enabled)}`}
+                  data-resource-availability-row={credential.enabled ? "enabled" : "disabled"}
+                  key={credential.id}
+                  role="listitem"
+                >
                   <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                     <div className="min-w-0">
                       <p className="break-words text-sm font-medium text-ink">{credential.label}</p>

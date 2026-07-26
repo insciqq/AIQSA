@@ -2,6 +2,7 @@ import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import {
   AvailabilityStatus,
+  availabilityRowClass,
   availabilityStatusClass,
   enableActionTone
 } from "./AvailabilityStatus";
@@ -16,8 +17,8 @@ describe("AvailabilityStatus", () => {
     );
 
     expect(screen.getByText("Enabled")).toHaveClass(
-      "border-positive/25",
-      "bg-positive/10",
+      "border-positive/35",
+      "bg-positive/[0.12]",
       "text-positive"
     );
     expect(screen.getByText("Enabled")).toHaveAttribute("data-resource-availability", "enabled");
@@ -32,7 +33,17 @@ describe("AvailabilityStatus", () => {
   it("exports the same semantic status and restoration-action tones to every surface", () => {
     expect(availabilityStatusClass(false)).not.toContain("text-ink-muted");
     expect(availabilityStatusClass(false)).not.toContain("text-critical");
+    expect(availabilityRowClass(true)).toContain("border-l-positive/55");
+    expect(availabilityRowClass(false)).toContain("border-l-trace-strong");
+    expect(availabilityRowClass(false)).not.toContain("critical");
     expect(enableActionTone).toContain("bg-proof/[0.08]");
     expect(enableActionTone).toContain("text-proof");
+  });
+
+  it("allows a domain-specific positive label without changing binary availability semantics", () => {
+    render(<AvailabilityStatus enabled enabledLabel="Active" />);
+
+    expect(screen.getByText("Active")).toHaveAttribute("data-resource-availability", "enabled");
+    expect(screen.getByText("Active")).toHaveClass("text-positive");
   });
 });

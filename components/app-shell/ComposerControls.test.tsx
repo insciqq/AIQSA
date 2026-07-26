@@ -303,6 +303,16 @@ describe("ComposerControls", () => {
     const { props } = renderControls();
     const dialog = openRunSetup();
 
+    const availabilityFacts = within(dialog).getAllByText("Available", {
+      selector: '[data-run-profile-availability="available"]'
+    });
+    expect(availabilityFacts).toHaveLength(3);
+    for (const fact of availabilityFacts) {
+      expect(fact).toBeVisible();
+      expect(fact.tagName).toBe("SPAN");
+      expect(fact).not.toHaveAttribute("disabled");
+    }
+
     fireEvent.click(within(dialog).getByRole("button", { name: "Use Deep run profile" }));
     expect(props.onRunProfileChange).toHaveBeenCalledWith("deep");
   });
@@ -315,7 +325,7 @@ describe("ComposerControls", () => {
     expect(within(dialog).getByRole("heading", { name: "Answer setup" })).toBeVisible();
   });
 
-  it("shows configured but unavailable profiles as disabled with a visible reason", () => {
+  it("separates an unavailable profile fact from its unavailable action", () => {
     const unavailableCatalog: Catalog = {
       ...catalog,
       runProfiles: [{
@@ -327,10 +337,24 @@ describe("ComposerControls", () => {
       }]
     };
     renderControls({ catalog: unavailableCatalog });
+    const compactProfiles = screen.getByTestId("composer-inline-run-profiles");
+    const compactFact = compactProfiles.querySelector('[data-run-profile-availability="unavailable"]');
+    expect(compactFact).toBeVisible();
+    expect(compactFact?.tagName).toBe("SPAN");
+    expect(compactProfiles).toHaveTextContent("Unavailable");
+
     const dialog = openRunSetup();
 
     expect(within(dialog).getByRole("heading", { name: "Profile" })).toBeVisible();
-    expect(within(dialog).getByRole("button", { name: "Use Fast run profile" })).toBeDisabled();
+    const action = within(dialog).getByRole("button", { name: "Use Fast run profile" });
+    const fact = within(dialog).getByText("Unavailable", {
+      selector: '[data-run-profile-availability="unavailable"]'
+    });
+    expect(action).toBeDisabled();
+    expect(fact).toBeVisible();
+    expect(fact.tagName).toBe("SPAN");
+    expect(fact).not.toHaveAttribute("disabled");
+    expect(dialog).not.toHaveTextContent("Disabled");
     expect(within(dialog).getByTestId("run-profile-unavailable-reason")).toHaveTextContent(
       "Unavailable profiles cannot be used with your current model access."
     );

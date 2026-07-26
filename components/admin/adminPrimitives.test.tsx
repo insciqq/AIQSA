@@ -75,7 +75,7 @@ describe("admin lifecycle presentation", () => {
       </>
     );
 
-    expect(screen.getByText("Enabled")).toHaveClass("border-positive/25", "bg-positive/10", "text-positive");
+    expect(screen.getByText("Enabled")).toHaveClass("border-positive/35", "bg-positive/[0.12]", "text-positive");
     expect(screen.getByText("Disabled")).toHaveClass("border-trace-strong", "bg-control-surface", "text-ink");
     expect(screen.getByRole("button", { name: "Enable resource" })).toHaveClass("border-proof/25", "bg-proof/[0.08]", "text-proof");
   });

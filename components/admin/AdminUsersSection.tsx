@@ -9,6 +9,7 @@ import {
   primaryButton,
   quietButton
 } from "@/components/admin/adminPrimitives";
+import { AdminUserStatus } from "@/components/admin/AdminUserStatus";
 import {
   entitlementCountLabel,
   hasEntitlements,
@@ -16,7 +17,7 @@ import {
   type AdminUserSortKey,
   type AdminUserStatusFilter,
   userDeletionInfo,
-  userStatusClass
+  userStatusRowClass
 } from "@/components/admin/adminUserView";
 import {
   formatDate,
@@ -122,7 +123,8 @@ function UserListRow({
   return (
     <button
       aria-label={`Open ${user.displayName}`}
-      className={`group/user-row grid w-full min-w-0 gap-3 border-b border-trace-subtle bg-transparent px-4 py-2.5 text-left transition-colors last:border-b-0 hover:bg-control-hover active:bg-control-pressed sm:px-5 ${userDirectoryColumns} md:items-center`}
+      className={`group/user-row grid w-full min-w-0 gap-3 border-b border-trace-subtle px-4 py-2.5 text-left transition-colors last:border-b-0 hover:bg-control-hover active:bg-control-pressed sm:px-5 ${userStatusRowClass(user.status)} ${userDirectoryColumns} md:items-center`}
+      data-user-lifecycle-row={user.status}
       data-testid="admin-user-row"
       onClick={onSelect}
       type="button"
@@ -134,9 +136,7 @@ function UserListRow({
           </span>
           <span className="mt-0.5 block break-words text-xs text-ink-muted [overflow-wrap:anywhere]">{user.email ?? "No email"}</span>
         </span>
-        <span className={`shrink-0 self-center rounded-pill border px-2 py-0.5 text-[11px] capitalize ${userStatusClass(user.status)}`}>
-          {user.status}
-        </span>
+        <AdminUserStatus status={user.status} />
       </span>
       <span className="grid min-w-0 grid-cols-2 gap-2 md:contents">
         <span className="block min-w-0">
@@ -283,9 +283,7 @@ function AdminUserDetail({ actions, data, detailRef, groupsEditorRef, mcpAccess,
             {isSelf ? " · Acting admin" : ""}
           </p>
         </div>
-        <span className={`shrink-0 rounded-pill border px-2 py-1 text-xs capitalize ${userStatusClass(selectedUser.status)}`}>
-          {selectedUser.status}
-        </span>
+        <AdminUserStatus status={selectedUser.status} />
       </div>
 
       <section className="border-b border-trace-subtle py-5" data-testid="admin-user-groups-editor" ref={groupsEditorRef} tabIndex={-1}>

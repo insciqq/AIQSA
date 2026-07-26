@@ -127,7 +127,8 @@ describe("AdminUsersSection", () => {
     expect(rowColumns).toBeDefined();
     expect(rowColumns).not.toContain("_auto]");
     expect(header).toHaveClass(rowColumns!);
-    expect(within(row).getByText("active")).toBeVisible();
+    expect(within(row).getByText("Active")).toHaveAttribute("data-resource-availability", "enabled");
+    expect(row).toHaveAttribute("data-user-lifecycle-row", "active");
   });
 
   it("renders only the dedicated detail while a user is open and connects Back", () => {

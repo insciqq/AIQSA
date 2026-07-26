@@ -51,13 +51,29 @@ describe("AdminAccessRulesSection", () => {
 
     expect(screen.getByTestId("admin-access-rules-index")).toHaveClass("block", "lg:block");
     expect(screen.getByTestId("admin-access-rules-detail-pane")).toHaveClass("hidden", "lg:block");
-    expect(screen.getByText("Enabled")).toHaveClass("border-positive/25", "text-positive");
+    expect(screen.getByText("Enabled")).toHaveClass("border-positive/35", "text-positive");
     expect(screen.queryByRole("table")).not.toBeInTheDocument();
     fireEvent.change(screen.getByLabelText("Search access rules"), { target: { value: "domain" } });
     fireEvent.click(within(screen.getByTestId("admin-access-rule-row")).getByRole("button", { name: "Details" }));
 
     expect(sectionActions.changeQuery).toHaveBeenCalledWith("domain");
     expect(sectionActions.selectRule).toHaveBeenCalledWith(rule.id);
+  });
+
+  it("keeps lifecycle emphasis visible underneath the independent selection ring", () => {
+    const sectionActions = actions();
+    render(
+      <AdminAccessRulesSection
+        {...props(sectionActions, {
+          data: { groups, rules: [rule], selectedRule: rule, totalRuleCount: 1 }
+        })}
+      />
+    );
+
+    expect(screen.getByTestId("admin-access-rule-row")).toHaveClass(
+      "border-l-positive/55",
+      "ring-proof/45"
+    );
   });
 
   it("wires create, exact normalized preview, active groups, and local validation", () => {

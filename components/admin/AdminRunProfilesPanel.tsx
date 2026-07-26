@@ -2,6 +2,7 @@
 
 import {
   AdminAvailabilityStatus,
+  adminAvailabilityRowClass,
   inputClass,
   primaryButton,
   quietButton
@@ -59,32 +60,64 @@ function ProfileRow({
   label,
   models,
   onChange,
-  savedEnabled
+  savedProfile
 }: {
   disabled: boolean;
   draft: ProfileDraft;
   label: string;
   models: AdminRunProfileModel[];
   onChange(next: ProfileDraft): void;
-  savedEnabled: boolean;
+  savedProfile: ProfileDraft;
 }) {
   const selectedModel = models.find((model) => model.id === draft.providerModelId) ?? null;
+  const savedModel = models.find((model) => model.id === savedProfile.providerModelId) ?? null;
+  const savedReadiness = !savedProfile.enabled
+    ? null
+    : savedModel?.selectable
+      ? "ready"
+      : "unavailable";
+  const savedReadinessLabel = !savedModel
+    ? "Model missing"
+    : !savedModel.connectionEnabled
+      ? "Connection disabled"
+      : !savedModel.modelEnabled
+        ? "Model disabled"
+        : "Model unavailable";
   const efforts = valuesWithCurrent(selectedModel?.reasoningEfforts ?? [], draft.reasoningEffort);
   const modes = valuesWithCurrent(selectedModel?.reasoningModes ?? [], draft.reasoningMode);
+  const rowClass = adminAvailabilityRowClass(savedProfile.enabled);
 
   return (
-    <fieldset className="grid min-w-0 gap-4 border-t border-trace-subtle px-4 py-5 sm:px-6 lg:grid-cols-[minmax(12rem,.8fr)_minmax(20rem,1.5fr)] lg:items-start">
+    <fieldset
+      className={`grid min-w-0 gap-4 border-t border-trace-subtle px-4 py-5 sm:px-6 lg:grid-cols-[minmax(12rem,.8fr)_minmax(20rem,1.5fr)] lg:items-start ${rowClass}`}
+      data-run-profile-readiness={savedReadiness ?? undefined}
+      data-run-profile-state={savedProfile.enabled ? "enabled" : "disabled"}
+    >
       <legend className="sr-only">{label} run profile</legend>
       <div className="min-w-0">
         <div className="flex flex-wrap items-center gap-2">
           <p className="text-sm font-semibold text-ink">{label}</p>
-          <AdminAvailabilityStatus enabled={savedEnabled} />
-          {draft.enabled !== savedEnabled ? (
+          <AdminAvailabilityStatus enabled={savedProfile.enabled} />
+          {savedReadiness === "unavailable" ? (
+            <span
+              className="inline-flex shrink-0 items-center gap-1.5 rounded-pill border border-caution/35 bg-caution/10 px-2.5 py-1 text-xs font-semibold leading-none text-caution"
+              data-resource-readiness="unavailable"
+            >
+              <span aria-hidden="true" className="size-2 rounded-full bg-current" />
+              {savedReadinessLabel}
+            </span>
+          ) : null}
+          {draft.enabled !== savedProfile.enabled ? (
             <span className="text-xs font-medium text-caution">
               Will be {draft.enabled ? "enabled" : "disabled"} after Save
             </span>
           ) : null}
         </div>
+        {savedReadiness === "unavailable" ? (
+          <p className="mt-1 text-xs leading-5 text-caution">
+            This profile remains configured, but its selected deployment cannot be used for new runs.
+          </p>
+        ) : null}
         <p className="mt-1 text-xs leading-5 text-ink-muted">
           Composer shortcut. Empty deployment disables this profile without deleting its slot.
         </p>
@@ -270,7 +303,7 @@ export function AdminRunProfilesPanel({
               ...current,
               drafts: updateDraft(current.drafts, draft.id, () => next)
             }))}
-            savedEnabled={catalog.profiles.find((profile) => profile.id === draft.id)?.enabled ?? false}
+            savedProfile={savedDrafts.find((profile) => profile.id === draft.id) ?? draft}
           />
         ))
       ) : null}

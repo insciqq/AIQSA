@@ -124,7 +124,7 @@ describe("Admin MCP grant ownership", () => {
 
   it("keeps direct use and exact personal-field grants in selected user details", () => {
     const view = controller();
-    render(<AdminMcpUserAccessPanel controller={view.controller} user={user} />);
+    render(<AdminMcpUserAccessPanel controller={view.controller} groups={[]} user={user} />);
 
     fireEvent.click(screen.getByRole("button", { name: "Grant Memory directly for Alice" }));
     expect(view.grant).toHaveBeenLastCalledWith("server-1", {
@@ -156,7 +156,7 @@ describe("Admin MCP grant ownership", () => {
         userName: user.displayName
       }]
     });
-    render(<AdminMcpUserAccessPanel controller={view.controller} user={user} />);
+    render(<AdminMcpUserAccessPanel controller={view.controller} groups={[]} user={user} />);
 
     expect(screen.queryByRole("checkbox", { name: "API key" })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("checkbox", { name: "removed_key" }));
@@ -165,5 +165,89 @@ describe("Admin MCP grant ownership", () => {
       personalSlotKeys: [],
       userId: "user-1"
     });
+  });
+
+  it("shows inherited Full access separately from the direct grant control", () => {
+    const view = controller();
+    const fullAccess = {
+      ...group,
+      id: "group-full-access",
+      name: "Full access",
+      systemRole: "full_access" as const
+    };
+    render(
+      <AdminMcpUserAccessPanel
+        controller={view.controller}
+        groups={[fullAccess]}
+        user={{
+          ...user,
+          groups: [{ groupId: fullAccess.id, name: fullAccess.name, role: "member" }]
+        }}
+      />
+    );
+
+    expect(screen.getByText("Included via Full access")).toHaveAttribute(
+      "data-effective-mcp-access",
+      "granted"
+    );
+    expect(screen.getByRole("button", { name: "Grant Memory directly for Alice" })).toHaveTextContent("Grant directly");
+  });
+
+  it("names an ordinary group that provides effective MCP access", () => {
+    const view = controller({
+      ...server,
+      grants: [{
+        canUse: true,
+        groupId: group.id,
+        groupName: group.name,
+        id: "grant-group",
+        personalSlotKeys: [],
+        userId: null,
+        userName: null
+      }]
+    });
+    render(
+      <AdminMcpUserAccessPanel
+        controller={view.controller}
+        groups={[group]}
+        user={{
+          ...user,
+          groups: [{ groupId: group.id, name: group.name, role: "member" }]
+        }}
+      />
+    );
+
+    expect(screen.getByText("Included via operators")).toHaveAttribute(
+      "data-effective-mcp-access",
+      "granted"
+    );
+    expect(screen.getByRole("button", { name: "Grant Memory directly for Alice" })).toHaveTextContent("Grant directly");
+  });
+
+  it("does not call assigned group access effective while the account is inactive", () => {
+    const fullAccess = {
+      ...group,
+      id: "group-full-access",
+      name: "Full access",
+      systemRole: "full_access" as const
+    };
+    const view = controller();
+    render(
+      <AdminMcpUserAccessPanel
+        controller={view.controller}
+        groups={[fullAccess]}
+        user={{
+          ...user,
+          groups: [{ groupId: fullAccess.id, name: fullAccess.name, role: "member" }],
+          status: "disabled"
+        }}
+      />
+    );
+
+    expect(screen.getByText("Unavailable while account is inactive")).toHaveAttribute(
+      "data-effective-mcp-access",
+      "not-granted"
+    );
+    expect(screen.getByRole("button", { name: "Grant Memory directly for Alice" })).toBeDisabled();
   });
 });

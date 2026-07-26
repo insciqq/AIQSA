@@ -7,6 +7,7 @@ import {
 } from "@/lib/contracts/mcp";
 import {
   AvailabilityStatus,
+  availabilityRowClass,
   enableActionTone
 } from "@/components/resource-lifecycle/AvailabilityStatus";
 import {
@@ -238,7 +239,11 @@ function ServerCard({
   }
 
   return (
-    <article className="border-t border-trace-subtle py-5 first:border-t-0" aria-labelledby={`mcp-server-${server.id}`}>
+    <article
+      aria-labelledby={`mcp-server-${server.id}`}
+      className={`border-t border-trace-subtle px-3 py-5 first:border-t-0 ${availabilityRowClass(server.enabled)}`}
+      data-resource-availability-row={server.enabled ? "enabled" : "disabled"}
+    >
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">

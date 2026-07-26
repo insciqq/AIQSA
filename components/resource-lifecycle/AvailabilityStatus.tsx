@@ -3,18 +3,32 @@ export const enableActionTone =
 
 export function availabilityStatusClass(enabled: boolean): string {
   return enabled
-    ? "border-positive/25 bg-positive/10 text-positive"
+    ? "border-positive/35 bg-positive/[0.12] text-positive"
     : "border-trace-strong bg-control-surface text-ink";
 }
 
-export function AvailabilityStatus({ enabled }: Readonly<{ enabled: boolean }>) {
+export function availabilityRowClass(enabled: boolean): string {
+  return enabled
+    ? "border-l-2 border-l-positive/55 bg-positive/5"
+    : "border-l-2 border-l-trace-strong bg-control-surface";
+}
+
+export function AvailabilityStatus({
+  disabledLabel = "Disabled",
+  enabled,
+  enabledLabel = "Enabled"
+}: Readonly<{
+  disabledLabel?: string;
+  enabled: boolean;
+  enabledLabel?: string;
+}>) {
   return (
     <span
-      className={`inline-flex shrink-0 items-center gap-1.5 rounded-pill border px-2 py-0.5 text-[11px] font-medium ${availabilityStatusClass(enabled)}`}
+      className={`inline-flex shrink-0 items-center gap-1.5 rounded-pill border px-2.5 py-1 text-xs font-semibold leading-none ${availabilityStatusClass(enabled)}`}
       data-resource-availability={enabled ? "enabled" : "disabled"}
     >
-      <span aria-hidden="true" className="size-1.5 rounded-full bg-current" />
-      {enabled ? "Enabled" : "Disabled"}
+      <span aria-hidden="true" className="size-2 rounded-full bg-current" />
+      {enabled ? enabledLabel : disabledLabel}
     </span>
   );
 }

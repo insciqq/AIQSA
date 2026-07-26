@@ -247,7 +247,7 @@ describe("AdminProvidersSection", () => {
 
     openTask("Credentials");
     const disable = screen.getByRole("button", { name: "Disable Primary credential" });
-    expect(screen.getByText("Enabled")).toHaveClass("border-positive/25", "text-positive");
+    expect(screen.getByText("Enabled")).toHaveClass("border-positive/35", "text-positive");
     expect(disable).not.toHaveClass("text-proof");
     fireEvent.click(disable);
     await waitFor(() => expect(view.actions.updateCredential).toHaveBeenCalledWith(

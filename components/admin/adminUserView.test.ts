@@ -7,7 +7,8 @@ import {
   sortValueForUser,
   type AdminUsersViewInput,
   userDeletionInfo,
-  userStatusClass
+  userStatusClass,
+  userStatusRowClass
 } from "./adminUserView";
 
 const activeGroup: AdminGroup = {
@@ -152,5 +153,8 @@ describe("adminUserView", () => {
     expect(userStatusClass("disabled")).toContain("bg-control-surface");
     expect(userStatusClass("disabled")).toContain("text-ink");
     expect(userStatusClass("disabled")).not.toContain("text-critical");
+    expect(userStatusRowClass("disabled")).toContain("border-l-trace-strong");
+    expect(userStatusRowClass("disabled")).not.toContain("critical");
+    expect(userStatusRowClass("active")).toContain("border-l-positive/55");
   });
 });

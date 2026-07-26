@@ -17,7 +17,8 @@ import {
   primaryButton,
   quietButton
 } from "@/components/admin/adminPrimitives";
-import { userStatusClass } from "@/components/admin/adminUserView";
+import { AdminUserStatus } from "@/components/admin/AdminUserStatus";
+import { userStatusRowClass } from "@/components/admin/adminUserView";
 import { formatDate } from "@/components/admin/adminViewUtils";
 import type { AdminCatalog, AdminGroup, AdminUserRecord } from "@/lib/contracts/admin";
 import { Archive, Check, ChevronRight, Plus, RotateCcw, Save, Search, Trash2 } from "lucide-react";
@@ -359,7 +360,11 @@ function GroupMembers({ actions, data, status }: Readonly<{
 
       <div className="mt-5 overflow-hidden rounded-panel border border-trace-subtle">
         {data.selectedGroupMembers.length ? data.selectedGroupMembers.map((user) => (
-          <div className="flex min-w-0 flex-col gap-3 border-b border-trace-subtle px-4 py-3 last:border-b-0 sm:flex-row sm:items-center sm:justify-between" key={user.id}>
+          <div
+            className={`flex min-w-0 flex-col gap-3 border-b border-trace-subtle px-4 py-3 last:border-b-0 sm:flex-row sm:items-center sm:justify-between ${userStatusRowClass(user.status)}`}
+            data-user-lifecycle-row={user.status}
+            key={user.id}
+          >
             <div className="min-w-0">
               <p className="break-words text-sm font-medium text-ink [overflow-wrap:anywhere]">{user.displayName}</p>
               <p className="mt-0.5 break-words text-xs text-ink-muted [overflow-wrap:anywhere]">
@@ -367,9 +372,7 @@ function GroupMembers({ actions, data, status }: Readonly<{
               </p>
             </div>
             <div className="flex shrink-0 flex-wrap items-center gap-2">
-              <span className={`rounded-pill border px-2 py-0.5 text-[11px] capitalize ${userStatusClass(user.status)}`}>
-                {user.status}
-              </span>
+              <AdminUserStatus status={user.status} />
               {!archived ? (
                 <button
                   className={quietButton}

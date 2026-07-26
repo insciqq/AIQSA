@@ -8,6 +8,7 @@ import { AdminProviderDiagnosticsTask } from "@/components/admin/AdminProviderDi
 import { AdminProviderModelsTask } from "@/components/admin/AdminProviderModelsTask";
 import {
   AdminAvailabilityStatus,
+  adminAvailabilityRowClass,
   AdminTaskBackButton,
   EmptyState,
   dangerButton,
@@ -198,7 +199,8 @@ function ConnectionIndex({
               return (
                 <li key={connection.id}>
                   <button
-                    className="flex min-h-touch w-full min-w-0 items-center gap-3 px-4 py-3 text-left hover:bg-control-hover"
+                    className={`flex min-h-touch w-full min-w-0 items-center gap-3 px-4 py-3 text-left hover:bg-control-hover ${adminAvailabilityRowClass(connection.enabled)}`}
+                    data-resource-availability-row={connection.enabled ? "enabled" : "disabled"}
                     onClick={() => onSelect(connection.id)}
                     type="button"
                   >

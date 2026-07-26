@@ -9,6 +9,7 @@ import {
 } from "@/components/admin/adminMcpDraft";
 import {
   AdminAvailabilityStatus,
+  adminAvailabilityRowClass,
   AdminTaskBackButton,
   AdminTaskDetailPane,
   AdminTaskIndexPane,
@@ -146,7 +147,12 @@ function ServerCatalog({
               return (
                 <button
                   aria-current={current ? "true" : undefined}
-                  className={`flex min-h-touch min-w-0 items-center gap-2 border-l-2 px-3 py-2 text-left ${focusRing} ${current ? "border-proof bg-answer-paper" : "border-transparent hover:bg-control-hover"}`}
+                  className={`flex min-h-touch min-w-0 items-center gap-2 px-3 py-2 text-left ${focusRing} ${
+                    server.archivedAt
+                      ? "border-l-2 border-l-critical/55 bg-critical/5"
+                      : adminAvailabilityRowClass(server.enabled)
+                  } ${current ? "ring-1 ring-inset ring-proof/45" : "hover:bg-control-hover"}`}
+                  data-resource-availability-row={server.archivedAt ? undefined : server.enabled ? "enabled" : "disabled"}
                   key={server.id}
                   onClick={() => onSelect(server.id)}
                   role="listitem"

@@ -275,11 +275,12 @@ describe("AdminAccessGroupsSection", () => {
 
     const row = screen.getByText("Disabled member").closest<HTMLElement>("div.border-b");
     expect(row).not.toBeNull();
-    expect(within(row!).getByText("disabled")).toHaveClass(
+    expect(within(row!).getByText("Disabled")).toHaveClass(
       "border-trace-strong",
       "bg-control-surface",
       "text-ink"
     );
+    expect(row).toHaveAttribute("data-user-lifecycle-row", "disabled");
   });
 
   it("keeps provider, model, search, and bulk grant actions in Models & search", () => {

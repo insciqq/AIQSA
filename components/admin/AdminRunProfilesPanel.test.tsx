@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AdminRunProfilesPanel } from "./AdminRunProfilesPanel";
 
@@ -130,6 +130,28 @@ describe("AdminRunProfilesPanel", () => {
       id: "fast",
       providerModelId: null
     });
+  });
+
+  it("separates profile enablement from an inactive model deployment", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({
+      models,
+      profiles: profiles.map((profile) => profile.id === "fast"
+        ? { ...profile, providerModelId: "deployment-retired" }
+        : profile)
+    })));
+    render(<AdminRunProfilesPanel active />);
+
+    const fastProfile = await screen.findByRole("group", { name: "Fast run profile" });
+    expect(fastProfile).toHaveAttribute("data-run-profile-state", "enabled");
+    expect(fastProfile).toHaveAttribute("data-run-profile-readiness", "unavailable");
+    expect(within(fastProfile).getByText("Enabled")).toHaveAttribute(
+      "data-resource-availability",
+      "enabled"
+    );
+    expect(within(fastProfile).getByText("Connection disabled")).toHaveAttribute(
+      "data-resource-readiness",
+      "unavailable"
+    );
   });
 
   it("distinguishes an initial load failure from an empty profile catalog", async () => {

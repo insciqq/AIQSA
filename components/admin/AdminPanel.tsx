@@ -177,7 +177,11 @@ function AdminSectionContent({
         <AdminUsersSection
           {...users.sectionProps}
           mcpAccess={users.sectionProps.data.selectedUser ? (
-            <AdminMcpUserAccessPanel controller={mcp} user={users.sectionProps.data.selectedUser} />
+            <AdminMcpUserAccessPanel
+              controller={mcp}
+              groups={dashboard.groups}
+              user={users.sectionProps.data.selectedUser}
+            />
           ) : null}
         />
       ) : null;
