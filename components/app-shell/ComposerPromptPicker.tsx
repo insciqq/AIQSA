@@ -69,7 +69,7 @@ export function ComposerPromptPicker({
       <button
         {...triggerProps}
         ref={triggerRef}
-        className="flex h-touch w-full items-center justify-between gap-2 rounded-control border border-separator-subtle bg-surface-thread px-3 text-left text-xs text-content-primary outline-none hover:bg-surface-hover focus-visible:ring-2 focus-visible:ring-accent-cyan/55 disabled:text-content-disabled sm:h-control [@media(hover:none)]:!h-touch [@media(pointer:coarse)]:!h-touch"
+        className="flex h-touch w-full items-center justify-between gap-2 rounded-control border border-trace-subtle bg-answer-paper px-3 text-left text-xs text-ink outline-none hover:bg-control-hover focus-visible:ring-2 focus-visible:ring-proof/55 disabled:text-ink-disabled sm:h-control [@media(hover:none)]:!h-touch [@media(pointer:coarse)]:!h-touch"
         type="button"
         aria-label="Prompt preset"
         aria-describedby="prompt-picker-current-value"
@@ -80,29 +80,29 @@ export function ComposerPromptPicker({
         <span className="flex min-w-0 items-center gap-2">
           {icon}
           <span className="min-w-0">
-            <span className="block text-[11px] text-content-muted">Prompt</span>
+            <span className="block text-[11px] text-ink-muted">Prompt</span>
             <span className="block truncate text-sm font-medium" id="prompt-picker-current-value">
               {selected?.name ?? "Prompt"}
             </span>
           </span>
         </span>
-        <ChevronDown className="size-3.5 shrink-0 text-content-muted" aria-hidden="true" />
+        <ChevronDown className="size-3.5 shrink-0 text-ink-muted" aria-hidden="true" />
       </button>
       {open ? (
         <div
           {...dialogProps}
           ref={dialogRef}
-          className="pop-enter absolute left-0 top-12 z-50 flex max-h-[min(18rem,calc(100dvh-8rem))] w-[min(24rem,calc(100vw-2rem))] flex-col overflow-hidden rounded-panel border border-separator-subtle bg-surface-overlay p-3 shadow-overlay max-sm:fixed max-sm:inset-x-2 max-sm:bottom-2 max-sm:top-auto max-sm:w-auto max-sm:max-h-[min(70dvh,32rem)] max-sm:pb-[calc(0.75rem+env(safe-area-inset-bottom))] [@media(max-height:32rem)]:fixed [@media(max-height:32rem)]:!bottom-[max(.5rem,env(safe-area-inset-bottom))] [@media(max-height:32rem)]:!left-[max(.5rem,env(safe-area-inset-left))] [@media(max-height:32rem)]:!right-[max(.5rem,env(safe-area-inset-right))] [@media(max-height:32rem)]:!top-auto [@media(max-height:32rem)]:!max-h-[calc(100dvh-1rem-env(safe-area-inset-top)-env(safe-area-inset-bottom))] [@media(max-height:32rem)]:!w-auto"
+          className="pop-enter absolute left-0 top-12 z-50 flex max-h-[min(18rem,calc(100dvh-8rem))] w-[min(24rem,calc(100vw-2rem))] flex-col overflow-hidden rounded-panel border border-trace-subtle bg-overlay-surface p-3 shadow-overlay max-sm:fixed max-sm:inset-x-2 max-sm:bottom-2 max-sm:top-auto max-sm:w-auto max-sm:max-h-[min(70dvh,32rem)] max-sm:pb-[calc(0.75rem+env(safe-area-inset-bottom))] [@media(max-height:32rem)]:!fixed [@media(max-height:32rem)]:!inset-x-2 [@media(max-height:32rem)]:!bottom-2 [@media(max-height:32rem)]:!top-auto [@media(max-height:32rem)]:!w-auto [@media(max-height:32rem)]:!max-h-[calc(100dvh-1rem-env(safe-area-inset-top)-env(safe-area-inset-bottom))] [@media(max-height:32rem)]:!pb-[calc(0.75rem+env(safe-area-inset-bottom))]"
           data-testid="prompt-picker-options"
           aria-label="Choose a prompt preset"
         >
           <div className="mb-2 flex items-start justify-between gap-3">
             <div className="min-w-0">
-              <h3 className="text-sm font-semibold text-content-primary">Choose a prompt preset</h3>
-              <p className="mt-0.5 text-xs text-content-muted">Changes apply to the next message.</p>
+              <h3 className="text-sm font-semibold text-ink">Choose a prompt preset</h3>
+              <p className="mt-0.5 text-xs text-ink-muted">Changes apply to the next message.</p>
             </div>
             <button
-              className="grid size-11 shrink-0 place-items-center rounded-control text-content-muted outline-none hover:bg-surface-hover hover:text-content-primary focus-visible:ring-2 focus-visible:ring-accent-cyan/55 lg:size-8 [@media(hover:none)]:!size-11 [@media(pointer:coarse)]:!size-11"
+              className="grid size-11 shrink-0 place-items-center rounded-control text-ink-muted outline-none hover:bg-control-hover hover:text-ink focus-visible:ring-2 focus-visible:ring-proof/55 lg:size-8 [@media(hover:none)]:!size-11 [@media(pointer:coarse)]:!size-11"
               type="button"
               aria-label="Close prompt picker"
               onClick={close}
@@ -110,11 +110,11 @@ export function ComposerPromptPicker({
               <X className="size-4" aria-hidden="true" />
             </button>
           </div>
-          <div className="mb-2 flex min-h-touch items-center gap-2 rounded-control border border-separator-subtle bg-surface-thread px-3 sm:min-h-control [@media(hover:none)]:!min-h-touch [@media(pointer:coarse)]:!min-h-touch">
-            <Search className="size-4 shrink-0 text-content-muted" aria-hidden="true" />
+          <div className="mb-2 flex min-h-touch items-center gap-2 rounded-control border border-trace-subtle bg-answer-paper px-3 sm:min-h-control [@media(hover:none)]:!min-h-touch [@media(pointer:coarse)]:!min-h-touch">
+            <Search className="size-4 shrink-0 text-ink-muted" aria-hidden="true" />
             <input
               ref={searchRef}
-              className="min-w-0 flex-1 bg-transparent text-sm text-content-primary outline-none placeholder:text-content-muted"
+              className="min-w-0 flex-1 bg-transparent text-sm text-ink outline-none placeholder:text-ink-muted"
               type="search"
               aria-label="Search prompt presets"
               placeholder="Search prompts"
@@ -139,9 +139,9 @@ export function ComposerPromptPicker({
             aria-label="Prompt presets"
           >
             {filteredPrompts.length === 0 ? (
-              <div className="rounded-control bg-surface-thread px-4 py-6 text-center" role="status">
-                <p className="text-sm font-medium text-content-primary">No prompts match “{query.trim()}”.</p>
-                <p className="mt-1 text-xs text-content-muted">Try a preset name or wording from its instructions.</p>
+              <div className="rounded-control bg-control-surface px-4 py-6 text-center" role="status">
+                <p className="text-sm font-medium text-ink">No prompts match “{query.trim()}”.</p>
+                <p className="mt-1 text-xs text-ink-muted">Try a preset name or wording from its instructions.</p>
               </div>
             ) : null}
             {filteredPrompts.map((prompt, index) => {
@@ -153,8 +153,8 @@ export function ComposerPromptPicker({
                   key={prompt.id}
                   {...getItemProps(index)}
                   className={[
-                    "flex min-h-touch w-full items-start justify-between gap-3 rounded-control px-3 py-2.5 text-left text-xs outline-none hover:bg-surface-hover focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent-cyan/55",
-                    active ? "bg-surface-selected text-content-primary" : "text-content-secondary"
+                    "flex min-h-touch w-full items-start justify-between gap-3 rounded-control px-3 py-2.5 text-left text-xs outline-none hover:bg-control-hover focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-proof/55",
+                    active ? "bg-control-selected text-ink" : "text-ink-secondary"
                   ].join(" ")}
                   data-option-value={prompt.id}
                   id={`prompt-picker-option-${index}`}
@@ -163,17 +163,17 @@ export function ComposerPromptPicker({
                   title={`${prompt.name}\n${preview}`}
                 >
                   <span className="min-w-0 flex-1">
-                    <span className="block break-words text-sm font-semibold leading-5 text-content-primary [overflow-wrap:anywhere]">
+                    <span className="block break-words text-sm font-semibold leading-5 text-ink [overflow-wrap:anywhere]">
                       {prompt.name}
                     </span>
-                    <span className="mt-0.5 block overflow-hidden text-xs leading-5 text-content-muted [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:2]">
+                    <span className="mt-0.5 block overflow-hidden text-xs leading-5 text-ink-muted [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:2]">
                       {preview}
                     </span>
                   </span>
                   <span className="flex shrink-0 flex-col items-end gap-1 text-xs">
-                    {active ? <span className="text-accent-cyan">Current</span> : null}
-                    {prompt.isDefault ? <span className="text-content-muted">Default</span> : null}
-                    {active ? <Check className="size-4 text-accent-cyan" aria-hidden="true" /> : null}
+                    {active ? <span className="text-proof">Current</span> : null}
+                    {prompt.isDefault ? <span className="text-ink-muted">Default</span> : null}
+                    {active ? <Check className="size-4 text-proof" aria-hidden="true" /> : null}
                   </span>
                 </button>
               );

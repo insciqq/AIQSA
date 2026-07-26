@@ -181,7 +181,6 @@ function renderPane(overrides: Partial<ComponentProps<typeof MainThreadPane>> = 
     },
     composerContextLine: null,
     composerDisabledHint: null,
-    composerSessionKey: "chat:chat-1",
     composerUsageStats: null,
     creatingChat: false,
     currentModel: undefined,
@@ -242,19 +241,6 @@ function renderPane(overrides: Partial<ComponentProps<typeof MainThreadPane>> = 
   };
 
   return { props, ...render(<MainThreadPane {...props} />) };
-}
-
-function installCompactComposerViewport() {
-  vi.stubGlobal(
-    "matchMedia",
-    vi.fn(() =>
-      ({
-        addEventListener: vi.fn(),
-        matches: true,
-        removeEventListener: vi.fn()
-      }) as unknown as MediaQueryList
-    )
-  );
 }
 
 describe("MainThreadPane", () => {
@@ -371,7 +357,7 @@ describe("MainThreadPane", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("Upload response was malformed");
   });
 
-  it("wires one-tap compact profiles beside the disclosed context statistics", () => {
+  it("renders one exact resting Run summary and opens the complete setup in one action", () => {
     const selectRunProfile = vi.fn();
     renderPane({
       catalog: deepProfileCatalog,
@@ -387,23 +373,25 @@ describe("MainThreadPane", () => {
       selectRunProfile
     });
 
-    const compactProfiles = screen.getByTestId("composer-compact-run-profiles");
-    expect(within(compactProfiles).getByRole("button", { name: "Use Fast run profile" })).toBeDisabled();
-    expect(within(compactProfiles).getByRole("button", { name: "Use Balanced run profile" })).toBeDisabled();
-    const deep = within(compactProfiles).getByRole("button", { name: "Use Deep run profile" });
-    expect(deep).toHaveAttribute("aria-pressed", "true");
-    expect(deep).toHaveClass("h-touch", "min-w-11");
-    fireEvent.click(deep);
+    const summary = screen.getByTestId("composer-run-summary");
+    expect(summary).toHaveTextContent("GPT-5.6 Sol");
+    expect(summary).toHaveTextContent("Profile: Deep");
+    expect(summary).toHaveTextContent("Reasoning: Pro · Maximum");
+    expect(summary).toHaveTextContent("Search: Off");
+    expect(screen.queryByTestId("composer-compact-run-profiles")).not.toBeInTheDocument();
 
+    fireEvent.click(summary);
+    const setup = screen.getByRole("dialog", { name: "Run setup" });
+    expect(setup).toHaveTextContent("Profile");
+    expect(setup).toHaveTextContent("Answer setup");
+    expect(setup).toHaveTextContent("Generation");
+    expect(setup).toHaveTextContent("Next run");
+    expect(setup).toHaveTextContent("Display preferences");
+
+    const deep = within(setup).getByRole("button", { name: "Use Deep run profile" });
+    expect(deep).toHaveAttribute("aria-pressed", "true");
+    fireEvent.click(deep);
     expect(selectRunProfile).toHaveBeenCalledWith("deep");
-    expect(screen.getByTestId("current-context-length")).toHaveClass(
-      "max-sm:hidden",
-      "[@media(max-height:32rem)]:!hidden"
-    );
-    fireEvent.click(screen.getByRole("button", { name: "Open context and usage statistics" }));
-    expect(screen.getByRole("dialog", { name: "Context and usage statistics" })).toHaveTextContent(
-      "Approx. input: ~2k / 3k safe input · 4.1k total context"
-    );
   });
 
   it("keeps pending edit controls local to the rendered composer session", () => {
@@ -456,8 +444,8 @@ describe("MainThreadPane", () => {
       selectedPromptId: "prompt-default"
     });
 
-    fireEvent.click(screen.getByRole("button", { name: "Run settings" }));
-    const runSettings = screen.getByRole("dialog", { name: "Run settings" });
+    fireEvent.click(screen.getByTestId("composer-run-summary"));
+    const runSettings = screen.getByRole("dialog", { name: "Run setup" });
     fireEvent.click(within(runSettings).getByRole("button", { name: "Prompt preset" }));
     fireEvent.click(
       screen
@@ -524,9 +512,8 @@ describe("MainThreadPane", () => {
     expect(screen.getByTestId("composer-disabled-hint")).toHaveTextContent(
       "Conversation unavailable. Retry loading before sending."
     );
-    expect(screen.getByRole("button", { name: "Select model" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Search strategy" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Run settings" })).toBeDisabled();
+    expect(screen.getByTestId("composer-run-summary")).toBeDisabled();
+    expect(screen.queryByRole("dialog", { name: "Run setup" })).not.toBeInTheDocument();
     expect(screen.getAllByRole("alert")).toHaveLength(1);
     expect(screen.queryAllByRole("status")).toHaveLength(0);
 
@@ -538,7 +525,7 @@ describe("MainThreadPane", () => {
     renderPane(readyComposerOverrides);
 
     const emptyState = screen.getByTestId("thread-empty-state");
-    expect(emptyState).toHaveTextContent("Start a conversation");
+    expect(emptyState).toHaveTextContent("New research");
     expect(emptyState).toHaveTextContent("Ask anything.");
     expect(emptyState).not.toHaveTextContent(
       "Ask a question, search when it helps, and build on the answer."
@@ -777,6 +764,7 @@ describe("MainThreadPane", () => {
   it("keeps failed pipeline context on the error tail without attaching it to history", () => {
     const { container } = renderPane({
       ...readyComposerOverrides,
+      currentRunId: "run-error",
       pipeline: {
         answer: "error",
         phase: "error",
@@ -803,6 +791,30 @@ describe("MainThreadPane", () => {
     expect(
       container.querySelector('[data-message-id="assistant-history"] [data-testid="thread-run-activity"]')
     ).toBeNull();
+  });
+
+  it("does not attach the latest failed pipeline to an error tail from another run", () => {
+    renderPane({
+      ...readyComposerOverrides,
+      currentRunId: "run-current",
+      pipeline: {
+        answer: "error",
+        phase: "error",
+        question: "done",
+        search: "done"
+      },
+      visibleMessages: [
+        userMessage("question-other"),
+        assistantMessage("assistant-other-error", {
+          content: "Older branch failed",
+          parentMessageId: "question-other",
+          runId: "run-other",
+          status: "error"
+        })
+      ]
+    });
+
+    expect(screen.queryByTestId("thread-run-activity")).not.toBeInTheDocument();
   });
 
   it("does not re-render an unchanged historical row when only the streaming tail gains a token", () => {
@@ -916,109 +928,6 @@ describe("MainThreadPane", () => {
     expect(screen.queryByRole("button", { name: "Branch tree" })).not.toBeInTheDocument();
     expect(screen.queryByRole("combobox", { name: "Chat folder" })).not.toBeInTheDocument();
     expect(jumpToLatest).toHaveBeenCalledOnce();
-  });
-
-  it("collapses idle compact controls after deliberate reading scroll and expands on focus or draft", async () => {
-    installCompactComposerViewport();
-    try {
-      const handleThreadScroll = vi.fn();
-      const { props, rerender } = renderPane({
-        ...readyComposerOverrides,
-        handleThreadScroll,
-        visibleMessages: [assistantMessage("assistant-reading")]
-      });
-      const thread = screen.getByTestId("thread");
-
-      fireEvent.scroll(thread, { target: { scrollTop: 60 } });
-      fireEvent.scroll(thread, { target: { scrollTop: 120 } });
-      expect(screen.getByTestId("composer-form")).not.toHaveAttribute(
-        "data-reading-collapsed"
-      );
-      handleThreadScroll.mockClear();
-
-      fireEvent.wheel(thread, { deltaY: 60 });
-      fireEvent.scroll(thread, { target: { scrollTop: 100 } });
-      fireEvent.scroll(thread, { target: { scrollTop: 160 } });
-
-      await waitFor(() =>
-        expect(screen.getByTestId("composer-form")).toHaveAttribute(
-          "data-reading-collapsed",
-          "true"
-        )
-      );
-      expect(screen.getByTestId("composer-controls-disclosure")).toHaveAttribute(
-        "aria-hidden",
-        "true"
-      );
-      expect(screen.getByTestId("composer-actions-disclosure")).toHaveAttribute(
-        "aria-hidden",
-        "true"
-      );
-      expect(screen.getByRole("textbox", { name: "Message" })).toBeVisible();
-      expect(handleThreadScroll).toHaveBeenCalledTimes(2);
-
-      fireEvent.focus(screen.getByRole("textbox", { name: "Message" }));
-      await waitFor(() =>
-        expect(screen.getByTestId("composer-form")).not.toHaveAttribute(
-          "data-reading-collapsed"
-        )
-      );
-
-      fireEvent.blur(screen.getByRole("textbox", { name: "Message" }));
-      fireEvent.wheel(thread, { deltaY: -60 });
-      fireEvent.scroll(thread, { target: { scrollTop: 260 } });
-      fireEvent.scroll(thread, { target: { scrollTop: 200 } });
-      await waitFor(() =>
-        expect(screen.getByTestId("composer-form")).toHaveAttribute(
-          "data-reading-collapsed",
-          "true"
-        )
-      );
-
-      rerender(<MainThreadPane {...props} draft="A protected draft" />);
-      await waitFor(() =>
-        expect(screen.getByTestId("composer-form")).not.toHaveAttribute(
-          "data-reading-collapsed"
-        )
-      );
-    } finally {
-      vi.unstubAllGlobals();
-    }
-  });
-
-  it("keeps compact run start expanded until Stop is addressable, then exposes Stop in reading mode", async () => {
-    installCompactComposerViewport();
-    try {
-      const stopCurrentRun = vi.fn();
-      const { props, rerender } = renderPane({
-        ...readyComposerOverrides,
-        activeChatStreaming: true,
-        currentRunId: null,
-        stopCurrentRun,
-        visibleMessages: [assistantMessage("assistant-streaming", { status: "streaming" })]
-      });
-      const thread = screen.getByTestId("thread");
-
-      fireEvent.wheel(thread, { deltaY: 80 });
-      fireEvent.scroll(thread, { target: { scrollTop: 100 } });
-      fireEvent.scroll(thread, { target: { scrollTop: 180 } });
-      expect(screen.getByTestId("composer-form")).not.toHaveAttribute(
-        "data-reading-collapsed"
-      );
-
-      rerender(<MainThreadPane {...props} currentRunId="run-1" />);
-      fireEvent.wheel(thread, { deltaY: 60 });
-      fireEvent.scroll(thread, { target: { scrollTop: 200 } });
-      fireEvent.scroll(thread, { target: { scrollTop: 260 } });
-
-      const stop = await screen.findByTestId("composer-reading-stop");
-      expect(stop).toHaveAccessibleName("Stop response");
-      expect(stop).toBeEnabled();
-      fireEvent.click(stop);
-      expect(stopCurrentRun).toHaveBeenCalledOnce();
-    } finally {
-      vi.unstubAllGlobals();
-    }
   });
 
   it("renders the custom chat delete confirmation dialog", () => {

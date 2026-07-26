@@ -2,7 +2,17 @@
 
 import { formatTokenCount } from "@/components/app-shell/shellFormatting";
 import { isImeCompositionEvent } from "@/components/keyboard";
-import { BarChart3, FileText, GitBranch, Image as ImageIcon, Loader2, Paperclip, Send, Square, X } from "lucide-react";
+import {
+  BarChart3,
+  FileText,
+  GitBranch,
+  Image as ImageIcon,
+  Loader2,
+  Paperclip,
+  Send,
+  Square,
+  X
+} from "lucide-react";
 import { type DragEvent, type ReactNode, useEffect, useRef, useState } from "react";
 
 export type ComposerAttachment = {
@@ -18,8 +28,7 @@ export type ComposerAttachment = {
 
 const documentAttachmentAccept =
   ".txt,.md,.markdown,.csv,.json,.html,.htm,text/plain,text/markdown,text/csv,application/json,text/html";
-const imageAttachmentAccept =
-  "image/png,image/jpeg,image/webp,image/gif";
+const imageAttachmentAccept = "image/png,image/jpeg,image/webp,image/gif";
 
 export type ComposerAttachmentPolicy = {
   documents: boolean;
@@ -43,7 +52,6 @@ export type ComposerUsageStats = {
 export type ComposerProps = {
   attachmentPolicy?: ComposerAttachmentPolicy;
   attachments: ComposerAttachment[];
-  compactProfileControls?: ReactNode;
   controls?: ReactNode;
   contextLine?: string | null;
   disabled?: boolean;
@@ -53,14 +61,12 @@ export type ComposerProps = {
   editPending?: boolean;
   onChange(value: string): void;
   onCancelEdit?(): void;
-  onRequestExpanded?(): void;
   onRemoveAttachment(id: string): void;
   onRejectedFiles?(files: readonly File[]): void;
   onSend(): void;
   onStop?(): void;
   onUploadFiles?(files: FileList | readonly File[]): void;
   operationError?: string | null;
-  readingCollapsed?: boolean;
   sendDisabled?: boolean;
   stopDisabled?: boolean;
   streaming?: boolean;
@@ -73,26 +79,13 @@ function hasFileTransfer(dataTransfer: DataTransfer): boolean {
   return dataTransfer.files.length > 0 || Array.from(dataTransfer.types).includes("Files");
 }
 
-function StopAction({
-  inlineReadingMode = false,
-  onStop,
-  stopDisabled
-}: {
-  inlineReadingMode?: boolean;
-  onStop(): void;
-  stopDisabled: boolean;
-}) {
+function StopAction({ onStop, stopDisabled }: { onStop(): void; stopDisabled: boolean }) {
   return (
     <button
-      className={
-        inlineReadingMode
-          ? "inline-flex h-touch min-w-[72px] shrink-0 items-center justify-center gap-2 rounded-control bg-accent-rose px-2 text-sm font-semibold text-surface-canvas hover:brightness-110 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-rose/65 disabled:cursor-not-allowed disabled:opacity-50"
-          : "inline-flex h-touch min-w-[72px] items-center justify-center gap-2 rounded-control bg-accent-rose px-2 text-sm font-semibold text-surface-canvas hover:brightness-110 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-rose/65 disabled:cursor-not-allowed disabled:opacity-50 sm:h-control sm:min-w-[92px] sm:px-3 [@media(max-height:32rem)]:!h-touch [@media(max-height:32rem)]:!min-w-[72px] [@media(max-height:32rem)]:!px-2 [@media(hover:none)]:!h-touch [@media(pointer:coarse)]:!h-touch"
-      }
+      className="inline-flex h-touch min-w-[72px] items-center justify-center gap-2 rounded-control bg-critical px-3 text-sm font-semibold text-proof-contrast outline-none hover:bg-critical/85 focus-visible:ring-2 focus-visible:ring-critical/55 disabled:cursor-not-allowed disabled:opacity-50 sm:h-control [@media(hover:none)]:!h-touch [@media(pointer:coarse)]:!h-touch"
       type="button"
       aria-label="Stop response"
       aria-describedby={stopDisabled ? "composer-stop-disabled-hint" : undefined}
-      data-testid={inlineReadingMode ? "composer-reading-stop" : undefined}
       title="Stop response"
       disabled={stopDisabled}
       onClick={onStop}
@@ -106,7 +99,6 @@ function StopAction({
 export function Composer({
   attachmentPolicy = defaultAttachmentPolicy,
   attachments,
-  compactProfileControls,
   controls,
   contextLine = null,
   disabled = false,
@@ -116,14 +108,12 @@ export function Composer({
   editPending = false,
   onChange,
   onCancelEdit,
-  onRequestExpanded,
   onRemoveAttachment,
   onRejectedFiles,
   onSend,
   onStop,
   onUploadFiles,
   operationError = null,
-  readingCollapsed = false,
   sendDisabled = false,
   stopDisabled = false,
   streaming = false,
@@ -132,7 +122,6 @@ export function Composer({
   value
 }: ComposerProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const pointerMessageActivationRef = useRef(false);
   const usagePopoverRef = useRef<HTMLDivElement>(null);
   const usageTriggerRef = useRef<HTMLButtonElement>(null);
   const dragDepthRef = useRef(0);
@@ -142,7 +131,9 @@ export function Composer({
     attachmentPolicy.documents ? documentAttachmentAccept : null,
     attachmentPolicy.pdfs ? "application/pdf" : null,
     attachmentPolicy.images ? imageAttachmentAccept : null
-  ].filter(Boolean).join(",");
+  ]
+    .filter(Boolean)
+    .join(",");
   const modelAcceptsAttachments = Boolean(attachmentAccept);
   const hasSendableContent = value.trim().length > 0 || (!editing && attachments.length > 0);
   const canSend =
@@ -152,8 +143,10 @@ export function Composer({
     !streaming &&
     !uploading &&
     !editPending;
-  const canUploadDroppedFiles = Boolean(onUploadFiles) && modelAcceptsAttachments && !disabled && !streaming && !uploading;
-  const attachmentDisabled = !onUploadFiles || !modelAcceptsAttachments || disabled || streaming || uploading;
+  const canUploadDroppedFiles =
+    Boolean(onUploadFiles) && modelAcceptsAttachments && !disabled && !streaming && !uploading;
+  const attachmentDisabled =
+    !onUploadFiles || !modelAcceptsAttachments || disabled || streaming || uploading;
   const attachmentDisabledReason = !attachmentDisabled
     ? null
     : disabledHint
@@ -164,9 +157,9 @@ export function Composer({
           ? "Attachments are unavailable while a response is streaming."
           : !modelAcceptsAttachments
             ? "The selected model does not support file attachments."
-          : !onUploadFiles
-            ? "File attachments are unavailable."
-            : "Attachments are unavailable.";
+            : !onUploadFiles
+              ? "File attachments are unavailable."
+              : "Attachments are unavailable.";
   const attachmentDescriptionId = attachmentDisabled
     ? disabledHint
       ? "composer-disabled-hint"
@@ -187,9 +180,6 @@ export function Composer({
     cacheWriteInputTokens: 0,
     totalTokens: 0
   };
-  const compactContextLine = contextLine?.replace(/^(?:Approx\. input|Current context length):\s*/u, "") ?? null;
-  const hasCompactProfileControls = Boolean(compactProfileControls);
-
   useEffect(() => {
     const textarea = textareaRef.current;
     if (!textarea) {
@@ -327,8 +317,6 @@ export function Composer({
       (accepted ? supported : rejected).push(file);
     }
 
-    // Start the upload generation before recording rejections from this same
-    // selection, so its reset clears only feedback from an older selection.
     if (supported.length > 0) {
       onUploadFiles?.(supported);
     }
@@ -339,8 +327,7 @@ export function Composer({
 
   return (
     <form
-      className="shrink-0 bg-surface-thread pb-[max(.5rem,env(safe-area-inset-bottom))] pl-[max(.5rem,env(safe-area-inset-left))] pr-[max(.5rem,env(safe-area-inset-right))] pt-2 sm:pb-[max(.75rem,env(safe-area-inset-bottom))] sm:pl-[max(1rem,env(safe-area-inset-left))] sm:pr-[max(1rem,env(safe-area-inset-right))] [@media(max-height:32rem)]:!pb-[max(.5rem,env(safe-area-inset-bottom))] [@media(max-height:32rem)]:!pt-1"
-      data-reading-collapsed={readingCollapsed ? "true" : undefined}
+      className="shrink-0 bg-research-canvas pb-[max(.5rem,env(safe-area-inset-bottom))] pl-[max(.5rem,env(safe-area-inset-left))] pr-[max(.5rem,env(safe-area-inset-right))] pt-2 sm:pb-[max(.75rem,env(safe-area-inset-bottom))] sm:pl-[max(1rem,env(safe-area-inset-left))] sm:pr-[max(1rem,env(safe-area-inset-right))] [@media(max-height:32rem)]:!pb-[max(.25rem,env(safe-area-inset-bottom))] [@media(max-height:32rem)]:!pt-1"
       data-testid="composer-form"
       onSubmit={(event) => {
         event.preventDefault();
@@ -352,10 +339,8 @@ export function Composer({
       <div className="mx-auto w-full max-w-reading">
         <div
           className={[
-            "relative rounded-composer border bg-surface-raised",
-            dragActive
-              ? "border-accent-cyan/50 ring-2 ring-accent-cyan/20"
-              : "border-separator-subtle"
+            "relative overflow-visible rounded-composer border bg-composer-surface shadow-float",
+            dragActive ? "border-proof/60 ring-2 ring-proof/20" : "border-trace-strong/70"
           ].join(" ")}
           data-drop-active={dragActive ? "true" : undefined}
           data-testid="composer-drop-zone"
@@ -369,10 +354,10 @@ export function Composer({
           {dragActive ? (
             <div
               className={[
-                "pointer-events-none absolute inset-1 z-40 grid place-items-center rounded-panel border bg-surface-overlay/95 text-sm font-semibold",
+                "pointer-events-none absolute inset-1 z-40 grid place-items-center rounded-panel border bg-overlay-surface/95 text-sm font-semibold",
                 canUploadDroppedFiles
-                  ? "border-accent-cyan/45 text-accent-cyan"
-                  : "border-accent-amber/45 text-accent-amber"
+                  ? "border-proof/45 text-proof"
+                  : "border-caution/45 text-caution"
               ].join(" ")}
               role="status"
             >
@@ -382,7 +367,7 @@ export function Composer({
 
           {editing ? (
             <div
-              className="flex items-center justify-between gap-3 rounded-t-composer border-b border-accent-cyan/20 bg-accent-cyan/[0.06] px-3 py-2 text-xs text-accent-cyan [@media(max-height:32rem)]:!py-0"
+              className="flex items-center justify-between gap-3 rounded-t-composer border-b border-proof/20 bg-proof/[0.06] px-3 py-2 text-xs text-proof"
               data-testid="edit-branch-strip"
             >
               <span
@@ -392,13 +377,11 @@ export function Composer({
               >
                 <GitBranch className="size-4 shrink-0" aria-hidden="true" />
                 <span className="truncate">
-                  {editPending
-                    ? "Saving edited branch…"
-                    : "Editing a message — Send creates a new branch"}
+                  {editPending ? "Saving edited branch…" : "Editing a message — Send creates a new branch"}
                 </span>
               </span>
               <button
-                className="h-touch shrink-0 rounded-control px-2 text-xs font-medium hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-cyan/55 disabled:cursor-not-allowed disabled:text-content-disabled sm:h-control-sm [@media(hover:none)]:!h-touch [@media(pointer:coarse)]:!h-touch"
+                className="h-touch shrink-0 rounded-control px-2 text-xs font-medium hover:bg-control-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-proof/55 disabled:cursor-not-allowed disabled:text-ink-disabled sm:h-control-sm [@media(hover:none)]:!h-touch [@media(pointer:coarse)]:!h-touch"
                 type="button"
                 aria-describedby={editPending ? "composer-edit-pending-status" : undefined}
                 disabled={editPending}
@@ -412,7 +395,7 @@ export function Composer({
 
           {disabledHint ? (
             <div
-              className="border-b border-accent-amber/20 bg-accent-amber/[0.07] px-3 py-2 text-xs text-accent-amber"
+              className="border-b border-caution/20 bg-caution/[0.07] px-3 py-2 text-xs text-caution"
               data-testid="composer-disabled-hint"
               id="composer-disabled-hint"
               role={disabledHintLive ? "status" : undefined}
@@ -423,7 +406,7 @@ export function Composer({
 
           {operationError ? (
             <div
-              className="border-b border-accent-rose/20 bg-accent-rose/[0.07] px-3 py-2 text-xs text-accent-rose"
+              className="border-b border-critical/20 bg-critical/[0.07] px-3 py-2 text-xs text-critical"
               data-testid="composer-operation-error"
               role="alert"
             >
@@ -439,25 +422,25 @@ export function Composer({
 
           {attachments.length > 0 ? (
             <ul
-              className="flex max-h-28 flex-wrap gap-2 overflow-y-auto border-b border-separator-subtle px-3 py-2 [@media(max-height:32rem)]:!max-h-none [@media(max-height:32rem)]:!flex-nowrap [@media(max-height:32rem)]:!overflow-x-auto [@media(max-height:32rem)]:!overflow-y-hidden [@media(max-height:32rem)]:!py-1"
+              className="flex max-h-28 flex-wrap gap-2 overflow-y-auto border-b border-trace-subtle px-3 py-2 [@media(max-height:32rem)]:!max-h-12 [@media(max-height:32rem)]:!flex-nowrap [@media(max-height:32rem)]:!py-1"
               data-testid="attachment-chip-list"
               aria-label="Attachments"
             >
               {attachments.map((attachment) => (
                 <li
-                  className="flex min-h-control-sm max-w-[min(15rem,100%)] items-center gap-1.5 rounded-control bg-surface-selected pl-2 text-xs text-content-secondary [@media(max-height:32rem)]:shrink-0"
+                  className="flex min-h-control-sm max-w-[min(15rem,100%)] items-center gap-1.5 rounded-control bg-control-selected pl-2 text-xs text-ink-secondary [@media(max-height:32rem)]:!min-h-8"
                   data-testid="attachment-chip"
                   key={attachment.id}
                   title={attachment.fileName}
                 >
                   {attachment.kind === "image" ? (
-                    <ImageIcon className="size-3.5 text-content-muted" aria-hidden="true" />
+                    <ImageIcon className="size-3.5 text-ink-muted" aria-hidden="true" />
                   ) : (
-                    <FileText className="size-3.5 text-content-muted" aria-hidden="true" />
+                    <FileText className="size-3.5 text-ink-muted" aria-hidden="true" />
                   )}
                   <span className="truncate">{attachment.fileName}</span>
                   <button
-                    className="grid size-11 shrink-0 place-items-center rounded-control text-content-muted hover:bg-surface-hover hover:text-content-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-cyan/55 sm:size-8 [@media(hover:none)]:!size-11 [@media(pointer:coarse)]:!size-11"
+                    className="grid size-11 shrink-0 place-items-center rounded-control text-ink-muted hover:bg-control-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-proof/55 sm:size-8 [@media(hover:none)]:!size-11 [@media(pointer:coarse)]:!size-11"
                     type="button"
                     aria-label={`Remove ${attachment.fileName}`}
                     title={`Remove ${attachment.fileName}`}
@@ -470,23 +453,12 @@ export function Composer({
             </ul>
           ) : null}
 
-          <div
-            className={[
-              "mx-2 mt-2 rounded-control border border-separator-subtle bg-surface-thread px-3 py-1.5 focus-within:border-accent-cyan/60 focus-within:ring-2 focus-within:ring-accent-cyan/20 sm:pb-2 sm:pt-2 [@media(max-height:32rem)]:!mt-1 [@media(max-height:32rem)]:!py-0.5",
-              readingCollapsed
-                ? "mb-2 grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2"
-                : ""
-            ].join(" ")}
-            data-testid="composer-message-field"
-          >
-            <label
-              className="block text-xs font-medium text-content-secondary max-sm:sr-only [@media(max-height:32rem)]:sr-only"
-              htmlFor="composer"
-            >
+          <div className="px-4 pb-2 pt-3 [@media(max-height:32rem)]:!px-3 [@media(max-height:32rem)]:!pb-1 [@media(max-height:32rem)]:!pt-1" data-testid="composer-message-field">
+            <label className="block text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-muted" htmlFor="composer">
               Message
             </label>
             <textarea
-              className="mt-0 block max-h-[200px] min-h-11 w-full min-w-0 resize-none bg-transparent text-[15px] leading-7 text-content-primary outline-none placeholder:text-content-muted disabled:cursor-not-allowed disabled:text-content-disabled sm:mt-1 sm:min-h-[72px] [@media(max-height:32rem)]:!mt-0 [@media(max-height:32rem)]:!max-h-16 [@media(max-height:32rem)]:!min-h-11 [@media(max-height:32rem)]:overflow-y-auto"
+              className="mt-1 block max-h-[200px] min-h-14 w-full min-w-0 resize-none bg-transparent text-[15px] leading-7 text-ink outline-none placeholder:text-ink-muted disabled:cursor-not-allowed disabled:text-ink-disabled sm:min-h-[72px] [@media(max-height:32rem)]:!max-h-20 [@media(max-height:32rem)]:!min-h-10 [@media(max-height:32rem)]:!leading-6 [@media(hover:none)]:!min-h-touch [@media(pointer:coarse)]:!min-h-touch"
               aria-describedby={disabledHint ? "composer-disabled-hint" : undefined}
               disabled={disabled}
               id="composer"
@@ -495,24 +467,6 @@ export function Composer({
               rows={1}
               value={value}
               onChange={(event) => onChange(event.target.value)}
-              onBlur={() => {
-                pointerMessageActivationRef.current = false;
-              }}
-              onClick={() => {
-                pointerMessageActivationRef.current = false;
-                onRequestExpanded?.();
-              }}
-              onFocus={() => {
-                if (!pointerMessageActivationRef.current) {
-                  onRequestExpanded?.();
-                }
-              }}
-              onPointerCancel={() => {
-                pointerMessageActivationRef.current = false;
-              }}
-              onPointerDown={() => {
-                pointerMessageActivationRef.current = true;
-              }}
               onKeyDown={(event) => {
                 if (isImeCompositionEvent(event)) {
                   return;
@@ -526,138 +480,92 @@ export function Composer({
                 }
               }}
             />
-            {readingCollapsed && streaming && onStop ? (
-              <StopAction
-                inlineReadingMode
-                stopDisabled={stopDisabled}
-                onStop={onStop}
-              />
-            ) : null}
           </div>
 
-          {controls ? (
-            <div
-              className={[
-                "grid transition-[grid-template-rows,opacity] duration-150 ease-out motion-reduce:transition-none",
-                readingCollapsed
-                  ? "grid-rows-[0fr] opacity-0"
-                  : "grid-rows-[1fr] opacity-100"
-              ].join(" ")}
-              aria-hidden={readingCollapsed || undefined}
-              data-testid="composer-controls-disclosure"
-              inert={readingCollapsed || undefined}
-            >
-              <div className={readingCollapsed ? "min-h-0 overflow-hidden" : "min-h-0 overflow-visible"}>
-                <div className="border-t border-separator-subtle p-1.5 sm:p-3 [@media(max-height:32rem)]:!p-1.5" data-testid="composer-controls-slot">
-                  {controls}
-                </div>
-              </div>
-            </div>
-          ) : null}
-
           <div
-            className={[
-              "grid transition-[grid-template-rows,opacity] duration-150 ease-out motion-reduce:transition-none",
-              readingCollapsed
-                ? "grid-rows-[0fr] opacity-0"
-                : "grid-rows-[1fr] opacity-100"
-            ].join(" ")}
-            aria-hidden={readingCollapsed || undefined}
-            data-testid="composer-actions-disclosure"
-            inert={readingCollapsed || undefined}
+            className="flex min-w-0 flex-wrap items-center gap-2 border-t border-trace-subtle px-2 py-2 sm:px-3 [@media(max-height:32rem)]:!py-1"
+            data-testid="composer-action-footer"
           >
-            <div className={readingCollapsed ? "min-h-0 overflow-hidden" : "min-h-0 overflow-visible"}>
+            {controls ? (
               <div
-                className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-1 border-t border-separator-subtle px-2 py-1.5 sm:gap-2 sm:px-3 sm:py-2.5 [@media(max-height:32rem)]:!gap-1 [@media(max-height:32rem)]:!py-1"
-                data-testid="composer-action-footer"
+                className="flex min-w-[min(100%,19rem)] flex-[1_1_22rem] items-center gap-1"
+                data-testid="composer-controls-slot"
               >
-            {contextLine ? (
-              <div
-                className="fade-in-soft relative flex min-w-0 flex-1 items-center gap-1 text-[11px] text-content-muted sm:gap-2 [@media(max-height:32rem)]:!gap-1"
-                data-testid="composer-usage-line"
-                ref={usagePopoverRef}
-              >
-                {hasCompactProfileControls ? (
-                  <div className="min-w-0 overflow-x-auto sm:hidden [@media(max-height:32rem)]:!block">
-                    {compactProfileControls}
-                  </div>
-                ) : null}
-                <span
-                  className={[
-                    "min-w-0 truncate font-mono",
-                    hasCompactProfileControls
-                      ? "max-sm:hidden [@media(max-height:32rem)]:!hidden"
-                      : ""
-                  ].join(" ")}
-                  data-testid="current-context-length"
-                  aria-label={contextLine}
-                  title={contextLine}
-                >
-                  {compactContextLine}
-                </span>
-                <button
-                  ref={usageTriggerRef}
-                  className="inline-flex size-11 shrink-0 items-center justify-center gap-1.5 rounded-control text-xs text-content-muted hover:bg-surface-hover hover:text-content-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-cyan/55 sm:h-control-sm sm:w-auto sm:px-2 max-lg:h-touch [@media(hover:none)]:!size-11 [@media(pointer:coarse)]:!size-11"
-                  type="button"
-                  aria-expanded={usageOpen}
-                  aria-haspopup="dialog"
-                  aria-label="Open context and usage statistics"
-                  data-testid="token-stats-button"
-                  onClick={() => setUsageOpen((open) => !open)}
-                >
-                  <BarChart3 className="size-3.5" aria-hidden="true" />
-                  <span className="hidden sm:inline">Usage</span>
-                </button>
-                {usageOpen ? (
-                  <div
-                    className="pop-enter absolute bottom-10 left-0 z-30 mb-2 max-h-[min(20rem,calc(100dvh-4rem))] w-[min(320px,calc(100vw-32px))] overflow-y-auto overscroll-contain rounded-panel border border-separator-subtle bg-surface-overlay p-3 shadow-overlay [@media(max-height:32rem)]:fixed [@media(max-height:32rem)]:!bottom-[max(.5rem,env(safe-area-inset-bottom))] [@media(max-height:32rem)]:!left-[max(.5rem,env(safe-area-inset-left))] [@media(max-height:32rem)]:!right-[max(.5rem,env(safe-area-inset-right))] [@media(max-height:32rem)]:!mb-0 [@media(max-height:32rem)]:!max-h-[calc(100dvh-1rem-env(safe-area-inset-top)-env(safe-area-inset-bottom))] [@media(max-height:32rem)]:!w-auto"
-                    data-testid="token-stats-popover"
-                    role="dialog"
-                    aria-label="Context and usage statistics"
-                  >
-                    <div className="mb-2 flex items-center justify-between gap-3">
-                      <p className="text-sm font-semibold text-content-primary">Context and usage</p>
-                      <button
-                        className="grid size-11 shrink-0 place-items-center rounded-control text-content-muted outline-none hover:bg-surface-hover hover:text-content-primary focus-visible:ring-2 focus-visible:ring-accent-cyan/55 lg:size-8 [@media(hover:none)]:!size-11 [@media(pointer:coarse)]:!size-11"
-                        type="button"
-                        aria-label="Close context and usage statistics"
-                        onClick={() => {
-                          setUsageOpen(false);
-                          restoreUsageTriggerIfFocusLost(true);
-                        }}
-                      >
-                        <X className="size-4" aria-hidden="true" />
-                      </button>
-                    </div>
-                    <dl className="space-y-2 text-xs">
-                      <div>
-                        <dt className="text-content-secondary">Current context</dt>
-                        <dd className="mt-1 break-words font-mono leading-5 text-content-primary [overflow-wrap:anywhere]">
-                          {contextLine}
-                        </dd>
-                      </div>
-                      <div className="flex items-center justify-between gap-3">
-                        <dt className="text-content-secondary">Total messages</dt>
-                        <dd className="font-mono text-content-primary">{stats.activeBranchMessageCount}</dd>
-                      </div>
-                      <div className="flex items-center justify-between gap-3">
-                        <dt className="text-content-secondary">Provider-reported tokens</dt>
-                        <dd className="font-mono text-content-primary">{formatTokenCount(stats.totalTokens)}</dd>
-                      </div>
-                      <div className="flex items-center justify-between gap-3">
-                        <dt className="text-content-secondary">Total tokens cached</dt>
-                        <dd className="font-mono text-content-primary">{formatTokenCount(stats.cachedInputTokens)}</dd>
-                      </div>
-                    </dl>
-                  </div>
-                ) : null}
+                {controls}
               </div>
-            ) : (
-              <span aria-hidden="true" />
-            )}
-            <div className="flex shrink-0 items-center justify-end gap-1 sm:gap-2 [@media(max-height:32rem)]:!gap-1">
+            ) : null}
+
+            <div
+              className="flex min-w-0 flex-[1_1_auto] items-center justify-end gap-1.5"
+              data-testid="composer-primary-actions"
+            >
+              {contextLine ? (
+                <div
+                  className="relative flex min-w-0 items-center gap-1 text-[11px] text-ink-muted"
+                  data-testid="composer-usage-line"
+                  ref={usagePopoverRef}
+                >
+                  <button
+                    ref={usageTriggerRef}
+                    className="inline-flex size-11 shrink-0 items-center justify-center gap-1.5 rounded-control text-xs text-ink-muted hover:bg-control-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-proof/55 sm:h-control-sm sm:w-auto sm:px-2 [@media(hover:none)]:!h-touch [@media(pointer:coarse)]:!h-touch"
+                    type="button"
+                    aria-expanded={usageOpen}
+                    aria-haspopup="dialog"
+                    aria-label="Open context and usage statistics"
+                    data-testid="token-stats-button"
+                    onClick={() => setUsageOpen((open) => !open)}
+                  >
+                    <BarChart3 className="size-3.5" aria-hidden="true" />
+                    <span className="hidden sm:inline">Usage</span>
+                  </button>
+                  {usageOpen ? (
+                    <div
+                      className="pop-enter absolute bottom-10 right-0 z-30 mb-2 max-h-[min(20rem,calc(100dvh-4rem))] w-[min(320px,calc(100vw-32px))] overflow-y-auto overscroll-contain rounded-panel border border-trace-subtle bg-overlay-surface p-3 shadow-overlay"
+                      data-testid="token-stats-popover"
+                      role="dialog"
+                      aria-label="Context and usage statistics"
+                    >
+                      <div className="mb-2 flex items-center justify-between gap-3">
+                        <p className="text-sm font-semibold text-ink">Context and usage</p>
+                        <button
+                          className="grid size-11 shrink-0 place-items-center rounded-control text-ink-muted outline-none hover:bg-control-hover hover:text-ink focus-visible:ring-2 focus-visible:ring-proof/55 lg:size-8 [@media(hover:none)]:!size-11 [@media(pointer:coarse)]:!size-11"
+                          type="button"
+                          aria-label="Close context and usage statistics"
+                          onClick={() => {
+                            setUsageOpen(false);
+                            restoreUsageTriggerIfFocusLost(true);
+                          }}
+                        >
+                          <X className="size-4" aria-hidden="true" />
+                        </button>
+                      </div>
+                      <dl className="space-y-2 text-xs">
+                        <div>
+                          <dt className="text-ink-secondary">Current context</dt>
+                          <dd className="mt-1 break-words font-mono leading-5 text-ink [overflow-wrap:anywhere]">
+                            {contextLine}
+                          </dd>
+                        </div>
+                        <div className="flex items-center justify-between gap-3">
+                          <dt className="text-ink-secondary">Total messages</dt>
+                          <dd className="font-mono text-ink">{stats.activeBranchMessageCount}</dd>
+                        </div>
+                        <div className="flex items-center justify-between gap-3">
+                          <dt className="text-ink-secondary">Provider-reported tokens</dt>
+                          <dd className="font-mono text-ink">{formatTokenCount(stats.totalTokens)}</dd>
+                        </div>
+                        <div className="flex items-center justify-between gap-3">
+                          <dt className="text-ink-secondary">Total tokens cached</dt>
+                          <dd className="font-mono text-ink">{formatTokenCount(stats.cachedInputTokens)}</dd>
+                        </div>
+                      </dl>
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+
               {uploading ? (
-                <span className="text-xs text-content-muted" id="composer-upload-status" role="status">
+                <span className="text-xs text-ink-muted" id="composer-upload-status" role="status">
                   Uploading…
                 </span>
               ) : null}
@@ -667,29 +575,29 @@ export function Composer({
                 </span>
               ) : null}
               {streaming && stopDisabled ? (
-                <span className="text-xs text-content-muted" role="status">
+                <span className="text-xs text-ink-muted" role="status">
                   Starting run…
                 </span>
               ) : null}
               <label
                 className={[
-                  "grid size-11 place-items-center rounded-control text-content-secondary focus-within:ring-2 focus-within:ring-accent-cyan/55 sm:size-9 [@media(hover:none)]:!size-11 [@media(pointer:coarse)]:!size-11",
+                  "inline-flex h-touch shrink-0 items-center gap-1.5 rounded-control px-2 text-xs font-medium text-ink-secondary focus-within:ring-2 focus-within:ring-proof/55 sm:h-control [@media(hover:none)]:!h-touch [@media(pointer:coarse)]:!h-touch",
                   uploading
-                    ? "cursor-wait bg-surface-active text-content-primary"
+                    ? "cursor-wait bg-control-pressed text-ink"
                     : attachmentDisabled
-                      ? "cursor-not-allowed text-content-disabled opacity-60"
-                      : "cursor-pointer hover:bg-surface-hover"
+                      ? "cursor-not-allowed text-ink-disabled opacity-60"
+                      : "cursor-pointer hover:bg-control-hover"
                 ].join(" ")}
                 aria-disabled={attachmentDisabled || undefined}
                 data-disabled={attachmentDisabled || undefined}
                 title={attachmentDisabledReason ?? "Attach file"}
               >
-                <span className="sr-only">Attach file</span>
                 {uploading ? (
                   <Loader2 className="size-4 animate-spin" aria-hidden="true" />
                 ) : (
                   <Paperclip className="size-4" aria-hidden="true" />
                 )}
+                <span>{uploading ? "Uploading" : "Attach"}</span>
                 <input
                   className="sr-only"
                   type="file"
@@ -711,10 +619,10 @@ export function Composer({
               ) : (
                 <button
                   className={[
-                    "inline-flex h-touch min-w-[72px] items-center justify-center gap-2 rounded-control px-2 text-sm font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-cyan/55 sm:h-control sm:min-w-[92px] sm:px-3 [@media(max-height:32rem)]:!h-touch [@media(max-height:32rem)]:!min-w-[72px] [@media(max-height:32rem)]:!px-2 [@media(hover:none)]:!h-touch [@media(pointer:coarse)]:!h-touch",
+                    "inline-flex h-touch min-w-[72px] items-center justify-center gap-2 rounded-control px-3 text-sm font-semibold outline-none focus-visible:ring-2 focus-visible:ring-proof/55 sm:h-control [@media(hover:none)]:!h-touch [@media(pointer:coarse)]:!h-touch",
                     canSend
-                      ? "bg-accent-cyan text-surface-canvas hover:brightness-110"
-                      : "bg-surface-active text-content-disabled"
+                      ? "bg-proof text-proof-contrast hover:bg-proof-hover"
+                      : "bg-control-pressed text-ink-disabled"
                   ].join(" ")}
                   type="submit"
                   aria-label="Send message"
@@ -726,8 +634,6 @@ export function Composer({
                   Send
                 </button>
               )}
-            </div>
-              </div>
             </div>
           </div>
         </div>

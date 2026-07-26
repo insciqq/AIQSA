@@ -2,11 +2,9 @@ import { Composer, type ComposerAttachment } from "@/components/chat/Composer";
 import { attachmentPolicyForModel } from "@/components/app-shell/attachmentCapabilities";
 import { ComposerControls } from "@/components/app-shell/ComposerControls";
 import { McpComposerSummary } from "@/components/app-shell/McpComposerSummary";
-import { ComposerRunProfiles } from "@/components/app-shell/ComposerRunProfiles";
-import { useCompactComposerReadingMode } from "@/components/app-shell/useCompactComposerReadingMode";
 import { ThreadMessageRow } from "@/components/app-shell/ThreadMessageRow";
 import type { PipelineSnapshot } from "@/components/app-shell/runState";
-import { resolveRunProfiles, type RunProfileId } from "@/components/app-shell/runProfiles";
+import type { RunProfileId } from "@/components/app-shell/runProfiles";
 import type {
   Catalog,
   CatalogModel,
@@ -52,7 +50,6 @@ export type MainThreadPaneProps = {
   changeTemperature(value: string): void;
   composerContextLine: string | null;
   composerDisabledHint: string | null;
-  composerSessionKey: string;
   composerActions: MainThreadPaneComposerActions;
   composerUsageStats: ChatUsageStats | null;
   creatingChat: boolean;
@@ -133,7 +130,6 @@ export function MainThreadPane({
   changeTemperature,
   composerContextLine,
   composerDisabledHint,
-  composerSessionKey,
   composerActions,
   composerUsageStats,
   creatingChat,
@@ -226,10 +222,6 @@ export function MainThreadPane({
     () => attachmentPolicyForModel(currentModel),
     [currentModel]
   );
-  const compactRunProfilesAvailable = useMemo(
-    () => resolveRunProfiles(catalog).some((profile) => profile.available),
-    [catalog]
-  );
   const runWarningsByRunId = useMemo(() => {
     const warnings = new Map<string, string[]>();
     for (const warning of runWarnings) {
@@ -264,25 +256,6 @@ export function MainThreadPane({
     !catalog ||
     !workspaceReady ||
     !currentModel;
-  const composerReadingForceExpanded =
-    composerUnavailable ||
-    Boolean(activeDisabledHint) ||
-    draft.length > 0 ||
-    attachments.length > 0 ||
-    Boolean(editingMessageId) ||
-    editingMessagePending ||
-    uploading ||
-    Boolean(operationError) ||
-    (activeChatStreaming && !currentRunId);
-  const {
-    collapsed: composerReadingCollapsed,
-    expand: expandComposerReadingMode,
-    handleScroll: handleComposerReadingScroll,
-    noteScrollIntent: noteComposerReadingScrollIntent
-  } = useCompactComposerReadingMode({
-    forceExpanded: composerReadingForceExpanded,
-    resetKey: composerSessionKey
-  });
 
   return (
     <section className="flex min-h-0 min-w-0 flex-1 flex-col bg-answer-paper" data-testid="main-thread-pane">
@@ -293,29 +266,20 @@ export function MainThreadPane({
           ref={threadScrollRef}
           className="min-h-0 flex-1 overflow-y-auto overscroll-contain [overflow-anchor:none]"
           data-testid="thread"
-          onScroll={(event) => {
-            handleThreadScroll();
-            handleComposerReadingScroll(event.currentTarget);
-          }}
-          onTouchMove={noteComposerReadingScrollIntent}
-          onWheel={(event) => {
-            if (event.deltaY !== 0) {
-              noteComposerReadingScrollIntent();
-            }
-          }}
+          onScroll={handleThreadScroll}
         >
           {catalogError ? (
             <div className="grid min-h-[260px] place-items-center px-4 py-10" data-testid="catalog-error-state" role="alert">
               <div className="w-full max-w-sm text-center">
-                <div className="mx-auto grid size-10 place-items-center rounded-control bg-accent-rose/10 text-accent-rose">
+                <div className="mx-auto grid size-10 place-items-center rounded-control bg-critical/10 text-critical">
                   <CircleAlert className="size-5" aria-hidden="true" />
                 </div>
-                <h2 className="mt-3 text-base font-semibold text-content-primary">Models didn&apos;t load</h2>
-                <p className="mt-1 break-words text-sm leading-6 text-content-secondary [overflow-wrap:anywhere]">
+                <h2 className="mt-3 text-base font-semibold text-ink">Models didn&apos;t load</h2>
+                <p className="mt-1 break-words text-sm leading-6 text-ink-secondary [overflow-wrap:anywhere]">
                   {catalogError}
                 </p>
                 <button
-                  className="mt-4 inline-flex h-touch items-center gap-2 rounded-control bg-surface-raised px-4 text-sm font-medium text-content-primary outline-none hover:bg-surface-hover focus-visible:ring-2 focus-visible:ring-accent-cyan/55 sm:h-control [@media(hover:none)]:!h-touch [@media(pointer:coarse)]:!h-touch"
+                  className="mt-4 inline-flex h-touch items-center gap-2 rounded-control border border-trace-subtle bg-control-surface px-4 text-sm font-medium text-ink hover:bg-control-hover sm:h-control [@media(hover:none)]:!h-touch [@media(pointer:coarse)]:!h-touch"
                   type="button"
                   aria-label="Retry loading models"
                   onClick={retryCatalog}
@@ -329,15 +293,15 @@ export function MainThreadPane({
           {workspaceError && !workspaceReady && !catalogError ? (
             <div className="grid min-h-[260px] place-items-center px-4 py-10" data-testid="workspace-error-state" role="alert">
               <div className="w-full max-w-sm text-center">
-                <div className="mx-auto grid size-10 place-items-center rounded-control bg-accent-rose/10 text-accent-rose">
+                <div className="mx-auto grid size-10 place-items-center rounded-control bg-critical/10 text-critical">
                   <CircleAlert className="size-5" aria-hidden="true" />
                 </div>
-                <h2 className="mt-3 text-base font-semibold text-content-primary">Workspace didn&apos;t load</h2>
-                <p className="mt-1 break-words text-sm leading-6 text-content-secondary [overflow-wrap:anywhere]">
+                <h2 className="mt-3 text-base font-semibold text-ink">Workspace didn&apos;t load</h2>
+                <p className="mt-1 break-words text-sm leading-6 text-ink-secondary [overflow-wrap:anywhere]">
                   {workspaceError}
                 </p>
                 <button
-                  className="mt-4 inline-flex h-touch items-center gap-2 rounded-control bg-surface-raised px-4 text-sm font-medium text-content-primary outline-none hover:bg-surface-hover focus-visible:ring-2 focus-visible:ring-accent-cyan/55 disabled:cursor-not-allowed disabled:opacity-60 sm:h-control [@media(hover:none)]:!h-touch [@media(pointer:coarse)]:!h-touch"
+                  className="mt-4 inline-flex h-touch items-center gap-2 rounded-control border border-trace-subtle bg-control-surface px-4 text-sm font-medium text-ink hover:bg-control-hover disabled:cursor-not-allowed disabled:opacity-60 sm:h-control [@media(hover:none)]:!h-touch [@media(pointer:coarse)]:!h-touch"
                   type="button"
                   aria-label="Retry loading workspace"
                   disabled={workspaceLoading}
@@ -352,16 +316,16 @@ export function MainThreadPane({
           {!catalog && !catalogError ? (
             <div className="grid min-h-[260px] place-items-center px-4 py-10 text-center" data-testid="catalog-loading-state" role="status">
               <div>
-                <LoaderCircle className="mx-auto size-6 animate-spin text-accent-cyan" aria-hidden="true" />
-                <p className="mt-3 text-sm font-medium text-content-secondary">Loading models and prompts…</p>
+                <LoaderCircle className="mx-auto size-6 animate-spin text-proof" aria-hidden="true" />
+                <p className="mt-3 text-sm font-medium text-ink-secondary">Loading models and prompts…</p>
               </div>
             </div>
           ) : null}
           {catalog && !workspaceReady && workspaceLoading && !workspaceError && !catalogError ? (
             <div className="grid min-h-[260px] place-items-center px-4 py-10 text-center" data-testid="workspace-loading-state" role="status">
               <div>
-                <LoaderCircle className="mx-auto size-6 animate-spin text-accent-cyan" aria-hidden="true" />
-                <p className="mt-3 text-sm font-medium text-content-secondary">Loading workspace…</p>
+                <LoaderCircle className="mx-auto size-6 animate-spin text-proof" aria-hidden="true" />
+                <p className="mt-3 text-sm font-medium text-ink-secondary">Loading workspace…</p>
               </div>
             </div>
           ) : null}
@@ -391,15 +355,15 @@ export function MainThreadPane({
           {catalog && workspaceReady && activeChatDetailError && !activeChatDetailLoading && !catalogError && !workspaceError ? (
             <div className="grid min-h-[260px] place-items-center px-4 py-10" data-testid="thread-detail-error" role="alert">
               <div className="w-full max-w-sm text-center">
-                <div className="mx-auto grid size-10 place-items-center rounded-control bg-accent-rose/10 text-accent-rose">
+                <div className="mx-auto grid size-10 place-items-center rounded-control bg-critical/10 text-critical">
                   <CircleAlert className="size-5" aria-hidden="true" />
                 </div>
-                <h2 className="mt-3 text-base font-semibold text-content-primary">This conversation didn&apos;t load</h2>
-                <p className="mt-1 break-words text-sm leading-6 text-content-secondary [overflow-wrap:anywhere]">
+                <h2 className="mt-3 text-base font-semibold text-ink">This conversation didn&apos;t load</h2>
+                <p className="mt-1 break-words text-sm leading-6 text-ink-secondary [overflow-wrap:anywhere]">
                   {activeChatDetailError}
                 </p>
                 <button
-                  className="mt-4 inline-flex h-touch items-center gap-2 rounded-control bg-surface-raised px-4 text-sm font-medium text-content-primary outline-none hover:bg-surface-hover focus-visible:ring-2 focus-visible:ring-accent-cyan/55 sm:h-control [@media(hover:none)]:!h-touch [@media(pointer:coarse)]:!h-touch"
+                  className="mt-4 inline-flex h-touch items-center gap-2 rounded-control border border-trace-subtle bg-control-surface px-4 text-sm font-medium text-ink hover:bg-control-hover sm:h-control [@media(hover:none)]:!h-touch [@media(pointer:coarse)]:!h-touch"
                   type="button"
                   aria-label="Retry loading chat"
                   onClick={retryActiveChatDetail}
@@ -420,23 +384,23 @@ export function MainThreadPane({
             <div className="grid min-h-[300px] place-items-center px-4 py-10" data-testid="thread-empty-state">
               {catalog && catalog.models.length === 0 ? (
                 <div className="w-full max-w-reading" data-testid="no-model-empty-state">
-                  <p className="text-xs font-medium text-content-muted">Model access required</p>
-                  <h2 className="mt-2 max-w-xl text-xl font-semibold leading-8 text-content-primary">
+                  <p className="text-xs font-medium text-ink-muted">Model access required</p>
+                  <h2 className="mt-2 max-w-xl text-2xl font-semibold leading-8 text-ink">
                     This workspace has no models available yet.
                   </h2>
-                  <p className="mt-2 max-w-xl text-sm leading-6 text-content-secondary">
+                  <p className="mt-2 max-w-xl text-sm leading-6 text-ink-secondary">
                     An administrator needs to grant model access before you can send a question. Your chats,
                     folders, Settings, and Appearance remain available.
                   </p>
                 </div>
               ) : (
                 <div className="w-full max-w-reading">
-                  <p className="text-xs font-medium text-content-muted">Start a conversation</p>
-                  <h2 className="mt-2 max-w-xl text-xl font-semibold leading-8 text-content-primary">
+                  <p className="text-xs font-medium text-ink-muted">New research</p>
+                  <h2 className="mt-2 max-w-xl text-2xl font-semibold leading-8 text-ink">
                     Ask anything.
                   </h2>
-                  <p className="mt-2 max-w-xl text-sm leading-6 text-content-secondary">
-                    Choose the model and search strategy below. Each run remains inspectable in Details.
+                  <p className="mt-2 max-w-xl text-sm leading-6 text-ink-secondary">
+                    Set up the run below when you need to change the model, reasoning, or search.
                   </p>
                 </div>
               )}
@@ -470,6 +434,9 @@ export function MainThreadPane({
               : noRunWarnings;
             const visibleRunActivity =
               isRunTail &&
+              message.role === "assistant" &&
+              Boolean(message.runId) &&
+              message.runId === currentRunId &&
               pipeline &&
               (activeChatStreaming || (pipeline.phase === "error" && message.status === "error"))
                 ? pipeline
@@ -539,10 +506,7 @@ export function MainThreadPane({
               type="button"
               aria-label="Jump to latest message"
               data-testid="jump-to-latest"
-              onClick={() => {
-                expandComposerReadingMode();
-                jumpToLatest();
-              }}
+              onClick={jumpToLatest}
             >
               <ArrowDown className="size-3.5 text-proof" aria-hidden="true" />
               Latest
@@ -554,63 +518,51 @@ export function MainThreadPane({
       <Composer
         attachmentPolicy={attachmentPolicy}
         attachments={attachments}
-        compactProfileControls={
-          compactRunProfilesAvailable ? (
-            <ComposerRunProfiles
-              catalog={catalog}
-              disabled={composerUnavailable || activeChatStreaming}
-              reasoningEffort={reasoningEffort}
-              reasoningMode={reasoningMode}
-              selectedModelId={selectedModelId}
-              selectedProvider={selectedProvider}
-              variant="compact-footer"
-              onSelect={selectRunProfile}
-            />
-          ) : null
-        }
         controls={
           <>
             <ComposerControls
-            backgroundMode={backgroundMode}
-            catalog={catalog}
-            catalogUnavailable={Boolean(catalogError)}
-            currentModel={currentModel}
-            currentParameterControls={currentParameterControls}
-            currentPrompt={currentPrompt}
-            disabled={composerUnavailable}
-            maxOutputTokens={maxOutputTokens}
-            reasoningEffort={reasoningEffort}
-            reasoningMode={reasoningMode}
-            searchOptions={searchOptions}
-            selectedModelId={selectedModelId}
-            selectedPromptId={selectedPromptId}
-            selectedProvider={selectedProvider}
-            selectedProviderName={selectedProviderName}
-            selectedSearchStrategy={selectedSearchStrategy}
-            showCitations={showCitations}
-            showReasoningBlocks={showReasoningBlocks}
-            showToolActivity={showToolActivity}
-            streamMode={streamMode}
-            streaming={activeChatStreaming}
-            onBackgroundModeChange={changeBackgroundMode}
-            onMaxOutputTokensChange={changeMaxOutputTokens}
-            onMaxOutputTokensCommit={flushPendingModelControlDefaults}
-            onOpenPromptSettings={() => openSettings()}
-            onPromptChange={(promptId) => selectPrompt(promptId)}
-            onReasoningEffortChange={changeReasoningEffort}
-            onReasoningModeChange={changeReasoningMode}
-            onRunProfileChange={selectRunProfile}
-            onSearchStrategyChange={selectSearchStrategy}
-            onSelectModel={selectModel}
-            onStreamModeChange={changeStreamMode}
-            onTemperatureChange={changeTemperature}
-            onTemperatureCommit={flushPendingModelControlDefaults}
-            onToggleNotificationSound={toggleNotificationSound}
-            onToggleCitations={toggleCitationsVisibility}
-            onToggleReasoningBlocks={toggleReasoningBlockVisibility}
-            onToggleToolActivity={toggleToolActivityVisibility}
-            notificationSoundEnabled={notificationSoundEnabled}
-            temperature={temperature}
+              backgroundMode={backgroundMode}
+              catalog={catalog}
+              catalogUnavailable={Boolean(catalogError)}
+              contextLine={composerContextLine}
+              currentModel={currentModel}
+              currentParameterControls={currentParameterControls}
+              currentPrompt={currentPrompt}
+              disabled={composerUnavailable}
+              maxOutputTokens={maxOutputTokens}
+              reasoningEffort={reasoningEffort}
+              reasoningMode={reasoningMode}
+              searchOptions={searchOptions}
+              selectedModelId={selectedModelId}
+              selectedPromptId={selectedPromptId}
+              selectedProvider={selectedProvider}
+              selectedProviderName={selectedProviderName}
+              selectedSearchStrategy={selectedSearchStrategy}
+              showCitations={showCitations}
+              showReasoningBlocks={showReasoningBlocks}
+              showToolActivity={showToolActivity}
+              streamMode={streamMode}
+              streaming={activeChatStreaming}
+              onBackgroundModeChange={changeBackgroundMode}
+              onMaxOutputTokensChange={changeMaxOutputTokens}
+              onMaxOutputTokensCommit={flushPendingModelControlDefaults}
+              onOpenPromptSettings={() => openSettings()}
+              onPromptChange={(promptId) => selectPrompt(promptId)}
+              onReasoningEffortChange={changeReasoningEffort}
+              onReasoningModeChange={changeReasoningMode}
+              onRunProfileChange={selectRunProfile}
+              onSearchStrategyChange={selectSearchStrategy}
+              onSelectModel={selectModel}
+              onStreamModeChange={changeStreamMode}
+              onTemperatureChange={changeTemperature}
+              onTemperatureCommit={flushPendingModelControlDefaults}
+              onToggleNotificationSound={toggleNotificationSound}
+              onToggleCitations={toggleCitationsVisibility}
+              onToggleReasoningBlocks={toggleReasoningBlockVisibility}
+              onToggleToolActivity={toggleToolActivityVisibility}
+              notificationSoundEnabled={notificationSoundEnabled}
+              temperature={temperature}
+              usageStats={composerUsageStats}
             />
             <McpComposerSummary onOpenSettings={openMcpSettings ?? openSettings} />
           </>
@@ -627,7 +579,6 @@ export function MainThreadPane({
         editing={Boolean(editingMessageId)}
         editPending={editingMessagePending}
         operationError={operationError}
-        readingCollapsed={composerReadingCollapsed}
         onChange={composerActions.changeDraft}
         onCancelEdit={composerActions.cancelMessageEdit}
         onRemoveAttachment={composerActions.removeAttachment}
@@ -644,7 +595,6 @@ export function MainThreadPane({
         contextLine={composerContextLine}
         usageStats={composerUsageStats}
         value={draft}
-        onRequestExpanded={expandComposerReadingMode}
       />
     </section>
   );

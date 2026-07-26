@@ -77,17 +77,25 @@ async function prepareFakeBlankChat(page: Page) {
   await page.getByRole("button", { name: "Start new chat" }).click();
   await expect(page.getByTestId("current-chat-title")).toHaveText("New chat");
 
-  await page.getByRole("button", { name: "Select model" }).click();
+  await page.getByTestId("composer-run-summary").click();
+  const runSetup = page.getByRole("dialog", { name: "Run setup" });
+  await expect(runSetup).toBeVisible();
+
+  await runSetup.getByRole("button", { name: "Select model" }).click();
   await page
     .getByTestId("model-picker")
     .getByRole("button", { name: "Select model Fake QSA Fake QSA" })
     .click();
-  await expect(page.getByRole("button", { name: "Select model" })).toContainText("Fake QSA");
-  await expect(page.getByRole("button", { name: "Select model" })).toHaveAttribute("title", "Fake QSA / Fake QSA");
+  await expect(runSetup.getByRole("button", { name: "Select model" })).toContainText("Fake QSA");
+  await expect(runSetup.getByRole("button", { name: "Select model" })).toHaveAttribute("title", "Fake QSA / Fake QSA");
 
-  await page.getByRole("button", { name: "Search strategy" }).click();
+  await runSetup.getByRole("button", { name: "Search strategy" }).click();
   await page.getByTestId("search-select-options").locator('[data-option-value="search-disabled"]').click();
   await expect(page.locator("#search-select-current-value")).toHaveText("Off");
+  await runSetup.getByRole("button", { name: "Close run setup" }).click();
+  await expect(runSetup).toHaveCount(0);
+  await expect(page.getByTestId("composer-run-summary")).toContainText("Fake QSA");
+  await expect(page.getByTestId("run-search-summary")).toContainText("Off");
 }
 
 async function waitForActiveChatId(page: Page): Promise<string> {
@@ -153,8 +161,9 @@ test("runs a fake-provider chat through real routes, Prisma, SSE, and Details", 
 
     await expect(page.getByTestId("thread")).toContainText(`Fake answer: ${prompt}`, { timeout: 20_000 });
     await expect(page.getByTestId("streaming-cursor")).toHaveCount(0, { timeout: 20_000 });
+    await expect(page.getByTestId("run-receipt").last()).toContainText("Run Complete");
+    await expect(page.getByTestId("run-receipt").last()).toContainText("Fake QSA");
     await expect(page.getByTestId("composer-usage-line")).toBeVisible();
-    await expect(page.getByTestId("current-context-length")).toHaveAccessibleName(/Approx\. input:/);
     await expect(page.getByTestId("composer-usage-line")).not.toContainText("cost");
 
     await page.getByRole("button", { name: "Open details" }).click();
@@ -201,6 +210,7 @@ test("cancels an in-flight fake-provider stream without leaving the shell stuck"
     await expect(page.getByRole("button", { name: "Stop response" })).toHaveCount(0, { timeout: 10_000 });
     await expect(page.getByTestId("streaming-cursor")).toHaveCount(0);
     await expect(page.getByRole("textbox", { name: "Message" })).toBeEnabled();
+    await expect(page.getByTestId("run-receipt").last()).toContainText("Run Stopped");
 
     await expect
       .poll(async () => (chatId ? (await latestRunForChat(page, chatId))?.status ?? null : null), {

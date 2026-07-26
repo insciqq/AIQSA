@@ -60,6 +60,23 @@ describe("usePinnedScroll", () => {
     expect(hasUnseenLatestMessageContent(element)).toBe(true);
   });
 
+  it("does not show Latest only because a receipt or action footer continues below visible answer content", () => {
+    const element = scrollElement({ clientHeight: 300, scrollHeight: 1000, scrollTop: 500 });
+    element.getBoundingClientRect = () => ({ bottom: 300 } as DOMRect);
+    const latestMessage = document.createElement("article");
+    latestMessage.dataset.messageId = "assistant-latest";
+    latestMessage.getBoundingClientRect = () => ({ bottom: 390 } as DOMRect);
+    const answerContent = document.createElement("div");
+    answerContent.dataset.threadMessageContent = "true";
+    answerContent.getBoundingClientRect = () => ({ bottom: 300 } as DOMRect);
+    const receipt = document.createElement("footer");
+    receipt.getBoundingClientRect = () => ({ bottom: 350 } as DOMRect);
+    latestMessage.append(answerContent, receipt);
+    element.append(latestMessage);
+
+    expect(hasUnseenLatestMessageContent(element)).toBe(false);
+  });
+
   it("keeps an empty thread at its first-run heading instead of pinning its structural spacer", async () => {
     const { result } = renderHook(() =>
       usePinnedScroll<HTMLDivElement>({
@@ -208,7 +225,7 @@ describe("usePinnedScroll", () => {
     await waitForAnimationFrame();
 
     expect(spacer.style.height).toBe("240px");
-    expect(element.scrollTop).toBe(726);
+    expect(element.scrollTop).toBe(654);
     expect(result.current.isPinned).toBe(false);
     expect(result.current.showJumpToLatest).toBe(false);
 
@@ -221,7 +238,7 @@ describe("usePinnedScroll", () => {
     await waitForAnimationFrame();
 
     expect(spacer.style.height).toBe("0px");
-    expect(element.scrollTop).toBe(726);
+    expect(element.scrollTop).toBe(654);
     expect(result.current.showJumpToLatest).toBe(true);
 
     act(() => result.current.jumpToLatest());

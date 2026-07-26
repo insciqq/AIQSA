@@ -158,7 +158,7 @@ export function ComposerModelPicker({
       <button
         {...triggerProps}
         ref={triggerRef}
-        className="flex h-touch w-full min-w-0 items-center justify-between gap-2 rounded-control bg-surface-hover px-3 text-left text-xs text-content-primary outline-none hover:bg-surface-active focus-visible:ring-2 focus-visible:ring-accent-cyan/55 disabled:cursor-not-allowed disabled:text-content-disabled sm:h-control [@media(hover:none)]:!h-touch [@media(pointer:coarse)]:!h-touch"
+        className="flex h-touch w-full min-w-0 items-center justify-between gap-2 rounded-control bg-control-surface px-3 text-left text-xs text-ink outline-none hover:bg-control-hover focus-visible:ring-2 focus-visible:ring-proof/55 disabled:cursor-not-allowed disabled:text-ink-disabled sm:h-control [@media(hover:none)]:!h-touch [@media(pointer:coarse)]:!h-touch"
         type="button"
         aria-label="Select model"
         aria-describedby="composer-model-current-description"
@@ -167,15 +167,15 @@ export function ComposerModelPicker({
         onClick={toggle}
       >
         <span className="flex min-w-0 items-baseline gap-2">
-          <span className="shrink-0 text-[11px] font-medium text-content-muted">Model</span>
+          <span className="shrink-0 text-[11px] font-medium text-ink-muted">Model</span>
           <span
-            className="truncate text-sm font-semibold text-content-primary"
+            className="truncate text-sm font-semibold text-ink"
             id="composer-model-current-value"
           >
             {modelSummary}
           </span>
         </span>
-        <ChevronDown className="size-4 shrink-0 text-content-muted" aria-hidden="true" />
+        <ChevronDown className="size-4 shrink-0 text-ink-muted" aria-hidden="true" />
       </button>
       <span className="sr-only" id="composer-model-current-description">
         {fullModelSummary}
@@ -184,7 +184,7 @@ export function ComposerModelPicker({
         <>
           {nestedInRunSetup ? (
             <div
-              className="fixed inset-0 z-[80] bg-scrim/55 backdrop-blur-sm"
+              className="fixed inset-0 z-[80] bg-scrim/55"
               data-testid="model-picker-backdrop"
               role="presentation"
               aria-hidden="true"
@@ -198,10 +198,10 @@ export function ComposerModelPicker({
             {...dialogProps}
             ref={dialogRef}
             className={[
-              "pop-enter absolute bottom-11 left-0 flex max-h-[min(34rem,calc(100dvh-6rem))] w-[min(42rem,calc(100vw-2rem))] flex-col overflow-hidden rounded-panel border bg-surface-overlay p-3 shadow-overlay max-sm:fixed max-sm:inset-x-0 max-sm:bottom-0 max-sm:max-h-[min(78dvh,40rem)] max-sm:w-full max-sm:rounded-b-none max-sm:border-x-0 max-sm:pb-[calc(0.75rem+env(safe-area-inset-bottom))] [@media(max-height:32rem)]:fixed [@media(max-height:32rem)]:!bottom-0 [@media(max-height:32rem)]:!left-[max(.5rem,env(safe-area-inset-left))] [@media(max-height:32rem)]:!right-[max(.5rem,env(safe-area-inset-right))] [@media(max-height:32rem)]:!max-h-[calc(100dvh-3.5rem-env(safe-area-inset-top))] [@media(max-height:32rem)]:!w-auto [@media(max-height:32rem)]:rounded-b-none [@media(max-height:32rem)]:pb-[calc(.75rem+env(safe-area-inset-bottom))]",
+              "pop-enter flex flex-col overflow-hidden rounded-panel border bg-overlay-surface p-3 shadow-overlay",
               nestedInRunSetup
-                ? "z-[90] border-separator-strong"
-                : "z-50 border-separator-subtle"
+                ? "fixed inset-x-2 bottom-2 z-[90] max-h-[min(78dvh,40rem)] w-auto border-trace-strong pb-[calc(0.75rem+env(safe-area-inset-bottom))] sm:inset-x-auto sm:bottom-auto sm:left-1/2 sm:top-1/2 sm:max-h-[min(42rem,calc(100dvh-2rem))] sm:w-[min(42rem,calc(100vw-2rem))] sm:-translate-x-1/2 sm:-translate-y-1/2 sm:pb-3"
+                : "absolute bottom-11 left-0 z-50 max-h-[min(34rem,calc(100dvh-6rem))] w-[min(42rem,calc(100vw-2rem))] border-trace-subtle max-sm:fixed max-sm:inset-x-0 max-sm:bottom-0 max-sm:max-h-[min(78dvh,40rem)] max-sm:w-full max-sm:rounded-b-none max-sm:border-x-0 max-sm:pb-[calc(0.75rem+env(safe-area-inset-bottom))]"
             ].join(" ")}
             data-testid="model-picker"
             aria-label="Choose a model"
@@ -209,7 +209,7 @@ export function ComposerModelPicker({
             <div className="mb-3">
               {nestedInRunSetup ? (
                 <button
-                  className="mb-1 inline-flex h-touch items-center gap-2 rounded-control px-2 text-xs font-medium text-content-secondary outline-none hover:bg-surface-hover hover:text-content-primary focus-visible:ring-2 focus-visible:ring-accent-cyan/55"
+                  className="mb-1 inline-flex h-touch items-center gap-2 rounded-control px-2 text-xs font-medium text-ink-secondary outline-none hover:bg-control-hover hover:text-ink focus-visible:ring-2 focus-visible:ring-proof/55"
                   type="button"
                   onClick={close}
                 >
@@ -219,14 +219,14 @@ export function ComposerModelPicker({
               ) : null}
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
-                  <h2 className="text-sm font-semibold text-content-primary">Choose a model</h2>
-                  <p className="mt-0.5 text-xs text-content-muted">
+                  <h2 className="text-sm font-semibold text-ink">Choose a model</h2>
+                  <p className="mt-0.5 text-xs text-ink-muted">
                     Search entitled models grouped by provider.
                   </p>
                 </div>
                 {!nestedInRunSetup ? (
                   <button
-                    className="grid size-11 shrink-0 place-items-center rounded-control text-content-muted outline-none hover:bg-surface-hover hover:text-content-primary focus-visible:ring-2 focus-visible:ring-accent-cyan/55 lg:size-8 [@media(hover:none)]:!size-11 [@media(pointer:coarse)]:!size-11"
+                    className="grid size-11 shrink-0 place-items-center rounded-control text-ink-muted outline-none hover:bg-control-hover hover:text-ink focus-visible:ring-2 focus-visible:ring-proof/55 lg:size-8 [@media(hover:none)]:!size-11 [@media(pointer:coarse)]:!size-11"
                     type="button"
                     aria-label="Close model picker"
                     onClick={close}
@@ -236,11 +236,11 @@ export function ComposerModelPicker({
                 ) : null}
               </div>
             </div>
-          <div className="mb-2 flex min-h-touch items-center gap-2 rounded-control border border-separator-subtle bg-surface-thread px-3 sm:min-h-control [@media(hover:none)]:!min-h-touch [@media(pointer:coarse)]:!min-h-touch">
-            <Search className="size-4 shrink-0 text-content-muted" aria-hidden="true" />
+          <div className="mb-2 flex min-h-touch items-center gap-2 rounded-control border border-trace-subtle bg-answer-paper px-3 sm:min-h-control [@media(hover:none)]:!min-h-touch [@media(pointer:coarse)]:!min-h-touch">
+            <Search className="size-4 shrink-0 text-ink-muted" aria-hidden="true" />
             <input
               ref={searchRef}
-              className="min-w-0 flex-1 bg-transparent text-sm text-content-primary outline-none placeholder:text-content-muted focus-visible:ring-0"
+              className="min-w-0 flex-1 bg-transparent text-sm text-ink outline-none placeholder:text-ink-muted focus-visible:ring-0"
               type="search"
               aria-label="Search models"
               placeholder="Search provider, model, capability"
@@ -265,9 +265,9 @@ export function ComposerModelPicker({
             aria-label="Available providers and models"
           >
             {filteredModelGroups.length === 0 ? (
-              <div className="rounded-control bg-surface-thread px-4 py-6 text-center" role="status">
-                <p className="text-sm font-medium text-content-primary">No models match {query.trim() ? `“${query.trim()}”` : "this search"}.</p>
-                <p className="mt-1 text-xs text-content-muted">Try a provider, model name, or capability.</p>
+              <div className="rounded-control bg-control-surface px-4 py-6 text-center" role="status">
+                <p className="text-sm font-medium text-ink">No models match {query.trim() ? `“${query.trim()}”` : "this search"}.</p>
+                <p className="mt-1 text-xs text-ink-muted">Try a provider, model name, or capability.</p>
               </div>
             ) : null}
             {filteredModelGroups.map((provider, providerIndex) => {
@@ -279,17 +279,17 @@ export function ComposerModelPicker({
 
               return (
                 <section key={provider.id} aria-labelledby={providerHeadingId}>
-                  <header className="mb-1 grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 rounded-control bg-surface-raised px-3 py-2">
+                  <header className="mb-1 grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 rounded-control bg-control-surface px-3 py-2">
                     <span className="min-w-0">
                       <span
-                        className="block text-[11px] font-medium leading-4 text-content-muted"
+                        className="block text-[11px] font-medium leading-4 text-ink-muted"
                         aria-hidden="true"
                       >
                         Provider
                       </span>
-                      <h3 className="truncate text-sm font-semibold text-content-primary" id={providerHeadingId}>{provider.name}</h3>
+                      <h3 className="truncate text-sm font-semibold text-ink" id={providerHeadingId}>{provider.name}</h3>
                     </span>
-                    <span className="flex shrink-0 flex-col items-end gap-0.5 text-xs text-content-muted">
+                    <span className="flex shrink-0 flex-col items-end gap-0.5 text-xs text-ink-muted">
                       <span>
                         {provider.models.length} {provider.models.length === 1 ? "model" : "models"}
                       </span>
@@ -320,8 +320,8 @@ export function ComposerModelPicker({
                           key={`${model.provider}:${model.modelId}`}
                           {...getItemProps(actionIndex)}
                           className={[
-                            "flex min-h-touch w-full items-start justify-between gap-3 rounded-control px-3 py-2.5 text-left outline-none hover:bg-surface-hover focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent-cyan/55",
-                            active ? "bg-surface-selected text-content-primary" : "text-content-secondary"
+                            "flex min-h-touch w-full items-start justify-between gap-3 rounded-control px-3 py-2.5 text-left outline-none hover:bg-control-hover focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-proof/55",
+                            active ? "bg-control-selected text-ink" : "text-ink-secondary"
                           ].join(" ")}
                           id={`model-picker-action-${actionIndex}`}
                           type="button"
@@ -337,7 +337,7 @@ export function ComposerModelPicker({
                           title={`${provider.name} / ${model.displayName}\n${modelCapabilityDescription(model)}`}
                         >
                           <span className="min-w-0 flex-1">
-                            <span className="block break-words text-sm font-semibold leading-5 text-content-primary [overflow-wrap:anywhere]">
+                            <span className="block break-words text-sm font-semibold leading-5 text-ink [overflow-wrap:anywhere]">
                               {model.displayName}
                             </span>
                             <span
@@ -345,7 +345,7 @@ export function ComposerModelPicker({
                               id={`model-picker-model-${actionIndex}-capabilities`}
                             >
                               {differentiatingLabels.length > 0 ? (
-                                <span className="font-medium text-content-secondary">
+                                <span className="font-medium text-ink-secondary">
                                   {differentiatingLabels.join(" · ")}
                                 </span>
                               ) : null}
@@ -353,7 +353,7 @@ export function ComposerModelPicker({
                                 ? " · "
                                 : null}
                               {remainingLabels.length > 0 ? (
-                                <span className="text-content-muted">
+                                <span className="text-ink-muted">
                                   {remainingLabels.join(" · ")}
                                 </span>
                               ) : null}
@@ -362,7 +362,7 @@ export function ComposerModelPicker({
                           <span className="flex shrink-0 flex-col items-end gap-1 pt-0.5 text-xs">
                             {active ? (
                               <span
-                                className="text-accent-cyan"
+                                className="text-proof"
                                 id={`model-picker-model-${actionIndex}-current`}
                               >
                                 Current
@@ -370,13 +370,13 @@ export function ComposerModelPicker({
                             ) : null}
                             {isDefault ? (
                               <span
-                                className="text-content-muted"
+                                className="text-ink-muted"
                                 id={`model-picker-model-${actionIndex}-default`}
                               >
                                 Default
                               </span>
                             ) : null}
-                            {active ? <Check className="size-4 text-accent-cyan" aria-hidden="true" /> : null}
+                            {active ? <Check className="size-4 text-proof" aria-hidden="true" /> : null}
                           </span>
                         </button>
                       );

@@ -5,6 +5,8 @@ import {
   SearchSummaryBlock,
   ToolActivityBlock
 } from "@/components/app-shell/ThreadArtifacts";
+import { RunReceipt } from "@/components/app-shell/RunReceipt";
+import { deriveRunReceipt } from "@/components/app-shell/runReceipt";
 import { runActivityLabel, type PipelineSnapshot } from "@/components/app-shell/runState";
 import {
   attachmentBlocksFromThreadContent,
@@ -26,7 +28,7 @@ import {
 import { memo, type ReactNode } from "react";
 
 const ghostActionClass =
-  "grid size-11 place-items-center rounded-control text-content-muted outline-none hover:bg-surface-hover hover:text-content-primary focus-visible:ring-2 focus-visible:ring-accent-cyan/55 disabled:cursor-not-allowed disabled:text-content-disabled disabled:opacity-50 sm:size-9 [@media(hover:none)]:!size-11 [@media(pointer:coarse)]:!size-11";
+  "grid size-11 place-items-center rounded-control text-ink-muted outline-none hover:bg-control-hover hover:text-ink focus-visible:ring-2 focus-visible:ring-proof/45 disabled:cursor-not-allowed disabled:text-ink-disabled disabled:opacity-50 sm:size-9 [@media(hover:none)]:!size-11 [@media(pointer:coarse)]:!size-11";
 
 // Reserved-height strip; reveal is opacity-only so hover never shifts layout.
 const actionStripClass =
@@ -38,7 +40,8 @@ function ThreadRunActivity({ pipeline }: { pipeline: PipelineSnapshot }) {
 
   return (
     <div
-      className={`mb-3 inline-flex min-h-5 items-center gap-2 text-xs font-medium ${error ? "text-accent-rose" : "text-content-secondary"}`}
+      className={`pipeline-indicator mb-4 inline-flex min-h-5 items-center gap-2 text-xs font-medium ${error ? "text-critical" : "text-ink-secondary"}`}
+      data-phase={pipeline.phase}
       data-testid="thread-run-activity"
       role="status"
       aria-label={`Run status: ${label}`}
@@ -46,7 +49,7 @@ function ThreadRunActivity({ pipeline }: { pipeline: PipelineSnapshot }) {
       {error ? (
         <CircleAlert className="size-3.5 shrink-0" aria-hidden="true" />
       ) : (
-        <span className="size-2 shrink-0 animate-pulse rounded-pill bg-accent-cyan" aria-hidden="true" />
+        <span className="size-2 shrink-0 rounded-full bg-proof" data-run-activity aria-hidden="true" />
       )}
       <span>
         {label}
@@ -109,7 +112,7 @@ function TurnActions({
         <button
           aria-label="Regenerate message"
           aria-describedby={mutableActionDescriptionIds}
-          className={`${ghostActionClass} hover:text-accent-cyan`}
+          className={`${ghostActionClass} hover:text-proof`}
           disabled={streaming}
           title={streaming ? "Regenerate is disabled while a response is streaming" : "Regenerate message"}
           type="button"
@@ -122,7 +125,7 @@ function TurnActions({
         <button
           aria-label="Edit message"
           aria-describedby={editActionDescriptionIds}
-          className={`${ghostActionClass} hover:text-accent-cyan`}
+          className={`${ghostActionClass} hover:text-proof`}
           disabled={streaming || editPending}
           title={
             streaming
@@ -140,7 +143,7 @@ function TurnActions({
       <button
         aria-label="Copy message"
         aria-describedby={targetDescriptionId}
-        className={`${ghostActionClass} hover:text-accent-cyan`}
+        className={`${ghostActionClass} hover:text-proof`}
         title="Copy message"
         type="button"
         onClick={() => onCopyMessage(message)}
@@ -150,7 +153,7 @@ function TurnActions({
       <button
         aria-label="Delete message"
         aria-describedby={mutableActionDescriptionIds}
-        className={`${ghostActionClass} hover:text-accent-rose`}
+        className={`${ghostActionClass} hover:text-critical`}
         disabled={streaming}
         title={streaming ? "Delete is disabled while a response is streaming" : "Delete message"}
         type="button"
@@ -161,7 +164,7 @@ function TurnActions({
       <button
         aria-label="Branch from here"
         aria-describedby={mutableActionDescriptionIds}
-        className={`${ghostActionClass} hover:text-accent-cyan`}
+        className={`${ghostActionClass} hover:text-proof`}
         disabled={streaming}
         title={streaming ? "Branching is disabled while a response is streaming" : "Branch from here"}
         type="button"
@@ -243,14 +246,17 @@ function ThreadMessageRowComponent({
   if (message.role === "user") {
     return (
       <article
-        className="group/turn px-2 pb-1 pt-5 sm:px-4"
+        className="group/turn px-4 pb-2 pt-8 sm:px-6"
         data-message-id={message.id}
         data-role="user"
         data-status={message.status}
         aria-label="Question"
       >
         <div className="mx-auto w-full max-w-reading">
-          <div className="ml-auto w-fit max-w-[min(38rem,88%)] break-words rounded-bubble bg-surface-raised px-4 py-3 text-[15px] leading-7 text-content-primary [overflow-wrap:anywhere]">
+          <div
+            className="ml-auto w-fit max-w-[min(36rem,88%)] break-words rounded-panel bg-control-surface px-4 py-3 text-[15px] leading-6 text-ink [overflow-wrap:anywhere]"
+            data-thread-message-content="true"
+          >
             {contentText ? <MarkdownMessage content={contentText} /> : null}
             {attachmentBlocks.length > 0 ? (
               <ul
@@ -259,14 +265,14 @@ function ThreadMessageRowComponent({
               >
                 {attachmentBlocks.map((attachment) => (
                   <li
-                    className="inline-flex min-h-control-sm max-w-[min(15rem,100%)] items-center gap-1.5 rounded-control bg-surface-active px-2 text-xs leading-4 text-content-secondary"
+                    className="inline-flex min-h-control-sm max-w-[min(15rem,100%)] items-center gap-1.5 rounded-control bg-control-pressed px-2 text-xs leading-4 text-ink-secondary"
                     key={`${attachment.type}-${attachment.attachmentId}`}
                     title={attachment.label}
                   >
                     {attachment.type === "image" ? (
-                      <ImageIcon className="size-3.5 shrink-0 text-content-muted" aria-hidden="true" />
+                      <ImageIcon className="size-3.5 shrink-0 text-ink-muted" aria-hidden="true" />
                     ) : (
-                      <FileText className="size-3.5 shrink-0 text-content-muted" aria-hidden="true" />
+                      <FileText className="size-3.5 shrink-0 text-ink-muted" aria-hidden="true" />
                     )}
                     <span className="truncate">{attachment.label}</span>
                   </li>
@@ -293,9 +299,17 @@ function ThreadMessageRowComponent({
     );
   }
 
+  const receipt = deriveRunReceipt({
+    artifactSummary,
+    messageStatus: message.status,
+    modelLabel: answerModelLabel,
+    runActivity,
+    warningCount: runWarnings.length
+  });
+
   return (
     <article
-      className="group/turn px-2 pb-5 pt-1 sm:px-4"
+      className="group/turn px-4 pb-8 pt-2 sm:px-6"
       data-message-id={message.id}
       data-role="assistant"
       data-status={message.status}
@@ -303,10 +317,9 @@ function ThreadMessageRowComponent({
       aria-busy={message.status === "streaming" || undefined}
     >
       <div className="mx-auto w-full max-w-reading">
-        {answerModelLabel ? (
+        {message.status === "streaming" && answerModelLabel ? (
           <div
-            className="mb-2 truncate text-[11px] leading-4 text-content-muted"
-            data-run-settled={justCompleted ? "true" : undefined}
+            className="mb-3 truncate text-xs leading-5 text-ink-muted"
             title={answerModelLabel}
           >
             {answerModelLabel}
@@ -314,18 +327,19 @@ function ThreadMessageRowComponent({
         ) : null}
         {runActivity ? <ThreadRunActivity pipeline={runActivity} /> : null}
         <div
-          className="min-w-0 text-[15px] leading-7 text-content-primary"
+          className="min-w-0 text-[16px] leading-[1.68] text-ink sm:text-[17px]"
+          data-thread-message-content="true"
           data-testid="assistant-message-content"
         >
           {artifactSummary?.contextTruncation ? <ContextTruncationBlock summary={artifactSummary} /> : null}
 
           {message.status === "error" ? (
             <div
-              className="rounded-panel bg-accent-rose/[0.08] px-3 py-3 text-sm leading-6 text-content-secondary"
+              className="border-l-2 border-critical/45 bg-critical/[0.05] px-4 py-3 text-sm leading-6 text-ink-secondary"
               data-testid="assistant-error-state"
               role="alert"
             >
-              <div className="mb-1 flex items-center gap-2 font-semibold text-accent-rose">
+              <div className="mb-1 flex items-center gap-2 font-semibold text-critical">
                 <CircleAlert className="size-4 shrink-0" aria-hidden="true" />
                 Response failed
               </div>
@@ -340,11 +354,11 @@ function ThreadMessageRowComponent({
               ) : null}
               {message.status === "streaming" && !contentText && !runActivity ? (
                 <div
-                  className="flex min-h-12 items-center gap-2 text-sm text-content-secondary"
+                  className="flex min-h-12 items-center gap-2 text-sm text-ink-secondary"
                   data-testid="assistant-pending-state"
                   role="status"
                 >
-                  <span className="size-2 animate-pulse rounded-pill bg-accent-cyan" aria-hidden="true" />
+                  <span className="size-2 animate-pulse rounded-full bg-proof" aria-hidden="true" />
                   Working…
                 </div>
               ) : null}
@@ -352,7 +366,7 @@ function ThreadMessageRowComponent({
                 <>
                   <span className="sr-only" role="status">Answer streaming</span>
                   <span
-                    className="ml-1 inline-block h-4 w-1 animate-pulse bg-accent-cyan align-[-2px]"
+                    className="ml-1 inline-block h-4 w-1 animate-pulse bg-proof align-[-2px]"
                     data-testid="streaming-cursor"
                     aria-hidden="true"
                   />
@@ -361,7 +375,7 @@ function ThreadMessageRowComponent({
               {message.status === "cancelled" ? (
                 <div
                   className={[
-                    "flex items-center gap-2 text-xs text-content-muted",
+                    "flex items-center gap-2 text-xs text-ink-muted",
                     contentText && contentText !== "Stopped." ? "mt-3" : ""
                   ].join(" ")}
                   data-testid="assistant-cancelled-state"
@@ -372,7 +386,7 @@ function ThreadMessageRowComponent({
                 </div>
               ) : null}
               {message.status === "complete" && !contentText ? (
-                <p className="text-sm italic text-content-muted" data-testid="assistant-empty-state">
+                <p className="text-sm italic text-ink-muted" data-testid="assistant-empty-state">
                   No answer text was returned.
                 </p>
               ) : null}
@@ -401,11 +415,11 @@ function ThreadMessageRowComponent({
           ) : null}
           {runWarnings.length > 0 ? (
             <aside
-              className="mt-5 rounded-control bg-accent-amber/[0.08] px-3 py-2.5 text-xs leading-5 text-content-secondary"
+              className="mt-5 border-l-2 border-caution/45 bg-caution/[0.05] px-4 py-3 text-xs leading-5 text-ink-secondary"
               data-testid="thread-run-warnings"
               aria-label="Run warnings"
             >
-              <div className="flex items-center gap-2 font-semibold text-accent-amber">
+              <div className="flex items-center gap-2 font-semibold text-caution">
                 <CircleAlert className="size-3.5 shrink-0" aria-hidden="true" />
                 Run {runWarnings.length === 1 ? "warning" : "warnings"}
               </div>
@@ -419,6 +433,7 @@ function ThreadMessageRowComponent({
             </aside>
           ) : null}
         </div>
+        {message.status !== "streaming" ? <RunReceipt receipt={receipt} settled={justCompleted} /> : null}
         <div
           className={actionStripClass}
           data-testid="message-actions"

@@ -164,7 +164,6 @@ function baseProps(): PowerAppShellViewProps {
       },
       composerContextLine: null,
       composerDisabledHint: null,
-      composerSessionKey: "chat:chat-1",
       composerUsageStats: null,
       currentModel: undefined,
       currentParameterControls: {

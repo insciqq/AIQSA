@@ -46,9 +46,12 @@ describe("McpComposerSummary", () => {
     });
 
     render(<McpComposerSummary onOpenSettings={onOpenSettings} />);
-    expect(screen.getByText("1/2 MCP ready · 2 tools")).toBeVisible();
-    expect(screen.getByText("1 need attention")).toBeVisible();
-    fireEvent.click(screen.getByTestId("composer-mcp-summary"));
+    expect(screen.getByText("Tools", { selector: "span" })).toBeVisible();
+    const summary = screen.getByTestId("composer-mcp-summary");
+    expect(summary).toHaveClass("text-ink-secondary", "hover:bg-control-hover");
+    expect(summary).not.toHaveClass("w-full", "mt-2");
+    expect(summary).toHaveAttribute("title", "Tools. 1/2 ready · 2 tools. 1 need attention");
+    fireEvent.click(summary);
     expect(onOpenSettings).toHaveBeenCalledOnce();
   });
 
@@ -73,6 +76,21 @@ describe("McpComposerSummary", () => {
 
     render(<McpComposerSummary onOpenSettings={vi.fn()} />);
 
-    expect(screen.getByText("Tool limit exceeded")).toBeVisible();
+    expect(screen.getByTestId("composer-mcp-summary")).toHaveAttribute(
+      "title",
+      "Tools. 0/1 ready · 0 tools. 1 need attention. Tool limit exceeded"
+    );
+  });
+
+  it("keeps the Tools entry visible before any server is configured", () => {
+    const onOpenSettings = vi.fn();
+    useMcpSettingsStore.setState({ loadState: "ready", servers: [] });
+
+    render(<McpComposerSummary onOpenSettings={onOpenSettings} />);
+
+    expect(screen.getByText("Tools", { selector: "span" })).toBeVisible();
+    expect(screen.getByTestId("composer-mcp-summary")).toHaveAttribute("title", "Tools. Not configured");
+    fireEvent.click(screen.getByTestId("composer-mcp-summary"));
+    expect(onOpenSettings).toHaveBeenCalledOnce();
   });
 });

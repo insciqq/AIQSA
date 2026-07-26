@@ -151,6 +151,27 @@ describe("LeftChatPane", () => {
     expect(screen.queryByText(/fake-qsa/)).not.toBeInTheDocument();
   });
 
+  it("renders a quiet semantic Workspace hierarchy instead of a card dashboard", () => {
+    renderPane({ chatActionId: "chat-1" });
+
+    const pane = screen.getByTestId("left-chat-pane");
+    expect(pane).toHaveClass("bg-workspace-rail", "text-ink", "border-trace-subtle");
+    expect(screen.getByTestId("workspace-identity")).toHaveTextContent("AIQSAWorkspace");
+    expect(screen.getByText("History")).toBeVisible();
+    expect(screen.getByText("1 chat")).toBeVisible();
+
+    const newChat = screen.getByRole("button", { name: "Start new chat" });
+    expect(newChat).toHaveClass("hover:bg-control-hover", "text-ink");
+    expect(newChat).not.toHaveClass("bg-proof");
+    expect(screen.getByTestId("chat-search-control")).toHaveClass("bg-control-surface");
+    expect(screen.getByTestId("chat-row")).toHaveClass("bg-control-selected");
+    expect(screen.getByTestId("active-chat-marker")).toHaveClass("bg-proof");
+    expect(screen.getByRole("dialog", { name: "Actions for Planning" })).toHaveClass(
+      "bg-overlay-surface",
+      "border-trace-subtle"
+    );
+  });
+
   it("keeps chat rows quiet and exposes every action in one menu", () => {
     const onDeleteChat = vi.fn();
     const onMoveChat = vi.fn();
@@ -214,7 +235,7 @@ describe("LeftChatPane", () => {
       "w-11"
     );
     expect(screen.getByText("Research")).toHaveClass("min-w-0", "truncate");
-    expect(screen.getByText("Planning")).toHaveClass("min-w-0", "overflow-hidden", "[-webkit-line-clamp:2]");
+    expect(screen.getByText("Planning")).toHaveClass("min-w-0", "truncate");
 
     fireEvent.click(screen.getByRole("button", { name: "New folder" }));
     expect(screen.getByLabelText("Folder name")).toHaveClass("min-h-touch");
@@ -233,9 +254,9 @@ describe("LeftChatPane", () => {
     expect(screen.getByTestId("chat-search-control")).toHaveClass("h-control");
     expect(screen.getByLabelText("Search chats")).toHaveClass("h-control");
     expect(screen.getByRole("button", { name: "Clear chat search" })).toHaveClass("size-9");
-    expect(screen.getByRole("button", { name: /Collapse folder Research/ })).toHaveClass("min-h-control-sm");
+    expect(screen.getByRole("button", { name: /Collapse folder Research/ })).toHaveClass("min-h-10");
     expect(screen.getByRole("button", { name: "Folder actions Research" })).toHaveClass("size-9");
-    expect(screen.getByRole("button", { name: "Planning" })).toHaveClass("min-h-control-sm");
+    expect(screen.getByRole("button", { name: "Planning" })).toHaveClass("min-h-10");
     expect(screen.getByRole("button", { name: "Chat actions Planning" })).toHaveClass("w-9");
     expect(screen.getByRole("button", { name: "Chat actions Planning" })).not.toHaveClass("min-h-touch");
   });
@@ -276,10 +297,10 @@ describe("LeftChatPane", () => {
       editingFolderName: "Research notes"
     });
 
-    expect(screen.getByLabelText("Edit title Planning")).toHaveClass("h-control-sm");
-    expect(screen.getByRole("button", { name: "Save title Planning" })).toHaveClass("size-8");
-    expect(screen.getByLabelText("Rename folder Research")).toHaveClass("h-control-sm");
-    expect(screen.getByRole("button", { name: "Save folder Research" })).toHaveClass("size-8");
+    expect(screen.getByLabelText("Edit title Planning")).toHaveClass("h-9");
+    expect(screen.getByRole("button", { name: "Save title Planning" })).toHaveClass("size-9");
+    expect(screen.getByLabelText("Rename folder Research")).toHaveClass("h-9");
+    expect(screen.getByRole("button", { name: "Save folder Research" })).toHaveClass("size-9");
   });
 
   it("does not save or cancel inline renames while IME composition owns the key", () => {
@@ -339,7 +360,7 @@ describe("LeftChatPane", () => {
     const chatLabel = screen.getByText(longChatTitle);
     expect(folderLabel).toHaveClass("min-w-0", "truncate");
     expect(folderLabel).toHaveAttribute("title", longFolderName);
-    expect(chatLabel).toHaveClass("min-w-0", "overflow-hidden", "[-webkit-line-clamp:2]");
+    expect(chatLabel).toHaveClass("min-w-0", "truncate");
     expect(screen.getByRole("button", { name: longChatTitle })).toHaveAttribute("title", longChatTitle);
     expect(screen.getByRole("navigation", { name: "Workspace chats and folders" })).toHaveClass(
       "overflow-x-hidden"
@@ -411,7 +432,7 @@ describe("LeftChatPane", () => {
     chatView.unmount();
     renderPane({ chatActionId: "chat-1" });
     for (const name of ["Add to favorites", "Rename", "Share", "Export", "Delete chat"]) {
-      expect(screen.getByRole("button", { name })).toHaveClass("min-h-9");
+      expect(screen.getByRole("button", { name })).toHaveClass("min-h-10");
       expect(screen.getByRole("button", { name })).not.toHaveClass("min-h-touch");
     }
     expect(screen.getByLabelText("Move chat Planning to folder")).toHaveClass("h-control");
@@ -434,6 +455,8 @@ describe("LeftChatPane", () => {
     expect(row).toHaveAttribute("data-active", "true");
     expect(row).toHaveAttribute("data-favorite", "true");
     expect(row).toHaveAttribute("data-unavailable", "true");
+    expect(row).toHaveClass("bg-control-selected");
+    expect(screen.getByTestId("active-chat-marker")).toHaveClass("bg-proof");
     expect(chat).toHaveAttribute("aria-current", "page");
     expect(chat).toHaveAccessibleDescription(/Favorite.*Response running.*Model unavailable for new runs/);
     expect(screen.getByText("Unavailable")).toBeVisible();
@@ -568,6 +591,20 @@ describe("LeftChatPane", () => {
     expect(screen.getByRole("button", { name: "Start new chat" })).toBeEnabled();
     expect(screen.getByRole("textbox", { name: "Search chats" })).toBeEnabled();
     expect(screen.getByText("No chats yet")).toBeVisible();
+  });
+
+  it("keeps initial loading distinct and reserves stable history-row geometry", () => {
+    renderPane({
+      chatGroups: [],
+      folders: [],
+      workspaceLoading: true,
+      workspaceReady: false
+    });
+
+    const loading = screen.getByTestId("workspace-loading-state");
+    expect(loading).toHaveTextContent("Loading workspace");
+    expect(loading.querySelectorAll(".skeleton-block")).toHaveLength(3);
+    expect(screen.queryByTestId("workspace-empty-state")).not.toBeInTheDocument();
   });
 
   it("renders chats without a folder as a flat list without a pseudo-folder heading", () => {

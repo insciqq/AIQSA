@@ -47,6 +47,13 @@ describe("ThreadMessageRow", () => {
     expect(assistant?.firstElementChild).toHaveClass("max-w-reading");
     expect(screen.queryByText("Assistant")).not.toBeInTheDocument();
     expect(screen.getByText("Fake / Fake QSA")).toBeVisible();
+    expect(screen.getByTestId("assistant-message-content")).toHaveClass(
+      "text-[16px]",
+      "text-ink"
+    );
+    expect(screen.getByTestId("run-receipt")).toHaveTextContent(
+      "Run Complete · Fake / Fake QSA"
+    );
 
     const assistantToolbar = screen.getByRole("toolbar", { name: "Assistant message actions" });
     expect(assistantToolbar).toHaveAccessibleDescription("Answer: Answer");
@@ -86,6 +93,9 @@ describe("ThreadMessageRow", () => {
     expect(screen.getByRole("article", { name: "Question" })).toBe(user);
     expect(user?.firstElementChild).toHaveClass("max-w-reading");
     expect(screen.queryByText("User")).not.toBeInTheDocument();
+    expect(screen.getByText("Question").closest("div.rounded-panel")).toHaveClass(
+      "bg-control-surface"
+    );
     const userToolbar = screen.getByRole("toolbar", { name: "User message actions" });
     expect(userToolbar).toHaveClass("min-h-11");
     expect(userToolbar).toHaveAccessibleDescription("Question: Question");
@@ -213,6 +223,7 @@ describe("ThreadMessageRow", () => {
     expect(screen.getByTestId("assistant-pending-state")).toHaveAttribute("role", "status");
     expect(screen.queryByTestId("streaming-cursor")).not.toBeInTheDocument();
     expect(screen.queryByTestId("assistant-empty-state")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("run-receipt")).not.toBeInTheDocument();
   });
 
   it("renders partial streamed markdown with an announced liveness state and caret", () => {
@@ -235,6 +246,7 @@ describe("ThreadMessageRow", () => {
 
     expect(screen.getByText("Partial result")).toBeVisible();
     expect(screen.getByTestId("assistant-cancelled-state")).toHaveTextContent("Response stopped");
+    expect(screen.getByTestId("run-receipt")).toHaveTextContent("Run Stopped");
     expect(screen.queryByTestId("streaming-cursor")).not.toBeInTheDocument();
 
     const error = assistantMessage({ content: "Provider timed out", status: "error" });
@@ -255,6 +267,7 @@ describe("ThreadMessageRow", () => {
     );
     expect(screen.getByRole("alert")).toHaveTextContent("Response failed");
     expect(screen.getByRole("alert")).toHaveTextContent("Provider timed out");
+    expect(screen.getByTestId("run-receipt")).toHaveTextContent("Run Failed");
     expect(screen.queryByTestId("assistant-cancelled-state")).not.toBeInTheDocument();
 
     const empty = assistantMessage({ content: "", status: "complete" });
@@ -274,6 +287,7 @@ describe("ThreadMessageRow", () => {
       />
     );
     expect(screen.getByTestId("assistant-empty-state")).toHaveTextContent("No answer text was returned.");
+    expect(screen.getByTestId("run-receipt")).toHaveTextContent("Run Complete");
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 
@@ -358,6 +372,7 @@ describe("ThreadMessageRow", () => {
     rerender(<ThreadMessageRow {...props} artifactSummary={artifactSummary} showToolActivity={false} />);
     expect(screen.queryByTestId("thread-tool-activity")).not.toBeInTheDocument();
     expect(screen.getByTestId("assistant-message-content")).toHaveTextContent("Answer");
+    expect(screen.getByTestId("run-receipt")).toHaveTextContent("1 tool call");
   });
 
   it("renders attachment chips from structured user message content", () => {

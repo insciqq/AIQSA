@@ -15,14 +15,10 @@ import {
   chooseReasoningEffort,
   chooseSearchStrategy,
   closeRunSetup,
-  closeRunSettings,
-  composerRestingButton,
-  composerRestingControls,
   composerRunSummary,
+  expectRunSummary,
   openRunSetup,
-  openRunSettings,
   reasoningOptionValues,
-  runSettingsButton,
   selectModel
 } from "./shell/composer";
 import { expectComposerBeforeDetails, runAccountMenuAction, themeContrastMetrics } from "./shell/page";
@@ -423,7 +419,7 @@ test("recovers catalog loading while keeping Settings Appearance usable and prom
   await expect(page.getByTestId("composer-disabled-hint")).toContainText(
     "Models unavailable. Retry loading before sending."
   );
-  await expect(page.getByRole("button", { name: "Select model" })).toContainText("Models unavailable");
+  await expectRunSummary(page, { model: "Models unavailable" });
 
   await page.getByRole("button", { name: "Open settings" }).click();
   const settings = page.getByTestId("settings-dialog");
@@ -512,13 +508,13 @@ test("verifies provider controls, prompt preview, Gemini preview, and hidden una
   });
   await signIn(page);
 
-  await page.getByRole("button", { name: "Select model" }).click();
+  let runSetup = await openRunSetup(page);
+  await runSetup.getByRole("button", { name: "Select model" }).click();
   await expect(page.getByTestId("model-picker").getByRole("button", { name: "Provider Fake" })).toHaveCount(0);
   await page.keyboard.press("Escape");
-  let runSettings = await openRunSettings(page);
-  await expect(runSettings.getByRole("button", { name: "Prompt preset" })).toContainText("Helpful Assistant");
-  await expect(runSettings.getByRole("button", { name: "Prompt preset" })).not.toContainText("Transparent QSA");
-  await closeRunSettings(page);
+  await expect(runSetup.getByRole("button", { name: "Prompt preset" })).toContainText("Helpful Assistant");
+  await expect(runSetup.getByRole("button", { name: "Prompt preset" })).not.toContainText("Transparent QSA");
+  await closeRunSetup(page);
   await expect(page.getByTestId("details-pane")).toHaveCount(0);
   await page.getByRole("button", { name: "Open details" }).click();
   await page.getByRole("button", { name: "Pin details" }).click();
@@ -530,59 +526,58 @@ test("verifies provider controls, prompt preview, Gemini preview, and hidden una
   await expect(page.getByRole("tab", { name: "Prompt" })).toHaveCount(0);
 
   await selectModel(page, "openai", "gpt-5.5");
-  runSettings = await openRunSettings(page);
-  await expect(runSettings.getByLabel("Background mode")).toBeVisible();
-  await expect(runSettings.getByRole("button", { name: "Stream response" })).toHaveAttribute(
+  runSetup = await openRunSetup(page);
+  await expect(runSetup.getByLabel("Background mode")).toBeVisible();
+  await expect(runSetup.getByRole("button", { name: "Stream response" })).toHaveAttribute(
     "aria-pressed",
     "false"
   );
-  await expect(runSettings.getByLabel("Max output tokens")).toHaveValue("128000");
-  await expect(runSettings.getByLabel("Temperature")).toHaveValue("1");
-  await expect(runSettings.getByLabel("Temperature")).toBeEnabled();
-  await runSettings.getByLabel("Temperature").fill("");
+  await expect(runSetup.getByLabel("Max output tokens")).toHaveValue("128000");
+  await expect(runSetup.getByLabel("Temperature")).toHaveValue("1");
+  await expect(runSetup.getByLabel("Temperature")).toBeEnabled();
+  await runSetup.getByLabel("Temperature").fill("");
   settingsPatchCount = 0;
-  await runSettings.getByLabel("Temperature").pressSequentially("0.75");
+  await runSetup.getByLabel("Temperature").pressSequentially("0.75");
   await expect.poll(() => settingsPatchCount, { timeout: 1200 }).toBe(1);
   expect(await reasoningOptionValues(page)).toEqual(["none", "minimal", "low", "medium", "high", "xhigh"]);
   expect(await reasoningOptionValues(page)).not.toContain("max");
 
   await selectModel(page, "anthropic", "claude-opus-4-8");
-  runSettings = await openRunSettings(page);
-  await expect(runSettings.getByLabel("Background mode")).toHaveCount(0);
-  await expect(runSettings.getByRole("button", { name: "Stream response" })).toHaveCount(0);
-  await expect(runSettings.getByLabel("Temperature")).toBeDisabled();
+  runSetup = await openRunSetup(page);
+  await expect(runSetup.getByLabel("Background mode")).toHaveCount(0);
+  await expect(runSetup.getByRole("button", { name: "Stream response" })).toHaveCount(0);
+  await expect(runSetup.getByLabel("Temperature")).toBeDisabled();
   expect(await reasoningOptionValues(page)).toEqual(["low", "medium", "high", "xhigh", "max"]);
 
   await selectModel(page, "openrouter", "anthropic/claude-opus-4.8");
-  await expect(page.getByRole("button", { name: "Select model" })).toContainText("Claude Opus 4.8");
-  await expect(page.getByRole("button", { name: "Select model" })).toHaveAttribute(
+  await expectRunSummary(page, { model: "Claude Opus 4.8" });
+  runSetup = await openRunSetup(page);
+  await expect(runSetup.getByRole("button", { name: "Select model" })).toHaveAttribute(
     "title",
     "OpenRouter / Claude Opus 4.8"
   );
-  await expect(page.getByRole("button", { name: "Select model" })).not.toContainText("via OpenRouter");
-  runSettings = await openRunSettings(page);
-  await expect(runSettings.getByLabel("Background mode")).toHaveCount(0);
-  await expect(runSettings.getByRole("button", { name: "Stream response" })).toHaveAttribute("aria-pressed", "true");
-  await expect(runSettings.getByLabel("Temperature")).toBeDisabled();
+  await expect(runSetup.getByRole("button", { name: "Select model" })).not.toContainText("via OpenRouter");
+  await expect(runSetup.getByLabel("Background mode")).toHaveCount(0);
+  await expect(runSetup.getByRole("button", { name: "Stream response" })).toHaveAttribute("aria-pressed", "true");
+  await expect(runSetup.getByLabel("Temperature")).toBeDisabled();
   expect(await reasoningOptionValues(page)).toEqual(["low", "medium", "high", "xhigh", "max"]);
 
   await selectModel(page, "openrouter", "google/gemini-3.5-flash");
-  runSettings = await openRunSettings(page);
-  await expect(runSettings.getByLabel("Background mode")).toHaveCount(0);
-  await expect(runSettings.getByLabel("Max output tokens")).toHaveValue("65536");
-  await expect(runSettings.getByLabel("Temperature")).toHaveValue("1");
-  await expect(runSettings.getByLabel("Temperature")).toBeEnabled();
+  runSetup = await openRunSetup(page);
+  await expect(runSetup.getByLabel("Background mode")).toHaveCount(0);
+  await expect(runSetup.getByLabel("Max output tokens")).toHaveValue("65536");
+  await expect(runSetup.getByLabel("Temperature")).toHaveValue("1");
+  await expect(runSetup.getByLabel("Temperature")).toBeEnabled();
   expect(await reasoningOptionValues(page)).toEqual(["none", "minimal", "low", "medium", "high"]);
   expect(await reasoningOptionValues(page)).not.toContain("xhigh");
   expect(await reasoningOptionValues(page)).not.toContain("max");
-  await expect(composerRestingControls(page).getByRole("button", { name: "Reasoning effort" })).toContainText(
-    "Medium"
-  );
+  await expectRunSummary(page, { reasoning: "Standard · Medium" });
 
   await selectModel(page, "openrouter", "~google/gemini-pro-latest");
-  await expect(page.getByRole("button", { name: "Select model" })).toContainText("Gemini Pro Latest");
+  await expectRunSummary(page, { model: "Gemini Pro Latest" });
 
-  await page.getByRole("button", { name: "Select model" }).click();
+  runSetup = await openRunSetup(page);
+  await runSetup.getByRole("button", { name: "Select model" }).click();
   const modelPicker = page.getByTestId("model-picker");
   const anthropicProviderHeader = modelPicker.locator("header").filter({
     has: page.getByRole("heading", { name: "Anthropic" })
@@ -596,7 +591,8 @@ test("verifies provider controls, prompt preview, Gemini preview, and hidden una
   await expect(openRouterProviderHeader.getByText("Provider", { exact: true })).toBeVisible();
   await expect(modelPicker.getByRole("button", { name: /Provider / })).toHaveCount(0);
   await page.keyboard.press("Escape");
-  await expect(page.getByRole("button", { name: "Select model" })).toContainText("Gemini Pro Latest");
+  await closeRunSetup(page);
+  await expectRunSummary(page, { model: "Gemini Pro Latest" });
 });
 
 test("keeps searchable pickers and command palette keyboard-safe in the narrow sheet layout", async ({ page }) => {
@@ -606,8 +602,12 @@ test("keeps searchable pickers and command palette keyboard-safe in the narrow s
 
   const runSummary = composerRunSummary(page);
   await expect(runSummary).toBeVisible();
-  await expect(runSummary).toContainText("Search:");
-  await expect(page.getByRole("button", { name: "Select model" })).toBeHidden();
+  await expectRunSummary(page, {
+    model: "GPT-5.5",
+    profile: "Custom",
+    reasoning: "Standard · Medium",
+    search: "Off"
+  });
   const runSetup = await openRunSetup(page);
   await expectWithinViewport(page, runSetup);
   await page.keyboard.press("Control+K");
@@ -624,7 +624,7 @@ test("keeps searchable pickers and command palette keyboard-safe in the narrow s
   await expect(modelPicker.getByRole("button", { name: "Close model picker" })).toHaveCount(0);
   const providerHeaders = modelPicker.locator("header");
   await expect(providerHeaders.first().getByText("Provider", { exact: true })).toBeVisible();
-  await expect(providerHeaders.first()).toHaveClass(/bg-surface-raised/);
+  await expect(providerHeaders.first()).toHaveClass(/bg-control-surface/);
   await modelSearch.press("End");
   await modelSearch.press("Tab");
   await expect(modelPicker.locator("button:focus")).toContainText("Gemini Pro Latest");
@@ -874,7 +874,7 @@ test("keeps Settings prompt and Appearance workflows safe in the narrow sheet la
   await expectNoHorizontalOverflow(page);
 });
 
-test("keeps the resting composer and Run settings inventory inside the thread column", async ({ page }) => {
+test("keeps one resting Run summary and one complete setup inside the thread workflow", async ({ page }) => {
   await page.setViewportSize({ height: 900, width: 1440 });
   await installMatrixCatalogFixture(page);
   await signIn(page);
@@ -907,39 +907,31 @@ test("keeps the resting composer and Run settings inventory inside the thread co
   await expect(page.getByTestId("shell-primary-content")).not.toHaveAttribute("inert");
   await expectComposerBeforeDetails(page);
 
-  const restingControls = composerRestingControls(page);
-  await expect(restingControls.getByRole("button", { name: "Select model" })).toBeVisible();
-  await expect(restingControls.locator("#search-select-current-value")).toHaveText("Off");
-  await expect(restingControls.getByRole("button", { name: "Run settings" })).toHaveAttribute(
-    "aria-expanded",
-    "false"
-  );
-  await expect(restingControls.getByRole("button", { name: "Prompt preset" })).toHaveCount(0);
-  await expect(restingControls.getByRole("button", { name: "Reasoning effort" })).toBeVisible();
-  await expect(restingControls.getByLabel("Temperature")).toHaveCount(0);
-
-  const runSettings = await openRunSettings(page);
-  await expect(runSettings.getByRole("button", { name: "Search strategy" })).toHaveCount(0);
-  await expect(runSettings.getByRole("button", { name: "Prompt preset" })).toBeVisible();
-  await expect(runSettings.getByRole("button", { name: "Manage prompts" })).toBeVisible();
-  await expect(runSettings.getByRole("button", { name: "Reasoning effort" })).toHaveCount(0);
-  await expect(runSettings.getByLabel("Temperature")).toBeVisible();
-  await expect(runSettings.getByLabel("Max output tokens")).toBeVisible();
-  await expect(runSettings.getByRole("button", { name: "Background mode" })).toBeVisible();
-  await expect(runSettings.getByRole("button", { name: "Stream response" })).toBeVisible();
-  await expect(runSettings.getByRole("button", { name: /^(Hide|Show) citations$/ })).toBeVisible();
-  await expect(runSettings.getByRole("button", { name: /^(Hide|Show) reasoning blocks$/ })).toBeVisible();
-  await expect(runSettings.getByRole("button", { name: /^(Enable|Mute) answer sound$/ })).toBeVisible();
-  const settingsMenuBox = await runSettings.boundingBox();
+  const runSummary = composerRunSummary(page);
+  await expectRunSummary(page, { model: "GPT-5.5", search: "Off" });
+  await expect(runSummary).toHaveAttribute("aria-expanded", "false");
+  const runSummaryBox = await runSummary.boundingBox();
   const detailedDetailsBox = await page.getByTestId("details-pane").boundingBox();
-  expect(settingsMenuBox).toBeTruthy();
+  expect(runSummaryBox).toBeTruthy();
   expect(detailedDetailsBox).toBeTruthy();
-  expect(settingsMenuBox!.x + settingsMenuBox!.width).toBeLessThanOrEqual(detailedDetailsBox!.x + 1);
-  await closeRunSettings(page);
-  await expect(restingControls.getByRole("button", { name: "Run settings" })).toHaveAttribute(
-    "aria-expanded",
-    "false"
-  );
+  expect(runSummaryBox!.x + runSummaryBox!.width).toBeLessThanOrEqual(detailedDetailsBox!.x + 1);
+
+  let runSetup = await openRunSetup(page);
+  await expectWithinViewport(page, runSetup);
+  await expect(runSetup.getByRole("button", { name: "Select model" })).toBeVisible();
+  await expect(runSetup.getByRole("button", { name: "Search strategy" })).toBeVisible();
+  await expect(runSetup.getByRole("button", { name: "Prompt preset" })).toBeVisible();
+  await expect(runSetup.getByRole("button", { name: "Manage prompts" })).toBeVisible();
+  await expect(runSetup.getByRole("button", { name: "Reasoning effort" })).toBeVisible();
+  await expect(runSetup.getByLabel("Temperature")).toBeVisible();
+  await expect(runSetup.getByLabel("Max output tokens")).toBeVisible();
+  await expect(runSetup.getByRole("button", { name: "Background mode" })).toBeVisible();
+  await expect(runSetup.getByRole("button", { name: "Stream response" })).toBeVisible();
+  await expect(runSetup.getByRole("button", { name: /^(Hide|Show) citations$/ })).toBeVisible();
+  await expect(runSetup.getByRole("button", { name: /^(Hide|Show) reasoning blocks$/ })).toBeVisible();
+  await expect(runSetup.getByRole("button", { name: /^(Enable|Mute) answer sound$/ })).toBeVisible();
+  await closeRunSetup(page);
+  await expect(runSummary).toHaveAttribute("aria-expanded", "false");
 
   await page.setViewportSize({ height: 720, width: 1280 });
   await expect(details).toHaveAttribute("data-presentation", "overlay");
@@ -953,11 +945,11 @@ test("keeps the resting composer and Run settings inventory inside the thread co
   expect(composerBox!.x + composerBox!.width).toBeLessThanOrEqual(1280);
   await expectNoHorizontalOverflow(page);
 
-  const contextualSettings = await openRunSettings(page);
-  await expect(contextualSettings.getByLabel("Temperature")).toBeVisible();
-  await expect(contextualSettings.getByLabel("Max output tokens")).toBeVisible();
-  await expect(contextualSettings.getByRole("button", { name: "Open API params in Details" })).toHaveCount(0);
-  await closeRunSettings(page);
+  runSetup = await openRunSetup(page);
+  await expect(runSetup.getByLabel("Temperature")).toBeVisible();
+  await expect(runSetup.getByLabel("Max output tokens")).toBeVisible();
+  await expect(runSetup.getByRole("button", { name: "Open API params in Details" })).toHaveCount(0);
+  await closeRunSetup(page);
   await page.getByRole("button", { name: "Open details" }).click();
   details = page.getByTestId("details-pane");
   await expect(details).toHaveAttribute("data-presentation", "overlay");
@@ -1071,25 +1063,29 @@ test("restores per-model search and reasoning drafts across model switches and r
 
   await chooseSearchStrategy(page, "Perplexity tool");
   await chooseReasoningEffort(page, "high");
-  await expect(composerRestingButton(page, "Search strategy")).toContainText("Perplexity");
-  await expect(composerRestingButton(page, "Reasoning effort")).toContainText("High");
+  await expectRunSummary(page, { reasoning: "Standard · High", search: "Perplexity tool" });
 
   await selectModel(page, "openrouter", "google/gemini-3.5-flash");
   await chooseSearchStrategy(page, "No Search");
   await chooseReasoningEffort(page, "minimal");
-  await expect(composerRestingButton(page, "Search strategy")).toContainText("Off");
-  await expect(composerRestingButton(page, "Reasoning effort")).toContainText("Minimal");
+  await expectRunSummary(page, { reasoning: "Standard · Minimal", search: "Off" });
 
   await selectModel(page, "openai", "gpt-5.5");
-  await expect(composerRestingButton(page, "Search strategy")).toContainText("Perplexity");
-  await expect(composerRestingButton(page, "Reasoning effort")).toContainText("High");
+  await expectRunSummary(page, { reasoning: "Standard · High", search: "Perplexity tool" });
 
   await page.reload();
   await expect(page.getByTestId("app-shell")).toBeVisible();
-  await expect(page.getByRole("button", { name: "Select model" })).toContainText("GPT-5.5");
-  await expect(page.getByRole("button", { name: "Select model" })).toHaveAttribute("title", "OpenAI / GPT-5.5");
-  await expect(composerRestingButton(page, "Search strategy")).toContainText("Perplexity");
-  await expect(composerRestingButton(page, "Reasoning effort")).toContainText("High");
+  await expectRunSummary(page, {
+    model: "GPT-5.5",
+    reasoning: "Standard · High",
+    search: "Perplexity tool"
+  });
+  const runSetup = await openRunSetup(page);
+  await expect(runSetup.getByRole("button", { name: "Select model" })).toHaveAttribute(
+    "title",
+    "OpenAI / GPT-5.5"
+  );
+  await closeRunSetup(page);
 });
 
 test("saves selected search as a user per-model draft without requiring a global search default", async ({ page }) => {
@@ -1199,7 +1195,7 @@ test("saves selected search as a user per-model draft without requiring a global
   });
 
   await signIn(page);
-  await expect(page.getByRole("button", { name: "Select model" })).toContainText("Claude Opus 4.8");
+  await expectRunSummary(page, { model: "Claude Opus 4.8" });
   await chooseSearchStrategy(page, "Perplexity tool");
   await expect.poll(() => settingsBodies.length).toBe(1);
   expect(settingsBodies[0]?.defaultSearchStrategyId).toBeUndefined();
@@ -1213,7 +1209,7 @@ test("saves selected search as a user per-model draft without requiring a global
 
   await page.reload();
   await expect(page.getByTestId("app-shell")).toBeVisible({ timeout: 15_000 });
-  await expect(page.locator("#search-select-current-value")).toHaveText("Perplexity");
+  await expectRunSummary(page, { search: "Perplexity tool" });
 });
 
 test("sends GPT-5.6 Pro/max controls and keeps selected search after an immediate reload", async ({
@@ -1336,34 +1332,31 @@ test("sends GPT-5.6 Pro/max controls and keeps selected search after an immediat
   });
 
   await signIn(page);
-  await expect(page.getByRole("button", { name: "Select model" })).toBeEnabled();
+  await expect(composerRunSummary(page)).toBeEnabled();
   await selectModel(page, "openai", "gpt-5.6-sol");
   await chooseReasoningEffort(page, "max");
-  const runSettings = await openRunSettings(page);
-  await runSettings.getByLabel("Reasoning mode").selectOption("pro");
-  await closeRunSettings(page);
-  const modelValue = page.locator("#composer-model-current-value");
-  const reasoningValue = page.locator("#composer-reasoning-effort-current-value");
-  const modelButton = page.getByRole("button", { name: "Select model" });
-  const reasoningButton = composerRestingButton(page, "Reasoning effort");
-  const searchButton = composerRestingButton(page, "Search strategy");
-  const settingsButton = page.getByRole("button", { name: "Run settings" });
-  await expect(modelValue).toHaveText("GPT-5.6 Sol");
-  await expect(modelButton).toHaveAttribute("title", "OpenAI / GPT-5.6 Sol");
-  await expect(modelButton).toHaveAccessibleDescription("OpenAI / GPT-5.6 Sol");
-  await expect(reasoningButton).toContainText("Reasoning");
-  await expect(reasoningValue).toHaveText("Pro · Max");
-  await expect(reasoningButton).toHaveAttribute("title", "Pro mode, Maximum effort");
-  await expect(reasoningButton).toHaveAccessibleDescription("Pro mode, Maximum effort");
+  let runSetup = await openRunSetup(page);
+  await runSetup.getByLabel("Reasoning mode").selectOption("pro");
+  await expect(runSetup.getByRole("button", { name: "Select model" })).toHaveAttribute(
+    "title",
+    "OpenAI / GPT-5.6 Sol"
+  );
+  await expect(runSetup.getByRole("button", { name: "Reasoning effort" })).toHaveAttribute(
+    "title",
+    "Pro mode, Maximum effort"
+  );
+  await closeRunSetup(page);
+  await expectRunSummary(page, {
+    model: "GPT-5.6 Sol",
+    profile: "Deep",
+    reasoning: "Pro · Maximum",
+    search: "Off"
+  });
+  const modelValue = page.getByTestId("run-model-summary");
+  const reasoningValue = page.getByTestId("run-reasoning-summary");
   for (const value of [modelValue, reasoningValue]) {
     await expect.poll(() => value.evaluate((element) => element.scrollWidth <= element.clientWidth + 1)).toBe(true);
   }
-  const controlTops = await Promise.all(
-    [modelButton, reasoningButton, searchButton, settingsButton].map((control) =>
-      control.evaluate((element) => Math.round(element.getBoundingClientRect().top))
-    )
-  );
-  expect(Math.max(...controlTops) - Math.min(...controlTops)).toBeLessThanOrEqual(1);
   await page.setViewportSize({ height: 390, width: 844 });
   const shortRunSetup = await openRunSetup(page);
   await expectWithinViewport(page, shortRunSetup);
@@ -1371,8 +1364,12 @@ test("sends GPT-5.6 Pro/max controls and keeps selected search after an immediat
   await closeRunSetup(page);
   await page.setViewportSize({ height: 720, width: 1176 });
   await chooseSearchStrategy(page, "Perplexity tool");
-  await expect(page.locator("#search-select-current-value")).toHaveText("Perplexity");
-  await expect(searchButton).toHaveAccessibleDescription("Perplexity tool");
+  await expectRunSummary(page, { search: "Perplexity tool" });
+  runSetup = await openRunSetup(page);
+  await expect(runSetup.getByRole("button", { name: "Search strategy" })).toHaveAccessibleDescription(
+    "Perplexity tool"
+  );
+  await closeRunSetup(page);
   await page.getByRole("textbox", { name: "Message" }).fill("Search should survive reload");
   await page.getByRole("textbox", { name: "Message" }).press("Enter");
 
@@ -1399,7 +1396,7 @@ test("sends GPT-5.6 Pro/max controls and keeps selected search after an immediat
 
   await page.reload();
   await expect(page.getByTestId("app-shell")).toBeVisible({ timeout: 15_000 });
-  await expect(page.locator("#search-select-current-value")).toHaveText("Perplexity");
+  await expectRunSummary(page, { search: "Perplexity tool" });
 });
 
 test("loads catalog before activating a stored chat and avoids hydration warnings", async ({ page }) => {
@@ -1503,11 +1500,13 @@ test("loads catalog before activating a stored chat and avoids hydration warning
   releaseCatalog();
   await signInStarted;
   await expect(page.getByTestId("thread")).toContainText("Bootstrap answer");
-  await expect(page.getByRole("button", { name: "Select model" })).toContainText("Claude Opus 4.8");
-  await expect(page.getByRole("button", { name: "Select model" })).toHaveAttribute(
+  await expectRunSummary(page, { model: "Claude Opus 4.8" });
+  const runSetup = await openRunSetup(page);
+  await expect(runSetup.getByRole("button", { name: "Select model" })).toHaveAttribute(
     "title",
     "Anthropic / Claude Opus 4.8"
   );
+  await closeRunSetup(page);
   expect(consoleErrors.filter((text) => /hydration|did not match/i.test(text))).toEqual([]);
 });
 
@@ -2341,8 +2340,7 @@ test("keeps delayed chat_update scoped to its source chat after switching chats"
   await page.getByRole("button", { exact: true, name: "Chat B steady" }).click();
   await expect(page.getByTestId("current-chat-title")).toHaveText("Chat B steady");
   await expect(page.getByTestId("thread")).toContainText("Old B answer");
-  await expect(page.getByRole("button", { name: "Select model" })).toBeEnabled();
-  await expect(composerRestingButton(page, "Search strategy")).toBeEnabled();
+  await expect(composerRunSummary(page)).toBeEnabled();
   await expect(page.getByRole("textbox", { name: "Message" })).toBeEnabled();
   await page.getByRole("textbox", { name: "Message" }).fill("Draft while A finishes");
   await expect(page.getByTestId("composer-disabled-hint")).toHaveCount(0);
@@ -2544,15 +2542,14 @@ test("shows a retryable in-thread error state when chat detail loading fails", a
   await expect(page.getByTestId("composer-disabled-hint")).toContainText(
     "Conversation unavailable. Retry loading before sending."
   );
-  await expect(page.getByRole("button", { name: "Select model" })).toBeDisabled();
-  await expect(page.getByRole("button", { name: "Search strategy" })).toBeDisabled();
-  await expect(page.getByRole("button", { name: "Run settings" })).toBeDisabled();
+  await expect(composerRunSummary(page)).toBeDisabled();
+  await expect(page.getByRole("dialog", { name: "Run setup" })).toHaveCount(0);
 
   await page.getByRole("button", { name: "Retry loading chat" }).click();
   await expect(page.getByTestId("thread")).toContainText("Recovered detail answer");
   await expect(page.getByTestId("thread-detail-error")).toHaveCount(0);
   await expect(page.getByRole("textbox", { name: "Message" })).toBeEnabled();
-  await expect(page.getByRole("button", { name: "Select model" })).toBeEnabled();
+  await expect(composerRunSummary(page)).toBeEnabled();
 });
 
 test("recovers a background run after reload and renders search/reasoning thread blocks", async ({ page }) => {
@@ -2704,17 +2701,17 @@ test("recovers a background run after reload and renders search/reasoning thread
   await expect(page.getByTestId("thread-search-summary")).toContainText("1 search call");
   await page.getByTestId("thread-citations-block").getByRole("button", { name: /Citations 1/ }).click();
   await expect(page.getByTestId("thread-citations-block")).toContainText("Recovered source");
-  const runSettings = await openRunSettings(page);
-  await runSettings.getByRole("button", { name: "Hide citations" }).click();
+  let runSetup = await openRunSetup(page);
+  await runSetup.getByRole("button", { name: "Hide citations" }).click();
   await expect(page.getByTestId("thread-citations-block")).toHaveCount(0);
-  await runSettings.getByRole("button", { name: "Show citations" }).click();
-  await closeRunSettings(page);
+  await runSetup.getByRole("button", { name: "Show citations" }).click();
+  await closeRunSetup(page);
   await page.getByTestId("thread-citations-block").getByRole("button", { name: /Citations 1/ }).click();
   await expect(page.getByTestId("thread-citations-block")).toContainText("Recovered source");
   await expect(page.getByTestId("thread-reasoning-block")).toHaveCount(0);
-  const reasoningSettings = await openRunSettings(page);
-  await reasoningSettings.getByRole("button", { name: "Show reasoning blocks" }).click();
-  await closeRunSettings(page);
+  runSetup = await openRunSetup(page);
+  await runSetup.getByRole("button", { name: "Show reasoning blocks" }).click();
+  await closeRunSetup(page);
   await page.getByTestId("thread-reasoning-block").getByRole("button", { name: /Reasoning 1/ }).click();
   await expect(page.getByTestId("thread-reasoning-block")).toContainText("Recovered reasoning summary");
 });
@@ -2803,20 +2800,20 @@ test("shows tool activity by default and persists hide/show across reload", asyn
   await activity.getByRole("button", { name: /Used 1 tool/ }).click();
   await expect(page.getByTestId("thread-tool-activity-details")).toContainText("Mem0 / search");
 
-  let settings = await openRunSettings(page);
-  await settings.getByRole("button", { name: "Hide tool activity" }).click();
+  let runSetup = await openRunSetup(page);
+  await runSetup.getByRole("button", { name: "Hide tool activity" }).click();
   await expect.poll(() => settingsPatches).toBe(1);
-  await closeRunSettings(page);
+  await closeRunSetup(page);
   await expect(activity).toHaveCount(0);
 
   await page.reload();
   await expect(page.getByTestId("app-shell")).toBeVisible();
   await expect(page.getByTestId("thread-tool-activity")).toHaveCount(0);
 
-  settings = await openRunSettings(page);
-  await settings.getByRole("button", { name: "Show tool activity" }).click();
+  runSetup = await openRunSetup(page);
+  await runSetup.getByRole("button", { name: "Show tool activity" }).click();
   await expect.poll(() => settingsPatches).toBe(2);
-  await closeRunSettings(page);
+  await closeRunSetup(page);
   await expect(page.getByTestId("thread-tool-activity")).toBeVisible();
 
   await page.reload();
@@ -2859,9 +2856,13 @@ test("supports the default QSA chat and folder workflow", async ({ browser, page
   await expect(page.getByTestId("left-chat-pane")).toBeVisible();
   await expect(page.getByTestId("main-thread-pane")).toBeVisible();
   await expect(page.getByTestId("details-pane")).toHaveCount(0);
-  const resetModelButton = page.getByRole("button", { name: "Select model" });
-  await expect(resetModelButton).toContainText(resetModelLabel.split(" / ").at(-1) ?? resetModelLabel);
-  await expect(resetModelButton).toHaveAttribute("title", resetModelLabel);
+  await expectRunSummary(page, { model: resetModelLabel.split(" / ").at(-1) ?? resetModelLabel });
+  let runSetup = await openRunSetup(page);
+  await expect(runSetup.getByRole("button", { name: "Select model" })).toHaveAttribute(
+    "title",
+    resetModelLabel
+  );
+  await closeRunSetup(page);
   await expect(page.getByTestId("current-chat-title")).toHaveText("New chat");
   await expect(page.getByTestId("thread")).not.toContainText("Compare native web search");
 
@@ -2891,11 +2892,11 @@ test("supports the default QSA chat and folder workflow", async ({ browser, page
   await expect(page.getByLabel("Chat folder")).toHaveCount(0);
 
   await selectModel(page, "fake", "Fake QSA", resetModelLabel.split(" / ").at(0) ?? "Fake QSA");
-  await expect(page.getByRole("button", { name: "Select model" })).toContainText("Fake QSA");
+  await expectRunSummary(page, { model: "Fake QSA" });
   await expect(page.getByLabel("Developer prompt")).toHaveCount(0);
-  const initialRunSettings = await openRunSettings(page);
-  await initialRunSettings.getByLabel("Temperature").fill("0.1");
-  await closeRunSettings(page);
+  runSetup = await openRunSetup(page);
+  await runSetup.getByLabel("Temperature").fill("0.1");
+  await closeRunSetup(page);
 
   let activeChatDetailFetches = 0;
   page.on("request", (request) => {
@@ -2963,10 +2964,11 @@ test("supports the default QSA chat and folder workflow", async ({ browser, page
   await expect(page.getByRole("tab", { name: "Response" })).toHaveCount(0);
   await expect(page.getByRole("tab", { name: "Usage" })).toHaveCount(0);
   await expect(page.getByRole("tab", { name: "Prompt" })).toHaveCount(0);
-  await expect(page.getByTestId("current-context-length")).toHaveAccessibleName(/Approx\. input:/);
-  await expect(page.getByTestId("composer-usage-line")).toContainText("/ 7.4k safe input · 8.2k total context");
+  await expect(page.getByTestId("token-stats-button")).toBeVisible();
   await expect(page.getByTestId("composer-usage-line")).not.toContainText("cost");
   await page.getByTestId("token-stats-button").click();
+  await expect(page.getByTestId("token-stats-popover")).toContainText("Current context");
+  await expect(page.getByTestId("token-stats-popover")).toContainText("/ 7.4k safe input · 8.2k total context");
   await expect(page.getByTestId("token-stats-popover")).toContainText("Total messages");
   await expect(page.getByTestId("token-stats-popover")).toContainText("Provider-reported tokens");
   await expect(page.getByTestId("token-stats-popover")).toContainText("Total tokens cached");
@@ -2987,7 +2989,6 @@ test("supports the default QSA chat and folder workflow", async ({ browser, page
   await page.reload();
   details = page.getByTestId("details-pane");
   await expect(details).toHaveAttribute("data-presentation", "pinned");
-  await expect(page.getByTestId("current-context-length")).toHaveAccessibleName(/Approx\. input:/);
   await page.getByTestId("token-stats-button").click();
   await expect(page.getByTestId("token-stats-popover")).toContainText("Provider-reported tokens");
   await page.keyboard.press("Escape");
@@ -3165,8 +3166,9 @@ test("manages prompt presets and left-pane folders", async ({ page }) => {
   await expect(page.getByTestId("shell-notice")).toContainText(`Default prompt: ${promptName}`);
   await page.getByRole("button", { name: `Use prompt ${promptName} for next run` }).click();
   await page.getByRole("button", { name: "Close settings" }).click();
-  await expect(await runSettingsButton(page, "Prompt preset")).toContainText(promptName);
-  await closeRunSettings(page);
+  const runSetup = await openRunSetup(page);
+  await expect(runSetup.getByRole("button", { name: "Prompt preset" })).toContainText(promptName);
+  await closeRunSetup(page);
 
   await page.getByRole("button", { name: "Open settings" }).click();
   await expect(page.getByRole("dialog", { name: "Settings" })).toBeVisible();
@@ -3205,7 +3207,6 @@ for (const viewport of responsiveTouchViewports) {
         }
       });
       const chatId = `responsive-touch-${viewport.label}`;
-      const compactComposer = viewport.width < 640 || viewport.height <= 512;
       const title = `A deliberately long ${viewport.label} conversation title that preserves every top-bar action`;
       const artifactSummary = {
         citationCount: 1,
@@ -3371,17 +3372,8 @@ for (const viewport of responsiveTouchViewports) {
       await signIn(page);
       const currentChatTitle = page.getByTestId("current-chat-title");
       await expect(currentChatTitle).toHaveAttribute("title", title);
-      await expect
-        .poll(() =>
-          currentChatTitle.evaluate((element) => {
-            const style = getComputedStyle(element);
-            return style.position === "absolute"
-              && style.width === "1px"
-              && style.height === "1px"
-              && style.overflow === "hidden";
-          })
-        )
-        .toBe(true);
+      await expect(currentChatTitle).toBeVisible();
+      await expectWithinViewport(page, currentChatTitle);
       await expect(page.getByRole("toolbar", { name: "Chat actions" })).toBeHidden();
       const viewportMeta = page.locator('meta[name="viewport"]');
       await expect(viewportMeta).toHaveAttribute("content", /viewport-fit=cover/);
@@ -3393,8 +3385,6 @@ for (const viewport of responsiveTouchViewports) {
       for (const name of [
         "Open workspace",
         "Start new chat",
-        "Copy thread",
-        "Branch tree",
         "Share anonymously",
         "Open details",
         "Account menu"
@@ -3408,6 +3398,16 @@ for (const viewport of responsiveTouchViewports) {
         await expectTouchSafe(action);
         await expectWithinViewport(page, action);
       }
+      const conversationActionsTrigger = page.getByRole("button", { name: "Conversation actions" });
+      await expectTouchSafe(conversationActionsTrigger);
+      await conversationActionsTrigger.click();
+      const conversationActionsMenu = page.getByRole("menu", { name: "Conversation actions" });
+      for (const name of ["Copy thread", "Branch tree"]) {
+        const action = conversationActionsMenu.getByRole("menuitem", { name });
+        await expectTouchSafe(action);
+        await expectWithinViewport(page, action);
+      }
+      await page.keyboard.press("Escape");
       if (viewport.label === "landscape") {
         await page.getByRole("button", { name: "Share anonymously" }).click();
         await expect(page.getByTestId("persistent-notice-region")).toContainText(/Share link (copied|created)/);
@@ -3440,157 +3440,66 @@ for (const viewport of responsiveTouchViewports) {
       await expect.poll(() => composer.evaluate((element) => getComputedStyle(element).fontSize)).toBe("16px");
       await expect(composer).toHaveAccessibleName("Message");
       await expect(messageLabel).toHaveText("Message");
-      if (compactComposer) {
-        await expect(page.getByTestId("composer-form")).not.toHaveAttribute(
-          "data-reading-collapsed"
-        );
-        await expect
-          .poll(() =>
-            messageLabel.evaluate((element) => {
-              const style = getComputedStyle(element);
-              return style.position === "absolute"
-                && style.width === "1px"
-                && style.height === "1px"
-                && style.overflow === "hidden";
-            })
-          )
-          .toBe(true);
-        const [messageFieldBox, composerInputBox] = await Promise.all([
-          page.getByTestId("composer-message-field").boundingBox(),
-          composer.boundingBox()
-        ]);
-        expect(messageFieldBox).toBeTruthy();
-        expect(composerInputBox).toBeTruthy();
-        expect(composerInputBox!.x - messageFieldBox!.x).toBeLessThanOrEqual(16);
-        expect(messageFieldBox!.x + messageFieldBox!.width - composerInputBox!.x - composerInputBox!.width).toBeLessThanOrEqual(16);
-        const summary = composerRunSummary(page);
-        await expect(summary).toBeVisible();
-        await expect(summary).toContainText("Custom");
-        await expect(page.getByTestId("run-reasoning-summary")).toContainText("Medium");
-        await expect(page.getByTestId("run-search-summary")).toContainText("Search: Off");
-        await expectTouchSafe(summary);
-        await expectWithinViewport(page, summary);
-        const compactProfiles = page.getByTestId("composer-compact-run-profiles");
-        await expect(compactProfiles).toBeVisible();
-        const compactProfileViewport = compactProfiles.locator("..");
-        await expect
-          .poll(() =>
-            compactProfileViewport.evaluate(
-              (element) => element.scrollWidth <= element.clientWidth
-            )
-          )
-          .toBe(true);
-        for (const name of ["Use Fast run profile", "Use Balanced run profile", "Use Deep run profile"]) {
-          const profile = compactProfiles.getByRole("button", { name });
-          await expect(profile).toBeVisible();
-          await expectTouchSafe(profile);
-        }
-        await compactProfiles.getByRole("button", { name: "Use Deep run profile" }).click();
-        await expect(compactProfiles.getByRole("button", { name: "Use Deep run profile" })).toHaveAttribute(
-          "aria-pressed",
-          "true"
-        );
-        await expect(summary).toContainText("Deep");
-        await expect(page.getByTestId("current-context-length")).toBeHidden();
-        await page.getByTestId("token-stats-button").click();
-        const contextStats = page.getByTestId("token-stats-popover");
-        await expect(contextStats).toContainText("Current context");
-        await expect(contextStats).toContainText("safe input");
-        await expect(contextStats).toContainText("total context");
-        await contextStats.getByRole("button", { name: "Close context and usage statistics" }).click();
-        for (const name of ["Select model", "Search strategy", "Run settings"]) {
-          await expect(page.getByRole("button", { name })).toBeHidden();
-        }
-        const composerBox = await page.getByTestId("composer-drop-zone").boundingBox();
-        expect(composerBox).toBeTruthy();
-        expect(composerBox!.height).toBeLessThanOrEqual(240);
+      await expect(messageLabel).toBeVisible();
+      const summary = composerRunSummary(page);
+      await expect(summary).toBeVisible();
+      await expectRunSummary(page, {
+        model: "GPT-5.5",
+        profile: "Custom",
+        reasoning: "Standard · Medium",
+        search: "Off"
+      });
+      await expectTouchSafe(summary);
+      await expectWithinViewport(page, summary);
 
-        const readingThread = page.getByTestId("thread");
-        await readingThread.evaluate((element) => {
-          element.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: 64 }));
-          const maxScrollTop = Math.max(0, element.scrollHeight - element.clientHeight);
-          const start = Math.max(0, Math.min(element.scrollTop, maxScrollTop - 80));
-          element.scrollTop = start;
-          element.dispatchEvent(new Event("scroll"));
-          element.scrollTop = Math.min(maxScrollTop, start + 64);
-          element.dispatchEvent(new Event("scroll"));
-        });
-        await expect(page.getByTestId("composer-form")).toHaveAttribute(
-          "data-reading-collapsed",
-          "true"
-        );
-        for (const disclosure of [
-          page.getByTestId("composer-controls-disclosure"),
-          page.getByTestId("composer-actions-disclosure")
-        ]) {
-          await expect(disclosure).toHaveAttribute("aria-hidden", "true");
-          await expect(disclosure).toHaveAttribute("inert", "");
-          await expect
-            .poll(() =>
-              disclosure.evaluate((element) => ({
-                height: Math.round(element.getBoundingClientRect().height),
-                opacity: getComputedStyle(element).opacity
-              }))
-            )
-            .toEqual({ height: 0, opacity: "0" });
-        }
-        await expect(composer).toBeVisible();
-        const collapsedComposerBox = await page.getByTestId("composer-drop-zone").boundingBox();
-        expect(collapsedComposerBox).toBeTruthy();
-        expect(collapsedComposerBox!.height).toBeLessThan(composerBox!.height - 40);
-
-        await composer.click();
-        await expect(page.getByTestId("composer-form")).not.toHaveAttribute(
-          "data-reading-collapsed"
-        );
-        await expect(page.getByTestId("run-setup-sheet")).toHaveCount(0);
-        await expect(composer).toBeFocused();
-        await expect(summary).toBeVisible();
-        await expect(compactProfiles).toBeVisible();
-        await composer.evaluate((element) => element.blur());
-
-        await readingThread.evaluate((element) => {
-          element.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: -64 }));
-          const maxScrollTop = Math.max(0, element.scrollHeight - element.clientHeight);
-          const start = Math.min(maxScrollTop, Math.max(80, element.scrollTop));
-          element.scrollTop = start;
-          element.dispatchEvent(new Event("scroll"));
-          element.scrollTop = Math.max(0, start - 64);
-          element.dispatchEvent(new Event("scroll"));
-        });
-        await expect(page.getByTestId("composer-form")).toHaveAttribute(
-          "data-reading-collapsed",
-          "true"
-        );
-        await composer.click();
-        await expect(page.getByTestId("run-setup-sheet")).toHaveCount(0);
-        await composer.evaluate((element) => element.blur());
-      } else {
-        await expect(messageLabel).toBeVisible();
-        await expect(page.getByTestId("composer-compact-run-profiles")).toBeHidden();
-        await expect(page.getByTestId("current-context-length")).toBeVisible();
-        for (const name of ["Select model", "Search strategy", "Run settings"]) {
-          const action = page.getByRole("button", { name });
-          await expectTouchSafe(action);
-          await expectWithinViewport(page, action);
-        }
+      let runSetup = await openRunSetup(page);
+      await expectWithinViewport(page, runSetup);
+      const runProfiles = runSetup.getByTestId("composer-run-profiles");
+      await expect(runProfiles).toBeVisible();
+      for (const name of ["Use Fast run profile", "Use Balanced run profile", "Use Deep run profile"]) {
+        const profile = runProfiles.getByRole("button", { name });
+        await expect(profile).toBeVisible();
+        await expectTouchSafe(profile);
       }
+      await runProfiles.getByRole("button", { name: "Use Deep run profile" }).click();
+      await expect(runProfiles.getByRole("button", { name: "Use Deep run profile" })).toHaveAttribute(
+        "aria-pressed",
+        "true"
+      );
+      await closeRunSetup(page);
+      await expectRunSummary(page, {
+        model: "GPT-5.6 Sol",
+        profile: "Deep",
+        reasoning: "Pro · Maximum",
+        search: "Off"
+      });
+
+      await page.getByTestId("token-stats-button").click();
+      const contextStats = page.getByTestId("token-stats-popover");
+      await expect(contextStats).toContainText("Current context");
+      await expect(contextStats).toContainText("safe input");
+      await expect(contextStats).toContainText("total context");
+      await contextStats.getByRole("button", { name: "Close context and usage statistics" }).click();
+      const composerBox = await page.getByTestId("composer-drop-zone").boundingBox();
+      expect(composerBox).toBeTruthy();
+      expect(composerBox!.height).toBeLessThanOrEqual(280);
       await expectTouchSafe(page.getByRole("button", { name: "Send message" }));
       await expectWithinViewport(page, page.getByRole("button", { name: "Send message" }));
       await expectTouchSafe(page.getByLabel("Attach file").locator(".."));
       const footer = page.getByTestId("composer-action-footer");
+      const primaryActions = page.getByTestId("composer-primary-actions");
       await expect(footer).toContainText(/\d/);
-      const [footerBox, attachBox, sendBox] = await Promise.all([
-        footer.boundingBox(),
+      const [primaryActionsBox, attachBox, sendBox] = await Promise.all([
+        primaryActions.boundingBox(),
         page.getByLabel("Attach file").locator("..").boundingBox(),
         page.getByRole("button", { name: "Send message" }).boundingBox()
       ]);
-      expect(footerBox).toBeTruthy();
+      expect(primaryActionsBox).toBeTruthy();
       expect(attachBox).toBeTruthy();
       expect(sendBox).toBeTruthy();
-      const footerCenter = footerBox!.y + footerBox!.height / 2;
-      expect(Math.abs(attachBox!.y + attachBox!.height / 2 - footerCenter)).toBeLessThanOrEqual(2);
-      expect(Math.abs(sendBox!.y + sendBox!.height / 2 - footerCenter)).toBeLessThanOrEqual(2);
+      const actionCenter = primaryActionsBox!.y + primaryActionsBox!.height / 2;
+      expect(Math.abs(attachBox!.y + attachBox!.height / 2 - actionCenter)).toBeLessThanOrEqual(2);
+      expect(Math.abs(sendBox!.y + sendBox!.height / 2 - actionCenter)).toBeLessThanOrEqual(2);
       await expectWithinViewport(page, composer);
 
       const lastAssistant = page.locator('article[data-role="assistant"]').last();
@@ -3656,46 +3565,34 @@ for (const viewport of responsiveTouchViewports) {
       await latest.click();
       await expectThreadTextInViewport(page, "Responsive latest bottom marker");
 
-      const compactRunSetup = compactComposer ? await openRunSetup(page) : null;
-      const runControlSurface = compactRunSetup ?? composerRestingControls(page);
-      if (compactRunSetup) {
-        await expectWithinViewport(page, compactRunSetup);
-        await expect(compactRunSetup.getByTestId("composer-run-profiles")).toBeVisible();
-        await expect(compactRunSetup.getByText("Advanced settings")).toBeVisible();
-        await expect(compactRunSetup.getByLabel("Temperature")).toBeVisible();
-      }
+      runSetup = await openRunSetup(page);
+      await expectWithinViewport(page, runSetup);
+      await expect(runSetup.getByTestId("composer-run-profiles")).toBeVisible();
+      await expect(runSetup.getByRole("heading", { name: "Generation" })).toBeVisible();
+      await expect(runSetup.getByRole("heading", { name: "Next run" })).toBeVisible();
+      await expect(runSetup.getByRole("heading", { name: "Display preferences" })).toBeVisible();
+      await expect(runSetup.getByLabel("Temperature")).toBeVisible();
 
-      const modelTrigger = runControlSurface.getByRole("button", { name: "Select model" });
+      const modelTrigger = runSetup.getByRole("button", { name: "Select model" });
       await modelTrigger.click();
       const modelPicker = page.getByTestId("model-picker");
       await expectWithinViewport(page, modelPicker);
       await expect(modelPicker.getByLabel("Search models")).toBeFocused();
       await page.keyboard.press("Escape");
       await expect(modelTrigger).toBeFocused();
-      if (compactRunSetup) {
-        await expect(compactRunSetup).toBeVisible();
-      }
+      await expect(runSetup).toBeVisible();
 
-      const searchTrigger = runControlSurface.getByRole("button", { name: "Search strategy" });
+      const searchTrigger = runSetup.getByRole("button", { name: "Search strategy" });
       await searchTrigger.click();
       const searchPicker = page.getByTestId("search-select-options");
       await expectWithinViewport(page, searchPicker);
       await page.keyboard.press("Escape");
       await expect(searchTrigger).toBeFocused();
 
-      if (compactRunSetup) {
-        await expect(compactRunSetup.getByRole("button", { name: "Prompt preset" })).toBeVisible();
-      } else {
-        const runSettings = await openRunSettings(page);
-        await expectWithinViewport(page, runSettings);
-        await expect(runSettings.getByRole("button", { name: "Prompt preset" })).toBeVisible();
-        await expectWithinViewport(page, runSettings.getByRole("button", { name: "Close run settings" }));
-        await expect(runSettings.getByRole("button", { name: "Reasoning effort" })).toHaveCount(0);
-        await closeRunSettings(page);
-      }
-      const reasoningTrigger = runControlSurface.getByRole("button", { name: "Reasoning effort" });
+      await expect(runSetup.getByRole("button", { name: "Prompt preset" })).toBeVisible();
+      const reasoningTrigger = runSetup.getByRole("button", { name: "Reasoning effort" });
       await reasoningTrigger.click();
-      const reasoningPicker = runControlSurface.getByTestId("composer-reasoning-effort-options");
+      const reasoningPicker = runSetup.getByTestId("composer-reasoning-effort-options");
       await expectWithinViewport(page, reasoningPicker);
       const lastReasoningOption = reasoningPicker.locator("[data-option-value]").last();
       await page.keyboard.press("End");
@@ -3708,10 +3605,8 @@ for (const viewport of responsiveTouchViewports) {
       expect(optionBox!.y + optionBox!.height).toBeLessThanOrEqual(pickerBox!.y + pickerBox!.height + 1);
       await page.keyboard.press("Escape");
       await expect(reasoningTrigger).toBeFocused();
-      if (compactRunSetup) {
-        await closeRunSetup(page);
-        await expect(composerRunSummary(page)).toBeFocused();
-      }
+      await closeRunSetup(page);
+      await expect(composerRunSummary(page)).toBeFocused();
 
       const workspaceTrigger = page.getByRole("button", { name: "Open workspace" });
       await workspaceTrigger.click();
@@ -3827,41 +3722,8 @@ for (const viewport of responsiveTouchViewports) {
       await expect(stop).toBeEnabled();
       await expectTouchSafe(stop);
       await expectWithinViewport(page, stop);
-      if (compactComposer) {
-        await page.getByTestId("thread").evaluate((element) => {
-          element.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: 64 }));
-          const maxScrollTop = Math.max(0, element.scrollHeight - element.clientHeight);
-          const start = Math.max(0, Math.min(element.scrollTop, maxScrollTop - 80));
-          element.scrollTop = start;
-          element.dispatchEvent(new Event("scroll"));
-          element.scrollTop = Math.min(maxScrollTop, start + 64);
-          element.dispatchEvent(new Event("scroll"));
-        });
-        await expect(page.getByTestId("composer-form")).toHaveAttribute(
-          "data-reading-collapsed",
-          "true"
-        );
-        const readingStop = page.getByTestId("composer-reading-stop");
-        await expect(readingStop).toBeVisible();
-        await expect(readingStop).toHaveAccessibleName("Stop response");
-        await expectTouchSafe(readingStop);
-        await readingStop.focus();
-        await expect(readingStop).toBeFocused();
-        await expect(page.getByTestId("composer-form")).toHaveAttribute(
-          "data-reading-collapsed",
-          "true"
-        );
-      }
       await emitResponsiveTouchEvent(page, "done", { status: "cancelled" });
       await closeResponsiveTouchStream(page);
-      if (compactComposer) {
-        await expect(page.getByTestId("composer-form")).toHaveAttribute(
-          "data-reading-collapsed",
-          "true"
-        );
-        await expect(page.getByRole("button", { name: "Send message" })).toBeHidden();
-        await composer.click();
-      }
       await expect(page.getByRole("button", { name: "Send message" })).toBeVisible();
       await expectNoHorizontalOverflow(page);
 

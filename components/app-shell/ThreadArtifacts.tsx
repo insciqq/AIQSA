@@ -28,20 +28,20 @@ function ContextTruncationBlockComponent({ summary }: { summary: ThreadArtifactS
 
   return (
     <aside
-      className="mb-4 rounded-control bg-accent-amber/[0.08] px-3 py-2.5 text-xs leading-5 text-content-secondary"
+      className="mb-5 border-l-2 border-caution/45 bg-caution/[0.05] px-4 py-3 text-xs leading-5 text-ink-secondary"
       data-testid="thread-context-truncation"
       aria-label="Context trimmed"
     >
       <div className="flex items-start gap-2">
-        <Scissors className="mt-0.5 size-3.5 shrink-0 text-accent-amber" aria-hidden="true" />
+        <Scissors className="mt-0.5 size-3.5 shrink-0 text-caution" aria-hidden="true" />
         <div className="min-w-0">
-          <div className="font-semibold text-accent-amber">Context trimmed</div>
+          <div className="font-semibold text-caution">Context trimmed</div>
           <div className="mt-0.5">
             {truncation.droppedMessages === 1
               ? "The oldest message was not sent because the context window was full"
               : `The oldest ${truncation.droppedMessages} messages were not sent because the context window was full`}
             {truncation.approxDroppedTokens > 0 ? (
-              <span className="font-mono text-content-primary"> · ~{truncation.approxDroppedTokens} tokens</span>
+              <span className="font-mono text-ink"> · ~{truncation.approxDroppedTokens} tokens</span>
             ) : null}
           </div>
         </div>
@@ -63,37 +63,40 @@ function SearchSummaryBlockComponent({
 
   return (
     <section
-      className="border-l-2 border-accent-cyan/35 pl-3 text-xs text-content-secondary"
+      className="border-t border-trace-subtle pt-2 text-xs text-ink-secondary"
       data-testid="thread-search-summary"
     >
       <button
-        className="flex min-h-control w-full cursor-pointer flex-wrap items-center gap-x-2 gap-y-1 rounded-control px-2 text-left outline-none hover:bg-surface-hover focus-visible:ring-2 focus-visible:ring-accent-cyan/55 [@media(hover:none)]:min-h-touch [@media(pointer:coarse)]:min-h-touch"
+        className="-mx-2 flex min-h-control w-[calc(100%+1rem)] cursor-pointer flex-wrap items-center gap-x-2 gap-y-1 rounded-control px-2 text-left outline-none hover:bg-control-hover focus-visible:ring-2 focus-visible:ring-proof/45 [@media(hover:none)]:min-h-touch [@media(pointer:coarse)]:min-h-touch"
         type="button"
         aria-expanded={open}
         onClick={() => setOpen((expanded) => !expanded)}
       >
         {open ? (
-          <ChevronDown className="size-3.5 shrink-0 text-content-muted" aria-hidden="true" />
+          <ChevronDown className="size-3.5 shrink-0 text-ink-muted" aria-hidden="true" />
         ) : (
-          <ChevronRight className="size-3.5 shrink-0 text-content-muted" aria-hidden="true" />
+          <ChevronRight className="size-3.5 shrink-0 text-ink-muted" aria-hidden="true" />
         )}
-        <Search className={active ? "size-4 shrink-0 text-accent-cyan" : "size-4 shrink-0 text-content-muted"} aria-hidden="true" />
-        <span className="font-semibold text-content-primary">
+        <Search className={active ? "size-4 shrink-0 text-proof" : "size-4 shrink-0 text-ink-muted"} aria-hidden="true" />
+        <span className="font-semibold text-ink">
           {active
             ? "Searching"
             : `${summary.searchCount} search ${summary.searchCount === 1 ? "call" : "calls"}`}
         </span>
-        <span className="text-content-muted">{strategy}</span>
+        <span className="text-ink-muted">{strategy}</span>
         {summary.citationCount > 0 ? (
-          <span className="text-content-muted">· {summary.citationCount} citations</span>
+          <span className="text-ink-muted">· {summary.citationCount} citations</span>
         ) : null}
       </button>
       {open && searchDetails.length > 0 ? (
-        <div className="mt-2 grid gap-2" data-testid="thread-search-details">
+        <div
+          className="mt-2 divide-y divide-trace-subtle border-y border-trace-subtle"
+          data-testid="thread-search-details"
+        >
           {searchDetails.map((detail, index) => (
-            <div className="min-w-0 rounded-control bg-surface-thread p-3" key={index}>
-              <div className="mb-2 flex flex-wrap items-center gap-2 text-[11px] text-content-muted">
-                <span className="font-mono text-content-secondary">Search {index + 1}</span>
+            <div className="min-w-0 py-3" key={index}>
+              <div className="mb-2 flex flex-wrap items-center gap-2 text-[11px] text-ink-muted">
+                <span className="font-mono text-ink-secondary">Search {index + 1}</span>
                 {detail.status ? <span>{detail.status}</span> : null}
                 {detail.provider || detail.modelId ? (
                   <span>{[detail.provider, detail.modelId].filter(Boolean).join(" / ")}</span>
@@ -101,27 +104,27 @@ function SearchSummaryBlockComponent({
               </div>
               {detail.callPreview !== undefined && detail.requestPreview === undefined && detail.responsePreview === undefined ? (
                 <div className="grid gap-1">
-                  <div className="text-[11px] font-medium text-content-secondary">{searchCallLabel(detail)}</div>
+                  <div className="text-[11px] font-medium text-ink-secondary">{searchCallLabel(detail)}</div>
                   {searchCallHasOnlyMetadata(detail.callPreview) ? (
-                    <div className="rounded-control bg-surface-active px-2 py-1.5 text-content-muted">
+                    <div className="border-l-2 border-trace-subtle px-2 py-1 text-ink-muted">
                       OpenAI returned call metadata only for this run. Cited URLs, when available, are shown in Citations.
                     </div>
                   ) : null}
-                  <pre className="max-h-52 max-w-full overflow-auto whitespace-pre-wrap break-words rounded-control bg-surface-canvas p-2 font-mono text-[11px] leading-5 text-content-secondary [overflow-wrap:anywhere]">
+                  <pre className="max-h-52 max-w-full overflow-auto whitespace-pre-wrap break-words rounded-control bg-control-surface p-2 font-mono text-[11px] leading-5 text-ink-secondary [overflow-wrap:anywhere]">
                     {formatPreview(detail.callPreview)}
                   </pre>
                 </div>
               ) : (
                 <div className="grid gap-2">
                   <div>
-                    <div className="mb-1 text-[11px] font-medium text-content-secondary">Request</div>
-                    <pre className="max-h-52 max-w-full overflow-auto whitespace-pre-wrap break-words rounded-control bg-surface-canvas p-2 font-mono text-[11px] leading-5 text-content-secondary [overflow-wrap:anywhere]">
+                    <div className="mb-1 text-[11px] font-medium text-ink-secondary">Request</div>
+                    <pre className="max-h-52 max-w-full overflow-auto whitespace-pre-wrap break-words rounded-control bg-control-surface p-2 font-mono text-[11px] leading-5 text-ink-secondary [overflow-wrap:anywhere]">
                       {formatPreview(detail.requestPreview)}
                     </pre>
                   </div>
                   <div>
-                    <div className="mb-1 text-[11px] font-medium text-content-secondary">Response</div>
-                    <pre className="max-h-52 max-w-full overflow-auto whitespace-pre-wrap break-words rounded-control bg-surface-canvas p-2 font-mono text-[11px] leading-5 text-content-secondary [overflow-wrap:anywhere]">
+                    <div className="mb-1 text-[11px] font-medium text-ink-secondary">Response</div>
+                    <pre className="max-h-52 max-w-full overflow-auto whitespace-pre-wrap break-words rounded-control bg-control-surface p-2 font-mono text-[11px] leading-5 text-ink-secondary [overflow-wrap:anywhere]">
                       {formatPreview(detail.responsePreview)}
                     </pre>
                   </div>
@@ -132,7 +135,7 @@ function SearchSummaryBlockComponent({
         </div>
       ) : null}
       {open && searchDetails.length === 0 ? (
-        <div className="mt-2 rounded-control bg-surface-thread px-3 py-2 text-content-muted">
+        <div className="mt-2 border-t border-trace-subtle py-3 text-ink-muted">
           No search/tool request or response preview captured for this run.
         </div>
       ) : null}
@@ -213,15 +216,15 @@ function toolStatusLabel(status: ThreadToolActivity["status"]): string {
 
 function ToolStatusIcon({ status }: { status: ThreadToolActivity["status"] }) {
   if (status === "complete") {
-    return <CheckCircle2 className="size-3.5 text-accent-green" aria-hidden="true" />;
+    return <CheckCircle2 className="size-3.5 text-positive" aria-hidden="true" />;
   }
   if (status === "error") {
-    return <CircleAlert className="size-3.5 text-accent-rose" aria-hidden="true" />;
+    return <CircleAlert className="size-3.5 text-critical" aria-hidden="true" />;
   }
   if (status === "cancelled") {
-    return <Square className="size-3.5 text-content-muted" aria-hidden="true" />;
+    return <Square className="size-3.5 text-ink-muted" aria-hidden="true" />;
   }
-  return <LoaderCircle className="size-3.5 animate-spin text-accent-cyan" aria-hidden="true" />;
+  return <LoaderCircle className="size-3.5 animate-spin text-proof" aria-hidden="true" />;
 }
 
 function toolDuration(durationMs: number | null): string | null {
@@ -253,64 +256,67 @@ function ToolActivityBlockComponent({ summary }: { summary: ThreadArtifactSummar
 
   return (
     <section
-      className="border-l-2 border-accent-cyan/35 pl-3 text-xs text-content-secondary"
+      className="border-t border-trace-subtle pt-2 text-xs text-ink-secondary"
       data-testid="thread-tool-activity"
       aria-label="Tool activity"
     >
       <button
-        className="flex min-h-control w-full flex-wrap items-center gap-x-2 gap-y-1 rounded-control px-2 text-left outline-none hover:bg-surface-hover focus-visible:ring-2 focus-visible:ring-accent-cyan/55 [@media(hover:none)]:min-h-touch [@media(pointer:coarse)]:min-h-touch"
+        className="-mx-2 flex min-h-control w-[calc(100%+1rem)] flex-wrap items-center gap-x-2 gap-y-1 rounded-control px-2 text-left outline-none hover:bg-control-hover focus-visible:ring-2 focus-visible:ring-proof/45 [@media(hover:none)]:min-h-touch [@media(pointer:coarse)]:min-h-touch"
         type="button"
         aria-expanded={open}
         onClick={() => setOpen((expanded) => !expanded)}
       >
         {open ? (
-          <ChevronDown className="size-3.5 shrink-0 text-content-muted" aria-hidden="true" />
+          <ChevronDown className="size-3.5 shrink-0 text-ink-muted" aria-hidden="true" />
         ) : (
-          <ChevronRight className="size-3.5 shrink-0 text-content-muted" aria-hidden="true" />
+          <ChevronRight className="size-3.5 shrink-0 text-ink-muted" aria-hidden="true" />
         )}
-        <Wrench className="size-4 shrink-0 text-accent-cyan" aria-hidden="true" />
-        <span className="font-semibold text-content-primary">{headline}</span>
-        {failed > 0 ? <span className="text-accent-rose">· {failed} failed</span> : null}
+        <Wrench className="size-4 shrink-0 text-proof" aria-hidden="true" />
+        <span className="font-semibold text-ink">{headline}</span>
+        {failed > 0 ? <span className="text-critical">· {failed} failed</span> : null}
         {servers.length > 0 ? (
-          <span className="min-w-0 truncate text-content-muted">{servers.join(", ")}</span>
+          <span className="min-w-0 truncate text-ink-muted">{servers.join(", ")}</span>
         ) : null}
       </button>
 
       {open ? (
-        <div className="mt-2 grid gap-3" data-testid="thread-tool-activity-details">
+        <div
+          className="mt-2 divide-y divide-trace-subtle border-y border-trace-subtle"
+          data-testid="thread-tool-activity-details"
+        >
           {[...rounds.entries()].map(([round, roundCalls]) => (
-            <section className="rounded-control bg-surface-thread p-3" key={round} aria-label={`Tool round ${round}`}>
-              <div className="mb-2 flex flex-wrap items-center gap-2 text-[11px] text-content-muted">
-                <span className="font-semibold text-content-secondary">Round {round}</span>
+            <section className="py-3" key={round} aria-label={`Tool round ${round}`}>
+              <div className="mb-2 flex flex-wrap items-center gap-2 text-[11px] text-ink-muted">
+                <span className="font-semibold text-ink-secondary">Round {round}</span>
                 <span>
                   {roundCalls.length > 1
                     ? `${roundCalls.length} parallel calls`
                     : "1 call"}
                 </span>
               </div>
-              <div className="grid gap-2">
+              <div className="divide-y divide-trace-subtle">
                 {roundCalls.map((call) => (
                   <details
-                    className="group/tool rounded-control bg-surface-canvas px-2.5 py-2"
+                    className="group/tool py-2"
                     data-tool-status={call.status}
                     key={call.callId}
                   >
-                    <summary className="flex min-h-control cursor-pointer list-none items-center gap-2 break-words outline-none marker:hidden focus-visible:ring-2 focus-visible:ring-accent-cyan/55 [overflow-wrap:anywhere]">
+                    <summary className="-mx-2 flex min-h-control cursor-pointer list-none items-center gap-2 break-words rounded-control px-2 outline-none marker:hidden hover:bg-control-hover focus-visible:ring-2 focus-visible:ring-proof/45 [overflow-wrap:anywhere]">
                       <ToolStatusIcon status={call.status} />
-                      <span className="min-w-0 flex-1 font-medium text-content-primary">
+                      <span className="min-w-0 flex-1 font-medium text-ink">
                         {toolIdentity(call)}
                       </span>
-                      <span className={call.status === "error" ? "text-accent-rose" : "text-content-muted"}>
+                      <span className={call.status === "error" ? "text-critical" : "text-ink-muted"}>
                         {toolStatusLabel(call.status)}
                       </span>
                       {toolDuration(call.durationMs) ? (
-                        <span className="font-mono text-content-muted">{toolDuration(call.durationMs)}</span>
+                        <span className="font-mono text-ink-muted">{toolDuration(call.durationMs)}</span>
                       ) : null}
-                      <ChevronRight className="size-3.5 shrink-0 text-content-muted transition-transform group-open/tool:rotate-90" aria-hidden="true" />
+                      <ChevronRight className="size-3.5 shrink-0 text-ink-muted transition-transform group-open/tool:rotate-90" aria-hidden="true" />
                     </summary>
-                    <div className="mt-2 grid gap-2 border-t border-separator-subtle pt-2">
+                    <div className="mt-2 grid gap-2 border-l border-trace-subtle pl-3">
                       {call.externalAccountLabel || call.credentialSources.length > 0 ? (
-                        <div className="flex flex-wrap gap-x-2 gap-y-1 text-[11px] text-content-muted">
+                        <div className="flex flex-wrap gap-x-2 gap-y-1 text-[11px] text-ink-muted">
                           {call.externalAccountLabel ? <span>Account: {call.externalAccountLabel}</span> : null}
                           {call.credentialSources.length > 0 ? (
                             <span>Credentials: {call.credentialSources.join(", ")}</span>
@@ -318,19 +324,19 @@ function ToolActivityBlockComponent({ summary }: { summary: ThreadArtifactSummar
                         </div>
                       ) : null}
                       <div>
-                        <div className="mb-1 text-[11px] font-medium text-content-secondary">Arguments · sensitive values redacted</div>
-                        <pre className="max-h-48 max-w-full overflow-auto whitespace-pre-wrap break-words rounded-control bg-surface-active p-2 font-mono text-[11px] leading-5 text-content-secondary [overflow-wrap:anywhere]">
+                        <div className="mb-1 text-[11px] font-medium text-ink-secondary">Arguments · sensitive values redacted</div>
+                        <pre className="max-h-48 max-w-full overflow-auto whitespace-pre-wrap break-words rounded-control bg-control-surface p-2 font-mono text-[11px] leading-5 text-ink-secondary [overflow-wrap:anywhere]">
                           {formatPreview(call.argumentsPreview)}
                         </pre>
                       </div>
                       <div>
-                        <div className="mb-1 text-[11px] font-medium text-content-secondary">Result preview</div>
-                        <pre className="max-h-48 max-w-full overflow-auto whitespace-pre-wrap break-words rounded-control bg-surface-active p-2 font-mono text-[11px] leading-5 text-content-secondary [overflow-wrap:anywhere]">
+                        <div className="mb-1 text-[11px] font-medium text-ink-secondary">Result preview</div>
+                        <pre className="max-h-48 max-w-full overflow-auto whitespace-pre-wrap break-words rounded-control bg-control-surface p-2 font-mono text-[11px] leading-5 text-ink-secondary [overflow-wrap:anywhere]">
                           {formatPreview(call.resultPreview)}
                         </pre>
                       </div>
                       {call.errorMessage ? (
-                        <p className="break-words text-[11px] leading-5 text-accent-rose [overflow-wrap:anywhere]">
+                        <p className="break-words text-[11px] leading-5 text-critical [overflow-wrap:anywhere]">
                           {call.errorMessage}
                         </p>
                       ) : null}
@@ -352,33 +358,33 @@ function CitationBlockComponent({ summary }: { summary: ThreadArtifactSummary })
 
   return (
     <section
-      className="border-l-2 border-separator-strong pl-3 text-xs text-content-secondary"
+      className="border-t border-trace-subtle pt-2 text-xs text-ink-secondary"
       data-testid="thread-citations-block"
     >
       <button
-        className="flex min-h-control w-full items-center gap-2 rounded-control px-2 text-left outline-none hover:bg-surface-hover focus-visible:ring-2 focus-visible:ring-accent-cyan/55 [@media(hover:none)]:min-h-touch [@media(pointer:coarse)]:min-h-touch"
+        className="-mx-2 flex min-h-control w-[calc(100%+1rem)] items-center gap-2 rounded-control px-2 text-left outline-none hover:bg-control-hover focus-visible:ring-2 focus-visible:ring-proof/45 [@media(hover:none)]:min-h-touch [@media(pointer:coarse)]:min-h-touch"
         type="button"
         aria-expanded={open}
         onClick={() => setOpen((expanded) => !expanded)}
       >
         {open ? (
-          <ChevronDown className="size-3.5 shrink-0 text-content-muted" aria-hidden="true" />
+          <ChevronDown className="size-3.5 shrink-0 text-ink-muted" aria-hidden="true" />
         ) : (
-          <ChevronRight className="size-3.5 shrink-0 text-content-muted" aria-hidden="true" />
+          <ChevronRight className="size-3.5 shrink-0 text-ink-muted" aria-hidden="true" />
         )}
-        <span className="font-semibold text-content-primary">Citations</span>
-        <span className="text-content-muted">{summary.citationCount}</span>
+        <span className="font-semibold text-ink">Citations</span>
+        <span className="text-ink-muted">{summary.citationCount}</span>
       </button>
       {open && citations.length > 0 ? (
-        <ol className="mt-2 space-y-2">
+        <ol className="mt-2 divide-y divide-trace-subtle border-y border-trace-subtle">
           {citations.map((citation) => {
             const href = safeExternalHref(citation.url);
 
             return (
-              <li className="min-w-0 rounded-control bg-surface-thread px-3 py-2" key={`${citation.index}:${citation.url}`}>
+              <li className="min-w-0 py-3" key={`${citation.index}:${citation.url}`}>
                 {href ? (
                   <a
-                    className="block break-words font-medium text-content-link underline-offset-2 hover:underline [overflow-wrap:anywhere]"
+                    className="block break-words font-medium text-proof underline-offset-2 hover:text-proof-hover hover:underline [overflow-wrap:anywhere]"
                     href={href}
                     rel="noreferrer"
                     target="_blank"
@@ -386,13 +392,13 @@ function CitationBlockComponent({ summary }: { summary: ThreadArtifactSummary })
                     [{citation.index}] {citation.title}
                   </a>
                 ) : (
-                  <div className="block break-words font-medium text-content-primary [overflow-wrap:anywhere]">
+                  <div className="block break-words font-medium text-ink [overflow-wrap:anywhere]">
                     [{citation.index}] {citation.title}
                   </div>
                 )}
-                <div className="mt-0.5 break-all text-[11px] text-content-muted">{citation.url}</div>
+                <div className="mt-0.5 break-all text-[11px] text-ink-muted">{citation.url}</div>
                 {citation.snippet ? (
-                  <div className="mt-1 break-words text-[11px] leading-5 text-content-secondary [overflow-wrap:anywhere]">
+                  <div className="mt-1 break-words text-[11px] leading-5 text-ink-secondary [overflow-wrap:anywhere]">
                     {citation.snippet}
                   </div>
                 ) : null}
@@ -401,7 +407,7 @@ function CitationBlockComponent({ summary }: { summary: ThreadArtifactSummary })
           })}
         </ol>
       ) : open ? (
-        <div className="mt-2 rounded-control bg-surface-thread px-3 py-2 text-content-muted">
+        <div className="mt-2 border-t border-trace-subtle py-3 text-ink-muted">
           No citation text captured for this run.
         </div>
       ) : null}
@@ -414,30 +420,30 @@ function ReasoningBlockComponent({ summary }: { summary: ThreadArtifactSummary }
 
   return (
     <section
-      className="border-l-2 border-separator-strong pl-3 text-xs text-content-secondary"
+      className="border-t border-trace-subtle pt-2 text-xs text-ink-secondary"
       data-testid="thread-reasoning-block"
     >
       <button
-        className="flex min-h-control w-full items-center gap-2 rounded-control px-2 text-left font-semibold text-content-primary outline-none hover:bg-surface-hover focus-visible:ring-2 focus-visible:ring-accent-cyan/55 [@media(hover:none)]:min-h-touch [@media(pointer:coarse)]:min-h-touch"
+        className="-mx-2 flex min-h-control w-[calc(100%+1rem)] items-center gap-2 rounded-control px-2 text-left font-semibold text-ink outline-none hover:bg-control-hover focus-visible:ring-2 focus-visible:ring-proof/45 [@media(hover:none)]:min-h-touch [@media(pointer:coarse)]:min-h-touch"
         type="button"
         aria-expanded={open}
         onClick={() => setOpen((expanded) => !expanded)}
       >
         {open ? (
-          <ChevronDown className="size-3.5 shrink-0 text-content-muted" aria-hidden="true" />
+          <ChevronDown className="size-3.5 shrink-0 text-ink-muted" aria-hidden="true" />
         ) : (
-          <ChevronRight className="size-3.5 shrink-0 text-content-muted" aria-hidden="true" />
+          <ChevronRight className="size-3.5 shrink-0 text-ink-muted" aria-hidden="true" />
         )}
-        <Brain className="size-3.5 text-content-muted" aria-hidden="true" />
+        <Brain className="size-3.5 text-ink-muted" aria-hidden="true" />
         Reasoning
-        <span className="font-normal text-content-muted">{summary.reasoningCount}</span>
+        <span className="font-normal text-ink-muted">{summary.reasoningCount}</span>
       </button>
       {open && summary.reasoningText.length > 0 ? (
-        <pre className="mt-2 max-h-48 max-w-full overflow-auto whitespace-pre-wrap break-words rounded-control bg-surface-thread p-3 font-sans text-xs leading-5 text-content-secondary [overflow-wrap:anywhere]">
+        <pre className="mt-2 max-h-48 max-w-full overflow-auto whitespace-pre-wrap break-words border-y border-trace-subtle bg-control-surface p-3 font-sans text-xs leading-5 text-ink-secondary [overflow-wrap:anywhere]">
           {summary.reasoningText.join("\n")}
         </pre>
       ) : open ? (
-        <div className="mt-2 rounded-control bg-surface-thread px-3 py-2 text-content-muted">
+        <div className="mt-2 border-t border-trace-subtle py-3 text-ink-muted">
           No reasoning text captured for this run.
         </div>
       ) : null}

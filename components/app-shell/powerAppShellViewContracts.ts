@@ -168,7 +168,6 @@ export type ShellComposerView = {
   composerActions: ShellComposerActions;
   composerContextLine: string | null;
   composerDisabledHint: string | null;
-  composerSessionKey: string;
   composerUsageStats: ChatUsageStats | null;
   currentModel: CatalogModel | undefined;
   currentParameterControls: ModelParameterControls;

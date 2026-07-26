@@ -812,7 +812,6 @@ export function PowerAppShell({
     composerActions,
     composerContextLine,
     composerDisabledHint,
-    composerSessionKey: activeComposerSessionKey,
     composerUsageStats,
     currentModel,
     currentParameterControls,

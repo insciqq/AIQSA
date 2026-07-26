@@ -37,6 +37,11 @@ describe("ThreadArtifacts", () => {
     const trigger = screen.getByRole("button", { name: /3 search calls/i });
     expect(trigger).toHaveAttribute("aria-expanded", "false");
     expect(trigger).toHaveTextContent("Perplexity tool");
+    expect(screen.getByTestId("thread-search-summary")).toHaveClass(
+      "border-trace-subtle",
+      "text-ink-secondary"
+    );
+    expect(trigger).toHaveClass("hover:bg-control-hover", "focus-visible:ring-proof/45");
   });
 
   it("shows honest active search progress without replacing provider context", () => {
@@ -273,6 +278,8 @@ describe("ThreadArtifacts", () => {
     );
 
     const notice = screen.getByRole("complementary", { name: "Context trimmed" });
+    expect(notice).toHaveClass("border-caution/45", "text-ink-secondary");
+    expect(notice).not.toHaveClass("rounded-control");
     expect(notice).toHaveTextContent("The oldest message was not sent because the context window was full");
     expect(notice).not.toHaveTextContent("messages were");
 
@@ -347,7 +354,7 @@ describe("ThreadArtifacts", () => {
     expect(safeLink.closest("li")).toHaveClass("min-w-0");
     expect(screen.getByText(longSnippet)).toHaveClass(
       "break-words",
-      "text-content-secondary",
+      "text-ink-secondary",
       "[overflow-wrap:anywhere]"
     );
   });

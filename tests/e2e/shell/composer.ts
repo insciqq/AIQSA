@@ -10,9 +10,7 @@ export async function selectModel(
   const providerName =
     providerNameOverride ?? matrixCatalog.providers.find((candidate) => candidate.id === provider)?.name ?? provider;
   const providerNamePattern = new RegExp(`^${providerName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "i");
-  await closeRunSettings(page);
-  const compact = await composerRunSummary(page).isVisible();
-  const controls = compact ? await openRunSetup(page) : composerRestingControls(page);
+  const controls = await openRunSetup(page);
   await controls.getByRole("button", { name: "Select model" }).click();
   await expect(page.getByLabel("Search models")).toBeFocused();
   await page.getByLabel("Search models").fill(modelQuery);
@@ -21,58 +19,36 @@ export async function selectModel(
     has: page.getByRole("heading", { name: providerNamePattern })
   });
   await providerSection.getByRole("button", { name: /^Select model / }).first().click();
-  if (compact) {
-    await closeRunSetup(page);
-  }
+  await closeRunSetup(page);
 }
 
 export async function reasoningOptionValues(page: Page): Promise<string[]> {
-  await closeRunSettings(page);
-  const compact = await composerRunSummary(page).isVisible();
-  const controls = compact ? await openRunSetup(page) : composerRestingControls(page);
+  const controls = await openRunSetup(page);
   await controls.getByRole("button", { name: "Reasoning effort", exact: true }).click();
   const values = await controls
     .getByTestId("composer-reasoning-effort-options")
     .locator("[data-option-value]")
     .evaluateAll((options) => options.map((option) => option.getAttribute("data-option-value") ?? ""));
   await controls.getByRole("button", { name: "Reasoning effort", exact: true }).click();
-  if (compact) {
-    await closeRunSetup(page);
-  }
+  await closeRunSetup(page);
   return values;
 }
 
 export async function chooseSearchStrategy(page: Page, label: string): Promise<void> {
-  await closeRunSettings(page);
-  const compact = await composerRunSummary(page).isVisible();
-  const controls = compact ? await openRunSetup(page) : composerRestingControls(page);
+  const controls = await openRunSetup(page);
   await controls.getByRole("button", { name: "Search strategy" }).click();
   await controls.getByTestId("search-select-options").getByRole("button", { name: new RegExp(label) }).click();
-  if (compact) {
-    await closeRunSetup(page);
-  }
+  await closeRunSetup(page);
 }
 
 export async function chooseReasoningEffort(page: Page, value: string): Promise<void> {
-  await closeRunSettings(page);
-  const compact = await composerRunSummary(page).isVisible();
-  const controls = compact ? await openRunSetup(page) : composerRestingControls(page);
+  const controls = await openRunSetup(page);
   await controls.getByRole("button", { name: "Reasoning effort", exact: true }).click();
   await controls
     .getByTestId("composer-reasoning-effort-options")
     .locator(`[data-option-value="${value}"]`)
     .click();
-  if (compact) {
-    await closeRunSetup(page);
-  }
-}
-
-export function composerRestingControls(page: Page): Locator {
-  return page.getByTestId("composer-control-bar");
-}
-
-export function composerRestingButton(page: Page, name: string): Locator {
-  return composerRestingControls(page).getByRole("button", { name });
+  await closeRunSetup(page);
 }
 
 export function composerRunSummary(page: Page): Locator {
@@ -100,27 +76,25 @@ export async function closeRunSetup(page: Page): Promise<void> {
   await expect(sheet).toHaveCount(0);
 }
 
-export async function openRunSettings(page: Page): Promise<Locator> {
-  const settings = page.getByTestId("run-settings-menu");
-  if (await settings.isVisible()) {
-    return settings;
+export async function expectRunSummary(
+  page: Page,
+  expected: Readonly<{
+    model?: string;
+    profile?: string;
+    reasoning?: string;
+    search?: string;
+  }>
+): Promise<void> {
+  if (expected.model !== undefined) {
+    await expect(page.getByTestId("run-model-summary")).toHaveText(expected.model);
   }
-
-  await composerRestingButton(page, "Run settings").click();
-  await expect(settings).toBeVisible();
-  return settings;
-}
-
-export async function closeRunSettings(page: Page): Promise<void> {
-  const settings = page.getByTestId("run-settings-menu");
-  if (!(await settings.isVisible())) {
-    return;
+  if (expected.profile !== undefined) {
+    await expect(page.getByTestId("run-profile-summary")).toHaveText(`Profile: ${expected.profile}`);
   }
-
-  await settings.getByRole("button", { name: "Close run settings" }).click();
-  await expect(settings).toHaveCount(0);
-}
-
-export async function runSettingsButton(page: Page, name: string): Promise<Locator> {
-  return (await openRunSettings(page)).getByRole("button", { name });
+  if (expected.reasoning !== undefined) {
+    await expect(page.getByTestId("run-reasoning-summary")).toHaveText(`Reasoning: ${expected.reasoning}`);
+  }
+  if (expected.search !== undefined) {
+    await expect(page.getByTestId("run-search-summary")).toHaveText(`Search: ${expected.search}`);
+  }
 }

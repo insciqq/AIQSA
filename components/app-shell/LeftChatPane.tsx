@@ -81,7 +81,10 @@ type LeftChatPaneProps = {
 };
 
 const focusRing =
-  "outline-none focus-visible:ring-2 focus-visible:ring-accent-cyan/55 focus-visible:ring-offset-2 focus-visible:ring-offset-surface-navigation";
+  "outline-none focus-visible:ring-2 focus-visible:ring-proof/55 focus-visible:ring-offset-2 focus-visible:ring-offset-workspace-rail";
+
+const menuSurface =
+  "pop-enter relative z-20 my-1 max-h-[min(25rem,calc(100dvh-12rem))] overflow-y-auto overscroll-contain rounded-panel border border-trace-subtle bg-overlay-surface p-1.5 text-sm text-ink-secondary shadow-overlay";
 
 function chatModelKey(chat: ChatSummary): string {
   return `${chat.defaultProvider}:${chat.defaultModelId}`;
@@ -200,7 +203,7 @@ function LeftChatPaneComponent({
   const touchTarget =
     layout === "mobile"
       ? "min-h-touch"
-      : "min-h-control-sm [@media(hover:none)]:!min-h-touch [@media(pointer:coarse)]:!min-h-touch";
+      : "min-h-10 [@media(hover:none)]:!min-h-touch [@media(pointer:coarse)]:!min-h-touch";
   const toolbarTarget =
     layout === "mobile"
       ? "min-h-touch"
@@ -216,15 +219,15 @@ function LeftChatPaneComponent({
   const inlineControlTarget =
     layout === "mobile"
       ? "min-h-touch"
-      : "h-control-sm [@media(hover:none)]:!h-touch [@media(pointer:coarse)]:!h-touch";
+      : "h-9 [@media(hover:none)]:!h-touch [@media(pointer:coarse)]:!h-touch";
   const inlineIconTarget =
     layout === "mobile"
       ? "size-11"
-      : "size-8 [@media(hover:none)]:!size-11 [@media(pointer:coarse)]:!size-11";
+      : "size-9 [@media(hover:none)]:!size-11 [@media(pointer:coarse)]:!size-11";
   const menuActionTarget =
     layout === "mobile"
       ? "min-h-touch"
-      : "min-h-9 [@media(hover:none)]:!min-h-touch [@media(pointer:coarse)]:!min-h-touch";
+      : "min-h-10 [@media(hover:none)]:!min-h-touch [@media(pointer:coarse)]:!min-h-touch";
   const menuSelectTarget =
     layout === "mobile"
       ? "h-touch"
@@ -452,28 +455,43 @@ function LeftChatPaneComponent({
     <aside
       className={
         layout === "mobile"
-          ? "flex h-full min-h-0 flex-col bg-surface-navigation"
-          : "hidden min-h-0 border-r border-separator-subtle bg-surface-navigation lg:flex lg:flex-col"
+          ? "flex h-full min-h-0 flex-col bg-workspace-rail text-ink"
+          : "hidden min-h-0 border-r border-trace-subtle bg-workspace-rail text-ink lg:flex lg:flex-col"
       }
       data-testid={layout === "mobile" ? "left-chat-pane-mobile" : "left-chat-pane"}
     >
-      <div className="shrink-0 border-b border-separator-subtle p-3">
-        <div className="flex items-center gap-2">
+      {layout === "desktop" ? (
+        <div className="flex h-16 shrink-0 items-center px-4" data-testid="workspace-identity">
+          <div className="min-w-0">
+            <p className="truncate text-sm font-semibold tracking-[-0.01em] text-ink">AIQSA</p>
+            <p className="truncate text-xs text-ink-muted">Workspace</p>
+          </div>
+        </div>
+      ) : null}
+
+      <div className="shrink-0 px-3 pb-3">
+        <div className="flex items-center gap-1">
           <button
             ref={newChatTriggerRef}
-            className={`flex ${toolbarTarget} min-w-0 flex-1 items-center justify-center gap-2 rounded-control bg-accent-cyan px-3 text-sm font-semibold text-surface-canvas hover:bg-accent-cyan/90 disabled:cursor-not-allowed disabled:opacity-55 ${focusRing}`}
+            className={`group flex ${toolbarTarget} min-w-0 flex-1 items-center gap-2 rounded-control px-2 text-left text-sm font-medium text-ink hover:bg-control-hover disabled:cursor-not-allowed disabled:text-ink-disabled ${focusRing}`}
             type="button"
             aria-label="Start new chat"
             disabled={creatingChat || !workspaceReady}
             onClick={() => onCreateChat()}
           >
-            <Plus className="size-4" aria-hidden="true" />
-            New Chat
+            <span className="grid size-7 shrink-0 place-items-center rounded-control border border-trace-strong/70 bg-answer-paper text-proof group-hover:border-proof/45">
+              {creatingChat ? (
+                <LoaderCircle className="size-3.5 animate-spin" aria-hidden="true" />
+              ) : (
+                <Plus className="size-3.5" aria-hidden="true" />
+              )}
+            </span>
+            <span className="min-w-0 flex-1 truncate">New chat</span>
           </button>
           <button
             ref={folderComposerTriggerRef}
-            className={`grid ${toolbarIconTarget} shrink-0 place-items-center rounded-control text-content-secondary hover:bg-surface-hover hover:text-content-primary disabled:cursor-not-allowed disabled:text-content-disabled disabled:opacity-60 ${focusRing} ${
-              folderComposerOpen ? "bg-surface-active text-accent-cyan" : "bg-surface-raised"
+            className={`grid ${toolbarIconTarget} shrink-0 place-items-center rounded-control text-ink-muted hover:bg-control-hover hover:text-ink disabled:cursor-not-allowed disabled:text-ink-disabled ${focusRing} ${
+              folderComposerOpen ? "bg-control-pressed text-proof" : ""
             }`}
             type="button"
             aria-label="New folder"
@@ -486,13 +504,16 @@ function LeftChatPaneComponent({
           </button>
         </div>
         {folderComposerOpen ? (
-          <div className="mt-2 flex items-center gap-1.5" data-testid="new-folder-form">
+          <div
+            className="mt-1 flex items-center gap-1 rounded-control bg-control-selected p-1"
+            data-testid="new-folder-form"
+          >
             <label className="sr-only" htmlFor={`${idPrefix}new-folder-name`}>
               Folder name
             </label>
             <input
               autoFocus
-              className={`${toolbarTarget} min-w-0 flex-1 rounded-control border border-separator-subtle bg-surface-thread px-3 text-sm text-content-primary placeholder:text-content-muted ${focusRing}`}
+              className={`${toolbarTarget} min-w-0 flex-1 rounded-control border border-trace-subtle bg-answer-paper px-3 text-sm text-ink placeholder:text-ink-muted ${focusRing}`}
               id={`${idPrefix}new-folder-name`}
               placeholder="Folder name"
               value={newFolderName}
@@ -518,7 +539,7 @@ function LeftChatPaneComponent({
               }}
             />
             <button
-              className={`grid ${toolbarIconTarget} place-items-center rounded-control bg-surface-raised text-content-secondary hover:bg-surface-hover hover:text-accent-cyan disabled:cursor-not-allowed disabled:text-content-disabled ${focusRing}`}
+              className={`grid ${toolbarIconTarget} place-items-center rounded-control text-ink-secondary hover:bg-control-hover hover:text-proof disabled:cursor-not-allowed disabled:text-ink-disabled ${focusRing}`}
               type="button"
               aria-label="Create folder"
               title="Create folder"
@@ -537,15 +558,15 @@ function LeftChatPaneComponent({
           </div>
         ) : null}
         <div
-          className={`mt-2 flex ${toolbarTarget} items-center gap-2 rounded-control border border-separator-subtle bg-surface-thread px-3 focus-within:border-accent-cyan/60 focus-within:ring-2 focus-within:ring-accent-cyan/25 ${workspaceReady ? "" : "opacity-60"}`}
+          className={`mt-2 flex ${toolbarTarget} items-center gap-2 rounded-control bg-control-surface px-3 ring-1 ring-transparent focus-within:bg-answer-paper focus-within:ring-proof/45 ${workspaceReady ? "" : "opacity-60"}`}
           data-testid="chat-search-control"
         >
-          <Search className="size-4 shrink-0 text-content-muted" aria-hidden="true" />
+          <Search className="size-4 shrink-0 text-ink-muted" aria-hidden="true" />
           <label className="sr-only" htmlFor={`${idPrefix}chat-search`}>
             Search chats
           </label>
           <input
-            className={`${toolbarTarget} min-w-0 flex-1 bg-transparent text-sm text-content-primary outline-none placeholder:text-content-muted disabled:cursor-not-allowed disabled:text-content-disabled`}
+            className={`${toolbarTarget} min-w-0 flex-1 bg-transparent text-sm text-ink outline-none placeholder:text-ink-muted disabled:cursor-not-allowed disabled:text-ink-disabled`}
             id={`${idPrefix}chat-search`}
             aria-label="Search chats"
             aria-describedby={queryActive ? `${idPrefix}chat-search-status` : undefined}
@@ -556,7 +577,7 @@ function LeftChatPaneComponent({
           />
           {chatQuery ? (
             <button
-              className={`-mr-2 grid ${searchClearTarget} shrink-0 place-items-center rounded-control text-content-muted hover:bg-surface-hover hover:text-content-primary ${focusRing}`}
+              className={`-mr-2 grid ${searchClearTarget} shrink-0 place-items-center rounded-control text-ink-muted hover:bg-control-hover hover:text-ink ${focusRing}`}
               type="button"
               aria-label="Clear chat search"
               title="Clear search"
@@ -570,7 +591,7 @@ function LeftChatPaneComponent({
 
       <nav
         ref={navigationRef}
-        className="min-h-0 flex-1 space-y-1 overflow-x-hidden overflow-y-auto px-2 py-3"
+        className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto px-2 pb-[max(0.75rem,env(safe-area-inset-bottom))]"
         aria-label="Workspace chats and folders"
         onScroll={(event) => {
           if (scrollTopRef) {
@@ -578,20 +599,40 @@ function LeftChatPaneComponent({
           }
         }}
       >
+        <div className="flex min-h-8 items-center justify-between gap-3 px-2 pb-1">
+          <span className="text-xs font-medium text-ink-muted">
+            {queryActive ? "Search results" : "History"}
+          </span>
+          {!queryActive && workspaceReady ? (
+            <span className="text-[11px] tabular-nums text-ink-muted">
+              {resultCount} {resultCount === 1 ? "chat" : "chats"}
+            </span>
+          ) : null}
+        </div>
         {workspaceLoading && !workspaceReady ? (
-          <div className="flex items-center gap-2 px-2 py-2 text-xs text-content-muted">
-            <LoaderCircle className="size-3.5 animate-spin" aria-hidden="true" />
-            Loading workspace…
+          <div className="space-y-2 px-2 py-2" data-testid="workspace-loading-state">
+            <div className="flex items-center gap-2 text-xs text-ink-muted">
+              <LoaderCircle className="size-3.5 animate-spin" aria-hidden="true" />
+              Loading workspace…
+            </div>
+            <div className="space-y-2" aria-hidden="true">
+              <div className="skeleton-block h-9 w-full" />
+              <div className="skeleton-block h-9 w-5/6" />
+              <div className="skeleton-block h-9 w-[92%]" />
+            </div>
           </div>
         ) : null}
         {workspaceError && !workspaceReady ? (
-          <div className="rounded-control bg-accent-rose/10 px-2 py-2 text-xs text-accent-rose" data-testid="left-workspace-unavailable">
+          <div
+            className="mx-2 border-l-2 border-critical px-3 py-1.5 text-xs leading-5 text-critical"
+            data-testid="left-workspace-unavailable"
+          >
             Chats unavailable. Use Retry in the conversation pane.
           </div>
         ) : null}
         {queryActive ? (
           <div
-            className={`px-2 pb-2 text-xs ${chatContentSearchError ? "text-accent-amber" : "text-content-muted"}`}
+            className={`px-2 pb-2 text-xs ${chatContentSearchError ? "text-caution" : "text-ink-muted"}`}
             id={`${idPrefix}chat-search-status`}
             data-testid="chat-search-status"
             role="status"
@@ -614,16 +655,16 @@ function LeftChatPaneComponent({
           const editingThisFolder = Boolean(group.folder && editingFolderId === group.folder.id);
           const folderChatCount = group.folder ? descendantChatCounts.get(group.folder.id) ?? group.chats.length : 0;
           const containsActiveChat = Boolean(group.folder && activeFolderTrail.has(group.folder.id));
-          const folderIndent = group.folder ? Math.min(group.depth, 5) * 12 : 0;
-          const chatIndent = group.folder ? folderIndent + 18 : 0;
+          const folderIndent = group.folder ? Math.min(group.depth, 5) * 10 : 0;
+          const chatIndent = group.folder ? folderIndent + 14 : 0;
           const menuId = group.folder ? `${idPrefix}folder-menu-${group.folder.id}` : undefined;
 
           return (
-            <section className="relative" key={folderKey}>
+            <section className="relative space-y-0.5" key={folderKey}>
               {group.folder ? (
                 editingThisFolder ? (
                   <div
-                    className="flex min-w-0 items-center gap-1 rounded-control bg-surface-active p-1"
+                    className="flex min-w-0 items-center gap-1 rounded-control bg-control-selected p-1"
                     style={{ marginLeft: folderIndent }}
                     data-testid="folder-rename-form"
                   >
@@ -632,7 +673,7 @@ function LeftChatPaneComponent({
                     </label>
                     <input
                       autoFocus
-                      className={`${inlineControlTarget} min-w-0 flex-1 rounded-control border border-separator-subtle bg-surface-thread px-2 text-sm text-content-primary ${focusRing}`}
+                      className={`${inlineControlTarget} min-w-0 flex-1 rounded-control border border-trace-subtle bg-answer-paper px-2 text-sm text-ink ${focusRing}`}
                       id={`${idPrefix}rename-folder-${group.folder.id}`}
                       aria-label={`Rename folder ${group.name}`}
                       value={editingFolderName}
@@ -654,7 +695,7 @@ function LeftChatPaneComponent({
                       }}
                     />
                     <button
-                      className={`grid ${inlineIconTarget} place-items-center rounded-control text-content-secondary hover:bg-surface-hover hover:text-accent-cyan disabled:text-content-disabled ${focusRing}`}
+                      className={`grid ${inlineIconTarget} place-items-center rounded-control text-ink-secondary hover:bg-control-hover hover:text-proof disabled:text-ink-disabled ${focusRing}`}
                       type="button"
                       aria-label={`Save folder ${group.name}`}
                       title={`Save folder ${group.name}`}
@@ -664,7 +705,7 @@ function LeftChatPaneComponent({
                       <Check className="size-3.5" aria-hidden="true" />
                     </button>
                     <button
-                      className={`grid ${inlineIconTarget} place-items-center rounded-control text-content-muted hover:bg-surface-hover hover:text-content-primary ${focusRing}`}
+                      className={`grid ${inlineIconTarget} place-items-center rounded-control text-ink-muted hover:bg-control-hover hover:text-ink ${focusRing}`}
                       type="button"
                       aria-label={`Cancel renaming folder ${group.name}`}
                       onClick={onCancelFolderEdit}
@@ -674,13 +715,15 @@ function LeftChatPaneComponent({
                   </div>
                 ) : (
                   <div
-                    className="group/folder flex min-w-0 items-center rounded-control hover:bg-surface-hover focus-within:bg-surface-hover"
+                    className={`group/folder relative flex min-w-0 items-center rounded-control hover:bg-control-hover focus-within:bg-control-hover ${
+                      containsActiveChat ? "text-ink" : "text-ink-secondary"
+                    }`}
                     style={{ marginLeft: folderIndent }}
                     data-testid="folder-row"
                     data-active-descendant={containsActiveChat || undefined}
                   >
                     <button
-                      className={`flex ${touchTarget} min-w-0 flex-1 items-center gap-1.5 rounded-control px-1.5 text-left text-content-secondary hover:text-content-primary ${focusRing}`}
+                      className={`flex ${touchTarget} min-w-0 flex-1 items-center gap-1.5 rounded-control px-1.5 text-left hover:text-ink ${focusRing}`}
                       type="button"
                       aria-expanded={!collapsed}
                       aria-label={`${collapsed ? "Expand" : "Collapse"} folder ${group.name}, ${folderChatCount} ${folderChatCount === 1 ? "chat" : "chats"}${group.folder.projectMemory.trim() ? ", project memory configured" : ""}${containsActiveChat ? ", contains active chat" : ""}`}
@@ -692,17 +735,17 @@ function LeftChatPaneComponent({
                       ) : (
                         <ChevronDown className="size-3.5 shrink-0" aria-hidden="true" />
                       )}
-                      <Folder className="size-3.5 shrink-0 text-content-muted" aria-hidden="true" />
-                      <span className="min-w-0 flex-1 truncate text-sm" title={group.name}>
+                      <Folder
+                        className={`size-3.5 shrink-0 ${containsActiveChat ? "text-proof" : "text-ink-muted"}`}
+                        aria-hidden="true"
+                      />
+                      <span className="min-w-0 flex-1 truncate text-[13px] font-medium" title={group.name}>
                         {group.name}
                       </span>
                       {group.folder.projectMemory.trim() ? (
-                        <span className="size-1.5 shrink-0 rounded-pill bg-accent-green" title="Project memory configured" />
+                        <span className="size-1.5 shrink-0 rounded-pill bg-positive" title="Project memory configured" />
                       ) : null}
-                      {containsActiveChat ? (
-                        <span className="size-1.5 shrink-0 rounded-pill bg-accent-cyan" title="Contains active chat" />
-                      ) : null}
-                      <span className="shrink-0 text-[11px] tabular-nums text-content-muted" aria-hidden="true">
+                      <span className="shrink-0 text-[11px] tabular-nums text-ink-muted" aria-hidden="true">
                         {folderChatCount}
                       </span>
                     </button>
@@ -712,7 +755,7 @@ function LeftChatPaneComponent({
                           lastMenuTriggerRef.current = element;
                         }
                       }}
-                      className={`grid ${layout === "mobile" ? "size-11" : "size-9 [@media(hover:none)]:!size-11 [@media(pointer:coarse)]:!size-11"} shrink-0 place-items-center rounded-control text-content-muted hover:bg-surface-active hover:text-content-primary ${focusRing}`}
+                      className={`grid ${layout === "mobile" ? "size-11" : "size-9 [@media(hover:none)]:!size-11 [@media(pointer:coarse)]:!size-11"} shrink-0 place-items-center rounded-control text-ink-muted hover:bg-control-pressed hover:text-ink ${focusRing}`}
                       type="button"
                       aria-label={`Folder actions ${group.name}`}
                       aria-expanded={folderMenuId === group.folder.id}
@@ -740,23 +783,23 @@ function LeftChatPaneComponent({
                       menuSurfaceRefs.current.delete(key);
                     }
                   }}
-                  className="pop-enter relative z-20 my-1 max-h-[min(25rem,calc(100dvh-12rem))] overflow-y-auto overscroll-contain rounded-panel border border-separator-subtle bg-surface-overlay p-2 text-sm shadow-overlay"
+                  className={menuSurface}
                   id={menuId}
                   role="dialog"
                   aria-label={`Folder actions for ${group.name}`}
                   aria-modal="false"
                   data-left-pane-menu="true"
                 >
-                  <div className="mb-1 border-b border-separator-subtle px-2 pb-2">
-                    <div className="truncate text-sm font-medium text-content-primary" title={group.name}>
+                  <div className="mb-1 border-b border-trace-subtle px-2 pb-2 pt-1">
+                    <div className="truncate text-sm font-medium text-ink" title={group.name}>
                       {group.name}
                     </div>
-                    <div className="mt-0.5 text-[11px] text-content-muted">
+                    <div className="mt-0.5 text-[11px] text-ink-muted">
                       {group.folder.projectMemory.trim() ? "Project memory configured" : "No project memory"}
                     </div>
                   </div>
                   <button
-                    className={`flex ${menuActionTarget} w-full items-center gap-2 rounded-control px-2 text-left text-content-secondary hover:bg-surface-hover hover:text-content-primary ${focusRing}`}
+                    className={`flex ${menuActionTarget} w-full items-center gap-2 rounded-control px-2 text-left text-ink-secondary hover:bg-control-hover hover:text-ink ${focusRing}`}
                     type="button"
                     data-menu-initial-focus="true"
                     onClick={() => {
@@ -764,27 +807,27 @@ function LeftChatPaneComponent({
                       onCreateChat(group.folder?.id ?? null);
                     }}
                   >
-                    <Plus className="size-4 text-content-muted" aria-hidden="true" />
+                    <Plus className="size-4 text-ink-muted" aria-hidden="true" />
                     New chat
                   </button>
                   <button
                     ref={subfolderTriggerRef}
-                    className={`flex ${menuActionTarget} w-full items-center gap-2 rounded-control px-2 text-left text-content-secondary hover:bg-surface-hover hover:text-content-primary ${focusRing}`}
+                    className={`flex ${menuActionTarget} w-full items-center gap-2 rounded-control px-2 text-left text-ink-secondary hover:bg-control-hover hover:text-ink ${focusRing}`}
                     type="button"
                     onClick={() => onStartSubfolder(group.folder!)}
                   >
-                    <FolderPlus className="size-4 text-content-muted" aria-hidden="true" />
+                    <FolderPlus className="size-4 text-ink-muted" aria-hidden="true" />
                     New subfolder
                   </button>
                   {subfolderParentId === group.folder.id ? (
-                    <div className="my-1 flex items-center gap-1 rounded-control bg-surface-thread p-1">
+                    <div className="my-1 flex items-center gap-1 rounded-control bg-control-selected p-1">
                       <label className="sr-only" htmlFor={`${idPrefix}subfolder-name-${group.folder.id}`}>
                         Subfolder name
                       </label>
                       <input
                         autoFocus
                         ref={subfolderInputRef}
-                        className={`${inlineControlTarget} min-w-0 flex-1 rounded-control border border-separator-subtle bg-surface-thread px-2 text-sm text-content-primary ${focusRing}`}
+                        className={`${inlineControlTarget} min-w-0 flex-1 rounded-control border border-trace-subtle bg-answer-paper px-2 text-sm text-ink ${focusRing}`}
                         id={`${idPrefix}subfolder-name-${group.folder.id}`}
                         aria-label={`Subfolder name for ${group.name}`}
                         placeholder="Subfolder name"
@@ -807,7 +850,7 @@ function LeftChatPaneComponent({
                         }}
                       />
                       <button
-                        className={`grid ${inlineIconTarget} place-items-center rounded-control text-content-secondary hover:bg-surface-hover hover:text-accent-cyan disabled:text-content-disabled ${focusRing}`}
+                        className={`grid ${inlineIconTarget} place-items-center rounded-control text-ink-secondary hover:bg-control-hover hover:text-proof disabled:text-ink-disabled ${focusRing}`}
                         type="button"
                         aria-label={`Create subfolder in ${group.name}`}
                         disabled={!subfolderName.trim() || creatingFolder}
@@ -816,7 +859,7 @@ function LeftChatPaneComponent({
                         <Check className="size-3.5" aria-hidden="true" />
                       </button>
                       <button
-                        className={`grid ${inlineIconTarget} place-items-center rounded-control text-content-muted hover:bg-surface-hover hover:text-content-primary ${focusRing}`}
+                        className={`grid ${inlineIconTarget} place-items-center rounded-control text-ink-muted hover:bg-control-hover hover:text-ink ${focusRing}`}
                         type="button"
                         aria-label={`Cancel subfolder in ${group.name}`}
                         onClick={cancelSubfolder}
@@ -826,25 +869,25 @@ function LeftChatPaneComponent({
                     </div>
                   ) : null}
                   <button
-                    className={`flex ${menuActionTarget} w-full items-center gap-2 rounded-control px-2 text-left text-content-secondary hover:bg-surface-hover hover:text-content-primary ${focusRing}`}
+                    className={`flex ${menuActionTarget} w-full items-center gap-2 rounded-control px-2 text-left text-ink-secondary hover:bg-control-hover hover:text-ink ${focusRing}`}
                     type="button"
                     onClick={() => onOpenProjectSettings(group.folder!)}
                   >
-                    <Settings className="size-4 text-content-muted" aria-hidden="true" />
+                    <Settings className="size-4 text-ink-muted" aria-hidden="true" />
                     Project settings
                   </button>
                   <button
-                    className={`flex ${menuActionTarget} w-full items-center gap-2 rounded-control px-2 text-left text-content-secondary hover:bg-surface-hover hover:text-content-primary ${focusRing}`}
+                    className={`flex ${menuActionTarget} w-full items-center gap-2 rounded-control px-2 text-left text-ink-secondary hover:bg-control-hover hover:text-ink ${focusRing}`}
                     type="button"
                     onClick={() => onStartFolderEdit(group.folder!)}
                   >
-                    <Pencil className="size-4 text-content-muted" aria-hidden="true" />
+                    <Pencil className="size-4 text-ink-muted" aria-hidden="true" />
                     Rename
                   </button>
-                  <label className="mt-1 block space-y-1 px-2 py-1 text-xs text-content-muted">
+                  <label className="mt-1 block space-y-1 px-2 py-1 text-xs text-ink-muted">
                     <span>Move to folder</span>
                     <select
-                      className={`${menuSelectTarget} w-full rounded-control border border-separator-subtle bg-surface-thread px-2 text-sm text-content-primary ${focusRing}`}
+                      className={`${menuSelectTarget} w-full rounded-control border border-trace-subtle bg-control-surface px-2 text-sm text-ink ${focusRing}`}
                       aria-label={`Move folder ${group.name} to folder`}
                       disabled={folderActionId === group.folder.id}
                       value={group.folder.parentId ?? ""}
@@ -864,9 +907,9 @@ function LeftChatPaneComponent({
                         ))}
                     </select>
                   </label>
-                  <div className="mt-1 border-t border-separator-subtle pt-1">
+                  <div className="mt-1 border-t border-trace-subtle pt-1">
                     <button
-                      className={`flex ${menuActionTarget} w-full items-center gap-2 rounded-control px-2 text-left text-accent-rose hover:bg-accent-rose/10 disabled:cursor-not-allowed disabled:text-content-disabled ${focusRing}`}
+                      className={`flex ${menuActionTarget} w-full items-center gap-2 rounded-control px-2 text-left text-critical hover:bg-critical/10 disabled:cursor-not-allowed disabled:text-ink-disabled ${focusRing}`}
                       type="button"
                       disabled={folderActionId === group.folder.id}
                       onClick={() => onDeleteFolder(group.folder!)}
@@ -936,7 +979,7 @@ function LeftChatPaneComponent({
                       >
                         {editingThisChat ? (
                           <div
-                            className="flex items-center gap-1 rounded-control bg-surface-active p-1"
+                            className="flex items-center gap-1 rounded-control bg-control-selected p-1"
                             data-testid="chat-rename-form"
                           >
                             <label className="sr-only" htmlFor={`${idPrefix}rename-chat-${chat.id}`}>
@@ -944,7 +987,7 @@ function LeftChatPaneComponent({
                             </label>
                             <input
                               autoFocus
-                              className={`${inlineControlTarget} min-w-0 flex-1 rounded-control border border-separator-subtle bg-surface-thread px-2 text-sm text-content-primary ${focusRing}`}
+                              className={`${inlineControlTarget} min-w-0 flex-1 rounded-control border border-trace-subtle bg-answer-paper px-2 text-sm text-ink ${focusRing}`}
                               id={`${idPrefix}rename-chat-${chat.id}`}
                               aria-label={`Edit title ${chat.title}`}
                               value={editingChatTitle}
@@ -966,7 +1009,7 @@ function LeftChatPaneComponent({
                               }}
                             />
                             <button
-                              className={`grid ${inlineIconTarget} place-items-center rounded-control text-content-secondary hover:bg-surface-hover hover:text-accent-cyan disabled:text-content-disabled ${focusRing}`}
+                              className={`grid ${inlineIconTarget} place-items-center rounded-control text-ink-secondary hover:bg-control-hover hover:text-proof disabled:text-ink-disabled ${focusRing}`}
                               type="button"
                               aria-label={`Save title ${chat.title}`}
                               disabled={!editingChatTitle.trim()}
@@ -975,7 +1018,7 @@ function LeftChatPaneComponent({
                               <Check className="size-3.5" aria-hidden="true" />
                             </button>
                             <button
-                              className={`grid ${inlineIconTarget} place-items-center rounded-control text-content-muted hover:bg-surface-hover hover:text-content-primary ${focusRing}`}
+                              className={`grid ${inlineIconTarget} place-items-center rounded-control text-ink-muted hover:bg-control-hover hover:text-ink ${focusRing}`}
                               type="button"
                               aria-label={`Cancel renaming ${chat.title}`}
                               onClick={onCancelChatEdit}
@@ -985,18 +1028,24 @@ function LeftChatPaneComponent({
                           </div>
                         ) : (
                           <div
-                            className={`group/chat flex min-w-0 items-stretch rounded-control ${
+                            className={`group/chat relative flex min-w-0 items-stretch rounded-control ${
                               active
-                                ? "bg-surface-selected text-content-primary"
-                                : "text-content-secondary hover:bg-surface-hover hover:text-content-primary focus-within:bg-surface-hover"
+                                ? "bg-control-selected text-ink"
+                                : "text-ink-secondary hover:bg-control-hover hover:text-ink focus-within:bg-control-hover"
                             }`}
                             data-testid="chat-row"
                             data-active={active || undefined}
                             data-favorite={favorite || undefined}
                             data-unavailable={unavailable || undefined}
                           >
+                            {active ? (
+                              <span
+                                className="absolute bottom-2 left-0 top-2 w-0.5 rounded-pill bg-proof"
+                                data-testid="active-chat-marker"
+                              />
+                            ) : null}
                             <button
-                              className={`flex ${touchTarget} min-w-0 flex-1 flex-col justify-center rounded-control px-2 py-1.5 text-left ${focusRing}`}
+                              className={`flex ${touchTarget} min-w-0 flex-1 flex-col justify-center rounded-control px-2 py-1 text-left ${focusRing}`}
                               type="button"
                               aria-current={active ? "page" : undefined}
                               aria-describedby={rowStatus ? rowStatusId : undefined}
@@ -1006,22 +1055,22 @@ function LeftChatPaneComponent({
                             >
                               <span className="flex min-w-0 items-center gap-1.5">
                                 {running ? (
-                                  <span
-                                    className="size-1.5 shrink-0 rounded-pill bg-accent-cyan motion-safe:animate-pulse"
+                                  <LoaderCircle
+                                    className="size-3 shrink-0 animate-spin text-proof"
                                     aria-hidden="true"
                                   />
                                 ) : null}
-                                <span className="min-w-0 flex-1 overflow-hidden text-sm leading-5 text-content-primary [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:2]">
+                                <span className="min-w-0 flex-1 truncate text-[13px] leading-5 text-ink">
                                   {chat.title}
                                 </span>
                                 {favorite ? (
                                   <span title="Favorite">
-                                    <Star className="size-3 shrink-0 fill-current text-accent-cyan" aria-hidden="true" />
+                                    <Star className="size-3 shrink-0 fill-current text-proof" aria-hidden="true" />
                                   </span>
                                 ) : null}
                               </span>
                               {showMetadata || matchLabel ? (
-                                <span className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[11px] leading-4 text-content-muted">
+                                <span className="flex min-w-0 items-center gap-1.5 text-[11px] leading-4 text-ink-muted">
                                   {showMetadata ? (
                                     <span className="min-w-0 truncate" title={`${providerModel} · Updated ${updated}`}>
                                       {providerModel}
@@ -1030,7 +1079,7 @@ function LeftChatPaneComponent({
                                   ) : null}
                                   {unavailable ? (
                                     <span
-                                      className="shrink-0 text-accent-amber"
+                                      className="shrink-0 text-caution"
                                       title="Unavailable for new runs"
                                       aria-hidden="true"
                                     >
@@ -1038,7 +1087,7 @@ function LeftChatPaneComponent({
                                     </span>
                                   ) : null}
                                   {matchLabel ? (
-                                    <span className="shrink-0 text-accent-cyan" aria-hidden="true">
+                                    <span className="shrink-0 text-proof" aria-hidden="true">
                                       {matchLabel}
                                     </span>
                                   ) : null}
@@ -1064,7 +1113,7 @@ function LeftChatPaneComponent({
                                     lastMenuTriggerRef.current = element;
                                   }
                                 }}
-                                className={`grid ${chatOverflowTarget} shrink-0 place-items-center rounded-control text-content-muted hover:bg-surface-active hover:text-content-primary ${focusRing}`}
+                                className={`grid ${chatOverflowTarget} shrink-0 place-items-center rounded-control text-ink-muted hover:bg-control-pressed hover:text-ink ${focusRing}`}
                                 type="button"
                                 aria-label={`Chat actions ${chat.title}`}
                                 aria-expanded={chatActionId === chat.id}
@@ -1092,47 +1141,47 @@ function LeftChatPaneComponent({
                                 menuSurfaceRefs.current.delete(key);
                               }
                             }}
-                            className="pop-enter relative z-20 my-1 max-h-[min(25rem,calc(100dvh-12rem))] overflow-y-auto overscroll-contain rounded-panel border border-separator-subtle bg-surface-overlay p-2 text-sm shadow-overlay"
+                            className={menuSurface}
                             id={chatMenuId}
                             role="dialog"
                             aria-label={`Actions for ${chat.title}`}
                             aria-modal="false"
                             data-left-pane-menu="true"
                           >
-                            <div className="mb-1 border-b border-separator-subtle px-2 pb-2">
-                              <div className="truncate text-sm font-medium text-content-primary" title={chat.title}>
+                            <div className="mb-1 border-b border-trace-subtle px-2 pb-2 pt-1">
+                              <div className="truncate text-sm font-medium text-ink" title={chat.title}>
                                 {chat.title}
                               </div>
-                              <div className="mt-0.5 truncate text-[11px] text-content-muted" title={providerModel}>
+                              <div className="mt-0.5 truncate text-[11px] text-ink-muted" title={providerModel}>
                                 {providerModel}
                                 {running ? " · Response running" : unavailable ? " · Unavailable for new runs" : ""}
                               </div>
                             </div>
                             <button
-                              className={`flex ${menuActionTarget} w-full items-center gap-2 rounded-control px-2 text-left text-content-secondary hover:bg-surface-hover hover:text-content-primary ${focusRing}`}
+                              className={`flex ${menuActionTarget} w-full items-center gap-2 rounded-control px-2 text-left text-ink-secondary hover:bg-control-hover hover:text-ink ${focusRing}`}
                               type="button"
                               aria-pressed={favorite}
                               data-menu-initial-focus="true"
                               onClick={() => onToggleChatFavorite(chat)}
                             >
                               <Star
-                                className={`size-4 text-content-muted ${favorite ? "fill-current text-accent-cyan" : ""}`}
+                                className={`size-4 text-ink-muted ${favorite ? "fill-current text-proof" : ""}`}
                                 aria-hidden="true"
                               />
                               {favorite ? "Remove from favorites" : "Add to favorites"}
                             </button>
                             <button
-                              className={`flex ${menuActionTarget} w-full items-center gap-2 rounded-control px-2 text-left text-content-secondary hover:bg-surface-hover hover:text-content-primary ${focusRing}`}
+                              className={`flex ${menuActionTarget} w-full items-center gap-2 rounded-control px-2 text-left text-ink-secondary hover:bg-control-hover hover:text-ink ${focusRing}`}
                               type="button"
                               onClick={() => onStartChatEdit(chat)}
                             >
-                              <Pencil className="size-4 text-content-muted" aria-hidden="true" />
+                              <Pencil className="size-4 text-ink-muted" aria-hidden="true" />
                               Rename
                             </button>
-                            <label className="mt-1 block space-y-1 px-2 py-1 text-xs text-content-muted">
+                            <label className="mt-1 block space-y-1 px-2 py-1 text-xs text-ink-muted">
                               <span>Move to folder</span>
                               <select
-                                className={`${menuSelectTarget} w-full rounded-control border border-separator-subtle bg-surface-thread px-2 text-sm text-content-primary ${focusRing}`}
+                                className={`${menuSelectTarget} w-full rounded-control border border-trace-subtle bg-control-surface px-2 text-sm text-ink ${focusRing}`}
                                 aria-label={`Move chat ${chat.title} to folder`}
                                 value={chat.folderId ?? ""}
                                 onChange={(event) => onMoveChat(chat.id, event.target.value || null)}
@@ -1146,25 +1195,25 @@ function LeftChatPaneComponent({
                               </select>
                             </label>
                             <button
-                              className={`flex ${menuActionTarget} w-full items-center gap-2 rounded-control px-2 text-left text-content-secondary hover:bg-surface-hover hover:text-content-primary ${focusRing}`}
+                              className={`flex ${menuActionTarget} w-full items-center gap-2 rounded-control px-2 text-left text-ink-secondary hover:bg-control-hover hover:text-ink disabled:text-ink-disabled ${focusRing}`}
                               type="button"
                               onClick={() => onShareChat(chat)}
                               disabled={sharing}
                             >
-                              <Share2 className="size-4 text-content-muted" aria-hidden="true" />
+                              <Share2 className="size-4 text-ink-muted" aria-hidden="true" />
                               Share
                             </button>
                             <button
-                              className={`flex ${menuActionTarget} w-full items-center gap-2 rounded-control px-2 text-left text-content-secondary hover:bg-surface-hover hover:text-content-primary ${focusRing}`}
+                              className={`flex ${menuActionTarget} w-full items-center gap-2 rounded-control px-2 text-left text-ink-secondary hover:bg-control-hover hover:text-ink ${focusRing}`}
                               type="button"
                               onClick={() => onExportChat(chat)}
                             >
-                              <Download className="size-4 text-content-muted" aria-hidden="true" />
+                              <Download className="size-4 text-ink-muted" aria-hidden="true" />
                               Export
                             </button>
-                            <div className="mt-1 border-t border-separator-subtle pt-1">
+                            <div className="mt-1 border-t border-trace-subtle pt-1">
                               <button
-                                className={`flex ${menuActionTarget} w-full items-center gap-2 rounded-control px-2 text-left text-accent-rose hover:bg-accent-rose/10 ${focusRing}`}
+                                className={`flex ${menuActionTarget} w-full items-center gap-2 rounded-control px-2 text-left text-critical hover:bg-critical/10 ${focusRing}`}
                                 type="button"
                                 onClick={() => onDeleteChat(chat)}
                               >
@@ -1184,8 +1233,13 @@ function LeftChatPaneComponent({
         })}
 
         {chatGroups.length === 0 && workspaceReady && !workspaceLoading && !chatContentSearchLoading ? (
-          <div className="mx-1 rounded-control border border-dashed border-separator-subtle px-3 py-4 text-sm text-content-muted">
-            {queryActive ? "No title or model matches" : "No chats yet"}
+          <div className="px-5 py-10 text-center" data-testid="workspace-empty-state">
+            <p className="text-sm font-medium text-ink-secondary">
+              {queryActive ? "No title or model matches" : "No chats yet"}
+            </p>
+            <p className="mt-1 text-xs leading-5 text-ink-muted">
+              {queryActive ? "Try a different title, model, or phrase." : "New conversations will appear here."}
+            </p>
           </div>
         ) : null}
       </nav>

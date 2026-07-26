@@ -2,13 +2,14 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 
 const defaultPinnedThresholdPx = 96;
 const defaultUnseenLatestThresholdPx = 48;
-const defaultReadingContextMinPx = 48;
-const defaultReadingContextMaxPx = 112;
-const defaultReadingContextViewportRatio = 0.18;
+const defaultReadingContextMinPx = 96;
+const defaultReadingContextMaxPx = 220;
+const defaultReadingContextViewportRatio = 0.42;
 
 type ScrollMetrics = Pick<HTMLElement, "clientHeight" | "scrollHeight" | "scrollTop">;
 
 const threadMessageSelector = "[data-message-id]";
+const threadMessageContentSelector = "[data-thread-message-content]";
 const readingSpacerSelector = "[data-thread-reading-spacer]";
 
 export function isPinnedToBottom(element: ScrollMetrics, thresholdPx = defaultPinnedThresholdPx): boolean {
@@ -26,7 +27,8 @@ export function hasUnseenLatestMessageContent(
   }
 
   const containerBottom = element.getBoundingClientRect().bottom;
-  const latestMessageBottom = latestMessage.getBoundingClientRect().bottom;
+  const latestMessageContent = latestMessage.querySelector<HTMLElement>(threadMessageContentSelector);
+  const latestMessageBottom = (latestMessageContent ?? latestMessage).getBoundingClientRect().bottom;
   return (
     Number.isFinite(containerBottom) &&
     Number.isFinite(latestMessageBottom) &&

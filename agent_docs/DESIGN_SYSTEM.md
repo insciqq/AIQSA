@@ -161,7 +161,7 @@ The resting composer contains:
 3. a text-backed Run summary;
 4. Send, or an addressable Stop while cancellation is available.
 
-The Run summary states exact Model, derived Profile or Custom/unavailable, Reasoning mode/effort, and Search or Off. It opens the complete setup in one action. Wider containers may reveal direct high-frequency choices, but may not create another state owner or turn the resting composer into a permanent settings panel. Fast/Balanced/Deep remain one-tap only when entitled and available.
+The Run summary states exact Model, derived Profile or Custom/unavailable, Reasoning mode/effort, and Search or Off. It opens the complete setup in one action and keeps the same hierarchy at every width; wrapping may change, meaning and ownership do not. Fast/Balanced/Deep appear at the start of setup only when entitled and configured.
 
 Attachment progress, partial failure, edit-branch intent, context warning, unavailable catalog, and send/run errors appear next to the control that can resolve them. The composer remains reachable above the software keyboard and safe-area inset.
 

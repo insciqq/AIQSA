@@ -44,36 +44,38 @@ describe("Composer", () => {
     expect(form).toContainElement(surface);
     expect(messageField).toContainElement(messageLabel);
     expect(messageField).toContainElement(textarea);
-    expect(messageLabel).toHaveClass("max-sm:sr-only", "[@media(max-height:32rem)]:sr-only");
     expect(messageLabel).toHaveAttribute("for", "composer");
-    expect(messageField).toHaveClass("bg-surface-thread", "focus-within:ring-2");
-    expect(messageField).not.toHaveClass("[@media(max-height:32rem)]:!grid");
-    expect(surface).not.toHaveClass("focus-within:ring-2");
+    expect(surface).toHaveClass("bg-composer-surface", "border-trace-strong/70");
+    expect(messageField).toHaveClass("px-4", "pt-3");
     expect(surface).toContainElement(textarea);
     expect(surface).toContainElement(screen.getByRole("list", { name: "Attachments" }));
     expect(surface).toContainElement(controls);
     expect(surface).toContainElement(send);
     expect(form).toHaveClass("sm:pb-[max(.75rem,env(safe-area-inset-bottom))]");
     expect(form).toHaveClass("[@media(max-height:32rem)]:!pt-1");
-    expect(controls).toHaveClass("[@media(max-height:32rem)]:!p-1.5");
-    expect(textarea).toHaveClass("[@media(max-height:32rem)]:!min-h-11");
-    expect(textarea).toHaveClass("[@media(max-height:32rem)]:!max-h-16");
-    expect(textarea).toHaveClass("mt-0", "sm:mt-1");
+    expect(controls).toHaveClass("flex", "flex-[1_1_22rem]");
+    expect(textarea).toHaveClass(
+      "min-h-14",
+      "sm:min-h-[72px]",
+      "[@media(max-height:32rem)]:!min-h-10",
+      "[@media(max-height:32rem)]:!max-h-20"
+    );
     expect(screen.getByRole("list", { name: "Attachments" })).toHaveClass(
-      "[@media(max-height:32rem)]:!flex-nowrap",
-      "[@media(max-height:32rem)]:!overflow-x-auto"
+      "[@media(max-height:32rem)]:!max-h-12",
+      "[@media(max-height:32rem)]:!flex-nowrap"
     );
     expect(textarea).toHaveAttribute("placeholder", "Ask AIQSA…");
     expect(send).toHaveTextContent("Send");
+    expect(screen.getByText("Attach", { selector: "span" })).toBeVisible();
     expect(send).toHaveClass(
       "h-touch",
       "min-w-[72px]",
-      "sm:min-w-[92px]",
-      "[@media(max-height:32rem)]:!min-w-[72px]"
+      "bg-proof",
+      "text-proof-contrast"
     );
   });
 
-  it("keeps context, attachment, and Send in one compact action footer", () => {
+  it("keeps controls, Usage, attachment, and Send in one coherent action row", () => {
     render(
       <Composer
         attachments={[]}
@@ -87,99 +89,35 @@ describe("Composer", () => {
     );
 
     const footer = screen.getByTestId("composer-action-footer");
-    const context = screen.getByTestId("current-context-length");
-    expect(footer).toHaveClass("grid-cols-[minmax(0,1fr)_auto]", "items-center");
-    expect(footer).toContainElement(context);
-    expect(footer).toContainElement(screen.getByLabelText("Attach file").closest("label"));
+    const primaryActions = screen.getByTestId("composer-primary-actions");
+    const attachControl = screen.getByLabelText("Attach file").closest("label");
+    expect(footer).toHaveClass("flex", "flex-wrap", "border-trace-subtle");
+    expect(footer).toContainElement(screen.getByRole("button", { name: "Open context and usage statistics" }));
+    expect(footer).toContainElement(attachControl);
+    expect(attachControl).toHaveTextContent("Attach");
     expect(footer).toContainElement(screen.getByRole("button", { name: "Send message" }));
-    expect(context).toHaveTextContent("~21k / 817k safe input · 1.05m total context");
-    expect(context).toHaveAccessibleName("Approx. input: ~21k / 817k safe input · 1.05m total context");
+    expect(primaryActions).toContainElement(attachControl);
+    expect(primaryActions).toContainElement(screen.getByRole("button", { name: "Send message" }));
+    expect(screen.queryByTestId("current-context-length")).not.toBeInTheDocument();
   });
 
-  it("keeps only the Message plane exposed while compact reading controls are collapsed", () => {
-    const onRequestExpanded = vi.fn();
+  it("keeps the resting controls and action available without a reading-collapse state", () => {
     render(
       <Composer
         attachments={[]}
-        compactProfileControls={<button type="button">Fast</button>}
-        contextLine="Approx. input: ~21k / 817k safe input · 1.05m total context"
         controls={<button type="button">Run setup</button>}
         onChange={() => undefined}
         onRemoveAttachment={() => undefined}
-        onRequestExpanded={onRequestExpanded}
         onSend={() => undefined}
-        readingCollapsed
         value=""
       />
     );
 
-    expect(screen.getByTestId("composer-form")).toHaveAttribute(
-      "data-reading-collapsed",
-      "true"
-    );
-    expect(screen.getByTestId("composer-message-field")).toHaveClass(
-      "mb-2",
-      "grid",
-      "grid-cols-[minmax(0,1fr)_auto]"
-    );
-    for (const disclosure of [
-      screen.getByTestId("composer-controls-disclosure"),
-      screen.getByTestId("composer-actions-disclosure")
-    ]) {
-      expect(disclosure).toHaveAttribute("aria-hidden", "true");
-      expect(disclosure).toHaveAttribute("inert");
-      expect(disclosure).toHaveClass(
-        "grid-rows-[0fr]",
-        "opacity-0",
-        "transition-[grid-template-rows,opacity]",
-        "motion-reduce:transition-none"
-      );
-    }
-    expect(screen.getByRole("textbox", { name: "Message" })).toBeVisible();
-    expect(screen.queryByRole("button", { name: "Send message" })).not.toBeInTheDocument();
-    expect(screen.getByTestId("composer-action-footer").querySelector('button[type="submit"]')).not.toBeNull();
-
-    const message = screen.getByRole("textbox", { name: "Message" });
-    fireEvent.pointerDown(message);
-    fireEvent.focus(message);
-    expect(onRequestExpanded).not.toHaveBeenCalled();
-    fireEvent.click(message);
-    expect(onRequestExpanded).toHaveBeenCalledOnce();
-
-    fireEvent.blur(message);
-    fireEvent.focus(message);
-    expect(onRequestExpanded).toHaveBeenCalledTimes(2);
-  });
-
-  it("keeps a labeled Stop action beside Message in collapsed streaming reading mode", () => {
-    const onRequestExpanded = vi.fn();
-    const onStop = vi.fn();
-    render(
-      <Composer
-        attachments={[]}
-        contextLine="Approx. input: ~21k / 817k safe input · 1.05m total context"
-        controls={<button type="button">Run setup</button>}
-        onChange={() => undefined}
-        onRemoveAttachment={() => undefined}
-        onRequestExpanded={onRequestExpanded}
-        onSend={() => undefined}
-        onStop={onStop}
-        readingCollapsed
-        streaming
-        value=""
-      />
-    );
-
-    const stop = screen.getByTestId("composer-reading-stop");
-    expect(stop).toHaveAccessibleName("Stop response");
-    expect(stop).toHaveTextContent("Stop");
-    expect(stop).toHaveClass("h-touch", "min-w-[72px]");
-    fireEvent.focus(stop);
-    fireEvent.pointerDown(stop);
-    fireEvent.click(stop);
-    expect(onRequestExpanded).not.toHaveBeenCalled();
-    expect(onStop).toHaveBeenCalledOnce();
-    expect(screen.queryByRole("button", { name: "Send message" })).not.toBeInTheDocument();
+    expect(screen.getByTestId("composer-form")).not.toHaveAttribute("data-reading-collapsed");
+    expect(screen.getByRole("button", { name: "Run setup" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Send message" })).toBeVisible();
+    expect(screen.queryByTestId("composer-controls-disclosure")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("composer-actions-disclosure")).not.toBeInTheDocument();
   });
 
   it("sends on Enter and keeps Shift+Enter for new lines", () => {
@@ -282,7 +220,7 @@ describe("Composer", () => {
     expect(attachment).toHaveAccessibleDescription("No model is available for this account.");
     expect(attachmentControl).toHaveAttribute("aria-disabled", "true");
     expect(attachmentControl).toHaveAttribute("data-disabled", "true");
-    expect(attachmentControl).toHaveClass("cursor-not-allowed", "text-content-disabled", "opacity-60");
+    expect(attachmentControl).toHaveClass("cursor-not-allowed", "text-ink-disabled", "opacity-60");
     expect(attachmentControl).toHaveAttribute("title", "No model is available for this account.");
   });
 
@@ -373,7 +311,7 @@ describe("Composer", () => {
     expect(screen.getByTestId("edit-branch-strip")).toHaveTextContent(
       "Editing a message — Send creates a new branch"
     );
-    expect(screen.getByTestId("edit-branch-strip")).toHaveClass("[@media(max-height:32rem)]:!py-0");
+    expect(screen.getByTestId("edit-branch-strip")).toHaveClass("border-proof/20", "text-proof");
     expect(screen.getByRole("list", { name: "Attachments" })).toBeVisible();
     expect(screen.getByTestId("attachment-chip")).toHaveAttribute("title", "branch-source.pdf");
 
@@ -648,17 +586,10 @@ describe("Composer", () => {
     expect(dropZone).not.toHaveAttribute("data-drop-active");
   });
 
-  it("keeps wider context inline and moves compact context into touch-safe statistics", async () => {
+  it("keeps exact context and usage behind one compact action-row disclosure", async () => {
     render(
       <Composer
         attachments={[]}
-        compactProfileControls={
-          <div role="group" aria-label="Run profile">
-            <button type="button">Fast</button>
-            <button type="button">Balanced</button>
-            <button type="button">Deep</button>
-          </div>
-        }
         contextLine="Approx. input: ~121.9k / 232k safe input · 400k total context"
         onChange={() => undefined}
         onRemoveAttachment={() => undefined}
@@ -673,27 +604,12 @@ describe("Composer", () => {
       />
     );
 
-    expect(screen.getByTestId("current-context-length")).toHaveTextContent(
-      "~121.9k / 232k safe input · 400k total context"
-    );
-    expect(screen.getByTestId("current-context-length")).toHaveAccessibleName(
-      "Approx. input: ~121.9k / 232k safe input · 400k total context"
-    );
-    expect(screen.getByTestId("current-context-length")).toHaveClass(
-      "max-sm:hidden",
-      "[@media(max-height:32rem)]:!hidden"
-    );
-    expect(screen.getByRole("group", { name: "Run profile" })).toBeInTheDocument();
+    expect(screen.queryByTestId("current-context-length")).not.toBeInTheDocument();
     const trigger = screen.getByRole("button", { name: "Open context and usage statistics" });
     fireEvent.click(trigger);
     const dialog = screen.getByRole("dialog", { name: "Context and usage statistics" });
     expect(dialog).toBeVisible();
-    expect(dialog).toHaveClass(
-      "overflow-y-auto",
-      "overscroll-contain",
-      "[@media(max-height:32rem)]:fixed",
-      "[@media(max-height:32rem)]:!right-[max(.5rem,env(safe-area-inset-right))]"
-    );
+    expect(dialog).toHaveClass("overflow-y-auto", "overscroll-contain", "bg-overlay-surface");
     expect(screen.getByText("Current context")).toBeVisible();
     expect(dialog).toHaveTextContent("Approx. input: ~121.9k / 232k safe input · 400k total context");
     expect(screen.getByText("Total messages")).toBeVisible();
@@ -705,11 +621,7 @@ describe("Composer", () => {
     expect(screen.queryByText(/cost/i)).not.toBeInTheDocument();
 
     const close = screen.getByRole("button", { name: "Close context and usage statistics" });
-    expect(close).toHaveClass(
-      "size-11",
-      "[@media(hover:none)]:!size-11",
-      "[@media(pointer:coarse)]:!size-11"
-    );
+    expect(close).toHaveClass("size-11", "text-ink-muted");
     fireEvent.click(close);
     expect(dialog).not.toBeInTheDocument();
     await waitFor(() => expect(trigger).toHaveFocus());
@@ -755,12 +667,7 @@ describe("Composer", () => {
 
     const stop = screen.getByRole("button", { name: "Stop response" });
     expect(stop).toHaveTextContent("Stop");
-    expect(stop).toHaveClass(
-      "h-touch",
-      "min-w-[72px]",
-      "sm:min-w-[92px]",
-      "[@media(max-height:32rem)]:!min-w-[72px]"
-    );
+    expect(stop).toHaveClass("h-touch", "min-w-[72px]", "bg-critical");
     expect(screen.getByLabelText("Message")).toBeEnabled();
     const attachment = screen.getByLabelText("Attach file");
     expect(attachment).toBeDisabled();
