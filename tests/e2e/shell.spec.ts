@@ -801,8 +801,10 @@ test("keeps Settings prompt and Appearance workflows safe in the narrow sheet la
   const graphiteTheme = settingsDialog.getByRole("radio", { name: /^Use Graphite theme/ });
   const verdantTheme = settingsDialog.getByRole("radio", { name: /^Use Verdant theme/ });
   const neutralTheme = settingsDialog.getByRole("radio", { name: /^Use Classic Light theme/ });
+  const paperTheme = settingsDialog.getByRole("radio", { name: /^Use Paper theme/ });
   await expect(verdantTheme).toBeVisible();
   await expect(neutralTheme).toBeVisible();
+  await expect(paperTheme).toBeVisible();
   await expect(neutralTheme).toHaveAttribute("aria-checked", "true");
   await neutralTheme.focus();
   await neutralTheme.press("Home");
@@ -827,6 +829,30 @@ test("keeps Settings prompt and Appearance workflows safe in the narrow sheet la
     "true"
   );
   await settingsDialog.getByRole("radio", { name: /^Use Graphite theme/ }).press("End");
+  const reloadedPaperTheme = settingsDialog.getByRole("radio", { name: /^Use Paper theme/ });
+  await expect(reloadedPaperTheme).toBeFocused();
+  await expect(reloadedPaperTheme).toHaveAttribute("aria-checked", "true");
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "paper");
+  await expect(page.locator("html")).toHaveAttribute("data-color-scheme", "light");
+  await expect
+    .poll(() => page.evaluate(() => window.localStorage.getItem("aiqsa.theme")))
+    .toBe("paper");
+  await page.reload();
+  await expect(page.getByTestId("app-shell")).toBeVisible();
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "paper");
+  await expect(page.locator("html")).toHaveAttribute("data-color-scheme", "light");
+  await page.evaluate(() => window.localStorage.setItem("aiqsa.theme", "malformed-theme"));
+  await page.reload();
+  await expect(page.getByTestId("app-shell")).toBeVisible();
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "paper");
+  await expect(page.locator("html")).toHaveAttribute("data-color-scheme", "light");
+  await expect
+    .poll(() => page.evaluate(() => window.localStorage.getItem("aiqsa.theme")))
+    .toBe("paper");
+  await runAccountMenuAction(page, "Settings");
+  settingsDialog = page.getByTestId("settings-dialog");
+  await settingsDialog.getByRole("button", { name: "Appearance" }).click();
+  await settingsDialog.getByRole("radio", { name: /^Use Paper theme/ }).press("ArrowLeft");
   const reloadedNeutralTheme = settingsDialog.getByRole("radio", { name: /^Use Classic Light theme/ });
   await expect(reloadedNeutralTheme).toBeFocused();
   await expect(reloadedNeutralTheme).toHaveAttribute("aria-checked", "true");

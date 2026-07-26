@@ -558,6 +558,14 @@ async function expectFullyHitTestable(surface: Locator): Promise<void> {
   })).toBe(true);
 }
 
+async function expectNoPageOverflow(page: Page): Promise<void> {
+  await expect.poll(() => page.evaluate(() => {
+    const viewport = document.documentElement.clientWidth;
+    return document.body.scrollWidth <= viewport + 1 &&
+      document.documentElement.scrollWidth <= viewport + 1;
+  })).toBe(true);
+}
+
 test("personal administrator completes the Quick picker, retry, Ready, and safe replacement journey", async ({ page }) => {
   const upstream = await startLocalResponsesServer();
   const fixtureState: { current: QuickChatFixture | null } = { current: null };
@@ -689,7 +697,7 @@ test("personal administrator completes the Quick picker, retry, Ready, and safe 
   const section = page.getByTestId("admin-section-providers");
   await expect(section.getByRole("heading", { name: "Connect a provider" })).toBeVisible();
   await expect(section.getByLabel("API key")).toHaveCount(0);
-  await expect(section.locator('[data-admin-renderer="legacy-embedded"]')).toHaveCount(0);
+  await expect(section.getByTestId("provider-advanced-workspace")).toHaveCount(0);
 
   await section.getByRole("button", { name: /OpenAI Not connected/ }).click();
   await section.getByLabel("API key").fill("e2e-personal-write-only-key");
@@ -698,7 +706,7 @@ test("personal administrator completes the Quick picker, retry, Ready, and safe 
   expect(keyBox).toBeTruthy();
   expect(saveBox).toBeTruthy();
   expect(saveBox!.y).toBeGreaterThanOrEqual(keyBox!.y + keyBox!.height);
-  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await expectNoPageOverflow(page);
   await section.getByRole("button", { name: "Test & Save" }).click();
   await expect(section.getByText("Choose a model available to this key")).toBeVisible();
   await expect(section.getByLabel("API key")).toHaveValue("e2e-personal-write-only-key");
@@ -708,7 +716,7 @@ test("personal administrator completes the Quick picker, retry, Ready, and safe 
   await expect(section.getByLabel("API key")).toBeDisabled();
   await expect(section.getByLabel("GPT-5.6 Luna")).toBeDisabled();
   await expect(section.getByLabel("GPT-5.6 Sol")).toBeDisabled();
-  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await expectNoPageOverflow(page);
   releasePickerRetry();
   await expect(section.getByText(
     "The provider rejected the key or its account catalog could not be reached."
@@ -734,7 +742,7 @@ test("personal administrator completes the Quick picker, retry, Ready, and safe 
   await expect(section.getByRole("button", { name: "Testing & saving…" })).toBeVisible();
   await expect(section.getByText("Ready to chat")).toBeVisible();
   await expect(section.getByLabel("API key")).toBeDisabled();
-  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await expectNoPageOverflow(page);
   releaseReplacement();
   await expect(section.getByText(
     "The provider rejected the key or its account catalog could not be reached."
@@ -751,6 +759,7 @@ test("personal administrator completes the Quick picker, retry, Ready, and safe 
   expect(quickRequests.filter(({ method }) => method === "GET").length).toBeGreaterThanOrEqual(2);
 
   for (const viewport of [
+    { height: 900, width: 1440 },
     { height: 844, width: 390 },
     { height: 1024, width: 768 },
     { height: 390, width: 844 }
@@ -758,7 +767,7 @@ test("personal administrator completes the Quick picker, retry, Ready, and safe 
     await page.setViewportSize(viewport);
     await section.getByRole("link", { name: "Start chatting" }).scrollIntoViewIfNeeded();
     await expect(section.getByRole("link", { name: "Start chatting" })).toBeVisible();
-    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+    await expectNoPageOverflow(page);
     const columns = await section.getByTestId("provider-quick-choice-strip").evaluate((element) =>
       getComputedStyle(element).gridTemplateColumns.split(" ").filter(Boolean).length
     );
@@ -1084,15 +1093,19 @@ test("administrator completes the OpenRouter key, model, route, check, and activ
   await page.goto("/admin?section=providers");
   const section = page.getByTestId("admin-section-providers");
   await expect(section.getByRole("heading", { exact: true, name: "Providers" })).toBeVisible();
+  await section.getByRole("button", { name: /OpenRouter Not connected/ }).click();
   await section.getByRole("button", { name: "Advanced configuration" }).click();
-  await expect(section.locator('[data-admin-legacy-scope="provider-advanced"]')).toBeVisible();
+  const advancedWorkspace = section.getByTestId("provider-advanced-workspace");
+  await expect(advancedWorkspace).toBeVisible();
+  await expect(advancedWorkspace.locator("xpath=..")).toHaveAttribute("data-admin-renderer", "replacement");
 
-  await section.getByRole("button", { name: "New connection" }).click();
+  await expect(section.getByRole("heading", { name: "New provider connection" })).toBeVisible();
+  await expect(section.getByLabel("Provider family")).toHaveValue("openrouter");
   await section.getByLabel("Display name").fill("E2E OpenRouter");
   await section.getByRole("button", { name: "Save connection" }).click();
   await expect(section.getByRole("heading", { name: "E2E OpenRouter" })).toBeVisible();
 
-  await section.getByLabel("API key").fill("e2e-write-only-provider-key");
+  await advancedWorkspace.getByLabel("API key").fill("e2e-write-only-provider-key");
   await expect(section.getByRole("button", { name: "Save key" })).toBeDisabled();
   const credentialTestResponse = page.waitForResponse((response) =>
     response.request().method() === "POST" &&
@@ -1114,14 +1127,15 @@ test("administrator completes the OpenRouter key, model, route, check, and activ
   await expect(section.getByText(`Key accepted. The account catalog exposes ${discoveredModels.length} models.`)).toBeVisible();
   await expect(section.getByRole("button", { name: "Save key" })).toBeEnabled();
   await section.getByRole("button", { name: "Save key" }).click();
-  await expect(section.getByLabel("API key")).toHaveCount(0);
+  await expect(advancedWorkspace.getByLabel("API key")).toHaveCount(0);
   await section.getByRole("button", { name: "Add key" }).click();
-  await expect(section.getByLabel("API key")).toHaveValue("");
+  await expect(advancedWorkspace.getByLabel("API key")).toHaveValue("");
   await section.getByRole("button", { name: "Close key form" }).click();
   expect(submittedKey).toBe("e2e-write-only-provider-key");
   await expect(section.getByText("e2e-write-only-provider-key")).toHaveCount(0);
 
-  const modelWorkflow = section.locator("#provider-models-workflow");
+  await section.getByRole("tab", { name: "Models" }).click();
+  const modelWorkflow = section.getByTestId("provider-task-models");
   const modelCatalogResponse = page.waitForResponse((response) => {
     const request = response.request();
     return request.method() === "POST" &&
@@ -1193,23 +1207,12 @@ test("administrator completes the OpenRouter key, model, route, check, and activ
   await expect(section.getByText("vendor/e2e-model", { exact: true })).toHaveCount(0);
   await modelMore.click();
 
-  await page.setViewportSize({ height: 844, width: 390 });
-  await modelMore.scrollIntoViewIfNeeded();
-  await modelMore.click();
-  await expectFullyHitTestable(modelActions);
-  await modelMore.click();
-  await page.setViewportSize({ height: 900, width: 1440 });
-
+  await section.getByRole("tab", { name: "Authentication" }).click();
   await section.locator("#provider-default-credential").selectOption("credential-e2e");
   await expect(section.getByText("Ready to activate.")).toBeVisible();
 
-  const diagnostics = section.locator("details").filter({
-    hasText: "Diagnostics and troubleshooting"
-  });
-  await expect(diagnostics).not.toHaveAttribute("open", "");
-  await expect(diagnostics.getByRole("button", { name: "Check model route" })).toBeHidden();
-  await diagnostics.locator("summary").click();
-  await expect(diagnostics).toHaveAttribute("open", "");
+  await section.getByRole("tab", { name: "Diagnostics" }).click();
+  const diagnostics = section.getByTestId("provider-task-diagnostics");
   await diagnostics.getByRole("button", { name: "Check model route" }).click();
   await expect(section.getByText("The exact model and credential draft is available.")).toBeVisible();
   await expect(diagnostics.getByText("available", { exact: true })).toBeVisible();
@@ -1228,6 +1231,40 @@ test("administrator completes the OpenRouter key, model, route, check, and activ
   }).locator("..");
   await expect(providerHeader.getByText("Enabled", { exact: true })).toBeVisible();
   await expect(providerHeader.getByText("Active v1", { exact: true })).toBeVisible();
+
+  const connectionIndex = section.getByTestId("provider-connection-index");
+  const connectionDetail = section.getByTestId("provider-connection-task-detail");
+  for (const viewport of [
+    { height: 900, width: 1440 },
+    { height: 1024, width: 768 },
+    { height: 844, width: 390 },
+    { height: 390, width: 844 }
+  ]) {
+    await page.setViewportSize(viewport);
+    if (viewport.width >= 1024) {
+      await expect(connectionIndex).toBeVisible();
+      await expect(connectionDetail).toBeVisible();
+      await expect(section.getByRole("button", { name: "Back to connections" })).toBeHidden();
+      await expectNoPageOverflow(page);
+      continue;
+    }
+
+    const back = section.getByRole("button", { name: "Back to connections" });
+    if (await back.isVisible()) await back.click();
+    await expect(connectionIndex).toBeVisible();
+    await expect(connectionDetail).toBeHidden();
+    await expectNoPageOverflow(page);
+
+    await connectionIndex.getByRole("button", { name: /E2E OpenRouter/ }).click();
+    await expect(connectionIndex).toBeHidden();
+    await expect(connectionDetail).toBeVisible();
+    await expect(connectionDetail.getByRole("heading", { name: "E2E OpenRouter" })).toBeVisible();
+    await expectNoPageOverflow(page);
+
+    await back.click();
+    await expect(connectionIndex).toBeVisible();
+    await expect(connectionDetail).toBeHidden();
+  }
 });
 
 test("administrator remaps the three composer run profiles in one save", async ({ page }) => {
@@ -1312,6 +1349,7 @@ test("administrator remaps the three composer run profiles in one save", async (
   await page.goto("/admin?section=providers");
   const section = page.getByTestId("admin-section-providers");
   await section.getByRole("button", { name: "Advanced configuration" }).click();
+  await section.getByRole("tab", { name: "Run profiles" }).click();
   await expect(section.getByRole("heading", { name: "Run profiles" })).toBeVisible();
   await expect(section.getByLabel("Fast description")).toHaveValue("Simple questions");
   await expect(section.getByLabel("Balanced description")).toHaveValue("Everyday questions");
@@ -1321,6 +1359,9 @@ test("administrator remaps the three composer run profiles in one save", async (
   await section.getByLabel("Fast model deployment").selectOption("deployment-sol");
   await expect(section.getByLabel("Fast reasoning mode")).toHaveValue("pro");
   await expect(section.getByLabel("Fast reasoning effort")).toHaveValue("max");
+  await section.getByRole("tab", { name: "Connections" }).click();
+  await section.getByRole("tab", { name: "Run profiles" }).click();
+  await expect(section.getByLabel("Fast description")).toHaveValue("Quick factual questions");
   await section.getByRole("button", { name: "Save profiles" }).click();
 
   await expect(section.getByText("Run profiles saved for future messages.")).toBeVisible();

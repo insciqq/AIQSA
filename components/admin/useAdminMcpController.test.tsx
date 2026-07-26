@@ -162,4 +162,34 @@ describe("useAdminMcpController", () => {
     expect(fetcher).toHaveBeenCalledTimes(2);
     expect(result.current.state.notice).toMatch(/connect OAuth/i);
   });
+
+  it("refreshes the MCP catalog after validation OAuth disconnect", async () => {
+    const connected = mcpServer({
+      validationOAuth: {
+        accountLabel: "Admin validation",
+        connectedAt: "2026-07-22T01:00:00.000Z",
+        state: "ready"
+      }
+    });
+    const disconnected = mcpServer({ validationOAuth: null });
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(response({ servers: [connected] }))
+      .mockResolvedValueOnce(response({ status: "disconnecting" }))
+      .mockResolvedValueOnce(response({ servers: [disconnected] }));
+    const { result } = renderHook(() => useAdminMcpController({ active: true, fetcher }));
+    await waitFor(() => expect(result.current.state.loaded).toBe(true));
+
+    await act(async () => {
+      expect(await result.current.actions.disconnectValidationOAuth(connected.id)).toBe(true);
+    });
+
+    expect(fetcher).toHaveBeenNthCalledWith(
+      2,
+      "/api/admin/mcp/server-1/oauth/validation/disconnect",
+      expect.objectContaining({ body: "{}", method: "POST" })
+    );
+    expect(fetcher).toHaveBeenNthCalledWith(3, "/api/admin/mcp", { method: "GET" });
+    expect(result.current.state.selectedServer?.validationOAuth).toBeNull();
+    expect(result.current.state.notice).toBe("Validation OAuth connection disconnected.");
+  });
 });

@@ -123,4 +123,20 @@ describe("AdminRunProfilesPanel", () => {
       providerModelId: null
     });
   });
+
+  it("distinguishes an initial load failure from an empty profile catalog", async () => {
+    const fetcher = vi.fn().mockRejectedValue(new Error("offline"));
+    vi.stubGlobal("fetch", fetcher);
+    render(<AdminRunProfilesPanel active />);
+
+    expect(await screen.findByText("Run profiles could not be loaded")).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Run profiles could not be reached. Check the connection and retry."
+    );
+    expect(screen.queryByLabelText("Fast description")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Dismiss run profile error" })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Retry run profiles" }));
+    await waitFor(() => expect(fetcher).toHaveBeenCalledTimes(2));
+  });
 });

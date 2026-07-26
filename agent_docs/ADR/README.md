@@ -21,7 +21,7 @@ Every ADR also declares `Amends: none` or a comma-separated list of earlier ADR 
 - `0007-context-window-budget-and-trimming.md` - provider context replay is server-owned and trimmed deterministically before run creation; ADR 0017 amends its text-estimate rule.
 - `0008-multi-user-auth-direction.md` - multi-user auth uses email/password plus optional Google/Yandex OAuth, same-email identity merge, verified access requests, approval gates, and stateful sessions.
 - `0009-conversation-first-ui-revamp.md` - the UI becomes conversation-first while preserving every QSA, provider, search, inspection, organization, auth, and admin capability; ADR 0025 now owns the clean-slate presentation and first-use direction.
-- `0010-neutral-light-theme.md` - themes declare dark/light scheme metadata and retain five stable IDs; ADR 0025 changes only no-preference first use to `neutral` and requires one new hierarchy across every palette.
+- `0010-neutral-light-theme.md` - themes declare dark/light scheme metadata and retain five original stable IDs; ADR 0025 changes no-preference first use to `neutral`, and ADR 0027 appends `paper` without changing the original ids.
 - `0011-explicit-next-run-control-ownership.md` - chats move from row menus, users select concrete models rather than providers, Reasoning is direct, Run settings owns next-run editing, and Details owns Branch/Events inspection.
 - `0015-lean-local-development-harness.md` - routine work uses one Compose check and an explicit destructive local E2E path; local CI, isolation/recovery, pollution cleanup, receipts, galleries, and parallel orchestration are intentionally absent.
 - `0016-responsive-composer-disclosure.md` - establishes exact responsive next-run disclosure and accessibility outcomes; ADR 0025 replaces its fixed compact composition and scroll-collapse recipes with one adaptive resting composer.
@@ -35,6 +35,7 @@ Every ADR also declares `Amends: none` or a comma-separated list of earlier ADR 
 - `0024-admin-managed-run-profiles.md` - Fast, Balanced, and Deep are three fixed database-owned semantic slots that administrators atomically map to active stable deployment IDs and supported reasoning tuples; the entitlement-filtered user catalog is their only composer projection and never leaks unavailable targets.
 - `0025-clean-slate-research-chat-and-control-center.md` - the view layer is replaced in place by light-first Research Chat and Control Center surfaces with adaptive composition, evidence-backed Run receipts, complete parity, preserved runtime ownership, and mandatory legacy deletion.
 - `0026-personal-provider-quick-setup.md` - one canonical OpenAI, Anthropic, or OpenRouter answer deployment becomes usable for the acting administrator through one write-only key, exact versioned recommendation/picker policy, and fenced atomic save; replacement preserves that selected model, groups remain untouched, and the Advanced control plane stays lazy and complete.
+- `0027-paper-light-theme.md` - appends a sixth stable light `paper` palette with a soft monochrome, conversation-product-familiar hierarchy while preserving the five existing themes and the `neutral` default.
 
 ## Superseded ADRs
 

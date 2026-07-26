@@ -115,4 +115,23 @@ describe("useAdminProvidersController", () => {
     expect(result.current.state.notice).toBe("Group credential assignment saved.");
     await waitFor(() => expect(onMutationCommitted).toHaveBeenCalledOnce());
   });
+
+  it("preserves structured delete blockers for the replacement error presentation", async () => {
+    api.getConnections.mockResolvedValue({
+      error: {
+        blockers: [{ count: 2, kind: "run_profiles" }],
+        code: "provider_connection_delete_blocked",
+        resourceIds: ["profile-fast", "profile-deep"]
+      },
+      ok: false
+    });
+
+    const { result } = renderHook(() => useAdminProvidersController(true));
+    await waitFor(() => expect(result.current.state.loaded).toBe(true));
+
+    expect(result.current.state.error).toBe("provider_connection_delete_blocked");
+    expect(result.current.state.errorBlockers).toEqual([
+      { count: 2, kind: "run_profiles" }
+    ]);
+  });
 });

@@ -203,6 +203,7 @@ describe("useAdminAccessRulesController", () => {
       confirmLabel: "Delete rule",
       dialogLabel: "Delete access rule example.org",
       message: "Access rule deleted.",
+      onSuccess: expect.any(Function),
       prompt:
         "Delete the domain access rule for example.org? Future matching requests will no longer auto-activate through this rule.",
       testId: "admin-confirm-delete-access-rule",

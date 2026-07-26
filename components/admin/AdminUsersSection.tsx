@@ -1,14 +1,16 @@
 import {
   AdminGroupOptions,
-  AdminTableRegion,
+  AdminTaskBackButton,
+  AdminTaskDetailPane,
+  AdminTaskIndexPane,
+  AdminTaskWorkspace,
   dangerButton,
   DeletionHint,
   EmptyState,
-  focusRing,
   GroupChips,
+  inputClass,
   primaryButton,
-  quietButton,
-  touchTarget
+  quietButton
 } from "@/components/admin/adminPrimitives";
 import {
   entitlementCountLabel,
@@ -27,11 +29,9 @@ import {
 } from "@/components/admin/adminViewUtils";
 import type { AdminDashboard, AdminGroup, AdminUserRecord } from "@/lib/contracts/admin";
 import {
-  ArrowUpDown,
   Ban,
   ChevronLeft,
   ChevronRight,
-  PanelRightOpen,
   RotateCcw,
   Save,
   Search,
@@ -52,6 +52,7 @@ export type AdminUsersData = Readonly<{
 }>;
 
 export type AdminUsersView = Readonly<{
+  compactDetailOpen: boolean;
   filteredCount: number;
   pageCount: number;
   pageEnd: number;
@@ -74,6 +75,7 @@ export type AdminUsersFocus = Readonly<{
 
 export type AdminUsersActions = Readonly<{
   onApprove(user: AdminUserRecord): void;
+  onBackToList(): void;
   onEditUserGroups(userId: string): void;
   onNextPage(): void;
   onPreviousPage(): void;
@@ -98,42 +100,114 @@ export type AdminUsersSectionProps = Readonly<{
   view: AdminUsersView;
 }>;
 
-function SortHeader({
+const sortOptions: ReadonlyArray<Readonly<{ key: AdminUserSortKey; label: string }>> = [
+  { key: "user", label: "User" },
+  { key: "status", label: "Status" },
+  { key: "role", label: "Role" },
+  { key: "groups", label: "Groups" },
+  { key: "access", label: "Access" },
+  { key: "lastSession", label: "Last session" }
+];
+
+function UserListRow({
   active,
-  direction,
-  label,
-  onClick
-}: {
+  adminUserId,
+  onSelect,
+  user
+}: Readonly<{
   active: boolean;
-  direction: AdminSortDirection;
-  label: string;
-  onClick(): void;
-}) {
+  adminUserId: string;
+  onSelect(): void;
+  user: AdminUserRecord;
+}>) {
+  const isSelf = user.id === adminUserId;
+
   return (
-    <button
-      className={[
-        `inline-flex min-h-control-sm items-center gap-1.5 rounded-control px-2 text-xs font-medium ${focusRing} ${touchTarget}`,
-        active ? "bg-surface-selected text-accent-cyan" : "text-content-muted hover:bg-surface-hover hover:text-content-secondary"
-      ].join(" ")}
-      type="button"
-      onClick={onClick}
-      aria-label={`Sort by ${label}`}
+    <article
+      className={`min-w-0 border-b border-trace-subtle px-4 py-3 last:border-b-0 ${active ? "bg-control-selected" : "bg-transparent"}`}
+      data-testid="admin-user-row"
     >
-      {label}
-      <ArrowUpDown className="size-3" aria-hidden="true" />
-      {active ? <span className="font-mono text-[11px]">{direction === "asc" ? "Asc" : "Desc"}</span> : null}
-    </button>
+      <div className="flex min-w-0 items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="break-words text-sm font-medium text-ink [overflow-wrap:anywhere]">
+            {user.displayName}
+            {isSelf ? <span className="ml-2 text-[11px] font-medium text-proof">You</span> : null}
+          </p>
+          <p className="mt-0.5 break-words text-xs text-ink-muted [overflow-wrap:anywhere]">
+            {user.email ?? "No email"}
+          </p>
+        </div>
+        <span className={`shrink-0 rounded-pill border px-2 py-0.5 text-[11px] capitalize ${userStatusClass(user.status)}`}>
+          {user.status}
+        </span>
+      </div>
+      <div className="mt-2 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-ink-muted">
+        <span className="capitalize">{user.role}</span>
+        <span>{entitlementCountLabel(user.effectiveEntitlements)}</span>
+        <span>{formatDate(user.lastSessionAt)}</span>
+      </div>
+      <div className="mt-2 flex min-w-0 items-end justify-between gap-3">
+        <GroupChips groups={user.groups} />
+        <button className={quietButton} onClick={onSelect} type="button">
+          {user.status === "pending" ? "Review" : "Details"}
+        </button>
+      </div>
+    </article>
   );
 }
 
-function AdminUserDetail({
-  actions,
-  data,
-  detailRef,
-  groupsEditorRef,
-  mcpAccess,
-  status
+function EffectiveAccess({
+  catalog,
+  user
 }: Readonly<{
+  catalog: AdminDashboard["catalog"];
+  user: AdminUserRecord;
+}>) {
+  if (!hasEntitlements(user.effectiveEntitlements)) {
+    return (
+      <p className="border-l-2 border-caution bg-caution/5 px-3 py-2 text-xs leading-5 text-caution">
+        No model access
+      </p>
+    );
+  }
+
+  return (
+    <div className="grid gap-4 text-xs text-ink-secondary">
+      {user.effectiveEntitlements.providers.length ? (
+        <div>
+          <p className="text-[11px] font-medium uppercase tracking-[0.08em] text-ink-muted">Providers</p>
+          <p className="mt-1 break-words leading-5 [overflow-wrap:anywhere]">
+            {user.effectiveEntitlements.providers.map((provider) => providerDisplayName(catalog, provider)).join(", ")}
+          </p>
+        </div>
+      ) : null}
+      {user.effectiveEntitlements.models.length ? (
+        <div>
+          <p className="text-[11px] font-medium uppercase tracking-[0.08em] text-ink-muted">Models</p>
+          <div className="mt-1 divide-y divide-trace-subtle border-y border-trace-subtle">
+            {user.effectiveEntitlements.models.map((model) => (
+              <p className="break-words py-2 [overflow-wrap:anywhere]" key={`${model.provider}:${model.modelId}`}>
+                {providerDisplayName(catalog, model.provider)} / {modelDisplayName(catalog, model)}
+              </p>
+            ))}
+          </div>
+        </div>
+      ) : null}
+      {user.effectiveEntitlements.searchStrategies.length ? (
+        <div>
+          <p className="text-[11px] font-medium uppercase tracking-[0.08em] text-ink-muted">Search</p>
+          <p className="mt-1 break-words leading-5 [overflow-wrap:anywhere]">
+            {user.effectiveEntitlements.searchStrategies
+              .map((strategy) => searchStrategyDisplayName(catalog, strategy))
+              .join(", ")}
+          </p>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function AdminUserDetail({ actions, data, detailRef, groupsEditorRef, mcpAccess, status }: Readonly<{
   actions: AdminUsersActions;
   data: AdminUsersData;
   detailRef: Ref<HTMLElement>;
@@ -145,484 +219,228 @@ function AdminUserDetail({
 
   if (!selectedUser) {
     return (
-      <aside className="border-t border-separator-subtle bg-surface-raised/40 p-3 lg:border-l lg:border-t-0">
-        <EmptyState title="No user selected" detail="Select a row to review groups, access, and account actions." />
-      </aside>
+      <div className="p-4 sm:p-6 lg:p-8">
+        <AdminTaskBackButton label="Back to users" onClick={actions.onBackToList} />
+        <EmptyState detail="Select a user to review groups, access, and account actions." title="No user selected" />
+      </div>
     );
   }
 
   const isSelf = selectedUser.id === adminUserId;
   const deletion = userDeletionInfo(selectedUser, adminUserId);
-  const noAccess = !hasEntitlements(selectedUser.effectiveEntitlements);
 
   return (
-    <aside
+    <article
       aria-label={`Selected user ${selectedUser.displayName}`}
-      className="border-t border-separator-subtle bg-surface-raised/40 p-3 outline-none focus-visible:border-accent-cyan focus-visible:ring-2 focus-visible:ring-accent-cyan/30 lg:border-l lg:border-t-0"
+      className="min-w-0 px-4 py-5 outline-none sm:px-6 lg:px-8 lg:py-7"
       data-testid="admin-user-detail"
       ref={detailRef}
       tabIndex={-1}
     >
-      <div className="flex items-start justify-between gap-3">
+      <AdminTaskBackButton label="Back to users" onClick={actions.onBackToList} />
+      <div className="flex min-w-0 items-start justify-between gap-4 border-b border-trace-subtle pb-5">
         <div className="min-w-0">
-          <div className="text-xs font-medium text-content-secondary">Selected user</div>
-          <h3 className="mt-1 break-words text-sm font-semibold text-content-primary [overflow-wrap:anywhere]">{selectedUser.displayName}</h3>
-          <p className="mt-1 break-words text-xs text-content-muted [overflow-wrap:anywhere]">{selectedUser.email ?? "No email"}</p>
+          <p className="text-[11px] font-semibold uppercase tracking-[0.1em] text-ink-muted">Selected user</p>
+          <h3 className="mt-2 break-words text-xl font-semibold tracking-tight text-ink [overflow-wrap:anywhere]">
+            {selectedUser.displayName}
+          </h3>
+          <p className="mt-1 break-words text-sm text-ink-muted [overflow-wrap:anywhere]">
+            {selectedUser.email ?? "No email"}
+          </p>
+          <p className="mt-2 text-xs text-ink-secondary">
+            <span className="capitalize">{selectedUser.role}</span> · {selectedUser.hasVerifiedIdentity ? "Verified email" : "Email not verified"}
+            {isSelf ? " · Acting admin" : ""}
+          </p>
         </div>
         <span className={`shrink-0 rounded-pill border px-2 py-1 text-xs capitalize ${userStatusClass(selectedUser.status)}`}>
           {selectedUser.status}
         </span>
       </div>
 
-      <div className="mt-3 grid gap-2 text-xs">
-        <div className="rounded-control bg-surface-raised px-3 py-2">
-          <div className="text-xs font-medium text-content-secondary mb-1">Identity</div>
-          <div className="flex flex-wrap gap-2 text-content-secondary">
-            <span>{selectedUser.role}</span>
-            <span>{selectedUser.hasVerifiedIdentity ? "Verified email" : "Email not verified"}</span>
-            {isSelf ? <span className="text-accent-cyan">Acting admin</span> : null}
+      <section className="border-b border-trace-subtle py-5" data-testid="admin-user-groups-editor" ref={groupsEditorRef} tabIndex={-1}>
+        <h4 className="text-sm font-semibold text-ink">Groups</h4>
+        {selectedUser.status === "pending" || (selectedUser.status === "active" && !isSelf) ? (
+          <div className="mt-3 grid gap-3">
+            <AdminGroupOptions
+              groups={groups}
+              label={selectedUser.status === "pending" ? "Groups applied on approval" : "Group memberships"}
+              onChange={(groupIds) => actions.onSelectedUserGroupsChange(selectedUser.id, groupIds)}
+              selected={selectedUserGroupIds}
+            />
+            <p className="text-xs leading-5 text-ink-muted">
+              {selectedUser.status === "pending"
+                ? "These groups are applied when the pending user is approved."
+                : "Group changes apply to future catalog and run entitlement checks."}
+            </p>
           </div>
-        </div>
+        ) : (
+          <div className="mt-3"><GroupChips groups={selectedUser.groups} /></div>
+        )}
+      </section>
 
-        <div
-          className="rounded-control bg-surface-raised px-3 py-2 outline-none focus-visible:border-accent-cyan focus-visible:ring-2 focus-visible:ring-accent-cyan/30"
-          data-testid="admin-user-groups-editor"
-          ref={groupsEditorRef}
-          tabIndex={-1}
-        >
-          {selectedUser.status === "pending" || (selectedUser.status === "active" && !isSelf) ? (
-            <div className="grid gap-2">
-              <AdminGroupOptions
-                groups={groups}
-                label="Groups"
-                onChange={(groupIds) => actions.onSelectedUserGroupsChange(selectedUser.id, groupIds)}
-                selected={selectedUserGroupIds}
-              />
-              <p className="text-[11px] leading-5 text-content-muted">
-                {selectedUser.status === "pending"
-                  ? "These groups are applied when the pending user is approved."
-                  : "Group changes apply to future catalog and run entitlement checks."}
-              </p>
-            </div>
-          ) : (
-            <>
-              <div className="text-xs font-medium text-content-secondary mb-1">Groups</div>
-              <GroupChips groups={selectedUser.groups} />
-            </>
-          )}
-        </div>
-
-        <div className="rounded-control bg-surface-raised px-3 py-2">
-          <div className="text-xs font-medium text-content-secondary mb-2">Effective access</div>
-          {noAccess ? (
-            <div className="rounded-control border border-accent-amber/25 bg-accent-amber/10 px-2 py-1.5 text-accent-amber">
-              No model access
-            </div>
-          ) : (
-            <div className="grid gap-2 text-content-secondary">
-              {selectedUser.effectiveEntitlements.providers.length ? (
-                <div>
-                  <div className="mb-1 text-[11px] text-content-muted">Providers</div>
-                  <div className="flex flex-wrap gap-1">
-                    {selectedUser.effectiveEntitlements.providers.map((provider) => (
-                      <span
-                        className="min-w-0 max-w-full break-words rounded-control bg-surface-raised px-1.5 py-px text-[11px] [overflow-wrap:anywhere]"
-                        key={provider}
-                      >
-                        {providerDisplayName(catalog, provider)}
-                      </span>
-                    ))}
-                  </div>
-                </div>
-              ) : null}
-              {selectedUser.effectiveEntitlements.models.length ? (
-                <div>
-                  <div className="mb-1 text-[11px] text-content-muted">Models</div>
-                  <div className="grid gap-1">
-                    {selectedUser.effectiveEntitlements.models.map((model) => (
-                      <div
-                        className="min-w-0 break-words rounded-control bg-surface-raised px-2 py-1 [overflow-wrap:anywhere]"
-                        key={`${model.provider}:${model.modelId}`}
-                      >
-                        {providerDisplayName(catalog, model.provider)} / {modelDisplayName(catalog, model)}
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              ) : null}
-              {selectedUser.effectiveEntitlements.searchStrategies.length ? (
-                <div>
-                  <div className="mb-1 text-[11px] text-content-muted">Search</div>
-                  <div className="flex flex-wrap gap-1">
-                    {selectedUser.effectiveEntitlements.searchStrategies.map((strategy) => (
-                      <span
-                        className="min-w-0 max-w-full break-words rounded-control bg-surface-raised px-1.5 py-px text-[11px] [overflow-wrap:anywhere]"
-                        key={strategy}
-                      >
-                        {searchStrategyDisplayName(catalog, strategy)}
-                      </span>
-                    ))}
-                  </div>
-                </div>
-              ) : null}
-            </div>
-          )}
-        </div>
-      </div>
+      <section className="border-b border-trace-subtle py-5">
+        <h4 className="text-sm font-semibold text-ink">Effective access</h4>
+        <p className="mt-1 text-xs leading-5 text-ink-muted">
+          Read-only access resolved from current group memberships. Direct user model overrides are not available here.
+        </p>
+        <div className="mt-4"><EffectiveAccess catalog={catalog} user={selectedUser} /></div>
+      </section>
 
       {mcpAccess}
 
-      <div className="mt-3 grid gap-2">
-        {selectedUser.status !== "active" && !isSelf ? (
-          <>
-            <DeletionHint info={deletion} />
-            {deletion.canDelete ? (
+      <section className="py-5">
+        <h4 className="text-sm font-semibold text-ink">Account actions</h4>
+        <div className="mt-3 grid max-w-xl gap-2">
+          {selectedUser.status === "pending" ? (
+            <>
               <button
-                className={dangerButton}
-                disabled={status.actionsDisabled}
-                onClick={() => actions.onRequestDelete(selectedUser)}
+                className={primaryButton}
+                disabled={status.actionsDisabled || !selectedUser.hasVerifiedIdentity}
+                onClick={() => actions.onApprove(selectedUser)}
                 type="button"
               >
-                <Trash2 className="size-3.5" aria-hidden="true" />
-                Delete stale user
+                <UserCheck aria-hidden="true" className="size-3.5" />
+                Approve user
               </button>
-            ) : null}
-          </>
-        ) : null}
+              <button className={dangerButton} disabled={status.actionsDisabled} onClick={() => actions.onRequestReject(selectedUser)} type="button">
+                <UserX aria-hidden="true" className="size-3.5" />
+                Reject user
+              </button>
+            </>
+          ) : null}
 
-        {selectedUser.status === "pending" ? (
-          <>
-            <button
-              className={primaryButton}
-              disabled={status.actionsDisabled || !selectedUser.hasVerifiedIdentity}
-              onClick={() => actions.onApprove(selectedUser)}
-              type="button"
-            >
-              <UserCheck className="size-3.5" aria-hidden="true" />
-              Approve user
-            </button>
-            <button
-              className={dangerButton}
-              disabled={status.actionsDisabled}
-              onClick={() => actions.onRequestReject(selectedUser)}
-              type="button"
-            >
-              <UserX className="size-3.5" aria-hidden="true" />
-              Reject user
-            </button>
-          </>
-        ) : null}
+          {selectedUser.status === "active" && !isSelf ? (
+            <>
+              <button className={primaryButton} disabled={status.actionsDisabled} onClick={() => actions.onSaveGroups(selectedUser)} type="button">
+                <Save aria-hidden="true" className="size-3.5" />
+                Save groups
+              </button>
+              <button className={quietButton} disabled={status.actionsDisabled} onClick={() => actions.onRequestRevokeSessions(selectedUser)} type="button">
+                <RotateCcw aria-hidden="true" className="size-3.5" />
+                Revoke sessions
+              </button>
+              <button className={dangerButton} disabled={status.actionsDisabled} onClick={() => actions.onRequestDisable(selectedUser)} type="button">
+                <Ban aria-hidden="true" className="size-3.5" />
+                Disable user
+              </button>
+            </>
+          ) : null}
 
-        {selectedUser.status === "active" && !isSelf ? (
-          <>
-            <button
-              className={quietButton}
-              disabled={status.actionsDisabled}
-              onClick={() => actions.onSaveGroups(selectedUser)}
-              type="button"
-            >
-              <Save className="size-3.5" aria-hidden="true" />
-              Save groups
-            </button>
-            <button
-              className={quietButton}
-              disabled={status.actionsDisabled}
-              onClick={() => actions.onRequestRevokeSessions(selectedUser)}
-              type="button"
-            >
-              <RotateCcw className="size-3.5" aria-hidden="true" />
-              Revoke sessions
-            </button>
-            <button
-              className={dangerButton}
-              disabled={status.actionsDisabled}
-              onClick={() => actions.onRequestDisable(selectedUser)}
-              type="button"
-            >
-              <Ban className="size-3.5" aria-hidden="true" />
-              Disable user
-            </button>
-            <DeletionHint info={deletion} />
-          </>
-        ) : null}
+          {selectedUser.status !== "active" && !isSelf ? (
+            <>
+              <DeletionHint info={deletion} />
+              {deletion.canDelete ? (
+                <button className={dangerButton} disabled={status.actionsDisabled} onClick={() => actions.onRequestDelete(selectedUser)} type="button">
+                  <Trash2 aria-hidden="true" className="size-3.5" />
+                  Delete stale user
+                </button>
+              ) : null}
+            </>
+          ) : null}
 
-        {selectedUser.status === "active" && isSelf ? (
-          <div className="rounded-control border border-accent-cyan/20 bg-accent-cyan/[0.07] px-2 py-2 text-xs text-content-secondary">
-            This is your current admin account. Self-disable and self-delete are not exposed in row or detail actions.
-          </div>
-        ) : null}
-      </div>
-    </aside>
+          {selectedUser.status === "active" && !isSelf ? <DeletionHint info={deletion} /> : null}
+          {selectedUser.status === "active" && isSelf ? (
+            <p className="border-l-2 border-proof/35 bg-proof/5 px-3 py-2 text-xs leading-5 text-ink-secondary">
+              This is your current admin account. Self-disable and self-delete are not exposed in row or detail actions.
+            </p>
+          ) : null}
+        </div>
+      </section>
+    </article>
   );
 }
 
 export function AdminUsersSection({ actions, data, focus, mcpAccess, status, view }: AdminUsersSectionProps) {
   return (
-    <div className="grid min-h-[420px] lg:grid-cols-[minmax(0,1fr)_320px]">
-      <div className="min-w-0">
-        <div className="flex flex-col gap-2 border-b border-separator-subtle bg-surface-raised/40 px-3 py-2 lg:flex-row lg:items-center lg:justify-between">
-          <div className="flex min-h-control-sm min-w-0 flex-1 items-center gap-2 rounded-control border border-separator-subtle bg-surface-thread px-3 focus-within:ring-2 focus-within:ring-accent-cyan/55 [@media(hover:none)]:!min-h-touch [@media(hover:none)]:!min-w-touch [@media(pointer:coarse)]:!min-h-touch [@media(pointer:coarse)]:!min-w-touch">
-            <Search className="size-3.5 shrink-0 text-content-muted" aria-hidden="true" />
+    <AdminTaskWorkspace indexWidth="23rem">
+      <AdminTaskIndexPane compactDetailOpen={view.compactDetailOpen} testId="admin-users-index">
+        <div className="border-b border-trace-subtle p-3">
+          <label className="block text-xs font-medium text-ink-secondary" htmlFor="admin-users-search">Search users</label>
+          <div className="relative mt-1.5">
+            <Search aria-hidden="true" className="pointer-events-none absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-ink-muted" />
             <input
-              aria-label="Search users"
-              className="min-h-control-sm min-w-0 flex-1 bg-transparent text-xs [@media(hover:none)]:!min-h-touch [@media(hover:none)]:!min-w-touch [@media(pointer:coarse)]:!min-h-touch [@media(pointer:coarse)]:!min-w-touch text-content-primary outline-none placeholder:text-content-disabled"
+              className={`${inputClass} pl-9`}
+              id="admin-users-search"
               onChange={(event) => actions.onQueryChange(event.currentTarget.value)}
-              placeholder="Search users, emails, roles, groups"
+              placeholder="Name, email, role, or group"
               value={view.query}
             />
           </div>
-          <div className="flex flex-wrap gap-1.5" role="group" aria-label="User status filters">
+          <div className="mt-3 flex flex-wrap gap-1.5" role="group" aria-label="User status filters">
             {(["all", "pending", "active", "disabled", "denied"] as const).map((userStatus) => (
               <button
                 aria-pressed={view.statusFilter === userStatus}
-                className={[
-                  "inline-flex min-h-control-sm items-center justify-center gap-1.5 rounded-control px-3 text-xs font-medium capitalize outline-none focus-visible:ring-2 focus-visible:ring-accent-cyan/55 [@media(hover:none)]:!min-h-touch [@media(hover:none)]:!min-w-touch [@media(pointer:coarse)]:!min-h-touch [@media(pointer:coarse)]:!min-w-touch",
-                  view.statusFilter === userStatus
-                    ? "bg-surface-selected text-accent-cyan"
-                    : "bg-surface-raised text-content-secondary hover:bg-surface-hover hover:text-content-primary"
-                ].join(" ")}
+                className={view.statusFilter === userStatus ? primaryButton : quietButton}
                 key={userStatus}
-                type="button"
                 onClick={() => actions.onStatusFilterChange(userStatus)}
+                type="button"
               >
-                {userStatus}
+                <span className="capitalize">{userStatus}</span>
               </button>
             ))}
           </div>
-        </div>
-
-        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-separator-subtle px-3 py-2 text-xs text-content-muted">
-          <span>
-            Showing <span className="font-mono text-content-secondary">{view.pageStart}-{view.pageEnd}</span> of{" "}
-            <span className="font-mono text-content-secondary">{view.filteredCount}</span> users
-          </span>
-          <div className="flex items-center gap-1.5">
-            <button
-              className={`grid h-8 w-8 place-items-center rounded-control bg-surface-raised text-content-secondary disabled:opacity-50 ${focusRing} [@media(hover:none)]:!h-touch [@media(hover:none)]:!w-touch [@media(pointer:coarse)]:!h-touch [@media(pointer:coarse)]:!w-touch`}
-              disabled={view.pageIndex <= 0}
-              onClick={actions.onPreviousPage}
-              aria-label="Previous users page"
-              type="button"
-            >
-              <ChevronLeft className="size-3.5" aria-hidden="true" />
-            </button>
-            <span className="font-mono text-[11px] text-content-secondary">
-              {view.pageIndex + 1}/{view.pageCount}
-            </span>
-            <button
-              className={`grid h-8 w-8 place-items-center rounded-control bg-surface-raised text-content-secondary disabled:opacity-50 ${focusRing} [@media(hover:none)]:!h-touch [@media(hover:none)]:!w-touch [@media(pointer:coarse)]:!h-touch [@media(pointer:coarse)]:!w-touch`}
-              disabled={view.pageIndex >= view.pageCount - 1}
-              onClick={actions.onNextPage}
-              aria-label="Next users page"
-              type="button"
-            >
-              <ChevronRight className="size-3.5" aria-hidden="true" />
+          <div className="mt-3 grid grid-cols-[minmax(0,1fr)_auto] gap-2">
+            <label className="min-w-0 text-xs font-medium text-ink-secondary">
+              Sort by
+              <select
+                aria-label="Sort users"
+                className={`${inputClass} mt-1.5`}
+                onChange={(event) => actions.onSort(event.currentTarget.value as AdminUserSortKey)}
+                value={view.sortKey}
+              >
+                {sortOptions.map((option) => <option key={option.key} value={option.key}>{option.label}</option>)}
+              </select>
+            </label>
+            <button className={`${quietButton} self-end`} onClick={() => actions.onSort(view.sortKey)} type="button">
+              {view.sortDirection === "asc" ? "Asc" : "Desc"}
             </button>
           </div>
         </div>
 
-        <AdminTableRegion label="Users table">
-          <table className="w-full min-w-[900px] border-collapse text-left text-xs">
-            <thead className="bg-surface-thread">
-              <tr>
-                <th
-                  aria-sort={view.sortKey === "user" ? (view.sortDirection === "asc" ? "ascending" : "descending") : "none"}
-                  className="px-3 py-2 font-medium"
-                >
-                  <SortHeader
-                    active={view.sortKey === "user"}
-                    direction={view.sortDirection}
-                    label="User"
-                    onClick={() => actions.onSort("user")}
-                  />
-                </th>
-                <th
-                  aria-sort={view.sortKey === "status" ? (view.sortDirection === "asc" ? "ascending" : "descending") : "none"}
-                  className="px-3 py-2 font-medium"
-                >
-                  <SortHeader
-                    active={view.sortKey === "status"}
-                    direction={view.sortDirection}
-                    label="Status"
-                    onClick={() => actions.onSort("status")}
-                  />
-                </th>
-                <th
-                  aria-sort={view.sortKey === "role" ? (view.sortDirection === "asc" ? "ascending" : "descending") : "none"}
-                  className="px-3 py-2 font-medium"
-                >
-                  <SortHeader
-                    active={view.sortKey === "role"}
-                    direction={view.sortDirection}
-                    label="Role"
-                    onClick={() => actions.onSort("role")}
-                  />
-                </th>
-                <th
-                  aria-sort={view.sortKey === "groups" ? (view.sortDirection === "asc" ? "ascending" : "descending") : "none"}
-                  className="px-3 py-2 font-medium"
-                >
-                  <SortHeader
-                    active={view.sortKey === "groups"}
-                    direction={view.sortDirection}
-                    label="Groups"
-                    onClick={() => actions.onSort("groups")}
-                  />
-                </th>
-                <th
-                  aria-sort={view.sortKey === "access" ? (view.sortDirection === "asc" ? "ascending" : "descending") : "none"}
-                  className="px-3 py-2 font-medium"
-                >
-                  <SortHeader
-                    active={view.sortKey === "access"}
-                    direction={view.sortDirection}
-                    label="Access"
-                    onClick={() => actions.onSort("access")}
-                  />
-                </th>
-                <th
-                  aria-sort={view.sortKey === "lastSession" ? (view.sortDirection === "asc" ? "ascending" : "descending") : "none"}
-                  className="px-3 py-2 font-medium"
-                >
-                  <SortHeader
-                    active={view.sortKey === "lastSession"}
-                    direction={view.sortDirection}
-                    label="Last session"
-                    onClick={() => actions.onSort("lastSession")}
-                  />
-                </th>
-                <th className="px-3 py-2 font-medium text-content-muted">Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {data.pageUsers.length === 0 ? (
-                <tr>
-                  <td className="px-3 py-8 text-center text-content-muted" colSpan={7}>
-                    {data.totalUserCount ? "No users match this view" : "No users yet"}
-                  </td>
-                </tr>
-              ) : null}
-              {data.pageUsers.map((user) => {
-                const isSelf = user.id === data.adminUserId;
-                const active = data.selectedUser?.id === user.id;
-                const deletion = userDeletionInfo(user, data.adminUserId);
+        <div className="flex items-center justify-between gap-3 border-b border-trace-subtle px-4 py-2 text-xs text-ink-muted">
+          <span>
+            <span className="font-mono text-ink-secondary">{view.pageStart}-{view.pageEnd}</span> of{" "}
+            <span className="font-mono text-ink-secondary">{view.filteredCount}</span>
+          </span>
+          <div className="flex items-center gap-1.5">
+            <button aria-label="Previous users page" className={quietButton} disabled={view.pageIndex <= 0} onClick={actions.onPreviousPage} type="button">
+              <ChevronLeft aria-hidden="true" className="size-3.5" />
+            </button>
+            <span className="font-mono text-[11px] text-ink-secondary">{view.pageIndex + 1}/{view.pageCount}</span>
+            <button aria-label="Next users page" className={quietButton} disabled={view.pageIndex >= view.pageCount - 1} onClick={actions.onNextPage} type="button">
+              <ChevronRight aria-hidden="true" className="size-3.5" />
+            </button>
+          </div>
+        </div>
 
-                return (
-                  <tr
-                    aria-current={active ? "true" : undefined}
-                    className={[
-                      "border-b border-separator-subtle align-top last:border-b-0",
-                      active ? "bg-accent-cyan/[0.07]" : ""
-                    ].join(" ")}
-                    key={user.id}
-                  >
-                    <td className="px-3 py-3">
-                      <div className="break-words font-medium text-content-primary [overflow-wrap:anywhere]">
-                        {user.displayName}
-                        {isSelf ? <span className="ml-2 text-[11px] text-accent-cyan">You</span> : null}
-                      </div>
-                      <div className="mt-1 break-words text-content-muted [overflow-wrap:anywhere]">{user.email ?? "No email"}</div>
-                      {!user.hasVerifiedIdentity ? <div className="mt-1 text-accent-amber">Unverified email</div> : null}
-                    </td>
-                    <td className="px-3 py-3">
-                      <span className={`inline-flex rounded-pill border px-2 py-1 capitalize ${userStatusClass(user.status)}`}>
-                        {user.status}
-                      </span>
-                    </td>
-                    <td className="px-3 py-3 text-content-secondary">{user.role}</td>
-                    <td className="px-3 py-3 text-content-secondary">
-                      <GroupChips groups={user.groups} />
-                    </td>
-                    <td className="px-3 py-3">
-                      <span className={hasEntitlements(user.effectiveEntitlements) ? "text-content-secondary" : "text-accent-amber"}>
-                        {entitlementCountLabel(user.effectiveEntitlements)}
-                      </span>
-                    </td>
-                    <td className="px-3 py-3 text-content-secondary">{formatDate(user.lastSessionAt)}</td>
-                    <td className="px-3 py-3">
-                      <div className="flex max-w-[320px] flex-wrap gap-2">
-                        <button className={quietButton} onClick={() => actions.onSelectUser(user.id)} type="button">
-                          <PanelRightOpen className="size-3.5" aria-hidden="true" />
-                          {user.status === "pending" ? "Review" : "Details"}
-                        </button>
-                        {user.status === "pending" && user.hasVerifiedIdentity ? (
-                          <button
-                            className={primaryButton}
-                            disabled={status.actionsDisabled}
-                            onClick={() => actions.onApprove(user)}
-                            type="button"
-                          >
-                            <UserCheck className="size-3.5" aria-hidden="true" />
-                            Approve
-                          </button>
-                        ) : null}
-                        {user.status === "pending" ? (
-                          <button
-                            className={dangerButton}
-                            disabled={status.actionsDisabled}
-                            onClick={() => actions.onRequestReject(user)}
-                            type="button"
-                          >
-                            <UserX className="size-3.5" aria-hidden="true" />
-                            Reject
-                          </button>
-                        ) : null}
-                        {user.status === "active" && !isSelf ? (
-                          <button className={quietButton} onClick={() => actions.onEditUserGroups(user.id)} type="button">
-                            <Save className="size-3.5" aria-hidden="true" />
-                            Edit groups
-                          </button>
-                        ) : null}
-                        {user.status === "active" && !isSelf ? (
-                          <button
-                            className={quietButton}
-                            disabled={status.actionsDisabled}
-                            onClick={() => actions.onRequestRevokeSessions(user)}
-                            type="button"
-                          >
-                            <RotateCcw className="size-3.5" aria-hidden="true" />
-                            Revoke
-                          </button>
-                        ) : null}
-                        {user.status === "active" && !isSelf ? (
-                          <button
-                            className={dangerButton}
-                            disabled={status.actionsDisabled}
-                            onClick={() => actions.onRequestDisable(user)}
-                            type="button"
-                          >
-                            <Ban className="size-3.5" aria-hidden="true" />
-                            Disable
-                          </button>
-                        ) : null}
-                        {user.status !== "active" && !isSelf && deletion.canDelete ? (
-                          <button
-                            className={dangerButton}
-                            disabled={status.actionsDisabled}
-                            onClick={() => actions.onRequestDelete(user)}
-                            type="button"
-                          >
-                            <Trash2 className="size-3.5" aria-hidden="true" />
-                            Delete
-                          </button>
-                        ) : null}
-                      </div>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </AdminTableRegion>
-      </div>
-      <AdminUserDetail
-        actions={actions}
-        data={data}
-        detailRef={focus.detail}
-        groupsEditorRef={focus.groupsEditor}
-        mcpAccess={mcpAccess}
-        status={status}
-      />
-    </div>
+        <div className="min-w-0" data-testid="admin-users-list">
+          {data.pageUsers.length ? data.pageUsers.map((user) => (
+            <UserListRow
+              active={data.selectedUser?.id === user.id}
+              adminUserId={data.adminUserId}
+              key={user.id}
+              onSelect={() => actions.onSelectUser(user.id)}
+              user={user}
+            />
+          )) : (
+            <EmptyState
+              detail={data.totalUserCount ? "Change the search or status filter to see other users." : "New access requests and accounts will appear here."}
+              title={data.totalUserCount ? "No users match this view" : "No users yet"}
+            />
+          )}
+        </div>
+      </AdminTaskIndexPane>
+
+      <AdminTaskDetailPane compactDetailOpen={view.compactDetailOpen} testId="admin-users-detail-pane">
+        <AdminUserDetail
+          actions={actions}
+          data={data}
+          detailRef={focus.detail}
+          groupsEditorRef={focus.groupsEditor}
+          mcpAccess={mcpAccess}
+          status={status}
+        />
+      </AdminTaskDetailPane>
+    </AdminTaskWorkspace>
   );
 }

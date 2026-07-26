@@ -12,7 +12,6 @@ function PublicShareHeader() {
     <header className="border-b border-trace-subtle bg-workspace-rail pt-[env(safe-area-inset-top)]">
       <div className="mx-auto flex min-h-14 w-full max-w-reading items-center justify-between gap-4 pl-[max(1rem,env(safe-area-inset-left))] pr-[max(1rem,env(safe-area-inset-right))] sm:min-h-16 sm:pl-[max(1.5rem,env(safe-area-inset-left))] sm:pr-[max(1.5rem,env(safe-area-inset-right))]">
         <div className="flex min-w-0 items-center gap-2.5">
-          <span className="size-2 shrink-0 rounded-full bg-proof" aria-hidden="true" />
           <p className="shrink-0 text-sm font-semibold tracking-[0.01em] text-ink">AIQSA</p>
           <span className="h-4 w-px shrink-0 bg-trace-strong" aria-hidden="true" />
           <p className="truncate text-xs text-ink-muted">Shared research</p>

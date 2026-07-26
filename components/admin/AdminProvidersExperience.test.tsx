@@ -7,12 +7,12 @@ const api = vi.hoisted(() => ({
   submit: vi.fn()
 }));
 
-const legacy = vi.hoisted(() => ({
+const advanced = vi.hoisted(() => ({
   mounts: 0,
   props: null as null | {
     active: boolean;
+    advancedEntryProvider?: "anthropic" | "openai" | "openrouter" | null;
     onMutationCommitted?(): void | Promise<unknown>;
-    refreshRevision?: number;
   }
 }));
 
@@ -30,22 +30,22 @@ vi.mock("./adminProviderQuickSetupApi", () => ({
 vi.mock("./AdminProvidersSection", async () => {
   const React = await import("react");
   return {
-    AdminProvidersSection: (props: typeof legacy.props extends infer _Ignored ? {
+    AdminProvidersSection: (props: typeof advanced.props extends infer _Ignored ? {
       active: boolean;
+      advancedEntryProvider?: "anthropic" | "openai" | "openrouter" | null;
       onMutationCommitted?(): void | Promise<unknown>;
-      refreshRevision?: number;
     } : never) => {
       const [draft, setDraft] = React.useState("");
       React.useEffect(() => {
-        legacy.mounts += 1;
+        advanced.mounts += 1;
       }, []);
-      legacy.props = props;
+      advanced.props = props;
       return (
-        <div data-testid="legacy-provider-workspace">
-          <span>Legacy active: {String(props.active)}</span>
-          <span>Refresh revision: {props.refreshRevision ?? 0}</span>
+        <div data-testid="advanced-provider-workspace">
+          <span>Advanced active: {String(props.active)}</span>
+          <span>Entry provider: {props.advancedEntryProvider ?? "none"}</span>
           <label>
-            Legacy draft
+            Advanced draft
             <input onChange={(event) => setDraft(event.currentTarget.value)} value={draft} />
           </label>
           <button onClick={() => void props.onMutationCommitted?.()} type="button">
@@ -117,8 +117,8 @@ describe("AdminProvidersExperience", () => {
   beforeEach(() => {
     api.get.mockReset();
     api.submit.mockReset();
-    legacy.mounts = 0;
-    legacy.props = null;
+    advanced.mounts = 0;
+    advanced.props = null;
     api.get.mockResolvedValue({ data: snapshot(), ok: true });
   });
 
@@ -141,7 +141,7 @@ describe("AdminProvidersExperience", () => {
 
     await screen.findByText("Choose a provider to continue.");
     expect(screen.queryByLabelText("API key")).not.toBeInTheDocument();
-    expect(legacy.mounts).toBe(0);
+    expect(advanced.mounts).toBe(0);
     fireEvent.click(screen.getByRole("button", { name: /OpenAI Not connected/ }));
     const key = screen.getByLabelText("API key");
     expect(key).toHaveAttribute("type", "password");
@@ -302,10 +302,10 @@ describe("AdminProvidersExperience", () => {
     expect(screen.getByText("Advanced configuration required")).toBeInTheDocument();
     expect(screen.queryByLabelText("API key")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Open Advanced configuration" }));
-    expect(await screen.findByTestId("legacy-provider-workspace")).toBeInTheDocument();
+    expect(await screen.findByTestId("advanced-provider-workspace")).toBeInTheDocument();
   });
 
-  it("lazy-mounts Advanced once, preserves its draft, and refetches Quick only on return", async () => {
+  it("unmounts Advanced with its drafts and refetches Quick only on return", async () => {
     api.get
       .mockResolvedValueOnce({ data: snapshot(), ok: true })
       .mockResolvedValue({
@@ -323,24 +323,25 @@ describe("AdminProvidersExperience", () => {
     await screen.findByText("Choose a provider to continue.");
     fireEvent.click(screen.getByRole("button", { name: /OpenAI Not connected/ }));
     fireEvent.change(screen.getByLabelText("API key"), { target: { value: "must-clear" } });
-    expect(legacy.mounts).toBe(0);
+    expect(advanced.mounts).toBe(0);
     fireEvent.click(screen.getByRole("button", { name: "Advanced configuration" }));
 
-    const legacyWorkspace = await screen.findByTestId("legacy-provider-workspace");
-    expect(legacyWorkspace.closest('[data-admin-renderer="legacy-embedded"]')).toHaveAttribute(
-      "data-admin-legacy-scope",
-      "provider-advanced"
-    );
-    await waitFor(() => expect(legacy.mounts).toBe(1));
-    fireEvent.change(screen.getByLabelText("Legacy draft"), { target: { value: "preserved draft" } });
+    const advancedWorkspace = await screen.findByTestId("advanced-provider-workspace");
+    expect(advancedWorkspace.closest('[data-admin-renderer="replacement"]')).toBeInTheDocument();
+    expect(screen.getByText("Entry provider: openai")).toBeInTheDocument();
+    expect(advanced.props?.advancedEntryProvider).toBe("openai");
+    await waitFor(() => expect(advanced.mounts).toBe(1));
+    fireEvent.change(screen.getByLabelText("Advanced draft"), { target: { value: "preserved draft" } });
     fireEvent.click(screen.getByRole("button", { name: "Back to Personal setup" }));
     await screen.findByText("Ready to chat");
+    expect(screen.queryByTestId("advanced-provider-workspace")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Advanced draft")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Replace API key" }));
     expect(screen.getByLabelText("API key")).toHaveValue("");
     fireEvent.click(screen.getByRole("button", { name: "Cancel replacement" }));
     fireEvent.click(screen.getByRole("button", { name: "Advanced configuration" }));
-    expect(screen.getByLabelText("Legacy draft")).toHaveValue("preserved draft");
-    expect(legacy.mounts).toBe(1);
+    expect(await screen.findByLabelText("Advanced draft")).toHaveValue("");
+    await waitFor(() => expect(advanced.mounts).toBe(2));
 
     const refreshesBeforeMutation = api.get.mock.calls.length;
     fireEvent.click(screen.getByRole("button", { name: "Simulate Advanced mutation" }));
@@ -362,9 +363,9 @@ describe("AdminProvidersExperience", () => {
     fireEvent.change(screen.getByLabelText("API key"), { target: { value: "unsupported-key" } });
     fireEvent.click(screen.getByRole("button", { name: "Test & Save" }));
 
-    const advanced = await screen.findByRole("button", { name: "Open Advanced configuration" });
-    fireEvent.click(advanced);
-    expect(await screen.findByTestId("legacy-provider-workspace")).toBeInTheDocument();
+    const advancedButton = await screen.findByRole("button", { name: "Open Advanced configuration" });
+    fireEvent.click(advancedButton);
+    expect(await screen.findByTestId("advanced-provider-workspace")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Back to Personal setup" }));
     expect(await screen.findByLabelText("API key")).toHaveValue("");
   });
@@ -389,7 +390,7 @@ describe("AdminProvidersExperience", () => {
     expect(screen.getByLabelText("API key")).toHaveValue("raced-key");
     expect(screen.getByLabelText("API key")).toBeEnabled();
     fireEvent.click(screen.getByRole("button", { name: "Open Advanced configuration" }));
-    expect(await screen.findByTestId("legacy-provider-workspace")).toBeInTheDocument();
+    expect(await screen.findByTestId("advanced-provider-workspace")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Back to Personal setup" }));
     await screen.findByText("Ready to chat");
     fireEvent.click(screen.getByRole("button", { name: "Replace API key" }));
@@ -441,7 +442,7 @@ describe("AdminProvidersExperience", () => {
     expect(screen.getByText("Run profiles filled: Balanced, Fast.")).toBeInTheDocument();
   });
 
-  it("invalidates the already-mounted Advanced projection after a Quick commit", async () => {
+  it("mounts a fresh Advanced projection after a Quick commit", async () => {
     api.get
       .mockResolvedValueOnce({ data: snapshot(), ok: true })
       .mockResolvedValueOnce({ data: snapshot(), ok: true })
@@ -460,7 +461,7 @@ describe("AdminProvidersExperience", () => {
     );
     await screen.findByText("Choose a provider to continue.");
     fireEvent.click(screen.getByRole("button", { name: "Advanced configuration" }));
-    await screen.findByTestId("legacy-provider-workspace");
+    await screen.findByTestId("advanced-provider-workspace");
     fireEvent.click(screen.getByRole("button", { name: "Back to Personal setup" }));
     await screen.findByText("Choose a provider to continue.");
     fireEvent.click(screen.getByRole("button", { name: /OpenAI Not connected/ }));
@@ -468,7 +469,11 @@ describe("AdminProvidersExperience", () => {
     fireEvent.click(screen.getByRole("button", { name: "Test & Save" }));
 
     await screen.findByText("Ready to chat");
-    await waitFor(() => expect(screen.getByText("Refresh revision: 1")).toBeInTheDocument());
+    expect(screen.queryByTestId("advanced-provider-workspace")).not.toBeInTheDocument();
     await waitFor(() => expect(onMutationCommitted).toHaveBeenCalledOnce());
+    fireEvent.click(screen.getByRole("button", { name: "Advanced configuration" }));
+    expect(await screen.findByTestId("advanced-provider-workspace")).toBeInTheDocument();
+    await waitFor(() => expect(advanced.mounts).toBe(2));
+    expect(screen.getByText("Entry provider: openai")).toBeInTheDocument();
   });
 });

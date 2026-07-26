@@ -39,10 +39,12 @@ export function useAdminAccessRulesController({
 }: UseAdminAccessRulesControllerOptions): AdminAccessRulesController {
   const { clearFieldError, fieldError, reportFieldError } = fieldErrors;
   const { requestConfirmedAction } = confirmation;
+  const [compactDetailOpen, setCompactDetailOpen] = useState(false);
   const [formOpen, setFormOpen] = useState(false);
   const [groupIds, setGroupIds] = useState<string[]>([]);
   const [kind, setKind] = useState<AdminAccessRuleKind>("email");
   const [query, setQuery] = useState("");
+  const [selectedRuleId, setSelectedRuleId] = useState<string | null>(null);
   const [value, setValue] = useState("");
   const normalizedPreview = normalizedRuleValue(kind, value);
   const projectedGroupIds = useMemo(
@@ -53,11 +55,36 @@ export function useAdminAccessRulesController({
     () => filterAdminAccessRules(dashboard?.accessRules ?? [], query),
     [dashboard?.accessRules, query]
   );
+  const selectedRule = useMemo(
+    () =>
+      (selectedRuleId
+        ? dashboard?.accessRules.find((rule) => rule.id === selectedRuleId)
+        : null) ?? null,
+    [dashboard?.accessRules, selectedRuleId]
+  );
 
   const toggleForm = useCallback(() => {
     clearFieldError("rule-value");
-    setFormOpen((open) => !open);
+    setFormOpen((open) => {
+      const nextOpen = !open;
+      if (nextOpen) {
+        setSelectedRuleId(null);
+      }
+      setCompactDetailOpen(nextOpen);
+      return nextOpen;
+    });
   }, [clearFieldError]);
+
+  const backToList = useCallback(() => {
+    setFormOpen(false);
+    setCompactDetailOpen(false);
+  }, []);
+
+  const selectRule = useCallback((ruleId: string) => {
+    setFormOpen(false);
+    setSelectedRuleId(ruleId);
+    setCompactDetailOpen(true);
+  }, []);
 
   const changeValue = useCallback(
     (nextValue: string) => {
@@ -90,6 +117,7 @@ export function useAdminAccessRulesController({
       setValue("");
       setGroupIds([]);
       setFormOpen(false);
+      setCompactDetailOpen(false);
     }
   }, [clearFieldError, kind, projectedGroupIds, reportFieldError, runAction, value]);
 
@@ -103,6 +131,10 @@ export function useAdminAccessRulesController({
         confirmLabel: "Delete rule",
         dialogLabel: `Delete access rule ${rule.value}`,
         message: "Access rule deleted.",
+        onSuccess: () => {
+          setSelectedRuleId(null);
+          setCompactDetailOpen(false);
+        },
         prompt: `Delete the ${rule.kind} access rule for ${rule.value}? Future matching requests will no longer auto-activate through this rule.`,
         testId: "admin-confirm-delete-access-rule",
         title: "Delete access rule?"
@@ -118,19 +150,23 @@ export function useAdminAccessRulesController({
 
     return {
       actions: {
+        backToList,
         changeGroups: setGroupIds,
         changeKind: setKind,
         changeQuery: setQuery,
         changeValue,
         createRule,
-        requestDeleteRule
+        requestDeleteRule,
+        selectRule
       },
       data: {
         groups: dashboard.groups,
         rules: filteredRules,
+        selectedRule,
         totalRuleCount: dashboard.accessRules.length
       },
       state: {
+        compactDetailOpen,
         formOpen,
         groupIds: projectedGroupIds,
         kind,
@@ -145,7 +181,9 @@ export function useAdminAccessRulesController({
     };
   }, [
     actionsDisabled,
+    backToList,
     changeValue,
+    compactDetailOpen,
     createRule,
     dashboard,
     fieldError,
@@ -156,6 +194,8 @@ export function useAdminAccessRulesController({
     projectedGroupIds,
     query,
     requestDeleteRule,
+    selectRule,
+    selectedRule,
     value
   ]);
 

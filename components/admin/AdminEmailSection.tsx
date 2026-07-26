@@ -1,6 +1,14 @@
 "use client";
 
 import {
+  type AdminEmailAxis,
+  deriveAdminEmailPresentation
+} from "@/components/admin/adminEmailPresentation";
+import {
+  AdminTaskBackButton,
+  AdminTaskDetailPane,
+  AdminTaskIndexPane,
+  AdminTaskWorkspace,
   dangerButton,
   inputClass,
   primaryButton,
@@ -15,19 +23,23 @@ import {
 import type {
   AdminEmailConfiguration,
   AdminEmailPasswordAction,
+  AdminEmailState,
   AdminEmailTransportMode
 } from "@/lib/contracts/email";
 import {
+  Activity,
   AlertTriangle,
   CheckCircle2,
-  Mail,
+  ChevronRight,
+  FilePenLine,
+  Gauge,
   Power,
   RefreshCw,
   Save,
   Send,
   Trash2
 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 
 type EmailForm = {
   allowInternalNetwork: boolean;
@@ -42,12 +54,26 @@ type EmailForm = {
   username: string;
 };
 
-const fieldLabel = "text-xs font-medium text-content-secondary";
-const helpText = "mt-1 text-[11px] leading-4 text-content-muted";
+type EmailTask = "clear" | "commissioning" | "configuration" | "overview" | "runtime";
 
-function formFrom(controller: AdminEmailController): EmailForm {
-  const draft = controller.state.email?.draft;
-  const configuration = draft?.configuration;
+const tasks: ReadonlyArray<{
+  description: string;
+  icon: typeof Gauge;
+  id: EmailTask;
+  label: string;
+}> = [
+  { description: "Draft, active, and health", icon: Gauge, id: "overview", label: "Overview" },
+  { description: "Connection and credentials", icon: FilePenLine, id: "configuration", label: "Draft configuration" },
+  { description: "Exact test and activation", icon: Send, id: "commissioning", label: "Test & activate" },
+  { description: "Delivery and safe health", icon: Activity, id: "runtime", label: "Runtime & health" },
+  { description: "Remove both versions", icon: Trash2, id: "clear", label: "Clear configuration" }
+];
+
+const fieldLabel = "text-xs font-medium text-ink-secondary";
+const helpText = "mt-1 text-[11px] leading-4 text-ink-muted";
+
+function formFrom(email: AdminEmailState): EmailForm {
+  const configuration = email.draft.configuration;
   return {
     allowInternalNetwork: configuration?.allowInternalNetwork ?? false,
     authenticationMode: configuration?.authentication.mode ?? "password",
@@ -55,12 +81,10 @@ function formFrom(controller: AdminEmailController): EmailForm {
     fromAddress: configuration?.from.address ?? "",
     host: configuration?.host ?? "",
     password: "",
-    passwordAction: draft?.passwordConfigured ? "preserve" : "replace",
+    passwordAction: email.draft.passwordConfigured ? "preserve" : "replace",
     port: String(configuration?.port ?? 587),
     transport: configuration?.transport ?? "starttls_required",
-    username: configuration?.authentication.mode === "password"
-      ? configuration.authentication.username
-      : ""
+    username: configuration?.authentication.mode === "password" ? configuration.authentication.username : ""
   };
 }
 
@@ -81,47 +105,51 @@ function configurationFrom(form: EmailForm): AdminEmailConfiguration {
 }
 
 function passwordActionFrom(form: EmailForm): AdminEmailPasswordAction {
-  if (form.authenticationMode === "none") {
-    return { confirm: true, kind: "clear" };
-  }
+  if (form.authenticationMode === "none") return { confirm: true, kind: "clear" };
   return form.passwordAction === "replace"
     ? { kind: "replace", password: form.password }
     : { kind: "preserve" };
 }
 
-function status(controller: AdminEmailController) {
-  const email = controller.state.email;
-  if (!email?.draft.configuration && !email?.active.configuration) {
-    return { label: "Not configured", tone: "bg-surface-raised text-content-muted" };
-  }
-  if (email.health.degraded) {
-    return { label: "Degraded", tone: "bg-accent-rose/10 text-accent-rose" };
-  }
-  if (email.active.enabled) {
-    return { label: "Active", tone: "bg-accent-green/10 text-accent-green" };
-  }
-  if (email.active.configuration) {
-    return { label: "Disabled", tone: "bg-accent-amber/10 text-accent-amber" };
-  }
-  if (email.draft.test?.tested) {
-    return { label: "Tested", tone: "bg-accent-cyan/10 text-accent-cyan" };
-  }
-  return { label: "Needs test", tone: "bg-accent-amber/10 text-accent-amber" };
+function toneClasses(tone: AdminEmailAxis["tone"]): string {
+  if (tone === "critical") return "border-critical text-critical";
+  if (tone === "positive") return "border-positive text-positive";
+  if (tone === "proof") return "border-proof text-proof";
+  if (tone === "warning") return "border-caution text-caution";
+  return "border-trace-strong text-ink-muted";
 }
 
-function Feedback({ controller }: { controller: AdminEmailController }) {
+function toneTextClass(tone: AdminEmailAxis["tone"]): string {
+  if (tone === "critical") return "text-critical";
+  if (tone === "positive") return "text-positive";
+  if (tone === "proof") return "text-proof";
+  if (tone === "warning") return "text-caution";
+  return "text-ink-muted";
+}
+
+function AxisFact({ axis, label }: Readonly<{ axis: AdminEmailAxis; label: string }>) {
+  return (
+    <div className={`min-w-0 border-l-2 pl-3 ${toneClasses(axis.tone)}`}>
+      <dt className="text-[10px] font-semibold uppercase tracking-[0.09em] text-ink-muted">{label}</dt>
+      <dd className="mt-1 break-words text-sm font-medium [overflow-wrap:anywhere]">{axis.label}</dd>
+      <dd className="mt-1 break-words text-xs leading-5 text-ink-muted [overflow-wrap:anywhere]">{axis.detail}</dd>
+    </div>
+  );
+}
+
+function Feedback({ controller }: Readonly<{ controller: AdminEmailController }>) {
   if (!controller.state.error && !controller.state.notice) return null;
   return (
     <div className="grid gap-2 px-4 pt-4">
       {controller.state.error ? (
-        <div className="flex flex-col gap-2 rounded-control bg-accent-rose/10 px-3 py-2 text-xs leading-5 text-accent-rose sm:flex-row sm:items-start sm:justify-between" role="alert">
-          <span>{controller.state.error}</span>
+        <div className="flex min-w-0 flex-col gap-2 border-l-2 border-critical bg-critical/10 px-3 py-2 text-xs leading-5 text-critical sm:flex-row sm:items-start sm:justify-between" role="alert">
+          <span className="min-w-0 break-words [overflow-wrap:anywhere]">{controller.state.error}</span>
           <button className={quietButton} onClick={controller.actions.dismissError} type="button">Dismiss</button>
         </div>
       ) : null}
       {controller.state.notice ? (
-        <div className="flex flex-col gap-2 rounded-control bg-accent-green/10 px-3 py-2 text-xs leading-5 text-accent-green sm:flex-row sm:items-start sm:justify-between" role="status">
-          <span>{controller.state.notice}</span>
+        <div className="flex min-w-0 flex-col gap-2 border-l-2 border-positive bg-positive/10 px-3 py-2 text-xs leading-5 text-positive sm:flex-row sm:items-start sm:justify-between" role="status">
+          <span className="min-w-0 break-words [overflow-wrap:anywhere]">{controller.state.notice}</span>
           <button className={quietButton} onClick={controller.actions.dismissNotice} type="button">Dismiss</button>
         </div>
       ) : null}
@@ -129,11 +157,11 @@ function Feedback({ controller }: { controller: AdminEmailController }) {
   );
 }
 
-function Field({
-  children,
-  help,
-  label
-}: Readonly<{ children: React.ReactNode; help?: string; label: string }>) {
+function Field({ children, help, label }: Readonly<{
+  children: ReactNode;
+  help?: string;
+  label: string;
+}>) {
   return (
     <label className="min-w-0">
       <span className={fieldLabel}>{label}</span>
@@ -143,280 +171,510 @@ function Field({
   );
 }
 
-function AdminEmailContent({ controller }: Readonly<{ controller: AdminEmailController }>) {
-  const [form, setForm] = useState<EmailForm>(() => formFrom(controller));
-  const [recipient, setRecipient] = useState("");
-  const [confirmClear, setConfirmClear] = useState(false);
-  const [plaintextAcknowledged, setPlaintextAcknowledged] = useState(false);
-  const email = controller.state.email;
-  if (!email) return null;
-  const currentStatus = status(controller);
+function PlaintextAcknowledgement({
+  acknowledged,
+  busy,
+  form,
+  setAcknowledged
+}: Readonly<{
+  acknowledged: boolean;
+  busy: boolean;
+  form: EmailForm;
+  setAcknowledged(value: boolean): void;
+}>) {
+  if (form.transport !== "plaintext_internal_no_auth") return null;
+  return (
+    <div className="border-l-2 border-caution bg-caution/10 px-3 py-3 text-xs leading-5 text-caution">
+      <div className="flex gap-2">
+        <AlertTriangle aria-hidden="true" className="mt-0.5 size-4 shrink-0" />
+        <p>Plaintext is allowed only for an explicitly approved internal relay and cannot carry a username or password.</p>
+      </div>
+      <label className={`mt-3 flex items-start gap-2 border border-caution/25 px-2 py-2 ${touchTarget}`}>
+        <input
+          aria-label="Acknowledge exact plaintext relay"
+          checked={acknowledged}
+          className="mt-0.5 size-4 shrink-0 accent-proof"
+          disabled={busy}
+          onChange={(event) => setAcknowledged(event.currentTarget.checked)}
+          type="checkbox"
+        />
+        <span>I reviewed this exact plaintext relay ({form.host || "host"}:{form.port || "port"}) and accept unencrypted SMTP for this test and activation.</span>
+      </label>
+    </div>
+  );
+}
 
-  const tested = email.draft.test?.tested === true && email.draft.test.version === email.draft.version;
-  const busy = controller.state.busy;
-  const hasDraft = Boolean(email.draft.configuration);
-  const hasActive = Boolean(email.active.configuration);
+function EmailTaskIndex({
+  email,
+  onOpenTask,
+  task
+}: Readonly<{
+  email: AdminEmailState;
+  onOpenTask(task: EmailTask): void;
+  task: EmailTask;
+}>) {
+  const presentation = deriveAdminEmailPresentation(email);
+  return (
+    <div className="min-w-0">
+      <div className="border-b border-trace-subtle p-4">
+        <p className="text-[10px] font-semibold uppercase tracking-[0.1em] text-ink-muted">SMTP delivery</p>
+        <h3 className="mt-1 text-base font-semibold text-ink">Email tasks</h3>
+        <dl className="mt-3 grid gap-2 text-xs">
+          <div className="flex items-center justify-between gap-2"><dt className="text-ink-muted">Draft</dt><dd className={toneTextClass(presentation.draft.tone)}>{presentation.draft.label}</dd></div>
+          <div className="flex items-center justify-between gap-2"><dt className="text-ink-muted">Active</dt><dd className={toneTextClass(presentation.active.tone)}>{presentation.active.label}</dd></div>
+          <div className="flex items-center justify-between gap-2"><dt className="text-ink-muted">Health</dt><dd className={toneTextClass(presentation.health.tone)}>{presentation.health.label}</dd></div>
+        </dl>
+      </div>
+      <nav className="p-2" aria-label="Email delivery tasks">
+        {tasks.map((item) => {
+          const Icon = item.icon;
+          const active = item.id === task;
+          return (
+            <button
+              className={`flex min-h-control w-full min-w-0 items-center gap-2 border-l-2 px-3 py-2 text-left ${active ? "border-proof bg-answer-paper text-ink" : "border-transparent text-ink-secondary hover:bg-control-hover hover:text-ink"}`}
+              key={item.id}
+              onClick={() => onOpenTask(item.id)}
+              type="button"
+            >
+              <Icon aria-hidden="true" className="size-3.5 shrink-0" />
+              <span className="min-w-0 flex-1">
+                <span className="block text-xs font-medium">{item.label}</span>
+                <span className="mt-0.5 block truncate text-[10px] text-ink-muted">{item.description}</span>
+              </span>
+              <ChevronRight aria-hidden="true" className="size-3.5 shrink-0 lg:hidden" />
+            </button>
+          );
+        })}
+      </nav>
+    </div>
+  );
+}
+
+function OverviewTask({ email, onOpenTask }: Readonly<{
+  email: AdminEmailState;
+  onOpenTask(task: EmailTask): void;
+}>) {
+  const presentation = deriveAdminEmailPresentation(email);
+  const nextTask: EmailTask = !email.draft.configuration || !presentation.tested
+    ? !email.draft.configuration ? "configuration" : "commissioning"
+    : !email.active.configuration
+      ? "commissioning"
+      : "runtime";
+  const nextLabel = nextTask === "configuration"
+    ? "Configure SMTP draft"
+    : nextTask === "commissioning"
+      ? email.active.configuration ? "Review test & activation" : "Test and activate"
+      : "Review runtime";
+  return (
+    <div className="grid gap-6">
+      <dl className="grid gap-4 sm:grid-cols-3">
+        <AxisFact axis={presentation.draft} label="Draft" />
+        <AxisFact axis={presentation.active} label="Active" />
+        <AxisFact axis={presentation.health} label="Health" />
+      </dl>
+      <section className="border-l border-trace-strong pl-4">
+        <h4 className="text-sm font-semibold text-ink">Safe staged delivery</h4>
+        <p className="mt-1 max-w-3xl text-xs leading-5 text-ink-muted">Saving and testing change only the mutable draft. Outgoing email keeps using the current enabled active version until the exact tested draft is activated.</p>
+        <button className={`${primaryButton} mt-3`} onClick={() => onOpenTask(nextTask)} type="button">{nextLabel}</button>
+      </section>
+      <section className="border-t border-trace-subtle pt-4">
+        <h4 className="text-sm font-semibold text-ink">Current facts</h4>
+        <dl className="mt-3 grid gap-x-5 gap-y-3 text-xs sm:grid-cols-2">
+          <div><dt className="text-ink-muted">Draft version</dt><dd className="mt-1 font-mono text-ink">{email.draft.version}</dd></div>
+          <div><dt className="text-ink-muted">Active version</dt><dd className="mt-1 font-mono text-ink">{email.active.version}</dd></div>
+          <div><dt className="text-ink-muted">Draft password</dt><dd className="mt-1 text-ink">{email.draft.passwordConfigured ? "Configured · write-only" : "None"}</dd></div>
+          <div><dt className="text-ink-muted">Last draft test</dt><dd className="mt-1 break-words text-ink [overflow-wrap:anywhere]">{email.draft.test ? `${email.draft.test.code} · ${formatDate(email.draft.test.attemptedAt)}` : "Never"}</dd></div>
+        </dl>
+      </section>
+    </div>
+  );
+}
+
+function ConfigurationTask({
+  busy,
+  draftDirty,
+  email,
+  form,
+  onReset,
+  onSave,
+  patchForm,
+  plaintextAcknowledged,
+  setPlaintextAcknowledged
+}: Readonly<{
+  busy: boolean;
+  draftDirty: boolean;
+  email: AdminEmailState;
+  form: EmailForm;
+  onReset(): void;
+  onSave(): void;
+  patchForm(patch: Partial<EmailForm>): void;
+  plaintextAcknowledged: boolean;
+  setPlaintextAcknowledged(value: boolean): void;
+}>) {
   const plaintext = form.transport === "plaintext_internal_no_auth";
   const plaintextApproved = !plaintext || (
     form.authenticationMode === "none" &&
     form.allowInternalNetwork &&
     plaintextAcknowledged
   );
-  const draftDirty = JSON.stringify(form) !== JSON.stringify(formFrom(controller));
+  const credentialsReady = form.authenticationMode === "none" || (
+    Boolean(form.username.trim()) &&
+    (form.passwordAction === "preserve" || Boolean(form.password))
+  );
+  const configurationReady = Boolean(
+    form.host.trim() &&
+    form.fromAddress.trim() &&
+    Number.isInteger(Number(form.port)) &&
+    Number(form.port) >= 1 &&
+    Number(form.port) <= 65535 &&
+    credentialsReady
+  );
+  return (
+    <div className="grid gap-7">
+      <section>
+        <h4 className="text-sm font-semibold text-ink">Connection</h4>
+        <p className="mt-1 text-xs leading-5 text-ink-muted">Saving produces a new draft version. It does not affect outgoing email.</p>
+        <div className="mt-4 grid min-w-0 gap-3 md:grid-cols-2">
+          <Field label="SMTP host" help="Hostname or IP address, without a URL scheme.">
+            <input aria-label="SMTP host" className={`${inputClass} mt-1.5`} disabled={busy} onChange={(event) => patchForm({ host: event.currentTarget.value })} required type="text" value={form.host} />
+          </Field>
+          <Field label="Port">
+            <input aria-label="Port" className={`${inputClass} mt-1.5`} disabled={busy} inputMode="numeric" max={65535} min={1} onChange={(event) => patchForm({ port: event.currentTarget.value })} required type="number" value={form.port} />
+          </Field>
+          <Field label="From address">
+            <input aria-label="From address" autoComplete="email" className={`${inputClass} mt-1.5`} disabled={busy} onChange={(event) => patchForm({ fromAddress: event.currentTarget.value })} required type="email" value={form.fromAddress} />
+          </Field>
+          <Field label="From display name" help="Optional printable text.">
+            <input aria-label="From display name" className={`${inputClass} mt-1.5`} disabled={busy} onChange={(event) => patchForm({ displayName: event.currentTarget.value })} type="text" value={form.displayName} />
+          </Field>
+        </div>
+      </section>
 
+      <section className="border-t border-trace-subtle pt-5">
+        <h4 className="text-sm font-semibold text-ink">Security boundary</h4>
+        <div className="mt-4 grid min-w-0 gap-3 md:grid-cols-2">
+          <Field label="Transport security">
+            <select aria-label="Transport security" className={`${inputClass} mt-1.5`} disabled={busy} onChange={(event) => patchForm({ transport: event.currentTarget.value as AdminEmailTransportMode })} value={form.transport}>
+              <option value="starttls_required">STARTTLS required</option>
+              <option value="implicit_tls">Implicit TLS</option>
+              <option value="plaintext_internal_no_auth">Plaintext internal relay</option>
+            </select>
+          </Field>
+          <label className={`flex min-h-control items-start gap-2 bg-control-surface px-3 py-2 text-xs text-ink-secondary ${touchTarget}`}>
+            <input checked={form.allowInternalNetwork} className="mt-0.5 size-4 shrink-0 accent-proof" disabled={busy} onChange={(event) => patchForm({ allowInternalNetwork: event.currentTarget.checked })} type="checkbox" />
+            <span>Allow a reviewed internal-network relay<span className="mt-0.5 block text-[11px] leading-4 text-ink-muted">Private and loopback destinations become eligible; metadata and unsafe address classes stay blocked.</span></span>
+          </label>
+        </div>
+        <div className="mt-3">
+          <PlaintextAcknowledgement acknowledged={plaintextAcknowledged} busy={busy} form={form} setAcknowledged={setPlaintextAcknowledged} />
+        </div>
+      </section>
+
+      <section className="border-t border-trace-subtle pt-5">
+        <h4 className="text-sm font-semibold text-ink">Authentication</h4>
+        <div className="mt-4 grid min-w-0 gap-3 md:grid-cols-2">
+          <Field label="Authentication">
+            <select
+              aria-label="Authentication"
+              className={`${inputClass} mt-1.5`}
+              disabled={busy}
+              onChange={(event) => patchForm({
+                authenticationMode: event.currentTarget.value as EmailForm["authenticationMode"],
+                password: "",
+                passwordAction: email.draft.passwordConfigured ? "preserve" : "replace"
+              })}
+              value={form.authenticationMode}
+            >
+              <option value="password">Username and password</option>
+              <option value="none">No authentication</option>
+            </select>
+          </Field>
+          {form.authenticationMode === "password" ? (
+            <Field label="Username">
+              <input aria-label="Username" autoComplete="username" className={`${inputClass} mt-1.5`} disabled={busy} onChange={(event) => patchForm({ username: event.currentTarget.value })} required type="text" value={form.username} />
+            </Field>
+          ) : null}
+          {form.authenticationMode === "password" ? (
+            <Field label="Password action" help={email.draft.passwordConfigured ? "The stored password is write-only." : "A password is required before this draft can be saved."}>
+              <select aria-label="Password action" className={`${inputClass} mt-1.5`} disabled={busy || !email.draft.passwordConfigured} onChange={(event) => patchForm({ passwordAction: event.currentTarget.value as EmailForm["passwordAction"], password: "" })} value={form.passwordAction}>
+                {email.draft.passwordConfigured ? <option value="preserve">Keep stored password</option> : null}
+                <option value="replace">Replace password</option>
+              </select>
+            </Field>
+          ) : null}
+          {form.authenticationMode === "password" && form.passwordAction === "replace" ? (
+            <Field label="New password" help="Encrypted before persistence and never returned to this page.">
+              <input aria-label="New password" autoComplete="new-password" className={`${inputClass} mt-1.5`} disabled={busy} onChange={(event) => patchForm({ password: event.currentTarget.value })} required type="password" value={form.password} />
+            </Field>
+          ) : null}
+        </div>
+        {form.authenticationMode === "none" ? <p className="mt-3 bg-workspace-rail/45 px-3 py-2 text-xs leading-5 text-ink-secondary">Saving without authentication explicitly clears any stored draft password.</p> : null}
+      </section>
+
+      {draftDirty ? <p className="border-l-2 border-caution bg-caution/10 px-3 py-2 text-xs leading-5 text-caution" role="status">These fields are not part of the stored draft yet. Save before testing or activation.</p> : null}
+      <div className="flex flex-wrap gap-2 border-t border-trace-subtle pt-4">
+        <button className={primaryButton} disabled={busy || !configurationReady || !plaintextApproved} onClick={onSave} type="button"><Save aria-hidden="true" className="size-3.5" />Save draft</button>
+        <button className={quietButton} disabled={busy} onClick={onReset} type="button">Reset fields</button>
+      </div>
+    </div>
+  );
+}
+
+function CommissioningTask({
+  busy,
+  controller,
+  draftDirty,
+  email,
+  form,
+  onActivated,
+  plaintextAcknowledged,
+  recipient,
+  setPlaintextAcknowledged,
+  setRecipient
+}: Readonly<{
+  busy: boolean;
+  controller: AdminEmailController;
+  draftDirty: boolean;
+  email: AdminEmailState;
+  form: EmailForm;
+  onActivated(): void;
+  plaintextAcknowledged: boolean;
+  recipient: string;
+  setPlaintextAcknowledged(value: boolean): void;
+  setRecipient(value: string): void;
+}>) {
+  const presentation = deriveAdminEmailPresentation(email);
+  const hasDraft = Boolean(email.draft.configuration);
+  const plaintext = form.transport === "plaintext_internal_no_auth";
+  const plaintextApproved = !plaintext || (
+    form.authenticationMode === "none" &&
+    form.allowInternalNetwork &&
+    plaintextAcknowledged
+  );
+  const runTest = async () => {
+    const oneUseRecipient = recipient;
+    try {
+      await controller.actions.test(email.draft.version, oneUseRecipient);
+    } finally {
+      setRecipient("");
+    }
+  };
+  return (
+    <div className="grid gap-6">
+      <section>
+        <h4 className="text-sm font-semibold text-ink">Test exact draft {email.draft.version}</h4>
+        <p className="mt-1 max-w-3xl text-xs leading-5 text-ink-muted">Testing sends one configuration-only message to a one-use recipient. The address is not stored. Accepted means the SMTP relay accepted the transaction; it does not prove inbox delivery.</p>
+        {draftDirty ? <p className="mt-3 border-l-2 border-caution bg-caution/10 px-3 py-2 text-xs leading-5 text-caution">Unsaved fields differ from draft {email.draft.version}. Save them before testing.</p> : null}
+        <div className="mt-4 max-w-xl">
+          <Field label="Test recipient">
+            <input aria-label="Test recipient" autoComplete="email" className={`${inputClass} mt-1.5`} disabled={busy} onChange={(event) => setRecipient(event.currentTarget.value)} placeholder="you@example.com" type="email" value={recipient} />
+          </Field>
+        </div>
+        <div className="mt-3"><PlaintextAcknowledgement acknowledged={plaintextAcknowledged} busy={busy} form={form} setAcknowledged={setPlaintextAcknowledged} /></div>
+        <button className={`${primaryButton} mt-4`} disabled={busy || draftDirty || !plaintextApproved || !hasDraft || !recipient.trim()} onClick={() => void runTest()} type="button">
+          <Send aria-hidden="true" className="size-3.5" />Test draft
+        </button>
+      </section>
+
+      <section className="border-t border-trace-subtle pt-5">
+        <h4 className="text-sm font-semibold text-ink">Activate tested version</h4>
+        <div className={`mt-3 border-l-2 px-3 py-3 text-xs leading-5 ${presentation.tested ? "border-positive bg-positive/10 text-positive" : "border-caution bg-caution/10 text-caution"}`}>
+          {presentation.tested
+            ? `Draft ${email.draft.version} passed a complete SMTP transaction and can replace active version ${email.active.version}.`
+            : "The current draft must pass an exact test before activation."}
+        </div>
+        <p className="mt-3 text-xs leading-5 text-ink-muted">Activation is atomic. Failed tests or stale versions leave the current active configuration unchanged.</p>
+        <button
+          className={`${primaryButton} mt-4`}
+          disabled={busy || draftDirty || !plaintextApproved || !presentation.tested}
+          onClick={async () => {
+            const activated = await controller.actions.activate(email.draft.version, email.active.version);
+            if (activated) onActivated();
+          }}
+          type="button"
+        >
+          <CheckCircle2 aria-hidden="true" className="size-3.5" />Activate
+        </button>
+      </section>
+    </div>
+  );
+}
+
+function RuntimeTask({ controller, email }: Readonly<{
+  controller: AdminEmailController;
+  email: AdminEmailState;
+}>) {
+  const presentation = deriveAdminEmailPresentation(email);
+  const hasActive = Boolean(email.active.configuration);
+  return (
+    <div className="grid gap-6">
+      <section>
+        <h4 className="text-sm font-semibold text-ink">Runtime delivery</h4>
+        <p className="mt-1 max-w-3xl text-xs leading-5 text-ink-muted">Each message loads the current enabled active version from the database. Enable and disable apply without restart. SMTP is optional and never changes core application readiness.</p>
+        <div className="mt-4 flex flex-wrap items-center gap-3">
+          <span className={`font-mono text-xs font-medium ${email.active.enabled ? "text-positive" : "text-caution"}`}>{email.active.enabled ? "ENABLED" : "DISABLED"}</span>
+          {email.active.enabled ? (
+            <button className={quietButton} disabled={controller.state.busy} onClick={() => void controller.actions.disable(email.active.version)} type="button"><Power aria-hidden="true" className="size-3.5" />Disable</button>
+          ) : (
+            <button className={primaryButton} disabled={controller.state.busy || !hasActive} onClick={() => void controller.actions.enable(email.active.version)} type="button"><Power aria-hidden="true" className="size-3.5" />Enable</button>
+          )}
+          <button className={quietButton} disabled={controller.state.busy || controller.state.loading} onClick={() => void controller.actions.refresh()} type="button"><RefreshCw aria-hidden="true" className="size-3.5" />Refresh</button>
+        </div>
+      </section>
+      <section className="border-t border-trace-subtle pt-5">
+        <h4 className="text-sm font-semibold text-ink">Safe active health</h4>
+        <div className={`mt-3 border-l-2 pl-3 ${toneClasses(presentation.health.tone)}`}>
+          <p className="text-sm font-medium">{presentation.health.label}</p>
+          <p className="mt-1 text-xs leading-5 text-ink-muted">{presentation.health.detail}</p>
+        </div>
+        <dl className="mt-4 grid gap-x-5 gap-y-3 text-xs sm:grid-cols-2">
+          <div><dt className="text-ink-muted">Health active version</dt><dd className="mt-1 font-mono text-ink">{email.health.activeVersion ?? "None"}</dd></div>
+          <div><dt className="text-ink-muted">Last attempt</dt><dd className="mt-1 text-ink">{formatDate(email.health.lastAttemptAt)}</dd></div>
+          <div><dt className="text-ink-muted">Last accepted send</dt><dd className="mt-1 text-ink">{formatDate(email.health.lastAcceptedAt)}</dd></div>
+          <div><dt className="text-ink-muted">Last failure</dt><dd className="mt-1 break-words text-ink [overflow-wrap:anywhere]">{email.health.lastFailureCode ? `${email.health.lastFailureCode} · ${formatDate(email.health.lastFailureAt)}` : "None"}</dd></div>
+        </dl>
+      </section>
+    </div>
+  );
+}
+
+function ClearTask({ controller, email, onCleared }: Readonly<{
+  controller: AdminEmailController;
+  email: AdminEmailState;
+  onCleared(): void;
+}>) {
+  const [confirm, setConfirm] = useState(false);
+  return (
+    <section className="max-w-3xl border-l-2 border-critical bg-critical/10 px-4 py-4">
+      <h4 className="text-sm font-semibold text-ink">Clear email delivery</h4>
+      <p className="mt-1 text-xs leading-5 text-ink-secondary">This disables delivery and removes both draft version {email.draft.version} and active version {email.active.version}, including their stored password generations and health. There is no restore or history action; counters remain monotonic.</p>
+      <label className={`mt-4 flex items-start gap-2 text-xs text-ink-secondary ${touchTarget}`}>
+        <input checked={confirm} className="mt-0.5 size-4 accent-proof" disabled={controller.state.busy} onChange={(event) => setConfirm(event.currentTarget.checked)} type="checkbox" />
+        I understand that the current SMTP configuration will be cleared.
+      </label>
+      <button
+        className={`${dangerButton} mt-4`}
+        disabled={controller.state.busy || !confirm}
+        onClick={async () => {
+          const cleared = await controller.actions.clear({
+            confirm: true,
+            expectedActiveVersion: email.active.version,
+            expectedDraftVersion: email.draft.version
+          });
+          if (cleared) {
+            setConfirm(false);
+            onCleared();
+          }
+        }}
+        type="button"
+      >
+        <Trash2 aria-hidden="true" className="size-3.5" />Clear email delivery
+      </button>
+    </section>
+  );
+}
+
+function AdminEmailContent({ controller, email }: Readonly<{
+  controller: AdminEmailController;
+  email: AdminEmailState;
+}>) {
+  const [task, setTask] = useState<EmailTask>("overview");
+  const [compactTaskOpen, setCompactTaskOpen] = useState(false);
+  const [form, setForm] = useState<EmailForm>(() => formFrom(email));
+  const [recipient, setRecipient] = useState("");
+  const [plaintextAcknowledged, setPlaintextAcknowledged] = useState(false);
+  const versionKey = `${email.draft.version}:${email.active.version}`;
+  const synchronizedVersion = useRef(versionKey);
+
+  useEffect(() => {
+    if (synchronizedVersion.current === versionKey) return;
+    synchronizedVersion.current = versionKey;
+    setForm(formFrom(email));
+    setPlaintextAcknowledged(false);
+    setRecipient("");
+  }, [email, versionKey]);
+
+  const presentation = deriveAdminEmailPresentation(email);
+  const draftDirty = JSON.stringify(form) !== JSON.stringify(formFrom(email));
+  const busy = controller.state.busy;
+  const current = tasks.find((item) => item.id === task) ?? tasks[0];
+  const openTask = (nextTask: EmailTask) => {
+    setTask(nextTask);
+    setCompactTaskOpen(true);
+  };
   const patchForm = (patch: Partial<EmailForm>) => {
     setPlaintextAcknowledged(false);
-    setForm((current) => ({ ...current, ...patch }));
+    setForm((currentForm) => ({ ...currentForm, ...patch }));
   };
-  const save = () => controller.actions.save({
-    configuration: configurationFrom(form),
-    expectedDraftVersion: email.draft.version,
-    passwordAction: passwordActionFrom(form)
-  });
 
   return (
     <div className="min-w-0">
       <Feedback controller={controller} />
-      <div className="grid min-w-0 gap-4 p-4 xl:grid-cols-[minmax(0,1fr)_360px]">
-        <section className="min-w-0 rounded-panel bg-surface-raised/40 p-4" aria-label="Email delivery draft">
-          <div className="flex flex-wrap items-start justify-between gap-3">
-            <div>
-              <h3 className="text-sm font-semibold text-content-primary">SMTP draft</h3>
-              <p className="mt-1 max-w-2xl text-xs leading-5 text-content-muted">
-                Saving changes does not affect outgoing email. Send a real test message, then activate the exact tested draft.
-              </p>
-            </div>
-            <span className={`inline-flex rounded-pill px-2 py-1 text-[11px] ${currentStatus.tone}`}>
-              {currentStatus.label}
-            </span>
-          </div>
-
-          <div className="mt-4 grid min-w-0 gap-3 md:grid-cols-2">
-            <Field label="SMTP host" help="Hostname or IP address, without a URL scheme.">
-              <input aria-label="SMTP host" className={`${inputClass} mt-1.5`} disabled={busy} onChange={(event) => patchForm({ host: event.currentTarget.value })} required type="text" value={form.host} />
-            </Field>
-            <Field label="Port">
-              <input aria-label="Port" className={`${inputClass} mt-1.5`} disabled={busy} inputMode="numeric" max={65535} min={1} onChange={(event) => patchForm({ port: event.currentTarget.value })} required type="number" value={form.port} />
-            </Field>
-            <Field label="From address">
-              <input aria-label="From address" autoComplete="email" className={`${inputClass} mt-1.5`} disabled={busy} onChange={(event) => patchForm({ fromAddress: event.currentTarget.value })} required type="email" value={form.fromAddress} />
-            </Field>
-            <Field label="From display name" help="Optional. Plain printable text only.">
-              <input aria-label="From display name" className={`${inputClass} mt-1.5`} disabled={busy} onChange={(event) => patchForm({ displayName: event.currentTarget.value })} type="text" value={form.displayName} />
-            </Field>
-            <Field label="Transport security">
-              <select
-                aria-label="Transport security"
-                className={`${inputClass} mt-1.5`}
-                disabled={busy}
-                onChange={(event) => patchForm({ transport: event.currentTarget.value as AdminEmailTransportMode })}
-                value={form.transport}
-              >
-                <option value="starttls_required">STARTTLS required</option>
-                <option value="implicit_tls">Implicit TLS</option>
-                <option value="plaintext_internal_no_auth">Plaintext internal relay</option>
-              </select>
-            </Field>
-            <Field label="Authentication">
-              <select
-                aria-label="Authentication"
-                className={`${inputClass} mt-1.5`}
-                disabled={busy}
-                onChange={(event) => patchForm({
-                  authenticationMode: event.currentTarget.value as EmailForm["authenticationMode"],
-                  password: "",
-                  passwordAction: email.draft.passwordConfigured ? "preserve" : "replace"
-                })}
-                value={form.authenticationMode}
-              >
-                <option value="password">Username and password</option>
-                <option value="none">No authentication</option>
-              </select>
-            </Field>
-          </div>
-
-          {form.authenticationMode === "password" ? (
-            <div className="mt-3 grid min-w-0 gap-3 md:grid-cols-2">
-              <Field label="Username">
-                <input aria-label="Username" autoComplete="username" className={`${inputClass} mt-1.5`} disabled={busy} onChange={(event) => patchForm({ username: event.currentTarget.value })} required type="text" value={form.username} />
-              </Field>
-              <Field label="Password action" help={email.draft.passwordConfigured ? "The stored password is write-only." : "A password is required before this draft can be saved."}>
-                <select
-                  aria-label="Password action"
-                  className={`${inputClass} mt-1.5`}
-                  disabled={busy || !email.draft.passwordConfigured}
-                  onChange={(event) => patchForm({ passwordAction: event.currentTarget.value as EmailForm["passwordAction"], password: "" })}
-                  value={form.passwordAction}
-                >
-                  {email.draft.passwordConfigured ? <option value="preserve">Keep stored password</option> : null}
-                  <option value="replace">Replace password</option>
-                </select>
-              </Field>
-              {form.passwordAction === "replace" ? (
-                <Field label="New password" help="The value is encrypted before persistence and is never returned to this page.">
-                  <input aria-label="New password" autoComplete="new-password" className={`${inputClass} mt-1.5`} disabled={busy} onChange={(event) => patchForm({ password: event.currentTarget.value })} required type="password" value={form.password} />
-                </Field>
-              ) : null}
-            </div>
-          ) : (
-            <p className="mt-3 rounded-control bg-surface-raised px-3 py-2 text-xs leading-5 text-content-secondary">
-              Saving without authentication explicitly clears any stored draft password.
-            </p>
-          )}
-
-          <label className={`mt-4 flex min-h-control items-start gap-2 rounded-control bg-surface-raised px-3 py-2 text-xs text-content-secondary ${touchTarget}`}>
-            <input
-              checked={form.allowInternalNetwork}
-              className="mt-0.5 size-4 shrink-0 accent-accent-cyan"
-              disabled={busy}
-              onChange={(event) => patchForm({ allowInternalNetwork: event.currentTarget.checked })}
-              type="checkbox"
-            />
-            <span>
-              Allow a reviewed internal-network relay
-              <span className="mt-0.5 block text-[11px] leading-4 text-content-muted">
-                Enables private or loopback destinations. Metadata, link-local, multicast, and unspecified addresses remain blocked.
-              </span>
-            </span>
-          </label>
-
-          {plaintext ? (
-            <div className="mt-3 rounded-control bg-accent-amber/10 px-3 py-2 text-xs leading-5 text-accent-amber" role="note">
-              <div className="flex gap-2">
-                <AlertTriangle aria-hidden="true" className="mt-0.5 size-4 shrink-0" />
-                Plaintext is allowed only for an explicitly approved internal relay and cannot carry a username or password.
-              </div>
-              <label className={`mt-2 flex items-start gap-2 rounded-control border border-accent-amber/25 px-2 py-2 ${touchTarget}`}>
-                <input
-                  aria-label="Acknowledge exact plaintext relay"
-                  checked={plaintextAcknowledged}
-                  className="mt-0.5 size-4 shrink-0 accent-accent-amber"
-                  disabled={busy}
-                  onChange={(event) => setPlaintextAcknowledged(event.currentTarget.checked)}
-                  type="checkbox"
-                />
-                <span>
-                  I reviewed this exact plaintext relay ({form.host || "host"}:{form.port || "port"}) and accept unencrypted SMTP for this test and activation.
-                </span>
-              </label>
-            </div>
-          ) : null}
-
-          {draftDirty ? (
-            <p className="mt-3 rounded-control bg-accent-amber/10 px-3 py-2 text-xs leading-5 text-accent-amber" role="status">
-              These fields are not part of the stored draft yet. Save before testing or activation.
-            </p>
-          ) : null}
-
-          <div className="mt-4 flex flex-wrap gap-2">
-            <button className={primaryButton} disabled={busy || !plaintextApproved} onClick={() => void save()} type="button">
-              <Save aria-hidden="true" className="size-3.5" />
-              Save draft
-            </button>
-            <button className={quietButton} disabled={busy} onClick={() => setForm(formFrom(controller))} type="button">
-              Reset fields
-            </button>
-          </div>
-        </section>
-
-        <aside className="grid min-w-0 content-start gap-3" aria-label="Email delivery status and actions">
-          <section className="rounded-panel bg-surface-raised/50 p-4">
-            <div className="flex items-center gap-2">
-              <Mail aria-hidden="true" className="size-4 text-accent-cyan" />
-              <h3 className="text-sm font-semibold text-content-primary">Status</h3>
-            </div>
-            <dl className="mt-3 grid grid-cols-[minmax(0,1fr)_auto] gap-x-3 gap-y-2 text-xs">
-              <dt className="text-content-muted">Draft version</dt><dd className="font-mono text-content-primary">{email.draft.version}</dd>
-              <dt className="text-content-muted">Active version</dt><dd className="font-mono text-content-primary">{email.active.version}</dd>
-              <dt className="text-content-muted">Draft password</dt><dd className="text-content-primary">{email.draft.passwordConfigured ? "Configured" : "None"}</dd>
-              <dt className="text-content-muted">Last draft test</dt><dd className="text-right text-content-primary">{email.draft.test ? `${email.draft.test.code} · ${formatDate(email.draft.test.attemptedAt)}` : "Never"}</dd>
-              <dt className="text-content-muted">Last accepted send</dt><dd className="text-right text-content-primary">{formatDate(email.health.lastAcceptedAt)}</dd>
-              <dt className="text-content-muted">Last failure</dt><dd className="text-right text-content-primary">{email.health.lastFailureCode ?? "None"}</dd>
-            </dl>
-            {tested ? (
-              <p className="mt-3 flex gap-2 rounded-control bg-accent-green/10 px-3 py-2 text-xs leading-5 text-accent-green">
-                <CheckCircle2 aria-hidden="true" className="mt-0.5 size-4 shrink-0" />
-                Draft {email.draft.version} passed a complete SMTP transaction.
-              </p>
-            ) : hasDraft ? (
-              <p className="mt-3 rounded-control bg-accent-amber/10 px-3 py-2 text-xs leading-5 text-accent-amber">
-                The current draft must be tested before activation.
-              </p>
-            ) : null}
-          </section>
-
-          <section className="rounded-panel bg-surface-raised/50 p-4">
-            <h3 className="text-sm font-semibold text-content-primary">Test and activate</h3>
-            <p className="mt-1 text-xs leading-5 text-content-muted">
-              Testing sends one configuration-only message to this one-use recipient. The address is not stored.
-            </p>
-            <Field label="Test recipient">
-              <input aria-label="Test recipient" autoComplete="email" className={`${inputClass} mt-1.5`} disabled={busy} onChange={(event) => setRecipient(event.currentTarget.value)} placeholder="you@example.com" type="email" value={recipient} />
-            </Field>
-            <div className="mt-3 flex flex-wrap gap-2">
-              <button className={quietButton} disabled={busy || draftDirty || !plaintextApproved || !hasDraft || !recipient.trim()} onClick={() => void controller.actions.test(email.draft.version, recipient)} type="button">
-                <Send aria-hidden="true" className="size-3.5" />
-                Test draft
-              </button>
-              <button className={primaryButton} disabled={busy || draftDirty || !plaintextApproved || !tested} onClick={() => void controller.actions.activate(email.draft.version, email.active.version)} type="button">
-                <CheckCircle2 aria-hidden="true" className="size-3.5" />
-                Activate
-              </button>
-            </div>
-          </section>
-
-          <section className="rounded-panel bg-surface-raised/50 p-4">
-            <h3 className="text-sm font-semibold text-content-primary">Runtime delivery</h3>
-            <p className="mt-1 text-xs leading-5 text-content-muted">
-              Each message loads the current enabled configuration from the database. Changes apply without restart.
-            </p>
-            <div className="mt-3 flex flex-wrap gap-2">
-              {email.active.enabled ? (
-                <button className={quietButton} disabled={busy} onClick={() => void controller.actions.disable(email.active.version)} type="button">
-                  <Power aria-hidden="true" className="size-3.5" />
-                  Disable
-                </button>
-              ) : (
-                <button className={primaryButton} disabled={busy || !hasActive} onClick={() => void controller.actions.enable(email.active.version)} type="button">
-                  <Power aria-hidden="true" className="size-3.5" />
-                  Enable
-                </button>
-              )}
-              <button className={quietButton} disabled={busy || controller.state.loading} onClick={() => void controller.actions.refresh()} type="button">
-                <RefreshCw aria-hidden="true" className="size-3.5" />
-                Refresh
-              </button>
-            </div>
-          </section>
-
-          <section className="rounded-panel border border-accent-rose/25 bg-accent-rose/5 p-4">
-            <h3 className="text-sm font-semibold text-content-primary">Clear configuration</h3>
-            <p className="mt-1 text-xs leading-5 text-content-muted">
-              Disables delivery and removes both draft and active configuration. Version counters remain monotonic.
-            </p>
-            <label className={`mt-3 flex items-start gap-2 text-xs text-content-secondary ${touchTarget}`}>
-              <input checked={confirmClear} className="mt-0.5 size-4 accent-accent-rose" disabled={busy} onChange={(event) => setConfirmClear(event.currentTarget.checked)} type="checkbox" />
-              I understand that the current SMTP configuration will be cleared.
-            </label>
-            <button
-              className={`${dangerButton} mt-3`}
-              disabled={busy || !confirmClear}
-              onClick={async () => {
-                const cleared = await controller.actions.clear({
-                  confirm: true,
-                  expectedActiveVersion: email.active.version,
-                  expectedDraftVersion: email.draft.version
-                });
-                if (cleared) setConfirmClear(false);
-              }}
-              type="button"
-            >
-              <Trash2 aria-hidden="true" className="size-3.5" />
-              Clear email delivery
-            </button>
-          </section>
-        </aside>
+      <div className="border-b border-trace-subtle px-4 py-3">
+        <p className="text-xs text-ink-muted">Singleton SMTP delivery control plane · draft {email.draft.version} · active {email.active.version}</p>
       </div>
+      <AdminTaskWorkspace indexWidth="18rem">
+        <AdminTaskIndexPane compactDetailOpen={compactTaskOpen} testId="email-task-index">
+          <EmailTaskIndex email={email} onOpenTask={openTask} task={task} />
+        </AdminTaskIndexPane>
+        <AdminTaskDetailPane compactDetailOpen={compactTaskOpen} testId="email-task-detail">
+          <article className="min-w-0 p-4 sm:p-5 lg:p-6">
+            <AdminTaskBackButton label="Back to email tasks" onClick={() => setCompactTaskOpen(false)} />
+            <header className="mb-6 border-b border-trace-subtle pb-4">
+              <p className="text-[10px] font-semibold uppercase tracking-[0.1em] text-ink-muted">Email delivery</p>
+              <h3 className="mt-1 text-lg font-semibold tracking-tight text-ink">{current.label}</h3>
+              <p className="mt-1 text-xs leading-5 text-ink-muted">{current.description}</p>
+            </header>
+            {task === "configuration" ? (
+              <ConfigurationTask
+                busy={busy}
+                draftDirty={draftDirty}
+                email={email}
+                form={form}
+                onReset={() => {
+                  setPlaintextAcknowledged(false);
+                  setForm(formFrom(email));
+                }}
+                onSave={() => void (async () => {
+                  const saved = await controller.actions.save({
+                    configuration: configurationFrom(form),
+                    expectedDraftVersion: email.draft.version,
+                    passwordAction: passwordActionFrom(form)
+                  });
+                  if (saved) openTask("commissioning");
+                })()}
+                patchForm={patchForm}
+                plaintextAcknowledged={plaintextAcknowledged}
+                setPlaintextAcknowledged={setPlaintextAcknowledged}
+              />
+            ) : task === "commissioning" ? (
+              <CommissioningTask
+                busy={busy}
+                controller={controller}
+                draftDirty={draftDirty}
+                email={email}
+                form={form}
+                onActivated={() => openTask("runtime")}
+                plaintextAcknowledged={plaintextAcknowledged}
+                recipient={recipient}
+                setPlaintextAcknowledged={setPlaintextAcknowledged}
+                setRecipient={setRecipient}
+              />
+            ) : task === "runtime" ? (
+              <RuntimeTask controller={controller} email={email} />
+            ) : task === "clear" ? (
+              <ClearTask controller={controller} email={email} onCleared={() => openTask("overview")} />
+            ) : (
+              <OverviewTask email={email} onOpenTask={openTask} />
+            )}
+            {task !== "overview" ? (
+              <div className="mt-8 border-t border-trace-subtle pt-4 text-[11px] leading-5 text-ink-muted">
+                Draft: {presentation.draft.label} · Active: {presentation.active.label} · Health: {presentation.health.label}
+              </div>
+            ) : null}
+          </article>
+        </AdminTaskDetailPane>
+      </AdminTaskWorkspace>
     </div>
   );
 }
@@ -434,10 +692,7 @@ export function AdminEmailSection({
   if (!controller.state.loaded && controller.state.loading) {
     return (
       <div className="grid min-h-52 place-items-center px-4 py-12" role="status">
-        <span className="inline-flex items-center gap-2 text-sm text-content-muted">
-          <RefreshCw aria-hidden="true" className="size-4 animate-spin" />
-          Loading email delivery settings…
-        </span>
+        <span className="inline-flex items-center gap-2 text-sm text-ink-muted"><RefreshCw aria-hidden="true" className="size-4 animate-spin" />Loading email delivery settings…</span>
       </div>
     );
   }
@@ -446,19 +701,11 @@ export function AdminEmailSection({
     return (
       <div className="grid gap-3 p-4">
         <Feedback controller={controller} />
-        <p className="text-sm text-content-muted">Email delivery settings are unavailable.</p>
-        <button className={quietButton} disabled={controller.state.loading} onClick={() => void controller.actions.refresh()} type="button">
-          <RefreshCw aria-hidden="true" className="size-3.5" />
-          Retry
-        </button>
+        <p className="text-sm text-ink-muted">Email delivery settings are unavailable.</p>
+        <button className={quietButton} disabled={controller.state.loading} onClick={() => void controller.actions.refresh()} type="button"><RefreshCw aria-hidden="true" className="size-3.5" />Retry</button>
       </div>
     );
   }
 
-  return (
-    <AdminEmailContent
-      controller={controller}
-      key={`${email.draft.version}:${email.active.version}`}
-    />
-  );
+  return <AdminEmailContent controller={controller} email={email} />;
 }

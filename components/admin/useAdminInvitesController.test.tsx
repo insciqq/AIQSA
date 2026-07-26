@@ -315,6 +315,7 @@ describe("useAdminInvitesController", () => {
       dialogLabel: "Delete invite for person@example.com",
       icon: "trash",
       message: "Invite deleted.",
+      onSuccess: expect.any(Function),
       prompt:
         "Delete the stale invite for person@example.com? Expired or revoked invite records and their hashed tokens will be removed.",
       testId: "admin-confirm-delete-invite",

@@ -147,6 +147,34 @@
   --shadow-overlay: 0 14px 40px rgb(0 0 0 / 0.4);
 }
 
+[data-theme="paper"] {
+  color-scheme: light;
+  --research-canvas: 250 250 250;
+  --workspace-rail: 248 248 248;
+  --answer-paper: 255 255 255;
+  --composer-surface: 255 255 255;
+  --control-surface: 244 244 244;
+  --overlay-surface: 255 255 255;
+  --control-hover: 235 235 235;
+  --control-pressed: 224 224 224;
+  --control-selected: 232 232 232;
+  --trace-subtle: 230 230 230;
+  --trace-strong: 184 184 184;
+  --ink: 13 13 13;
+  --ink-secondary: 66 66 66;
+  --ink-muted: 110 110 110;
+  --ink-disabled: 156 156 156;
+  --proof: 33 33 33;
+  --proof-hover: 0 0 0;
+  --proof-contrast: 255 255 255;
+  --positive: 32 122 74;
+  --caution: 151 91 16;
+  --critical: 183 52 68;
+  --scrim: 16 16 16;
+  --shadow-float: 0 2px 10px rgb(0 0 0 / 0.08);
+  --shadow-overlay: 0 14px 40px rgb(0 0 0 / 0.14);
+}
+
 :root,
 [data-theme] {
   /*

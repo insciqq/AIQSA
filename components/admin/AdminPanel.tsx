@@ -26,7 +26,10 @@ import type { AdminSectionId } from "@/components/admin/adminSections";
 import { formatTime } from "@/components/admin/adminViewUtils";
 import { useAdminAccessRulesController, type AdminAccessRulesController } from "@/components/admin/useAdminAccessRulesController";
 import { useAdminActionRunner } from "@/components/admin/useAdminActionRunner";
-import { useAdminConfirmationController } from "@/components/admin/useAdminConfirmationController";
+import {
+  useAdminConfirmationController,
+  type AdminConfirmationController
+} from "@/components/admin/useAdminConfirmationController";
 import { useAdminDashboardResource } from "@/components/admin/useAdminDashboardResource";
 import { useAdminFeedback } from "@/components/admin/useAdminFeedback";
 import { useAdminFieldErrors } from "@/components/admin/useAdminFieldErrors";
@@ -109,6 +112,7 @@ function AdminSectionContent({
   mcp,
   mcpSection,
   onMutationCommitted,
+  requestConfirmation,
   onRequestRevokeAllSessions,
   submitting,
   users
@@ -123,6 +127,7 @@ function AdminSectionContent({
   mcp: AdminMcpController;
   mcpSection: AdminMcpSectionState;
   onMutationCommitted(): void | Promise<unknown>;
+  requestConfirmation: AdminConfirmationController["requestConfirmation"];
   onRequestRevokeAllSessions(): void;
   submitting: boolean;
   users: AdminUsersController;
@@ -152,6 +157,7 @@ function AdminSectionContent({
           active
           groups={dashboard.groups}
           onMutationCommitted={onMutationCommitted}
+          requestConfirmation={requestConfirmation}
         />
       );
     case "invites":
@@ -307,13 +313,7 @@ export function AdminPanel({ adminEmail, adminUserId }: AdminPanelProps) {
               }
               navigation={navigation}
             >
-              <div
-                data-admin-renderer={
-                  navigation.activeSection === "providers" || navigation.activeSection === "usage" || navigation.activeSection === "safety"
-                    ? "replacement"
-                    : "legacy-embedded"
-                }
-              >
+              <div data-admin-renderer="replacement">
                 <AdminSectionContent
                   accessRules={accessRules}
                   activeSection={navigation.activeSection}
@@ -325,6 +325,7 @@ export function AdminPanel({ adminEmail, adminUserId }: AdminPanelProps) {
                   mcp={mcp}
                   mcpSection={mcpSection}
                   onMutationCommitted={resource.refresh}
+                  requestConfirmation={confirmation.requestConfirmation}
                   onRequestRevokeAllSessions={requestRevokeAllSessions}
                   submitting={actionsDisabled}
                   users={users}

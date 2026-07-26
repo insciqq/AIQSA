@@ -132,10 +132,10 @@ export function deriveAdminUsersView(input: AdminUsersViewInput): AdminUsersView
 
 export function userStatusClass(status: AdminUserRecord["status"]): string {
   const classes: Record<AdminUserRecord["status"], string> = {
-    active: "border-accent-green/30 bg-accent-green/10 text-accent-green",
-    denied: "border-accent-rose/30 bg-accent-rose/10 text-accent-rose",
-    disabled: "border-separator-subtle bg-surface-raised text-content-secondary",
-    pending: "border-accent-amber/30 bg-accent-amber/10 text-accent-amber"
+    active: "border-positive/25 bg-positive/10 text-positive",
+    denied: "border-critical/25 bg-critical/10 text-critical",
+    disabled: "border-trace-subtle bg-control-surface text-ink-secondary",
+    pending: "border-caution/25 bg-caution/10 text-caution"
   };
 
   return classes[status];

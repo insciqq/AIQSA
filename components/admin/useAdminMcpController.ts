@@ -236,16 +236,27 @@ export function useAdminMcpController({
     busyRef.current = true;
     setBusy(true);
     setError(null);
-    const result = await disconnectAdminMcpValidationOAuth(serverId, fetcher);
-    busyRef.current = false;
-    setBusy(false);
-    if (!result.ok) {
-      setError(adminMcpErrorMessage(result.error));
-      return false;
+    setNotice(null);
+    try {
+      const result = await disconnectAdminMcpValidationOAuth(serverId, fetcher);
+      if (!result.ok) {
+        setError(adminMcpErrorMessage(result.error));
+        return false;
+      }
+
+      const catalog = await requestAdminMcpCatalog(fetcher);
+      if (catalog.ok) {
+        setServers(sortServers(catalog.data.servers));
+      } else {
+        setError(adminMcpErrorMessage(catalog.error));
+      }
+      setNotice("Validation OAuth connection disconnected.");
+      notifyMutationCommitted(onMutationCommitted);
+      return true;
+    } finally {
+      busyRef.current = false;
+      setBusy(false);
     }
-    setNotice("Validation OAuth connection disconnected.");
-    notifyMutationCommitted(onMutationCommitted);
-    return true;
   }, [fetcher, onMutationCommitted]);
 
   const selectedServer = useMemo(() => {

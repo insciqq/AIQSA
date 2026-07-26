@@ -1,5 +1,5 @@
 import type { AdminDeletionInfo, AdminGroup, AdminMembership } from "@/lib/contracts/admin";
-import type { LucideIcon } from "lucide-react";
+import { ArrowLeft, type LucideIcon } from "lucide-react";
 import type { ReactNode } from "react";
 
 export const focusRing =
@@ -199,5 +199,83 @@ export function AdminResourceDetailPane({
     >
       {children}
     </div>
+  );
+}
+
+export function AdminTaskWorkspace({
+  children,
+  className = "",
+  indexWidth = "18rem"
+}: Readonly<{
+  children: ReactNode;
+  className?: string;
+  indexWidth?: string;
+}>) {
+  return (
+    <div
+      className={`min-h-[28rem] min-w-0 lg:grid ${className}`}
+      style={{ gridTemplateColumns: `${indexWidth} minmax(0, 1fr)` }}
+    >
+      {children}
+    </div>
+  );
+}
+
+export function AdminTaskIndexPane({
+  children,
+  className = "",
+  compactDetailOpen,
+  testId
+}: Readonly<{
+  children: ReactNode;
+  className?: string;
+  compactDetailOpen: boolean;
+  testId: string;
+}>) {
+  return (
+    <aside
+      className={`${compactDetailOpen ? "hidden" : "block"} min-h-0 min-w-0 border-b border-trace-subtle bg-workspace-rail/45 lg:block lg:border-b-0 lg:border-r ${className}`}
+      data-admin-task-view="index"
+      data-testid={testId}
+    >
+      {children}
+    </aside>
+  );
+}
+
+export function AdminTaskDetailPane({
+  children,
+  className = "",
+  compactDetailOpen,
+  testId
+}: Readonly<{
+  children: ReactNode;
+  className?: string;
+  compactDetailOpen: boolean;
+  testId: string;
+}>) {
+  return (
+    <div
+      className={`${compactDetailOpen ? "block" : "hidden"} min-h-0 min-w-0 bg-answer-paper lg:block ${className}`}
+      data-admin-task-view="detail"
+      data-testid={testId}
+    >
+      {children}
+    </div>
+  );
+}
+
+export function AdminTaskBackButton({
+  label,
+  onClick
+}: Readonly<{
+  label: string;
+  onClick(): void;
+}>) {
+  return (
+    <button className={`${quietButton} mb-4 lg:hidden`} onClick={onClick} type="button">
+      <ArrowLeft aria-hidden="true" className="size-3.5" />
+      {label}
+    </button>
   );
 }

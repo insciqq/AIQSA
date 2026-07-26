@@ -4,6 +4,8 @@ import { AdminProviderQuickSetup } from "@/components/admin/AdminProviderQuickSe
 import { AdminProvidersSection } from "@/components/admin/AdminProvidersSection";
 import { quietButton } from "@/components/admin/adminPrimitives";
 import { useAdminProviderQuickSetupController } from "@/components/admin/useAdminProviderQuickSetupController";
+import type { AdminProviderQuickSetupId } from "@/components/admin/adminProviderQuickSetupApi";
+import type { AdminConfirmationController } from "@/components/admin/useAdminConfirmationController";
 import type { AdminGroup } from "@/lib/contracts/admin";
 import { ArrowLeft } from "lucide-react";
 import { useState } from "react";
@@ -12,41 +14,37 @@ export type AdminProvidersExperienceProps = Readonly<{
   active: boolean;
   groups: AdminGroup[];
   onMutationCommitted?(): void | Promise<unknown>;
+  requestConfirmation?: AdminConfirmationController["requestConfirmation"];
 }>;
 
 export function AdminProvidersExperience({
   active,
   groups,
-  onMutationCommitted
+  onMutationCommitted,
+  requestConfirmation
 }: AdminProvidersExperienceProps) {
   const [view, setView] = useState<"advanced" | "quick">("quick");
-  const [advancedMounted, setAdvancedMounted] = useState(false);
-  const [advancedRefreshRevision, setAdvancedRefreshRevision] = useState(0);
+  const [advancedEntryProvider, setAdvancedEntryProvider] = useState<
+    AdminProviderQuickSetupId | null
+  >(null);
   const quick = useAdminProviderQuickSetupController(active && view === "quick", {
-    onMutationCommitted,
-    onQuickSetupCommitted: () => {
-      if (advancedMounted) setAdvancedRefreshRevision((revision) => revision + 1);
-    }
+    onMutationCommitted
   });
 
   const openAdvanced = () => {
+    setAdvancedEntryProvider(quick.state.selectedProviderId);
     quick.actions.leaveQuickSetup();
-    setAdvancedMounted(true);
     setView("advanced");
   };
 
   return (
     <div className="min-w-0">
-      <div hidden={view !== "quick"}>
+      {view === "quick" ? (
         <AdminProviderQuickSetup controller={quick} onOpenAdvanced={openAdvanced} />
-      </div>
+      ) : null}
 
-      {advancedMounted ? (
-        <div
-          data-admin-legacy-scope="provider-advanced"
-          data-admin-renderer="legacy-embedded"
-          hidden={view !== "advanced"}
-        >
+      {view === "advanced" ? (
+        <div data-admin-renderer="replacement">
           <div className="flex min-w-0 flex-col gap-2 border-b border-trace-subtle px-4 py-3 sm:flex-row sm:items-center sm:justify-between sm:px-6 lg:px-8">
             <div className="min-w-0">
               <p className="text-xs font-medium text-ink-secondary">Advanced configuration</p>
@@ -65,9 +63,10 @@ export function AdminProvidersExperience({
           </div>
           <AdminProvidersSection
             active={active && view === "advanced"}
+            advancedEntryProvider={advancedEntryProvider}
             groups={groups}
             onMutationCommitted={onMutationCommitted}
-            refreshRevision={advancedRefreshRevision}
+            requestConfirmation={requestConfirmation}
           />
         </div>
       ) : null}

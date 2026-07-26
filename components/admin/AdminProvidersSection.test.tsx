@@ -120,20 +120,34 @@ function controller() {
     updateCredential: vi.fn().mockResolvedValue(true),
     updateModel: vi.fn().mockResolvedValue(true)
   };
-  return {
-    actions,
-    state: {
-      busy: false,
-      connections: [connection],
-      error: null,
-      errorCode: null,
-      feedbackConnectionId: null,
-      loaded: true,
-      loading: false,
-      notice: null,
-      selectedConnection: connection
-    }
+  const state: {
+    busy: boolean;
+    connections: AdminProviderConnection[];
+    error: string | null;
+    errorBlockers: Array<{ count: number; kind: string }>;
+    errorCode: string | null;
+    feedbackConnectionId: string | null;
+    loaded: boolean;
+    loading: boolean;
+    notice: string | null;
+    selectedConnection: AdminProviderConnection | null;
+  } = {
+    busy: false,
+    connections: [connection],
+    error: null,
+    errorBlockers: [],
+    errorCode: null,
+    feedbackConnectionId: null,
+    loaded: true,
+    loading: false,
+    notice: null,
+    selectedConnection: connection
   };
+  return { actions, state };
+}
+
+function openTask(name: "Authentication" | "Credentials" | "Diagnostics" | "Models") {
+  fireEvent.click(screen.getByRole("tab", { name }));
 }
 
 describe("AdminProvidersSection", () => {
@@ -145,6 +159,8 @@ describe("AdminProvidersSection", () => {
     const view = controller();
     mocks.useController.mockReturnValue(view);
     render(<AdminProvidersSection active groups={[]} />);
+
+    openTask("Credentials");
 
     const addKey = screen.getByRole("button", { name: "Add key" });
     expect(addKey).toHaveAttribute("aria-expanded", "false");
@@ -185,6 +201,7 @@ describe("AdminProvidersSection", () => {
     mocks.useController.mockReturnValue(view);
     render(<AdminProvidersSection active groups={[]} />);
 
+    openTask("Credentials");
     fireEvent.click(screen.getByRole("button", { name: "Add key" }));
     const keyInput = screen.getByLabelText("API key");
     fireEvent.change(keyInput, { target: { value: "first-key" } });
@@ -201,6 +218,7 @@ describe("AdminProvidersSection", () => {
     mocks.useController.mockReturnValue(view);
     render(<AdminProvidersSection active groups={[]} />);
 
+    openTask("Credentials");
     fireEvent.click(screen.getByRole("button", { name: "Add key" }));
     fireEvent.change(screen.getByLabelText("API key"), {
       target: { value: "unsaved-secret" }
@@ -213,6 +231,22 @@ describe("AdminProvidersSection", () => {
 
     expect(screen.getByLabelText("API key")).toHaveValue("");
     expect(screen.getByRole("button", { name: "Save key" })).toBeDisabled();
+  });
+
+  it("keeps focused task drafts mounted while switching Advanced peer views", () => {
+    const view = controller();
+    mocks.useController.mockReturnValue(view);
+    render(<AdminProvidersSection active groups={[]} />);
+
+    openTask("Credentials");
+    fireEvent.click(screen.getByRole("button", { name: "Add key" }));
+    fireEvent.change(screen.getByLabelText("API key"), {
+      target: { value: "still-local" }
+    });
+    fireEvent.click(screen.getByRole("tab", { name: "Run profiles" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Connections" }));
+
+    expect(screen.getByLabelText("API key")).toHaveValue("still-local");
   });
 
   it("opens the model editor from the contextual readiness action", async () => {
@@ -233,7 +267,7 @@ describe("AdminProvidersSection", () => {
     expect(screen.getByRole("heading", { name: "Add model" })).toBeInTheDocument();
   });
 
-  it("returns focus to the mobile connection summary after switching", () => {
+  it("keeps compact list/detail navigation independent from the selected connection", () => {
     const secondConnection: AdminProviderConnection = {
       ...connection,
       displayName: "OpenRouter backup",
@@ -244,17 +278,20 @@ describe("AdminProvidersSection", () => {
     mocks.useController.mockReturnValue(view);
     render(<AdminProvidersSection active groups={[]} />);
 
-    const summary = screen.getByText("Current provider").closest("summary");
-    expect(summary).not.toBeNull();
-    const mobileConnections = screen.getByRole("list", {
-      name: "Choose provider connection"
-    });
-    fireEvent.click(within(mobileConnections).getByRole("button", {
+    const index = screen.getByTestId("provider-connection-index");
+    const detail = screen.getByTestId("provider-connection-task-detail");
+    expect(index).toHaveClass("block");
+    expect(detail).toHaveClass("hidden");
+    fireEvent.click(within(index).getByRole("button", {
       name: /OpenRouter backup/
     }));
 
-    expect(summary).toHaveFocus();
     expect(view.actions.select).toHaveBeenCalledWith(secondConnection.id);
+    expect(index).toHaveClass("hidden");
+    expect(detail).toHaveClass("block");
+    fireEvent.click(screen.getByRole("button", { name: "Back to connections" }));
+    expect(index).toHaveClass("block");
+    expect(detail).toHaveClass("hidden");
   });
 
   it("does not expose an activation override on a different connection", () => {
@@ -278,7 +315,7 @@ describe("AdminProvidersSection", () => {
     mocks.useController.mockReturnValue(view);
     render(<AdminProvidersSection active groups={[]} />);
 
-    expect(screen.queryByText(/Allow activation even though/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Review override" })).not.toBeInTheDocument();
     expect(screen.queryByText("Confirmation required.")).not.toBeInTheDocument();
   });
 
@@ -310,6 +347,7 @@ describe("AdminProvidersSection", () => {
     view.state.selectedConnection = refreshedConnection;
     rendered.rerender(<AdminProvidersSection active groups={[group]} />);
 
+    openTask("Authentication");
     fireEvent.click(screen.getByRole("button", { name: "Assign" }));
 
     expect(view.actions.connectionAction).toHaveBeenCalledWith(
@@ -329,7 +367,7 @@ describe("AdminProvidersSection", () => {
     mocks.useController.mockReturnValue(view);
     const rendered = render(<AdminProvidersSection active groups={[]} />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Edit connection" }));
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
     const refreshedConnection: AdminProviderConnection = {
       ...connection,
       draftVersion: 2,
@@ -359,6 +397,7 @@ describe("AdminProvidersSection", () => {
     mocks.useController.mockReturnValue(view);
     const rendered = render(<AdminProvidersSection active groups={[]} />);
 
+    openTask("Credentials");
     fireEvent.click(screen.getByRole("button", {
       name: "Rotate Primary credential"
     }));
@@ -413,7 +452,8 @@ describe("AdminProvidersSection", () => {
     mocks.useController.mockReturnValue(view);
     render(<AdminProvidersSection active groups={[]} />);
 
-    const modelsRegion = screen.getByRole("region", { name: "Models" });
+    openTask("Models");
+    const modelsRegion = screen.getByTestId("provider-task-models");
     fireEvent.click(within(modelsRegion).getByRole("button", { name: "Add model" }));
     await waitFor(() => expect(view.actions.discoverModels).toHaveBeenCalledWith(
       "connection-1",
@@ -485,11 +525,42 @@ describe("AdminProvidersSection", () => {
 
     render(<AdminProvidersSection active groups={[]} />);
 
+    openTask("Models");
     const models = screen.getByRole("list", { name: "Configured models" });
     expect(models).not.toHaveClass("overflow-hidden");
     fireEvent.click(within(models).getByLabelText("More actions for Configured model model"));
     expect(within(models).getByRole("button", { name: "Delete Configured model model" })).toBeVisible();
     expect(within(models).queryByText("vendor/model", { exact: true })).not.toBeInTheDocument();
+  });
+
+  it("routes destructive provider actions through the host confirmation port", async () => {
+    const view = controller();
+    const configuredConnection: AdminProviderConnection = {
+      ...connection,
+      models: [providerModel()]
+    };
+    view.state.connections = [configuredConnection];
+    view.state.selectedConnection = configuredConnection;
+    const requestConfirmation = vi.fn();
+    mocks.useController.mockReturnValue(view);
+    render(
+      <AdminProvidersSection
+        active
+        groups={[]}
+        requestConfirmation={requestConfirmation}
+      />
+    );
+
+    openTask("Models");
+    fireEvent.click(screen.getByLabelText("More actions for Configured model model"));
+    fireEvent.click(screen.getByRole("button", { name: "Delete Configured model model" }));
+
+    expect(requestConfirmation).toHaveBeenCalledWith(expect.objectContaining({
+      testId: "admin-confirm-delete-provider-model",
+      title: "Delete “Configured model”?"
+    }));
+    await requestConfirmation.mock.calls[0]![0].onConfirm();
+    expect(view.actions.deleteModel).toHaveBeenCalledWith("connection-1", "model-1");
   });
 
   it("keeps group key assignment separate and exposes activation once locally ready", async () => {
@@ -509,6 +580,7 @@ describe("AdminProvidersSection", () => {
       userCount: 4
     }]} />);
 
+    openTask("Authentication");
     fireEvent.click(screen.getByRole("button", { name: "Assign" }));
     await waitFor(() => expect(view.actions.connectionAction).toHaveBeenCalledWith(
       "connection-1",
@@ -561,13 +633,8 @@ describe("AdminProvidersSection", () => {
     const blockedView = controller();
     mocks.useController.mockReturnValue(blockedView);
     rendered.rerender(<AdminProvidersSection active groups={[]} />);
-    const setupItems = screen.getByText("Review setup items").closest("details");
-    expect(setupItems).not.toBeNull();
-    fireEvent.click(screen.getByText("Review setup items"));
-    expect(within(setupItems!).getByText("Add and enable at least one model.")).toBeVisible();
-    expect(within(
-      screen.getByRole("region", { name: "Models" })
-    ).getByRole("button", { name: "Add model" })).toBeInTheDocument();
+    expect(screen.getAllByText("Add and enable at least one model.").length).toBeGreaterThan(0);
+    expect(screen.getByRole("button", { name: "Add model" })).toBeInTheDocument();
   });
 
   it("labels a revoked credential version instead of presenting it as a usable draft", () => {
@@ -592,6 +659,7 @@ describe("AdminProvidersSection", () => {
 
     render(<AdminProvidersSection active groups={[]} />);
 
+    openTask("Credentials");
     expect(screen.getByText("Revoked")).toBeInTheDocument();
     expect(screen.getByText("Key version 1 was revoked.")).toBeInTheDocument();
     expect(screen.queryByRole("button", {
@@ -673,12 +741,11 @@ describe("AdminProvidersSection", () => {
     mocks.useController.mockReturnValue(view);
     render(<AdminProvidersSection active groups={[]} />);
 
-    expect(screen.queryByText("Refresh failed; prior result preserved")).not.toBeInTheDocument();
+    expect(screen.queryByText("Available · refresh needs attention")).not.toBeVisible();
     expect(screen.queryByRole("table")).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Check model route" })).not.toBeVisible();
-    const diagnostics = screen.getByText("Diagnostics and troubleshooting").closest("details");
-    expect(diagnostics).not.toHaveAttribute("open");
-    fireEvent.click(screen.getByText("Diagnostics and troubleshooting"));
+    expect(screen.queryByRole("button", { name: "Check model route" })).not.toBeInTheDocument();
+    openTask("Diagnostics");
+    expect(screen.getByText("Available · refresh needs attention")).toBeVisible();
     expect(screen.getByRole("button", { name: "Check model route" })).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "Check model route" }));
     expect(view.actions.testDraft).toHaveBeenCalledWith(
@@ -690,5 +757,40 @@ describe("AdminProvidersSection", () => {
         mode: "account_catalog"
       }
     );
+    fireEvent.click(screen.getByRole("button", { name: "Refresh active check" }));
+    expect(view.actions.refreshActive).toHaveBeenCalledWith(
+      "connection-1",
+      "model-active",
+      "credential-1",
+      false
+    );
+  });
+
+  it("renders a load failure as an error instead of an empty connection catalog", () => {
+    const view = controller();
+    view.state.connections = [];
+    view.state.selectedConnection = null;
+    view.state.error = "Provider catalog is unavailable.";
+    mocks.useController.mockReturnValue(view);
+
+    render(<AdminProvidersSection active groups={[]} />);
+
+    expect(screen.getByRole("alert")).toHaveTextContent("Provider connections could not be loaded");
+    expect(screen.queryByText("No provider connections")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Retry provider refresh" }));
+    expect(view.actions.refresh).toHaveBeenCalledOnce();
+  });
+
+  it("prefills a new advanced connection from the Quick provider family", async () => {
+    const view = controller();
+    view.state.connections = [];
+    view.state.selectedConnection = null;
+    mocks.useController.mockReturnValue(view);
+
+    render(<AdminProvidersSection active advancedEntryProvider="openai" groups={[]} />);
+
+    expect(await screen.findByRole("heading", { name: "New provider connection" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Provider family")).toHaveValue("openai");
+    expect(screen.getByRole("textbox", { name: /API root/ })).toHaveValue("https://api.openai.com/v1");
   });
 });

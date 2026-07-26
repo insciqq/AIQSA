@@ -42,6 +42,8 @@ describe("Composer", () => {
     const send = screen.getByRole("button", { name: "Send message" });
 
     expect(form).toContainElement(surface);
+    expect(form).toHaveClass("bg-answer-paper");
+    expect(form).not.toHaveClass("bg-research-canvas");
     expect(messageField).toContainElement(messageLabel);
     expect(messageField).toContainElement(textarea);
     expect(messageLabel).toHaveAttribute("for", "composer");

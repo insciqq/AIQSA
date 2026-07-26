@@ -131,6 +131,9 @@ describe("AdminMcpServersSection", () => {
     render(<TestSection controller={view.controller} />);
 
     expect(screen.getByText(/model may invoke every current or future valid tool/i)).toBeInTheDocument();
+    expect(screen.getByText(/user-scoped; not returned by this admin catalog/i)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /Validate & tools/i }));
     expect(screen.getByText("External account: AIQSA test workspace")).toBeInTheDocument();
     const checkConnection = screen.getByRole("button", { name: "Check connection" });
     expect(checkConnection.closest("form")).toHaveAttribute(
@@ -144,7 +147,6 @@ describe("AdminMcpServersSection", () => {
       "/api/admin/mcp/server-1/oauth/validation/reconnect"
     );
     expect(reconnect.closest("form")).toHaveAttribute("method", "post");
-    expect(screen.getByText(/runtime health/i).parentElement).toHaveTextContent(/user-scoped/i);
     expect(screen.getByText(/\+1 added · 1 changed · −0 removed/)).toBeInTheDocument();
 
     fireEvent.change(screen.getByLabelText("Test workspace"), { target: { value: "one-use-only" } });
@@ -152,6 +154,18 @@ describe("AdminMcpServersSection", () => {
     expect(view.actions.test).toHaveBeenCalledWith("server-1", {
       oneTimeValues: { workspace_key: "one-use-only" }
     });
+  });
+
+  it("clears one-time validation values after a request settles", async () => {
+    const view = viewController();
+    render(<TestSection controller={view.controller} />);
+    fireEvent.click(screen.getByRole("button", { name: /Validate & tools/i }));
+
+    const oneTime = screen.getByLabelText("Test workspace");
+    fireEvent.change(oneTime, { target: { value: "one-use-only" } });
+    fireEvent.click(screen.getByRole("button", { name: "Test draft" }));
+
+    await waitFor(() => expect(oneTime).toHaveValue(""));
   });
 
   it("normalizes pasted npx configuration for review and keeps imported secrets in password fields", async () => {
@@ -228,6 +242,7 @@ describe("AdminMcpServersSection", () => {
   it("uses an in-flow irreversible confirmation before deleting", () => {
     const view = viewController();
     render(<TestSection controller={view.controller} />);
+    fireEvent.click(screen.getByRole("button", { name: /Delete Irreversible removal/i }));
     fireEvent.click(screen.getByRole("button", { name: "Delete…" }));
     const prompt = screen.getByText(/Delete Memory\?/i).closest("div");
     expect(prompt).not.toBeNull();
@@ -246,7 +261,7 @@ describe("AdminMcpServersSection", () => {
     render(<TestSection controller={view.controller} />);
 
     expect(screen.queryByRole("button", { name: "Activate tested revision" })).not.toBeInTheDocument();
-    expect(screen.getByText("The tested revision is active.")).toBeInTheDocument();
+    expect(screen.getByText(/latest tested identity is already active/i)).toBeInTheDocument();
   });
 
   it("keeps activation available for a new resolved artifact under the same draft selector", () => {
@@ -258,6 +273,50 @@ describe("AdminMcpServersSection", () => {
     render(<TestSection controller={viewController(update).controller} />);
 
     expect(screen.getByRole("button", { name: "Activate tested revision" })).toBeInTheDocument();
+  });
+
+  it("distinguishes missing revision artifacts and requires explicit draft replacement to rebuild", async () => {
+    const missingRevision = {
+      ...server.activeRevision!,
+      artifactStatus: "missing" as const,
+      id: "revision-missing",
+      revisionNumber: 2
+    };
+    const revisionServer = {
+      ...server,
+      revisions: [server.activeRevision!, missingRevision]
+    };
+    const view = viewController(revisionServer);
+    render(<TestSection controller={view.controller} />);
+
+    fireEvent.click(screen.getByRole("button", { name: /Revisions Rollback and rebuild/i }));
+    const missingRow = screen.getByText("Revision 2").closest("section");
+    expect(missingRow).not.toBeNull();
+    expect(within(missingRow!).getByRole("button", { name: "Roll back" })).toBeDisabled();
+    expect(within(missingRow!).getByText("Artifact missing")).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("Test workspace"), { target: { value: "rebuild-only" } });
+    fireEvent.click(within(missingRow!).getByRole("button", { name: "Rebuild" }));
+    fireEvent.click(within(missingRow!).getByRole("button", { name: /Replace draft, rebuild, and activate/i }));
+
+    await waitFor(() => expect(view.actions.rebuild).toHaveBeenCalledWith("server-1", {
+      oneTimeValues: { workspace_key: "rebuild-only" },
+      replaceDraft: true,
+      revisionId: "revision-missing"
+    }));
+    expect(screen.getByLabelText("Test workspace")).toHaveValue("");
+  });
+
+  it("keeps legacy archived MCP records read-only", () => {
+    const archived = { ...server, archivedAt: "2026-07-24T00:00:00.000Z", enabled: false };
+    render(<TestSection controller={viewController(archived).controller} />);
+
+    expect(screen.getByText("Legacy archived")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Definition Source, auth, and fields/i }));
+    expect(screen.getByRole("button", { name: "Edit draft" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: /Delete Irreversible removal/i }));
+    expect(screen.getByText(/Legacy archived records are read-only/i)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Delete…" })).not.toBeInTheDocument();
   });
 
   it("keeps an operational draft when the rendered admin section changes", () => {
@@ -275,6 +334,27 @@ describe("AdminMcpServersSection", () => {
 
     expect(screen.getByRole("searchbox", { name: "Search MCP servers" })).toHaveValue("memory");
     expect(screen.getByLabelText("Display name")).toHaveValue("Unfinished draft");
+  });
+
+  it("uses separate compact catalog, server task index, and task detail views", () => {
+    const view = viewController();
+    render(<TestSection controller={view.controller} />);
+
+    expect(screen.getByTestId("mcp-catalog-view")).toHaveClass("block");
+    expect(screen.getByTestId("mcp-detail-view")).toHaveClass("hidden");
+
+    fireEvent.click(screen.getByRole("listitem"));
+    expect(screen.getByTestId("mcp-catalog-view")).toHaveClass("hidden");
+    expect(screen.getByTestId("mcp-server-task-index")).toHaveClass("block");
+
+    fireEvent.click(screen.getByRole("button", { name: /Validate & tools/i }));
+    expect(screen.getByTestId("mcp-server-task-index")).toHaveClass("hidden");
+    expect(screen.getByTestId("mcp-server-task-detail")).toHaveClass("block");
+
+    fireEvent.click(screen.getByRole("button", { name: "Back to server tasks" }));
+    expect(screen.getByTestId("mcp-server-task-index")).toHaveClass("block");
+    fireEvent.click(screen.getByRole("button", { name: "Back to MCP servers" }));
+    expect(screen.getByTestId("mcp-catalog-view")).toHaveClass("block");
   });
 
   it("selects the OAuth callback server and scrubs only callback query parameters", async () => {

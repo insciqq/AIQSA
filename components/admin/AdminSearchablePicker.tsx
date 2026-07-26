@@ -143,13 +143,13 @@ export function AdminSearchablePicker({
 
   return (
     <div {...boundaryProps} className="relative min-w-0" ref={boundaryRef}>
-      <span className="mb-1 block text-xs font-medium text-content-secondary">{label}</span>
-      {description ? <span className="mb-2 block text-[11px] leading-4 text-content-muted" id={descriptionId}>{description}</span> : null}
+      <span className="mb-1 block text-xs font-medium text-ink-secondary">{label}</span>
+      {description ? <span className="mb-2 block text-[11px] leading-4 text-ink-muted" id={descriptionId}>{description}</span> : null}
       <button
         {...triggerProps}
         aria-describedby={description ? descriptionId : undefined}
         aria-label={label}
-        className={`flex min-h-control w-full min-w-0 items-center justify-between gap-3 rounded-control border border-separator-subtle bg-surface-thread px-3 py-2 text-left text-content-primary hover:bg-surface-hover ${focusRing} ${touchTarget} disabled:cursor-not-allowed disabled:text-content-disabled disabled:opacity-60`}
+        className={`flex min-h-control w-full min-w-0 items-center justify-between gap-3 rounded-control border border-trace-subtle bg-answer-paper px-3 py-2 text-left text-ink hover:bg-control-hover ${focusRing} ${touchTarget} disabled:cursor-not-allowed disabled:text-ink-disabled disabled:opacity-60`}
         disabled={disabled}
         onClick={toggle}
         ref={triggerRef}
@@ -158,29 +158,29 @@ export function AdminSearchablePicker({
         <span className="min-w-0 flex-1">
           <span className="block break-words text-sm leading-5 [overflow-wrap:anywhere]">{selectedPrimary}</span>
           {selectedSecondary ? (
-            <span className="mt-0.5 block break-words font-mono text-[11px] leading-4 text-content-muted [overflow-wrap:anywhere]">
+            <span className="mt-0.5 block break-words font-mono text-[11px] leading-4 text-ink-muted [overflow-wrap:anywhere]">
               {selectedSecondary}
             </span>
           ) : null}
         </span>
-        <ChevronDown className="size-4 shrink-0 text-content-muted" aria-hidden="true" />
+        <ChevronDown className="size-4 shrink-0 text-ink-muted" aria-hidden="true" />
       </button>
 
       {open ? (
         <div
           {...dialogProps}
           aria-labelledby={headingId}
-          className="absolute left-0 top-full z-50 mt-1 flex max-h-[min(30rem,calc(100dvh-8rem))] w-[min(36rem,calc(100vw-3rem))] flex-col overflow-hidden rounded-panel border border-separator-subtle bg-surface-overlay p-3 shadow-overlay max-sm:fixed max-sm:inset-x-2 max-sm:bottom-[max(.5rem,env(safe-area-inset-bottom))] max-sm:top-auto max-sm:mt-0 max-sm:max-h-[min(80dvh,36rem)] max-sm:w-auto max-sm:pb-[calc(.75rem+env(safe-area-inset-bottom))]"
+          className="absolute left-0 top-full z-50 mt-1 flex max-h-[min(30rem,calc(100dvh-8rem))] w-[min(36rem,calc(100vw-3rem))] flex-col overflow-hidden rounded-panel border border-trace-subtle bg-overlay-surface p-3 shadow-overlay max-sm:fixed max-sm:inset-x-2 max-sm:bottom-[max(.5rem,env(safe-area-inset-bottom))] max-sm:top-auto max-sm:mt-0 max-sm:max-h-[min(80dvh,36rem)] max-sm:w-auto max-sm:pb-[calc(.75rem+env(safe-area-inset-bottom))]"
           ref={dialogRef}
         >
           <div className="mb-3 flex items-start justify-between gap-3">
             <div className="min-w-0">
-              <h3 className="text-sm font-semibold text-content-primary" id={headingId}>{label}</h3>
-              {description ? <p className="mt-0.5 text-xs leading-4 text-content-muted">{description}</p> : null}
+              <h3 className="text-sm font-semibold text-ink" id={headingId}>{label}</h3>
+              {description ? <p className="mt-0.5 text-xs leading-4 text-ink-muted">{description}</p> : null}
             </div>
             <button
               aria-label={`Close ${label}`}
-              className={`grid size-9 shrink-0 place-items-center rounded-control text-content-muted hover:bg-surface-hover hover:text-content-primary ${focusRing} ${touchTarget}`}
+              className={`grid size-9 shrink-0 place-items-center rounded-control text-ink-muted hover:bg-control-hover hover:text-ink ${focusRing} ${touchTarget}`}
               onClick={close}
               type="button"
             >
@@ -188,15 +188,15 @@ export function AdminSearchablePicker({
             </button>
           </div>
 
-          <div className="mb-2 flex min-h-control items-center gap-2 rounded-control border border-separator-subtle bg-surface-thread px-3 focus-within:ring-2 focus-within:ring-accent-cyan/55 [@media(hover:none)]:!min-h-touch [@media(pointer:coarse)]:!min-h-touch">
-            <Search className="size-4 shrink-0 text-content-muted" aria-hidden="true" />
+          <div className="mb-2 flex min-h-control items-center gap-2 rounded-control border border-trace-subtle bg-answer-paper px-3 focus-within:ring-2 focus-within:ring-proof/45 [@media(hover:none)]:!min-h-touch [@media(pointer:coarse)]:!min-h-touch">
+            <Search className="size-4 shrink-0 text-ink-muted" aria-hidden="true" />
             <input
               aria-activedescendant={activeItem ? `${idPrefix}-option-${navigableIndex}` : undefined}
               aria-autocomplete="list"
               aria-controls={listboxId}
               aria-expanded="true"
               aria-label={`Search ${noun?.plural ?? "options"}`}
-              className="min-w-0 flex-1 bg-transparent text-sm text-content-primary outline-none placeholder:text-content-muted"
+              className="min-w-0 flex-1 bg-transparent text-sm text-ink outline-none placeholder:text-ink-muted"
               onChange={(event) => {
                 setActiveIndex(0);
                 setQuery(event.currentTarget.value);
@@ -215,36 +215,36 @@ export function AdminSearchablePicker({
             />
           </div>
 
-          <div className="mb-2 flex min-h-5 items-center justify-between gap-3 text-[11px] text-content-muted">
+          <div className="mb-2 flex min-h-5 items-center justify-between gap-3 text-[11px] text-ink-muted">
             <span aria-live="polite" className="tabular-nums">{countText}</span>
             {loading && sortedItems.length > 0 ? <span role="status">Refreshing…</span> : null}
           </div>
 
           {error ? (
-            <div className="mb-2 flex items-start justify-between gap-3 rounded-control bg-accent-rose/10 px-3 py-2 text-xs leading-5 text-accent-rose" role="alert">
+            <div className="mb-2 flex items-start justify-between gap-3 rounded-control bg-critical/10 px-3 py-2 text-xs leading-5 text-critical" role="alert">
               <span className="min-w-0 break-words [overflow-wrap:anywhere]">{error}</span>
               {onRetry ? <button className={quietButton} disabled={loading} onClick={onRetry} type="button">Retry</button> : null}
             </div>
           ) : null}
 
           {loading && sortedItems.length === 0 ? (
-            <div className="rounded-control bg-surface-thread px-4 py-6 text-center" role="status">
-              <p className="text-sm font-medium text-content-primary">{loadingText}</p>
-              <p className="mt-1 text-xs text-content-muted">The picker will update when the catalog is ready.</p>
+            <div className="rounded-control bg-control-surface px-4 py-6 text-center" role="status">
+              <p className="text-sm font-medium text-ink">{loadingText}</p>
+              <p className="mt-1 text-xs text-ink-muted">The picker will update when the catalog is ready.</p>
             </div>
           ) : null}
 
           <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain pr-1" ref={resultsRef}>
             {showInitialEmpty ? (
-              <div className="rounded-control bg-surface-thread px-4 py-6 text-center" role="status">
-                <p className="text-sm font-medium text-content-primary">{emptyTitle}</p>
-                <p className="mt-1 text-xs leading-5 text-content-muted">{emptyDescription}</p>
+              <div className="rounded-control bg-control-surface px-4 py-6 text-center" role="status">
+                <p className="text-sm font-medium text-ink">{emptyTitle}</p>
+                <p className="mt-1 text-xs leading-5 text-ink-muted">{emptyDescription}</p>
               </div>
             ) : null}
             {showNoResults ? (
-              <div className="rounded-control bg-surface-thread px-4 py-6 text-center" role="status">
-                <p className="text-sm font-medium text-content-primary">No matches for “{query.trim()}”</p>
-                <p className="mt-1 text-xs text-content-muted">Try a model name, provider, or raw id.</p>
+              <div className="rounded-control bg-control-surface px-4 py-6 text-center" role="status">
+                <p className="text-sm font-medium text-ink">No matches for “{query.trim()}”</p>
+                <p className="mt-1 text-xs text-ink-muted">Try a model name, provider, or raw id.</p>
               </div>
             ) : null}
             <div className="space-y-1" id={listboxId} role="listbox" aria-label={label}>
@@ -258,12 +258,12 @@ export function AdminSearchablePicker({
                     {...getItemProps(index)}
                     aria-selected={selected}
                     className={[
-                      "flex min-h-touch w-full min-w-0 items-start justify-between gap-3 rounded-control px-3 py-2 text-left outline-none focus-visible:ring-2 focus-visible:ring-accent-cyan/55 sm:min-h-control [@media(hover:none)]:!min-h-touch [@media(pointer:coarse)]:!min-h-touch",
+                      "flex min-h-touch w-full min-w-0 items-start justify-between gap-3 rounded-control px-3 py-2 text-left outline-none focus-visible:ring-2 focus-visible:ring-proof/45 sm:min-h-control [@media(hover:none)]:!min-h-touch [@media(pointer:coarse)]:!min-h-touch",
                       active
-                        ? "bg-surface-hover text-content-primary"
+                        ? "bg-control-hover text-ink"
                         : selected
-                          ? "bg-surface-selected text-content-primary"
-                          : "text-content-secondary hover:bg-surface-hover hover:text-content-primary"
+                          ? "bg-control-selected text-ink"
+                          : "text-ink-secondary hover:bg-control-hover hover:text-ink"
                     ].join(" ")}
                     id={`${idPrefix}-option-${index}`}
                     onMouseDown={(event) => event.preventDefault()}
@@ -271,11 +271,11 @@ export function AdminSearchablePicker({
                     type="button"
                   >
                     <span className="min-w-0 flex-1">
-                      <span className="block break-words text-sm leading-5 text-content-primary [overflow-wrap:anywhere]">{item.label}</span>
-                      <span className="mt-0.5 block break-words font-mono text-[11px] leading-4 text-content-muted [overflow-wrap:anywhere]">{item.secondaryText}</span>
+                      <span className="block break-words text-sm leading-5 text-ink [overflow-wrap:anywhere]">{item.label}</span>
+                      <span className="mt-0.5 block break-words font-mono text-[11px] leading-4 text-ink-muted [overflow-wrap:anywhere]">{item.secondaryText}</span>
                     </span>
                     {selected ? (
-                      <span className="mt-0.5 inline-flex shrink-0 items-center gap-1 text-xs text-accent-cyan">
+                      <span className="mt-0.5 inline-flex shrink-0 items-center gap-1 text-xs text-proof">
                         <Check className="size-3.5" aria-hidden="true" />
                         Selected
                       </span>

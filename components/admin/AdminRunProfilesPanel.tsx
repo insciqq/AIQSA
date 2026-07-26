@@ -26,7 +26,7 @@ type ProfileDraft = Pick<
   | "version"
 >;
 
-const fieldLabel = "mb-1 block text-xs font-medium text-content-secondary";
+const fieldLabel = "mb-1 block text-xs font-medium text-ink-secondary";
 
 function draftsFromCatalog(catalog: AdminRunProfileCatalog): ProfileDraft[] {
   return catalog.profiles.map((profile) => ({
@@ -70,71 +70,79 @@ function ProfileRow({
   const modes = valuesWithCurrent(selectedModel?.reasoningModes ?? [], draft.reasoningMode);
 
   return (
-    <fieldset className="grid min-w-0 gap-3 border-t border-separator-subtle px-4 py-3 lg:grid-cols-[minmax(10rem,0.75fr)_minmax(13rem,1.35fr)_minmax(8rem,0.7fr)_minmax(8rem,0.7fr)] lg:items-end">
+    <fieldset className="grid min-w-0 gap-4 border-t border-trace-subtle px-4 py-5 sm:px-6 lg:grid-cols-[minmax(12rem,.8fr)_minmax(20rem,1.5fr)] lg:items-start">
       <legend className="sr-only">{label} run profile</legend>
-      <label className="min-w-0">
-        <span className={fieldLabel}>{label}</span>
-        <input
-          aria-label={`${label} description`}
-          className={inputClass}
-          disabled={disabled}
-          maxLength={240}
-          onChange={(event) => onChange({ ...draft, description: event.currentTarget.value })}
-          required
-          value={draft.description}
-        />
-      </label>
-      <label className="min-w-0">
-        <span className={fieldLabel}>Model deployment</span>
-        <select
-          aria-label={`${label} model deployment`}
-          className={inputClass}
-          disabled={disabled}
-          onChange={(event) => {
-            const providerModelId = event.currentTarget.value || null;
-            const model = models.find((candidate) => candidate.id === providerModelId) ?? null;
-            onChange({
-              ...draft,
-              enabled: Boolean(model),
-              providerModelId,
-              reasoningEffort: model?.defaultReasoningEffort ?? draft.reasoningEffort,
-              reasoningMode: model?.defaultReasoningMode ?? draft.reasoningMode
-            });
-          }}
-          value={draft.providerModelId ?? ""}
-        >
-          <option value="">Disabled</option>
-          {models.map((model) => (
-            <option disabled={!model.selectable} key={model.id} value={model.id}>
-              {model.providerDisplayName} / {model.displayName}{model.selectable ? "" : " (inactive)"}
-            </option>
-          ))}
-        </select>
-      </label>
-      <label className="min-w-0">
-        <span className={fieldLabel}>Reasoning mode</span>
-        <select
-          aria-label={`${label} reasoning mode`}
-          className={inputClass}
-          disabled={disabled || !draft.enabled || !selectedModel?.selectable}
-          onChange={(event) => onChange({ ...draft, reasoningMode: event.currentTarget.value })}
-          value={draft.reasoningMode}
-        >
-          {modes.map((mode) => <option key={mode} value={mode}>{mode.replaceAll("_", " ")}</option>)}
-        </select>
-      </label>
-      <label className="min-w-0">
-        <span className={fieldLabel}>Reasoning effort</span>
-        <select
-          aria-label={`${label} reasoning effort`}
-          className={inputClass}
-          disabled={disabled || !draft.enabled || !selectedModel?.selectable}
-          onChange={(event) => onChange({ ...draft, reasoningEffort: event.currentTarget.value })}
-          value={draft.reasoningEffort}
-        >
-          {efforts.map((effort) => <option key={effort} value={effort}>{effort.replaceAll("_", " ")}</option>)}
-        </select>
-      </label>
+      <div className="min-w-0">
+        <p className="text-sm font-semibold text-ink">{label}</p>
+        <p className="mt-1 text-xs leading-5 text-ink-muted">
+          Composer shortcut. Empty deployment disables this profile without deleting its slot.
+        </p>
+        <label className="mt-3 block min-w-0">
+          <span className={fieldLabel}>Description</span>
+          <input
+            aria-label={`${label} description`}
+            className={inputClass}
+            disabled={disabled}
+            maxLength={240}
+            onChange={(event) => onChange({ ...draft, description: event.currentTarget.value })}
+            required
+            value={draft.description}
+          />
+        </label>
+      </div>
+      <div className="grid min-w-0 gap-3 sm:grid-cols-2">
+        <label className="min-w-0 sm:col-span-2">
+          <span className={fieldLabel}>Model deployment</span>
+          <select
+            aria-label={`${label} model deployment`}
+            className={inputClass}
+            disabled={disabled}
+            onChange={(event) => {
+              const providerModelId = event.currentTarget.value || null;
+              const model = models.find((candidate) => candidate.id === providerModelId) ?? null;
+              onChange({
+                ...draft,
+                enabled: Boolean(model),
+                providerModelId,
+                reasoningEffort: model?.defaultReasoningEffort ?? draft.reasoningEffort,
+                reasoningMode: model?.defaultReasoningMode ?? draft.reasoningMode
+              });
+            }}
+            value={draft.providerModelId ?? ""}
+          >
+            <option value="">Disabled</option>
+            {models.map((model) => (
+              <option disabled={!model.selectable} key={model.id} value={model.id}>
+                {model.providerDisplayName} / {model.displayName}{model.selectable ? "" : " (inactive)"}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="min-w-0">
+          <span className={fieldLabel}>Reasoning mode</span>
+          <select
+            aria-label={`${label} reasoning mode`}
+            className={inputClass}
+            disabled={disabled || !draft.enabled || !selectedModel?.selectable}
+            onChange={(event) => onChange({ ...draft, reasoningMode: event.currentTarget.value })}
+            value={draft.reasoningMode}
+          >
+            {modes.map((mode) => <option key={mode} value={mode}>{mode.replaceAll("_", " ")}</option>)}
+          </select>
+        </label>
+        <label className="min-w-0">
+          <span className={fieldLabel}>Reasoning effort</span>
+          <select
+            aria-label={`${label} reasoning effort`}
+            className={inputClass}
+            disabled={disabled || !draft.enabled || !selectedModel?.selectable}
+            onChange={(event) => onChange({ ...draft, reasoningEffort: event.currentTarget.value })}
+            value={draft.reasoningEffort}
+          >
+            {efforts.map((effort) => <option key={effort} value={effort}>{effort.replaceAll("_", " ")}</option>)}
+          </select>
+        </label>
+      </div>
     </fieldset>
   );
 }
@@ -176,15 +184,15 @@ export function AdminRunProfilesPanel({
   });
 
   return (
-    <section aria-busy={controller.state.busy || controller.state.loading} aria-labelledby="run-profiles-title" className="border-b border-separator-subtle bg-surface-thread/35">
-      <div className="flex flex-col gap-3 px-4 py-3 sm:flex-row sm:items-start sm:justify-between">
+    <section aria-busy={controller.state.busy || controller.state.loading} aria-labelledby="run-profiles-title" className="border-b border-trace-subtle bg-answer-paper">
+      <div className="flex flex-col gap-3 px-4 py-5 sm:flex-row sm:items-start sm:justify-between sm:px-6">
         <div className="max-w-3xl">
-          <h2 className="text-sm font-semibold text-content-primary" id="run-profiles-title">Run profiles</h2>
-          <p className="mt-1 text-xs leading-5 text-content-muted">
+          <h2 className="text-sm font-semibold text-ink" id="run-profiles-title">Run profiles</h2>
+          <p className="mt-1 text-xs leading-5 text-ink-muted">
             Map the three one-tap composer profiles to active model deployments and supported reasoning. Search and other generation controls remain independent.
           </p>
         </div>
-        <div className="flex shrink-0 flex-wrap gap-2">
+        <div className="flex shrink-0 flex-wrap gap-1">
           <button
             aria-label="Refresh run profiles"
             className={quietButton}
@@ -215,20 +223,30 @@ export function AdminRunProfilesPanel({
       </div>
 
       {controller.state.error ? (
-        <div className="mx-4 mb-3 flex items-start justify-between gap-3 rounded-control bg-accent-rose/10 px-3 py-2 text-xs leading-5 text-accent-rose" role="alert">
+        <div className="mx-4 mb-4 flex items-start justify-between gap-3 rounded-control bg-critical/10 px-3 py-2 text-xs leading-5 text-critical sm:mx-6" role="alert">
           <span>{controller.state.error}</span>
-          <button aria-label="Dismiss run profile error" className={quietButton} onClick={controller.actions.dismissError} type="button"><X aria-hidden="true" className="size-3.5" /></button>
+          {catalog ? (
+            <button aria-label="Dismiss run profile error" className={quietButton} onClick={controller.actions.dismissError} type="button"><X aria-hidden="true" className="size-3.5" /></button>
+          ) : null}
         </div>
       ) : null}
       {controller.state.notice ? (
-        <div className="mx-4 mb-3 flex items-start justify-between gap-3 rounded-control bg-accent-green/10 px-3 py-2 text-xs leading-5 text-accent-green" role="status">
+        <div className="mx-4 mb-4 flex items-start justify-between gap-3 rounded-control bg-positive/10 px-3 py-2 text-xs leading-5 text-positive sm:mx-6" role="status">
           <span>{controller.state.notice}</span>
           <button aria-label="Dismiss run profile notice" className={quietButton} onClick={controller.actions.dismissNotice} type="button"><X aria-hidden="true" className="size-3.5" /></button>
         </div>
       ) : null}
 
       {!catalog && controller.state.loading ? (
-        <p className="border-t border-separator-subtle px-4 py-6 text-center text-sm text-content-muted" role="status">Loading run profiles…</p>
+        <p className="border-t border-trace-subtle px-4 py-6 text-center text-sm text-ink-muted" role="status">Loading run profiles…</p>
+      ) : !catalog && controller.state.error ? (
+        <div className="border-t border-trace-subtle px-4 py-10 text-center sm:px-6">
+          <p className="text-sm font-semibold text-critical">Run profiles could not be loaded</p>
+          <p className="mx-auto mt-1 max-w-xl text-sm leading-6 text-ink-muted">The current profile mapping is unavailable. No empty configuration is being assumed.</p>
+          <button className={`${quietButton} mt-4`} onClick={() => void controller.actions.refresh()} type="button">
+            Retry run profiles
+          </button>
+        </div>
       ) : catalog ? (
         drafts.map((draft) => (
           <ProfileRow

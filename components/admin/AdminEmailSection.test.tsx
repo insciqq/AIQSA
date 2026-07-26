@@ -132,6 +132,7 @@ describe("AdminEmailSection", () => {
 
     render(<AdminEmailSection onMutationCommitted={onMutationCommitted} />);
 
+    fireEvent.click(await screen.findByRole("button", { name: /Draft configuration/i }));
     const host = await screen.findByLabelText("SMTP host");
     await waitFor(() => expect(host).toHaveValue("smtp.example.com"));
     expect(screen.getByText("The stored password is write-only.")).toBeInTheDocument();
@@ -143,7 +144,9 @@ describe("AdminEmailSection", () => {
     fireEvent.change(password, { target: { value: "new-write-only-password" } });
     fireEvent.change(host, { target: { value: "smtp2.example.com" } });
     expect(screen.getByText(/not part of the stored draft yet/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Test & activate/i }));
     expect(screen.getByRole("button", { name: "Test draft" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: /Draft configuration/i }));
     fireEvent.click(screen.getByRole("button", { name: "Save draft" }));
 
     await waitFor(() => expect(requests.some(({ method }) => method === "PUT")).toBe(true));
@@ -162,6 +165,7 @@ describe("AdminEmailSection", () => {
     fireEvent.change(screen.getByLabelText("Test recipient"), { target: { value: "admin@example.com" } });
     fireEvent.click(screen.getByRole("button", { name: "Test draft" }));
     await screen.findByText(/accepted the test message/i);
+    expect(screen.getByLabelText("Test recipient")).toHaveValue("");
     expect(requests.find(({ body }) => body?.action === "test")?.body).toEqual({
       action: "test",
       expectedDraftVersion: 5,
@@ -174,6 +178,7 @@ describe("AdminEmailSection", () => {
     await screen.findByText("Email delivery disabled.");
     expect(onMutationCommitted).toHaveBeenCalledTimes(1);
 
+    fireEvent.click(screen.getByRole("button", { name: /Clear configuration/i }));
     const clearButton = screen.getByRole("button", { name: "Clear email delivery" });
     expect(clearButton).toBeDisabled();
     fireEvent.click(screen.getByLabelText(/I understand that the current SMTP configuration/i));
@@ -196,6 +201,7 @@ describe("AdminEmailSection", () => {
     });
     vi.stubGlobal("fetch", fetcher);
     render(<AdminEmailSection />);
+    fireEvent.click(await screen.findByRole("button", { name: /Draft configuration/i }));
     const host = await screen.findByLabelText("SMTP host");
     await waitFor(() => expect(host).toHaveValue("smtp.example.com"));
 
@@ -253,21 +259,84 @@ describe("AdminEmailSection", () => {
     });
     vi.stubGlobal("fetch", vi.fn(async () => json({ email: current })));
     render(<AdminEmailSection />);
+    fireEvent.click(await screen.findByRole("button", { name: /Draft configuration/i }));
     const host = await screen.findByLabelText("SMTP host");
     await waitFor(() => expect(host).toHaveValue("smtp.example.com"));
+
+    const configurationAcknowledge = screen.getByRole("checkbox", {
+      name: "Acknowledge exact plaintext relay"
+    });
+    expect(configurationAcknowledge).not.toBeChecked();
+    expect(screen.getByRole("button", { name: "Save draft" })).toBeDisabled();
+
+    fireEvent.click(screen.getByRole("button", { name: /Test & activate/i }));
     fireEvent.change(screen.getByLabelText("Test recipient"), {
       target: { value: "admin@example.com" }
     });
-
-    const acknowledge = screen.getByRole("checkbox", {
+    const commissioningAcknowledge = screen.getByRole("checkbox", {
       name: "Acknowledge exact plaintext relay"
     });
-    expect(acknowledge).not.toBeChecked();
-    expect(screen.getByRole("button", { name: "Save draft" })).toBeDisabled();
+    expect(commissioningAcknowledge).not.toBeChecked();
     expect(screen.getByRole("button", { name: "Test draft" })).toBeDisabled();
 
-    fireEvent.click(acknowledge);
-    expect(screen.getByRole("button", { name: "Save draft" })).toBeEnabled();
+    fireEvent.click(commissioningAcknowledge);
     expect(screen.getByRole("button", { name: "Test draft" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: /Draft configuration/i }));
+    expect(screen.getByRole("button", { name: "Save draft" })).toBeEnabled();
+  });
+
+  it("keeps compact email tasks separate and preserves an unfinished local draft", async () => {
+    const current = emailState();
+    vi.stubGlobal("fetch", vi.fn(async () => json({ email: current })));
+    render(<AdminEmailSection />);
+
+    await screen.findByRole("heading", { name: "Email tasks" });
+    expect(screen.getByTestId("email-task-index")).toHaveClass("block");
+    expect(screen.getByTestId("email-task-detail")).toHaveClass("hidden");
+
+    fireEvent.click(screen.getByRole("button", { name: /Draft configuration/i }));
+    expect(screen.getByTestId("email-task-index")).toHaveClass("hidden");
+    expect(screen.getByTestId("email-task-detail")).toHaveClass("block");
+    fireEvent.change(screen.getByLabelText("SMTP host"), { target: { value: "unfinished.example.com" } });
+
+    fireEvent.click(screen.getByRole("button", { name: "Back to email tasks" }));
+    expect(screen.getByTestId("email-task-index")).toHaveClass("block");
+    fireEvent.click(screen.getByRole("button", { name: /Draft configuration/i }));
+    expect(screen.getByLabelText("SMTP host")).toHaveValue("unfinished.example.com");
+  });
+
+  it("clears the one-use test recipient after a failed SMTP attempt", async () => {
+    let current = emailState();
+    const fetcher = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === "POST") {
+        current = {
+          ...current,
+          draft: {
+            ...current.draft,
+            test: {
+              attemptedAt: "2026-07-23T12:05:00.000Z",
+              code: "smtp_connection_failed",
+              tested: false,
+              version: current.draft.version
+            }
+          }
+        };
+        return json({
+          email: current,
+          test: { code: "smtp_connection_failed", tested: false }
+        });
+      }
+      return json({ email: current });
+    });
+    vi.stubGlobal("fetch", fetcher);
+    render(<AdminEmailSection />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /Test & activate/i }));
+    const recipient = screen.getByLabelText("Test recipient");
+    fireEvent.change(recipient, { target: { value: "one-use@example.com" } });
+    fireEvent.click(screen.getByRole("button", { name: "Test draft" }));
+
+    await screen.findByText(/did not accept the test message/i);
+    expect(recipient).toHaveValue("");
   });
 });

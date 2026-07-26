@@ -37,8 +37,8 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
-const fieldLabel = "mb-1 block text-xs font-medium text-content-secondary";
-const helpText = "mt-1 text-[11px] leading-4 text-content-muted";
+const fieldLabel = "mb-1 block text-xs font-medium text-ink-secondary";
+const helpText = "mt-1 text-[11px] leading-4 text-ink-muted";
 const collator = new Intl.Collator("en", { numeric: true, sensitivity: "base" });
 
 type ModelForm = {
@@ -223,10 +223,10 @@ function RouteEditor({
     <fieldset className="grid gap-3">
       <legend className={fieldLabel}>Provider routing</legend>
       <div className="grid gap-2 sm:grid-cols-2">
-        <label className={`flex min-h-touch items-start gap-2 rounded-control bg-surface-raised px-3 py-2 text-xs text-content-secondary ${touchTarget}`}>
+        <label className={`flex min-h-touch items-start gap-2 rounded-control bg-control-surface px-3 py-2 text-xs text-ink-secondary ${touchTarget}`}>
           <input
             checked={form.openRouterRoutingMode === "automatic"}
-            className="mt-0.5 size-4 shrink-0 accent-accent-cyan"
+            className="mt-0.5 size-4 shrink-0 accent-proof"
             name="openrouter-routing-mode"
             onChange={() => onChange({
               ...form,
@@ -236,33 +236,33 @@ function RouteEditor({
             type="radio"
           />
           <span>
-            <span className="block font-medium text-content-primary">Automatic routing</span>
-            <span className="mt-0.5 block leading-4 text-content-muted">Recommended. OpenRouter chooses a healthy route using the installation safety policy.</span>
+            <span className="block font-medium text-ink">Automatic routing</span>
+            <span className="mt-0.5 block leading-4 text-ink-muted">Recommended. OpenRouter chooses a healthy route using the installation safety policy.</span>
           </span>
         </label>
-        <label className={`flex min-h-touch items-start gap-2 rounded-control bg-surface-raised px-3 py-2 text-xs text-content-secondary ${touchTarget}`}>
+        <label className={`flex min-h-touch items-start gap-2 rounded-control bg-control-surface px-3 py-2 text-xs text-ink-secondary ${touchTarget}`}>
           <input
             checked={form.openRouterRoutingMode === "only_selected"}
-            className="mt-0.5 size-4 shrink-0 accent-accent-cyan"
+            className="mt-0.5 size-4 shrink-0 accent-proof"
             name="openrouter-routing-mode"
             onChange={() => onChange({ ...form, openRouterRoutingMode: "only_selected" })}
             type="radio"
           />
           <span>
-            <span className="block font-medium text-content-primary">Only selected providers</span>
-            <span className="mt-0.5 block leading-4 text-content-muted">Use the ordered allowlist below and deny fallback outside it.</span>
+            <span className="block font-medium text-ink">Only selected providers</span>
+            <span className="mt-0.5 block leading-4 text-ink-muted">Use the ordered allowlist below and deny fallback outside it.</span>
           </span>
         </label>
       </div>
 
       {form.openRouterRoutingMode === "only_selected" ? (
         !credentialId || !form.upstreamModelId ? (
-          <p className="text-xs text-content-muted">Choose a usable key and model before selecting downstream providers.</p>
+          <p className="text-xs text-ink-muted">Choose a usable key and model before selecting downstream providers.</p>
         ) : (
-          <div className="grid gap-3 rounded-control bg-surface-raised/60 p-3">
+          <div className="grid gap-3 rounded-control bg-control-surface/60 p-3">
             <div className="flex flex-wrap items-start justify-between gap-2">
               <div>
-                <h5 className="text-xs font-semibold text-content-primary">Route priority</h5>
+                <h5 className="text-xs font-semibold text-ink">Route priority</h5>
                 <p className={helpText}>The first provider is tried first. Tags distinguish endpoints with the same provider name.</p>
               </div>
               <button
@@ -279,11 +279,11 @@ function RouteEditor({
             {selected.length ? (
               <ol aria-label="Selected provider route priority" className="grid gap-1">
                 {selected.map(({ endpoint, tag }, index) => (
-                  <li className="flex min-w-0 items-center gap-2 rounded-control bg-surface-thread px-2 py-1.5" key={tag}>
-                    <span className="w-5 shrink-0 text-center font-mono text-[11px] text-content-muted">{index + 1}</span>
+                  <li className="flex min-w-0 items-center gap-2 rounded-control bg-answer-paper px-2 py-1.5" key={tag}>
+                    <span className="w-5 shrink-0 text-center font-mono text-[11px] text-ink-muted">{index + 1}</span>
                     <span className="min-w-0 flex-1">
-                      <span className="block break-words text-xs font-medium text-content-primary [overflow-wrap:anywhere]">{endpoint ? endpointLabel(endpoint) : tag}</span>
-                      <span className="block break-all font-mono text-[11px] text-content-muted">{endpoint ? endpointDetail(endpoint) : tag}</span>
+                      <span className="block break-words text-xs font-medium text-ink [overflow-wrap:anywhere]">{endpoint ? endpointLabel(endpoint) : tag}</span>
+                      <span className="block break-all font-mono text-[11px] text-ink-muted">{endpoint ? endpointDetail(endpoint) : tag}</span>
                     </span>
                     <button aria-label={`Move ${tag} up`} className={quietButton} disabled={index === 0} onClick={() => onChange({ ...form, providerTags: moveItem(form.providerTags, index, -1) })} type="button"><ArrowUp aria-hidden="true" className="size-3" /></button>
                     <button aria-label={`Move ${tag} down`} className={quietButton} disabled={index === form.providerTags.length - 1} onClick={() => onChange({ ...form, providerTags: moveItem(form.providerTags, index, 1) })} type="button"><ArrowDown aria-hidden="true" className="size-3" /></button>
@@ -291,26 +291,26 @@ function RouteEditor({
                   </li>
                 ))}
               </ol>
-            ) : <p className="text-xs text-content-muted">No providers selected yet.</p>}
+            ) : <p className="text-xs text-ink-muted">No providers selected yet.</p>}
 
-            {endpointState.status === "loading" && endpointState.items.length === 0 ? <p className="text-xs text-content-muted" role="status">Loading providers for this model…</p> : null}
+            {endpointState.status === "loading" && endpointState.items.length === 0 ? <p className="text-xs text-ink-muted" role="status">Loading providers for this model…</p> : null}
             {endpointState.status === "error" ? (
-              <div className="flex flex-wrap items-center justify-between gap-2 rounded-control bg-accent-rose/10 px-3 py-2 text-xs text-accent-rose" role="alert">
+              <div className="flex flex-wrap items-center justify-between gap-2 rounded-control bg-critical/10 px-3 py-2 text-xs text-critical" role="alert">
                 <span>{endpointState.error}</span>
                 <button className={quietButton} onClick={() => void discovery.endpoints.retry(endpointIdentity)} type="button">Retry</button>
               </div>
             ) : null}
-            {endpointState.status === "empty" ? <p className="text-xs text-content-muted" role="status">OpenRouter returned no downstream providers for this model.</p> : null}
+            {endpointState.status === "empty" ? <p className="text-xs text-ink-muted" role="status">OpenRouter returned no downstream providers for this model.</p> : null}
 
             {endpointState.items.length ? (
               <div className="grid gap-2">
                 <label>
                   <span className={fieldLabel}>Add downstream provider</span>
-                  <span className="flex min-h-control items-center gap-2 rounded-control border border-separator-subtle bg-surface-thread px-3 focus-within:ring-2 focus-within:ring-accent-cyan/55">
-                    <Search aria-hidden="true" className="size-4 shrink-0 text-content-muted" />
+                  <span className="flex min-h-control items-center gap-2 rounded-control border border-trace-subtle bg-answer-paper px-3 focus-within:ring-2 focus-within:ring-proof/55">
+                    <Search aria-hidden="true" className="size-4 shrink-0 text-ink-muted" />
                     <input
                       aria-label="Search downstream providers"
-                      className="min-w-0 flex-1 bg-transparent text-sm text-content-primary outline-none placeholder:text-content-muted"
+                      className="min-w-0 flex-1 bg-transparent text-sm text-ink outline-none placeholder:text-ink-muted"
                       onChange={(event) => setQuery(event.currentTarget.value)}
                       placeholder="Search provider, route tag, or endpoint"
                       type="search"
@@ -323,18 +323,18 @@ function RouteEditor({
                     <li key={endpoint.tag}>
                       <button
                         aria-label={`Add route ${endpointLabel(endpoint)} (${endpoint.tag})`}
-                        className={`flex min-h-control w-full min-w-0 items-center gap-3 rounded-control bg-surface-thread px-3 py-2 text-left hover:bg-surface-hover ${focusRing} ${touchTarget}`}
+                        className={`flex min-h-control w-full min-w-0 items-center gap-3 rounded-control bg-answer-paper px-3 py-2 text-left hover:bg-control-hover ${focusRing} ${touchTarget}`}
                         onClick={() => onChange({ ...form, providerTags: [...form.providerTags, endpoint.tag] })}
                         type="button"
                       >
                         <span className="min-w-0 flex-1">
-                          <span className="block break-words text-xs font-medium text-content-primary [overflow-wrap:anywhere]">{endpointLabel(endpoint)}</span>
-                          <span className="block break-all font-mono text-[11px] text-content-muted">{endpointDetail(endpoint)}</span>
+                          <span className="block break-words text-xs font-medium text-ink [overflow-wrap:anywhere]">{endpointLabel(endpoint)}</span>
+                          <span className="block break-all font-mono text-[11px] text-ink-muted">{endpointDetail(endpoint)}</span>
                         </span>
-                        <Plus aria-hidden="true" className="size-3.5 shrink-0 text-accent-cyan" />
+                        <Plus aria-hidden="true" className="size-3.5 shrink-0 text-proof" />
                       </button>
                     </li>
-                  )) : <li><p className="px-3 py-4 text-center text-xs text-content-muted" role="status">{query.trim() ? `No routes match “${query.trim()}”.` : "All available providers are selected."}</p></li>}
+                  )) : <li><p className="px-3 py-4 text-center text-xs text-ink-muted" role="status">{query.trim() ? `No routes match “${query.trim()}”.` : "All available providers are selected."}</p></li>}
                 </ul>
               </div>
             ) : null}
@@ -452,7 +452,7 @@ export function AdminProviderModelEditor({
 
   return (
     <form
-      className="grid gap-4 rounded-control bg-surface-thread p-3"
+      className="grid gap-4 rounded-control bg-answer-paper p-3"
       id="provider-model-editor"
       onSubmit={(event) => {
         event.preventDefault();
@@ -460,7 +460,7 @@ export function AdminProviderModelEditor({
       }}
     >
       <div>
-        <h4 className="text-sm font-semibold text-content-primary">
+        <h4 className="text-sm font-semibold text-ink">
           {editing ? "Edit model" : "Add model"}
         </h4>
         <p className={helpText}>
@@ -500,7 +500,7 @@ export function AdminProviderModelEditor({
             ) : (
               <div className="min-w-0 flex-1">
                 <span className={fieldLabel}>Models available to credential</span>
-                <p className="break-words text-sm text-content-primary">
+                <p className="break-words text-sm text-ink">
                   {credential?.label ?? "No usable credential"}
                 </p>
               </div>
@@ -559,7 +559,7 @@ export function AdminProviderModelEditor({
           ) : null}
 
           {selectedCatalogModel ? (
-            <p className="rounded-control bg-surface-raised px-3 py-2 text-xs leading-5 text-content-secondary">
+            <p className="rounded-control bg-control-surface px-3 py-2 text-xs leading-5 text-ink-secondary">
               {selectedCatalogModel.contextLength
                 ? `${selectedCatalogModel.contextLength.toLocaleString()} context tokens`
                 : "Context not reported"}
@@ -607,13 +607,13 @@ export function AdminProviderModelEditor({
         </div>
       )}
 
-      <details className="group rounded-control bg-surface-raised/60" ref={advancedRef}>
-        <summary className={`flex min-h-control cursor-pointer list-none items-center justify-between gap-3 rounded-control px-3 py-2 text-xs font-medium text-content-secondary hover:bg-surface-hover ${focusRing} ${touchTarget}`}>
+      <details className="group rounded-control bg-control-surface/60" ref={advancedRef}>
+        <summary className={`flex min-h-control cursor-pointer list-none items-center justify-between gap-3 rounded-control px-3 py-2 text-xs font-medium text-ink-secondary hover:bg-control-hover ${focusRing} ${touchTarget}`}>
           <span>Advanced model settings</span>
           <ChevronDown aria-hidden="true" className="size-4 shrink-0 group-open:rotate-180" />
         </summary>
-        <div className="grid gap-3 border-t border-separator-subtle p-3">
-          <p className="text-xs leading-5 text-content-muted">
+        <div className="grid gap-3 border-t border-trace-subtle p-3">
+          <p className="text-xs leading-5 text-ink-muted">
             Override inferred capabilities or request defaults only when the upstream contract requires it.
           </p>
           <div className="grid gap-3 md:grid-cols-2">
@@ -628,8 +628,8 @@ export function AdminProviderModelEditor({
             <legend className={fieldLabel}>Capability overrides</legend>
             <div className="flex flex-wrap gap-2">
               {([['reasoning', 'Reasoning'], ['vision', 'Vision'], ['pdf', 'PDF'], ['nativePdfInput', 'Native PDF input'], ['nativeSearch', 'Native search'], ['toolCalling', 'Tools'], ['streaming', 'Streaming'], ['parallelToolCalls', 'Parallel tools']] as const).map(([key, label]) => (
-                <label className={`flex min-h-control items-center gap-2 rounded-control bg-surface-thread px-3 text-xs text-content-secondary ${touchTarget}`} key={key}>
-                  <input checked={form.capabilities[key] === true} className="size-4 accent-accent-cyan" disabled={controller.state.busy} onChange={(event) => updateCapability(key, event.currentTarget.checked)} type="checkbox" />
+                <label className={`flex min-h-control items-center gap-2 rounded-control bg-answer-paper px-3 text-xs text-ink-secondary ${touchTarget}`} key={key}>
+                  <input checked={form.capabilities[key] === true} className="size-4 accent-proof" disabled={controller.state.busy} onChange={(event) => updateCapability(key, event.currentTarget.checked)} type="checkbox" />
                   {label}
                 </label>
               ))}
@@ -642,7 +642,7 @@ export function AdminProviderModelEditor({
         </div>
       </details>
 
-      {formError ? <p className="text-xs text-accent-rose" role="alert">{formError}</p> : null}
+      {formError ? <p className="text-xs text-critical" role="alert">{formError}</p> : null}
       <div className="flex flex-wrap gap-2">
         <button className={primaryButton} disabled={controller.state.busy || !form.displayName.trim() || !form.upstreamModelId.trim()} type="submit">Save model</button>
         <button className={quietButton} disabled={controller.state.busy} onClick={onClose} type="button">Cancel</button>

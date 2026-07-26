@@ -48,6 +48,10 @@ export function useAdminProvidersController(
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [errorCode, setErrorCode] = useState<string | null>(null);
+  const [errorBlockers, setErrorBlockers] = useState<ReadonlyArray<{
+    count: number;
+    kind: string;
+  }>>([]);
   const [feedbackConnectionId, setFeedbackConnectionId] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const busyRef = useRef(false);
@@ -67,6 +71,7 @@ export function useAdminProvidersController(
     setLoading(true);
     setError(null);
     setErrorCode(null);
+    setErrorBlockers([]);
     setFeedbackConnectionId(null);
     const result = await getAdminProviderConnections();
     if (generation !== catalogGenerationRef.current) return false;
@@ -75,6 +80,7 @@ export function useAdminProvidersController(
     if (!result.ok) {
       setError(adminProviderErrorMessage(result.error));
       setErrorCode(result.error.code);
+      setErrorBlockers(result.error.blockers);
       return false;
     }
     applyConnections(result.data);
@@ -105,6 +111,7 @@ export function useAdminProvidersController(
     setBusy(true);
     setError(null);
     setErrorCode(null);
+    setErrorBlockers([]);
     setFeedbackConnectionId(null);
     setNotice(null);
     const result = await operation();
@@ -123,6 +130,7 @@ export function useAdminProvidersController(
       setBusy(false);
       setError(message);
       setErrorCode(result.error.code);
+      setErrorBlockers(result.error.blockers);
       setFeedbackConnectionId(feedbackScope);
       return false;
     }
@@ -130,6 +138,7 @@ export function useAdminProvidersController(
     setBusy(false);
     applyConnections(result.data);
     setErrorCode(null);
+    setErrorBlockers([]);
     setFeedbackConnectionId(
       feedbackScope && result.data.some(({ id }) => id === feedbackScope)
         ? feedbackScope
@@ -149,6 +158,7 @@ export function useAdminProvidersController(
     setBusy(true);
     setError(null);
     setErrorCode(null);
+    setErrorBlockers([]);
     setFeedbackConnectionId(null);
     setNotice(null);
     const result = await operation();
@@ -157,6 +167,7 @@ export function useAdminProvidersController(
     if (!result.ok) {
       setError(adminProviderErrorMessage(result.error));
       setErrorCode(result.error.code);
+      setErrorBlockers(result.error.blockers);
       setFeedbackConnectionId(feedbackScope);
       return null;
     }
@@ -179,6 +190,7 @@ export function useAdminProvidersController(
     setSelectedId(connectionId);
     setError(null);
     setErrorCode(null);
+    setErrorBlockers([]);
     setFeedbackConnectionId(null);
     setNotice(null);
   }, []);
@@ -245,6 +257,7 @@ export function useAdminProvidersController(
       dismissError: () => {
         setError(null);
         setErrorCode(null);
+        setErrorBlockers([]);
       },
       dismissNotice: () => setNotice(null),
       refresh,
@@ -314,6 +327,7 @@ export function useAdminProvidersController(
       busy,
       connections,
       error,
+      errorBlockers,
       errorCode,
       feedbackConnectionId,
       loaded,

@@ -34,9 +34,9 @@ type AdminMcpDraftEditorProps = Readonly<{
   storedSharedValues?: AdminMcpServer["sharedValues"];
 }>;
 
-const fieldLabel = "text-xs font-medium text-content-secondary";
-const helpText = "mt-1 text-[11px] leading-4 text-content-muted";
-const checkboxClass = "size-4 shrink-0 accent-accent-cyan";
+const fieldLabel = "text-xs font-medium text-ink-secondary";
+const helpText = "mt-1 text-[11px] leading-4 text-ink-muted";
+const checkboxClass = "size-4 shrink-0 accent-proof";
 
 function nextSlotKey(slots: readonly McpConfigurationSlot[]): string {
   const existing = new Set(slots.map((slot) => slot.slotKey));
@@ -113,9 +113,9 @@ function SourceEditor({
   );
 
   return (
-    <section className="grid min-w-0 gap-3 rounded-panel bg-surface-raised/55 p-3">
+    <section className="grid min-w-0 gap-3 rounded-panel bg-workspace-rail/45 p-3">
       <div>
-        <h4 className="text-xs font-semibold text-content-primary">Source and transport</h4>
+        <h4 className="text-xs font-semibold text-ink">Source and transport</h4>
         <p className={helpText}>Package selectors are resolved to an immutable revision when the draft is tested.</p>
       </div>
       <div className="grid min-w-0 gap-3 md:grid-cols-2">
@@ -164,7 +164,7 @@ function SourceEditor({
             />
             <span className={helpText}>Stored as non-secret admin configuration. Do not put credentials in the path; query strings are rejected. Use a static header field or OAuth.</span>
           </label>
-          <label className={`flex min-h-control items-center gap-2 text-xs text-content-secondary ${touchTarget}`}>
+          <label className={`flex min-h-control items-center gap-2 text-xs text-ink-secondary ${touchTarget}`}>
             <input
               checked={source.allowPrivateNetwork === true}
               className={checkboxClass}
@@ -178,7 +178,7 @@ function SourceEditor({
             Allow this endpoint to resolve to the installation&apos;s private network
           </label>
           {source.allowPrivateNetwork ? (
-            <p className="rounded-control bg-accent-amber/10 px-3 py-2 text-xs leading-5 text-accent-amber">
+            <p className="rounded-control bg-caution/10 px-3 py-2 text-xs leading-5 text-caution">
               Private-network access weakens the default SSRF boundary. Use it only for an endpoint you operate.
             </p>
           ) : null}
@@ -241,7 +241,7 @@ function SourceEditor({
       )}
 
       {source.kind !== "remote" ? (
-        <p className="rounded-control bg-accent-amber/10 px-3 py-2 text-xs leading-5 text-accent-amber">
+        <p className="rounded-control bg-caution/10 px-3 py-2 text-xs leading-5 text-caution">
           Local MCP code runs in a ToolHive-managed sibling container with unrestricted outbound networking. Its effective environment is visible in Docker metadata to trusted host administrators.
         </p>
       ) : null}
@@ -268,9 +268,9 @@ function AuthEditor({
   const oauth = draft.auth.mode === "oauth" ? draft.auth : null;
 
   return (
-    <section className="grid min-w-0 gap-3 rounded-panel bg-surface-raised/55 p-3">
+    <section className="grid min-w-0 gap-3 rounded-panel bg-workspace-rail/45 p-3">
       <div>
-        <h4 className="text-xs font-semibold text-content-primary">Authentication</h4>
+        <h4 className="text-xs font-semibold text-ink">Authentication</h4>
         <p className={helpText}>Static credentials come from the explicit fields below. OAuth is available only for remote MCP servers.</p>
       </div>
       <label>
@@ -421,15 +421,15 @@ function SlotEditor({
   const configured = storedSharedValues?.[slot.slotKey]?.configured === true;
 
   return (
-    <section className="grid min-w-0 gap-3 rounded-panel border border-separator-subtle bg-surface-thread p-3">
+    <section className="grid min-w-0 gap-3 rounded-panel border border-trace-subtle bg-answer-paper p-3">
       <div className="flex min-w-0 items-start justify-between gap-3">
         <div className="min-w-0">
-          <h5 className="break-words text-xs font-semibold text-content-primary">{slot.label || `Field ${index + 1}`}</h5>
+          <h5 className="break-words text-xs font-semibold text-ink">{slot.label || `Field ${index + 1}`}</h5>
           <p className={helpText}>Stable slot key: <span className="font-mono">{slot.slotKey || "not set"}</span></p>
         </div>
         <button
           aria-label={`Remove ${slot.label || `field ${index + 1}`}`}
-          className={`grid size-9 shrink-0 place-items-center rounded-control text-content-muted hover:bg-surface-hover hover:text-accent-rose ${focusRing} ${touchTarget}`}
+          className={`grid size-9 shrink-0 place-items-center rounded-control text-ink-muted hover:bg-control-hover hover:text-critical ${focusRing} ${touchTarget}`}
           disabled={disabled}
           onClick={removeSlot}
           type="button"
@@ -554,7 +554,7 @@ function SlotEditor({
             <option disabled={slot.valueType === "secret"} value="literal">Literal configuration</option>
           </select>
         </label>
-        <label className={`flex min-h-control items-center gap-2 self-end text-xs text-content-secondary ${touchTarget}`}>
+        <label className={`flex min-h-control items-center gap-2 self-end text-xs text-ink-secondary ${touchTarget}`}>
           <input
             checked={slot.sensitive}
             className={checkboxClass}
@@ -567,7 +567,7 @@ function SlotEditor({
       </div>
 
       {slot.policy.kind === "shared" ? (
-        <div className="grid min-w-0 gap-2 rounded-control bg-surface-raised p-3">
+        <div className="grid min-w-0 gap-2 rounded-control bg-control-surface p-3">
           <label>
             <span className={fieldLabel}>New shared value for {slot.label}</span>
             {slot.valueType === "boolean" ? (
@@ -610,7 +610,7 @@ function SlotEditor({
             )}
           </label>
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <label className={`flex min-h-control-sm items-center gap-2 text-xs text-content-secondary ${touchTarget}`}>
+            <label className={`flex min-h-control-sm items-center gap-2 text-xs text-ink-secondary ${touchTarget}`}>
               <input
                 checked={slot.policy.allowPersonalOverride}
                 className={checkboxClass}
@@ -634,7 +634,7 @@ function SlotEditor({
               </button>
             ) : null}
           </div>
-          {sharedDraft === null ? <p className="text-xs text-accent-amber">The stored shared value will be cleared on Save.</p> : null}
+          {sharedDraft === null ? <p className="text-xs text-caution">The stored shared value will be cleared on Save.</p> : null}
           <p className={helpText}>Existing values are never returned to this form. Leaving the field blank keeps the current value.</p>
         </div>
       ) : slot.policy.kind === "literal" ? (
@@ -647,7 +647,7 @@ function SlotEditor({
           />
         </label>
       ) : (
-        <p className="rounded-control bg-accent-amber/10 px-3 py-2 text-xs leading-5 text-accent-amber">
+        <p className="rounded-control bg-caution/10 px-3 py-2 text-xs leading-5 text-caution">
           Every user must receive an explicit personal-slot grant and provide this value before the MCP can become ready.
         </p>
       )}
@@ -661,10 +661,10 @@ export function AdminMcpDraftEditor(props: AdminMcpDraftEditorProps) {
     <div className="grid min-w-0 gap-3">
       <SourceEditor disabled={disabled} draft={draft} onChange={onChange} />
       <AuthEditor disabled={disabled} draft={draft} onChange={onChange} />
-      <section className="grid min-w-0 gap-3 rounded-panel bg-surface-raised/55 p-3">
+      <section className="grid min-w-0 gap-3 rounded-panel bg-workspace-rail/45 p-3">
         <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
           <div>
-            <h4 className="text-xs font-semibold text-content-primary">Configuration fields</h4>
+            <h4 className="text-xs font-semibold text-ink">Configuration fields</h4>
             <p className={helpText}>Bind only declared values to an HTTP header or process environment variable.</p>
           </div>
           <button
@@ -680,12 +680,12 @@ export function AdminMcpDraftEditor(props: AdminMcpDraftEditorProps) {
         {draft.slots.length ? draft.slots.map((slot, index) => (
           <SlotEditor {...props} index={index} key={`${index}:${slot.slotKey}`} slot={slot} />
         )) : (
-          <p className="text-xs text-content-muted">No static or personal configuration fields.</p>
+          <p className="text-xs text-ink-muted">No static or personal configuration fields.</p>
         )}
       </section>
-      <section className="grid gap-3 rounded-panel bg-surface-raised/55 p-3">
+      <section className="grid gap-3 rounded-panel bg-workspace-rail/45 p-3">
         <div>
-          <h4 className="text-xs font-semibold text-content-primary">Runtime timeouts</h4>
+          <h4 className="text-xs font-semibold text-ink">Runtime timeouts</h4>
           <p className={helpText}>Values are milliseconds, from 1,000 to 600,000.</p>
         </div>
         <div className="grid gap-3 md:grid-cols-2">

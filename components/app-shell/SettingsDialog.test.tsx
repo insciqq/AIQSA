@@ -640,20 +640,22 @@ describe("SettingsDialog", () => {
     const verdant = screen.getByRole("radio", { name: /Use Verdant theme/ });
     const classicDark = screen.getByRole("radio", { name: /Use Classic Dark theme/ });
     const neutral = screen.getByRole("radio", { name: /Use Classic Light theme/ });
+    const paper = screen.getByRole("radio", { name: /Use Paper theme/ });
     const aiqsa = screen.getByRole("radio", { name: /Use AIQSA theme/ });
-    expect(screen.getAllByRole("radio")).toHaveLength(5);
+    expect(screen.getAllByRole("radio")).toHaveLength(6);
     expect(graphite).toHaveAttribute("aria-checked", "true");
     expect(graphite).toHaveAttribute("tabindex", "0");
     expect(verdant).toHaveAttribute("tabindex", "-1");
     expect(classicDark).toHaveAttribute("tabindex", "-1");
     expect(neutral).toHaveAttribute("tabindex", "-1");
+    expect(paper).toHaveAttribute("tabindex", "-1");
 
     graphite.focus();
     fireEvent.keyDown(graphite, { key: "End" });
-    expect(props.onThemeChange).toHaveBeenLastCalledWith("neutral");
-    expect(neutral).toHaveFocus();
+    expect(props.onThemeChange).toHaveBeenLastCalledWith("paper");
+    expect(paper).toHaveFocus();
 
-    fireEvent.keyDown(neutral, { key: "Home" });
+    fireEvent.keyDown(paper, { key: "Home" });
     expect(props.onThemeChange).toHaveBeenLastCalledWith("aiqsa");
     expect(aiqsa).toHaveFocus();
 

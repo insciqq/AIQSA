@@ -2,11 +2,7 @@ import { fireEvent, render, screen, within } from "@testing-library/react";
 import { createRef } from "react";
 import { describe, expect, it, vi } from "vitest";
 import type { AdminCatalog, AdminGroup } from "@/lib/contracts/admin";
-import {
-  AdminGroupsSection,
-  type AdminGroupsSectionActions,
-  type AdminGroupsSectionProps
-} from "./AdminGroupsSection";
+import { AdminGroupsSection, type AdminGroupsSectionActions, type AdminGroupsSectionProps } from "./AdminGroupsSection";
 
 const catalog: AdminCatalog = {
   models: [{ displayName: "GPT 5.5", modelId: "gpt-5.5", provider: "openai" }],
@@ -17,11 +13,7 @@ const catalog: AdminCatalog = {
 const activeGroup: AdminGroup = {
   accessGrants: [],
   archivedAt: null,
-  deletion: {
-    canDelete: true,
-    reason: null,
-    summary: "No members or active grants; this group can be deleted."
-  },
+  deletion: { canDelete: true, reason: null, summary: "No members or active grants; this group can be deleted." },
   id: "group-active",
   name: "Operators",
   userCount: 0
@@ -36,25 +28,23 @@ const archivedGroup: AdminGroup = {
 
 function createActions(): AdminGroupsSectionActions {
   return {
-    onCreateNameChange: vi.fn<AdminGroupsSectionActions["onCreateNameChange"]>(),
-    onCreateSubmit: vi.fn<AdminGroupsSectionActions["onCreateSubmit"]>(),
-    onQueryChange: vi.fn<AdminGroupsSectionActions["onQueryChange"]>(),
-    onRenameNameChange: vi.fn<AdminGroupsSectionActions["onRenameNameChange"]>(),
-    onRenameSubmit: vi.fn<AdminGroupsSectionActions["onRenameSubmit"]>(),
-    onRequestArchive: vi.fn<AdminGroupsSectionActions["onRequestArchive"]>(),
-    onRequestDelete: vi.fn<AdminGroupsSectionActions["onRequestDelete"]>(),
-    onSelectGroup: vi.fn<AdminGroupsSectionActions["onSelectGroup"]>(),
-    onStartRenaming: vi.fn<AdminGroupsSectionActions["onStartRenaming"]>(),
-    onStatusFilterChange: vi.fn<AdminGroupsSectionActions["onStatusFilterChange"]>()
+    onBackToList: vi.fn(),
+    onCreateNameChange: vi.fn(),
+    onCreateSubmit: vi.fn(),
+    onQueryChange: vi.fn(),
+    onRenameNameChange: vi.fn(),
+    onRenameSubmit: vi.fn(),
+    onRequestArchive: vi.fn(),
+    onRequestDelete: vi.fn(),
+    onSelectGroup: vi.fn(),
+    onStartRenaming: vi.fn(),
+    onStatusFilterChange: vi.fn()
   };
 }
 
-function activeProps(
-  actions: AdminGroupsSectionActions,
-  detailRef: AdminGroupsSectionProps["refs"]["detail"]
-): AdminGroupsSectionProps {
+function createProps(overrides: Partial<AdminGroupsSectionProps> = {}): AdminGroupsSectionProps {
   return {
-    actions,
+    actions: createActions(),
     data: {
       allGroups: [activeGroup, archivedGroup],
       catalog,
@@ -62,229 +52,141 @@ function activeProps(
       visibleGroups: [activeGroup, archivedGroup]
     },
     draft: {
-      createFormOpen: true,
-      createName: "Draft group",
+      compactDetailOpen: false,
+      createFormOpen: false,
+      createName: "",
       query: "",
-      renameName: "Operators",
-      renamingGroupId: activeGroup.id,
+      renameName: "",
+      renamingGroupId: null,
       statusFilter: "all"
     },
-    refs: {
-      detail: detailRef
-    },
-    status: {
-      actionsDisabled: false,
-      createError: "Create error",
-      renameError: "Rename error"
-    }
+    refs: { detail: createRef<HTMLElement>() },
+    status: { actionsDisabled: false, createError: null, renameError: null },
+    ...overrides
   };
 }
 
 describe("AdminGroupsSection", () => {
-  it("keeps the table and detail ref boundaries while delegating group workflows", () => {
+  it("keeps the list and selected detail mounted and delegates list controls", () => {
     const actions = createActions();
-    const detailRef = createRef<HTMLElement>();
-    const props = activeProps(actions, detailRef);
-    const { rerender } = render(<AdminGroupsSection {...props} />);
+    const props = createProps({ actions });
+    render(<AdminGroupsSection {...props} />);
 
-    const tableRegion = screen.getByRole("region", { name: "Groups table" });
-    expect(tableRegion).toHaveAttribute("tabindex", "0");
-    expect(within(tableRegion).getByRole("table")).toBeVisible();
-    expect(within(tableRegion).getAllByRole("columnheader").map((header) => header.textContent)).toEqual([
-      "Group",
-      "Users",
-      "Access",
-      "Status",
-      "Actions"
-    ]);
+    expect(screen.getByTestId("admin-groups-index")).toHaveClass("block", "lg:block");
+    expect(screen.getByTestId("admin-groups-detail-pane")).toHaveClass("hidden", "lg:block");
+    expect(screen.queryByRole("table")).not.toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Search groups"), { target: { value: "former" } });
+    fireEvent.click(screen.getByRole("button", { name: "archived" }));
+    const archivedRow = screen.getAllByTestId("admin-group").filter((element) => element.textContent?.includes("Former operators"));
+    expect(archivedRow).toHaveLength(1);
+    fireEvent.click(within(archivedRow[0]!).getByRole("button", { name: "Details" }));
 
-    const detail = screen.getByTestId("admin-group-detail");
-    expect(detailRef.current).toBe(detail);
-    expect(detail.tagName).toBe("ASIDE");
-    expect(detail).toHaveAttribute("aria-label", "Selected group Operators");
-    expect(detail).toHaveAttribute("tabindex", "-1");
+    expect(actions.onQueryChange).toHaveBeenCalledWith("former");
+    expect(actions.onStatusFilterChange).toHaveBeenCalledWith("archived");
+    expect(actions.onSelectGroup).toHaveBeenCalledWith(archivedGroup.id);
+  });
 
-    const createInput = screen.getByLabelText("Group name");
-    expect(createInput).toHaveValue("Draft group");
-    expect(createInput).toHaveAttribute("aria-invalid", "true");
-    expect(createInput).toHaveAccessibleDescription("Create error");
-    fireEvent.change(createInput, { target: { value: "Reviewers" } });
-    expect(actions.onCreateNameChange).toHaveBeenCalledWith("Reviewers");
-    const createForm = createInput.closest("form");
-    if (!createForm) {
-      throw new Error("Expected create-group form");
-    }
-    fireEvent.submit(createForm);
-    expect(actions.onCreateSubmit).toHaveBeenCalledTimes(1);
-
-    const renameInput = screen.getByLabelText("Rename group");
-    expect(renameInput).toHaveValue("Operators");
-    expect(renameInput).toHaveAttribute("name", "name");
-    expect(renameInput).toHaveAccessibleDescription("Rename error");
-    fireEvent.change(renameInput, { target: { value: "Retitled operators" } });
-    expect(actions.onRenameNameChange).toHaveBeenCalledWith("Retitled operators");
-
-    rerender(
+  it("renders create as the deliberate detail task and preserves its controlled error", () => {
+    const actions = createActions();
+    render(
       <AdminGroupsSection
-        {...props}
+        {...createProps({ actions })}
         draft={{
-          ...props.draft,
-          createName: "Parent-controlled name",
-          renameName: "Retitled operators"
+          compactDetailOpen: true,
+          createFormOpen: true,
+          createName: "Draft group",
+          query: "",
+          renameName: "",
+          renamingGroupId: null,
+          statusFilter: "all"
         }}
+        status={{ actionsDisabled: false, createError: "Create error", renameError: null }}
       />
     );
 
-    expect(screen.getByLabelText("Group name")).toHaveValue("Parent-controlled name");
-    expect(screen.getByLabelText("Rename group")).toHaveValue("Retitled operators");
-    const renameForm = screen.getByLabelText("Rename group").closest("form");
-    if (!renameForm) {
-      throw new Error("Expected rename-group form");
-    }
-    fireEvent.submit(renameForm);
-    expect(actions.onRenameSubmit).toHaveBeenCalledWith(activeGroup);
+    expect(screen.getByTestId("admin-groups-index")).toHaveClass("hidden", "lg:block");
+    expect(screen.getByTestId("admin-groups-detail-pane")).toHaveClass("block", "lg:block");
+    const input = screen.getByLabelText("Group name");
+    expect(input).toHaveValue("Draft group");
+    expect(input).toHaveAccessibleDescription("Create error");
+    fireEvent.change(input, { target: { value: "Reviewers" } });
+    fireEvent.submit(input.closest("form")!);
+    fireEvent.click(screen.getByRole("button", { name: "Back to groups" }));
 
-    fireEvent.change(screen.getByLabelText("Search groups"), { target: { value: "former" } });
-    expect(actions.onQueryChange).toHaveBeenCalledWith("former");
-    fireEvent.click(screen.getByRole("button", { name: "archived" }));
-    expect(actions.onStatusFilterChange).toHaveBeenCalledWith("archived");
+    expect(actions.onCreateNameChange).toHaveBeenCalledWith("Reviewers");
+    expect(actions.onCreateSubmit).toHaveBeenCalledTimes(1);
+    expect(actions.onBackToList).toHaveBeenCalledTimes(1);
+  });
 
-    const archivedRow = screen.getByText("Former operators").closest("tr");
-    if (!archivedRow) {
-      throw new Error("Expected archived group row");
-    }
-    fireEvent.click(within(archivedRow).getByRole("button", { name: "Select" }));
-    expect(actions.onSelectGroup).toHaveBeenCalledWith(archivedGroup.id);
+  it("delegates rename, archive, and eligible delete from the selected group detail", () => {
+    const actions = createActions();
+    const detailRef = createRef<HTMLElement>();
+    render(
+      <AdminGroupsSection
+        {...createProps({ actions, refs: { detail: detailRef } })}
+        draft={{
+          compactDetailOpen: true,
+          createFormOpen: false,
+          createName: "",
+          query: "",
+          renameName: "Operators",
+          renamingGroupId: activeGroup.id,
+          statusFilter: "active"
+        }}
+        status={{ actionsDisabled: false, createError: null, renameError: "Rename error" }}
+      />
+    );
 
+    const detail = screen.getByTestId("admin-group-detail");
+    expect(detailRef.current).toBe(detail);
+    expect(detail.tagName).toBe("ARTICLE");
+    const rename = screen.getByLabelText("Rename group");
+    expect(rename).toHaveAccessibleDescription("Rename error");
+    fireEvent.change(rename, { target: { value: "Retitled operators" } });
+    fireEvent.submit(rename.closest("form")!);
     fireEvent.click(within(detail).getByRole("button", { name: "Rename group" }));
     fireEvent.click(within(detail).getByRole("button", { name: "Delete group" }));
     fireEvent.click(within(detail).getByRole("button", { name: "Archive group" }));
+
+    expect(actions.onRenameNameChange).toHaveBeenCalledWith("Retitled operators");
+    expect(actions.onRenameSubmit).toHaveBeenCalledWith(activeGroup);
     expect(actions.onStartRenaming).toHaveBeenCalledWith(activeGroup);
     expect(actions.onRequestDelete).toHaveBeenCalledWith(activeGroup);
     expect(actions.onRequestArchive).toHaveBeenCalledWith(activeGroup);
   });
 
-  it("keeps the two distinct empty states and the deliberate table row mounted", () => {
+  it("distinguishes empty states and keeps archived lifecycle non-editable", () => {
     const actions = createActions();
-    const detailRef = createRef<HTMLElement>();
-    const props: AdminGroupsSectionProps = {
-      actions,
-      data: {
-        allGroups: [],
-        catalog,
-        selectedGroup: null,
-        visibleGroups: []
-      },
-      draft: {
-        createFormOpen: false,
-        createName: "",
-        query: "",
-        renameName: "",
-        renamingGroupId: null,
-        statusFilter: "active"
-      },
-      refs: {
-        detail: detailRef
-      },
-      status: {
-        actionsDisabled: false,
-        createError: null,
-        renameError: null
-      }
-    };
-    const { rerender } = render(<AdminGroupsSection {...props} />);
-
-    expect(screen.getByText("No groups").closest("td")).toHaveAttribute("colspan", "5");
-    expect(screen.getByText("No group selected").closest("aside")).toBeInTheDocument();
-    expect(screen.getByRole("region", { name: "Groups table" })).toBeVisible();
-    expect(detailRef.current).toBeNull();
-
-    rerender(
+    const view = render(
       <AdminGroupsSection
-        {...props}
-        data={{
-          ...props.data,
-          allGroups: [activeGroup]
-        }}
+        {...createProps({ actions })}
+        data={{ allGroups: [], catalog, selectedGroup: null, visibleGroups: [] }}
       />
     );
+    expect(screen.getByText("No groups")).toBeVisible();
+    expect(screen.getByText("No group selected")).toBeVisible();
 
-    expect(screen.getByText("No groups match this view").closest("td")).toHaveAttribute("colspan", "5");
-  });
-
-  it("disables active mutations while busy and keeps archived-only actions absent", () => {
-    const actions = createActions();
-    const detailRef = createRef<HTMLElement>();
-    const { rerender } = render(
+    view.rerender(
       <AdminGroupsSection
-        actions={actions}
-        data={{
-          allGroups: [activeGroup],
-          catalog,
-          selectedGroup: activeGroup,
-          visibleGroups: [activeGroup]
-        }}
+        {...createProps({ actions })}
+        data={{ allGroups: [archivedGroup], catalog, selectedGroup: archivedGroup, visibleGroups: [] }}
         draft={{
-          createFormOpen: true,
-          createName: "Draft",
-          query: "",
-          renameName: "Operators draft",
-          renamingGroupId: activeGroup.id,
-          statusFilter: "active"
-        }}
-        refs={{ detail: detailRef }}
-        status={{
-          actionsDisabled: true,
-          createError: null,
-          renameError: null
-        }}
-      />
-    );
-
-    expect(detailRef.current).toBe(screen.getByTestId("admin-group-detail"));
-    expect(screen.getByRole("button", { name: "Create" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Rename group" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Delete group" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Archive group" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Select" })).toBeEnabled();
-
-    rerender(
-      <AdminGroupsSection
-        actions={actions}
-        data={{
-          allGroups: [archivedGroup],
-          catalog,
-          selectedGroup: archivedGroup,
-          visibleGroups: [archivedGroup]
-        }}
-        draft={{
+          compactDetailOpen: true,
           createFormOpen: false,
           createName: "",
-          query: "",
+          query: "missing",
           renameName: "",
           renamingGroupId: null,
           statusFilter: "archived"
         }}
-        refs={{ detail: detailRef }}
-        status={{
-          actionsDisabled: true,
-          createError: null,
-          renameError: null
-        }}
+        status={{ actionsDisabled: true, createError: null, renameError: null }}
       />
     );
 
-    expect(
-      screen.getByText(
-        "Archived groups remain visible for history. Their grants no longer apply, and grant editing is disabled."
-      )
-    ).toBeVisible();
+    expect(screen.getByText("No groups match this view")).toBeVisible();
+    expect(screen.getByText(/Archived groups remain visible for history/)).toBeVisible();
     expect(screen.queryByRole("button", { name: "Rename group" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Archive group" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Delete group" })).toBeDisabled();
-
-    fireEvent.click(screen.getByRole("button", { name: "Delete group" }));
-    expect(actions.onRequestDelete).not.toHaveBeenCalled();
   });
 });

@@ -42,6 +42,7 @@ const archivedGroup: AdminGroup = {
 
 function createActions(): AdminModelAccessSectionActions {
   return {
+    onBackToList: vi.fn<AdminModelAccessSectionActions["onBackToList"]>(),
     onQueryChange: vi.fn<AdminModelAccessSectionActions["onQueryChange"]>(),
     onSelectGroup: vi.fn<AdminModelAccessSectionActions["onSelectGroup"]>(),
     onToggleGrant: vi.fn<AdminModelAccessSectionActions["onToggleGrant"]>(),
@@ -62,6 +63,7 @@ function activeProps(
       visibleGroups: [activeGroup, archivedGroup]
     },
     draft: {
+      compactDetailOpen: false,
       query: ""
     },
     refs: {
@@ -98,14 +100,11 @@ describe("AdminModelAccessSection", () => {
     expect(detail).toHaveAttribute("role", "region");
     expect(detail).toHaveAttribute("tabindex", "-1");
 
-    for (const name of ["Provider-wide access grants", "OpenAI model grants", "Search strategy grants"]) {
-      const region = screen.getByRole("region", { name });
-      expect(region).toHaveAttribute("tabindex", "0");
-      expect(within(region).getByRole("table")).toBeVisible();
-    }
-    const modelGrants = screen.getByRole("region", { name: "OpenAI model grants" });
-    expect(within(modelGrants).queryByRole("columnheader", { name: "API id" })).not.toBeInTheDocument();
-    expect(within(modelGrants).queryByText("openai:gpt-5.5")).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Provider-wide access" })).toBeVisible();
+    expect(screen.getByRole("heading", { name: "Explicit model grants" })).toBeVisible();
+    expect(screen.getByRole("heading", { name: "Search strategy grants" })).toBeVisible();
+    expect(screen.queryByRole("table")).not.toBeInTheDocument();
+    expect(screen.queryByText("openai:gpt-5.5")).not.toBeInTheDocument();
 
     fireEvent.change(screen.getByLabelText("Search model access groups"), { target: { value: "former" } });
     expect(actions.onQueryChange).toHaveBeenCalledWith("former");
@@ -149,6 +148,7 @@ describe("AdminModelAccessSection", () => {
         visibleGroups: []
       },
       draft: {
+        compactDetailOpen: false,
         query: ""
       },
       refs: {
@@ -161,7 +161,7 @@ describe("AdminModelAccessSection", () => {
     const { rerender } = render(<AdminModelAccessSection {...props} />);
 
     expect(screen.getByText("No groups")).toBeVisible();
-    expect(screen.getByText("Create a group before assigning provider, model, or search access.")).toBeVisible();
+    expect(screen.getByText("Create a group before assigning provider, model, search, or MCP access.")).toBeVisible();
     expect(screen.queryByTestId("admin-model-access-group-list")).not.toBeInTheDocument();
     expect(detailRef.current).toBeNull();
 
@@ -172,7 +172,7 @@ describe("AdminModelAccessSection", () => {
           ...props.data,
           totalGroupCount: 1
         }}
-        draft={{ query: "missing" }}
+        draft={{ compactDetailOpen: false, query: "missing" }}
       />
     );
 
@@ -180,7 +180,7 @@ describe("AdminModelAccessSection", () => {
     expect(screen.getByLabelText("Search model access groups")).toHaveValue("missing");
     expect(screen.getByText("No groups match this view")).toBeVisible();
     expect(screen.getByText("No group selected")).toBeVisible();
-    expect(screen.queryByRole("region")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("admin-model-access-group")).not.toBeInTheDocument();
     expect(detailRef.current).toBeNull();
   });
 
@@ -196,6 +196,7 @@ describe("AdminModelAccessSection", () => {
         visibleGroups: [archivedGroup]
       },
       draft: {
+        compactDetailOpen: true,
         query: ""
       },
       refs: {

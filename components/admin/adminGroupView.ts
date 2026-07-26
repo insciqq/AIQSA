@@ -95,7 +95,7 @@ export function grantCounts(group: AdminGroup): { models: number; providers: num
 export function groupAccessState(group: AdminGroup): { className: string; label: string } {
   if (group.archivedAt) {
     return {
-      className: "border-separator-subtle bg-surface-raised text-content-secondary",
+      className: "border-trace-subtle bg-control-surface text-ink-secondary",
       label: "archived"
     };
   }
@@ -104,20 +104,20 @@ export function groupAccessState(group: AdminGroup): { className: string; label:
 
   if (!enabledGrantCount(group)) {
     return {
-      className: "border-accent-amber/25 bg-accent-amber/10 text-accent-amber",
+      className: "border-caution/25 bg-caution/10 text-caution",
       label: "no access"
     };
   }
 
   if (counts.providers) {
     return {
-      className: "border-accent-amber/30 bg-accent-amber/10 text-accent-amber",
+      className: "border-caution/25 bg-caution/10 text-caution",
       label: "broad access"
     };
   }
 
   return {
-    className: "border-accent-green/30 bg-accent-green/10 text-accent-green",
+    className: "border-positive/25 bg-positive/10 text-positive",
     label: "configured"
   };
 }

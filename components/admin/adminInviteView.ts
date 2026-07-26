@@ -69,11 +69,11 @@ export function inviteStatusLabel(status: AdminInviteStatus): string {
 
 export function inviteStatusClass(status: AdminInviteStatus): string {
   const classes: Record<AdminInviteStatus, string> = {
-    accepted: "border-accent-green/30 bg-accent-green/10 text-accent-green",
-    expired: "border-separator-subtle bg-surface-raised text-content-secondary",
-    open: "border-accent-cyan/30 bg-accent-cyan/10 text-accent-cyan",
-    revoked: "border-accent-rose/30 bg-accent-rose/10 text-accent-rose",
-    soon: "border-accent-amber/30 bg-accent-amber/10 text-accent-amber"
+    accepted: "border-positive/25 bg-positive/10 text-positive",
+    expired: "border-trace-subtle bg-control-surface text-ink-secondary",
+    open: "border-proof/25 bg-proof/10 text-proof",
+    revoked: "border-critical/25 bg-critical/10 text-critical",
+    soon: "border-caution/25 bg-caution/10 text-caution"
   };
 
   return classes[status];

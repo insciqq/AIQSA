@@ -67,10 +67,12 @@ export function useAdminGroupsController({
 }: UseAdminGroupsControllerOptions): AdminGroupsController {
   const { clearFieldError, fieldError, reportFieldError } = fieldErrors;
   const [createFormOpen, setCreateFormOpen] = useState(false);
+  const [groupsCompactDetailOpen, setGroupsCompactDetailOpen] = useState(false);
   const [createName, setCreateName] = useState("");
   const [groupQuery, setGroupQuery] = useState("");
   const [groupStatusFilter, setGroupStatusFilter] = useState<AdminGroupStatusFilter>("active");
   const [modelAccessQuery, setModelAccessQuery] = useState("");
+  const [modelAccessCompactDetailOpen, setModelAccessCompactDetailOpen] = useState(false);
   const [renameName, setRenameName] = useState("");
   const [renamingGroupId, setRenamingGroupId] = useState<string | null>(null);
   const [requestedSelectedGroupId, setRequestedSelectedGroupId] = useState<string | null>(null);
@@ -107,14 +109,28 @@ export function useAdminGroupsController({
     (groupId: string, target: "group-detail" | "model-access-detail" = "group-detail") => {
       requestFocus(target);
       setRequestedSelectedGroupId(groupId);
+      if (target === "model-access-detail") {
+        setModelAccessCompactDetailOpen(true);
+      } else {
+        setGroupsCompactDetailOpen(true);
+      }
     },
     [requestFocus]
   );
 
   const toggleCreateForm = useCallback(() => {
     clearFieldError("group-name");
-    setCreateFormOpen((open) => !open);
+    setCreateFormOpen((open) => {
+      const nextOpen = !open;
+      setGroupsCompactDetailOpen(nextOpen);
+      return nextOpen;
+    });
   }, [clearFieldError]);
+
+  const closeGroupsDetail = useCallback(() => {
+    setCreateFormOpen(false);
+    setGroupsCompactDetailOpen(false);
+  }, []);
 
   const changeCreateName = useCallback(
     (value: string) => {
@@ -151,6 +167,7 @@ export function useAdminGroupsController({
     if (!result.error) {
       setCreateName("");
       setCreateFormOpen(false);
+      setGroupsCompactDetailOpen(false);
     }
   }, [clearFieldError, createName, reportFieldError, runAction]);
 
@@ -191,7 +208,11 @@ export function useAdminGroupsController({
         dialogLabel: `Delete group ${group.name}`,
         icon: "trash",
         message: "Group deleted.",
-        onSuccess: () => setRequestedSelectedGroupId(null),
+        onSuccess: () => {
+          setRequestedSelectedGroupId(null);
+          setGroupsCompactDetailOpen(false);
+          setModelAccessCompactDetailOpen(false);
+        },
         prompt: `Delete ${group.name}? This permanently removes the empty group. Groups with members or active grants are blocked.`,
         testId: "admin-confirm-delete-group",
         title: "Delete empty group?"
@@ -294,6 +315,7 @@ export function useAdminGroupsController({
 
     return {
       actions: {
+        onBackToList: closeGroupsDetail,
         onCreateNameChange: changeCreateName,
         onCreateSubmit: createGroup,
         onQueryChange: setGroupQuery,
@@ -312,6 +334,7 @@ export function useAdminGroupsController({
         visibleGroups
       },
       draft: {
+        compactDetailOpen: groupsCompactDetailOpen,
         createFormOpen,
         createName,
         query: groupQuery,
@@ -330,6 +353,7 @@ export function useAdminGroupsController({
     actionsDisabled,
     changeCreateName,
     changeRenameName,
+    closeGroupsDetail,
     createFormOpen,
     createGroup,
     createName,
@@ -338,6 +362,7 @@ export function useAdminGroupsController({
     focus.groups,
     groupQuery,
     groupStatusFilter,
+    groupsCompactDetailOpen,
     renameGroup,
     renameName,
     renamingGroupId,
@@ -356,8 +381,12 @@ export function useAdminGroupsController({
 
     return {
       actions: {
+        onBackToList: () => setModelAccessCompactDetailOpen(false),
         onQueryChange: setModelAccessQuery,
-        onSelectGroup: setRequestedSelectedGroupId,
+        onSelectGroup: (groupId) => {
+          setRequestedSelectedGroupId(groupId);
+          setModelAccessCompactDetailOpen(true);
+        },
         onToggleGrant: (group, target, enabled) => void setGroupGrant(group, target, enabled),
         onToggleProviderModels: (group, providerId, enabled) =>
           void setProviderModelGrants(group, providerId, enabled)
@@ -369,6 +398,7 @@ export function useAdminGroupsController({
         visibleGroups: visibleModelAccessGroups
       },
       draft: {
+        compactDetailOpen: modelAccessCompactDetailOpen,
         query: modelAccessQuery
       },
       refs: focus.modelAccess,
@@ -380,6 +410,7 @@ export function useAdminGroupsController({
     actionsDisabled,
     dashboard,
     focus.modelAccess,
+    modelAccessCompactDetailOpen,
     modelAccessQuery,
     selectedModelAccessGroup,
     setGroupGrant,

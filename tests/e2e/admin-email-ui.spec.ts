@@ -6,6 +6,10 @@ import type {
   AdminEmailState
 } from "../../lib/contracts/email";
 import { LOCAL_RESTRICTED_MEMBER } from "../../prisma/local-seed-fixtures";
+import {
+  expectNoHorizontalOverflow,
+  expectTouchSafe
+} from "./support/layoutAssertions";
 import { signInWithLocalToken } from "./support/localAuth";
 
 function emptyEmailState(): AdminEmailState {
@@ -187,7 +191,10 @@ test("admin saves, tests, and activates a write-only SMTP draft without network 
   await signInWithLocalToken(page);
   await page.goto("/admin");
   const section = await openEmailDelivery(page);
-  await expect(section.getByText("SMTP draft")).toBeVisible();
+  await expectNoHorizontalOverflow(page);
+  await expect(section.getByRole("heading", { name: "Email tasks" })).toBeVisible();
+  await section.getByRole("button", { name: /Draft configuration/u }).click();
+  await expect(section.getByRole("heading", { name: "Draft configuration" })).toBeVisible();
 
   const secret = "playwright-write-only-smtp-password";
   await section.getByLabel("SMTP host").fill("smtp.example.test");
@@ -209,10 +216,14 @@ test("admin saves, tests, and activates a write-only SMTP draft without network 
     expectedDraftVersion: 0,
     passwordAction: { kind: "replace", password: secret }
   });
-  await expect(section.getByLabel("Password action")).toHaveValue("preserve");
-  await expect(section.getByLabel("New password")).toHaveCount(0);
+  await expect(section.getByRole("heading", { name: "Test & activate" })).toBeVisible();
   await expect(section).not.toContainText(secret);
   expect(JSON.stringify(email)).not.toContain(secret);
+
+  await section.getByRole("button", { name: /Draft configuration/u }).click();
+  await expect(section.getByLabel("Password action")).toHaveValue("preserve");
+  await expect(section.getByLabel("New password")).toHaveCount(0);
+  await section.getByRole("button", { name: /Test & activate/u }).click();
 
   await section.getByLabel("Test recipient").fill("operator@example.test");
   await section.getByRole("button", { name: "Test draft" }).click();
@@ -224,10 +235,31 @@ test("admin saves, tests, and activates a write-only SMTP draft without network 
   }]);
   expect(JSON.stringify(email)).not.toContain("operator@example.test");
 
-  await section.getByRole("button", { name: "Activate" }).click();
+  await section.getByTestId("email-task-detail").getByRole("button", { name: "Activate", exact: true }).click();
   await expect(section.getByText("The tested email draft is now active.")).toBeVisible();
-  await expect(section.getByText("Active", { exact: true })).toBeVisible();
+  await expect(section.getByRole("heading", { name: "Runtime & health" })).toBeVisible();
+  await expect(section.getByText("ENABLED", { exact: true })).toBeVisible();
+  await expect(section.getByText("Enabled", { exact: true })).toBeVisible();
   expect(email.active).toMatchObject({ enabled: true, passwordConfigured: true, version: 1 });
+
+  await page.setViewportSize({ height: 900, width: 768 });
+  await expectNoHorizontalOverflow(page);
+  const backToTasks = section.getByRole("button", { name: "Back to email tasks" });
+  await backToTasks.click();
+  await expect(section.getByTestId("email-task-index")).toBeVisible();
+
+  await page.setViewportSize({ height: 844, width: 390 });
+  await expectNoHorizontalOverflow(page);
+  const runtimeTask = section.getByRole("button", { name: /Runtime & health/u });
+  await expectTouchSafe(runtimeTask);
+  await runtimeTask.click();
+  await expect(section.getByTestId("email-task-detail")).toBeVisible();
+
+  await page.setViewportSize({ height: 390, width: 844 });
+  await expectNoHorizontalOverflow(page);
+  await backToTasks.scrollIntoViewIfNeeded();
+  await backToTasks.click();
+  await expect(section.getByTestId("email-task-index")).toBeVisible();
 });
 
 test("ordinary user receives real active-admin denial for email configuration", async ({ page }) => {

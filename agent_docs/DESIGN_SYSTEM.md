@@ -62,7 +62,7 @@ Names may receive a CSS/Tailwind prefix, but their semantic role must stay recog
 
 ### Reference neutral palette
 
-The `neutral` theme is the first-use default, the only light registry theme, and the reference against which hierarchy is reviewed. Each dark theme owns its concrete values in `globals.css` while preserving this semantic ordering; there is no `neutral-dark` theme.
+The `neutral` theme is the first-use default and the reference against which hierarchy is reviewed. `paper` is an additional light interpretation; each dark theme owns its concrete values in `globals.css` while preserving this semantic ordering. There is no implicit dark counterpart for either light theme.
 
 | Role | Light `neutral` reference |
 |---|---:|
@@ -84,13 +84,14 @@ The table is a visual reference. Review normal text, muted text, controls, and s
 
 ### Theme compatibility
 
-The existing IDs `aiqsa`, `graphite`, `verdant`, `classic-dark`, and `neutral` remain valid because they are stored browser preferences. They are five tonal interpretations of one hierarchy, not five old layouts:
+The existing IDs `aiqsa`, `graphite`, `verdant`, `classic-dark`, and `neutral` remain valid because they are stored browser preferences. `paper` is appended as a sixth stable choice. They are tonal interpretations of one hierarchy, not old layouts:
 
 - `neutral`: quiet light neutral with teal proof accent; first-use default;
 - `aiqsa`: warm dark neutral with teal proof accent;
 - `graphite`: cool dark neutral with blue-teal proof accent;
 - `verdant`: green-black neutral with mint proof accent;
 - `classic-dark`: charcoal neutral with restrained blue proof accent.
+- `paper`: paper-white and whisper-gray light surfaces with graphite proof/action hierarchy; conversation-product familiar without copying another product's brand or layout.
 
 Every registry entry declares `light` or `dark`. Server first paint and runtime switching set both `data-theme` and `data-color-scheme`. Components never infer scheme from an ID. An existing cookie or LocalStorage value wins over the first-use default.
 

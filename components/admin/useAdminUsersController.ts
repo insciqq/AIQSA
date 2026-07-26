@@ -42,6 +42,7 @@ export function useAdminUsersController({
   runAction
 }: UseAdminUsersControllerOptions): AdminUsersController {
   const [pageIndex, setPageIndex] = useState(0);
+  const [compactDetailOpen, setCompactDetailOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [requestedSelectedUserId, setRequestedSelectedUserId] = useState<string | null>(null);
   const [selectedGroupIdsByUser, setSelectedGroupIdsByUser] = useState<Record<string, string[]>>({});
@@ -68,6 +69,7 @@ export function useAdminUsersController({
     (userId: string, target: "user-detail" | "user-groups" = "user-detail") => {
       requestFocus(target);
       setRequestedSelectedUserId(userId);
+      setCompactDetailOpen(true);
     },
     [requestFocus]
   );
@@ -138,7 +140,10 @@ export function useAdminUsersController({
         dialogLabel: `Delete ${user.email ?? user.displayName}`,
         icon: "trash",
         message: "User deleted.",
-        onSuccess: () => setRequestedSelectedUserId(null),
+        onSuccess: () => {
+          setRequestedSelectedUserId(null);
+          setCompactDetailOpen(false);
+        },
         prompt: `Delete ${user.email ?? user.displayName}? This permanently removes the stale account shell and auth records. This cannot delete users with app-owned data.`,
         testId: "admin-confirm-delete-user",
         title: "Delete stale user?"
@@ -224,6 +229,7 @@ export function useAdminUsersController({
     return {
       actions: {
         onApprove: (user) => void approveUser(user),
+        onBackToList: () => setCompactDetailOpen(false),
         onEditUserGroups: (userId) => selectUser(userId, "user-groups"),
         onNextPage: () => setPageIndex((current) => Math.min(viewModel.pageCount - 1, current + 1)),
         onPreviousPage: () => setPageIndex((current) => Math.max(0, current - 1)),
@@ -256,6 +262,7 @@ export function useAdminUsersController({
         actionsDisabled
       },
       view: {
+        compactDetailOpen,
         filteredCount: viewModel.filteredUsers.length,
         pageCount: viewModel.pageCount,
         pageEnd: viewModel.pageEnd,
@@ -274,6 +281,7 @@ export function useAdminUsersController({
     changeQuery,
     changeSort,
     changeStatusFilter,
+    compactDetailOpen,
     dashboard,
     focus,
     requestDeleteUser,

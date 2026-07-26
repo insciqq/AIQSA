@@ -34,7 +34,7 @@ function GrantToggle({
       aria-pressed={checked}
       className={[
         `inline-flex min-h-control-sm min-w-20 items-center justify-center gap-1.5 rounded-control px-3 text-xs font-medium ${focusRing} ${touchTarget} disabled:cursor-not-allowed disabled:opacity-50`,
-        checked ? "bg-surface-selected text-accent-cyan" : "bg-surface-thread text-content-muted hover:bg-surface-hover"
+        checked ? "bg-proof text-proof-contrast hover:bg-proof-hover" : "bg-control-surface text-ink-secondary hover:bg-control-hover"
       ].join(" ")}
       disabled={disabled}
       onClick={onClick}
@@ -48,10 +48,10 @@ function GrantToggle({
 
 function CatalogState({ controller }: { controller: AdminMcpController }) {
   if (controller.state.loading && !controller.state.loaded) {
-    return <p className="text-xs text-content-muted" role="status">Loading MCP servers…</p>;
+    return <p className="text-xs text-ink-muted" role="status">Loading MCP servers…</p>;
   }
   if (!controller.state.loaded) {
-    return <p className="text-xs leading-5 text-accent-amber">MCP grants are unavailable. Open MCP servers or retry its catalog.</p>;
+    return <p className="text-xs leading-5 text-caution">MCP grants are unavailable. Open MCP servers or retry its catalog.</p>;
   }
   return null;
 }
@@ -66,25 +66,25 @@ export function AdminMcpGroupAccessPanel({
   const servers = controller.state.servers.filter((server) => !server.archivedAt);
   const disabled = controller.state.busy || Boolean(group.archivedAt);
   return (
-    <section className="rounded-panel bg-surface-raised/50" data-testid="admin-group-mcp-access">
-      <div className="border-b border-separator-subtle px-3 py-2">
-        <div className="text-xs font-medium text-content-secondary">MCP server grants</div>
-        <p className="mt-1 text-xs leading-5 text-content-muted">
+    <section className="border-b border-trace-subtle py-5" data-testid="admin-group-mcp-access">
+      <div>
+        <div className="text-sm font-semibold text-ink">MCP server grants</div>
+        <p className="mt-1 text-xs leading-5 text-ink-muted">
           A grant unlocks every valid current and future tool from that installation-owned server. Personal fields are never granted through a group.
         </p>
       </div>
-      <div className="grid gap-2 p-3">
+      <div className="mt-4 divide-y divide-trace-subtle border-y border-trace-subtle">
         <CatalogState controller={controller} />
         {controller.state.loaded && !servers.length ? (
-          <p className="text-xs text-content-muted">No non-archived MCP servers.</p>
+          <p className="py-4 text-xs text-ink-muted">No non-archived MCP servers.</p>
         ) : null}
         {servers.map((server) => {
           const grant = grantForGroup(server, group.id);
           return (
-            <div className="flex min-w-0 flex-col gap-2 rounded-control bg-surface-thread px-3 py-2 sm:flex-row sm:items-center sm:justify-between" key={server.id}>
+            <div className="flex min-w-0 flex-col gap-2 py-3 sm:flex-row sm:items-center sm:justify-between" key={server.id}>
               <div className="min-w-0">
-                <div className="break-words text-xs font-medium text-content-primary [overflow-wrap:anywhere]">{server.name}</div>
-                <p className="mt-1 text-[11px] text-content-muted">
+                <div className="break-words text-sm font-medium text-ink [overflow-wrap:anywhere]">{server.name}</div>
+                <p className="mt-1 text-[11px] text-ink-muted">
                   {server.enabled ? "Enabled installation-wide" : "Currently disabled installation-wide"}
                 </p>
               </div>
@@ -115,15 +115,16 @@ export function AdminMcpUserAccessPanel({
   const servers = controller.state.servers.filter((server) => !server.archivedAt);
   const disabled = controller.state.busy || user.status !== "active";
   return (
-    <section className="mt-3 grid gap-2 rounded-control bg-surface-raised px-3 py-2" data-testid="admin-user-mcp-access">
+    <section className="border-b border-trace-subtle py-5" data-testid="admin-user-mcp-access">
       <div>
-        <div className="text-xs font-medium text-content-secondary">MCP server access</div>
-        <p className="mt-1 text-[11px] leading-5 text-content-muted">
+        <div className="text-sm font-semibold text-ink">MCP server access</div>
+        <p className="mt-1 text-xs leading-5 text-ink-muted">
           Direct server use combines with group grants. Personal-field permission is direct-only and does not reveal a stored value.
         </p>
       </div>
       <CatalogState controller={controller} />
-      {controller.state.loaded && !servers.length ? <p className="text-xs text-content-muted">No non-archived MCP servers.</p> : null}
+      {controller.state.loaded && !servers.length ? <p className="mt-3 text-xs text-ink-muted">No non-archived MCP servers.</p> : null}
+      <div className="mt-4 divide-y divide-trace-subtle border-y border-trace-subtle">
       {servers.map((server) => {
         const grant = grantForUser(server, user.id);
         const grantedSlots = new Set(grant?.personalSlotKeys ?? []);
@@ -131,11 +132,11 @@ export function AdminMcpUserAccessPanel({
         const activeSlotKeys = new Set(personalSlots.map((slot) => slot.slotKey));
         const staleSlotKeys = [...grantedSlots].filter((slotKey) => !activeSlotKeys.has(slotKey));
         return (
-          <div className="grid min-w-0 gap-2 rounded-control bg-surface-thread p-2" key={server.id}>
+          <div className="grid min-w-0 gap-3 py-3" key={server.id}>
             <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
               <div className="min-w-0">
-                <div className="break-words text-xs font-medium text-content-primary [overflow-wrap:anywhere]">{server.name}</div>
-                <p className="mt-1 text-[11px] text-content-muted">
+                <div className="break-words text-sm font-medium text-ink [overflow-wrap:anywhere]">{server.name}</div>
+                <p className="mt-1 text-[11px] text-ink-muted">
                   {server.enabled ? "Enabled installation-wide" : "Currently disabled installation-wide"}
                 </p>
               </div>
@@ -151,14 +152,14 @@ export function AdminMcpUserAccessPanel({
               />
             </div>
             {personalSlots.length ? (
-              <fieldset className="min-w-0 border-t border-separator-subtle pt-2">
-                <legend className="px-1 text-[11px] text-content-muted">Permitted personal fields</legend>
+              <fieldset className="min-w-0 border-t border-trace-subtle pt-2">
+                <legend className="px-1 text-[11px] text-ink-muted">Permitted personal fields</legend>
                 <div className="mt-1 flex min-w-0 flex-wrap gap-2">
                   {personalSlots.map((slot) => (
-                    <label className={`flex min-h-control-sm min-w-0 items-center gap-2 rounded-control bg-surface-raised px-2.5 text-[11px] text-content-secondary ${touchTarget}`} key={slot.slotKey}>
+                    <label className={`flex min-h-control-sm min-w-0 items-center gap-2 rounded-control bg-control-surface px-2.5 text-[11px] text-ink-secondary ${touchTarget}`} key={slot.slotKey}>
                       <input
                         checked={grantedSlots.has(slot.slotKey)}
-                        className="size-4 shrink-0 accent-accent-cyan"
+                        className="size-4 shrink-0 accent-proof"
                         disabled={disabled}
                         onChange={(event) => {
                           const next = new Set(grantedSlots);
@@ -179,17 +180,17 @@ export function AdminMcpUserAccessPanel({
               </fieldset>
             ) : null}
             {staleSlotKeys.length ? (
-              <fieldset className="min-w-0 border-t border-separator-subtle pt-2">
-                <legend className="px-1 text-[11px] text-accent-amber">Removed field permissions</legend>
-                <p className="mt-1 text-[11px] leading-5 text-content-muted">
+              <fieldset className="min-w-0 border-t border-trace-subtle pt-2">
+                <legend className="px-1 text-[11px] text-caution">Removed field permissions</legend>
+                <p className="mt-1 text-[11px] leading-5 text-ink-muted">
                   These keys no longer exist in the active revision. Clear them to finish grant cleanup.
                 </p>
                 <div className="mt-1 flex min-w-0 flex-wrap gap-2">
                   {staleSlotKeys.map((slotKey) => (
-                    <label className={`flex min-h-control-sm min-w-0 items-center gap-2 rounded-control bg-surface-raised px-2.5 font-mono text-[11px] text-accent-amber ${touchTarget}`} key={slotKey}>
+                    <label className={`flex min-h-control-sm min-w-0 items-center gap-2 rounded-control bg-control-surface px-2.5 font-mono text-[11px] text-caution ${touchTarget}`} key={slotKey}>
                       <input
                         checked
-                        className="size-4 shrink-0 accent-accent-cyan"
+                        className="size-4 shrink-0 accent-proof"
                         disabled={disabled}
                         onChange={() => {
                           const next = [...grantedSlots].filter((candidate) => candidate !== slotKey);
@@ -210,7 +211,8 @@ export function AdminMcpUserAccessPanel({
           </div>
         );
       })}
-      {user.status !== "active" ? <p className="text-[11px] text-accent-amber">MCP grants can be edited after this user becomes active.</p> : null}
+      </div>
+      {user.status !== "active" ? <p className="mt-3 text-[11px] text-caution">MCP grants can be edited after this user becomes active.</p> : null}
     </section>
   );
 }

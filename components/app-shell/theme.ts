@@ -1,7 +1,7 @@
 export const AIQSA_THEME_STORAGE_KEY = "aiqsa.theme";
 export const AIQSA_THEME_COOKIE_NAME = "aiqsa.theme";
 
-export type ThemeId = "aiqsa" | "classic-dark" | "graphite" | "neutral" | "verdant";
+export type ThemeId = "aiqsa" | "classic-dark" | "graphite" | "neutral" | "paper" | "verdant";
 export type ThemeColorScheme = "dark" | "light";
 
 export type ThemeOption = {
@@ -49,6 +49,13 @@ export const AIQSA_THEMES: ThemeOption[] = [
     description: "Quiet neutral light palette",
     id: "neutral",
     name: "Classic Light"
+  },
+  {
+    accentLabel: "Graphite",
+    colorScheme: "light",
+    description: "Soft monochrome research palette",
+    id: "paper",
+    name: "Paper"
   }
 ];
 
@@ -76,9 +83,24 @@ export function storedThemeId(): ThemeId {
     return DEFAULT_THEME_ID;
   }
 
-  return resolveThemeId(
-    window.localStorage.getItem(AIQSA_THEME_STORAGE_KEY) ?? document.documentElement.dataset.theme
-  );
+  const localThemeId = window.localStorage.getItem(AIQSA_THEME_STORAGE_KEY);
+  const serverThemeId = document.documentElement.dataset.theme;
+
+  if (isThemeId(localThemeId)) {
+    if (serverThemeId !== localThemeId) {
+      document.cookie = `${AIQSA_THEME_COOKIE_NAME}=${localThemeId}; max-age=31536000; path=/; samesite=lax`;
+    }
+    return localThemeId;
+  }
+
+  if (isThemeId(serverThemeId)) {
+    if (localThemeId !== null) {
+      window.localStorage.setItem(AIQSA_THEME_STORAGE_KEY, serverThemeId);
+    }
+    return serverThemeId;
+  }
+
+  return DEFAULT_THEME_ID;
 }
 
 export function applyThemeId(themeId: ThemeId, root: HTMLElement | null = null) {

@@ -4,7 +4,11 @@ import type { AdminGroup } from "@/lib/contracts/admin";
 import {
   AdminGroupOptions,
   AdminResourceDetailPane,
-  AdminResourceIndexPane
+  AdminResourceIndexPane,
+  AdminTaskBackButton,
+  AdminTaskDetailPane,
+  AdminTaskIndexPane,
+  AdminTaskWorkspace
 } from "./adminPrimitives";
 
 const activeGroup: AdminGroup = {
@@ -76,5 +80,27 @@ describe("admin resource task panes", () => {
     expect(screen.getByTestId("resource-detail")).toHaveAttribute("data-admin-task-view", "detail");
     expect(screen.getByTestId("resource-detail")).toHaveClass("hidden", "lg:block");
     expect(screen.getByText("Resource detail")).toBeInTheDocument();
+  });
+
+  it("keeps an inner resource list mounted while compact detail owns the viewport", () => {
+    const onBack = vi.fn();
+    render(
+      <AdminTaskWorkspace indexWidth="20rem">
+        <AdminTaskIndexPane compactDetailOpen testId="task-index">
+          Task index
+        </AdminTaskIndexPane>
+        <AdminTaskDetailPane compactDetailOpen testId="task-detail">
+          <AdminTaskBackButton label="Back to resources" onClick={onBack} />
+          Task detail
+        </AdminTaskDetailPane>
+      </AdminTaskWorkspace>
+    );
+
+    expect(screen.getByTestId("task-index")).toHaveClass("hidden", "lg:block");
+    expect(screen.getByTestId("task-detail")).toHaveClass("block", "lg:block");
+    expect(screen.getByText("Task index")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Back to resources" }));
+    expect(onBack).toHaveBeenCalledOnce();
   });
 });

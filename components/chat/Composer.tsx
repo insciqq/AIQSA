@@ -327,7 +327,7 @@ export function Composer({
 
   return (
     <form
-      className="shrink-0 bg-research-canvas pb-[max(.5rem,env(safe-area-inset-bottom))] pl-[max(.5rem,env(safe-area-inset-left))] pr-[max(.5rem,env(safe-area-inset-right))] pt-2 sm:pb-[max(.75rem,env(safe-area-inset-bottom))] sm:pl-[max(1rem,env(safe-area-inset-left))] sm:pr-[max(1rem,env(safe-area-inset-right))] [@media(max-height:32rem)]:!pb-[max(.25rem,env(safe-area-inset-bottom))] [@media(max-height:32rem)]:!pt-1"
+      className="shrink-0 bg-answer-paper pb-[max(.5rem,env(safe-area-inset-bottom))] pl-[max(.5rem,env(safe-area-inset-left))] pr-[max(.5rem,env(safe-area-inset-right))] pt-2 sm:pb-[max(.75rem,env(safe-area-inset-bottom))] sm:pl-[max(1rem,env(safe-area-inset-left))] sm:pr-[max(1rem,env(safe-area-inset-right))] [@media(max-height:32rem)]:!pb-[max(.25rem,env(safe-area-inset-bottom))] [@media(max-height:32rem)]:!pt-1"
       data-testid="composer-form"
       onSubmit={(event) => {
         event.preventDefault();

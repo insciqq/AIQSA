@@ -59,11 +59,13 @@ export function useAdminInvitesController({
   const { clearFieldError, fieldError, reportFieldError } = fieldErrors;
   const { reportError, reportNotice } = feedback;
   const { requestConfirmedAction } = confirmation;
+  const [compactDetailOpen, setCompactDetailOpen] = useState(false);
   const [email, setEmail] = useState("");
   const [emailDelivery, setEmailDelivery] = useState<AdminInviteEmailDelivery | null>(null);
   const [formOpen, setFormOpen] = useState(false);
   const [groupIds, setGroupIds] = useState<string[]>([]);
   const [query, setQuery] = useState("");
+  const [selectedInviteId, setSelectedInviteId] = useState<string | null>(null);
   const [sendEmail, setSendEmail] = useState(true);
   const [statusFilter, setStatusFilter] = useState<AdminInviteStatusFilter>("all");
   const inviteLink = useAdminOneTimeInviteLink({ feedback, writeText });
@@ -75,11 +77,36 @@ export function useAdminInvitesController({
     () => filterAdminInvites(dashboard?.invites ?? [], query, statusFilter, nowMs),
     [dashboard?.invites, nowMs, query, statusFilter]
   );
+  const selectedInvite = useMemo(
+    () =>
+      (selectedInviteId
+        ? dashboard?.invites.find((invite) => invite.id === selectedInviteId)
+        : null) ?? null,
+    [dashboard?.invites, selectedInviteId]
+  );
 
   const toggleForm = useCallback(() => {
     clearFieldError("invite-email");
-    setFormOpen((open) => !open);
+    setFormOpen((open) => {
+      const nextOpen = !open;
+      if (nextOpen) {
+        setSelectedInviteId(null);
+      }
+      setCompactDetailOpen(nextOpen);
+      return nextOpen;
+    });
   }, [clearFieldError]);
+
+  const backToList = useCallback(() => {
+    setFormOpen(false);
+    setCompactDetailOpen(false);
+  }, []);
+
+  const selectInvite = useCallback((inviteId: string) => {
+    setFormOpen(false);
+    setSelectedInviteId(inviteId);
+    setCompactDetailOpen(true);
+  }, []);
 
   const changeEmail = useCallback(
     (value: string) => {
@@ -168,6 +195,10 @@ export function useAdminInvitesController({
         dialogLabel: `Delete invite for ${invite.email}`,
         icon: "trash",
         message: "Invite deleted.",
+        onSuccess: () => {
+          setSelectedInviteId(null);
+          setCompactDetailOpen(false);
+        },
         prompt: `Delete the stale invite for ${invite.email}? Expired or revoked invite records and their hashed tokens will be removed.`,
         testId: "admin-confirm-delete-invite",
         title: "Delete stale invite?"
@@ -183,6 +214,7 @@ export function useAdminInvitesController({
 
     return {
       actions: {
+        backToList,
         changeEmail,
         changeGroups: setGroupIds,
         changeQuery: setQuery,
@@ -191,15 +223,18 @@ export function useAdminInvitesController({
         copyOneTimeUrl: inviteLink.copyOneTimeUrl,
         createInvite,
         requestDeleteInvite,
-        requestRevokeInvite
+        requestRevokeInvite,
+        selectInvite
       },
       data: {
         groups: dashboard.groups,
         invites: filteredInvites,
         nowMs,
+        selectedInvite,
         totalInviteCount: dashboard.invites.length
       },
       state: {
+        compactDetailOpen,
         email,
         emailDelivery,
         emailError: fieldError?.field === "invite-email" ? fieldError.message : null,
@@ -217,7 +252,9 @@ export function useAdminInvitesController({
     };
   }, [
     actionsDisabled,
+    backToList,
     changeEmail,
+    compactDetailOpen,
     createInvite,
     dashboard,
     email,
@@ -233,6 +270,8 @@ export function useAdminInvitesController({
     query,
     requestDeleteInvite,
     requestRevokeInvite,
+    selectInvite,
+    selectedInvite,
     sendEmail,
     statusFilter
   ]);

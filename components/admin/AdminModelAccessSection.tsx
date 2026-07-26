@@ -7,11 +7,14 @@ import {
   type AdminGrantTarget
 } from "@/components/admin/adminGroupView";
 import {
-  AdminTableRegion,
+  AdminTaskBackButton,
+  AdminTaskDetailPane,
+  AdminTaskIndexPane,
+  AdminTaskWorkspace,
   EmptyState,
-  focusRing,
-  quietButton,
-  touchTarget
+  inputClass,
+  primaryButton,
+  quietButton
 } from "@/components/admin/adminPrimitives";
 import type { AdminCatalog, AdminGroup } from "@/lib/contracts/admin";
 import { Check, RotateCcw, Search } from "lucide-react";
@@ -25,6 +28,7 @@ export type AdminModelAccessSectionData = Readonly<{
 }>;
 
 export type AdminModelAccessSectionDraft = Readonly<{
+  compactDetailOpen: boolean;
   query: string;
 }>;
 
@@ -37,6 +41,7 @@ export type AdminModelAccessSectionRefs = Readonly<{
 }>;
 
 export type AdminModelAccessSectionActions = Readonly<{
+  onBackToList(): void;
   onQueryChange(value: string): void;
   onSelectGroup(groupId: string): void;
   onToggleGrant(group: AdminGroup, target: AdminGrantTarget, enabled: boolean): void;
@@ -52,12 +57,7 @@ export type AdminModelAccessSectionProps = Readonly<{
   status: AdminModelAccessSectionStatus;
 }>;
 
-function GrantToggle({
-  checked,
-  disabled,
-  label,
-  onToggle
-}: Readonly<{
+function GrantToggle({ checked, disabled, label, onToggle }: Readonly<{
   checked: boolean;
   disabled?: boolean;
   label: string;
@@ -67,358 +67,243 @@ function GrantToggle({
     <button
       aria-label={label}
       aria-pressed={checked}
-      className={[
-        `inline-flex min-h-control-sm min-w-20 items-center justify-center gap-1.5 rounded-control px-3 text-xs font-medium ${focusRing} ${touchTarget} disabled:cursor-not-allowed disabled:opacity-50`,
-        checked
-          ? "bg-surface-selected text-accent-cyan"
-          : "bg-surface-raised text-content-secondary hover:bg-surface-hover hover:text-content-primary"
-      ].join(" ")}
+      className={checked ? primaryButton : quietButton}
       disabled={disabled}
       onClick={() => onToggle(!checked)}
       type="button"
     >
-      {checked ? <Check className="size-3.5" aria-hidden="true" /> : null}
+      {checked ? <Check aria-hidden="true" className="size-3.5" /> : null}
       {checked ? "Enabled" : "Off"}
     </button>
   );
 }
 
-export function AdminModelAccessSection({
-  actions,
-  data,
-  draft,
-  mcpAccess,
-  refs: { detail: detailRef },
-  status
-}: AdminModelAccessSectionProps) {
+function AccessSection({ children, description, title }: Readonly<{
+  children: ReactNode;
+  description: string;
+  title: string;
+}>) {
+  return (
+    <section className="border-b border-trace-subtle py-5 last:border-b-0">
+      <h4 className="text-sm font-semibold text-ink">{title}</h4>
+      <p className="mt-1 max-w-3xl text-xs leading-5 text-ink-muted">{description}</p>
+      <div className="mt-4">{children}</div>
+    </section>
+  );
+}
+
+export function AdminModelAccessSection({ actions, data, draft, mcpAccess, refs: { detail: detailRef }, status }: AdminModelAccessSectionProps) {
   if (!data.totalGroupCount) {
-    return <EmptyState title="No groups" detail="Create a group before assigning provider, model, or search access." />;
+    return <EmptyState detail="Create a group before assigning provider, model, search, or MCP access." title="No groups" />;
   }
 
   const group = data.selectedGroup;
   const archived = Boolean(group?.archivedAt);
-  const selectedCounts = group ? grantCounts(group) : null;
+  const counts = group ? grantCounts(group) : null;
 
   return (
-    <div className="grid min-h-[460px] lg:grid-cols-[280px_minmax(0,1fr)]">
-      <aside
-        className="border-b border-separator-subtle bg-surface-raised/40 p-3 lg:border-b-0 lg:border-r"
-        data-testid="admin-model-access-group-list"
-      >
-        <div className="text-xs font-medium text-content-secondary mb-2">Groups</div>
-        <div className="mb-2 flex items-center gap-2 rounded-control border border-separator-subtle bg-surface-thread px-2 focus-within:border-accent-cyan/60 focus-within:ring-2 focus-within:ring-accent-cyan/20">
-          <Search className="size-3.5 shrink-0 text-content-muted" aria-hidden="true" />
-          <input
-            aria-label="Search model access groups"
-            className="min-h-control-sm min-w-0 flex-1 bg-transparent text-xs [@media(hover:none)]:!min-h-touch [@media(hover:none)]:!min-w-touch [@media(pointer:coarse)]:!min-h-touch [@media(pointer:coarse)]:!min-w-touch text-content-primary outline-none placeholder:text-content-disabled"
-            onChange={(event) => actions.onQueryChange(event.currentTarget.value)}
-            placeholder="Search groups"
-            value={draft.query}
-          />
+    <AdminTaskWorkspace indexWidth="20rem">
+      <AdminTaskIndexPane compactDetailOpen={draft.compactDetailOpen} testId="admin-model-access-group-list">
+        <div className="border-b border-trace-subtle p-3">
+          <label className="block text-xs font-medium text-ink-secondary" htmlFor="admin-model-access-search">Groups</label>
+          <div className="relative mt-1.5">
+            <Search aria-hidden="true" className="pointer-events-none absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-ink-muted" />
+            <input
+              aria-label="Search model access groups"
+              className={`${inputClass} pl-9`}
+              id="admin-model-access-search"
+              onChange={(event) => actions.onQueryChange(event.currentTarget.value)}
+              placeholder="Search groups"
+              value={draft.query}
+            />
+          </div>
         </div>
-        <div className="grid max-h-[560px] gap-1.5 overflow-y-auto pr-1">
-          {data.visibleGroups.length ? (
-            data.visibleGroups.map((candidate) => {
-              const accessState = groupAccessState(candidate);
-              const active = group?.id === candidate.id;
+        <div className="min-w-0 divide-y divide-trace-subtle">
+          {data.visibleGroups.length ? data.visibleGroups.map((candidate) => {
+            const accessState = groupAccessState(candidate);
+            const active = group?.id === candidate.id;
 
-              return (
-                <button
-                  aria-controls="admin-model-access-selected-group"
-                  aria-label={`Select ${candidate.name}`}
-                  aria-pressed={active}
-                  className={[
-                    "rounded-control border px-2 py-2 text-left text-xs outline-none focus-visible:border-accent-cyan focus-visible:ring-2 focus-visible:ring-accent-cyan/30",
-                    active
-                      ? "border-accent-cyan/40 bg-accent-cyan/[0.07]"
-                      : "border-separator-subtle bg-surface-thread hover:border-accent-cyan/35"
-                  ].join(" ")}
-                  key={candidate.id}
-                  onClick={() => actions.onSelectGroup(candidate.id)}
-                  type="button"
-                >
-                  <span className="block break-words font-medium text-content-primary [overflow-wrap:anywhere]">
-                    {candidate.name}
+            return (
+              <button
+                aria-controls="admin-model-access-selected-group"
+                aria-label={`Select ${candidate.name}`}
+                aria-pressed={active}
+                className={`block w-full min-w-0 px-4 py-3 text-left ${active ? "bg-control-selected" : "bg-transparent hover:bg-control-hover"}`}
+                key={candidate.id}
+                onClick={() => actions.onSelectGroup(candidate.id)}
+                type="button"
+              >
+                <span className="flex min-w-0 items-start justify-between gap-3">
+                  <span className="min-w-0">
+                    <span className="block break-words text-sm font-medium text-ink [overflow-wrap:anywhere]">{candidate.name}</span>
+                    <span className="mt-1 block font-mono text-[11px] text-ink-muted">{candidate.userCount} users</span>
                   </span>
-                  <span className="mt-1 flex items-center justify-between gap-2">
-                    <span className="font-mono text-content-muted">{candidate.userCount} users</span>
-                    <span
-                      className={`shrink-0 rounded-pill border px-2 py-0.5 text-[11px] capitalize ${accessState.className}`}
-                    >
-                      {accessState.label}
-                    </span>
+                  <span className={`shrink-0 rounded-pill border px-2 py-0.5 text-[11px] capitalize ${accessState.className}`}>
+                    {accessState.label}
                   </span>
-                </button>
-              );
-            })
-          ) : (
-            <div className="rounded-control border border-separator-subtle bg-surface-thread px-2 py-6 text-center text-xs text-content-muted">
-              No groups match this view
-            </div>
+                </span>
+              </button>
+            );
+          }) : (
+            <EmptyState detail="Change the search to see other groups." title="No groups match this view" />
           )}
         </div>
-      </aside>
+      </AdminTaskIndexPane>
 
-      {group ? (
-        <div
-          aria-label={`Model access for ${group.name}`}
-          className={`min-w-0 ${focusRing}`}
-          data-testid="admin-model-access-group"
-          id="admin-model-access-selected-group"
-          ref={detailRef}
-          role="region"
-          tabIndex={-1}
-        >
-          <div className="flex flex-col gap-3 border-b border-separator-subtle px-3 py-3 xl:flex-row xl:items-start xl:justify-between">
-            <div className="min-w-0">
-              <div className="text-xs font-medium text-content-secondary">Selected group</div>
-              <h3 className="mt-1 break-words text-sm font-semibold text-content-primary [overflow-wrap:anywhere]">
-                {group.name}
-              </h3>
-              <p className="mt-1 text-xs text-content-muted">
-                {group.userCount} users / {groupAccessSummary(data.catalog, group)}
+      <AdminTaskDetailPane compactDetailOpen={draft.compactDetailOpen} testId="admin-model-access-detail-pane">
+        {group ? (
+          <div
+            aria-label={`Model access for ${group.name}`}
+            className="min-w-0 px-4 py-5 outline-none sm:px-6 lg:px-8 lg:py-7"
+            data-testid="admin-model-access-group"
+            id="admin-model-access-selected-group"
+            ref={detailRef}
+            role="region"
+            tabIndex={-1}
+          >
+            <AdminTaskBackButton label="Back to groups" onClick={actions.onBackToList} />
+            <div className="border-b border-trace-subtle pb-5">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.1em] text-ink-muted">Model access</p>
+              <h3 className="mt-2 break-words text-xl font-semibold tracking-tight text-ink [overflow-wrap:anywhere]">{group.name}</h3>
+              <p className="mt-1 text-sm text-ink-muted">{group.userCount} users · {groupAccessSummary(data.catalog, group)}</p>
+              <p className="mt-3 max-w-3xl border-l border-trace-strong pl-3 text-xs leading-5 text-ink-secondary">
+                These grants control entitlement. Provider key assignment under Providers → Advanced chooses authentication policy and never grants model access.
               </p>
+              <dl className="mt-4 grid grid-cols-3 gap-4">
+                {[
+                  ["Provider-wide", counts?.providers ?? 0],
+                  ["Models", counts?.models ?? 0],
+                  ["Search", counts?.search ?? 0]
+                ].map(([label, value]) => (
+                  <div className="min-w-0" key={String(label)}>
+                    <dt className="text-[10px] font-medium uppercase tracking-[0.08em] text-ink-muted">{label}</dt>
+                    <dd className="mt-1 font-mono text-sm text-ink">{value}</dd>
+                  </div>
+                ))}
+              </dl>
             </div>
-            <div className="grid grid-cols-3 gap-2 text-xs sm:min-w-[360px]">
-              <div className="rounded-control bg-surface-raised px-3 py-2">
-                <div className="text-xs font-medium text-content-secondary mb-1">Provider-wide</div>
-                <div className="font-mono text-content-primary">{selectedCounts?.providers ?? 0}</div>
-              </div>
-              <div className="rounded-control bg-surface-raised px-3 py-2">
-                <div className="text-xs font-medium text-content-secondary mb-1">Models</div>
-                <div className="font-mono text-content-primary">{selectedCounts?.models ?? 0}</div>
-              </div>
-              <div className="rounded-control bg-surface-raised px-3 py-2">
-                <div className="text-xs font-medium text-content-secondary mb-1">Search</div>
-                <div className="font-mono text-content-primary">{selectedCounts?.search ?? 0}</div>
-              </div>
-            </div>
-          </div>
 
-          {archived ? (
-            <div className="border-b border-accent-amber/25 bg-accent-amber/10 px-3 py-2 text-xs text-accent-amber">
-              Archived groups do not apply grants. Grant editing is disabled for this group.
-            </div>
-          ) : null}
+            {archived ? (
+              <p className="border-b border-trace-subtle bg-caution/5 py-3 text-xs leading-5 text-caution">
+                Archived groups do not apply grants. Grant editing is disabled for this group.
+              </p>
+            ) : null}
 
-          <div className="grid gap-3 p-3">
-            <section className="rounded-panel bg-surface-raised/50">
-              <div className="border-b border-separator-subtle px-3 py-2">
-                <div className="text-xs font-medium text-content-secondary">Provider-wide access</div>
-                <p className="mt-1 text-xs text-content-muted">
-                  Provider-wide grants unlock every current and future model for that provider.
-                </p>
+            <AccessSection
+              description="Provider-wide grants unlock every current and future model for that provider."
+              title="Provider-wide access"
+            >
+              <div className="divide-y divide-trace-subtle border-y border-trace-subtle">
+                {data.catalog.providers.map((provider) => {
+                  const checked = grantEnabled(group, { provider: provider.id });
+                  return (
+                    <div className="flex min-w-0 flex-col gap-2 py-3 sm:flex-row sm:items-center sm:justify-between" key={`${group.id}:provider:${provider.id}`}>
+                      <div className="min-w-0">
+                        <p className="break-words text-sm font-medium text-ink [overflow-wrap:anywhere]">{provider.name}</p>
+                        <p className="mt-1 text-xs text-ink-muted">All provider models ({providerModelCount(data.catalog, provider.id)})</p>
+                      </div>
+                      <GrantToggle
+                        checked={checked}
+                        disabled={archived || status.actionsDisabled}
+                        label={`Grant provider ${provider.name}`}
+                        onToggle={(enabled) => actions.onToggleGrant(group, { provider: provider.id }, enabled)}
+                      />
+                    </div>
+                  );
+                })}
+                {!data.catalog.providers.length ? <p className="py-5 text-sm text-ink-muted">No providers in the catalog</p> : null}
               </div>
-              <AdminTableRegion label="Provider-wide access grants">
-                <table className="w-full min-w-[620px] border-collapse text-left text-xs">
-                  <thead className="bg-surface-thread text-content-muted">
-                    <tr>
-                      <th className="px-3 py-2 font-medium">Provider</th>
-                      <th className="px-3 py-2 font-medium">Scope</th>
-                      <th className="px-3 py-2 font-medium">Grant</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {data.catalog.providers.map((provider) => {
-                      const checked = grantEnabled(group, { provider: provider.id });
+            </AccessSection>
 
-                      return (
-                        <tr
-                          className="border-b border-separator-subtle last:border-b-0"
-                          key={`${group.id}:provider:${provider.id}`}
-                        >
-                          <td className="px-3 py-3 text-content-primary">{provider.name}</td>
-                          <td className="px-3 py-3 text-content-secondary">
-                            All provider models ({providerModelCount(data.catalog, provider.id)})
-                          </td>
-                          <td className="px-3 py-3">
-                            <GrantToggle
-                              checked={checked}
-                              disabled={archived || status.actionsDisabled}
-                              label={`Grant provider ${provider.name}`}
-                              onToggle={(enabled) =>
-                                actions.onToggleGrant(
-                                  group,
-                                  {
-                                    provider: provider.id
-                                  },
-                                  enabled
-                                )
-                              }
-                            />
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </AdminTableRegion>
-            </section>
-
-            <section className="rounded-panel bg-surface-raised/50">
-              <div className="border-b border-separator-subtle px-3 py-2">
-                <div className="text-xs font-medium text-content-secondary">Explicit model grants</div>
-                <p className="mt-1 text-xs text-content-muted">
-                  Individual model grants stay distinct from provider-wide access.
-                </p>
-              </div>
-              <div className="grid gap-3 p-3">
+            <AccessSection
+              description="Individual model grants stay distinct from provider-wide access."
+              title="Explicit model grants"
+            >
+              <div className="grid gap-6">
                 {data.catalog.providers.map((provider) => {
                   const models = data.catalog.models.filter((model) => model.provider === provider.id);
-
                   return (
-                    <section
-                      className="rounded-control border border-separator-subtle bg-surface-thread"
-                      key={`${group.id}:models:${provider.id}`}
-                    >
-                      <div className="flex flex-col gap-2 border-b border-separator-subtle px-3 py-2 sm:flex-row sm:items-center sm:justify-between">
-                        <div>
-                          <h4 className="text-xs font-semibold text-content-primary">{provider.name}</h4>
-                          <p className="mt-1 text-[11px] text-content-muted">
-                            {models.length} model{models.length === 1 ? "" : "s"}
-                          </p>
+                    <section className="min-w-0" key={`${group.id}:models:${provider.id}`}>
+                      <div className="flex min-w-0 flex-col gap-3 border-b border-trace-subtle pb-3 sm:flex-row sm:items-end sm:justify-between">
+                        <div className="min-w-0">
+                          <h5 className="break-words text-sm font-semibold text-ink [overflow-wrap:anywhere]">{provider.name}</h5>
+                          <p className="mt-1 text-xs text-ink-muted">{models.length} model{models.length === 1 ? "" : "s"}</p>
                         </div>
                         <div className="flex flex-wrap gap-2">
                           <button
-                            className={quietButton}
                             aria-label={`Grant all ${provider.name} models to ${group.name}`}
+                            className={quietButton}
                             disabled={archived || status.actionsDisabled || !models.length}
                             onClick={() => actions.onToggleProviderModels(group, provider.id, true)}
                             type="button"
                           >
-                            <Check className="size-3.5" aria-hidden="true" />
-                            Grant all models
+                            <Check aria-hidden="true" className="size-3.5" /> Grant all models
                           </button>
                           <button
-                            className={quietButton}
                             aria-label={`Clear ${provider.name} models from ${group.name}`}
+                            className={quietButton}
                             disabled={archived || status.actionsDisabled || !models.length}
                             onClick={() => actions.onToggleProviderModels(group, provider.id, false)}
                             type="button"
                           >
-                            <RotateCcw className="size-3.5" aria-hidden="true" />
-                            Clear models
+                            <RotateCcw aria-hidden="true" className="size-3.5" /> Clear models
                           </button>
                         </div>
                       </div>
-                      <AdminTableRegion label={`${provider.name} model grants`}>
-                        <table className="w-full min-w-[560px] border-collapse text-left text-xs">
-                          <thead className="bg-surface-raised/40 text-content-muted">
-                            <tr>
-                              <th className="px-3 py-2 font-medium">Model</th>
-                              <th className="px-3 py-2 font-medium">Grant</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {models.length ? (
-                              models.map((model) => {
-                                const checked = grantEnabled(group, {
-                                  modelId: model.modelId,
-                                  provider: model.provider
-                                });
-
-                                return (
-                                  <tr
-                                    className="border-b border-separator-subtle last:border-b-0"
-                                    key={`${group.id}:model:${model.provider}:${model.modelId}`}
-                                  >
-                                    <td className="px-3 py-3 text-content-primary">{model.displayName}</td>
-                                    <td className="px-3 py-3">
-                                      <GrantToggle
-                                        checked={checked}
-                                        disabled={archived || status.actionsDisabled}
-                                        label={`Grant model ${provider.name} / ${model.displayName}`}
-                                        onToggle={(enabled) =>
-                                          actions.onToggleGrant(
-                                            group,
-                                            {
-                                              modelId: model.modelId,
-                                              provider: model.provider
-                                            },
-                                            enabled
-                                          )
-                                        }
-                                      />
-                                    </td>
-                                  </tr>
-                                );
-                              })
-                            ) : (
-                              <tr>
-                                <td className="px-3 py-6 text-center text-content-muted" colSpan={2}>
-                                  No models for this provider
-                                </td>
-                              </tr>
-                            )}
-                          </tbody>
-                        </table>
-                      </AdminTableRegion>
+                      <div className="divide-y divide-trace-subtle">
+                        {models.length ? models.map((model) => {
+                          const checked = grantEnabled(group, { modelId: model.modelId, provider: model.provider });
+                          return (
+                            <div className="flex min-w-0 flex-col gap-2 py-3 sm:flex-row sm:items-center sm:justify-between" key={`${group.id}:model:${model.provider}:${model.modelId}`}>
+                              <p className="break-words text-sm text-ink-secondary [overflow-wrap:anywhere]">{model.displayName}</p>
+                              <GrantToggle
+                                checked={checked}
+                                disabled={archived || status.actionsDisabled}
+                                label={`Grant model ${provider.name} / ${model.displayName}`}
+                                onToggle={(enabled) => actions.onToggleGrant(group, { modelId: model.modelId, provider: model.provider }, enabled)}
+                              />
+                            </div>
+                          );
+                        }) : <p className="py-4 text-sm text-ink-muted">No models for this provider</p>}
+                      </div>
                     </section>
                   );
                 })}
               </div>
-            </section>
+            </AccessSection>
 
-            <section className="rounded-panel bg-surface-raised/50">
-              <div className="border-b border-separator-subtle px-3 py-2">
-                <div className="text-xs font-medium text-content-secondary">Search strategy grants</div>
-                <p className="mt-1 text-xs text-content-muted">
-                  Search access is managed separately from model and provider grants.
-                </p>
+            <AccessSection description="Search access is managed separately from model and provider grants." title="Search strategy grants">
+              <div className="divide-y divide-trace-subtle border-y border-trace-subtle">
+                {data.catalog.searchStrategies.map((strategy) => {
+                  const checked = grantEnabled(group, { searchStrategy: strategy.strategyId });
+                  return (
+                    <div className="flex min-w-0 flex-col gap-2 py-3 sm:flex-row sm:items-center sm:justify-between" key={`${group.id}:search:${strategy.strategyId}`}>
+                      <div className="min-w-0">
+                        <p className="break-words text-sm font-medium text-ink [overflow-wrap:anywhere]">{strategy.displayName}</p>
+                        <p className="mt-1 break-all font-mono text-[11px] text-ink-muted">{strategy.strategyId}</p>
+                      </div>
+                      <GrantToggle
+                        checked={checked}
+                        disabled={archived || status.actionsDisabled}
+                        label={`Grant search ${strategy.displayName}`}
+                        onToggle={(enabled) => actions.onToggleGrant(group, { searchStrategy: strategy.strategyId }, enabled)}
+                      />
+                    </div>
+                  );
+                })}
+                {!data.catalog.searchStrategies.length ? <p className="py-5 text-sm text-ink-muted">No search strategies in the catalog</p> : null}
               </div>
-              <AdminTableRegion label="Search strategy grants">
-                <table className="w-full min-w-[620px] border-collapse text-left text-xs">
-                  <thead className="bg-surface-thread text-content-muted">
-                    <tr>
-                      <th className="px-3 py-2 font-medium">Strategy</th>
-                      <th className="px-3 py-2 font-medium">API id</th>
-                      <th className="px-3 py-2 font-medium">Grant</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {data.catalog.searchStrategies.map((strategy) => {
-                      const checked = grantEnabled(group, {
-                        searchStrategy: strategy.strategyId
-                      });
+            </AccessSection>
 
-                      return (
-                        <tr
-                          className="border-b border-separator-subtle last:border-b-0"
-                          key={`${group.id}:search:${strategy.strategyId}`}
-                        >
-                          <td className="px-3 py-3 text-content-primary">{strategy.displayName}</td>
-                          <td className="break-words px-3 py-3 font-mono text-[11px] text-content-muted [overflow-wrap:anywhere]">
-                            {strategy.strategyId}
-                          </td>
-                          <td className="px-3 py-3">
-                            <GrantToggle
-                              checked={checked}
-                              disabled={archived || status.actionsDisabled}
-                              label={`Grant search ${strategy.displayName}`}
-                              onToggle={(enabled) =>
-                                actions.onToggleGrant(
-                                  group,
-                                  {
-                                    searchStrategy: strategy.strategyId
-                                  },
-                                  enabled
-                                )
-                              }
-                            />
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </AdminTableRegion>
-            </section>
             {mcpAccess}
           </div>
-        </div>
-      ) : (
-        <EmptyState title="No group selected" detail="Select a group before editing provider, model, or search grants." />
-      )}
-    </div>
+        ) : (
+          <div className="p-4 sm:p-6 lg:p-8">
+            <AdminTaskBackButton label="Back to groups" onClick={actions.onBackToList} />
+            <EmptyState detail="Select a group before editing provider, model, search, or MCP grants." title="No group selected" />
+          </div>
+        )}
+      </AdminTaskDetailPane>
+    </AdminTaskWorkspace>
   );
 }
