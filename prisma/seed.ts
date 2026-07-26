@@ -2,6 +2,7 @@ import { Prisma, PrismaClient } from "@prisma/client";
 import { defaultProviderModels, defaultSearchStrategies } from "../lib/domain/catalog";
 import {
   providerConnectionTemplates,
+  providerModelTemplateId,
   providerTemplateIds
 } from "../lib/domain/providerTemplates";
 import {
@@ -35,19 +36,6 @@ const ids = {
 };
 
 const asJson = (value: unknown) => value as Prisma.InputJsonValue;
-
-const providerModelTemplateIds: Record<string, string> = {
-  "anthropic:claude-opus-4-8": "00000000-0000-4000-8000-000000001206",
-  "fake:fake-qsa": providerTemplateIds.fakeModel,
-  "openai:gpt-5.5": "00000000-0000-4000-8000-000000001202",
-  "openai:gpt-5.6-luna": "00000000-0000-4000-8000-000000001205",
-  "openai:gpt-5.6-sol": "00000000-0000-4000-8000-000000001203",
-  "openai:gpt-5.6-terra": "00000000-0000-4000-8000-000000001204",
-  "openrouter:anthropic/claude-opus-4.8": "00000000-0000-4000-8000-000000001207",
-  "openrouter:google/gemini-3.5-flash": "00000000-0000-4000-8000-000000001208",
-  "openrouter:perplexity/sonar-pro-search": "00000000-0000-4000-8000-000000001210",
-  "openrouter:~google/gemini-pro-latest": "00000000-0000-4000-8000-000000001209"
-};
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -127,7 +115,7 @@ async function synchronizeLocalProviderTemplates(): Promise<Map<string, string>>
 
   for (const model of defaultProviderModels) {
     const templateKey = `${model.provider}:${model.modelId}`;
-    const id = providerModelTemplateIds[templateKey];
+    const id = providerModelTemplateId(templateKey);
     const connectionId = connectionIds.get(model.provider);
     if (!id || !connectionId) {
       throw new Error(`Missing local provider template identity: ${templateKey}`);

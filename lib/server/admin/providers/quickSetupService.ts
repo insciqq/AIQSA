@@ -1,0 +1,294 @@
+import {
+  createHmac,
+  randomUUID,
+  timingSafeEqual
+} from "node:crypto";
+import {
+  ADMIN_PROVIDER_QUICK_SETUP_PROVIDERS,
+  type AdminProviderQuickSetupErrorCode,
+  type AdminProviderQuickSetupRequest,
+  type AdminProviderQuickSetupResult,
+  type AdminProviderQuickSetupSnapshot
+} from "../../../contracts/adminProviderQuickSetup";
+import {
+  encryptProviderCredentialSecret,
+  normalizeProviderCredentialSecret
+} from "../../providers/credentialSecrets";
+import { getSecretEncryptionKey } from "../../secrets/envelope";
+import type { AdminProviderCredentialTester } from "./credentialTester";
+import {
+  adminProviderQuickSetupPolicy,
+  decideAdminProviderQuickSetupModel,
+  type AdminProviderQuickSetupPolicyCandidate
+} from "./quickSetupPolicy";
+import type {
+  AdminProviderQuickSetupActor,
+  AdminProviderQuickSetupInspection,
+  AdminProviderQuickSetupRepository
+} from "./quickSetupRepositoryContract";
+
+export class AdminProviderQuickSetupServiceError extends Error {
+  readonly code: AdminProviderQuickSetupErrorCode;
+
+  constructor(code: AdminProviderQuickSetupErrorCode) {
+    super(code);
+    this.code = code;
+    this.name = "AdminProviderQuickSetupServiceError";
+  }
+}
+
+const STATE_TOKEN_KEY_DERIVATION_DOMAIN =
+  "aiqsa:provider-quick-setup-state-token-key:v1";
+
+export function deriveAdminProviderQuickSetupStateTokenKey(
+  sessionSecret: string
+): Buffer {
+  if (!sessionSecret) {
+    throw new Error("provider_quick_setup_state_token_key_unavailable");
+  }
+  return createHmac("sha256", Buffer.from(sessionSecret, "utf8"))
+    .update(STATE_TOKEN_KEY_DERIVATION_DOMAIN, "utf8")
+    .digest();
+}
+
+function stateToken(key: Buffer, inspection: AdminProviderQuickSetupInspection): string {
+  return createHmac("sha256", key)
+    .update(`aiqsa:provider-quick-setup-state:v1:${inspection.fingerprint}`, "utf8")
+    .digest("base64url");
+}
+
+function sameToken(left: string, right: string): boolean {
+  const leftBytes = Buffer.from(left, "utf8");
+  const rightBytes = Buffer.from(right, "utf8");
+  return leftBytes.length === rightBytes.length && timingSafeEqual(leftBytes, rightBytes);
+}
+
+function providerSnapshot(
+  inspection: AdminProviderQuickSetupInspection,
+  key: Buffer
+): AdminProviderQuickSetupSnapshot["providers"][number] {
+  const policy = adminProviderQuickSetupPolicy(inspection.provider);
+  return {
+    ...(inspection.state === "ready" && inspection.model
+      ? { model: { displayName: inspection.model.displayName } }
+      : {}),
+    provider: inspection.provider,
+    providerDisplayName: policy.connection.displayName,
+    state: inspection.state,
+    stateToken: stateToken(key, inspection)
+  };
+}
+
+function replacementCandidate(
+  inspection: AdminProviderQuickSetupInspection
+): AdminProviderQuickSetupPolicyCandidate | null {
+  if ((inspection.mode !== "replacement" && inspection.mode !== "recovery") ||
+    !inspection.model) {
+    return null;
+  }
+  return adminProviderQuickSetupPolicy(inspection.provider).candidates.find(
+    (candidate) => candidate.templateKey === inspection.model?.templateKey
+  ) ?? null;
+}
+
+export function createAdminProviderQuickSetupService(input: Readonly<{
+  credentialTester: AdminProviderCredentialTester;
+  encryptionKey?: () => Buffer;
+  idFactory?: () => string;
+  now?: () => Date;
+  repository: AdminProviderQuickSetupRepository;
+  stateTokenKey: () => Buffer;
+}>) {
+  const encryptionKey = input.encryptionKey ?? getSecretEncryptionKey;
+  const idFactory = input.idFactory ?? randomUUID;
+  const now = input.now ?? (() => new Date());
+  const stateTokenKey = input.stateTokenKey;
+
+  return {
+    async getSnapshot(actor: AdminProviderQuickSetupActor): Promise<AdminProviderQuickSetupSnapshot> {
+      const inspectedAt = now();
+      const inspections = await Promise.all(ADMIN_PROVIDER_QUICK_SETUP_PROVIDERS.map((provider) =>
+        input.repository.inspect({ ...actor, now: inspectedAt, provider })
+      ));
+      const key = stateTokenKey();
+      const readyDefaults = inspections.filter(
+        (inspection) => inspection.state === "ready" && inspection.actingUserDefault
+      );
+      const simpleConfigured = inspections.filter(
+        (inspection) => inspection.configured && inspection.state !== "advanced_required"
+      );
+      const suggestedProvider = readyDefaults.length === 1
+        ? readyDefaults[0].provider
+        : simpleConfigured.length === 1
+          ? simpleConfigured[0].provider
+          : null;
+      return {
+        providers: inspections.map((inspection) => providerSnapshot(inspection, key)),
+        suggestedProvider
+      };
+    },
+
+    async setup(inputValue: Readonly<{
+      actor: AdminProviderQuickSetupActor;
+      request: AdminProviderQuickSetupRequest;
+      signal?: AbortSignal;
+    }>): Promise<AdminProviderQuickSetupResult> {
+      const policy = adminProviderQuickSetupPolicy(inputValue.request.provider);
+      const inspectedAt = now();
+      const inspection = await input.repository.inspect({
+        ...inputValue.actor,
+        now: inspectedAt,
+        provider: inputValue.request.provider
+      });
+      if (!inspection.authorized || inspection.state === "advanced_required" ||
+        inspection.mode === null) {
+        throw new AdminProviderQuickSetupServiceError(
+          "provider_quick_setup_advanced_required"
+        );
+      }
+      if (!sameToken(inputValue.request.expectedState, stateToken(stateTokenKey(), inspection))) {
+        throw new AdminProviderQuickSetupServiceError("provider_draft_stale");
+      }
+
+      const existingCandidate = replacementCandidate(inspection);
+      if (inspection.mode === "replacement" && !existingCandidate) {
+        throw new AdminProviderQuickSetupServiceError(
+          "provider_quick_setup_advanced_required"
+        );
+      }
+      if (existingCandidate && inputValue.request.selectedModel) {
+        throw new AdminProviderQuickSetupServiceError(
+          "provider_quick_setup_selection_invalid"
+        );
+      }
+      if (inputValue.request.selectedModel && (
+        inputValue.request.selectedModel.policyVersion !== policy.version ||
+        !policy.candidates.some(
+          ({ candidateId }) => candidateId === inputValue.request.selectedModel?.candidateId
+        )
+      )) {
+        throw new AdminProviderQuickSetupServiceError(
+          "provider_quick_setup_selection_invalid"
+        );
+      }
+
+      let secret: string;
+      try {
+        secret = normalizeProviderCredentialSecret(inputValue.request.secret).trim();
+      } catch {
+        throw new AdminProviderQuickSetupServiceError("provider_credential_test_failed");
+      }
+
+      let modelIds: string[];
+      try {
+        const outcome = await input.credentialTester.test({
+          connection: policy.connection.configuration,
+          family: policy.provider,
+          secret,
+          signal: inputValue.signal
+        });
+        modelIds = outcome.modelIds;
+      } catch {
+        throw new AdminProviderQuickSetupServiceError("provider_credential_test_failed");
+      }
+      const checkedAt = now();
+
+      let candidate: AdminProviderQuickSetupPolicyCandidate;
+      if (existingCandidate) {
+        if (!modelIds.includes(existingCandidate.configuration.upstreamModelId)) {
+          throw new AdminProviderQuickSetupServiceError(
+            "provider_quick_setup_unsupported_catalog"
+          );
+        }
+        candidate = existingCandidate;
+      } else {
+        const decision = decideAdminProviderQuickSetupModel({
+          modelIds,
+          policy,
+          ...(inputValue.request.selectedModel
+            ? { selectedModel: inputValue.request.selectedModel }
+            : {})
+        });
+        if (decision.kind === "selection_invalid") {
+          throw new AdminProviderQuickSetupServiceError(
+            "provider_quick_setup_selection_invalid"
+          );
+        }
+        if (decision.kind === "unsupported_catalog") {
+          throw new AdminProviderQuickSetupServiceError(
+            "provider_quick_setup_unsupported_catalog"
+          );
+        }
+        if (decision.kind === "selection_required") {
+          return {
+            candidates: decision.candidates,
+            checkedAt: checkedAt.toISOString(),
+            expectedState: stateToken(stateTokenKey(), inspection),
+            outcome: "selection_required",
+            policyVersion: policy.version,
+            provider: policy.provider,
+            providerDisplayName: policy.connection.displayName
+          };
+        }
+        candidate = decision.candidate;
+      }
+
+      const credentialId = inspection.primaryCredential?.id ?? idFactory();
+      const draftVersion = inspection.primaryCredential
+        ? inspection.primaryCredential.draftVersion + 1
+        : 1;
+      if (!Number.isSafeInteger(draftVersion) || draftVersion < 1) {
+        throw new AdminProviderQuickSetupServiceError("provider_draft_stale");
+      }
+      const versionId = idFactory();
+      const commit = await input.repository.commit({
+        actor: inputValue.actor,
+        candidate,
+        checkedAt,
+        credential: {
+          draftVersion,
+          id: credentialId,
+          isNew: inspection.primaryCredential === null,
+          versionEnvelope: encryptProviderCredentialSecret({
+            credentialId,
+            key: encryptionKey(),
+            secret,
+            valueId: versionId
+          }),
+          versionId
+        },
+        expectedFingerprint: inspection.fingerprint,
+        grantId: idFactory(),
+        mode: inspection.mode,
+        now: now(),
+        provider: policy.provider
+      });
+      if (commit === "stale") {
+        throw new AdminProviderQuickSetupServiceError("provider_draft_stale");
+      }
+      if (commit === "advanced_required") {
+        throw new AdminProviderQuickSetupServiceError(
+          "provider_quick_setup_advanced_required"
+        );
+      }
+      if (commit === "catalog_unavailable") {
+        throw new AdminProviderQuickSetupServiceError(
+          "provider_quick_setup_unsupported_catalog"
+        );
+      }
+      return {
+        checkedAt: checkedAt.toISOString(),
+        defaultChanged: commit.defaultChanged,
+        model: { displayName: candidate.displayName },
+        outcome: "ready",
+        profilesFilled: commit.profilesFilled,
+        provider: policy.provider,
+        providerDisplayName: policy.connection.displayName
+      };
+    }
+  };
+}
+
+export type AdminProviderQuickSetupService = ReturnType<
+  typeof createAdminProviderQuickSetupService
+>;

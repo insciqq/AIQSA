@@ -445,6 +445,17 @@ function mockAdminFetch() {
       });
     }
 
+    if (url === "/api/admin/providers/quick-setup" && (init?.method ?? "GET") === "GET") {
+      return dashboardResponse({
+        providers: [
+          { provider: "openai", providerDisplayName: "OpenAI", state: "not_configured", stateToken: "state-openai" },
+          { provider: "anthropic", providerDisplayName: "Anthropic", state: "not_configured", stateToken: "state-anthropic" },
+          { provider: "openrouter", providerDisplayName: "OpenRouter", state: "not_configured", stateToken: "state-openrouter" }
+        ],
+        suggestedProvider: null
+      });
+    }
+
     if (url === "/api/admin/action" && init?.body && typeof init.body === "string") {
       const body = parseRequestRecord(init.body);
       posts.push(body);
@@ -702,6 +713,18 @@ describe("AdminPanel", () => {
     expect(screen.getByTestId("admin-section-index-pane")).toHaveClass("hidden");
     expect(screen.getByTestId("admin-active-task-pane")).toHaveClass("block");
     expect(usage.querySelector('[data-admin-renderer="replacement"]')).toBeInTheDocument();
+
+    fireEvent.click(within(usage).getByRole("button", { name: "All sections" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Providers" }));
+    const providers = await screen.findByTestId("admin-section-providers");
+    expect(providers.querySelector('[data-admin-renderer="replacement"]')).toBeInTheDocument();
+    expect(providers.querySelector('[data-admin-renderer="legacy-embedded"]')).not.toBeInTheDocument();
+    fireEvent.click(within(providers).getByRole("button", { name: "Advanced configuration" }));
+    expect(providers.querySelector('[data-admin-renderer="legacy-embedded"]')).toHaveAttribute(
+      "data-admin-legacy-scope",
+      "provider-advanced"
+    );
+    await waitFor(() => expect(within(providers).getAllByRole("alert")).toHaveLength(2));
   });
 
   it("preserves operational drafts, filters, and selections across section round trips", async () => {

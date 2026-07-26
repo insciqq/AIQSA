@@ -343,32 +343,36 @@ Providers
 1. разрешает Quick setup только для code-owned OpenAI, Anthropic и OpenRouter templates с canonical API root;
 2. проверяет unsaved key bounded read-only catalog request без платной generation;
 3. выбирает deterministic code-owned recommended deployment, а не первый remote catalog row;
-4. если recommendation недоступна, ничего не сохраняет и показывает один компактный model picker;
+4. если recommendation недоступна, ничего не сохраняет и показывает только code-owned opaque fallback picker; второй submit повторно тестирует key;
 5. атомарно создаёт/обновляет canonical connection, `Primary` credential, default credential и `use_default` policy;
-6. активирует только выбранные known recommended model deployments и authoritative availability checks;
-7. создаёт model-specific direct `AccessGrant` только acting admin, как прямо разрешает ADR 0022;
-8. устанавливает user default только если предыдущего usable default нет, и заполняет только disabled run-profile slots;
+6. создаёт или активирует ровно один выбранный answer deployment и один соответствующий authoritative availability check;
+7. создаёт ровно один model-specific direct `AccessGrant` только acting admin, как прямо разрешает ADR 0022;
+8. устанавливает user default только если предыдущего usable default нет, и заполняет максимум один provably untouched profile только при exact совпадении с существующим `DEFAULT_RUN_PROFILE_CONFIGURATIONS` target;
 9. возвращает `Ready` только если deployment уже присутствует в filtered current-user catalog.
+
+Сервер различает три внутренние lossless-операции без расширения wire-контракта: `initial` для нетронутого bootstrap, `recovery` для доказуемо canonical и однозначного, но неполного personal graph, и `replacement` для уже полностью Ready graph. Recovery сохраняет существующую supported selected model, если она есть, чинит только недостающие canonical connection/Primary/model/check/direct-grant pieces, условно меняет только unusable user default и никогда не заполняет profile. Любой draft check, group state, custom/extra model, ambiguous credential или missing/disabled/duplicate grant при уже выбранной модели переводит provider в Advanced. Healthy replacement меняет только immutable credential version/pointer и exact check, не переписывая connection/model/grant/settings/profile state.
+
+Binding policy v1: OpenAI автоматически рекомендует Terra, а при её отсутствии предлагает только Luna, Sol, затем GPT-5.5; Anthropic рекомендует Opus и не имеет fallback; OpenRouter рекомендует Claude Opus, затем может предложить Gemini Flash и Gemini Pro. IDs выбора code-owned и opaque для browser. Perplexity Sonar остаётся technical search deployment и никогда не попадает в answer picker. Exact profile recipe существует только для OpenAI Terra → Balanced, Luna → Fast и Sol → Deep; GPT-5.5, Anthropic и OpenRouter не получают выдуманных profile mappings.
 
 Quick setup никогда не создаёт, не переименовывает и не меняет groups, memberships, group grants или group credential assignments. Bootstrap `private-operators` не появляется в этом UX. Добавление второго provider не перезаписывает существующие user/chat defaults, profile mappings или настройки первого provider.
 
-Сохранённый secret никогда не возвращается в input: UI показывает `Key configured · updated …`, а replacement начинается с пустого `New API key`. При rotation новый key сначала тестируется; failure оставляет прежнюю active credential/version рабочей.
+Сохранённый secret никогда не возвращается в input, а replacement начинается с пустого `New API key`. При rotation новый key сначала тестируется; failure оставляет прежнюю active credential/version рабочей, выбранная модель никогда не меняется на новую recommendation, а предыдущая immutable credential version сохраняется для отдельного ADR 0022 lifecycle.
 
 Честные outcome states:
 
-- `Testing key… → Activating model… → Granting access…`;
+- один правдивый synchronous pending `Testing & saving…`, без выдуманных промежуточных Activating/Granting phases;
 - invalid/unreachable key: ничего не сохранено, введённое значение остаётся для retry;
-- no known recommendation: один model picker, без перехода в Groups или общий advanced editor;
-- partial setup: `Setup needs attention`, если ready current-user catalog получить нельзя;
+- recommendation отсутствует, но известные fallback есть: один bounded picker и полный повторный test; пустой supported intersection возвращает `provider_quick_setup_unsupported_catalog` и предлагает Advanced без partial writes;
+- canonical setup требует внимания: value-free `Setup needs attention` без утечки или client-side догадки о причине; это только server-proven bounded recovery, а не попытка автоматически нормализовать Advanced state;
 - success: `Ready to chat`, точная active model и `Start chatting`.
 
-Обычный connected-state показывает только status, active/default model, `Replace API key` и `Advanced configuration`. Никакие internal checks или draft/active counters не становятся обязательным user workflow.
+Обычный connected-state показывает только status, выбранную Quick answer model, `Replace API key` и `Advanced configuration`. Никакие internal checks или draft/active counters не становятся обязательным user workflow.
 
 `Advanced configuration` использует только существующие provider concepts: `Run profiles`, connection fields, `Credentials`, `Key assignment`, `Models` и `Diagnostics and troubleshooting`. Там остаются custom OpenAI-compatible `Responses`/`Chat Completions`, private-network policy, несколько credentials и rotation/revoke, default/required assignment policy, group overrides, upstream model ids, capability/default-parameter overrides, OpenRouter routing, explicit activation, optional paid diagnostics, enable/disable и deletion blockers.
 
 Connection/model revision history, rollback, provider `Activity`, audit trail и provider-specific audit subsystem не существуют и не должны появляться в макетах. ADR 0022 хранит только credential-version history; connection/model используют bounded draft/active counters. MCP revisions — отдельный MCP contract и не должны визуально загрязнять provider Quick setup.
 
-Quick setup требует отдельного backend endpoint/orchestrator; собирать эту цепочку серией browser mutations нельзя, потому что это снова создаст partially configured state. До реализации это proposal, который должен получить API tests и обновление owning contracts/ADR evidence.
+Quick setup закреплён в ADR 0026 и реализован как один `GET`/`POST /api/admin/providers/quick-setup` endpoint/orchestrator; собирать эту цепочку серией browser mutations нельзя, потому что это снова создаст partially configured state. Default Quick surface загружает только его secret-free projection; существующие `/api/admin/providers` и `/api/admin/run-profiles` остаются lazy до explicit Advanced. Endpoint, repository, component и Ready-to-first-answer browser evidence закрывают этот Personal flow; полная замена Advanced presentation остаётся отдельным срезом.
 
 ### MCP servers
 
@@ -483,7 +487,7 @@ Safety — самостоятельная section с acting-admin context, по�
 
 ### Product-grounded image-generated set — основной набор для review
 
-Новая серия сверена с существующими chat/admin routes, labels, provider families и ADR 0022/0024. Там, где экран показывает предлагаемую orchestration, она использует существующие сущности и отдельно помечена как proposal в этом документе.
+Новая серия сверена с существующими chat/admin routes, labels, provider families и ADR 0022/0024. Изображения Quick setup были созданы до принятия exact ADR 0026 policy и остаются visual references, а не wire/model/profile contract; расхождения разрешаются в пользу ADR 0026 и parity ledger.
 
 - [Active chat with real Events detail and composer controls](output/imagegen/aiqsa-product-mockups-v1/01-chat-active-events-desktop.png)
 - [Fresh-install no-model state — preferred refined version](output/imagegen/aiqsa-product-mockups-v1/02-chat-no-model-admin-desktop-refined.png)
@@ -503,7 +507,7 @@ Safety — самостоятельная section с acting-admin context, по�
 
 Основная последовательность review: fresh-install no-model → Personal Quick setup → success → Start chatting. Затем отдельно: Team Users → Team Model access и Advanced provider Credentials. Это намеренно не один onboarding funnel: Team и Advanced — раскрываемые рабочие области, а не обязательные шаги и не коммерческие планы.
 
-В текущем продукте уже существуют показанные Chat, Users, Model access и Advanced provider capabilities. `Test & Save`, atomic recommended-model activation, direct grant acting admin, Personal/Team disclosure и no-model admin CTA — предложения для реализации; они требуют нового server-side orchestration endpoint и contract tests, описанных выше.
+В текущем продукте уже существуют показанные Chat, Users, Model access и Advanced provider capabilities. `Test & Save`, atomic single-model activation, direct acting-admin grant и lazy Personal/Advanced provider disclosure реализуют принятый ADR 0026 contract; endpoint/repository/component/browser evidence подтверждает Personal flow до первого реального ответа через сохранённый provider graph.
 
 ## Capability parity: что обязано пережить замену UI
 

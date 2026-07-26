@@ -139,8 +139,14 @@ function ProfileRow({
   );
 }
 
-export function AdminRunProfilesPanel({ active }: { active: boolean }) {
-  const controller = useAdminRunProfilesController(active);
+export function AdminRunProfilesPanel({
+  active,
+  refreshRevision = 0
+}: {
+  active: boolean;
+  refreshRevision?: number;
+}) {
+  const controller = useAdminRunProfilesController(active, refreshRevision);
   const catalog = controller.state.catalog;
   const [draftState, setDraftState] = useState<{
     catalog: AdminRunProfileCatalog | null;

@@ -46,12 +46,13 @@ import {
   Trash2,
   X
 } from "lucide-react";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 export type AdminProvidersSectionProps = Readonly<{
   active: boolean;
   groups: AdminGroup[];
   onMutationCommitted?(): void | Promise<unknown>;
+  refreshRevision?: number;
 }>;
 
 const fieldLabel = "mb-1 block text-xs font-medium text-content-secondary";
@@ -1006,7 +1007,8 @@ function MobileConnectionSwitcher({
 export function AdminProvidersSection({
   active,
   groups,
-  onMutationCommitted
+  onMutationCommitted,
+  refreshRevision = 0
 }: AdminProvidersSectionProps) {
   const controller = useAdminProvidersController(active, { onMutationCommitted });
   const discovery = useAdminOpenRouterDiscovery({
@@ -1015,8 +1017,15 @@ export function AdminProvidersSection({
   });
   const [creating, setCreating] = useState(false);
   const [editingConnectionId, setEditingConnectionId] = useState<string | null>(null);
+  const refreshRevisionRef = useRef(refreshRevision);
   const selected = controller.state.selectedConnection;
   const enabledCount = controller.state.connections.filter(({ enabled }) => enabled).length;
+
+  useEffect(() => {
+    if (!active || refreshRevisionRef.current === refreshRevision) return;
+    refreshRevisionRef.current = refreshRevision;
+    void controller.actions.refresh();
+  }, [active, controller.actions, refreshRevision]);
 
   const selectConnection = (id: string) => {
     setCreating(false);
@@ -1026,7 +1035,7 @@ export function AdminProvidersSection({
 
   return (
     <div className="min-w-0">
-      <AdminRunProfilesPanel active={active} />
+      <AdminRunProfilesPanel active={active} refreshRevision={refreshRevision} />
       <div className="flex flex-col gap-3 border-b border-separator-subtle px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
         <p className="text-xs text-content-muted">
           {controller.state.loading && !controller.state.loaded

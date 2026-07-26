@@ -1,0 +1,82 @@
+import type { RunProfileId } from "./runProfiles";
+
+export const ADMIN_PROVIDER_QUICK_SETUP_PROVIDERS = [
+  "openai",
+  "anthropic",
+  "openrouter"
+] as const;
+
+export type AdminProviderQuickSetupProviderId =
+  (typeof ADMIN_PROVIDER_QUICK_SETUP_PROVIDERS)[number];
+
+export type AdminProviderQuickSetupModelDisplay = Readonly<{
+  displayName: string;
+}>;
+
+export type AdminProviderQuickSetupState =
+  | "advanced_required"
+  | "needs_attention"
+  | "not_configured"
+  | "ready";
+
+export type AdminProviderQuickSetupProviderSnapshot = Readonly<{
+  model?: AdminProviderQuickSetupModelDisplay;
+  provider: AdminProviderQuickSetupProviderId;
+  providerDisplayName: string;
+  state: AdminProviderQuickSetupState;
+  stateToken: string;
+}>;
+
+export type AdminProviderQuickSetupSnapshot = Readonly<{
+  providers: AdminProviderQuickSetupProviderSnapshot[];
+  suggestedProvider: AdminProviderQuickSetupProviderId | null;
+}>;
+
+export type AdminProviderQuickSetupSelection = Readonly<{
+  candidateId: string;
+  policyVersion: number;
+}>;
+
+/** The secret is write-only and must never appear in a response DTO. */
+export type AdminProviderQuickSetupRequest = Readonly<{
+  expectedState: string;
+  provider: AdminProviderQuickSetupProviderId;
+  secret: string;
+  selectedModel?: AdminProviderQuickSetupSelection;
+}>;
+
+export type AdminProviderQuickSetupCandidate = Readonly<{
+  candidateId: string;
+  displayName: string;
+}>;
+
+export type AdminProviderQuickSetupReadyResult = Readonly<{
+  checkedAt: string;
+  defaultChanged: boolean;
+  model: AdminProviderQuickSetupModelDisplay;
+  outcome: "ready";
+  profilesFilled: RunProfileId[];
+  provider: AdminProviderQuickSetupProviderId;
+  providerDisplayName: string;
+}>;
+
+export type AdminProviderQuickSetupSelectionRequiredResult = Readonly<{
+  candidates: AdminProviderQuickSetupCandidate[];
+  checkedAt: string;
+  expectedState: string;
+  outcome: "selection_required";
+  policyVersion: number;
+  provider: AdminProviderQuickSetupProviderId;
+  providerDisplayName: string;
+}>;
+
+export type AdminProviderQuickSetupResult =
+  | AdminProviderQuickSetupReadyResult
+  | AdminProviderQuickSetupSelectionRequiredResult;
+
+export type AdminProviderQuickSetupErrorCode =
+  | "provider_credential_test_failed"
+  | "provider_draft_stale"
+  | "provider_quick_setup_advanced_required"
+  | "provider_quick_setup_selection_invalid"
+  | "provider_quick_setup_unsupported_catalog";

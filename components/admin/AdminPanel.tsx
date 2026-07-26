@@ -11,7 +11,7 @@ import { AdminInvitesSection } from "@/components/admin/AdminInvitesSection";
 import { AdminModelAccessSection } from "@/components/admin/AdminModelAccessSection";
 import { AdminMcpGroupAccessPanel, AdminMcpUserAccessPanel } from "@/components/admin/AdminMcpGrantPanels";
 import { AdminMcpServersSection } from "@/components/admin/AdminMcpServersSection";
-import { AdminProvidersSection } from "@/components/admin/AdminProvidersSection";
+import { AdminProvidersExperience } from "@/components/admin/AdminProvidersExperience";
 import { AdminSafetySection } from "@/components/admin/AdminSafetySection";
 import { AdminSectionFrame } from "@/components/admin/AdminSectionFrame";
 import { AdminSectionTabs } from "@/components/admin/AdminSectionTabs";
@@ -148,7 +148,7 @@ function AdminSectionContent({
       return <AdminEmailSection onMutationCommitted={onMutationCommitted} />;
     case "providers":
       return (
-        <AdminProvidersSection
+        <AdminProvidersExperience
           active
           groups={dashboard.groups}
           onMutationCommitted={onMutationCommitted}
@@ -309,7 +309,7 @@ export function AdminPanel({ adminEmail, adminUserId }: AdminPanelProps) {
             >
               <div
                 data-admin-renderer={
-                  navigation.activeSection === "usage" || navigation.activeSection === "safety"
+                  navigation.activeSection === "providers" || navigation.activeSection === "usage" || navigation.activeSection === "safety"
                     ? "replacement"
                     : "legacy-embedded"
                 }

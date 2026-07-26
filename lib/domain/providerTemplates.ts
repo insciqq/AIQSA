@@ -6,6 +6,27 @@ export const providerTemplateIds = Object.freeze({
   openRouterConnection: "00000000-0000-4000-8000-000000001104"
 });
 
+export const providerModelTemplateIds = Object.freeze({
+  "anthropic:claude-opus-4-8": "00000000-0000-4000-8000-000000001206",
+  "fake:fake-qsa": providerTemplateIds.fakeModel,
+  "openai:gpt-5.5": "00000000-0000-4000-8000-000000001202",
+  "openai:gpt-5.6-luna": "00000000-0000-4000-8000-000000001205",
+  "openai:gpt-5.6-sol": "00000000-0000-4000-8000-000000001203",
+  "openai:gpt-5.6-terra": "00000000-0000-4000-8000-000000001204",
+  "openrouter:anthropic/claude-opus-4.8": "00000000-0000-4000-8000-000000001207",
+  "openrouter:google/gemini-3.5-flash": "00000000-0000-4000-8000-000000001208",
+  "openrouter:perplexity/sonar-pro-search": "00000000-0000-4000-8000-000000001210",
+  "openrouter:~google/gemini-pro-latest": "00000000-0000-4000-8000-000000001209"
+} as const);
+
+export type ProviderModelTemplateKey = keyof typeof providerModelTemplateIds;
+
+export function providerModelTemplateId(templateKey: string): string | undefined {
+  return Object.prototype.hasOwnProperty.call(providerModelTemplateIds, templateKey)
+    ? providerModelTemplateIds[templateKey as ProviderModelTemplateKey]
+    : undefined;
+}
+
 export const providerConnectionTemplates = Object.freeze([
   Object.freeze({
     config: Object.freeze({ allowPrivateNetwork: true, apiRoot: "http://127.0.0.1" }),

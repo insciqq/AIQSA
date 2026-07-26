@@ -185,9 +185,9 @@ The active destination owns the page title, short scope description, primary act
 
 ### Personal provider Quick setup
 
-The default simple flow is Provider -> API key -> Test & Save -> Ready. Use one focused setup surface with provider choices, a write-only key field, one primary action, precise testing/saving state, and a factual success result. Advanced configuration is a secondary disclosure/link, not a wall of fields before the key.
+The default simple flow is Provider -> API key -> Test & Save -> Ready. Use one focused setup surface with provider choices, a write-only key field, one primary action, one truthful **Testing & saving…** pending state, and a factual success result. Do not animate or label unobservable server phases. Advanced configuration is a secondary disclosure/link and lazy-loaded subview, not a wall of fields or background resource load before the key.
 
-Never imply that a successful catalog check guarantees future generation or billing. Key replacement identifies the currently active configuration and makes it clear that a failed test/save leaves it unchanged. Secret fields clear on success and close and never echo a saved value.
+Never imply that a successful catalog check guarantees future generation or billing. Ready identifies the exact selected answer model and only factual default/profile effects. Key replacement identifies the currently active configuration and makes it clear that a failed test/save leaves it unchanged and never silently changes models. Secret fields clear on success, provider/subview change, and close; they never echo a saved value.
 
 ### Team and Advanced work
 

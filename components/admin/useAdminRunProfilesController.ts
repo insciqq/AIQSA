@@ -8,7 +8,7 @@ import {
 } from "./adminRunProfilesApi";
 import { useCallback, useEffect, useRef, useState } from "react";
 
-export function useAdminRunProfilesController(active: boolean) {
+export function useAdminRunProfilesController(active: boolean, refreshRevision = 0) {
   const [catalog, setCatalog] = useState<AdminRunProfileCatalog | null>(null);
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -16,6 +16,7 @@ export function useAdminRunProfilesController(active: boolean) {
   const [notice, setNotice] = useState<string | null>(null);
   const generationRef = useRef(0);
   const attemptedRef = useRef(false);
+  const refreshRevisionRef = useRef(refreshRevision);
 
   const refresh = useCallback(async () => {
     const generation = ++generationRef.current;
@@ -42,6 +43,12 @@ export function useAdminRunProfilesController(active: boolean) {
       void refresh();
     }
   }, [active, catalog, loading, refresh]);
+
+  useEffect(() => {
+    if (!active || refreshRevisionRef.current === refreshRevision) return;
+    refreshRevisionRef.current = refreshRevision;
+    void refresh();
+  }, [active, refresh, refreshRevision]);
 
   const save = useCallback(async (profiles: unknown) => {
     if (busy) return false;

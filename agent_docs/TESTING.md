@@ -186,6 +186,28 @@ docker compose -f docker-compose.dev.yml exec -T app npx vitest run \
   components/admin/adminEmailApi.test.ts
 ```
 
+For ADR 0026 Personal Provider Quick setup policy, service, route/repository contracts, and UI state, use:
+
+```bash
+docker compose -f docker-compose.dev.yml exec -T app npx vitest run \
+  lib/server/admin/providers/quickSetupPolicy.test.ts \
+  lib/server/admin/providers/quickSetupService.test.ts \
+  lib/server/admin/providers/quickSetupHandlers.test.ts \
+  lib/server/admin/providers/quickSetupPrismaRepository.test.ts \
+  lib/server/admin/providers/credentialTester.test.ts \
+  components/admin/adminProviderQuickSetupApi.test.ts \
+  components/admin/useAdminProviderQuickSetupController.test.tsx \
+  components/admin/AdminProvidersExperience.test.tsx
+```
+
+The repository also has an opt-in rollback-only Prisma integration case. Run it only in the disposable development stack; its outer serializable transaction always rolls back:
+
+```bash
+docker compose -f docker-compose.dev.yml exec -T \
+  -e AIQSA_PROVIDER_QUICK_SETUP_INTEGRATION_TEST=1 app \
+  npx vitest run lib/server/admin/providers/quickSetupPrismaRepository.integration.test.ts
+```
+
 The stopped control-plane migration has four deterministic contracts. They create only temporary databases or in-memory fixtures and do not contact providers or SMTP:
 
 ```bash
@@ -206,7 +228,7 @@ docker compose -f docker-compose.dev.yml exec -T \
     --project=chromium
 ```
 
-Those specs mock only each Admin resource boundary for the administrator workflow. The provider browser case proves automatic loading of a large account catalog into the sorted/searchable OpenRouter picker, capability/provider search, automatic endpoint loading after explicit manual-routing selection, ordered route tags, collapsed optional diagnostics, contextual activation, and one atomic three-slot run-profile save. Their ordinary-user cases exercise the real provider and run-profile `403` routes; repository, service, route, transport, and runtime tests remain authoritative for RBAC, write-only unsaved-key preflight, profile CAS/target validation, discovery-cache races, one-catalog-request-per-referenced-key activation, group-key selection, revocation, SSRF/TLS rules, and delivery outcomes.
+Those specs mock only each Admin resource boundary for the administrator workflow. The provider browser case mocks only the Quick endpoint for its Personal setup state machine; after Ready it installs a disposable persisted graph and uses the real current-user catalog, chat/message routes, OpenAI Responses SSE runtime, saved answer, ModelRun API, and exact ProviderRunBinding before restoring the prior user defaults and removing every fixture row. The same spec proves default lazy Quick setup, picker resubmission, retry/reconciliation, replacement preservation, compact states, automatic loading of a large account catalog into the sorted/searchable OpenRouter picker after Advanced disclosure, capability/provider search, automatic endpoint loading after explicit manual-routing selection, ordered route tags, collapsed optional diagnostics, contextual activation, and one atomic three-slot run-profile save. Its ordinary-user case exercises the real Quick, provider, and run-profile `403` routes; repository, service, route, transport, and runtime tests remain authoritative for RBAC, write-only secret handling, atomic initial/recovery/replacement persistence, profile constraints, catalog visibility, discovery-cache races, group-key selection, revocation, SSRF/TLS rules, and delivery outcomes.
 
 MCP UI behavior has focused component/API/store coverage in `components/app-shell/*Mcp*.test.tsx`, `components/app-shell/mcpSettings*.test.ts`, and `components/admin/AdminMcp*.test.tsx`. Its deterministic browser boundary is:
 

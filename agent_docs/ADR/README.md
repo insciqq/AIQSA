@@ -34,7 +34,7 @@ Every ADR also declares `Amends: none` or a comma-separated list of earlier ADR 
 - `0023-admin-managed-runtime-smtp-configuration.md` - one optional installation SMTP channel uses a singleton draft/active lifecycle with exact-draft testing, write-only encrypted credentials, strict TLS/network policy, consistent per-send resolution, preserved auth outcomes, and one stopped full cutover from environment ownership without revision or drain machinery.
 - `0024-admin-managed-run-profiles.md` - Fast, Balanced, and Deep are three fixed database-owned semantic slots that administrators atomically map to active stable deployment IDs and supported reasoning tuples; the entitlement-filtered user catalog is their only composer projection and never leaks unavailable targets.
 - `0025-clean-slate-research-chat-and-control-center.md` - the view layer is replaced in place by light-first Research Chat and Control Center surfaces with adaptive composition, evidence-backed Run receipts, complete parity, preserved runtime ownership, and mandatory legacy deletion.
-- `0026-personal-provider-quick-setup.md` - a supported provider becomes usable for the acting administrator through one write-only key, bounded catalog test, and fenced atomic save, without group setup or loss of the Advanced control plane.
+- `0026-personal-provider-quick-setup.md` - one canonical OpenAI, Anthropic, or OpenRouter answer deployment becomes usable for the acting administrator through one write-only key, exact versioned recommendation/picker policy, and fenced atomic save; replacement preserves that selected model, groups remain untouched, and the Advanced control plane stays lazy and complete.
 
 ## Superseded ADRs
 

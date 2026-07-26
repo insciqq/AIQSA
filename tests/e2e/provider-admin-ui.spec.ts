@@ -1,3 +1,7 @@
+import { randomUUID } from "node:crypto";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
+import { Prisma, PrismaClient } from "@prisma/client";
 import { expect, test, type Locator, type Page } from "@playwright/test";
 import type {
   AdminOpenRouterDiscoveredEndpoint,
@@ -7,10 +11,449 @@ import type {
   AdminProviderModelConfiguration
 } from "../../lib/contracts/adminProviders";
 import type { AdminRunProfileCatalog } from "../../lib/contracts/runProfiles";
+import { adminProviderQuickSetupPolicy } from "../../lib/server/admin/providers/quickSetupPolicy";
+import { DEFAULT_BOOTSTRAP_USER_ID } from "../../lib/server/auth/config";
+import { encryptProviderCredentialSecret } from "../../lib/server/providers/credentialSecrets";
+import { parseSecretEncryptionKey } from "../../lib/server/secrets/envelope";
 import { LOCAL_RESTRICTED_MEMBER } from "../../prisma/local-seed-fixtures";
 import { signInWithLocalToken } from "./support/localAuth";
 
+test.describe.configure({ mode: "serial" });
+test.setTimeout(60_000);
+
+const prisma = new PrismaClient();
+
 const now = "2026-07-23T00:00:00.000Z";
+const quickAnswer = "Real Quick setup answer received.";
+const playwrightEncryptionKey = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+
+type LocalResponsesRequest = {
+  authorization: string;
+  body: Record<string, unknown>;
+  method: string;
+  path: string;
+};
+
+type QuickChatFixture = {
+  accessGrantId: string;
+  checkId: string;
+  connectionId: string;
+  credentialId: string;
+  credentialVersionId: string;
+  modelId: string;
+  priorDefaultControlValues: unknown;
+  priorDefaultModelId: string | null;
+  userId: string;
+};
+
+type QuickCatalogBody = {
+  catalog: {
+    defaults: {
+      modelId: string;
+      provider: string;
+    };
+    models: Array<{
+      displayName: string;
+      modelId: string;
+      provider: string;
+      providerFamily: string;
+      upstreamModelId: string;
+    }>;
+    providers: Array<{
+      family: string;
+      id: string;
+      models: string[];
+      name: string;
+    }>;
+  };
+};
+
+type QuickChatDetailBody = {
+  chat: {
+    id: string;
+    messages: Array<{
+      content: unknown;
+      id: string;
+      modelRunId: string | null;
+      role: string;
+      status: string;
+    }>;
+  };
+};
+
+type QuickRunBody = {
+  run: {
+    id: string;
+    modelId: string;
+    provider: string;
+    status: string;
+  };
+};
+
+function json(value: unknown): Prisma.InputJsonValue {
+  return structuredClone(value) as Prisma.InputJsonValue;
+}
+
+function completedOpenAIResponse(responseId: string) {
+  return {
+    id: responseId,
+    model: "gpt-5.6-sol",
+    output: [
+      {
+        content: [{ annotations: [], text: quickAnswer, type: "output_text" }],
+        role: "assistant",
+        type: "message"
+      }
+    ],
+    status: "completed",
+    usage: {
+      input_tokens: 11,
+      output_tokens: 6,
+      total_tokens: 17
+    }
+  };
+}
+
+async function startLocalResponsesServer() {
+  const requests: LocalResponsesRequest[] = [];
+  let sseResponses = 0;
+  const server = createServer((request, response) => {
+    void (async () => {
+      const chunks: Buffer[] = [];
+      for await (const chunk of request) {
+        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      }
+      const rawBody = Buffer.concat(chunks).toString("utf8");
+      const body = rawBody ? JSON.parse(rawBody) as Record<string, unknown> : {};
+      const path = new URL(request.url ?? "/", "http://127.0.0.1").pathname;
+      requests.push({
+        authorization: request.headers.authorization ?? "",
+        body,
+        method: request.method ?? "",
+        path
+      });
+
+      if (request.method !== "POST" || path !== "/responses") {
+        response.writeHead(404, { "content-type": "application/json" });
+        response.end(JSON.stringify({ error: "unexpected_e2e_upstream_request" }));
+        return;
+      }
+
+      const responseId = `resp-e2e-${randomUUID()}`;
+      const completed = completedOpenAIResponse(responseId);
+      if (body.stream === true) {
+        sseResponses += 1;
+        response.writeHead(200, {
+          "cache-control": "no-cache",
+          "content-type": "text/event-stream"
+        });
+        response.end([
+          `event: response.created\ndata: ${JSON.stringify({
+            response: { id: responseId, model: "gpt-5.6-sol", status: "in_progress" },
+            type: "response.created"
+          })}\n\n`,
+          `event: response.output_text.delta\ndata: ${JSON.stringify({
+            delta: quickAnswer,
+            response_id: responseId,
+            type: "response.output_text.delta"
+          })}\n\n`,
+          `event: response.completed\ndata: ${JSON.stringify({
+            response: completed,
+            type: "response.completed"
+          })}\n\n`
+        ].join(""));
+        return;
+      }
+
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify(completed));
+    })().catch((error: unknown) => {
+      if (!response.headersSent) {
+        response.writeHead(500, { "content-type": "application/json" });
+      }
+      response.end(JSON.stringify({
+        error: error instanceof Error ? error.message : "local_responses_server_failed"
+      }));
+    });
+  });
+
+  await new Promise<void>((resolve, reject) => {
+    const onError = (error: Error) => reject(error);
+    server.once("error", onError);
+    server.listen(0, "127.0.0.1", () => {
+      server.off("error", onError);
+      resolve();
+    });
+  });
+  const address = server.address() as AddressInfo;
+
+  return {
+    apiRoot: `http://127.0.0.1:${address.port}`,
+    close: () => new Promise<void>((resolve, reject) => {
+      server.close((error) => error ? reject(error) : resolve());
+    }),
+    requests,
+    get sseResponses() {
+      return sseResponses;
+    }
+  };
+}
+
+async function installQuickChatFixture(apiRoot: string): Promise<QuickChatFixture> {
+  const policy = adminProviderQuickSetupPolicy("openai");
+  const candidate = policy.candidates.find(({ candidateId }) => candidateId === "p1-o3");
+  if (!candidate) throw new Error("OpenAI Sol Quick candidate is missing");
+
+  const fixture = {
+    accessGrantId: randomUUID(),
+    checkId: randomUUID(),
+    connectionId: randomUUID(),
+    credentialId: randomUUID(),
+    credentialVersionId: randomUUID(),
+    modelId: randomUUID(),
+    userId: DEFAULT_BOOTSTRAP_USER_ID
+  };
+  const checkedAt = new Date();
+  const connectionConfig = { allowPrivateNetwork: true, apiRoot };
+  const streamingDefaultParams = {
+    ...candidate.configuration.defaultParams,
+    background: false,
+    stream: true
+  };
+  const streamingModelConfiguration = {
+    ...candidate.configuration,
+    defaultParams: streamingDefaultParams
+  };
+  const encryptionKey = parseSecretEncryptionKey(
+    process.env.AIQSA_ENCRYPTION_KEY ?? playwrightEncryptionKey
+  );
+  const secretEnvelope = encryptProviderCredentialSecret({
+    credentialId: fixture.credentialId,
+    key: encryptionKey,
+    secret: "e2e-local-openai-key",
+    valueId: fixture.credentialVersionId
+  });
+
+  const priorSettings = await prisma.$transaction(async (tx) => {
+    const settings = await tx.userSettings.findUniqueOrThrow({
+      select: { defaultControlValues: true, defaultProviderModelId: true },
+      where: { userId: fixture.userId }
+    });
+    await tx.providerConnection.create({
+      data: {
+        activatedAt: checkedAt,
+        activeConfig: json(connectionConfig),
+        activeVersion: 1,
+        displayName: "OpenAI",
+        draftConfig: json(connectionConfig),
+        draftVersion: 1,
+        enabled: true,
+        family: "openai",
+        id: fixture.connectionId,
+        templateKey: null,
+        unassignedPolicy: "use_default"
+      }
+    });
+    await tx.providerModel.create({
+      data: {
+        activatedAt: checkedAt,
+        activeConfig: json(streamingModelConfiguration),
+        activeVersion: 1,
+        capabilities: json(candidate.model.capabilities),
+        connectionId: fixture.connectionId,
+        contextWindow: candidate.model.contextWindow,
+        defaultParams: json(streamingDefaultParams),
+        displayName: candidate.displayName,
+        draftConfig: json(streamingModelConfiguration),
+        draftVersion: 1,
+        enabled: true,
+        id: fixture.modelId,
+        inputTokenPriceMicros: candidate.model.inputTokenPriceMicros,
+        modelId: candidate.model.modelId,
+        outputTokenPriceMicros: candidate.model.outputTokenPriceMicros,
+        provider: candidate.model.provider,
+        supportsNativeSearch: candidate.model.capabilities.nativeSearch,
+        supportsPdf: candidate.model.capabilities.pdf,
+        supportsReasoning: candidate.model.capabilities.reasoning,
+        supportsVision: candidate.model.capabilities.vision,
+        templateKey: null
+      }
+    });
+    await tx.providerCredential.create({
+      data: {
+        activatedAt: checkedAt,
+        connectionId: fixture.connectionId,
+        draftSecretEnvelope: null,
+        draftVersion: 1,
+        enabled: true,
+        id: fixture.credentialId,
+        label: "Primary",
+        testedAt: checkedAt
+      }
+    });
+    await tx.providerCredentialVersion.create({
+      data: {
+        activatedAt: checkedAt,
+        credentialId: fixture.credentialId,
+        id: fixture.credentialVersionId,
+        secretEnvelope,
+        testEvidence: json({ method: "e2e_local_responses", status: "valid" }),
+        testedAt: checkedAt,
+        version: 1
+      }
+    });
+    await tx.providerCredential.update({
+      data: { activeVersionId: fixture.credentialVersionId },
+      where: { id: fixture.credentialId }
+    });
+    await tx.providerConnection.update({
+      data: { defaultCredentialId: fixture.credentialId },
+      where: { id: fixture.connectionId }
+    });
+    await tx.providerModelCredentialCheck.create({
+      data: {
+        checkedAt,
+        connectionId: fixture.connectionId,
+        connectionVersion: 1,
+        credentialId: fixture.credentialId,
+        credentialVersionId: fixture.credentialVersionId,
+        evidence: json({ method: "e2e_local_responses", upstreamModelId: "gpt-5.6-sol" }),
+        id: fixture.checkId,
+        modelVersion: 1,
+        providerModelId: fixture.modelId,
+        status: "available"
+      }
+    });
+    await tx.accessGrant.create({
+      data: {
+        enabled: true,
+        groupId: null,
+        id: fixture.accessGrantId,
+        providerConnectionId: null,
+        providerModelId: fixture.modelId,
+        searchStrategy: null,
+        userId: fixture.userId
+      }
+    });
+    await tx.userSettings.update({
+      data: {
+        defaultControlValues: json({
+          ...(typeof settings.defaultControlValues === "object" &&
+            settings.defaultControlValues !== null &&
+            !Array.isArray(settings.defaultControlValues)
+            ? settings.defaultControlValues
+            : {}),
+          [`${fixture.connectionId}:${fixture.modelId}`]: {
+            backgroundMode: false,
+            streamMode: true
+          }
+        }),
+        defaultProviderModelId: fixture.modelId
+      },
+      where: { userId: fixture.userId }
+    });
+
+    return settings;
+  });
+
+  return {
+    ...fixture,
+    priorDefaultControlValues: priorSettings.defaultControlValues,
+    priorDefaultModelId: priorSettings.defaultProviderModelId
+  };
+}
+
+async function cleanupQuickChatFixture(
+  fixture: QuickChatFixture,
+  trackedChatIds: readonly string[],
+  trackedRunIds: readonly string[]
+): Promise<void> {
+  await prisma.$transaction(async (tx) => {
+    await tx.userSettings.updateMany({
+      data: {
+        defaultControlValues: json(fixture.priorDefaultControlValues),
+        defaultProviderModelId: fixture.priorDefaultModelId
+      },
+      where: { userId: fixture.userId }
+    });
+    const fixtureChats = await tx.chat.findMany({
+      select: { id: true },
+      where: {
+        defaultProviderModelId: fixture.modelId,
+        userId: fixture.userId
+      }
+    });
+    const fixtureRuns = await tx.modelRun.findMany({
+      select: { chatId: true, id: true },
+      where: {
+        OR: [
+          { id: { in: [...trackedRunIds] } },
+          { modelId: fixture.modelId },
+          { providerRunBindings: { some: { providerModelId: fixture.modelId } } }
+        ],
+        userId: fixture.userId
+      }
+    });
+    const runIds = [...new Set([...trackedRunIds, ...fixtureRuns.map(({ id }) => id)])];
+    const chatIds = [...new Set([
+      ...trackedChatIds,
+      ...fixtureChats.map(({ id }) => id),
+      ...fixtureRuns.map(({ chatId }) => chatId)
+    ])];
+
+    await tx.providerRunBinding.deleteMany({
+      where: {
+        OR: [
+          { connectionId: fixture.connectionId },
+          { credentialId: fixture.credentialId },
+          { providerModelId: fixture.modelId }
+        ]
+      }
+    });
+    if (runIds.length > 0) {
+      await tx.modelRun.deleteMany({ where: { id: { in: runIds } } });
+    }
+    if (chatIds.length > 0) {
+      await tx.chat.deleteMany({ where: { id: { in: chatIds }, userId: fixture.userId } });
+    }
+    await tx.accessGrant.deleteMany({
+      where: {
+        OR: [
+          { id: fixture.accessGrantId },
+          { providerConnectionId: fixture.connectionId },
+          { providerModelId: fixture.modelId }
+        ]
+      }
+    });
+    await tx.providerDraftCheck.deleteMany({ where: { connectionId: fixture.connectionId } });
+    await tx.providerModelCredentialCheck.deleteMany({ where: { connectionId: fixture.connectionId } });
+    await tx.providerConnection.updateMany({
+      data: { defaultCredentialId: null },
+      where: { id: fixture.connectionId }
+    });
+    await tx.providerCredential.updateMany({
+      data: { activeVersionId: null },
+      where: { id: fixture.credentialId }
+    });
+    await tx.providerCredentialVersion.deleteMany({ where: { credentialId: fixture.credentialId } });
+    await tx.providerCredential.deleteMany({ where: { id: fixture.credentialId } });
+    await tx.providerModel.deleteMany({ where: { id: fixture.modelId } });
+    await tx.providerConnection.deleteMany({ where: { id: fixture.connectionId } });
+  });
+}
+
+async function waitForActiveChatId(page: Page): Promise<string> {
+  let chatId: string | null = null;
+  await expect.poll(async () => {
+    chatId = await page.evaluate(() => window.localStorage.getItem("aiqsa.activeChatId"));
+    return chatId;
+  }).not.toBeNull();
+  return chatId!;
+}
+
+test.afterAll(async () => {
+  await prisma.$disconnect();
+});
 
 const discoveredModels: AdminOpenRouterDiscoveredModel[] = [
   ...Array.from({ length: 332 }, (_, offset) => {
@@ -115,6 +558,332 @@ async function expectFullyHitTestable(surface: Locator): Promise<void> {
   })).toBe(true);
 }
 
+test("personal administrator completes the Quick picker, retry, Ready, and safe replacement journey", async ({ page }) => {
+  const upstream = await startLocalResponsesServer();
+  const fixtureState: { current: QuickChatFixture | null } = { current: null };
+  const trackedChatIds: string[] = [];
+  const trackedRunIds: string[] = [];
+  let configured = false;
+  const quickRequests: Array<{ body: Record<string, unknown>; method: string }> = [];
+  const undisclosedResourceRequests: string[] = [];
+  const messageRequests: Record<string, unknown>[] = [];
+  let releasePickerRetry!: () => void;
+  let releaseReplacement!: () => void;
+  const pickerRetryCanFinish = new Promise<void>((resolve) => {
+    releasePickerRetry = resolve;
+  });
+  const replacementCanFinish = new Promise<void>((resolve) => {
+    releaseReplacement = resolve;
+  });
+
+  try {
+  page.on("request", (request) => {
+    const path = new URL(request.url()).pathname;
+    if (path === "/api/admin/providers" || path === "/api/admin/run-profiles") {
+      undisclosedResourceRequests.push(`${request.method()} ${path}`);
+    }
+    if (request.method() === "POST" && /^\/api\/chats\/[^/]+\/messages$/u.test(path)) {
+      messageRequests.push(request.postDataJSON() as Record<string, unknown>);
+    }
+  });
+
+  await page.route("**/api/admin/providers/quick-setup", async (route) => {
+    const request = route.request();
+    if (request.method() === "GET") {
+      quickRequests.push({ body: {}, method: "GET" });
+      await route.fulfill({
+        contentType: "application/json",
+        json: {
+          providers: [
+            {
+              ...(configured ? { model: { displayName: "GPT-5.6 Sol" } } : {}),
+              provider: "openai",
+              providerDisplayName: "OpenAI",
+              state: configured ? "ready" : "not_configured",
+              stateToken: configured ? "state-openai-ready" : "state-openai-fresh"
+            },
+            { provider: "anthropic", providerDisplayName: "Anthropic", state: "not_configured", stateToken: "state-anthropic" },
+            { provider: "openrouter", providerDisplayName: "OpenRouter", state: "not_configured", stateToken: "state-openrouter" }
+          ],
+          suggestedProvider: configured ? "openai" : null
+        }
+      });
+      return;
+    }
+
+    const body = request.postDataJSON() as Record<string, unknown>;
+    quickRequests.push({ body, method: request.method() });
+    const postNumber = quickRequests.filter(({ method }) => method === "POST").length;
+    if (postNumber === 1) {
+      expect(body).toEqual({
+        expectedState: "state-openai-fresh",
+        provider: "openai",
+        secret: "e2e-personal-write-only-key"
+      });
+      await route.fulfill({
+        contentType: "application/json",
+        json: {
+          candidates: [
+            { candidateId: "p1-o2", displayName: "GPT-5.6 Luna" },
+            { candidateId: "p1-o3", displayName: "GPT-5.6 Sol" }
+          ],
+          checkedAt: now,
+          expectedState: "state-openai-picker",
+          outcome: "selection_required",
+          policyVersion: 1,
+          provider: "openai",
+          providerDisplayName: "OpenAI"
+        }
+      });
+      return;
+    }
+    if (postNumber === 2 || postNumber === 3) {
+      expect(body).toEqual({
+        expectedState: "state-openai-picker",
+        provider: "openai",
+        secret: "e2e-personal-write-only-key",
+        selectedModel: { candidateId: "p1-o3", policyVersion: 1 }
+      });
+      if (postNumber === 2) {
+        await pickerRetryCanFinish;
+        await route.fulfill({
+          contentType: "application/json",
+          json: { error: "provider_credential_test_failed" },
+          status: 422
+        });
+        return;
+      }
+      configured = true;
+      fixtureState.current = await installQuickChatFixture(upstream.apiRoot);
+      await route.fulfill({
+        contentType: "application/json",
+        json: {
+          checkedAt: now,
+          defaultChanged: true,
+          model: { displayName: "GPT-5.6 Sol" },
+          outcome: "ready",
+          profilesFilled: ["deep"],
+          provider: "openai",
+          providerDisplayName: "OpenAI"
+        }
+      });
+      return;
+    }
+    expect(postNumber).toBe(4);
+    expect(body).toEqual({
+      expectedState: "state-openai-ready",
+      provider: "openai",
+      secret: "e2e-failing-replacement-key"
+    });
+    await replacementCanFinish;
+    await route.fulfill({
+      contentType: "application/json",
+      json: { error: "provider_credential_test_failed" },
+      status: 422
+    });
+  });
+
+  await page.setViewportSize({ height: 844, width: 390 });
+  await signInWithLocalToken(page);
+  await page.goto("/admin?section=providers");
+  const section = page.getByTestId("admin-section-providers");
+  await expect(section.getByRole("heading", { name: "Connect a provider" })).toBeVisible();
+  await expect(section.getByLabel("API key")).toHaveCount(0);
+  await expect(section.locator('[data-admin-renderer="legacy-embedded"]')).toHaveCount(0);
+
+  await section.getByRole("button", { name: /OpenAI Not connected/ }).click();
+  await section.getByLabel("API key").fill("e2e-personal-write-only-key");
+  const keyBox = await section.getByLabel("API key").boundingBox();
+  const saveBox = await section.getByRole("button", { name: "Test & Save" }).boundingBox();
+  expect(keyBox).toBeTruthy();
+  expect(saveBox).toBeTruthy();
+  expect(saveBox!.y).toBeGreaterThanOrEqual(keyBox!.y + keyBox!.height);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await section.getByRole("button", { name: "Test & Save" }).click();
+  await expect(section.getByText("Choose a model available to this key")).toBeVisible();
+  await expect(section.getByLabel("API key")).toHaveValue("e2e-personal-write-only-key");
+  await section.getByLabel("GPT-5.6 Sol").click();
+  await section.getByRole("button", { name: "Test & Save" }).click();
+  await expect(section.getByRole("button", { name: "Testing & saving…" })).toBeVisible();
+  await expect(section.getByLabel("API key")).toBeDisabled();
+  await expect(section.getByLabel("GPT-5.6 Luna")).toBeDisabled();
+  await expect(section.getByLabel("GPT-5.6 Sol")).toBeDisabled();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  releasePickerRetry();
+  await expect(section.getByText(
+    "The provider rejected the key or its account catalog could not be reached."
+  )).toBeVisible();
+  await expect(section.getByLabel("API key")).toHaveValue("e2e-personal-write-only-key");
+  await section.getByRole("button", { name: "Test & Save" }).click();
+  await expect(section.getByText("Ready to chat")).toBeVisible();
+  await expect(section.getByRole("heading", { name: "GPT-5.6 Sol" })).toBeVisible();
+  const readyReceipt = section.getByTestId("provider-quick-ready-receipt");
+  await expect(readyReceipt).toContainText("API key: saved and verified.");
+  await expect(readyReceipt).toContainText("Active model: GPT-5.6 Sol.");
+  await expect(readyReceipt).toContainText("Access: available to this administrator.");
+  await expect(readyReceipt).toContainText("Default model: updated.");
+  await expect(readyReceipt).toContainText("Run profiles filled: Deep.");
+  await expect(section.getByRole("link", { name: "Start chatting" })).toHaveAttribute("href", "/");
+  await expect(section.getByText("e2e-personal-write-only-key")).toHaveCount(0);
+
+  await expect(section.getByRole("button", { name: /OpenAI Ready/ })).toBeVisible();
+  await section.getByRole("button", { name: "Replace API key" }).click();
+  await expect(section.getByLabel("API key")).toHaveValue("");
+  await section.getByLabel("API key").fill("e2e-failing-replacement-key");
+  await section.getByRole("button", { name: "Test & Save" }).click();
+  await expect(section.getByRole("button", { name: "Testing & saving…" })).toBeVisible();
+  await expect(section.getByText("Ready to chat")).toBeVisible();
+  await expect(section.getByLabel("API key")).toBeDisabled();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  releaseReplacement();
+  await expect(section.getByText(
+    "The provider rejected the key or its account catalog could not be reached."
+  )).toBeVisible();
+  await expect(section.getByText("Ready to chat")).toBeVisible();
+  await expect(section.getByLabel("API key")).toHaveValue("e2e-failing-replacement-key");
+  await section.getByRole("button", { name: "Cancel replacement" }).click();
+  await section.getByRole("button", { name: "Replace API key" }).click();
+  await expect(section.getByLabel("API key")).toHaveValue("");
+  await section.getByRole("button", { name: "Cancel replacement" }).click();
+
+  expect(undisclosedResourceRequests).toEqual([]);
+  expect(quickRequests.filter(({ method }) => method === "POST")).toHaveLength(4);
+  expect(quickRequests.filter(({ method }) => method === "GET").length).toBeGreaterThanOrEqual(2);
+
+  for (const viewport of [
+    { height: 844, width: 390 },
+    { height: 1024, width: 768 },
+    { height: 390, width: 844 }
+  ]) {
+    await page.setViewportSize(viewport);
+    await section.getByRole("link", { name: "Start chatting" }).scrollIntoViewIfNeeded();
+    await expect(section.getByRole("link", { name: "Start chatting" })).toBeVisible();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+    const columns = await section.getByTestId("provider-quick-choice-strip").evaluate((element) =>
+      getComputedStyle(element).gridTemplateColumns.split(" ").filter(Boolean).length
+    );
+    expect(columns).toBe(viewport.width === 390 ? 1 : 3);
+  }
+
+  const catalogResponse = page.waitForResponse((response) =>
+    response.request().method() === "GET" &&
+    new URL(response.url()).pathname === "/api/me/catalog"
+  );
+  await section.getByRole("link", { name: "Start chatting" }).click();
+  const realCatalogResponse = await catalogResponse;
+  expect(realCatalogResponse.ok()).toBe(true);
+  await expect(page).toHaveURL(/\/$/);
+  const installedFixture = fixtureState.current;
+  if (!installedFixture) throw new Error("Quick setup fixture was not installed");
+  const catalogBody = await realCatalogResponse.json() as QuickCatalogBody;
+  expect(catalogBody.catalog.defaults).toMatchObject({
+    modelId: installedFixture.modelId,
+    provider: installedFixture.connectionId
+  });
+  expect(catalogBody.catalog.models.filter(({ modelId }) => modelId === installedFixture.modelId))
+    .toEqual([
+      expect.objectContaining({
+        displayName: "GPT-5.6 Sol",
+        modelId: installedFixture.modelId,
+        provider: installedFixture.connectionId,
+        providerFamily: "openai",
+        upstreamModelId: "gpt-5.6-sol"
+      })
+    ]);
+  expect(catalogBody.catalog.providers.filter(({ id }) => id === installedFixture.connectionId))
+    .toEqual([{
+      family: "openai",
+      id: installedFixture.connectionId,
+      models: [installedFixture.modelId],
+      name: "OpenAI"
+    }]);
+  await expect(page.getByTestId("run-model-summary")).toHaveText("GPT-5.6 Sol");
+  const composer = page.getByRole("textbox", { name: "Message" });
+  await expect(composer).toBeEnabled();
+  const question = `First question after Quick setup ${randomUUID()}`;
+  await composer.fill(question);
+  const messageResponse = page.waitForResponse((response) =>
+    response.request().method() === "POST" &&
+    /^\/api\/chats\/[^/]+\/messages$/u.test(new URL(response.url()).pathname)
+  );
+  await page.getByRole("button", { name: "Send message" }).click();
+  expect((await messageResponse).ok()).toBe(true);
+  const chatId = await waitForActiveChatId(page);
+  trackedChatIds.push(chatId);
+  await expect.poll(() => messageRequests.length).toBe(1);
+  expect(messageRequests[0]).toMatchObject({
+    modelId: installedFixture.modelId,
+    provider: installedFixture.connectionId,
+    searchStrategy: "search-disabled"
+  });
+  expect(messageRequests[0]?.content).toEqual({
+    blocks: [{ text: question, type: "text" }]
+  });
+  await expect.poll(() => upstream.requests.length, { timeout: 20_000 }).toBe(1);
+  expect(upstream.requests[0]).toMatchObject({
+    authorization: "Bearer e2e-local-openai-key",
+    method: "POST",
+    path: "/responses"
+  });
+  expect(upstream.requests[0]?.body).toMatchObject({
+    background: false,
+    model: "gpt-5.6-sol",
+    stream: true
+  });
+  expect(upstream.sseResponses).toBe(1);
+  expect(JSON.stringify(upstream.requests[0]?.body.input)).toContain(question);
+  await expect(page.getByTestId("thread")).toContainText(question);
+  await expect(page.getByTestId("thread")).toContainText(quickAnswer, { timeout: 20_000 });
+  await expect(page.getByTestId("streaming-cursor")).toHaveCount(0, { timeout: 20_000 });
+
+  const chatResponse = await page.request.get(`/api/chats/${chatId}`);
+  expect(chatResponse.ok()).toBe(true);
+  const chatBody = await chatResponse.json() as QuickChatDetailBody;
+  const userMessage = chatBody.chat.messages.find(({ role }) => role === "user");
+  const assistantMessage = chatBody.chat.messages.find(({ role }) => role === "assistant");
+  expect(JSON.stringify(userMessage?.content)).toContain(question);
+  expect(JSON.stringify(assistantMessage?.content)).toContain(quickAnswer);
+  expect(assistantMessage?.status).toBe("complete");
+  expect(assistantMessage?.modelRunId).toBeTruthy();
+  const runId = assistantMessage!.modelRunId!;
+  trackedRunIds.push(runId);
+
+  const runResponse = await page.request.get(`/api/model-runs/${runId}`);
+  expect(runResponse.ok()).toBe(true);
+  const runBody = await runResponse.json() as QuickRunBody;
+  expect(runBody.run).toMatchObject({
+    id: runId,
+    modelId: "gpt-5.6-sol",
+    provider: "openai",
+    status: "complete"
+  });
+  await expect(prisma.providerRunBinding.findUnique({
+    select: {
+      connectionId: true,
+      credentialId: true,
+      credentialVersionId: true,
+      providerModelId: true
+    },
+    where: { modelRunId_role: { modelRunId: runId, role: "answer" } }
+  })).resolves.toEqual({
+    connectionId: installedFixture.connectionId,
+    credentialId: installedFixture.credentialId,
+    credentialVersionId: installedFixture.credentialVersionId,
+    providerModelId: installedFixture.modelId
+  });
+  } finally {
+    releasePickerRetry();
+    releaseReplacement();
+    try {
+      if (fixtureState.current) {
+        await cleanupQuickChatFixture(fixtureState.current, trackedChatIds, trackedRunIds);
+      }
+    } finally {
+      await upstream.close();
+    }
+  }
+});
+
 test("administrator completes the OpenRouter key, model, route, check, and activation flow", async ({ page }) => {
   let connections: AdminProviderConnection[] = [];
   const discoveryActions: Array<Record<string, unknown>> = [];
@@ -130,6 +899,20 @@ test("administrator completes the OpenRouter key, model, route, check, and activ
     const method = request.method();
     const body = method === "GET" ? {} : request.postDataJSON() as Record<string, unknown>;
 
+    if (method === "GET" && path === "/api/admin/providers/quick-setup") {
+      await route.fulfill({
+        contentType: "application/json",
+        json: {
+          providers: [
+            { provider: "openai", providerDisplayName: "OpenAI", state: "not_configured", stateToken: "state-openai" },
+            { provider: "anthropic", providerDisplayName: "Anthropic", state: "not_configured", stateToken: "state-anthropic" },
+            { provider: "openrouter", providerDisplayName: "OpenRouter", state: "not_configured", stateToken: "state-openrouter" }
+          ],
+          suggestedProvider: null
+        }
+      });
+      return;
+    }
     if (method === "GET" && path === "/api/admin/providers") {
       await route.fulfill({ contentType: "application/json", json: { connections } });
       return;
@@ -301,6 +1084,8 @@ test("administrator completes the OpenRouter key, model, route, check, and activ
   await page.goto("/admin?section=providers");
   const section = page.getByTestId("admin-section-providers");
   await expect(section.getByRole("heading", { exact: true, name: "Providers" })).toBeVisible();
+  await section.getByRole("button", { name: "Advanced configuration" }).click();
+  await expect(section.locator('[data-admin-legacy-scope="provider-advanced"]')).toBeVisible();
 
   await section.getByRole("button", { name: "New connection" }).click();
   await section.getByLabel("Display name").fill("E2E OpenRouter");
@@ -484,6 +1269,19 @@ test("administrator remaps the three composer run profiles in one save", async (
   await page.route("**/api/admin/providers", async (route) => {
     await route.fulfill({ contentType: "application/json", json: { connections: [] } });
   });
+  await page.route("**/api/admin/providers/quick-setup", async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      json: {
+        providers: [
+          { provider: "openai", providerDisplayName: "OpenAI", state: "not_configured", stateToken: "state-openai" },
+          { provider: "anthropic", providerDisplayName: "Anthropic", state: "not_configured", stateToken: "state-anthropic" },
+          { provider: "openrouter", providerDisplayName: "OpenRouter", state: "not_configured", stateToken: "state-openrouter" }
+        ],
+        suggestedProvider: null
+      }
+    });
+  });
   await page.route("**/api/admin/run-profiles", async (route) => {
     if (route.request().method() === "GET") {
       await route.fulfill({ contentType: "application/json", json: runProfileCatalog });
@@ -513,6 +1311,7 @@ test("administrator remaps the three composer run profiles in one save", async (
   await signInWithLocalToken(page);
   await page.goto("/admin?section=providers");
   const section = page.getByTestId("admin-section-providers");
+  await section.getByRole("button", { name: "Advanced configuration" }).click();
   await expect(section.getByRole("heading", { name: "Run profiles" })).toBeVisible();
   await expect(section.getByLabel("Fast description")).toHaveValue("Simple questions");
   await expect(section.getByLabel("Balanced description")).toHaveValue("Everyday questions");
@@ -539,7 +1338,7 @@ test("administrator remaps the three composer run profiles in one save", async (
 test("ordinary user receives real provider-admin denial without provider metadata", async ({ page }) => {
   await signInOrdinaryUser(page);
 
-  const [catalog, mutation, runProfiles] = await Promise.all([
+  const [catalog, mutation, runProfiles, quickGet, quickPost] = await Promise.all([
     page.request.get("/api/admin/providers"),
     page.request.post("/api/admin/providers/not-visible/actions", {
       data: {
@@ -547,9 +1346,17 @@ test("ordinary user receives real provider-admin denial without provider metadat
         credentialId: "not-visible"
       }
     }),
-    page.request.get("/api/admin/run-profiles")
+    page.request.get("/api/admin/run-profiles"),
+    page.request.get("/api/admin/providers/quick-setup"),
+    page.request.post("/api/admin/providers/quick-setup", {
+      data: {
+        expectedState: "opaque-state",
+        provider: "openai",
+        secret: "write-only-test-key"
+      }
+    })
   ]);
-  for (const response of [catalog, mutation, runProfiles]) {
+  for (const response of [catalog, mutation, runProfiles, quickGet, quickPost]) {
     expect(response.status()).toBe(403);
     const text = await response.text();
     expect(text).toBe('{"error":"forbidden"}');
