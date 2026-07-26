@@ -39,7 +39,7 @@ The shipped product is a conversation-first workspace for explicit provider/mode
 | `ARCHITECTURE.md` | Process topology, module dependency direction, data boundaries, and deployment shape. |
 | `BACKEND.md` | Observable API semantics, persistence constraints, run lifecycle, uploads, and internal adapter behavior. |
 | `QSA_PIPELINE.md` | Product-level Question/Search/Answer stages, search behavior, transparency, and sharing semantics. |
-| `FRONTEND.md` | UI capability, behavior, state ownership, accessibility, responsive composition, and admin workflows. |
+| `FRONTEND.md` | UI capability, behavior, state ownership, responsive composition, and admin workflows. WCAG and dedicated accessibility work are deferred by operator decision. |
 | `DESIGN_SYSTEM.md` | Palette/tokens, typography, geometry, density, visual hierarchy, and visual recipes. |
 | `SECURITY.md` | Auth/threat boundaries, origin/session hardening, secret/exposure rules, and dependency-security policy. |
 | `ENV_VARIABLES.md` | Complete environment inventory, defaults, switch semantics, and installation configuration. |

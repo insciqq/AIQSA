@@ -8,7 +8,7 @@ Use these defaults only when the operator has not decided the point. They route 
 - Keep the Next.js/Postgres/Prisma/S3 modular monolith. Add a runtime/service/library only after a measured existing boundary blocks the work.
 - Preserve the full reachable capability inventory in `FRONTEND.md`. Prefer progressive disclosure and removal of duplicate editors over hiding a capability.
 - Keep conversation/composer primary, workspace navigation secondary, and Details on demand. Concrete Model, Search, and Reasoning remain legible near the composer; Run settings owns next-run editing and Details owns Branch/Events inspection.
-- Resolve failure/loading/notice/focus/keyboard/responsive behavior through `FRONTEND.md`; resolve appearance through `DESIGN_SYSTEM.md`. Do not restate those contracts in a task.
+- Resolve failure, loading, notice, shortcut safety, and responsive behavior through `FRONTEND.md`; resolve appearance through `DESIGN_SYSTEM.md`. Do not restate those contracts in a task. Do not infer WCAG or dedicated accessibility scope: ADR 0025 explicitly defers it until a separately approved task.
 - Keep backend user ownership, entitlement validation, server-owned branch context, guarded run finalization, private attachments, and sanitized snapshot boundaries.
 - Add abstractions only when they remove demonstrated duplication or give one authoritative owner to behavior; prefer narrow contracts/selectors over broad controller/repository interfaces.
 - Treat catalog model ids, prices, and limits as operational metadata. Do not turn estimates into billing truth.

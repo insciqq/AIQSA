@@ -11,6 +11,8 @@
 
 The executable command definitions remain in `package.json`; `vitest.config.ts`, `playwright.config.ts`, and the test tree remain authoritative for runner details and actual coverage. Do not copy volatile test counts or exhaustive file inventories into this document.
 
+WCAG conformance and dedicated accessibility work are outside the current revamp scope by operator decision. Do not add accessibility audits, screen-reader or forced-colors cases, keyboard-only parity, formal focus-management proof, contrast thresholds, or dedicated accessibility tests to its acceptance or cutover gates. Existing role-based selectors and incidental browser semantics may remain where they already make a functional test stable; they do not certify or expand accessibility scope. Responsive layout, touch use, safe areas, software-keyboard clearance, readable content, and overflow remain ordinary product verification.
+
 ## Default Workflow
 
 AIQSA has one routine application check. Start the isolated development stack, then run:
@@ -34,7 +36,7 @@ The default `docker-compose.yml` is an operator installation with persistent use
 
 ## Browser Integration
 
-Run Playwright only when behavior crosses the browser/server boundary, routing, auth/session state, focus/inert behavior, responsive input, or streaming integration:
+Run Playwright only when behavior crosses the browser/server boundary, routing, auth/session state, responsive input, or streaming integration:
 
 ```bash
 docker compose -f docker-compose.dev.yml run --rm -T \
@@ -230,7 +232,7 @@ Do not turn these into a cumulative local release pipeline. Exposed-installation
 - Test observable behavior and stable contracts, not implementation shape.
 - Add the cheapest deterministic regression test; add browser coverage only for a real cross-boundary risk.
 - Focused `.only` tests are forbidden in both Vitest and Playwright configuration; use an explicit focused command while iterating.
-- Prefer accessible roles and labels; use test ids only where semantics are insufficient.
+- Prefer stable visible roles and labels when they already describe product behavior; use test ids where they are clearer or more durable. Selector choice is not accessibility acceptance.
 - Use fake providers in automated tests. Never make paid external calls from Vitest or routine Playwright.
 - Preserve explicit loading, error, empty, queued, streaming, cancelled, and terminal states when changing their owner.
 - Keep fixtures small and avoid broad snapshots or duplicated governance assertions.

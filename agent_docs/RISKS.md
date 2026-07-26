@@ -3,7 +3,7 @@
 ## Current Risks
 
 1. The shell is interaction-heavy.
-   - Keyboard navigation, command palette, inspector modes, folders, branching, responsive disclosure, and async ownership need focused tests when touched.
+   - Command-palette shortcut safety, inspector modes, folders, branching, responsive disclosure, and async ownership need focused functional tests when touched. WCAG and dedicated accessibility coverage are deferred under ADR 0025.
 
 2. Provider APIs differ substantially.
    - OpenAI Responses, Anthropic Messages, and OpenRouter expose different streaming, reasoning, search, background, tool, and usage shapes; keep those differences inside adapters.
