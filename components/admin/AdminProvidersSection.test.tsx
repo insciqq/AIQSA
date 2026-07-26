@@ -3,6 +3,7 @@ import type {
   AdminProviderConnection,
   AdminProviderModel
 } from "@/lib/contracts/adminProviders";
+import { providerTemplateIds } from "@/lib/domain/providerTemplates";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AdminProvidersSection } from "./AdminProvidersSection";
 
@@ -355,7 +356,7 @@ describe("AdminProvidersSection", () => {
     expect(screen.queryByTestId("provider-connection-task-detail")).not.toBeInTheDocument();
   });
 
-  it("opens the exact custom connection passed from its Ready receipt", async () => {
+  it("prioritizes the exact custom connection over a Quick provider family hint", async () => {
     const customConnection: AdminProviderConnection = {
       ...connection,
       displayName: "Custom provider",
@@ -371,6 +372,7 @@ describe("AdminProvidersSection", () => {
       <AdminProvidersSection
         active
         advancedEntryConnectionId="custom-connection-1"
+        advancedEntryProvider="openrouter"
         groups={[]}
       />
     );
@@ -382,6 +384,108 @@ describe("AdminProvidersSection", () => {
     expect(screen.getByTestId("provider-connection-task-detail")).toBeInTheDocument();
     expect(screen.getByRole("heading", { level: 2, name: "Custom provider" }))
       .toBeInTheDocument();
+    expect(view.actions.select).toHaveBeenCalledTimes(1);
+  });
+
+  it("opens the canonical Quick connection when the family has alternatives", async () => {
+    const backupConnection: AdminProviderConnection = {
+      ...connection,
+      displayName: "OpenRouter backup",
+      id: "connection-backup"
+    };
+    const canonicalConnection: AdminProviderConnection = {
+      ...connection,
+      displayName: "OpenRouter canonical",
+      id: providerTemplateIds.openRouterConnection
+    };
+    const view = controller();
+    view.state.connections = [backupConnection, canonicalConnection];
+    view.state.selectedConnection = canonicalConnection;
+    mocks.useController.mockReturnValue(view);
+
+    render(
+      <AdminProvidersSection active advancedEntryProvider="openrouter" groups={[]} />
+    );
+
+    await waitFor(() => expect(view.actions.select).toHaveBeenCalledWith(
+      canonicalConnection.id
+    ));
+    expect(view.actions.select).toHaveBeenCalledTimes(1);
+    expect(screen.queryByTestId("provider-connection-index")).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 2, name: "OpenRouter canonical" }))
+      .toBeInTheDocument();
+  });
+
+  it("opens one matching Quick family connection only once and respects Back", async () => {
+    const uniqueConnection: AdminProviderConnection = {
+      ...connection,
+      displayName: "Single OpenAI connection",
+      family: "openai",
+      id: "single-openai-connection"
+    };
+    const view = controller();
+    view.state.connections = [uniqueConnection];
+    view.state.selectedConnection = uniqueConnection;
+    mocks.useController.mockReturnValue(view);
+
+    const rendered = render(
+      <AdminProvidersSection active advancedEntryProvider="openai" groups={[]} />
+    );
+
+    await waitFor(() => expect(view.actions.select).toHaveBeenCalledWith(
+      uniqueConnection.id
+    ));
+    expect(screen.getByRole("heading", { level: 2, name: "Single OpenAI connection" }))
+      .toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Back to connections" }));
+    expect(screen.getByTestId("provider-connection-index")).toBeInTheDocument();
+
+    const refreshedConnection = { ...uniqueConnection };
+    view.state.connections = [refreshedConnection];
+    view.state.selectedConnection = refreshedConnection;
+    rendered.rerender(
+      <AdminProvidersSection active advancedEntryProvider="openai" groups={[]} />
+    );
+
+    expect(view.actions.select).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId("provider-connection-index")).toBeInTheDocument();
+    expect(screen.queryByTestId("provider-connection-task-detail")).not.toBeInTheDocument();
+  });
+
+  it("keeps an ambiguous Quick provider family on the connection index", () => {
+    const primaryConnection: AdminProviderConnection = {
+      ...connection,
+      displayName: "OpenAI primary",
+      family: "openai",
+      id: "openai-primary"
+    };
+    const backupConnection: AdminProviderConnection = {
+      ...primaryConnection,
+      displayName: "OpenAI backup",
+      id: "openai-backup"
+    };
+    const view = controller();
+    view.state.connections = [primaryConnection, backupConnection];
+    view.state.selectedConnection = primaryConnection;
+    mocks.useController.mockReturnValue(view);
+
+    const rendered = render(
+      <AdminProvidersSection active advancedEntryProvider="openai" groups={[]} />
+    );
+
+    expect(view.actions.select).not.toHaveBeenCalled();
+    expect(screen.getByTestId("provider-connection-index")).toBeInTheDocument();
+    expect(screen.queryByTestId("provider-connection-task-detail")).not.toBeInTheDocument();
+
+    view.state.connections = [primaryConnection];
+    view.state.selectedConnection = primaryConnection;
+    rendered.rerender(
+      <AdminProvidersSection active advancedEntryProvider="openai" groups={[]} />
+    );
+
+    expect(view.actions.select).not.toHaveBeenCalled();
+    expect(screen.getByTestId("provider-connection-index")).toBeInTheDocument();
   });
 
   it("does not expose an activation override on a different connection", () => {
@@ -752,6 +856,7 @@ describe("AdminProvidersSection", () => {
 
     const rendered = render(<AdminProvidersSection active groups={[]} />);
 
+    expect(screen.queryByText(/setup items need attention/i)).not.toBeInTheDocument();
     openConnection();
     const connectionHeading = screen.getByRole("heading", {
       level: 2,
@@ -761,7 +866,8 @@ describe("AdminProvidersSection", () => {
     expect(header).not.toBeNull();
     expect(within(header!).getByText("Disabled")).toBeInTheDocument();
     expect(within(header!).getByText("Changes pending")).toBeInTheDocument();
-    expect(screen.getByText("Ready to activate.")).toBeInTheDocument();
+    expect(screen.getByText("Connection is disabled.")).toBeInTheDocument();
+    expect(screen.queryByText("Ready to activate.")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Activate changes and enable" })).toBeInTheDocument();
 
     const blockedView = controller();
@@ -928,6 +1034,7 @@ describe("AdminProvidersSection", () => {
     render(<AdminProvidersSection active advancedEntryProvider="openai" groups={[]} />);
 
     const index = await screen.findByTestId("provider-connection-index");
+    expect(view.actions.select).not.toHaveBeenCalled();
     expect(screen.queryByRole("heading", { name: "New provider connection" })).not.toBeInTheDocument();
     fireEvent.click(within(index).getByRole("button", { name: "New" }));
     expect(await screen.findByRole("heading", { name: "New provider connection" })).toBeInTheDocument();

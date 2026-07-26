@@ -16,6 +16,7 @@ export type AdminProviderQuickSetupModelDisplay = Readonly<{
 
 export type AdminProviderQuickSetupState =
   | "advanced_required"
+  | "disabled"
   | "needs_attention"
   | "not_configured"
   | "ready";

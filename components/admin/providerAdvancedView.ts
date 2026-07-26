@@ -5,6 +5,7 @@ import type {
   AdminProviderDeleteBlocker,
   AdminProviderModel
 } from "@/lib/contracts/adminProviders";
+import { providerTemplateIds } from "@/lib/domain/providerTemplates";
 import {
   deriveProviderUiState,
   type ProviderPrimaryAction
@@ -109,7 +110,9 @@ export function presentProviderConnection(
 ): ProviderConnectionPresentation {
   const ui = deriveProviderUiState(connection);
   return {
-    attention: ui.publication.kind !== "not_configured" && ui.readiness.blockers.length
+    attention: ui.runtime.kind === "enabled" &&
+      ui.publication.kind !== "not_configured" &&
+      ui.readiness.blockers.length
       ? ui.readiness.summary
       : null,
     credentialCount: connection.credentials.length,
@@ -229,6 +232,14 @@ export function preferredProviderConnectionId(
   family: ProviderAdvancedFamily | null | undefined
 ): string | null {
   if (!family) return null;
+  const canonicalIds: Record<ProviderAdvancedFamily, string> = {
+    anthropic: providerTemplateIds.anthropicConnection,
+    gemini: providerTemplateIds.geminiConnection,
+    openai: providerTemplateIds.openAiConnection,
+    openrouter: providerTemplateIds.openRouterConnection
+  };
+  const canonical = connections.find(({ id }) => id === canonicalIds[family]);
+  if (canonical?.family === family) return canonical.id;
   const matches = connections.filter((connection) => connection.family === family);
   return matches.length === 1 ? matches[0]!.id : null;
 }

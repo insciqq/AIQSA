@@ -537,9 +537,11 @@ async function loadQuickSetupState(
     ? "advanced_required" as const
     : ready
       ? "ready" as const
-      : configured
-        ? "needs_attention" as const
-        : "not_configured" as const;
+      : configured && connection?.enabled === false
+        ? "disabled" as const
+        : configured
+          ? "needs_attention" as const
+          : "not_configured" as const;
 
   const globallyPristine = !connections.some((candidate) =>
     candidate.id !== policy.connection.id ||

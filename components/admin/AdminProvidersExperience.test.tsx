@@ -78,7 +78,7 @@ vi.mock("./AdminProvidersSection", async () => {
 
 function provider(
   id: "anthropic" | "gemini" | "openai" | "openrouter",
-  state: "advanced_required" | "needs_attention" | "not_configured" | "ready" = "not_configured",
+  state: "advanced_required" | "disabled" | "needs_attention" | "not_configured" | "ready" = "not_configured",
   modelName?: string
 ) {
   const names = {
@@ -401,6 +401,21 @@ describe("AdminProvidersExperience", () => {
     expect(screen.getByLabelText("API key")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Advanced configuration" }));
     expect(await screen.findByTestId("advanced-provider-workspace")).toBeInTheDocument();
+  });
+
+  it("presents a configured disabled provider as Disabled without attention styling", async () => {
+    api.get.mockResolvedValue({
+      data: snapshot({ openai: "disabled", suggestedProvider: "openai" }),
+      ok: true
+    });
+    render(<AdminProvidersExperience active groups={[]} />);
+
+    expect(await screen.findByText("Provider disabled")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /OpenAI Disabled/ })).toBeInTheDocument();
+    expect(screen.getByText(/Existing configuration is paused for new runs/))
+      .toBeInTheDocument();
+    expect(screen.queryByText("Setup needs attention")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("API key")).toBeInTheDocument();
   });
 
   it("confirms a truthful Quick assignment removal without promising fallback access", async () => {

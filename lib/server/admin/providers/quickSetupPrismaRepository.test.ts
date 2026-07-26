@@ -501,6 +501,22 @@ describe("Prisma provider Quick setup eligibility", () => {
     })).resolves.toMatchObject({ mode: "recovery", state: "not_configured" });
   });
 
+  it("presents a configured disabled connection as Disabled", async () => {
+    const graph = readyGraph();
+    graph.connection.enabled = false;
+    const { repository } = inspectionRepository({
+      connections: [graph.connection],
+      grants: [exactGrant()]
+    });
+
+    await expect(repository.inspect({
+      now,
+      provider: "openai",
+      sessionId: "session-admin",
+      userId: "admin"
+    })).resolves.toMatchObject({ mode: "recovery", state: "disabled" });
+  });
+
   it("does not advertise Ready without a canonical connection activation time", async () => {
     const graph = readyGraph();
     graph.connection.activatedAt = null;
@@ -571,7 +587,7 @@ describe("Prisma provider Quick setup eligibility", () => {
     expect(inspection.quickSetupCredential).toBeNull();
   });
 
-  it("keeps missing active credential state repairable", async () => {
+  it("keeps an enabled configured provider with a missing active credential in Needs attention", async () => {
     const graph = readyGraph();
     const credential = graph.credential as unknown as {
       activeVersion: null;

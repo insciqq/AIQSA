@@ -29,7 +29,7 @@ function snapshot() {
         provider: "gemini",
         providerDisplayName: "Gemini",
         quickSetupAssigned: false,
-        state: "not_configured",
+        state: "disabled",
         stateToken: "state-gemini"
       },
       {

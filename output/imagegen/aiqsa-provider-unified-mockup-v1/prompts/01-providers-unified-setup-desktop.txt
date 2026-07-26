@@ -1,0 +1,22 @@
+Use case: ui-mockup
+Asset type: high-fidelity desktop admin web application mockup, 16:9.
+
+Primary edit: Rework the supplied AIQSA Providers screen into one unified Providers workspace. Keep the established restrained paper-light visual language and subject-based left navigation, but remove the split between a Quick setup page and a separately hidden Advanced page.
+
+Information architecture: Directly beneath the page title "Providers", add one prominent persistent horizontal task switcher with exactly three peers: "Setup" (selected), "Connections 4", and "Run profiles". This switcher is the only local page navigation. It must read like normal product tabs, not pills floating in a toolbar. There is no "Advanced configuration", "Advanced settings", or "Back to quick setup" link anywhere.
+
+Main Setup content: Show a restrained four-segment provider selector with exactly "OpenAI", "Anthropic", "Gemini", and "OpenRouter". OpenAI is selected. Beneath each name show a small factual state: OpenAI says "Disabled" in neutral gray; all other providers say "Not connected". Beneath the selector, show "Connect OpenAI", the sentence "Paste a key. AIQSA will verify it and prepare the supported models for your account.", a field labeled "API key" with placeholder "Paste API key", helper text "Stored encrypted. The full key is never shown again.", and one muted deep-teal primary button "Test & Save".
+
+Existing-configuration handoff: Next to or immediately below the primary action, show a clearly visible secondary outlined action "Manage OpenAI connection". Under it, small neutral helper text says "Credentials, authentication, models, and diagnostics". This action is not a tiny link and is not described as advanced. Add a quiet secondary action "Connect custom endpoint" near the provider selector.
+
+Right explanatory column: Preserve a narrow factual guide titled "What AIQSA will do" with exactly three short rows: "Verify the key", "Prepare supported models", and "Give your account access". Keep it visually subordinate to the form.
+
+Scene and composition: Full browser-sized application at 2048x1152. Left navigation around 300px and one wide main document. The main document should be comfortably dense, aligned to a clear vertical grid, and use subtle section rules rather than a dashboard of cards. Preserve the current global navigation labels where legible: "AIQSA", "Control Center", "Providers", "Team & access", "Users", "Access & groups", "Invites", "Access rules", "Operations", "Usage", "Infrastructure", "MCP servers", "Email delivery", "Safety", "Return to chat". Providers is selected.
+
+Visual style: Modern 2026 conversation-product quality inspired by the calm restraint of leading AI products, without copying branding. Humanist sans typography, graphite ink, warm paper white, whisper-gray surfaces, very thin cool-gray dividers, quiet teal selected state and primary action. Modest 8px control radii and 14px section radii. No gradients, no glass, no decorative shadows, no oversized logo art.
+
+Critical exact text: "Providers", "Setup", "Connections 4", "Run profiles", "OpenAI", "Disabled", "Anthropic", "Gemini", "OpenRouter", "Not connected", "Connect OpenAI", "API key", "Paste API key", "Test & Save", "Manage OpenAI connection", "Credentials, authentication, models, and diagnostics", "Connect custom endpoint", "What AIQSA will do".
+
+Constraints: Preserve a realistic shippable UI. No Personal tab or section. No provider is labeled Advanced. No tiny advanced disclosure. No setup wizard or numbered steps. No separate advanced page. No nested sidebar or four-column master-detail. No provider logos or trademark marks; text labels only. No analytics, billing, or invented product capabilities. No accessibility callouts. No watermark.
+
+Avoid: card grid, giant empty areas, generic dashboard KPI cards, glossy gradients, glassmorphism, terminal aesthetic, floating rounded navigation pills, dense enterprise policy controls on the Setup tab.

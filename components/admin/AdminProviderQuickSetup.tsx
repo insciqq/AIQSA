@@ -22,6 +22,7 @@ export type AdminProviderQuickSetupProps = Readonly<{
 
 function stateLabel(provider: AdminProviderQuickSetupProvider): string {
   if (provider.state === "ready") return "Ready";
+  if (provider.state === "disabled") return "Disabled";
   if (provider.state === "needs_attention") return "Needs attention";
   if (provider.state === "advanced_required") return "Custom setup exists";
   return "Not connected";
@@ -361,6 +362,15 @@ function SelectedProviderTask({
           </p>
           <p className="mt-2 max-w-xl text-sm leading-6 text-ink-secondary">
             Test and save a key again to restore a proven setup for your account. Existing active configuration is not changed unless this succeeds.
+          </p>
+        </>
+      ) : provider.state === "disabled" ? (
+        <>
+          <p className="text-[11px] font-semibold uppercase tracking-[0.1em] text-ink-muted">
+            Provider disabled
+          </p>
+          <p className="mt-2 max-w-xl text-sm leading-6 text-ink-secondary">
+            Existing configuration is paused for new runs. Test and save a key to verify and enable it again, or manage the connection directly.
           </p>
         </>
       ) : (

@@ -121,7 +121,8 @@ function provider(value: unknown): AdminProviderQuickSetupProvider | null {
   ]) || !providerId(value.provider) || !safeText(value.providerDisplayName, 80) ||
     typeof value.quickSetupAssigned !== "boolean" ||
     !safeText(value.stateToken, 512) ||
-    (value.state !== "advanced_required" && value.state !== "needs_attention" &&
+    (value.state !== "advanced_required" && value.state !== "disabled" &&
+      value.state !== "needs_attention" &&
       value.state !== "not_configured" && value.state !== "ready") ||
     (value.state === "ready" ? !model(value.model) : value.model !== undefined)) {
     return null;

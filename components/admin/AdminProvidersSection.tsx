@@ -23,6 +23,7 @@ import {
 import {
   PROVIDER_ADVANCED_TASK_LABELS,
   PROVIDER_ADVANCED_TASKS,
+  preferredProviderConnectionId,
   presentProviderConnection,
   providerDeleteBlockerLabel,
   providerFamilyLabel,
@@ -281,7 +282,11 @@ function ConnectionDetail({
     controller.state.errorCode === "provider_activation_unavailable_confirmation_required";
   const firstSetupHasBlockers =
     ui.publication.kind === "not_configured" && ui.readiness.blockers.length > 0;
-  const readinessTone = ui.readiness.blockers.length === 0
+  const runtimeDisabled =
+    ui.runtime.kind === "disabled" && ui.publication.kind !== "not_configured";
+  const readinessTone = runtimeDisabled
+    ? "disabled"
+    : ui.readiness.blockers.length === 0
     ? "ready"
     : firstSetupHasBlockers
       ? "setup"
@@ -369,7 +374,9 @@ function ConnectionDetail({
         <div className={`mt-4 flex flex-col gap-3 border-l-2 pl-3 sm:flex-row sm:items-center sm:justify-between ${readinessTone === "ready" ? "border-positive" : readinessTone === "attention" ? "border-caution" : "border-trace-strong"}`}>
           <div className="min-w-0">
             <p className={`text-sm font-medium ${readinessTone === "ready" ? "text-positive" : readinessTone === "attention" ? "text-caution" : "text-ink-secondary"}`}>
-              {firstSetupHasBlockers
+              {runtimeDisabled
+                ? "Connection is disabled."
+                : firstSetupHasBlockers
                 ? "Complete setup before activation."
                 : ui.readiness.blockers.length
                   ? ui.readiness.summary
@@ -383,7 +390,9 @@ function ConnectionDetail({
               </ul>
             ) : (
               <p className="mt-1 text-xs leading-5 text-ink-muted">
-                Activation revalidates the current endpoint, models, and referenced keys on the server.
+                {runtimeDisabled
+                  ? "Enable it when you want this provider to accept new runs."
+                  : "Activation revalidates the current endpoint, models, and referenced keys on the server."}
               </p>
             )}
           </div>
@@ -510,6 +519,7 @@ export function AdminProvidersSection({
   const [localConfirmation, setLocalConfirmation] = useState<AdminConfirmationRequest | null>(null);
   const refreshRevisionRef = useRef(refreshRevision);
   const handledEntryConnectionRef = useRef<string | null>(null);
+  const handledEntryProviderRef = useRef<AdminProviderQuickSetupId | null>(null);
   const selected = controller.state.selectedConnection;
   const requestConfirmation = externalRequestConfirmation ?? setLocalConfirmation;
 
@@ -538,6 +548,39 @@ export function AdminProvidersSection({
   }, [
     active,
     advancedEntryConnectionId,
+    controller.actions,
+    controller.state.connections,
+    controller.state.loaded
+  ]);
+
+  useEffect(() => {
+    if (
+      !active ||
+      advancedEntryConnectionId ||
+      !advancedEntryProvider ||
+      !controller.state.loaded ||
+      handledEntryProviderRef.current === advancedEntryProvider
+    ) {
+      return;
+    }
+    handledEntryProviderRef.current = advancedEntryProvider;
+    const connectionId = preferredProviderConnectionId(
+      controller.state.connections,
+      advancedEntryProvider
+    );
+    if (!connectionId) return;
+    const openTimer = window.setTimeout(() => {
+      setPeer("connections");
+      setCreating(false);
+      setEditingConnectionId(null);
+      controller.actions.select(connectionId);
+      setConnectionTaskOpen(true);
+    }, 0);
+    return () => window.clearTimeout(openTimer);
+  }, [
+    active,
+    advancedEntryConnectionId,
+    advancedEntryProvider,
     controller.actions,
     controller.state.connections,
     controller.state.loaded

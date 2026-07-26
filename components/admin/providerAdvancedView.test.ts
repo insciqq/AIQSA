@@ -3,6 +3,7 @@ import type {
   AdminProviderCredential,
   AdminProviderModel
 } from "@/lib/contracts/adminProviders";
+import { providerTemplateIds } from "@/lib/domain/providerTemplates";
 import { describe, expect, it } from "vitest";
 import {
   activeProviderCheckLabel,
@@ -87,6 +88,18 @@ describe("providerAdvancedView", () => {
     });
   });
 
+  it("keeps setup blockers neutral while an existing connection is disabled", () => {
+    expect(presentProviderConnection({
+      ...connection(),
+      activeConfig: connection().draftConfig,
+      activeVersion: 1
+    })).toMatchObject({
+      attention: null,
+      publicationState: "changes_pending",
+      runtimeLabel: "Disabled"
+    });
+  });
+
   it("presents credential and model lifecycle states independently", () => {
     expect(presentProviderCredential(credential)).toMatchObject({
       publication: "draft",
@@ -128,7 +141,12 @@ describe("providerAdvancedView", () => {
       .toBe("user assignments: 1");
   });
 
-  it("uses a Quick family hint only when it identifies one real connection", () => {
+  it("prefers the canonical Quick connection and otherwise requires one family match", () => {
+    const canonical = connection(providerTemplateIds.openRouterConnection);
+    expect(preferredProviderConnectionId([
+      connection("connection-backup"),
+      canonical
+    ], "openrouter")).toBe(canonical.id);
     expect(preferredProviderConnectionId([connection()], "openrouter")).toBe("connection-1");
     expect(preferredProviderConnectionId([
       connection("connection-1"),

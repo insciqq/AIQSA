@@ -1148,7 +1148,7 @@ integration("Prisma provider Quick setup atomic graph", () => {
       expect(recovery).toMatchObject({
         mode: "recovery",
         model: { id: terra.modelId, templateKey: terra.templateKey },
-        state: "needs_attention"
+        state: "disabled"
       });
       const [grantBefore, profileBefore, groupGraphBefore] = await Promise.all([
         transaction.accessGrant.findFirstOrThrow({
@@ -1337,7 +1337,7 @@ integration("Prisma provider Quick setup atomic graph", () => {
         now: new Date("2026-07-26T10:00:03.000Z"),
         provider: "openai"
       });
-      expect(recovery).toMatchObject({ mode: "recovery", state: "needs_attention" });
+      expect(recovery).toMatchObject({ mode: "recovery", state: "disabled" });
       const recoveryPlan = plan({
         actor,
         credentialId,
