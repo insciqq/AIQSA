@@ -4,7 +4,7 @@
 
 This conditional document owns externally verified provider constraints, documentation links, dated smoke observations, and provider-specific caveats. `BACKEND.md` owns AIQSA adapter behavior/defaults; `QSA_PIPELINE.md` owns product semantics; `ENV_VARIABLES.md` owns configuration names; executable adapter tests own exact request/response mapping.
 
-Provider documentation was checked on 2026-04-26 and the current search/upload/routing constraints were rechecked on 2026-06-14. GPT-5.5/GPT-5.6 context, OpenAI PDF token, and Anthropic usage contracts were rechecked on 2026-07-18. The OpenAI Responses/Chat support direction and the OpenAI, Anthropic, and OpenRouter model-catalog contracts were rechecked on 2026-07-24 for ADR 0022 and the credential-test implementation. Current OpenAI/Claude model sets plus Gemini models, OpenAI-compatible chat, catalog, reasoning, and thought-signature contracts were rechecked on 2026-07-26 for ADR 0030. Reverify the affected source and update that date when a provider-facing change depends on mutable external behavior.
+Provider documentation was checked on 2026-04-26 and the current search/upload/routing constraints were rechecked on 2026-06-14. GPT-5.5/GPT-5.6 context, OpenAI PDF token, and Anthropic usage contracts were rechecked on 2026-07-18. The OpenAI Responses/Chat support direction and the OpenAI, Anthropic, and OpenRouter model-catalog contracts were rechecked on 2026-07-24 for ADR 0022 and the credential-test implementation. Current OpenAI/Claude/Gemini model sets were rechecked on 2026-07-26 for ADR 0030; stable native Gemini Interactions v1, streaming, function calling, Google Search, tool-combination, Search-Suggestions display/retention, and API-version contracts were rechecked on 2026-07-26 for ADR 0031. Reverify the affected source and update that date when a provider-facing change depends on mutable external behavior.
 
 Provider smokes require the standing permission and limits in `CRITICAL_INVARIANTS.md`. Default automation uses fake providers; never print, inspect, persist, or commit key values, and do not run large-context/deep-research/large-attachment/long-background calls without fresh approval.
 
@@ -73,28 +73,34 @@ Externally constrained facts:
 
 Current AIQSA defaults and request/event normalization live in `BACKEND.md` and adapter tests.
 
-## Gemini OpenAI-Compatible API
+## Gemini Native Interactions API
 
 Primary references:
 
 - `https://ai.google.dev/gemini-api/docs/models`
 - `https://ai.google.dev/gemini-api/docs/latest-model`
-- `https://ai.google.dev/gemini-api/docs/openai`
-- `https://ai.google.dev/api`
-- `https://ai.google.dev/gemini-api/docs/thought-signatures`
+- `https://ai.google.dev/gemini-api/docs/interactions-overview`
+- `https://ai.google.dev/api/interactions-api-v1`
+- `https://ai.google.dev/gemini-api/docs/api-versions`
+- `https://ai.google.dev/gemini-api/docs/streaming`
+- `https://ai.google.dev/gemini-api/docs/function-calling`
+- `https://ai.google.dev/gemini-api/docs/google-search`
+- `https://ai.google.dev/gemini-api/docs/tool-combination`
+- `https://ai.google.dev/gemini-api/terms`
 
 Externally constrained facts and dated evidence:
 
-- Google's OpenAI-compatible root is `https://generativelanguage.googleapis.com/v1beta/openai/`; Chat Completions and the Models catalog accept the Gemini API key as a Bearer token.
+- Stable native v1 Interactions uses `POST https://generativelanguage.googleapis.com/v1/interactions`; the Gemini API key is sent through `x-goog-api-key`. AIQSA uses `store: false`, supplies complete local context, and does not depend on provider-side interaction history.
 - Models catalog entries use identifiers such as `models/gemini-...`. AIQSA strips only that leading wrapper before exact reviewed-policy comparison; it does not normalize arbitrary names or import every result.
 - On 2026-07-26 the current reviewed explicit model ids were `gemini-3.6-flash`, `gemini-3.5-flash`, `gemini-3.5-flash-lite`, and `gemini-3.1-pro-preview`. Their reviewed catalog controls use a 1,000,000-token context window and at most 65,536 output tokens, with model-specific `minimal`/`low`/`medium`/`high` reasoning-effort choices. Explicit ids are preferred to hot-swapping latest aliases.
-- The OpenAI-compatible surface accepts `reasoning_effort`; current AIQSA Gemini templates deliberately omit temperature. Compatibility does not establish support for native Google Search grounding, native PDF upload, media generation, Live API, or provider-side conversation state.
-- Gemini tool-call continuations carry thought signatures. In the compatible Chat response they can appear under `tool_calls[].extra_content.google.thought_signature`; the complete assistant tool-call object and signature must be replayed unchanged with the tool result. Dropping, merging, or inventing this value can make a continuation fail.
+- Interactions expresses generation controls under `generation_config`, accepts native typed input/step arrays, returns step types such as model output, thought and function calls/results, and exposes cumulative token fields including cached and thought totals. Streaming uses named SSE events and a final done proof; stream EOF alone is not successful completion.
+- Native function continuations require the provider-returned thought/signature steps. Dropping, merging, or fabricating them can invalidate the next request. They are request-critical private state, not display or logging metadata.
+- Native Google Search is a hosted `{ "type": "google_search" }` tool. It can produce search call/result steps, URL citation annotations, and exact `search_suggestions` markup. The documentation requires Suggestions to accompany the grounded content; current terms constrain storage/use of Search Suggestions and citation Links. AIQSA chooses the stricter permitted product boundary: the complete grounded answer, Suggestions, Links, and search result/signature data are live-only and are never durable chat context.
+- The Search-plus-function/MCP combination is deliberately rejected even where some native tool combinations may be documented. This keeps exact provider search results/Suggestions out of the recoverable client-tool checkpoint; broadening it requires a new persistence/privacy proof.
 - A bounded authenticated catalog check on 2026-07-26 returned HTTP 200 and 57 rows, including image/audio/embedding/media identifiers. That result is direct evidence that blind catalog import is unsafe; Quick setup intersects only the reviewed chat candidates above.
-- A sanitized low-token normal-adapter smoke on 2026-07-26 completed with a provider response id and usage of 24 input, 5 output, and 29 total tokens. It printed no key, answer body, raw provider payload, or signature.
-- A second bounded normal-runtime smoke on 2026-07-26 completed exactly one tool call and continuation: arguments matched, the provider supplied a thought signature, the bridge replayed it unchanged, the final marker matched, and a provider response id was present. Its output contained only boolean/count evidence, never the key, signature, answer text, or raw body.
+- A bounded native research probe on 2026-07-26 used Gemini 3.6 Flash with `store: false` and Google Search. It returned search-call, search-result, thought, and model-output steps plus Suggestions markup. Observed markup was limited to `a`, `circle`, `div`, `path`, `style`, and `svg` with a small attribute set; that observation informed a closed allowlist but remains mutable provider evidence, not permission to accept future tags automatically.
 
-Current catalog intersection, parameter mapping, stream parser, tool bridge, signature replay, and safe smoke behavior live in `BACKEND.md`, `SECURITY.md`, and focused tests.
+Current catalog intersection, native request mapping, stream parser, tool bridge, signature replay, live-only grounding fence, and safe smoke behavior live in `BACKEND.md`, `SECURITY.md`, and focused tests.
 
 ## OpenRouter
 

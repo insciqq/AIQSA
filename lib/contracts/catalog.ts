@@ -75,7 +75,7 @@ export type CatalogWireModel = {
 
 export type CatalogWireSearchStrategy = {
   displayName: string;
-  kind: "none" | "openai_native_web_search" | "perplexity_tool_search";
+  kind: "gemini_google_search" | "none" | "openai_native_web_search" | "perplexity_tool_search";
   strategyId: string;
 };
 
@@ -300,6 +300,7 @@ function decodeSearchStrategy(value: unknown): CatalogSearchStrategy | null {
     !isRecord(value) ||
     !nonEmptyString(value.displayName) ||
     (value.kind !== "none" &&
+      value.kind !== "gemini_google_search" &&
       value.kind !== "openai_native_web_search" &&
       value.kind !== "perplexity_tool_search") ||
     !nonEmptyString(value.strategyId)

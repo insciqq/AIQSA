@@ -8,14 +8,24 @@ const api = vi.hoisted(() => ({
   submit: vi.fn()
 }));
 
+const customApi = vi.hoisted(() => ({
+  submit: vi.fn()
+}));
+
 const advanced = vi.hoisted(() => ({
   mounts: 0,
   props: null as null | {
     active: boolean;
+    advancedEntryConnectionId?: string | null;
     advancedEntryProvider?: "anthropic" | "gemini" | "openai" | "openrouter" | null;
     onBackToQuickSetup(): void;
     onMutationCommitted?(): void | Promise<unknown>;
   }
+}));
+
+vi.mock("./adminProviderCustomSetupApi", () => ({
+  adminProviderCustomSetupErrorMessage: (error: { code: string }) => error.code,
+  submitAdminProviderCustomSetup: customApi.submit
 }));
 
 vi.mock("./adminProviderQuickSetupApi", () => ({
@@ -35,6 +45,7 @@ vi.mock("./AdminProvidersSection", async () => {
   return {
     AdminProvidersSection: (props: typeof advanced.props extends infer _Ignored ? {
       active: boolean;
+      advancedEntryConnectionId?: string | null;
       advancedEntryProvider?: "anthropic" | "gemini" | "openai" | "openrouter" | null;
       onBackToQuickSetup(): void;
       onMutationCommitted?(): void | Promise<unknown>;
@@ -47,6 +58,7 @@ vi.mock("./AdminProvidersSection", async () => {
       return (
         <div data-testid="advanced-provider-workspace">
           <span>Advanced active: {String(props.active)}</span>
+          <span>Entry connection: {props.advancedEntryConnectionId ?? "none"}</span>
           <span>Entry provider: {props.advancedEntryProvider ?? "none"}</span>
           <label>
             Advanced draft
@@ -139,9 +151,68 @@ describe("AdminProvidersExperience", () => {
     api.clear.mockReset();
     api.get.mockReset();
     api.submit.mockReset();
+    customApi.submit.mockReset();
     advanced.mounts = 0;
     advanced.props = null;
     api.get.mockResolvedValue({ data: snapshot(), ok: true });
+  });
+
+  it("keeps custom OpenAI-compatible setup separate and deep-links its Ready connection", async () => {
+    customApi.submit.mockResolvedValue({
+      data: {
+        authenticationMode: "bearer",
+        checkedAt: "2026-07-26T10:00:00.000Z",
+        connectionDisplayName: "Custom · llm.example.test",
+        connectionId: "custom-connection-1",
+        defaultChanged: true,
+        modelDisplayName: "vendor/model-1",
+        outcome: "ready",
+        providerModelId: "custom-model-1"
+      },
+      ok: true
+    });
+    const onMutationCommitted = vi.fn();
+    render(
+      <AdminProvidersExperience
+        active
+        groups={[]}
+        onMutationCommitted={onMutationCommitted}
+      />
+    );
+
+    await screen.findByText("Choose a provider to continue.");
+    fireEvent.click(screen.getByRole("button", { name: "Connect custom endpoint" }));
+    expect(screen.getByRole("heading", { name: "Connect a custom endpoint" })).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText(/^API root/), {
+      target: { value: "https://llm.example.test/v1" }
+    });
+    fireEvent.change(screen.getByLabelText("Model ID"), {
+      target: { value: "vendor/model-1" }
+    });
+    fireEvent.change(screen.getByLabelText(/^API key/), {
+      target: { value: "browser-only-key" }
+    });
+    expect(screen.getByText("https://llm.example.test/v1/chat/completions"))
+      .toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Test & Save" }));
+
+    const receipt = await screen.findByTestId("provider-custom-ready-receipt");
+    expect(receipt).toHaveTextContent("API key saved and verified");
+    expect(receipt).toHaveTextContent("assigned directly to this administrator");
+    expect(customApi.submit).toHaveBeenCalledOnce();
+    expect(customApi.submit.mock.calls[0]?.[0]).toEqual(expect.objectContaining({
+      apiRoot: "https://llm.example.test/v1",
+      authenticationMode: "bearer",
+      modelId: "vendor/model-1",
+      secret: "browser-only-key"
+    }));
+    await waitFor(() => expect(onMutationCommitted).toHaveBeenCalledOnce());
+
+    fireEvent.click(screen.getByRole("button", { name: "Manage in Advanced" }));
+    expect(await screen.findByTestId("advanced-provider-workspace")).toBeInTheDocument();
+    expect(screen.getByText("Entry connection: custom-connection-1")).toBeInTheDocument();
+    expect(advanced.props?.advancedEntryConnectionId).toBe("custom-connection-1");
+    expect(advanced.props?.advancedEntryProvider).toBeNull();
   });
 
   it("starts with no implicit provider and completes one write-only Test & Save request", async () => {
@@ -231,7 +302,7 @@ describe("AdminProvidersExperience", () => {
       checkedAt: "2026-07-26T03:00:00.000Z",
       expectedState: "state-openai",
       outcome: "selection_required" as const,
-      policyVersion: 2,
+      policyVersion: 3,
       provider: "openai" as const,
       providerDisplayName: "OpenAI"
     };
@@ -267,7 +338,7 @@ describe("AdminProvidersExperience", () => {
       expectedState: "state-openai",
       provider: "openai",
       secret: "changed-key",
-      selectedModel: { candidateId: "p2-o3", policyVersion: 2 }
+      selectedModel: { candidateId: "p2-o3", policyVersion: 3 }
     });
     await act(async () => {
       finalCheck.resolve({

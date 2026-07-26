@@ -66,15 +66,24 @@ function modelId(value: unknown): string | null {
 }
 
 function modelIdsFromCatalog(value: unknown, family: ProviderFamily): string[] {
-  if (!isRecord(value) || !Array.isArray(value.data) ||
-    value.data.length > MAX_PROVIDER_CREDENTIAL_TEST_MODELS) {
+  if (!isRecord(value)) {
+    throw new AdminProviderCredentialTestError();
+  }
+
+  const entries = family === "gemini" ? value.models : value.data;
+  if (!Array.isArray(entries) || entries.length > MAX_PROVIDER_CREDENTIAL_TEST_MODELS) {
+    throw new AdminProviderCredentialTestError();
+  }
+  if (family === "gemini" && value.nextPageToken !== undefined) {
     throw new AdminProviderCredentialTestError();
   }
 
   const output: string[] = [];
   const seen = new Set<string>();
-  for (const entry of value.data) {
-    const rawId = isRecord(entry) ? modelId(entry.id) : null;
+  for (const entry of entries) {
+    const rawId = isRecord(entry)
+      ? modelId(family === "gemini" ? entry.name : entry.id)
+      : null;
     const id = family === "gemini" && rawId?.startsWith("models/")
       ? modelId(rawId.slice("models/".length))
       : rawId;
@@ -87,7 +96,8 @@ function modelIdsFromCatalog(value: unknown, family: ProviderFamily): string[] {
 }
 
 function catalogPath(family: ProviderFamily): string {
-  return family === "openrouter" ? "models/user" : "models";
+  if (family === "openrouter") return "models/user";
+  return family === "gemini" ? "models?pageSize=1000" : "models";
 }
 
 function authenticationHeaders(family: ProviderFamily, secret: string): Headers {
@@ -95,6 +105,8 @@ function authenticationHeaders(family: ProviderFamily, secret: string): Headers 
   if (family === "anthropic") {
     headers.set("anthropic-version", "2023-06-01");
     headers.set("x-api-key", secret);
+  } else if (family === "gemini") {
+    headers.set("x-goog-api-key", secret);
   } else {
     headers.set("authorization", `Bearer ${secret}`);
   }

@@ -55,6 +55,7 @@ import { useEffect, useRef, useState } from "react";
 
 export type AdminProvidersSectionProps = Readonly<{
   active: boolean;
+  advancedEntryConnectionId?: string | null;
   advancedEntryProvider?: AdminProviderQuickSetupId | null;
   groups: AdminGroup[];
   onBackToQuickSetup?(): void;
@@ -141,75 +142,77 @@ function ConnectionIndex({
   return (
     <section
       aria-label="Provider connections"
-      className="min-w-0"
+      className="min-w-0 bg-workspace-rail/45 px-4 py-4 sm:px-6"
       data-testid="provider-connection-index"
     >
-      <div className="border-b border-trace-subtle px-4 py-4 sm:px-6">
-        <div className="flex items-center justify-between gap-2">
-          <div>
-            <h3 className="text-sm font-semibold text-ink">Connections</h3>
-            <p className="mt-0.5 text-xs text-ink-muted">
-              {connections.length} configured
-            </p>
+      <div className="min-w-0 overflow-hidden rounded-panel border border-trace-subtle bg-answer-paper">
+        <div className="border-b border-trace-subtle bg-control-surface/60 px-4 py-3.5">
+          <div className="flex items-center justify-between gap-2">
+            <div>
+              <h3 className="text-sm font-semibold text-ink">Connections</h3>
+              <p className="mt-0.5 text-xs text-ink-muted">
+                {connections.length} configured
+              </p>
+            </div>
+            <button className={primaryButton} disabled={controller.state.busy} onClick={onCreate} type="button">
+              <Plus aria-hidden="true" className="size-3.5" />
+              New
+            </button>
           </div>
-          <button className={primaryButton} disabled={controller.state.busy} onClick={onCreate} type="button">
-            <Plus aria-hidden="true" className="size-3.5" />
-            New
-          </button>
+          {connections.length > 6 ? (
+            <label className="mt-3 block">
+              <span className="sr-only">Search provider connections</span>
+              <input
+                className={inputClass}
+                onChange={(event) => onQueryChange(event.currentTarget.value)}
+                placeholder="Search connections"
+                type="search"
+                value={query}
+              />
+            </label>
+          ) : null}
         </div>
-        {connections.length > 6 ? (
-          <label className="mt-3 block">
-            <span className="sr-only">Search provider connections</span>
-            <input
-              className={inputClass}
-              onChange={(event) => onQueryChange(event.currentTarget.value)}
-              placeholder="Search connections"
-              type="search"
-              value={query}
-            />
-          </label>
-        ) : null}
-      </div>
 
-      {filtered.length ? (
-        <ul className="divide-y divide-trace-subtle border-b border-trace-subtle">
-          {filtered.map((connection) => {
-            const presentation = presentProviderConnection(connection);
-            const preferred = preferredFamily === connection.family;
-            return (
-              <li key={connection.id}>
-                <button
-                  className="flex min-h-touch w-full min-w-0 items-center gap-3 px-4 py-3 text-left hover:bg-control-hover"
-                  onClick={() => onSelect(connection.id)}
-                  type="button"
-                >
-                  <span className="min-w-0 flex-1">
-                    <span className="block break-words text-sm font-medium text-ink [overflow-wrap:anywhere]">
-                      {connection.displayName}
+        {filtered.length ? (
+          <ul className="divide-y divide-trace-subtle">
+            {filtered.map((connection) => {
+              const presentation = presentProviderConnection(connection);
+              const preferred = preferredFamily === connection.family;
+              return (
+                <li key={connection.id}>
+                  <button
+                    className="flex min-h-touch w-full min-w-0 items-center gap-3 px-4 py-3 text-left hover:bg-control-hover"
+                    onClick={() => onSelect(connection.id)}
+                    type="button"
+                  >
+                    <span className="min-w-0 flex-1">
+                      <span className="block break-words text-sm font-medium text-ink [overflow-wrap:anywhere]">
+                        {connection.displayName}
+                      </span>
+                      <span className="mt-1 block text-xs leading-5 text-ink-muted">
+                        {providerFamilyLabel(connection.family)} · {presentation.runtimeLabel} · {presentation.publicationLabel}
+                      </span>
+                      <span className="mt-0.5 block text-xs text-ink-muted">
+                        {presentation.credentialCount} key{presentation.credentialCount === 1 ? "" : "s"} · {presentation.modelCount} model{presentation.modelCount === 1 ? "" : "s"}
+                        {preferred ? " · Selected provider family" : ""}
+                      </span>
+                      {presentation.attention ? (
+                        <span className="mt-1 block text-xs leading-5 text-caution">{presentation.attention}</span>
+                      ) : null}
                     </span>
-                    <span className="mt-1 block text-xs leading-5 text-ink-muted">
-                      {providerFamilyLabel(connection.family)} · {presentation.runtimeLabel} · {presentation.publicationLabel}
-                    </span>
-                    <span className="mt-0.5 block text-xs text-ink-muted">
-                      {presentation.credentialCount} key{presentation.credentialCount === 1 ? "" : "s"} · {presentation.modelCount} model{presentation.modelCount === 1 ? "" : "s"}
-                      {preferred ? " · Selected provider family" : ""}
-                    </span>
-                    {presentation.attention ? (
-                      <span className="mt-1 block text-xs leading-5 text-caution">{presentation.attention}</span>
-                    ) : null}
-                  </span>
-                  <ChevronRight aria-hidden="true" className="size-4 shrink-0 text-ink-muted" />
-                </button>
-              </li>
-            );
-          })}
-        </ul>
-      ) : (
-        <EmptyState
-          detail={normalizedQuery ? "Clear the search or try a provider family." : "Create a provider connection to begin."}
-          title={normalizedQuery ? "No matching connections" : "No provider connections"}
-        />
-      )}
+                    <ChevronRight aria-hidden="true" className="size-4 shrink-0 text-ink-muted" />
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        ) : (
+          <EmptyState
+            detail={normalizedQuery ? "Clear the search or try a provider family." : "Create a provider connection to begin."}
+            title={normalizedQuery ? "No matching connections" : "No provider connections"}
+          />
+        )}
+      </div>
     </section>
   );
 }
@@ -486,6 +489,7 @@ function ConnectionDetail({
 
 export function AdminProvidersSection({
   active,
+  advancedEntryConnectionId = null,
   advancedEntryProvider = null,
   groups,
   onBackToQuickSetup,
@@ -505,6 +509,7 @@ export function AdminProvidersSection({
   const [connectionTaskOpen, setConnectionTaskOpen] = useState(false);
   const [localConfirmation, setLocalConfirmation] = useState<AdminConfirmationRequest | null>(null);
   const refreshRevisionRef = useRef(refreshRevision);
+  const handledEntryConnectionRef = useRef<string | null>(null);
   const selected = controller.state.selectedConnection;
   const requestConfirmation = externalRequestConfirmation ?? setLocalConfirmation;
 
@@ -513,6 +518,30 @@ export function AdminProvidersSection({
     refreshRevisionRef.current = refreshRevision;
     void controller.actions.refresh();
   }, [active, controller.actions, refreshRevision]);
+
+  useEffect(() => {
+    if (
+      !active ||
+      !advancedEntryConnectionId ||
+      !controller.state.loaded ||
+      handledEntryConnectionRef.current === advancedEntryConnectionId ||
+      !controller.state.connections.some(({ id }) => id === advancedEntryConnectionId)
+    ) {
+      return;
+    }
+    handledEntryConnectionRef.current = advancedEntryConnectionId;
+    setPeer("connections");
+    setCreating(false);
+    setEditingConnectionId(null);
+    controller.actions.select(advancedEntryConnectionId);
+    setConnectionTaskOpen(true);
+  }, [
+    active,
+    advancedEntryConnectionId,
+    controller.actions,
+    controller.state.connections,
+    controller.state.loaded
+  ]);
 
   const selectConnection = (id: string) => {
     setCreating(false);

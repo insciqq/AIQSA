@@ -80,13 +80,21 @@ Add only checks justified by the changed boundary:
 - Provider adapter changes: run deterministic adapter tests first; then the small explicit provider smoke only when permitted by `CRITICAL_INVARIANTS.md` and a key is present.
 - Retention/schema changes: run `npm run db:retention:migration:contract`, use `npm run prune -- --dry-run`, and execute deletion only when intentional.
 
-For the first-class Gemini compatible-chat boundary, the optional real-key smoke is:
+For the first-class native Gemini Interactions boundary, the optional real-key smoke is:
 
 ```bash
 npm run smoke:gemini
 ```
 
-It reads `GEMINI_API_KEY` and optional `AIQSA_GEMINI_SMOKE_MODEL` only for that process, uses the normal runtime factory and provider tool loop with one bounded tool call/continuation, and verifies the internal thought-signature round trip. Output is restricted to booleans/counts; it must not print the key, response text, raw provider payload, or signature. A missing key skips cleanly.
+It reads `GEMINI_API_KEY` and optional `AIQSA_GEMINI_SMOKE_MODEL` only for that process, uses the native v1 runtime with `store: false`, and verifies bounded SSE completion, one function call/continuation with private thought-signature replay, plus a native Google Search result whose Suggestions precede answer tokens. Output is restricted to booleans/counts and sanitized step/usage evidence; it must not print the key, response text, Suggestions markup, citation Links, raw provider payload, or signature. A missing key skips cleanly.
+
+The Custom compatible path has a deterministic no-network smoke:
+
+```bash
+npm run smoke:custom-openai-compatible
+```
+
+It starts an in-process loopback Chat Completions fixture and proves manual model routing, bearer auth, explicit no-auth without an `Authorization` header, two streamed text deltas, terminal proof, and usage. It does not read a provider key or call an external service.
 
 For focused MCP catalog, remote policy/runtime, OAuth, local lifecycle, run-plan, and cleanup verification, use:
 
@@ -208,7 +216,7 @@ docker compose -f docker-compose.dev.yml exec -T app npx vitest run \
   components/admin/adminEmailApi.test.ts
 ```
 
-For the ADR 0026/0028/0030 Provider Quick setup policy, four-provider reviewed-model provisioning, direct-user persistence, route/repository contracts, Gemini runtime, and UI state, use:
+For the ADR 0026/0028/0030/0031/0032 reviewed Quick setup, native Gemini, Custom compatible setup, direct-user persistence, route/repository contracts, grounding UI, and runtime state, use:
 
 ```bash
 docker compose -f docker-compose.dev.yml exec -T app npx vitest run \
@@ -217,17 +225,34 @@ docker compose -f docker-compose.dev.yml exec -T app npx vitest run \
   lib/server/admin/providers/quickSetupHandlers.test.ts \
   lib/server/admin/providers/quickSetupPrismaRepository.test.ts \
   lib/server/admin/providers/credentialTester.test.ts \
+  lib/server/admin/providers/customSetupHandlers.test.ts \
+  lib/server/admin/providers/customSetupService.test.ts \
+  lib/server/admin/providers/customSetupPrismaRepository.test.ts \
   lib/server/admin/providers/service.test.ts \
-  lib/server/providers/openaiCompatibleChatRequest.test.ts \
+  lib/server/providers/geminiInteractionsGrounding.test.ts \
+  lib/server/providers/geminiInteractionsRequest.test.ts \
+  lib/server/providers/geminiInteractionsResponse.test.ts \
+  lib/server/providers/geminiInteractionsTransport.test.ts \
   lib/server/providers/openaiCompatibleChatResponse.test.ts \
   lib/server/providers/runtimeFactory.test.ts \
+  lib/server/runs/groundingPersistence.test.ts \
   lib/server/tools/bridges.test.ts \
+  components/admin/adminProviderCustomSetupApi.test.ts \
   components/admin/adminProviderQuickSetupApi.test.ts \
   components/admin/useAdminProviderQuickSetupController.test.tsx \
+  components/app-shell/GeminiSearchSuggestions.test.tsx \
   components/admin/AdminProvidersExperience.test.tsx
 ```
 
-That focused set must cover policy-v2 OpenAI/Anthropic/Gemini/OpenRouter candidate ordering, normalized Gemini `models/` ids, rejection of arbitrary remote rows, atomic checks/grants for every remotely visible reviewed candidate, replacement preservation for every currently available entitled canonical model, the 64-model Quick bound, no-write behavior when a catalog loses one required upstream id, and actor-only assignment clearing through DELETE. Gemini coverage must include Advanced-family validation, parameter/request normalization, family-specific tool bridging, and streamed thought-signature replay. Clearing must prove that the credential/version, checks, grants, defaults, and team configuration are retained.
+That focused set must cover policy-v3 OpenAI/Anthropic/Gemini/OpenRouter candidate ordering, normalized Gemini `models/` ids, rejection of arbitrary remote rows, atomic checks/grants for every remotely visible reviewed candidate, replacement preservation for every currently available entitled canonical model, the 64-model Quick bound, no-write behavior when a catalog loses one required upstream id, and actor-only assignment clearing through DELETE. Gemini coverage must prove native-only admission/runtime, native terminal proof, exact function/thought continuation, no Search-plus-client-tools, strict Suggestions validation, marker/display/token order, ordinary no-search completion, live-only complete/fail cleanup, context placeholder, and share rejection. Custom coverage must prove safe endpoint/auth validation, one pre-transaction test, atomic direct assignment/grant/default behavior, real null no-auth evidence, and bearer/no-auth runtime headers. Clearing must prove that the credential/version, checks, grants, defaults, and team configuration are retained.
+
+For the atomic native cutover and no-auth version constraint, run the disposable PostgreSQL contract:
+
+```bash
+npm run db:gemini:migration:contract
+```
+
+It applies every pre-target migration to isolated databases, proves empty/existing conversion, unchanged credentials/envelopes/assignments/grants/defaults/checks and execution snapshots, old active compatible-run settlement, native/terminal-run preservation, grounding/search constraints, explicit no-auth evidence, and full rollback for unknown Gemini roots/adapters.
 
 The repository also has opt-in Prisma integration cases. The suite creates and drops temporary schemas so saved development runs, credentials, custom connections, and `ProviderRunBinding` rows cannot affect or be affected by Quick setup reset/rollback cases; scenarios that need independently committed or concurrent state receive their own additional isolated schema. Run them only against the disposable development stack:
 
@@ -281,7 +306,7 @@ docker compose -f docker-compose.dev.yml exec -T \
     --project=chromium
 ```
 
-Those specs mock only each Admin resource boundary for the administrator workflow. The provider browser case mocks only the Quick endpoint for its actor-relative setup state machine; after Ready it installs a disposable persisted graph and uses the real current-user catalog, chat/message routes, OpenAI Responses SSE runtime, saved answer, ModelRun API, and exact ProviderRunBinding before restoring the prior user defaults and removing every fixture row. The same spec proves default lazy Quick setup, policy-v2 picker resubmission, retry/reconciliation, multi-model Ready receipt, replacement preservation, confirmation-gated actor-assignment removal, the two-column compact/four-column wide provider grid, first-screen key/action placement, Advanced index-first navigation with always-visible Back, automatic loading of a large account catalog into the sorted/searchable OpenRouter picker, capability/provider search, automatic endpoint loading after explicit manual-routing selection, ordered route tags, collapsed optional diagnostics, contextual activation, and one atomic three-slot run-profile save. Its ordinary-user case exercises the real Quick, provider, and run-profile `403` routes; repository, service, route, transport, and runtime tests remain authoritative for RBAC, write-only secret handling, atomic direct-user initial/recovery/replacement persistence, profile constraints, catalog visibility, discovery-cache races, direct/group/default credential selection, revocation, SSRF/TLS rules, and delivery outcomes.
+Those specs mock only each Admin resource boundary for the administrator workflow. The provider browser case mocks the Quick and Custom task endpoints for their actor-relative UI state machines; after Quick Ready it installs a disposable persisted graph and uses the real current-user catalog, chat/message routes, OpenAI Responses SSE runtime, saved answer, ModelRun API, and exact ProviderRunBinding before restoring the prior user defaults and removing every fixture row. The separate Custom journey verifies the Endpoint -> Model ID -> API key -> Test & Save request and Ready receipt at wide and compact viewports; the local transport smoke and repository/service tests own its actual compatible request and atomic persistence. The same spec proves default lazy Quick setup, policy-v3 picker resubmission, retry/reconciliation, multi-model Ready receipt, replacement preservation, confirmation-gated actor-assignment removal, the two-column compact/four-column wide provider grid, first-screen key/action placement, Advanced index-first navigation with always-visible Back, automatic loading of a large account catalog into the sorted/searchable OpenRouter picker, capability/provider search, automatic endpoint loading after explicit manual-routing selection, ordered route tags, collapsed optional diagnostics, contextual activation, and one atomic three-slot run-profile save. Its ordinary-user case exercises the real Quick, Custom, provider, and run-profile `403` routes; repository, service, route, transport, and runtime tests remain authoritative for RBAC, write-only secret handling, atomic direct-user initial/recovery/replacement persistence, profile constraints, catalog visibility, discovery-cache races, direct/group/default credential selection, revocation, SSRF/TLS rules, and delivery outcomes.
 
 `tests/e2e/auth-admin.spec.ts` uses the real admin action route and Prisma state for Users and Access & groups. Its group-detail membership case adds and removes a member from the local Members task, proves unrelated active and archived memberships survive the complete replacement payload, verifies archived groups expose no mutation controls, and checks that Back preserves the group-directory query. The same real-data boundary verifies that `Full access` is visible as built-in, contains the seeded first administrator, leaves Members editable, and exposes no rename/archive/delete or per-resource grant controls.
 

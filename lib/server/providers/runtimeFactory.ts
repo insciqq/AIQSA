@@ -2,6 +2,10 @@ import { createAnthropicMessagesAdapter, createFetchAnthropicMessagesClient } fr
 import { createCompatibleResponsesAdapter } from "./compatibleResponses";
 import { createFakeProviderAdapter } from "./fakeProvider";
 import {
+  createFetchGeminiInteractionsClient,
+  createGeminiInteractionsAdapter
+} from "./geminiInteractions";
+import {
   createOpenAICompatibleChatAdapter,
   createFetchOpenAICompatibleChatClient
 } from "./openaiCompatibleChat";
@@ -19,6 +23,7 @@ import {
   normalizeProviderDefaultParams,
   normalizeProviderModelCapabilities,
   normalizeProviderModelConfiguration,
+  providerAuthenticationMode,
   type ProviderConnectionConfiguration,
   type ProviderModelConfiguration
 } from "./providerConfiguration";
@@ -30,7 +35,7 @@ import {
 } from "./providerCredentialSource";
 import {
   anthropicMessagesToolBridge,
-  geminiChatToolBridge,
+  geminiInteractionsToolBridge,
   openAICompatibleChatToolBridge,
   openAICompatibleResponsesToolBridge,
   openAIResponsesToolBridge,
@@ -126,6 +131,23 @@ export function normalizeProviderExecutionSnapshot(value: unknown): ProviderExec
   if (model.adapterKind !== "fake" && (!value.credentialId || !value.credentialVersionId)) {
     throw new Error("provider_execution_snapshot_invalid");
   }
+  const compatibleAdapter = model.adapterKind === "openai_chat_completions_compatible" ||
+    model.adapterKind === "openai_responses_compatible";
+  if (
+    (model.adapterKind === "gemini_interactions_native") !==
+    (value.providerFamily === "gemini")
+  ) {
+    throw new Error("provider_execution_snapshot_invalid");
+  }
+  if (compatibleAdapter !== (value.providerFamily === "openai_compatible")) {
+    throw new Error("provider_execution_snapshot_invalid");
+  }
+  if (
+    providerAuthenticationMode(connection) === "none" &&
+    model.adapterKind !== "openai_chat_completions_compatible"
+  ) {
+    throw new Error("provider_execution_snapshot_invalid");
+  }
 
   return Object.freeze({
     connection,
@@ -164,6 +186,9 @@ function fetchWithPerRequestCredential(
     const headers = new Headers(init?.headers);
     if (adapterKind === "anthropic_messages") {
       headers.set("x-api-key", secret);
+    } else if (adapterKind === "gemini_interactions_native") {
+      headers.delete("authorization");
+      headers.set("x-goog-api-key", secret);
     } else {
       headers.set("authorization", `Bearer ${secret}`);
     }
@@ -188,6 +213,24 @@ export function createProviderRuntimeBinding(input: Readonly<{
     return { adapter: createFakeProviderAdapter() };
   }
 
+  const authenticationMode = providerAuthenticationMode(snapshot.connection);
+  if (authenticationMode === "none") {
+    if (input.secret !== null) {
+      throw new Error("provider_credential_unexpected");
+    }
+    return {
+      adapter: createOpenAICompatibleChatAdapter({
+        client: createFetchOpenAICompatibleChatClient({
+          apiRoot: snapshot.connection.apiRoot,
+          authenticationMode,
+          bearerToken: null,
+          fetchFn: requiredFetch(input.options)
+        })
+      }),
+      toolBridge: openAICompatibleChatToolBridge
+    };
+  }
+
   if (!input.secret) {
     throw new Error("provider_credential_missing");
   }
@@ -203,6 +246,17 @@ export function createProviderRuntimeBinding(input: Readonly<{
   const baseUrl = snapshot.connection.apiRoot;
 
   switch (snapshot.model.adapterKind) {
+    case "gemini_interactions_native":
+      return {
+        adapter: createGeminiInteractionsAdapter({
+          client: createFetchGeminiInteractionsClient({
+            apiKey: clientSecret,
+            apiRoot: baseUrl,
+            fetchFn
+          })
+        }),
+        toolBridge: geminiInteractionsToolBridge
+      };
     case "openai_responses_native":
       return {
         adapter: createOpenAIResponsesAdapter({
@@ -222,13 +276,12 @@ export function createProviderRuntimeBinding(input: Readonly<{
         adapter: createOpenAICompatibleChatAdapter({
           client: createFetchOpenAICompatibleChatClient({
             apiRoot: baseUrl,
+            authenticationMode,
             bearerToken: clientSecret,
             fetchFn
           })
         }),
-        toolBridge: snapshot.providerFamily === "gemini"
-          ? geminiChatToolBridge
-          : openAICompatibleChatToolBridge
+        toolBridge: openAICompatibleChatToolBridge
       };
     case "anthropic_messages":
       return {
@@ -261,7 +314,10 @@ export function createProviderPreviewRuntimeBinding(
       allowFake,
       ...(normalized.model.adapterKind === "fake" ? {} : { fetchFn: unavailableFetch })
     },
-    secret: normalized.model.adapterKind === "fake" ? null : "preview-only",
+    secret: normalized.model.adapterKind === "fake" ||
+      providerAuthenticationMode(normalized.connection) === "none"
+      ? null
+      : "preview-only",
     snapshot: normalized
   });
 }

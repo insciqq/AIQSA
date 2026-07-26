@@ -7,6 +7,7 @@ export type AdminProviderFamily =
 
 export type AdminProviderAdapterKind =
   | "anthropic_messages"
+  | "gemini_interactions_native"
   | "openai_chat_completions_compatible"
   | "openai_responses_compatible"
   | "openai_responses_native"
@@ -18,6 +19,7 @@ export type AdminProviderCheckStatus = "available" | "unavailable";
 export type AdminProviderConnectionConfiguration = {
   allowPrivateNetwork: boolean;
   apiRoot: string;
+  authenticationMode?: "bearer" | "none";
 };
 
 export type AdminProviderModelCapabilities = {

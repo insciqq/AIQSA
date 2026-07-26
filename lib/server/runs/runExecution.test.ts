@@ -1,6 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { textMessageContent } from "../../domain/content";
 import type { ContextTruncationSummary } from "../../domain/contextBudget";
+import {
+  GROUNDED_LIVE_ONLY_PLACEHOLDER,
+  groundedLiveOnlyProviderPreview
+} from "../../domain/grounding";
 import type { ModelRunSseEvent, ModelRunUsage } from "../../domain/modelRunEvents";
 import { textFromContentBlocks } from "../../domain/modelRunEvents";
 import type { ResolvedEntitlements } from "../auth/entitlements";
@@ -32,6 +36,7 @@ type FailedRun = {
   error: { code: string; message: string };
   runId: string;
 };
+type GroundedMark = Parameters<RunRepository["markAssistantMessageGroundedLiveOnly"]>[0];
 
 type RepositoryOptions = Readonly<{
   chatUpdate?: RunChatUpdateRecord | null;
@@ -237,12 +242,14 @@ function createRepository(options: RepositoryOptions = {}) {
   const assistantTexts: string[] = [];
   const completeRuns: CompleteRunInput[] = [];
   const failedRuns: FailedRun[] = [];
+  const groundedMarks: GroundedMark[] = [];
   const persistedEvents: { event: ModelRunSseEvent; runId: string; sequence: number }[] = [];
   const providerResponseIds: string[] = [];
   const providerRequestPreviews: Record<string, unknown>[] = [];
   const recordedRunUsageEvents: RecordRunUsageEventsInput[] = [];
   const searchRuns: CreateSearchRunInput[] = [];
   const toolCalls = new Map<string, PersistedToolLoopCall>();
+  let durableProviderResponsePreview: Record<string, unknown> | null = null;
   let toolCallSequence = 0;
   let chatUpdateLoads = 0;
   const repository: RunExecutionRepository = {
@@ -282,6 +289,7 @@ function createRepository(options: RepositoryOptions = {}) {
       if (options.completionWins === false) {
         return false;
       }
+      durableProviderResponsePreview = input.finalProviderResponsePreview;
 
       for (const event of [
         ...(input.eventsBeforeTerminal ?? []),
@@ -347,6 +355,18 @@ function createRepository(options: RepositoryOptions = {}) {
     },
     async loadModelPricing() {
       return null;
+    },
+    async markAssistantMessageGroundedLiveOnly(input) {
+      groundedMarks.push(input);
+      durableProviderResponsePreview = groundedLiveOnlyProviderPreview();
+      assistantTexts.splice(0);
+      for (let index = persistedEvents.length - 1; index >= 0; index -= 1) {
+        const event = persistedEvents[index]?.event;
+        if (event?.type === "artifact" || event?.type === "token") {
+          persistedEvents.splice(index, 1);
+        }
+      }
+      return true;
     },
     async nextRunEventSequence() {
       return persistedEvents.length;
@@ -417,7 +437,11 @@ function createRepository(options: RepositoryOptions = {}) {
   return {
     assistantTexts,
     completeRuns,
+    get durableProviderResponsePreview() {
+      return durableProviderResponsePreview;
+    },
     failedRuns,
+    groundedMarks,
     get chatUpdateLoads() {
       return chatUpdateLoads;
     },
@@ -720,6 +744,156 @@ describe("run execution", () => {
     expect(repository.persistedEvents.some(({ event }) => event.type === "chat_update")).toBe(false);
     expect(eventTypes.slice(-3)).toEqual(["usage", "chat_update", "done"]);
     expect(activeRunControllerRegistry.has("run-1")).toBe(false);
+  });
+
+  it("keeps grounded output live while persisting only provenance, usage, and a neutral placeholder", async () => {
+    const persistedChatUpdate = chatUpdate();
+    persistedChatUpdate.messages[1]!.content = textMessageContent(GROUNDED_LIVE_ONLY_PLACEHOLDER);
+    const repository = createRepository({
+      chatUpdate: persistedChatUpdate,
+      entitlements: {
+        modelKeys: new Set<string>(),
+        providerKeys: new Set(["gemini"]),
+        searchStrategies: new Set(["gemini-google-search"])
+      }
+    });
+    const adapter = createAdapter(async function* () {
+      for (let index = 0; index < 33; index += 1) {
+        yield { data: { delta: "pre-marker-secret" }, type: "token" };
+      }
+      yield {
+        data: {
+          citations: [],
+          provider: "gemini",
+          runSearch: { callCount: 1, queryCount: 1 },
+          suggestionsHtml: "<div>suggestion-secret</div>"
+        },
+        type: "grounding_display"
+      };
+      yield {
+        data: {
+          artifactType: "citation",
+          payload: { title: "citation-secret", url: "https://source.example/secret" }
+        },
+        type: "artifact"
+      };
+      yield { data: { delta: "Live grounded answer" }, type: "token" };
+      return providerResult({
+        finalProviderResponsePreview: {
+          citation: "https://source.example/secret",
+          searchSuggestionsHtml: "<div>suggestion-secret</div>"
+        },
+        finalText: "Live grounded answer"
+      });
+    });
+
+    const events = parseSse(await createRunExecutionResponse(executionInput({
+      adapter,
+      prepared: preparedData({
+        modelId: "gemini-3.6-flash",
+        provider: "gemini",
+        searchStrategy: "gemini-google-search"
+      }),
+      repository: repository.repository
+    })).text());
+
+    expect(repository.groundedMarks).toHaveLength(1);
+    expect(repository.groundedMarks[0]).toMatchObject({
+      assistantMessageId: "assistant-1",
+      provider: "gemini",
+      runId: "run-1",
+      strategy: "gemini-google-search"
+    });
+    expect(repository.assistantTexts).toEqual([]);
+    expect(repository.completeRuns).toHaveLength(1);
+    expect(repository.completeRuns[0]?.finalText).toBe(GROUNDED_LIVE_ONLY_PLACEHOLDER);
+    expect(repository.completeRuns[0]?.finalProviderResponsePreview).toEqual(
+      groundedLiveOnlyProviderPreview()
+    );
+    expect(repository.durableProviderResponsePreview).toEqual(groundedLiveOnlyProviderPreview());
+    expect(repository.persistedEvents.map(({ event }) => event.type)).toEqual([
+      "run_start",
+      "message_start",
+      "usage",
+      "done"
+    ]);
+    const persisted = JSON.stringify({
+      assistantTexts: repository.assistantTexts,
+      completeRuns: repository.completeRuns,
+      events: repository.persistedEvents,
+      providerRequestPreviews: repository.providerRequestPreviews,
+      providerResponsePreview: repository.durableProviderResponsePreview
+    });
+    expect(persisted).not.toContain("suggestion-secret");
+    expect(persisted).not.toContain("citation-secret");
+    expect(persisted).not.toContain("source.example");
+    expect(persisted).not.toContain("Live grounded answer");
+    expect(persisted).not.toContain("pre-marker-secret");
+
+    const liveChatUpdate = events.find((event) => event.type === "chat_update");
+    expect(JSON.stringify(liveChatUpdate)).toContain("Live grounded answer");
+    expect(JSON.stringify(liveChatUpdate)).not.toContain(GROUNDED_LIVE_ONLY_PLACEHOLDER);
+    const groundingIndex = events.findIndex((event) => event.type === "grounding_display");
+    const liveAnswerIndex = events.findIndex(
+      (event) => event.type === "token" && event.data.delta === "Live grounded answer"
+    );
+    expect(groundingIndex).toBeGreaterThan(-1);
+    expect(liveAnswerIndex).toBeGreaterThan(groundingIndex);
+    expect(events.at(-1)?.type).toBe("done");
+  });
+
+  it("keeps failed grounded partial output transient and leaves no durable provider content", async () => {
+    const repository = createRepository();
+    const adapter = createAdapter(async function* () {
+      yield {
+        data: {
+          citations: [{
+            endIndex: 8,
+            startIndex: 0,
+            title: "failed-citation-secret",
+            url: "https://failed-source.example/secret"
+          }],
+          provider: "gemini",
+          runSearch: { callCount: 1, queryCount: 1 },
+          suggestionsHtml: "<div>failed-suggestion-secret</div>"
+        },
+        type: "grounding_display"
+      };
+      yield { data: { delta: "failed grounded partial" }, type: "token" };
+      throw new Error("grounded_stream_failed");
+    });
+
+    const events = parseSse(
+      await createRunExecutionResponse(executionInput({ adapter, repository: repository.repository })).text()
+    );
+
+    expect(repository.groundedMarks).toHaveLength(1);
+    expect(repository.assistantTexts).toEqual([]);
+    expect(repository.completeRuns).toEqual([]);
+    expect(repository.failedRuns).toHaveLength(1);
+    expect(repository.durableProviderResponsePreview).toEqual(groundedLiveOnlyProviderPreview());
+    expect(repository.persistedEvents.map(({ event }) => event.type)).toEqual([
+      "run_start",
+      "message_start",
+      "error"
+    ]);
+    const persisted = JSON.stringify({
+      assistantTexts: repository.assistantTexts,
+      events: repository.persistedEvents,
+      providerRequestPreviews: repository.providerRequestPreviews,
+      providerResponsePreview: repository.durableProviderResponsePreview
+    });
+    expect(persisted).not.toContain("failed grounded partial");
+    expect(persisted).not.toContain("failed-suggestion-secret");
+    expect(persisted).not.toContain("failed-citation-secret");
+    expect(persisted).not.toContain("failed-source.example");
+    expect(events.map((event) => event.type)).toEqual([
+      "run_start",
+      "message_start",
+      "grounding_display",
+      "token",
+      "error"
+    ]);
   });
 
   it("cannot append a contradictory error after durable completion because terminal evidence is repository-owned", async () => {

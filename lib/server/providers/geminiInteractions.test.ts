@@ -1,0 +1,76 @@
+import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
+import { describe, expect, it, vi } from "vitest";
+import { createGeminiInteractionsAdapter } from "./geminiInteractions";
+import type { GeminiInteractionsClient } from "./geminiInteractionsTransport";
+import type { ProviderRunRequest, ProviderRunResult } from "./types";
+
+function request(stream: boolean): ProviderRunRequest {
+  return {
+    attachmentIds: [],
+    attachments: [],
+    chatId: "chat-1",
+    content: { blocks: [{ text: "hello", type: "text" }] },
+    modelCapabilities: {
+      nativePdfInput: false,
+      nativeSearch: true,
+      pdf: false,
+      reasoning: false,
+      streaming: true,
+      vision: false
+    },
+    modelId: "gemini-3.6-flash",
+    params: { maxTokens: 32, stream },
+    prompt: { developer: null, presetId: null, system: null },
+    provider: "gemini",
+    searchStrategy: "search-disabled"
+  };
+}
+
+async function collect(
+  stream: AsyncGenerator<ModelRunSseEvent, ProviderRunResult>
+): Promise<ProviderRunResult> {
+  let next = await stream.next();
+  while (!next.done) next = await stream.next();
+  return next.value;
+}
+
+describe("Gemini Interactions adapter", () => {
+  it("uses unary create when streaming is disabled", async () => {
+    const createInteraction = vi.fn<GeminiInteractionsClient["createInteraction"]>(async () => ({
+      id: "unary-1",
+      model: "gemini-3.6-flash",
+      status: "completed",
+      steps: [{ content: [{ text: "ok", type: "text" }], type: "model_output" }]
+    }));
+    const client: GeminiInteractionsClient = {
+      createInteraction,
+      streamInteraction: vi.fn()
+    };
+    const result = await collect(createGeminiInteractionsAdapter({ client }).stream(request(false)));
+
+    expect(createInteraction).toHaveBeenCalledOnce();
+    expect(createInteraction.mock.calls[0]?.[0]).toMatchObject({ store: false, stream: false });
+    expect(result.finalText).toBe("ok");
+  });
+
+  it("uses strict SSE when streaming is enabled", async () => {
+    const body = [
+      'event: interaction.created\ndata: {"event_type":"interaction.created","interaction":{"id":"stream-1","status":"in_progress"}}\n\n',
+      'event: step.start\ndata: {"event_type":"step.start","index":0,"step":{"type":"model_output","content":[]}}\n\n',
+      'event: step.delta\ndata: {"event_type":"step.delta","index":0,"delta":{"type":"text","text":"ok"}}\n\n',
+      'event: step.stop\ndata: {"event_type":"step.stop","index":0}\n\n',
+      'event: interaction.completed\ndata: {"event_type":"interaction.completed","interaction":{"id":"stream-1","status":"completed"}}\n\n',
+      "event: done\ndata: [DONE]\n\n"
+    ].join("");
+    const client: GeminiInteractionsClient = {
+      createInteraction: vi.fn(),
+      streamInteraction: vi.fn(async () => new Response(body, {
+        headers: { "content-type": "text/event-stream" }
+      }))
+    };
+    const result = await collect(createGeminiInteractionsAdapter({ client }).stream(request(true)));
+
+    expect(client.streamInteraction).toHaveBeenCalledOnce();
+    expect(result.finalText).toBe("ok");
+  });
+});

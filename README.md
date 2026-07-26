@@ -8,8 +8,8 @@ AIQSA combines a conversation UI with inspectable execution: users can choose a 
 
 ## Highlights
 
-- OpenAI, Anthropic, Gemini, and OpenRouter provider adapters.
-- Optional OpenAI web search and Perplexity search through OpenRouter.
+- Native OpenAI, Anthropic, Gemini Interactions, and OpenRouter provider adapters, plus manual OpenAI-compatible Chat endpoints.
+- Optional OpenAI web search, native Gemini Google Search, and Perplexity search through OpenRouter.
 - Branchable conversations, saved chats, projects, prompt presets, and attachments.
 - Inspectable citations, reasoning, provider events, request previews, and token usage.
 - Multi-user accounts, invitations, access rules, model entitlements, and an admin console.
@@ -47,7 +47,7 @@ docker compose up -d --build
 
 Open [http://localhost:3000](http://localhost:3000) and sign in with the initial administrator account from `.env`.
 
-Then open `Control Center -> Providers`. Choose OpenAI, Anthropic, Gemini, or OpenRouter, paste its API key, and select **Test & Save**; AIQSA installs every current reviewed chat model visible to that key, chooses one recommended default, and links straight back to chat. The normal single-administrator path does not require group setup. The first administrator is already an owner of the built-in, undeletable `Full access` group, whose explicit members are entitled to all current and future providers, models, search strategies, and MCP servers; credentials and personal MCP secrets remain separate. Provider keys and SMTP settings are database-managed and are not normal `.env` inputs.
+Then open `Control Center -> Providers`. Choose OpenAI, Anthropic, Gemini, or OpenRouter, paste its API key, and select **Test & Save**; AIQSA installs every current reviewed chat model visible to that key, chooses one recommended default, and links straight back to chat. For another OpenAI-compatible Chat API, choose **Connect custom endpoint**, enter its API root, manual model ID, and key, then use the same **Test & Save** flow. The normal single-administrator path does not require group setup. The first administrator is already an owner of the built-in, undeletable `Full access` group, whose explicit members are entitled to all current and future providers, models, search strategies, and MCP servers; credentials and personal MCP secrets remain separate. Provider keys and SMTP settings are database-managed and are not normal `.env` inputs.
 
 That is enough for local use. A domain, SMTP server, and OAuth credentials are optional. PostgreSQL and uploaded objects live in named Docker volumes, so a normal rebuild or update does not erase them.
 

@@ -3,7 +3,7 @@
 Status: Accepted
 Amends: 0004-private-auth-entitlements-uploads-and-sharing, 0020-unified-installation-and-isolated-development, 0021-admin-managed-mcp-tools-and-isolated-runtime
 
-Amendment note: ADR 0028 implements the reserved direct-user credential resolver seam with a separate `ProviderUserCredentialAssignment`, gives it precedence over group/default selection, and moves the visible model/search entitlement workflow from the retired `Model access` destination into `Access & groups`. ADR 0030 adds Gemini as a first-class family through the existing explicit OpenAI-compatible Chat protocol and keeps remote catalogs as bounded evidence for reviewed code-owned deployments only.
+Amendment note: ADR 0028 implements the reserved direct-user credential resolver seam with a separate `ProviderUserCredentialAssignment`, gives it precedence over group/default selection, and moves the visible model/search entitlement workflow from the retired `Model access` destination into `Access & groups`. ADR 0030 added Gemini and keeps remote catalogs as bounded evidence for reviewed code-owned deployments only; ADR 0031 replaces Gemini's compatible Chat protocol with native Interactions v1. ADR 0032 implements the direct Custom compatible Chat setup and explicit tested private/local no-auth version while retaining this record's stable connection/model/credential lineage.
 
 ## Context
 

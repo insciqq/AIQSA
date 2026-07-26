@@ -17,7 +17,7 @@ import type {
   ProviderModelConfiguration
 } from "../../providers/providerConfiguration";
 
-export const ADMIN_PROVIDER_QUICK_SETUP_POLICY_VERSION = 2;
+export const ADMIN_PROVIDER_QUICK_SETUP_POLICY_VERSION = 3;
 
 type QuickSetupCandidateDefinition = Readonly<{
   candidateId: string;

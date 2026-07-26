@@ -90,6 +90,18 @@ function anthropicFunctionTool(tool: RunTool): SerializedProviderTool {
   };
 }
 
+function geminiFunctionTool(tool: RunTool): SerializedProviderTool {
+  return {
+    provider: "gemini",
+    tool: {
+      description: tool.description,
+      name: tool.name,
+      parameters: tool.inputSchema,
+      type: "function"
+    }
+  };
+}
+
 export const openAIResponsesToolBridge: ProviderToolBridge = {
   appendToolResult(_request, result) {
     return {
@@ -228,10 +240,64 @@ export const openAICompatibleChatToolBridge = forProviderFamily(
   "openai_compatible"
 );
 
-export const geminiChatToolBridge = forProviderFamily(
-  openRouterChatToolBridge,
-  "gemini"
-);
+export const geminiInteractionsToolBridge: ProviderToolBridge = {
+  appendToolResult(_request, result) {
+    return {
+      call_id: result.callId,
+      ...(result.status === "error" ? { is_error: true } : {}),
+      name: result.name,
+      result: [{ text: toolResultText(result), type: "text" }],
+      type: "function_result"
+    };
+  },
+  parseToolCalls(response) {
+    const steps = Array.isArray(response)
+      ? response
+      : isRecord(response) && Array.isArray(response.steps)
+        ? response.steps
+        : [];
+
+    return steps.flatMap((step): ModelToolCall[] => {
+      if (
+        !isRecord(step) ||
+        step.type !== "function_call" ||
+        typeof step.id !== "string" ||
+        !step.id ||
+        typeof step.name !== "string" ||
+        !step.name
+      ) {
+        return [];
+      }
+
+      return [{
+        arguments: parseArguments(step.arguments),
+        id: step.id,
+        name: step.name,
+        raw: step
+      }];
+    });
+  },
+  provider: "gemini",
+  serializeAssistantToolCalls({ calls, providerMessage }) {
+    return suppliedProviderMessages(providerMessage) ?? calls.map((call) =>
+      isRecord(call.raw) ? call.raw : {
+        arguments: call.arguments,
+        id: call.id,
+        name: call.name,
+        type: "function_call"
+      }
+    );
+  },
+  serializeHostedTools(request) {
+    return request.searchStrategy === "gemini-google-search"
+      ? [{ type: "google_search" }]
+      : [];
+  },
+  serializeTool: geminiFunctionTool,
+  supportsToolCalling(input) {
+    return input.provider === "gemini";
+  }
+};
 
 export const anthropicMessagesToolBridge: ProviderToolBridge = {
   appendToolResult(_request, result) {
@@ -292,7 +358,7 @@ export const anthropicMessagesToolBridge: ProviderToolBridge = {
 
 export const providerToolBridges = {
   anthropic: anthropicMessagesToolBridge,
-  gemini: geminiChatToolBridge,
+  gemini: geminiInteractionsToolBridge,
   openai: openAIResponsesToolBridge,
   openrouter: openRouterChatToolBridge
 } satisfies Record<string, ProviderToolBridge>;

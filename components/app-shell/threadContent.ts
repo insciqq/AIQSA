@@ -106,6 +106,43 @@ function citationFromValue(value: unknown, fallbackIndex: number): ThreadCitatio
   };
 }
 
+function groundingDisplayFromEvent(event: RunEventView): {
+  citations: ThreadCitation[];
+  display: NonNullable<ThreadArtifactSummary["groundingDisplay"]>;
+} | null {
+  if (event.type !== "grounding_display" || !isRecord(event.data)) {
+    return null;
+  }
+  const data = event.data;
+  if (
+    data.provider !== "gemini" ||
+    typeof data.suggestionsHtml !== "string" ||
+    data.suggestionsHtml.length === 0 ||
+    new TextEncoder().encode(data.suggestionsHtml).byteLength > 256 * 1_024 ||
+    !isRecord(data.runSearch)
+  ) {
+    return null;
+  }
+  const callCount = numberValue(data.runSearch.callCount, 0);
+  const queryCount = numberValue(data.runSearch.queryCount, 0);
+  if (callCount < 1 || callCount > 100 || queryCount < 0 || queryCount > 100) {
+    return null;
+  }
+  const citations = (Array.isArray(data.citations) ? data.citations : [])
+    .slice(0, 100)
+    .map((citation, index) => citationFromValue(citation, index + 1))
+    .filter((citation): citation is ThreadCitation => Boolean(citation));
+  return {
+    citations,
+    display: {
+      callCount,
+      provider: "gemini",
+      queryCount,
+      suggestionsHtml: data.suggestionsHtml
+    }
+  };
+}
+
 function reasoningSnippet(event: RunEventView): string | null {
   return reasoningTextFromValue(artifactPayload(event));
 }
@@ -205,6 +242,10 @@ export function summarizeThreadArtifacts(
   durableToolCalls: ThreadArtifactSummary["toolCalls"] = [],
   runStatus?: string
 ): ThreadArtifactSummary | null {
+  const grounding = events
+    .map(groundingDisplayFromEvent)
+    .filter((value): value is NonNullable<typeof value> => Boolean(value))
+    .at(-1) ?? null;
   const searchArtifacts = events.filter(
     (event) => artifactTypeFromEvent(event) === "search"
   );
@@ -225,11 +266,15 @@ export function summarizeThreadArtifacts(
           Boolean(summary)
       )
       .at(-1) ?? null;
-  const citations = citationEvents
+  const citations = (grounding?.citations ?? citationEvents
     .map((event, index) => citationFromValue(artifactPayload(event), index + 1))
-    .filter((citation): citation is ThreadCitation => Boolean(citation));
+    .filter((citation): citation is ThreadCitation => Boolean(citation)));
   const citationCount = Math.max(citationEvents.length, citations.length);
-  const searchCount = Math.max(searchArtifacts.length, searchRunsCount(searchRuns));
+  const searchCount = Math.max(
+    grounding?.display.callCount ?? 0,
+    searchArtifacts.length,
+    searchRunsCount(searchRuns)
+  );
   const runSearchDetails = searchDetailsFromRuns(searchRuns) ?? [];
   const searchDetails =
     runSearchDetails.length > 0
@@ -270,14 +315,16 @@ export function summarizeThreadArtifacts(
     citationCount,
     citations,
     contextTruncation,
+    groundingDisplay: grounding?.display ?? null,
     reasoningCount,
     reasoningText,
     searchCount,
     searchDetails,
     searchStrategy:
-      searchArtifacts
+      (grounding ? ["gemini-google-search"] : searchArtifacts
         .map(searchStrategyFromEvent)
-        .find((strategy): strategy is string => Boolean(strategy)) ?? null,
+        .filter((strategy): strategy is string => Boolean(strategy)))
+        .at(0) ?? null,
     toolCallCount: toolCalls.length,
     toolCalls
   };

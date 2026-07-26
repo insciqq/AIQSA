@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  defaultGeminiChatParams,
+  defaultGeminiInteractionsParams,
   defaultOpenRouterParams,
   defaultOpenAIResponsesParams,
   normalizeOpenAIResponsesParams,
@@ -32,8 +32,8 @@ describe("provider parameter defaults", () => {
     expect(normalizeOpenRouterParams({ temperature: 0 }).temperature).toBe(0);
   });
 
-  it("keeps Gemini compatibility defaults bounded and free of sampling controls", () => {
-    expect(defaultGeminiChatParams()).toEqual({
+  it("keeps native Gemini Interactions defaults bounded and free of sampling controls", () => {
+    expect(defaultGeminiInteractionsParams()).toEqual({
       maxTokens: 65536,
       reasoning: { effort: "medium" },
       stream: true

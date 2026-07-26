@@ -689,6 +689,9 @@ model Message {
   role               String
   parentMessageId    String?
   content            Json
+  groundedAt         DateTime?
+  groundingProvider  String?
+  groundingStrategy  String?
   provider           String?
   modelId            String?
   promptPresetId     String?
@@ -710,6 +713,7 @@ model Message {
   @@unique([chatId, id], map: "Message_chatId_id_key")
   @@index([chatId, parentMessageId])
   @@index([chatId, createdAt])
+  @@index([groundingProvider, groundedAt])
 }
 
 model ModelRun {

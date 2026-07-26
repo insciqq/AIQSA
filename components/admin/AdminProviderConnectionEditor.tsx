@@ -20,6 +20,7 @@ import { useRef, useState } from "react";
 type ConnectionForm = {
   allowPrivateNetwork: boolean;
   apiRoot: string;
+  authenticationMode: "bearer" | "none";
   displayName: string;
   family: AdminProviderFamily;
 };
@@ -32,6 +33,7 @@ function blankConnection(family: ProviderAdvancedFamily | null): ConnectionForm 
   return {
     allowPrivateNetwork: false,
     apiRoot: providerFamilyRoot(selectedFamily),
+    authenticationMode: "bearer",
     displayName: providerFamilyLabel(selectedFamily),
     family: selectedFamily
   };
@@ -41,6 +43,7 @@ function connectionForm(connection: AdminProviderConnection): ConnectionForm {
   return {
     allowPrivateNetwork: connection.draftConfig.allowPrivateNetwork,
     apiRoot: connection.draftConfig.apiRoot,
+    authenticationMode: connection.draftConfig.authenticationMode ?? "bearer",
     displayName: connection.displayName,
     family: connection.family === "fake" ? "openai_compatible" : connection.family
   };
@@ -73,7 +76,10 @@ export function AdminProviderConnectionEditor({
         const body = {
           configuration: {
             allowPrivateNetwork: form.allowPrivateNetwork,
-            apiRoot: form.apiRoot
+            apiRoot: form.apiRoot,
+            ...(form.family === "openai_compatible"
+              ? { authenticationMode: form.authenticationMode }
+              : {})
           },
           displayName: form.displayName,
           family: form.family,
@@ -119,6 +125,7 @@ export function AdminProviderConnectionEditor({
               setForm({
                 ...form,
                 apiRoot: providerFamilyRoot(family),
+                authenticationMode: "bearer",
                 displayName: providerFamilyLabel(family),
                 family
               });
@@ -132,6 +139,15 @@ export function AdminProviderConnectionEditor({
             <option value="openai_compatible">OpenAI-compatible</option>
           </select>
         </label>
+        {form.family === "openai_compatible" ? (
+          <div className="rounded-control bg-control-surface/60 px-3 py-2.5 text-xs leading-5 text-ink-secondary">
+            <p className="font-medium text-ink">Authentication</p>
+            <p>{form.authenticationMode === "none" ? "No authentication" : "Bearer API key"}</p>
+            <p className="mt-1 text-ink-muted">
+              The tested mode is preserved with this connection. Create a different mode through Custom Test &amp; Save.
+            </p>
+          </div>
+        ) : null}
         <label className="md:col-span-2">
           <span className={fieldLabel}>API root</span>
           <input

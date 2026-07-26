@@ -241,6 +241,7 @@ function createHarness(options: Readonly<{
           }
         : options.pricing,
     loadRunUsageAttributions: async () => [],
+    markAssistantMessageGroundedLiveOnly: async () => true,
     nextRunEventSequence: async () => nextSequence,
     persistToolLoopCallBatch: async () => ({ kind: "not_found" }),
     recordRunUsageEvents: async () => true,

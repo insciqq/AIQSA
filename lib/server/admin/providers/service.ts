@@ -108,6 +108,8 @@ function expectedFamily(model: ProviderModelConfiguration): AdminProviderFamily 
   switch (model.adapterKind) {
     case "anthropic_messages":
       return "anthropic";
+    case "gemini_interactions_native":
+      return "gemini";
     case "openai_chat_completions_compatible":
     case "openai_responses_compatible":
       return "openai_compatible";
@@ -119,9 +121,7 @@ function expectedFamily(model: ProviderModelConfiguration): AdminProviderFamily 
 }
 
 function validateFamily(family: string, model: ProviderModelConfiguration): void {
-  const compatibleGeminiChat = family === "gemini" &&
-    model.adapterKind === "openai_chat_completions_compatible";
-  if (family !== expectedFamily(model) && !compatibleGeminiChat) {
+  if (family !== expectedFamily(model)) {
     throw new AdminProviderServiceError("provider_family_adapter_mismatch");
   }
 }

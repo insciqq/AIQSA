@@ -108,7 +108,7 @@ describe("catalog capability matrix", () => {
     expect(gpt55?.parameterControls.reasoningMode).toBeUndefined();
   });
 
-  it("publishes the current Claude 5 and Gemini defaults as explicit reviewed chat models", () => {
+  it("publishes current Claude 5 and native Gemini defaults as reviewed models", () => {
     const claudeModels = defaultProviderModels.filter(
       ({ provider }) => provider === "anthropic"
     ).slice(0, 2);
@@ -140,7 +140,7 @@ describe("catalog capability matrix", () => {
     ]);
     for (const model of geminiModels) {
       expect(model).toMatchObject({
-        adapterKind: "openai_chat_completions_compatible",
+        adapterKind: "gemini_interactions_native",
         contextWindow: 1_000_000,
         parameterControls: {
           maxOutputTokens: { defaultValue: 65_536, maxValue: 65_536 },
@@ -150,6 +150,9 @@ describe("catalog capability matrix", () => {
       });
       expect(buildCatalogModel(model, defaultSearchStrategies).defaultParams).not.toHaveProperty(
         "temperature"
+      );
+      expect(availableSearchStrategiesForModel(model, defaultSearchStrategies)).toContain(
+        "gemini-google-search"
       );
     }
   });
@@ -217,7 +220,11 @@ describe("catalog capability matrix", () => {
     expect(JSON.stringify(model)).not.toContain("admin-secret");
     expect(model).not.toHaveProperty("routeProviderPreferences");
 
-    const strategy = toCatalogSearchStrategy(defaultSearchStrategies[2]!);
+    const strategyTemplate = defaultSearchStrategies.find(
+      ({ strategyId }) => strategyId === "perplexity-tool-search"
+    );
+    expect(strategyTemplate).toBeDefined();
+    const strategy = toCatalogSearchStrategy(strategyTemplate!);
     expect(strategy).toEqual({
       displayName: "Perplexity tool",
       kind: "perplexity_tool_search",

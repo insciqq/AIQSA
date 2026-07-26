@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   normalizeProviderConnectionConfiguration,
   normalizeProviderModelConfiguration,
+  providerAuthenticationMode,
   providerRequestEndpoint,
   ProviderConfigurationError
 } from "./providerConfiguration";
@@ -43,6 +44,8 @@ describe("provider connection configuration", () => {
       .toBe("https://api.example.test/v1/chat/completions");
     expect(providerRequestEndpoint(configuration, "anthropic_messages"))
       .toBe("https://api.example.test/v1/messages");
+    expect(providerRequestEndpoint(configuration, "gemini_interactions_native"))
+      .toBe("https://api.example.test/v1/interactions");
   });
 
   it("allows HTTP only for an explicit internal-network connection", () => {
@@ -62,6 +65,39 @@ describe("provider connection configuration", () => {
     );
   });
 
+  it("defaults legacy connections to bearer and preserves explicit authentication", () => {
+    const legacy = normalizeProviderConnectionConfiguration({
+      allowPrivateNetwork: false,
+      apiRoot: "https://api.example.test/v1"
+    });
+    const bearer = normalizeProviderConnectionConfiguration({
+      allowPrivateNetwork: false,
+      apiRoot: "https://api.example.test/v1",
+      authenticationMode: "bearer"
+    });
+    const none = normalizeProviderConnectionConfiguration({
+      allowPrivateNetwork: true,
+      apiRoot: "http://127.0.0.1:11434/v1",
+      authenticationMode: "none"
+    });
+
+    expect(legacy.authenticationMode).toBeUndefined();
+    expect(providerAuthenticationMode(legacy)).toBe("bearer");
+    expect(bearer.authenticationMode).toBe("bearer");
+    expect(none.authenticationMode).toBe("none");
+  });
+
+  it.each([
+    { allowPrivateNetwork: false, apiRoot: "https://api.example.test/v1", authenticationMode: "none" },
+    { allowPrivateNetwork: true, apiRoot: "https://api.example.test/v1", authenticationMode: "none" },
+    { allowPrivateNetwork: true, apiRoot: "http://127.0.0.1:11434/v1", authenticationMode: "basic" }
+  ])("rejects an unsafe or unknown authentication contract", (configuration) => {
+    expectCode(
+      () => normalizeProviderConnectionConfiguration(configuration),
+      "provider_authentication_mode_invalid"
+    );
+  });
+
   it.each([
     "ftp://api.example.test/v1",
     "https://user:pass@api.example.test/v1",
@@ -76,6 +112,18 @@ describe("provider connection configuration", () => {
 });
 
 describe("provider model configuration", () => {
+  it("accepts the explicit native Gemini Interactions adapter kind", () => {
+    expect(normalizeProviderModelConfiguration({
+      adapterKind: "gemini_interactions_native",
+      capabilities,
+      defaultParams: { maxTokens: 4096, stream: true },
+      upstreamModelId: "gemini-3.6-flash"
+    })).toMatchObject({
+      adapterKind: "gemini_interactions_native",
+      upstreamModelId: "gemini-3.6-flash"
+    });
+  });
+
   it("keeps only the explicit compatible Chat Completions contract", () => {
     expect(
       normalizeProviderModelConfiguration({

@@ -6,6 +6,7 @@ const MAX_PROVIDER_ROUTE_COUNT = 16;
 
 export const providerAdapterKinds = [
   "anthropic_messages",
+  "gemini_interactions_native",
   "openai_chat_completions_compatible",
   "openai_responses_compatible",
   "openai_responses_native",
@@ -20,9 +21,12 @@ export type ProviderFamily =
   | "openai_compatible"
   | "openrouter";
 
+export type ProviderAuthenticationMode = "bearer" | "none";
+
 export type ProviderConnectionConfiguration = {
   allowPrivateNetwork: boolean;
   apiRoot: string;
+  authenticationMode?: ProviderAuthenticationMode;
 };
 
 export type OpenRouterRoutingConfiguration =
@@ -46,6 +50,7 @@ export type ProviderModelConfiguration = {
 export type ProviderConfigurationErrorCode =
   | "provider_adapter_kind_invalid"
   | "provider_api_root_invalid"
+  | "provider_authentication_mode_invalid"
   | "provider_default_params_invalid"
   | "provider_model_capabilities_invalid"
   | "provider_routing_invalid"
@@ -119,17 +124,42 @@ export function normalizeProviderConnectionConfiguration(
     throw new ProviderConfigurationError("provider_api_root_invalid");
   }
 
+  if (
+    value.authenticationMode !== undefined &&
+    value.authenticationMode !== "bearer" &&
+    value.authenticationMode !== "none"
+  ) {
+    throw new ProviderConfigurationError("provider_authentication_mode_invalid");
+  }
+  const apiRoot = normalizeProviderApiRoot(value.apiRoot, value.allowPrivateNetwork);
+  if (
+    value.authenticationMode === "none" &&
+    (!value.allowPrivateNetwork || new URL(apiRoot).protocol !== "http:")
+  ) {
+    throw new ProviderConfigurationError("provider_authentication_mode_invalid");
+  }
+
   return {
     allowPrivateNetwork: value.allowPrivateNetwork,
-    apiRoot: normalizeProviderApiRoot(value.apiRoot, value.allowPrivateNetwork)
+    apiRoot,
+    ...(value.authenticationMode === "bearer" || value.authenticationMode === "none"
+      ? { authenticationMode: value.authenticationMode }
+      : {})
   };
+}
+
+export function providerAuthenticationMode(
+  configuration: ProviderConnectionConfiguration
+): ProviderAuthenticationMode {
+  return configuration.authenticationMode ?? "bearer";
 }
 
 export function providerRequestEndpoint(
   configuration: ProviderConnectionConfiguration,
   adapterKind: ProviderAdapterKind
 ): string {
-  const terminalPath = adapterKind.includes("responses") ? "responses" :
+  const terminalPath = adapterKind === "gemini_interactions_native" ? "interactions" :
+    adapterKind.includes("responses") ? "responses" :
     adapterKind === "anthropic_messages" ? "messages" : "chat/completions";
   return `${configuration.apiRoot}/${terminalPath}`;
 }

@@ -17,7 +17,7 @@ The shipped product is a conversation-first workspace for explicit provider/mode
 - TypeScript/Node.js with Next.js App Router and Route Handlers.
 - React, Tailwind CSS, Zustand, and `lucide-react` in the browser.
 - Postgres/Prisma plus S3-compatible storage, local MinIO, and a filesystem fallback.
-- Fake, native/compatible OpenAI Responses, generic compatible Chat Completions including first-class Gemini, Anthropic Messages, and OpenRouter adapters behind database-resolved server-only provider contracts.
+- Fake, native/compatible OpenAI Responses, generic Custom-compatible Chat Completions, native Gemini Interactions v1, Anthropic Messages, and OpenRouter adapters behind database-resolved server-only provider contracts.
 - Administrator-managed remote and local MCP servers through the official SDK, with ToolHive-isolated local workloads.
 - Default Docker Compose for the persistent installation; `docker-compose.dev.yml`, Vitest, Testing Library, and Playwright CLI for isolated development verification.
 

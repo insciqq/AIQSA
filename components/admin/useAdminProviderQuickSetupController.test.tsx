@@ -115,7 +115,7 @@ describe("useAdminProviderQuickSetupController", () => {
           checkedAt: "2026-07-26T03:00:00.000Z",
           expectedState: "state-old",
           outcome: "selection_required",
-          policyVersion: 2,
+          policyVersion: 3,
           provider: "openai",
           providerDisplayName: "OpenAI"
         },
@@ -363,7 +363,7 @@ describe("useAdminProviderQuickSetupController", () => {
       checkedAt: "2026-07-26T03:00:00.000Z",
       expectedState: "state-selection",
       outcome: "selection_required" as const,
-      policyVersion: 2,
+      policyVersion: 3,
       provider: "openai" as const,
       providerDisplayName: "OpenAI"
     };
@@ -389,7 +389,7 @@ describe("useAdminProviderQuickSetupController", () => {
     act(() => result.current.actions.chooseModel("p2-o3"));
     expect(result.current.state.selectedCandidateId).toBe("p2-o2");
     expect(api.submit.mock.calls[1]?.[0]).toMatchObject({
-      selectedModel: { candidateId: "p2-o2", policyVersion: 2 }
+      selectedModel: { candidateId: "p2-o2", policyVersion: 3 }
     });
 
     pending.resolve({ error: { code: "provider_quick_setup_selection_invalid" }, ok: false });

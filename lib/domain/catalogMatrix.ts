@@ -73,6 +73,15 @@ export function availableSearchStrategiesForModel(
     }
 
     if (
+      strategy.kind === "gemini_google_search" &&
+      model.adapterKind === "gemini_interactions_native" &&
+      model.capabilities.nativeSearch
+    ) {
+      strategyIds.add(strategy.strategyId);
+      continue;
+    }
+
+    if (
       strategy.kind === "openai_native_web_search" &&
       model.adapterKind === "openai_responses_native" &&
       model.capabilities.nativeSearch
@@ -164,7 +173,9 @@ export function buildCatalogModel(
           : "none",
       imageInput: model.capabilities.vision,
       nativeWebSearch:
-        model.adapterKind === "openai_responses_native" && model.capabilities.nativeSearch,
+        (model.adapterKind === "openai_responses_native" ||
+          model.adapterKind === "gemini_interactions_native") &&
+        model.capabilities.nativeSearch,
       openRouterPerplexitySearch,
       reasoning: model.capabilities.reasoning,
       streaming: model.capabilities.streaming,

@@ -47,7 +47,7 @@ export function providerFamilyRoot(
 ): string {
   if (family === "anthropic") return "https://api.anthropic.com/v1";
   if (family === "gemini") {
-    return "https://generativelanguage.googleapis.com/v1beta/openai";
+    return "https://generativelanguage.googleapis.com/v1";
   }
   if (family === "openrouter") return "https://openrouter.ai/api/v1";
   if (family === "openai") return "https://api.openai.com/v1";

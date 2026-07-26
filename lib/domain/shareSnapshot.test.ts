@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { buildPublicShareSnapshot, type ShareSnapshotMessageInput } from "./shareSnapshot";
+import {
+  buildPublicShareSnapshot,
+  GroundedContentNotShareableError,
+  type ShareSnapshotMessageInput
+} from "./shareSnapshot";
 
 const messages: ShareSnapshotMessageInput[] = [
   {
@@ -85,6 +89,25 @@ describe("share snapshots", () => {
     ]) {
       expect(serialized).not.toContain(privateValue);
     }
+  });
+
+  it("rejects a visible grounded branch without blocking an unrelated sibling branch", () => {
+    const groundedMessages: ShareSnapshotMessageInput[] = messages.map((message) =>
+      message.id === "a1"
+        ? { ...message, groundedAt: new Date("2026-07-26T12:00:00.000Z") }
+        : message
+    );
+
+    expect(() => buildPublicShareSnapshot({
+      activeLeafMessageId: "a1",
+      messages: groundedMessages,
+      title: "Grounded"
+    })).toThrow(GroundedContentNotShareableError);
+    expect(buildPublicShareSnapshot({
+      activeLeafMessageId: "u2",
+      messages: groundedMessages,
+      title: "Sibling"
+    }).messages).toHaveLength(1);
   });
 
   it("keeps attachment-only turns readable even when private file metadata is malformed", () => {

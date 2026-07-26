@@ -401,6 +401,14 @@ export async function loadProviderAdmissionPlan(
     ) {
       throw new ProviderAdmissionError("search_strategy_not_available");
     }
+  } else if (strategy.kind === "gemini_google_search") {
+    if (
+      answer.snapshot.providerFamily !== "gemini" ||
+      answer.snapshot.model.adapterKind !== "gemini_interactions_native" ||
+      !answer.modelConfiguration.capabilities.nativeSearch
+    ) {
+      throw new ProviderAdmissionError("search_strategy_not_available");
+    }
   } else if (strategy.kind === "perplexity_tool_search") {
     if (
       !strategy.providerModelId ||

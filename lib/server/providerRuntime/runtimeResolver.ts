@@ -7,6 +7,7 @@ import {
   type ProviderExecutionSnapshot,
   type ProviderRuntimeBinding
 } from "../providers/runtimeFactory";
+import { providerAuthenticationMode } from "../providers/providerConfiguration";
 
 export type ProviderRunBindingRole = "answer" | "search";
 
@@ -23,6 +24,7 @@ export type LockedProviderCredentialVersion = Readonly<{
   id: string;
   revokedAt: Date | null;
   secretEnvelope: string | null;
+  testEvidence: unknown;
 }>;
 
 export type ProviderRuntimeStore = Readonly<{
@@ -37,6 +39,18 @@ export type ProviderRuntimeStore = Readonly<{
 export type ProviderRuntimeResolver = Readonly<{
   resolve(runId: string, role: ProviderRunBindingRole): Promise<ProviderRuntimeBinding>;
 }>;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function credentialEvidenceMode(value: unknown): "bearer" | "none" | null | "invalid" {
+  if (!isRecord(value) || value.authenticationMode === undefined) return null;
+  if (value.authenticationMode === "bearer" || value.authenticationMode === "none") {
+    return value.authenticationMode;
+  }
+  return "invalid";
+}
 
 function assertBindingLineage(
   binding: StoredProviderRunBinding,
@@ -82,6 +96,44 @@ export function createProviderRuntimeResolver(input: Readonly<{
       }
       const credentialId = snapshot.credentialId;
       const credentialVersionId = snapshot.credentialVersionId;
+      const authenticationMode = providerAuthenticationMode(snapshot.connection);
+
+      if (authenticationMode === "none") {
+        const assertNoAuthCredential = async () => {
+          const valid = await input.store.withLockedCredential(
+            credentialId,
+            credentialVersionId,
+            (version) => {
+              if (
+                version.id !== credentialVersionId ||
+                version.credentialId !== credentialId ||
+                version.revokedAt ||
+                version.secretEnvelope !== null ||
+                credentialEvidenceMode(version.testEvidence) !== "none"
+              ) {
+                throw new Error("credential_revoked");
+              }
+              return true;
+            }
+          );
+          if (valid !== true) {
+            throw new Error("credential_revoked");
+          }
+        };
+        const providerFetch = input.createFetch(snapshot);
+        const guardedFetch: typeof fetch = async (request, init) => {
+          await assertNoAuthCredential();
+          return providerFetch(request, init);
+        };
+        return createProviderRuntimeBinding({
+          options: {
+            allowFake: input.allowFake,
+            fetchFn: guardedFetch
+          },
+          secret: null,
+          snapshot
+        });
+      }
 
       const secret = async () => {
         const value = await input.store.withLockedCredential(
@@ -92,7 +144,9 @@ export function createProviderRuntimeResolver(input: Readonly<{
               version.id !== credentialVersionId ||
               version.credentialId !== credentialId ||
               version.revokedAt ||
-              !version.secretEnvelope
+              !version.secretEnvelope ||
+              credentialEvidenceMode(version.testEvidence) === "none" ||
+              credentialEvidenceMode(version.testEvidence) === "invalid"
             ) {
               throw new Error("credential_revoked");
             }
@@ -149,7 +203,7 @@ export function createPrismaProviderRuntimeStore(
     withLockedCredential(credentialId, credentialVersionId, consume) {
       return prisma.$transaction(async (tx) => {
         const rows = await tx.$queryRaw<LockedProviderCredentialVersion[]>(Prisma.sql`
-          SELECT "credentialId", "id", "revokedAt", "secretEnvelope"
+          SELECT "credentialId", "id", "revokedAt", "secretEnvelope", "testEvidence"
           FROM "ProviderCredentialVersion"
           WHERE "credentialId" = ${credentialId}
             AND "id" = ${credentialVersionId}

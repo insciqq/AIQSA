@@ -24,7 +24,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function requiredBearerToken(value: string): string {
+function requiredBearerToken(value: string | null | undefined): string {
+  if (typeof value !== "string") {
+    throw new Error("openai_compatible_chat_bearer_token_required");
+  }
   const token = value.trim();
   if (!token) {
     throw new Error("openai_compatible_chat_bearer_token_required");
@@ -95,16 +98,28 @@ async function throwHttpError(response: Response, signal: AbortSignal): Promise<
 
 export function createFetchOpenAICompatibleChatClient(input: {
   apiRoot: string;
-  bearerToken: string;
+  authenticationMode?: "bearer" | "none";
+  bearerToken?: string | null;
   fetchFn?: typeof fetch;
 }): OpenAICompatibleChatClient {
   const endpoint = deriveOpenAICompatibleChatEndpoint(input.apiRoot);
-  const bearerToken = requiredBearerToken(input.bearerToken);
+  const authenticationMode = input.authenticationMode ?? "bearer";
+  if (authenticationMode !== "bearer" && authenticationMode !== "none") {
+    throw new Error("openai_compatible_chat_authentication_invalid");
+  }
+  const bearerToken = authenticationMode === "bearer"
+    ? requiredBearerToken(input.bearerToken)
+    : null;
+  if (
+    authenticationMode === "none" &&
+    input.bearerToken !== null &&
+    input.bearerToken !== undefined
+  ) {
+    throw new Error("openai_compatible_chat_authentication_invalid");
+  }
   const fetchFn = input.fetchFn ?? fetch;
-  const headers = {
-    authorization: `Bearer ${bearerToken}`,
-    "content-type": "application/json"
-  };
+  const headers: Record<string, string> = { "content-type": "application/json" };
+  if (bearerToken) headers.authorization = `Bearer ${bearerToken}`;
 
   async function post(
     body: Record<string, unknown>,

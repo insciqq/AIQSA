@@ -121,6 +121,21 @@ describe("catalog wire contract", () => {
     });
   });
 
+  it("decodes the native Gemini Google Search strategy", () => {
+    const response = validResponse();
+    response.catalog.searchStrategies = [{
+      displayName: "Google Search",
+      kind: "gemini_google_search",
+      strategyId: "gemini-google-search"
+    }];
+
+    expect(decodeCatalogResponse(response)?.searchStrategies).toEqual([{
+      displayName: "Google Search",
+      kind: "gemini_google_search",
+      strategyId: "gemini-google-search"
+    }]);
+  });
+
   it("rejects malformed or duplicate run-profile projections", () => {
     const duplicate = validResponse();
     duplicate.catalog.runProfiles.push({ ...duplicate.catalog.runProfiles[0] });

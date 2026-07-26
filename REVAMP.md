@@ -121,6 +121,14 @@ Canonical section — `access`. Старые `groups` и `model-access` оста
 Providers -> OpenAI / Anthropic / Gemini / OpenRouter -> API key -> Test & Save -> Ready
 ```
 
+Рядом находится отдельная задача `Connect custom endpoint`, а не пятая branded provider-card и не вход в Advanced:
+
+```text
+API root -> manual model ID -> API key -> Test & Save -> Ready
+```
+
+Она фиксирует OpenAI-compatible Chat Completions, показывает derived `/chat/completions`, сразу создаёт direct credential assignment + model entitlement acting administrator и не требует группу. Empty key разрешён только как явный no-auth для подтверждённого private/local HTTP endpoint; hosted path остаётся endpoint + key. Names/capabilities находятся в одном тихом disclosure, а full lifecycle остаётся в Advanced.
+
 На экране сразу есть:
 
 - четыре provider choices;
@@ -133,6 +141,8 @@ Providers -> OpenAI / Anthropic / Gemini / OpenRouter -> API key -> Test & Save 
 На compact viewport четыре provider choices складываются в короткую сетку 2 × 2; на широком экране это одна строка из четырёх. Поле key и `Test & Save` должны помещаться в первый экран после заголовка; объясняющая правая колонка появляется только когда для неё действительно есть место.
 
 Provider никогда не получает блокирующий UI-status `Advanced` только из-за group assignments, extra models, extra credentials или другого custom connection. Existing team/custom state показывается как спокойная nonblocking информация и сохраняется без изменений.
+
+Gemini в этом UX остаётся тем же простым key-flow, но runtime под ним полностью native Interactions v1 и не имеет OpenAI-compatible fallback. Выбранный Google Search показывает validated Search Suggestions и citations только рядом с текущим live grounded-answer; после reload остаётся честный placeholder, а такой branch нельзя публиковать через anonymous Share.
 
 Quick setup создаёт прямой путь для acting administrator:
 

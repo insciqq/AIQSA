@@ -122,7 +122,7 @@ describe("provider Quick setup handlers", () => {
       expectedState: "state-token",
       provider: "openai",
       secret: "sk-secret",
-      selectedModel: { candidateId: "p2-o2", extra: true, policyVersion: 2 }
+      selectedModel: { candidateId: "p2-o2", extra: true, policyVersion: 3 }
     }]
   ])("rejects request fields outside the exact contract", async (body) => {
     const quickService = service();
@@ -158,7 +158,7 @@ describe("provider Quick setup handlers", () => {
         expectedState: "state-token",
         provider: "openai",
         secret: "sk-write-only",
-        selectedModel: { candidateId: "p2-o2", policyVersion: 2 }
+        selectedModel: { candidateId: "p2-o2", policyVersion: 3 }
       }),
       headers: { "content-type": "application/json" },
       method: "POST"

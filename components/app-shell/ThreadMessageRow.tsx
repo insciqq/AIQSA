@@ -21,6 +21,7 @@ import type {
   ThreadMessage
 } from "@/components/app-shell/types";
 import { MarkdownMessage } from "@/components/chat/MarkdownMessage";
+import { GeminiSearchSuggestions } from "@/components/app-shell/GeminiSearchSuggestions";
 import {
   CircleAlert,
   Copy,
@@ -477,6 +478,9 @@ function ThreadMessageRowComponent({
                 onExpandedChange={(expanded) => changeDisclosure("search", expanded)}
               />
             </div>
+          ) : null}
+          {artifactSummary?.groundingDisplay?.provider === "gemini" ? (
+            <GeminiSearchSuggestions html={artifactSummary.groundingDisplay.suggestionsHtml} />
           ) : null}
           {showToolActivity && artifactSummary?.toolCallCount ? (
             <div className="mt-5">

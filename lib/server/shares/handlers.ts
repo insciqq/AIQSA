@@ -14,7 +14,7 @@ export type CreatedShareRecord = ShareRecord & {
 };
 
 export type ShareCreateError = {
-  error: "invalid_active_leaf";
+  error: "grounded_content_not_shareable" | "invalid_active_leaf";
 };
 
 export type ShareRepository = {

@@ -322,6 +322,13 @@ export type RunRepository = {
     runId: string;
     userId: string;
   }): Promise<CheckpointedToolLoopRun | null>;
+  markAssistantMessageGroundedLiveOnly(input: {
+    assistantMessageId: string;
+    groundedAt: Date;
+    provider: string;
+    runId: string;
+    strategy: string;
+  }): Promise<boolean>;
   nextRunEventSequence(runId: string): Promise<number>;
   persistToolLoopCallBatch(input: PersistToolLoopCallBatchInput): Promise<PersistToolLoopCallBatchResult>;
   recordRunUsageEvents(input: {

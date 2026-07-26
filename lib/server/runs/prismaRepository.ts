@@ -7,7 +7,11 @@ import {
   type PrismaClient
 } from "@prisma/client";
 import { textMessageContent } from "../../domain/content";
-import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
+import {
+  groundedLiveOnlyMessageContent,
+  groundedLiveOnlyProviderPreview
+} from "../../domain/grounding";
+import { isGroundingDisplaySseEvent, type ModelRunSseEvent } from "../../domain/modelRunEvents";
 import { normalizeTokenUsage, sumTokenUsage } from "../../domain/usage";
 import { loadChatUsageStats, summarizeMessageRunArtifacts } from "../chats/prismaRepository";
 import { titleFromMessageContent } from "../chats/titlePolicy";
@@ -479,13 +483,14 @@ type ConversationPathSelector =
 
 type ConversationPathRow = {
   chatId: string;
+  messageGroundedAt: Date | null;
   messageContent: Prisma.JsonValue | null;
   messageId: string | null;
   messageRole: string | null;
   messageStatus: string | null;
 };
 
-function conversationMessagesFromPathRows(rows: ConversationPathRow[]): ProviderConversationMessage[] {
+export function conversationMessagesFromPathRows(rows: ConversationPathRow[]): ProviderConversationMessage[] {
   return rows.flatMap((row) => {
     if (
       !row.messageId ||
@@ -497,7 +502,9 @@ function conversationMessagesFromPathRows(rows: ConversationPathRow[]): Provider
 
     return [
       {
-        content: row.messageContent as { blocks: unknown[] },
+        content: row.messageGroundedAt
+          ? groundedLiveOnlyMessageContent()
+          : row.messageContent as { blocks: unknown[] },
         id: row.messageId,
         role: row.messageRole
       }
@@ -534,6 +541,7 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
         SELECT
           message."chatId",
           message."content",
+          message."groundedAt",
           message."id",
           message."parentMessageId",
           message."role",
@@ -550,6 +558,7 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
         SELECT
           parent."chatId",
           parent."content",
+          parent."groundedAt",
           parent."id",
           parent."parentMessageId",
           parent."role",
@@ -565,6 +574,7 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
       SELECT
         chat."id" AS "chatId",
         path."content" AS "messageContent",
+        path."groundedAt" AS "messageGroundedAt",
         path."id" AS "messageId",
         path."role" AS "messageRole",
         path."status" AS "messageStatus"
@@ -625,6 +635,7 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
           status: "streaming"
         },
         where: {
+          groundedAt: null,
           id: assistantMessageId,
           status: "streaming"
         }
@@ -721,6 +732,9 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
       return { call: persistedToolLoopCall(call), kind: "claimed" as const };
     }),
     appendRunEvent: async (runId, sequence, event) => {
+      if (isGroundingDisplaySseEvent(event)) {
+        throw new Error("grounding_display_event_is_transient");
+      }
       await prismaClient.$transaction(async (tx) => {
         await tx.modelRunEvent.create({
           data: {
@@ -964,13 +978,21 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
           return false;
         }
 
+        const assistantMessage = await tx.message.findUnique({
+          select: { groundedAt: true },
+          where: { id: input.assistantMessageId }
+        });
+        const groundedLiveOnly = Boolean(assistantMessage?.groundedAt);
+
         await tx.modelRun.update({
           data: {
             cachedInputTokens: usage.cachedInputTokens,
             cacheWriteInputTokens: usage.cacheWriteInputTokens,
             errorPayload: Prisma.JsonNull,
             estimatedCostMicros: input.estimatedCostMicros ?? 0,
-            finalProviderResponsePreview: json(input.finalProviderResponsePreview),
+            finalProviderResponsePreview: json(
+              groundedLiveOnly ? groundedLiveOnlyProviderPreview() : input.finalProviderResponsePreview
+            ),
             inputTokens: usage.inputTokens,
             outputTokens: usage.outputTokens,
             providerResponseId: input.providerResponseId ?? existingRun?.providerResponseId ?? null,
@@ -985,7 +1007,9 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
 
         await tx.message.updateMany({
           data: {
-            content: json(textMessageContent(input.finalText)),
+            content: json(
+              groundedLiveOnly ? groundedLiveOnlyMessageContent() : textMessageContent(input.finalText)
+            ),
             errorMessage: null,
             outputTokens: usage.outputTokens,
             reasoningTokens: usage.reasoningTokens,
@@ -1052,7 +1076,7 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
         });
         const firstTerminalSequence = (latestEvent._max.sequence ?? -1) + 1;
         const terminalEvents: ModelRunSseEvent[] = [
-          ...(input.eventsBeforeTerminal ?? []),
+          ...(groundedLiveOnly ? [] : input.eventsBeforeTerminal ?? []),
           {
             data: usage,
             type: "usage"
@@ -1354,9 +1378,20 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
     },
     failRun: async (runId, assistantMessageId, error) => {
       return prismaClient.$transaction(async (tx) => {
+        const assistantMessage = await tx.message.findUnique({
+          select: { groundedAt: true },
+          where: { id: assistantMessageId }
+        });
+        const groundedLiveOnly = Boolean(assistantMessage?.groundedAt);
+        const durableError = groundedLiveOnly
+          ? { code: error.code, message: "Grounded live-only run failed." }
+          : error;
         const updatedRun = await tx.modelRun.updateMany({
           data: {
-            errorPayload: json(error),
+            errorPayload: json(durableError),
+            ...(groundedLiveOnly
+              ? { finalProviderResponsePreview: json(groundedLiveOnlyProviderPreview()) }
+              : {}),
             status: "error"
           },
           where: {
@@ -1382,9 +1417,21 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
           }
         });
 
+        if (groundedLiveOnly) {
+          await tx.modelRunEvent.deleteMany({
+            where: {
+              eventType: { in: ["artifact", "token"] },
+              modelRunId: runId
+            }
+          });
+        }
+
         await tx.message.updateMany({
           data: {
-            errorMessage: error.message,
+            ...(groundedLiveOnly
+              ? { content: json(groundedLiveOnlyMessageContent()) }
+              : {}),
+            errorMessage: durableError.message,
             status: "error"
           },
           where: {
@@ -1406,7 +1453,7 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
           data: {
             eventType: "error",
             modelRunId: runId,
-            payload: json(error),
+            payload: json(durableError),
             sequence: (latestEvent._max.sequence ?? -1) + 1
           }
         });
@@ -2478,6 +2525,47 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
           where: { id: call.id }
         });
         return "settled" as const;
+      });
+    },
+    markAssistantMessageGroundedLiveOnly: async (input) => {
+      const provider = input.provider.trim().slice(0, 128);
+      const strategy = input.strategy.trim().slice(0, 128);
+      if (provider !== "gemini" || strategy !== "gemini-google-search") return false;
+
+      return prismaClient.$transaction(async (tx) => {
+        const run = await tx.modelRun.findUnique({
+          select: { assistantMessageId: true, status: true },
+          where: { id: input.runId }
+        });
+        if (
+          run?.assistantMessageId !== input.assistantMessageId ||
+          !activeModelRunStatuses.includes(run.status)
+        ) return false;
+
+        const updated = await tx.message.updateMany({
+          data: {
+            content: json(groundedLiveOnlyMessageContent()),
+            groundedAt: input.groundedAt,
+            groundingProvider: provider,
+            groundingStrategy: strategy
+          },
+          where: { id: input.assistantMessageId }
+        });
+        if (updated.count !== 1) return false;
+
+        await tx.modelRunEvent.deleteMany({
+          where: {
+            eventType: { in: ["artifact", "token"] },
+            modelRunId: input.runId
+          }
+        });
+        await tx.modelRun.update({
+          data: {
+            finalProviderResponsePreview: json(groundedLiveOnlyProviderPreview())
+          },
+          where: { id: input.runId }
+        });
+        return true;
       });
     },
     nextRunEventSequence: async (runId) => {

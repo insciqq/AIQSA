@@ -157,20 +157,20 @@ describe("OpenAI-compatible Chat Completions request", () => {
     expect(body.messages).toContainEqual({ content: "Earlier question", role: "user" });
   });
 
-  it("serializes the reviewed Gemini reasoning field without adding temperature", () => {
+  it("serializes a reviewed compatible reasoning field without adding temperature", () => {
     const body = buildOpenAICompatibleChatRequest(request({
-      modelId: "gemini-3.6-flash",
+      modelId: "vendor/reasoning-model",
       params: {
         maxOutputTokens: 64,
         reasoning: { effort: "medium" },
         stream: false
       },
-      provider: "gemini"
+      provider: "openai_compatible"
     }));
 
     expect(body).toMatchObject({
       max_completion_tokens: 64,
-      model: "gemini-3.6-flash",
+      model: "vendor/reasoning-model",
       reasoning_effort: "medium",
       stream: false
     });

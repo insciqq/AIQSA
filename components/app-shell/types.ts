@@ -16,6 +16,7 @@ export type {
   ChatUsageStats,
   ThreadArtifactSummary,
   ThreadCitation,
+  ThreadGroundingDisplay,
   ThreadMessage,
   ThreadSearchDetail,
   ThreadToolActivity,

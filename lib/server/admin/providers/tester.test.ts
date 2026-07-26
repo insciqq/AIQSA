@@ -193,6 +193,45 @@ describe("admin provider draft tester", () => {
     });
   });
 
+  it("tests an explicit no-auth private compatible endpoint without a placeholder secret", async () => {
+    const fetchFn = vi.fn<typeof fetch>(async (_request, init) => {
+      expect(new Headers(init?.headers).get("authorization")).toBeNull();
+      return new Response(JSON.stringify({
+        choices: [{ finish_reason: "stop", message: { content: "OK", role: "assistant" } }],
+        usage: { completion_tokens: 1, prompt_tokens: 2, total_tokens: 3 }
+      }));
+    });
+    const providerTester = createAdminProviderDraftTester({ createFetch: () => fetchFn });
+
+    await expect(providerTester.test(input({
+      connection: {
+        allowPrivateNetwork: true,
+        apiRoot: "http://127.0.0.1:11434/v1",
+        authenticationMode: "none"
+      },
+      mode: "tiny_generation",
+      model: {
+        ...input().model,
+        adapterKind: "openai_chat_completions_compatible",
+        openRouterRouting: undefined
+      },
+      providerFamily: "openai_compatible",
+      secret: null
+    }))).resolves.toMatchObject({
+      evidence: { detail: "ok", method: "tiny_generation" },
+      status: "available"
+    });
+    expect(fetchFn).toHaveBeenCalledOnce();
+  });
+
+  it("does not allow no-auth to enter the OpenRouter account-catalog path", async () => {
+    const providerTester = createAdminProviderDraftTester({
+      createDiscoveryClient: () => discovery()
+    });
+    await expect(providerTester.test(input({ secret: null })))
+      .rejects.toThrow("provider_credential_missing");
+  });
+
   it("gives an OpenRouter reasoning diagnostic the standard output budget", async () => {
     const fetchFn = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({
       choices: [{ finish_reason: "stop", message: { content: "private output", role: "assistant" } }],

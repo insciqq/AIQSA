@@ -118,6 +118,7 @@ export type CatalogDataLoaderDeps = {
 };
 
 const supportedSearchStrategies = new Map<string, SearchStrategyCatalogEntry["kind"]>([
+  ["gemini-google-search", "gemini_google_search"],
   ["openai-native-web-search", "openai_native_web_search"],
   ["perplexity-tool-search", "perplexity_tool_search"],
   ["search-disabled", "none"]

@@ -3,6 +3,8 @@
 Status: Accepted
 Amends: 0011-explicit-next-run-control-ownership, 0016-responsive-composer-disclosure, 0022-admin-managed-llm-provider-control-plane, 0025-clean-slate-research-chat-and-control-center, 0026-personal-provider-quick-setup, 0028-task-first-control-center-and-direct-provider-setup
 
+Amendment note: ADR 0031 completely replaces this record's Gemini OpenAI-compatible runtime decision with native stateless Interactions v1 and live-only Google Search grounding. The reviewed Gemini model set and one-key Quick provisioning decision remain in force.
+
 ## Context
 
 The clean-slate shell preserved every next-run control behind one complete Run setup disclosure. That kept a single state owner, but it added an unnecessary click to the three choices used most often: concrete model, Fast/Balanced/Deep profile, and search strategy. Completed answers also repeated search and citation summaries as separate stacked disclosures below the terminal run receipt.

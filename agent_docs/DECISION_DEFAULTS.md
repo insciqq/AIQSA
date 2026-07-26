@@ -16,7 +16,7 @@ Use these defaults only when the operator has not decided the point. They route 
 ## Provider Defaults
 
 - OpenAI Responses is the default provider path; current defaults and execution behavior are owned by `BACKEND.md`.
-- Anthropic uses Messages; Gemini uses Google's OpenAI-compatible Chat Completions endpoint; OpenRouter uses Chat Completions and backs the Perplexity tool executor.
+- Anthropic uses Messages; first-class Gemini uses only Google's native stateless Interactions v1 adapter with no compatible fallback; OpenRouter uses Chat Completions and backs the Perplexity tool executor. A simple Custom endpoint fixes the wire protocol to generic Chat Completions; other compatible protocol choices remain Advanced.
 - The browser selects an entitled concrete model; providers are grouping/routing metadata, not standalone model choices.
 - Routine automation uses fake providers. Real provider calls follow the permission and cost limits in `CRITICAL_INVARIANTS.md`.
 - External mutable facts come from `PROVIDER_API_NOTES.md`; configuration names/defaults come from `ENV_VARIABLES.md`.

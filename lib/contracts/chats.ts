@@ -30,6 +30,7 @@ export type ThreadArtifactSummary = {
     approxDroppedTokens: number;
     droppedMessages: number;
   } | null;
+  groundingDisplay?: ThreadGroundingDisplay | null;
   reasoningCount: number;
   reasoningText: string[];
   searchCount: number;
@@ -37,6 +38,13 @@ export type ThreadArtifactSummary = {
   searchStrategy: string | null;
   toolCallCount: number;
   toolCalls: ThreadToolActivity[];
+};
+
+export type ThreadGroundingDisplay = {
+  callCount: number;
+  provider: "gemini";
+  queryCount: number;
+  suggestionsHtml: string;
 };
 
 export type ThreadSearchDetail = {

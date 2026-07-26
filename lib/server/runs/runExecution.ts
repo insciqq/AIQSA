@@ -1,7 +1,13 @@
 import type { ChatUpdateDataWire } from "../../contracts/chats";
 import type { ContextTruncationSummary } from "../../domain/contextBudget";
+import { textMessageContent } from "../../domain/content";
+import {
+  GROUNDED_LIVE_ONLY_PLACEHOLDER,
+  groundedLiveOnlyProviderPreview
+} from "../../domain/grounding";
 import {
   encodeSseEvent,
+  isGroundingDisplaySseEvent,
   type ModelRunChatUpdateData,
   type ModelRunSseEvent,
   type ModelRunUsage
@@ -135,6 +141,7 @@ export type RunExecutionRepository = Pick<
   | "loadEntitlements"
   | "loadModelConfiguration"
   | "loadModelPricing"
+  | "markAssistantMessageGroundedLiveOnly"
   | "nextRunEventSequence"
   | "persistToolLoopCallBatch"
   | "recordRunUsageEvents"
@@ -198,7 +205,10 @@ function iso(value: Date | string): string {
   return value instanceof Date ? value.toISOString() : value;
 }
 
-function serializeChatUpdate(update: RunChatUpdateRecord): ModelRunChatUpdateData {
+function serializeChatUpdate(
+  update: RunChatUpdateRecord,
+  liveGroundedAnswer?: Readonly<{ assistantMessageId: string; finalText: string }>
+): ModelRunChatUpdateData {
   return {
     chat: {
       activeLeafMessageId: update.chat.activeLeafMessageId,
@@ -216,7 +226,10 @@ function serializeChatUpdate(update: RunChatUpdateRecord): ModelRunChatUpdateDat
     },
     messages: update.messages.map((message) => ({
       artifactSummary: message.artifactSummary ?? null,
-      content: message.content,
+      content:
+        liveGroundedAnswer && message.id === liveGroundedAnswer.assistantMessageId
+          ? textMessageContent(liveGroundedAnswer.finalText)
+          : message.content,
       createdAt: iso(message.createdAt),
       errorMessage: message.errorMessage ?? null,
       id: message.id,
@@ -272,6 +285,7 @@ function createTokenPersistenceBuffer(input: Readonly<{
   let flushTimer: ReturnType<typeof setTimeout> | null = null;
   let flushChain = Promise.resolve();
   let flushError: unknown = null;
+  let persistenceDisabled = false;
 
   function clearFlushTimer(): void {
     if (flushTimer) {
@@ -282,6 +296,11 @@ function createTokenPersistenceBuffer(input: Readonly<{
 
   async function persistPending(): Promise<void> {
     clearFlushTimer();
+    if (persistenceDisabled) {
+      pendingDelta = "";
+      pendingTokenCount = 0;
+      return;
+    }
     if (!pendingDelta) {
       return;
     }
@@ -326,10 +345,26 @@ function createTokenPersistenceBuffer(input: Readonly<{
   }
 
   return {
+    async disablePersistence(): Promise<void> {
+      persistenceDisabled = true;
+      clearFlushTimer();
+      assistantText = "";
+      pendingDelta = "";
+      pendingTokenCount = 0;
+      // Wait until a previously-started flush settles before the repository
+      // replaces the message and purges durable provider events. Preserve the
+      // original flush error for the normal pipeline failure path, but do not
+      // let it bypass the live-only persistence fence.
+      await flushChain.catch(() => undefined);
+    },
     flush,
     push(delta: string): Promise<void> {
       if (flushError) {
         return Promise.reject(flushError);
+      }
+
+      if (persistenceDisabled) {
+        return Promise.resolve();
       }
 
       assistantText += delta;
@@ -544,6 +579,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
         sequence
       });
       let persistedProviderResponseId: string | null = null;
+      let groundedLiveOnly = false;
       const reportedUsageAttributions: RunUsageAttribution[] = [];
 
       function rememberReportedUsage(provider: string, modelId: string, usage: ModelRunUsage): void {
@@ -579,12 +615,43 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
       ): Promise<void> {
         const includeTokenEvents = options.includeTokenEvents ?? true;
 
+        if (isGroundingDisplaySseEvent(event)) {
+          if (!groundedLiveOnly) {
+            groundedLiveOnly = true;
+            await tokenBuffer.disablePersistence();
+            const marked = await input.repository.markAssistantMessageGroundedLiveOnly({
+              assistantMessageId: input.created.assistantMessageId,
+              groundedAt: new Date(),
+              provider: normalizedRequest.provider,
+              runId,
+              strategy: normalizedRequest.searchStrategy ?? "provider-grounding"
+            });
+            if (!marked) {
+              throw new RunPipelineError(
+                "grounding_persistence_fence_failed",
+                "Grounded answer could not enter live-only mode"
+              );
+            }
+          }
+          emitTransient(controller, encoder, event);
+          return;
+        }
+
         if (event.type === "token") {
           if (!includeTokenEvents) {
             return;
           }
 
-          await tokenBuffer.push(event.data.delta);
+          if (!groundedLiveOnly) {
+            await tokenBuffer.push(event.data.delta);
+          }
+          emitTransient(controller, encoder, event);
+          return;
+        }
+
+        if (groundedLiveOnly) {
+          const eventProviderResponseId = providerResponseIdFromEvent(event);
+          if (eventProviderResponseId) await publishProviderResponseId(eventProviderResponseId);
           emitTransient(controller, encoder, event);
           return;
         }
@@ -1095,9 +1162,16 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
 
         await tokenBuffer.flush();
         throwIfAborted(signal);
+        const persistedProviderResult = groundedLiveOnly
+          ? {
+              ...providerResult,
+              finalProviderResponsePreview: groundedLiveOnlyProviderPreview(),
+              finalText: GROUNDED_LIVE_ONLY_PLACEHOLDER
+            }
+          : providerResult;
         const finalization = await finalizeRunCompletion({
           repository: input.repository,
-          result: providerResult,
+          result: persistedProviderResult,
           run: {
             assistantMessageId: input.created.assistantMessageId,
             chatId: normalizedRequest.chatId,
@@ -1125,7 +1199,15 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
           });
           if (chatUpdate) {
             emitTransient(controller, encoder, {
-              data: serializeChatUpdate(chatUpdate),
+              data: serializeChatUpdate(
+                chatUpdate,
+                groundedLiveOnly
+                  ? {
+                      assistantMessageId: input.created.assistantMessageId,
+                      finalText: providerResult.finalText
+                    }
+                  : undefined
+              ),
               type: "chat_update"
             });
           }

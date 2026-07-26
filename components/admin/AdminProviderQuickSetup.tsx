@@ -11,11 +11,12 @@ import type { AdminProviderQuickSetupController } from "@/components/admin/useAd
 import type { AdminProviderQuickSetupProvider } from "@/components/admin/adminProviderQuickSetupApi";
 import type { AdminConfirmationController } from "@/components/admin/useAdminConfirmationController";
 import Link from "next/link";
-import { CheckCircle2, KeyRound, ShieldCheck, UserRound } from "lucide-react";
+import { CheckCircle2, KeyRound, ServerCog, ShieldCheck, UserRound } from "lucide-react";
 
 export type AdminProviderQuickSetupProps = Readonly<{
   controller: AdminProviderQuickSetupController;
   onOpenAdvanced(): void;
+  onOpenCustom(): void;
   requestConfirmation: AdminConfirmationController["requestConfirmation"];
 }>;
 
@@ -437,6 +438,7 @@ function SetupGuide() {
 export function AdminProviderQuickSetup({
   controller,
   onOpenAdvanced,
+  onOpenCustom,
   requestConfirmation
 }: AdminProviderQuickSetupProps) {
   const providers = controller.state.snapshot?.providers ?? [];
@@ -485,6 +487,18 @@ export function AdminProviderQuickSetup({
                 })}
               </div>
 
+              <div className="mt-3 flex justify-end">
+                <button
+                  className={quietButton}
+                  disabled={controller.state.formLocked}
+                  onClick={onOpenCustom}
+                  type="button"
+                >
+                  <ServerCog aria-hidden="true" className="size-3.5" />
+                  Connect custom endpoint
+                </button>
+              </div>
+
               <SnapshotFeedback controller={controller} />
 
               {controller.state.selectedProvider ? (
@@ -507,6 +521,12 @@ export function AdminProviderQuickSetup({
         ) : (
           <>
             <SnapshotFeedback controller={controller} />
+            <div className="mt-4">
+              <button className={quietButton} onClick={onOpenCustom} type="button">
+                <ServerCog aria-hidden="true" className="size-3.5" />
+                Connect custom endpoint
+              </button>
+            </div>
             <div className="mt-4"><AdvancedLink onOpenAdvanced={onOpenAdvanced} /></div>
           </>
         )}

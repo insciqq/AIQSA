@@ -7,6 +7,49 @@ import {
 } from "./threadContent";
 
 describe("thread artifact summaries", () => {
+  it("projects live Gemini grounding without turning provider markup into a durable artifact", () => {
+    const suggestionsHtml = '<div><a href="https://www.google.com/search?q=aiqsa">AIQSA</a></div>';
+    const summary = summarizeThreadArtifacts([{
+      data: {
+        citations: [{ title: "Source", url: "https://example.com/source" }],
+        provider: "gemini",
+        runSearch: { callCount: 1, queryCount: 2 },
+        suggestionsHtml
+      },
+      type: "grounding_display"
+    }]);
+
+    expect(summary).toMatchObject({
+      citationCount: 1,
+      groundingDisplay: {
+        callCount: 1,
+        provider: "gemini",
+        queryCount: 2,
+        suggestionsHtml
+      },
+      searchCount: 1,
+      searchStrategy: "gemini-google-search"
+    });
+  });
+
+  it("keeps a provider-proven search call visible when Gemini omits query metadata", () => {
+    const suggestionsHtml = '<a href="https://google.com/search?q=aiqsa">Search</a>';
+    expect(summarizeThreadArtifacts([{
+      data: {
+        citations: [],
+        provider: "gemini",
+        runSearch: { callCount: 1, queryCount: 0 },
+        suggestionsHtml
+      },
+      type: "grounding_display"
+    }])?.groundingDisplay).toEqual({
+      callCount: 1,
+      provider: "gemini",
+      queryCount: 0,
+      suggestionsHtml
+    });
+  });
+
   it("uses native web search artifacts as details when search runs are absent", () => {
     const summary = summarizeThreadArtifacts([
       {

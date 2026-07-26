@@ -76,7 +76,7 @@ describe("admin provider credential tester", () => {
       family: "gemini" as const,
       path: "/v1/models",
       expectedHeaders: {
-        authorization: "Bearer exact-secret"
+        "x-goog-api-key": "exact-secret"
       }
     },
     {
@@ -96,7 +96,11 @@ describe("admin provider credential tester", () => {
       network: {
         dispatch: async (request) => {
           requests.push(request);
-          return catalog(["model-b", "model-a", "model-b"]);
+          return family === "gemini"
+            ? new Response(JSON.stringify({
+                models: ["model-b", "model-a", "model-b"].map((name) => ({ name }))
+              }))
+            : catalog(["model-b", "model-a", "model-b"]);
         },
         lookupHostname: publicLookup
       }
@@ -115,7 +119,7 @@ describe("admin provider credential tester", () => {
     for (const [name, value] of Object.entries(expectedHeaders)) {
       expect(request.headers.get(name)).toBe(value);
     }
-    if (family === "anthropic") {
+    if (family === "anthropic" || family === "gemini") {
       expect(request.headers.has("authorization")).toBe(false);
     } else {
       expect(request.headers.has("x-api-key")).toBe(false);
@@ -126,12 +130,14 @@ describe("admin provider credential tester", () => {
   it("normalizes Gemini catalog resource names before policy matching", async () => {
     const tester = createAdminProviderCredentialTester({
       network: {
-        dispatch: async () => catalog([
-          "models/gemini-3.6-flash",
-          "gemini-3.5-flash",
-          "models/gemini-3.6-flash",
-          "models/gemini-3.5-flash-lite"
-        ]),
+        dispatch: async () => new Response(JSON.stringify({
+          models: [
+            "models/gemini-3.6-flash",
+            "gemini-3.5-flash",
+            "models/gemini-3.6-flash",
+            "models/gemini-3.5-flash-lite"
+          ].map((name) => ({ name }))
+        })),
         lookupHostname: publicLookup
       }
     });

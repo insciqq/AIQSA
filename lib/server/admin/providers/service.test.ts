@@ -225,7 +225,7 @@ function activationCandidate(): ProviderActivationCandidate {
 }
 
 describe("admin provider service", () => {
-  it("accepts only the reviewed Chat Completions adapter for Advanced Gemini models", async () => {
+  it("accepts only the native Interactions adapter for Advanced Gemini models", async () => {
     const create = vi.fn(async () => ({}));
     const updateMany = vi.fn(async () => ({ count: 1 }));
     const db = {
@@ -247,10 +247,10 @@ describe("admin provider service", () => {
       ["gemini-model-1", "rejected-model-1"]
     );
     const geminiConfiguration = {
-      adapterKind: "openai_chat_completions_compatible" as const,
+      adapterKind: "gemini_interactions_native" as const,
       capabilities: {
         nativePdfInput: false,
-        nativeSearch: false,
+        nativeSearch: true,
         pdf: true,
         reasoning: true,
         streaming: true,
@@ -274,7 +274,7 @@ describe("admin provider service", () => {
       data: expect.objectContaining({
         connectionId: "gemini-connection-1",
         draftConfig: expect.objectContaining({
-          adapterKind: "openai_chat_completions_compatible",
+          adapterKind: "gemini_interactions_native",
           upstreamModelId: "gemini-3.6-flash"
         }),
         id: "gemini-model-1",
@@ -291,7 +291,7 @@ describe("admin provider service", () => {
     expect(updateMany).toHaveBeenCalledWith({
       data: expect.objectContaining({
         draftConfig: expect.objectContaining({
-          adapterKind: "openai_chat_completions_compatible"
+          adapterKind: "gemini_interactions_native"
         }),
         draftVersion: { increment: 1 }
       }),

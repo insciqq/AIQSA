@@ -86,7 +86,7 @@ export type AnthropicMessagesParams = {
   };
 };
 
-export type GeminiChatParams = {
+export type GeminiInteractionsParams = {
   maxTokens: number;
   reasoning: {
     effort: ReasoningEffort;
@@ -253,7 +253,7 @@ export function defaultOpenAIResponsesParams(): OpenAIResponsesParams {
   };
 }
 
-export function defaultGeminiChatParams(): GeminiChatParams {
+export function defaultGeminiInteractionsParams(): GeminiInteractionsParams {
   return {
     maxTokens: 65536,
     reasoning: {

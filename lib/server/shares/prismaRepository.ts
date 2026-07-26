@@ -1,5 +1,9 @@
 import { Prisma } from "@prisma/client";
-import { buildPublicShareSnapshot, type PublicShareSnapshot } from "../../domain/shareSnapshot";
+import {
+  buildPublicShareSnapshot,
+  GroundedContentNotShareableError,
+  type PublicShareSnapshot
+} from "../../domain/shareSnapshot";
 import { prisma } from "../prisma";
 import type { ShareRepository } from "./handlers";
 
@@ -41,16 +45,25 @@ export function createPrismaShareRepository(prismaClient = prisma): ShareReposit
           };
         }
 
-        const snapshot = buildPublicShareSnapshot({
-          activeLeafMessageId: leaf,
-          messages: chat.messages.map((message) => ({
-            content: message.content,
-            id: message.id,
-            parentMessageId: message.parentMessageId,
-            role: message.role as "assistant" | "system" | "tool" | "user"
-          })),
-          title: chat.title
-        });
+        let snapshot: PublicShareSnapshot;
+        try {
+          snapshot = buildPublicShareSnapshot({
+            activeLeafMessageId: leaf,
+            messages: chat.messages.map((message) => ({
+              content: message.content,
+              groundedAt: message.groundedAt,
+              id: message.id,
+              parentMessageId: message.parentMessageId,
+              role: message.role as "assistant" | "system" | "tool" | "user"
+            })),
+            title: chat.title
+          });
+        } catch (error) {
+          if (error instanceof GroundedContentNotShareableError) {
+            return { error: "grounded_content_not_shareable" as const };
+          }
+          throw error;
+        }
 
         const share = await tx.sharedChatSnapshot.create({
           data: {

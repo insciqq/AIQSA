@@ -31,7 +31,7 @@ export type AdminProviderDraftTesterInput = Readonly<{
   modelDisplayName: string;
   providerFamily: string;
   providerModelId: string;
-  secret: ProviderCredentialSource;
+  secret: ProviderCredentialSource | null;
   signal?: AbortSignal;
 }>;
 
@@ -140,6 +140,9 @@ async function testOpenRouterCatalog(
   const routing = input.model.openRouterRouting;
   if (!routing) {
     throw new Error("provider_account_catalog_test_unsupported");
+  }
+  if (input.secret === null) {
+    throw new Error("provider_credential_missing");
   }
   const client = options.createDiscoveryClient?.({
     connection: input.connection,

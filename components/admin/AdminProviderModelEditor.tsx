@@ -53,7 +53,7 @@ type ModelForm = {
 
 function adapterFor(family: AdminProviderConnection["family"]): AdminProviderAdapterKind {
   if (family === "anthropic") return "anthropic_messages";
-  if (family === "gemini") return "openai_chat_completions_compatible";
+  if (family === "gemini") return "gemini_interactions_native";
   if (family === "openrouter") return "openrouter_chat_completions";
   if (family === "openai") return "openai_responses_native";
   return "openai_responses_compatible";
@@ -62,6 +62,7 @@ function adapterFor(family: AdminProviderConnection["family"]): AdminProviderAda
 export function adminProviderAdapterLabel(kind: AdminProviderAdapterKind): string {
   const labels: Record<AdminProviderAdapterKind, string> = {
     anthropic_messages: "Anthropic Messages",
+    gemini_interactions_native: "Gemini Interactions",
     openai_chat_completions_compatible: "Chat Completions",
     openai_responses_compatible: "Responses (compatible)",
     openai_responses_native: "Responses (native OpenAI)",
@@ -77,7 +78,7 @@ function initialCapabilities(
     backgroundStreaming: family === "openai",
     nativeBackground: family === "openai",
     nativePdfInput: family === "openai",
-    nativeSearch: family === "openai",
+    nativeSearch: family === "openai" || family === "gemini",
     parallelToolCalls: family !== "gemini",
     pdf: family === "openai" || family === "gemini",
     reasoning: family === "gemini",
@@ -383,6 +384,8 @@ export function AdminProviderModelEditor({
   const selectedCatalogModel = catalogModels.find(({ id }) => id === form.upstreamModelId);
   const terminalPath = form.adapterKind.includes("responses")
     ? "responses"
+    : form.adapterKind === "gemini_interactions_native"
+      ? "interactions"
     : form.adapterKind === "anthropic_messages"
       ? "messages"
       : "chat/completions";

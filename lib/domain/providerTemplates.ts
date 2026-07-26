@@ -62,7 +62,7 @@ export const providerConnectionTemplates = Object.freeze([
   Object.freeze({
     config: Object.freeze({
       allowPrivateNetwork: false,
-      apiRoot: "https://generativelanguage.googleapis.com/v1beta/openai"
+      apiRoot: "https://generativelanguage.googleapis.com/v1"
     }),
     displayName: "Gemini",
     enabled: false,

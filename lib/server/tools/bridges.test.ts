@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   anthropicMessagesToolBridge,
-  geminiChatToolBridge,
+  geminiInteractionsToolBridge,
   openAICompatibleChatToolBridge,
   openAICompatibleResponsesToolBridge,
   openAIResponsesToolBridge,
@@ -66,16 +66,27 @@ describe("provider tool bridges", () => {
     );
   });
 
-  it("keeps Gemini on the compatible chat wire shape with a Gemini family identity", () => {
+  it("uses the native Gemini Interactions wire shape", () => {
     const input = { modelId: "gemini-3.6-flash", provider: "gemini" };
 
-    expect(geminiChatToolBridge.supportsToolCalling(input)).toBe(true);
-    expect(geminiChatToolBridge.serializeTool(searchTool)).toMatchObject({
+    expect(geminiInteractionsToolBridge.supportsToolCalling(input)).toBe(true);
+    expect(geminiInteractionsToolBridge.serializeTool(searchTool)).toEqual({
       provider: "gemini",
-      tool: { function: { name: "search_via_perplexity" }, type: "function" }
+      tool: {
+        description: "Search the web.",
+        name: "search_via_perplexity",
+        parameters: searchTool.inputSchema,
+        type: "function"
+      }
     });
-    expect(geminiChatToolBridge.supportsToolCalling({ ...input, provider: "openai_compatible" }))
+    expect(geminiInteractionsToolBridge.supportsToolCalling({ ...input, provider: "openai_compatible" }))
       .toBe(false);
+    expect(geminiInteractionsToolBridge.appendToolResult({}, result)).toEqual({
+      call_id: "call-1",
+      name: "search_via_perplexity",
+      result: [{ text: "Search result text", type: "text" }],
+      type: "function_result"
+    });
   });
 
   it("owns provider-specific assistant continuation serialization", () => {
@@ -100,6 +111,12 @@ describe("provider tool bridges", () => {
     expect(anthropicMessagesToolBridge.serializeAssistantToolCalls({ calls })).toEqual([{
       content: [{ id: "call-1", input: { content: "Review" }, name: mcpTool.name, type: "tool_use" }],
       role: "assistant"
+    }]);
+    expect(geminiInteractionsToolBridge.serializeAssistantToolCalls({ calls })).toEqual([{
+      arguments: { content: "Review" },
+      id: "call-1",
+      name: mcpTool.name,
+      type: "function_call"
     }]);
   });
 

@@ -46,11 +46,12 @@ import type {
 const visibleAnswerContract =
   "Visible answer contract: answer the user directly in the chat message. Do not include debug sections such as Question, Search, Provider Parameters, Request Preview, Artifacts, Usage, or Errors. Provider/search/request/usage/error details are displayed by AIQSA Details summaries or model-run APIs. Include citations naturally only when they help the answer.";
 const perplexityToolSearchStrategyId = "perplexity-tool-search";
+const geminiGoogleSearchStrategyId = "gemini-google-search";
 const currentSendMessageId = "current-user-message";
 
 function legacyAdapterKind(provider: string): CatalogAdapterKind {
   if (provider === "anthropic") return "anthropic_messages";
-  if (provider === "gemini") return "openai_chat_completions_compatible";
+  if (provider === "gemini") return "gemini_interactions_native";
   if (provider === "openrouter") return "openrouter_chat_completions";
   if (provider === "fake") return "fake";
   return "openai_responses_native";
@@ -638,6 +639,12 @@ function validateSearchStrategyForModel(
       : { code: "search_strategy_not_supported_by_model", status: 400 };
   }
 
+  if (searchStrategy === geminiGoogleSearchStrategyId) {
+    return adapterKind === "gemini_interactions_native" && capabilities.nativeSearch
+      ? null
+      : { code: "search_strategy_not_supported_by_model", status: 400 };
+  }
+
   if (searchStrategy === perplexityToolSearchStrategyId) {
     return (
       adapterKind === "openai_responses_native" ||
@@ -961,6 +968,17 @@ export async function prepareRun(
     provider: executionProvider
   });
   if (mcpCompatibility) return failure(mcpCompatibility.code, mcpCompatibility.status);
+  if (
+    requestedSearchStrategy === geminiGoogleSearchStrategyId &&
+    mcpPlan?.ok &&
+    mcpPlan.snapshot.servers.length > 0
+  ) {
+    return failure(
+      "gemini_search_with_client_tools_not_supported",
+      400,
+      "Gemini Google Search cannot be combined with MCP tools in the same run."
+    );
+  }
 
   const uniqueAttachmentIds = Array.from(new Set(attachmentIds));
   const attachments = await loadProviderAttachments(deps, input.userId, uniqueAttachmentIds, {

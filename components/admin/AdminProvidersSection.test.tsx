@@ -355,6 +355,35 @@ describe("AdminProvidersSection", () => {
     expect(screen.queryByTestId("provider-connection-task-detail")).not.toBeInTheDocument();
   });
 
+  it("opens the exact custom connection passed from its Ready receipt", async () => {
+    const customConnection: AdminProviderConnection = {
+      ...connection,
+      displayName: "Custom provider",
+      family: "openai_compatible",
+      id: "custom-connection-1"
+    };
+    const view = controller();
+    view.state.connections = [connection, customConnection];
+    view.state.selectedConnection = customConnection;
+    mocks.useController.mockReturnValue(view);
+
+    render(
+      <AdminProvidersSection
+        active
+        advancedEntryConnectionId="custom-connection-1"
+        groups={[]}
+      />
+    );
+
+    await waitFor(() => expect(view.actions.select).toHaveBeenCalledWith(
+      "custom-connection-1"
+    ));
+    expect(screen.queryByTestId("provider-connection-index")).not.toBeInTheDocument();
+    expect(screen.getByTestId("provider-connection-task-detail")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 2, name: "Custom provider" }))
+      .toBeInTheDocument();
+  });
+
   it("does not expose an activation override on a different connection", () => {
     const secondConnection: AdminProviderConnection = {
       ...connection,
@@ -453,6 +482,45 @@ describe("AdminProvidersSection", () => {
         unassignedPolicy: "use_default"
       })
     );
+  });
+
+  it("preserves explicit no-auth mode when a Custom connection is edited", async () => {
+    const customConnection: AdminProviderConnection = {
+      ...connection,
+      displayName: "Custom local",
+      draftConfig: {
+        allowPrivateNetwork: true,
+        apiRoot: "http://127.0.0.1:11434/v1",
+        authenticationMode: "none"
+      },
+      family: "openai_compatible"
+    };
+    const view = controller();
+    view.actions.updateConnection = vi.fn(() => new Promise(() => undefined));
+    view.state.connections = [customConnection];
+    view.state.selectedConnection = customConnection;
+    mocks.useController.mockReturnValue(view);
+    render(<AdminProvidersSection active groups={[]} />);
+
+    openConnection("Custom local");
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+    expect(screen.getByText("No authentication", { exact: true })).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Display name"), {
+      target: { value: "Custom local edited" }
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save connection" }));
+
+    await waitFor(() => expect(view.actions.updateConnection).toHaveBeenCalledWith(
+      connection.id,
+      expect.objectContaining({
+        configuration: {
+          allowPrivateNetwork: true,
+          apiRoot: "http://127.0.0.1:11434/v1",
+          authenticationMode: "none"
+        },
+        displayName: "Custom local edited"
+      })
+    ));
   });
 
   it("keeps credential rotation fenced to the version opened by the administrator", async () => {

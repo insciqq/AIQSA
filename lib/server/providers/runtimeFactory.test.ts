@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import type { ProviderRunRequest, ProviderRunResult } from "./types";
 import type { ProviderExecutionSnapshot } from "./runtimeFactory";
 import {
   createProviderRuntimeBinding,
@@ -9,7 +10,9 @@ import {
 function snapshot(
   adapterKind: Exclude<ProviderExecutionSnapshot["model"]["adapterKind"], "fake">
 ): ProviderExecutionSnapshot {
-  const providerFamily = adapterKind === "openai_responses_native"
+  const providerFamily = adapterKind === "gemini_interactions_native"
+    ? "gemini"
+    : adapterKind === "openai_responses_native"
     ? "openai"
     : adapterKind === "anthropic_messages"
       ? "anthropic"
@@ -50,8 +53,40 @@ function snapshot(
   };
 }
 
+function compatibleRequest(): ProviderRunRequest {
+  return {
+    attachmentIds: [],
+    attachments: [],
+    chatId: "chat-1",
+    content: { blocks: [{ text: "hello", type: "text" }] },
+    forceNonStreaming: true,
+    modelCapabilities: {
+      nativePdfInput: false,
+      nativeSearch: false,
+      pdf: false,
+      reasoning: false,
+      streaming: false,
+      vision: false
+    },
+    modelId: "upstream/model",
+    params: { stream: false },
+    prompt: { developer: null, presetId: null, system: null },
+    provider: "openai_compatible",
+    searchStrategy: "search-disabled"
+  };
+}
+
+async function collect(
+  stream: AsyncGenerator<unknown, ProviderRunResult>
+): Promise<ProviderRunResult> {
+  let next = await stream.next();
+  while (!next.done) next = await stream.next();
+  return next.value;
+}
+
 describe("provider runtime factory", () => {
   it.each([
+    "gemini_interactions_native",
     "openai_responses_native",
     "openai_responses_compatible",
     "openai_chat_completions_compatible",
@@ -90,11 +125,8 @@ describe("provider runtime factory", () => {
     expect(preview.adapter.buildRequestPreview).toBeTypeOf("function");
   });
 
-  it("selects the Gemini-compatible tool bridge from the provider family", () => {
-    const gemini = {
-      ...snapshot("openai_chat_completions_compatible"),
-      providerFamily: "gemini"
-    };
+  it("selects only the native Gemini adapter/bridge and rejects family mismatches", () => {
+    const gemini = snapshot("gemini_interactions_native");
     const runtime = createProviderRuntimeBinding({
       options: { allowFake: false, fetchFn: vi.fn<typeof fetch>() },
       secret: "secret",
@@ -106,6 +138,129 @@ describe("provider runtime factory", () => {
       modelId: "gemini-3.6-flash",
       provider: "gemini"
     })).toBe(true);
+    expect(() => normalizeProviderExecutionSnapshot({
+      ...snapshot("openai_chat_completions_compatible"),
+      providerFamily: "gemini"
+    })).toThrow("provider_execution_snapshot_invalid");
+    expect(() => normalizeProviderExecutionSnapshot({
+      ...gemini,
+      providerFamily: "openai_compatible"
+    })).toThrow("provider_execution_snapshot_invalid");
+    expect(() => normalizeProviderExecutionSnapshot({
+      ...snapshot("openai_responses_native"),
+      providerFamily: "openai_compatible"
+    })).toThrow("provider_execution_snapshot_invalid");
+    expect(() => normalizeProviderExecutionSnapshot({
+      ...snapshot("openai_chat_completions_compatible"),
+      providerFamily: "openai"
+    })).toThrow("provider_execution_snapshot_invalid");
+  });
+
+  it("routes explicit no-auth compatible Chat through the transport without a credential", async () => {
+    const fetchFn = vi.fn<typeof fetch>(async (_request, init) => {
+      expect(new Headers(init?.headers).get("authorization")).toBeNull();
+      return new Response(JSON.stringify({
+        choices: [{ finish_reason: "stop", index: 0, message: { content: "ok", role: "assistant" } }],
+        id: "chatcmpl-1",
+        model: "upstream/model",
+        usage: { completion_tokens: 1, prompt_tokens: 1, total_tokens: 2 }
+      }));
+    });
+    const noAuthSnapshot: ProviderExecutionSnapshot = {
+      ...snapshot("openai_chat_completions_compatible"),
+      connection: {
+        allowPrivateNetwork: true,
+        apiRoot: "http://127.0.0.1:11434/v1",
+        authenticationMode: "none"
+      }
+    };
+    const runtime = createProviderRuntimeBinding({
+      options: { allowFake: false, fetchFn },
+      secret: null,
+      snapshot: noAuthSnapshot
+    });
+
+    await expect(collect(runtime.adapter.stream(compatibleRequest()))).resolves.toMatchObject({
+      finalText: "ok"
+    });
+    expect(fetchFn).toHaveBeenCalledOnce();
+    expect(() => createProviderRuntimeBinding({
+      options: { allowFake: false, fetchFn },
+      secret: "unexpected",
+      snapshot: noAuthSnapshot
+    })).toThrow("provider_credential_unexpected");
+  });
+
+  it("keeps legacy and explicit bearer snapshots fail-closed without a credential", () => {
+    const fetchFn = vi.fn<typeof fetch>();
+    expect(() => createProviderRuntimeBinding({
+      options: { allowFake: false, fetchFn },
+      secret: null,
+      snapshot: snapshot("openai_chat_completions_compatible")
+    })).toThrow("provider_credential_missing");
+    expect(() => createProviderRuntimeBinding({
+      options: { allowFake: false, fetchFn },
+      secret: null,
+      snapshot: {
+        ...snapshot("openai_chat_completions_compatible"),
+        connection: {
+          ...snapshot("openai_chat_completions_compatible").connection,
+          authenticationMode: "bearer"
+        }
+      }
+    })).toThrow("provider_credential_missing");
+  });
+
+  it("rejects no-auth on every adapter outside compatible Chat", () => {
+    expect(() => normalizeProviderExecutionSnapshot({
+      ...snapshot("openai_responses_compatible"),
+      connection: {
+        allowPrivateNetwork: true,
+        apiRoot: "http://127.0.0.1:11434/v1",
+        authenticationMode: "none"
+      }
+    })).toThrow("provider_execution_snapshot_invalid");
+  });
+
+  it("injects a deferred Gemini credential only as x-goog-api-key", async () => {
+    const fetchFn = vi.fn<typeof fetch>(async (_request, init) => new Response(JSON.stringify({
+      id: "interaction-1",
+      model: "gemini-3.6-flash",
+      status: "completed",
+      steps: [{ content: [{ text: "ok", type: "text" }], type: "model_output" }]
+    })));
+    const runtime = createProviderRuntimeBinding({
+      options: { allowFake: false, fetchFn },
+      secret: async () => "resolved-google-secret",
+      snapshot: snapshot("gemini_interactions_native")
+    });
+    const request: ProviderRunRequest = {
+      attachmentIds: [],
+      attachments: [],
+      chatId: "chat-1",
+      content: { blocks: [{ text: "hello", type: "text" }] },
+      modelCapabilities: {
+        nativePdfInput: false,
+        nativeSearch: false,
+        pdf: false,
+        reasoning: false,
+        streaming: false,
+        vision: false
+      },
+      modelId: "gemini-3.6-flash",
+      params: { stream: false },
+      prompt: { developer: null, presetId: null, system: null },
+      provider: "gemini",
+      searchStrategy: "search-disabled"
+    };
+    const stream = runtime.adapter.stream(request);
+    while (!(await stream.next()).done) {
+      // Drain the normalized provider events.
+    }
+
+    const headers = new Headers(fetchFn.mock.calls[0]?.[1]?.headers);
+    expect(headers.get("x-goog-api-key")).toBe("resolved-google-secret");
+    expect(headers.get("authorization")).toBeNull();
   });
 
   it("keeps Fake behind the explicit test boundary and credential-free", () => {

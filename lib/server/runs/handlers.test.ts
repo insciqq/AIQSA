@@ -533,6 +533,7 @@ function createMemoryRepository(
     loadModelPricing: async () => modelPricing,
     loadRunUsageAttributions: async () => [],
     loadCheckpointedToolLoopRun: async () => null,
+    markAssistantMessageGroundedLiveOnly: async () => true,
     nextRunEventSequence: async () =>
       state.events.reduce((max, event) => Math.max(max, event.sequence), -1) + 1,
     persistToolLoopCallBatch: async (input) => {

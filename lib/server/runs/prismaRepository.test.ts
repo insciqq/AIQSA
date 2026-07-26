@@ -1,6 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, describe, expect, it } from "vitest";
 import { textMessageContent } from "../../domain/content";
+import {
+  GROUNDED_LIVE_ONLY_PLACEHOLDER,
+  groundedLiveOnlyProviderPreview
+} from "../../domain/grounding";
 import { providerTemplateIds } from "../../domain/providerTemplates";
 import { loadAdminUsageQueryRows } from "../auth/adminUsageQueries";
 import { mcpRuntimeFingerprint } from "../mcp/access";
@@ -2739,6 +2743,151 @@ describe("Prisma run repository", () => {
         { eventType: "usage", sequence: 2 },
         { eventType: "done", sequence: 3 }
       ]);
+    });
+  });
+
+  it("purges grounded provider content and keeps complete and failed runs live-only", async () => {
+    await withRunUser(async ({ userId }) => {
+      const repository = createPrismaRunRepository(prisma);
+      const completed = await createActiveRun(repository, userId, "Grounded completion");
+      await repository.appendAssistantText(completed.assistantMessageId, "grounded-draft-secret");
+      await repository.appendRunEvent(completed.runId, 0, {
+        data: { delta: "grounded-token-secret" },
+        type: "token"
+      });
+      await repository.appendRunEvent(completed.runId, 1, {
+        data: {
+          artifactType: "citation",
+          payload: {
+            suggestionsHtml: "<div>grounded-suggestion-secret</div>",
+            url: "https://grounded-source.example/secret"
+          }
+        },
+        type: "artifact"
+      });
+
+      await expect(repository.markAssistantMessageGroundedLiveOnly({
+        assistantMessageId: completed.assistantMessageId,
+        groundedAt: new Date("2026-07-26T12:00:00.000Z"),
+        provider: "gemini",
+        runId: completed.runId,
+        strategy: "gemini-google-search"
+      })).resolves.toBe(true);
+      await repository.appendAssistantText(completed.assistantMessageId, "late-grounded-secret");
+      await expect(repository.appendRunEvent(completed.runId, 0, {
+        data: {
+          citations: [],
+          provider: "gemini",
+          runSearch: { callCount: 1, queryCount: 1 },
+          suggestionsHtml: "<div>must-stay-transient</div>"
+        },
+        type: "grounding_display"
+      })).rejects.toThrow("grounding_display_event_is_transient");
+
+      const completion = completionInput(completed);
+      completion.finalText = "grounded-final-secret";
+      completion.finalProviderResponsePreview = {
+        suggestionsHtml: "<div>completion-preview-secret</div>",
+        url: "https://completion-source.example/secret"
+      };
+      completion.eventsBeforeTerminal = [{
+        data: {
+          artifactType: "citation",
+          payload: { url: "https://terminal-source.example/secret" }
+        },
+        type: "artifact"
+      }];
+      await expect(repository.completeRun(completion)).resolves.toBe(true);
+
+      const completedState = await prisma.modelRun.findUniqueOrThrow({
+        select: {
+          events: {
+            orderBy: { sequence: "asc" },
+            select: { eventType: true, payload: true }
+          },
+          finalProviderResponsePreview: true,
+          assistantMessage: {
+            select: {
+              content: true,
+              groundedAt: true,
+              groundingProvider: true,
+              groundingStrategy: true,
+              status: true
+            }
+          }
+        },
+        where: { id: completed.runId }
+      });
+      expect(completedState).toMatchObject({
+        events: [{ eventType: "usage" }, { eventType: "done" }],
+        finalProviderResponsePreview: groundedLiveOnlyProviderPreview(),
+        assistantMessage: {
+          content: textMessageContent(GROUNDED_LIVE_ONLY_PLACEHOLDER),
+          groundedAt: new Date("2026-07-26T12:00:00.000Z"),
+          groundingProvider: "gemini",
+          groundingStrategy: "gemini-google-search",
+          status: "complete"
+        }
+      });
+      expect(JSON.stringify(completedState)).not.toMatch(
+        /grounded-(?:draft|token|suggestion|final)-secret|(?:completion|terminal)-source\.example|completion-preview-secret|late-grounded-secret/
+      );
+
+      const failed = await createActiveRun(repository, userId, "Grounded failure");
+      await repository.appendAssistantText(failed.assistantMessageId, "failed-grounded-draft-secret");
+      await repository.appendRunEvent(failed.runId, 0, {
+        data: { delta: "failed-grounded-token-secret" },
+        type: "token"
+      });
+      await repository.appendRunEvent(failed.runId, 1, {
+        data: {
+          artifactType: "citation",
+          payload: { url: "https://failed-grounded-source.example/secret" }
+        },
+        type: "artifact"
+      });
+      await expect(repository.markAssistantMessageGroundedLiveOnly({
+        assistantMessageId: failed.assistantMessageId,
+        groundedAt: new Date("2026-07-26T12:01:00.000Z"),
+        provider: "gemini",
+        runId: failed.runId,
+        strategy: "gemini-google-search"
+      })).resolves.toBe(true);
+      await expect(repository.failRun(failed.runId, failed.assistantMessageId, {
+        code: "provider_failed",
+        message: "failed-grounded-answer-secret https://failed-error.example/secret"
+      })).resolves.toBe(true);
+
+      const failedState = await prisma.modelRun.findUniqueOrThrow({
+        select: {
+          errorPayload: true,
+          events: {
+            orderBy: { sequence: "asc" },
+            select: { eventType: true, payload: true }
+          },
+          finalProviderResponsePreview: true,
+          assistantMessage: {
+            select: { content: true, errorMessage: true, status: true }
+          }
+        },
+        where: { id: failed.runId }
+      });
+      expect(failedState).toMatchObject({
+        errorPayload: { code: "provider_failed", message: "Grounded live-only run failed." },
+        events: [{
+          eventType: "error",
+          payload: { code: "provider_failed", message: "Grounded live-only run failed." }
+        }],
+        finalProviderResponsePreview: groundedLiveOnlyProviderPreview(),
+        assistantMessage: {
+          content: textMessageContent(GROUNDED_LIVE_ONLY_PLACEHOLDER),
+          errorMessage: "Grounded live-only run failed.",
+          status: "error"
+        }
+      });
+      expect(JSON.stringify(failedState)).not.toMatch(
+        /failed-grounded-(?:draft|token|answer)-secret|failed-(?:grounded-source|error)\.example/
+      );
     });
   });
 

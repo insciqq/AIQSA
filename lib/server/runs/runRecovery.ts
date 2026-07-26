@@ -1,4 +1,8 @@
-import type { ModelRunSseEvent, ModelRunUsage } from "../../domain/modelRunEvents";
+import {
+  isGroundingDisplaySseEvent,
+  type ModelRunSseEvent,
+  type ModelRunUsage
+} from "../../domain/modelRunEvents";
 import { sumTokenUsage } from "../../domain/usage";
 import type { AiqsaMcpToolCallResult } from "../mcp/clientSession";
 import { getDefaultMcpRuntimeCoordinator } from "../mcp/defaultRuntime";
@@ -72,6 +76,7 @@ export type RunRecoveryRepository = Pick<
   | "loadCheckpointedToolLoopRun"
   | "loadModelPricing"
   | "loadRunUsageAttributions"
+  | "markAssistantMessageGroundedLiveOnly"
   | "nextRunEventSequence"
   | "persistToolLoopCallBatch"
   | "recordRunUsageEvents"
@@ -675,6 +680,21 @@ async function recoverCheckpointedToolLoop(
     }
 
     async function appendEvent(event: ModelRunSseEvent): Promise<void> {
+      if (isGroundingDisplaySseEvent(event)) {
+        if (run.assistantMessageId) {
+          await deps.repository.markAssistantMessageGroundedLiveOnly({
+            assistantMessageId: run.assistantMessageId,
+            groundedAt: new Date(),
+            provider: run.normalizedRequest.provider,
+            runId: run.id,
+            strategy: run.normalizedRequest.searchStrategy ?? "provider-grounding"
+          });
+        }
+        throw new ToolLoopRecoveryError(
+          "grounding_live_only_not_recoverable",
+          "Grounded live-only output cannot resume after process recovery."
+        );
+      }
       await publishProviderResponseId(providerResponseIdFromEvent(event) ?? undefined);
       await appendRunEventWithRetry(deps.repository, run.id, sequence, event);
     }

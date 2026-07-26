@@ -14,10 +14,11 @@
 10. AIQSA is a QSA client, not an agent builder, plugin marketplace, visual workflow graph, or generic tool-constructor UI.
 11. Search is selected as an explicit backend-catalog strategy.
 12. Raw user request/response logs are not persisted locally by default.
-13. Native OpenAI integration uses Responses API with background-capable, stored, manual context replay. Administrator-managed compatible endpoints select Responses or Chat Completions explicitly; deployment IDs and upstream model names are not durable invariants.
+13. Native OpenAI integration uses Responses API with background-capable, stored, manual context replay. First-class Gemini uses only native stateless Interactions v1 with no compatible fallback. Administrator-managed compatible endpoints use an explicit protocol; the simple Custom path fixes it to Chat Completions. Deployment IDs and upstream model names are not durable invariants.
 14. Available providers, models, and search strategies are loaded from the backend catalog for the current user.
 15. `Share (anonymously)` creates a sanitized immutable snapshot, not public access to a private live chat.
 16. Uploaded attachments are private and are not exposed by public share snapshots.
+17. After an actual native Gemini Google Search call, the grounded answer, Search Suggestions, citation Links, and search result/signature data are live-only: durable state keeps only provenance, usage/status, and a neutral placeholder; later context and anonymous shares cannot recover or reuse the answer.
 
 ## Agent Development Invariants
 
@@ -48,6 +49,9 @@
 10. Share snapshots must strip raw provider payloads, private attachment URLs, API keys, internal run ids, and private user/group metadata.
 11. Provider entitlement and credential selection are independent. Credential precedence is direct user, then one unambiguous active-group assignment, then an allowed default; once a tier selects a credential, an unusable selection fails closed without fallback.
 12. Every bootstrapped or adopted installation has exactly one lifecycle-immutable built-in `full_access` group. Its explicit active members inherit all current and future provider/model/search and MCP entitlements, but never inherit provider key selection or MCP personal-slot secrets from that wildcard. A legacy ordinary group with the reserved name is preserved under a collision-safe custom name, never promoted with its members or policy references. A just-migrated empty database may remain group-free only until first installation bootstrap.
+13. Gemini family/adapters fail closed unless paired as `gemini` + `gemini_interactions_native`; no execution, recovery, test, or smoke path may fall back to a compatible Gemini transport.
+14. A Gemini grounding marker atomically purges and fences durable provider token/artifact content before live grounded output. Validated non-empty Search Suggestions must precede the first released grounded answer token; unsafe or missing Suggestions fail without releasing it.
+15. Compatible no-auth is explicit private/local configuration backed by a tested immutable version with a null envelope and a per-request non-revoked-version guard. Missing legacy authentication mode remains bearer; empty/sentinel secrets and implicit keyless fallback are forbidden.
 
 ## Frontend Invariants
 

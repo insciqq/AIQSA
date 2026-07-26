@@ -69,6 +69,23 @@ export type ModelRunSseEvent =
       };
     }
   | {
+      type: "grounding_display";
+      data: {
+        provider: "gemini";
+        runSearch: {
+          callCount: number;
+          queryCount: number;
+        };
+        suggestionsHtml: string;
+        citations: {
+          startIndex: number;
+          endIndex: number;
+          url: string;
+          title: string;
+        }[];
+      };
+    }
+  | {
       type: "artifact";
       data: {
         artifactType: "citation" | "context_truncated" | "reasoning" | "search" | "summary" | "tool_call" | "tool_result";
@@ -97,6 +114,17 @@ export type ModelRunSseEvent =
         message: string;
       };
     };
+
+export type GroundingDisplaySseEvent = Extract<
+  ModelRunSseEvent,
+  { type: "grounding_display" }
+>;
+
+export function isGroundingDisplaySseEvent(
+  event: ModelRunSseEvent
+): event is GroundingDisplaySseEvent {
+  return event.type === "grounding_display";
+}
 
 export function encodeSseEvent(event: ModelRunSseEvent): string {
   return `event: ${event.type}\ndata: ${JSON.stringify(event.data)}\n\n`;

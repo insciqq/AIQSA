@@ -1,7 +1,7 @@
 import {
   defaultAnthropicMessagesParams,
   defaultFakeProviderParams,
-  defaultGeminiChatParams,
+  defaultGeminiInteractionsParams,
   defaultOpenRouterParams,
   defaultOpenAIResponsesParams,
   type ProviderId
@@ -13,6 +13,7 @@ export type { ModelParameterControls } from "../contracts/catalog";
 export type CatalogAdapterKind =
   | "anthropic_messages"
   | "fake"
+  | "gemini_interactions_native"
   | "openai_chat_completions_compatible"
   | "openai_responses_compatible"
   | "openai_responses_native"
@@ -51,7 +52,7 @@ export type SearchStrategyCatalogEntry = {
   modelId?: string;
   providerModelId?: string;
   displayName: string;
-  kind: "none" | "openai_native_web_search" | "perplexity_tool_search";
+  kind: "gemini_google_search" | "none" | "openai_native_web_search" | "perplexity_tool_search";
   description: string;
   config: Record<string, unknown>;
 };
@@ -107,7 +108,7 @@ function controls(input: Partial<ModelParameterControls> & Pick<ModelParameterCo
 
 const openAIResponsesParams = defaultOpenAIResponsesParams();
 const anthropicMessagesParams = defaultAnthropicMessagesParams();
-const geminiChatParams = defaultGeminiChatParams();
+const geminiInteractionsParams = defaultGeminiInteractionsParams();
 const openRouterParams = defaultOpenRouterParams();
 
 function openAIGpt56Model(modelId: string, displayName: string): ProviderModelTemplate {
@@ -239,7 +240,7 @@ function geminiModel(input: Readonly<{
       backgroundStreaming: false,
       nativeBackground: false,
       nativePdfInput: false,
-      nativeSearch: false,
+      nativeSearch: true,
       parallelToolCalls: false,
       pdf: true,
       reasoning: true,
@@ -248,7 +249,7 @@ function geminiModel(input: Readonly<{
       vision: true
     },
     defaultParams: {
-      ...geminiChatParams,
+      ...geminiInteractionsParams,
       reasoning: {
         effort: input.effort
       }
@@ -655,7 +656,7 @@ const providerDisplayNames: Record<ProviderId, string> = {
 const providerAdapterKinds: Record<ProviderId, CatalogAdapterKind> = {
   anthropic: "anthropic_messages",
   fake: "fake",
-  gemini: "openai_chat_completions_compatible",
+  gemini: "gemini_interactions_native",
   openai: "openai_responses_native",
   openrouter: "openrouter_chat_completions"
 };
@@ -796,6 +797,17 @@ export const defaultSearchStrategies: SearchStrategyCatalogEntry[] = [
     description: "OpenAI Responses API web_search tool for direct OpenAI models.",
     config: {
       tool: "web_search"
+    }
+  },
+  {
+    strategyId: "gemini-google-search",
+    provider: "gemini",
+    displayName: "Google Search",
+    kind: "gemini_google_search",
+    description: "Native Google Search grounding for eligible Gemini models.",
+    config: {
+      liveOnly: true,
+      tool: "google_search"
     }
   },
   {

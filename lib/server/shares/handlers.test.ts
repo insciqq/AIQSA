@@ -33,6 +33,12 @@ function createMemoryRepository() {
         return null;
       }
 
+      if (activeLeafMessageId === "grounded-message") {
+        return {
+          error: "grounded_content_not_shareable"
+        };
+      }
+
       if (activeLeafMessageId !== "message-1") {
         return {
           error: "invalid_active_leaf"
@@ -146,6 +152,22 @@ describe("share route handlers", () => {
     await expect(response.json()).resolves.toEqual({
       error: "chat_not_found_or_empty_branch"
     });
+  });
+
+  it("rejects a share whose visible branch contains live-only grounded content", async () => {
+    const { repository } = createMemoryRepository();
+    const POST = createShareChatHandler({ repository, resolveAuth: auth.resolveAuth });
+    const response = await POST(
+      new Request("http://app.local/api/chats/chat-1/share", {
+        body: JSON.stringify({ activeLeafMessageId: "grounded-message" }),
+        headers: { cookie: authCookie() },
+        method: "POST"
+      }),
+      { params: { chatId: "chat-1" } }
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({ error: "grounded_content_not_shareable" });
   });
 
   it.each([

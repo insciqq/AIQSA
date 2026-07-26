@@ -41,6 +41,14 @@ type QuickChatFixture = {
   credentialId: string;
   credentialVersionId: string;
   modelId: string;
+  priorDeepProfile: {
+    enabled: boolean;
+    providerModelId: string | null;
+    reasoningEffort: string;
+    reasoningMode: string;
+    updatedByUserId: string | null;
+    version: number;
+  };
   priorDefaultControlValues: unknown;
   priorDefaultModelId: string | null;
   userId: string;
@@ -143,11 +151,7 @@ async function startLocalResponsesServer() {
       const completed = completedOpenAIResponse(responseId);
       if (body.stream === true) {
         sseResponses += 1;
-        response.writeHead(200, {
-          "cache-control": "no-cache",
-          "content-type": "text/event-stream"
-        });
-        response.end([
+        const sseBody = [
           `event: response.created\ndata: ${JSON.stringify({
             response: { id: responseId, model: "gpt-5.6-sol", status: "in_progress" },
             type: "response.created"
@@ -161,7 +165,14 @@ async function startLocalResponsesServer() {
             response: completed,
             type: "response.completed"
           })}\n\n`
-        ].join(""));
+        ].join("");
+        response.writeHead(200, {
+          "cache-control": "no-cache",
+          "connection": "close",
+          "content-length": Buffer.byteLength(sseBody),
+          "content-type": "text/event-stream"
+        });
+        response.end(sseBody);
         return;
       }
 
@@ -234,11 +245,24 @@ async function installQuickChatFixture(apiRoot: string): Promise<QuickChatFixtur
     valueId: fixture.credentialVersionId
   });
 
-  const priorSettings = await prisma.$transaction(async (tx) => {
-    const settings = await tx.userSettings.findUniqueOrThrow({
-      select: { defaultControlValues: true, defaultProviderModelId: true },
-      where: { userId: fixture.userId }
-    });
+  const priorState = await prisma.$transaction(async (tx) => {
+    const [settings, deepProfile] = await Promise.all([
+      tx.userSettings.findUniqueOrThrow({
+        select: { defaultControlValues: true, defaultProviderModelId: true },
+        where: { userId: fixture.userId }
+      }),
+      tx.runProfile.findUniqueOrThrow({
+        select: {
+          enabled: true,
+          providerModelId: true,
+          reasoningEffort: true,
+          reasoningMode: true,
+          updatedByUserId: true,
+          version: true
+        },
+        where: { id: "deep" }
+      })
+    ]);
     await tx.providerConnection.create({
       data: {
         activatedAt: checkedAt,
@@ -356,14 +380,26 @@ async function installQuickChatFixture(apiRoot: string): Promise<QuickChatFixtur
       },
       where: { userId: fixture.userId }
     });
+    await tx.runProfile.update({
+      data: {
+        enabled: true,
+        providerModelId: fixture.modelId,
+        reasoningEffort: "max",
+        reasoningMode: "pro",
+        updatedByUserId: fixture.userId,
+        version: { increment: 1 }
+      },
+      where: { id: "deep" }
+    });
 
-    return settings;
+    return { deepProfile, settings };
   });
 
   return {
     ...fixture,
-    priorDefaultControlValues: priorSettings.defaultControlValues,
-    priorDefaultModelId: priorSettings.defaultProviderModelId
+    priorDeepProfile: priorState.deepProfile,
+    priorDefaultControlValues: priorState.settings.defaultControlValues,
+    priorDefaultModelId: priorState.settings.defaultProviderModelId
   };
 }
 
@@ -379,6 +415,10 @@ async function cleanupQuickChatFixture(
         defaultProviderModelId: fixture.priorDefaultModelId
       },
       where: { userId: fixture.userId }
+    });
+    await tx.runProfile.update({
+      data: fixture.priorDeepProfile,
+      where: { id: "deep" }
     });
     const fixtureChats = await tx.chat.findMany({
       select: { id: true },
@@ -647,7 +687,7 @@ test("administrator completes the Quick direct-user picker, retry, Ready, and sa
           checkedAt: now,
           expectedState: "state-openai-picker",
           outcome: "selection_required",
-          policyVersion: 2,
+          policyVersion: 3,
           provider: "openai",
           providerDisplayName: "OpenAI"
         }
@@ -659,7 +699,7 @@ test("administrator completes the Quick direct-user picker, retry, Ready, and sa
         expectedState: "state-openai-picker",
         provider: "openai",
         secret: "e2e-quick-write-only-key",
-        selectedModel: { candidateId: "p2-o3", policyVersion: 2 }
+        selectedModel: { candidateId: "p2-o3", policyVersion: 3 }
       });
       if (postNumber === 2) {
         await pickerRetryCanFinish;
@@ -862,17 +902,42 @@ test("administrator completes the Quick direct-user picker, retry, Ready, and sa
   await expect(page.getByTestId("thread")).toContainText(quickAnswer, { timeout: 20_000 });
   await expect(page.getByTestId("streaming-cursor")).toHaveCount(0, { timeout: 20_000 });
 
-  const chatResponse = await page.request.get(`/api/chats/${chatId}`);
-  expect(chatResponse.ok()).toBe(true);
-  const chatBody = await chatResponse.json() as QuickChatDetailBody;
+  await expect.poll(async () => {
+    const chatResponse = await page.request.get(`/api/chats/${chatId}`);
+    if (!chatResponse.ok()) return { answerRetained: false, status: "request_failed" };
+    const chatBody = await chatResponse.json() as QuickChatDetailBody;
+    const assistant = chatBody.chat.messages.find(({ role }) => role === "assistant");
+    return {
+      answerRetained: JSON.stringify(assistant?.content).includes(quickAnswer),
+      status: assistant?.status ?? "missing"
+    };
+  }, { timeout: 20_000 }).toEqual({ answerRetained: true, status: "complete" });
+  const durableChatResponse = await page.request.get(`/api/chats/${chatId}`);
+  expect(durableChatResponse.ok()).toBe(true);
+  const chatBody = await durableChatResponse.json() as QuickChatDetailBody;
   const userMessage = chatBody.chat.messages.find(({ role }) => role === "user");
   const assistantMessage = chatBody.chat.messages.find(({ role }) => role === "assistant");
   expect(JSON.stringify(userMessage?.content)).toContain(question);
-  expect(JSON.stringify(assistantMessage?.content)).toContain(quickAnswer);
   expect(assistantMessage?.status).toBe("complete");
   expect(assistantMessage?.modelRunId).toBeTruthy();
   const runId = assistantMessage!.modelRunId!;
   trackedRunIds.push(runId);
+  await expect(prisma.modelRun.findUnique({
+    select: {
+      assistantMessage: {
+        select: { content: true, groundedAt: true }
+      },
+      finalProviderResponsePreview: true
+    },
+    where: { id: runId }
+  })).resolves.toMatchObject({
+    assistantMessage: {
+      content: { blocks: [{ text: quickAnswer, type: "text" }] },
+      groundedAt: null
+    },
+    finalProviderResponsePreview: { text: quickAnswer }
+  });
+  expect(JSON.stringify(assistantMessage?.content)).toContain(quickAnswer);
 
   const runResponse = await page.request.get(`/api/model-runs/${runId}`);
   expect(runResponse.ok()).toBe(true);
@@ -909,6 +974,98 @@ test("administrator completes the Quick direct-user picker, retry, Ready, and sa
     } finally {
       await upstream.close();
     }
+  }
+});
+
+test("administrator completes the separate Custom compatible setup on wide and compact screens", async ({ page }) => {
+  const submitted: Record<string, unknown>[] = [];
+  let receipt = 0;
+
+  await page.route("**/api/admin/providers/quick-setup", async (route) => {
+    expect(route.request().method()).toBe("GET");
+    await route.fulfill({
+      contentType: "application/json",
+      json: {
+        providers: [
+          { provider: "openai", providerDisplayName: "OpenAI", quickSetupAssigned: false, state: "not_configured", stateToken: "state-openai" },
+          { provider: "anthropic", providerDisplayName: "Anthropic", quickSetupAssigned: false, state: "not_configured", stateToken: "state-anthropic" },
+          { provider: "gemini", providerDisplayName: "Gemini", quickSetupAssigned: false, state: "not_configured", stateToken: "state-gemini" },
+          { provider: "openrouter", providerDisplayName: "OpenRouter", quickSetupAssigned: false, state: "not_configured", stateToken: "state-openrouter" }
+        ],
+        suggestedProvider: null
+      }
+    });
+  });
+  await page.route("**/api/admin/providers/custom-setup", async (route) => {
+    expect(route.request().method()).toBe("POST");
+    const body = route.request().postDataJSON() as Record<string, unknown>;
+    submitted.push(body);
+    receipt += 1;
+    await route.fulfill({
+      contentType: "application/json",
+      json: {
+        authenticationMode: "bearer",
+        checkedAt: now,
+        connectionDisplayName: `Fixture Compatible ${receipt}`,
+        connectionId: `custom-connection-${receipt}`,
+        defaultChanged: receipt === 1,
+        modelDisplayName: `Fixture Model ${receipt}`,
+        outcome: "ready",
+        providerModelId: `custom-model-${receipt}`
+      }
+    });
+  });
+
+  await signInWithLocalToken(page);
+  await page.goto("/admin");
+  const section = page.getByTestId("admin-section-providers");
+
+  for (const viewport of [
+    { height: 900, width: 1440 },
+    { height: 844, width: 390 }
+  ]) {
+    await page.setViewportSize(viewport);
+    await expect(section.getByTestId("provider-quick-choice-strip").getByRole("button"))
+      .toHaveCount(4);
+    await section.getByRole("button", { name: "Connect custom endpoint" }).click();
+    await expect(section.getByRole("heading", { name: "Connect a custom endpoint" })).toBeVisible();
+    await expect(section.getByLabel("API root")).toBeVisible();
+    await expect(section.getByLabel("Model ID")).toBeVisible();
+    await expect(section.getByLabel("API key")).toHaveAttribute("type", "password");
+    await expect(section.getByLabel("Context window")).toBeHidden();
+    await expectNoPageOverflow(page);
+
+    await section.getByText("Advanced settings", { exact: true }).click();
+    await expect(section.getByLabel("Context window")).toBeVisible();
+    await expect(section.getByLabel("Default max output")).toBeVisible();
+    await expectNoPageOverflow(page);
+
+    const key = `e2e-custom-write-only-key-${viewport.width}`;
+    await section.getByLabel("API root").fill("https://llm.fixture.invalid/v1");
+    await section.getByLabel("Model ID").fill(`fixture/model-${viewport.width}`);
+    await section.getByLabel("API key").fill(key);
+    await section.getByRole("button", { name: "Test & Save" }).click();
+    await expect(section.getByText("Ready to chat", { exact: true })).toBeVisible();
+    const ready = section.getByTestId("provider-custom-ready-receipt");
+    await expect(ready).toContainText("API key saved and verified.");
+    await expect(ready).toContainText("assigned directly to this administrator");
+    await expect(section.getByText(key)).toHaveCount(0);
+    await expectNoPageOverflow(page);
+
+    await section.getByRole("button", { name: "Add another provider" }).click();
+    await expect(section.getByRole("button", { name: "Connect custom endpoint" })).toBeVisible();
+  }
+
+  expect(submitted).toHaveLength(2);
+  for (const [index, body] of submitted.entries()) {
+    expect(body).toMatchObject({
+      allowPrivateNetwork: false,
+      apiRoot: "https://llm.fixture.invalid/v1",
+      authenticationMode: "bearer",
+      confirmPaidRequest: true,
+      modelId: `fixture/model-${index === 0 ? 1440 : 390}`,
+      secret: `e2e-custom-write-only-key-${index === 0 ? 1440 : 390}`
+    });
   }
 });
 
@@ -1396,8 +1553,18 @@ test("administrator remaps the three composer run profiles in one save", async (
 test("ordinary user receives real provider-admin denial without provider metadata", async ({ page }) => {
   await signInOrdinaryUser(page);
 
-  const [catalog, mutation, runProfiles, quickGet, quickPost] = await Promise.all([
+  const [catalog, customPost, mutation, runProfiles, quickGet, quickPost] = await Promise.all([
     page.request.get("/api/admin/providers"),
+    page.request.post("/api/admin/providers/custom-setup", {
+      data: {
+        allowPrivateNetwork: false,
+        apiRoot: "https://not-visible.invalid/v1",
+        authenticationMode: "bearer",
+        confirmPaidRequest: true,
+        modelId: "not-visible",
+        secret: "write-only-test-key"
+      }
+    }),
     page.request.post("/api/admin/providers/not-visible/actions", {
       data: {
         action: "discover_models",
@@ -1414,7 +1581,7 @@ test("ordinary user receives real provider-admin denial without provider metadat
       }
     })
   ]);
-  for (const response of [catalog, mutation, runProfiles, quickGet, quickPost]) {
+  for (const response of [catalog, customPost, mutation, runProfiles, quickGet, quickPost]) {
     expect(response.status()).toBe(403);
     const text = await response.text();
     expect(text).toBe('{"error":"forbidden"}');

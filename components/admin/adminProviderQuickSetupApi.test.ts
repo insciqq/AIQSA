@@ -87,7 +87,7 @@ describe("admin provider Quick setup API", () => {
       secret: "write-only-key",
       selectedModel: {
         candidateId: "p2-o1",
-        policyVersion: 2
+        policyVersion: 3
       }
     };
 
@@ -113,7 +113,7 @@ describe("admin provider Quick setup API", () => {
       checkedAt,
       expectedState: "state-openai",
       outcome: "selection_required",
-      policyVersion: 2,
+      policyVersion: 3,
       provider: "openai",
       providerDisplayName: "OpenAI"
     };
@@ -222,7 +222,7 @@ describe("admin provider Quick setup API", () => {
       checkedAt,
       expectedState: "state-openai",
       outcome: "selection_required",
-      policyVersion: 2,
+      policyVersion: 3,
       provider: "openai",
       providerDisplayName: "OpenAI"
     },

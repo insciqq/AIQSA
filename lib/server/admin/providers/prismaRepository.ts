@@ -440,11 +440,7 @@ export function createPrismaAdminProviderRepository(
         where: { id: input.connectionId }
       });
       if (!connection || connection.family === "fake") return "connection_not_found";
-      if (connection.family !== input.family && !(
-        connection.family === "gemini" &&
-        input.family === "openai_compatible" &&
-        input.configuration.adapterKind === "openai_chat_completions_compatible"
-      )) return "family_mismatch";
+      if (connection.family !== input.family) return "family_mismatch";
       await prisma.providerModel.create({
         data: {
           ...modelLegacyFields(input.configuration),
@@ -467,11 +463,7 @@ export function createPrismaAdminProviderRepository(
         where: { id: input.modelId }
       });
       if (!existing || existing.connection.family === "fake") return "not_found";
-      if (existing.connection.family !== input.family && !(
-        existing.connection.family === "gemini" &&
-        input.family === "openai_compatible" &&
-        input.configuration.adapterKind === "openai_chat_completions_compatible"
-      )) return "family_mismatch";
+      if (existing.connection.family !== input.family) return "family_mismatch";
       const updated = await prisma.providerModel.updateMany({
         data: {
           displayName: input.displayName,

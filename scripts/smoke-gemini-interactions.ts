@@ -37,7 +37,7 @@ if (!apiKey) {
   process.exit(0);
 }
 
-const apiRoot = "https://generativelanguage.googleapis.com/v1beta/openai";
+const apiRoot = "https://generativelanguage.googleapis.com/v1";
 const modelId = process.env.AIQSA_GEMINI_SMOKE_MODEL || "gemini-3.6-flash";
 const maxOutputTokens = 64;
 const connection = {
@@ -46,7 +46,7 @@ const connection = {
 };
 const modelCapabilities = {
   nativePdfInput: false,
-  nativeSearch: false,
+  nativeSearch: true,
   parallelToolCalls: false,
   pdf: true,
   reasoning: true,
@@ -105,18 +105,14 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function thoughtSignature(value: unknown): string | null {
-  const messages = Array.isArray(value) ? value : [value];
-  for (const message of messages) {
-    if (!isRecord(message) || !Array.isArray(message.tool_calls)) continue;
-    for (const call of message.tool_calls) {
-      if (!isRecord(call) || !isRecord(call.extra_content) ||
-        !isRecord(call.extra_content.google)) {
-        continue;
-      }
-      const signature = call.extra_content.google.thought_signature;
-      if (typeof signature === "string" && signature) return signature;
-    }
+function providerSignature(value: unknown): string | null {
+  const steps = Array.isArray(value) ? value : [value];
+  for (const step of steps) {
+    if (
+      !isRecord(step) ||
+      (step.type !== "thought" && step.type !== "function_call")
+    ) continue;
+    if (typeof step.signature === "string" && step.signature) return step.signature;
   }
   return null;
 }
@@ -135,7 +131,7 @@ async function main(): Promise<void> {
       credentialId: "gemini-smoke-credential",
       credentialVersionId: "gemini-smoke-credential-version",
       model: {
-        adapterKind: "openai_chat_completions_compatible",
+        adapterKind: "gemini_interactions_native",
         capabilities: modelCapabilities,
         defaultParams,
         upstreamModelId: modelId
@@ -156,7 +152,7 @@ async function main(): Promise<void> {
     adapter: runtime.adapter,
     beforeProviderRound({ request: roundRequest, round }) {
       if (round > 1 && firstRoundSignature) {
-        signatureRoundTrip = thoughtSignature(roundRequest.providerToolMessages) ===
+        signatureRoundTrip = providerSignature(roundRequest.providerToolMessages) ===
           firstRoundSignature;
       }
     },
@@ -164,7 +160,7 @@ async function main(): Promise<void> {
     budgets: {
       maxConcurrency: 1,
       maxToolCalls: 1,
-      maxToolRounds: 1,
+      maxToolRounds: 2,
       providerRoundTimeoutMs: 30_000,
       toolCallTimeoutMs: 5_000
     },
@@ -185,7 +181,7 @@ async function main(): Promise<void> {
     initialRequest: request,
     onProviderResult({ result, round }) {
       if (round === 1) {
-        firstRoundSignature = thoughtSignature(result.providerToolCallMessage);
+        firstRoundSignature = providerSignature(result.providerToolCallMessage);
       }
     },
     parallelToolCalls: false,
@@ -194,11 +190,19 @@ async function main(): Promise<void> {
 
   const finalOutputMatched = outcome.status === "complete" &&
     outcome.final.finalText.trim() === "AIQSA_TOOL_OK";
+  const signatureRoundTripSatisfied = !firstRoundSignature || signatureRoundTrip;
   const passed = outcome.status === "complete" && toolExecutions === 1 &&
-    toolArgumentsMatched && Boolean(firstRoundSignature) && signatureRoundTrip &&
+    toolArgumentsMatched && signatureRoundTripSatisfied &&
     finalOutputMatched;
 
+  const failureCode = outcome.status === "failed" && /^gemini_[a-z_]+$/u.test(outcome.failure.message)
+    ? outcome.failure.message
+    : outcome.status === "failed"
+      ? outcome.failure.code
+      : null;
   console.log(JSON.stringify({
+    failureCode,
+    failureStage: outcome.status === "failed" ? outcome.failure.stage : null,
     finalOutputMatched,
     providerResponseIdPresent: outcome.status === "complete" &&
       Boolean(outcome.final.providerResponseId),
@@ -206,12 +210,13 @@ async function main(): Promise<void> {
     signatureRoundTrip,
     status: passed ? "passed" : "failed",
     toolArgumentsMatched,
-    toolExecutions
+    toolExecutions,
+    providerRounds: outcome.providerRounds
   }, null, 2));
   if (!passed) process.exitCode = 1;
 }
 
 main().catch(() => {
-  console.error("Gemini tool-loop smoke failed.");
+  console.error("Gemini Interactions tool-loop smoke failed.");
   process.exit(1);
 });

@@ -6,7 +6,6 @@ import {
   streamOpenAICompatibleChatSseResponse,
   type OpenAICompatibleChatResponseContext
 } from "./openaiCompatibleChatResponse";
-import { buildOpenAICompatibleChatRequest } from "./openaiCompatibleChatRequest";
 
 const responseContext: OpenAICompatibleChatResponseContext = {
   modelId: "vendor/model-1",
@@ -207,53 +206,6 @@ describe("OpenAI-compatible Chat Completions response", () => {
           type: "function"
         }
       ]
-    });
-  });
-
-  it("preserves Gemini thought signatures through streamed tool continuation", async () => {
-    const signature = "opaque-google-thought-signature";
-    const normalized = await collect(
-      streamOpenAICompatibleChatSseResponse(
-        sseResponse([
-          `data: {"id":"stream-tools","choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-gemini","type":"function","extra_content":{"google":{"thought_signature":"${signature}"}},"function":{"name":"lookup","arguments":"{\\"query\\":"}}]}}]}\n\n`,
-          'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\\"two\\"}"}}]},"finish_reason":"tool_calls"}]}\n\n',
-          "data: [DONE]\n\n"
-        ]),
-        { modelId: "gemini-3.6-flash", provider: "gemini" }
-      )
-    );
-    const providerMessage = normalized.result.providerToolCallMessage as Record<string, unknown>;
-    expect(providerMessage).toMatchObject({
-      tool_calls: [{
-        extra_content: { google: { thought_signature: signature } },
-        id: "call-gemini"
-      }]
-    });
-
-    const continuation = buildOpenAICompatibleChatRequest({
-      attachmentIds: [],
-      attachments: [],
-      chatId: "chat-1",
-      content: { blocks: [{ text: "Continue", type: "text" }] },
-      modelCapabilities: {
-        nativePdfInput: false,
-        nativeSearch: false,
-        pdf: false,
-        reasoning: true,
-        toolCalling: true,
-        vision: false
-      },
-      modelId: "gemini-3.6-flash",
-      params: { maxOutputTokens: 64, stream: false },
-      prompt: { developer: null, presetId: null, system: null },
-      provider: "gemini",
-      providerToolMessages: [providerMessage],
-      searchStrategy: "search-disabled"
-    });
-    expect(continuation.messages.at(-1)).toMatchObject({
-      tool_calls: [{
-        extra_content: { google: { thought_signature: signature } }
-      }]
     });
   });
 

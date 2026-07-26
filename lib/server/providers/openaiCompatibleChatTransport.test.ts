@@ -72,6 +72,39 @@ describe("OpenAI-compatible Chat Completions transport", () => {
     }
   });
 
+  it("omits Authorization only for an explicit no-auth compatible endpoint", async () => {
+    const calls: RequestInit[] = [];
+    const client = createFetchOpenAICompatibleChatClient({
+      apiRoot: "http://127.0.0.1:11434/v1",
+      authenticationMode: "none",
+      bearerToken: null,
+      fetchFn: async (_input, init) => {
+        calls.push(init ?? {});
+        return new Response(JSON.stringify({ choices: [{ message: { content: "ok" } }] }));
+      }
+    });
+
+    await client.createChatCompletion({ model: "local-model" });
+    const headers = new Headers(calls[0]?.headers);
+    expect(headers.get("authorization")).toBeNull();
+    expect(headers.get("content-type")).toBe("application/json");
+    expect(() => createFetchOpenAICompatibleChatClient({
+      apiRoot: "http://127.0.0.1:11434/v1",
+      authenticationMode: "none",
+      bearerToken: "unexpected"
+    })).toThrow("openai_compatible_chat_authentication_invalid");
+    expect(() => createFetchOpenAICompatibleChatClient({
+      apiRoot: "http://127.0.0.1:11434/v1",
+      authenticationMode: "none",
+      bearerToken: "   "
+    })).toThrow("openai_compatible_chat_authentication_invalid");
+    expect(() => createFetchOpenAICompatibleChatClient({
+      apiRoot: "http://127.0.0.1:11434/v1",
+      authenticationMode: "invalid" as never,
+      bearerToken: null
+    })).toThrow("openai_compatible_chat_authentication_invalid");
+  });
+
   it("returns an SSE response and composes caller cancellation into the request", async () => {
     const caller = new AbortController();
     const signals: AbortSignal[] = [];
