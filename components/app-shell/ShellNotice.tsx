@@ -12,14 +12,14 @@ function NoticeActionButton({
   return (
     <button
       className={[
-        "inline-flex min-h-touch items-center rounded-control border px-2 font-medium outline-none hover:bg-surface-hover focus-visible:ring-2 focus-visible:ring-current/65 disabled:cursor-not-allowed disabled:opacity-60 sm:min-h-control-sm [@media(hover:none)]:!min-h-touch [@media(pointer:coarse)]:!min-h-touch",
+        "inline-flex min-h-touch items-center rounded-control border px-2 font-medium outline-none hover:bg-control-hover focus-visible:ring-2 focus-visible:ring-current/65 disabled:cursor-not-allowed disabled:opacity-60 sm:min-h-control-sm [@media(hover:none)]:!min-h-touch [@media(pointer:coarse)]:!min-h-touch",
         action.tone === "destructive"
-          ? "border-accent-rose/30 text-accent-rose"
+          ? "border-critical/30 text-critical"
           : action.tone === "neutral"
-            ? "border-separator-subtle text-content-primary"
+            ? "border-trace-subtle text-ink"
             : noticeKind === "success"
-              ? "border-accent-green/30"
-              : "border-accent-rose/30"
+              ? "border-positive/30"
+              : "border-critical/30"
       ].join(" ")}
       disabled={action.disabled}
       type="button"
@@ -58,11 +58,11 @@ export function ShellNotice({
   return (
     <div
       className={[
-        "flex max-h-[min(14rem,40dvh)] w-full max-w-2xl items-start justify-between gap-3 overflow-y-auto rounded-panel border bg-surface-overlay px-3 py-2 text-sm shadow-float",
+        "flex max-h-[min(14rem,40dvh)] w-full max-w-2xl items-start justify-between gap-3 overflow-y-auto rounded-control border-l-2 bg-overlay-surface px-3 py-2 text-sm text-ink-secondary shadow-float",
         "pointer-events-auto",
         notice.kind === "success"
-          ? "border-accent-green/25 text-accent-green"
-          : "border-accent-rose/25 text-accent-rose"
+          ? "border-positive/45"
+          : "border-critical/45"
       ].join(" ")}
       role={notice.kind === "error" ? "alert" : "status"}
       aria-live={notice.kind === "error" ? "assertive" : "polite"}
@@ -72,7 +72,7 @@ export function ShellNotice({
       <span className="inline-flex min-w-0 flex-wrap items-center gap-2">
         <span className="min-w-0 break-words">{notice.text}</span>
         {notice.href && interactive ? (
-          <a className="inline-flex min-h-touch min-w-0 items-center break-all underline-offset-2 hover:underline sm:min-h-control [@media(hover:none)]:!min-h-touch [@media(pointer:coarse)]:!min-h-touch" href={notice.href}>
+          <a className="inline-flex min-h-touch min-w-0 items-center break-all text-proof underline-offset-2 hover:text-proof-hover hover:underline sm:min-h-control [@media(hover:none)]:!min-h-touch [@media(pointer:coarse)]:!min-h-touch" href={notice.href}>
             {notice.href}
           </a>
         ) : notice.href ? (
@@ -87,7 +87,7 @@ export function ShellNotice({
       </span>
       {interactive ? (
         <button
-          className="grid size-11 shrink-0 place-items-center rounded-control hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-current/65 sm:size-9 [@media(hover:none)]:!size-11 [@media(pointer:coarse)]:!size-11"
+          className="grid size-11 shrink-0 place-items-center rounded-control text-ink-muted hover:bg-control-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-proof/55 sm:size-9 [@media(hover:none)]:!size-11 [@media(pointer:coarse)]:!size-11"
           type="button"
           aria-label="Dismiss notice"
           title="Dismiss notice"

@@ -8,7 +8,7 @@ import {
 } from "@/components/app-shell/promptSettingsStore";
 import { AIQSA_THEMES, type ThemeId } from "@/components/app-shell/theme";
 import type { Notice, PromptPreset } from "@/components/app-shell/types";
-import { Check, Copy, FilePlus2, LoaderCircle, Palette, Plus, RotateCcw, Save, Star, Trash2, Wrench, X } from "lucide-react";
+import { Check, ChevronLeft, Copy, FilePlus2, LoaderCircle, Palette, Plus, RotateCcw, Save, Star, Trash2, Wrench, X } from "lucide-react";
 import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { useDialogFocus } from "./useDialogFocus";
 
@@ -17,13 +17,14 @@ type DiscardIntent =
   | { kind: "delete"; prompt: PromptPreset }
   | { kind: "duplicate"; prompt: PromptPreset }
   | { kind: "edit"; prompt: PromptPreset }
+  | { kind: "library" }
   | { kind: "new" }
   | { kind: "section"; section: SettingsSection };
 
 const focusRing =
-  "outline-none focus-visible:ring-2 focus-visible:ring-accent-cyan/55 focus-visible:ring-offset-2 focus-visible:ring-offset-surface-overlay";
+  "outline-none focus-visible:ring-2 focus-visible:ring-proof/55 focus-visible:ring-offset-2 focus-visible:ring-offset-overlay-surface";
 const coarsePointerTarget = "[@media(hover:none)]:!min-h-touch [@media(pointer:coarse)]:!min-h-touch";
-const quietButton = `inline-flex min-h-touch items-center justify-center gap-2 rounded-control px-3 text-xs font-medium text-content-secondary hover:bg-surface-hover hover:text-content-primary disabled:cursor-not-allowed disabled:text-content-disabled disabled:opacity-60 sm:min-h-control-sm ${coarsePointerTarget} ${focusRing}`;
+const quietButton = `inline-flex min-h-touch items-center justify-center gap-2 rounded-control px-3 text-xs font-medium text-ink-secondary hover:bg-control-hover hover:text-ink disabled:cursor-not-allowed disabled:text-ink-disabled disabled:opacity-60 sm:min-h-control-sm ${coarsePointerTarget} ${focusRing}`;
 
 function promptPreview(prompt: PromptPreset) {
   return prompt.systemPrompt.trim() || prompt.developerPrompt?.trim() || "No instructions yet.";
@@ -81,7 +82,10 @@ export function SettingsDialog({
   themeId: ThemeId;
 }) {
   const [activeSection, setActiveSection] = useState<SettingsSection>(initialSection);
+  const [compactPromptPane, setCompactPromptPane] = useState<"editor" | "library">("library");
   const [discardIntent, setDiscardIntent] = useState<DiscardIntent | null>(null);
+  const [mcpBusy, setMcpBusy] = useState(false);
+  const [mcpDirty, setMcpDirty] = useState(false);
   const promptCatalogHeadingRef = useRef<HTMLHeadingElement>(null);
   const promptLibraryHeadingRef = useRef<HTMLHeadingElement>(null);
   const promptNameRef = useRef<HTMLInputElement>(null);
@@ -99,12 +103,14 @@ export function SettingsDialog({
   const canDelete = Boolean(editingPrompt && editingPrompt.id !== defaultPromptId && !saving);
   const discardConfirmationOpen = discardIntent !== null;
   const childDialogOpen = discardConfirmationOpen || nestedDialogOpen;
+  const settingsDirty = activeSection === "prompts" ? dirty : activeSection === "mcp" ? mcpDirty : false;
+  const settingsBusy = saving || mcpBusy;
 
   const requestClose = () => {
-    if (saving) {
+    if (settingsBusy) {
       return;
     }
-    if (dirty) {
+    if (settingsDirty) {
       setDiscardIntent({ kind: "close" });
       return;
     }
@@ -127,10 +133,10 @@ export function SettingsDialog({
       if (promptCatalogState === "ready") {
         const narrowLayout =
           typeof window.matchMedia === "function" && window.matchMedia("(max-width: 1023px)").matches;
-        if (narrowLayout && !promptReadyEntryFocusedRef.current) {
-          promptLibraryHeadingRef.current?.focus();
+        if (narrowLayout && compactPromptPane === "library") {
+          promptLibraryHeadingRef.current?.focus({ preventScroll: true });
         } else {
-          promptNameRef.current?.focus();
+          promptNameRef.current?.focus({ preventScroll: true });
         }
         promptReadyEntryFocusedRef.current = true;
       } else {
@@ -138,7 +144,7 @@ export function SettingsDialog({
       }
     }, 0);
     return () => window.clearTimeout(timer);
-  }, [activeSection, editor.id, promptCatalogState]);
+  }, [activeSection, compactPromptPane, editor.id, promptCatalogState]);
 
   useEffect(() => {
     if (activeSection !== "prompts" || promptCatalogState !== "ready" || notice?.kind !== "error") {
@@ -163,10 +169,10 @@ export function SettingsDialog({
   }
 
   function requestSection(section: SettingsSection) {
-    if (saving || section === activeSection) {
+    if (settingsBusy || section === activeSection) {
       return;
     }
-    if (activeSection === "prompts" && dirty) {
+    if ((activeSection === "prompts" && dirty) || (activeSection === "mcp" && mcpDirty)) {
       setDiscardIntent({ kind: "section", section });
       return;
     }
@@ -182,10 +188,15 @@ export function SettingsDialog({
       return;
     }
     onNewPrompt();
+    setCompactPromptPane("editor");
   }
 
   function requestEditPrompt(prompt: PromptPreset) {
-    if (saving || prompt.id === editor.id) {
+    if (saving) {
+      return;
+    }
+    if (prompt.id === editor.id) {
+      setCompactPromptPane("editor");
       return;
     }
     if (dirty) {
@@ -193,6 +204,7 @@ export function SettingsDialog({
       return;
     }
     onEditPrompt(prompt);
+    setCompactPromptPane("editor");
   }
 
   function requestDuplicatePrompt(prompt: PromptPreset) {
@@ -204,6 +216,7 @@ export function SettingsDialog({
       return;
     }
     onDuplicatePrompt(prompt);
+    setCompactPromptPane("editor");
   }
 
   function requestDeletePrompt(prompt: PromptPreset) {
@@ -230,21 +243,42 @@ export function SettingsDialog({
     }
     if (intent.kind === "edit") {
       onEditPrompt(intent.prompt);
+      setCompactPromptPane("editor");
       return;
     }
     if (intent.kind === "new") {
       onNewPrompt();
+      setCompactPromptPane("editor");
       return;
     }
 
-    resetEditor();
+    if (activeSection === "prompts") {
+      resetEditor();
+    }
     if (intent.kind === "section") {
+      if (activeSection === "mcp") {
+        setMcpDirty(false);
+      }
       setActiveSection(intent.section);
     } else if (intent.kind === "duplicate") {
       onDuplicatePrompt(intent.prompt);
+      setCompactPromptPane("editor");
+    } else if (intent.kind === "library") {
+      setCompactPromptPane("library");
     } else {
       window.setTimeout(() => onDeletePrompt(intent.prompt), 0);
     }
+  }
+
+  function requestPromptLibrary() {
+    if (saving) {
+      return;
+    }
+    if (dirty) {
+      setDiscardIntent({ kind: "library" });
+      return;
+    }
+    setCompactPromptPane("library");
   }
 
   function handleThemeKeyDown(event: ReactKeyboardEvent<HTMLButtonElement>, index: number) {
@@ -291,34 +325,36 @@ export function SettingsDialog({
     >
       <div
         ref={dialogRef}
-        className="pop-enter flex h-[100dvh] w-full max-w-5xl flex-col overflow-hidden bg-surface-overlay pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)] pt-[env(safe-area-inset-top)] shadow-overlay sm:h-[min(48rem,calc(100dvh-2.5rem))] sm:rounded-panel sm:border sm:border-separator-subtle sm:p-0 [@media(max-height:32rem)]:!h-full [@media(max-height:32rem)]:!max-h-full"
+        className="pop-enter flex h-[100dvh] w-full max-w-5xl flex-col overflow-hidden bg-overlay-surface pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)] pt-[env(safe-area-inset-top)] text-ink shadow-overlay sm:h-[min(48rem,calc(100dvh-2.5rem))] sm:rounded-panel sm:border sm:border-trace-subtle sm:p-0 [@media(max-height:32rem)]:!h-full [@media(max-height:32rem)]:!max-h-full"
         role="dialog"
         aria-modal="true"
         aria-hidden={childDialogOpen || undefined}
         aria-label="Settings"
-        aria-busy={saving}
+        aria-busy={settingsBusy}
         data-testid="settings-dialog"
         inert={childDialogOpen || undefined}
         onMouseDown={(event) => event.stopPropagation()}
       >
-        <header className="relative z-10 flex min-h-16 shrink-0 items-center justify-between gap-4 border-b border-separator-subtle bg-surface-overlay px-4 sm:px-5">
+        <header className="relative z-10 flex min-h-16 shrink-0 items-center justify-between gap-4 border-b border-trace-subtle bg-overlay-surface px-4 sm:px-5">
           <div className="min-w-0">
-            <h2 className="text-lg font-semibold text-content-primary">Settings</h2>
-            <p className="mt-0.5 truncate text-xs text-content-muted">Prompts, MCP tools, and local appearance</p>
+            <h2 className="text-lg font-semibold text-ink">Settings</h2>
+            <p className="mt-0.5 truncate text-xs text-ink-muted">Prompts, tools, and this browser’s appearance</p>
           </div>
           <div className="flex shrink-0 items-center gap-2">
-            {dirty ? (
-              <span className="hidden text-xs font-medium text-accent-amber sm:inline" role="status">
-                Unsaved prompt edits
+            {mcpBusy || (!saving && settingsDirty) ? (
+              <span className="hidden text-xs font-medium text-caution sm:inline" role="status">
+                {mcpBusy
+                  ? "Updating MCP settings…"
+                  : activeSection === "mcp" ? "Unsaved MCP values" : "Unsaved prompt edits"}
               </span>
             ) : null}
             <button
-              className={`grid size-11 place-items-center rounded-control text-content-muted hover:bg-surface-hover hover:text-content-primary sm:size-9 [@media(hover:none)]:!size-11 [@media(pointer:coarse)]:!size-11 ${focusRing}`}
+              className={`grid size-11 place-items-center rounded-control text-ink-muted hover:bg-control-hover hover:text-ink sm:size-9 [@media(hover:none)]:!size-11 [@media(pointer:coarse)]:!size-11 ${focusRing}`}
               type="button"
               aria-label="Close settings"
               aria-describedby={saving ? "settings-save-status" : undefined}
-              disabled={saving}
-              title={saving ? "Wait for the prompt save to finish" : "Close settings"}
+              disabled={settingsBusy}
+              title={mcpBusy ? "Wait for the MCP update to finish" : saving ? "Wait for the prompt save to finish" : "Close settings"}
               onClick={requestClose}
             >
               <X className="size-4" aria-hidden="true" />
@@ -327,60 +363,60 @@ export function SettingsDialog({
         </header>
 
         <nav
-          className="relative z-10 flex shrink-0 gap-1 border-b border-separator-subtle bg-surface-overlay px-2 py-2 sm:px-4"
+          className="relative z-10 flex shrink-0 gap-1 overflow-x-auto border-b border-trace-subtle bg-overlay-surface px-2 py-2 sm:px-4"
           aria-label="Settings sections"
         >
           <button
             className={[
-              `flex min-h-touch min-w-0 flex-1 items-center justify-center gap-2 rounded-control px-3 text-sm font-medium disabled:cursor-not-allowed disabled:text-content-disabled sm:min-h-control sm:flex-none sm:justify-start ${coarsePointerTarget} ${focusRing}`,
+              `flex min-h-touch min-w-0 flex-1 items-center justify-center gap-2 rounded-control px-3 text-sm font-medium disabled:cursor-not-allowed disabled:text-ink-disabled sm:min-h-control sm:flex-none sm:justify-start ${coarsePointerTarget} ${focusRing}`,
               activeSection === "prompts"
-                ? "bg-surface-selected text-content-primary"
-                : "text-content-secondary hover:bg-surface-hover hover:text-content-primary"
+                ? "bg-control-selected text-ink"
+                : "text-ink-secondary hover:bg-control-hover hover:text-ink"
             ].join(" ")}
             type="button"
             aria-current={activeSection === "prompts" ? "page" : undefined}
-            disabled={saving && activeSection !== "prompts"}
+            disabled={settingsBusy && activeSection !== "prompts"}
             onClick={() => requestSection("prompts")}
           >
-            <FilePlus2 className="size-4 text-content-muted" aria-hidden="true" />
+            <FilePlus2 className="size-4 text-ink-muted" aria-hidden="true" />
             Prompts
-            {dirty ? <span className="text-xs text-accent-amber">Unsaved</span> : null}
+            {dirty ? <span className="text-xs text-caution">Unsaved</span> : null}
           </button>
           <button
             className={[
-              `flex min-h-touch min-w-0 flex-1 items-center justify-center gap-2 rounded-control px-3 text-sm font-medium disabled:cursor-not-allowed disabled:text-content-disabled sm:min-h-control sm:flex-none sm:justify-start ${coarsePointerTarget} ${focusRing}`,
+              `flex min-h-touch min-w-0 flex-1 items-center justify-center gap-2 rounded-control px-3 text-sm font-medium disabled:cursor-not-allowed disabled:text-ink-disabled sm:min-h-control sm:flex-none sm:justify-start ${coarsePointerTarget} ${focusRing}`,
               activeSection === "appearance"
-                ? "bg-surface-selected text-content-primary"
-                : "text-content-secondary hover:bg-surface-hover hover:text-content-primary"
+                ? "bg-control-selected text-ink"
+                : "text-ink-secondary hover:bg-control-hover hover:text-ink"
             ].join(" ")}
             type="button"
             aria-current={activeSection === "appearance" ? "page" : undefined}
-            disabled={saving && activeSection !== "appearance"}
+            disabled={settingsBusy && activeSection !== "appearance"}
             onClick={() => requestSection("appearance")}
           >
-            <Palette className="size-4 text-content-muted" aria-hidden="true" />
+            <Palette className="size-4 text-ink-muted" aria-hidden="true" />
             Appearance
           </button>
           <button
             className={[
-              `flex min-h-touch min-w-0 flex-1 items-center justify-center gap-2 rounded-control px-3 text-sm font-medium disabled:cursor-not-allowed disabled:text-content-disabled sm:min-h-control sm:flex-none sm:justify-start ${coarsePointerTarget} ${focusRing}`,
+              `flex min-h-touch min-w-0 flex-1 items-center justify-center gap-2 rounded-control px-3 text-sm font-medium disabled:cursor-not-allowed disabled:text-ink-disabled sm:min-h-control sm:flex-none sm:justify-start ${coarsePointerTarget} ${focusRing}`,
               activeSection === "mcp"
-                ? "bg-surface-selected text-content-primary"
-                : "text-content-secondary hover:bg-surface-hover hover:text-content-primary"
+                ? "bg-control-selected text-ink"
+                : "text-ink-secondary hover:bg-control-hover hover:text-ink"
             ].join(" ")}
             type="button"
             aria-current={activeSection === "mcp" ? "page" : undefined}
-            disabled={saving && activeSection !== "mcp"}
+            disabled={settingsBusy && activeSection !== "mcp"}
             onClick={() => requestSection("mcp")}
           >
-            <Wrench className="size-4 text-content-muted" aria-hidden="true" />
+            <Wrench className="size-4 text-ink-muted" aria-hidden="true" />
             MCP &amp; tools
           </button>
         </nav>
 
         {notice ? (
           <div
-            className="relative z-10 flex shrink-0 justify-center border-b border-separator-subtle bg-surface-overlay px-3 py-2"
+            className="relative z-10 flex shrink-0 justify-center border-b border-trace-subtle bg-overlay-surface px-3 py-2"
             data-testid="settings-notice-region"
           >
             <ShellNotice notice={notice} onDismiss={onDismissNotice ?? (() => undefined)} />
@@ -396,26 +432,26 @@ export function SettingsDialog({
             >
               <div className="w-full max-w-sm text-center">
                 {promptCatalogState === "loading" ? (
-                  <LoaderCircle className="mx-auto size-6 animate-spin text-accent-cyan" aria-hidden="true" />
+                  <LoaderCircle className="mx-auto size-6 animate-spin text-proof" aria-hidden="true" />
                 ) : (
-                  <RotateCcw className="mx-auto size-6 text-accent-rose" aria-hidden="true" />
+                  <RotateCcw className="mx-auto size-6 text-critical" aria-hidden="true" />
                 )}
                 <h3
                   ref={promptCatalogHeadingRef}
-                  className="mt-3 text-base font-semibold text-content-primary focus:outline-none"
+                  className="mt-3 text-base font-semibold text-ink focus:outline-none"
                   id="settings-prompts-catalog-heading"
                   tabIndex={-1}
                 >
                   {promptCatalogState === "loading" ? "Loading prompt library…" : "Prompt library didn’t load"}
                 </h3>
-                <p className="mt-2 text-sm leading-6 text-content-secondary">
+                <p className="mt-2 text-sm leading-6 text-ink-secondary">
                   {promptCatalogState === "loading"
                     ? "Appearance remains available while models and prompt presets load."
                     : promptCatalogError ?? "Try loading models and prompt presets again."}
                 </p>
                 {promptCatalogState === "error" ? (
                   <button
-                    className={`mt-4 inline-flex min-h-touch items-center justify-center gap-2 rounded-control bg-surface-raised px-4 text-sm font-medium text-content-primary hover:bg-surface-hover sm:min-h-control ${coarsePointerTarget} ${focusRing}`}
+                    className={`mt-4 inline-flex min-h-touch items-center justify-center gap-2 rounded-control bg-control-surface px-4 text-sm font-medium text-ink hover:bg-control-hover sm:min-h-control ${coarsePointerTarget} ${focusRing}`}
                     type="button"
                     aria-label="Retry loading prompt library"
                     onClick={onRetryCatalog}
@@ -428,23 +464,36 @@ export function SettingsDialog({
             </section>
           ) : (
           <div
-            className="grid min-h-0 flex-1 overflow-y-auto overscroll-contain lg:grid-cols-[minmax(17rem,21rem)_minmax(0,1fr)] lg:overflow-hidden"
+            className="grid min-h-0 flex-1 grid-cols-1 overflow-hidden lg:grid-cols-[minmax(17rem,21rem)_minmax(0,1fr)]"
             data-testid="settings-prompts-scroll"
           >
             <section
-              className="order-2 min-w-0 px-4 py-5 lg:order-2 lg:min-h-0 lg:overflow-y-auto lg:px-6"
+              className={[
+                "order-2 min-h-0 min-w-0 overflow-y-auto overscroll-contain px-4 py-5 lg:order-2 lg:block lg:px-6",
+                compactPromptPane === "editor" ? "block" : "hidden"
+              ].join(" ")}
               aria-labelledby="prompt-editor-heading"
+              data-testid="settings-prompt-editor-pane"
             >
               <div className="mx-auto max-w-3xl">
+                <button
+                  className={`mb-4 inline-flex min-h-touch items-center gap-2 rounded-control px-2 text-sm font-medium text-ink-secondary hover:bg-control-hover hover:text-ink lg:hidden ${coarsePointerTarget} ${focusRing}`}
+                  disabled={saving}
+                  onClick={requestPromptLibrary}
+                  type="button"
+                >
+                  <ChevronLeft className="size-4" aria-hidden="true" />
+                  Back to prompts
+                </button>
                 <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
                   <div className="min-w-0">
-                    <h3 className="break-words text-base font-semibold text-content-primary" id="prompt-editor-heading">
+                    <h3 className="break-words text-base font-semibold text-ink" id="prompt-editor-heading">
                       {editor.id ? (editingPrompt?.name ?? editor.name) || "Edit prompt" : "Create a prompt"}
                     </h3>
                     <p
                       className={[
                         "mt-1 text-xs font-medium",
-                        saving ? "text-accent-cyan" : dirty ? "text-accent-amber" : "text-content-muted"
+                        saving ? "text-proof" : dirty ? "text-caution" : "text-ink-muted"
                       ].join(" ")}
                       role="status"
                       id="settings-save-status"
@@ -454,96 +503,102 @@ export function SettingsDialog({
                     </p>
                   </div>
                   {editingPrompt ? (
-                    <div className="text-right text-xs leading-5 text-content-muted">
-                      {editingPrompt.id === currentPromptId ? <div className="text-accent-cyan">Used for next run</div> : null}
+                    <div className="text-right text-xs leading-5 text-ink-muted">
+                      {editingPrompt.id === currentPromptId ? <div className="text-proof">Used for next run</div> : null}
                       {editingPrompt.id === defaultPromptId ? <div>User default</div> : null}
                     </div>
                   ) : null}
                 </div>
 
                 <div className="space-y-5">
-                  <label className="block" htmlFor="settings-prompt-name">
-                    <span className="text-xs font-medium text-content-secondary">Name</span>
-                    <span
-                      className={`ml-1 text-xs ${nameMissing ? "text-accent-rose" : "text-content-muted"}`}
-                      aria-hidden="true"
-                      data-testid="prompt-name-required-indicator"
-                    >
-                      Required
-                    </span>
-                    <input
-                      ref={promptNameRef}
-                      className={`mt-1.5 h-touch w-full rounded-control border border-separator-subtle bg-surface-thread px-3 text-sm text-content-primary placeholder:text-content-muted disabled:cursor-not-allowed disabled:text-content-disabled sm:h-control [@media(hover:none)]:!h-touch [@media(pointer:coarse)]:!h-touch ${focusRing}`}
-                      id="settings-prompt-name"
-                      type="text"
-                      aria-label="Prompt name"
-                      aria-describedby="settings-prompt-name-help settings-prompt-name-error"
-                      aria-invalid={nameMissing}
-                      autoComplete="off"
-                      disabled={saving}
-                      placeholder="For example, Research analyst"
-                      value={editor.name}
-                      onChange={(event) => onEditorChange({ ...editor, name: event.target.value })}
-                    />
-                  </label>
-                  <div className="-mt-3 text-xs leading-5 text-content-muted" id="settings-prompt-name-help">
-                    This name appears in the composer, command palette, and Settings.
-                  </div>
-                  <div className="-mt-4 min-h-5 text-xs text-accent-rose" id="settings-prompt-name-error">
-                    {nameMissing ? "Enter a prompt name." : null}
-                  </div>
-
-                  <label className="block" htmlFor="settings-system-prompt">
-                    <span className="text-xs font-medium text-content-secondary">System instructions</span>
-                    <span
-                      className={`ml-1 text-xs ${systemMissing ? "text-accent-rose" : "text-content-muted"}`}
-                      aria-hidden="true"
-                      data-testid="system-prompt-required-indicator"
-                    >
-                      Required
-                    </span>
-                    <textarea
-                      className={`mt-1.5 min-h-48 w-full resize-y rounded-control border border-separator-subtle bg-surface-thread px-3 py-2.5 text-sm leading-6 text-content-primary placeholder:text-content-muted disabled:cursor-not-allowed disabled:text-content-disabled ${focusRing}`}
-                      id="settings-system-prompt"
-                      aria-label="Settings system prompt"
-                      aria-describedby="settings-system-prompt-help settings-system-prompt-error"
-                      aria-invalid={systemMissing}
-                      disabled={saving}
-                      placeholder="Define the assistant’s role, priorities, and response style."
-                      value={editor.systemPrompt}
-                      onChange={(event) => onEditorChange({ ...editor, systemPrompt: event.target.value })}
-                    />
-                  </label>
-                  <div className="-mt-3 text-xs leading-5 text-content-muted" id="settings-system-prompt-help">
-                    Primary instructions sent whenever this preset is used.
-                  </div>
-                  <div className="-mt-4 min-h-5 text-xs text-accent-rose" id="settings-system-prompt-error">
-                    {systemMissing ? "Enter system instructions." : null}
+                  <div>
+                    <label className="block" htmlFor="settings-prompt-name">
+                      <span className="text-xs font-medium text-ink-secondary">Name</span>
+                      <span
+                        className={`ml-1 text-xs ${nameMissing ? "text-critical" : "text-ink-muted"}`}
+                        aria-hidden="true"
+                        data-testid="prompt-name-required-indicator"
+                      >
+                        Required
+                      </span>
+                      <input
+                        ref={promptNameRef}
+                        className={`mt-1.5 h-touch w-full rounded-control border border-trace-subtle bg-answer-paper px-3 text-sm text-ink placeholder:text-ink-muted disabled:cursor-not-allowed disabled:text-ink-disabled sm:h-control [@media(hover:none)]:!h-touch [@media(pointer:coarse)]:!h-touch ${focusRing}`}
+                        id="settings-prompt-name"
+                        type="text"
+                        aria-label="Prompt name"
+                        aria-describedby="settings-prompt-name-help settings-prompt-name-error"
+                        aria-invalid={nameMissing}
+                        autoComplete="off"
+                        disabled={saving}
+                        placeholder="For example, Research analyst"
+                        value={editor.name}
+                        onChange={(event) => onEditorChange({ ...editor, name: event.target.value })}
+                      />
+                    </label>
+                    <p className="mt-2 text-xs leading-5 text-ink-muted" id="settings-prompt-name-help">
+                      This name appears in the composer, command palette, and Settings.
+                    </p>
+                    <p className="mt-1 min-h-5 text-xs text-critical" id="settings-prompt-name-error">
+                      {nameMissing ? "Enter a prompt name." : null}
+                    </p>
                   </div>
 
-                  <label className="block" htmlFor="settings-developer-prompt">
-                    <span className="text-xs font-medium text-content-secondary">Developer instructions</span>
-                    <span className="ml-1 text-xs text-content-muted">Optional</span>
-                    <textarea
-                      className={`mt-1.5 min-h-36 w-full resize-y rounded-control border border-separator-subtle bg-surface-thread px-3 py-2.5 text-sm leading-6 text-content-primary placeholder:text-content-muted disabled:cursor-not-allowed disabled:text-content-disabled ${focusRing}`}
-                      id="settings-developer-prompt"
-                      aria-label="Developer prompt"
-                      aria-describedby="settings-developer-prompt-help"
-                      disabled={saving}
-                      placeholder="Add implementation constraints or provider-specific guidance."
-                      value={editor.developerPrompt}
-                      onChange={(event) => onEditorChange({ ...editor, developerPrompt: event.target.value })}
-                    />
-                  </label>
-                  <div className="-mt-3 text-xs leading-5 text-content-muted" id="settings-developer-prompt-help">
-                    Additional guidance kept separate from the system instructions.
+                  <div>
+                    <label className="block" htmlFor="settings-system-prompt">
+                      <span className="text-xs font-medium text-ink-secondary">System instructions</span>
+                      <span
+                        className={`ml-1 text-xs ${systemMissing ? "text-critical" : "text-ink-muted"}`}
+                        aria-hidden="true"
+                        data-testid="system-prompt-required-indicator"
+                      >
+                        Required
+                      </span>
+                      <textarea
+                        className={`mt-1.5 min-h-48 w-full resize-y rounded-control border border-trace-subtle bg-answer-paper px-3 py-2.5 text-sm leading-6 text-ink placeholder:text-ink-muted disabled:cursor-not-allowed disabled:text-ink-disabled ${focusRing}`}
+                        id="settings-system-prompt"
+                        aria-label="Settings system prompt"
+                        aria-describedby="settings-system-prompt-help settings-system-prompt-error"
+                        aria-invalid={systemMissing}
+                        disabled={saving}
+                        placeholder="Define the assistant’s role, priorities, and response style."
+                        value={editor.systemPrompt}
+                        onChange={(event) => onEditorChange({ ...editor, systemPrompt: event.target.value })}
+                      />
+                    </label>
+                    <p className="mt-2 text-xs leading-5 text-ink-muted" id="settings-system-prompt-help">
+                      Primary instructions sent whenever this preset is used.
+                    </p>
+                    <p className="mt-1 min-h-5 text-xs text-critical" id="settings-system-prompt-error">
+                      {systemMissing ? "Enter system instructions." : null}
+                    </p>
+                  </div>
+
+                  <div>
+                    <label className="block" htmlFor="settings-developer-prompt">
+                      <span className="text-xs font-medium text-ink-secondary">Developer instructions</span>
+                      <span className="ml-1 text-xs text-ink-muted">Optional</span>
+                      <textarea
+                        className={`mt-1.5 min-h-36 w-full resize-y rounded-control border border-trace-subtle bg-answer-paper px-3 py-2.5 text-sm leading-6 text-ink placeholder:text-ink-muted disabled:cursor-not-allowed disabled:text-ink-disabled ${focusRing}`}
+                        id="settings-developer-prompt"
+                        aria-label="Developer prompt"
+                        aria-describedby="settings-developer-prompt-help"
+                        disabled={saving}
+                        placeholder="Add implementation constraints or provider-specific guidance."
+                        value={editor.developerPrompt}
+                        onChange={(event) => onEditorChange({ ...editor, developerPrompt: event.target.value })}
+                      />
+                    </label>
+                    <p className="mt-2 text-xs leading-5 text-ink-muted" id="settings-developer-prompt-help">
+                      Additional guidance kept separate from the system instructions.
+                    </p>
                   </div>
                 </div>
 
-                <div ref={promptActionRegionRef} className="mt-6 border-t border-separator-subtle pt-4" data-testid="prompt-action-region">
+                <div ref={promptActionRegionRef} className="mt-6 border-t border-trace-subtle pt-4" data-testid="prompt-action-region">
                   <div className="flex flex-wrap items-center gap-2">
                     <button
-                      className={`inline-flex min-h-touch items-center justify-center gap-2 rounded-control bg-accent-cyan px-4 text-sm font-semibold text-surface-canvas hover:bg-accent-cyan/90 disabled:cursor-not-allowed disabled:opacity-55 sm:min-h-control ${coarsePointerTarget} ${focusRing}`}
+                      className={`inline-flex min-h-touch items-center justify-center gap-2 rounded-control bg-proof px-4 text-sm font-semibold text-proof-contrast hover:bg-proof-hover disabled:cursor-not-allowed disabled:opacity-55 sm:min-h-control ${coarsePointerTarget} ${focusRing}`}
                       type="button"
                       aria-label={editor.id ? "Update prompt" : "Create prompt"}
                       disabled={!canSave}
@@ -576,7 +631,7 @@ export function SettingsDialog({
                           {editingPrompt.id === defaultPromptId ? "User default" : "Make default"}
                         </button>
                         <button
-                          className={`${quietButton} text-accent-rose hover:bg-accent-rose/10 hover:text-accent-rose`}
+                          className={`${quietButton} text-critical hover:bg-critical/10 hover:text-critical`}
                           type="button"
                           aria-label="Delete selected prompt"
                           aria-describedby={editingPrompt.id === defaultPromptId ? "default-delete-protection" : undefined}
@@ -590,11 +645,11 @@ export function SettingsDialog({
                     ) : null}
                   </div>
                   {editingPrompt?.id === defaultPromptId ? (
-                    <p className="mt-3 text-xs leading-5 text-content-muted" id="default-delete-protection">
+                    <p className="mt-3 text-xs leading-5 text-ink-muted" id="default-delete-protection">
                       The user default is protected. Make another prompt the default before deleting this one.
                     </p>
                   ) : null}
-                  <p className="mt-3 text-xs leading-5 text-content-muted">
+                  <p className="mt-3 text-xs leading-5 text-ink-muted">
                     Save errors appear above in Settings; your draft stays available so you can try again.
                   </p>
                 </div>
@@ -602,23 +657,27 @@ export function SettingsDialog({
             </section>
 
             <section
-              className="order-1 min-w-0 border-b border-separator-subtle bg-surface-thread px-3 py-5 lg:order-1 lg:min-h-0 lg:overflow-y-auto lg:border-b-0 lg:border-r"
+              className={[
+                "order-1 min-h-0 min-w-0 overflow-y-auto overscroll-contain bg-answer-paper px-3 py-5 lg:order-1 lg:block lg:border-r lg:border-trace-subtle",
+                compactPromptPane === "library" ? "block" : "hidden"
+              ].join(" ")}
               aria-labelledby="prompt-library-heading"
+              data-testid="settings-prompt-library-pane"
             >
               <div className="mb-4 flex items-start justify-between gap-3 px-1">
                 <div className="min-w-0">
                   <h3
                     ref={promptLibraryHeadingRef}
-                    className="text-sm font-semibold text-content-primary focus:outline-none"
+                    className="text-sm font-semibold text-ink focus:outline-none"
                     id="prompt-library-heading"
                     tabIndex={-1}
                   >
                     Prompt library
                   </h3>
-                  <p className="mt-1 text-xs leading-5 text-content-muted">Select a prompt to edit it. Selection alone does not change the next run.</p>
+                  <p className="mt-1 text-xs leading-5 text-ink-muted">Choose a prompt to inspect or edit. Selection alone does not change the next run.</p>
                 </div>
                 <button
-                  className={`inline-flex min-h-touch shrink-0 items-center gap-2 rounded-control bg-surface-raised px-3 text-xs font-medium text-content-primary hover:bg-surface-hover sm:min-h-control-sm ${coarsePointerTarget} ${focusRing}`}
+                  className={`inline-flex min-h-touch shrink-0 items-center gap-2 rounded-control bg-control-surface px-3 text-xs font-medium text-ink hover:bg-control-hover sm:min-h-control-sm ${coarsePointerTarget} ${focusRing}`}
                   type="button"
                   aria-label="New prompt"
                   disabled={saving}
@@ -629,14 +688,14 @@ export function SettingsDialog({
                 </button>
               </div>
 
-              <div className="mb-4 rounded-control bg-surface-raised px-3 py-3 text-xs leading-5 text-content-secondary">
+              <div className="mb-4 border-y border-trace-subtle py-3 text-xs leading-5 text-ink-secondary">
                 <div className="flex items-start gap-2">
-                  <Check className="mt-0.5 size-3.5 shrink-0 text-accent-cyan" aria-hidden="true" />
-                  <span><strong className="font-semibold text-content-primary">Next run:</strong> {currentPrompt?.name ?? "No prompt selected"}. This changes only the next-message choice.</span>
+                  <Check className="mt-0.5 size-3.5 shrink-0 text-proof" aria-hidden="true" />
+                  <span><strong className="font-semibold text-ink">Next run:</strong> {currentPrompt?.name ?? "No prompt selected"}. This changes only the next-message choice.</span>
                 </div>
                 <div className="mt-2 flex items-start gap-2">
-                  <Star className="mt-0.5 size-3.5 shrink-0 text-content-muted" aria-hidden="true" />
-                  <span><strong className="font-semibold text-content-primary">User default:</strong> {defaultPrompt?.name ?? "No default set"}. Used as the startup choice for new chats.</span>
+                  <Star className="mt-0.5 size-3.5 shrink-0 text-ink-muted" aria-hidden="true" />
+                  <span><strong className="font-semibold text-ink">User default:</strong> {defaultPrompt?.name ?? "No default set"}. Used as the startup choice for new chats.</span>
                 </div>
               </div>
 
@@ -651,7 +710,7 @@ export function SettingsDialog({
                       <li
                         className={[
                           "rounded-control px-2 py-2.5",
-                          editing ? "bg-surface-selected" : "hover:bg-surface-hover"
+                          editing ? "bg-control-selected" : "hover:bg-control-hover"
                         ].join(" ")}
                         key={prompt.id}
                       >
@@ -663,18 +722,18 @@ export function SettingsDialog({
                           disabled={saving}
                           onClick={() => requestEditPrompt(prompt)}
                         >
-                          <span className="block break-words text-sm font-semibold leading-5 text-content-primary [overflow-wrap:anywhere]">
+                          <span className="block break-words text-sm font-semibold leading-5 text-ink [overflow-wrap:anywhere]">
                             {prompt.name}
                           </span>
-                          <span className="mt-1 block overflow-hidden text-xs leading-5 text-content-muted [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:2] [overflow-wrap:anywhere]">
+                          <span className="mt-1 block overflow-hidden text-xs leading-5 text-ink-muted [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:2] [overflow-wrap:anywhere]">
                             {promptPreview(prompt)}
                           </span>
                         </button>
 
                         <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 px-1 text-xs">
-                          {current ? <span className="font-medium text-accent-cyan">Next run</span> : null}
-                          {isDefault ? <span className="text-content-secondary">User default</span> : null}
-                          {!current && !isDefault ? <span className="text-content-muted">Available preset</span> : null}
+                          {current ? <span className="font-medium text-proof">Next run</span> : null}
+                          {isDefault ? <span className="text-ink-secondary">User default</span> : null}
+                          {!current && !isDefault ? <span className="text-ink-muted">Available preset</span> : null}
                         </div>
 
                         <div className="mt-2 grid grid-cols-2 gap-1 sm:flex sm:flex-wrap">
@@ -710,7 +769,7 @@ export function SettingsDialog({
                             Duplicate
                           </button>
                           <button
-                            className={`${quietButton} text-accent-rose hover:bg-accent-rose/10 hover:text-accent-rose`}
+                            className={`${quietButton} text-critical hover:bg-critical/10 hover:text-critical`}
                             type="button"
                             aria-label={`Delete prompt ${prompt.name}`}
                             aria-describedby={isDefault ? `default-protection-${prompt.id}` : undefined}
@@ -722,7 +781,7 @@ export function SettingsDialog({
                           </button>
                         </div>
                         {isDefault ? (
-                          <p className="mt-2 px-1 text-xs leading-5 text-content-muted" id={`default-protection-${prompt.id}`}>
+                          <p className="mt-2 px-1 text-xs leading-5 text-ink-muted" id={`default-protection-${prompt.id}`}>
                             Protected while this is the user default.
                           </p>
                         ) : null}
@@ -731,11 +790,11 @@ export function SettingsDialog({
                   })}
                 </ul>
               ) : (
-                <div className="rounded-control border border-dashed border-separator-subtle px-4 py-6 text-center">
-                  <p className="text-sm font-medium text-content-primary">No prompt presets yet</p>
-                  <p className="mt-1 text-xs leading-5 text-content-muted">Create one to reuse instructions across conversations.</p>
+                <div className="border-y border-trace-subtle px-4 py-6 text-center">
+                  <p className="text-sm font-medium text-ink">No prompt presets yet</p>
+                  <p className="mt-1 text-xs leading-5 text-ink-muted">Create one to reuse instructions across conversations.</p>
                   <button
-                    className={`mt-3 inline-flex min-h-touch items-center gap-2 rounded-control bg-surface-raised px-3 text-sm font-medium text-content-primary sm:min-h-control ${coarsePointerTarget} ${focusRing}`}
+                    className={`mt-3 inline-flex min-h-touch items-center gap-2 rounded-control bg-control-surface px-3 text-sm font-medium text-ink sm:min-h-control ${coarsePointerTarget} ${focusRing}`}
                     type="button"
                     disabled={saving}
                     onClick={requestNewPrompt}
@@ -749,23 +808,23 @@ export function SettingsDialog({
           </div>
           )
         ) : activeSection === "mcp" ? (
-          <McpSettingsSection />
+          <McpSettingsSection onBusyChange={setMcpBusy} onDirtyChange={setMcpDirty} />
         ) : (
           <section
             className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-6 sm:px-6"
             aria-labelledby="appearance-heading"
             data-testid="settings-appearance-scroll"
           >
-            <div className="mx-auto max-w-4xl">
-              <h3 className="text-base font-semibold text-content-primary" id="appearance-heading">Appearance</h3>
-              <p className="mt-1 max-w-2xl text-sm leading-6 text-content-secondary">
+            <div className="mx-auto max-w-3xl">
+              <h3 className="text-base font-semibold text-ink" id="appearance-heading">Appearance</h3>
+              <p className="mt-1 max-w-2xl text-sm leading-6 text-ink-secondary">
                 Choose an AIQSA palette. The change applies immediately across this browser.
               </p>
-              <p className="mt-2 max-w-2xl text-xs leading-5 text-content-muted">
+              <p className="mt-2 max-w-2xl text-xs leading-5 text-ink-muted">
                 This theme is saved only in this browser and does not follow your account.
               </p>
 
-              <div className="mt-6 grid gap-3 sm:grid-cols-2 lg:grid-cols-5" role="radiogroup" aria-label="Theme">
+              <div className="mt-6 divide-y divide-trace-subtle border-y border-trace-subtle" role="radiogroup" aria-label="Theme">
                 {AIQSA_THEMES.map((theme, index) => {
                   const selected = theme.id === themeId;
 
@@ -776,10 +835,10 @@ export function SettingsDialog({
                       }}
                       key={theme.id}
                       className={[
-                        `min-h-touch min-w-0 rounded-panel p-3 text-left ${focusRing}`,
+                        `grid min-h-touch w-full min-w-0 grid-cols-[5.5rem_minmax(0,1fr)_auto] items-center gap-3 px-2 py-3 text-left ${focusRing}`,
                         selected
-                          ? "bg-surface-selected text-content-primary"
-                          : "bg-surface-thread text-content-secondary hover:bg-surface-hover hover:text-content-primary"
+                          ? "bg-control-selected text-ink"
+                          : "text-ink-secondary hover:bg-control-hover hover:text-ink"
                       ].join(" ")}
                       type="button"
                       role="radio"
@@ -790,32 +849,30 @@ export function SettingsDialog({
                       onKeyDown={(event) => handleThemeKeyDown(event, index)}
                     >
                       <span
-                        className="block h-24 overflow-hidden rounded-control bg-surface-canvas p-2"
+                        className="block h-14 overflow-hidden rounded-control border border-trace-subtle bg-research-canvas p-1.5"
                         data-theme={theme.id}
                         aria-hidden="true"
                       >
-                        <span className="flex h-4 items-center justify-between rounded-control bg-surface-navigation px-1.5">
-                          <span className="h-1.5 w-8 rounded-pill bg-content-muted/60" />
-                          <span className="size-1.5 rounded-pill bg-accent-cyan" />
+                        <span className="flex h-3 items-center justify-between rounded-control bg-workspace-rail px-1">
+                          <span className="h-1 w-6 rounded-pill bg-ink-muted/60" />
+                          <span className="size-1 rounded-pill bg-proof" />
                         </span>
-                        <span className="mt-2 grid h-[3.75rem] grid-cols-[2rem_minmax(0,1fr)] gap-1.5">
-                          <span className="rounded-control bg-surface-navigation" />
-                          <span className="rounded-control bg-surface-thread p-1.5">
-                            <span className="block h-1.5 w-4/5 rounded-pill bg-content-muted/45" />
-                            <span className="mt-1.5 block h-5 rounded-control bg-surface-raised" />
-                            <span className="mt-1.5 block h-1.5 w-1/2 rounded-pill bg-accent-cyan/75" />
+                        <span className="mt-1.5 grid h-8 grid-cols-[1.25rem_minmax(0,1fr)] gap-1">
+                          <span className="rounded-control bg-workspace-rail" />
+                          <span className="rounded-control bg-answer-paper p-1">
+                            <span className="block h-1 w-4/5 rounded-pill bg-ink-muted/45" />
+                            <span className="mt-1 block h-3 rounded-control bg-control-surface" />
+                            <span className="mt-1 block h-1 w-1/2 rounded-pill bg-proof/75" />
                           </span>
                         </span>
                       </span>
-                      <span className="mt-3 flex items-start justify-between gap-2">
-                        <span className="min-w-0">
-                          <span className="block text-sm font-semibold text-content-primary">{theme.name}</span>
-                          <span className="mt-0.5 block text-xs leading-5 text-content-muted">{theme.description} · {theme.accentLabel} accent</span>
-                        </span>
-                        {selected ? <Check className="mt-0.5 size-4 shrink-0 text-accent-cyan" aria-hidden="true" /> : null}
+                      <span className="min-w-0">
+                        <span className="block text-sm font-semibold text-ink">{theme.name}</span>
+                        <span className="mt-0.5 block text-xs leading-5 text-ink-muted">{theme.description} · {theme.accentLabel} accent</span>
                       </span>
-                      <span className={`mt-2 block text-xs font-medium ${selected ? "text-accent-cyan" : "text-content-muted"}`}>
-                        {selected ? "Current palette" : "Select palette"}
+                      <span className={`inline-flex items-center gap-1 text-xs font-medium ${selected ? "text-proof" : "text-ink-muted"}`}>
+                        {selected ? <Check className="size-4 shrink-0" aria-hidden="true" /> : null}
+                        <span className="hidden sm:inline">{selected ? "Current" : "Select"}</span>
                       </span>
                     </button>
                   );
@@ -828,7 +885,7 @@ export function SettingsDialog({
 
       {discardConfirmationOpen ? (
         <DiscardChangesConfirmationDialog
-          label="prompt"
+          label={activeSection === "mcp" ? "MCP settings" : "prompt"}
           onCancel={() => setDiscardIntent(null)}
           onConfirm={confirmDiscard}
         />

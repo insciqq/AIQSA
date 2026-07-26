@@ -1,7 +1,7 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import type { ComponentProps } from "react";
 import { describe, expect, it, vi } from "vitest";
-import type { ThreadMessage } from "./types";
+import type { PersistedRun, ThreadArtifactSummary, ThreadMessage } from "./types";
 import { ThreadMessageRow } from "./ThreadMessageRow";
 
 function assistantMessage(overrides: Partial<ThreadMessage> = {}): ThreadMessage {
@@ -11,6 +11,41 @@ function assistantMessage(overrides: Partial<ThreadMessage> = {}): ThreadMessage
     parentMessageId: "question-1",
     role: "assistant",
     status: "complete",
+    ...overrides
+  };
+}
+
+function persistedRun(overrides: Partial<PersistedRun> = {}): PersistedRun {
+  return {
+    cachedInputTokens: 0,
+    cacheWriteInputTokens: 0,
+    errorPayload: null,
+    estimatedCostMicros: null,
+    events: [],
+    id: "run-1",
+    inputTokens: 80,
+    modelId: "fake-qsa",
+    outputTokens: 20,
+    provider: "fake",
+    reasoningTokens: 0,
+    searchRuns: [],
+    status: "complete",
+    toolCalls: [],
+    totalTokens: 100,
+    ...overrides
+  };
+}
+
+function artifactSummary(overrides: Partial<ThreadArtifactSummary> = {}): ThreadArtifactSummary {
+  return {
+    citationCount: 0,
+    citations: [],
+    reasoningCount: 0,
+    reasoningText: [],
+    searchCount: 0,
+    searchStrategy: null,
+    toolCallCount: 0,
+    toolCalls: [],
     ...overrides
   };
 }
@@ -27,6 +62,7 @@ function renderRow(overrides: Partial<ComponentProps<typeof ThreadMessageRow>> =
     onCopyMessage: vi.fn(),
     onDeleteMessage: vi.fn(),
     onEditMessage: vi.fn(),
+    onOpenRunDetails: vi.fn(),
     onRegenerateMessage: vi.fn(),
     ...overrides
   };
@@ -62,14 +98,14 @@ describe("ThreadMessageRow", () => {
     expect(assistantToolbar).toHaveClass("focus-within:opacity-100");
     expect(assistantToolbar).toHaveClass("group-hover/turn:opacity-100");
     expect(assistantToolbar).toHaveClass("[@media(hover:none)]:opacity-100");
-    expect(screen.getAllByRole("button").map((button) => button.getAttribute("aria-label"))).toEqual([
+    expect(within(assistantToolbar).getAllByRole("button").map((button) => button.getAttribute("aria-label"))).toEqual([
       "Regenerate message",
       "Edit message",
       "Copy message",
       "Delete message",
       "Branch from here"
     ]);
-    for (const action of screen.getAllByRole("button")) {
+    for (const action of within(assistantToolbar).getAllByRole("button")) {
       expect(action).toHaveAccessibleDescription("Answer: Answer");
     }
     expect(
@@ -99,13 +135,13 @@ describe("ThreadMessageRow", () => {
     const userToolbar = screen.getByRole("toolbar", { name: "User message actions" });
     expect(userToolbar).toHaveClass("min-h-11");
     expect(userToolbar).toHaveAccessibleDescription("Question: Question");
-    expect(screen.getAllByRole("button").map((button) => button.getAttribute("aria-label"))).toEqual([
+    expect(within(userToolbar).getAllByRole("button").map((button) => button.getAttribute("aria-label"))).toEqual([
       "Edit message",
       "Copy message",
       "Delete message",
       "Branch from here"
     ]);
-    for (const action of screen.getAllByRole("button")) {
+    for (const action of within(userToolbar).getAllByRole("button")) {
       expect(action).toHaveAccessibleDescription("Question: Question");
     }
   });
@@ -262,6 +298,7 @@ describe("ThreadMessageRow", () => {
         onCopyMessage={vi.fn()}
         onDeleteMessage={vi.fn()}
         onEditMessage={vi.fn()}
+        onOpenRunDetails={vi.fn()}
         onRegenerateMessage={vi.fn()}
       />
     );
@@ -283,6 +320,7 @@ describe("ThreadMessageRow", () => {
         onCopyMessage={vi.fn()}
         onDeleteMessage={vi.fn()}
         onEditMessage={vi.fn()}
+        onOpenRunDetails={vi.fn()}
         onRegenerateMessage={vi.fn()}
       />
     );
@@ -338,6 +376,109 @@ describe("ThreadMessageRow", () => {
     expect(warnings).toHaveTextContent("Malformed provider event was skipped.");
     expect(warnings).toHaveTextContent("Search response was incomplete.");
     expect(warnings.querySelectorAll("li")).toHaveLength(2);
+  });
+
+  it("opens the existing inline evidence disclosures from receipt facts", () => {
+    const onOpenRunDetails = vi.fn();
+    renderRow({
+      artifactSummary: artifactSummary({
+        citationCount: 1,
+        citations: [{ index: 1, title: "Source", url: "https://example.com" }],
+        reasoningCount: 1,
+        reasoningText: ["Observed reasoning"],
+        searchCount: 1,
+        searchDetails: [{ requestPreview: { query: "evidence" }, responsePreview: { ok: true } }],
+        toolCallCount: 1,
+        toolCalls: [{
+          argumentsPreview: { query: "memory" },
+          callId: "call-1",
+          capability: "mcp",
+          credentialSources: [],
+          durationMs: 42,
+          errorMessage: null,
+          externalAccountLabel: null,
+          ordinal: 0,
+          resultPreview: { ok: true },
+          round: 1,
+          serverName: "Memory",
+          status: "complete",
+          toolName: "search"
+        }]
+      }),
+      onOpenRunDetails,
+      showReasoningBlocks: true
+    });
+
+    const searchDisclosure = screen.getByRole("button", { name: /1 search call Search\/tool call/i });
+    const toolDisclosure = screen.getByRole("button", { name: /Used 1 tool Memory/i });
+    const citationDisclosure = screen.getByRole("button", { name: "Citations 1" });
+    const reasoningDisclosure = screen.getByRole("button", { name: "Reasoning 1" });
+
+    fireEvent.click(screen.getByRole("button", { name: "1 search call" }));
+    fireEvent.click(screen.getByRole("button", { name: "1 tool call" }));
+    fireEvent.click(screen.getByRole("button", { name: "1 citation" }));
+    fireEvent.click(screen.getByRole("button", { name: "1 reasoning trace" }));
+
+    expect(searchDisclosure).toHaveAttribute("aria-expanded", "true");
+    expect(toolDisclosure).toHaveAttribute("aria-expanded", "true");
+    expect(citationDisclosure).toHaveAttribute("aria-expanded", "true");
+    expect(reasoningDisclosure).toHaveAttribute("aria-expanded", "true");
+    expect(onOpenRunDetails).not.toHaveBeenCalled();
+  });
+
+  it("routes status, usage, warnings, context, model, and hidden evidence to Details Events", () => {
+    const onOpenRunDetails = vi.fn();
+    renderRow({
+      artifactSummary: artifactSummary({
+        citationCount: 1,
+        citations: [{ index: 1, title: "Source", url: "https://example.com" }],
+        contextTruncation: { approxDroppedTokens: 10, droppedMessages: 1 }
+      }),
+      message: assistantMessage({ runId: "run-1" }),
+      onOpenRunDetails,
+      persistedRun: persistedRun({
+        events: [{ eventType: "usage", payload: { totalTokens: 100 }, sequence: 1 }]
+      }),
+      runWarnings: ["Provider warning"],
+      showCitations: false
+    });
+
+    for (const name of [
+      "Run Complete",
+      "Fake / Fake QSA",
+      "1 citation",
+      "Context trimmed",
+      "100 tokens used",
+      "1 warning"
+    ]) {
+      fireEvent.click(screen.getByRole("button", { name }));
+    }
+
+    expect(onOpenRunDetails).toHaveBeenCalledTimes(6);
+  });
+
+  it("does not route a historical receipt into another answer's Details events", () => {
+    const onOpenRunDetails = vi.fn();
+    renderRow({
+      artifactSummary: artifactSummary({
+        citationCount: 1,
+        citations: [{ index: 1, title: "Historical source", url: "https://example.com" }]
+      }),
+      message: assistantMessage({ runId: "run-historical" }),
+      onOpenRunDetails,
+      persistedRun: persistedRun({
+        events: [{ eventType: "usage", payload: { totalTokens: 100 }, sequence: 1 }],
+        id: "run-latest"
+      }),
+      showCitations: false
+    });
+
+    expect(screen.queryByRole("button", { name: "Run Complete" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Fake / Fake QSA" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "1 citation" })).not.toBeInTheDocument();
+    expect(screen.getByText("Run").parentElement).toHaveAttribute("data-run-segment", "status");
+    expect(screen.getByText("1 citation")).toHaveAttribute("data-run-segment", "citations");
+    expect(onOpenRunDetails).not.toHaveBeenCalled();
   });
 
   it("shows tool activity by default and hides only its inline projection", () => {

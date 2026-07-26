@@ -81,12 +81,12 @@ describe("ShellNotice", () => {
     expect(screen.getByRole("link", { name: "https://app.local/s/share" })).toHaveClass("min-h-touch");
     expect(screen.getByRole("button", { name: "Revoke link" })).toHaveClass(
       "rounded-control",
-      "text-accent-rose"
+      "text-critical"
     );
     expect(screen.getByRole("button", { name: "Copy link" })).toHaveClass(
       "min-h-touch",
-      "border-separator-subtle",
-      "text-content-primary"
+      "border-trace-subtle",
+      "text-ink"
     );
     fireEvent.click(screen.getByRole("button", { name: "Copy link" }));
     expect(onCopy).toHaveBeenCalledOnce();

@@ -18,7 +18,8 @@ describe("InspectorTabs", () => {
     const branchTab = screen.getByRole("tab", { name: "Branch" });
     expect(branchTab).toHaveAttribute("aria-selected", "true");
     expect(branchTab).toHaveAttribute("tabindex", "0");
-    expect(branchTab).toHaveClass("focus-visible:ring-2", "focus-visible:ring-accent-cyan/55");
+    expect(branchTab).toHaveClass("focus-visible:ring-2", "focus-visible:ring-proof/55");
+    expect(branchTab).toHaveClass("text-ink", "after:bg-proof");
 
     for (const tab of inspectorTabs) {
       const element = screen.getByRole("tab", { name: tab.label });
@@ -35,6 +36,7 @@ describe("InspectorTabs", () => {
     rerender(<InspectorTabs activeTab="events" onTabChange={onTabChange} />);
     expect(branchTab).toHaveAttribute("aria-selected", "false");
     expect(branchTab).toHaveAttribute("tabindex", "-1");
+    expect(branchTab).toHaveClass("text-ink-muted", "hover:text-ink");
     expect(screen.getByRole("tab", { name: "Events" })).toHaveAttribute("aria-selected", "true");
     expect(screen.getByRole("tab", { name: "Events" })).toHaveAttribute("tabindex", "0");
   });

@@ -19,6 +19,30 @@ import {
 } from "lucide-react";
 import { memo, useState } from "react";
 
+type DisclosureControl = {
+  expanded?: boolean;
+  onExpandedChange?(expanded: boolean): void;
+};
+
+function useDisclosureControl({
+  expanded,
+  onExpandedChange
+}: DisclosureControl): readonly [boolean, () => void] {
+  const [localExpanded, setLocalExpanded] = useState(false);
+  const resolvedExpanded = expanded ?? localExpanded;
+
+  return [
+    resolvedExpanded,
+    () => {
+      const nextExpanded = !resolvedExpanded;
+      if (expanded === undefined) {
+        setLocalExpanded(nextExpanded);
+      }
+      onExpandedChange?.(nextExpanded);
+    }
+  ] as const;
+}
+
 function ContextTruncationBlockComponent({ summary }: { summary: ThreadArtifactSummary }) {
   const truncation = summary.contextTruncation;
 
@@ -52,14 +76,16 @@ function ContextTruncationBlockComponent({ summary }: { summary: ThreadArtifactS
 
 function SearchSummaryBlockComponent({
   active = false,
+  expanded,
+  onExpandedChange,
   summary
-}: {
+}: DisclosureControl & {
   active?: boolean;
   summary: ThreadArtifactSummary;
 }) {
   const strategy = summary.searchStrategy ? searchStrategyDescription(summary.searchStrategy) : "Search/tool call";
   const searchDetails = summary.searchDetails ?? [];
-  const [open, setOpen] = useState(false);
+  const [open, toggleOpen] = useDisclosureControl({ expanded, onExpandedChange });
 
   return (
     <section
@@ -70,7 +96,7 @@ function SearchSummaryBlockComponent({
         className="-mx-2 flex min-h-control w-[calc(100%+1rem)] cursor-pointer flex-wrap items-center gap-x-2 gap-y-1 rounded-control px-2 text-left outline-none hover:bg-control-hover focus-visible:ring-2 focus-visible:ring-proof/45 [@media(hover:none)]:min-h-touch [@media(pointer:coarse)]:min-h-touch"
         type="button"
         aria-expanded={open}
-        onClick={() => setOpen((expanded) => !expanded)}
+        onClick={toggleOpen}
       >
         {open ? (
           <ChevronDown className="size-3.5 shrink-0 text-ink-muted" aria-hidden="true" />
@@ -236,9 +262,13 @@ function toolIdentity(call: ThreadToolActivity): string {
   return call.serverName ? `${call.serverName} / ${call.toolName}` : call.toolName;
 }
 
-function ToolActivityBlockComponent({ summary }: { summary: ThreadArtifactSummary }) {
+function ToolActivityBlockComponent({
+  expanded,
+  onExpandedChange,
+  summary
+}: DisclosureControl & { summary: ThreadArtifactSummary }) {
   const calls = summary.toolCalls;
-  const [open, setOpen] = useState(false);
+  const [open, toggleOpen] = useDisclosureControl({ expanded, onExpandedChange });
   if (calls.length === 0) return null;
 
   const rounds = new Map<number, ThreadToolActivity[]>();
@@ -264,7 +294,7 @@ function ToolActivityBlockComponent({ summary }: { summary: ThreadArtifactSummar
         className="-mx-2 flex min-h-control w-[calc(100%+1rem)] flex-wrap items-center gap-x-2 gap-y-1 rounded-control px-2 text-left outline-none hover:bg-control-hover focus-visible:ring-2 focus-visible:ring-proof/45 [@media(hover:none)]:min-h-touch [@media(pointer:coarse)]:min-h-touch"
         type="button"
         aria-expanded={open}
-        onClick={() => setOpen((expanded) => !expanded)}
+        onClick={toggleOpen}
       >
         {open ? (
           <ChevronDown className="size-3.5 shrink-0 text-ink-muted" aria-hidden="true" />
@@ -352,9 +382,13 @@ function ToolActivityBlockComponent({ summary }: { summary: ThreadArtifactSummar
   );
 }
 
-function CitationBlockComponent({ summary }: { summary: ThreadArtifactSummary }) {
+function CitationBlockComponent({
+  expanded,
+  onExpandedChange,
+  summary
+}: DisclosureControl & { summary: ThreadArtifactSummary }) {
   const citations = summary.citations ?? [];
-  const [open, setOpen] = useState(false);
+  const [open, toggleOpen] = useDisclosureControl({ expanded, onExpandedChange });
 
   return (
     <section
@@ -365,7 +399,7 @@ function CitationBlockComponent({ summary }: { summary: ThreadArtifactSummary })
         className="-mx-2 flex min-h-control w-[calc(100%+1rem)] items-center gap-2 rounded-control px-2 text-left outline-none hover:bg-control-hover focus-visible:ring-2 focus-visible:ring-proof/45 [@media(hover:none)]:min-h-touch [@media(pointer:coarse)]:min-h-touch"
         type="button"
         aria-expanded={open}
-        onClick={() => setOpen((expanded) => !expanded)}
+        onClick={toggleOpen}
       >
         {open ? (
           <ChevronDown className="size-3.5 shrink-0 text-ink-muted" aria-hidden="true" />
@@ -415,8 +449,12 @@ function CitationBlockComponent({ summary }: { summary: ThreadArtifactSummary })
   );
 }
 
-function ReasoningBlockComponent({ summary }: { summary: ThreadArtifactSummary }) {
-  const [open, setOpen] = useState(false);
+function ReasoningBlockComponent({
+  expanded,
+  onExpandedChange,
+  summary
+}: DisclosureControl & { summary: ThreadArtifactSummary }) {
+  const [open, toggleOpen] = useDisclosureControl({ expanded, onExpandedChange });
 
   return (
     <section
@@ -427,7 +465,7 @@ function ReasoningBlockComponent({ summary }: { summary: ThreadArtifactSummary }
         className="-mx-2 flex min-h-control w-[calc(100%+1rem)] items-center gap-2 rounded-control px-2 text-left font-semibold text-ink outline-none hover:bg-control-hover focus-visible:ring-2 focus-visible:ring-proof/45 [@media(hover:none)]:min-h-touch [@media(pointer:coarse)]:min-h-touch"
         type="button"
         aria-expanded={open}
-        onClick={() => setOpen((expanded) => !expanded)}
+        onClick={toggleOpen}
       >
         {open ? (
           <ChevronDown className="size-3.5 shrink-0 text-ink-muted" aria-hidden="true" />

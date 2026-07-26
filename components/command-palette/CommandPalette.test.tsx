@@ -188,7 +188,12 @@ describe("CommandPalette", () => {
     expect(lastOption).toHaveAttribute("aria-selected", "true");
     expect(lastOption.querySelector("[title^='A very long conversation']")).toHaveClass("[overflow-wrap:anywhere]");
     expect(screen.getByRole("dialog", { name: "Command palette" })).toHaveClass(
-      "max-h-[calc(100dvh-1rem-env(safe-area-inset-top)-env(safe-area-inset-bottom))]"
+      "max-h-[calc(100dvh-max(.5rem,env(safe-area-inset-top)))]",
+      "bg-overlay-surface",
+      "border-trace-subtle"
+    );
+    expect(screen.getByRole("dialog", { name: "Command palette" }).parentElement).not.toHaveClass(
+      "backdrop-blur-sm"
     );
     expect(scrollIntoView).toHaveBeenLastCalledWith({ block: "nearest" });
   });

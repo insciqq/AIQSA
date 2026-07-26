@@ -791,6 +791,7 @@ export function PowerAppShell({
     handleRegenerateMessage,
     handleThreadScroll,
     jumpToLatest,
+    lastRun: activeRunSurface.lastRun,
     liveArtifactSummary,
     retryActiveChatDetail,
     showJumpToLatest,

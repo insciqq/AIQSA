@@ -51,30 +51,39 @@ export function DetailedInspector({
   streaming: boolean;
 }) {
   return (
-    <div className="flex h-full min-h-0 flex-col" data-testid="details-content">
-      <div className="flex min-h-16 items-start justify-between gap-3 border-b border-separator-subtle px-4 py-3">
+    <div
+      className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden bg-overlay-surface text-ink"
+      data-testid="details-content"
+    >
+      <div className="flex shrink-0 items-start justify-between gap-3 border-b border-trace-subtle px-4 py-4 [@media(max-height:32rem)]:py-2.5">
         <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-            <h2 className="text-sm font-semibold text-content-primary" id="details-heading">Details</h2>
+          <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5">
+            <h2 className="text-base font-semibold tracking-[-0.01em] text-ink" id="details-heading">Details</h2>
             <span
-              className="rounded-pill bg-surface-hover px-2 py-0.5 text-[11px] font-medium text-content-muted"
+              className="text-[11px] font-medium uppercase tracking-[0.08em] text-ink-muted"
               data-testid="details-mode-label"
             >
-              {pinned ? "Pinned" : "Overlay"}
+              {pinned ? "Pinned view" : "Overlay view"}
             </span>
           </div>
           <p
-            className={`mt-1 max-h-10 overflow-y-auto break-words text-xs leading-5 [overflow-wrap:anywhere] ${errorText ? "text-accent-rose" : streaming ? "text-accent-cyan" : "text-content-muted"}`}
+            className={`mt-1 max-h-10 overflow-y-auto break-words text-xs leading-5 [overflow-wrap:anywhere] ${errorText ? "text-critical" : streaming ? "text-proof" : "text-ink-muted"}`}
             data-testid="details-summary"
             title={errorText ?? undefined}
           >
-            {errorText ?? (streaming ? "Run active · live Events available" : runId ? `Latest run ${runId.slice(0, 8)}` : "Branch and run events")}
+            {errorText ?? (
+              streaming
+                ? events.length > 0 ? "Run active · live events available" : "Run active"
+                : runId
+                  ? events.length > 0 ? "Run events available" : "Run recorded · no events captured"
+                  : "Branch and run events"
+            )}
           </p>
         </div>
         <div className="flex shrink-0 items-center gap-1">
           {pinningAvailable ? (
             <button
-              className="grid size-9 place-items-center rounded-control text-content-muted hover:bg-surface-hover hover:text-content-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-cyan/55 [@media(hover:none)]:!size-11 [@media(pointer:coarse)]:!size-11"
+              className="grid size-9 place-items-center rounded-control text-ink-muted outline-none hover:bg-control-hover hover:text-ink focus-visible:ring-2 focus-visible:ring-proof/55 [@media(hover:none)]:!size-11 [@media(pointer:coarse)]:!size-11"
               type="button"
               aria-label={pinned ? "Unpin details" : "Pin details"}
               aria-pressed={pinned}
@@ -85,7 +94,7 @@ export function DetailedInspector({
             </button>
           ) : null}
           <button
-            className="grid size-9 place-items-center rounded-control text-content-muted hover:bg-surface-hover hover:text-content-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-cyan/55 [@media(hover:none)]:!size-11 [@media(pointer:coarse)]:!size-11"
+            className="grid size-9 place-items-center rounded-control text-ink-muted outline-none hover:bg-control-hover hover:text-ink focus-visible:ring-2 focus-visible:ring-proof/55 [@media(hover:none)]:!size-11 [@media(pointer:coarse)]:!size-11"
             type="button"
             aria-label="Close details"
             title="Close details"
@@ -99,13 +108,13 @@ export function DetailedInspector({
       <InspectorTabs activeTab={activeTab} onTabChange={onActiveTabChange} />
 
       <div
-        className="min-h-0 flex-1 overscroll-contain overflow-y-auto px-4 py-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent-cyan/55"
+        className="min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain px-3 py-4 outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-proof/55 sm:px-4 [@media(max-height:32rem)]:py-3"
         id={inspectorPanelId(activeTab)}
         role="tabpanel"
         aria-labelledby={inspectorTabId(activeTab)}
         tabIndex={0}
       >
-        <div>
+        <div className="min-w-0">
           {activeTab === "events" ? <EventLog events={events} /> : null}
 
           {activeTab === "branch" ? (
@@ -140,45 +149,44 @@ function EventLog({ events }: { events: RunEventView[] }) {
   return (
     <section aria-labelledby="details-events-heading">
       <div className="flex items-start gap-3">
-        <span className="mt-0.5 grid size-8 shrink-0 place-items-center rounded-control bg-accent-cyan/10 text-accent-cyan">
-          <Activity className="size-4" aria-hidden="true" />
-        </span>
-        <div>
-          <h3 className="text-sm font-semibold text-content-primary" id="details-events-heading">Run events</h3>
-          <p className="mt-1 text-xs leading-5 text-content-muted">
-            A chronological digest. Repeated provider, token, tool, and artifact updates stay grouped at their first occurrence.
+        <Activity className="mt-0.5 size-4 shrink-0 text-proof" aria-hidden="true" />
+        <div className="min-w-0">
+          <p className="text-[11px] font-medium uppercase tracking-[0.09em] text-ink-muted">Run trace</p>
+          <h3 className="mt-0.5 text-[15px] font-semibold text-ink" id="details-events-heading">Events</h3>
+          <p className="mt-1 text-xs leading-5 text-ink-secondary">
+            Chronological run evidence. Repeated provider, token, tool, and artifact updates are compacted at their first occurrence.
           </p>
         </div>
       </div>
 
-      <ol className="mt-4 space-y-2" data-testid="inspector-event-log">
+      <ol className="mt-4 border-y border-trace-subtle" data-testid="inspector-event-log">
         {summaries.length === 0 ? (
-          <li className="rounded-panel border border-dashed border-separator-subtle px-3 py-4 text-xs leading-5 text-content-muted">
-            Events appear here during a run. Starting a response does not open Details automatically.
+          <li className="bg-control-surface px-3 py-5 text-xs leading-5 text-ink-secondary">
+            Events appear here during a run. Details stays closed until you open it.
           </li>
         ) : (
           summaries.map((item, index) => (
             <li
               className={[
-                "grid grid-cols-[3rem_minmax(0,1fr)] gap-3 rounded-panel border px-3 py-3 text-xs",
+                "relative grid min-w-0 grid-cols-[2.75rem_minmax(0,1fr)] gap-3 border-b border-trace-subtle px-2 py-3 text-xs last:border-b-0 sm:grid-cols-[3rem_minmax(0,1fr)] sm:px-3",
                 item.tone === "error"
-                  ? "border-accent-rose/25 bg-accent-rose/[0.07]"
+                  ? "bg-critical/[0.055]"
                   : item.tone === "warning"
-                    ? "border-accent-amber/25 bg-accent-amber/[0.06]"
-                    : "border-separator-subtle bg-surface-raised"
+                    ? "bg-caution/[0.055]"
+                    : "bg-overlay-surface"
               ].join(" ")}
               data-tone={item.tone}
               key={item.id}
             >
               <span className="sr-only">Event {index + 1}, stage {item.stage}.</span>
-              <div className="font-mono text-[11px] leading-4 text-content-muted" aria-hidden="true">
-                <div className="text-content-disabled">{String(index + 1).padStart(2, "0")}</div>
-                <div className="mt-1 inline-flex max-w-full rounded-control bg-surface-hover px-1.5 py-0.5 text-content-secondary">
+              <div className="border-r border-trace-subtle pr-2 font-mono text-[10px] leading-4 text-ink-muted" aria-hidden="true">
+                <div className="text-ink-disabled">{String(index + 1).padStart(2, "0")}</div>
+                <div className="mt-1 break-words font-semibold text-ink-secondary [overflow-wrap:anywhere]">
                   {item.stage}
                 </div>
               </div>
               <div className="min-w-0">
-                <div className="flex min-w-0 items-center gap-1.5 font-medium text-content-secondary">
+                <div className="flex min-w-0 items-center gap-1.5 font-medium text-ink-secondary">
                     <EventToneIcon tone={item.tone} />
                     <span className="min-w-0 break-words [overflow-wrap:anywhere]">{item.label}</span>
                 </div>
@@ -186,19 +194,19 @@ function EventLog({ events }: { events: RunEventView[] }) {
                   className={[
                     "mt-1 break-words text-sm leading-5 [overflow-wrap:anywhere]",
                     item.tone === "error"
-                      ? "text-accent-rose"
+                      ? "text-critical"
                       : item.tone === "success"
-                        ? "text-accent-green"
+                        ? "text-positive"
                         : item.tone === "warning"
-                          ? "text-accent-amber"
-                          : "text-content-primary"
+                          ? "text-caution"
+                          : "text-ink"
                   ].join(" ")}
                 >
                   {item.value}
                 </p>
                 {item.detail ? (
                   <div
-                    className="mt-1 break-words font-mono text-[11px] leading-5 text-content-muted [overflow-wrap:anywhere]"
+                    className="mt-1 break-words font-mono text-[11px] leading-5 text-ink-muted [overflow-wrap:anywhere]"
                     title={item.detail}
                   >
                     {item.detail}
@@ -215,18 +223,18 @@ function EventLog({ events }: { events: RunEventView[] }) {
 
 function EventToneIcon({ tone }: { tone: "default" | "error" | "success" | "warning" }) {
   if (tone === "error") {
-    return <XCircle className="size-3.5 shrink-0 text-accent-rose" aria-hidden="true" />;
+    return <XCircle className="size-3.5 shrink-0 text-critical" aria-hidden="true" />;
   }
 
   if (tone === "success") {
-    return <CheckCircle2 className="size-3.5 shrink-0 text-accent-green" aria-hidden="true" />;
+    return <CheckCircle2 className="size-3.5 shrink-0 text-positive" aria-hidden="true" />;
   }
 
   if (tone === "warning") {
-    return <AlertTriangle className="size-3.5 shrink-0 text-accent-amber" aria-hidden="true" />;
+    return <AlertTriangle className="size-3.5 shrink-0 text-caution" aria-hidden="true" />;
   }
 
-  return <Circle className="size-3.5 shrink-0 text-content-muted" aria-hidden="true" />;
+  return <Circle className="size-3.5 shrink-0 text-ink-muted" aria-hidden="true" />;
 }
 
 function BranchTree({
@@ -249,12 +257,11 @@ function BranchTree({
   return (
     <section aria-labelledby="details-branch-heading" data-testid="branch-tree">
       <div className="flex items-start gap-3">
-        <span className="mt-0.5 grid size-8 shrink-0 place-items-center rounded-control bg-accent-cyan/10 text-accent-cyan">
-          <GitBranch className="size-4" aria-hidden="true" />
-        </span>
+        <GitBranch className="mt-0.5 size-4 shrink-0 text-proof" aria-hidden="true" />
         <div className="min-w-0">
-          <h3 className="text-sm font-semibold text-content-primary" id="details-branch-heading">Conversation branches</h3>
-          <p className="mt-1 text-xs leading-5 text-content-muted">
+          <p className="text-[11px] font-medium uppercase tracking-[0.09em] text-ink-muted">Conversation path</p>
+          <h3 className="mt-0.5 text-[15px] font-semibold text-ink" id="details-branch-heading">Branches</h3>
+          <p className="mt-1 text-xs leading-5 text-ink-secondary">
             {nodes.length === 0
               ? "Messages appear here after the conversation begins."
               : hasForks
@@ -265,17 +272,23 @@ function BranchTree({
       </div>
 
       {nodes.length > 0 && !hasForks ? (
-        <p className="mt-4 rounded-control bg-surface-raised px-3 py-2 text-xs leading-5 text-content-muted">
+        <p className="mt-4 border-l border-trace-strong bg-control-surface px-3 py-2.5 text-xs leading-5 text-ink-secondary">
           This chat has a single path. Edit, regenerate, or Branch from here to create branches.
         </p>
       ) : null}
       {streaming && nodes.length > 0 ? (
-        <p className="mt-3 rounded-control bg-accent-amber/[0.07] px-3 py-2 text-xs leading-5 text-accent-amber" id="branch-streaming-guidance" role="status">
+        <p className="mt-3 border-l border-caution/60 bg-caution/[0.06] px-3 py-2.5 text-xs leading-5 text-ink-secondary" id="branch-streaming-guidance" role="status">
           You can’t open another version while a response is streaming. Stop or finish the response first.
         </p>
       ) : null}
 
-      <div className="mt-4 space-y-1.5 text-xs">
+      {nodes.length === 0 ? (
+        <div className="mt-4 border-y border-trace-subtle bg-control-surface px-3 py-5 text-xs leading-5 text-ink-secondary">
+          No conversation yet. Ask a question to create the first path.
+        </div>
+      ) : null}
+
+      <div className="mt-4 border-y border-trace-subtle text-xs empty:hidden">
         {nodes.map((node, index) => (
           <button
             aria-label={`${node.active ? "Active branch" : "Open this version, branch"} ${node.message.role} ${index + 1}`}
@@ -286,12 +299,12 @@ function BranchTree({
               streaming ? "branch-streaming-guidance" : null
             ].filter(Boolean).join(" ")}
             className={[
-              "grid w-full grid-cols-[minmax(0,1fr)_auto] items-start gap-3 rounded-panel border px-3 py-2.5 text-left outline-none focus-visible:ring-2 focus-visible:ring-accent-cyan/55 disabled:cursor-not-allowed disabled:opacity-55",
+              "group relative grid min-h-touch w-full min-w-0 grid-cols-[minmax(0,1fr)_auto] items-start gap-2 border-b border-trace-subtle px-2 py-3 text-left outline-none last:border-b-0 focus-visible:z-10 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-proof/55 disabled:cursor-not-allowed disabled:opacity-55 sm:gap-3 sm:px-3",
               node.active
-                ? "border-accent-cyan/30 bg-accent-cyan/[0.09] text-content-primary"
+                ? "bg-control-selected text-ink before:absolute before:inset-y-2 before:left-0 before:w-0.5 before:rounded-pill before:bg-proof"
                 : node.activePath
-                  ? "border-accent-cyan/10 bg-accent-cyan/[0.035] text-content-primary hover:bg-accent-cyan/[0.07]"
-                  : "border-separator-subtle bg-surface-raised text-content-secondary hover:bg-surface-hover hover:text-content-primary"
+                  ? "bg-proof/[0.025] text-ink hover:bg-control-hover"
+                  : "bg-overlay-surface text-ink-secondary hover:bg-control-hover hover:text-ink"
             ].join(" ")}
             data-active-leaf={node.active ? "true" : undefined}
             data-depth={node.depth}
@@ -318,38 +331,39 @@ function BranchTree({
                 ? "Active leaf."
                 : `${node.activePath ? "On the active path. " : ""}Open this version.`}
             </span>
-            <span className="flex min-w-0 items-start gap-2" style={{ paddingLeft: `${Math.min(node.depth, 6) * 12}px` }}>
+            <span className="flex min-w-0 items-start gap-2" style={{ paddingLeft: `${Math.min(node.depth, 5) * 10}px` }}>
               <span
                 className={[
-                  "grid size-5 shrink-0 place-items-center rounded-control border font-mono text-[11px] font-semibold",
+                  "grid size-6 shrink-0 place-items-center rounded-full border font-mono text-[10px] font-semibold",
                   node.activePath
-                    ? "border-accent-cyan/30 bg-accent-cyan/10 text-accent-cyan"
-                    : "border-separator-subtle bg-surface-thread text-content-muted"
+                    ? "border-proof/35 bg-proof/[0.08] text-proof"
+                    : "border-trace-subtle bg-control-surface text-ink-muted"
                 ].join(" ")}
                 aria-hidden="true"
               >
                 {node.roleGlyph}
               </span>
               <span className="min-w-0 flex-1">
-                <span className="flex flex-wrap items-center gap-1.5 text-[11px] font-medium text-content-muted">
+                <span className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] font-medium text-ink-muted">
                   <span>{node.message.role === "user" ? "Question" : "Answer"}</span>
-                  {node.childCount > 1 ? <span className="text-accent-amber">Fork point · {node.childCount} choices</span> : null}
+                  {node.childCount > 1 ? <span className="text-caution">Fork point · {node.childCount} choices</span> : null}
                   {node.message.parentMessageId && (childCountByMessageId.get(node.message.parentMessageId) ?? 0) > 1 ? (
-                    <span className="text-accent-cyan">Branch path</span>
+                    <span className="text-proof">Branch path</span>
                   ) : null}
                 </span>
-                <span className="mt-1 block break-words text-xs leading-5 [display:-webkit-box] [overflow-wrap:anywhere] [-webkit-box-orient:vertical] [-webkit-line-clamp:3]">
+                <span className="mt-1 block break-words text-[13px] leading-5 [display:-webkit-box] [overflow-wrap:anywhere] [-webkit-box-orient:vertical] [-webkit-line-clamp:3]">
                   {node.preview}
                 </span>
               </span>
             </span>
             {node.active ? (
-              <span className="rounded-pill border border-accent-cyan/25 bg-accent-cyan/10 px-2 py-0.5 text-[11px] font-medium text-accent-cyan">
+              <span className="pt-0.5 text-[11px] font-semibold text-proof">
                 Active leaf
               </span>
             ) : (
-              <span className="mt-0.5 max-w-24 rounded-control border border-separator-subtle bg-surface-thread px-2 py-1 text-center text-[11px] font-medium leading-4 text-content-secondary">
-                Open this version
+              <span className="pt-0.5 text-[11px] font-medium text-ink-secondary group-hover:text-ink">
+                <span className="sm:hidden">Open</span>
+                <span className="hidden sm:inline">Open this version</span>
               </span>
             )}
           </button>

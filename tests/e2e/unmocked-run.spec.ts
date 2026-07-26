@@ -161,14 +161,17 @@ test("runs a fake-provider chat through real routes, Prisma, SSE, and Details", 
 
     await expect(page.getByTestId("thread")).toContainText(`Fake answer: ${prompt}`, { timeout: 20_000 });
     await expect(page.getByTestId("streaming-cursor")).toHaveCount(0, { timeout: 20_000 });
-    await expect(page.getByTestId("run-receipt").last()).toContainText("Run Complete");
-    await expect(page.getByTestId("run-receipt").last()).toContainText("Fake QSA");
+    const receipt = page.getByTestId("run-receipt").last();
+    await expect(receipt).toContainText("Run Complete");
+    await expect(receipt).toContainText("Fake QSA");
+    const usageSegment = receipt.getByRole("button", { name: /tokens used/ });
+    await expect(usageSegment).toBeVisible({ timeout: 20_000 });
     await expect(page.getByTestId("composer-usage-line")).toBeVisible();
     await expect(page.getByTestId("composer-usage-line")).not.toContainText("cost");
 
-    await page.getByRole("button", { name: "Open details" }).click();
+    await usageSegment.click();
     const details = page.getByTestId("details-pane");
-    await details.getByRole("tab", { name: "Events" }).click();
+    await expect(details.getByRole("tab", { name: "Events" })).toHaveAttribute("aria-selected", "true");
     await expect(details.getByTestId("inspector-event-log")).toContainText("Provider status");
     await expect(details.getByTestId("inspector-event-log")).toContainText("Answer text");
     await expect(details.getByTestId("inspector-event-log")).toContainText("Usage");

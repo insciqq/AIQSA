@@ -32,25 +32,25 @@ export function ConfirmationDialog({
   const toneClasses =
     tone === "warning"
       ? {
-          button: "border-accent-amber/40 bg-accent-amber/10 text-accent-amber hover:bg-accent-amber/15",
-          icon: "border-accent-amber/30 bg-accent-amber/10 text-accent-amber"
+          button: "bg-caution text-proof-contrast hover:opacity-90",
+          icon: "border-caution/35 bg-caution/10 text-caution"
         }
       : {
-          button: "border-accent-rose/40 bg-accent-rose/10 text-accent-rose hover:bg-accent-rose/15",
-          icon: "border-accent-rose/30 bg-accent-rose/10 text-accent-rose"
+          button: "bg-critical text-proof-contrast hover:opacity-90",
+          icon: "border-critical/35 bg-critical/10 text-critical"
         };
   const ConfirmIcon = icon === "x" ? X : Trash2;
 
   return (
     <div
-      className="fixed inset-0 z-50 grid place-items-center bg-scrim/70 pb-[max(.75rem,env(safe-area-inset-bottom))] pl-[max(.75rem,env(safe-area-inset-left))] pr-[max(.75rem,env(safe-area-inset-right))] pt-[max(.75rem,env(safe-area-inset-top))] backdrop-blur-sm"
+      className="fixed inset-0 z-50 flex items-end justify-center bg-scrim/70 pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)] pt-[max(.75rem,env(safe-area-inset-top))] sm:items-center sm:pb-[max(.75rem,env(safe-area-inset-bottom))] sm:pl-[max(.75rem,env(safe-area-inset-left))] sm:pr-[max(.75rem,env(safe-area-inset-right))]"
       data-testid={testId}
       role="presentation"
       onMouseDown={onCancel}
     >
       <div
         ref={dialogRef}
-        className="pop-enter max-h-[calc(100dvh-1.5rem-env(safe-area-inset-top)-env(safe-area-inset-bottom))] w-full max-w-lg overflow-y-auto overscroll-contain rounded-panel border border-separator-subtle bg-surface-overlay p-4 shadow-overlay"
+        className="pop-enter max-h-[calc(100dvh-max(.75rem,env(safe-area-inset-top)))] w-full max-w-lg overflow-y-auto overscroll-contain rounded-t-panel border border-b-0 border-trace-subtle bg-overlay-surface px-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-4 text-ink shadow-overlay sm:rounded-panel sm:border sm:p-5 [@media(max-height:32rem)]:max-h-[calc(100dvh-1rem-env(safe-area-inset-top)-env(safe-area-inset-bottom))]"
         role="dialog"
         aria-modal="true"
         aria-label={dialogLabel}
@@ -61,13 +61,13 @@ export function ConfirmationDialog({
             <AlertTriangle className="size-4" aria-hidden="true" />
           </span>
           <div className="min-w-0 flex-1">
-            <h2 className="break-words text-sm font-semibold text-content-primary [overflow-wrap:anywhere]">{title}</h2>
-            <p className="mt-1 break-words text-xs leading-5 text-content-secondary [overflow-wrap:anywhere]">{children}</p>
+            <h2 className="break-words text-base font-semibold text-ink [overflow-wrap:anywhere]">{title}</h2>
+            <p className="mt-1 break-words text-sm leading-6 text-ink-secondary [overflow-wrap:anywhere]">{children}</p>
           </div>
         </div>
         <div className="mt-4 flex justify-end gap-2">
           <button
-            className="flex h-touch items-center justify-center gap-1.5 rounded-control bg-surface-raised px-3 text-xs font-medium text-content-secondary outline-none hover:bg-surface-hover hover:text-content-primary focus-visible:ring-2 focus-visible:ring-accent-cyan/55 focus-visible:ring-offset-2 focus-visible:ring-offset-surface-overlay sm:h-control-sm [@media(hover:none)]:!h-touch [@media(pointer:coarse)]:!h-touch"
+            className="flex h-touch items-center justify-center gap-1.5 rounded-control bg-control-surface px-3 text-sm font-medium text-ink-secondary outline-none hover:bg-control-hover hover:text-ink focus-visible:ring-2 focus-visible:ring-proof/55 focus-visible:ring-offset-2 focus-visible:ring-offset-overlay-surface sm:h-control [@media(hover:none)]:!h-touch [@media(pointer:coarse)]:!h-touch"
             type="button"
             onClick={onCancel}
           >
@@ -75,7 +75,7 @@ export function ConfirmationDialog({
           </button>
           <button
             className={[
-              "flex h-touch items-center justify-center gap-1.5 rounded-control border px-3 text-xs font-medium outline-none focus-visible:ring-2 focus-visible:ring-accent-cyan/55 focus-visible:ring-offset-2 focus-visible:ring-offset-surface-overlay disabled:opacity-50 sm:h-control-sm [@media(hover:none)]:!h-touch [@media(pointer:coarse)]:!h-touch",
+              "flex h-touch items-center justify-center gap-1.5 rounded-control px-3 text-sm font-semibold outline-none focus-visible:ring-2 focus-visible:ring-proof/55 focus-visible:ring-offset-2 focus-visible:ring-offset-overlay-surface disabled:opacity-50 sm:h-control [@media(hover:none)]:!h-touch [@media(pointer:coarse)]:!h-touch",
               toneClasses.button
             ].join(" ")}
             type="button"

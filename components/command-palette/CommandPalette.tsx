@@ -97,7 +97,7 @@ export function CommandPalette({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-start justify-center bg-scrim/55 pb-[max(.5rem,env(safe-area-inset-bottom))] pl-[max(.5rem,env(safe-area-inset-left))] pr-[max(.5rem,env(safe-area-inset-right))] pt-[max(.5rem,env(safe-area-inset-top))] backdrop-blur-sm sm:pb-[max(1rem,env(safe-area-inset-bottom))] sm:pl-[max(1rem,env(safe-area-inset-left))] sm:pr-[max(1rem,env(safe-area-inset-right))] sm:pt-[min(12vh,6rem)] [@media(max-height:32rem)]:!pt-[max(.5rem,env(safe-area-inset-top))]"
+      className="fixed inset-0 z-50 flex items-end justify-center bg-scrim/60 pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)] pt-[max(.5rem,env(safe-area-inset-top))] sm:items-start sm:pb-[max(1rem,env(safe-area-inset-bottom))] sm:pl-[max(1rem,env(safe-area-inset-left))] sm:pr-[max(1rem,env(safe-area-inset-right))] sm:pt-[min(12vh,6rem)] [@media(max-height:32rem)]:!items-start [@media(max-height:32rem)]:!pb-[max(.5rem,env(safe-area-inset-bottom))] [@media(max-height:32rem)]:!pt-[max(.5rem,env(safe-area-inset-top))]"
       role="presentation"
       onMouseDown={(event) => {
         if (event.target === event.currentTarget) {
@@ -106,16 +106,16 @@ export function CommandPalette({
       }}
     >
       <div
-        className="pop-enter flex max-h-[calc(100dvh-1rem-env(safe-area-inset-top)-env(safe-area-inset-bottom))] w-full max-w-2xl flex-col overflow-hidden rounded-panel border border-separator-subtle bg-surface-overlay shadow-overlay sm:max-h-[min(36rem,calc(100dvh-8rem))] [@media(max-height:32rem)]:!max-h-[calc(100dvh-1rem-env(safe-area-inset-top)-env(safe-area-inset-bottom))]"
+        className="pop-enter flex max-h-[calc(100dvh-max(.5rem,env(safe-area-inset-top)))] w-full max-w-2xl flex-col overflow-hidden rounded-t-panel border border-b-0 border-trace-subtle bg-overlay-surface pb-[env(safe-area-inset-bottom)] text-ink shadow-overlay sm:max-h-[min(36rem,calc(100dvh-8rem))] sm:rounded-panel sm:border sm:pb-0 [@media(max-height:32rem)]:!max-h-[calc(100dvh-1rem-env(safe-area-inset-top)-env(safe-area-inset-bottom))] [@media(max-height:32rem)]:!rounded-panel [@media(max-height:32rem)]:!border [@media(max-height:32rem)]:!pb-0"
         ref={dialogRef}
         role="dialog"
         aria-modal="true"
         aria-label="Command palette"
       >
-        <div className="flex shrink-0 items-center gap-2 border-b border-separator-subtle px-3">
-          <Search className="size-4 text-content-muted" aria-hidden="true" />
+        <div className="flex shrink-0 items-center gap-2 border-b border-trace-subtle px-3">
+          <Search className="size-4 text-ink-muted" aria-hidden="true" />
           <input
-            className="h-12 min-w-0 flex-1 bg-transparent text-sm text-content-primary outline-none placeholder:text-content-muted"
+            className="h-14 min-w-0 flex-1 bg-transparent text-sm text-ink outline-none placeholder:text-ink-muted"
             aria-label="Command search"
             aria-activedescendant={selectedItem ? `command-option-${boundedSelectedIndex}` : undefined}
             aria-autocomplete="list"
@@ -146,7 +146,7 @@ export function CommandPalette({
             }}
           />
           <button
-            className="grid size-11 shrink-0 place-items-center rounded-control text-content-muted outline-none hover:bg-surface-hover hover:text-content-primary focus-visible:ring-2 focus-visible:ring-accent-cyan/55 sm:size-9 [@media(hover:none)]:!size-11 [@media(pointer:coarse)]:!size-11"
+            className="grid size-11 shrink-0 place-items-center rounded-control text-ink-muted outline-none hover:bg-control-hover hover:text-ink focus-visible:ring-2 focus-visible:ring-proof/55 sm:size-9 [@media(hover:none)]:!size-11 [@media(pointer:coarse)]:!size-11"
             type="button"
             aria-label="Close command palette"
             title="Close command palette"
@@ -164,8 +164,8 @@ export function CommandPalette({
         >
           {filteredItems.length === 0 ? (
             <div className="px-4 py-10 text-center" role="status">
-              <p className="text-sm font-medium text-content-primary">No matching commands</p>
-              <p className="mt-1 text-xs text-content-muted">Try a chat, model, provider, prompt, search, or action name.</p>
+              <p className="text-sm font-medium text-ink">No matching commands</p>
+              <p className="mt-1 text-xs text-ink-muted">Try a chat, model, provider, prompt, search, or action name.</p>
             </div>
           ) : (
             groupedItems.map((group) => {
@@ -179,7 +179,7 @@ export function CommandPalette({
                   aria-labelledby={headingId}
                 >
                   <div
-                    className="flex items-center justify-between px-3 pb-1 pt-2 text-[11px] font-medium text-content-muted first:pt-1"
+                    className="flex items-center justify-between px-3 pb-1 pt-2 text-[11px] font-medium text-ink-muted first:pt-1"
                     id={headingId}
                   >
                     <span>{kindLabels[group.kind].group}</span>
@@ -190,10 +190,10 @@ export function CommandPalette({
                   {group.items.map(({ index, item }) => (
                     <button
                       className={[
-                        "flex min-h-touch w-full items-start justify-between gap-3 rounded-control px-3 py-2 text-left outline-none focus-visible:ring-2 focus-visible:ring-accent-cyan/55 sm:min-h-control [@media(hover:none)]:!min-h-touch [@media(pointer:coarse)]:!min-h-touch",
+                        "flex min-h-touch w-full items-start justify-between gap-3 rounded-control px-3 py-2 text-left outline-none focus-visible:ring-2 focus-visible:ring-proof/55 sm:min-h-control [@media(hover:none)]:!min-h-touch [@media(pointer:coarse)]:!min-h-touch",
                         index === boundedSelectedIndex
-                          ? "bg-surface-selected text-content-primary"
-                          : "text-content-secondary hover:bg-surface-hover hover:text-content-primary"
+                          ? "bg-control-selected text-ink"
+                          : "text-ink-secondary hover:bg-control-hover hover:text-ink"
                       ].join(" ")}
                       id={`command-option-${index}`}
                       key={item.id}
@@ -208,18 +208,18 @@ export function CommandPalette({
                       onClick={() => onRun(item)}
                     >
                       <span className="flex min-w-0 items-start gap-3">
-                        <span className="mt-0.5 grid size-7 shrink-0 place-items-center rounded-control bg-surface-raised text-content-muted">
+                        <span className="mt-0.5 grid size-7 shrink-0 place-items-center rounded-control bg-control-surface text-ink-muted">
                           <CommandKindIcon kind={item.kind} />
                         </span>
                         <span className="min-w-0">
                           <span
-                            className="block break-words text-sm leading-5 text-content-primary [overflow-wrap:anywhere]"
+                            className="block break-words text-sm leading-5 text-ink [overflow-wrap:anywhere]"
                             title={item.label}
                           >
                             {item.label}
                           </span>
                           <span
-                            className="mt-0.5 block break-words text-xs leading-4 text-content-muted [overflow-wrap:anywhere]"
+                            className="mt-0.5 block break-words text-xs leading-4 text-ink-muted [overflow-wrap:anywhere]"
                             title={item.subtitle}
                           >
                             {kindLabels[item.kind].item} · {item.subtitle}
@@ -227,7 +227,7 @@ export function CommandPalette({
                         </span>
                       </span>
                       {item.current ? (
-                        <span className="mt-0.5 inline-flex shrink-0 items-center gap-1 text-xs font-medium text-accent-cyan">
+                        <span className="mt-0.5 inline-flex shrink-0 items-center gap-1 text-xs font-medium text-proof">
                           <Check className="size-3.5" aria-hidden="true" />
                           Current
                         </span>

@@ -82,6 +82,14 @@ describe("DetailedInspector", () => {
     expect(screen.queryByText(/Fork point/)).not.toBeInTheDocument();
   });
 
+  it("guides an empty conversation without presenting a fabricated branch", () => {
+    render(<DetailedInspector {...inspectorProps({ messages: [], runId: null })} />);
+
+    expect(screen.getByTestId("branch-tree")).toHaveTextContent("No conversation yet");
+    expect(screen.getByTestId("branch-tree")).toHaveTextContent("Ask a question to create the first path");
+    expect(screen.queryByRole("button", { name: /branch/i })).not.toBeInTheDocument();
+  });
+
   it("makes real forks, role excerpts, active path, leaf, and version opening unambiguous", () => {
     const onSelectBranch = vi.fn();
     render(
@@ -153,5 +161,48 @@ describe("DetailedInspector", () => {
     rerender(<DetailedInspector {...inspectorProps({ onClose, onPinToggle, pinned: true })} />);
     expect(screen.getByTestId("details-mode-label")).toHaveTextContent("Pinned");
     expect(screen.getByRole("button", { name: "Unpin details" })).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("uses factual readable run context without inventing events or exposing an internal run id", () => {
+    render(<DetailedInspector {...inspectorProps({ runId: "run-internal-123456789" })} />);
+
+    expect(screen.getByTestId("details-summary")).toHaveTextContent("Run recorded · no events captured");
+    expect(screen.getByTestId("details-summary")).not.toHaveTextContent("run-internal");
+  });
+
+  it("claims run events only when an event is actually present", () => {
+    const { rerender } = render(
+      <DetailedInspector
+        {...inspectorProps({
+          activeTab: "events",
+          events: [{ data: { totalTokens: 20 }, type: "usage" }]
+        })}
+      />
+    );
+
+    expect(screen.getByTestId("details-summary")).toHaveTextContent("Run events available");
+
+    rerender(<DetailedInspector {...inspectorProps({ activeTab: "events", streaming: true })} />);
+    expect(screen.getByTestId("details-summary")).toHaveTextContent("Run active");
+    expect(screen.getByTestId("details-summary")).not.toHaveTextContent("events available");
+  });
+
+  it("keeps the inspection plane and local scroller bounded for compact and short viewports", () => {
+    render(<DetailedInspector {...inspectorProps()} />);
+
+    expect(screen.getByTestId("details-content")).toHaveClass(
+      "overflow-hidden",
+      "bg-overlay-surface",
+      "text-ink"
+    );
+    expect(screen.getByRole("tabpanel")).toHaveClass(
+      "overflow-x-hidden",
+      "overflow-y-auto",
+      "[@media(max-height:32rem)]:py-3"
+    );
+    expect(screen.getByRole("button", { name: "Close details" })).toHaveClass(
+      "[@media(hover:none)]:!size-11",
+      "[@media(pointer:coarse)]:!size-11"
+    );
   });
 });

@@ -9,6 +9,7 @@ type WorkspaceBody = {
   folders: {
     id: string;
     name: string;
+    parentId: string | null;
   }[];
 };
 
@@ -36,7 +37,10 @@ export async function cleanupE2eWorkspace(page: Page): Promise<string> {
 
   const body = (await response.json()) as WorkspaceBody;
   const folders = body.folders.filter(
-    (folder) => folder.name.startsWith("E2E Folder ") || folder.name.startsWith("Evidence Folder ")
+    (folder) =>
+      folder.name.startsWith("E2E Folder ") ||
+      folder.name.startsWith("E2E Subfolder ") ||
+      folder.name.startsWith("Evidence Folder ")
   );
   const folderIds = new Set(folders.map((folder) => folder.id));
   const chats = body.chats.filter(
@@ -44,11 +48,30 @@ export async function cleanupE2eWorkspace(page: Page): Promise<string> {
   );
 
   for (const chat of chats) {
-    await page.request.delete(`/api/chats/${chat.id}`);
+    const deleteResponse = await page.request.delete(`/api/chats/${chat.id}`);
+    if (!deleteResponse.ok() && deleteResponse.status() !== 404) {
+      throw new Error(`Unable to delete E2E chat ${chat.id}`);
+    }
   }
 
-  for (const folder of folders) {
-    await page.request.delete(`/api/folders/${folder.id}`);
+  const foldersById = new Map(body.folders.map((folder) => [folder.id, folder]));
+  const folderDepth = (folder: WorkspaceBody["folders"][number]) => {
+    let depth = 0;
+    let parentId = folder.parentId;
+    const visited = new Set<string>();
+    while (parentId && !visited.has(parentId)) {
+      visited.add(parentId);
+      depth += 1;
+      parentId = foldersById.get(parentId)?.parentId ?? null;
+    }
+    return depth;
+  };
+
+  for (const folder of [...folders].sort((left, right) => folderDepth(right) - folderDepth(left))) {
+    const deleteResponse = await page.request.delete(`/api/folders/${folder.id}`);
+    if (!deleteResponse.ok() && deleteResponse.status() !== 404) {
+      throw new Error(`Unable to delete E2E folder ${folder.id}`);
+    }
   }
 
   const catalogResponse = await page.request.get("/api/me/catalog");

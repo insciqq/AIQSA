@@ -17,6 +17,7 @@ import type {
   InspectorMode,
   ModelParameterControls,
   Notice,
+  PersistedRun,
   PromptPreset,
   RunEventView,
   ThreadArtifactSummary,
@@ -140,6 +141,7 @@ export type ShellThreadView = {
   handleRegenerateMessage(messageId: string): void;
   handleThreadScroll(): void;
   jumpToLatest(): void;
+  lastRun: PersistedRun | null;
   liveArtifactSummary: ThreadArtifactSummary | null;
   retryActiveChatDetail(): void;
   showJumpToLatest: boolean;

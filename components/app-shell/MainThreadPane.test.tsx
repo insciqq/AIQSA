@@ -11,7 +11,14 @@ import {
 import { MainThreadPane } from "./MainThreadPane";
 import { defaultParameterControls } from "./controlDefaults";
 import { resetMcpSettingsStoreForTest, useMcpSettingsStore } from "./mcpSettingsStore";
-import type { Catalog, CatalogModel, ChatSummary, FolderSummary, ThreadMessage } from "./types";
+import type {
+  Catalog,
+  CatalogModel,
+  ChatSummary,
+  FolderSummary,
+  PersistedRun,
+  ThreadMessage
+} from "./types";
 
 beforeEach(() => {
   resetMcpSettingsStoreForTest();
@@ -157,6 +164,27 @@ function assistantMessage(
   };
 }
 
+function persistedRun(overrides: Partial<PersistedRun> = {}): PersistedRun {
+  return {
+    cachedInputTokens: 0,
+    cacheWriteInputTokens: 0,
+    errorPayload: null,
+    estimatedCostMicros: null,
+    events: [],
+    id: "run-current",
+    inputTokens: 90,
+    modelId: "fake-qsa",
+    outputTokens: 30,
+    provider: "fake",
+    reasoningTokens: 0,
+    searchRuns: [],
+    status: "complete",
+    toolCalls: [],
+    totalTokens: 120,
+    ...overrides
+  };
+}
+
 function renderPane(overrides: Partial<ComponentProps<typeof MainThreadPane>> = {}) {
   const props: ComponentProps<typeof MainThreadPane> = {
     activeChatDetailError: null,
@@ -198,10 +226,12 @@ function renderPane(overrides: Partial<ComponentProps<typeof MainThreadPane>> = 
     handleRegenerateMessage: vi.fn(),
     handleThreadScroll: vi.fn(),
     jumpToLatest: vi.fn(),
+    lastRun: null,
     liveArtifactSummary: null,
     maxOutputTokens: "1024",
     notificationSoundEnabled: false,
     operationError: null,
+    openRunDetails: vi.fn(),
     openSettings: vi.fn(),
     reasoningEffort: "none",
     reasoningMode: "standard",
@@ -726,6 +756,32 @@ describe("MainThreadPane", () => {
     expect(historical).not.toHaveTextContent("Live MCP");
     expect(live).toHaveTextContent("Live MCP");
     expect(live).not.toHaveTextContent("Stale MCP");
+  });
+
+  it("attaches persisted usage only to the answer with the exact run id", () => {
+    const openRunDetails = vi.fn();
+    const { container } = renderPane({
+      ...readyComposerOverrides,
+      lastRun: persistedRun({
+        events: [{ eventType: "usage", payload: { totalTokens: 120 }, sequence: 1 }]
+      }),
+      openRunDetails,
+      visibleMessages: [
+        assistantMessage("assistant-history", { runId: "run-history" }),
+        assistantMessage("assistant-current", { runId: "run-current" })
+      ]
+    });
+
+    const historical = container.querySelector('[data-message-id="assistant-history"]');
+    const current = container.querySelector('[data-message-id="assistant-current"]');
+    expect(historical).not.toBeNull();
+    expect(current).not.toBeNull();
+    expect(within(historical as HTMLElement).queryByText("120 tokens used")).not.toBeInTheDocument();
+
+    fireEvent.click(
+      within(current as HTMLElement).getByRole("button", { name: "120 tokens used" })
+    );
+    expect(openRunDetails).toHaveBeenCalledOnce();
   });
 
   it("keeps warnings on their originating run across branch changes", () => {

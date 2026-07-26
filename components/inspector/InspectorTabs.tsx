@@ -47,7 +47,7 @@ export function InspectorTabs({
 
   return (
     <div
-      className="flex min-w-0 shrink-0 gap-1 overflow-x-auto border-b border-separator-subtle px-3"
+      className="flex min-w-0 shrink-0 gap-5 overflow-x-auto border-b border-trace-subtle px-4"
       role="tablist"
       aria-label="Details tabs"
       aria-orientation="horizontal"
@@ -58,10 +58,10 @@ export function InspectorTabs({
         return (
           <button
             className={[
-              "relative flex min-h-touch shrink-0 items-center justify-center rounded-control px-3 text-sm font-medium outline-none transition-colors duration-100 after:pointer-events-none focus-visible:z-10 focus-visible:ring-2 focus-visible:ring-accent-cyan/55 sm:min-h-control [@media(hover:none)]:!min-h-touch [@media(pointer:coarse)]:!min-h-touch",
+              "relative flex min-h-touch shrink-0 items-center justify-center px-0.5 text-[13px] font-medium outline-none transition-colors duration-100 after:pointer-events-none focus-visible:z-10 focus-visible:ring-2 focus-visible:ring-proof/55 sm:min-h-control [@media(hover:none)]:!min-h-touch [@media(pointer:coarse)]:!min-h-touch",
               active
-                ? "text-content-primary after:absolute after:inset-x-3 after:bottom-0 after:h-0.5 after:rounded-pill after:bg-accent-cyan"
-                : "text-content-secondary hover:bg-surface-hover hover:text-content-primary"
+                ? "text-ink after:absolute after:inset-x-0 after:bottom-0 after:h-0.5 after:rounded-pill after:bg-proof"
+                : "text-ink-muted hover:text-ink"
             ].join(" ")}
             key={tab.id}
             id={inspectorTabId(tab.id)}

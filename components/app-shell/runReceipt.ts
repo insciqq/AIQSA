@@ -1,5 +1,9 @@
 import { runActivityLabel, type PipelineSnapshot } from "@/components/app-shell/runState";
-import type { ThreadArtifactSummary, ThreadMessage } from "@/components/app-shell/types";
+import type {
+  PersistedRun,
+  ThreadArtifactSummary,
+  ThreadMessage
+} from "@/components/app-shell/types";
 
 export type RunReceiptFactKind =
   | "citations"
@@ -8,7 +12,10 @@ export type RunReceiptFactKind =
   | "reasoning"
   | "search"
   | "tools"
+  | "usage"
   | "warnings";
+
+export type RunReceiptSegmentKind = "status" | RunReceiptFactKind;
 
 export type RunReceiptFact = Readonly<{
   kind: RunReceiptFactKind;
@@ -26,7 +33,9 @@ export type FactualRunReceipt = Readonly<{
 export type RunReceiptInput = Readonly<{
   artifactSummary?: ThreadArtifactSummary | null;
   messageStatus: ThreadMessage["status"];
+  messageRunId?: string | null;
   modelLabel: string | null;
+  persistedRun?: PersistedRun | null;
   runActivity?: PipelineSnapshot | null;
   warningCount?: number;
 }>;
@@ -37,6 +46,21 @@ function factualCount(value: number): number {
 
 function countLabel(count: number, singular: string, plural: string): string {
   return `${count} ${count === 1 ? singular : plural}`;
+}
+
+function tokenUsageLabel(run: PersistedRun, messageRunId: string | null | undefined): string | null {
+  if (
+    !messageRunId ||
+    run.id !== messageRunId ||
+    (run.status !== "complete" && run.status !== "cancelled" && run.status !== "error")
+  ) {
+    return null;
+  }
+
+  const totalTokens = factualCount(run.totalTokens);
+  return totalTokens > 0
+    ? `${totalTokens.toLocaleString("en-US")} ${totalTokens === 1 ? "token" : "tokens"} used`
+    : null;
 }
 
 function receiptStatus(
@@ -63,14 +87,16 @@ function receiptStatus(
 
 /**
  * Projects only facts already bound to this assistant message. It deliberately
- * has no access to current composer settings, display toggles, the latest run,
- * or estimated values, so historical receipts cannot borrow evidence from
- * another run or hide facts that were actually recorded.
+ * has no access to current composer settings, display toggles, or estimated
+ * values. Persisted usage is accepted only when its run id exactly matches the
+ * answer, so a historical receipt cannot borrow the active surface's usage.
  */
 export function deriveRunReceipt({
   artifactSummary,
   messageStatus,
+  messageRunId,
   modelLabel,
+  persistedRun,
   runActivity,
   warningCount = 0
 }: RunReceiptInput): FactualRunReceipt {
@@ -123,6 +149,11 @@ export function deriveRunReceipt({
     if (artifactSummary.contextTruncation) {
       facts.push({ kind: "context", label: "Context trimmed" });
     }
+  }
+
+  const usageLabel = persistedRun ? tokenUsageLabel(persistedRun, messageRunId) : null;
+  if (usageLabel) {
+    facts.push({ kind: "usage", label: usageLabel });
   }
 
   const warnings = factualCount(warningCount);

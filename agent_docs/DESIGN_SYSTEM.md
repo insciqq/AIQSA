@@ -148,9 +148,9 @@ Chat and folder rows use quiet selected/hover states, stable action space, and t
 
 ### Run receipt
 
-Each applicable answer owns one compact receipt below its leading metadata or answer body. It may show only facts already represented by accepted run state, events, search/tool activity, citations, warnings, and final usage. A typical collapsed receipt contains phase/status, elapsed time when known, and evidence/tool counts when known; unavailable facts are omitted, never estimated.
+Each non-streaming assistant answer owns one compact terminal receipt below its answer body. It may show only facts bound to that message: terminal status, stored provider/model identity, bounded search/tool/citation/reasoning/context evidence, message-bound warnings, and final provider usage from a terminal persisted run with the exact same run id. Profile or elapsed time appears only when the accepted run carries that exact historical fact; current composer/catalog defaults are never used to reconstruct it. Unavailable facts are omitted, never estimated.
 
-The receipt opens the existing inspection path rather than inventing an audit feed. Branch and Events remain the Details destinations. Live updates are visually restrained and do not repaint the whole receipt for each token chunk.
+The receipt opens an existing disclosure on its originating answer, or Details → Events only when the exact same persisted run and real events are currently loaded. A segment without that truthful destination stays noninteractive text, so an older answer can never open the latest answer's trace. The receipt invents no audit feed, resource, or tab; Branch and Events remain the only Details destinations.
 
 ### Composer
 
@@ -169,7 +169,7 @@ Attachment progress, partial failure, edit-branch intent, context warning, unava
 
 Details is closed by default, opens as an overlay at all widths, and may be pinned only when at least 1440px of useful width remains. It contains Branch and Events inspection, never duplicated next-run editing.
 
-Settings is a bounded workspace for Prompts, Appearance, and MCP & tools. On compact/short viewports it becomes one safe-area-aware sheet with one content scroller. Dirty-close protection and nested confirmations remain visible parts of the quality contract.
+Settings is a bounded workspace for Prompts, Appearance, and MCP & tools. On compact/short viewports it becomes one safe-area-aware sheet whose active task owns local scrolling; Prompts switches between separate library and editor views with an explicit Back action. Appearance is a divided comparison list, not a card grid. Dirty-close protection and nested confirmations remain visible parts of the quality contract.
 
 ## Control Center Composition
 

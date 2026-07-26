@@ -46,6 +46,7 @@ type MainThreadProjectionKeys =
   | "creatingChat"
   | "noticeSlot"
   | "openMcpSettings"
+  | "openRunDetails"
   | "openSettings"
   | "pipeline"
   | "retryWorkspace"
@@ -300,6 +301,7 @@ function baseProps(): PowerAppShellViewProps {
       handleRegenerateMessage: noop,
       handleThreadScroll: noop,
       jumpToLatest: noop,
+      lastRun: null,
       liveArtifactSummary: null,
       retryActiveChatDetail: noop,
       showJumpToLatest: false,

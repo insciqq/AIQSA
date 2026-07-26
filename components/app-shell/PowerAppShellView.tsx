@@ -65,6 +65,7 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
     open: openDetails,
     pinningAvailable: inspectorPinningAvailable
   } = details;
+  const openRunDetails = useEventCallback(() => openDetails("events"));
   const { confirmations, palette } = overlays;
   const {
     cancelChat: cancelDeleteChat,
@@ -352,6 +353,7 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
               creatingChat={workspace.pane.state.creatingChat}
               noticeSlot={persistentNoticeSlot}
               openMcpSettings={settings.openMcp}
+              openRunDetails={openRunDetails}
               openSettings={settings.open}
               pipeline={pipeline}
               retryWorkspace={workspace.pane.actions.retry}

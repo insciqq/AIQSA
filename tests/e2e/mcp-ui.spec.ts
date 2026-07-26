@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { expectNoHorizontalOverflow, expectTouchSafe } from "./support/layoutAssertions";
+import { expectNoHorizontalOverflow, expectTouchSafe, expectWithinViewport } from "./support/layoutAssertions";
 import { signInWithLocalToken as signIn } from "./support/localAuth";
 
 type FakeMcpServer = {
@@ -109,7 +109,8 @@ test("keeps multi-MCP enablement, personal secrets, OAuth return, and composer s
 
   await signIn(page);
   const summary = page.getByTestId("composer-mcp-summary");
-  await expect(summary).toContainText("MCP tools are off");
+  await expect(summary).toHaveText("Tools");
+  await expect(summary).toHaveAttribute("title", "Tools. Off");
   await summary.click();
 
   let settings = page.getByTestId("settings-dialog");
@@ -130,7 +131,7 @@ test("keeps multi-MCP enablement, personal secrets, OAuth return, and composer s
   expect(patchBodies).toContainEqual({ id: "mem0", value: { values: { api_key: "personal-mem0-token" } } });
 
   await settings.getByRole("button", { name: "Close settings" }).click();
-  await expect(summary).toContainText("2/2 MCP ready · 2 tools");
+  await expect(summary).toHaveAttribute("title", "Tools. 2/2 ready · 2 tools");
 
   servers = servers.map((server) => server.id === "notion"
     ? {
@@ -152,4 +153,9 @@ test("keeps multi-MCP enablement, personal secrets, OAuth return, and composer s
   await expectNoHorizontalOverflow(page);
   await expectTouchSafe(settings.getByRole("button", { name: "Disable Mem0" }));
   await expectTouchSafe(settings.getByRole("button", { name: "Close settings" }));
+
+  await page.setViewportSize({ height: 390, width: 844 });
+  await expectWithinViewport(page, settings);
+  await expectNoHorizontalOverflow(page);
+  await expect(settings.getByRole("button", { name: "Refresh status" })).toBeInViewport();
 });

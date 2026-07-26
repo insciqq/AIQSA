@@ -455,8 +455,8 @@ function LeftChatPaneComponent({
     <aside
       className={
         layout === "mobile"
-          ? "flex h-full min-h-0 flex-col bg-workspace-rail text-ink"
-          : "hidden min-h-0 border-r border-trace-subtle bg-workspace-rail text-ink lg:flex lg:flex-col"
+          ? "flex h-full min-h-0 min-w-0 w-full flex-col overflow-hidden bg-workspace-rail text-ink"
+          : "hidden h-full min-h-0 min-w-0 w-full overflow-hidden border-r border-trace-subtle bg-workspace-rail text-ink lg:flex lg:flex-col"
       }
       data-testid={layout === "mobile" ? "left-chat-pane-mobile" : "left-chat-pane"}
     >

@@ -6,13 +6,20 @@ import {
   ToolActivityBlock
 } from "@/components/app-shell/ThreadArtifacts";
 import { RunReceipt } from "@/components/app-shell/RunReceipt";
-import { deriveRunReceipt } from "@/components/app-shell/runReceipt";
+import {
+  deriveRunReceipt,
+  type RunReceiptSegmentKind
+} from "@/components/app-shell/runReceipt";
 import { runActivityLabel, type PipelineSnapshot } from "@/components/app-shell/runState";
 import {
   attachmentBlocksFromThreadContent,
   textFromThreadContent
 } from "@/components/app-shell/threadContent";
-import type { ThreadArtifactSummary, ThreadMessage } from "@/components/app-shell/types";
+import type {
+  PersistedRun,
+  ThreadArtifactSummary,
+  ThreadMessage
+} from "@/components/app-shell/types";
 import { MarkdownMessage } from "@/components/chat/MarkdownMessage";
 import {
   CircleAlert,
@@ -25,7 +32,7 @@ import {
   Square,
   Trash2
 } from "lucide-react";
-import { memo, type ReactNode } from "react";
+import { memo, type ReactNode, useState } from "react";
 
 const ghostActionClass =
   "grid size-11 place-items-center rounded-control text-ink-muted outline-none hover:bg-control-hover hover:text-ink focus-visible:ring-2 focus-visible:ring-proof/45 disabled:cursor-not-allowed disabled:text-ink-disabled disabled:opacity-50 sm:size-9 [@media(hover:none)]:!size-11 [@media(pointer:coarse)]:!size-11";
@@ -33,6 +40,8 @@ const ghostActionClass =
 // Reserved-height strip; reveal is opacity-only so hover never shifts layout.
 const actionStripClass =
   "flex min-h-11 items-center gap-0.5 opacity-0 transition-opacity duration-100 focus-within:opacity-100 group-hover/turn:opacity-100 [@media(hover:none)]:!min-h-11 [@media(hover:none)]:opacity-100 [@media(pointer:coarse)]:!min-h-11 [@media(pointer:coarse)]:opacity-100 sm:min-h-9";
+
+type InlineReceiptDisclosure = "citations" | "reasoning" | "search" | "tools";
 
 function ThreadRunActivity({ pipeline }: { pipeline: PipelineSnapshot }) {
   const label = runActivityLabel(pipeline);
@@ -186,7 +195,9 @@ function ThreadMessageRowComponent({
   onCopyMessage,
   onDeleteMessage,
   onEditMessage,
+  onOpenRunDetails,
   onRegenerateMessage,
+  persistedRun = null,
   runActivity = null,
   runWarnings = [],
   showCitations,
@@ -203,7 +214,9 @@ function ThreadMessageRowComponent({
   onCopyMessage(message: ThreadMessage): void;
   onDeleteMessage(messageId: string): void;
   onEditMessage(message: ThreadMessage): void;
+  onOpenRunDetails(): void;
   onRegenerateMessage(messageId: string): void;
+  persistedRun?: PersistedRun | null;
   runActivity?: PipelineSnapshot | null;
   runWarnings?: string[];
   showCitations: boolean;
@@ -214,6 +227,50 @@ function ThreadMessageRowComponent({
   const disabledDescriptionId = `message-actions-disabled-${message.id}`;
   const editPendingDescriptionId = `message-edit-pending-${message.id}`;
   const targetDescriptionId = `message-actions-target-${message.id}`;
+  const [expandedDisclosures, setExpandedDisclosures] = useState<ReadonlySet<InlineReceiptDisclosure>>(
+    () => new Set()
+  );
+  const hasInlineSearch = Boolean(artifactSummary?.searchCount) && runActivity?.search !== "active";
+  const hasInlineTools = showToolActivity && Boolean(artifactSummary?.toolCalls.length);
+  const hasInlineCitations = showCitations && Boolean(artifactSummary?.citationCount);
+  const hasInlineReasoning = showReasoningBlocks && Boolean(artifactSummary?.reasoningCount);
+  const hasExactRunEvents = Boolean(
+    message.runId &&
+    persistedRun?.id === message.runId &&
+    persistedRun.events.length > 0
+  );
+  function changeDisclosure(kind: InlineReceiptDisclosure, expanded: boolean) {
+    setExpandedDisclosures((current) => {
+      const next = new Set(current);
+      if (expanded) {
+        next.add(kind);
+      } else {
+        next.delete(kind);
+      }
+      return next;
+    });
+  }
+  function activateReceiptSegment(kind: RunReceiptSegmentKind) {
+    if (kind === "search" && hasInlineSearch) {
+      changeDisclosure("search", true);
+      return;
+    }
+    if (kind === "tools" && hasInlineTools) {
+      changeDisclosure("tools", true);
+      return;
+    }
+    if (kind === "citations" && hasInlineCitations) {
+      changeDisclosure("citations", true);
+      return;
+    }
+    if (kind === "reasoning" && hasInlineReasoning) {
+      changeDisclosure("reasoning", true);
+      return;
+    }
+    if (hasExactRunEvents) {
+      onOpenRunDetails();
+    }
+  }
   const actionTargetDescription = turnActionDescription(message);
   const actions = (
     <TurnActions
@@ -302,10 +359,23 @@ function ThreadMessageRowComponent({
   const receipt = deriveRunReceipt({
     artifactSummary,
     messageStatus: message.status,
+    messageRunId: message.runId,
     modelLabel: answerModelLabel,
+    persistedRun,
     runActivity,
     warningCount: runWarnings.length
   });
+  const actionableReceiptSegments = new Set<RunReceiptSegmentKind>();
+  if (hasExactRunEvents) {
+    actionableReceiptSegments.add("status");
+    for (const fact of receipt.facts) {
+      actionableReceiptSegments.add(fact.kind);
+    }
+  }
+  if (hasInlineSearch) actionableReceiptSegments.add("search");
+  if (hasInlineTools) actionableReceiptSegments.add("tools");
+  if (hasInlineCitations) actionableReceiptSegments.add("citations");
+  if (hasInlineReasoning) actionableReceiptSegments.add("reasoning");
 
   return (
     <article
@@ -395,22 +465,38 @@ function ThreadMessageRowComponent({
 
           {artifactSummary?.searchCount && runActivity?.search !== "active" ? (
             <div className={contentText || message.status !== "streaming" ? "mt-5" : undefined}>
-              <SearchSummaryBlock summary={artifactSummary} />
+              <SearchSummaryBlock
+                expanded={expandedDisclosures.has("search")}
+                summary={artifactSummary}
+                onExpandedChange={(expanded) => changeDisclosure("search", expanded)}
+              />
             </div>
           ) : null}
           {showToolActivity && artifactSummary?.toolCallCount ? (
             <div className="mt-5">
-              <ToolActivityBlock summary={artifactSummary} />
+              <ToolActivityBlock
+                expanded={expandedDisclosures.has("tools")}
+                summary={artifactSummary}
+                onExpandedChange={(expanded) => changeDisclosure("tools", expanded)}
+              />
             </div>
           ) : null}
           {showCitations && artifactSummary?.citationCount ? (
             <div className="mt-5">
-              <CitationBlock summary={artifactSummary} />
+              <CitationBlock
+                expanded={expandedDisclosures.has("citations")}
+                summary={artifactSummary}
+                onExpandedChange={(expanded) => changeDisclosure("citations", expanded)}
+              />
             </div>
           ) : null}
           {showReasoningBlocks && artifactSummary?.reasoningCount ? (
             <div className="mt-5">
-              <ReasoningBlock summary={artifactSummary} />
+              <ReasoningBlock
+                expanded={expandedDisclosures.has("reasoning")}
+                summary={artifactSummary}
+                onExpandedChange={(expanded) => changeDisclosure("reasoning", expanded)}
+              />
             </div>
           ) : null}
           {runWarnings.length > 0 ? (
@@ -433,7 +519,14 @@ function ThreadMessageRowComponent({
             </aside>
           ) : null}
         </div>
-        {message.status !== "streaming" ? <RunReceipt receipt={receipt} settled={justCompleted} /> : null}
+        {message.status !== "streaming" ? (
+          <RunReceipt
+            actionableSegments={actionableReceiptSegments}
+            receipt={receipt}
+            settled={justCompleted}
+            onActivate={activateReceiptSegment}
+          />
+        ) : null}
         <div
           className={actionStripClass}
           data-testid="message-actions"

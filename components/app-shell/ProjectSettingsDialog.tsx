@@ -42,7 +42,7 @@ export function ProjectSettingsDialog({
 
   return (
     <div
-      className="fixed inset-0 z-40 grid place-items-center bg-scrim/55 pb-[max(.75rem,env(safe-area-inset-bottom))] pl-[max(.75rem,env(safe-area-inset-left))] pr-[max(.75rem,env(safe-area-inset-right))] pt-[max(.75rem,env(safe-area-inset-top))]"
+      className="fixed inset-0 z-40 flex items-end justify-center bg-scrim/60 pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)] pt-[max(.75rem,env(safe-area-inset-top))] sm:items-center sm:pb-[max(.75rem,env(safe-area-inset-bottom))] sm:pl-[max(.75rem,env(safe-area-inset-left))] sm:pr-[max(.75rem,env(safe-area-inset-right))]"
       role="presentation"
       onMouseDown={(event) => {
         if (event.target === event.currentTarget) {
@@ -52,7 +52,7 @@ export function ProjectSettingsDialog({
     >
       <div
         ref={dialogRef}
-        className="pop-enter max-h-[calc(100dvh-1.5rem-env(safe-area-inset-top)-env(safe-area-inset-bottom))] w-full max-w-lg overflow-y-auto overscroll-contain rounded-panel border border-separator-subtle bg-surface-overlay p-4 shadow-overlay"
+        className="pop-enter flex max-h-[calc(100dvh-max(.75rem,env(safe-area-inset-top)))] w-full max-w-lg flex-col overflow-hidden rounded-t-panel border border-b-0 border-trace-subtle bg-overlay-surface text-ink shadow-overlay sm:max-h-[calc(100dvh-1.5rem-env(safe-area-inset-top)-env(safe-area-inset-bottom))] sm:rounded-panel sm:border [@media(max-height:32rem)]:max-h-[calc(100dvh-1rem-env(safe-area-inset-top)-env(safe-area-inset-bottom))]"
         role="dialog"
         aria-modal="true"
         aria-hidden={discardConfirmationOpen || undefined}
@@ -60,13 +60,13 @@ export function ProjectSettingsDialog({
         aria-busy={saving || undefined}
         inert={discardConfirmationOpen || undefined}
       >
-        <div className="mb-3 flex items-center justify-between gap-3">
+        <header className="flex min-h-16 shrink-0 items-center justify-between gap-3 border-b border-trace-subtle px-4">
           <div className="min-w-0">
-            <h2 className="text-sm font-semibold text-content-primary">Project Settings</h2>
-            <p className="break-words text-xs text-content-muted [overflow-wrap:anywhere]">{folder.name}</p>
+            <h2 className="text-base font-semibold text-ink">Project settings</h2>
+            <p className="break-words text-xs text-ink-muted [overflow-wrap:anywhere]">{folder.name}</p>
           </div>
           <button
-            className="grid size-11 shrink-0 place-items-center rounded-control bg-surface-raised text-content-secondary outline-none hover:bg-surface-hover hover:text-content-primary focus-visible:ring-2 focus-visible:ring-accent-cyan/55 focus-visible:ring-offset-2 focus-visible:ring-offset-surface-overlay sm:size-8 [@media(hover:none)]:!size-11 [@media(pointer:coarse)]:!size-11"
+            className="grid size-11 shrink-0 place-items-center rounded-control text-ink-muted outline-none hover:bg-control-hover hover:text-ink focus-visible:ring-2 focus-visible:ring-proof/55 focus-visible:ring-offset-2 focus-visible:ring-offset-overlay-surface sm:size-9 [@media(hover:none)]:!size-11 [@media(pointer:coarse)]:!size-11"
             type="button"
             aria-label="Close project settings"
             disabled={saving}
@@ -74,26 +74,28 @@ export function ProjectSettingsDialog({
           >
             <X className="size-4" aria-hidden="true" />
           </button>
+        </header>
+        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-5">
+          <label className="mb-1 block text-xs font-medium text-ink-secondary" htmlFor="project-instructions">
+            Project instructions
+          </label>
+          <textarea
+            className="h-48 min-h-32 w-full resize-y rounded-control border border-trace-subtle bg-answer-paper p-3 text-sm leading-6 text-ink outline-none focus-visible:border-proof focus-visible:ring-2 focus-visible:ring-proof/55"
+            id="project-instructions"
+            aria-label="Project instructions"
+            aria-describedby="project-instructions-help"
+            disabled={saving}
+            value={memoryDraft}
+            onChange={(event) => onMemoryDraftChange(event.target.value)}
+          />
+          <p className="mt-2 text-xs leading-5 text-ink-muted" id="project-instructions-help">
+            Sent to the model as context for future messages in every chat in this project. Existing messages and
+            replies are unchanged.
+          </p>
         </div>
-        <label className="mb-1 block text-xs font-medium text-content-secondary" htmlFor="project-instructions">
-          Project instructions
-        </label>
-        <textarea
-          className="h-40 min-h-28 w-full resize-none rounded-control border border-separator-subtle bg-surface-thread p-3 text-sm leading-6 text-content-primary outline-none focus-visible:border-accent-cyan focus-visible:ring-2 focus-visible:ring-accent-cyan/55"
-          id="project-instructions"
-          aria-label="Project instructions"
-          aria-describedby="project-instructions-help"
-          disabled={saving}
-          value={memoryDraft}
-          onChange={(event) => onMemoryDraftChange(event.target.value)}
-        />
-        <p className="mt-2 text-xs leading-5 text-content-muted" id="project-instructions-help">
-          Sent to the model as context for future messages in every chat in this project. Existing messages and
-          replies are unchanged.
-        </p>
-        <div className="mt-3 flex justify-end gap-2">
+        <footer className="flex shrink-0 justify-end gap-2 border-t border-trace-subtle px-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-3 sm:pb-3">
           <button
-            className="h-touch rounded-control bg-surface-raised px-3 text-xs font-medium text-content-secondary outline-none hover:bg-surface-hover hover:text-content-primary focus-visible:ring-2 focus-visible:ring-accent-cyan/55 focus-visible:ring-offset-2 focus-visible:ring-offset-surface-overlay sm:h-control-sm [@media(hover:none)]:!h-touch [@media(pointer:coarse)]:!h-touch"
+            className="h-touch rounded-control bg-control-surface px-3 text-sm font-medium text-ink-secondary outline-none hover:bg-control-hover hover:text-ink focus-visible:ring-2 focus-visible:ring-proof/55 focus-visible:ring-offset-2 focus-visible:ring-offset-overlay-surface sm:h-control [@media(hover:none)]:!h-touch [@media(pointer:coarse)]:!h-touch"
             type="button"
             disabled={saving}
             onClick={requestCancel}
@@ -101,14 +103,14 @@ export function ProjectSettingsDialog({
             Cancel
           </button>
           <button
-            className="h-touch rounded-control bg-accent-cyan px-3 text-xs font-semibold text-surface-canvas outline-none focus-visible:ring-2 focus-visible:ring-accent-cyan/55 focus-visible:ring-offset-2 focus-visible:ring-offset-surface-overlay disabled:opacity-50 sm:h-control-sm [@media(hover:none)]:!h-touch [@media(pointer:coarse)]:!h-touch"
+            className="h-touch rounded-control bg-proof px-4 text-sm font-semibold text-proof-contrast outline-none hover:bg-proof-hover focus-visible:ring-2 focus-visible:ring-proof/55 focus-visible:ring-offset-2 focus-visible:ring-offset-overlay-surface disabled:opacity-50 sm:h-control [@media(hover:none)]:!h-touch [@media(pointer:coarse)]:!h-touch"
             type="button"
             disabled={saving}
             onClick={onSave}
           >
             {saving ? "Saving…" : "Save"}
           </button>
-        </div>
+        </footer>
       </div>
       {discardConfirmationOpen ? (
         <DiscardChangesConfirmationDialog

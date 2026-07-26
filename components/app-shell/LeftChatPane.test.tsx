@@ -155,7 +155,15 @@ describe("LeftChatPane", () => {
     renderPane({ chatActionId: "chat-1" });
 
     const pane = screen.getByTestId("left-chat-pane");
-    expect(pane).toHaveClass("bg-workspace-rail", "text-ink", "border-trace-subtle");
+    expect(pane).toHaveClass(
+      "h-full",
+      "min-w-0",
+      "w-full",
+      "overflow-hidden",
+      "bg-workspace-rail",
+      "text-ink",
+      "border-trace-subtle"
+    );
     expect(screen.getByTestId("workspace-identity")).toHaveTextContent("AIQSAWorkspace");
     expect(screen.getByText("History")).toBeVisible();
     expect(screen.getByText("1 chat")).toBeVisible();

@@ -11,6 +11,7 @@ import type {
   CatalogSearchStrategy,
   ChatUsageStats,
   ModelParameterControls,
+  PersistedRun,
   PromptPreset,
   ThreadArtifactSummary,
   ThreadMessage
@@ -68,11 +69,13 @@ export type MainThreadPaneProps = {
   handleRegenerateMessage(messageId: string): void;
   handleThreadScroll(): void;
   jumpToLatest(): void;
+  lastRun: PersistedRun | null;
   liveArtifactSummary: ThreadArtifactSummary | null;
   maxOutputTokens: string;
   notificationSoundEnabled: boolean;
   operationError: string | null;
   openMcpSettings?(): void;
+  openRunDetails(): void;
   openSettings(): void;
   pipeline?: PipelineSnapshot | null;
   reasoningEffort: string;
@@ -148,11 +151,13 @@ export function MainThreadPane({
   handleRegenerateMessage,
   handleThreadScroll,
   jumpToLatest,
+  lastRun,
   liveArtifactSummary,
   maxOutputTokens,
   notificationSoundEnabled,
   operationError,
   openMcpSettings,
+  openRunDetails,
   openSettings,
   pipeline = null,
   reasoningEffort,
@@ -450,6 +455,7 @@ export function MainThreadPane({
                 justCompleted={justCompleted}
                 key={message.id}
                 message={message}
+                persistedRun={message.runId && message.runId === lastRun?.id ? lastRun : null}
                 runActivity={visibleRunActivity}
                 runWarnings={messageRunWarnings}
                 showCitations={showCitations}
@@ -460,6 +466,7 @@ export function MainThreadPane({
                 onCopyMessage={handleCopyMessage}
                 onDeleteMessage={handleDeleteMessage}
                 onEditMessage={handleEditMessage}
+                onOpenRunDetails={openRunDetails}
                 onRegenerateMessage={handleRegenerateMessage}
               />
             );

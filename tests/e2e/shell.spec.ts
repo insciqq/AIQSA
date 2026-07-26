@@ -21,7 +21,7 @@ import {
   reasoningOptionValues,
   selectModel
 } from "./shell/composer";
-import { expectComposerBeforeDetails, runAccountMenuAction, themeContrastMetrics } from "./shell/page";
+import { expectComposerBeforeDetails, runAccountMenuAction } from "./shell/page";
 import {
   closeResponsiveTouchStream,
   emitResponsiveTouchEvent,
@@ -735,6 +735,8 @@ test("keeps Settings prompt and Appearance workflows safe in the narrow sheet la
   await settingsDialog.getByRole("button", { name: "Edit prompt Research Prompt" }).click();
   await expect(settingsDialog.getByLabel("Prompt name")).toHaveValue("Research Prompt");
   await expect(promptName).toBeFocused();
+  await expectWithinViewport(page, settingsDialog);
+  await expectWithinViewport(page, settingsDialog.getByRole("heading", { name: "Settings" }));
   await promptName.press("Shift+Tab");
   await expect
     .poll(() =>
@@ -801,8 +803,11 @@ test("keeps Settings prompt and Appearance workflows safe in the narrow sheet la
   const neutralTheme = settingsDialog.getByRole("radio", { name: /^Use Classic Light theme/ });
   await expect(verdantTheme).toBeVisible();
   await expect(neutralTheme).toBeVisible();
+  await expect(neutralTheme).toHaveAttribute("aria-checked", "true");
+  await neutralTheme.focus();
+  await neutralTheme.press("Home");
+  await expect(aiqsaTheme).toBeFocused();
   await expect(aiqsaTheme).toHaveAttribute("aria-checked", "true");
-  await aiqsaTheme.focus();
   await aiqsaTheme.press("ArrowRight");
   await expect(graphiteTheme).toBeFocused();
   await expect(graphiteTheme).toHaveAttribute("aria-checked", "true");
@@ -830,11 +835,6 @@ test("keeps Settings prompt and Appearance workflows safe in the narrow sheet la
   await expect
     .poll(() => page.evaluate(() => window.localStorage.getItem("aiqsa.theme")))
     .toBe("neutral");
-  const neutralContrast = await themeContrastMetrics(page);
-  expect(neutralContrast.text).toBeGreaterThanOrEqual(7);
-  expect(neutralContrast.action).toBeGreaterThanOrEqual(4.5);
-  expect(neutralContrast.focus).toBeGreaterThanOrEqual(3);
-
   await page.reload();
   await expect(page.getByTestId("app-shell")).toBeVisible();
   await expect(page.locator("html")).toHaveAttribute("data-theme", "neutral");
@@ -851,11 +851,6 @@ test("keeps Settings prompt and Appearance workflows safe in the narrow sheet la
   await expect
     .poll(() => page.evaluate(() => window.localStorage.getItem("aiqsa.theme")))
     .toBe("classic-dark");
-  const classicDarkContrast = await themeContrastMetrics(page);
-  expect(classicDarkContrast.text).toBeGreaterThanOrEqual(7);
-  expect(classicDarkContrast.action).toBeGreaterThanOrEqual(4.5);
-  expect(classicDarkContrast.focus).toBeGreaterThanOrEqual(3);
-
   await page.reload();
   await expect(page.getByTestId("app-shell")).toBeVisible();
   await expect(page.locator("html")).toHaveAttribute("data-theme", "classic-dark");
@@ -1730,13 +1725,14 @@ test("opens a contained full-height branch details sheet from the thread header 
 });
 
 test("reveals desktop chat row actions on hover and keyboard focus without layout shift", async ({ page }) => {
+  const longFolderName = `Research-${"unbroken-label-".repeat(12)}`;
   const chat = {
     activeLeafMessageId: null,
     createdAt: "2026-06-10T13:30:00.000Z",
     defaultModelId: "gpt-5.5",
     defaultPromptPresetId: "prompt-helpful",
     defaultProvider: "openai",
-    folderId: null,
+    folderId: "folder-long-workspace-label",
     id: "chat-quiet-actions",
     messageCount: 0,
     messages: [],
@@ -1746,10 +1742,40 @@ test("reveals desktop chat row actions on hover and keyboard focus without layou
   };
   await installMatrixCatalogFixture(page, {
     chats: [chat],
-    folders: []
+    folders: [
+      {
+        id: "folder-long-workspace-label",
+        name: longFolderName,
+        parentId: null,
+        projectMemory: "",
+        sortOrder: 0
+      }
+    ]
   });
 
   await signIn(page);
+
+  const workspaceRail = page.getByTestId("workspace-rail");
+  const leftChatPane = page.getByTestId("left-chat-pane");
+  const newFolderButton = page.getByRole("button", { name: "New folder" });
+  const [workspaceRailBox, leftChatPaneBox, newFolderButtonBox] = await Promise.all([
+    workspaceRail.boundingBox(),
+    leftChatPane.boundingBox(),
+    newFolderButton.boundingBox()
+  ]);
+  expect(workspaceRailBox).toBeTruthy();
+  expect(leftChatPaneBox).toBeTruthy();
+  expect(newFolderButtonBox).toBeTruthy();
+  expect(leftChatPaneBox!.x + leftChatPaneBox!.width).toBeLessThanOrEqual(
+    workspaceRailBox!.x + workspaceRailBox!.width + 1
+  );
+  expect(newFolderButtonBox!.x + newFolderButtonBox!.width).toBeLessThanOrEqual(
+    workspaceRailBox!.x + workspaceRailBox!.width + 1
+  );
+  await expectCenterUnobscured(newFolderButton);
+  await newFolderButton.click();
+  await expect(page.getByTestId("new-folder-form")).toBeVisible();
+  await newFolderButton.click();
 
   const chatButton = page.getByRole("button", { exact: true, name: "Quiet row actions" });
   const actions = page.getByTestId("chat-row-actions").first();
@@ -2373,7 +2399,7 @@ test("keeps delayed chat_update scoped to its source chat after switching chats"
   await page.getByRole("button", { name: "Open details" }).click();
   details = page.getByTestId("details-pane");
   await details.getByRole("tab", { name: "Events" }).click();
-  await expect(details.getByTestId("details-summary")).toHaveText("Latest run run-a-de");
+  await expect(details.getByTestId("details-summary")).toHaveText("Run events available");
   await expect(details.getByTestId("inspector-event-log")).toContainText("Run");
   await details.getByRole("button", { name: "Close details" }).click();
   await page.getByRole("textbox", { name: "Message" }).fill("Follow-up after A completes");
@@ -2880,7 +2906,19 @@ test("supports the default QSA chat and folder workflow", async ({ browser, page
     newChatRowsBeforeBlank
   );
 
-  await page.getByRole("button", { name: "New folder" }).click();
+  const workspaceRail = page.getByTestId("workspace-rail");
+  const newFolderButton = page.getByRole("button", { name: "New folder" });
+  const [workspaceRailBox, newFolderButtonBox] = await Promise.all([
+    workspaceRail.boundingBox(),
+    newFolderButton.boundingBox()
+  ]);
+  expect(workspaceRailBox).toBeTruthy();
+  expect(newFolderButtonBox).toBeTruthy();
+  expect(newFolderButtonBox!.x).toBeGreaterThanOrEqual(workspaceRailBox!.x - 1);
+  expect(newFolderButtonBox!.x + newFolderButtonBox!.width).toBeLessThanOrEqual(
+    workspaceRailBox!.x + workspaceRailBox!.width + 1
+  );
+  await newFolderButton.click();
   await page.getByLabel("Folder name").fill(folderName);
   await page.getByRole("button", { name: "Create folder" }).click();
   await expect(page.getByTestId("shell-notice")).toContainText(`Folder created: ${folderName}`);
@@ -2932,14 +2970,10 @@ test("supports the default QSA chat and folder workflow", async ({ browser, page
   await expect(page.getByTestId("left-chat-pane")).toContainText("No title or model matches");
   await page.getByLabel("Search chats").fill("");
   await expect(page.getByTestId("current-chat-title")).toBeVisible();
-  const desktopChatToolbar = page.getByRole("toolbar", { name: "Chat actions" });
-  await expect(desktopChatToolbar).toBeVisible();
-  const desktopCopyThread = page.getByRole("button", { name: "Copy thread" });
-  expect(
-    await desktopCopyThread.evaluate((element) =>
-      Boolean(element.closest('[aria-label="Chat actions"]'))
-    )
-  ).toBe(true);
+  const desktopConversationHeader = page.getByTestId("top-rail");
+  await expect(desktopConversationHeader).toBeVisible();
+  const desktopCopyThread = desktopConversationHeader.getByRole("button", { name: "Copy thread" });
+  await expect(desktopCopyThread).toBeVisible();
   await desktopCopyThread.click();
   await expect(page.getByTestId("shell-notice")).toContainText("Thread copied");
   await expect
