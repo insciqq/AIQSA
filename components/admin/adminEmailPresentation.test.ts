@@ -72,4 +72,14 @@ describe("deriveAdminEmailPresentation", () => {
     };
     expect(deriveAdminEmailPresentation(exact).draft.label).toBe("Tested");
   });
+
+  it("treats disabled delivery as an intentional inactive state, not a warning", () => {
+    const email = state();
+    const presentation = deriveAdminEmailPresentation({
+      ...email,
+      active: { ...email.active, enabled: false }
+    });
+
+    expect(presentation.active).toMatchObject({ label: "Disabled", tone: "inactive" });
+  });
 });

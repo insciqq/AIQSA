@@ -114,6 +114,14 @@ describe("Admin MCP grant ownership", () => {
     expect(view.grant).not.toHaveBeenCalled();
   });
 
+  it("keeps an installation-wide disabled server visible beside its independent grant", () => {
+    const view = controller({ ...server, enabled: false });
+    render(<AdminMcpGroupAccessPanel controller={view.controller} group={group} />);
+
+    expect(screen.getByText("Disabled")).toHaveClass("border-trace-strong", "bg-control-surface", "text-ink");
+    expect(screen.getByRole("button", { name: "Grant Memory for group operators" })).toBeEnabled();
+  });
+
   it("keeps direct use and exact personal-field grants in selected user details", () => {
     const view = controller();
     render(<AdminMcpUserAccessPanel controller={view.controller} user={user} />);

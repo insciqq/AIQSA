@@ -1,8 +1,10 @@
 "use client";
 
 import {
+  AdminAvailabilityStatus,
   EmptyState,
   dangerButton,
+  enableButton,
   inputClass,
   primaryButton,
   quietButton
@@ -184,10 +186,8 @@ export function AdminProviderCredentialsTask({
                   <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                     <div className="min-w-0">
                       <p className="break-words text-sm font-medium text-ink">{credential.label}</p>
-                      <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1">
-                        <StateText tone={credential.enabled ? "positive" : "neutral"}>
-                          {presentation.runtimeLabel}
-                        </StateText>
+                      <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1">
+                        <AdminAvailabilityStatus enabled={credential.enabled} />
                         <StateText tone={publicationTone}>{presentation.publicationLabel}</StateText>
                       </div>
                       <p className="mt-1 text-xs leading-5 text-ink-muted">{presentation.detail}</p>
@@ -234,7 +234,7 @@ export function AdminProviderCredentialsTask({
                         <div className="absolute right-0 top-full z-20 mt-1 grid min-w-52 gap-1 rounded-panel border border-trace-subtle bg-overlay-surface p-2 shadow-overlay">
                           <button
                             aria-label={`${credential.enabled ? "Disable" : "Enable"} ${credential.label} credential`}
-                            className={quietButton}
+                            className={credential.enabled ? quietButton : enableButton}
                             disabled={controller.state.busy}
                             onClick={() => void controller.actions.updateCredential(
                               connection.id,

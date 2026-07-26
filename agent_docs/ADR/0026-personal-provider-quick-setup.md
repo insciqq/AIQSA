@@ -3,7 +3,7 @@
 Status: Accepted
 Amends: 0022-admin-managed-llm-provider-control-plane, 0024-admin-managed-run-profiles
 
-Amendment note: ADR 0028 retains the one-key Quick workflow but replaces its isolated Primary/default-credential graph with an actor-relative direct-user credential assignment. Existing team/custom state is nonblocking, and `advanced_required` is now limited to a canonical identity/configuration collision that Quick cannot reconcile losslessly. ADR 0030 replaces policy v1's three-provider, one-deployment/one-grant result with policy v2 across OpenAI, Anthropic, Gemini, and OpenRouter: every remotely visible reviewed candidate is installed and granted atomically, while one selected candidate still owns default/profile decisions.
+Amendment note: ADR 0028 retains the one-key Quick workflow but replaces its isolated Primary/default-credential graph with an actor-relative direct-user credential assignment. Existing team/custom state is nonblocking, and `advanced_required` is now limited to a canonical identity/configuration collision that Quick cannot reconcile losslessly. ADR 0030 replaces policy v1's three-provider, one-deployment/one-grant result with policy v2 across OpenAI, Anthropic, Gemini, and OpenRouter: every remotely visible reviewed candidate is installed and granted atomically, while one selected candidate still owns default/profile decisions. ADR 0033 replaces the separate Quick/Advanced presentation with lazy peer Setup, Connections, and Run profiles tasks while preserving this API and mutation boundary.
 
 ## Context
 

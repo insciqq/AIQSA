@@ -46,7 +46,7 @@ export const adminSectionGroups = [
 export const adminSections = [
   {
     Icon: ServerCog,
-    description: "Connect a provider for your account, or open advanced team and custom configuration.",
+    description: "Connect a provider, manage its full configuration, and map installation run profiles.",
     group: "ai-setup",
     id: "providers",
     label: "Providers"

@@ -3,6 +3,8 @@
 import { AdminProviderQuickSetup } from "@/components/admin/AdminProviderQuickSetup";
 import { AdminProviderCustomSetup } from "@/components/admin/AdminProviderCustomSetup";
 import { AdminProvidersSection } from "@/components/admin/AdminProvidersSection";
+import { AdminRunProfilesPanel } from "@/components/admin/AdminRunProfilesPanel";
+import { focusRing, touchTarget } from "@/components/admin/adminPrimitives";
 import { ConfirmationDialog } from "@/components/app-shell/ConfirmationDialog";
 import { useAdminProviderCustomSetupController } from "@/components/admin/useAdminProviderCustomSetupController";
 import { useAdminProviderQuickSetupController } from "@/components/admin/useAdminProviderQuickSetupController";
@@ -13,6 +15,8 @@ import type {
 } from "@/components/admin/useAdminConfirmationController";
 import type { AdminGroup } from "@/lib/contracts/admin";
 import { useState } from "react";
+
+type ProviderWorkspaceTask = "connections" | "profiles" | "setup";
 
 export type AdminProvidersExperienceProps = Readonly<{
   active: boolean;
@@ -27,69 +31,131 @@ export function AdminProvidersExperience({
   onMutationCommitted,
   requestConfirmation
 }: AdminProvidersExperienceProps) {
-  const [view, setView] = useState<"advanced" | "custom" | "quick">("quick");
-  const [advancedEntryProvider, setAdvancedEntryProvider] = useState<
+  const [workspaceTask, setWorkspaceTask] = useState<ProviderWorkspaceTask>("setup");
+  const [setupTask, setSetupTask] = useState<"custom" | "quick">("quick");
+  const [connectionEntryProvider, setConnectionEntryProvider] = useState<
     AdminProviderQuickSetupId | null
   >(null);
-  const [advancedEntryConnectionId, setAdvancedEntryConnectionId] = useState<string | null>(null);
+  const [connectionEntryId, setConnectionEntryId] = useState<string | null>(null);
   const [localConfirmation, setLocalConfirmation] = useState<AdminConfirmationRequest | null>(null);
   const requestProviderConfirmation = requestConfirmation ?? setLocalConfirmation;
-  const quick = useAdminProviderQuickSetupController(active && view === "quick", {
+  const quick = useAdminProviderQuickSetupController(
+    active && workspaceTask === "setup" && setupTask === "quick",
+    {
     onMutationCommitted
-  });
-  const custom = useAdminProviderCustomSetupController(active && view === "custom", {
+    }
+  );
+  const custom = useAdminProviderCustomSetupController(
+    active && workspaceTask === "setup" && setupTask === "custom",
+    {
     onMutationCommitted
-  });
+    }
+  );
 
-  const openAdvanced = (connectionId: string | null = null) => {
-    setAdvancedEntryProvider(connectionId ? null : quick.state.selectedProviderId);
-    setAdvancedEntryConnectionId(connectionId);
+  const leaveSetup = () => {
     quick.actions.leaveQuickSetup();
     custom.actions.leave();
-    setView("advanced");
+  };
+
+  const openConnection = (connectionId: string | null = null) => {
+    setConnectionEntryProvider(connectionId ? null : quick.state.selectedProviderId);
+    setConnectionEntryId(connectionId);
+    leaveSetup();
+    setWorkspaceTask("connections");
   };
 
   const openCustom = () => {
-    setAdvancedEntryProvider(null);
-    setAdvancedEntryConnectionId(null);
+    setConnectionEntryProvider(null);
+    setConnectionEntryId(null);
     quick.actions.leaveQuickSetup();
-    setView("custom");
+    setSetupTask("custom");
   };
 
-  const backToQuick = () => {
+  const backToSetup = () => {
     custom.actions.leave();
-    setView("quick");
+    setSetupTask("quick");
+  };
+
+  const selectWorkspaceTask = (nextTask: ProviderWorkspaceTask) => {
+    if (nextTask === workspaceTask) return;
+
+    if (workspaceTask === "setup") {
+      leaveSetup();
+    }
+    if (nextTask === "setup") {
+      setConnectionEntryProvider(null);
+      setConnectionEntryId(null);
+      setSetupTask("quick");
+    } else if (nextTask === "connections" && workspaceTask === "setup") {
+      setConnectionEntryProvider(null);
+      setConnectionEntryId(null);
+    }
+    setWorkspaceTask(nextTask);
   };
 
   return (
     <div className="min-w-0">
-      {view === "quick" ? (
+      <div
+        aria-label="Provider tasks"
+        className="flex min-w-0 gap-6 overflow-x-auto border-b border-trace-subtle px-4 sm:px-6 lg:px-8"
+        data-testid="provider-workspace-tabs"
+        role="tablist"
+      >
+        {([
+          ["setup", "Setup"],
+          ["connections", "Connections"],
+          ["profiles", "Run profiles"]
+        ] as const).map(([task, label]) => (
+          <button
+            aria-selected={workspaceTask === task}
+            className={`-mb-px min-h-touch shrink-0 border-b-2 px-0.5 text-sm font-medium ${focusRing} ${touchTarget} ${
+              workspaceTask === task
+                ? "border-proof text-ink"
+                : "border-transparent text-ink-muted hover:border-trace-strong hover:text-ink-secondary"
+            }`}
+            key={task}
+            onClick={() => selectWorkspaceTask(task)}
+            role="tab"
+            type="button"
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {workspaceTask === "setup" && setupTask === "quick" ? (
         <AdminProviderQuickSetup
           controller={quick}
-          onOpenAdvanced={() => openAdvanced()}
+          onManageConnection={() => openConnection()}
           onOpenCustom={openCustom}
           requestConfirmation={requestProviderConfirmation}
         />
       ) : null}
 
-      {view === "custom" ? (
+      {workspaceTask === "setup" && setupTask === "custom" ? (
         <AdminProviderCustomSetup
           controller={custom}
-          onBack={backToQuick}
-          onOpenAdvanced={(connectionId) => openAdvanced(connectionId)}
+          onBack={backToSetup}
+          onManageConnection={(connectionId) => openConnection(connectionId)}
         />
       ) : null}
 
-      {view === "advanced" ? (
-        <AdminProvidersSection
-          active={active && view === "advanced"}
-          advancedEntryConnectionId={advancedEntryConnectionId}
-          advancedEntryProvider={advancedEntryProvider}
-          groups={groups}
-          onBackToQuickSetup={backToQuick}
-          onMutationCommitted={onMutationCommitted}
-          requestConfirmation={requestProviderConfirmation}
-        />
+      {workspaceTask !== "setup" ? (
+        <div className="min-w-0">
+          <div hidden={workspaceTask !== "connections"}>
+            <AdminProvidersSection
+              active={active && workspaceTask === "connections"}
+              entryConnectionId={connectionEntryId}
+              entryProvider={connectionEntryProvider}
+              groups={groups}
+              onMutationCommitted={onMutationCommitted}
+              requestConfirmation={requestProviderConfirmation}
+            />
+          </div>
+          <div hidden={workspaceTask !== "profiles"}>
+            <AdminRunProfilesPanel active={active && workspaceTask === "profiles"} />
+          </div>
+        </div>
       ) : null}
 
       {localConfirmation ? (

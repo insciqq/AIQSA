@@ -3,7 +3,7 @@
 Status: Accepted
 Amends: 0016-responsive-composer-disclosure, 0018-intent-gated-mobile-reading-mode, 0022-admin-managed-llm-provider-control-plane, 0024-admin-managed-run-profiles, 0025-clean-slate-research-chat-and-control-center, 0026-personal-provider-quick-setup
 
-Amendment note: ADR 0030 keeps this ADR's direct-user credential and nonblocking team/custom semantics, adds Gemini as the fourth Quick choice, and makes one save provision every remotely visible reviewed candidate instead of only the selected answer deployment.
+Amendment note: ADR 0030 keeps this ADR's direct-user credential and nonblocking team/custom semantics, adds Gemini as the fourth Quick choice, and makes one save provision every remotely visible reviewed candidate instead of only the selected answer deployment. ADR 0033 replaces the small Advanced link and separate Advanced page with one persistent Setup/Connections/Run profiles task line; Quick remains the default lazy task and the complete control plane remains intact.
 
 ## Context
 

@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  AdminAvailabilityStatus,
   focusRing,
   touchTarget
 } from "@/components/admin/adminPrimitives";
@@ -87,9 +88,10 @@ export function AdminMcpGroupAccessPanel({
             <div className="flex min-w-0 flex-col gap-2 py-3 sm:flex-row sm:items-center sm:justify-between" key={server.id}>
               <div className="min-w-0">
                 <div className="break-words text-sm font-medium text-ink [overflow-wrap:anywhere]">{server.name}</div>
-                <p className="mt-1 text-[11px] text-ink-muted">
-                  {server.enabled ? "Enabled installation-wide" : "Currently disabled installation-wide"}
-                </p>
+                <div className="mt-1 flex flex-wrap items-center gap-2">
+                  <span className="text-[11px] text-ink-muted">Installation-wide</span>
+                  <AdminAvailabilityStatus enabled={server.enabled} />
+                </div>
               </div>
               {systemFullAccess ? (
                 <span
@@ -149,9 +151,10 @@ export function AdminMcpUserAccessPanel({
             <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
               <div className="min-w-0">
                 <div className="break-words text-sm font-medium text-ink [overflow-wrap:anywhere]">{server.name}</div>
-                <p className="mt-1 text-[11px] text-ink-muted">
-                  {server.enabled ? "Enabled installation-wide" : "Currently disabled installation-wide"}
-                </p>
+                <div className="mt-1 flex flex-wrap items-center gap-2">
+                  <span className="text-[11px] text-ink-muted">Installation-wide</span>
+                  <AdminAvailabilityStatus enabled={server.enabled} />
+                </div>
               </div>
               <GrantToggle
                 checked={grant?.canUse === true}

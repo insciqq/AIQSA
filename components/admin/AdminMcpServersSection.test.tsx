@@ -169,6 +169,21 @@ describe("AdminMcpServersSection", () => {
     await waitFor(() => expect(oneTime).toHaveValue(""));
   });
 
+  it("makes disabled installation availability and its restoration action explicit", () => {
+    const view = viewController({ ...server, enabled: false });
+    render(<TestSection controller={view.controller} />);
+
+    for (const status of screen.getAllByText("Disabled")) {
+      expect(status).toHaveClass("border-trace-strong", "bg-control-surface", "text-ink");
+    }
+
+    fireEvent.click(screen.getByRole("button", { name: /Runtime Availability to users/i }));
+    const enable = screen.getByRole("button", { name: "Enable" });
+    expect(enable).toHaveClass("border-proof/25", "bg-proof/[0.08]", "text-proof");
+    fireEvent.click(enable);
+    expect(view.actions.update).toHaveBeenCalledWith("server-1", { enabled: true });
+  });
+
   it("normalizes pasted npx configuration for review and keeps imported secrets in password fields", async () => {
     const view = viewController();
     render(<TestSection controller={view.controller} />);

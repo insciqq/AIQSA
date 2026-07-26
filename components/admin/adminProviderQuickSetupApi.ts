@@ -291,10 +291,10 @@ export function adminProviderQuickSetupErrorMessage(
     provider_admin_action_failed: "Provider setup could not be completed. Your existing configuration was not changed.",
     provider_credential_test_failed: "The provider rejected the key or its account catalog could not be reached.",
     provider_draft_stale: "Provider settings changed in another request. Refresh and try again.",
-    provider_quick_setup_advanced_required: "This provider has configuration that must be managed in Advanced configuration.",
+    provider_quick_setup_advanced_required: "This provider has configuration that must be managed in Connections.",
     provider_quick_setup_response_invalid: "The provider setup API returned an unexpected response. Refresh and try again.",
     provider_quick_setup_selection_invalid: "That model choice is no longer available. Test the key again.",
-    provider_quick_setup_unsupported_catalog: "No supported answer model is available for this key. Continue in Advanced configuration.",
+    provider_quick_setup_unsupported_catalog: "No supported answer model is available for this key. Continue in Connections.",
     unauthorized: "Your administrator session is no longer valid. Sign in again."
   };
   return messages[error.code] ?? messages.provider_admin_action_failed!;

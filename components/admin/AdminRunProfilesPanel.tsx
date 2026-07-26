@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  AdminAvailabilityStatus,
   inputClass,
   primaryButton,
   quietButton
@@ -73,7 +74,10 @@ function ProfileRow({
     <fieldset className="grid min-w-0 gap-4 border-t border-trace-subtle px-4 py-5 sm:px-6 lg:grid-cols-[minmax(12rem,.8fr)_minmax(20rem,1.5fr)] lg:items-start">
       <legend className="sr-only">{label} run profile</legend>
       <div className="min-w-0">
-        <p className="text-sm font-semibold text-ink">{label}</p>
+        <div className="flex flex-wrap items-center gap-2">
+          <p className="text-sm font-semibold text-ink">{label}</p>
+          <AdminAvailabilityStatus enabled={draft.enabled} />
+        </div>
         <p className="mt-1 text-xs leading-5 text-ink-muted">
           Composer shortcut. Empty deployment disables this profile without deleting its slot.
         </p>

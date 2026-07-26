@@ -5,11 +5,13 @@ import {
   deriveAdminEmailPresentation
 } from "@/components/admin/adminEmailPresentation";
 import {
+  AdminAvailabilityStatus,
   AdminTaskBackButton,
   AdminTaskDetailPane,
   AdminTaskIndexPane,
   AdminTaskWorkspace,
   dangerButton,
+  enableButton,
   inputClass,
   primaryButton,
   quietButton,
@@ -113,6 +115,7 @@ function passwordActionFrom(form: EmailForm): AdminEmailPasswordAction {
 
 function toneClasses(tone: AdminEmailAxis["tone"]): string {
   if (tone === "critical") return "border-critical text-critical";
+  if (tone === "inactive") return "border-trace-strong text-ink";
   if (tone === "positive") return "border-positive text-positive";
   if (tone === "proof") return "border-proof text-proof";
   if (tone === "warning") return "border-caution text-caution";
@@ -121,17 +124,24 @@ function toneClasses(tone: AdminEmailAxis["tone"]): string {
 
 function toneTextClass(tone: AdminEmailAxis["tone"]): string {
   if (tone === "critical") return "text-critical";
+  if (tone === "inactive") return "text-ink";
   if (tone === "positive") return "text-positive";
   if (tone === "proof") return "text-proof";
   if (tone === "warning") return "text-caution";
   return "text-ink-muted";
 }
 
-function AxisFact({ axis, label }: Readonly<{ axis: AdminEmailAxis; label: string }>) {
+function AxisFact({ availability, axis, label }: Readonly<{
+  availability?: boolean;
+  axis: AdminEmailAxis;
+  label: string;
+}>) {
   return (
     <div className={`min-w-0 border-l-2 pl-3 ${toneClasses(axis.tone)}`}>
       <dt className="text-[10px] font-semibold uppercase tracking-[0.09em] text-ink-muted">{label}</dt>
-      <dd className="mt-1 break-words text-sm font-medium [overflow-wrap:anywhere]">{axis.label}</dd>
+      <dd className="mt-1 break-words text-sm font-medium [overflow-wrap:anywhere]">
+        {availability === undefined ? axis.label : <AdminAvailabilityStatus enabled={availability} />}
+      </dd>
       <dd className="mt-1 break-words text-xs leading-5 text-ink-muted [overflow-wrap:anywhere]">{axis.detail}</dd>
     </div>
   );
@@ -221,7 +231,14 @@ function EmailTaskIndex({
         <h3 className="mt-1 text-base font-semibold text-ink">Email tasks</h3>
         <dl className="mt-3 grid gap-2 text-xs">
           <div className="flex items-center justify-between gap-2"><dt className="text-ink-muted">Draft</dt><dd className={toneTextClass(presentation.draft.tone)}>{presentation.draft.label}</dd></div>
-          <div className="flex items-center justify-between gap-2"><dt className="text-ink-muted">Active</dt><dd className={toneTextClass(presentation.active.tone)}>{presentation.active.label}</dd></div>
+          <div className="flex items-center justify-between gap-2">
+            <dt className="text-ink-muted">Active</dt>
+            <dd className={toneTextClass(presentation.active.tone)}>
+              {email.active.configuration
+                ? <AdminAvailabilityStatus enabled={email.active.enabled} />
+                : presentation.active.label}
+            </dd>
+          </div>
           <div className="flex items-center justify-between gap-2"><dt className="text-ink-muted">Health</dt><dd className={toneTextClass(presentation.health.tone)}>{presentation.health.label}</dd></div>
         </dl>
       </div>
@@ -269,7 +286,11 @@ function OverviewTask({ email, onOpenTask }: Readonly<{
     <div className="grid gap-6">
       <dl className="grid gap-4 sm:grid-cols-3">
         <AxisFact axis={presentation.draft} label="Draft" />
-        <AxisFact axis={presentation.active} label="Active" />
+        <AxisFact
+          availability={email.active.configuration ? email.active.enabled : undefined}
+          axis={presentation.active}
+          label="Active"
+        />
         <AxisFact axis={presentation.health} label="Health" />
       </dl>
       <section className="border-l border-trace-strong pl-4">
@@ -512,11 +533,11 @@ function RuntimeTask({ controller, email }: Readonly<{
         <h4 className="text-sm font-semibold text-ink">Runtime delivery</h4>
         <p className="mt-1 max-w-3xl text-xs leading-5 text-ink-muted">Each message loads the current enabled active version from the database. Enable and disable apply without restart. SMTP is optional and never changes core application readiness.</p>
         <div className="mt-4 flex flex-wrap items-center gap-3">
-          <span className={`font-mono text-xs font-medium ${email.active.enabled ? "text-positive" : "text-caution"}`}>{email.active.enabled ? "ENABLED" : "DISABLED"}</span>
+          <AdminAvailabilityStatus enabled={email.active.enabled} />
           {email.active.enabled ? (
             <button className={quietButton} disabled={controller.state.busy} onClick={() => void controller.actions.disable(email.active.version)} type="button"><Power aria-hidden="true" className="size-3.5" />Disable</button>
           ) : (
-            <button className={primaryButton} disabled={controller.state.busy || !hasActive} onClick={() => void controller.actions.enable(email.active.version)} type="button"><Power aria-hidden="true" className="size-3.5" />Enable</button>
+            <button className={enableButton} disabled={controller.state.busy || !hasActive} onClick={() => void controller.actions.enable(email.active.version)} type="button"><Power aria-hidden="true" className="size-3.5" />Enable</button>
           )}
           <button className={quietButton} disabled={controller.state.busy || controller.state.loading} onClick={() => void controller.actions.refresh()} type="button"><RefreshCw aria-hidden="true" className="size-3.5" />Refresh</button>
         </div>

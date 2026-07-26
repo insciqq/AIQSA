@@ -51,6 +51,7 @@ describe("AdminAccessRulesSection", () => {
 
     expect(screen.getByTestId("admin-access-rules-index")).toHaveClass("block", "lg:block");
     expect(screen.getByTestId("admin-access-rules-detail-pane")).toHaveClass("hidden", "lg:block");
+    expect(screen.getByText("Enabled")).toHaveClass("border-positive/25", "text-positive");
     expect(screen.queryByRole("table")).not.toBeInTheDocument();
     fireEvent.change(screen.getByLabelText("Search access rules"), { target: { value: "domain" } });
     fireEvent.click(within(screen.getByTestId("admin-access-rule-row")).getByRole("button", { name: "Details" }));
@@ -111,6 +112,23 @@ describe("AdminAccessRulesSection", () => {
     expect(screen.getByText(/Rules cannot be edited/)).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "Delete rule" }));
     expect(sectionActions.requestDeleteRule).toHaveBeenCalledWith({ id: rule.id, kind: rule.kind, value: rule.value });
+  });
+
+  it("surfaces retained disabled rules without inventing an enable mutation", () => {
+    const sectionActions = actions();
+    const disabledRule = { ...rule, enabled: false };
+    render(
+      <AdminAccessRulesSection
+        {...props(sectionActions, {
+          data: { groups, rules: [disabledRule], selectedRule: disabledRule, totalRuleCount: 1 },
+          state: { ...props(sectionActions).state, compactDetailOpen: true }
+        })}
+      />
+    );
+
+    expect(screen.getAllByText("Disabled")).toHaveLength(2);
+    expect(screen.getAllByText("Disabled")[0]).toHaveClass("border-trace-strong", "text-ink");
+    expect(screen.queryByRole("button", { name: /enable rule/i })).not.toBeInTheDocument();
   });
 
   it("distinguishes empty views and disables the active mutation", () => {

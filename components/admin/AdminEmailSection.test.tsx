@@ -176,6 +176,10 @@ describe("AdminEmailSection", () => {
     await screen.findByText(/now active/i);
     fireEvent.click(screen.getByRole("button", { name: "Disable" }));
     await screen.findByText("Email delivery disabled.");
+    for (const status of screen.getAllByText("Disabled")) {
+      expect(status).toHaveClass("border-trace-strong", "bg-control-surface", "text-ink");
+    }
+    expect(screen.getByRole("button", { name: "Enable" })).toHaveClass("border-proof/25", "bg-proof/[0.08]", "text-proof");
     expect(onMutationCommitted).toHaveBeenCalledTimes(1);
 
     fireEvent.click(screen.getByRole("button", { name: /Clear configuration/i }));

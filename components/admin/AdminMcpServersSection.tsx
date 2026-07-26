@@ -8,6 +8,7 @@ import {
   type AdminMcpServerForm
 } from "@/components/admin/adminMcpDraft";
 import {
+  AdminAvailabilityStatus,
   AdminTaskBackButton,
   AdminTaskDetailPane,
   AdminTaskIndexPane,
@@ -57,18 +58,13 @@ function readAdminMcpOAuthReturn(): AdminMcpOAuthReturn | null {
   return kind || serverId ? { kind, serverId } : null;
 }
 
-function availability(server: AdminMcpServer): { label: string; tone: string } {
-  if (server.archivedAt) return { label: "Legacy", tone: "bg-critical/10 text-critical" };
-  if (server.enabled) return { label: "Enabled", tone: "bg-positive/10 text-positive" };
-  return { label: "Disabled", tone: "bg-control-surface text-ink-muted" };
-}
-
 function StatusPill({ server }: Readonly<{ server: AdminMcpServer }>) {
-  const status = availability(server);
+  if (!server.archivedAt) return <AdminAvailabilityStatus enabled={server.enabled} />;
+
   return (
-    <span className={`inline-flex items-center gap-1 rounded-pill px-2 py-0.5 text-[11px] ${status.tone}`}>
+    <span className="inline-flex items-center gap-1.5 rounded-pill border border-critical/25 bg-critical/10 px-2 py-0.5 text-[11px] font-medium text-critical">
       <span aria-hidden="true" className="size-1.5 rounded-full bg-current" />
-      {status.label}
+      Legacy
     </span>
   );
 }

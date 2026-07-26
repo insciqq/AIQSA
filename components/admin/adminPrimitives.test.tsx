@@ -2,13 +2,15 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type { AdminGroup } from "@/lib/contracts/admin";
 import {
+  AdminAvailabilityStatus,
   AdminGroupOptions,
   AdminResourceDetailPane,
   AdminResourceIndexPane,
   AdminTaskBackButton,
   AdminTaskDetailPane,
   AdminTaskIndexPane,
-  AdminTaskWorkspace
+  AdminTaskWorkspace,
+  enableButton
 } from "./adminPrimitives";
 
 const activeGroup: AdminGroup = {
@@ -60,6 +62,22 @@ describe("AdminGroupOptions", () => {
 
     expect(screen.getByRole("group", { name: "Default groups" })).toHaveTextContent("No groups");
     expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
+  });
+});
+
+describe("admin lifecycle presentation", () => {
+  it("keeps enabled, disabled, and restoration actions semantically distinct", () => {
+    render(
+      <>
+        <AdminAvailabilityStatus enabled />
+        <AdminAvailabilityStatus enabled={false} />
+        <button className={enableButton} type="button">Enable resource</button>
+      </>
+    );
+
+    expect(screen.getByText("Enabled")).toHaveClass("border-positive/25", "bg-positive/10", "text-positive");
+    expect(screen.getByText("Disabled")).toHaveClass("border-trace-strong", "bg-control-surface", "text-ink");
+    expect(screen.getByRole("button", { name: "Enable resource" })).toHaveClass("border-proof/25", "bg-proof/[0.08]", "text-proof");
   });
 });
 

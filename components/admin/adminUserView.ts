@@ -133,7 +133,7 @@ export function userStatusClass(status: AdminUserRecord["status"]): string {
   const classes: Record<AdminUserRecord["status"], string> = {
     active: "border-positive/25 bg-positive/10 text-positive",
     denied: "border-critical/25 bg-critical/10 text-critical",
-    disabled: "border-trace-subtle bg-control-surface text-ink-secondary",
+    disabled: "border-trace-strong bg-control-surface text-ink",
     pending: "border-caution/25 bg-caution/10 text-caution"
   };
 

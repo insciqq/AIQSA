@@ -735,7 +735,7 @@ describe("AdminPanel", () => {
     fireEvent.click(within(usage).getByRole("button", { name: "All sections" }));
     fireEvent.click(screen.getByRole("tab", { name: "Providers" }));
     const providers = await screen.findByTestId("admin-section-providers");
-    fireEvent.click(within(providers).getByRole("button", { name: "Advanced configuration" }));
+    fireEvent.click(within(providers).getByRole("tab", { name: "Connections" }));
     expect(await within(providers).findByRole("alert")).toHaveTextContent("Provider connections could not be loaded");
   });
 

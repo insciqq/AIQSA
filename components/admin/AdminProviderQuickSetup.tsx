@@ -15,7 +15,7 @@ import { CheckCircle2, KeyRound, ServerCog, ShieldCheck, UserRound } from "lucid
 
 export type AdminProviderQuickSetupProps = Readonly<{
   controller: AdminProviderQuickSetupController;
-  onOpenAdvanced(): void;
+  onManageConnection(): void;
   onOpenCustom(): void;
   requestConfirmation: AdminConfirmationController["requestConfirmation"];
 }>;
@@ -28,24 +28,30 @@ function stateLabel(provider: AdminProviderQuickSetupProvider): string {
   return "Not connected";
 }
 
-function AdvancedLink({ onOpenAdvanced }: { onOpenAdvanced(): void }) {
+function ManageConnectionButton({
+  onManageConnection,
+  providerDisplayName
+}: {
+  onManageConnection(): void;
+  providerDisplayName: string;
+}) {
   return (
     <button
-      className={`text-left text-xs font-medium text-proof hover:text-proof-hover ${focusRing} ${touchTarget}`}
-      onClick={onOpenAdvanced}
+      className={`${quietButton} border border-trace-strong bg-answer-paper`}
+      onClick={onManageConnection}
       type="button"
     >
-      Advanced configuration
+      Manage {providerDisplayName} connection
     </button>
   );
 }
 
 function SetupFeedback({
   controller,
-  onOpenAdvanced
+  onManageConnection
 }: {
   controller: AdminProviderQuickSetupController;
-  onOpenAdvanced(): void;
+  onManageConnection(): void;
 }) {
   if (!controller.state.error) return null;
   const advancedRecommended = controller.state.errorCode ===
@@ -57,10 +63,10 @@ function SetupFeedback({
       {advancedRecommended ? (
         <button
           className={`${quietButton} mt-2 text-critical hover:text-critical`}
-          onClick={onOpenAdvanced}
+          onClick={onManageConnection}
           type="button"
         >
-          Open Advanced configuration
+          Manage provider connection
         </button>
       ) : null}
     </div>
@@ -142,11 +148,13 @@ function ModelChoice({
 
 function KeyForm({
   controller,
-  onOpenAdvanced,
+  onManageConnection,
+  providerDisplayName,
   replacement = false
 }: {
   controller: AdminProviderQuickSetupController;
-  onOpenAdvanced(): void;
+  onManageConnection(): void;
+  providerDisplayName: string;
   replacement?: boolean;
 }) {
   const selectionRequired = Boolean(controller.state.selection);
@@ -197,6 +205,12 @@ function KeyForm({
         </button>
       </div>
       <ModelChoice controller={controller} />
+      <div className="mt-3 flex flex-wrap items-center gap-2">
+        <ManageConnectionButton
+          onManageConnection={onManageConnection}
+          providerDisplayName={providerDisplayName}
+        />
+      </div>
       {replacement ? (
         <button
           className={`${quietButton} mt-3`}
@@ -207,7 +221,7 @@ function KeyForm({
           Cancel replacement
         </button>
       ) : null}
-      <SetupFeedback controller={controller} onOpenAdvanced={onOpenAdvanced} />
+      <SetupFeedback controller={controller} onManageConnection={onManageConnection} />
     </form>
   );
 }
@@ -225,7 +239,7 @@ function QuickAssignmentControl({
   return (
     <div className="mt-5 border-t border-trace-subtle pt-4">
       <p className="max-w-xl text-xs leading-5 text-ink-muted">
-        Remove this Quick setup key assignment from your account. Model access may stop unless an applicable team or default credential is already configured. The stored credential and all team settings stay unchanged; the credential remains manageable in Advanced configuration.
+        Remove this Quick setup key assignment from your account. Model access may stop unless an applicable team or default credential is already configured. The stored credential and all team settings stay unchanged; the credential remains manageable in Connections.
       </p>
       <button
         className={`${quietButton} mt-2`}
@@ -252,12 +266,12 @@ function QuickAssignmentControl({
 
 function ReadyProvider({
   controller,
-  onOpenAdvanced,
+  onManageConnection,
   provider,
   requestConfirmation
 }: {
   controller: AdminProviderQuickSetupController;
-  onOpenAdvanced(): void;
+  onManageConnection(): void;
   provider: AdminProviderQuickSetupProvider;
   requestConfirmation: AdminConfirmationController["requestConfirmation"];
 }) {
@@ -297,7 +311,12 @@ function ReadyProvider({
       ) : null}
 
       {controller.state.replacing ? (
-        <KeyForm controller={controller} onOpenAdvanced={onOpenAdvanced} replacement />
+        <KeyForm
+          controller={controller}
+          onManageConnection={onManageConnection}
+          providerDisplayName={provider.providerDisplayName}
+          replacement
+        />
       ) : (
         <>
           <div className="mt-5 flex flex-wrap items-center gap-2">
@@ -314,16 +333,17 @@ function ReadyProvider({
             >
               Replace API key
             </button>
-          </div>
-          <div className="mt-4">
-            <AdvancedLink onOpenAdvanced={onOpenAdvanced} />
+            <ManageConnectionButton
+              onManageConnection={onManageConnection}
+              providerDisplayName={provider.providerDisplayName}
+            />
           </div>
           <QuickAssignmentControl
             controller={controller}
             provider={provider}
             requestConfirmation={requestConfirmation}
           />
-          <SetupFeedback controller={controller} onOpenAdvanced={onOpenAdvanced} />
+          <SetupFeedback controller={controller} onManageConnection={onManageConnection} />
         </>
       )}
     </section>
@@ -332,12 +352,12 @@ function ReadyProvider({
 
 function SelectedProviderTask({
   controller,
-  onOpenAdvanced,
+  onManageConnection,
   provider,
   requestConfirmation
 }: {
   controller: AdminProviderQuickSetupController;
-  onOpenAdvanced(): void;
+  onManageConnection(): void;
   provider: AdminProviderQuickSetupProvider;
   requestConfirmation: AdminConfirmationController["requestConfirmation"];
 }) {
@@ -345,7 +365,7 @@ function SelectedProviderTask({
     return (
       <ReadyProvider
         controller={controller}
-        onOpenAdvanced={onOpenAdvanced}
+        onManageConnection={onManageConnection}
         provider={provider}
         requestConfirmation={requestConfirmation}
       />
@@ -353,7 +373,11 @@ function SelectedProviderTask({
   }
   return (
     <section className={`mt-6 border-t pt-5 ${
-      provider.state === "needs_attention" ? "border-caution" : "border-trace-subtle"
+      provider.state === "needs_attention"
+        ? "border-caution"
+        : provider.state === "disabled"
+          ? "border-trace-strong"
+          : "border-trace-subtle"
     }`}>
       {provider.state === "needs_attention" ? (
         <>
@@ -366,7 +390,7 @@ function SelectedProviderTask({
         </>
       ) : provider.state === "disabled" ? (
         <>
-          <p className="text-[11px] font-semibold uppercase tracking-[0.1em] text-ink-muted">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.1em] text-ink">
             Provider disabled
           </p>
           <p className="mt-2 max-w-xl text-sm leading-6 text-ink-secondary">
@@ -388,10 +412,11 @@ function SelectedProviderTask({
           ) : null}
         </>
       )}
-      <KeyForm controller={controller} onOpenAdvanced={onOpenAdvanced} />
-      <div className="mt-4">
-        <AdvancedLink onOpenAdvanced={onOpenAdvanced} />
-      </div>
+      <KeyForm
+        controller={controller}
+        onManageConnection={onManageConnection}
+        providerDisplayName={provider.providerDisplayName}
+      />
       <QuickAssignmentControl
         controller={controller}
         provider={provider}
@@ -447,7 +472,7 @@ function SetupGuide() {
 
 export function AdminProviderQuickSetup({
   controller,
-  onOpenAdvanced,
+  onManageConnection,
   onOpenCustom,
   requestConfirmation
 }: AdminProviderQuickSetupProps) {
@@ -488,7 +513,11 @@ export function AdminProviderQuickSetup({
                           ? "text-positive"
                           : provider.state === "needs_attention"
                             ? "text-caution"
-                            : "text-ink-muted"
+                            : provider.state === "disabled"
+                              ? "font-semibold text-ink"
+                              : provider.state === "advanced_required"
+                                ? "text-proof"
+                                : "text-ink-muted"
                       }`}>
                         {stateLabel(provider)}
                       </span>
@@ -514,15 +543,14 @@ export function AdminProviderQuickSetup({
               {controller.state.selectedProvider ? (
                 <SelectedProviderTask
                   controller={controller}
-                  onOpenAdvanced={onOpenAdvanced}
+                  onManageConnection={onManageConnection}
                   provider={controller.state.selectedProvider}
                   requestConfirmation={requestConfirmation}
                 />
               ) : (
                 <div className="mt-6 border-t border-trace-subtle pt-5">
                   <p className="text-sm text-ink-secondary">Choose a provider to continue.</p>
-                  <SetupFeedback controller={controller} onOpenAdvanced={onOpenAdvanced} />
-                  <div className="mt-4"><AdvancedLink onOpenAdvanced={onOpenAdvanced} /></div>
+                  <SetupFeedback controller={controller} onManageConnection={onManageConnection} />
                 </div>
               )}
             </div>
@@ -537,7 +565,6 @@ export function AdminProviderQuickSetup({
                 Connect custom endpoint
               </button>
             </div>
-            <div className="mt-4"><AdvancedLink onOpenAdvanced={onOpenAdvanced} /></div>
           </>
         )}
       </div>

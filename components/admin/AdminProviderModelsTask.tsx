@@ -5,8 +5,10 @@ import {
   adminProviderAdapterLabel
 } from "@/components/admin/AdminProviderModelEditor";
 import {
+  AdminAvailabilityStatus,
   EmptyState,
   dangerButton,
+  enableButton,
   primaryButton,
   quietButton
 } from "@/components/admin/adminPrimitives";
@@ -101,10 +103,8 @@ export function AdminProviderModelsTask({
                     <p className="mt-1 text-xs leading-5 text-ink-muted">
                       {adminProviderAdapterLabel(model.draftConfig.adapterKind)} · {routingText}
                     </p>
-                    <p className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs">
-                      <span className={model.enabled ? "text-positive" : "text-ink-muted"}>
-                        {presentation.runtimeLabel}
-                      </span>
+                    <p className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+                      <AdminAvailabilityStatus enabled={model.enabled} />
                       <span className={
                         presentation.publication === "active"
                           ? "text-positive"
@@ -129,7 +129,7 @@ export function AdminProviderModelsTask({
                     </button>
                     <button
                       aria-label={`${model.enabled ? "Disable" : "Enable"} ${model.displayName} model`}
-                      className={quietButton}
+                      className={model.enabled ? quietButton : enableButton}
                       disabled={controller.state.busy}
                       onClick={() => void controller.actions.updateModel(
                         connection.id,

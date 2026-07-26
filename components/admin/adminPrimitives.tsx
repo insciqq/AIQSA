@@ -7,11 +7,30 @@ export const focusRing =
 export const touchTarget = "[@media(hover:none)]:!min-h-touch [@media(hover:none)]:!min-w-touch [@media(pointer:coarse)]:!min-h-touch [@media(pointer:coarse)]:!min-w-touch";
 const buttonBase = `inline-flex min-h-control-sm items-center justify-center gap-1.5 rounded-control px-3 text-xs font-medium ${focusRing} ${touchTarget} disabled:cursor-not-allowed disabled:text-ink-disabled disabled:opacity-60`;
 export const primaryButton = `${buttonBase} bg-proof text-proof-contrast hover:bg-proof-hover`;
+export const enableButton = `${buttonBase} border border-proof/25 bg-proof/[0.08] text-proof hover:border-proof/40 hover:bg-proof/[0.14]`;
 export const quietButton = `${buttonBase} bg-control-surface text-ink-secondary hover:bg-control-hover hover:text-ink active:bg-control-pressed`;
 export const dangerButton = `${buttonBase} bg-critical/10 text-critical hover:bg-critical/15`;
 export const inputClass =
   `min-h-control w-full rounded-control border border-trace-subtle bg-answer-paper px-3 text-sm text-ink ${focusRing} ${touchTarget} placeholder:text-ink-muted`;
 const fieldLabelClass = "text-xs font-medium text-ink-secondary";
+
+export function adminAvailabilityStatusClass(enabled: boolean): string {
+  return enabled
+    ? "border-positive/25 bg-positive/10 text-positive"
+    : "border-trace-strong bg-control-surface text-ink";
+}
+
+export function AdminAvailabilityStatus({ enabled }: Readonly<{ enabled: boolean }>) {
+  return (
+    <span
+      className={`inline-flex shrink-0 items-center gap-1.5 rounded-pill border px-2 py-0.5 text-[11px] font-medium ${adminAvailabilityStatusClass(enabled)}`}
+      data-admin-availability={enabled ? "enabled" : "disabled"}
+    >
+      <span aria-hidden="true" className="size-1.5 rounded-full bg-current" />
+      {enabled ? "Enabled" : "Disabled"}
+    </span>
+  );
+}
 
 export function AdminGroupOptions({
   groups,

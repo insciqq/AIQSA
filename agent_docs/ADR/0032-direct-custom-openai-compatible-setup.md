@@ -3,6 +3,8 @@
 Status: Accepted
 Amends: 0022-admin-managed-llm-provider-control-plane, 0026-personal-provider-quick-setup, 0028-task-first-control-center-and-direct-provider-setup
 
+Amendment note: ADR 0033 keeps this atomic Custom setup contract but presents Custom as a Setup subtask and hands its exact created connection to the peer Connections task instead of a separate Advanced page.
+
 ## Context
 
 The reviewed OpenAI, Anthropic, Gemini, and OpenRouter Quick path is intentionally code-owned and cannot import arbitrary upstream model rows. Administrators nevertheless need a direct way to try a self-hosted gateway, local inference server, or another OpenAI-compatible endpoint without pretending it is one of those providers and without walking through connection draft, credential, model, activation, assignment, group, and entitlement screens.

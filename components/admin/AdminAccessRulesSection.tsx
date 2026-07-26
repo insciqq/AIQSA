@@ -1,4 +1,5 @@
 import {
+  AdminAvailabilityStatus,
   AdminGroupOptions,
   AdminTaskBackButton,
   AdminTaskDetailPane,
@@ -144,7 +145,8 @@ function RuleDetail({ actions, rule, status }: Readonly<{
         <p className="text-[11px] font-semibold uppercase tracking-[0.1em] text-ink-muted">Exact {rule.kind} rule</p>
         <div className="mt-2 flex min-w-0 items-start gap-3">
           {rule.kind === "email" ? <Mail aria-hidden="true" className="mt-1 size-4 shrink-0 text-proof" /> : <Globe2 aria-hidden="true" className="mt-1 size-4 shrink-0 text-proof" />}
-          <h3 className="break-words text-xl font-semibold tracking-tight text-ink [overflow-wrap:anywhere]">{rule.value}</h3>
+          <h3 className="min-w-0 flex-1 break-words text-xl font-semibold tracking-tight text-ink [overflow-wrap:anywhere]">{rule.value}</h3>
+          <AdminAvailabilityStatus enabled={rule.enabled} />
         </div>
       </div>
       <section className="border-b border-trace-subtle py-5">
@@ -196,6 +198,7 @@ export function AdminAccessRulesSection(props: AdminAccessRulesSectionProps) {
                   <p className="break-words text-sm font-medium text-ink [overflow-wrap:anywhere]">{rule.value}</p>
                   <p className="mt-1 break-words text-xs text-ink-muted [overflow-wrap:anywhere]">Exact {rule.kind} · {groupLabel(rule.defaultGroups)}</p>
                 </div>
+                <AdminAvailabilityStatus enabled={rule.enabled} />
               </div>
               <div className="mt-2 flex justify-end">
                 <button className={quietButton} onClick={() => actions.selectRule(rule.id)} type="button">Details</button>

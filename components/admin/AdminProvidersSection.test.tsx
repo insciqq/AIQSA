@@ -166,33 +166,18 @@ describe("AdminProvidersSection", () => {
     mocks.useController.mockReset();
   });
 
-  it("owns the Advanced navigation header and delegates return to Quick setup", () => {
+  it("owns the Connections workspace without a duplicate Advanced header", () => {
     const view = controller();
-    const onBackToQuickSetup = vi.fn();
     mocks.useController.mockReturnValue(view);
-    render(
-      <AdminProvidersSection
-        active
-        groups={[]}
-        onBackToQuickSetup={onBackToQuickSetup}
-      />
-    );
+    render(<AdminProvidersSection active groups={[]} />);
 
-    expect(screen.getByRole("heading", {
-      level: 2,
-      name: "Advanced provider controls"
-    })).toBeInTheDocument();
-    expect(screen.getByRole("tab", { name: "Connections" })).toHaveAttribute(
-      "aria-selected",
-      "true"
-    );
-    expect(screen.getByRole("tab", { name: "Run profiles" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Advanced provider controls" }))
+      .not.toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: "Run profiles" })).not.toBeInTheDocument();
+    expect(screen.getByTestId("provider-connections-workspace")).toBeInTheDocument();
     expect(screen.getByRole("button", {
       name: "Refresh provider connections"
     })).toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole("button", { name: "Back to quick setup" }));
-    expect(onBackToQuickSetup).toHaveBeenCalledOnce();
   });
 
   it("does not offer Configure credential while the empty key form is already open", () => {
@@ -296,22 +281,6 @@ describe("AdminProvidersSection", () => {
     expect(screen.getByRole("button", { name: "Save key" })).toBeDisabled();
   });
 
-  it("keeps focused task drafts mounted while switching Advanced peer views", () => {
-    const view = controller();
-    mocks.useController.mockReturnValue(view);
-    render(<AdminProvidersSection active groups={[]} />);
-
-    openTask("Credentials");
-    fireEvent.click(screen.getByRole("button", { name: "Add key" }));
-    fireEvent.change(screen.getByLabelText("API key"), {
-      target: { value: "still-local" }
-    });
-    fireEvent.click(screen.getByRole("tab", { name: "Run profiles" }));
-    fireEvent.click(screen.getByRole("tab", { name: "Connections" }));
-
-    expect(screen.getByLabelText("API key")).toHaveValue("still-local");
-  });
-
   it("opens the model editor from the contextual readiness action", async () => {
     const view = controller();
     mocks.useController.mockReturnValue(view);
@@ -371,8 +340,8 @@ describe("AdminProvidersSection", () => {
     render(
       <AdminProvidersSection
         active
-        advancedEntryConnectionId="custom-connection-1"
-        advancedEntryProvider="openrouter"
+        entryConnectionId="custom-connection-1"
+        entryProvider="openrouter"
         groups={[]}
       />
     );
@@ -404,7 +373,7 @@ describe("AdminProvidersSection", () => {
     mocks.useController.mockReturnValue(view);
 
     render(
-      <AdminProvidersSection active advancedEntryProvider="openrouter" groups={[]} />
+      <AdminProvidersSection active entryProvider="openrouter" groups={[]} />
     );
 
     await waitFor(() => expect(view.actions.select).toHaveBeenCalledWith(
@@ -429,7 +398,7 @@ describe("AdminProvidersSection", () => {
     mocks.useController.mockReturnValue(view);
 
     const rendered = render(
-      <AdminProvidersSection active advancedEntryProvider="openai" groups={[]} />
+      <AdminProvidersSection active entryProvider="openai" groups={[]} />
     );
 
     await waitFor(() => expect(view.actions.select).toHaveBeenCalledWith(
@@ -445,7 +414,7 @@ describe("AdminProvidersSection", () => {
     view.state.connections = [refreshedConnection];
     view.state.selectedConnection = refreshedConnection;
     rendered.rerender(
-      <AdminProvidersSection active advancedEntryProvider="openai" groups={[]} />
+      <AdminProvidersSection active entryProvider="openai" groups={[]} />
     );
 
     expect(view.actions.select).toHaveBeenCalledTimes(1);
@@ -471,7 +440,7 @@ describe("AdminProvidersSection", () => {
     mocks.useController.mockReturnValue(view);
 
     const rendered = render(
-      <AdminProvidersSection active advancedEntryProvider="openai" groups={[]} />
+      <AdminProvidersSection active entryProvider="openai" groups={[]} />
     );
 
     expect(view.actions.select).not.toHaveBeenCalled();
@@ -481,7 +450,7 @@ describe("AdminProvidersSection", () => {
     view.state.connections = [primaryConnection];
     view.state.selectedConnection = primaryConnection;
     rendered.rerender(
-      <AdminProvidersSection active advancedEntryProvider="openai" groups={[]} />
+      <AdminProvidersSection active entryProvider="openai" groups={[]} />
     );
 
     expect(view.actions.select).not.toHaveBeenCalled();
@@ -749,7 +718,7 @@ describe("AdminProvidersSection", () => {
     ));
   });
 
-  it("keeps model actions outside the list clip and leaves the upstream id in Advanced only", () => {
+  it("keeps model actions outside the list clip and leaves the upstream id in configuration only", () => {
     const view = controller();
     const configuredConnection: AdminProviderConnection = {
       ...connection,
@@ -767,6 +736,61 @@ describe("AdminProvidersSection", () => {
     fireEvent.click(within(models).getByLabelText("More actions for Configured model model"));
     expect(within(models).getByRole("button", { name: "Delete Configured model model" })).toBeVisible();
     expect(within(models).queryByText("vendor/model", { exact: true })).not.toBeInTheDocument();
+  });
+
+  it("makes model availability and restoration actions visually explicit", async () => {
+    const view = controller();
+    const configuredConnection: AdminProviderConnection = {
+      ...connection,
+      models: [
+        providerModel(),
+        providerModel({
+          displayName: "Disabled model",
+          enabled: false,
+          id: "model-disabled"
+        })
+      ]
+    };
+    view.state.connections = [configuredConnection];
+    view.state.selectedConnection = configuredConnection;
+    mocks.useController.mockReturnValue(view);
+
+    render(<AdminProvidersSection active groups={[]} />);
+    openTask("Models");
+
+    const models = screen.getByRole("list", { name: "Configured models" });
+    const enabledRow = within(models).getByText("Configured model").closest<HTMLElement>('[role="listitem"]')!;
+    const disabledRow = within(models).getByText("Disabled model").closest<HTMLElement>('[role="listitem"]')!;
+    expect(within(enabledRow).getByText("Enabled")).toHaveClass("text-positive");
+    expect(within(disabledRow).getByText("Disabled")).toHaveClass(
+      "border-trace-strong",
+      "text-ink"
+    );
+    expect(within(disabledRow).getByRole("button", {
+      name: "Enable Disabled model model"
+    })).toHaveClass("text-proof");
+    expect(within(enabledRow).getByRole("button", {
+      name: "Disable Configured model model"
+    })).toHaveClass("bg-control-surface");
+
+    fireEvent.click(within(disabledRow).getByRole("button", {
+      name: "Enable Disabled model model"
+    }));
+    fireEvent.click(within(enabledRow).getByRole("button", {
+      name: "Disable Configured model model"
+    }));
+    await waitFor(() => expect(view.actions.updateModel).toHaveBeenCalledWith(
+      "connection-1",
+      "model-disabled",
+      { action: "enable" },
+      expect.stringContaining("activation will validate")
+    ));
+    expect(view.actions.updateModel).toHaveBeenCalledWith(
+      "connection-1",
+      "model-1",
+      { action: "disable" },
+      "Model disabled for new runs."
+    );
   });
 
   it("routes destructive provider actions through the host confirmation port", async () => {
@@ -1025,13 +1049,13 @@ describe("AdminProvidersSection", () => {
     expect(view.actions.refresh).toHaveBeenCalledOnce();
   });
 
-  it("opens the advanced index first and prefills a new connection from the Quick provider family", async () => {
+  it("opens the Connections index first and prefills a new connection from the Setup provider family", async () => {
     const view = controller();
     view.state.connections = [];
     view.state.selectedConnection = null;
     mocks.useController.mockReturnValue(view);
 
-    render(<AdminProvidersSection active advancedEntryProvider="openai" groups={[]} />);
+    render(<AdminProvidersSection active entryProvider="openai" groups={[]} />);
 
     const index = await screen.findByTestId("provider-connection-index");
     expect(view.actions.select).not.toHaveBeenCalled();

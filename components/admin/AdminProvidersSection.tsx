@@ -6,11 +6,12 @@ import { AdminProviderConnectionEditor } from "@/components/admin/AdminProviderC
 import { AdminProviderCredentialsTask } from "@/components/admin/AdminProviderCredentialsTask";
 import { AdminProviderDiagnosticsTask } from "@/components/admin/AdminProviderDiagnosticsTask";
 import { AdminProviderModelsTask } from "@/components/admin/AdminProviderModelsTask";
-import { AdminRunProfilesPanel } from "@/components/admin/AdminRunProfilesPanel";
 import {
+  AdminAvailabilityStatus,
   AdminTaskBackButton,
   EmptyState,
   dangerButton,
+  enableButton,
   inputClass,
   primaryButton,
   quietButton
@@ -42,7 +43,6 @@ import {
 import type { AdminGroup } from "@/lib/contracts/admin";
 import type { AdminProviderConnection } from "@/lib/contracts/adminProviders";
 import {
-  ArrowLeft,
   Check,
   ChevronRight,
   MoreHorizontal,
@@ -56,16 +56,12 @@ import { useEffect, useRef, useState } from "react";
 
 export type AdminProvidersSectionProps = Readonly<{
   active: boolean;
-  advancedEntryConnectionId?: string | null;
-  advancedEntryProvider?: AdminProviderQuickSetupId | null;
+  entryConnectionId?: string | null;
+  entryProvider?: AdminProviderQuickSetupId | null;
   groups: AdminGroup[];
-  onBackToQuickSetup?(): void;
   onMutationCommitted?(): void | Promise<unknown>;
-  refreshRevision?: number;
   requestConfirmation?: AdminConfirmationController["requestConfirmation"];
 }>;
-
-type AdvancedPeer = "connections" | "profiles";
 
 function Feedback({ controller }: Readonly<{ controller: AdminProvidersController }>) {
   if (
@@ -116,6 +112,14 @@ function Feedback({ controller }: Readonly<{ controller: AdminProvidersControlle
   );
 }
 
+function publicationStatusClass(
+  state: "active" | "changes_pending" | "not_configured"
+): string {
+  if (state === "active") return "text-positive";
+  if (state === "changes_pending") return "text-caution";
+  return "text-ink-muted";
+}
+
 function ConnectionIndex({
   connections,
   controller,
@@ -155,10 +159,22 @@ function ConnectionIndex({
                 {connections.length} configured
               </p>
             </div>
-            <button className={primaryButton} disabled={controller.state.busy} onClick={onCreate} type="button">
-              <Plus aria-hidden="true" className="size-3.5" />
-              New
-            </button>
+            <div className="flex flex-wrap items-center gap-1">
+              <button
+                aria-label="Refresh provider connections"
+                className={quietButton}
+                disabled={controller.state.busy || controller.state.loading}
+                onClick={() => void controller.actions.refresh()}
+                type="button"
+              >
+                <RefreshCw aria-hidden="true" className={`size-3.5 ${controller.state.loading ? "animate-spin" : ""}`} />
+                Refresh
+              </button>
+              <button className={primaryButton} disabled={controller.state.busy} onClick={onCreate} type="button">
+                <Plus aria-hidden="true" className="size-3.5" />
+                New
+              </button>
+            </div>
           </div>
           {connections.length > 6 ? (
             <label className="mt-3 block">
@@ -191,7 +207,13 @@ function ConnectionIndex({
                         {connection.displayName}
                       </span>
                       <span className="mt-1 block text-xs leading-5 text-ink-muted">
-                        {providerFamilyLabel(connection.family)} · {presentation.runtimeLabel} · {presentation.publicationLabel}
+                        {providerFamilyLabel(connection.family)}
+                      </span>
+                      <span className="mt-1 flex flex-wrap items-center gap-2">
+                        <AdminAvailabilityStatus enabled={connection.enabled} />
+                        <span className={`text-xs font-medium ${publicationStatusClass(presentation.publicationState)}`}>
+                          {presentation.publicationLabel}
+                        </span>
                       </span>
                       <span className="mt-0.5 block text-xs text-ink-muted">
                         {presentation.credentialCount} key{presentation.credentialCount === 1 ? "" : "s"} · {presentation.modelCount} model{presentation.modelCount === 1 ? "" : "s"}
@@ -300,10 +322,8 @@ function ConnectionDetail({
           <div className="min-w-0">
             <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
               <h2 className="break-words text-lg font-semibold text-ink">{connection.displayName}</h2>
-              <span className={ui.runtime.kind === "enabled" ? "text-xs font-medium text-positive" : "text-xs font-medium text-ink-muted"}>
-                {ui.runtime.label}
-              </span>
-              <span className={ui.publication.kind === "active" ? "text-xs font-medium text-positive" : ui.publication.kind === "changes_pending" ? "text-xs font-medium text-caution" : "text-xs font-medium text-ink-muted"}>
+              <AdminAvailabilityStatus enabled={connection.enabled} />
+              <span className={`text-xs font-medium ${publicationStatusClass(ui.publication.kind)}`}>
                 {ui.publication.label}
               </span>
             </div>
@@ -316,7 +336,7 @@ function ConnectionDetail({
             </button>
             {connection.activeConfig ? (
               <button
-                className={quietButton}
+                className={connection.enabled ? quietButton : enableButton}
                 disabled={controller.state.busy}
                 onClick={() => void controller.actions.connectionAction(
                   connection.id,
@@ -330,6 +350,16 @@ function ConnectionDetail({
                 {connection.enabled ? "Disable" : "Enable"}
               </button>
             ) : null}
+            <button
+              aria-label="Refresh provider connections"
+              className={quietButton}
+              disabled={controller.state.busy || controller.state.loading}
+              onClick={() => void controller.actions.refresh()}
+              type="button"
+            >
+              <RefreshCw aria-hidden="true" className={`size-3.5 ${controller.state.loading ? "animate-spin" : ""}`} />
+              Refresh
+            </button>
             <details className="relative">
               <summary
                 aria-label={`More actions for ${connection.displayName} connection`}
@@ -373,7 +403,7 @@ function ConnectionDetail({
 
         <div className={`mt-4 flex flex-col gap-3 border-l-2 pl-3 sm:flex-row sm:items-center sm:justify-between ${readinessTone === "ready" ? "border-positive" : readinessTone === "attention" ? "border-caution" : "border-trace-strong"}`}>
           <div className="min-w-0">
-            <p className={`text-sm font-medium ${readinessTone === "ready" ? "text-positive" : readinessTone === "attention" ? "text-caution" : "text-ink-secondary"}`}>
+            <p className={`text-sm font-medium ${readinessTone === "ready" ? "text-positive" : readinessTone === "attention" ? "text-caution" : runtimeDisabled ? "text-ink" : "text-ink-secondary"}`}>
               {runtimeDisabled
                 ? "Connection is disabled."
                 : firstSetupHasBlockers
@@ -398,7 +428,7 @@ function ConnectionDetail({
           </div>
           {ui.primaryAction && !primaryActionIsAlreadyOpen ? (
             <button
-              className={primaryButton}
+              className={ui.primaryAction.kind === "enable" ? enableButton : primaryButton}
               disabled={controller.state.busy}
               onClick={() => runPrimaryAction(ui.primaryAction!, connection, controller, setActiveTask)}
               type="button"
@@ -498,12 +528,10 @@ function ConnectionDetail({
 
 export function AdminProvidersSection({
   active,
-  advancedEntryConnectionId = null,
-  advancedEntryProvider = null,
+  entryConnectionId = null,
+  entryProvider = null,
   groups,
-  onBackToQuickSetup,
   onMutationCommitted,
-  refreshRevision = 0,
   requestConfirmation: externalRequestConfirmation
 }: AdminProvidersSectionProps) {
   const controller = useAdminProvidersController(active, { onMutationCommitted });
@@ -511,43 +539,34 @@ export function AdminProvidersSection({
     loadEndpoints: controller.actions.discoverEndpoints,
     loadModels: controller.actions.discoverModels
   });
-  const [peer, setPeer] = useState<AdvancedPeer>("connections");
   const [connectionQuery, setConnectionQuery] = useState("");
   const [creating, setCreating] = useState(false);
   const [editingConnectionId, setEditingConnectionId] = useState<string | null>(null);
   const [connectionTaskOpen, setConnectionTaskOpen] = useState(false);
   const [localConfirmation, setLocalConfirmation] = useState<AdminConfirmationRequest | null>(null);
-  const refreshRevisionRef = useRef(refreshRevision);
   const handledEntryConnectionRef = useRef<string | null>(null);
   const handledEntryProviderRef = useRef<AdminProviderQuickSetupId | null>(null);
   const selected = controller.state.selectedConnection;
   const requestConfirmation = externalRequestConfirmation ?? setLocalConfirmation;
 
   useEffect(() => {
-    if (!active || refreshRevisionRef.current === refreshRevision) return;
-    refreshRevisionRef.current = refreshRevision;
-    void controller.actions.refresh();
-  }, [active, controller.actions, refreshRevision]);
-
-  useEffect(() => {
     if (
       !active ||
-      !advancedEntryConnectionId ||
+      !entryConnectionId ||
       !controller.state.loaded ||
-      handledEntryConnectionRef.current === advancedEntryConnectionId ||
-      !controller.state.connections.some(({ id }) => id === advancedEntryConnectionId)
+      handledEntryConnectionRef.current === entryConnectionId ||
+      !controller.state.connections.some(({ id }) => id === entryConnectionId)
     ) {
       return;
     }
-    handledEntryConnectionRef.current = advancedEntryConnectionId;
-    setPeer("connections");
+    handledEntryConnectionRef.current = entryConnectionId;
     setCreating(false);
     setEditingConnectionId(null);
-    controller.actions.select(advancedEntryConnectionId);
+    controller.actions.select(entryConnectionId);
     setConnectionTaskOpen(true);
   }, [
     active,
-    advancedEntryConnectionId,
+    entryConnectionId,
     controller.actions,
     controller.state.connections,
     controller.state.loaded
@@ -556,21 +575,20 @@ export function AdminProvidersSection({
   useEffect(() => {
     if (
       !active ||
-      advancedEntryConnectionId ||
-      !advancedEntryProvider ||
+      entryConnectionId ||
+      !entryProvider ||
       !controller.state.loaded ||
-      handledEntryProviderRef.current === advancedEntryProvider
+      handledEntryProviderRef.current === entryProvider
     ) {
       return;
     }
-    handledEntryProviderRef.current = advancedEntryProvider;
+    handledEntryProviderRef.current = entryProvider;
     const connectionId = preferredProviderConnectionId(
       controller.state.connections,
-      advancedEntryProvider
+      entryProvider
     );
     if (!connectionId) return;
     const openTimer = window.setTimeout(() => {
-      setPeer("connections");
       setCreating(false);
       setEditingConnectionId(null);
       controller.actions.select(connectionId);
@@ -579,8 +597,8 @@ export function AdminProvidersSection({
     return () => window.clearTimeout(openTimer);
   }, [
     active,
-    advancedEntryConnectionId,
-    advancedEntryProvider,
+    entryConnectionId,
+    entryProvider,
     controller.actions,
     controller.state.connections,
     controller.state.loaded
@@ -594,56 +612,8 @@ export function AdminProvidersSection({
   };
 
   return (
-    <div className="min-w-0" data-testid="provider-advanced-workspace">
-      <div className="flex flex-col gap-3 border-b border-trace-subtle px-4 py-4 sm:px-6 xl:flex-row xl:items-start xl:justify-between">
-        <div className="min-w-0 max-w-3xl">
-          <h2 className="text-base font-semibold text-ink">Advanced provider controls</h2>
-          <p className="mt-0.5 text-xs leading-5 text-ink-muted">
-            Manage custom endpoints, account policy, deployments, diagnostics, and the three installation run profiles.
-          </p>
-        </div>
-        <div className="flex flex-wrap items-center gap-1">
-          {onBackToQuickSetup ? (
-            <button className={quietButton} onClick={onBackToQuickSetup} type="button">
-              <ArrowLeft aria-hidden="true" className="size-3.5" />
-              Back to quick setup
-            </button>
-          ) : null}
-          <div className="flex flex-wrap gap-1" role="tablist" aria-label="Advanced provider views">
-            <button
-              aria-selected={peer === "connections"}
-              className={peer === "connections" ? primaryButton : quietButton}
-              onClick={() => setPeer("connections")}
-              role="tab"
-              type="button"
-            >
-              Connections
-            </button>
-            <button
-              aria-selected={peer === "profiles"}
-              className={peer === "profiles" ? primaryButton : quietButton}
-              onClick={() => setPeer("profiles")}
-              role="tab"
-              type="button"
-            >
-              Run profiles
-            </button>
-          </div>
-          <button
-            aria-label="Refresh provider connections"
-            className={quietButton}
-            disabled={controller.state.busy || controller.state.loading}
-            onClick={() => void controller.actions.refresh()}
-            type="button"
-          >
-            <RefreshCw aria-hidden="true" className={`size-3.5 ${controller.state.loading ? "animate-spin" : ""}`} />
-            Refresh
-          </button>
-        </div>
-      </div>
-
-      <div hidden={peer !== "connections"}>
-        {controller.state.loading && !controller.state.loaded ? (
+    <div className="min-w-0" data-testid="provider-connections-workspace">
+      {controller.state.loading && !controller.state.loaded ? (
           <p className="px-4 py-12 text-center text-sm text-ink-muted" role="status">
             Loading provider connections…
           </p>
@@ -673,7 +643,7 @@ export function AdminProvidersSection({
                     <AdminProviderConnectionEditor
                       connection={null}
                       controller={controller}
-                      initialFamily={advancedEntryProvider}
+                      initialFamily={entryProvider}
                       onClose={() => {
                         setCreating(false);
                         setConnectionTaskOpen(false);
@@ -724,17 +694,12 @@ export function AdminProvidersSection({
                 }}
                 onQueryChange={setConnectionQuery}
                 onSelect={selectConnection}
-                preferredFamily={advancedEntryProvider}
+                preferredFamily={entryProvider}
                 query={connectionQuery}
               />
             )}
           </>
         )}
-      </div>
-
-      <div hidden={peer !== "profiles"}>
-        <AdminRunProfilesPanel active={active} refreshRevision={refreshRevision} />
-      </div>
 
       {localConfirmation ? (
         <ConfirmationDialog

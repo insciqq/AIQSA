@@ -3,7 +3,7 @@ import type { AdminEmailState } from "@/lib/contracts/email";
 export type AdminEmailAxis = Readonly<{
   detail: string;
   label: string;
-  tone: "critical" | "muted" | "positive" | "proof" | "warning";
+  tone: "critical" | "inactive" | "muted" | "positive" | "proof" | "warning";
 }>;
 
 export type AdminEmailPresentation = Readonly<{
@@ -51,7 +51,7 @@ export function deriveAdminEmailPresentation(email: AdminEmailState): AdminEmail
       : {
           detail: `Active version ${email.active.version} is retained but delivery is disabled.`,
           label: "Disabled",
-          tone: "warning"
+          tone: "inactive"
         };
 
   const health: AdminEmailAxis = !email.active.configuration

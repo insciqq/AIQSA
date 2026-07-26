@@ -12,15 +12,19 @@ const customApi = vi.hoisted(() => ({
   submit: vi.fn()
 }));
 
-const advanced = vi.hoisted(() => ({
+const connections = vi.hoisted(() => ({
   mounts: 0,
   props: null as null | {
     active: boolean;
-    advancedEntryConnectionId?: string | null;
-    advancedEntryProvider?: "anthropic" | "gemini" | "openai" | "openrouter" | null;
-    onBackToQuickSetup(): void;
+    entryConnectionId?: string | null;
+    entryProvider?: "anthropic" | "gemini" | "openai" | "openrouter" | null;
     onMutationCommitted?(): void | Promise<unknown>;
   }
+}));
+
+const profiles = vi.hoisted(() => ({
+  mounts: 0,
+  props: null as null | { active: boolean }
 }));
 
 vi.mock("./adminProviderCustomSetupApi", () => ({
@@ -43,33 +47,51 @@ vi.mock("./adminProviderQuickSetupApi", () => ({
 vi.mock("./AdminProvidersSection", async () => {
   const React = await import("react");
   return {
-    AdminProvidersSection: (props: typeof advanced.props extends infer _Ignored ? {
+    AdminProvidersSection: (props: typeof connections.props extends infer _Ignored ? {
       active: boolean;
-      advancedEntryConnectionId?: string | null;
-      advancedEntryProvider?: "anthropic" | "gemini" | "openai" | "openrouter" | null;
-      onBackToQuickSetup(): void;
+      entryConnectionId?: string | null;
+      entryProvider?: "anthropic" | "gemini" | "openai" | "openrouter" | null;
       onMutationCommitted?(): void | Promise<unknown>;
     } : never) => {
       const [draft, setDraft] = React.useState("");
       React.useEffect(() => {
-        advanced.mounts += 1;
+        connections.mounts += 1;
       }, []);
-      advanced.props = props;
+      connections.props = props;
       return (
-        <div data-testid="advanced-provider-workspace">
-          <span>Advanced active: {String(props.active)}</span>
-          <span>Entry connection: {props.advancedEntryConnectionId ?? "none"}</span>
-          <span>Entry provider: {props.advancedEntryProvider ?? "none"}</span>
+        <div data-testid="connections-provider-workspace">
+          <span>Connections active: {String(props.active)}</span>
+          <span>Entry connection: {props.entryConnectionId ?? "none"}</span>
+          <span>Entry provider: {props.entryProvider ?? "none"}</span>
           <label>
-            Advanced draft
+            Connection draft
             <input onChange={(event) => setDraft(event.currentTarget.value)} value={draft} />
           </label>
           <button onClick={() => void props.onMutationCommitted?.()} type="button">
-            Simulate Advanced mutation
+            Simulate Connections mutation
           </button>
-          <button onClick={props.onBackToQuickSetup} type="button">
-            Back to quick setup
-          </button>
+        </div>
+      );
+    }
+  };
+});
+
+vi.mock("./AdminRunProfilesPanel", async () => {
+  const React = await import("react");
+  return {
+    AdminRunProfilesPanel: (props: { active: boolean }) => {
+      const [draft, setDraft] = React.useState("");
+      React.useEffect(() => {
+        profiles.mounts += 1;
+      }, []);
+      profiles.props = props;
+      return (
+        <div data-testid="run-profiles-workspace">
+          <span>Profiles active: {String(props.active)}</span>
+          <label>
+            Profile draft
+            <input onChange={(event) => setDraft(event.currentTarget.value)} value={draft} />
+          </label>
         </div>
       );
     }
@@ -152,8 +174,10 @@ describe("AdminProvidersExperience", () => {
     api.get.mockReset();
     api.submit.mockReset();
     customApi.submit.mockReset();
-    advanced.mounts = 0;
-    advanced.props = null;
+    connections.mounts = 0;
+    connections.props = null;
+    profiles.mounts = 0;
+    profiles.props = null;
     api.get.mockResolvedValue({ data: snapshot(), ok: true });
   });
 
@@ -181,6 +205,9 @@ describe("AdminProvidersExperience", () => {
     );
 
     await screen.findByText("Choose a provider to continue.");
+    expect(screen.getByRole("tab", { name: "Setup" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("tab", { name: "Connections" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Run profiles" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Connect custom endpoint" }));
     expect(screen.getByRole("heading", { name: "Connect a custom endpoint" })).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText(/^API root/), {
@@ -208,11 +235,12 @@ describe("AdminProvidersExperience", () => {
     }));
     await waitFor(() => expect(onMutationCommitted).toHaveBeenCalledOnce());
 
-    fireEvent.click(screen.getByRole("button", { name: "Manage in Advanced" }));
-    expect(await screen.findByTestId("advanced-provider-workspace")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Manage connection" }));
+    expect(await screen.findByTestId("connections-provider-workspace")).toBeInTheDocument();
     expect(screen.getByText("Entry connection: custom-connection-1")).toBeInTheDocument();
-    expect(advanced.props?.advancedEntryConnectionId).toBe("custom-connection-1");
-    expect(advanced.props?.advancedEntryProvider).toBeNull();
+    expect(connections.props?.entryConnectionId).toBe("custom-connection-1");
+    expect(connections.props?.entryProvider).toBeNull();
+    expect(screen.getByRole("tab", { name: "Connections" })).toHaveAttribute("aria-selected", "true");
   });
 
   it("starts with no implicit provider and completes one write-only Test & Save request", async () => {
@@ -235,7 +263,8 @@ describe("AdminProvidersExperience", () => {
     await screen.findByText("Choose a provider to continue.");
     expect(screen.getByRole("button", { name: /Gemini Not connected/ })).toBeInTheDocument();
     expect(screen.queryByLabelText("API key")).not.toBeInTheDocument();
-    expect(advanced.mounts).toBe(0);
+    expect(connections.mounts).toBe(0);
+    expect(profiles.mounts).toBe(0);
     fireEvent.click(screen.getByRole("button", { name: /OpenAI Not connected/ }));
     const key = screen.getByLabelText("API key");
     expect(key).toHaveAttribute("type", "password");
@@ -399,8 +428,9 @@ describe("AdminProvidersExperience", () => {
     expect(screen.getByRole("heading", { name: "Connect Anthropic" })).toBeInTheDocument();
     expect(screen.getByText("Existing team or custom configuration will stay unchanged.")).toBeInTheDocument();
     expect(screen.getByLabelText("API key")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Advanced configuration" }));
-    expect(await screen.findByTestId("advanced-provider-workspace")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Manage Anthropic connection" }));
+    expect(await screen.findByTestId("connections-provider-workspace")).toBeInTheDocument();
+    expect(connections.props?.entryProvider).toBe("anthropic");
   });
 
   it("presents a configured disabled provider as Disabled without attention styling", async () => {
@@ -441,7 +471,7 @@ describe("AdminProvidersExperience", () => {
       .toBeInTheDocument();
     expect(screen.getByText(/stored credential and all team settings stay unchanged/i))
       .toBeInTheDocument();
-    expect(screen.getByText(/credential remains manageable in Advanced configuration/i))
+    expect(screen.getByText(/credential remains manageable in Connections/i))
       .toBeInTheDocument();
     expect(screen.queryByText(/fall back to the applicable/i)).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Remove my key assignment" }));
@@ -461,7 +491,7 @@ describe("AdminProvidersExperience", () => {
     }, expect.any(Function), expect.any(AbortSignal)));
   });
 
-  it("unmounts Advanced with its drafts and refetches Quick only on return", async () => {
+  it("clears Setup secrets, preserves management drafts between peer tasks, and refetches Setup on return", async () => {
     api.get
       .mockResolvedValueOnce({ data: snapshot(), ok: true })
       .mockResolvedValue({
@@ -479,37 +509,50 @@ describe("AdminProvidersExperience", () => {
     await screen.findByText("Choose a provider to continue.");
     fireEvent.click(screen.getByRole("button", { name: /OpenAI Not connected/ }));
     fireEvent.change(screen.getByLabelText("API key"), { target: { value: "must-clear" } });
-    expect(advanced.mounts).toBe(0);
-    fireEvent.click(screen.getByRole("button", { name: "Advanced configuration" }));
+    expect(connections.mounts).toBe(0);
+    fireEvent.click(screen.getByRole("button", { name: "Manage OpenAI connection" }));
 
-    expect(await screen.findByTestId("advanced-provider-workspace")).toBeInTheDocument();
+    expect(await screen.findByTestId("connections-provider-workspace")).toBeInTheDocument();
     expect(screen.getByText("Entry provider: openai")).toBeInTheDocument();
-    expect(advanced.props?.advancedEntryProvider).toBe("openai");
-    expect(advanced.props?.onBackToQuickSetup).toEqual(expect.any(Function));
-    expect(screen.getAllByRole("button", { name: "Back to quick setup" })).toHaveLength(1);
-    await waitFor(() => expect(advanced.mounts).toBe(1));
-    fireEvent.change(screen.getByLabelText("Advanced draft"), { target: { value: "preserved draft" } });
-    fireEvent.click(screen.getByRole("button", { name: "Back to quick setup" }));
+    expect(connections.props?.entryProvider).toBe("openai");
+    expect(screen.queryByLabelText("API key")).not.toBeInTheDocument();
+    await waitFor(() => expect(connections.mounts).toBe(1));
+    expect(profiles.mounts).toBe(1);
+    fireEvent.change(screen.getByLabelText("Connection draft"), {
+      target: { value: "preserved connection draft" }
+    });
+
+    fireEvent.click(screen.getByRole("tab", { name: "Run profiles" }));
+    expect(screen.getByText("Profiles active: true")).toBeInTheDocument();
+    expect(screen.getByText("Connections active: false")).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Profile draft"), {
+      target: { value: "preserved profile draft" }
+    });
+    fireEvent.click(screen.getByRole("tab", { name: "Connections" }));
+    expect(screen.getByLabelText("Connection draft")).toHaveValue("preserved connection draft");
+    fireEvent.click(screen.getByRole("tab", { name: "Run profiles" }));
+    expect(screen.getByLabelText("Profile draft")).toHaveValue("preserved profile draft");
+
+    const refreshesBeforeMutation = api.get.mock.calls.length;
+    fireEvent.click(screen.getByRole("tab", { name: "Connections" }));
+    fireEvent.click(screen.getByRole("button", { name: "Simulate Connections mutation" }));
+    await waitFor(() => expect(onMutationCommitted).toHaveBeenCalledOnce());
+    expect(api.get).toHaveBeenCalledTimes(refreshesBeforeMutation);
+    fireEvent.click(screen.getByRole("tab", { name: "Setup" }));
     await screen.findByText("Ready to chat");
-    expect(screen.queryByTestId("advanced-provider-workspace")).not.toBeInTheDocument();
-    expect(screen.queryByLabelText("Advanced draft")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("connections-provider-workspace")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Connection draft")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Profile draft")).not.toBeInTheDocument();
+    expect(api.get).toHaveBeenCalledTimes(refreshesBeforeMutation + 1);
     fireEvent.click(screen.getByRole("button", { name: "Replace API key" }));
     expect(screen.getByLabelText("API key")).toHaveValue("");
     fireEvent.click(screen.getByRole("button", { name: "Cancel replacement" }));
-    fireEvent.click(screen.getByRole("button", { name: "Advanced configuration" }));
-    expect(await screen.findByLabelText("Advanced draft")).toHaveValue("");
-    await waitFor(() => expect(advanced.mounts).toBe(2));
-
-    const refreshesBeforeMutation = api.get.mock.calls.length;
-    fireEvent.click(screen.getByRole("button", { name: "Simulate Advanced mutation" }));
-    await waitFor(() => expect(onMutationCommitted).toHaveBeenCalledOnce());
-    expect(api.get).toHaveBeenCalledTimes(refreshesBeforeMutation);
-    fireEvent.click(screen.getByRole("button", { name: "Back to quick setup" }));
-    expect(await screen.findByText("Ready to chat")).toBeInTheDocument();
-    expect(api.get).toHaveBeenCalledTimes(refreshesBeforeMutation + 1);
+    fireEvent.click(screen.getByRole("tab", { name: "Connections" }));
+    expect(await screen.findByLabelText("Connection draft")).toHaveValue("");
+    await waitFor(() => expect(connections.mounts).toBe(2));
   });
 
-  it("offers Advanced directly when the provider catalog is unsupported", async () => {
+  it("offers Connections directly when the provider catalog is unsupported", async () => {
     api.submit.mockResolvedValue({
       error: { code: "provider_quick_setup_unsupported_catalog" },
       ok: false
@@ -520,14 +563,14 @@ describe("AdminProvidersExperience", () => {
     fireEvent.change(screen.getByLabelText("API key"), { target: { value: "unsupported-key" } });
     fireEvent.click(screen.getByRole("button", { name: "Test & Save" }));
 
-    const advancedButton = await screen.findByRole("button", { name: "Open Advanced configuration" });
-    fireEvent.click(advancedButton);
-    expect(await screen.findByTestId("advanced-provider-workspace")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Back to quick setup" }));
+    const manageButton = await screen.findByRole("button", { name: "Manage provider connection" });
+    fireEvent.click(manageButton);
+    expect(await screen.findByTestId("connections-provider-workspace")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("tab", { name: "Setup" }));
     expect(await screen.findByLabelText("API key")).toHaveValue("");
   });
 
-  it("keeps Ready visible and offers Advanced after a raced replacement", async () => {
+  it("keeps Ready visible and offers Connections after a raced replacement", async () => {
     api.get.mockResolvedValue({
       data: snapshot({ openai: "ready", suggestedProvider: "openai" }),
       ok: true
@@ -546,9 +589,9 @@ describe("AdminProvidersExperience", () => {
     expect(screen.getByText("Ready to chat")).toBeInTheDocument();
     expect(screen.getByLabelText("API key")).toHaveValue("raced-key");
     expect(screen.getByLabelText("API key")).toBeEnabled();
-    fireEvent.click(screen.getByRole("button", { name: "Open Advanced configuration" }));
-    expect(await screen.findByTestId("advanced-provider-workspace")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Back to quick setup" }));
+    fireEvent.click(screen.getByRole("button", { name: "Manage provider connection" }));
+    expect(await screen.findByTestId("connections-provider-workspace")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("tab", { name: "Setup" }));
     await screen.findByText("Ready to chat");
     fireEvent.click(screen.getByRole("button", { name: "Replace API key" }));
     expect(screen.getByLabelText("API key")).toHaveValue("");
@@ -599,7 +642,7 @@ describe("AdminProvidersExperience", () => {
     expect(screen.getByText("Run profiles filled: Balanced, Fast.")).toBeInTheDocument();
   });
 
-  it("mounts a fresh Advanced projection after a Quick commit", async () => {
+  it("activates only the selected lazy task and mounts a fresh Connections projection after a Quick commit", async () => {
     api.get
       .mockResolvedValueOnce({ data: snapshot(), ok: true })
       .mockResolvedValueOnce({ data: snapshot(), ok: true })
@@ -617,20 +660,26 @@ describe("AdminProvidersExperience", () => {
       />
     );
     await screen.findByText("Choose a provider to continue.");
-    fireEvent.click(screen.getByRole("button", { name: "Advanced configuration" }));
-    await screen.findByTestId("advanced-provider-workspace");
-    fireEvent.click(screen.getByRole("button", { name: "Back to quick setup" }));
+    expect(connections.mounts).toBe(0);
+    expect(profiles.mounts).toBe(0);
+    fireEvent.click(screen.getByRole("tab", { name: "Run profiles" }));
+    await screen.findByTestId("run-profiles-workspace");
+    expect(connections.props?.active).toBe(false);
+    expect(profiles.props?.active).toBe(true);
+    fireEvent.click(screen.getByRole("tab", { name: "Setup" }));
     await screen.findByText("Choose a provider to continue.");
     fireEvent.click(screen.getByRole("button", { name: /OpenAI Not connected/ }));
     fireEvent.change(screen.getByLabelText("API key"), { target: { value: "one-key" } });
     fireEvent.click(screen.getByRole("button", { name: "Test & Save" }));
 
     await screen.findByText("Ready to chat");
-    expect(screen.queryByTestId("advanced-provider-workspace")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("connections-provider-workspace")).not.toBeInTheDocument();
     await waitFor(() => expect(onMutationCommitted).toHaveBeenCalledOnce());
-    fireEvent.click(screen.getByRole("button", { name: "Advanced configuration" }));
-    expect(await screen.findByTestId("advanced-provider-workspace")).toBeInTheDocument();
-    await waitFor(() => expect(advanced.mounts).toBe(2));
+    fireEvent.click(screen.getByRole("button", { name: "Manage OpenAI connection" }));
+    expect(await screen.findByTestId("connections-provider-workspace")).toBeInTheDocument();
+    await waitFor(() => expect(connections.mounts).toBe(2));
+    expect(connections.props?.active).toBe(true);
+    expect(profiles.props?.active).toBe(false);
     expect(screen.getByText("Entry provider: openai")).toBeInTheDocument();
   });
 });

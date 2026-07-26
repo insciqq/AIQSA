@@ -15,7 +15,7 @@ const helpText = "mt-1 block text-[11px] leading-4 text-ink-muted";
 export type AdminProviderCustomSetupProps = Readonly<{
   controller: AdminProviderCustomSetupController;
   onBack(): void;
-  onOpenAdvanced(connectionId: string): void;
+  onManageConnection(connectionId: string): void;
 }>;
 
 function requestEndpoint(apiRoot: string): string {
@@ -26,7 +26,7 @@ function requestEndpoint(apiRoot: string): string {
 export function AdminProviderCustomSetup({
   controller,
   onBack,
-  onOpenAdvanced
+  onManageConnection
 }: AdminProviderCustomSetupProps) {
   const { form, ready } = controller.state;
 
@@ -60,10 +60,10 @@ export function AdminProviderCustomSetup({
             <Link className={primaryButton} href="/">Start chatting</Link>
             <button
               className={quietButton}
-              onClick={() => onOpenAdvanced(ready.connectionId)}
+              onClick={() => onManageConnection(ready.connectionId)}
               type="button"
             >
-              Manage in Advanced
+              Manage connection
             </button>
             <button className={quietButton} onClick={onBack} type="button">
               Add another provider
@@ -89,7 +89,7 @@ export function AdminProviderCustomSetup({
       <div className="max-w-4xl">
         <button className={quietButton} onClick={onBack} type="button">
           <ArrowLeft aria-hidden="true" className="size-3.5" />
-          Back to providers
+          Back to provider setup
         </button>
 
         <div className="mt-5 max-w-3xl">

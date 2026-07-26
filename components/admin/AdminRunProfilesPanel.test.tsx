@@ -71,6 +71,7 @@ describe("AdminRunProfilesPanel", () => {
       expect.stringContaining("Balanced"),
       expect.stringContaining("Deep")
     ]);
+    expect(screen.getAllByText("Enabled")).toHaveLength(3);
     expect(screen.getAllByRole("option", {
       name: "Old connection / Retired model (inactive)"
     })).toHaveLength(3);
@@ -110,6 +111,7 @@ describe("AdminRunProfilesPanel", () => {
 
     fireEvent.change(modelSelect, { target: { value: "" } });
 
+    expect(screen.getByText("Disabled", { selector: "[data-admin-availability]" })).toHaveClass("border-trace-strong", "text-ink");
     expect(screen.getByLabelText("Fast reasoning mode")).toBeDisabled();
     expect(screen.getByLabelText("Fast reasoning effort")).toBeDisabled();
     fireEvent.click(screen.getByRole("button", { name: "Save profiles" }));

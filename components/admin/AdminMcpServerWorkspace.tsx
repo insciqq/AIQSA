@@ -7,11 +7,13 @@ import {
   sourceDisplay
 } from "@/components/admin/adminMcpDraft";
 import {
+  AdminAvailabilityStatus,
   AdminTaskBackButton,
   AdminTaskDetailPane,
   AdminTaskIndexPane,
   AdminTaskWorkspace,
   dangerButton,
+  enableButton,
   inputClass,
   primaryButton,
   quietButton
@@ -37,7 +39,7 @@ import {
   Trash2,
   Wrench
 } from "lucide-react";
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 
 const fieldLabel = "text-xs font-medium text-ink-secondary";
 const helpText = "mt-1 text-[11px] leading-4 text-ink-muted";
@@ -121,7 +123,7 @@ function Fact({ detail, label, tone, value }: Readonly<{
   detail: string;
   label: string;
   tone: string;
-  value: string;
+  value: ReactNode;
 }>) {
   return (
     <div className="min-w-0 border-l border-trace-strong pl-3">
@@ -293,8 +295,8 @@ function OverviewTask({ controller, onOpenTask, server }: Readonly<{
         <Fact
           detail={archived ? "Legacy record is retained as read-only evidence." : "Controls whether the active revision is offered to entitled users."}
           label="Availability"
-          tone={archived ? "text-critical" : server.enabled ? "text-positive" : "text-caution"}
-          value={archived ? "Legacy archived" : server.enabled ? "Enabled" : "Disabled"}
+          tone={archived ? "text-critical" : "text-ink"}
+          value={archived ? "Legacy archived" : <AdminAvailabilityStatus enabled={server.enabled} />}
         />
         <Fact detail={publication.detail} label="Publication" tone={publication.tone} value={publication.label} />
         <Fact detail={oauth.detail} label="Validation identity" tone={oauth.tone} value={oauth.label} />
@@ -587,12 +589,14 @@ function RuntimeTask({ controller, server }: Readonly<{
         <h4 className="text-sm font-semibold text-ink">Availability to users</h4>
         <p className="mt-1 max-w-3xl text-xs leading-5 text-ink-muted">Enable or disable whether the active installation revision is offered to users who already have MCP access. Access assignments remain in Users and Access & groups.</p>
         <div className="mt-4 flex flex-wrap items-center gap-3">
-          <span className={`font-mono text-xs font-medium ${archived ? "text-critical" : server.enabled ? "text-positive" : "text-caution"}`}>
-            {archived ? "LEGACY ARCHIVED" : server.enabled ? "ENABLED" : "DISABLED"}
-          </span>
+          {archived ? (
+            <span className="font-mono text-xs font-medium text-critical">LEGACY ARCHIVED</span>
+          ) : (
+            <AdminAvailabilityStatus enabled={server.enabled} />
+          )}
           {!archived ? (
             <button
-              className={server.enabled ? quietButton : primaryButton}
+              className={server.enabled ? quietButton : enableButton}
               disabled={controller.state.busy || (!server.activeRevision && !server.enabled)}
               onClick={() => void controller.actions.update(server.id, { enabled: !server.enabled })}
               type="button"

@@ -6,7 +6,8 @@ import {
   entitlementCountLabel,
   sortValueForUser,
   type AdminUsersViewInput,
-  userDeletionInfo
+  userDeletionInfo,
+  userStatusClass
 } from "./adminUserView";
 
 const activeGroup: AdminGroup = {
@@ -144,5 +145,12 @@ describe("adminUserView", () => {
         users: [active, pending]
       }).filteredUsers.map((record) => record.id)
     ).toEqual([pending.id]);
+  });
+
+  it("keeps disabled users strongly legible without treating them as an error", () => {
+    expect(userStatusClass("disabled")).toContain("border-trace-strong");
+    expect(userStatusClass("disabled")).toContain("bg-control-surface");
+    expect(userStatusClass("disabled")).toContain("text-ink");
+    expect(userStatusClass("disabled")).not.toContain("text-critical");
   });
 });
