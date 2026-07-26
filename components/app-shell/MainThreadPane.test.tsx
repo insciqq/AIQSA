@@ -387,7 +387,7 @@ describe("MainThreadPane", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("Upload response was malformed");
   });
 
-  it("renders one exact resting Run summary and opens the complete setup in one action", () => {
+  it("renders direct Model, Profile, and Search controls plus one complete More setup", () => {
     const selectRunProfile = vi.fn();
     renderPane({
       catalog: deepProfileCatalog,
@@ -403,14 +403,20 @@ describe("MainThreadPane", () => {
       selectRunProfile
     });
 
-    const summary = screen.getByTestId("composer-run-summary");
-    expect(summary).toHaveTextContent("GPT-5.6 Sol");
-    expect(summary).toHaveTextContent("Profile: Deep");
-    expect(summary).toHaveTextContent("Reasoning: Pro · Maximum");
-    expect(summary).toHaveTextContent("Search: Off");
-    expect(screen.queryByTestId("composer-compact-run-profiles")).not.toBeInTheDocument();
+    const controls = screen.getByTestId("composer-control-bar");
+    const more = screen.getByTestId("composer-run-summary");
+    expect(screen.getByTestId("run-model-summary")).toHaveTextContent("GPT-5.6 Sol");
+    expect(screen.getByTestId("run-profile-summary")).toHaveTextContent("Profile: Deep");
+    expect(screen.getByTestId("run-search-summary")).toHaveTextContent("Search: Off");
+    expect(within(controls).getByRole("button", { name: "Select model" })).toBeVisible();
+    const directDeep = within(controls).getByRole("button", { name: "Use Deep run profile" });
+    expect(directDeep).toHaveAttribute("aria-pressed", "true");
+    fireEvent.click(directDeep);
+    expect(selectRunProfile).toHaveBeenCalledWith("deep");
+    expect(within(controls).getByRole("button", { name: "Search strategy" })).toBeVisible();
+    expect(more).toHaveTextContent("More");
 
-    fireEvent.click(summary);
+    fireEvent.click(more);
     const setup = screen.getByRole("dialog", { name: "Run setup" });
     expect(setup).toHaveTextContent("Profile");
     expect(setup).toHaveTextContent("Answer setup");
@@ -421,7 +427,7 @@ describe("MainThreadPane", () => {
     const deep = within(setup).getByRole("button", { name: "Use Deep run profile" });
     expect(deep).toHaveAttribute("aria-pressed", "true");
     fireEvent.click(deep);
-    expect(selectRunProfile).toHaveBeenCalledWith("deep");
+    expect(selectRunProfile).toHaveBeenCalledTimes(2);
   });
 
   it("keeps pending edit controls local to the rendered composer session", () => {

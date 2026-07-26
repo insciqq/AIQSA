@@ -41,6 +41,7 @@ export type AdminProviderQuickSetupInspection = Readonly<{
 export type AdminProviderQuickSetupCommitPlan = Readonly<{
   actor: AdminProviderQuickSetupActor;
   candidate: AdminProviderQuickSetupPolicyCandidate;
+  candidates: readonly AdminProviderQuickSetupPolicyCandidate[];
   checkedAt: Date;
   credential: Readonly<{
     draftVersion: number;
@@ -50,7 +51,10 @@ export type AdminProviderQuickSetupCommitPlan = Readonly<{
     versionId: string;
   }>;
   expectedFingerprint: string;
-  grantId: string;
+  grants: ReadonlyArray<Readonly<{
+    id: string;
+    modelId: string;
+  }>>;
   mode: "initial" | "recovery" | "replacement";
   now: Date;
   preservedModels: AdminProviderQuickSetupInspection["preservedModels"];

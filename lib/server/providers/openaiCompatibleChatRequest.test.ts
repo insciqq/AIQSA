@@ -157,6 +157,26 @@ describe("OpenAI-compatible Chat Completions request", () => {
     expect(body.messages).toContainEqual({ content: "Earlier question", role: "user" });
   });
 
+  it("serializes the reviewed Gemini reasoning field without adding temperature", () => {
+    const body = buildOpenAICompatibleChatRequest(request({
+      modelId: "gemini-3.6-flash",
+      params: {
+        maxOutputTokens: 64,
+        reasoning: { effort: "medium" },
+        stream: false
+      },
+      provider: "gemini"
+    }));
+
+    expect(body).toMatchObject({
+      max_completion_tokens: 64,
+      model: "gemini-3.6-flash",
+      reasoning_effort: "medium",
+      stream: false
+    });
+    expect(body).not.toHaveProperty("temperature");
+  });
+
   it("redacts image data in previews while preserving safe replay evidence", () => {
     const runRequest = request({
       attachmentIds: ["image-1"],

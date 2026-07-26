@@ -1,4 +1,4 @@
-export type ProviderId = "fake" | "openai" | "anthropic" | "openrouter";
+export type ProviderId = "fake" | "openai" | "anthropic" | "gemini" | "openrouter";
 export type ReasoningEffort = string;
 export type OpenAIReasoningEffort = string;
 export type OpenAIReasoningMode = "pro" | "standard";
@@ -86,6 +86,14 @@ export type AnthropicMessagesParams = {
   };
 };
 
+export type GeminiChatParams = {
+  maxTokens: number;
+  reasoning: {
+    effort: ReasoningEffort;
+  };
+  stream: boolean;
+};
+
 export type FakeProviderParams = {
   deterministic: boolean;
   latencyMs: number;
@@ -144,6 +152,19 @@ export const providerParameterSchemas: Record<ProviderId, ProviderParameterSchem
       { name: "deterministic", type: "boolean", defaultValue: true },
       { name: "latencyMs", type: "integer", defaultValue: 0 },
       { name: "responseStyle", type: "enum", defaultValue: "inspectable", allowedValues: ["concise", "inspectable"] }
+    ]
+  },
+  gemini: {
+    provider: "gemini",
+    fields: [
+      { name: "maxTokens", type: "integer", defaultValue: 65536 },
+      { name: "stream", type: "boolean", defaultValue: true },
+      {
+        name: "reasoning.effort",
+        type: "enum",
+        defaultValue: "medium",
+        allowedValues: ["minimal", "low", "medium", "high"]
+      }
     ]
   },
   openai: {
@@ -229,6 +250,16 @@ export function defaultOpenAIResponsesParams(): OpenAIResponsesParams {
     store: true,
     stream: false,
     temperature: 1
+  };
+}
+
+export function defaultGeminiChatParams(): GeminiChatParams {
+  return {
+    maxTokens: 65536,
+    reasoning: {
+      effort: "medium"
+    },
+    stream: true
   };
 }
 

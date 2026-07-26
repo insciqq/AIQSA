@@ -119,7 +119,9 @@ function expectedFamily(model: ProviderModelConfiguration): AdminProviderFamily 
 }
 
 function validateFamily(family: string, model: ProviderModelConfiguration): void {
-  if (family !== expectedFamily(model)) {
+  const compatibleGeminiChat = family === "gemini" &&
+    model.adapterKind === "openai_chat_completions_compatible";
+  if (family !== expectedFamily(model) && !compatibleGeminiChat) {
     throw new AdminProviderServiceError("provider_family_adapter_mismatch");
   }
 }
@@ -127,6 +129,7 @@ function validateFamily(family: string, model: ProviderModelConfiguration): void
 function realProviderFamily(value: string): AdminProviderFamily {
   if (
     value === "anthropic" ||
+    value === "gemini" ||
     value === "openai" ||
     value === "openai_compatible" ||
     value === "openrouter"

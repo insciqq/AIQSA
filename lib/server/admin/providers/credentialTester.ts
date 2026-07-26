@@ -65,7 +65,7 @@ function modelId(value: unknown): string | null {
     : null;
 }
 
-function modelIdsFromCatalog(value: unknown): string[] {
+function modelIdsFromCatalog(value: unknown, family: ProviderFamily): string[] {
   if (!isRecord(value) || !Array.isArray(value.data) ||
     value.data.length > MAX_PROVIDER_CREDENTIAL_TEST_MODELS) {
     throw new AdminProviderCredentialTestError();
@@ -74,7 +74,10 @@ function modelIdsFromCatalog(value: unknown): string[] {
   const output: string[] = [];
   const seen = new Set<string>();
   for (const entry of value.data) {
-    const id = isRecord(entry) ? modelId(entry.id) : null;
+    const rawId = isRecord(entry) ? modelId(entry.id) : null;
+    const id = family === "gemini" && rawId?.startsWith("models/")
+      ? modelId(rawId.slice("models/".length))
+      : rawId;
     if (!id) throw new AdminProviderCredentialTestError();
     if (seen.has(id)) continue;
     seen.add(id);
@@ -135,7 +138,7 @@ export function createAdminProviderCredentialTester(
           }
           return {
             method: "models_catalog",
-            modelIds: modelIdsFromCatalog(catalog)
+            modelIds: modelIdsFromCatalog(catalog, input.family)
           };
         } finally {
           timeout.clear();

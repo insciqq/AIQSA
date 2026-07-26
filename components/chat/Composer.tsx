@@ -485,13 +485,13 @@ export function Composer({
           </div>
 
           <div
-            className={`flex min-w-0 items-center border-t border-trace-subtle px-2 py-2 sm:px-3 [@media(max-height:32rem)]:!py-1 ${promptFirst ? "flex-nowrap gap-1" : "flex-wrap gap-2"}`}
+            className={`flex min-w-0 items-center border-t border-trace-subtle px-2 py-2 sm:px-3 [@media(max-height:32rem)]:!py-1 ${promptFirst ? "flex-wrap gap-1" : "flex-wrap gap-2"}`}
             data-testid="composer-action-footer"
           >
             {controls ? (
               <div
                 className={promptFirst
-                  ? "flex min-w-0 flex-[1_1_auto] items-center gap-0.5"
+                  ? "flex min-w-[min(100%,35rem)] flex-[1_1_35rem] items-center gap-0.5"
                   : "flex min-w-[min(100%,19rem)] flex-[1_1_22rem] items-center gap-1"}
                 data-testid="composer-controls-slot"
               >
@@ -501,7 +501,7 @@ export function Composer({
 
             <div
                 className={promptFirst
-                  ? "flex min-w-0 shrink-0 items-center justify-end gap-0.5"
+                  ? "ml-auto flex min-w-0 shrink-0 items-center justify-end gap-0.5"
                   : "flex min-w-0 flex-[1_1_auto] items-center justify-end gap-1.5"}
               data-testid="composer-primary-actions"
             >

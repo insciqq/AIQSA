@@ -208,7 +208,7 @@ describe("admin repository serializers", () => {
     ).toEqual({
       canDelete: false,
       reason: "system_group_forbidden",
-      summary: "Full access is built in and cannot be deleted."
+      summary: "Full access is built in and cannot be renamed, archived, or deleted."
     });
   });
 

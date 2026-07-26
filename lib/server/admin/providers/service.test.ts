@@ -1,3 +1,4 @@
+import type { PrismaClient } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
 import {
   decryptProviderCredentialSecret,
@@ -21,6 +22,7 @@ import {
 import { createOpenRouterDiscoveryClient } from "../../providers/openRouterDiscovery";
 import type { AdminProviderCredentialTester } from "./credentialTester";
 import type { AdminProviderConnection } from "../../../contracts/adminProviders";
+import { createPrismaAdminProviderRepository } from "./prismaRepository";
 
 const KEY = Buffer.alloc(32, 19);
 const NOW = new Date("2026-07-23T12:00:00.000Z");
@@ -223,6 +225,90 @@ function activationCandidate(): ProviderActivationCandidate {
 }
 
 describe("admin provider service", () => {
+  it("accepts only the reviewed Chat Completions adapter for Advanced Gemini models", async () => {
+    const create = vi.fn(async () => ({}));
+    const updateMany = vi.fn(async () => ({ count: 1 }));
+    const db = {
+      providerConnection: {
+        findUnique: vi.fn(async () => ({ family: "gemini" }))
+      },
+      providerModel: {
+        create,
+        findUnique: vi.fn(async () => ({
+          connection: { family: "gemini" },
+          id: "gemini-model-1"
+        })),
+        updateMany
+      }
+    };
+    const providers = service(
+      createPrismaAdminProviderRepository(db as unknown as PrismaClient),
+      tester(),
+      ["gemini-model-1", "rejected-model-1"]
+    );
+    const geminiConfiguration = {
+      adapterKind: "openai_chat_completions_compatible" as const,
+      capabilities: {
+        nativePdfInput: false,
+        nativeSearch: false,
+        pdf: true,
+        reasoning: true,
+        streaming: true,
+        toolCalling: true,
+        vision: true
+      },
+      defaultParams: {
+        maxTokens: 64,
+        reasoning: { effort: "low" },
+        stream: true
+      },
+      upstreamModelId: "gemini-3.6-flash"
+    };
+
+    await expect(providers.createModelDraft({
+      configuration: geminiConfiguration,
+      connectionId: "gemini-connection-1",
+      displayName: "Gemini 3.6 Flash"
+    })).resolves.toEqual({ id: "gemini-model-1" });
+    expect(create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        connectionId: "gemini-connection-1",
+        draftConfig: expect.objectContaining({
+          adapterKind: "openai_chat_completions_compatible",
+          upstreamModelId: "gemini-3.6-flash"
+        }),
+        id: "gemini-model-1",
+        provider: "gemini"
+      })
+    });
+
+    await expect(providers.updateModelDraft({
+      configuration: geminiConfiguration,
+      displayName: "Gemini 3.6 Flash",
+      expectedDraftVersion: 1,
+      modelId: "gemini-model-1"
+    })).resolves.toEqual({ draftVersion: 2 });
+    expect(updateMany).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        draftConfig: expect.objectContaining({
+          adapterKind: "openai_chat_completions_compatible"
+        }),
+        draftVersion: { increment: 1 }
+      }),
+      where: { draftVersion: 1, id: "gemini-model-1" }
+    });
+
+    await expect(providers.createModelDraft({
+      configuration: {
+        ...geminiConfiguration,
+        adapterKind: "openai_responses_compatible"
+      },
+      connectionId: "gemini-connection-1",
+      displayName: "Invalid Gemini wire protocol"
+    })).rejects.toMatchObject({ code: "provider_family_adapter_mismatch" });
+    expect(create).toHaveBeenCalledOnce();
+  });
+
   it("normalizes CRUD drafts and keeps credential ciphertext write-only", async () => {
     const createConnection = vi.fn<AdminProviderRepository["createConnection"]>(async () => {});
     const createModel = vi.fn<AdminProviderRepository["createModel"]>(async () => "created");

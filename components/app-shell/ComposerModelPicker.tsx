@@ -22,29 +22,37 @@ type ModelPickerAction = { kind: "model"; model: CatalogModel; provider: ModelGr
 export function ComposerModelPicker({
   catalog,
   catalogUnavailable,
+  className,
   currentModel,
+  idPrefix = "composer-model",
   disabled,
   nestedInRunSetup = false,
   onOpenChange,
   onSelectModel,
   open,
+  pickerTestId = "model-picker",
   selectedModelId,
   selectedProvider,
   selectedProviderName,
-  streaming
+  streaming,
+  valueTestId
 }: {
   catalog: Catalog | null;
   catalogUnavailable: boolean;
+  className?: string;
   currentModel?: CatalogModel;
   disabled: boolean;
+  idPrefix?: string;
   nestedInRunSetup?: boolean;
   onOpenChange(open: boolean): void;
   onSelectModel(model: CatalogModel): void;
   open: boolean;
+  pickerTestId?: string;
   selectedModelId: string;
   selectedProvider: string;
   selectedProviderName: string;
   streaming: boolean;
+  valueTestId?: string;
 }) {
   const [query, setQuery] = useState("");
   const selectionKey = `${selectedProvider}\u0000${selectedModelId}`;
@@ -140,7 +148,7 @@ export function ComposerModelPicker({
     triggerProps,
     triggerRef
   } = useComposerPickerSession({
-    dialogId: "model-picker-dialog",
+    dialogId: `${idPrefix}-picker-dialog`,
     disabled: pickerDisabled,
     initialFocus: "search",
     itemFocusPreventScroll: true,
@@ -154,14 +162,18 @@ export function ComposerModelPicker({
   });
 
   return (
-    <div {...boundaryProps} ref={boundaryRef} className="relative col-span-3 min-w-0 sm:col-span-1">
+    <div
+      {...boundaryProps}
+      ref={boundaryRef}
+      className={["relative col-span-3 min-w-0 sm:col-span-1", className].filter(Boolean).join(" ")}
+    >
       <button
         {...triggerProps}
         ref={triggerRef}
         className="flex h-touch w-full min-w-0 items-center justify-between gap-2 rounded-control bg-control-surface px-3 text-left text-xs text-ink outline-none hover:bg-control-hover focus-visible:ring-2 focus-visible:ring-proof/55 disabled:cursor-not-allowed disabled:text-ink-disabled sm:h-control [@media(hover:none)]:!h-touch [@media(pointer:coarse)]:!h-touch"
         type="button"
         aria-label="Select model"
-        aria-describedby="composer-model-current-description"
+        aria-describedby={`${idPrefix}-current-description`}
         disabled={pickerDisabled}
         title={fullModelSummary}
         onClick={toggle}
@@ -170,14 +182,15 @@ export function ComposerModelPicker({
           <span className="shrink-0 text-[11px] font-medium text-ink-muted">Model</span>
           <span
             className="truncate text-sm font-semibold text-ink"
-            id="composer-model-current-value"
+            data-testid={valueTestId}
+            id={`${idPrefix}-current-value`}
           >
             {modelSummary}
           </span>
         </span>
         <ChevronDown className="size-4 shrink-0 text-ink-muted" aria-hidden="true" />
       </button>
-      <span className="sr-only" id="composer-model-current-description">
+      <span className="sr-only" id={`${idPrefix}-current-description`}>
         {fullModelSummary}
       </span>
       {pickerOpen ? (
@@ -203,7 +216,7 @@ export function ComposerModelPicker({
                 ? "fixed inset-x-2 bottom-2 z-[90] max-h-[min(78dvh,40rem)] w-auto border-trace-strong pb-[calc(0.75rem+env(safe-area-inset-bottom))] sm:inset-x-auto sm:bottom-auto sm:left-1/2 sm:top-1/2 sm:max-h-[min(42rem,calc(100dvh-2rem))] sm:w-[min(42rem,calc(100vw-2rem))] sm:-translate-x-1/2 sm:-translate-y-1/2 sm:pb-3"
                 : "absolute bottom-11 left-0 z-50 max-h-[min(34rem,calc(100dvh-6rem))] w-[min(42rem,calc(100vw-2rem))] border-trace-subtle max-sm:fixed max-sm:inset-x-0 max-sm:bottom-0 max-sm:max-h-[min(78dvh,40rem)] max-sm:w-full max-sm:rounded-b-none max-sm:border-x-0 max-sm:pb-[calc(0.75rem+env(safe-area-inset-bottom))]"
             ].join(" ")}
-            data-testid="model-picker"
+            data-testid={pickerTestId}
             aria-label="Choose a model"
           >
             <div className="mb-3">
@@ -260,7 +273,7 @@ export function ComposerModelPicker({
           <div
             ref={resultsRef}
             className="min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain pr-1"
-            id="model-picker-results"
+            id={`${idPrefix}-picker-results`}
             role="group"
             aria-label="Available providers and models"
           >
@@ -272,7 +285,7 @@ export function ComposerModelPicker({
             ) : null}
             {filteredModelGroups.map((provider, providerIndex) => {
               const currentProvider = provider.id === selectedProvider;
-              const providerHeadingId = `model-picker-provider-${providerIndex}`;
+              const providerHeadingId = `${idPrefix}-picker-provider-${providerIndex}`;
               const comparisonModels = catalog?.models.filter(
                 (candidate) => candidate.provider === provider.id
               ) ?? [];
@@ -323,14 +336,14 @@ export function ComposerModelPicker({
                             "flex min-h-touch w-full items-start justify-between gap-3 rounded-control px-3 py-2.5 text-left outline-none hover:bg-control-hover focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-proof/55",
                             active ? "bg-control-selected text-ink" : "text-ink-secondary"
                           ].join(" ")}
-                          id={`model-picker-action-${actionIndex}`}
+                          id={`${idPrefix}-picker-action-${actionIndex}`}
                           type="button"
                           aria-current={active ? "true" : undefined}
                           aria-label={`Select model ${provider.name} ${model.displayName}`}
                           aria-describedby={[
-                            `model-picker-model-${actionIndex}-capabilities`,
-                            active ? `model-picker-model-${actionIndex}-current` : null,
-                            isDefault ? `model-picker-model-${actionIndex}-default` : null
+                            `${idPrefix}-picker-model-${actionIndex}-capabilities`,
+                            active ? `${idPrefix}-picker-model-${actionIndex}-current` : null,
+                            isDefault ? `${idPrefix}-picker-model-${actionIndex}-default` : null
                           ]
                             .filter((id): id is string => Boolean(id))
                             .join(" ")}
@@ -342,7 +355,7 @@ export function ComposerModelPicker({
                             </span>
                             <span
                               className="mt-0.5 block text-xs leading-5"
-                              id={`model-picker-model-${actionIndex}-capabilities`}
+                              id={`${idPrefix}-picker-model-${actionIndex}-capabilities`}
                             >
                               {differentiatingLabels.length > 0 ? (
                                 <span className="font-medium text-ink-secondary">
@@ -363,7 +376,7 @@ export function ComposerModelPicker({
                             {active ? (
                               <span
                                 className="text-proof"
-                                id={`model-picker-model-${actionIndex}-current`}
+                                id={`${idPrefix}-picker-model-${actionIndex}-current`}
                               >
                                 Current
                               </span>
@@ -371,7 +384,7 @@ export function ComposerModelPicker({
                             {isDefault ? (
                               <span
                                 className="text-ink-muted"
-                                id={`model-picker-model-${actionIndex}-default`}
+                                id={`${idPrefix}-picker-model-${actionIndex}-default`}
                               >
                                 Default
                               </span>

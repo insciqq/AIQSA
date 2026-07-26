@@ -13,7 +13,12 @@ export const providerAdapterKinds = [
 ] as const;
 
 export type ProviderAdapterKind = (typeof providerAdapterKinds)[number];
-export type ProviderFamily = "anthropic" | "openai" | "openai_compatible" | "openrouter";
+export type ProviderFamily =
+  | "anthropic"
+  | "gemini"
+  | "openai"
+  | "openai_compatible"
+  | "openrouter";
 
 export type ProviderConnectionConfiguration = {
   allowPrivateNetwork: boolean;

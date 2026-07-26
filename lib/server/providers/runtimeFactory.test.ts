@@ -90,6 +90,24 @@ describe("provider runtime factory", () => {
     expect(preview.adapter.buildRequestPreview).toBeTypeOf("function");
   });
 
+  it("selects the Gemini-compatible tool bridge from the provider family", () => {
+    const gemini = {
+      ...snapshot("openai_chat_completions_compatible"),
+      providerFamily: "gemini"
+    };
+    const runtime = createProviderRuntimeBinding({
+      options: { allowFake: false, fetchFn: vi.fn<typeof fetch>() },
+      secret: "secret",
+      snapshot: gemini
+    });
+
+    expect(runtime.toolBridge?.provider).toBe("gemini");
+    expect(runtime.toolBridge?.supportsToolCalling({
+      modelId: "gemini-3.6-flash",
+      provider: "gemini"
+    })).toBe(true);
+  });
+
   it("keeps Fake behind the explicit test boundary and credential-free", () => {
     const fake: ProviderExecutionSnapshot = {
       connection: { allowPrivateNetwork: true, apiRoot: "http://127.0.0.1" },

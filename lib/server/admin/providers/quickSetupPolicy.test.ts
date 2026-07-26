@@ -6,20 +6,35 @@ import {
 } from "./quickSetupPolicy";
 
 describe("provider Quick setup policy", () => {
-  it("keeps the v1 candidate ids and recommendations explicit", () => {
-    expect(ADMIN_PROVIDER_QUICK_SETUP_POLICY_VERSION).toBe(1);
+  it("keeps the v2 current-model candidates and recommendations explicit", () => {
+    expect(ADMIN_PROVIDER_QUICK_SETUP_POLICY_VERSION).toBe(2);
     expect(adminProviderQuickSetupPolicy("openai").candidates.map((candidate) => ({
       id: candidate.candidateId,
       recommended: candidate.recommended,
       templateKey: candidate.templateKey
     }))).toEqual([
-      { id: "p1-o1", recommended: true, templateKey: "openai:gpt-5.6-terra" },
-      { id: "p1-o2", recommended: false, templateKey: "openai:gpt-5.6-luna" },
-      { id: "p1-o3", recommended: false, templateKey: "openai:gpt-5.6-sol" },
-      { id: "p1-o4", recommended: false, templateKey: "openai:gpt-5.5" }
+      { id: "p2-o1", recommended: true, templateKey: "openai:gpt-5.6-terra" },
+      { id: "p2-o2", recommended: false, templateKey: "openai:gpt-5.6-luna" },
+      { id: "p2-o3", recommended: false, templateKey: "openai:gpt-5.6-sol" }
     ]);
-    expect(adminProviderQuickSetupPolicy("anthropic").candidates.map(({ candidateId }) =>
-      candidateId)).toEqual(["p1-a1"]);
+    expect(adminProviderQuickSetupPolicy("anthropic").candidates.map((candidate) => ({
+      id: candidate.candidateId,
+      recommended: candidate.recommended,
+      templateKey: candidate.templateKey
+    }))).toEqual([
+      { id: "p2-a1", recommended: true, templateKey: "anthropic:claude-opus-5" },
+      { id: "p2-a2", recommended: false, templateKey: "anthropic:claude-sonnet-5" }
+    ]);
+    expect(adminProviderQuickSetupPolicy("gemini").candidates.map((candidate) => ({
+      id: candidate.candidateId,
+      recommended: candidate.recommended,
+      templateKey: candidate.templateKey
+    }))).toEqual([
+      { id: "p2-g1", recommended: true, templateKey: "gemini:gemini-3.6-flash" },
+      { id: "p2-g2", recommended: false, templateKey: "gemini:gemini-3.5-flash" },
+      { id: "p2-g3", recommended: false, templateKey: "gemini:gemini-3.5-flash-lite" },
+      { id: "p2-g4", recommended: false, templateKey: "gemini:gemini-3.1-pro-preview" }
+    ]);
     expect(adminProviderQuickSetupPolicy("openrouter").candidates.map(({ candidateId }) =>
       candidateId)).toEqual(["p1-r1", "p1-r2", "p1-r3"]);
     expect(adminProviderQuickSetupPolicy("openrouter").candidates.some(
@@ -30,25 +45,24 @@ describe("provider Quick setup policy", () => {
   it("ignores remote ordering and picks the code-owned recommendation", () => {
     const policy = adminProviderQuickSetupPolicy("openai");
     for (const modelIds of [
-      ["gpt-5.5", "gpt-5.6-terra", "gpt-5.6-luna"],
-      ["gpt-5.6-luna", "gpt-5.5", "gpt-5.6-terra"]
+      ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"],
+      ["gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra"]
     ]) {
       const decision = decideAdminProviderQuickSetupModel({ modelIds, policy });
       expect(decision.kind).toBe("selected");
-      if (decision.kind === "selected") expect(decision.candidate.candidateId).toBe("p1-o1");
+      if (decision.kind === "selected") expect(decision.candidate.candidateId).toBe("p2-o1");
     }
   });
 
   it("returns only bounded supported fallbacks in policy order", () => {
     const decision = decideAdminProviderQuickSetupModel({
-      modelIds: ["unknown/new-model", "gpt-5.5", "gpt-5.6-sol", "gpt-5.6-luna"],
+      modelIds: ["unknown/new-model", "gpt-5.6-sol", "gpt-5.6-luna"],
       policy: adminProviderQuickSetupPolicy("openai")
     });
     expect(decision).toEqual({
       candidates: [
-        { candidateId: "p1-o2", displayName: "GPT-5.6 Luna" },
-        { candidateId: "p1-o3", displayName: "GPT-5.6 Sol" },
-        { candidateId: "p1-o4", displayName: "GPT-5.5" }
+        { candidateId: "p2-o2", displayName: "GPT-5.6 Luna" },
+        { candidateId: "p2-o3", displayName: "GPT-5.6 Sol" }
       ],
       kind: "selection_required"
     });
@@ -59,12 +73,12 @@ describe("provider Quick setup policy", () => {
     expect(decideAdminProviderQuickSetupModel({
       modelIds: ["google/gemini-3.5-flash"],
       policy,
-      selectedModel: { candidateId: "p1-r2", policyVersion: 1 }
+      selectedModel: { candidateId: "p1-r2", policyVersion: 2 }
     }).kind).toBe("selected");
     expect(decideAdminProviderQuickSetupModel({
       modelIds: ["other"],
       policy,
-      selectedModel: { candidateId: "p1-r2", policyVersion: 1 }
+      selectedModel: { candidateId: "p1-r2", policyVersion: 2 }
     })).toEqual({ kind: "selection_invalid" });
   });
 });

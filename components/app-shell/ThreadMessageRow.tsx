@@ -252,19 +252,19 @@ function ThreadMessageRowComponent({
   }
   function activateReceiptSegment(kind: RunReceiptSegmentKind) {
     if (kind === "search" && hasInlineSearch) {
-      changeDisclosure("search", true);
+      changeDisclosure("search", !expandedDisclosures.has("search"));
       return;
     }
     if (kind === "tools" && hasInlineTools) {
-      changeDisclosure("tools", true);
+      changeDisclosure("tools", !expandedDisclosures.has("tools"));
       return;
     }
     if (kind === "citations" && hasInlineCitations) {
-      changeDisclosure("citations", true);
+      changeDisclosure("citations", !expandedDisclosures.has("citations"));
       return;
     }
     if (kind === "reasoning" && hasInlineReasoning) {
-      changeDisclosure("reasoning", true);
+      changeDisclosure("reasoning", !expandedDisclosures.has("reasoning"));
       return;
     }
     if (hasExactRunEvents) {
@@ -376,6 +376,12 @@ function ThreadMessageRowComponent({
   if (hasInlineTools) actionableReceiptSegments.add("tools");
   if (hasInlineCitations) actionableReceiptSegments.add("citations");
   if (hasInlineReasoning) actionableReceiptSegments.add("reasoning");
+  const disclosureReceiptSegments = new Set<RunReceiptSegmentKind>();
+  if (hasInlineSearch) disclosureReceiptSegments.add("search");
+  if (hasInlineTools) disclosureReceiptSegments.add("tools");
+  if (hasInlineCitations) disclosureReceiptSegments.add("citations");
+  if (hasInlineReasoning) disclosureReceiptSegments.add("reasoning");
+  const expandedReceiptSegments = new Set<RunReceiptSegmentKind>(expandedDisclosures);
 
   return (
     <article
@@ -463,7 +469,7 @@ function ThreadMessageRowComponent({
             </>
           )}
 
-          {artifactSummary?.searchCount && runActivity?.search !== "active" ? (
+          {message.status === "streaming" && artifactSummary?.searchCount && runActivity?.search !== "active" ? (
             <div className={contentText || message.status !== "streaming" ? "mt-5" : undefined}>
               <SearchSummaryBlock
                 expanded={expandedDisclosures.has("search")}
@@ -481,7 +487,7 @@ function ThreadMessageRowComponent({
               />
             </div>
           ) : null}
-          {showCitations && artifactSummary?.citationCount ? (
+          {message.status === "streaming" && showCitations && artifactSummary?.citationCount ? (
             <div className="mt-5">
               <CitationBlock
                 expanded={expandedDisclosures.has("citations")}
@@ -520,12 +526,36 @@ function ThreadMessageRowComponent({
           ) : null}
         </div>
         {message.status !== "streaming" ? (
-          <RunReceipt
-            actionableSegments={actionableReceiptSegments}
-            receipt={receipt}
-            settled={justCompleted}
-            onActivate={activateReceiptSegment}
-          />
+          <div
+            className="mt-5 border-y border-trace-subtle py-2.5"
+            data-testid="answer-metadata-block"
+          >
+            <RunReceipt
+              actionableSegments={actionableReceiptSegments}
+              contained
+              disclosureSegments={disclosureReceiptSegments}
+              expandedSegments={expandedReceiptSegments}
+              receipt={receipt}
+              settled={justCompleted}
+              onActivate={activateReceiptSegment}
+            />
+            {hasInlineSearch && artifactSummary ? (
+              <SearchSummaryBlock
+                embedded
+                expanded={expandedDisclosures.has("search")}
+                summary={artifactSummary}
+                onExpandedChange={(expanded) => changeDisclosure("search", expanded)}
+              />
+            ) : null}
+            {hasInlineCitations && artifactSummary ? (
+              <CitationBlock
+                embedded
+                expanded={expandedDisclosures.has("citations")}
+                summary={artifactSummary}
+                onExpandedChange={(expanded) => changeDisclosure("citations", expanded)}
+              />
+            ) : null}
+          </div>
         ) : null}
         <div
           className={actionStripClass}

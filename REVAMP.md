@@ -58,12 +58,12 @@ Ready-пустой chat использует один центральный с�
 
 ```text
 What do you want to investigate?
-[ existing composer with Message / Attach / Tools / Run summary / Send ]
+[ existing composer with Message / Attach / Model / Profile / Search / More / Tools / Send ]
 ```
 
 Никаких suggestion cards, feature dashboard, fake prompts или второго «упрощённого» composer. При начале first-chat creation или появлении optimistic/persisted message тот же mounted composer занимает thread tail. Loading, error и no-model состояния остаются честно отличимыми.
 
-Blank state визуально prompt-first: верхняя панель не показывает Share, Details и conversation menu до появления разговора; composer оставляет компактный Run summary, Tools, Attach и Send, а Usage и расширенная расшифровка параметров остаются внутри существующих disclosures. Это уменьшает конкуренцию с первым вопросом, не создавая отдельной control model.
+Blank state визуально prompt-first: верхняя панель не показывает Share, Details и conversation menu до появления разговора; composer оставляет прямые Model, доступные Fast/Balanced/Deep и Search, а также More, Tools, Attach и Send. More владеет полной расширенной настройкой, Usage остаётся существующим disclosure. Это уменьшает конкуренцию с первым вопросом, не создавая отдельной control model.
 
 ### Active chat
 
@@ -72,7 +72,7 @@ Blank state визуально prompt-first: верхняя панель не п
 - вопрос компактный;
 - ответ идёт документным потоком;
 - citations, search, tool activity и reasoning остаются рядом с породившим их ответом;
-- Run receipt показывает только реальную persisted evidence;
+- завершённые search/citation facts и Run receipt собраны в один компактный evidence-блок и показывают только реальную persisted evidence;
 - Branch и Events остаются единственными Details destinations;
 - composer находится внизу и не меняет владельца draft/run controls.
 
@@ -118,19 +118,19 @@ Canonical section — `access`. Старые `groups` и `model-access` оста
 Главный single-member сценарий:
 
 ```text
-Providers -> OpenAI / Anthropic / OpenRouter -> API key -> Test & Save -> Ready
+Providers -> OpenAI / Anthropic / Gemini / OpenRouter -> API key -> Test & Save -> Ready
 ```
 
 На экране сразу есть:
 
-- три provider choices;
+- четыре provider choices;
 - выбранный provider;
 - одно write-only поле API key;
 - одна primary action `Test & Save`;
 - короткое фактическое объяснение, что будет сделано;
 - вторичная ссылка `Advanced configuration`.
 
-На compact viewport три provider choices остаются одной короткой трёхколоночной строкой. Поле key и `Test & Save` должны помещаться в первый экран после заголовка; объясняющая правая колонка появляется только когда для неё действительно есть место.
+На compact viewport четыре provider choices складываются в короткую сетку 2 × 2; на широком экране это одна строка из четырёх. Поле key и `Test & Save` должны помещаться в первый экран после заголовка; объясняющая правая колонка появляется только когда для неё действительно есть место.
 
 Provider никогда не получает блокирующий UI-status `Advanced` только из-за group assignments, extra models, extra credentials или другого custom connection. Existing team/custom state показывается как спокойная nonblocking информация и сохраняется без изменений.
 
@@ -138,9 +138,11 @@ Quick setup создаёт прямой путь для acting administrator:
 
 ```text
 direct user credential assignment
-+ direct model entitlement
-+ exact credential/model availability check
++ direct entitlement на все найденные code-owned current models
++ exact credential/model availability checks для каждой
 ```
+
+Каталог провайдера используется только как bounded availability evidence. Quick setup устанавливает пересечение каталога с проверенным versioned policy-набором OpenAI, Anthropic, Gemini или OpenRouter и никогда не импортирует произвольные image/audio/embedding/unknown IDs. Одна рекомендованная или явно выбранная модель по-прежнему определяет user default и untouched profile; остальные проверенные модели сразу доступны без Advanced.
 
 Credential selection и model entitlement остаются независимыми. Runtime precedence:
 

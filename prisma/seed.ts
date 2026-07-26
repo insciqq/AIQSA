@@ -46,6 +46,7 @@ function providerModelDraftConfig(model: (typeof defaultProviderModels)[number])
   const adapterKind = {
     anthropic: "anthropic_messages",
     fake: "fake",
+    gemini: "openai_chat_completions_compatible",
     openai: "openai_responses_native",
     openrouter: "openrouter_chat_completions"
   }[model.provider];

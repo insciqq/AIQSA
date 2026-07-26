@@ -188,24 +188,49 @@ describe("ComposerControls", () => {
     vi.restoreAllMocks();
   });
 
-  it("rests as one exact textual Run receipt at every size", () => {
+  it("keeps model, profile, and search directly reachable beside an explicit More control", () => {
     renderControls();
 
     const controls = screen.getByTestId("composer-control-bar");
     const summary = screen.getByTestId("composer-run-summary");
-    expect(controls).toHaveAttribute("data-layout", "coherent");
-    expect(summary).toHaveClass("w-full", "text-ink");
+    expect(controls).toHaveAttribute("data-layout", "direct");
+    expect(summary).toHaveTextContent("More");
+    expect(summary).not.toHaveClass("w-full");
     expect(screen.getByTestId("run-model-summary")).toHaveTextContent("Balanced Research");
     expect(screen.getByTestId("run-profile-summary")).toHaveTextContent("Profile: Balanced");
     expect(screen.getByTestId("run-reasoning-summary")).toHaveTextContent("Reasoning: Standard · Medium");
     expect(screen.getByTestId("run-search-summary")).toHaveTextContent("Search: Off");
     expect(summary).toHaveAccessibleName(
-      "Open run setup. Profile Balanced. Model Balanced Research. Reasoning Standard mode, Medium effort. Search Off."
+      "Open more run settings. Profile Balanced. Model Balanced Research. Reasoning Standard mode, Medium effort. Search Off."
     );
-    expect(within(controls).queryByRole("button", { name: "Select model" })).not.toBeInTheDocument();
+    expect(within(controls).getByRole("button", { name: "Select model" })).toBeVisible();
+    expect(within(controls).getByRole("button", { name: "Use Balanced run profile" })).toBeVisible();
+    expect(within(controls).getByRole("button", { name: "Use Deep run profile" })).toBeVisible();
+    expect(within(controls).getByRole("button", { name: "Search strategy" })).toBeVisible();
     expect(within(controls).queryByRole("button", { name: "Reasoning effort" })).not.toBeInTheDocument();
-    expect(within(controls).queryByRole("button", { name: "Search strategy" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Run settings" })).not.toBeInTheDocument();
+    expect(summary.querySelector(".lucide-chevron-right")).not.toBeInTheDocument();
+  });
+
+  it("routes the direct profile, model, and search controls through the existing actions", () => {
+    const { props } = renderControls();
+
+    fireEvent.click(screen.getByRole("button", { name: "Use Deep run profile" }));
+    expect(props.onRunProfileChange).toHaveBeenCalledWith("deep");
+
+    fireEvent.click(screen.getByRole("button", { name: "Select model" }));
+    const modelPicker = screen.getByTestId("composer-inline-model-picker");
+    expect(within(modelPicker).queryByRole("button", { name: "Back to Run setup" })).not.toBeInTheDocument();
+    fireEvent.click(within(modelPicker).getByRole("button", { name: "Select model Fake Deep Research" }));
+    expect(props.onSelectModel).toHaveBeenCalledWith(deepModel);
+
+    fireEvent.click(screen.getByRole("button", { name: "Search strategy" }));
+    fireEvent.click(
+      screen
+        .getByTestId("composer-inline-search-options")
+        .querySelector('[data-option-value="web-search"]')!
+    );
+    expect(props.onSearchStrategyChange).toHaveBeenCalledWith("web-search");
   });
 
   it("prints exact non-default profile, mode, effort, and search names", () => {
@@ -224,14 +249,14 @@ describe("ComposerControls", () => {
     expect(screen.getByTestId("run-search-summary")).toHaveTextContent("Search: Web Search");
   });
 
-  it("keeps a long exact model name visible instead of truncating it", () => {
+  it("keeps the full model identity available while containing a long direct-control label", () => {
     const longName = "OpenRouter research model with a deliberately long exact display name";
     renderControls({ currentModel: { ...balancedModel, displayName: longName } });
 
     const model = screen.getByTestId("run-model-summary");
     expect(model).toHaveTextContent(longName);
-    expect(model).toHaveClass("break-words", "[overflow-wrap:anywhere]");
-    expect(model).not.toHaveClass("truncate");
+    expect(model).toHaveClass("truncate");
+    expect(model.closest("button")).toHaveAttribute("title", `Fake / ${longName}`);
   });
 
   it("opens one complete Run setup from that receipt", () => {

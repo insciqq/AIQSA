@@ -34,6 +34,13 @@ function snapshot(stateToken = "state-openai") {
         stateToken: "state-anthropic"
       },
       {
+        provider: "gemini" as const,
+        providerDisplayName: "Gemini",
+        quickSetupAssigned: false,
+        state: "not_configured" as const,
+        stateToken: "state-gemini"
+      },
+      {
         provider: "openrouter" as const,
         providerDisplayName: "OpenRouter",
         quickSetupAssigned: false,
@@ -68,6 +75,11 @@ function readyResult(options: {
     checkedAt: "2026-07-26T03:00:00.000Z",
     defaultChanged: options.defaultChanged ?? true,
     model: { displayName: "GPT-5.6 Terra" },
+    models: [
+      { displayName: "GPT-5.6 Terra" },
+      { displayName: "GPT-5.6 Luna" },
+      { displayName: "GPT-5.6 Sol" }
+    ],
     outcome: "ready" as const,
     profilesFilled: options.profilesFilled ?? [],
     provider: "openai" as const,
@@ -99,11 +111,11 @@ describe("useAdminProviderQuickSetupController", () => {
     api.submit
       .mockResolvedValueOnce({
         data: {
-          candidates: [{ candidateId: "p1-o2", displayName: "GPT-5.6 Luna" }],
+          candidates: [{ candidateId: "p2-o2", displayName: "GPT-5.6 Luna" }],
           checkedAt: "2026-07-26T03:00:00.000Z",
           expectedState: "state-old",
           outcome: "selection_required",
-          policyVersion: 1,
+          policyVersion: 2,
           provider: "openai",
           providerDisplayName: "OpenAI"
         },
@@ -115,6 +127,7 @@ describe("useAdminProviderQuickSetupController", () => {
           checkedAt: "2026-07-26T03:01:00.000Z",
           defaultChanged: true,
           model: { displayName: "GPT-5.6 Luna" },
+          models: [{ displayName: "GPT-5.6 Luna" }],
           outcome: "ready",
           profilesFilled: [],
           provider: "openai",
@@ -132,7 +145,7 @@ describe("useAdminProviderQuickSetupController", () => {
     await act(async () => {
       await result.current.actions.submit();
     });
-    act(() => result.current.actions.chooseModel("p1-o2"));
+    act(() => result.current.actions.chooseModel("p2-o2"));
     await act(async () => {
       await result.current.actions.submit();
     });
@@ -344,13 +357,13 @@ describe("useAdminProviderQuickSetupController", () => {
   it("clears an invalid model choice, ignores radio changes during POST, and retains the key", async () => {
     const selection = {
       candidates: [
-        { candidateId: "p1-o2", displayName: "GPT-5.6 Luna" },
-        { candidateId: "p1-o3", displayName: "GPT-5.6 Sol" }
+        { candidateId: "p2-o2", displayName: "GPT-5.6 Luna" },
+        { candidateId: "p2-o3", displayName: "GPT-5.6 Sol" }
       ],
       checkedAt: "2026-07-26T03:00:00.000Z",
       expectedState: "state-selection",
       outcome: "selection_required" as const,
-      policyVersion: 1,
+      policyVersion: 2,
       provider: "openai" as const,
       providerDisplayName: "OpenAI"
     };
@@ -367,16 +380,16 @@ describe("useAdminProviderQuickSetupController", () => {
     await act(async () => {
       await result.current.actions.submit();
     });
-    act(() => result.current.actions.chooseModel("p1-o2"));
+    act(() => result.current.actions.chooseModel("p2-o2"));
     let request!: Promise<boolean>;
     act(() => {
       request = result.current.actions.submit();
     });
     await waitFor(() => expect(result.current.state.submitting).toBe(true));
-    act(() => result.current.actions.chooseModel("p1-o3"));
-    expect(result.current.state.selectedCandidateId).toBe("p1-o2");
+    act(() => result.current.actions.chooseModel("p2-o3"));
+    expect(result.current.state.selectedCandidateId).toBe("p2-o2");
     expect(api.submit.mock.calls[1]?.[0]).toMatchObject({
-      selectedModel: { candidateId: "p1-o2", policyVersion: 1 }
+      selectedModel: { candidateId: "p2-o2", policyVersion: 2 }
     });
 
     pending.resolve({ error: { code: "provider_quick_setup_selection_invalid" }, ok: false });
@@ -432,6 +445,11 @@ describe("useAdminProviderQuickSetupController", () => {
         checkedAt: "2026-07-26T03:00:00.000Z",
         defaultChanged: true,
         model: { displayName: "GPT-5.6 Terra" },
+        models: [
+          { displayName: "GPT-5.6 Terra" },
+          { displayName: "GPT-5.6 Luna" },
+          { displayName: "GPT-5.6 Sol" }
+        ],
         outcome: "ready",
         profilesFilled: [],
         provider: "openai",
@@ -505,6 +523,7 @@ describe("useAdminProviderQuickSetupController", () => {
         checkedAt: string;
         defaultChanged: boolean;
         model: { displayName: string };
+        models: { displayName: string }[];
         outcome: "ready";
         profilesFilled: never[];
         provider: "openai";
@@ -541,6 +560,11 @@ describe("useAdminProviderQuickSetupController", () => {
         checkedAt: "2026-07-26T03:00:00.000Z",
         defaultChanged: true,
         model: { displayName: "GPT-5.6 Terra" },
+        models: [
+          { displayName: "GPT-5.6 Terra" },
+          { displayName: "GPT-5.6 Luna" },
+          { displayName: "GPT-5.6 Sol" }
+        ],
         outcome: "ready",
         profilesFilled: [],
         provider: "openai",

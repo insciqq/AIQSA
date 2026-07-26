@@ -20,18 +20,28 @@ const dotClass: Record<FactualRunReceipt["status"], string> = {
 
 function RunReceiptComponent({
   actionableSegments,
+  contained = false,
+  disclosureSegments = new Set(),
+  expandedSegments = new Set(),
   onActivate,
   receipt,
   settled = false
 }: Readonly<{
   actionableSegments: ReadonlySet<RunReceiptSegmentKind>;
+  contained?: boolean;
+  disclosureSegments?: ReadonlySet<RunReceiptSegmentKind>;
+  expandedSegments?: ReadonlySet<RunReceiptSegmentKind>;
   onActivate(kind: RunReceiptSegmentKind): void;
   receipt: FactualRunReceipt;
   settled?: boolean;
 }>) {
   return (
     <footer
-      className="mt-5 border-t border-trace-subtle pt-3 text-xs leading-5 text-ink-muted"
+      className={
+        contained
+          ? "text-xs leading-5 text-ink-muted"
+          : "mt-5 border-t border-trace-subtle pt-3 text-xs leading-5 text-ink-muted"
+      }
       data-run-receipt-status={receipt.status}
       data-run-settled={settled ? "true" : undefined}
       data-testid="run-receipt"
@@ -63,9 +73,12 @@ function RunReceiptComponent({
                 className="-mx-1 min-h-7 min-w-0 rounded-control px-1 text-left text-ink-secondary outline-none hover:bg-control-hover hover:text-ink focus-visible:ring-2 focus-visible:ring-proof/45 [overflow-wrap:anywhere] [@media(hover:none)]:min-h-touch [@media(pointer:coarse)]:min-h-touch"
                 data-run-segment={fact.kind}
                 type="button"
+                aria-label={fact.label}
+                aria-expanded={disclosureSegments.has(fact.kind) ? expandedSegments.has(fact.kind) : undefined}
                 onClick={() => onActivate(fact.kind)}
               >
-                {fact.label}
+                <span>{fact.label}</span>
+                {fact.detail ? <span className="text-ink-muted">{" · "}{fact.detail}</span> : null}
               </button>
             ) : (
               <span
@@ -73,6 +86,7 @@ function RunReceiptComponent({
                 data-run-segment={fact.kind}
               >
                 {fact.label}
+                {fact.detail ? <span className="text-ink-muted">{" · "}{fact.detail}</span> : null}
               </span>
             )}
           </span>

@@ -3,6 +3,8 @@
 Status: Accepted
 Amends: 0009-conversation-first-ui-revamp
 
+Amendment note: ADR 0030 retains one composer-control owner and direct concrete-model/search selection, exposes configured profiles directly, and moves the Reasoning editor behind the one-action More setup instead of requiring its resting value to remain separately visible.
+
 ## Context
 
 The conversation-first revamp preserved every capability, but three controls acquired more than one apparent owner:

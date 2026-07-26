@@ -201,7 +201,7 @@ async function startLocalResponsesServer() {
 
 async function installQuickChatFixture(apiRoot: string): Promise<QuickChatFixture> {
   const policy = adminProviderQuickSetupPolicy("openai");
-  const candidate = policy.candidates.find(({ candidateId }) => candidateId === "p1-o3");
+  const candidate = policy.candidates.find(({ candidateId }) => candidateId === "p2-o3");
   if (!candidate) throw new Error("OpenAI Sol Quick candidate is missing");
 
   const fixture = {
@@ -348,6 +348,7 @@ async function installQuickChatFixture(apiRoot: string): Promise<QuickChatFixtur
             : {}),
           [`${fixture.connectionId}:${fixture.modelId}`]: {
             backgroundMode: false,
+            searchStrategyId: "search-disabled",
             streamMode: true
           }
         }),
@@ -618,6 +619,7 @@ test("administrator completes the Quick direct-user picker, retry, Ready, and sa
               stateToken: configured ? "state-openai-ready" : "state-openai-fresh"
             },
             { provider: "anthropic", providerDisplayName: "Anthropic", quickSetupAssigned: false, state: "not_configured", stateToken: "state-anthropic" },
+            { provider: "gemini", providerDisplayName: "Gemini", quickSetupAssigned: false, state: "not_configured", stateToken: "state-gemini" },
             { provider: "openrouter", providerDisplayName: "OpenRouter", quickSetupAssigned: false, state: "not_configured", stateToken: "state-openrouter" }
           ],
           suggestedProvider: configured ? "openai" : null
@@ -639,13 +641,13 @@ test("administrator completes the Quick direct-user picker, retry, Ready, and sa
         contentType: "application/json",
         json: {
           candidates: [
-            { candidateId: "p1-o2", displayName: "GPT-5.6 Luna" },
-            { candidateId: "p1-o3", displayName: "GPT-5.6 Sol" }
+            { candidateId: "p2-o2", displayName: "GPT-5.6 Luna" },
+            { candidateId: "p2-o3", displayName: "GPT-5.6 Sol" }
           ],
           checkedAt: now,
           expectedState: "state-openai-picker",
           outcome: "selection_required",
-          policyVersion: 1,
+          policyVersion: 2,
           provider: "openai",
           providerDisplayName: "OpenAI"
         }
@@ -657,7 +659,7 @@ test("administrator completes the Quick direct-user picker, retry, Ready, and sa
         expectedState: "state-openai-picker",
         provider: "openai",
         secret: "e2e-quick-write-only-key",
-        selectedModel: { candidateId: "p1-o3", policyVersion: 1 }
+        selectedModel: { candidateId: "p2-o3", policyVersion: 2 }
       });
       if (postNumber === 2) {
         await pickerRetryCanFinish;
@@ -676,6 +678,11 @@ test("administrator completes the Quick direct-user picker, retry, Ready, and sa
           checkedAt: now,
           defaultChanged: true,
           model: { displayName: "GPT-5.6 Sol" },
+          models: [
+            { displayName: "GPT-5.6 Terra" },
+            { displayName: "GPT-5.6 Luna" },
+            { displayName: "GPT-5.6 Sol" }
+          ],
           outcome: "ready",
           profilesFilled: ["deep"],
           provider: "openai",
@@ -734,9 +741,12 @@ test("administrator completes the Quick direct-user picker, retry, Ready, and sa
   await expect(section.getByRole("heading", { name: "GPT-5.6 Sol" })).toBeVisible();
   const readyReceipt = section.getByTestId("provider-quick-ready-receipt");
   await expect(readyReceipt).toContainText("API key: saved and verified.");
-  await expect(readyReceipt).toContainText("Active model: GPT-5.6 Sol.");
+  await expect(readyReceipt).toContainText("Default model: GPT-5.6 Sol.");
+  await expect(readyReceipt).toContainText(
+    "Available models: GPT-5.6 Terra, GPT-5.6 Luna, GPT-5.6 Sol."
+  );
   await expect(readyReceipt).toContainText("Access: available to this administrator.");
-  await expect(readyReceipt).toContainText("Default model: updated.");
+  await expect(readyReceipt).toContainText("Default selection: updated.");
   await expect(readyReceipt).toContainText("Run profiles filled: Deep.");
   await expect(section.getByRole("link", { name: "Start chatting" })).toHaveAttribute("href", "/");
   await expect(section.getByText("e2e-quick-write-only-key")).toHaveCount(0);
@@ -778,7 +788,7 @@ test("administrator completes the Quick direct-user picker, retry, Ready, and sa
     const columns = await section.getByTestId("provider-quick-choice-strip").evaluate((element) =>
       getComputedStyle(element).gridTemplateColumns.split(" ").filter(Boolean).length
     );
-    expect(columns).toBe(3);
+    expect(columns).toBe(viewport.width < 640 ? 2 : 4);
   }
 
   const catalogResponse = page.waitForResponse((response) =>
@@ -924,6 +934,7 @@ test("administrator completes the OpenRouter key, model, route, check, and activ
           providers: [
             { provider: "openai", providerDisplayName: "OpenAI", quickSetupAssigned: false, state: "not_configured", stateToken: "state-openai" },
             { provider: "anthropic", providerDisplayName: "Anthropic", quickSetupAssigned: false, state: "not_configured", stateToken: "state-anthropic" },
+            { provider: "gemini", providerDisplayName: "Gemini", quickSetupAssigned: false, state: "not_configured", stateToken: "state-gemini" },
             { provider: "openrouter", providerDisplayName: "OpenRouter", quickSetupAssigned: false, state: "not_configured", stateToken: "state-openrouter" }
           ],
           suggestedProvider: null
@@ -1318,6 +1329,7 @@ test("administrator remaps the three composer run profiles in one save", async (
         providers: [
           { provider: "openai", providerDisplayName: "OpenAI", quickSetupAssigned: false, state: "not_configured", stateToken: "state-openai" },
           { provider: "anthropic", providerDisplayName: "Anthropic", quickSetupAssigned: false, state: "not_configured", stateToken: "state-anthropic" },
+          { provider: "gemini", providerDisplayName: "Gemini", quickSetupAssigned: false, state: "not_configured", stateToken: "state-gemini" },
           { provider: "openrouter", providerDisplayName: "OpenRouter", quickSetupAssigned: false, state: "not_configured", stateToken: "state-openrouter" }
         ],
         suggestedProvider: null

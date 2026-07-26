@@ -48,7 +48,7 @@ const fullAccessGroup: AdminGroup = {
   deletion: {
     canDelete: false,
     reason: "system_group_forbidden",
-    summary: "Full access is built in and cannot be deleted."
+    summary: "Full access is built in and cannot be renamed, archived, or deleted."
   },
   id: "group-full-access",
   name: "Full access",
@@ -310,6 +310,7 @@ describe("AdminAccessGroupsSection", () => {
 
     expect(screen.getByText("Built-in")).toBeVisible();
     expect(screen.getByText(/all current and future providers, models, search strategies, and MCP servers/i)).toBeVisible();
+    expect(screen.getByText(/provider credentials and personal MCP setup remain separate/i)).toBeVisible();
     expect(screen.getByText(/cannot be renamed, archived, or deleted/i)).toBeVisible();
     expect(screen.queryByRole("button", { name: "Rename group" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Archive group" })).not.toBeInTheDocument();
@@ -330,7 +331,7 @@ describe("AdminAccessGroupsSection", () => {
     );
 
     expect(screen.getByRole("heading", { name: "Automatic full access" })).toBeVisible();
-    expect(screen.getByText(/provider authentication and current availability are configured separately/i)).toBeVisible();
+    expect(screen.getByText(/independently selected provider credential and its current availability check are valid/i)).toBeVisible();
     expect(screen.getByText(/there are no per-resource switches/i)).toBeVisible();
     expect(screen.queryByRole("button", { name: /Grant provider/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Grant model/i })).not.toBeInTheDocument();

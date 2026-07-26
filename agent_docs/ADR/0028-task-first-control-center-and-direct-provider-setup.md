@@ -3,6 +3,8 @@
 Status: Accepted
 Amends: 0016-responsive-composer-disclosure, 0018-intent-gated-mobile-reading-mode, 0022-admin-managed-llm-provider-control-plane, 0024-admin-managed-run-profiles, 0025-clean-slate-research-chat-and-control-center, 0026-personal-provider-quick-setup
 
+Amendment note: ADR 0030 keeps this ADR's direct-user credential and nonblocking team/custom semantics, adds Gemini as the fourth Quick choice, and makes one save provision every remotely visible reviewed candidate instead of only the selected answer deployment.
+
 ## Context
 
 The first clean-slate presentation changed the visual language but retained several interaction structures from the old administration console. Provider setup was placed under a plan-like `Personal` heading, any team or custom provider state could turn a provider into an `Advanced` dead end, Users and Groups required a small row action instead of making the resource row selectable, Groups and Model access duplicated one group-owned workflow, and desktop resource pages kept an always-open master/detail split. The empty Research Chat also kept its composer at the bottom before a conversation existed.

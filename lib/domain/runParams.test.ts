@@ -42,6 +42,11 @@ describe("run parameter validation", () => {
       },
       {
         aliases: ["maxOutputTokens", "maxTokens", "max_output_tokens", "max_tokens", "max_completion_tokens"],
+        modelId: "gemini-3.6-flash",
+        provider: "gemini"
+      },
+      {
+        aliases: ["maxOutputTokens", "maxTokens", "max_output_tokens", "max_tokens", "max_completion_tokens"],
         modelId: "anthropic/claude-opus-4.8",
         provider: "openrouter"
       }
@@ -94,6 +99,31 @@ describe("run parameter validation", () => {
         })
       ).toEqual({ code: invalidRunParamsError, ok: false });
     }
+  });
+
+  it("accepts reviewed Gemini reasoning and rejects unsupported sampling params", () => {
+    const controls = modelControls("gemini", "gemini-3.6-flash");
+    expect(validateRunParams({
+      controls,
+      params: {
+        maxTokens: 64,
+        reasoning: { effort: "high" },
+        stream: false
+      },
+      provider: "gemini"
+    })).toEqual({
+      ok: true,
+      params: {
+        maxOutputTokens: 64,
+        reasoning: { effort: "high" },
+        stream: false
+      }
+    });
+    expect(validateRunParams({
+      controls,
+      params: { temperature: 0.2 },
+      provider: "gemini"
+    })).toEqual({ code: invalidRunParamsError, ok: false });
   });
 
   it("accepts only canonical bounded ordinary tool-search controls", () => {

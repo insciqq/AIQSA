@@ -19,7 +19,7 @@ export const PROVIDER_ADVANCED_TASKS = [
 
 export type ProviderAdvancedTask = (typeof PROVIDER_ADVANCED_TASKS)[number];
 
-export type ProviderAdvancedFamily = "anthropic" | "openai" | "openrouter";
+export type ProviderAdvancedFamily = "anthropic" | "gemini" | "openai" | "openrouter";
 
 export const PROVIDER_ADVANCED_TASK_LABELS: Record<ProviderAdvancedTask, string> = {
   authentication: "Authentication",
@@ -34,6 +34,7 @@ export function providerFamilyLabel(
   const labels: Record<AdminProviderConnection["family"], string> = {
     anthropic: "Anthropic",
     fake: "Fake",
+    gemini: "Gemini",
     openai: "OpenAI",
     openai_compatible: "OpenAI-compatible",
     openrouter: "OpenRouter"
@@ -45,6 +46,9 @@ export function providerFamilyRoot(
   family: Exclude<AdminProviderConnection["family"], "fake">
 ): string {
   if (family === "anthropic") return "https://api.anthropic.com/v1";
+  if (family === "gemini") {
+    return "https://generativelanguage.googleapis.com/v1beta/openai";
+  }
   if (family === "openrouter") return "https://openrouter.ai/api/v1";
   if (family === "openai") return "https://api.openai.com/v1";
   return "https://provider.example.com/v1";

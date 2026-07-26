@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { Prisma, PrismaClient, type PrismaClient as PrismaClientType } from "@prisma/client";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createPrismaCatalogDataLoader } from "../../catalog/prismaCatalogData";
 import { loadEntitlementsForUser } from "../../auth/dbEntitlements";
 import { resolveEntitlements } from "../../auth/entitlements";
@@ -10,10 +10,13 @@ import type { AdminProviderQuickSetupCommitPlan } from "./quickSetupRepositoryCo
 
 const enabled = process.env.AIQSA_PROVIDER_QUICK_SETUP_INTEGRATION_TEST === "1";
 const integration = enabled ? describe : describe.skip;
-const database = new PrismaClient();
+const administrationDatabase = new PrismaClient();
+let database: PrismaClient;
+let sharedIntegrationDatabase: Awaited<ReturnType<typeof createIsolatedQuickSetupDatabase>> | null = null;
 const policy = adminProviderQuickSetupPolicy("openai");
 const terra = policy.candidates[0];
 const luna = policy.candidates[1];
+const sol = policy.candidates[2];
 
 class RollbackFixture extends Error {}
 class InjectedBoundaryFailure extends Error {}
@@ -307,6 +310,9 @@ async function resetOpenAiToInitial(transaction: Prisma.TransactionClient): Prom
     data: { defaultProviderModelId: null },
     where: { defaultProviderModelId: { in: modelIds } }
   });
+  await transaction.providerRunBinding.deleteMany({
+    where: { connectionId: policy.connection.id }
+  });
   await transaction.providerDraftCheck.deleteMany({
     where: { connectionId: policy.connection.id }
   });
@@ -394,6 +400,7 @@ async function createActor(transaction: Prisma.TransactionClient, suffix: string
 
 function plan(input: Readonly<{
   actor: Readonly<{ sessionId: string; userId: string }>;
+  candidates?: AdminProviderQuickSetupCommitPlan["candidates"];
   credentialId: string;
   credentialIsNew?: boolean;
   credentialVersion: number;
@@ -403,9 +410,11 @@ function plan(input: Readonly<{
   preservedModels: AdminProviderQuickSetupCommitPlan["preservedModels"];
   versionId: string;
 }>): AdminProviderQuickSetupCommitPlan {
+  const candidates = input.candidates ?? [terra];
   return {
     actor: input.actor,
     candidate: terra,
+    candidates,
     checkedAt: new Date("2026-07-26T10:00:01.000Z"),
     credential: {
       draftVersion: input.credentialVersion,
@@ -415,7 +424,10 @@ function plan(input: Readonly<{
       versionId: input.versionId
     },
     expectedFingerprint: input.expectedFingerprint,
-    grantId: input.grantId,
+    grants: candidates.map((candidate, index) => ({
+      id: index === 0 ? input.grantId : `${input.grantId}-${index + 1}`,
+      modelId: candidate.modelId
+    })),
     mode: input.mode,
     now: new Date("2026-07-26T10:00:02.000Z"),
     preservedModels: input.preservedModels,
@@ -435,7 +447,10 @@ const ISOLATED_TABLES = [
   "ProviderUserCredentialAssignment",
   "ProviderModel",
   "ProviderModelCredentialCheck",
+  "ProviderRunBinding",
+  "PromptPreset",
   "RunProfile",
+  "SearchStrategy",
   "User",
   "UserGroup",
   "UserSettings"
@@ -462,45 +477,71 @@ async function createIsolatedQuickSetupDatabase(): Promise<Readonly<{
   let client: PrismaClient | null = null;
   let cleaned = false;
 
-  await database.$executeRawUnsafe(`CREATE SCHEMA ${schema}`);
+  await administrationDatabase.$executeRawUnsafe(`CREATE SCHEMA ${schema}`);
   try {
     for (const table of ISOLATED_TABLES) {
-      await database.$executeRawUnsafe(
+      await administrationDatabase.$executeRawUnsafe(
         `CREATE TABLE ${schema}."${table}" ` +
         `(LIKE ${sourceSchema}."${table}" INCLUDING ALL)`
       );
     }
-    await database.$executeRawUnsafe(
+    await administrationDatabase.$executeRawUnsafe(
       `INSERT INTO ${schema}."ProviderConnection" ` +
       `SELECT * FROM ${sourceSchema}."ProviderConnection" WHERE "id" = $1`,
       policy.connection.id
     );
     const modelPlaceholders = policy.candidates.map((_, index) => `$${index + 2}`).join(", ");
-    await database.$executeRawUnsafe(
+    await administrationDatabase.$executeRawUnsafe(
       `INSERT INTO ${schema}."ProviderModel" ` +
       `SELECT * FROM ${sourceSchema}."ProviderModel" ` +
       `WHERE "connectionId" = $1 AND "id" IN (${modelPlaceholders})`,
       policy.connection.id,
       ...policy.candidates.map((candidate) => candidate.modelId)
     );
-    await database.$executeRawUnsafe(
+    await administrationDatabase.$executeRawUnsafe(
       `INSERT INTO ${schema}."RunProfile" SELECT * FROM ${sourceSchema}."RunProfile"`
     );
-    await database.$executeRawUnsafe(
+    await administrationDatabase.$executeRawUnsafe(
+      `INSERT INTO ${schema}."SearchStrategy" SELECT * FROM ${sourceSchema}."SearchStrategy"`
+    );
+    await administrationDatabase.$executeRawUnsafe(
       `CREATE TYPE ${schema}."UserRole" AS ENUM ('admin', 'user')`
     );
-    await database.$executeRawUnsafe(
+    await administrationDatabase.$executeRawUnsafe(
       `CREATE TYPE ${schema}."UserStatus" AS ENUM ('pending', 'active', 'disabled', 'denied')`
     );
-    await database.$executeRawUnsafe(
+    await administrationDatabase.$executeRawUnsafe(
       `CREATE TYPE ${schema}."ProviderUnassignedPolicy" ` +
       `AS ENUM ('use_default', 'require_assignment')`
     );
-    await database.$executeRawUnsafe(
+    await administrationDatabase.$executeRawUnsafe(
       `CREATE TYPE ${schema}."ProviderCredentialCheckStatus" ` +
       `AS ENUM ('available', 'unavailable')`
     );
-    await database.$executeRawUnsafe(
+    await administrationDatabase.$executeRawUnsafe(
+      `CREATE TYPE ${schema}."GroupSystemRole" AS ENUM ('full_access')`
+    );
+    await administrationDatabase.$executeRawUnsafe(
+      `ALTER TABLE ${schema}."Group" DROP CONSTRAINT IF EXISTS "Group_full_access_identity_check"`
+    );
+    await administrationDatabase.$executeRawUnsafe(
+      `DROP INDEX IF EXISTS ${schema}."Group_systemRole_key"`
+    );
+    await administrationDatabase.$executeRawUnsafe(
+      `ALTER TABLE ${schema}."Group" ALTER COLUMN "systemRole" ` +
+      `TYPE ${schema}."GroupSystemRole" ` +
+      `USING "systemRole"::text::${schema}."GroupSystemRole"`
+    );
+    await administrationDatabase.$executeRawUnsafe(
+      `CREATE UNIQUE INDEX "Group_systemRole_key" ON ${schema}."Group"("systemRole")`
+    );
+    await administrationDatabase.$executeRawUnsafe(
+      `ALTER TABLE ${schema}."Group" ADD CONSTRAINT "Group_full_access_identity_check" ` +
+      `CHECK (("systemRole" = 'full_access'::${schema}."GroupSystemRole" ` +
+      `AND "name" = 'Full access' AND "archivedAt" IS NULL) ` +
+      `OR ("systemRole" IS NULL AND lower(btrim("name")) <> 'full access'))`
+    );
+    await administrationDatabase.$executeRawUnsafe(
       `ALTER TABLE ${schema}."User" ALTER COLUMN "role" DROP DEFAULT, ` +
       `ALTER COLUMN "role" TYPE ${schema}."UserRole" ` +
       `USING "role"::text::${schema}."UserRole", ` +
@@ -510,7 +551,7 @@ async function createIsolatedQuickSetupDatabase(): Promise<Readonly<{
       `USING "status"::text::${schema}."UserStatus", ` +
       `ALTER COLUMN "status" SET DEFAULT 'pending'::${schema}."UserStatus"`
     );
-    await database.$executeRawUnsafe(
+    await administrationDatabase.$executeRawUnsafe(
       `ALTER TABLE ${schema}."ProviderConnection" ` +
       `ALTER COLUMN "unassignedPolicy" DROP DEFAULT, ` +
       `ALTER COLUMN "unassignedPolicy" TYPE ${schema}."ProviderUnassignedPolicy" ` +
@@ -519,7 +560,7 @@ async function createIsolatedQuickSetupDatabase(): Promise<Readonly<{
       `SET DEFAULT 'use_default'::${schema}."ProviderUnassignedPolicy"`
     );
     for (const table of ["ProviderDraftCheck", "ProviderModelCredentialCheck"] as const) {
-      await database.$executeRawUnsafe(
+      await administrationDatabase.$executeRawUnsafe(
         `ALTER TABLE ${schema}."${table}" ALTER COLUMN "status" ` +
         `TYPE ${schema}."ProviderCredentialCheckStatus" ` +
         `USING "status"::text::${schema}."ProviderCredentialCheckStatus"`
@@ -536,23 +577,31 @@ async function createIsolatedQuickSetupDatabase(): Promise<Readonly<{
         if (cleaned) return;
         cleaned = true;
         await isolatedClient.$disconnect();
-        await database.$executeRawUnsafe(`DROP SCHEMA ${schema} CASCADE`);
+        await administrationDatabase.$executeRawUnsafe(`DROP SCHEMA ${schema} CASCADE`);
       }
     };
   } catch (error) {
     await client?.$disconnect();
-    await database.$executeRawUnsafe(`DROP SCHEMA IF EXISTS ${schema} CASCADE`);
+    await administrationDatabase.$executeRawUnsafe(`DROP SCHEMA IF EXISTS ${schema} CASCADE`);
     throw error;
   }
 }
 
 integration("Prisma provider Quick setup atomic graph", () => {
+  beforeAll(async () => {
+    sharedIntegrationDatabase = await createIsolatedQuickSetupDatabase();
+    database = sharedIntegrationDatabase.client;
+  });
+
   afterAll(async () => {
-    await database.$disconnect();
+    await sharedIntegrationDatabase?.cleanup();
+    await administrationDatabase.$disconnect();
   });
 
   it("commits a catalog-visible personal graph without group writes and preserves it on replacement", async () => {
-    await expect(database.$transaction(async (transaction) => {
+    const isolated = await createIsolatedQuickSetupDatabase();
+    try {
+      await expect(isolated.client.$transaction(async (transaction) => {
       await resetOpenAiToInitial(transaction);
       const suffix = randomUUID();
       const actor = await createActor(transaction, suffix);
@@ -579,6 +628,7 @@ integration("Prisma provider Quick setup atomic graph", () => {
       const firstVersionId = `quick-version-one-${suffix}`;
       await expect(repository.commit(plan({
         actor,
+        candidates: [terra, luna, sol],
         credentialId,
         credentialVersion: 1,
         expectedFingerprint: initial.fingerprint,
@@ -612,6 +662,29 @@ integration("Prisma provider Quick setup atomic graph", () => {
         providerConnectionId: null,
         searchStrategy: null
       });
+      expect(await transaction.accessGrant.findMany({
+        orderBy: { providerModelId: "asc" },
+        select: { enabled: true, providerModelId: true },
+        where: {
+          providerModelId: { in: [terra.modelId, luna.modelId, sol.modelId] },
+          userId: actor.userId
+        }
+      })).toEqual([terra, luna, sol]
+        .map(({ modelId }) => ({ enabled: true, providerModelId: modelId }))
+        .sort((left, right) => left.providerModelId.localeCompare(right.providerModelId)));
+      expect(await transaction.providerModelCredentialCheck.count({
+        where: {
+          credentialVersionId: firstVersionId,
+          providerModelId: { in: [terra.modelId, luna.modelId, sol.modelId] },
+          status: "available"
+        }
+      })).toBe(3);
+      expect(await transaction.providerModel.count({
+        where: {
+          enabled: true,
+          id: { in: [terra.modelId, luna.modelId, sol.modelId] }
+        }
+      })).toBe(3);
       expect(await transaction.providerUserCredentialAssignment.findUnique({
         where: {
           connectionId_userId: {
@@ -665,6 +738,7 @@ integration("Prisma provider Quick setup atomic graph", () => {
       const secondVersionId = `quick-version-two-${suffix}`;
       await expect(repository.commit(plan({
         actor,
+        candidates: [terra, luna, sol],
         credentialId,
         credentialVersion: 2,
         expectedFingerprint: ready.fingerprint,
@@ -700,12 +774,38 @@ integration("Prisma provider Quick setup atomic graph", () => {
       expect(await transaction.providerCredential.findUniqueOrThrow({
         where: { id: credentialId }
       })).toMatchObject({ activeVersionId: secondVersionId, draftVersion: 2 });
+      expect(await transaction.providerModelCredentialCheck.findMany({
+        orderBy: { providerModelId: "asc" },
+        select: { providerModelId: true, status: true },
+        where: {
+          credentialVersionId: secondVersionId,
+          providerModelId: { in: [terra.modelId, luna.modelId, sol.modelId] }
+        }
+      })).toEqual([terra, luna, sol]
+        .map(({ modelId }) => ({ providerModelId: modelId, status: "available" }))
+        .sort((left, right) => left.providerModelId.localeCompare(right.providerModelId)));
+      expect(await transaction.accessGrant.findMany({
+        orderBy: { providerModelId: "asc" },
+        select: { enabled: true, providerModelId: true },
+        where: {
+          providerModelId: { in: [terra.modelId, luna.modelId, sol.modelId] },
+          userId: actor.userId
+        }
+      })).toEqual([terra, luna, sol]
+        .map(({ modelId }) => ({ enabled: true, providerModelId: modelId }))
+        .sort((left, right) => left.providerModelId.localeCompare(right.providerModelId)));
+      expect(await transaction.accessGrant.count({
+        where: { id: { startsWith: `unused-grant-${suffix}` } }
+      })).toBe(0);
       expect(await groupGraphSnapshot(transaction)).toEqual(replacementGroupGraphBefore);
       throw new RollbackFixture("success_fixture_complete");
-    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable })).rejects.toBeInstanceOf(
-      RollbackFixture
-    );
-  });
+      }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable })).rejects.toBeInstanceOf(
+        RollbackFixture
+      );
+    } finally {
+      await isolated.cleanup();
+    }
+  }, 30_000);
 
   it("keeps the Quick model grant while wildcard-preserving every credential-available model", async () => {
     await expect(database.$transaction(async (transaction) => {
@@ -714,7 +814,7 @@ integration("Prisma provider Quick setup atomic graph", () => {
       const actor = await createActor(transaction, suffix);
       const fullAccessGroup = await transaction.group.upsert({
         create: {
-          name: `full-access-${suffix}`,
+          name: "Full access",
           systemRole: "full_access"
         },
         update: {},
@@ -1319,6 +1419,74 @@ integration("Prisma provider Quick setup atomic graph", () => {
     }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable })).rejects.toBeInstanceOf(
       RollbackFixture
     );
+  }, 30_000);
+
+  it("rejects a reserved collision on a non-selected candidate before changing the Quick graph", async () => {
+    const isolated = await createIsolatedQuickSetupDatabase();
+    try {
+      await expect(isolated.client.$transaction(async (transaction) => {
+        await resetOpenAiToInitial(transaction);
+        const suffix = randomUUID();
+        const actor = await createActor(transaction, suffix);
+        const foreignConnectionId = `quick-foreign-connection-${suffix}`;
+        await transaction.providerConnection.create({
+          data: {
+            displayName: "Foreign provider connection",
+            family: "anthropic",
+            id: foreignConnectionId
+          }
+        });
+        await transaction.providerModel.update({
+          data: { connectionId: foreignConnectionId },
+          where: { id: luna.modelId }
+        });
+
+        const repository = createPrismaAdminProviderQuickSetupRepository(
+          transactionBackedClient(transaction)
+        );
+        const initial = await repository.inspect({
+          ...actor,
+          now: new Date("2026-07-26T10:00:00.000Z"),
+          provider: "openai"
+        });
+        expect(initial).toMatchObject({ mode: "initial", state: "not_configured" });
+        const graphBefore = await quickGraphSnapshot(transaction, actor.userId);
+        const foreignConnectionBefore = await transaction.providerConnection.findUniqueOrThrow({
+          where: { id: foreignConnectionId }
+        });
+
+        const credentialId = `quick-collision-credential-${suffix}`;
+        const versionId = `quick-collision-version-${suffix}`;
+        const grantId = `quick-collision-grant-${suffix}`;
+        await expect(repository.commit(plan({
+          actor,
+          candidates: [terra, luna],
+          credentialId,
+          credentialVersion: 1,
+          expectedFingerprint: initial.fingerprint,
+          grantId,
+          mode: "initial",
+          preservedModels: initial.preservedModels,
+          versionId
+        }))).resolves.toBe("advanced_required");
+
+        expect(await quickGraphSnapshot(transaction, actor.userId)).toEqual(graphBefore);
+        expect(await transaction.providerConnection.findUniqueOrThrow({
+          where: { id: foreignConnectionId }
+        })).toEqual(foreignConnectionBefore);
+        expect(await transaction.providerCredential.count({ where: { id: credentialId } }))
+          .toBe(0);
+        expect(await transaction.providerCredentialVersion.count({ where: { id: versionId } }))
+          .toBe(0);
+        expect(await transaction.accessGrant.count({
+          where: { id: { startsWith: grantId } }
+        })).toBe(0);
+        throw new RollbackFixture("non_selected_collision_fixture_complete");
+      }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable })).rejects
+        .toBeInstanceOf(RollbackFixture);
+    } finally {
+      await isolated.cleanup();
+    }
   }, 30_000);
 
   it("fences a raced team edit, then preserves it on a fresh Quick commit", async () => {

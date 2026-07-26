@@ -284,9 +284,12 @@ function ReadyProvider({
           data-testid="provider-quick-ready-receipt"
         >
           <p>API key: saved and verified.</p>
-          <p>Active model: {confirmation.model.displayName}.</p>
+          <p>Default model: {confirmation.model.displayName}.</p>
+          <p>
+            Available models: {confirmation.models.map(({ displayName }) => displayName).join(", ")}.
+          </p>
           <p>Access: available to this administrator.</p>
-          <p>Default model: {confirmation.defaultChanged ? "updated" : "unchanged"}.</p>
+          <p>Default selection: {confirmation.defaultChanged ? "updated" : "unchanged"}.</p>
           <p>Run profiles filled: {profileLabels.length ? profileLabels.join(", ") : "none"}.</p>
         </div>
       ) : null}
@@ -365,7 +368,7 @@ function SelectedProviderTask({
             Connect {provider.providerDisplayName}
           </h3>
           <p className="mt-2 max-w-xl text-sm leading-6 text-ink-secondary">
-            Paste a key. AIQSA will verify it and make one supported model available to your account.
+            Paste a key. AIQSA will verify it and make the current supported models visible to that key available to your account.
           </p>
           {provider.state === "advanced_required" ? (
             <p className="mt-3 max-w-xl border-l-2 border-proof/40 pl-3 text-xs leading-5 text-ink-muted">
@@ -395,7 +398,7 @@ function SetupGuide() {
       title: "Verify the key"
     },
     {
-      detail: "AIQSA activates one supported answer model, or asks you to choose from known compatible models.",
+      detail: "AIQSA activates the current supported answer models available to your key and chooses a sensible default.",
       Icon: CheckCircle2,
       title: "Prepare a model"
     },
@@ -448,16 +451,16 @@ export function AdminProviderQuickSetup({
           <div className="grid gap-8 xl:grid-cols-[minmax(0,1fr)_20rem] xl:gap-10">
             <div className="min-w-0">
               <div
-                className="grid min-w-0 grid-cols-3 overflow-hidden rounded-panel border border-trace-subtle"
+                className="grid min-w-0 grid-cols-2 gap-px overflow-hidden rounded-panel border border-trace-subtle bg-trace-subtle sm:grid-cols-4"
                 data-testid="provider-quick-choice-strip"
               >
-                {providers.map((provider, index) => {
+                {providers.map((provider) => {
                   const selected = controller.state.selectedProviderId === provider.provider;
                   return (
                     <button
-                      className={`min-w-0 border-trace-subtle px-2 py-3 text-left sm:px-4 sm:py-4 ${focusRing} ${touchTarget} ${
-                        index > 0 ? "border-l" : ""
-                      } ${selected ? "bg-proof/10 text-proof" : "text-ink hover:bg-control-hover"}`}
+                      className={`min-w-0 bg-answer-paper px-2 py-3 text-left sm:px-4 sm:py-4 ${focusRing} ${touchTarget} ${
+                        selected ? "bg-proof/10 text-proof" : "text-ink hover:bg-control-hover"
+                      }`}
                       disabled={controller.state.formLocked}
                       key={provider.provider}
                       onClick={() => {

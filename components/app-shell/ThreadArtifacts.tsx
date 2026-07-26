@@ -76,47 +76,68 @@ function ContextTruncationBlockComponent({ summary }: { summary: ThreadArtifactS
 
 function SearchSummaryBlockComponent({
   active = false,
+  embedded = false,
   expanded,
   onExpandedChange,
   summary
 }: DisclosureControl & {
   active?: boolean;
+  embedded?: boolean;
   summary: ThreadArtifactSummary;
 }) {
   const strategy = summary.searchStrategy ? searchStrategyDescription(summary.searchStrategy) : "Search/tool call";
   const searchDetails = summary.searchDetails ?? [];
   const [open, toggleOpen] = useDisclosureControl({ expanded, onExpandedChange });
 
+  if (embedded && !open) {
+    return null;
+  }
+
   return (
     <section
-      className="border-t border-trace-subtle pt-2 text-xs text-ink-secondary"
+      className={
+        embedded
+          ? "mt-2 border-t border-trace-subtle pt-2 text-xs text-ink-secondary"
+          : "border-t border-trace-subtle pt-2 text-xs text-ink-secondary"
+      }
       data-testid="thread-search-summary"
+      aria-label={
+        embedded
+          ? `${summary.searchCount} search ${summary.searchCount === 1 ? "call" : "calls"} details`
+          : undefined
+      }
     >
-      <button
-        className="-mx-2 flex min-h-control w-[calc(100%+1rem)] cursor-pointer flex-wrap items-center gap-x-2 gap-y-1 rounded-control px-2 text-left outline-none hover:bg-control-hover focus-visible:ring-2 focus-visible:ring-proof/45 [@media(hover:none)]:min-h-touch [@media(pointer:coarse)]:min-h-touch"
-        type="button"
-        aria-expanded={open}
-        onClick={toggleOpen}
-      >
-        {open ? (
-          <ChevronDown className="size-3.5 shrink-0 text-ink-muted" aria-hidden="true" />
-        ) : (
-          <ChevronRight className="size-3.5 shrink-0 text-ink-muted" aria-hidden="true" />
-        )}
-        <Search className={active ? "size-4 shrink-0 text-proof" : "size-4 shrink-0 text-ink-muted"} aria-hidden="true" />
-        <span className="font-semibold text-ink">
-          {active
-            ? "Searching"
-            : `${summary.searchCount} search ${summary.searchCount === 1 ? "call" : "calls"}`}
-        </span>
-        <span className="text-ink-muted">{strategy}</span>
-        {summary.citationCount > 0 ? (
-          <span className="text-ink-muted">· {summary.citationCount} citations</span>
-        ) : null}
-      </button>
+      {!embedded ? (
+        <button
+          className="-mx-2 flex min-h-control w-[calc(100%+1rem)] cursor-pointer flex-wrap items-center gap-x-2 gap-y-1 rounded-control px-2 text-left outline-none hover:bg-control-hover focus-visible:ring-2 focus-visible:ring-proof/45 [@media(hover:none)]:min-h-touch [@media(pointer:coarse)]:min-h-touch"
+          type="button"
+          aria-expanded={open}
+          onClick={toggleOpen}
+        >
+          {open ? (
+            <ChevronDown className="size-3.5 shrink-0 text-ink-muted" aria-hidden="true" />
+          ) : (
+            <ChevronRight className="size-3.5 shrink-0 text-ink-muted" aria-hidden="true" />
+          )}
+          <Search className={active ? "size-4 shrink-0 text-proof" : "size-4 shrink-0 text-ink-muted"} aria-hidden="true" />
+          <span className="font-semibold text-ink">
+            {active
+              ? "Searching"
+              : `${summary.searchCount} search ${summary.searchCount === 1 ? "call" : "calls"}`}
+          </span>
+          <span className="text-ink-muted">{strategy}</span>
+          {summary.citationCount > 0 ? (
+            <span className="text-ink-muted">· {summary.citationCount} citations</span>
+          ) : null}
+        </button>
+      ) : null}
       {open && searchDetails.length > 0 ? (
         <div
-          className="mt-2 divide-y divide-trace-subtle border-y border-trace-subtle"
+          className={
+            embedded
+              ? "divide-y divide-trace-subtle"
+              : "mt-2 divide-y divide-trace-subtle border-y border-trace-subtle"
+          }
           data-testid="thread-search-details"
         >
           {searchDetails.map((detail, index) => (
@@ -161,7 +182,13 @@ function SearchSummaryBlockComponent({
         </div>
       ) : null}
       {open && searchDetails.length === 0 ? (
-        <div className="mt-2 border-t border-trace-subtle py-3 text-ink-muted">
+        <div
+          className={
+            embedded
+              ? "py-3 text-ink-muted"
+              : "mt-2 border-t border-trace-subtle py-3 text-ink-muted"
+          }
+        >
           No search/tool request or response preview captured for this run.
         </div>
       ) : null}
@@ -383,34 +410,56 @@ function ToolActivityBlockComponent({
 }
 
 function CitationBlockComponent({
+  embedded = false,
   expanded,
   onExpandedChange,
   summary
-}: DisclosureControl & { summary: ThreadArtifactSummary }) {
+}: DisclosureControl & { embedded?: boolean; summary: ThreadArtifactSummary }) {
   const citations = summary.citations ?? [];
   const [open, toggleOpen] = useDisclosureControl({ expanded, onExpandedChange });
 
+  if (embedded && !open) {
+    return null;
+  }
+
   return (
     <section
-      className="border-t border-trace-subtle pt-2 text-xs text-ink-secondary"
+      className={
+        embedded
+          ? "mt-2 border-t border-trace-subtle pt-2 text-xs text-ink-secondary"
+          : "border-t border-trace-subtle pt-2 text-xs text-ink-secondary"
+      }
       data-testid="thread-citations-block"
+      aria-label={
+        embedded
+          ? `${summary.citationCount} citation ${summary.citationCount === 1 ? "source" : "sources"}`
+          : undefined
+      }
     >
-      <button
-        className="-mx-2 flex min-h-control w-[calc(100%+1rem)] items-center gap-2 rounded-control px-2 text-left outline-none hover:bg-control-hover focus-visible:ring-2 focus-visible:ring-proof/45 [@media(hover:none)]:min-h-touch [@media(pointer:coarse)]:min-h-touch"
-        type="button"
-        aria-expanded={open}
-        onClick={toggleOpen}
-      >
-        {open ? (
-          <ChevronDown className="size-3.5 shrink-0 text-ink-muted" aria-hidden="true" />
-        ) : (
-          <ChevronRight className="size-3.5 shrink-0 text-ink-muted" aria-hidden="true" />
-        )}
-        <span className="font-semibold text-ink">Citations</span>
-        <span className="text-ink-muted">{summary.citationCount}</span>
-      </button>
+      {!embedded ? (
+        <button
+          className="-mx-2 flex min-h-control w-[calc(100%+1rem)] items-center gap-2 rounded-control px-2 text-left outline-none hover:bg-control-hover focus-visible:ring-2 focus-visible:ring-proof/45 [@media(hover:none)]:min-h-touch [@media(pointer:coarse)]:min-h-touch"
+          type="button"
+          aria-expanded={open}
+          onClick={toggleOpen}
+        >
+          {open ? (
+            <ChevronDown className="size-3.5 shrink-0 text-ink-muted" aria-hidden="true" />
+          ) : (
+            <ChevronRight className="size-3.5 shrink-0 text-ink-muted" aria-hidden="true" />
+          )}
+          <span className="font-semibold text-ink">Citations</span>
+          <span className="text-ink-muted">{summary.citationCount}</span>
+        </button>
+      ) : null}
       {open && citations.length > 0 ? (
-        <ol className="mt-2 divide-y divide-trace-subtle border-y border-trace-subtle">
+        <ol
+          className={
+            embedded
+              ? "divide-y divide-trace-subtle"
+              : "mt-2 divide-y divide-trace-subtle border-y border-trace-subtle"
+          }
+        >
           {citations.map((citation) => {
             const href = safeExternalHref(citation.url);
 
@@ -441,7 +490,13 @@ function CitationBlockComponent({
           })}
         </ol>
       ) : open ? (
-        <div className="mt-2 border-t border-trace-subtle py-3 text-ink-muted">
+        <div
+          className={
+            embedded
+              ? "py-3 text-ink-muted"
+              : "mt-2 border-t border-trace-subtle py-3 text-ink-muted"
+          }
+        >
           No citation text captured for this run.
         </div>
       ) : null}

@@ -599,6 +599,85 @@ describe("control default freshness", () => {
     expect(compatibleHarness.actions().buildParams()).not.toHaveProperty("stream");
   });
 
+  it("translates Gemini and Claude controls into one valid provider dialect", () => {
+    vi.stubGlobal("fetch", settingsFetchMock());
+    const geminiModel: CatalogModel = {
+      ...model,
+      defaultParams: {
+        maxOutputTokens: 65536,
+        reasoning: { effort: "medium" },
+        stream: true
+      },
+      displayName: "Gemini 3.6 Flash",
+      modelId: "gemini-3.6-flash",
+      parameterControls: {
+        ...model.parameterControls,
+        background: { defaultValue: false, supported: false },
+        maxOutputTokens: { defaultValue: 65536, maxValue: 65536 },
+        reasoningEffort: {
+          defaultValue: "medium",
+          options: ["minimal", "low", "medium", "high"],
+          supported: true
+        },
+        stream: { defaultValue: true, supported: true },
+        temperature: { defaultValue: 1, maxValue: 2, minValue: 0, supported: false }
+      },
+      provider: "gemini-connection",
+      providerFamily: "gemini",
+      searchStrategyIds: ["search-disabled"]
+    };
+    const geminiHarness = createRunControlsHarness(
+      geminiModel,
+      catalog({}, [model, geminiModel])
+    );
+    useComposerControlStore.getState().setSelectedProvider(geminiModel.provider);
+    useComposerControlStore.getState().setSelectedModelId(geminiModel.modelId);
+    geminiHarness.actions().applyModelControlDefaults(geminiModel);
+    geminiHarness.actions().changeMaxOutputTokens("2048");
+
+    expect(geminiHarness.actions().buildParams()).toEqual({
+      maxOutputTokens: 2048,
+      reasoning: { effort: "medium" },
+      stream: true
+    });
+
+    const claudeModel: CatalogModel = {
+      ...geminiModel,
+      defaultParams: {
+        maxTokens: 128000,
+        reasoning: { effort: "high" }
+      },
+      displayName: "Claude Opus 5",
+      modelId: "claude-opus-5",
+      parameterControls: {
+        ...geminiModel.parameterControls,
+        maxOutputTokens: { defaultValue: 128000, maxValue: 128000 },
+        reasoningEffort: {
+          defaultValue: "high",
+          options: ["low", "medium", "high", "xhigh", "max"],
+          supported: true
+        },
+        stream: { defaultValue: true, supported: false }
+      },
+      provider: "anthropic-connection",
+      providerFamily: "anthropic"
+    };
+    const claudeHarness = createRunControlsHarness(
+      claudeModel,
+      catalog({}, [model, claudeModel])
+    );
+    useComposerControlStore.getState().setSelectedProvider(claudeModel.provider);
+    useComposerControlStore.getState().setSelectedModelId(claudeModel.modelId);
+    claudeHarness.actions().applyModelControlDefaults(claudeModel);
+
+    expect(claudeHarness.actions().buildParams()).toMatchObject({
+      maxTokens: 128000,
+      outputConfig: { effort: "high" },
+      thinking: { enabled: true, type: "adaptive" }
+    });
+    expect(claudeHarness.actions().buildParams()).not.toHaveProperty("reasoning");
+  });
+
   it("applies a Deep profile atomically and persists one complete target-model draft", async () => {
     const fetchMock = settingsFetchMock();
     vi.stubGlobal("fetch", fetchMock);

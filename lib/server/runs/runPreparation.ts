@@ -50,12 +50,14 @@ const currentSendMessageId = "current-user-message";
 
 function legacyAdapterKind(provider: string): CatalogAdapterKind {
   if (provider === "anthropic") return "anthropic_messages";
+  if (provider === "gemini") return "openai_chat_completions_compatible";
   if (provider === "openrouter") return "openrouter_chat_completions";
   if (provider === "fake") return "fake";
   return "openai_responses_native";
 }
 
-function parameterDialect(adapterKind: CatalogAdapterKind): string {
+function parameterDialect(adapterKind: CatalogAdapterKind, providerFamily: string): string {
+  if (providerFamily === "gemini") return "gemini";
   if (adapterKind === "anthropic_messages") return "anthropic";
   if (adapterKind === "openrouter_chat_completions") return "openrouter";
   if (adapterKind === "fake") return "fake";
@@ -825,7 +827,7 @@ export async function prepareRun(
   const { capabilities: modelCapabilities, defaultParams } = modelConfiguration;
   const executionAdapterKind =
     modelConfiguration.adapterKind ?? legacyAdapterKind(executionProvider);
-  const parameterProvider = parameterDialect(executionAdapterKind);
+  const parameterProvider = parameterDialect(executionAdapterKind, executionProvider);
 
   if (!admissionPlan && !(await deps.repository.isSearchStrategyEnabled(requestedSearchStrategy))) {
     return failure("search_strategy_not_available", 403);

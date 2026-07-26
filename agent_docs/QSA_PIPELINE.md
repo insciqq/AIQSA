@@ -10,7 +10,7 @@ Question -> Search -> Answer
 
 The common conversation path stays calm while giving the operator precise control over API request shape, model parameters, search strategy, streamed events, response artifacts, branch state, and provider-reported usage.
 
-Streaming is a provider-neutral run capability. Catalog `capabilities.streaming` says a model/adapter can stream normalized run events; catalog `parameterControls.stream.supported` says the composer exposes a per-run Stream toggle for that model. OpenAI and OpenRouter currently expose the toggle, while other streaming providers can keep adapter-owned defaults until their user-facing control is deliberately enabled.
+Streaming is a provider-neutral run capability. Catalog `capabilities.streaming` says a model/adapter can stream normalized run events; catalog `parameterControls.stream.supported` says the composer exposes a per-run Stream toggle for that model. OpenAI, Gemini, and OpenRouter currently expose the toggle, while other streaming providers can keep adapter-owned defaults until their user-facing control is deliberately enabled.
 
 ## Pipeline Stages
 
@@ -32,7 +32,7 @@ Streaming is a provider-neutral run capability. Catalog `capabilities.streaming`
 
 3. Answer
    - streamed visible answer through the normalized SSE contract;
-   - provider EOF is not success: OpenAI requires a completed `response.completed`, OpenRouter streaming requires `[DONE]`, OpenRouter non-streaming requires a usable first choice/message, and Anthropic requires `message_stop`; accepted partial text remains inspectable with error status when terminal proof never arrives;
+   - provider EOF is not success: OpenAI Responses requires a completed `response.completed`, Gemini/generic compatible Chat and OpenRouter streaming require `[DONE]`, compatible/OpenRouter non-streaming requires a usable first choice/message, and Anthropic requires `message_stop`; accepted partial text remains inspectable with error status when terminal proof never arrives;
    - final foreground stream update carries the canonical changed chat/message snapshot needed by the UI, without reloading chat detail;
    - reasoning/thinking summaries or blocks when available, hidden in the thread by default and shown through a user toggle;
    - citations/search artifacts when available, with citations optionally visible in the thread;
@@ -74,6 +74,7 @@ Current providers:
 - native OpenAI Responses as the first-class OpenAI path;
 - custom OpenAI-compatible Responses and Chat Completions as separate explicit protocols;
 - Anthropic Messages API;
+- Gemini through Google's OpenAI-compatible Chat Completions endpoint, with Gemini-specific tool transcript/signature preservation;
 - OpenRouter Chat Completions-compatible API;
 - administrator-selected OpenRouter search deployments for provider-neutral search tools;
 - Provider-neutral run-tool contracts for web search, with OpenAI Responses and OpenRouter Chat Completions bridge boundaries.
@@ -86,7 +87,7 @@ Adapter defaults and cache/wire details live in `BACKEND.md`; externally verifie
 - Send/regenerate requests carry the selected strategy in the run body and a `controlDefaults` snapshot. After validation, the backend commits that snapshot to current-user defaults inside the same transaction as the guarded run graph; provider execution starts only after this complete commit. The visible composer state therefore survives immediate reloads even if a separate settings autosave was still in flight, while pre-create rejection, insert-time active-run conflict, or defaults failure leaves both the graph and defaults unchanged.
 - Explicit `search-disabled` is preserved as No Search and survives model/chat switching.
 - Selected `openai-native-web-search` sends OpenAI Responses the hosted `web_search` tool with `tool_choice: "auto"`; the model decides whether to search.
-- Selected `perplexity-tool-search` lets the entitled OpenAI/OpenRouter answer model decide whether to call the provider-neutral `search_via_perplexity` tool against full branch context. The enabled strategy and search-model policy are server-authoritative; posted search params may change only bounded canonical output-token and temperature controls, never provider routing/privacy. No call creates no `SearchRun`; each actual call records search/citation/usage/error artifacts, and failures are returned to the answer model so it can still synthesize a useful answer. Execution is bounded and ends with a no-tool synthesis round. Current implementation also forwards bounded extracted PDF/document text to OpenRouter/Perplexity without a separate attachment confirmation; this is a known privacy limitation awaiting query-only, fail-closed remediation, so do not describe the current path as sending only the generated query. Exact bridge/transcript/streaming mechanics live in `BACKEND.md`.
+- Selected `perplexity-tool-search` lets an entitled OpenAI, Gemini, or OpenRouter answer model decide whether to call the provider-neutral `search_via_perplexity` tool against full branch context. The enabled strategy and search-model policy are server-authoritative; posted search params may change only bounded canonical output-token and temperature controls, never provider routing/privacy. No call creates no `SearchRun`; each actual call records search/citation/usage/error artifacts, and failures are returned to the answer model so it can still synthesize a useful answer. Execution is bounded and ends with a no-tool synthesis round. Current implementation also forwards bounded extracted PDF/document text to OpenRouter/Perplexity without a separate attachment confirmation; this is a known privacy limitation awaiting query-only, fail-closed remediation, so do not describe the current path as sending only the generated query. Exact bridge/transcript/streaming mechanics live in `BACKEND.md`.
 - The legacy regex-gated OpenRouter/Perplexity pre-search stage and `openrouter-perplexity-sonar` id are removed from active runtime paths. Stale settings are migrated to concrete strategy ids; stale requests are rejected by normal entitlement/model validation.
 - Expose only search strategies allowed for the current user/model through the backend catalog.
 - Store citations/annotations/search result metadata as response artifacts. Citation URLs are sanitized through the shared link-safety helper before persistence/read-back/rendering; unsafe schemes render inertly.

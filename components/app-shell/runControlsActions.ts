@@ -103,6 +103,28 @@ export function useRunControlsActions({
     const effort = coerceReasoningEffort(reasoningEffort, controls);
     const mode = coerceReasoningMode(reasoningMode, controls);
 
+    if (providerFamily === "gemini") {
+      const params: Record<string, unknown> = {
+        ...baseParams,
+        maxOutputTokens: maxTokens,
+        reasoning: {
+          ...recordValue(baseParams.reasoning),
+          effort
+        }
+      };
+      delete params.maxTokens;
+      delete params.max_tokens;
+      delete params.max_output_tokens;
+      delete params.max_completion_tokens;
+      if (controls.stream.supported) {
+        params.stream = streamMode;
+      } else {
+        delete params.stream;
+      }
+      delete params.temperature;
+      return params;
+    }
+
     if (providerFamily === "openai" || providerFamily === "openai_compatible") {
       const reasoning: Record<string, unknown> = {
         ...recordValue(baseParams.reasoning),
@@ -154,6 +176,7 @@ export function useRunControlsActions({
       } else {
         delete params.temperature;
       }
+      delete params.reasoning;
 
       return params;
     }

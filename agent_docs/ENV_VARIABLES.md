@@ -59,7 +59,7 @@ AIQSA_OPENAI_BACKGROUND_POLL_TIMEOUT_MS=660000
 
 Provider connections, endpoints, adapter protocols, models, routing, credentials, direct-user/group assignments, activation evidence, stored diagnostics, and enabled state are database-owned and configured through `Control Center -> Providers`. The Quick setup preflight persists neither an unsuccessful key nor its validation result. The long-running application receives no provider key/base-URL variables and has no environment fallback. The remaining response-size and timeout variables only bound untrusted buffered responses, complete non-streaming exchanges, streaming idle time, and the absolute OpenAI background polling lifecycle respectively.
 
-`AIQSA_DEFAULT_MODEL` and `AIQSA_DEFAULT_SEARCH_MODEL` are optional explicit provider-smoke inputs only. The application uses persisted catalog/settings choices. Provider-smoke permission is defined in `CRITICAL_INVARIANTS.md`; no routine test makes a paid external call.
+`AIQSA_DEFAULT_MODEL` and `AIQSA_DEFAULT_SEARCH_MODEL` are optional explicit provider-smoke inputs only. `GEMINI_API_KEY` and optional `AIQSA_GEMINI_SMOKE_MODEL` are consumed only by `npm run smoke:gemini`; they select the one-off key/model for its bounded sanitized chat/tool-loop check and are not application configuration. The application uses persisted catalog/settings choices. Provider-smoke permission is defined in `CRITICAL_INVARIANTS.md`; no routine test makes a paid external call.
 
 ## MCP Runtime Wiring
 
@@ -164,7 +164,7 @@ AIQSA_FAKE_PROVIDER_TOKEN_DELAY_MS=
 
 Exact `AIQSA_TEST_MODE=1` plus non-production `NODE_ENV` authorizes the deterministic seed and Fake QSA adapter. Deterministic auth additionally requires exact `PLAYWRIGHT_TEST_AUTH=1`. The compiled runtime rejects these switches through readiness, and they are absent from `.env.example`. The seed restores the public fixture `operator@aiqsa.local` / `AIQSA-local-2026!` only inside disposable development volumes.
 
-The dev Compose service hardcodes loopback publication and does not inject provider/SMTP or sign-in OAuth credentials from the normal installation `.env`. A deliberate one-off adapter smoke passes only the required key to the standalone smoke command; routine application runtime always resolves provider credentials from its disposable database.
+The dev Compose service hardcodes loopback publication and does not inject provider/SMTP or sign-in OAuth credentials from the normal installation `.env`. A deliberate one-off adapter smoke passes only the required key to the standalone smoke command; `smoke:gemini` may read `GEMINI_API_KEY` from the uncommitted local `.env` when launched from the repository. Routine application runtime always resolves provider credentials from its disposable database.
 
 `NODE_ENV` remains a framework/container-owned value: the built standalone runtime uses `production`, while the supported localhost-vs-HTTPS policy comes from explicit URL/cookie settings rather than a named AIQSA environment tier.
 

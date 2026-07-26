@@ -7,7 +7,7 @@ Use these defaults only when the operator has not decided the point. They route 
 - Continue the shipped conversation-first QSA product under ADRs 0009-0011; do not invent a landing page, agent builder, marketplace, or unrelated product direction.
 - Keep the Next.js/Postgres/Prisma/S3 modular monolith. Add a runtime/service/library only after a measured existing boundary blocks the work.
 - Preserve the full reachable capability inventory in `FRONTEND.md`. Prefer progressive disclosure and removal of duplicate editors over hiding a capability.
-- Keep conversation/composer primary, workspace navigation secondary, and Details on demand. Concrete Model, Search, and Reasoning remain legible near the composer; Run settings owns next-run editing and Details owns Branch/Events inspection.
+- Keep conversation/composer primary, workspace navigation secondary, and Details on demand. Concrete Model, configured Profiles, and Search are direct composer actions; More owns complete next-run editing including Reasoning, and Details owns Branch/Events inspection.
 - Resolve failure, loading, notice, shortcut safety, and responsive behavior through `FRONTEND.md`; resolve appearance through `DESIGN_SYSTEM.md`. Do not restate those contracts in a task. Do not infer WCAG or dedicated accessibility scope: ADR 0025 explicitly defers it until a separately approved task.
 - Keep backend user ownership, entitlement validation, server-owned branch context, guarded run finalization, private attachments, and sanitized snapshot boundaries.
 - Add abstractions only when they remove demonstrated duplication or give one authoritative owner to behavior; prefer narrow contracts/selectors over broad controller/repository interfaces.
@@ -16,7 +16,7 @@ Use these defaults only when the operator has not decided the point. They route 
 ## Provider Defaults
 
 - OpenAI Responses is the default provider path; current defaults and execution behavior are owned by `BACKEND.md`.
-- Anthropic uses Messages; OpenRouter uses Chat Completions and backs the Perplexity tool executor.
+- Anthropic uses Messages; Gemini uses Google's OpenAI-compatible Chat Completions endpoint; OpenRouter uses Chat Completions and backs the Perplexity tool executor.
 - The browser selects an entitled concrete model; providers are grouping/routing metadata, not standalone model choices.
 - Routine automation uses fake providers. Real provider calls follow the permission and cost limits in `CRITICAL_INVARIANTS.md`.
 - External mutable facts come from `PROVIDER_API_NOTES.md`; configuration names/defaults come from `ENV_VARIABLES.md`.

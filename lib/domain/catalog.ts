@@ -1,6 +1,7 @@
 import {
   defaultAnthropicMessagesParams,
   defaultFakeProviderParams,
+  defaultGeminiChatParams,
   defaultOpenRouterParams,
   defaultOpenAIResponsesParams,
   type ProviderId
@@ -106,6 +107,7 @@ function controls(input: Partial<ModelParameterControls> & Pick<ModelParameterCo
 
 const openAIResponsesParams = defaultOpenAIResponsesParams();
 const anthropicMessagesParams = defaultAnthropicMessagesParams();
+const geminiChatParams = defaultGeminiChatParams();
 const openRouterParams = defaultOpenRouterParams();
 
 function openAIGpt56Model(modelId: string, displayName: string): ProviderModelTemplate {
@@ -163,6 +165,115 @@ function openAIGpt56Model(modelId: string, displayName: string): ProviderModelTe
         maxValue: 2,
         minValue: 0,
         supported: true
+      }
+    })
+  };
+}
+
+function anthropicClaude5Model(modelId: string, displayName: string): ProviderModelTemplate {
+  return {
+    provider: "anthropic",
+    modelId,
+    displayName,
+    contextWindow: 1_000_000,
+    inputTokenPriceMicros: 0,
+    outputTokenPriceMicros: 0,
+    capabilities: {
+      backgroundStreaming: false,
+      nativeBackground: false,
+      nativePdfInput: true,
+      nativeSearch: false,
+      parallelToolCalls: true,
+      pdf: true,
+      reasoning: true,
+      streaming: true,
+      toolCalling: true,
+      vision: true
+    },
+    defaultParams: {
+      ...anthropicMessagesParams,
+      thinking: {
+        ...anthropicMessagesParams.thinking,
+        enabled: true,
+        type: "adaptive"
+      }
+    },
+    parameterControls: controls({
+      maxOutputTokens: {
+        defaultValue: 128_000,
+        maxValue: 128_000
+      },
+      reasoningEffort: {
+        defaultValue: "high",
+        options: ["low", "medium", "high", "xhigh", "max"],
+        supported: true
+      },
+      stream: {
+        defaultValue: true,
+        supported: false
+      },
+      temperature: {
+        defaultValue: neutralTemperature,
+        maxValue: 1,
+        minValue: 0,
+        supported: false
+      }
+    })
+  };
+}
+
+function geminiModel(input: Readonly<{
+  displayName: string;
+  effort: "high" | "medium" | "minimal";
+  modelId: string;
+  pro?: boolean;
+}>): ProviderModelTemplate {
+  return {
+    provider: "gemini",
+    modelId: input.modelId,
+    displayName: input.displayName,
+    contextWindow: 1_000_000,
+    inputTokenPriceMicros: 0,
+    outputTokenPriceMicros: 0,
+    capabilities: {
+      backgroundStreaming: false,
+      nativeBackground: false,
+      nativePdfInput: false,
+      nativeSearch: false,
+      parallelToolCalls: false,
+      pdf: true,
+      reasoning: true,
+      streaming: true,
+      toolCalling: true,
+      vision: true
+    },
+    defaultParams: {
+      ...geminiChatParams,
+      reasoning: {
+        effort: input.effort
+      }
+    },
+    parameterControls: controls({
+      maxOutputTokens: {
+        defaultValue: 65_536,
+        maxValue: 65_536
+      },
+      reasoningEffort: {
+        defaultValue: input.effort,
+        options: input.pro
+          ? ["low", "medium", "high"]
+          : ["minimal", "low", "medium", "high"],
+        supported: true
+      },
+      stream: {
+        defaultValue: true,
+        supported: true
+      },
+      temperature: {
+        defaultValue: neutralTemperature,
+        maxValue: 2,
+        minValue: 0,
+        supported: false
       }
     })
   };
@@ -260,6 +371,8 @@ const defaultProviderModelTemplates: ProviderModelTemplate[] = [
   openAIGpt56Model("gpt-5.6-sol", "GPT-5.6 Sol"),
   openAIGpt56Model("gpt-5.6-terra", "GPT-5.6 Terra"),
   openAIGpt56Model("gpt-5.6-luna", "GPT-5.6 Luna"),
+  anthropicClaude5Model("claude-opus-5", "Claude Opus 5"),
+  anthropicClaude5Model("claude-sonnet-5", "Claude Sonnet 5"),
   {
     provider: "anthropic",
     modelId: "claude-opus-4-8",
@@ -302,6 +415,27 @@ const defaultProviderModelTemplates: ProviderModelTemplate[] = [
       }
     })
   },
+  geminiModel({
+    displayName: "Gemini 3.6 Flash",
+    effort: "medium",
+    modelId: "gemini-3.6-flash"
+  }),
+  geminiModel({
+    displayName: "Gemini 3.5 Flash",
+    effort: "medium",
+    modelId: "gemini-3.5-flash"
+  }),
+  geminiModel({
+    displayName: "Gemini 3.5 Flash-Lite",
+    effort: "minimal",
+    modelId: "gemini-3.5-flash-lite"
+  }),
+  geminiModel({
+    displayName: "Gemini 3.1 Pro Preview",
+    effort: "high",
+    modelId: "gemini-3.1-pro-preview",
+    pro: true
+  }),
   {
     provider: "openrouter",
     modelId: "anthropic/claude-opus-4.8",
@@ -513,6 +647,7 @@ const defaultProviderModelTemplates: ProviderModelTemplate[] = [
 const providerDisplayNames: Record<ProviderId, string> = {
   anthropic: "Anthropic",
   fake: "Fake",
+  gemini: "Gemini",
   openai: "OpenAI",
   openrouter: "OpenRouter"
 };
@@ -520,6 +655,7 @@ const providerDisplayNames: Record<ProviderId, string> = {
 const providerAdapterKinds: Record<ProviderId, CatalogAdapterKind> = {
   anthropic: "anthropic_messages",
   fake: "fake",
+  gemini: "openai_chat_completions_compatible",
   openai: "openai_responses_native",
   openrouter: "openrouter_chat_completions"
 };

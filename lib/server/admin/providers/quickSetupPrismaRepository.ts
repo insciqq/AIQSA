@@ -187,7 +187,7 @@ async function loadQuickSetupState(
   db: QuickSetupDb,
   input: AdminProviderQuickSetupActor & Readonly<{
     now: Date;
-    provider: "anthropic" | "openai" | "openrouter";
+    provider: "anthropic" | "gemini" | "openai" | "openrouter";
   }>
 ) {
   const policy = adminProviderQuickSetupPolicy(input.provider);
@@ -884,6 +884,38 @@ async function applyQuickSetupPlan(
     return "advanced_required";
   }
   if (current.inspection.fingerprint !== plan.expectedFingerprint) return "stale";
+  const policy = adminProviderQuickSetupPolicy(plan.provider);
+  const canonicalCandidates = plan.candidates.flatMap((planned) => {
+    const canonical = policy.candidates.find(
+      ({ candidateId }) => candidateId === planned.candidateId
+    );
+    return canonical && canonical.provider === planned.provider &&
+      canonical.modelId === planned.modelId &&
+      canonical.templateKey === planned.templateKey &&
+      canonical.displayName === planned.displayName &&
+      canonicalJson(canonical.configuration) === canonicalJson(planned.configuration)
+      ? [canonical]
+      : [];
+  });
+  const candidateModelIds = canonicalCandidates.map(({ modelId }) => modelId);
+  const selectedCandidate = canonicalCandidates.find(
+    ({ candidateId }) => candidateId === plan.candidate.candidateId
+  );
+  const grantIds = plan.grants.map(({ id }) => id);
+  const grantModelIds = plan.grants.map(({ modelId }) => modelId);
+  if (
+    plan.candidates.length < 1 || plan.candidates.length > policy.candidates.length ||
+    canonicalCandidates.length !== plan.candidates.length ||
+    new Set(candidateModelIds).size !== candidateModelIds.length ||
+    !selectedCandidate ||
+    selectedCandidate.modelId !== plan.candidate.modelId ||
+    plan.grants.length !== canonicalCandidates.length ||
+    new Set(grantIds).size !== grantIds.length || grantIds.some((id) => !id) ||
+    new Set(grantModelIds).size !== grantModelIds.length ||
+    grantModelIds.some((modelId) => !candidateModelIds.includes(modelId))
+  ) {
+    return "stale";
+  }
   if (
     current.inspection.mode !== plan.mode ||
     (current.inspection.quickSetupCredential === null) !== plan.credential.isNew ||
@@ -892,7 +924,7 @@ async function applyQuickSetupPlan(
       current.inspection.quickSetupCredential.draftVersion + 1 !== plan.credential.draftVersion
     )) ||
     (current.inspection.mode !== "initial" && current.inspection.model &&
-      current.inspection.model?.templateKey !== plan.candidate.templateKey)
+      current.inspection.model?.templateKey !== selectedCandidate.templateKey)
   ) {
     return "stale";
   }
@@ -929,12 +961,36 @@ async function applyQuickSetupPlan(
     where: {
       groupId: null,
       providerConnectionId: null,
-      providerModelId: plan.candidate.modelId,
+      providerModelId: { in: candidateModelIds },
       searchStrategy: null,
       userId: plan.actor.userId
     }
   });
-  const policy = adminProviderQuickSetupPolicy(plan.provider);
+  const existingModels = new Map((await Promise.all(
+    canonicalCandidates.map(async (candidate) => [
+      candidate.modelId,
+      await tx.providerModel.findUnique({ where: { id: candidate.modelId } })
+    ] as const)
+  )));
+  for (const candidate of canonicalCandidates) {
+    const existingModel = existingModels.get(candidate.modelId) ?? null;
+    if (plan.mode === "replacement" && candidate.modelId === selectedCandidate.modelId &&
+      !existingModel) {
+      return "stale";
+    }
+    if (existingModel && (
+      existingModel.connectionId !== policy.connection.id ||
+      existingModel.provider !== policy.provider ||
+      existingModel.templateKey !== candidate.templateKey ||
+      (existingModel.activeConfig === null
+        ? existingModel.draftVersion < 1 ||
+          !canonicalModelConfig(existingModel.draftConfig, candidate.configuration)
+        : existingModel.activeVersion < 1 ||
+          !canonicalModelConfig(existingModel.activeConfig, candidate.configuration))
+    )) {
+      return "advanced_required";
+    }
+  }
   if (!current.connection) {
     await tx.providerConnection.create({
       data: {
@@ -972,49 +1028,52 @@ async function applyQuickSetupPlan(
     ? current.connection.draftVersion
     : current.connection?.activeVersion ?? 1;
 
-  const existingModel = await tx.providerModel.findUnique({
-    where: { id: plan.candidate.modelId }
-  });
-  if (plan.mode === "replacement" && !existingModel) return "stale";
-  if (!existingModel) {
-    await tx.providerModel.create({
-      data: {
-        activeConfig: json(plan.candidate.configuration),
-        activeVersion: 1,
-        activatedAt: plan.now,
-        connectionId: policy.connection.id,
-        displayName: plan.candidate.displayName,
-        draftConfig: json(plan.candidate.configuration),
-        draftVersion: 1,
-        enabled: true,
-        id: plan.candidate.modelId,
-        inputTokenPriceMicros: plan.candidate.model.inputTokenPriceMicros,
-        outputTokenPriceMicros: plan.candidate.model.outputTokenPriceMicros,
-        provider: policy.provider,
-        templateKey: plan.candidate.templateKey,
-        ...modelLegacyFields(plan.candidate.configuration)
-      }
-    });
-  } else if (existingModel.activeConfig === null) {
-    await tx.providerModel.update({
-      data: {
-        activeConfig: json(plan.candidate.configuration),
-        activeVersion: existingModel.draftVersion,
-        activatedAt: plan.now,
-        enabled: true,
-        ...modelLegacyFields(plan.candidate.configuration)
-      },
-      where: { id: plan.candidate.modelId }
-    });
-  } else if (!existingModel.enabled) {
-    await tx.providerModel.update({
-      data: { enabled: true },
-      where: { id: plan.candidate.modelId }
-    });
+  const modelVersions = new Map<string, number>();
+  for (const candidate of canonicalCandidates) {
+    const existingModel = existingModels.get(candidate.modelId) ?? null;
+    if (!existingModel) {
+      await tx.providerModel.create({
+        data: {
+          activeConfig: json(candidate.configuration),
+          activeVersion: 1,
+          activatedAt: plan.now,
+          connectionId: policy.connection.id,
+          displayName: candidate.displayName,
+          draftConfig: json(candidate.configuration),
+          draftVersion: 1,
+          enabled: true,
+          id: candidate.modelId,
+          inputTokenPriceMicros: candidate.model.inputTokenPriceMicros,
+          outputTokenPriceMicros: candidate.model.outputTokenPriceMicros,
+          provider: policy.provider,
+          templateKey: candidate.templateKey,
+          ...modelLegacyFields(candidate.configuration)
+        }
+      });
+    } else if (existingModel.activeConfig === null) {
+      await tx.providerModel.update({
+        data: {
+          activeConfig: json(candidate.configuration),
+          activeVersion: existingModel.draftVersion,
+          activatedAt: plan.now,
+          enabled: true,
+          ...modelLegacyFields(candidate.configuration)
+        },
+        where: { id: candidate.modelId }
+      });
+    } else if (!existingModel.enabled) {
+      await tx.providerModel.update({
+        data: { enabled: true },
+        where: { id: candidate.modelId }
+      });
+    }
+    modelVersions.set(
+      candidate.modelId,
+      existingModel?.activeConfig === null
+        ? existingModel.draftVersion
+        : existingModel?.activeVersion ?? 1
+    );
   }
-  const modelVersion = existingModel?.activeConfig === null
-    ? existingModel.draftVersion
-    : existingModel?.activeVersion ?? 1;
 
   if (plan.credential.isNew) {
     await tx.providerCredential.create({
@@ -1068,10 +1127,12 @@ async function applyQuickSetupPlan(
       }
     }
   });
-  preservedTargets.set(plan.candidate.modelId, {
-    configuration: plan.candidate.configuration,
-    modelVersion
-  });
+  for (const candidate of canonicalCandidates) {
+    preservedTargets.set(candidate.modelId, {
+      configuration: candidate.configuration,
+      modelVersion: modelVersions.get(candidate.modelId) ?? 1
+    });
+  }
   for (const [providerModelId, target] of [...preservedTargets.entries()].sort(
     ([left], [right]) => left.localeCompare(right)
   )) {
@@ -1095,39 +1156,45 @@ async function applyQuickSetupPlan(
     });
   }
 
-  const enabledDirectGrant = directGrants.find((grant) => grant.enabled);
-  if (!enabledDirectGrant && directGrants[0]) {
-    await tx.accessGrant.update({
-      data: { enabled: true },
-      where: { id: directGrants[0].id }
-    });
-  } else if (!enabledDirectGrant) {
-    await tx.accessGrant.create({
-      data: {
-        enabled: true,
-        groupId: null,
-        id: plan.grantId,
-        providerConnectionId: null,
-        providerModelId: plan.candidate.modelId,
-        searchStrategy: null,
-        userId: plan.actor.userId
-      }
-    });
+  const grantIdByModelId = new Map(plan.grants.map(({ id, modelId }) => [modelId, id]));
+  for (const candidate of canonicalCandidates) {
+    const candidateGrants = directGrants.filter(
+      ({ providerModelId }) => providerModelId === candidate.modelId
+    );
+    const enabledDirectGrant = candidateGrants.find((grant) => grant.enabled);
+    if (!enabledDirectGrant && candidateGrants[0]) {
+      await tx.accessGrant.update({
+        data: { enabled: true },
+        where: { id: candidateGrants[0].id }
+      });
+    } else if (!enabledDirectGrant) {
+      await tx.accessGrant.create({
+        data: {
+          enabled: true,
+          groupId: null,
+          id: grantIdByModelId.get(candidate.modelId)!,
+          providerConnectionId: null,
+          providerModelId: candidate.modelId,
+          searchStrategy: null,
+          userId: plan.actor.userId
+        }
+      });
+    }
   }
 
   const eligibleModelIds = await eligibleProviderModelIds(tx, plan.actor.userId, exposeFake);
-  if (![plan.candidate.modelId, ...plan.preservedModels.map(({ id }) => id)].every(
+  if ([...candidateModelIds, ...plan.preservedModels.map(({ id }) => id)].every(
     (modelId) => eligibleModelIds.has(modelId)
-  )) {
+  ) === false) {
     throw new QuickSetupCatalogUnavailableError();
   }
   const priorDefault = current.settings?.defaultProviderModelId ?? null;
   const priorDefaultUsable = Boolean(priorDefault && eligibleModelIds.has(priorDefault));
   const defaultChanged = plan.mode !== "replacement" &&
-    !priorDefaultUsable && priorDefault !== plan.candidate.modelId;
+    !priorDefaultUsable && priorDefault !== selectedCandidate.modelId;
   if (plan.mode !== "replacement" && !priorDefaultUsable) {
     await tx.userSettings.update({
-      data: { defaultProviderModelId: plan.candidate.modelId },
+      data: { defaultProviderModelId: selectedCandidate.modelId },
       where: { userId: plan.actor.userId }
     });
   }
@@ -1135,14 +1202,14 @@ async function applyQuickSetupPlan(
   const profileFills = planAdminProviderQuickSetupProfileFills({
     mode: plan.mode,
     profiles: current.profiles,
-    templateKey: plan.candidate.templateKey
+    templateKey: selectedCandidate.templateKey
   });
   const profilesFilled = [] as RunProfileId[];
   for (const profile of profileFills) {
     await tx.runProfile.update({
       data: {
         enabled: true,
-        providerModelId: plan.candidate.modelId,
+        providerModelId: selectedCandidate.modelId,
         reasoningEffort: profile.reasoningEffort,
         reasoningMode: profile.reasoningMode,
         updatedByUserId: plan.actor.userId,

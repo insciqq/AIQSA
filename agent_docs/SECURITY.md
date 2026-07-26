@@ -76,6 +76,10 @@ Storage remains private. MinIO has no anonymous access, filesystem fallback is s
 
 Repository-local `.aiqsa/` state is excluded from Git and Docker build context because it may contain user objects or other private runtime data. Do not copy it into images or caches.
 
+## Provider Catalog Trust
+
+Authenticated provider model catalogs are untrusted availability evidence, not executable configuration authority. Quick setup normalizes only the provider-specific identifier wrapper and intersects the bounded response with the current versioned code-owned candidate set. It never persists an arbitrary returned model id, guesses capabilities from its name, or treats image, audio, embedding, media, or unknown rows as chat deployments. Every candidate is canonical-preflighted before a multi-model transaction writes any connection, credential, model, check, or grant; a collision or changed fence fails without partial adoption. Provider credentials remain write-only and catalog failures expose only stable value-free errors.
+
 ## Dependency Safety
 
 For a dependency change:

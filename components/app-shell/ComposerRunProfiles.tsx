@@ -8,20 +8,24 @@ import { useId } from "react";
 
 export function ComposerRunProfiles({
   catalog,
+  compact = false,
   disabled,
   onSelect,
   reasoningEffort,
   reasoningMode,
   selectedModelId,
-  selectedProvider
+  selectedProvider,
+  testId = "composer-run-profiles"
 }: {
   catalog: Catalog | null;
+  compact?: boolean;
   disabled: boolean;
   onSelect(profileId: RunProfileId): void;
   reasoningEffort: string;
   reasoningMode: string;
   selectedModelId: string;
   selectedProvider: string;
+  testId?: string;
 }) {
   const descriptionPrefix = useId();
   const profiles = resolveRunProfiles(catalog);
@@ -42,7 +46,7 @@ export function ComposerRunProfiles({
     ? "Unavailable profiles need model access or an administrator configuration change."
     : "Unavailable profiles cannot be used with your current model access.";
   return (
-    <div data-testid="composer-run-profiles">
+    <div data-testid={testId}>
       <div className="flex min-w-0 flex-wrap items-center gap-1.5">
         <div className="flex shrink-0 items-center gap-1" role="group" aria-label="Run profile">
           {profiles.map((profile) => {
@@ -54,7 +58,8 @@ export function ComposerRunProfiles({
               <span key={profile.id} className="contents">
                 <button
                   className={[
-                    "h-touch rounded-control px-3 text-xs font-medium outline-none focus-visible:ring-2 focus-visible:ring-proof/55 disabled:cursor-not-allowed disabled:text-ink-disabled disabled:opacity-65 sm:h-control-sm [@media(hover:none)]:!h-touch [@media(pointer:coarse)]:!h-touch",
+                    "h-touch rounded-control text-xs font-medium outline-none focus-visible:ring-2 focus-visible:ring-proof/55 disabled:cursor-not-allowed disabled:text-ink-disabled disabled:opacity-65 sm:h-control-sm [@media(hover:none)]:!h-touch [@media(pointer:coarse)]:!h-touch",
+                    compact ? "px-2" : "px-3",
                     active
                       ? "bg-control-selected text-proof"
                       : "bg-control-surface text-ink-secondary hover:bg-control-hover hover:text-ink"
@@ -86,7 +91,7 @@ export function ComposerRunProfiles({
           {activeProfile ? null : profiles.some((profile) => profile.available) ? "Custom" : "No profile available"}
         </span>
       </div>
-      {unavailableProfiles.length > 0 ? (
+      {!compact && unavailableProfiles.length > 0 ? (
         <p className="mt-2 text-xs text-ink-muted" data-testid="run-profile-unavailable-reason">
           {unavailableCopy}
         </p>

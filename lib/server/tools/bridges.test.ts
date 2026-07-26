@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   anthropicMessagesToolBridge,
+  geminiChatToolBridge,
   openAICompatibleChatToolBridge,
   openAICompatibleResponsesToolBridge,
   openAIResponsesToolBridge,
@@ -63,6 +64,18 @@ describe("provider tool bridges", () => {
       "function.name",
       "search_via_perplexity"
     );
+  });
+
+  it("keeps Gemini on the compatible chat wire shape with a Gemini family identity", () => {
+    const input = { modelId: "gemini-3.6-flash", provider: "gemini" };
+
+    expect(geminiChatToolBridge.supportsToolCalling(input)).toBe(true);
+    expect(geminiChatToolBridge.serializeTool(searchTool)).toMatchObject({
+      provider: "gemini",
+      tool: { function: { name: "search_via_perplexity" }, type: "function" }
+    });
+    expect(geminiChatToolBridge.supportsToolCalling({ ...input, provider: "openai_compatible" }))
+      .toBe(false);
   });
 
   it("owns provider-specific assistant continuation serialization", () => {

@@ -327,7 +327,9 @@ test("admin sees the built-in Full access group with automatic resource coverage
   await detail.getByRole("button", { name: "Models & search" }).click();
   await expect(detail.getByRole("heading", { name: "Automatic full access" })).toBeVisible();
   await expect(
-    detail.getByText(/provider authentication and current availability are configured separately/i)
+    detail.getByText(
+      /independently selected provider credential and its current availability check are valid/i
+    )
   ).toBeVisible();
   await expect(detail.getByRole("button", { name: /Grant provider/i })).toHaveCount(0);
   await expect(detail.getByRole("button", { name: /Grant model/i })).toHaveCount(0);
@@ -340,7 +342,9 @@ test("admin sees the built-in Full access group with automatic resource coverage
 
   await page.setViewportSize({ height: 844, width: 390 });
   await detail.getByRole("button", { name: "Overview" }).click();
-  await expect(detail.getByText(/provider authentication and personal MCP setup remain separate/i)).toBeVisible();
+  await expect(
+    detail.getByText(/provider credentials and personal MCP setup remain separate/i)
+  ).toBeVisible();
   await expectNoPageOverflow(page);
   await page.screenshot({
     fullPage: true,

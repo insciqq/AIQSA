@@ -53,6 +53,7 @@ type ModelForm = {
 
 function adapterFor(family: AdminProviderConnection["family"]): AdminProviderAdapterKind {
   if (family === "anthropic") return "anthropic_messages";
+  if (family === "gemini") return "openai_chat_completions_compatible";
   if (family === "openrouter") return "openrouter_chat_completions";
   if (family === "openai") return "openai_responses_native";
   return "openai_responses_compatible";
@@ -77,12 +78,12 @@ function initialCapabilities(
     nativeBackground: family === "openai",
     nativePdfInput: family === "openai",
     nativeSearch: family === "openai",
-    parallelToolCalls: true,
-    pdf: family === "openai",
-    reasoning: false,
+    parallelToolCalls: family !== "gemini",
+    pdf: family === "openai" || family === "gemini",
+    reasoning: family === "gemini",
     streaming: true,
     toolCalling: true,
-    vision: false
+    vision: family === "gemini"
   };
 }
 

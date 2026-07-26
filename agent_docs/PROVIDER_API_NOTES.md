@@ -4,7 +4,7 @@
 
 This conditional document owns externally verified provider constraints, documentation links, dated smoke observations, and provider-specific caveats. `BACKEND.md` owns AIQSA adapter behavior/defaults; `QSA_PIPELINE.md` owns product semantics; `ENV_VARIABLES.md` owns configuration names; executable adapter tests own exact request/response mapping.
 
-Provider documentation was checked on 2026-04-26 and the current search/upload/routing constraints were rechecked on 2026-06-14. GPT-5.5/GPT-5.6 context, OpenAI PDF token, and Anthropic usage contracts were rechecked on 2026-07-18. The OpenAI Responses/Chat support direction and the OpenAI, Anthropic, and OpenRouter model-catalog contracts were rechecked on 2026-07-24 for ADR 0022 and the credential-test implementation. Reverify the affected source and update that date when a provider-facing change depends on mutable external behavior.
+Provider documentation was checked on 2026-04-26 and the current search/upload/routing constraints were rechecked on 2026-06-14. GPT-5.5/GPT-5.6 context, OpenAI PDF token, and Anthropic usage contracts were rechecked on 2026-07-18. The OpenAI Responses/Chat support direction and the OpenAI, Anthropic, and OpenRouter model-catalog contracts were rechecked on 2026-07-24 for ADR 0022 and the credential-test implementation. Current OpenAI/Claude model sets plus Gemini models, OpenAI-compatible chat, catalog, reasoning, and thought-signature contracts were rechecked on 2026-07-26 for ADR 0030. Reverify the affected source and update that date when a provider-facing change depends on mutable external behavior.
 
 Provider smokes require the standing permission and limits in `CRITICAL_INVARIANTS.md`. Default automation uses fake providers; never print, inspect, persist, or commit key values, and do not run large-context/deep-research/large-attachment/long-background calls without fresh approval.
 
@@ -50,6 +50,9 @@ Current AIQSA request construction, polling, tool bridging, attachment mapping, 
 
 Primary references:
 
+- `https://platform.claude.com/docs/en/about-claude/models/overview`
+- `https://platform.claude.com/docs/en/about-claude/models/whats-new-sonnet-5`
+- `https://platform.claude.com/docs/en/about-claude/models/migration-guide`
 - `https://platform.claude.com/docs/en/build-with-claude/streaming`
 - `https://docs.anthropic.com/en/api/messages`
 - `https://docs.anthropic.com/en/api/messages-examples`
@@ -63,10 +66,35 @@ Externally constrained facts:
 - Content deltas may contain text, tool input JSON, or thinking; usage can appear in events and final message data.
 - Total Anthropic input usage is `input_tokens + cache_creation_input_tokens + cache_read_input_tokens`; current thinking usage is reported as `output_tokens_details.thinking_tokens` when available.
 - Older manual thinking uses a token budget below `max_tokens`. Claude Opus 4.8+ uses adaptive thinking plus `output_config.effort`; its documented scale includes `low`, `medium`, `high`, `xhigh`, and `max`, with `high` as API default.
+- The current explicit Claude 5 API ids are `claude-opus-5` and `claude-sonnet-5`. Both document a 1,000,000-token context window and 128,000 maximum output tokens. AIQSA uses those stable ids rather than a mutable alias.
+- Claude 5 uses adaptive thinking with effort. Its migration guidance removes manual extended-thinking budgets and non-default sampling combinations for this path, so AIQSA's Claude 5 templates do not expose temperature and default to adaptive thinking with high effort.
 - PDF/document and image support are model capabilities, not provider-wide assumptions. Direct native PDF input uses Messages document content; unsupported routes require the local extracted-text fallback.
 - Authenticated `GET /v1/models` uses `x-api-key` plus the Anthropic version header and returns model identifiers suitable for bounded credential validation and catalog-presence evidence.
 
 Current AIQSA defaults and request/event normalization live in `BACKEND.md` and adapter tests.
+
+## Gemini OpenAI-Compatible API
+
+Primary references:
+
+- `https://ai.google.dev/gemini-api/docs/models`
+- `https://ai.google.dev/gemini-api/docs/latest-model`
+- `https://ai.google.dev/gemini-api/docs/openai`
+- `https://ai.google.dev/api`
+- `https://ai.google.dev/gemini-api/docs/thought-signatures`
+
+Externally constrained facts and dated evidence:
+
+- Google's OpenAI-compatible root is `https://generativelanguage.googleapis.com/v1beta/openai/`; Chat Completions and the Models catalog accept the Gemini API key as a Bearer token.
+- Models catalog entries use identifiers such as `models/gemini-...`. AIQSA strips only that leading wrapper before exact reviewed-policy comparison; it does not normalize arbitrary names or import every result.
+- On 2026-07-26 the current reviewed explicit model ids were `gemini-3.6-flash`, `gemini-3.5-flash`, `gemini-3.5-flash-lite`, and `gemini-3.1-pro-preview`. Their reviewed catalog controls use a 1,000,000-token context window and at most 65,536 output tokens, with model-specific `minimal`/`low`/`medium`/`high` reasoning-effort choices. Explicit ids are preferred to hot-swapping latest aliases.
+- The OpenAI-compatible surface accepts `reasoning_effort`; current AIQSA Gemini templates deliberately omit temperature. Compatibility does not establish support for native Google Search grounding, native PDF upload, media generation, Live API, or provider-side conversation state.
+- Gemini tool-call continuations carry thought signatures. In the compatible Chat response they can appear under `tool_calls[].extra_content.google.thought_signature`; the complete assistant tool-call object and signature must be replayed unchanged with the tool result. Dropping, merging, or inventing this value can make a continuation fail.
+- A bounded authenticated catalog check on 2026-07-26 returned HTTP 200 and 57 rows, including image/audio/embedding/media identifiers. That result is direct evidence that blind catalog import is unsafe; Quick setup intersects only the reviewed chat candidates above.
+- A sanitized low-token normal-adapter smoke on 2026-07-26 completed with a provider response id and usage of 24 input, 5 output, and 29 total tokens. It printed no key, answer body, raw provider payload, or signature.
+- A second bounded normal-runtime smoke on 2026-07-26 completed exactly one tool call and continuation: arguments matched, the provider supplied a thought signature, the bridge replayed it unchanged, the final marker matched, and a provider response id was present. Its output contained only boolean/count evidence, never the key, signature, answer text, or raw body.
+
+Current catalog intersection, parameter mapping, stream parser, tool bridge, signature replay, and safe smoke behavior live in `BACKEND.md`, `SECURITY.md`, and focused tests.
 
 ## OpenRouter
 

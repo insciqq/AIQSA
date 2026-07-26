@@ -3,6 +3,7 @@ import type { RunProfileId } from "./runProfiles";
 export const ADMIN_PROVIDER_QUICK_SETUP_PROVIDERS = [
   "openai",
   "anthropic",
+  "gemini",
   "openrouter"
 ] as const;
 
@@ -60,6 +61,7 @@ export type AdminProviderQuickSetupReadyResult = Readonly<{
   checkedAt: string;
   defaultChanged: boolean;
   model: AdminProviderQuickSetupModelDisplay;
+  models: AdminProviderQuickSetupModelDisplay[];
   outcome: "ready";
   profilesFilled: RunProfileId[];
   provider: AdminProviderQuickSetupProviderId;

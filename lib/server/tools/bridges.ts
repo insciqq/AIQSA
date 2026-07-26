@@ -206,6 +206,12 @@ function forProviderFamily(
   return {
     ...bridge,
     provider,
+    serializeTool(tool) {
+      return {
+        ...bridge.serializeTool(tool),
+        provider
+      };
+    },
     supportsToolCalling(input) {
       return input.provider === provider;
     }
@@ -220,6 +226,11 @@ export const openAICompatibleResponsesToolBridge = forProviderFamily(
 export const openAICompatibleChatToolBridge = forProviderFamily(
   openRouterChatToolBridge,
   "openai_compatible"
+);
+
+export const geminiChatToolBridge = forProviderFamily(
+  openRouterChatToolBridge,
+  "gemini"
 );
 
 export const anthropicMessagesToolBridge: ProviderToolBridge = {
@@ -281,6 +292,7 @@ export const anthropicMessagesToolBridge: ProviderToolBridge = {
 
 export const providerToolBridges = {
   anthropic: anthropicMessagesToolBridge,
+  gemini: geminiChatToolBridge,
   openai: openAIResponsesToolBridge,
   openrouter: openRouterChatToolBridge
 } satisfies Record<string, ProviderToolBridge>;

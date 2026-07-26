@@ -151,7 +151,7 @@ export function groupDeletionInfo(group: AdminGroup): AdminDeletionInfo {
     return {
       canDelete: false,
       reason: "system_group_forbidden",
-      summary: "Built-in groups cannot be renamed, archived, or deleted."
+      summary: "Full access is built in and cannot be renamed, archived, or deleted."
     };
   }
 

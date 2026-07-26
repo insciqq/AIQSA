@@ -931,10 +931,38 @@ test("keeps Settings prompt and Appearance workflows safe in the narrow sheet la
   await expectNoHorizontalOverflow(page);
 });
 
-test("keeps one resting Run summary and one complete setup inside the thread workflow", async ({ page }) => {
+test("keeps direct run choices and one complete More setup inside the thread workflow", async ({ page }) => {
   await page.setViewportSize({ height: 900, width: 1440 });
-  await installMatrixCatalogFixture(page);
+  const composerChat = {
+    activeLeafMessageId: "assistant-direct-controls",
+    createdAt: "2026-06-10T12:00:00.000Z",
+    defaultModelId: "gpt-5.5",
+    defaultPromptPresetId: "prompt-helpful",
+    defaultProvider: "openai",
+    folderId: null,
+    id: "chat-direct-controls",
+    messageCount: 2,
+    messages: [
+      scrollMessage("user-direct-controls", "user", "Direct controls question", null),
+      scrollMessage(
+        "assistant-direct-controls",
+        "assistant",
+        "Direct controls answer",
+        "user-direct-controls"
+      )
+    ],
+    pinned: false,
+    title: "Direct controls chat",
+    updatedAt: "2026-06-10T12:00:02.000Z",
+    usageStats: null
+  };
+
+  await page.addInitScript(() =>
+    window.localStorage.setItem("aiqsa.activeChatId", "chat-direct-controls")
+  );
+  await installMatrixCatalogFixture(page, { chats: [composerChat], folders: [] });
   await signIn(page);
+  await expect(page.getByTestId("thread")).toContainText("Direct controls answer");
 
   const threadBeforeDrawer = await page.getByTestId("main-thread-pane").boundingBox();
   expect(threadBeforeDrawer).toBeTruthy();
@@ -965,7 +993,12 @@ test("keeps one resting Run summary and one complete setup inside the thread wor
   await expectComposerBeforeDetails(page);
 
   const runSummary = composerRunSummary(page);
+  const directControls = page.getByTestId("composer-control-bar");
   await expectRunSummary(page, { model: "GPT-5.5", search: "Off" });
+  await expect(directControls.getByRole("button", { name: "Select model" })).toBeVisible();
+  await expect(directControls.getByRole("button", { name: "Use Balanced run profile" })).toBeVisible();
+  await expect(directControls.getByRole("button", { name: "Search strategy" })).toBeVisible();
+  await expect(runSummary).toContainText("More");
   await expect(runSummary).toHaveAttribute("aria-expanded", "false");
   const runSummaryBox = await runSummary.boundingBox();
   const detailedDetailsBox = await page.getByTestId("details-pane").boundingBox();

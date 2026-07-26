@@ -35,6 +35,11 @@ function service(overrides: Partial<AdminProviderQuickSetupService> = {}): Admin
       checkedAt: "2026-07-26T10:00:00.000Z",
       defaultChanged: true,
       model: { displayName: "GPT-5.6 Terra" },
+      models: [
+        { displayName: "GPT-5.6 Terra" },
+        { displayName: "GPT-5.6 Luna" },
+        { displayName: "GPT-5.6 Sol" }
+      ],
       outcome: "ready" as const,
       profilesFilled: ["balanced" as const],
       provider: "openai" as const,
@@ -117,7 +122,7 @@ describe("provider Quick setup handlers", () => {
       expectedState: "state-token",
       provider: "openai",
       secret: "sk-secret",
-      selectedModel: { candidateId: "p1-o2", extra: true, policyVersion: 1 }
+      selectedModel: { candidateId: "p2-o2", extra: true, policyVersion: 2 }
     }]
   ])("rejects request fields outside the exact contract", async (body) => {
     const quickService = service();
@@ -138,6 +143,7 @@ describe("provider Quick setup handlers", () => {
       checkedAt: "2026-07-26T10:00:00.000Z",
       defaultChanged: true,
       model: { displayName: "GPT-5.6 Luna" },
+      models: [{ displayName: "GPT-5.6 Luna" }],
       outcome: "ready" as const,
       profilesFilled: ["fast" as const],
       provider: "openai" as const,
@@ -152,7 +158,7 @@ describe("provider Quick setup handlers", () => {
         expectedState: "state-token",
         provider: "openai",
         secret: "sk-write-only",
-        selectedModel: { candidateId: "p1-o2", policyVersion: 1 }
+        selectedModel: { candidateId: "p2-o2", policyVersion: 2 }
       }),
       headers: { "content-type": "application/json" },
       method: "POST"

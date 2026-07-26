@@ -49,7 +49,7 @@ function version(value: unknown): number | null {
 }
 
 function family(value: unknown): AdminProviderFamily | null {
-  return value === "anthropic" || value === "openai" ||
+  return value === "anthropic" || value === "gemini" || value === "openai" ||
     value === "openai_compatible" || value === "openrouter"
     ? value
     : null;

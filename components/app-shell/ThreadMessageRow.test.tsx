@@ -378,7 +378,7 @@ describe("ThreadMessageRow", () => {
     expect(warnings.querySelectorAll("li")).toHaveLength(2);
   });
 
-  it("opens the existing inline evidence disclosures from receipt facts", () => {
+  it("keeps run, search, and citations in one compact metadata block with inline details", () => {
     const onOpenRunDetails = vi.fn();
     renderRow({
       artifactSummary: artifactSummary({
@@ -388,6 +388,7 @@ describe("ThreadMessageRow", () => {
         reasoningText: ["Observed reasoning"],
         searchCount: 1,
         searchDetails: [{ requestPreview: { query: "evidence" }, responsePreview: { ok: true } }],
+        searchStrategy: "openai-native-web-search",
         toolCallCount: 1,
         toolCalls: [{
           argumentsPreview: { query: "memory" },
@@ -409,20 +410,35 @@ describe("ThreadMessageRow", () => {
       showReasoningBlocks: true
     });
 
-    const searchDisclosure = screen.getByRole("button", { name: /1 search call Search\/tool call/i });
+    const metadata = screen.getByTestId("answer-metadata-block");
+    const searchDisclosure = within(metadata).getByRole("button", { name: "1 search call" });
+    const citationDisclosure = within(metadata).getByRole("button", { name: "1 citation" });
     const toolDisclosure = screen.getByRole("button", { name: /Used 1 tool Memory/i });
-    const citationDisclosure = screen.getByRole("button", { name: "Citations 1" });
     const reasoningDisclosure = screen.getByRole("button", { name: "Reasoning 1" });
+    expect(within(metadata).getByTestId("run-receipt")).toHaveTextContent(
+      "Run Complete · Fake / Fake QSA · 1 search call · OpenAI web_search · 1 tool call · 1 citation · 1 reasoning trace"
+    );
+    expect(screen.queryByTestId("thread-search-summary")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("thread-citations-block")).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "1 search call" }));
+    fireEvent.click(searchDisclosure);
     fireEvent.click(screen.getByRole("button", { name: "1 tool call" }));
-    fireEvent.click(screen.getByRole("button", { name: "1 citation" }));
+    fireEvent.click(citationDisclosure);
     fireEvent.click(screen.getByRole("button", { name: "1 reasoning trace" }));
 
     expect(searchDisclosure).toHaveAttribute("aria-expanded", "true");
     expect(toolDisclosure).toHaveAttribute("aria-expanded", "true");
     expect(citationDisclosure).toHaveAttribute("aria-expanded", "true");
     expect(reasoningDisclosure).toHaveAttribute("aria-expanded", "true");
+    expect(within(metadata).getByTestId("thread-search-details")).toHaveTextContent("evidence");
+    expect(within(metadata).getByRole("link", { name: "[1] Source" })).toBeVisible();
+
+    fireEvent.click(searchDisclosure);
+    fireEvent.click(citationDisclosure);
+    expect(searchDisclosure).toHaveAttribute("aria-expanded", "false");
+    expect(citationDisclosure).toHaveAttribute("aria-expanded", "false");
+    expect(within(metadata).queryByTestId("thread-search-details")).not.toBeInTheDocument();
+    expect(within(metadata).queryByRole("link", { name: "[1] Source" })).not.toBeInTheDocument();
     expect(onOpenRunDetails).not.toHaveBeenCalled();
   });
 

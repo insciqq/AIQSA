@@ -105,6 +105,9 @@ const sortOptions: ReadonlyArray<Readonly<{ key: AdminUserSortKey; label: string
   { key: "lastSession", label: "Last session" }
 ];
 
+const userDirectoryColumns =
+  "md:grid-cols-[minmax(9rem,1.45fr)_minmax(6.5rem,1fr)_minmax(4rem,0.55fr)_minmax(7rem,0.9fr)_minmax(9rem,0.9fr)]";
+
 function UserListRow({
   adminUserId,
   onSelect,
@@ -119,19 +122,19 @@ function UserListRow({
   return (
     <button
       aria-label={`Open ${user.displayName}`}
-      className="group/user-row grid w-full min-w-0 gap-3 border-b border-trace-subtle bg-transparent px-4 py-3 text-left transition-colors last:border-b-0 hover:bg-control-hover active:bg-control-pressed sm:px-5 md:grid-cols-[minmax(13rem,1.5fr)_minmax(9rem,1fr)_minmax(8rem,0.8fr)_minmax(8rem,0.8fr)_auto] md:items-center"
+      className={`group/user-row grid w-full min-w-0 gap-3 border-b border-trace-subtle bg-transparent px-4 py-2.5 text-left transition-colors last:border-b-0 hover:bg-control-hover active:bg-control-pressed sm:px-5 ${userDirectoryColumns} md:items-center`}
       data-testid="admin-user-row"
       onClick={onSelect}
       type="button"
     >
-      <span className="flex min-w-0 items-start justify-between gap-3 md:block">
+      <span className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-start gap-2 md:items-center">
         <span className="min-w-0">
           <span className="block break-words text-sm font-medium text-ink [overflow-wrap:anywhere]">
             {user.displayName}{isSelf ? <span className="ml-2 text-[11px] font-medium text-proof">You</span> : null}
           </span>
           <span className="mt-0.5 block break-words text-xs text-ink-muted [overflow-wrap:anywhere]">{user.email ?? "No email"}</span>
         </span>
-        <span className={`shrink-0 rounded-pill border px-2 py-0.5 text-[11px] capitalize ${userStatusClass(user.status)}`}>
+        <span className={`shrink-0 self-center rounded-pill border px-2 py-0.5 text-[11px] capitalize ${userStatusClass(user.status)}`}>
           {user.status}
         </span>
       </span>
@@ -148,8 +151,8 @@ function UserListRow({
           <span className="mb-1 block text-[10px] font-medium uppercase tracking-[0.08em] text-ink-muted md:hidden">Access</span>
           {entitlementCountLabel(user.effectiveEntitlements)}
         </span>
-        <span className="flex items-end justify-between gap-3 text-xs text-ink-muted md:items-center">
-          <span>
+        <span className="flex min-w-0 items-end justify-between gap-3 text-xs text-ink-muted md:items-center">
+          <span className="min-w-0 break-words [overflow-wrap:anywhere]">
             <span className="mb-1 block text-[10px] font-medium uppercase tracking-[0.08em] text-ink-muted md:hidden">Last session</span>
             {formatDate(user.lastSessionAt)}
           </span>
@@ -460,7 +463,10 @@ export function AdminUsersSection({ actions, data, focus, mcpAccess, status, vie
 
         <div className="min-w-0 overflow-hidden rounded-panel border border-trace-subtle" data-testid="admin-users-list">
           {data.pageUsers.length ? (
-            <div className="hidden grid-cols-[minmax(13rem,1.5fr)_minmax(9rem,1fr)_minmax(8rem,0.8fr)_minmax(8rem,0.8fr)_auto] gap-3 border-b border-trace-subtle bg-control-surface px-5 py-2 text-[11px] font-medium uppercase tracking-[0.08em] text-ink-muted md:grid">
+            <div
+              className={`hidden gap-3 border-b border-trace-subtle bg-control-surface px-5 py-2 text-[11px] font-medium uppercase tracking-[0.08em] text-ink-muted ${userDirectoryColumns} md:grid`}
+              data-testid="admin-users-header"
+            >
               <span>User</span><span>Groups</span><span>Role</span><span>Access</span><span>Last session</span>
             </div>
           ) : null}

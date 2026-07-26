@@ -128,6 +128,7 @@ export function AdminProviderConnectionEditor({
             <option value="openrouter">OpenRouter</option>
             <option value="openai">OpenAI</option>
             <option value="anthropic">Anthropic</option>
+            <option value="gemini">Gemini</option>
             <option value="openai_compatible">OpenAI-compatible</option>
           </select>
         </label>

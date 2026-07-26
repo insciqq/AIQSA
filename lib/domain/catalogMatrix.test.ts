@@ -108,6 +108,52 @@ describe("catalog capability matrix", () => {
     expect(gpt55?.parameterControls.reasoningMode).toBeUndefined();
   });
 
+  it("publishes the current Claude 5 and Gemini defaults as explicit reviewed chat models", () => {
+    const claudeModels = defaultProviderModels.filter(
+      ({ provider }) => provider === "anthropic"
+    ).slice(0, 2);
+    expect(claudeModels.map(({ modelId }) => modelId)).toEqual([
+      "claude-opus-5",
+      "claude-sonnet-5"
+    ]);
+    for (const model of claudeModels) {
+      expect(model).toMatchObject({
+        adapterKind: "anthropic_messages",
+        contextWindow: 1_000_000,
+        defaultParams: {
+          maxTokens: 128_000,
+          thinking: { enabled: true, type: "adaptive" }
+        },
+        parameterControls: {
+          maxOutputTokens: { defaultValue: 128_000, maxValue: 128_000 },
+          temperature: { supported: false }
+        }
+      });
+    }
+
+    const geminiModels = defaultProviderModels.filter(({ provider }) => provider === "gemini");
+    expect(geminiModels.map(({ modelId }) => modelId)).toEqual([
+      "gemini-3.6-flash",
+      "gemini-3.5-flash",
+      "gemini-3.5-flash-lite",
+      "gemini-3.1-pro-preview"
+    ]);
+    for (const model of geminiModels) {
+      expect(model).toMatchObject({
+        adapterKind: "openai_chat_completions_compatible",
+        contextWindow: 1_000_000,
+        parameterControls: {
+          maxOutputTokens: { defaultValue: 65_536, maxValue: 65_536 },
+          temperature: { supported: false }
+        },
+        providerFamily: "gemini"
+      });
+      expect(buildCatalogModel(model, defaultSearchStrategies).defaultParams).not.toHaveProperty(
+        "temperature"
+      );
+    }
+  });
+
   it("distinguishes native PDF input from extracted PDF text in the catalog", () => {
     const openAI = defaultProviderModels.find((entry) => entry.provider === "openai" && entry.modelId === "gpt-5.5");
     const anthropic = defaultProviderModels.find((entry) => entry.provider === "anthropic");

@@ -17,7 +17,7 @@ import type {
   ProviderModelConfiguration
 } from "../../providers/providerConfiguration";
 
-export const ADMIN_PROVIDER_QUICK_SETUP_POLICY_VERSION = 1;
+export const ADMIN_PROVIDER_QUICK_SETUP_POLICY_VERSION = 2;
 
 type QuickSetupCandidateDefinition = Readonly<{
   candidateId: string;
@@ -51,31 +51,53 @@ const candidateDefinitions: Readonly<Record<
 >> = Object.freeze({
   anthropic: Object.freeze([
     Object.freeze({
-      candidateId: "p1-a1",
+      candidateId: "p2-a1",
       recommended: true,
-      templateKey: "anthropic:claude-opus-4-8"
+      templateKey: "anthropic:claude-opus-5"
+    }),
+    Object.freeze({
+      candidateId: "p2-a2",
+      recommended: false,
+      templateKey: "anthropic:claude-sonnet-5"
+    })
+  ]),
+  gemini: Object.freeze([
+    Object.freeze({
+      candidateId: "p2-g1",
+      recommended: true,
+      templateKey: "gemini:gemini-3.6-flash"
+    }),
+    Object.freeze({
+      candidateId: "p2-g2",
+      recommended: false,
+      templateKey: "gemini:gemini-3.5-flash"
+    }),
+    Object.freeze({
+      candidateId: "p2-g3",
+      recommended: false,
+      templateKey: "gemini:gemini-3.5-flash-lite"
+    }),
+    Object.freeze({
+      candidateId: "p2-g4",
+      recommended: false,
+      templateKey: "gemini:gemini-3.1-pro-preview"
     })
   ]),
   openai: Object.freeze([
     Object.freeze({
-      candidateId: "p1-o1",
+      candidateId: "p2-o1",
       recommended: true,
       templateKey: "openai:gpt-5.6-terra"
     }),
     Object.freeze({
-      candidateId: "p1-o2",
+      candidateId: "p2-o2",
       recommended: false,
       templateKey: "openai:gpt-5.6-luna"
     }),
     Object.freeze({
-      candidateId: "p1-o3",
+      candidateId: "p2-o3",
       recommended: false,
       templateKey: "openai:gpt-5.6-sol"
-    }),
-    Object.freeze({
-      candidateId: "p1-o4",
-      recommended: false,
-      templateKey: "openai:gpt-5.5"
     })
   ]),
   openrouter: Object.freeze([
@@ -176,6 +198,7 @@ function createPolicy(provider: AdminProviderQuickSetupProviderId): AdminProvide
 
 const policies = Object.freeze({
   anthropic: createPolicy("anthropic"),
+  gemini: createPolicy("gemini"),
   openai: createPolicy("openai"),
   openrouter: createPolicy("openrouter")
 });

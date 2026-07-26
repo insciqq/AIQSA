@@ -116,6 +116,20 @@ describe("AdminUsersSection", () => {
     expect(fixture.actions.onSelectUser).toHaveBeenCalledWith(user.id);
   });
 
+  it("keeps directory headers and rows on the same bounded desktop columns", () => {
+    const fixture = createFixture({ pageUsers: [createUser()] });
+    render(<AdminUsersSection {...fixture.props} />);
+
+    const header = screen.getByTestId("admin-users-header");
+    const row = screen.getByTestId("admin-user-row");
+    const rowColumns = [...row.classList].find((className) => className.startsWith("md:grid-cols-"));
+
+    expect(rowColumns).toBeDefined();
+    expect(rowColumns).not.toContain("_auto]");
+    expect(header).toHaveClass(rowColumns!);
+    expect(within(row).getByText("active")).toBeVisible();
+  });
+
   it("renders only the dedicated detail while a user is open and connects Back", () => {
     const user = createUser();
     const fixture = createFixture({ selectedUser: user, view: { compactDetailOpen: true } });

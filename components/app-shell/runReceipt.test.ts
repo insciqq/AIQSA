@@ -45,6 +45,7 @@ describe("deriveRunReceipt", () => {
         contextTruncation: { approxDroppedTokens: 100, droppedMessages: 2 },
         reasoningCount: 2,
         searchCount: 1,
+        searchStrategy: "openai-native-web-search",
         toolCallCount: 2,
         toolCalls: [
           {
@@ -87,7 +88,7 @@ describe("deriveRunReceipt", () => {
     expect(receipt).toEqual({
       facts: [
         { kind: "model", label: "OpenAI / GPT-5" },
-        { kind: "search", label: "1 search call" },
+        { detail: "OpenAI web_search", kind: "search", label: "1 search call" },
         { kind: "tools", label: "2 tool calls (1 failed)" },
         { kind: "citations", label: "3 citations" },
         { kind: "reasoning", label: "2 reasoning traces" },

@@ -140,14 +140,16 @@ function snapshot(value: unknown): AdminProviderQuickSetupSnapshot | null {
   if (!record(value) || containsForbiddenMaterial(value) ||
     !exactKeys(value, ["providers", "suggestedProvider"]) ||
     (value.suggestedProvider !== null && !providerId(value.suggestedProvider)) ||
-    !Array.isArray(value.providers) || value.providers.length !== 3) {
+    !Array.isArray(value.providers) || value.providers.length !== 4) {
     return null;
   }
   const providers = value.providers.map(provider);
   if (providers.some((entry) => entry === null)) return null;
   const ids = providers.map((entry) => entry!.provider);
   if (new Set(ids).size !== providers.length ||
-    !["openai", "anthropic", "openrouter"].every((id) => ids.includes(id as AdminProviderQuickSetupId))) {
+    !["openai", "anthropic", "gemini", "openrouter"].every(
+      (id) => ids.includes(id as AdminProviderQuickSetupId)
+    )) {
     return null;
   }
   return {
@@ -167,12 +169,17 @@ function result(value: unknown): AdminProviderQuickSetupResult | null {
     "checkedAt",
     "defaultChanged",
     "model",
+    "models",
     "outcome",
     "profilesFilled",
     "provider",
     "providerDisplayName"
   ]) && timestamp(value.checkedAt) && typeof value.defaultChanged === "boolean" &&
-    model(value.model) && providerId(value.provider) && safeText(value.providerDisplayName, 80) &&
+    model(value.model) && Array.isArray(value.models) && value.models.length > 0 &&
+    value.models.length <= 16 && value.models.every(model) &&
+    new Set(value.models.map((entry) => (entry as AdminProviderQuickSetupModel).displayName)).size ===
+      value.models.length &&
+    providerId(value.provider) && safeText(value.providerDisplayName, 80) &&
     Array.isArray(value.profilesFilled) &&
     value.profilesFilled.every((entry) => typeof entry === "string" && profileIds.has(entry)) &&
     new Set(value.profilesFilled).size === value.profilesFilled.length) {

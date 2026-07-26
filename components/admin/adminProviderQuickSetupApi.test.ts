@@ -18,12 +18,19 @@ function snapshot() {
         stateToken: "state-openai"
       },
       {
-        model: { displayName: "Claude Opus 4.8" },
+        model: { displayName: "Claude Opus 5" },
         provider: "anthropic",
         providerDisplayName: "Anthropic",
         quickSetupAssigned: true,
         state: "ready",
         stateToken: "state-anthropic"
+      },
+      {
+        provider: "gemini",
+        providerDisplayName: "Gemini",
+        quickSetupAssigned: false,
+        state: "not_configured",
+        stateToken: "state-gemini"
       },
       {
         provider: "openrouter",
@@ -42,7 +49,7 @@ function response(value: unknown, status = 200): Response {
 }
 
 describe("admin provider Quick setup API", () => {
-  it("decodes the exact three-provider snapshot and sends same-origin GET", async () => {
+  it("decodes the exact four-provider snapshot and sends same-origin GET", async () => {
     const fetcher = vi.fn(async () => response(snapshot()));
     await expect(getAdminProviderQuickSetup(fetcher)).resolves.toEqual({
       data: snapshot(),
@@ -60,6 +67,11 @@ describe("admin provider Quick setup API", () => {
       checkedAt,
       defaultChanged: false,
       model: { displayName: "GPT-5.6 Terra" },
+      models: [
+        { displayName: "GPT-5.6 Terra" },
+        { displayName: "GPT-5.6 Luna" },
+        { displayName: "GPT-5.6 Sol" }
+      ],
       outcome: "ready",
       profilesFilled: ["balanced"],
       provider: "openai",
@@ -74,8 +86,8 @@ describe("admin provider Quick setup API", () => {
       provider: "openai" as const,
       secret: "write-only-key",
       selectedModel: {
-        candidateId: "p1-o1",
-        policyVersion: 1
+        candidateId: "p2-o1",
+        policyVersion: 2
       }
     };
 
@@ -95,13 +107,13 @@ describe("admin provider Quick setup API", () => {
   it("decodes a bounded no-write model selection result", async () => {
     const selection = {
       candidates: [
-        { candidateId: "p1-o1", displayName: "GPT-5.6 Terra" },
-        { candidateId: "p1-o3", displayName: "GPT-5.6 Sol" }
+        { candidateId: "p2-o1", displayName: "GPT-5.6 Terra" },
+        { candidateId: "p2-o3", displayName: "GPT-5.6 Sol" }
       ],
       checkedAt,
       expectedState: "state-openai",
       outcome: "selection_required",
-      policyVersion: 1,
+      policyVersion: 2,
       provider: "openai",
       providerDisplayName: "OpenAI"
     };
@@ -199,6 +211,7 @@ describe("admin provider Quick setup API", () => {
       checkedAt: "not-a-time",
       defaultChanged: true,
       model: { displayName: "Model" },
+      models: [{ displayName: "Model" }],
       outcome: "ready",
       profilesFilled: [],
       provider: "openai",
@@ -209,12 +222,12 @@ describe("admin provider Quick setup API", () => {
       checkedAt,
       expectedState: "state-openai",
       outcome: "selection_required",
-      policyVersion: 1,
+      policyVersion: 2,
       provider: "openai",
       providerDisplayName: "OpenAI"
     },
     {
-      candidates: [{ candidateId: "p1-model", displayName: "Model" }],
+      candidates: [{ candidateId: "p2-model", displayName: "Model" }],
       checkedAt,
       expectedState: "state-openai",
       outcome: "selection_required",

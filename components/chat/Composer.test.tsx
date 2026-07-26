@@ -103,6 +103,29 @@ describe("Composer", () => {
     expect(screen.queryByTestId("current-context-length")).not.toBeInTheDocument();
   });
 
+  it("lets prompt-first direct controls wrap as a group while keeping primary actions aligned", () => {
+    render(
+      <Composer
+        attachments={[]}
+        controls={<button type="button">Direct run controls</button>}
+        promptFirst
+        onChange={() => undefined}
+        onRemoveAttachment={() => undefined}
+        onSend={() => undefined}
+        onUploadFiles={() => undefined}
+        value=""
+      />
+    );
+
+    expect(screen.getByTestId("composer-action-footer")).toHaveClass("flex-wrap");
+    expect(screen.getByTestId("composer-controls-slot")).toHaveClass(
+      "min-w-[min(100%,35rem)]",
+      "flex-[1_1_35rem]"
+    );
+    expect(screen.getByTestId("composer-primary-actions")).toHaveClass("ml-auto");
+    expect(screen.getByText("Attach", { selector: "span" })).toHaveClass("hidden", "sm:inline");
+  });
+
   it("keeps the resting controls and action available without a reading-collapse state", () => {
     render(
       <Composer

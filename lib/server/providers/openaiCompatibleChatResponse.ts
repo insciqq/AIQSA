@@ -250,6 +250,7 @@ export async function* streamOpenAICompatibleChatJsonResponse(
 
 type StreamedToolCall = {
   arguments: Record<string, unknown> | string;
+  extraContent?: unknown;
   id?: string;
   index: number;
   name?: string;
@@ -285,6 +286,9 @@ function accumulateToolCalls(
     if (typeof candidate.type === "string" && candidate.type) {
       current.type = candidate.type;
     }
+    if (Object.prototype.hasOwnProperty.call(candidate, "extra_content")) {
+      current.extraContent = candidate.extra_content;
+    }
     if (typeof fn.name === "string" && fn.name) {
       current.name = fn.name;
     }
@@ -310,6 +314,7 @@ function completedToolCalls(target: ReadonlyMap<number, StreamedToolCall>): Reco
         name: call.name
       },
       id: call.id,
+      ...(call.extraContent !== undefined ? { extra_content: call.extraContent } : {}),
       type: call.type ?? "function"
     }));
 }

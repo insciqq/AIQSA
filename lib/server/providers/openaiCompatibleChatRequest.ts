@@ -18,6 +18,7 @@ export type OpenAICompatibleChatRequestBody = Record<string, unknown> & {
   messages: OpenAICompatibleChatMessage[];
   model: string;
   parallel_tool_calls?: boolean;
+  reasoning_effort?: string;
   stream: boolean;
   temperature?: number;
   tool_choice?: "auto" | "none";
@@ -169,12 +170,16 @@ function buildBody(
   };
   const maxCompletionTokens = maxOutputTokensFromParams(request.params);
   const tools = (request.tools ?? []).map(serializeTool);
+  const reasoning = isRecord(request.params.reasoning) ? request.params.reasoning : null;
 
   if (maxCompletionTokens !== undefined) {
     body.max_completion_tokens = maxCompletionTokens;
   }
   if (typeof request.params.temperature === "number" && Number.isFinite(request.params.temperature)) {
     body.temperature = request.params.temperature;
+  }
+  if (reasoning && typeof reasoning.effort === "string" && reasoning.effort.trim()) {
+    body.reasoning_effort = reasoning.effort.trim();
   }
   if (tools.length > 0) {
     body.tools = tools;

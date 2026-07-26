@@ -194,6 +194,11 @@ function runEmptyDatabaseCase(): void {
     );
     expectIdentityConstraint(
       database,
+      "archived system insert",
+      `INSERT INTO "Group" ("id", "name", "systemRole", "archivedAt", "updatedAt") VALUES ('archived-system-group', 'Full access', 'full_access', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);`
+    );
+    expectIdentityConstraint(
+      database,
       "reserved ordinary name",
       `INSERT INTO "Group" ("id", "name", "updatedAt") VALUES ('reserved-ordinary-group', ' FULL ACCESS ', CURRENT_TIMESTAMP);`
     );

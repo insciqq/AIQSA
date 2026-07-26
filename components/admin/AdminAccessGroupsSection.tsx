@@ -223,7 +223,7 @@ function GroupOverview({ actions, data, draft, status }: Readonly<{
         {builtIn ? (
           <div className="mt-4 max-w-2xl border-l-2 border-positive bg-positive/5 px-3 py-2 text-xs leading-5 text-ink-secondary">
             <p>Entitlement updates automatically when a provider, model, search strategy, or MCP server is added.</p>
-            <p className="mt-1">Provider authentication and personal MCP setup remain separate.</p>
+            <p className="mt-1">Provider credentials and personal MCP setup remain separate.</p>
           </div>
         ) : (
           <dl className="mt-4 grid grid-cols-2 gap-x-5 gap-y-4 sm:grid-cols-4">
@@ -320,7 +320,7 @@ function GroupMembers({ actions, data, status }: Readonly<{
         <h4 className="text-sm font-semibold text-ink">Members</h4>
         <p className="mt-1 text-xs leading-5 text-ink-muted">
           {data.selectedGroup.systemRole === "full_access"
-            ? "Members receive automatic entitlement to every current and future provider, model, search strategy, and MCP server. Provider authentication and personal MCP setup remain separate."
+            ? "Members receive automatic entitlement to every current and future provider, model, search strategy, and MCP server. Provider credentials and personal MCP setup remain separate."
             : "Members inherit this group’s model, search, and tool access."}
         </p>
       </div>
@@ -397,7 +397,7 @@ function ModelsAndSearch({ actions, catalog, group, status }: Readonly<{
       <div className="py-5">
         <h4 className="text-sm font-semibold text-ink">Automatic full access</h4>
         <p className="mt-1 max-w-2xl text-xs leading-5 text-ink-secondary">
-          Members automatically receive entitlement to every current and future provider, model, and search strategy. A model is usable only when its provider authentication and current availability are configured separately. There are no per-resource switches for this built-in group.
+          Members automatically receive entitlement to every current and future provider, model, and search strategy. A model is usable only when an independently selected provider credential and its current availability check are valid. There are no per-resource switches for this built-in group.
         </p>
       </div>
     );

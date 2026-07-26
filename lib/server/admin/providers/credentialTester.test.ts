@@ -73,6 +73,13 @@ describe("admin provider credential tester", () => {
       }
     },
     {
+      family: "gemini" as const,
+      path: "/v1/models",
+      expectedHeaders: {
+        authorization: "Bearer exact-secret"
+      }
+    },
+    {
       family: "openrouter" as const,
       path: "/v1/models/user",
       expectedHeaders: {
@@ -114,6 +121,29 @@ describe("admin provider credential tester", () => {
       expect(request.headers.has("x-api-key")).toBe(false);
       expect(request.headers.has("anthropic-version")).toBe(false);
     }
+  });
+
+  it("normalizes Gemini catalog resource names before policy matching", async () => {
+    const tester = createAdminProviderCredentialTester({
+      network: {
+        dispatch: async () => catalog([
+          "models/gemini-3.6-flash",
+          "gemini-3.5-flash",
+          "models/gemini-3.6-flash",
+          "models/gemini-3.5-flash-lite"
+        ]),
+        lookupHostname: publicLookup
+      }
+    });
+
+    await expect(tester.test(input("gemini"))).resolves.toEqual({
+      method: "models_catalog",
+      modelIds: [
+        "gemini-3.6-flash",
+        "gemini-3.5-flash",
+        "gemini-3.5-flash-lite"
+      ]
+    });
   });
 
   it("resolves a lazy secret once and never includes it in the result", async () => {

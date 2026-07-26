@@ -1,4 +1,5 @@
 import { runActivityLabel, type PipelineSnapshot } from "@/components/app-shell/runState";
+import { searchStrategyDescription } from "@/components/app-shell/shellFormatting";
 import type {
   PersistedRun,
   ThreadArtifactSummary,
@@ -18,6 +19,7 @@ export type RunReceiptFactKind =
 export type RunReceiptSegmentKind = "status" | RunReceiptFactKind;
 
 export type RunReceiptFact = Readonly<{
+  detail?: string;
   kind: RunReceiptFactKind;
   label: string;
 }>;
@@ -111,6 +113,9 @@ export function deriveRunReceipt({
     const searchCount = factualCount(artifactSummary.searchCount);
     if (searchCount > 0) {
       facts.push({
+        ...(artifactSummary.searchStrategy
+          ? { detail: searchStrategyDescription(artifactSummary.searchStrategy) }
+          : {}),
         kind: "search",
         label: countLabel(searchCount, "search call", "search calls")
       });

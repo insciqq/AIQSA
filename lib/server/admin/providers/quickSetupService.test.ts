@@ -46,6 +46,7 @@ function fixture(input: {
   const order: string[] = [];
   const inspections = {
     anthropic: inspection("anthropic"),
+    gemini: inspection("gemini"),
     openai: inspection("openai"),
     openrouter: inspection("openrouter"),
     ...input.inspections
@@ -115,8 +116,9 @@ describe("provider Quick setup service", () => {
   });
 
   it.each([
-    ["openai", "gpt-5.6-terra", "p1-o1"],
-    ["anthropic", "claude-opus-4-8", "p1-a1"],
+    ["openai", "gpt-5.6-terra", "p2-o1"],
+    ["anthropic", "claude-opus-5", "p2-a1"],
+    ["gemini", "gemini-3.6-flash", "p2-g1"],
     ["openrouter", "anthropic/claude-opus-4.8", "p1-r1"]
   ] as const)("tests and commits one %s recommendation", async (provider, upstream, candidateId) => {
     const value = fixture({ modelIds: ["remote-first", upstream] });
@@ -132,9 +134,53 @@ describe("provider Quick setup service", () => {
     expect(value.test).toHaveBeenCalledTimes(1);
     expect(value.commit).toHaveBeenCalledTimes(1);
     expect(value.commit.mock.calls[0][0].candidate.candidateId).toBe(candidateId);
+    expect(result).toMatchObject({ models: [{ displayName: expect.any(String) }] });
     expect(value.order).toEqual(["network", "commit"]);
     expect(JSON.stringify(value.commit.mock.calls[0][0])).not.toContain("sk-one-use");
     expect(JSON.stringify(result)).not.toContain("sk-one-use");
+  });
+
+  it("passes every catalog-visible known candidate to the commit and Ready result", async () => {
+    const value = fixture({
+      modelIds: [
+        "remote-unknown",
+        "gpt-5.6-sol",
+        "gpt-5.6-terra",
+        "gpt-5.6-luna"
+      ]
+    });
+    const result = await value.service.setup({
+      actor,
+      request: {
+        expectedState: await expectedState(value.service, "openai"),
+        provider: "openai",
+        secret: "sk-current-catalog"
+      }
+    });
+
+    const plan = value.commit.mock.calls[0][0];
+    expect(plan.candidates.map(({ candidateId, configuration, modelId }) => ({
+      candidateId,
+      modelId,
+      upstreamModelId: configuration.upstreamModelId
+    }))).toEqual([
+      { candidateId: "p2-o1", modelId: expect.any(String), upstreamModelId: "gpt-5.6-terra" },
+      { candidateId: "p2-o2", modelId: expect.any(String), upstreamModelId: "gpt-5.6-luna" },
+      { candidateId: "p2-o3", modelId: expect.any(String), upstreamModelId: "gpt-5.6-sol" }
+    ]);
+    expect(plan.grants.map(({ modelId }) => modelId)).toEqual(
+      plan.candidates.map(({ modelId }) => modelId)
+    );
+    expect(new Set(plan.grants.map(({ id }) => id)).size).toBe(3);
+    expect(result).toMatchObject({
+      model: { displayName: "GPT-5.6 Terra" },
+      models: [
+        { displayName: "GPT-5.6 Terra" },
+        { displayName: "GPT-5.6 Luna" },
+        { displayName: "GPT-5.6 Sol" }
+      ],
+      outcome: "ready"
+    });
   });
 
   it("tests and encrypts the same canonical secret", async () => {
@@ -158,7 +204,7 @@ describe("provider Quick setup service", () => {
   });
 
   it("returns selection_required without any durable write", async () => {
-    const value = fixture({ modelIds: ["gpt-5.5", "gpt-5.6-luna"] });
+    const value = fixture({ modelIds: ["gpt-5.6-sol", "gpt-5.6-luna"] });
     const result = await value.service.setup({
       actor,
       request: {
@@ -169,11 +215,11 @@ describe("provider Quick setup service", () => {
     });
     expect(result).toMatchObject({
       candidates: [
-        { candidateId: "p1-o2" },
-        { candidateId: "p1-o4" }
+        { candidateId: "p2-o2" },
+        { candidateId: "p2-o3" }
       ],
       outcome: "selection_required",
-      policyVersion: 1
+      policyVersion: 2
     });
     expect(value.test).toHaveBeenCalledTimes(1);
     expect(value.commit).not.toHaveBeenCalled();
@@ -189,12 +235,12 @@ describe("provider Quick setup service", () => {
         expectedState: state,
         provider: "openai",
         secret: "sk-picker",
-        selectedModel: { candidateId: "p1-o2", policyVersion: 1 }
+        selectedModel: { candidateId: "p2-o2", policyVersion: 2 }
       }
     });
     expect(result.outcome).toBe("ready");
     expect(value.test).toHaveBeenCalledTimes(1);
-    expect(value.commit.mock.calls[0][0].candidate.candidateId).toBe("p1-o2");
+    expect(value.commit.mock.calls[0][0].candidate.candidateId).toBe("p2-o2");
   });
 
   it("rejects stale state before network or persistence", async () => {
@@ -262,7 +308,7 @@ describe("provider Quick setup service", () => {
       }
     });
     expect(value.commit.mock.calls[0][0]).toMatchObject({
-      candidate: { candidateId: "p1-o2" },
+      candidate: { candidateId: "p2-o2" },
       credential: { draftVersion: 5, id: "credential-primary", isNew: false },
       mode: "replacement"
     });
@@ -441,7 +487,7 @@ describe("provider Quick setup service", () => {
       }
     });
     expect(value.commit.mock.calls[0][0]).toMatchObject({
-      candidate: { candidateId: "p1-o2" },
+      candidate: { candidateId: "p2-o2" },
       mode: "recovery"
     });
   });
@@ -471,9 +517,9 @@ describe("provider Quick setup service", () => {
       mode: "replacement",
       model: {
         checkedAt,
-        displayName: "Claude Opus 4.8",
-        id: "00000000-0000-4000-8000-000000001206",
-        templateKey: "anthropic:claude-opus-4-8"
+        displayName: "Claude Opus 5",
+        id: "00000000-0000-4000-8000-000000001211",
+        templateKey: "anthropic:claude-opus-5"
       },
       state: "ready"
     });

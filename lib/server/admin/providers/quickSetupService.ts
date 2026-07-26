@@ -238,6 +238,9 @@ export function createAdminProviderQuickSetupService(input: Readonly<{
       }
       const checkedAt = now();
       const remotelyAvailableModelIds = new Set(modelIds);
+      const availableCandidates = policy.candidates.filter((candidate) =>
+        remotelyAvailableModelIds.has(candidate.configuration.upstreamModelId)
+      );
       if (inspection.preservedModels.some(
         ({ upstreamModelId }) => !remotelyAvailableModelIds.has(upstreamModelId)
       )) {
@@ -297,6 +300,7 @@ export function createAdminProviderQuickSetupService(input: Readonly<{
       const commit = await input.repository.commit({
         actor: inputValue.actor,
         candidate,
+        candidates: availableCandidates,
         checkedAt,
         credential: {
           draftVersion,
@@ -311,7 +315,10 @@ export function createAdminProviderQuickSetupService(input: Readonly<{
           versionId
         },
         expectedFingerprint: inspection.fingerprint,
-        grantId: idFactory(),
+        grants: availableCandidates.map(({ modelId }) => ({
+          id: idFactory(),
+          modelId
+        })),
         mode: inspection.mode,
         now: now(),
         preservedModels: inspection.preservedModels,
@@ -334,6 +341,7 @@ export function createAdminProviderQuickSetupService(input: Readonly<{
         checkedAt: checkedAt.toISOString(),
         defaultChanged: commit.defaultChanged,
         model: { displayName: candidate.displayName },
+        models: availableCandidates.map(({ displayName }) => ({ displayName })),
         outcome: "ready",
         profilesFilled: commit.profilesFilled,
         provider: policy.provider,

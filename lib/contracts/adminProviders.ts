@@ -1,5 +1,6 @@
 export type AdminProviderFamily =
   | "anthropic"
+  | "gemini"
   | "openai"
   | "openai_compatible"
   | "openrouter";

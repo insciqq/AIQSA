@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  defaultGeminiChatParams,
   defaultOpenRouterParams,
   defaultOpenAIResponsesParams,
   normalizeOpenAIResponsesParams,
@@ -29,6 +30,19 @@ describe("provider parameter defaults", () => {
     expect(normalizeOpenRouterParams({}).stream).toBe(true);
     expect(normalizeOpenRouterParams({ stream: false }).stream).toBe(false);
     expect(normalizeOpenRouterParams({ temperature: 0 }).temperature).toBe(0);
+  });
+
+  it("keeps Gemini compatibility defaults bounded and free of sampling controls", () => {
+    expect(defaultGeminiChatParams()).toEqual({
+      maxTokens: 65536,
+      reasoning: { effort: "medium" },
+      stream: true
+    });
+    expect(providerParameterSchemas.gemini.fields.map(({ name }) => name)).toEqual([
+      "maxTokens",
+      "stream",
+      "reasoning.effort"
+    ]);
   });
 
   it("normalizes partial OpenAI reasoning params without dropping defaults", () => {
@@ -66,8 +80,14 @@ describe("provider parameter defaults", () => {
     }
   });
 
-  it("exposes schemas for fake, OpenAI, Anthropic, and OpenRouter providers", () => {
-    expect(Object.keys(providerParameterSchemas).sort()).toEqual(["anthropic", "fake", "openai", "openrouter"]);
+  it("exposes schemas for every built-in provider family", () => {
+    expect(Object.keys(providerParameterSchemas).sort()).toEqual([
+      "anthropic",
+      "fake",
+      "gemini",
+      "openai",
+      "openrouter"
+    ]);
   });
 
   it("exposes GPT-5.6 max effort and reasoning mode without adding OpenRouter-only minimal effort", () => {

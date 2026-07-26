@@ -30,6 +30,7 @@ import {
 } from "./providerCredentialSource";
 import {
   anthropicMessagesToolBridge,
+  geminiChatToolBridge,
   openAICompatibleChatToolBridge,
   openAICompatibleResponsesToolBridge,
   openAIResponsesToolBridge,
@@ -225,7 +226,9 @@ export function createProviderRuntimeBinding(input: Readonly<{
             fetchFn
           })
         }),
-        toolBridge: openAICompatibleChatToolBridge
+        toolBridge: snapshot.providerFamily === "gemini"
+          ? geminiChatToolBridge
+          : openAICompatibleChatToolBridge
       };
     case "anthropic_messages":
       return {

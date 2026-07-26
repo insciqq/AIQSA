@@ -12,7 +12,7 @@ const advanced = vi.hoisted(() => ({
   mounts: 0,
   props: null as null | {
     active: boolean;
-    advancedEntryProvider?: "anthropic" | "openai" | "openrouter" | null;
+    advancedEntryProvider?: "anthropic" | "gemini" | "openai" | "openrouter" | null;
     onBackToQuickSetup(): void;
     onMutationCommitted?(): void | Promise<unknown>;
   }
@@ -35,7 +35,7 @@ vi.mock("./AdminProvidersSection", async () => {
   return {
     AdminProvidersSection: (props: typeof advanced.props extends infer _Ignored ? {
       active: boolean;
-      advancedEntryProvider?: "anthropic" | "openai" | "openrouter" | null;
+      advancedEntryProvider?: "anthropic" | "gemini" | "openai" | "openrouter" | null;
       onBackToQuickSetup(): void;
       onMutationCommitted?(): void | Promise<unknown>;
     } : never) => {
@@ -65,13 +65,19 @@ vi.mock("./AdminProvidersSection", async () => {
 });
 
 function provider(
-  id: "anthropic" | "openai" | "openrouter",
+  id: "anthropic" | "gemini" | "openai" | "openrouter",
   state: "advanced_required" | "needs_attention" | "not_configured" | "ready" = "not_configured",
   modelName?: string
 ) {
-  const names = { anthropic: "Anthropic", openai: "OpenAI", openrouter: "OpenRouter" };
+  const names = {
+    anthropic: "Anthropic",
+    gemini: "Gemini",
+    openai: "OpenAI",
+    openrouter: "OpenRouter"
+  };
   const models = {
-    anthropic: "Claude Opus 4.8",
+    anthropic: "Claude Opus 5",
+    gemini: "Gemini 3.6 Flash",
     openai: "GPT-5.6 Terra",
     openrouter: "Claude Opus 4.8"
   };
@@ -87,14 +93,16 @@ function provider(
 
 function snapshot(options: {
   anthropic?: Parameters<typeof provider>[1];
+  gemini?: Parameters<typeof provider>[1];
   openai?: Parameters<typeof provider>[1];
   openrouter?: Parameters<typeof provider>[1];
-  suggestedProvider?: "anthropic" | "openai" | "openrouter" | null;
+  suggestedProvider?: "anthropic" | "gemini" | "openai" | "openrouter" | null;
 } = {}) {
   return {
     providers: [
       provider("openai", options.openai),
       provider("anthropic", options.anthropic),
+      provider("gemini", options.gemini),
       provider("openrouter", options.openrouter)
     ],
     suggestedProvider: options.suggestedProvider ?? null
@@ -106,6 +114,11 @@ function ready(defaultChanged = true) {
     checkedAt: "2026-07-26T03:00:00.000Z",
     defaultChanged,
     model: { displayName: "GPT-5.6 Terra" },
+    models: [
+      { displayName: "GPT-5.6 Terra" },
+      { displayName: "GPT-5.6 Luna" },
+      { displayName: "GPT-5.6 Sol" }
+    ],
     outcome: "ready" as const,
     profilesFilled: ["balanced"],
     provider: "openai" as const,
@@ -149,6 +162,7 @@ describe("AdminProvidersExperience", () => {
     );
 
     await screen.findByText("Choose a provider to continue.");
+    expect(screen.getByRole("button", { name: /Gemini Not connected/ })).toBeInTheDocument();
     expect(screen.queryByLabelText("API key")).not.toBeInTheDocument();
     expect(advanced.mounts).toBe(0);
     fireEvent.click(screen.getByRole("button", { name: /OpenAI Not connected/ }));
@@ -169,9 +183,12 @@ describe("AdminProvidersExperience", () => {
     expect(screen.getByText("Available in chat. Your existing default model remained unchanged.")).toBeInTheDocument();
     const receipt = screen.getByTestId("provider-quick-ready-receipt");
     expect(receipt).toHaveTextContent("API key: saved and verified.");
-    expect(receipt).toHaveTextContent("Active model: GPT-5.6 Terra.");
+    expect(receipt).toHaveTextContent("Default model: GPT-5.6 Terra.");
+    expect(receipt).toHaveTextContent(
+      "Available models: GPT-5.6 Terra, GPT-5.6 Luna, GPT-5.6 Sol."
+    );
     expect(receipt).toHaveTextContent("Access: available to this administrator.");
-    expect(screen.getByText("Default model: unchanged.")).toBeInTheDocument();
+    expect(screen.getByText("Default selection: unchanged.")).toBeInTheDocument();
     expect(screen.getByText("Run profiles filled: Balanced.")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Start chatting" })).toHaveAttribute("href", "/");
     await waitFor(() => expect(onMutationCommitted).toHaveBeenCalledOnce());
@@ -208,13 +225,13 @@ describe("AdminProvidersExperience", () => {
     const finalCheck = deferred<{ data: ReturnType<typeof ready>; ok: true }>();
     const selection = {
       candidates: [
-        { candidateId: "p1-o2", displayName: "GPT-5.6 Luna" },
-        { candidateId: "p1-o3", displayName: "GPT-5.6 Sol" }
+        { candidateId: "p2-o2", displayName: "GPT-5.6 Luna" },
+        { candidateId: "p2-o3", displayName: "GPT-5.6 Sol" }
       ],
       checkedAt: "2026-07-26T03:00:00.000Z",
       expectedState: "state-openai",
       outcome: "selection_required" as const,
-      policyVersion: 1,
+      policyVersion: 2,
       provider: "openai" as const,
       providerDisplayName: "OpenAI"
     };
@@ -250,7 +267,7 @@ describe("AdminProvidersExperience", () => {
       expectedState: "state-openai",
       provider: "openai",
       secret: "changed-key",
-      selectedModel: { candidateId: "p1-o3", policyVersion: 1 }
+      selectedModel: { candidateId: "p2-o3", policyVersion: 2 }
     });
     await act(async () => {
       finalCheck.resolve({
@@ -264,7 +281,7 @@ describe("AdminProvidersExperience", () => {
       await finalCheck.promise;
     });
     const receipt = await screen.findByTestId("provider-quick-ready-receipt");
-    expect(receipt).toHaveTextContent("Active model: GPT-5.6 Sol.");
+    expect(receipt).toHaveTextContent("Default model: GPT-5.6 Sol.");
     expect(receipt).toHaveTextContent("Run profiles filled: Deep.");
     expect(receipt).not.toHaveTextContent("Balanced");
   });
@@ -486,13 +503,13 @@ describe("AdminProvidersExperience", () => {
     expect(screen.getByText("Ready to chat")).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "Start chatting" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Replace API key" })).toBeDisabled();
-    expect(screen.getByText("Default model: unchanged.")).toBeInTheDocument();
+    expect(screen.getByText("Default selection: unchanged.")).toBeInTheDocument();
     expect(screen.getByText("Run profiles filled: Balanced, Fast.")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Retry status refresh" }));
     expect(await screen.findByRole("link", { name: "Start chatting" })).toHaveAttribute("href", "/");
     expect(screen.getByRole("button", { name: "Replace API key" })).toBeEnabled();
-    expect(screen.getByText("Default model: unchanged.")).toBeInTheDocument();
+    expect(screen.getByText("Default selection: unchanged.")).toBeInTheDocument();
     expect(screen.getByText("Run profiles filled: Balanced, Fast.")).toBeInTheDocument();
   });
 

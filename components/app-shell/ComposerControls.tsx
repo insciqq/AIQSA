@@ -22,7 +22,6 @@ import {
   Bell,
   BellOff,
   BookOpen,
-  ChevronRight,
   MessageSquareText,
   Radio,
   ScrollText,
@@ -170,7 +169,8 @@ export function ComposerControls({
   usageStats?: ComposerUsageStats | null;
 }) {
   const runSetupTriggerRef = useRef<HTMLButtonElement>(null);
-  const [modelPickerOpen, setModelPickerOpen] = useState(false);
+  const [inlineModelPickerOpen, setInlineModelPickerOpen] = useState(false);
+  const [setupModelPickerOpen, setSetupModelPickerOpen] = useState(false);
   const [runSetupOpen, setRunSetupOpen] = useState(false);
   const reasoningSupported = Boolean(currentModel && currentParameterControls.reasoningEffort.supported);
   const reasoningOptions = reasoningSupported
@@ -218,7 +218,7 @@ export function ComposerControls({
     cacheWriteInputTokens: 0,
     totalTokens: 0
   };
-  const summaryDescription = `Open run setup. Profile ${profileLabel}. Model ${modelLabel}. Reasoning ${
+  const summaryDescription = `Open more run settings. Profile ${profileLabel}. Model ${modelLabel}. Reasoning ${
     reasoningSupported ? reasoningAccessibleDescription(reasoningEffort, reasoningMode) : "not supported"
   }. Search ${searchSummary}.`;
 
@@ -231,7 +231,7 @@ export function ComposerControls({
 
   const closeRunSetup = useCallback(() => {
     commitNumericDrafts();
-    setModelPickerOpen(false);
+    setSetupModelPickerOpen(false);
     setRunSetupOpen(false);
   }, [commitNumericDrafts]);
   const runSetupDialogRef = useDialogFocus<HTMLDivElement>({
@@ -250,12 +250,68 @@ export function ComposerControls({
   }, [closeRunSetup, disabled, runSetupOpen]);
 
   return (
-    <div className="relative min-w-0 flex-1" data-layout="coherent" data-testid="composer-control-bar">
+    <div
+      className="relative flex min-w-0 flex-1 flex-wrap items-center gap-1"
+      data-layout="direct"
+      data-testid="composer-control-bar"
+    >
+      <ComposerModelPicker
+        catalog={catalog}
+        catalogUnavailable={catalogUnavailable}
+        className={compact ? "max-w-[15rem] flex-[1_1_9rem]" : "max-w-[18rem] flex-[1_1_11rem]"}
+        currentModel={currentModel}
+        disabled={disabled}
+        idPrefix="composer-inline-model"
+        open={inlineModelPickerOpen}
+        pickerTestId="composer-inline-model-picker"
+        selectedModelId={selectedModelId}
+        selectedProvider={selectedProvider}
+        selectedProviderName={selectedProviderName}
+        streaming={streaming}
+        valueTestId="run-model-summary"
+        onOpenChange={setInlineModelPickerOpen}
+        onSelectModel={onSelectModel}
+      />
+
+      {hasConfiguredProfiles ? (
+        <ComposerRunProfiles
+          catalog={catalog}
+          compact
+          disabled={disabled || streaming}
+          reasoningEffort={reasoningEffort}
+          reasoningMode={reasoningMode}
+          selectedModelId={selectedModelId}
+          selectedProvider={selectedProvider}
+          testId="composer-inline-run-profiles"
+          onSelect={onRunProfileChange}
+        />
+      ) : null}
+
+      <ComposerOptionPicker
+        align="right"
+        className={compact ? "max-w-[10rem] flex-[1_1_7rem]" : "max-w-[12rem] flex-[1_1_8rem]"}
+        id="composer-inline-search"
+        label="Search strategy"
+        restingLabel="Search"
+        disabled={disabled || !currentModel || streaming}
+        options={searchOptions.map((strategy) => ({
+          description: searchStrategyDescription(strategy),
+          label: strategy.displayName,
+          value: strategy.strategyId
+        }))}
+        defaultValue={catalog?.defaults.searchStrategyId}
+        resting
+        summaryLabel={compactSearchStrategyLabel(currentSearchStrategy)}
+        value={selectedSearchStrategy}
+        onChange={onSearchStrategyChange}
+      />
+
+      <span className="sr-only" data-testid="run-profile-summary">Profile: {profileLabel}</span>
+      <span className="sr-only" data-testid="run-search-summary">Search: {searchSummary}</span>
+
       <button
         ref={runSetupTriggerRef}
-        className={compact
-          ? "inline-flex min-h-touch min-w-0 max-w-full items-center gap-1.5 rounded-control px-2.5 text-left text-xs text-ink outline-none hover:bg-control-hover focus-visible:ring-2 focus-visible:ring-proof/55 disabled:cursor-not-allowed disabled:text-ink-disabled disabled:opacity-65"
-          : "grid min-h-touch w-full min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-2 rounded-control px-2.5 py-1.5 text-left text-ink outline-none hover:bg-control-hover focus-visible:ring-2 focus-visible:ring-proof/55 disabled:cursor-not-allowed disabled:text-ink-disabled disabled:opacity-65"}
+        className="inline-flex min-h-touch min-w-0 shrink-0 items-center gap-1.5 rounded-control px-2.5 text-left text-xs font-medium text-ink-secondary outline-none hover:bg-control-hover hover:text-ink focus-visible:ring-2 focus-visible:ring-proof/55 disabled:cursor-not-allowed disabled:text-ink-disabled disabled:opacity-65 sm:min-h-control"
         type="button"
         aria-label={summaryDescription}
         aria-controls="composer-run-setup-panel"
@@ -268,53 +324,19 @@ export function ComposerControls({
             closeRunSetup();
             return;
           }
+          setInlineModelPickerOpen(false);
           setRunSetupOpen(true);
         }}
       >
-        {compact ? (
-          <>
-            <SlidersHorizontal className="size-3.5 shrink-0 text-ink-muted" aria-hidden="true" />
-            <span className="shrink-0 font-medium text-ink-secondary">Run</span>
-            <span
-              className="min-w-0 truncate font-medium text-ink"
-              data-testid="run-model-summary"
-              title={modelLabel}
-            >
-              {modelLabel}
-            </span>
-            <span className="sr-only" data-testid="run-profile-summary">Profile: {profileLabel}</span>
-            <span className="sr-only" data-testid="run-reasoning-summary">Reasoning: {reasoningSummary}</span>
-            <span className="sr-only" data-testid="run-search-summary">Search: {searchSummary}</span>
-            <ChevronRight className="size-3.5 shrink-0 text-ink-muted" aria-hidden="true" />
-          </>
-        ) : (
-          <>
-          <span className="min-w-0">
-          <span className="flex min-w-0 items-baseline gap-2">
-            <span className="shrink-0 text-[11px] font-semibold uppercase tracking-[0.1em] text-ink-muted">Run</span>
-            <span
-              className="min-w-0 break-words text-sm font-semibold text-ink [overflow-wrap:anywhere]"
-              data-testid="run-model-summary"
-              title={modelLabel}
-            >
-              {modelLabel}
-            </span>
-          </span>
-          <span className="mt-0.5 flex min-w-0 flex-wrap gap-x-3 gap-y-0.5 text-[11px] leading-4 text-ink-secondary">
-            <span data-testid="run-profile-summary">
-              Profile: <span className="font-medium text-ink">{profileLabel}</span>
-            </span>
-            <span data-testid="run-reasoning-summary">
-              Reasoning: <span className="font-medium text-ink">{reasoningSummary}</span>
-            </span>
-            <span data-testid="run-search-summary">
-              Search: <span className="font-medium text-ink">{searchSummary}</span>
-            </span>
-          </span>
-          </span>
-          <ChevronRight className="size-4 shrink-0 text-ink-muted" aria-hidden="true" />
-          </>
-        )}
+        <SlidersHorizontal className="size-3.5 shrink-0 text-ink-muted" aria-hidden="true" />
+        <span className="sr-only">{modelLabel}. Profile: {profileLabel}. Search: {searchSummary}. </span>
+        <span className="shrink-0">More</span>
+        <span
+          className="hidden"
+          data-testid="run-reasoning-summary"
+        >
+          Reasoning: {reasoningSummary}
+        </span>
       </button>
 
       {runSetupOpen ? (
@@ -391,12 +413,12 @@ export function ComposerControls({
                     currentModel={currentModel}
                     disabled={disabled}
                     nestedInRunSetup
-                    open={modelPickerOpen}
+                    open={setupModelPickerOpen}
                     selectedModelId={selectedModelId}
                     selectedProvider={selectedProvider}
                     selectedProviderName={selectedProviderName}
                     streaming={streaming}
-                    onOpenChange={setModelPickerOpen}
+                    onOpenChange={setSetupModelPickerOpen}
                     onSelectModel={onSelectModel}
                   />
 

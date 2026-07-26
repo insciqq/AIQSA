@@ -3,6 +3,8 @@
 Status: Accepted
 Amends: 0011-explicit-next-run-control-ownership
 
+Amendment note: ADR 0030 replaces the single resting Run-summary composition with direct Model/configured-Profile/Search controls plus More at every viewport while retaining this ADR's one state owner, safe-area modal, touch, and software-keyboard outcomes.
+
 ## Context
 
 At narrow phone widths, the permanent Profile, Model, Reasoning, Search, Run settings, context/usage, and action rows consumed roughly half of the useful conversation viewport. The transparent textarea had no visible label or local field boundary, while narrow Reasoning and Search triggers truncated their selected values. The controls were physically present without making the draft or the next-run state legible. Reducing touch targets would violate the coarse-input contract.

@@ -60,6 +60,16 @@ const allowedTopLevelKeys: Record<string, Set<string>> = {
     "search",
     "temperature"
   ]),
+  gemini: new Set([
+    "maxTokens",
+    "max_tokens",
+    "maxOutputTokens",
+    "max_output_tokens",
+    "max_completion_tokens",
+    "reasoning",
+    "search",
+    "stream"
+  ]),
   openai: new Set([
     "background",
     "manualContextReplay",
@@ -336,6 +346,23 @@ function validateAnthropicParams(params: Record<string, unknown>, controls: Mode
   return true;
 }
 
+function validateGeminiParams(
+  params: Record<string, unknown>,
+  controls: ModelParameterControls
+): boolean {
+  if (hasOwn(params, "stream") &&
+    (!controls.stream.supported || !validateBoolean(params.stream))) {
+    return false;
+  }
+  if (!hasOwn(params, "reasoning")) return true;
+  if (!isRecord(params.reasoning) ||
+    !allKeysAllowed(params.reasoning, new Set(["effort"]))) {
+    return false;
+  }
+  return !hasOwn(params.reasoning, "effort") ||
+    validateEffort(params.reasoning.effort, controls);
+}
+
 function validateOpenRouterProviderParams(value: unknown): boolean {
   if (!isRecord(value)) {
     return false;
@@ -435,6 +462,9 @@ function validateProviderParams(
   }
   if (provider === "anthropic") {
     return validateAnthropicParams(params, controls);
+  }
+  if (provider === "gemini") {
+    return validateGeminiParams(params, controls);
   }
   if (provider === "openrouter") {
     return validateOpenRouterParams(params, controls);

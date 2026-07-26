@@ -42,6 +42,8 @@ export function AdminProviderModelsTask({
           <p className="mt-1 text-sm leading-6 text-ink-muted">
             {connection.family === "openai_compatible"
               ? "Each deployment chooses Responses or Chat Completions explicitly."
+              : connection.family === "gemini"
+                ? "Each deployment uses Gemini's reviewed OpenAI-compatible Chat Completions boundary."
               : connection.family === "openrouter"
                 ? "Choose from the selected account catalog, then keep Automatic routing or define one ordered provider allowlist."
                 : "Each row is one concrete deployment that becomes available for grants only after activation."}
