@@ -6,7 +6,7 @@ describe("AdminSafetySection", () => {
   it("renders the safety guidance and delegates the global session reset request", () => {
     const onRequestRevokeAllSessions = vi.fn();
 
-    const { container } = render(
+    render(
       <AdminSafetySection
         actionsDisabled={false}
         currentAdminEmail="admin@example.com"
@@ -38,7 +38,6 @@ describe("AdminSafetySection", () => {
     fireEvent.click(revokeButton);
 
     expect(onRequestRevokeAllSessions).toHaveBeenCalledTimes(1);
-    expect(container.innerHTML).not.toMatch(/(?:surface-|content-|separator-|accent-)/);
   });
 
   it("disables the global session reset while another action is pending", () => {

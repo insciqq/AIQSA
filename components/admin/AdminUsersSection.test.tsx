@@ -194,6 +194,35 @@ describe("AdminUsersSection", () => {
     expect(screen.getByRole("button", { name: "Disable user" })).toBeDisabled();
   });
 
+  it("keeps catalog-backed model rows and collapses missing model grants into one truthful disclosure", () => {
+    const active = createUser({
+      effectiveEntitlements: {
+        models: [
+          { modelId: "gpt-5.5", provider: "openai" },
+          { modelId: "retired-alpha", provider: "legacy-openai" },
+          { modelId: "retired-beta", provider: "legacy-anthropic" }
+        ],
+        providers: ["openai"],
+        searchStrategies: ["web"]
+      }
+    });
+    const fixture = createFixture({ pageUsers: [active], selectedUser: active, view: { compactDetailOpen: true } });
+    render(<AdminUsersSection {...fixture.props} />);
+
+    expect(screen.getByText("OpenAI / GPT 5.5")).toBeVisible();
+    expect(screen.queryByText("Unavailable provider / Unavailable model")).not.toBeInTheDocument();
+
+    const summary = screen.getByText("2 unavailable model grants");
+    const disclosure = summary.closest("details");
+    expect(disclosure).not.toHaveAttribute("open");
+    fireEvent.click(summary);
+
+    expect(disclosure).toHaveAttribute("open");
+    expect(screen.getByText("legacy-openai / retired-alpha")).toBeVisible();
+    expect(screen.getByText("legacy-anthropic / retired-beta")).toBeVisible();
+    expect(screen.getByText(/remain effective records/)).toBeVisible();
+  });
+
   it("keeps the acting admin read-only", () => {
     const currentAdmin = createUser({ displayName: "Current Admin", email: "admin@example.com", id: "admin-current", role: "admin" });
     const fixture = createFixture({ pageUsers: [currentAdmin], selectedUser: currentAdmin, view: { compactDetailOpen: true } });

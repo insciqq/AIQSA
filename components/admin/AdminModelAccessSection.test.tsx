@@ -103,6 +103,10 @@ describe("AdminModelAccessSection", () => {
     expect(screen.getByRole("heading", { name: "Provider-wide access" })).toBeVisible();
     expect(screen.getByRole("heading", { name: "Explicit model grants" })).toBeVisible();
     expect(screen.getByRole("heading", { name: "Search strategy grants" })).toBeVisible();
+    expect(screen.getByText(/These grants control entitlement/)).toBeVisible();
+    expect(screen.queryByText("Provider-wide grants unlock every current and future model for that provider.")).not.toBeInTheDocument();
+    expect(screen.queryByText("Individual model grants stay distinct from provider-wide access.")).not.toBeInTheDocument();
+    expect(screen.queryByText("Search access is managed separately from model and provider grants.")).not.toBeInTheDocument();
     expect(screen.queryByRole("table")).not.toBeInTheDocument();
     expect(screen.queryByText("openai:gpt-5.5")).not.toBeInTheDocument();
 

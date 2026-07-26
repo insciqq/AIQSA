@@ -55,9 +55,11 @@ PostgreSQL and MinIO data use named Docker volumes. Do not use `docker compose d
 
 ### AI providers
 
-Sign in as the initial administrator and open `Admin -> Providers`. Connections, models, routing, credentials, group-specific credentials, activation evidence, and stored diagnostics live in PostgreSQL; the unsaved-key preflight persists neither the key nor its result. Configuration changes take effect for future runs without rebuilding or restarting AIQSA. Provider secrets are write-only in the UI.
+Sign in as the initial administrator and open `Control Center -> Providers`. For the normal OpenAI, Anthropic, or OpenRouter setup, stay in **Personal setup**: choose the provider, paste its API key, select **Test & Save**, and then use **Start chatting** from the Ready result. If the key cannot use the recommended model, AIQSA asks for one model choice before retrying the same atomic save. A single administrator does not need to create a group or visit Model access for this path. The key is write-only, and a failed test or save does not partially replace the last working configuration.
 
-For the common OpenRouter path, enter and Test the installation-owned key, save it, load the account-filtered model list, choose a model, optionally choose ordered downstream providers, and Activate. Activation checks each referenced default/group key once against its account model catalog; there is no manual model-by-key test matrix. `Check model route` is an optional diagnostic. `Automatic` lets OpenRouter route with AIQSA's fixed privacy defaults; `Only selected providers` denies fallback outside the chosen list. Custom OpenAI-compatible deployments require an explicit `Responses` or `Chat Completions` protocol choice and a standard authenticated Models endpoint for key validation.
+Open **Advanced configuration** only for custom endpoints, multiple credentials, group-specific authentication policy, explicit deployments/routing, activation lifecycle, diagnostics, or Run profiles. Connections, models, routing, credentials, activation evidence, and stored diagnostics live in PostgreSQL. Changes apply to future runs without rebuilding or restarting AIQSA, and provider secrets remain write-only in the UI.
+
+For advanced OpenRouter routing, load the account-filtered model list, choose a model, optionally choose ordered downstream providers, and activate the tested draft. Activation checks each referenced default/group key once against its account model catalog; there is no manual model-by-key test matrix. `Check model route` is an optional diagnostic. `Automatic` lets OpenRouter route with AIQSA's fixed privacy defaults; `Only selected providers` denies fallback outside the chosen list. Custom OpenAI-compatible deployments require an explicit `Responses` or `Chat Completions` protocol choice and a standard authenticated Models endpoint for key validation.
 
 Model/search grants and provider credentials are separate. `Model access` decides what a user may select. A connection may use one default administrator-owned credential, or administrators may assign different credentials to groups. Overlapping group assignments to different credentials fail closed instead of choosing one silently.
 
@@ -72,7 +74,7 @@ Provider safety bounds are optional:
 
 ## MCP servers
 
-MCP is installation-managed. An administrator uses `Admin -> MCP servers` to create a draft, test its exact configuration and discovered tools, activate it, and grant the whole server to users or groups. Direct user access can additionally permit specific administrator-declared personal fields. Ordinary users can only enable entitled servers, fill those fields, or connect their own external OAuth identity under `Settings -> MCP & tools`; they cannot change endpoints, packages, commands, scopes, or tool grants.
+MCP is installation-managed. An administrator uses `Control Center -> MCP servers` to create a draft, test its exact configuration and discovered tools, activate it, and grant the whole server to users or groups. Direct user access can additionally permit specific administrator-declared personal fields. Ordinary users can only enable entitled servers, fill those fields, or connect their own external OAuth identity under `Settings -> MCP & tools`; they cannot change endpoints, packages, commands, scopes, or tool grants.
 
 The initial source matrix supports:
 
@@ -122,7 +124,7 @@ When `AIQSA_COOKIE_SECURE` is blank, AIQSA derives it from the base URL: HTTPS e
 
 ## Email (optional)
 
-SMTP is not needed for the initial administrator or normal local use. Open `Admin -> Email delivery`, save a draft, send its one-off test to an explicit recipient, and activate the tested version. Choose implicit TLS, required STARTTLS, or the explicitly warned credential-free internal plaintext mode. The password is write-only; saving an omitted password preserves it, replacement is explicit, and clearing is confirmation-gated.
+SMTP is not needed for the initial administrator or normal local use. Open `Control Center -> Email delivery`, save a draft, send its one-off test to an explicit recipient, and activate the tested version. Choose implicit TLS, required STARTTLS, or the explicitly warned credential-free internal plaintext mode. The password is write-only; saving an omitted password preserves it, replacement is explicit, and clearing is confirmation-gated.
 
 Activation and Disable affect the next send without restart. A failed draft test does not disturb the active version. Without active SMTP, password-reset and verification messages cannot be delivered, while an administrator can still copy newly created invitation links manually.
 
@@ -134,7 +136,7 @@ ADR 0022/0023 use a full stopped cutover, not a compatibility mode:
 
 1. Stop the old application and take a coordinated PostgreSQL/object-storage backup.
 2. Keep the old provider and SMTP variables in the private `.env` for the first upgraded `docker compose up -d --build` only. The one-shot tools container holds the installation lock, upgrades MCP envelopes, and imports complete legacy values as disabled, untested encrypted drafts. It performs no provider/SMTP network request.
-3. Sign in and review each imported draft in Admin. For providers, review the imported endpoint, models, and credential assignments, then Activate; activation validates every referenced imported key, while model/route diagnostics remain optional. For SMTP, run its exact-draft Test and Activate it.
+3. Sign in and review each imported draft in Control Center. For providers, review the imported endpoint, models, and credential assignments, then Activate; activation validates every referenced imported key, while model/route diagnostics remain optional. For SMTP, run its exact-draft Test and Activate it.
 4. Remove the old provider keys/base URLs and SMTP connection/password variables from `.env`; they never enter the application container and are not a fallback.
 
 Partial or structurally invalid legacy input aborts the atomic cutover with a value-free field-class error. Recover by restoring the required pre-cutover backup, correcting the source values, and rerunning; mixed old/new authority is unsupported.

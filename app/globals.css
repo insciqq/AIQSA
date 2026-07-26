@@ -175,33 +175,6 @@
   --shadow-overlay: 0 14px 40px rgb(0 0 0 / 0.14);
 }
 
-:root,
-[data-theme] {
-  /*
-   * Temporary migration aliases for legacy renderers. New UI must consume
-   * the product-semantic tokens above; remove each alias with its old view.
-   */
-  --surface-canvas: var(--research-canvas);
-  --surface-navigation: var(--workspace-rail);
-  --surface-thread: var(--answer-paper);
-  --surface-raised: var(--control-surface);
-  --surface-overlay: var(--overlay-surface);
-  --surface-hover: var(--control-hover);
-  --surface-active: var(--control-pressed);
-  --surface-selected: var(--control-selected);
-  --separator-subtle: var(--trace-subtle);
-  --separator-strong: var(--trace-strong);
-  --text-primary: var(--ink);
-  --text-secondary: var(--ink-secondary);
-  --text-muted: var(--ink-muted);
-  --text-disabled: var(--ink-disabled);
-  --text-link: var(--proof);
-  --accent-cyan: var(--proof);
-  --accent-green: var(--positive);
-  --accent-amber: var(--caution);
-  --accent-rose: var(--critical);
-}
-
 * {
   box-sizing: border-box;
 }

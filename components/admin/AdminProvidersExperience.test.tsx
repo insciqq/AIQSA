@@ -12,6 +12,7 @@ const advanced = vi.hoisted(() => ({
   props: null as null | {
     active: boolean;
     advancedEntryProvider?: "anthropic" | "openai" | "openrouter" | null;
+    onBackToPersonal(): void;
     onMutationCommitted?(): void | Promise<unknown>;
   }
 }));
@@ -33,6 +34,7 @@ vi.mock("./AdminProvidersSection", async () => {
     AdminProvidersSection: (props: typeof advanced.props extends infer _Ignored ? {
       active: boolean;
       advancedEntryProvider?: "anthropic" | "openai" | "openrouter" | null;
+      onBackToPersonal(): void;
       onMutationCommitted?(): void | Promise<unknown>;
     } : never) => {
       const [draft, setDraft] = React.useState("");
@@ -50,6 +52,9 @@ vi.mock("./AdminProvidersSection", async () => {
           </label>
           <button onClick={() => void props.onMutationCommitted?.()} type="button">
             Simulate Advanced mutation
+          </button>
+          <button onClick={props.onBackToPersonal} type="button">
+            Back to Personal setup
           </button>
         </div>
       );
@@ -326,10 +331,11 @@ describe("AdminProvidersExperience", () => {
     expect(advanced.mounts).toBe(0);
     fireEvent.click(screen.getByRole("button", { name: "Advanced configuration" }));
 
-    const advancedWorkspace = await screen.findByTestId("advanced-provider-workspace");
-    expect(advancedWorkspace.closest('[data-admin-renderer="replacement"]')).toBeInTheDocument();
+    expect(await screen.findByTestId("advanced-provider-workspace")).toBeInTheDocument();
     expect(screen.getByText("Entry provider: openai")).toBeInTheDocument();
     expect(advanced.props?.advancedEntryProvider).toBe("openai");
+    expect(advanced.props?.onBackToPersonal).toEqual(expect.any(Function));
+    expect(screen.getAllByRole("button", { name: "Back to Personal setup" })).toHaveLength(1);
     await waitFor(() => expect(advanced.mounts).toBe(1));
     fireEvent.change(screen.getByLabelText("Advanced draft"), { target: { value: "preserved draft" } });
     fireEvent.click(screen.getByRole("button", { name: "Back to Personal setup" }));

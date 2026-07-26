@@ -45,6 +45,7 @@ import {
 import type { AdminGroup } from "@/lib/contracts/admin";
 import type { AdminProviderConnection } from "@/lib/contracts/adminProviders";
 import {
+  ArrowLeft,
   Check,
   ChevronRight,
   MoreHorizontal,
@@ -60,6 +61,7 @@ export type AdminProvidersSectionProps = Readonly<{
   active: boolean;
   advancedEntryProvider?: AdminProviderQuickSetupId | null;
   groups: AdminGroup[];
+  onBackToPersonal?(): void;
   onMutationCommitted?(): void | Promise<unknown>;
   refreshRevision?: number;
   requestConfirmation?: AdminConfirmationController["requestConfirmation"];
@@ -273,6 +275,9 @@ function ConnectionDetail({
   const [activeTask, setActiveTask] = useState<ProviderAdvancedTask>(() =>
     providerTaskForPrimaryAction(ui.primaryAction)
   );
+  const primaryActionIsAlreadyOpen = ui.primaryAction?.kind === "configure_credential" &&
+    activeTask === "credentials" &&
+    connection.credentials.length === 0;
   const activationNeedsOverride =
     controller.state.feedbackConnectionId === connection.id &&
     controller.state.errorCode === "provider_activation_unavailable_confirmation_required";
@@ -375,7 +380,7 @@ function ConnectionDetail({
               </p>
             )}
           </div>
-          {ui.primaryAction ? (
+          {ui.primaryAction && !primaryActionIsAlreadyOpen ? (
             <button
               className={primaryButton}
               disabled={controller.state.busy}
@@ -479,6 +484,7 @@ export function AdminProvidersSection({
   active,
   advancedEntryProvider = null,
   groups,
+  onBackToPersonal,
   onMutationCommitted,
   refreshRevision = 0,
   requestConfirmation: externalRequestConfirmation
@@ -539,32 +545,40 @@ export function AdminProvidersSection({
 
   return (
     <div className="min-w-0" data-testid="provider-advanced-workspace">
-      <div className="flex flex-col gap-3 border-b border-trace-subtle px-4 py-3 sm:flex-row sm:items-center sm:justify-between sm:px-6">
-        <div>
-          <p className="text-sm font-medium text-ink">Advanced provider controls</p>
+      <div className="flex flex-col gap-3 border-b border-trace-subtle px-4 py-4 sm:px-6 xl:flex-row xl:items-start xl:justify-between">
+        <div className="min-w-0 max-w-3xl">
+          <h2 className="text-base font-semibold text-ink">Advanced provider controls</h2>
           <p className="mt-0.5 text-xs leading-5 text-ink-muted">
             Manage custom endpoints, account policy, deployments, diagnostics, and the three installation run profiles.
           </p>
         </div>
-        <div className="flex flex-wrap gap-1" role="tablist" aria-label="Advanced provider views">
-          <button
-            aria-selected={peer === "connections"}
-            className={peer === "connections" ? primaryButton : quietButton}
-            onClick={() => setPeer("connections")}
-            role="tab"
-            type="button"
-          >
-            Connections
-          </button>
-          <button
-            aria-selected={peer === "profiles"}
-            className={peer === "profiles" ? primaryButton : quietButton}
-            onClick={() => setPeer("profiles")}
-            role="tab"
-            type="button"
-          >
-            Run profiles
-          </button>
+        <div className="flex flex-wrap items-center gap-1">
+          {onBackToPersonal ? (
+            <button className={quietButton} onClick={onBackToPersonal} type="button">
+              <ArrowLeft aria-hidden="true" className="size-3.5" />
+              Back to Personal setup
+            </button>
+          ) : null}
+          <div className="flex flex-wrap gap-1" role="tablist" aria-label="Advanced provider views">
+            <button
+              aria-selected={peer === "connections"}
+              className={peer === "connections" ? primaryButton : quietButton}
+              onClick={() => setPeer("connections")}
+              role="tab"
+              type="button"
+            >
+              Connections
+            </button>
+            <button
+              aria-selected={peer === "profiles"}
+              className={peer === "profiles" ? primaryButton : quietButton}
+              onClick={() => setPeer("profiles")}
+              role="tab"
+              type="button"
+            >
+              Run profiles
+            </button>
+          </div>
           <button
             aria-label="Refresh provider connections"
             className={quietButton}

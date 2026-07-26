@@ -34,35 +34,7 @@ const config = {
         positive: "rgb(var(--positive) / <alpha-value>)",
         caution: "rgb(var(--caution) / <alpha-value>)",
         critical: "rgb(var(--critical) / <alpha-value>)",
-        scrim: "rgb(var(--scrim) / <alpha-value>)",
-        /* Temporary class aliases for legacy renderers during the in-place revamp. */
-        surface: {
-          canvas: "rgb(var(--surface-canvas) / <alpha-value>)",
-          navigation: "rgb(var(--surface-navigation) / <alpha-value>)",
-          thread: "rgb(var(--surface-thread) / <alpha-value>)",
-          overlay: "rgb(var(--surface-overlay) / <alpha-value>)",
-          hover: "rgb(var(--surface-hover) / <alpha-value>)",
-          active: "rgb(var(--surface-active) / <alpha-value>)",
-          selected: "rgb(var(--surface-selected) / <alpha-value>)",
-          raised: "rgb(var(--surface-raised) / <alpha-value>)"
-        },
-        content: {
-          primary: "rgb(var(--text-primary) / <alpha-value>)",
-          secondary: "rgb(var(--text-secondary) / <alpha-value>)",
-          muted: "rgb(var(--text-muted) / <alpha-value>)",
-          disabled: "rgb(var(--text-disabled) / <alpha-value>)",
-          link: "rgb(var(--text-link) / <alpha-value>)"
-        },
-        separator: {
-          subtle: "rgb(var(--separator-subtle) / <alpha-value>)",
-          strong: "rgb(var(--separator-strong) / <alpha-value>)"
-        },
-        accent: {
-          cyan: "rgb(var(--accent-cyan) / <alpha-value>)",
-          green: "rgb(var(--accent-green) / <alpha-value>)",
-          amber: "rgb(var(--accent-amber) / <alpha-value>)",
-          rose: "rgb(var(--accent-rose) / <alpha-value>)"
-        }
+        scrim: "rgb(var(--scrim) / <alpha-value>)"
       },
       fontFamily: {
         sans: [

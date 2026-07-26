@@ -155,6 +155,57 @@ describe("AdminProvidersSection", () => {
     mocks.useController.mockReset();
   });
 
+  it("owns the Advanced navigation header and delegates return to Personal setup", () => {
+    const view = controller();
+    const onBackToPersonal = vi.fn();
+    mocks.useController.mockReturnValue(view);
+    render(
+      <AdminProvidersSection
+        active
+        groups={[]}
+        onBackToPersonal={onBackToPersonal}
+      />
+    );
+
+    expect(screen.getByRole("heading", {
+      level: 2,
+      name: "Advanced provider controls"
+    })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Connections" })).toHaveAttribute(
+      "aria-selected",
+      "true"
+    );
+    expect(screen.getByRole("tab", { name: "Run profiles" })).toBeInTheDocument();
+    expect(screen.getByRole("button", {
+      name: "Refresh provider connections"
+    })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Back to Personal setup" }));
+    expect(onBackToPersonal).toHaveBeenCalledOnce();
+  });
+
+  it("does not offer Configure credential while the empty key form is already open", () => {
+    const emptyConnection: AdminProviderConnection = {
+      ...connection,
+      credentials: [],
+      defaultCredentialId: null
+    };
+    const view = controller();
+    view.state.connections = [emptyConnection];
+    view.state.selectedConnection = emptyConnection;
+    mocks.useController.mockReturnValue(view);
+    render(<AdminProvidersSection active groups={[]} />);
+
+    expect(screen.getByLabelText("API key")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Close key form" })).toHaveAttribute(
+      "aria-expanded",
+      "true"
+    );
+    expect(screen.queryByRole("button", {
+      name: "Configure credential"
+    })).not.toBeInTheDocument();
+  });
+
   it("keeps administrator keys write-only in a password field and clears the submitted value", async () => {
     const view = controller();
     mocks.useController.mockReturnValue(view);

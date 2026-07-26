@@ -238,7 +238,7 @@ describe("MarkdownMessage", () => {
       "text-base",
       "leading-7"
     );
-    expect(container.querySelector("strong")).toHaveClass("font-semibold", "text-content-primary");
+    expect(container.querySelector("strong")).toHaveClass("font-semibold", "text-ink");
     expect(container.querySelector("strong")).not.toHaveClass("text-base");
   });
 

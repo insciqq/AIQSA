@@ -895,8 +895,6 @@ test("admin console keeps every section touch-operable in the documented compact
     const users = page.getByTestId("admin-section-users");
     await expectTouchTarget(users.getByLabel("Search users"));
     await expectTouchTarget(users.getByRole("button", { exact: true, name: "all" }));
-    await expect(users.locator('[data-admin-renderer="replacement"]')).toBeVisible();
-    await expect(users.locator('[data-admin-renderer="legacy-embedded"]')).toHaveCount(0);
 
     await users.getByLabel("Search users").fill("operator@aiqsa.local");
     const operatorRow = userRow(page, "operator@aiqsa.local");
@@ -1039,8 +1037,6 @@ test("admin compact usage and empty access-rule states stay in the visible workf
       .toBe(true);
     await expect(usage.getByTestId("admin-usage-groups-mobile")).toBeVisible();
     await expect(usage.getByTestId("admin-usage-users-mobile")).toBeVisible();
-    await expect(usage.getByRole("table")).toHaveCount(0);
-    await expect(usage.locator('[data-admin-renderer="replacement"]')).toBeVisible();
     await expectNoPageOverflow(page);
 
     await openAdminSection(page, adminSections[6]);
@@ -1110,7 +1106,6 @@ test("Control Center keeps the current workflow in the short-landscape viewport"
     const usage = page.getByTestId("admin-section-usage");
     await expect(usage.getByTestId("admin-usage-groups-mobile")).toBeVisible();
     await expect(usage.getByTestId("admin-usage-users-mobile")).toBeVisible();
-    await expect(usage.getByRole("table")).toHaveCount(0);
     await expectNoPageOverflow(page);
   } finally {
     await context.close();
@@ -1151,7 +1146,6 @@ test("Control Center uses the compact section-index task model at tablet width",
     await expect(usage.getByRole("region", { name: "Usage summary" })).toBeVisible();
     await expect(usage.getByTestId("admin-usage-groups-mobile")).toBeVisible();
     await expect(usage.getByTestId("admin-usage-users-mobile")).toBeVisible();
-    await expect(usage.getByRole("table")).toHaveCount(0);
     await expectNoPageOverflow(page);
   } finally {
     await context.close();

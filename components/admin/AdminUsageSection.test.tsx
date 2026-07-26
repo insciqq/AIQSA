@@ -103,7 +103,7 @@ function populatedUsage(): AdminUsageDashboard {
 
 describe("AdminUsageSection", () => {
   it("renders the complete read-only usage ledger and native comparison tables", () => {
-    const { container } = render(<AdminUsageSection catalog={catalog} usage={populatedUsage()} />);
+    render(<AdminUsageSection catalog={catalog} usage={populatedUsage()} />);
 
     const summary = screen.getByRole("region", { name: "Usage summary" });
     expect(summary).toHaveClass("min-w-0", "border-y", "border-trace-subtle");
@@ -153,7 +153,6 @@ describe("AdminUsageSection", () => {
     expect(screen.queryByRole("button")).not.toBeInTheDocument();
     expect(screen.queryByRole("form")).not.toBeInTheDocument();
     expect(screen.queryByText(/cost/i)).not.toBeInTheDocument();
-    expect(container.innerHTML).not.toMatch(/(?:surface-|content-|separator-|accent-)/);
   });
 
   it("keeps both table regions and deliberate empty rows mounted", () => {

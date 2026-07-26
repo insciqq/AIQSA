@@ -89,7 +89,7 @@ function MathExpression({ displayMode, raw, source }: { displayMode: boolean; ra
   if (!displayMode) {
     return renderedHtml ? (
       <span
-        className="inline-block max-w-full align-middle text-content-primary"
+        className="inline-block max-w-full align-middle text-ink"
         data-math-display="false"
         dangerouslySetInnerHTML={{ __html: renderedHtml }}
       />
@@ -100,7 +100,7 @@ function MathExpression({ displayMode, raw, source }: { displayMode: boolean; ra
 
   return (
     <div
-      className="max-w-full overflow-x-auto overflow-y-hidden py-1 text-content-primary outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent-cyan/55 [&_.katex-display]:!my-0"
+      className="max-w-full overflow-x-auto overflow-y-hidden py-1 text-ink outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-proof/55 [&_.katex-display]:!my-0"
       data-math-display="true"
       role="region"
       aria-label="Scrollable mathematical formula"
@@ -145,14 +145,14 @@ function renderInline(text: string, keyPrefix: string): ReactNode[] {
       );
     } else if (token.startsWith("**") && token.endsWith("**")) {
       nodes.push(
-        <strong className="font-semibold text-content-primary" key={`${keyPrefix}-strong-${match.index}`}>
+        <strong className="font-semibold text-ink" key={`${keyPrefix}-strong-${match.index}`}>
           {token.slice(2, -2)}
         </strong>
       );
     } else if (token.startsWith("`") && token.endsWith("`")) {
       nodes.push(
         <code
-          className="break-words rounded-control bg-surface-active px-1 py-0.5 font-mono text-[0.9em] text-content-primary [overflow-wrap:anywhere]"
+          className="break-words rounded-control bg-control-pressed px-1 py-0.5 font-mono text-[0.9em] text-ink [overflow-wrap:anywhere]"
           key={`${keyPrefix}-code-${match.index}`}
         >
           {token.slice(1, -1)}
@@ -165,7 +165,7 @@ function renderInline(text: string, keyPrefix: string): ReactNode[] {
       nodes.push(
         href ? (
           <a
-            className="break-words text-content-link underline decoration-content-link/40 underline-offset-2 hover:decoration-content-link [overflow-wrap:anywhere]"
+            className="break-words text-proof underline decoration-proof/40 underline-offset-2 hover:decoration-proof [overflow-wrap:anywhere]"
             href={href}
             key={`${keyPrefix}-link-${match.index}`}
             rel="noreferrer"
@@ -179,13 +179,13 @@ function renderInline(text: string, keyPrefix: string): ReactNode[] {
       );
     } else if (token.startsWith("~~") && token.endsWith("~~")) {
       nodes.push(
-        <del className="text-content-muted" key={`${keyPrefix}-del-${match.index}`}>
+        <del className="text-ink-muted" key={`${keyPrefix}-del-${match.index}`}>
           {token.slice(2, -2)}
         </del>
       );
     } else {
       nodes.push(
-        <em className="italic text-content-primary" key={`${keyPrefix}-em-${match.index}`}>
+        <em className="italic text-ink" key={`${keyPrefix}-em-${match.index}`}>
           {token.slice(1, -1)}
         </em>
       );
@@ -229,7 +229,7 @@ function renderHeading(line: string, keyPrefix: string): ReactNode | null {
   }
 
   const level = heading[1].length;
-  const className = `${headingClass(level)} break-words font-semibold text-content-primary first:pt-0 [overflow-wrap:anywhere]`;
+  const className = `${headingClass(level)} break-words font-semibold text-ink first:pt-0 [overflow-wrap:anywhere]`;
   const children = renderInline(heading[2], `${keyPrefix}-heading`);
 
   switch (level) {
@@ -340,8 +340,8 @@ function parseList(lines: string[], startIndex: number, baseIndent?: number): { 
 function renderList(block: ListBlock, keyPrefix: string): ReactNode {
   const Tag = block.ordered ? "ol" : "ul";
   const className = block.ordered
-    ? "list-decimal space-y-1 break-words pl-5 marker:text-content-muted [overflow-wrap:anywhere]"
-    : "list-disc space-y-1 break-words pl-5 marker:text-content-muted [overflow-wrap:anywhere]";
+    ? "list-decimal space-y-1 break-words pl-5 marker:text-ink-muted [overflow-wrap:anywhere]"
+    : "list-disc space-y-1 break-words pl-5 marker:text-ink-muted [overflow-wrap:anywhere]";
 
   return (
     <Tag className={className} key={keyPrefix}>
@@ -392,7 +392,7 @@ function renderTable(lines: string[], startIndex: number, keyPrefix: string): { 
     nextIndex: index,
     node: (
       <div
-        className="max-w-full overflow-x-auto rounded-control border border-separator-subtle outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent-cyan/55"
+        className="max-w-full overflow-x-auto rounded-control border border-trace-subtle outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-proof/55"
         data-testid="markdown-table-scroll"
         key={keyPrefix}
         role="region"
@@ -400,10 +400,10 @@ function renderTable(lines: string[], startIndex: number, keyPrefix: string): { 
         tabIndex={0}
       >
         <table className="min-w-full border-collapse text-left text-xs">
-          <thead className="border-b border-separator-strong text-content-secondary">
+          <thead className="border-b border-trace-strong text-ink-secondary">
             <tr>
               {headerCells.map((cell, cellIndex) => (
-                <th className="border-b border-r border-separator-subtle bg-surface-thread px-3 py-2 font-semibold last:border-r-0" key={`${keyPrefix}-th-${cellIndex}`}>
+                <th className="border-b border-r border-trace-subtle bg-answer-paper px-3 py-2 font-semibold last:border-r-0" key={`${keyPrefix}-th-${cellIndex}`}>
                   {renderInline(cell, `${keyPrefix}-th-${cellIndex}`)}
                 </th>
               ))}
@@ -411,9 +411,9 @@ function renderTable(lines: string[], startIndex: number, keyPrefix: string): { 
           </thead>
           <tbody>
             {rows.map((row, rowIndex) => (
-              <tr className="border-b border-separator-subtle last:border-b-0" key={`${keyPrefix}-tr-${rowIndex}`}>
+              <tr className="border-b border-trace-subtle last:border-b-0" key={`${keyPrefix}-tr-${rowIndex}`}>
                 {headerCells.map((_header, cellIndex) => (
-                  <td className="border-r border-separator-subtle px-3 py-2 align-top last:border-r-0" key={`${keyPrefix}-td-${rowIndex}-${cellIndex}`}>
+                  <td className="border-r border-trace-subtle px-3 py-2 align-top last:border-r-0" key={`${keyPrefix}-td-${rowIndex}-${cellIndex}`}>
                     {renderInline(row[cellIndex] ?? "", `${keyPrefix}-td-${rowIndex}-${cellIndex}`)}
                   </td>
                 ))}
@@ -522,7 +522,7 @@ function renderTextLines(markdown: string, keyPrefix: string): ReactNode[] {
     }
 
     if (isHorizontalRule(lines[index])) {
-      nodes.push(<hr className="border-separator-subtle" key={`${keyPrefix}-hr-${index}`} />);
+      nodes.push(<hr className="border-trace-subtle" key={`${keyPrefix}-hr-${index}`} />);
       index += 1;
       continue;
     }
@@ -535,7 +535,7 @@ function renderTextLines(markdown: string, keyPrefix: string): ReactNode[] {
       }
 
       nodes.push(
-        <blockquote className="space-y-2 border-l-2 border-accent-cyan/40 pl-4 text-content-secondary" key={`${keyPrefix}-quote-${index}`}>
+        <blockquote className="space-y-2 border-l-2 border-proof/40 pl-4 text-ink-secondary" key={`${keyPrefix}-quote-${index}`}>
           {renderTextLines(quoteLines.join("\n"), `${keyPrefix}-quote-${index}`)}
         </blockquote>
       );
@@ -629,21 +629,21 @@ function CodeBlock({ code, language, streaming }: { code: string; language: stri
   }
 
   return (
-    <div className="group/code min-w-0 max-w-full overflow-hidden rounded-panel border border-separator-subtle bg-surface-thread">
-      <div className="flex min-h-control items-center justify-between gap-3 border-b border-separator-subtle px-3">
+    <div className="group/code min-w-0 max-w-full overflow-hidden rounded-panel border border-trace-subtle bg-answer-paper">
+      <div className="flex min-h-control items-center justify-between gap-3 border-b border-trace-subtle px-3">
         {displayLanguage ? (
-          <span className="truncate font-mono text-[11px] text-content-muted">{displayLanguage}</span>
+          <span className="truncate font-mono text-[11px] text-ink-muted">{displayLanguage}</span>
         ) : (
           <span aria-hidden="true" />
         )}
         <button
-          className="inline-flex h-touch items-center gap-1.5 rounded-control px-2 text-[11px] text-content-secondary opacity-0 outline-none transition-opacity duration-100 hover:bg-surface-hover hover:text-content-primary focus:opacity-100 focus-visible:ring-2 focus-visible:ring-accent-cyan/55 group-focus-within/code:opacity-100 group-hover/code:opacity-100 [@media(hover:none)]:!h-touch [@media(hover:none)]:opacity-100 [@media(pointer:coarse)]:!h-touch [@media(pointer:coarse)]:opacity-100 sm:h-control-sm"
+          className="inline-flex h-touch items-center gap-1.5 rounded-control px-2 text-[11px] text-ink-secondary opacity-0 outline-none transition-opacity duration-100 hover:bg-control-hover hover:text-ink focus:opacity-100 focus-visible:ring-2 focus-visible:ring-proof/55 group-focus-within/code:opacity-100 group-hover/code:opacity-100 [@media(hover:none)]:!h-touch [@media(hover:none)]:opacity-100 [@media(pointer:coarse)]:!h-touch [@media(pointer:coarse)]:opacity-100 sm:h-control-sm"
           type="button"
           aria-label="Copy code"
           onClick={() => void copyCode()}
         >
           {copied ? (
-            <Check className="size-3 text-accent-green" aria-hidden="true" />
+            <Check className="size-3 text-positive" aria-hidden="true" />
           ) : (
             <Copy className="size-3" aria-hidden="true" />
           )}
@@ -652,7 +652,7 @@ function CodeBlock({ code, language, streaming }: { code: string; language: stri
       </div>
       {highlightedHtml ? (
         <div
-          className="max-w-full overflow-x-auto p-3 font-mono text-xs leading-5 text-content-primary outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent-cyan/55 [overflow-wrap:normal] [&_code]:font-mono [&_pre]:!m-0 [&_pre]:!bg-transparent [&_pre]:!p-0"
+          className="max-w-full overflow-x-auto p-3 font-mono text-xs leading-5 text-ink outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-proof/55 [overflow-wrap:normal] [&_code]:font-mono [&_pre]:!m-0 [&_pre]:!bg-transparent [&_pre]:!p-0"
           data-testid="markdown-code-scroll"
           role="region"
           aria-label="Scrollable code block"
@@ -661,7 +661,7 @@ function CodeBlock({ code, language, streaming }: { code: string; language: stri
         />
       ) : (
         <pre
-          className="max-w-full overflow-x-auto p-3 font-mono text-xs leading-5 text-content-primary outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent-cyan/55 [overflow-wrap:normal]"
+          className="max-w-full overflow-x-auto p-3 font-mono text-xs leading-5 text-ink outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-proof/55 [overflow-wrap:normal]"
           data-testid="markdown-code-scroll"
           role="region"
           aria-label="Scrollable code block"

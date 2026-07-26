@@ -2,9 +2,7 @@
 
 This is the binding visual contract for AIQSA's clean-slate Research Chat and Control Center. `FRONTEND.md` owns behavior, state, responsive access, and control ownership. ADR 0025 owns the product-level presentation decision. This file owns visual hierarchy, semantic tokens, component recipes, motion, content presentation, and visual quality gates.
 
-During the in-place migration, old and new renderers may coexist only at explicit slice boundaries recorded in `FRONTEND_REVAMP_PARITY.md`. New UI uses this system. Existing visual recipes are not a compatibility target, and a verified slice removes the legacy renderer and tokens it replaced.
-
-During that migration, `globals.css` and Tailwind may retain one centralized compatibility mapping from legacy `surface-*`, `content-*`, `separator-*`, and `accent-*` names to the new semantic tokens. These aliases exist only for renderers that have not cut over, are forbidden in new or converted components, and disappear with their final legacy consumer. They are not part of the new component API.
+All runtime UI consumes this system's product-semantic tokens directly. Compatibility aliases such as `surface-*`, `content-*`, `separator-*`, and generic color-named accents are not part of the component API and must not return.
 
 ## Product Character
 
@@ -80,7 +78,7 @@ The `neutral` theme is the first-use default and the reference against which hie
 | Proof | `#176f65` |
 | Proof contrast | `#ffffff` |
 
-The table is a visual reference. Review normal text, muted text, controls, and status colors for ordinary readability in every theme; this revamp does not claim formal contrast conformance. Muted text is not a substitute for tiny type.
+The table is a visual reference. Review normal text, muted text, controls, and status colors for ordinary readability in every theme; the product does not claim formal contrast conformance. Muted text is not a substitute for tiny type.
 
 ### Theme compatibility
 
@@ -95,7 +93,7 @@ The existing IDs `aiqsa`, `graphite`, `verdant`, `classic-dark`, and `neutral` r
 
 Every registry entry declares `light` or `dark`. Server first paint and runtime switching set both `data-theme` and `data-color-scheme`. Components never infer scheme from an ID. An existing cookie or LocalStorage value wins over the first-use default.
 
-Dark parity is complete only when conversation, admin, auth, public share, code, math, menus, native controls, selection, scrollbars, status, charts, and overlays all follow the selected scheme. No theme may expose the retired visual hierarchy.
+Dark parity is complete only when conversation, admin, auth, public share, code, math, menus, native controls, selection, scrollbars, status, charts, and overlays all follow the selected scheme. No theme may diverge into a separate visual hierarchy.
 
 ## Typography
 
@@ -134,7 +132,7 @@ Avoid isolated floating rectangles when a plain section, row, or disclosure comm
 
 ### Shell and workspace
 
-The conversation and composer dominate. A persistent Workspace rail appears at `>=1024px`; below that, Workspace is a modal drawer. The conversation column owns its local top rail. Share and Details remain direct at every width; compact Copy thread and Branch tree share one secondary menu, while desktop exposes them directly in the same rail. There is no second permanent action bar.
+The conversation and composer dominate. A persistent Workspace rail appears at `>=1024px`; below that, Workspace is a modal drawer. The conversation column owns its local top rail. Share and Details remain direct at every width; Copy thread and Branch tree live in one `Conversation actions` menu at every width, while Command palette and Settings live in Account. There is no second permanent action bar.
 
 Chat and folder rows use quiet selected/hover states, stable action space, and text labels where consequence matters. Active-run state is a small factual cue. Nested folders must retain readable indentation without causing page-level horizontal overflow.
 
@@ -202,10 +200,10 @@ Each reusable control defines rest, hover, active, selected, disabled, busy, inv
 
 - **Buttons:** one primary action per local decision. Secondary and quiet actions rely on type/surface, not arbitrary colors. Destructive styling appears only at the point of consequence.
 - **Fields:** persistent label, optional help, input, and associated error. Placeholder is example text, never the only label. Secret fields state write-only/preserve/replace behavior.
-- **Menus/listboxes:** use native controls when they fit. Reuse existing interaction logic where practical; this revamp does not add a dedicated accessibility implementation.
+- **Menus/listboxes:** use native controls when they fit. Reuse existing interaction logic where practical; dedicated accessibility implementation remains deferred.
 - **Tabs:** represent peer panels only and keep one obvious selected state.
 - **Disclosures:** have a visible summary and expanded state. They do not hide the only path to a frequent action.
-- **Dialogs/drawers/sheets:** isolate the background, support an explicit Close, and keep one local scroll owner. Existing Escape/focus behavior may remain through reused primitives but is not a revamp gate.
+- **Dialogs/drawers/sheets:** isolate the background, support an explicit Close, and keep one local scroll owner. Existing Escape/focus behavior may remain through reused primitives but is not a dedicated accessibility claim.
 - **Empty/error states:** explain the resource and give the next valid action. Loading failure must not masquerade as a true empty result.
 - **Skeletons:** approximate stable content geometry and avoid shifting the eventual content.
 - **Confirmations:** name the affected resource and consequence. Typed confirmation is reserved for exceptional irreversible scope, not ordinary deletion.
@@ -225,7 +223,7 @@ Composition follows available space, content, and input capability. Media querie
 
 ## Deferred Accessibility Scope
 
-WCAG conformance and dedicated accessibility implementation are intentionally deferred for the current revamp. Do not schedule or block cutover on screen-reader semantics, forced-colors support, keyboard-only parity, formal focus management, contrast certification, reduced-motion remediation, reflow audits, or dedicated accessibility tests. Existing native semantics and interaction behavior may remain when they come from reused controls, but the revamp does not expand or certify them. Accessibility requires a separately approved future task.
+WCAG conformance and dedicated accessibility implementation are intentionally outside the current product scope. Do not schedule or block ordinary UI delivery on screen-reader semantics, forced-colors support, keyboard-only parity, formal focus management, contrast certification, reduced-motion remediation, reflow audits, or dedicated accessibility tests. Existing native semantics and interaction behavior may remain when they come from reused controls, but the product does not certify them. Accessibility requires a separately approved future task.
 
 ## Motion
 
@@ -236,7 +234,7 @@ Motion communicates state change, spatial origin, and live work; it does not dec
 - Drawers/sheets: 160-220ms.
 - Completion emphasis: one restrained settle, no looping celebration.
 
-Do not animate shell entrance or idle/settled pipeline chrome. Running activity may pulse, answer completion may settle once, and overlays may use one short entrance. Animate opacity and transform where possible. Never animate layout during token streaming. Keep the existing deterministic test motion-off mode; no new reduced-motion work is required in this revamp.
+Do not animate shell entrance or idle/settled pipeline chrome. Running activity may pulse, answer completion may settle once, and overlays may use one short entrance. Animate opacity and transform where possible. Never animate layout during token streaming. Keep the existing deterministic test motion-off mode; dedicated reduced-motion work remains deferred.
 
 ## Performance And Rendering
 
@@ -273,8 +271,8 @@ A slice may be marked visually complete only when:
 - loading, empty, error, busy, success, destructive, and long-content states are covered as applicable;
 - safe-area, software-keyboard clearance, overflow, and coarse-pointer composition are verified;
 - the Run receipt and other AI stages show only real state;
-- applicable parity-ledger rows have test/evidence references;
-- legacy renderer, component-local colors, obsolete tokens, and replaced tests are removed.
+- affected capability and state contracts have test/evidence references;
+- no superseded renderer, component-local color recipe, obsolete token, or implementation-shape test remains.
 
 Use these audits during implementation:
 

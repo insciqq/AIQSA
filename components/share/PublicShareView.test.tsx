@@ -38,7 +38,6 @@ describe("PublicShareView", () => {
     expect(screen.getByText("AIQSA")).toBeVisible();
     const readOnlyMarker = screen.getByText("Read-only snapshot");
     expect(readOnlyMarker).toBeVisible();
-    expect(readOnlyMarker.closest("header")).not.toBeNull();
     expect(screen.getByRole("heading", { level: 1, name: "Architecture notes" })).toBeVisible();
     expect(screen.getByText(/it shows one conversation branch/i)).toBeVisible();
     expect(screen.getByRole("list", { name: "Shared conversation" })).toBeVisible();
@@ -52,7 +51,7 @@ describe("PublicShareView", () => {
   });
 
   it("matches the private thread's compact question and document-like answer treatment", () => {
-    const { container } = render(
+    render(
       <PublicShareView
         snapshot={snapshot([message("user", "A compact question"), message("assistant", "A full answer")])}
         title="Reading rhythm"
@@ -89,8 +88,6 @@ describe("PublicShareView", () => {
     );
     expect(screen.getByTestId("public-share-view")).toHaveClass("bg-answer-paper", "text-ink");
     expect(screen.getByTestId("public-share-note")).toHaveClass("border-trace-subtle");
-    expect(container.querySelector(".bg-surface-navigation")).not.toBeInTheDocument();
-    expect(container.querySelector(".text-content-primary")).not.toBeInTheDocument();
     expect(screen.queryByText("User")).not.toBeInTheDocument();
     expect(screen.queryByText("Assistant")).not.toBeInTheDocument();
   });

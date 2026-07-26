@@ -313,7 +313,7 @@ export function AdminPanel({ adminEmail, adminUserId }: AdminPanelProps) {
               }
               navigation={navigation}
             >
-              <div data-admin-renderer="replacement">
+              <div>
                 <AdminSectionContent
                   accessRules={accessRules}
                   activeSection={navigation.activeSection}

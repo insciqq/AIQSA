@@ -47,7 +47,7 @@ docker compose up -d --build
 
 Open [http://localhost:3000](http://localhost:3000) and sign in with the initial administrator account from `.env`.
 
-Then use Admin to add and test an LLM provider; provider keys and SMTP settings are database-managed and are not normal `.env` inputs.
+Then open `Control Center -> Providers`. For OpenAI, Anthropic, or OpenRouter, choose the provider, paste its API key, and select **Test & Save**; the Ready result links straight back to chat. The normal single-administrator path does not require Groups or Model access. Provider keys and SMTP settings are database-managed and are not normal `.env` inputs.
 
 That is enough for local use. A domain, SMTP server, and OAuth credentials are optional. PostgreSQL and uploaded objects live in named Docker volumes, so a normal rebuild or update does not erase them.
 

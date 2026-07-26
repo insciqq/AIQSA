@@ -711,8 +711,6 @@ describe("AdminPanel", () => {
     expect(screen.getByTestId("admin-section-index-pane")).toHaveClass("hidden");
     expect(screen.getByTestId("admin-active-task-pane")).toHaveClass("block");
     expect(within(users).getByTestId("admin-user-detail")).toBeInTheDocument();
-    expect(users.querySelector('[data-admin-renderer="replacement"]')).toBeInTheDocument();
-    expect(users.querySelector('[data-admin-renderer="legacy-embedded"]')).not.toBeInTheDocument();
 
     fireEvent.click(within(users).getByRole("button", { name: "All sections" }));
     expect(screen.getByTestId("admin-section-index-pane")).toHaveClass("block");
@@ -722,15 +720,11 @@ describe("AdminPanel", () => {
     const usage = await screen.findByTestId("admin-section-usage");
     expect(screen.getByTestId("admin-section-index-pane")).toHaveClass("hidden");
     expect(screen.getByTestId("admin-active-task-pane")).toHaveClass("block");
-    expect(usage.querySelector('[data-admin-renderer="replacement"]')).toBeInTheDocument();
 
     fireEvent.click(within(usage).getByRole("button", { name: "All sections" }));
     fireEvent.click(screen.getByRole("tab", { name: "Providers" }));
     const providers = await screen.findByTestId("admin-section-providers");
-    expect(providers.querySelector('[data-admin-renderer="replacement"]')).toBeInTheDocument();
-    expect(providers.querySelector('[data-admin-renderer="legacy-embedded"]')).not.toBeInTheDocument();
     fireEvent.click(within(providers).getByRole("button", { name: "Advanced configuration" }));
-    expect(providers.querySelector('[data-admin-renderer="legacy-embedded"]')).not.toBeInTheDocument();
     expect(await within(providers).findByRole("alert")).toHaveTextContent("Provider connections could not be loaded");
   });
 
@@ -945,7 +939,6 @@ describe("AdminPanel", () => {
     }
 
     const users = screen.getByTestId("admin-section-users");
-    expect(within(users).queryByRole("table")).not.toBeInTheDocument();
     const sort = within(users).getByLabelText("Sort users");
     expect(sort).toHaveValue("user");
     fireEvent.change(sort, { target: { value: "status" } });
@@ -961,12 +954,10 @@ describe("AdminPanel", () => {
     fireEvent.click(screen.getByRole("tab", { name: "Groups" }));
     expect(screen.getByTestId("admin-groups-index")).toBeInTheDocument();
     expect(screen.getByTestId("admin-groups-detail-pane")).toBeInTheDocument();
-    expect(screen.queryByRole("region", { name: "Groups table" })).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("tab", { name: "Model access" }));
     expect(screen.getByTestId("admin-model-access-group-list")).toBeInTheDocument();
     expect(screen.getByTestId("admin-model-access-detail-pane")).toBeInTheDocument();
-    expect(screen.getByTestId("admin-section-model-access").querySelector("table")).toBeNull();
 
     fireEvent.click(screen.getByRole("tab", { name: "Invites" }));
     expect(screen.getByTestId("admin-invites-index")).toBeInTheDocument();

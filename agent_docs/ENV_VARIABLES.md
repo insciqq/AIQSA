@@ -57,7 +57,7 @@ AIQSA_PROVIDER_STREAM_IDLE_TIMEOUT_MS=30000
 AIQSA_OPENAI_BACKGROUND_POLL_TIMEOUT_MS=660000
 ```
 
-Provider connections, endpoints, adapter protocols, models, routing, credentials, group assignments, activation evidence, stored diagnostics, and enabled state are database-owned and configured through `Admin -> Providers`. The unsaved-key preflight persists neither its key nor result. The long-running application receives no provider key/base-URL variables and has no environment fallback. The remaining response-size and timeout variables only bound untrusted buffered responses, complete non-streaming exchanges, streaming idle time, and the absolute OpenAI background polling lifecycle respectively.
+Provider connections, endpoints, adapter protocols, models, routing, credentials, group assignments, activation evidence, stored diagnostics, and enabled state are database-owned and configured through `Control Center -> Providers`. The Personal Quick setup preflight persists neither an unsuccessful key nor its validation result. The long-running application receives no provider key/base-URL variables and has no environment fallback. The remaining response-size and timeout variables only bound untrusted buffered responses, complete non-streaming exchanges, streaming idle time, and the absolute OpenAI background polling lifecycle respectively.
 
 `AIQSA_DEFAULT_MODEL` and `AIQSA_DEFAULT_SEARCH_MODEL` are optional explicit provider-smoke inputs only. The application uses persisted catalog/settings choices. Provider-smoke permission is defined in `CRITICAL_INVARIANTS.md`; no routine test makes a paid external call.
 
@@ -79,7 +79,7 @@ AIQSA_SMTP_COMMAND_TIMEOUT_MS=15000
 AIQSA_SMTP_TOTAL_TIMEOUT_MS=60000
 ```
 
-SMTP host, port, sender, authentication, password, transport, test/active state, and health are database-owned and configured through `Admin -> Email delivery`. The long-running application receives no SMTP configuration variables and has no environment fallback. SMTP remains optional for bootstrap, login, manual invitation links, and core readiness.
+SMTP host, port, sender, authentication, password, transport, test/active state, and health are database-owned and configured through `Control Center -> Email delivery`. The long-running application receives no SMTP configuration variables and has no environment fallback. SMTP remains optional for bootstrap, login, manual invitation links, and core readiness.
 
 Timeouts are positive whole milliseconds capped at 600,000. Their defaults bound connection/TLS, each SMTP command, and the complete send. Failure output must never contain credentials, recipients, message bodies, server response bodies, or token-bearing URLs.
 

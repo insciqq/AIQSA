@@ -23,8 +23,8 @@ import {
 } from "@/components/admin/adminUserView";
 import {
   formatDate,
-  modelDisplayName,
   providerDisplayName,
+  providerModelDisplayName,
   searchStrategyDisplayName
 } from "@/components/admin/adminViewUtils";
 import type { AdminDashboard, AdminGroup, AdminUserRecord } from "@/lib/contracts/admin";
@@ -171,6 +171,13 @@ function EffectiveAccess({
     );
   }
 
+  const modelGrants = user.effectiveEntitlements.models.map((model) => ({
+    label: providerModelDisplayName(catalog, model),
+    model
+  }));
+  const availableModelGrants = modelGrants.filter(({ label }) => label !== "Unavailable model");
+  const catalogMissingModelGrants = modelGrants.filter(({ label }) => label === "Unavailable model");
+
   return (
     <div className="grid gap-4 text-xs text-ink-secondary">
       {user.effectiveEntitlements.providers.length ? (
@@ -185,11 +192,28 @@ function EffectiveAccess({
         <div>
           <p className="text-[11px] font-medium uppercase tracking-[0.08em] text-ink-muted">Models</p>
           <div className="mt-1 divide-y divide-trace-subtle border-y border-trace-subtle">
-            {user.effectiveEntitlements.models.map((model) => (
+            {availableModelGrants.map(({ label, model }) => (
               <p className="break-words py-2 [overflow-wrap:anywhere]" key={`${model.provider}:${model.modelId}`}>
-                {providerDisplayName(catalog, model.provider)} / {modelDisplayName(catalog, model)}
+                {label}
               </p>
             ))}
+            {catalogMissingModelGrants.length ? (
+              <details className="py-2">
+                <summary className="cursor-pointer text-ink-secondary">
+                  {catalogMissingModelGrants.length} unavailable model grant{catalogMissingModelGrants.length === 1 ? "" : "s"}
+                </summary>
+                <p className="mt-2 leading-5 text-ink-muted">
+                  These grants remain effective records, but their provider/model pairs are absent from the current catalog.
+                </p>
+                <ul className="mt-2 grid gap-1 font-mono text-[11px] text-ink-muted">
+                  {catalogMissingModelGrants.map(({ model }) => (
+                    <li className="break-all" key={`${model.provider}:${model.modelId}`}>
+                      {model.provider} / {model.modelId}
+                    </li>
+                  ))}
+                </ul>
+              </details>
+            ) : null}
           </div>
         </div>
       ) : null}

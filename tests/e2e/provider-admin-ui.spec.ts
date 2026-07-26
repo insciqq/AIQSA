@@ -225,7 +225,7 @@ async function installQuickChatFixture(apiRoot: string): Promise<QuickChatFixtur
     defaultParams: streamingDefaultParams
   };
   const encryptionKey = parseSecretEncryptionKey(
-    process.env.AIQSA_ENCRYPTION_KEY ?? playwrightEncryptionKey
+    process.env.AIQSA_ENCRYPTION_KEY?.trim() || playwrightEncryptionKey
   );
   const secretEnvelope = encryptProviderCredentialSecret({
     credentialId: fixture.credentialId,
@@ -1097,7 +1097,6 @@ test("administrator completes the OpenRouter key, model, route, check, and activ
   await section.getByRole("button", { name: "Advanced configuration" }).click();
   const advancedWorkspace = section.getByTestId("provider-advanced-workspace");
   await expect(advancedWorkspace).toBeVisible();
-  await expect(advancedWorkspace.locator("xpath=..")).toHaveAttribute("data-admin-renderer", "replacement");
 
   await expect(section.getByRole("heading", { name: "New provider connection" })).toBeVisible();
   await expect(section.getByLabel("Provider family")).toHaveValue("openrouter");

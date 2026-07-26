@@ -2,7 +2,7 @@
 
 ## Product Invariants
 
-1. ADR 0025 defines the binding clean-slate Research Chat and Control Center direction while retaining the capability-preservation and explicit-control-ownership requirements of ADRs 0009 and 0011. A presentation slice is not complete until its applicable capability, state, responsive, and persistence parity is verified and its replaced renderer is removed. WCAG conformance and dedicated accessibility work are explicitly deferred for this revamp.
+1. ADR 0025 defines the shipped Research Chat and Control Center presentation while retaining the capability-preservation and explicit-control-ownership requirements of ADRs 0009 and 0011. The existing routes have one presentation tree and one state owner; parallel classic/new renderers and legacy visual-token aliases must not return. WCAG conformance and dedicated accessibility work remain explicitly deferred.
 2. First use defaults to the light `neutral` theme. Existing `aiqsa`, `graphite`, `verdant`, `classic-dark`, and `neutral` theme IDs and stored preferences remain valid; the appended light `paper` id is equally stable. Every theme must render the same semantic hierarchy with declared light/dark scheme metadata and complete dark-mode parity.
 3. Provider, model, prompt, search, and parameter changes affect future messages only.
 4. Existing message content with descendants is not edited in place; edits create branches.

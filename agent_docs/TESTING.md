@@ -11,7 +11,7 @@
 
 The executable command definitions remain in `package.json`; `vitest.config.ts`, `playwright.config.ts`, and the test tree remain authoritative for runner details and actual coverage. Do not copy volatile test counts or exhaustive file inventories into this document.
 
-WCAG conformance and dedicated accessibility work are outside the current revamp scope by operator decision. Do not add accessibility audits, screen-reader or forced-colors cases, keyboard-only parity, formal focus-management proof, contrast thresholds, or dedicated accessibility tests to its acceptance or cutover gates. Existing role-based selectors and incidental browser semantics may remain where they already make a functional test stable; they do not certify or expand accessibility scope. Responsive layout, touch use, safe areas, software-keyboard clearance, readable content, and overflow remain ordinary product verification.
+WCAG conformance and dedicated accessibility work are outside the current product scope by operator decision. Do not add accessibility audits, screen-reader or forced-colors cases, keyboard-only parity, formal focus-management proof, contrast thresholds, or dedicated accessibility tests to routine acceptance without a separately approved task. Existing role-based selectors and incidental browser semantics may remain where they already make a functional test stable; they do not certify or expand accessibility scope. Responsive layout, touch use, safe areas, software-keyboard clearance, readable content, and overflow remain ordinary product verification.
 
 ## Default Workflow
 
@@ -44,6 +44,8 @@ docker compose -f docker-compose.dev.yml run --rm -T \
 ```
 
 This is intentionally destructive verification inside the `aiqsa-dev` project. It may reset its database, replace seeded state, and write to its object bucket. Do not run E2E concurrently with development or another check. If it is interrupted, use `docker compose -f docker-compose.dev.yml down --remove-orphans`; use the same command with `-v` when a complete development-stack reset is acceptable. Neither command targets the default installation volumes.
+
+The standalone Playwright web server inherits the runner's trimmed `AIQSA_ENCRYPTION_KEY`, with a deterministic test-only fallback when the variable is absent. Keep fixture encryption and the spawned server on that one value: provider, MCP, and SMTP envelopes are intentionally decrypted by the real runtime during browser tests. Reusable-server commands continue to use the key already present in the development app container.
 
 The reset restores three public local logins: administrator `operator@aiqsa.local` / `AIQSA-local-2026!`, ordinary MCP member `mcp-member@aiqsa.local` / `AIQSA-mcp-member-2026!`, and ordinary restricted member `restricted-member@aiqsa.local` / `AIQSA-restricted-member-2026!`. Browser coverage signs in through the visible password form. These credentials exist only behind the development seed guard and are not safe for an exposed stack.
 
@@ -217,7 +219,7 @@ npx tsx prisma/scripts/tests/smtp-control-migration-contract.ts
 npx tsx prisma/scripts/tests/mcp-envelope-v2-cutover-contract.ts
 ```
 
-The Admin provider/run-profile and email browser boundary can reuse the disposable development server:
+The Admin provider/run-profile, email, and MCP browser boundaries can reuse the disposable development server:
 
 ```bash
 docker compose -f docker-compose.dev.yml exec -T \
@@ -225,6 +227,7 @@ docker compose -f docker-compose.dev.yml exec -T \
   npx playwright test \
     tests/e2e/provider-admin-ui.spec.ts \
     tests/e2e/admin-email-ui.spec.ts \
+    tests/e2e/admin-mcp-ui.spec.ts \
     --project=chromium
 ```
 

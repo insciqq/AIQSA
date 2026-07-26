@@ -2,6 +2,8 @@ import { defineConfig, devices } from "@playwright/test";
 
 const baseURL = "http://127.0.0.1:3000";
 const fakeProviderTokenDelayMs = process.env.AIQSA_FAKE_PROVIDER_TOKEN_DELAY_MS?.trim() || "150";
+const encryptionKey = process.env.AIQSA_ENCRYPTION_KEY?.trim() ||
+  "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
 
 export default defineConfig({
   forbidOnly: true,
@@ -29,7 +31,7 @@ export default defineConfig({
       AIQSA_BOOTSTRAP_LOGIN_ENABLED: "",
       AIQSA_BOOTSTRAP_USER_ID: "00000000-0000-4000-8000-000000000001",
       AIQSA_COOKIE_SECURE: "0",
-      AIQSA_ENCRYPTION_KEY: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+      AIQSA_ENCRYPTION_KEY: encryptionKey,
       AIQSA_FAKE_PROVIDER_TOKEN_DELAY_MS: fakeProviderTokenDelayMs,
       AIQSA_TEST_MODE: "1",
       ANTHROPIC_API_KEY: "",

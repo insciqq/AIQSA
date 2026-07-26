@@ -421,7 +421,7 @@ test("recovers catalog loading while keeping Settings Appearance usable and prom
   );
   await expectRunSummary(page, { model: "Models unavailable" });
 
-  await page.getByRole("button", { name: "Open settings" }).click();
+  await runAccountMenuAction(page, "Settings");
   const settings = page.getByTestId("settings-dialog");
   const promptRecovery = settings.getByTestId("settings-prompts-catalog-state");
   await expect(promptRecovery).toContainText("Prompt library didn’t load");
@@ -810,10 +810,16 @@ test("keeps Settings prompt and Appearance workflows safe in the narrow sheet la
   await neutralTheme.press("Home");
   await expect(aiqsaTheme).toBeFocused();
   await expect(aiqsaTheme).toHaveAttribute("aria-checked", "true");
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "aiqsa");
+  await expect(page.locator("html")).toHaveAttribute("data-color-scheme", "dark");
+  await expect
+    .poll(() => page.evaluate(() => window.localStorage.getItem("aiqsa.theme")))
+    .toBe("aiqsa");
   await aiqsaTheme.press("ArrowRight");
   await expect(graphiteTheme).toBeFocused();
   await expect(graphiteTheme).toHaveAttribute("aria-checked", "true");
   await expect(page.locator("html")).toHaveAttribute("data-theme", "graphite");
+  await expect(page.locator("html")).toHaveAttribute("data-color-scheme", "dark");
   await expect
     .poll(() => page.evaluate(() => window.localStorage.getItem("aiqsa.theme")))
     .toBe("graphite");
@@ -821,6 +827,7 @@ test("keeps Settings prompt and Appearance workflows safe in the narrow sheet la
   await page.reload();
   await expect(page.getByTestId("app-shell")).toBeVisible();
   await expect(page.locator("html")).toHaveAttribute("data-theme", "graphite");
+  await expect(page.locator("html")).toHaveAttribute("data-color-scheme", "dark");
   await runAccountMenuAction(page, "Settings");
   settingsDialog = page.getByTestId("settings-dialog");
   await settingsDialog.getByRole("button", { name: "Appearance" }).click();
@@ -828,9 +835,29 @@ test("keeps Settings prompt and Appearance workflows safe in the narrow sheet la
     "aria-checked",
     "true"
   );
-  await settingsDialog.getByRole("radio", { name: /^Use Graphite theme/ }).press("End");
+  await settingsDialog.getByRole("radio", { name: /^Use Verdant theme/ }).click();
+  await expect(settingsDialog.getByRole("radio", { name: /^Use Verdant theme/ })).toHaveAttribute(
+    "aria-checked",
+    "true"
+  );
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "verdant");
+  await expect(page.locator("html")).toHaveAttribute("data-color-scheme", "dark");
+  await expect
+    .poll(() => page.evaluate(() => window.localStorage.getItem("aiqsa.theme")))
+    .toBe("verdant");
+  await page.reload();
+  await expect(page.getByTestId("app-shell")).toBeVisible();
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "verdant");
+  await expect(page.locator("html")).toHaveAttribute("data-color-scheme", "dark");
+  await runAccountMenuAction(page, "Settings");
+  settingsDialog = page.getByTestId("settings-dialog");
+  await settingsDialog.getByRole("button", { name: "Appearance" }).click();
+  await expect(settingsDialog.getByRole("radio", { name: /^Use Verdant theme/ })).toHaveAttribute(
+    "aria-checked",
+    "true"
+  );
+  await settingsDialog.getByRole("radio", { name: /^Use Paper theme/ }).click();
   const reloadedPaperTheme = settingsDialog.getByRole("radio", { name: /^Use Paper theme/ });
-  await expect(reloadedPaperTheme).toBeFocused();
   await expect(reloadedPaperTheme).toHaveAttribute("aria-checked", "true");
   await expect(page.locator("html")).toHaveAttribute("data-theme", "paper");
   await expect(page.locator("html")).toHaveAttribute("data-color-scheme", "light");
@@ -888,6 +915,15 @@ test("keeps Settings prompt and Appearance workflows safe in the narrow sheet la
   await expect(settingsDialog.getByRole("radio", { name: /^Use AIQSA theme/ })).toBeFocused();
   await expect(page.locator("html")).toHaveAttribute("data-theme", "aiqsa");
   await expect(page.locator("html")).toHaveAttribute("data-color-scheme", "dark");
+  await expect
+    .poll(() => page.evaluate(() => window.localStorage.getItem("aiqsa.theme")))
+    .toBe("aiqsa");
+  await page.reload();
+  await expect(page.getByTestId("app-shell")).toBeVisible();
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "aiqsa");
+  await expect(page.locator("html")).toHaveAttribute("data-color-scheme", "dark");
+  await runAccountMenuAction(page, "Settings");
+  settingsDialog = page.getByTestId("settings-dialog");
 
   await page.getByTestId("settings-backdrop").dispatchEvent("mousedown");
   await expect(settingsDialog).toHaveCount(0);
@@ -2452,6 +2488,348 @@ test("keeps delayed chat_update scoped to its source chat after switching chats"
   await expect(page.getByTestId("attachment-chip")).toContainText("source-a.md");
 });
 
+test("recovers a rejected send by preserving the draft and retrying from the same context", async ({ page }) => {
+  const chatId = "chat-send-recovery";
+  const draft = "Retry this question without losing context";
+  const parentUser = scrollMessage("user-send-parent", "user", "Existing question", null);
+  const parentAssistant = scrollMessage(
+    "assistant-send-parent",
+    "assistant",
+    "Existing answer stays in context",
+    parentUser.id
+  );
+  const chat = {
+    activeLeafMessageId: parentAssistant.id,
+    createdAt: "2026-06-08T12:00:00.000Z",
+    defaultModelId: "gpt-5.5",
+    defaultPromptPresetId: "prompt-helpful",
+    defaultProvider: "openai",
+    folderId: null,
+    id: chatId,
+    messageCount: 2,
+    messages: [parentUser, parentAssistant],
+    pinned: false,
+    title: "Send recovery",
+    updatedAt: "2026-06-08T12:00:02.000Z",
+    usageStats: null
+  };
+  const sendBodies: Array<Record<string, unknown>> = [];
+
+  await page.addInitScript((activeChatId) => {
+    window.localStorage.setItem("aiqsa.activeChatId", activeChatId);
+  }, chatId);
+  await installMatrixCatalogFixture(page, {
+    chats: [chat],
+    folders: []
+  });
+  await page.route(`**/api/chats/${chatId}/messages`, async (route) => {
+    const body = JSON.parse(route.request().postData() ?? "{}") as Record<string, unknown>;
+    sendBodies.push(body);
+
+    if (sendBodies.length === 1) {
+      await route.fulfill({
+        contentType: "application/json",
+        json: { error: "provider_unavailable" },
+        status: 503
+      });
+      return;
+    }
+
+    const retryUser = scrollMessage("user-send-retry", "user", draft, parentAssistant.id);
+    const retryAssistant = {
+      ...scrollMessage(
+        "assistant-send-retry",
+        "assistant",
+        "Recovered answer after retry",
+        retryUser.id
+      ),
+      modelRunId: "run-send-retry"
+    };
+    await route.fulfill({
+      body: [
+        sseEvent("run_start", { runId: "run-send-retry" }),
+        sseEvent("message_start", {
+          assistantMessageId: retryAssistant.id,
+          userMessageId: retryUser.id
+        }),
+        sseEvent("chat_update", {
+          chat: {
+            ...chat,
+            activeLeafMessageId: retryAssistant.id,
+            messageCount: 4,
+            messages: [parentUser, parentAssistant, retryUser, retryAssistant],
+            updatedAt: "2026-06-08T12:01:00.000Z"
+          },
+          messages: [retryUser, retryAssistant]
+        }),
+        sseEvent("done", { runId: "run-send-retry", status: "complete" })
+      ].join(""),
+      contentType: "text/event-stream",
+      status: 200
+    });
+  });
+  await page.route("**/api/model-runs/run-send-retry", async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      json: {
+        run: {
+          cachedInputTokens: 0,
+          cacheWriteInputTokens: 0,
+          errorPayload: null,
+          estimatedCostMicros: 0,
+          events: [{ eventType: "done", payload: { status: "complete" }, sequence: 0 }],
+          id: "run-send-retry",
+          inputTokens: 8,
+          modelId: "gpt-5.5",
+          outputTokens: 5,
+          provider: "openai",
+          reasoningTokens: 0,
+          searchRuns: [],
+          status: "complete",
+          toolCalls: [],
+          totalTokens: 13
+        }
+      }
+    });
+  });
+
+  await signIn(page);
+  const composer = page.getByRole("textbox", { name: "Message" });
+  const send = page.getByRole("button", { name: "Send message" });
+  const thread = page.getByTestId("thread");
+  await expect(thread).toContainText("Existing answer stays in context");
+
+  await composer.fill(draft);
+  await send.click();
+
+  await expect(page.getByTestId("composer-operation-error")).toHaveText(
+    "Send failed. Your draft was preserved."
+  );
+  await expect(composer).toHaveValue(draft);
+  await expect(send).toBeEnabled();
+  await expect(thread).toContainText("Existing answer stays in context");
+  await expect(thread).not.toContainText(draft);
+  await expect.poll(() => sendBodies.length).toBe(1);
+  expect(sendBodies[0]).toMatchObject({
+    content: { blocks: [{ text: draft, type: "text" }] },
+    expectedActiveLeafId: parentAssistant.id
+  });
+
+  await send.click();
+
+  await expect(thread).toContainText(draft);
+  await expect(thread).toContainText("Recovered answer after retry");
+  await expect(thread).toContainText("Existing answer stays in context");
+  await expect(composer).toHaveValue("");
+  await expect(page.getByTestId("composer-operation-error")).toHaveCount(0);
+  await expect.poll(() => sendBodies.length).toBe(2);
+  expect(sendBodies[1]).toMatchObject({
+    content: { blocks: [{ text: draft, type: "text" }] },
+    expectedActiveLeafId: parentAssistant.id
+  });
+});
+
+test("keeps successful attachments and the draft after a mixed upload failure", async ({ page }) => {
+  const chatId = "chat-upload-recovery";
+  const draft = "Use the uploaded notes for this answer";
+  const parentUser = scrollMessage("user-upload-parent", "user", "Existing upload question", null);
+  const parentAssistant = scrollMessage(
+    "assistant-upload-parent",
+    "assistant",
+    "Existing upload answer",
+    parentUser.id
+  );
+  const chat = {
+    activeLeafMessageId: parentAssistant.id,
+    createdAt: "2026-06-08T13:00:00.000Z",
+    defaultModelId: "gpt-5.5",
+    defaultPromptPresetId: "prompt-helpful",
+    defaultProvider: "openai",
+    folderId: null,
+    id: chatId,
+    messageCount: 2,
+    messages: [parentUser, parentAssistant],
+    pinned: false,
+    title: "Upload recovery",
+    updatedAt: "2026-06-08T13:00:02.000Z",
+    usageStats: null
+  };
+  let uploadAttempts = 0;
+  let sendBody: Record<string, unknown> | null = null;
+  let markFailedUploadStarted!: () => void;
+  let releaseFailedUpload!: () => void;
+  const failedUploadStarted = new Promise<void>((resolve) => {
+    markFailedUploadStarted = resolve;
+  });
+  const failedUploadCanFinish = new Promise<void>((resolve) => {
+    releaseFailedUpload = resolve;
+  });
+
+  await page.addInitScript((activeChatId) => {
+    window.localStorage.setItem("aiqsa.activeChatId", activeChatId);
+  }, chatId);
+  await installMatrixCatalogFixture(page, {
+    chats: [chat],
+    folders: []
+  });
+  await page.route("**/api/uploads", async (route) => {
+    uploadAttempts += 1;
+    if (uploadAttempts === 1) {
+      await route.fulfill({
+        contentType: "application/json",
+        json: {
+          attachment: {
+            byteSize: 14,
+            extractedText: "Accepted notes",
+            fileName: "accepted-notes.md",
+            id: "attachment-upload-good",
+            kind: "document",
+            mimeType: "text/markdown",
+            status: "ready"
+          }
+        },
+        status: 201
+      });
+      return;
+    }
+
+    markFailedUploadStarted();
+    await failedUploadCanFinish;
+    await route.fulfill({
+      contentType: "application/json",
+      json: { error: "storage_temporarily_unavailable" },
+      status: 500
+    });
+  });
+  await page.route(`**/api/chats/${chatId}/messages`, async (route) => {
+    sendBody = JSON.parse(route.request().postData() ?? "{}") as Record<string, unknown>;
+    const sentUser = {
+      ...scrollMessage("user-upload-sent", "user", draft, parentAssistant.id),
+      content: {
+        blocks: [
+          { text: draft, type: "text" },
+          {
+            attachmentId: "attachment-upload-good",
+            fileName: "accepted-notes.md",
+            type: "file"
+          }
+        ]
+      }
+    };
+    const sentAssistant = {
+      ...scrollMessage(
+        "assistant-upload-sent",
+        "assistant",
+        "Answer used the successful upload",
+        sentUser.id
+      ),
+      modelRunId: "run-upload-recovery"
+    };
+    await route.fulfill({
+      body: [
+        sseEvent("run_start", { runId: "run-upload-recovery" }),
+        sseEvent("message_start", {
+          assistantMessageId: sentAssistant.id,
+          userMessageId: sentUser.id
+        }),
+        sseEvent("chat_update", {
+          chat: {
+            ...chat,
+            activeLeafMessageId: sentAssistant.id,
+            messageCount: 4,
+            messages: [parentUser, parentAssistant, sentUser, sentAssistant],
+            updatedAt: "2026-06-08T13:01:00.000Z"
+          },
+          messages: [sentUser, sentAssistant]
+        }),
+        sseEvent("done", { runId: "run-upload-recovery", status: "complete" })
+      ].join(""),
+      contentType: "text/event-stream",
+      status: 200
+    });
+  });
+  await page.route("**/api/model-runs/run-upload-recovery", async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      json: {
+        run: {
+          cachedInputTokens: 0,
+          cacheWriteInputTokens: 0,
+          errorPayload: null,
+          estimatedCostMicros: 0,
+          events: [{ eventType: "done", payload: { status: "complete" }, sequence: 0 }],
+          id: "run-upload-recovery",
+          inputTokens: 9,
+          modelId: "gpt-5.5",
+          outputTokens: 6,
+          provider: "openai",
+          reasoningTokens: 0,
+          searchRuns: [],
+          status: "complete",
+          toolCalls: [],
+          totalTokens: 15
+        }
+      }
+    });
+  });
+
+  await signIn(page);
+  const composer = page.getByRole("textbox", { name: "Message" });
+  const send = page.getByRole("button", { name: "Send message" });
+  await composer.fill(draft);
+  await page.getByLabel("Attach file").setInputFiles([
+    {
+      buffer: Buffer.from("Accepted notes"),
+      mimeType: "text/markdown",
+      name: "accepted-notes.md"
+    },
+    {
+      buffer: Buffer.from("Rejected notes"),
+      mimeType: "text/markdown",
+      name: "rejected-notes.md"
+    }
+  ]);
+
+  await failedUploadStarted;
+  await expect(page.getByText("Uploading…", { exact: true })).toBeVisible();
+  await expect(composer).toHaveValue(draft);
+  await expect(page.getByTestId("attachment-chip")).toHaveText("accepted-notes.md");
+  await expect(send).toBeDisabled();
+
+  releaseFailedUpload();
+
+  const uploadError = page.getByTestId("composer-operation-error");
+  await expect(uploadError).toContainText("rejected-notes.md");
+  await expect(uploadError).toContainText("upload failed with HTTP 500 (upload_failed_500)");
+  await expect(page.getByText("Uploading…", { exact: true })).toHaveCount(0);
+  await expect(composer).toHaveValue(draft);
+  await expect(page.getByTestId("attachment-chip")).toHaveCount(1);
+  await expect(page.getByTestId("attachment-chip")).toHaveText("accepted-notes.md");
+  await expect(send).toBeEnabled();
+
+  await send.click();
+
+  await expect(page.getByTestId("thread")).toContainText("Answer used the successful upload");
+  await expect(composer).toHaveValue("");
+  await expect(page.getByTestId("attachment-chip")).toHaveCount(0);
+  await expect(page.getByTestId("composer-operation-error")).toHaveCount(0);
+  await expect.poll(() => sendBody).not.toBeNull();
+  expect(sendBody).toMatchObject({
+    content: {
+      blocks: [
+        { text: draft, type: "text" },
+        {
+          attachmentId: "attachment-upload-good",
+          fileName: "accepted-notes.md",
+          type: "file"
+        }
+      ]
+    },
+    expectedActiveLeafId: parentAssistant.id
+  });
+  expect(JSON.stringify(sendBody)).not.toContain("rejected-notes.md");
+});
+
 test("disables send while active chat detail is loading", async ({ page }) => {
   let releaseDetail!: () => void;
   const detailCanFinish = new Promise<void>((release) => {
@@ -2758,7 +3136,15 @@ test("recovers a background run after reload and renders search/reasoning thread
   await expect(page.getByTestId("thread-citations-block")).toHaveCount(0);
   await runSetup.getByRole("button", { name: "Show citations" }).click();
   await closeRunSetup(page);
-  await page.getByTestId("thread-citations-block").getByRole("button", { name: /Citations 1/ }).click();
+  const restoredCitations = page
+    .getByTestId("thread-citations-block")
+    .getByRole("button", { name: /Citations 1/ });
+  await expect(restoredCitations).toHaveAttribute("aria-expanded", "true");
+  await expect(page.getByTestId("thread-citations-block")).toContainText("Recovered source");
+  await restoredCitations.click();
+  await expect(restoredCitations).toHaveAttribute("aria-expanded", "false");
+  await restoredCitations.click();
+  await expect(restoredCitations).toHaveAttribute("aria-expanded", "true");
   await expect(page.getByTestId("thread-citations-block")).toContainText("Recovered source");
   await expect(page.getByTestId("thread-reasoning-block")).toHaveCount(0);
   runSetup = await openRunSetup(page);
@@ -2998,9 +3384,14 @@ test("supports the default QSA chat and folder workflow", async ({ browser, page
   await expect(page.getByTestId("current-chat-title")).toBeVisible();
   const desktopConversationHeader = page.getByTestId("top-rail");
   await expect(desktopConversationHeader).toBeVisible();
-  const desktopCopyThread = desktopConversationHeader.getByRole("button", { name: "Copy thread" });
-  await expect(desktopCopyThread).toBeVisible();
-  await desktopCopyThread.click();
+  const conversationActions = desktopConversationHeader.getByRole("button", {
+    name: "Conversation actions"
+  });
+  await conversationActions.click();
+  await page
+    .getByRole("menu", { name: "Conversation actions" })
+    .getByRole("menuitem", { name: "Copy thread" })
+    .click();
   await expect(page.getByTestId("shell-notice")).toContainText("Thread copied");
   await expect
     .poll(() => page.evaluate(() => window.localStorage.getItem("aiqsa.testClipboard") ?? ""))
@@ -3043,7 +3434,11 @@ test("supports the default QSA chat and folder workflow", async ({ browser, page
   await expect(page.getByTestId("inspector-event-log")).toContainText("Run");
   await expect(page.getByTestId("inspector-event-log")).toContainText("Provider status");
   await expect(page.getByTestId("inspector-event-log")).toContainText("Done");
-  await page.getByRole("button", { name: "Branch tree" }).click();
+  await conversationActions.click();
+  await page
+    .getByRole("menu", { name: "Conversation actions" })
+    .getByRole("menuitem", { name: "Branch tree" })
+    .click();
   await expect(page.getByRole("tab", { name: "Branch" })).toHaveAttribute("aria-selected", "true");
   await expect(page.getByTestId("branch-tree")).toBeVisible();
   await page.reload();
@@ -3220,7 +3615,7 @@ test("manages prompt presets and left-pane folders", async ({ page }) => {
     .click();
   await expect(page.getByRole("button", { name: `Folder actions ${renamedFolderName}` })).toHaveCount(0);
 
-  await page.getByRole("button", { name: "Open settings" }).click();
+  await runAccountMenuAction(page, "Settings");
   await expect(page.getByRole("dialog", { name: "Settings" })).toBeVisible();
   await page.getByRole("button", { name: "New prompt" }).click();
   await page.getByLabel("Prompt name").fill(promptName);
@@ -3235,7 +3630,7 @@ test("manages prompt presets and left-pane folders", async ({ page }) => {
   await expect(runSetup.getByRole("button", { name: "Prompt preset" })).toContainText(promptName);
   await closeRunSetup(page);
 
-  await page.getByRole("button", { name: "Open settings" }).click();
+  await runAccountMenuAction(page, "Settings");
   await expect(page.getByRole("dialog", { name: "Settings" })).toBeVisible();
 
   await page.getByRole("button", { name: "Set prompt Helpful Assistant as default" }).click();

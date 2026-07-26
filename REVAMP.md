@@ -1,14 +1,17 @@
 # AIQSA — clean-slate UI/UX redesign brief
 
 Дата аудита: 25 июля 2026 года
-Статус: концепция, не реализация
-Связанные задачи: `381-ui-ux-revamp`, `382-imagegen-provider-concepts`, `383-product-grounded-revamp-mockups`
+Дата завершения реализации: 26 июля 2026 года
+Статус: реализовано; документ сохраняет исходный аудит и концептуальное обоснование как исторический контекст
+Связанные задачи: `381-ui-ux-revamp`, `382-imagegen-provider-concepts`, `383-product-grounded-revamp-mockups`, epic `384` и задачи реализации `385`–`393`
 
-## Короткий вывод
+> **Completion note.** Clean-slate Research Chat, Control Center, auth и public share уже являются единственным runtime view layer на существующих routes. Personal Quick setup, Team/Advanced separation, Run receipt и шестая тема `paper` реализованы; временный parity ledger и legacy presentation удалены. Разделы с оценкой «текущего» интерфейса и phased migration plan ниже описывают baseline до реализации и принятый путь, а не актуальное состояние продукта. Текущие contracts принадлежат `agent_docs/FRONTEND.md`, `agent_docs/DESIGN_SYSTEM.md` и принятым ADR.
 
-Текущий интерфейс не стоит «улучшать» по компонентам. Его главная проблема не в цвете, отступах или радиусах, а в экранной модели: почти каждая возможность постоянно превращена в chrome. В чате это две панели действий, инженерный composer и слабая иерархия чтения. В админке — метрики, десять равноправных вкладок, широкая таблица, row actions и бесконечный detail одновременно.
+## Короткий вывод исходного аудита
 
-Нужна полная замена view layer и информационной архитектуры при сохранении уже сильных behavioral contracts, stores, controllers, backend и privacy boundaries.
+Интерфейс на момент аудита не стоило «улучшать» по компонентам. Его главная проблема была не в цвете, отступах или радиусах, а в экранной модели: почти каждая возможность постоянно превращалась в chrome. В чате это были две панели действий, инженерный composer и слабая иерархия чтения. В админке — метрики, десять равноправных вкладок, широкая таблица, row actions и бесконечный detail одновременно.
+
+Требовалась полная замена view layer и информационной архитектуры при сохранении уже сильных behavioral contracts, stores, controllers, backend и privacy boundaries.
 
 Рекомендуемый продуктовый каркас:
 
@@ -25,9 +28,9 @@
 
 Fresh-install путь вида `provider → key → model → activate → group → Model access → grant` для единственного администратора считается продуктовым дефектом, а не «power-user flexibility». Новый интерфейс должен доводить владельца от API key до первого рабочего чата без видимой работы с группами, assignments, draft/active versions или diagnostics.
 
-## Что было сделано и что не было сделано
+## Что было сделано на этапе концепции
 
-В код приложения изменения не внесены. Начатые до уточнения задачи component-level правки были остановлены и откатаны. В `.aiqsa/ui-revamp/` находятся только исследовательские скриншоты и изолированный статический прототип; он не импортирует компоненты приложения и не участвует в runtime/build.
+На момент этого аудита изменения в код приложения ещё не вносились: начатые до уточнения задачи component-level правки были остановлены и откатаны. После sign-off задачи 384–393 реализовали направление end-to-end в основном приложении. `.aiqsa/ui-revamp/` по-прежнему содержит только исторические исследовательские скриншоты и изолированный статический прототип; он не импортируется приложением и не участвует в runtime/build.
 
 В рамках концепции:
 
@@ -41,7 +44,7 @@ Fresh-install путь вида `provider → key → model → activate → gro
 
 Существующий code-rendered prototype и предыдущие raster-концепты сохранены без изменений. Дополнительная серия создана через разрешённый `imagegen` CLI fallback с `gpt-image-2`; использовался только локальный `OPENAI_API_KEY` из `.env`, значение ключа не копировалось в prompts или файлы. Product-grounded варианты проверялись визуально в оригинальном разрешении; когда генератор переносил выдуманную navigation из ранних concepts, создавался отдельный refined-файл вместо перезаписи исходника.
 
-## Текущий интерфейс: честная оценка
+## Исторический baseline: честная оценка интерфейса до ревампа
 
 ### Итоговая оценка
 
@@ -57,7 +60,7 @@ Fresh-install путь вида `provider → key → model → activate → gro
 
 ### Главная причина провала
 
-Текущий UI проектировался как визуализация capability inventory: если функция существует, она получает постоянную кнопку, вкладку, card или row action. Рыночные лидеры делают обратное: постоянными остаются только location, content и primary action; вторичные возможности появляются у объекта и в момент задачи.
+Старый UI был спроектирован как визуализация capability inventory: если функция существовала, она получала постоянную кнопку, вкладку, card или row action. Рыночные лидеры делают обратное: постоянными остаются только location, content и primary action; вторичные возможности появляются у объекта и в момент задачи.
 
 ### Что нельзя брать в новый дизайн как основу
 
@@ -487,7 +490,7 @@ Safety — самостоятельная section с acting-admin context, по�
 
 ### Product-grounded image-generated set — основной набор для review
 
-Новая серия сверена с существующими chat/admin routes, labels, provider families и ADR 0022/0024. Изображения Quick setup были созданы до принятия exact ADR 0026 policy и остаются visual references, а не wire/model/profile contract; расхождения разрешаются в пользу ADR 0026 и parity ledger.
+Новая серия сверена с существующими chat/admin routes, labels, provider families и ADR 0022/0024. Изображения Quick setup были созданы до принятия exact ADR 0026 policy и остаются visual references, а не wire/model/profile contract; расхождения разрешаются в пользу ADR 0026 и текущих `FRONTEND.md`/`DESIGN_SYSTEM.md` contracts.
 
 - [Active chat with real Events detail and composer controls](output/imagegen/aiqsa-product-mockups-v1/01-chat-active-events-desktop.png)
 - [Fresh-install no-model state — preferred refined version](output/imagegen/aiqsa-product-mockups-v1/02-chat-no-model-admin-desktop-refined.png)
@@ -521,7 +524,7 @@ Safety — самостоятельная section с acting-admin context, по�
 - regenerate/edit/delete/branch/checkout/copy/share semantics;
 - Branch and Events evidence completeness;
 - command palette, existing interaction behavior and confirmations;
-- prompts, MCP and five appearance themes;
+- prompts, MCP and all six appearance themes;
 - sanitized immutable public share contract;
 - every admin capability across Users, Usage, Groups, Model access, Providers, MCP servers, Email delivery, Invites, Access rules and Safety;
 - all loading, empty, stale, unavailable, success, error and guarded destructive states;
@@ -530,7 +533,9 @@ Safety — самостоятельная section с acting-admin context, по�
 
 Behavioral owners such as `workspaceStore`, `threadStore`, `composerSessionStore`, `composerControlStore`, `runLifecycleStore`, `runSurfaceStore` and admin controllers should be reused through semantic adapters. They are an asset; current markup is not.
 
-## Recommended migration plan — only after visual sign-off
+## Реализованный migration plan — историческая запись
+
+Фазы 0–7 завершены задачами 385–393. Список ниже фиксирует принятую последовательность, а не активный план. Реализация выполнялась in place через проверяемые cutover boundaries; параллельного runtime shell, `/v2` или classic/new switch в итоговом продукте нет.
 
 ### Phase 0 — product/design validation
 
@@ -544,7 +549,7 @@ Behavioral owners such as `workspaceStore`, `threadStore`, `composerSessionStore
 ### Phase 1 — new foundation and shell
 
 - introduce new semantic visual tokens and typography rhythm;
-- build a parallel Research Chat shell and Control Center shell;
+- build the replacement Research Chat and Control Center shells at explicit in-place cutover boundaries;
 - preserve route guards and state owners;
 - establish viewport and safe-area contracts; accessibility and reduced-motion expansion are deferred.
 
@@ -590,15 +595,15 @@ Behavioral owners such as `workspaceStore`, `threadStore`, `composerSessionStore
 - screenshot comparison and browser tests;
 - remove old view components only after full parity is proven.
 
-## Decisions recommended for sign-off
+## Decisions accepted and shipped
 
-1. **Approve the two-product model:** Research Chat + Control Center.
-2. **Approve Run receipt as the AIQSA signature.** It differentiates the product without unfamiliar interaction.
-3. **Approve light-first concept with complete dark parity.** This creates the clearest visible break from the old UI.
-4. **Approve route-based admin object details.** One extra navigation step is worth stable URLs, Back behavior and mobile clarity.
-5. **Approve progressive Run setup.** Advanced control becomes one click deeper, while the common ask/read loop becomes dramatically clearer.
-6. **Approve provider Quick setup as the admin default.** For known providers the complete normal flow is `key → Test & Save → ready`; Advanced remains available for exceptional infrastructure work.
-7. **Approve Personal/Team/Advanced as disclosure, not plans.** Single-member setup не проходит группы; существующие team/advanced configurations остаются полностью доступны и автоматически раскрываются.
+1. **Two-product model shipped:** Research Chat + Control Center.
+2. **Run receipt shipped as the AIQSA signature.** It differentiates the product without unfamiliar interaction.
+3. **Light-first concept shipped with complete dark parity.** The appended `paper` theme creates the clearest visible break while `neutral` remains the first-use default.
+4. **Stable admin destinations and task details shipped.** Existing section URLs, aliases, Back behavior and mobile task composition remain intact.
+5. **Progressive Run setup shipped.** Advanced control is one click deeper, while the common ask/read loop is clearer.
+6. **Provider Quick setup shipped as the admin default.** For known providers the complete normal flow is `key → Test & Save → ready`; Advanced remains available for exceptional infrastructure work.
+7. **Personal/Team/Advanced shipped as disclosure, not plans.** Single-member setup не проходит группы; существующие team/advanced configurations остаются полностью доступны и автоматически раскрываются.
 
 ## Final opinion
 

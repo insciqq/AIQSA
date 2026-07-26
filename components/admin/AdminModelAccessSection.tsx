@@ -78,16 +78,14 @@ function GrantToggle({ checked, disabled, label, onToggle }: Readonly<{
   );
 }
 
-function AccessSection({ children, description, title }: Readonly<{
+function AccessSection({ children, title }: Readonly<{
   children: ReactNode;
-  description: string;
   title: string;
 }>) {
   return (
     <section className="border-b border-trace-subtle py-5 last:border-b-0">
       <h4 className="text-sm font-semibold text-ink">{title}</h4>
-      <p className="mt-1 max-w-3xl text-xs leading-5 text-ink-muted">{description}</p>
-      <div className="mt-4">{children}</div>
+      <div className="mt-3">{children}</div>
     </section>
   );
 }
@@ -189,10 +187,7 @@ export function AdminModelAccessSection({ actions, data, draft, mcpAccess, refs:
               </p>
             ) : null}
 
-            <AccessSection
-              description="Provider-wide grants unlock every current and future model for that provider."
-              title="Provider-wide access"
-            >
+            <AccessSection title="Provider-wide access">
               <div className="divide-y divide-trace-subtle border-y border-trace-subtle">
                 {data.catalog.providers.map((provider) => {
                   const checked = grantEnabled(group, { provider: provider.id });
@@ -215,10 +210,7 @@ export function AdminModelAccessSection({ actions, data, draft, mcpAccess, refs:
               </div>
             </AccessSection>
 
-            <AccessSection
-              description="Individual model grants stay distinct from provider-wide access."
-              title="Explicit model grants"
-            >
+            <AccessSection title="Explicit model grants">
               <div className="grid gap-6">
                 {data.catalog.providers.map((provider) => {
                   const models = data.catalog.models.filter((model) => model.provider === provider.id);
@@ -272,7 +264,7 @@ export function AdminModelAccessSection({ actions, data, draft, mcpAccess, refs:
               </div>
             </AccessSection>
 
-            <AccessSection description="Search access is managed separately from model and provider grants." title="Search strategy grants">
+            <AccessSection title="Search strategy grants">
               <div className="divide-y divide-trace-subtle border-y border-trace-subtle">
                 {data.catalog.searchStrategies.map((strategy) => {
                   const checked = grantEnabled(group, { searchStrategy: strategy.strategyId });

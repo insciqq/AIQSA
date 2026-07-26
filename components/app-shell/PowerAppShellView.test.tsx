@@ -580,7 +580,6 @@ describe("PowerAppShellView Details composition", () => {
     const conversation = screen.getByTestId("conversation-column");
 
     expect(shell).toHaveClass("h-dvh", "bg-research-canvas", "text-ink");
-    expect(shell).not.toHaveClass("shell-reveal");
     expect(rail).toHaveClass("bg-workspace-rail", "lg:grid");
     expect(rail).toContainElement(screen.getByTestId("left-chat-pane"));
     expect(conversation).toHaveClass("bg-answer-paper", "flex-col");

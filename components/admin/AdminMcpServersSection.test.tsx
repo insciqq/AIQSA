@@ -126,7 +126,7 @@ describe("AdminMcpServersSection", () => {
     window.history.replaceState(null, "", "/");
   });
 
-  it("shows honest trust, OAuth, revision, inventory, and one-time test evidence", () => {
+  it("shows honest trust, OAuth, revision, inventory, and one-time test evidence", async () => {
     const view = viewController();
     render(<TestSection controller={view.controller} />);
 
@@ -154,6 +154,7 @@ describe("AdminMcpServersSection", () => {
     expect(view.actions.test).toHaveBeenCalledWith("server-1", {
       oneTimeValues: { workspace_key: "one-use-only" }
     });
+    await waitFor(() => expect(screen.getByLabelText("Test workspace")).toHaveValue(""));
   });
 
   it("clears one-time validation values after a request settles", async () => {

@@ -149,11 +149,11 @@ function ConversationActionsMenu({
   }
 
   return (
-    <div className="relative lg:hidden" ref={boundaryRef}>
+    <div className="relative" ref={boundaryRef}>
       <button
         ref={triggerRef}
         className={[
-          "grid size-11 shrink-0 place-items-center rounded-control text-ink-muted hover:bg-control-hover hover:text-ink [@media(hover:none)]:!size-11 [@media(pointer:coarse)]:!size-11",
+          "grid size-9 shrink-0 place-items-center rounded-control text-ink-muted hover:bg-control-hover hover:text-ink max-lg:size-11 [@media(hover:none)]:!size-11 [@media(pointer:coarse)]:!size-11",
           actionFocusClass
         ].join(" ")}
         type="button"
@@ -378,7 +378,7 @@ function AccountMenu({
             </p>
           </div>
           <button
-            className={`${menuItemClass} lg:hidden`}
+            className={menuItemClass}
             type="button"
             role="menuitem"
             disabled={signingOut}
@@ -390,7 +390,7 @@ function AccountMenu({
             Command palette
           </button>
           <button
-            className={`${menuItemClass} lg:hidden`}
+            className={menuItemClass}
             type="button"
             role="menuitem"
             disabled={signingOut}
@@ -534,42 +534,6 @@ export function TopRail({
 
       <div className="flex min-w-0 items-center justify-end gap-0.5 sm:gap-1">
         <PipelineIndicator pipeline={pipeline} onOpen={onOpenPipeline} />
-        <button
-          className={`${iconActionClass} hidden lg:grid`}
-          type="button"
-          aria-label="Copy thread"
-          title="Copy thread"
-          onClick={onCopyThread}
-        >
-          <Copy className="size-3.5" aria-hidden="true" />
-        </button>
-        <button
-          className={`${iconActionClass} hidden lg:grid`}
-          type="button"
-          aria-label="Branch tree"
-          title="Branch tree"
-          onClick={onOpenBranches}
-        >
-          <GitBranch className="size-3.5" aria-hidden="true" />
-        </button>
-        <button
-          className={`${iconActionClass} hidden lg:grid`}
-          type="button"
-          aria-label="Open command palette"
-          title="Open command palette"
-          onClick={onOpenPalette}
-        >
-          <Command className="size-4" aria-hidden="true" />
-        </button>
-        <button
-          className={`${iconActionClass} hidden lg:grid`}
-          type="button"
-          aria-label="Open settings"
-          title="Open settings"
-          onClick={onOpenSettings}
-        >
-          <Settings className="size-4" aria-hidden="true" />
-        </button>
         <button
           className={[
             "inline-flex size-11 shrink-0 items-center justify-center rounded-control text-ink-muted hover:bg-control-hover hover:text-ink disabled:cursor-not-allowed disabled:text-ink-disabled disabled:opacity-60 lg:h-9 lg:w-auto lg:min-w-9 lg:gap-2 lg:px-3 lg:text-xs lg:font-medium lg:text-ink-secondary [@media(hover:none)]:!size-11 [@media(pointer:coarse)]:!size-11",
