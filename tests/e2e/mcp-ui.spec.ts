@@ -109,12 +109,18 @@ test("keeps multi-MCP enablement, personal secrets, OAuth return, and composer s
 
   await signIn(page);
   const summary = page.getByTestId("composer-mcp-summary");
-  await expect(summary).toHaveText("Tools");
-  await expect(summary).toHaveAttribute("title", "Tools. Off");
+  await expect(summary).toContainText("Tools");
+  await expect(summary.locator('[data-resource-availability="disabled"]')).toHaveText("Disabled");
+  await expect(summary).toHaveAttribute("title", "Tools. Disabled");
+  await page.setViewportSize({ height: 844, width: 390 });
+  await expectTouchSafe(summary);
+  await expectNoHorizontalOverflow(page);
+  await page.setViewportSize({ height: 900, width: 1440 });
   await summary.click();
 
   let settings = page.getByTestId("settings-dialog");
   await expect(settings.getByRole("heading", { name: "MCP & tools" })).toBeVisible();
+  await expect(settings.locator('[data-resource-availability="disabled"]')).toHaveCount(3);
   await settings.getByRole("button", { name: "Complete setup for Mem0" }).click();
   await expect(settings.getByText("Add and save the required personal values before enabling this server.")).toBeVisible();
 
@@ -128,9 +134,12 @@ test("keeps multi-MCP enablement, personal secrets, OAuth return, and composer s
   await settings.getByRole("button", { name: "Enable Mem0" }).click();
   await settings.getByRole("button", { name: "Enable Todoist" }).click();
   await expect(settings.getByText("Ready", { exact: true })).toHaveCount(2);
+  await expect(settings.locator('[data-resource-availability="enabled"]')).toHaveCount(2);
+  await expect(settings.locator('[data-resource-availability="disabled"]')).toHaveCount(1);
   expect(patchBodies).toContainEqual({ id: "mem0", value: { values: { api_key: "personal-mem0-token" } } });
 
   await settings.getByRole("button", { name: "Close settings" }).click();
+  await expect(summary.locator('[data-resource-availability="enabled"]')).toHaveText("Enabled");
   await expect(summary).toHaveAttribute("title", "Tools. 2/2 ready · 2 tools");
 
   servers = servers.map((server) => server.id === "notion"

@@ -58,13 +58,15 @@ function ProfileRow({
   disabled,
   label,
   models,
-  onChange
+  onChange,
+  savedEnabled
 }: {
   disabled: boolean;
   draft: ProfileDraft;
   label: string;
   models: AdminRunProfileModel[];
   onChange(next: ProfileDraft): void;
+  savedEnabled: boolean;
 }) {
   const selectedModel = models.find((model) => model.id === draft.providerModelId) ?? null;
   const efforts = valuesWithCurrent(selectedModel?.reasoningEfforts ?? [], draft.reasoningEffort);
@@ -76,7 +78,12 @@ function ProfileRow({
       <div className="min-w-0">
         <div className="flex flex-wrap items-center gap-2">
           <p className="text-sm font-semibold text-ink">{label}</p>
-          <AdminAvailabilityStatus enabled={draft.enabled} />
+          <AdminAvailabilityStatus enabled={savedEnabled} />
+          {draft.enabled !== savedEnabled ? (
+            <span className="text-xs font-medium text-caution">
+              Will be {draft.enabled ? "enabled" : "disabled"} after Save
+            </span>
+          ) : null}
         </div>
         <p className="mt-1 text-xs leading-5 text-ink-muted">
           Composer shortcut. Empty deployment disables this profile without deleting its slot.
@@ -263,6 +270,7 @@ export function AdminRunProfilesPanel({
               ...current,
               drafts: updateDraft(current.drafts, draft.id, () => next)
             }))}
+            savedEnabled={catalog.profiles.find((profile) => profile.id === draft.id)?.enabled ?? false}
           />
         ))
       ) : null}

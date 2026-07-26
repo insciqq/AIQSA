@@ -111,11 +111,17 @@ describe("AdminRunProfilesPanel", () => {
 
     fireEvent.change(modelSelect, { target: { value: "" } });
 
-    expect(screen.getByText("Disabled", { selector: "[data-admin-availability]" })).toHaveClass("border-trace-strong", "text-ink");
+    expect(screen.getAllByText("Enabled", { selector: "[data-resource-availability]" })).toHaveLength(3);
+    expect(screen.getByText("Will be disabled after Save")).toHaveClass("text-caution");
     expect(screen.getByLabelText("Fast reasoning mode")).toBeDisabled();
     expect(screen.getByLabelText("Fast reasoning effort")).toBeDisabled();
     fireEvent.click(screen.getByRole("button", { name: "Save profiles" }));
     await waitFor(() => expect(fetcher).toHaveBeenCalledTimes(2));
+    expect(await screen.findByText("Disabled", { selector: "[data-resource-availability]" })).toHaveClass(
+      "border-trace-strong",
+      "text-ink"
+    );
+    expect(screen.queryByText("Will be disabled after Save")).not.toBeInTheDocument();
     const body = JSON.parse(String(fetcher.mock.calls[1]?.[1]?.body)) as {
       profiles: Array<Record<string, unknown>>;
     };

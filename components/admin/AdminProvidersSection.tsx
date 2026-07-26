@@ -299,6 +299,8 @@ function ConnectionDetail({
   const primaryActionIsAlreadyOpen = ui.primaryAction?.kind === "configure_credential" &&
     activeTask === "credentials" &&
     connection.credentials.length === 0;
+  const primaryActionIsAlreadyInHeader = ui.primaryAction?.kind === "enable" &&
+    Boolean(connection.activeConfig);
   const activationNeedsOverride =
     controller.state.feedbackConnectionId === connection.id &&
     controller.state.errorCode === "provider_activation_unavailable_confirmation_required";
@@ -426,7 +428,7 @@ function ConnectionDetail({
               </p>
             )}
           </div>
-          {ui.primaryAction && !primaryActionIsAlreadyOpen ? (
+          {ui.primaryAction && !primaryActionIsAlreadyOpen && !primaryActionIsAlreadyInHeader ? (
             <button
               className={ui.primaryAction.kind === "enable" ? enableButton : primaryButton}
               disabled={controller.state.busy}

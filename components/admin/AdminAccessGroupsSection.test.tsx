@@ -252,6 +252,36 @@ describe("AdminAccessGroupsSection", () => {
     expect(actions.onRemoveMember).toHaveBeenCalledWith(activeGroup, member);
   });
 
+  it("keeps disabled member status visible at the group scan point", () => {
+    const disabledMember: AdminUserRecord = {
+      ...member,
+      displayName: "Disabled member",
+      id: "user-disabled",
+      status: "disabled"
+    };
+    const props = createProps();
+    render(
+      <AdminAccessGroupsSection
+        {...props}
+        data={{
+          ...props.data,
+          allUsers: [disabledMember],
+          selectedGroup: activeGroup,
+          selectedGroupMembers: [disabledMember]
+        }}
+        draft={{ ...props.draft, activeView: "members", detailOpen: true }}
+      />
+    );
+
+    const row = screen.getByText("Disabled member").closest<HTMLElement>("div.border-b");
+    expect(row).not.toBeNull();
+    expect(within(row!).getByText("disabled")).toHaveClass(
+      "border-trace-strong",
+      "bg-control-surface",
+      "text-ink"
+    );
+  });
+
   it("keeps provider, model, search, and bulk grant actions in Models & search", () => {
     const actions = createActions();
     render(
@@ -283,6 +313,9 @@ describe("AdminAccessGroupsSection", () => {
     fireEvent.click(screen.getByRole("button", { name: "Grant search OpenAI web search" }));
     fireEvent.click(screen.getByRole("button", { name: "Grant all OpenAI models to Operators" }));
     fireEvent.click(screen.getByRole("button", { name: "Clear OpenAI models from Operators" }));
+
+    expect(screen.getByRole("button", { name: "Grant provider OpenAI" })).toHaveTextContent("Granted");
+    expect(screen.getByRole("button", { name: "Grant model OpenAI / GPT 5.5" })).toHaveTextContent("Not granted");
 
     expect(actions.onToggleGrant).toHaveBeenNthCalledWith(1, activeGroup, { provider: "openai" }, false);
     expect(actions.onToggleGrant).toHaveBeenNthCalledWith(2, activeGroup, { modelId: "gpt-5.5", provider: "openai" }, true);

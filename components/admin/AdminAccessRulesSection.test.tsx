@@ -128,6 +128,8 @@ describe("AdminAccessRulesSection", () => {
 
     expect(screen.getAllByText("Disabled")).toHaveLength(2);
     expect(screen.getAllByText("Disabled")[0]).toHaveClass("border-trace-strong", "text-ink");
+    expect(screen.getByText(/Matching future access requests are not approved by it/)).toBeVisible();
+    expect(screen.queryByText(/matching this exact email is approved/i)).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /enable rule/i })).not.toBeInTheDocument();
   });
 

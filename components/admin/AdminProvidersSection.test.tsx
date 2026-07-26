@@ -240,6 +240,44 @@ describe("AdminProvidersSection", () => {
     expect(screen.queryByText("sk-admin-secret")).not.toBeInTheDocument();
   });
 
+  it("keeps credential availability visible and separates it from the lifecycle action", async () => {
+    const view = controller();
+    mocks.useController.mockReturnValue(view);
+    const rendered = render(<AdminProvidersSection active groups={[]} />);
+
+    openTask("Credentials");
+    const disable = screen.getByRole("button", { name: "Disable Primary credential" });
+    expect(screen.getByText("Enabled")).toHaveClass("border-positive/25", "text-positive");
+    expect(disable).not.toHaveClass("text-proof");
+    fireEvent.click(disable);
+    await waitFor(() => expect(view.actions.updateCredential).toHaveBeenCalledWith(
+      connection.id,
+      "credential-1",
+      { action: "disable" },
+      "Credential disabled for new runs."
+    ));
+
+    const disabledConnection: AdminProviderConnection = {
+      ...connection,
+      credentials: [{ ...connection.credentials[0]!, enabled: false }]
+    };
+    view.state.connections = [disabledConnection];
+    view.state.selectedConnection = disabledConnection;
+    rendered.rerender(<AdminProvidersSection active groups={[]} />);
+
+    const credentialsTask = screen.getByTestId("provider-task-credentials");
+    expect(within(credentialsTask).getByText("Disabled")).toHaveClass(
+      "border-trace-strong",
+      "bg-control-surface",
+      "text-ink"
+    );
+    expect(screen.getByRole("button", { name: "Enable Primary credential" })).toHaveClass(
+      "border-proof/25",
+      "bg-proof/[0.08]",
+      "text-proof"
+    );
+  });
+
   it("does not accept a late key-test result for a changed input", async () => {
     let finishTest!: (value: boolean) => void;
     const view = controller();
@@ -901,6 +939,60 @@ describe("AdminProvidersSection", () => {
     expect(screen.queryByText(/setup items need attention/i)).not.toBeInTheDocument();
     expect(screen.getAllByText("Add and enable at least one model.").length).toBeGreaterThan(0);
     expect(screen.getByRole("button", { name: "Add model" })).toBeInTheDocument();
+  });
+
+  it("offers one visible Enable action for an unchanged published connection", () => {
+    const timestamp = "2026-07-23T00:00:00.000Z";
+    const activeModel = providerModel({
+      activatedAt: timestamp,
+      activeConfig: providerModel().draftConfig,
+      activeVersion: 1
+    });
+    const activeCredential = {
+      ...connection.credentials[0]!,
+      activatedAt: timestamp,
+      activeVersion: {
+        activatedAt: timestamp,
+        id: "credential-version-1",
+        revokedAt: null,
+        testedAt: timestamp,
+        version: 1
+      },
+      draftSecretConfigured: false,
+      testedAt: timestamp
+    };
+    const disabledConnection: AdminProviderConnection = {
+      ...connection,
+      activatedAt: timestamp,
+      activeChecks: [{
+        checkedAt: timestamp,
+        connectionVersion: 1,
+        credentialId: activeCredential.id,
+        credentialVersionId: activeCredential.activeVersion.id,
+        evidence: null,
+        latestRefreshError: null,
+        modelVersion: activeModel.activeVersion,
+        providerModelId: activeModel.id,
+        refreshFailedAt: null,
+        status: "available"
+      }],
+      activeConfig: connection.draftConfig,
+      activeVersion: 1,
+      credentials: [activeCredential],
+      draftVersion: 1,
+      enabled: false,
+      models: [activeModel]
+    };
+    const view = controller();
+    view.state.connections = [disabledConnection];
+    view.state.selectedConnection = disabledConnection;
+    mocks.useController.mockReturnValue(view);
+    render(<AdminProvidersSection active groups={[]} />);
+
+    openConnection();
+    const enableActions = screen.getAllByRole("button", { name: "Enable" });
+    expect(enableActions).toHaveLength(1);
+    expect(enableActions[0]).toHaveClass("border-proof/25", "bg-proof/[0.08]", "text-proof");
   });
 
   it("labels a revoked credential version instead of presenting it as a usable draft", () => {

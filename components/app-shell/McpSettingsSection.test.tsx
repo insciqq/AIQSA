@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { McpSettingsSection } from "./McpSettingsSection";
 import { isMcpOAuthAuthorizing, resetMcpSettingsStoreForTest } from "./mcpSettingsStore";
@@ -67,6 +67,49 @@ describe("McpSettingsSection", () => {
     )).toBeVisible();
   });
 
+  it("keeps availability separate from the enable and disable actions", async () => {
+    let todoist = userServer("todoist", "Todoist");
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      if (!init?.method || init.method === "GET") return response({ servers: [todoist] });
+      const update = JSON.parse(String(init.body)) as { enabled?: boolean };
+      todoist = {
+        ...todoist,
+        enabled: Boolean(update.enabled),
+        readiness: update.enabled ? "ready" : "disabled"
+      };
+      return response({ server: todoist });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<McpSettingsSection />);
+    const heading = await screen.findByRole("heading", { name: "Todoist" });
+    const card = heading.closest("article");
+    expect(card).not.toBeNull();
+    const initial = within(card!);
+    const disabledStatus = initial.getByText("Disabled", {
+      selector: "[data-resource-availability]"
+    });
+    const enable = initial.getByRole("button", { name: "Enable Todoist" });
+    expect(disabledStatus.closest("button")).toBeNull();
+    expect(disabledStatus).toHaveClass("border-trace-strong", "bg-control-surface", "text-ink");
+    expect(enable).toHaveClass("border-proof/25", "bg-proof/[0.08]", "text-proof");
+
+    fireEvent.click(enable);
+    await waitFor(() => expect(todoist.enabled).toBe(true));
+    expect(within(card!).getByText("Enabled", {
+      selector: "[data-resource-availability]"
+    })).toHaveClass("border-positive/25", "bg-positive/10", "text-positive");
+    const disable = within(card!).getByRole("button", { name: "Disable Todoist" });
+    expect(disable).toHaveClass("bg-control-surface", "text-ink-secondary");
+
+    fireEvent.click(disable);
+    await waitFor(() => expect(todoist.enabled).toBe(false));
+    expect(within(card!).getByText("Disabled", {
+      selector: "[data-resource-availability]"
+    })).toBeVisible();
+    expect(within(card!).getByRole("button", { name: "Enable Todoist" })).toBeVisible();
+  });
+
   it("lets a user independently enable multiple granted MCPs and save a write-only value", async () => {
     let servers = [userServer("mem0", "Mem0"), userServer("todoist", "Todoist")];
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -128,7 +171,8 @@ describe("McpSettingsSection", () => {
     fireEvent.click(connect);
 
     expect(screen.getByText("Authorizing in your browser…")).toBeVisible();
-    expect(screen.getByRole("button", { name: "Authorizing" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Authorizing" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Authorizing" })).toHaveAttribute("aria-busy", "true");
     expect(isMcpOAuthAuthorizing("notion")).toBe(true);
   });
 
@@ -145,6 +189,8 @@ describe("McpSettingsSection", () => {
     render(<McpSettingsSection />);
     await screen.findByRole("heading", { name: "Notion" });
     const connectToEnable = screen.getByRole("button", { name: "Connect Notion to enable" });
+    expect(screen.getByText("Disabled", { selector: "[data-resource-availability]" })).toBeVisible();
+    expect(connectToEnable).toHaveClass("border-proof/25", "bg-proof/[0.08]", "text-proof");
     const form = connectToEnable.closest("form");
     expect(form).toHaveAttribute("action", "/api/me/mcp/notion/oauth/connect");
     expect(form).toHaveAttribute("method", "post");
@@ -155,6 +201,39 @@ describe("McpSettingsSection", () => {
     expect(screen.getAllByText("Authorizing in your browser…")).toHaveLength(1);
     expect(fetchMock.mock.calls.some(([, init]) => init?.method === "PATCH")).toBe(false);
     expect(screen.queryByText(/invalid_mcp_values/u)).not.toBeInTheDocument();
+  });
+
+  it("orders personal setup before OAuth connection when both are required", async () => {
+    let notion: UserMcpServer = {
+      ...userServer("mem0", "Notion"),
+      id: "notion",
+      oauthAvailable: true,
+      oauthState: "disconnected"
+    };
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      if (!init?.method || init.method === "GET") return response({ servers: [notion] });
+      notion = {
+        ...notion,
+        fields: notion.fields.map((field) => ({
+          ...field,
+          configured: true,
+          source: "personal" as const
+        }))
+      };
+      return response({ server: notion });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<McpSettingsSection />);
+    await screen.findByRole("heading", { name: "Notion" });
+    expect(screen.getByRole("button", { name: "Complete setup for Notion" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Connect Notion to enable" })).not.toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("API key"), { target: { value: "personal-token" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save personal values" }));
+
+    expect(await screen.findByRole("button", { name: "Connect Notion to enable" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Complete setup for Notion" })).not.toBeInTheDocument();
   });
 
   it("turns a raced OAuth enable rejection into an actionable reconnect path", async () => {
@@ -194,6 +273,12 @@ describe("McpSettingsSection", () => {
 
     render(<McpSettingsSection />);
     await screen.findByRole("heading", { name: "Mem0" });
+    expect(screen.getByText("Disabled", { selector: "[data-resource-availability]" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Complete setup for Mem0" })).toHaveClass(
+      "border-proof/25",
+      "bg-proof/[0.08]",
+      "text-proof"
+    );
     fireEvent.click(screen.getByRole("button", { name: "Complete setup for Mem0" }));
 
     expect(screen.getByText("Add and save the required personal values before enabling this server.")).toBeVisible();
@@ -273,5 +358,49 @@ describe("McpSettingsSection", () => {
       `This would expose ${MCP_RUN_PLAN_LIMITS.maxTools + 1} known tools, above the ${MCP_RUN_PLAN_LIMITS.maxTools}-tool run limit.`
     )).toBeVisible();
     expect(fetchMock.mock.calls.some(([, init]) => init?.method === "PATCH")).toBe(false);
+  });
+
+  it("distinguishes progress and idle readiness from attention states", async () => {
+    const authorizing = {
+      ...userServer("authorizing", "Authorizing server"),
+      enabled: true,
+      readiness: "authorizing" as const
+    };
+    const idle = {
+      ...userServer("idle", "Idle server"),
+      enabled: true,
+      readiness: "idle" as const
+    };
+    vi.stubGlobal("fetch", vi.fn(async () => response({ servers: [authorizing, idle] })));
+
+    render(<McpSettingsSection />);
+    await screen.findByRole("heading", { name: "Authorizing server" });
+
+    const authorizingReadiness = screen.getByText("Authorizing").closest("p");
+    const idleReadiness = screen.getByText("Idle").closest("p");
+    expect(authorizingReadiness?.querySelector("svg")).toHaveClass("lucide-loader-circle", "animate-spin");
+    expect(idleReadiness?.querySelector("svg")).toHaveClass("lucide-wrench");
+    expect(idleReadiness?.querySelector("svg")).not.toHaveClass("lucide-circle-alert");
+  });
+
+  it("keeps enabled availability visible beside authorization readiness", async () => {
+    const notion = {
+      ...userServer("notion", "Notion"),
+      enabled: true,
+      oauthAvailable: true,
+      oauthState: "disconnected" as const,
+      readiness: "needs_authorization" as const
+    };
+    vi.stubGlobal("fetch", vi.fn(async () => response({ servers: [notion] })));
+
+    render(<McpSettingsSection />);
+    const heading = await screen.findByRole("heading", { name: "Notion" });
+    const card = heading.closest<HTMLElement>("article");
+    expect(card).not.toBeNull();
+    expect(within(card!).getByText("Enabled", {
+      selector: "[data-resource-availability]"
+    })).toBeVisible();
+    expect(within(card!).getByText("Needs authorization")).toHaveClass("text-caution");
+    expect(within(card!).getByRole("button", { name: "Connect" })).toBeVisible();
   });
 });

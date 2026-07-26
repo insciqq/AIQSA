@@ -22,7 +22,7 @@ ChatGPT, Claude и Open WebUI используются как benchmark зрел
 | --- | --- | --- |
 | Новый чат | Главный объект старта — один центральный composer | Пустой ready chat центрирует существующий composer; после первого send тот же owner переходит вниз |
 | Conversation shell | История тише текущего разговора; вторичные функции раскрываются по задаче | Workspace rail + один conversation column; Details закрыт по умолчанию |
-| Provider connection | Частый путь начинается с выбора сервиса и key, а сложная topology живёт отдельно | Provider -> key -> Test & Save; Advanced — вторичная ссылка |
+| Provider connection | Частый путь начинается с выбора сервиса и key, а сложная topology живёт отдельно | Provider -> key -> Test & Save; Connections и Run profiles остаются видимыми peer-задачами |
 | Organization settings | Вертикальная subject navigation и отдельные resource pages | Control Center без plan-like Personal/Team/Advanced и без горизонтальной стены tabs |
 | Resource administration | Сначала каталог, затем отдельный object detail | Полная строка кликабельна; list и detail не показываются как обязательный split |
 
@@ -46,7 +46,7 @@ ChatGPT, Claude и Open WebUI используются как benchmark зрел
 2. **Весь row означает переход.** Если строка выглядит как resource row, она открывает resource; отдельный `Details` для этого не нужен.
 3. **Список и detail — разные состояния.** Пользователь сначала сканирует полный индекс, затем работает с одним объектом и возвращается Back.
 4. **Нет автоматического первого detail.** Первый ресурс не выбирается только потому, что он первый в массиве.
-5. **Internal mechanics остаются internal.** Draft/active versions, validation evidence, routing и credential assignments доступны в Advanced, но не формируют first-run UX.
+5. **Internal mechanics остаются internal.** Draft/active versions, validation evidence, routing и credential assignments доступны внутри Connections, но не формируют first-run UX.
 6. **Concept art не создаёт продукт.** В runtime попадают только существующие routes, entities, controls и доказуемые состояния.
 7. **Один state owner.** Новый layout не создаёт второй composer, provider registry, group selection или API orchestration path.
 
@@ -121,13 +121,13 @@ Canonical section — `access`. Старые `groups` и `model-access` оста
 Providers -> OpenAI / Anthropic / Gemini / OpenRouter -> API key -> Test & Save -> Ready
 ```
 
-Рядом находится отдельная задача `Connect custom endpoint`, а не пятая branded provider-card и не вход в Advanced:
+Рядом находится отдельная задача `Connect custom endpoint`, а не пятая branded provider-card и не вход в отдельный Advanced mode:
 
 ```text
 API root -> manual model ID -> API key -> Test & Save -> Ready
 ```
 
-Она фиксирует OpenAI-compatible Chat Completions, показывает derived `/chat/completions`, сразу создаёт direct credential assignment + model entitlement acting administrator и не требует группу. Empty key разрешён только как явный no-auth для подтверждённого private/local HTTP endpoint; hosted path остаётся endpoint + key. Names/capabilities находятся в одном тихом disclosure, а full lifecycle остаётся в Advanced.
+Она фиксирует OpenAI-compatible Chat Completions, показывает derived `/chat/completions`, сразу создаёт direct credential assignment + model entitlement acting administrator и не требует группу. Empty key разрешён только как явный no-auth для подтверждённого private/local HTTP endpoint; hosted path остаётся endpoint + key. Names/capabilities находятся в одном тихом disclosure, а full lifecycle остаётся в Connections.
 
 На экране сразу есть:
 
@@ -136,7 +136,7 @@ API root -> manual model ID -> API key -> Test & Save -> Ready
 - одно write-only поле API key;
 - одна primary action `Test & Save`;
 - короткое фактическое объяснение, что будет сделано;
-- вторичная ссылка `Advanced configuration`.
+- постоянно видимая peer-навигация `Setup` / `Connections` / `Run profiles` и контекстный `Manage provider connection` там, где уже есть конфигурация.
 
 На compact viewport четыре provider choices складываются в короткую сетку 2 × 2; на широком экране это одна строка из четырёх. Поле key и `Test & Save` должны помещаться в первый экран после заголовка; объясняющая правая колонка появляется только когда для неё действительно есть место.
 
@@ -152,7 +152,7 @@ direct user credential assignment
 + exact credential/model availability checks для каждой
 ```
 
-Каталог провайдера используется только как bounded availability evidence. Quick setup устанавливает пересечение каталога с проверенным versioned policy-набором OpenAI, Anthropic, Gemini или OpenRouter и никогда не импортирует произвольные image/audio/embedding/unknown IDs. Одна рекомендованная или явно выбранная модель по-прежнему определяет user default и untouched profile; остальные проверенные модели сразу доступны без Advanced.
+Каталог провайдера используется только как bounded availability evidence. Quick setup устанавливает пересечение каталога с проверенным versioned policy-набором OpenAI, Anthropic, Gemini или OpenRouter и никогда не импортирует произвольные image/audio/embedding/unknown IDs. Одна рекомендованная или явно выбранная модель по-прежнему определяет user default и untouched profile; остальные проверенные модели сразу доступны без дополнительной настройки прав.
 
 Credential selection и model entitlement остаются независимыми. Runtime precedence:
 
@@ -162,15 +162,15 @@ direct user assignment -> unambiguous active group assignment -> allowed connect
 
 Если выбранный credential unusable, resolver fail-closed и не падает на следующий tier. Group/default setup других пользователей не переписывается.
 
-Replacement проверяет не только рекомендуемую модель. Новый key обязан видеть upstream IDs всех моделей canonical connection, которые уже были доступны acting administrator; для каждой из них записывается exact available check нового credential version. Если таких моделей больше 64, набор изменился во время операции или хотя бы одна исчезла из catalog key, Quick setup завершается без writes и отправляет администратора в Advanced.
+Replacement проверяет не только рекомендуемую модель. Новый key обязан видеть upstream IDs всех моделей canonical connection, которые уже были доступны acting administrator; для каждой из них записывается exact available check нового credential version. Если таких моделей больше 64, набор изменился во время операции или хотя бы одна исчезла из catalog key, Quick setup завершается без writes и отправляет администратора в Connections.
 
 Ready-state позволяет `Remove my key assignment` только после явного подтверждения. Это удаляет одну direct-user assignment acting administrator и ничего больше: сохранённый credential/version, grants, defaults, checks и team configuration остаются. После удаления доступ может сохраниться через applicable group/default credential либо исчезнуть; UI не обещает fallback.
 
 Редкий конфликт допустим только когда сам canonical code-owned subgraph изменён так, что official-provider key нельзя честно связать с runtime route, или state raced и lossless commit невозможен. Это submit-time no-write error, а не состояние всех provider cards.
 
-### Advanced provider
+### Provider connections
 
-Advanced остаётся полной control plane, но получает отдельную композицию:
+Connections остаётся полной control plane внутри единого Providers workspace:
 
 1. full-width Connections index;
 2. клик по всей connection row;
@@ -204,7 +204,7 @@ Groups и Model access объединяются, потому что grants пр
 - Models & search;
 - Tools.
 
-Rename/archive/delete, provider-wide и explicit model grants, search grants и MCP grants сохраняются. Archived group остаётся читаемой, но её grants не применяются и mutations недоступны. Provider key assignment сюда не переносится: это отдельная Advanced authentication policy.
+Rename/archive/delete, provider-wide и explicit model grants, search grants и MCP grants сохраняются. Archived group остаётся читаемой, но её grants не применяются и mutations недоступны. Provider key assignment сюда не переносится: это отдельная Connections authentication policy.
 
 `Full access` — одна встроенная системная группа, которая существует по умолчанию и не может быть переименована, архивирована или удалена. Первый administrator входит в неё; дальше membership явно управляется в Members, без автоматического добавления новых users. Участник получает semantic wildcard на все текущие и будущие provider connections, models и enabled search strategies, а также автоматически поддерживаемые group grants на все текущие и будущие MCP servers. В её Models & search и Tools нет фиктивных switches: UI объясняет automatic coverage. Wildcard не выбирает provider credential, не даёт MCP personal slots и не копирует OAuth/secret identity — эти setup boundaries остаются отдельными.
 
@@ -235,7 +235,7 @@ Dedicated accessibility implementation and conformance are not being implemented
 - [Provider Quick setup](output/imagegen/aiqsa-product-mockups-v2/02-providers-quick-setup-desktop.png)
 - [Users directory](output/imagegen/aiqsa-product-mockups-v2/03-users-directory-desktop.png)
 - [Access group detail](output/imagegen/aiqsa-product-mockups-v2/04-access-group-detail-desktop.png)
-- [Advanced provider detail](output/imagegen/aiqsa-product-mockups-v2/05-provider-advanced-desktop.png)
+- [Provider connection detail](output/imagegen/aiqsa-product-mockups-v2/05-provider-advanced-desktop.png)
 
 Берём из v2 hierarchy, task flow, whitespace и спокойную цветовую систему. Не переносим буквально выдуманные counts, logos, tabs, model names, direct toggles или copy, если они не соответствуют текущему backend/UI contract.
 

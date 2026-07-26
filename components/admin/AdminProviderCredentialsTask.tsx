@@ -223,6 +223,22 @@ export function AdminProviderCredentialsTask({
                       >
                         Rotate
                       </button>
+                      <button
+                        aria-label={`${credential.enabled ? "Disable" : "Enable"} ${credential.label} credential`}
+                        className={credential.enabled ? quietButton : enableButton}
+                        disabled={controller.state.busy}
+                        onClick={() => void controller.actions.updateCredential(
+                          connection.id,
+                          credential.id,
+                          { action: credential.enabled ? "disable" : "enable" },
+                          credential.enabled
+                            ? "Credential disabled for new runs."
+                            : "Credential enabled; activation will validate it before use."
+                        )}
+                        type="button"
+                      >
+                        {credential.enabled ? "Disable" : "Enable"}
+                      </button>
                       <details className="relative">
                         <summary
                           aria-label={`More actions for ${credential.label} credential`}
@@ -232,22 +248,6 @@ export function AdminProviderCredentialsTask({
                           More
                         </summary>
                         <div className="absolute right-0 top-full z-20 mt-1 grid min-w-52 gap-1 rounded-panel border border-trace-subtle bg-overlay-surface p-2 shadow-overlay">
-                          <button
-                            aria-label={`${credential.enabled ? "Disable" : "Enable"} ${credential.label} credential`}
-                            className={credential.enabled ? quietButton : enableButton}
-                            disabled={controller.state.busy}
-                            onClick={() => void controller.actions.updateCredential(
-                              connection.id,
-                              credential.id,
-                              { action: credential.enabled ? "disable" : "enable" },
-                              credential.enabled
-                                ? "Credential disabled for new runs."
-                                : "Credential enabled; activation will validate it before use."
-                            )}
-                            type="button"
-                          >
-                            {credential.enabled ? "Disable credential" : "Enable credential"}
-                          </button>
                           {credential.draftSecretConfigured ? (
                             <button
                               aria-label={`Clear ${credential.label} key draft`}

@@ -152,7 +152,9 @@ function RuleDetail({ actions, rule, status }: Readonly<{
       <section className="border-b border-trace-subtle py-5">
         <h4 className="text-sm font-semibold text-ink">Approval result</h4>
         <p className="mt-2 text-sm leading-6 text-ink-secondary">
-          A verified access request matching this exact {rule.kind} is approved with {groupLabel(rule.defaultGroups)}.
+          {rule.enabled
+            ? <>A verified access request matching this exact {rule.kind} is approved with {groupLabel(rule.defaultGroups)}.</>
+            : <>This rule is disabled. Matching future access requests are not approved by it.</>}
         </p>
       </section>
       <section className="py-5">

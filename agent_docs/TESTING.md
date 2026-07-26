@@ -325,7 +325,7 @@ docker compose -f docker-compose.dev.yml exec -T \
   npx playwright test tests/e2e/mcp-ui.spec.ts --project=chromium
 ```
 
-That spec mocks only the MCP catalog/mutation boundary while exercising Settings routing, multi-enable state, write-only fields, OAuth-return auto-enable state and query scrubbing, composer aggregate, and compact containment. Repository/route tests remain authoritative for server grants, secrets, OAuth settlement, and runtime state.
+That spec mocks only the MCP catalog/mutation boundary while exercising Settings routing, separate availability status and lifecycle actions, multi-enable state, write-only fields, OAuth-return auto-enable state and query scrubbing, the visible composer availability aggregate plus detailed title, and compact containment. Repository/route tests remain authoritative for server grants, secrets, OAuth settlement, and runtime state.
 
 Do not turn these into a cumulative local release pipeline. Exposed-installation readiness is proved by the specific backlog tasks for migrations/bootstrap, backup/restore, hardening, security, observability, quotas, and load—not by rerunning unrelated harness machinery on every feature.
 

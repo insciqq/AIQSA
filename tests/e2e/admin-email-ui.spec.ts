@@ -238,8 +238,8 @@ test("admin saves, tests, and activates a write-only SMTP draft without network 
   await section.getByTestId("email-task-detail").getByRole("button", { name: "Activate", exact: true }).click();
   await expect(section.getByText("The tested email draft is now active.")).toBeVisible();
   await expect(section.getByRole("heading", { name: "Runtime & health" })).toBeVisible();
-  await expect(section.getByText("ENABLED", { exact: true })).toBeVisible();
-  await expect(section.getByText("Enabled", { exact: true })).toBeVisible();
+  await expect(section.locator('[data-resource-availability="enabled"]').first()).toHaveText("Enabled");
+  await expect(section.getByRole("button", { name: "Disable", exact: true })).toBeVisible();
   expect(email.active).toMatchObject({ enabled: true, passwordConfigured: true, version: 1 });
 
   await page.setViewportSize({ height: 900, width: 768 });

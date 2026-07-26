@@ -441,7 +441,13 @@ describe("AdminProvidersExperience", () => {
     render(<AdminProvidersExperience active groups={[]} />);
 
     expect(await screen.findByText("Provider disabled")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /OpenAI Disabled/ })).toBeInTheDocument();
+    const providerChoice = screen.getByRole("button", { name: /OpenAI Disabled/ });
+    expect(providerChoice).toBeInTheDocument();
+    expect(within(providerChoice).getByText("Disabled")).toHaveClass(
+      "border-trace-strong",
+      "bg-control-surface",
+      "text-ink"
+    );
     expect(screen.getByText(/Existing configuration is paused for new runs/))
       .toBeInTheDocument();
     expect(screen.queryByText("Setup needs attention")).not.toBeInTheDocument();

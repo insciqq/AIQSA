@@ -533,11 +533,17 @@ function RuntimeTask({ controller, email }: Readonly<{
         <h4 className="text-sm font-semibold text-ink">Runtime delivery</h4>
         <p className="mt-1 max-w-3xl text-xs leading-5 text-ink-muted">Each message loads the current enabled active version from the database. Enable and disable apply without restart. SMTP is optional and never changes core application readiness.</p>
         <div className="mt-4 flex flex-wrap items-center gap-3">
-          <AdminAvailabilityStatus enabled={email.active.enabled} />
-          {email.active.enabled ? (
-            <button className={quietButton} disabled={controller.state.busy} onClick={() => void controller.actions.disable(email.active.version)} type="button"><Power aria-hidden="true" className="size-3.5" />Disable</button>
+          {hasActive ? (
+            <>
+              <AdminAvailabilityStatus enabled={email.active.enabled} />
+              {email.active.enabled ? (
+                <button className={quietButton} disabled={controller.state.busy} onClick={() => void controller.actions.disable(email.active.version)} type="button"><Power aria-hidden="true" className="size-3.5" />Disable</button>
+              ) : (
+                <button className={enableButton} disabled={controller.state.busy} onClick={() => void controller.actions.enable(email.active.version)} type="button"><Power aria-hidden="true" className="size-3.5" />Enable</button>
+              )}
+            </>
           ) : (
-            <button className={enableButton} disabled={controller.state.busy || !hasActive} onClick={() => void controller.actions.enable(email.active.version)} type="button"><Power aria-hidden="true" className="size-3.5" />Enable</button>
+            <span className="text-sm font-medium text-ink-secondary">Not configured</span>
           )}
           <button className={quietButton} disabled={controller.state.busy || controller.state.loading} onClick={() => void controller.actions.refresh()} type="button"><RefreshCw aria-hidden="true" className="size-3.5" />Refresh</button>
         </div>
@@ -689,8 +695,16 @@ function AdminEmailContent({ controller, email }: Readonly<{
               <OverviewTask email={email} onOpenTask={openTask} />
             )}
             {task !== "overview" ? (
-              <div className="mt-8 border-t border-trace-subtle pt-4 text-[11px] leading-5 text-ink-muted">
-                Draft: {presentation.draft.label} · Active: {presentation.active.label} · Health: {presentation.health.label}
+              <div className="mt-8 flex flex-wrap items-center gap-x-3 gap-y-2 border-t border-trace-subtle pt-4 text-[11px] leading-5 text-ink-muted">
+                <span>Draft: {presentation.draft.label} · Health: {presentation.health.label}</span>
+                {task !== "runtime" && email.active.configuration ? (
+                  <span className="inline-flex items-center gap-1.5">
+                    Runtime
+                    <AdminAvailabilityStatus enabled={email.active.enabled} />
+                  </span>
+                ) : task !== "runtime" ? (
+                  <span>Active: Not configured</span>
+                ) : null}
               </div>
             ) : null}
           </article>

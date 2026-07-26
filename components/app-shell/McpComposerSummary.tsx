@@ -1,4 +1,5 @@
 import { MCP_RUN_PLAN_LIMITS } from "@/lib/contracts/mcp";
+import { AvailabilityStatus } from "@/components/resource-lifecycle/AvailabilityStatus";
 import { CircleAlert, LoaderCircle, Wrench } from "lucide-react";
 import { useEffect } from "react";
 import { refreshMcpSettings, useMcpSettingsStore } from "./mcpSettingsStore";
@@ -35,11 +36,21 @@ export function McpComposerSummary({
 
   const label = loadState === "loading" && servers.length === 0
     ? "Loading…"
-    : servers.length === 0
-      ? "Not configured"
-      : enabled.length === 0
-        ? "Off"
-        : `${ready.length}/${enabled.length} ready · ${readyTools} tool${readyTools === 1 ? "" : "s"}`;
+    : loadState === "error" && servers.length === 0
+      ? "Unavailable"
+      : servers.length === 0
+        ? "Not configured"
+        : enabled.length === 0
+          ? "Disabled"
+          : `${ready.length}/${enabled.length} ready · ${readyTools} tool${readyTools === 1 ? "" : "s"}`;
+
+  const visibleState = loadState === "loading" && servers.length === 0
+    ? <span className="text-ink-muted">Loading…</span>
+    : loadState === "error" && servers.length === 0
+      ? <span className="text-critical">Unavailable</span>
+      : servers.length === 0
+        ? <span className="text-ink-muted">Not configured</span>
+        : <AvailabilityStatus enabled={enabled.length > 0} />;
 
   return (
     <button
@@ -57,6 +68,10 @@ export function McpComposerSummary({
         <Wrench className="size-3.5 shrink-0 text-ink-muted" aria-hidden="true" />
       )}
       <span className="shrink-0 font-medium text-ink">Tools</span>
+      {visibleState}
+      {issues > 0 ? (
+        <span className="shrink-0 font-medium text-caution">{ready.length}/{enabled.length} ready</span>
+      ) : null}
     </button>
   );
 }

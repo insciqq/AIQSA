@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  AdminAvailabilityStatus,
   focusRing,
   inputClass,
   primaryButton,
@@ -508,19 +509,23 @@ export function AdminProviderQuickSetup({
                       <span className="block break-words text-sm font-semibold sm:text-base [overflow-wrap:anywhere]">
                         {provider.providerDisplayName}
                       </span>
-                      <span className={`mt-1 block text-[11px] ${
-                        provider.state === "ready"
-                          ? "text-positive"
-                          : provider.state === "needs_attention"
-                            ? "text-caution"
-                            : provider.state === "disabled"
-                              ? "font-semibold text-ink"
+                      {provider.state === "disabled" ? (
+                        <span className="mt-1 inline-flex">
+                          <AdminAvailabilityStatus enabled={false} />
+                        </span>
+                      ) : (
+                        <span className={`mt-1 block text-[11px] ${
+                          provider.state === "ready"
+                            ? "text-positive"
+                            : provider.state === "needs_attention"
+                              ? "text-caution"
                               : provider.state === "advanced_required"
                                 ? "text-proof"
                                 : "text-ink-muted"
-                      }`}>
-                        {stateLabel(provider)}
-                      </span>
+                        }`}>
+                          {stateLabel(provider)}
+                        </span>
+                      )}
                     </button>
                   );
                 })}

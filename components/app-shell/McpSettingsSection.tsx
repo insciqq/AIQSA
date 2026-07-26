@@ -6,6 +6,10 @@ import {
   type UserMcpServer
 } from "@/lib/contracts/mcp";
 import {
+  AvailabilityStatus,
+  enableActionTone
+} from "@/components/resource-lifecycle/AvailabilityStatus";
+import {
   CircleAlert,
   CircleCheck,
   KeyRound,
@@ -33,7 +37,9 @@ import {
 const focusRing =
   "outline-none focus-visible:ring-2 focus-visible:ring-proof/55 focus-visible:ring-offset-2 focus-visible:ring-offset-overlay-surface";
 const touchTarget = "[@media(hover:none)]:!min-h-touch [@media(pointer:coarse)]:!min-h-touch";
-const neutralButton = `inline-flex min-h-touch items-center justify-center gap-2 rounded-control bg-control-surface px-3 text-sm font-medium text-ink-secondary hover:bg-control-hover hover:text-ink disabled:cursor-not-allowed disabled:text-ink-disabled disabled:opacity-60 sm:min-h-control ${touchTarget} ${focusRing}`;
+const actionButtonBase = `inline-flex min-h-touch items-center justify-center gap-2 rounded-control px-3 text-sm font-medium disabled:cursor-not-allowed disabled:text-ink-disabled disabled:opacity-60 sm:min-h-control ${touchTarget} ${focusRing}`;
+const neutralButton = `${actionButtonBase} bg-control-surface text-ink-secondary hover:bg-control-hover hover:text-ink`;
+const enableButton = `${actionButtonBase} ${enableActionTone}`;
 
 const readinessLabels: Record<McpReadiness, string> = {
   authorizing: "Authorizing",
@@ -211,6 +217,11 @@ function ServerCard({
   const connected = server.oauthState === "ready" || server.oauthState === "reauthorization_required";
   const needsOAuth = server.oauthAvailable && server.oauthState !== "ready";
   const missingPersonalField = server.fields.find((field) => field.source === "missing");
+  const lifecycleActionLabel = server.enabled
+    ? "Disable"
+    : missingPersonalField
+      ? "Complete setup"
+      : "Enable";
 
   async function run(kind: typeof busy, operation: () => Promise<void>) {
     setBusy(kind);
@@ -230,21 +241,28 @@ function ServerCard({
     <article className="border-t border-trace-subtle py-5 first:border-t-0" aria-labelledby={`mcp-server-${server.id}`}>
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
-          <h4 className="break-words text-sm font-semibold text-ink" id={`mcp-server-${server.id}`}>
-            {server.name}
-          </h4>
+          <div className="flex flex-wrap items-center gap-2">
+            <h4 className="break-words text-sm font-semibold text-ink" id={`mcp-server-${server.id}`}>
+              {server.name}
+            </h4>
+            <AvailabilityStatus enabled={server.enabled} />
+          </div>
           {server.description ? <p className="mt-1 max-w-3xl text-sm leading-6 text-ink-secondary">{server.description}</p> : null}
-          <p className={`mt-2 flex items-center gap-1.5 text-xs font-medium ${readinessTone(server.readiness)}`}>
-            {server.readiness === "ready"
-              ? <CircleCheck className="size-3.5" aria-hidden="true" />
-              : server.readiness === "starting" || server.readiness === "queued" || server.readiness === "restarting"
-                ? <LoaderCircle className="size-3.5 animate-spin" aria-hidden="true" />
-                : <CircleAlert className="size-3.5" aria-hidden="true" />}
-            {readinessLabels[server.readiness]}
-            {server.errorCode ? ` · ${readableCode(server.errorCode)}` : ""}
-          </p>
+          {server.enabled ? (
+            <p className={`mt-2 flex items-center gap-1.5 text-xs font-medium ${readinessTone(server.readiness)}`}>
+              {server.readiness === "ready"
+                ? <CircleCheck className="size-3.5" aria-hidden="true" />
+                : server.readiness === "authorizing" || server.readiness === "starting" || server.readiness === "queued" || server.readiness === "restarting"
+                  ? <LoaderCircle className="size-3.5 animate-spin" aria-hidden="true" />
+                  : server.readiness === "idle"
+                    ? <Wrench className="size-3.5" aria-hidden="true" />
+                    : <CircleAlert className="size-3.5" aria-hidden="true" />}
+              {readinessLabels[server.readiness]}
+              {server.errorCode ? ` · ${readableCode(server.errorCode)}` : ""}
+            </p>
+          ) : null}
         </div>
-        {!server.enabled && needsOAuth ? (
+        {!server.enabled && needsOAuth && !missingPersonalField ? (
           <form
             action={userMcpOAuthAction(server.id, server.oauthState === "reauthorization_required")}
             className="shrink-0"
@@ -257,7 +275,9 @@ function ServerCard({
           >
             <button
               aria-label={`${server.oauthState === "reauthorization_required" ? "Reconnect" : "Connect"} ${server.name} to enable`}
-              className={`${neutralButton} shrink-0`}
+              aria-busy={authorizing || undefined}
+              className={`${enableButton} shrink-0`}
+              disabled={authorizing}
               type="submit"
             >
               {authorizing ? <LoaderCircle className="size-4 animate-spin" aria-hidden="true" /> : <KeyRound className="size-4" aria-hidden="true" />}
@@ -268,12 +288,9 @@ function ServerCard({
           </form>
         ) : (
           <button
+            aria-busy={busy === "toggle" || undefined}
             aria-label={`${server.enabled ? "Disable" : missingPersonalField ? "Complete setup for" : "Enable"} ${server.name}`}
-            aria-pressed={server.enabled}
-            className={[
-              `${neutralButton} shrink-0`,
-              server.enabled ? "bg-control-selected text-ink" : ""
-            ].join(" ")}
+            className={`${server.enabled ? neutralButton : enableButton} shrink-0`}
             disabled={busy !== null}
             onClick={() => {
               if (!server.enabled && missingPersonalField) {
@@ -291,8 +308,12 @@ function ServerCard({
             }}
             type="button"
           >
-            {busy === "toggle" ? <LoaderCircle className="size-4 animate-spin" aria-hidden="true" /> : <Plug className="size-4" aria-hidden="true" />}
-            {server.enabled ? "Enabled" : missingPersonalField ? "Complete setup" : "Disabled"}
+            {busy === "toggle"
+              ? <LoaderCircle className="size-4 animate-spin" aria-hidden="true" />
+              : server.enabled
+                ? <Unplug className="size-4" aria-hidden="true" />
+                : <Plug className="size-4" aria-hidden="true" />}
+            {lifecycleActionLabel}
           </button>
         )}
       </div>
@@ -316,7 +337,12 @@ function ServerCard({
                     setAuthorizing(true);
                   }}
                 >
-                  <button className={neutralButton} type="submit">
+                  <button
+                    aria-busy={authorizing || undefined}
+                    className={neutralButton}
+                    disabled={authorizing}
+                    type="submit"
+                  >
                     {authorizing ? <LoaderCircle className="size-4 animate-spin" aria-hidden="true" /> : <KeyRound className="size-4" aria-hidden="true" />}
                     {authorizing ? "Authorizing" : connected ? "Reconnect" : "Connect"}
                   </button>
@@ -325,7 +351,7 @@ function ServerCard({
               {connected ? (
                 <button
                   className={neutralButton}
-                  disabled={busy !== null}
+                  disabled={busy !== null || authorizing}
                   onClick={() => void run("disconnect", async () => {
                     await disconnectUserMcpServer(server.id);
                     await refreshMcpSettings(true);
@@ -414,6 +440,7 @@ export function McpSettingsSection({
   const [edits, setEdits] = useState<ServerEdits>({});
   const [busyServerIds, setBusyServerIds] = useState<ReadonlySet<string>>(() => new Set());
   const enabledCount = servers.filter((server) => server.enabled).length;
+  const disabledCount = servers.length - enabledCount;
   const enabledToolCount = servers
     .filter((server) => server.enabled)
     .reduce((total, server) => total + server.knownToolCount, 0);
@@ -459,7 +486,7 @@ export function McpSettingsSection({
               Enable any combination of servers your administrator granted.
             </p>
             <p className="mt-1 text-xs leading-5 text-ink-muted">
-              {enabledCount} enabled · {enabledToolCount} known tool{enabledToolCount === 1 ? "" : "s"}
+              {enabledCount} enabled · {disabledCount} disabled · {enabledToolCount} known tool{enabledToolCount === 1 ? "" : "s"}
             </p>
             <p className="mt-3 flex max-w-3xl items-start gap-2 border-l-2 border-caution/45 bg-caution/[0.05] px-3 py-2 text-xs leading-5 text-ink-secondary">
               <CircleAlert className="mt-0.5 size-3.5 shrink-0 text-caution" aria-hidden="true" />

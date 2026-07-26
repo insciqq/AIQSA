@@ -41,7 +41,7 @@ Every ADR also declares `Amends: none` or a comma-separated list of earlier ADR 
 - `0030-direct-run-controls-and-reviewed-provider-catalog.md` - exposes Model/Profile/Search directly from the one composer owner, consolidates completed-answer evidence, and makes Quick setup atomically install every remotely visible reviewed candidate; ADR 0031 replaces its original compatible Gemini runtime clause.
 - `0031-native-gemini-interactions-and-live-only-grounding.md` - replaces first-class Gemini compatibility with one native stateless Interactions v1 adapter and makes actual Google Search-grounded output validated, transient, non-shareable, and non-replayable without any fallback.
 - `0032-direct-custom-openai-compatible-setup.md` - adds one administrator-first custom Chat endpoint/model/key Test & Save path with direct access, atomic control-plane creation, and explicit fail-closed keyless local authentication.
-- `0033-unified-providers-workspace-and-lifecycle-state-language.md` - presents Setup, Connections, and Run profiles as one lazy Providers workspace and gives actual Enabled/Disabled resources one explicit Control Center state/action language.
+- `0033-unified-providers-workspace-and-lifecycle-state-language.md` - presents Setup, Connections, and Run profiles as one lazy Providers workspace and gives actual Enabled/Disabled resources one explicit product-wide status/action language.
 
 ## Superseded ADRs
 

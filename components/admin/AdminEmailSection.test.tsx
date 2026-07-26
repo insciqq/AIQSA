@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { AdminEmailConfiguration, AdminEmailState } from "@/lib/contracts/email";
 import { AdminEmailSection } from "./AdminEmailSection";
 
@@ -51,6 +51,20 @@ function json(body: unknown, status = 200) {
 describe("AdminEmailSection", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
+  });
+
+  it("keeps an absent active configuration distinct from a disabled runtime", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => json({ email: emailState() })));
+    render(<AdminEmailSection />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /Runtime & health/i }));
+    const detail = screen.getByTestId("email-task-detail");
+    expect(within(detail).getByText("Not configured")).toBeVisible();
+    expect(within(detail).queryByText("Disabled", {
+      selector: "[data-resource-availability]"
+    })).not.toBeInTheDocument();
+    expect(within(detail).queryByRole("button", { name: "Enable" })).not.toBeInTheDocument();
+    expect(within(detail).getByRole("button", { name: "Refresh" })).toBeVisible();
   });
 
   it("keeps passwords write-only and supports save, exact test, activation, disable, and clear", async () => {
