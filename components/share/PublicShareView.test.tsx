@@ -36,9 +36,11 @@ describe("PublicShareView", () => {
     );
 
     expect(screen.getByText("AIQSA")).toBeVisible();
-    expect(screen.getByText("Read-only snapshot")).toBeVisible();
+    const readOnlyMarker = screen.getByText("Read-only snapshot");
+    expect(readOnlyMarker).toBeVisible();
+    expect(readOnlyMarker.closest("header")).not.toBeNull();
     expect(screen.getByRole("heading", { level: 1, name: "Architecture notes" })).toBeVisible();
-    expect(screen.getByText(/fixed copy of one conversation branch/i)).toBeVisible();
+    expect(screen.getByText(/it shows one conversation branch/i)).toBeVisible();
     expect(screen.getByRole("list", { name: "Shared conversation" })).toBeVisible();
     expect(screen.getByRole("article", { name: "Shared question" })).toHaveAttribute("data-role", "user");
     expect(screen.getByRole("article", { name: "Shared answer" })).toHaveAttribute(
@@ -50,7 +52,7 @@ describe("PublicShareView", () => {
   });
 
   it("matches the private thread's compact question and document-like answer treatment", () => {
-    render(
+    const { container } = render(
       <PublicShareView
         snapshot={snapshot([message("user", "A compact question"), message("assistant", "A full answer")])}
         title="Reading rhythm"
@@ -58,19 +60,37 @@ describe("PublicShareView", () => {
     );
 
     expect(screen.getByRole("article", { name: "Shared question" })).toHaveClass(
-      "ml-auto",
-      "max-w-[min(38rem,88%)]",
-      "rounded-bubble",
-      "bg-surface-raised"
+      "mx-auto",
+      "max-w-reading"
     );
     expect(screen.getByRole("article", { name: "Shared answer" })).toHaveClass(
       "min-w-0",
-      "w-full"
+      "max-w-reading",
+      "text-[16px]",
+      "leading-[1.68]"
     );
-    expect(screen.getByRole("article", { name: "Shared answer" })).not.toHaveClass(
-      "rounded-bubble",
-      "bg-surface-raised"
+    expect(
+      screen.getByRole("article", { name: "Shared question" }).querySelector(
+        '[data-public-share-message-content="true"]'
+      )
+    ).toHaveClass(
+      "ml-auto",
+      "max-w-[min(36rem,88%)]",
+      "rounded-panel",
+      "bg-control-surface"
     );
+    expect(
+      screen.getByRole("article", { name: "Shared answer" }).querySelector(
+        '[data-public-share-message-content="true"]'
+      )
+    ).not.toHaveClass(
+      "rounded-panel",
+      "bg-control-surface"
+    );
+    expect(screen.getByTestId("public-share-view")).toHaveClass("bg-answer-paper", "text-ink");
+    expect(screen.getByTestId("public-share-note")).toHaveClass("border-trace-subtle");
+    expect(container.querySelector(".bg-surface-navigation")).not.toBeInTheDocument();
+    expect(container.querySelector(".text-content-primary")).not.toBeInTheDocument();
     expect(screen.queryByText("User")).not.toBeInTheDocument();
     expect(screen.queryByText("Assistant")).not.toBeInTheDocument();
   });

@@ -25,6 +25,12 @@ describe("AuthLogin", () => {
     render(<AuthLogin nextPath="/" />);
 
     expect(screen.getByText("AIQSA")).toBeInTheDocument();
+    expect(screen.getByTestId("auth-root")).toHaveClass("bg-answer-paper", "overflow-x-hidden");
+    expect(screen.getByTestId("auth-workspace")).toHaveClass("max-w-[42rem]");
+    expect(screen.getByTestId("auth-workspace")).not.toHaveClass("rounded-panel", "border");
+    expect(
+      screen.getByText((_, element) => element?.textContent === "Question → Search → Answer")
+    ).toBeInTheDocument();
     expect(screen.getByRole("heading", { level: 1, name: "Sign in" })).toBeInTheDocument();
     expect(screen.getByText("Use the email and password for your active account.")).toBeInTheDocument();
     expect(screen.getByLabelText("Email")).toHaveAttribute("autocomplete", "email");
@@ -72,15 +78,115 @@ describe("AuthLogin", () => {
     expect(googleLink.parentElement).not.toHaveClass("sm:grid-cols-2");
   });
 
-  it("keeps OAuth choices out of proof-bearing invite and reset modes", () => {
+  it("keeps OAuth choices out of proof-bearing modes and activates a newly received proof", async () => {
     const { rerender } = render(
       <AuthLogin inviteToken="invite-token" nextPath="/" oauthProviders={["google", "yandex"]} />
     );
 
+    expect(screen.getByRole("heading", { level: 1, name: "Create your account" })).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: /Continue with/ })).not.toBeInTheDocument();
 
     rerender(<AuthLogin nextPath="/" oauthProviders={["google", "yandex"]} resetToken="reset-token" />);
+    expect(await screen.findByRole("heading", { level: 1, name: "Choose a new password" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Update password" })).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: /Continue with/ })).not.toBeInTheDocument();
+  });
+
+  it("starts a fresh uncontrolled field session when an invite or reset proof changes", async () => {
+    const { rerender } = render(<AuthLogin inviteToken="invite-proof-a" nextPath="/" />);
+
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Old invite name" } });
+    fireEvent.change(screen.getByLabelText("Password"), { target: { value: "old-invite-password" } });
+    rerender(<AuthLogin inviteToken="invite-proof-b" nextPath="/" />);
+
+    await waitFor(() => {
+      expect(screen.getByLabelText("Name")).toHaveValue("");
+      expect(screen.getByLabelText("Password")).toHaveValue("");
+    });
+
+    rerender(<AuthLogin nextPath="/" resetToken="reset-proof-a" />);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Update password" })).toBeInTheDocument());
+    fireEvent.change(screen.getByLabelText("New password"), { target: { value: "old-reset-password" } });
+    rerender(<AuthLogin nextPath="/" resetToken="reset-proof-b" />);
+
+    await waitFor(() => expect(screen.getByLabelText("New password")).toHaveValue(""));
+    expect(document.body.innerHTML).not.toContain("invite-proof-a");
+    expect(document.body.innerHTML).not.toContain("invite-proof-b");
+    expect(document.body.innerHTML).not.toContain("reset-proof-a");
+    expect(document.body.innerHTML).not.toContain("reset-proof-b");
+  });
+
+  it("ignores a stale invite settlement after a proof transition and enables the new invite", async () => {
+    let resolveFirstInvite!: (response: Response) => void;
+    const fetch = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementationOnce(
+        () =>
+          new Promise<Response>((resolve) => {
+            resolveFirstInvite = resolve;
+          })
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ status: "active" }), {
+          status: 200
+        })
+      );
+    const navigateAfterLogin = vi.fn();
+    window.history.replaceState({}, "", "/login?invite=invite-a&next=%2Fworkspace#auth");
+    const { rerender } = render(
+      <AuthLogin inviteToken="invite-a" navigateAfterLogin={navigateAfterLogin} nextPath="/workspace" />
+    );
+
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Invite A" } });
+    fireEvent.change(screen.getByLabelText("Password"), { target: { value: "invite-a-password" } });
+    fireEvent.submit(screen.getByRole("button", { name: "Create account" }).closest("form")!);
+    expect(await screen.findByRole("button", { name: "Creating account…" })).toBeDisabled();
+
+    window.history.replaceState({}, "", "/login?invite=invite-b&next=%2Fworkspace#auth");
+    rerender(
+      <AuthLogin inviteToken="invite-b" navigateAfterLogin={navigateAfterLogin} nextPath="/workspace" />
+    );
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Create account" })).toBeEnabled();
+      expect(screen.getByLabelText("Name")).toHaveValue("");
+      expect(screen.getByLabelText("Password")).toHaveValue("");
+    });
+
+    await act(async () => {
+      resolveFirstInvite(
+        new Response(JSON.stringify({ status: "active" }), {
+          status: 200
+        })
+      );
+    });
+    expect(navigateAfterLogin).not.toHaveBeenCalled();
+    expect(screen.getByRole("heading", { level: 1, name: "Create your account" })).toBeInTheDocument();
+    expect(`${window.location.pathname}${window.location.search}${window.location.hash}`).toBe(
+      "/login?invite=invite-b&next=%2Fworkspace#auth"
+    );
+
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Invite B" } });
+    fireEvent.change(screen.getByLabelText("Password"), { target: { value: "invite-b-password" } });
+    fireEvent.submit(screen.getByRole("button", { name: "Create account" }).closest("form")!);
+
+    await waitFor(() => expect(navigateAfterLogin).toHaveBeenCalledTimes(1));
+    expect(navigateAfterLogin).toHaveBeenCalledWith("/workspace");
+    expect(fetch).toHaveBeenNthCalledWith(
+      2,
+      "/api/auth/invite/accept",
+      expect.objectContaining({
+        body: JSON.stringify({
+          displayName: "Invite B",
+          password: "invite-b-password",
+          token: "invite-b"
+        }),
+        method: "POST"
+      })
+    );
+    expect(`${window.location.pathname}${window.location.search}${window.location.hash}`).toBe(
+      "/login?next=%2Fworkspace#auth"
+    );
   });
 
   it("renders privacy-safe OAuth callback outcomes", () => {
@@ -448,7 +554,14 @@ describe("AuthLogin", () => {
       "",
       "/login?verify=verify-token&next=%2Fadmin&oauth=cancelled#auth"
     );
-    render(<AuthLogin nextPath="/admin" verifyToken="verify-token" />);
+    render(
+      <AuthLogin
+        inviteToken="lower-priority-invite"
+        nextPath="/admin"
+        resetToken="lower-priority-reset"
+        verifyToken="verify-token"
+      />
+    );
 
     expect(screen.getByRole("heading", { level: 1, name: "Choose your password" })).toBeInTheDocument();
     expect(screen.getByLabelText("New password")).toHaveFocus();
@@ -476,6 +589,8 @@ describe("AuthLogin", () => {
       await screen.findByText("Email verified and password set. Your account is active. Sign in to continue.")
     ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Sign in" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Request access" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Create account" })).not.toBeInTheDocument();
     expect(`${window.location.pathname}${window.location.search}${window.location.hash}`).toBe(
       "/login?next=%2Fadmin&oauth=cancelled#auth"
     );
@@ -568,18 +683,54 @@ describe("AuthLogin", () => {
     expect(window.location.search).toBe("?next=%2Fsettings");
   });
 
-  it("scrubs proof parameters when explicitly leaving a token mode", () => {
+  it("retires every proof after leaving a combined token URL and cannot resurrect invite semantics", async () => {
+    const fetch = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ status: "request_received" }), {
+        status: 200
+      })
+    );
     window.history.replaceState(
       {},
       "",
       "/login?verify=verify-token&reset=reset-token&invite=invite-token&next=%2Fadmin"
     );
-    render(<AuthLogin nextPath="/admin" verifyToken="verify-token" />);
+    const proofProps = {
+      inviteToken: "invite-token",
+      nextPath: "/admin",
+      resetToken: "reset-token",
+      verifyToken: "verify-token"
+    } as const;
+    const { rerender } = render(<AuthLogin {...proofProps} />);
 
     fireEvent.click(screen.getByRole("button", { name: "Back to sign in" }));
 
     expect(screen.getByRole("heading", { level: 1, name: "Sign in" })).toBeInTheDocument();
     expect(window.location.search).toBe("?next=%2Fadmin");
+    expect(screen.getByRole("button", { name: "Request access" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Create account" })).not.toBeInTheDocument();
+
+    rerender(<AuthLogin {...proofProps} />);
+    expect(screen.getByRole("heading", { level: 1, name: "Sign in" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Request access" })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Request access" }));
+    expect(screen.getByRole("heading", { level: 1, name: "Request access" })).toBeInTheDocument();
+    expect(screen.queryByLabelText("Password")).not.toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Email"), {
+      target: { value: "person@example.com" }
+    });
+    fireEvent.submit(screen.getByRole("button", { name: "Request access" }).closest("form")!);
+
+    await waitFor(() => {
+      expect(fetch).toHaveBeenCalledWith(
+        "/api/auth/register",
+        expect.objectContaining({
+          body: JSON.stringify({ displayName: "", email: "person@example.com" }),
+          method: "POST"
+        })
+      );
+    });
+    expect(fetch).not.toHaveBeenCalledWith("/api/auth/invite/accept", expect.anything());
   });
 
   it("keeps reset completion available after an invalid or replayed token error", async () => {

@@ -4,6 +4,7 @@ import { expect, test, type APIRequestContext, type Locator, type Page } from "@
 import { providerTemplateIds } from "../../lib/domain/providerTemplates";
 import { DEFAULT_BOOTSTRAP_USER_ID } from "../../lib/server/auth/config";
 import { hashPassword } from "../../lib/server/auth/password";
+import { closeRunSetup, composerRunSummary, openRunSetup } from "./shell/composer";
 
 test.describe.configure({ mode: "serial" });
 
@@ -343,8 +344,11 @@ test("admin manages approvals, rules, invites, session revocation, and disabling
     await expect(userPage.getByTestId("admin-denied")).toBeVisible();
     await userPage.goto("/");
     await expect(userPage.getByTestId("app-shell")).toBeVisible();
-    await userPage.getByRole("button", { name: "Select model" }).click();
+    let runSetup = await openRunSetup(userPage);
+    await runSetup.getByRole("button", { name: "Select model" }).click();
     await expect(userPage.getByTestId("model-picker")).toContainText("Fake QSA");
+    await userPage.keyboard.press("Escape");
+    await closeRunSetup(userPage);
 
     await page.getByRole("tab", { name: "Model access" }).click();
     const modelAccess = page.getByTestId("admin-section-model-access");
@@ -372,13 +376,16 @@ test("admin manages approvals, rules, invites, session revocation, and disabling
     await userPage.reload();
     expect((await catalogRefresh).ok()).toBe(true);
     await expect(userPage.getByTestId("app-shell")).toBeVisible();
-    const modelSelector = userPage.getByRole("button", { name: "Select model" });
-    await expect(modelSelector).not.toContainText("Fake QSA");
-    if (await modelSelector.isEnabled()) {
-      await modelSelector.click();
+    const runSummary = composerRunSummary(userPage);
+    await expect(runSummary).not.toContainText("Fake QSA");
+    if (await runSummary.isEnabled()) {
+      runSetup = await openRunSetup(userPage);
+      await runSetup.getByRole("button", { name: "Select model" }).click();
       await expect(userPage.getByTestId("model-picker")).not.toContainText("Fake QSA");
+      await userPage.keyboard.press("Escape");
+      await closeRunSetup(userPage);
     } else {
-      await expect(modelSelector).toContainText("No models available");
+      await expect(runSummary).toContainText("No models available");
       await expect(userPage.getByText("This workspace has no models available yet.")).toBeVisible();
     }
 

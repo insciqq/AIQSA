@@ -107,6 +107,14 @@ test("keeps auth forms keyboard-safe and mobile-friendly without exposing recove
   await expect(page.getByRole("button", { name: "Request access" })).toBeInViewport();
   await expectNoHorizontalOverflow(page);
 
+  await page.getByLabel("Email").focus();
+  await page.setViewportSize({ height: 500, width: 390 });
+  const requestAccess = page.getByRole("button", { name: "Request access" });
+  await requestAccess.scrollIntoViewIfNeeded();
+  await expectWithinViewport(page, requestAccess);
+  await expectNoHorizontalOverflow(page);
+  await page.setViewportSize({ height: 844, width: 390 });
+
   await page.goto("/login?invite=browser-evidence-invite-token");
   await expect(page.getByRole("heading", { level: 1, name: "Create your account" })).toBeVisible();
   await expect(page.getByLabel("Name")).toHaveAttribute("autocomplete", "name");
@@ -165,6 +173,24 @@ test("keeps request and invite registration actions inside a 1280x720 auth panel
   await expectWithinViewport(page, page.getByRole("button", { name: "Create account" }));
   await expectWithinViewport(page, page.getByRole("button", { name: "Back to sign in" }));
   await expect(page.getByText("browser-evidence-invite-token")).toHaveCount(0);
+  await expectNoHorizontalOverflow(page);
+});
+
+test("keeps request and invite actions immediately reachable in short landscape", async ({ page }) => {
+  await page.setViewportSize({ height: 390, width: 844 });
+
+  await page.goto("/login");
+  await page.getByRole("button", { name: "Request access" }).click();
+  await expect(page.getByRole("heading", { level: 1, name: "Request access" })).toBeVisible();
+  await expectWithinViewport(page, page.getByRole("button", { name: "Request access" }));
+  await expectWithinViewport(page, page.getByRole("button", { name: "Back to sign in" }));
+  await expectNoHorizontalOverflow(page);
+
+  await page.goto("/login?invite=browser-landscape-invite-token");
+  await expect(page.getByRole("heading", { level: 1, name: "Create your account" })).toBeVisible();
+  await expectWithinViewport(page, page.getByRole("button", { name: "Create account" }));
+  await expectWithinViewport(page, page.getByRole("button", { name: "Back to sign in" }));
+  await expect(page.getByText("browser-landscape-invite-token")).toHaveCount(0);
   await expectNoHorizontalOverflow(page);
 });
 

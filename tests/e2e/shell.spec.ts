@@ -3075,7 +3075,9 @@ test("supports the default QSA chat and folder workflow", async ({ browser, page
   const shareHref = await page.getByTestId("share-link").getByRole("link").getAttribute("href");
   expect(shareHref).toBeTruthy();
 
-  const anonymousContext = await browser.newContext();
+  const anonymousContext = await browser.newContext({
+    viewport: { height: 844, width: 390 }
+  });
   const anonymousPage = await anonymousContext.newPage();
   try {
     const shareResponse = await anonymousPage.goto(shareHref!);
@@ -3096,6 +3098,7 @@ test("supports the default QSA chat and folder workflow", async ({ browser, page
     await expect(anonymousPage.getByRole("button", { name: "Share anonymously" })).toHaveCount(0);
     await expect(anonymousPage.getByRole("button", { name: "Edit message" })).toHaveCount(0);
     await expect(anonymousPage.getByRole("button", { name: "Open details" })).toHaveCount(0);
+    await expectNoHorizontalOverflow(anonymousPage);
 
     const shareRevocation = page.waitForResponse((response) => {
       const pathname = new URL(response.url()).pathname;
@@ -3112,6 +3115,7 @@ test("supports the default QSA chat and folder workflow", async ({ browser, page
       "Shared snapshot unavailable"
     );
     await expect(anonymousPage).not.toHaveURL(/\/login/);
+    await expectNoHorizontalOverflow(anonymousPage);
 
     const unknownShareResponse = await anonymousPage.goto("/s/unknown-token");
     expect(unknownShareResponse?.status()).toBe(404);
@@ -3122,6 +3126,7 @@ test("supports the default QSA chat and folder workflow", async ({ browser, page
       "operator@aiqsa.local"
     );
     await expect(anonymousPage).not.toHaveURL(/\/login/);
+    await expectNoHorizontalOverflow(anonymousPage);
     await expect.poll(async () => (await anonymousContext.request.get("/favicon.svg")).status()).toBe(200);
     await expect.poll(async () => (await anonymousContext.request.get("/favicon-alert.svg")).status()).toBe(200);
   } finally {

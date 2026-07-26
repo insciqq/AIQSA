@@ -171,6 +171,12 @@ Details is closed by default, opens as an overlay at all widths, and may be pinn
 
 Settings is a bounded workspace for Prompts, Appearance, and MCP & tools. On compact/short viewports it becomes one safe-area-aware sheet whose active task owns local scrolling; Prompts switches between separate library and editor views with an explicit Back action. Appearance is a divided comparison list, not a card grid. Dirty-close protection and nested confirmations remain visible parts of the quality contract.
 
+## Auth And Public Share Composition
+
+Auth uses one flat, spacious answer-paper workspace with a maximum width of 42rem. Product identity and orientation sit above the active task; the form is part of the page rather than a bordered, shadowed, or decorated card. Only the current sign-in, request, invite, verification, reset, pending, success, or error state appears. OAuth actions remain neutral alternatives to the single primary action.
+
+Public share is a reading surface, not a reduced private shell. A quiet workspace-rail header identifies AIQSA, shared-research context, and the immutable read-only state. The title, fixed-copy note, compact questions, and document-flow answers share the normal reading measure. Do not add a composer, private metadata, navigation into the installation, or promotional call to action. Empty and unavailable links remain plain terminal states.
+
 ## Control Center Composition
 
 The Control Center is an operational workspace, not a dashboard landing page. Navigation exposes only real destinations in this exact order: Personal — Providers, Usage; Team — Users, Groups, Model access, Invites, Access rules; Advanced — MCP servers, Email delivery, Safety. `Personal`, `Team`, and `Advanced` are visual group headings; they are not plans, modes, entitlements, disclosures, or synthetic routes.
