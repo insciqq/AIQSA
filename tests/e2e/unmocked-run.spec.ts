@@ -229,6 +229,18 @@ test("streams a new answer on the branch created by editing an answered question
     expect(run?.events.map((event) => event.eventType)).toEqual(
       expect.arrayContaining(["token", "usage", "done"])
     );
+
+    await page.getByRole("button", { name: "Conversation actions" }).click();
+    await page.getByRole("menuitem", { name: "Branch tree" }).click();
+    const branchTree = page.getByTestId("branch-tree");
+    await expect(branchTree).toBeVisible();
+    await expect(branchTree).toContainText("2 versions · 2 messages in the current version");
+
+    await branchTree.getByRole("button", { name: /^Open alternate version, user \d+$/ }).click();
+    await expect(page.getByTestId("thread")).toContainText(`Fake answer: ${prompt}`, { timeout: 10_000 });
+    await expect(page.getByTestId("thread")).not.toContainText(editedPrompt);
+    await expect(branchTree).toBeVisible();
+    await expect(branchTree).toContainText("2 versions · 2 messages in the current version");
   } finally {
     if (chatId) {
       await page.request.delete(`/api/chats/${chatId}`, { timeout: 5_000 }).catch(() => undefined);

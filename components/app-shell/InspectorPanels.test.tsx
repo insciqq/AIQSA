@@ -130,6 +130,50 @@ describe("DetailedInspector", () => {
     expect(onSelectBranch).toHaveBeenCalledWith("answer-a");
   });
 
+  it("reports a first-message edit as two versions with checkout to the original branch leaf", () => {
+    const onSelectBranch = vi.fn();
+    render(
+      <DetailedInspector
+        {...inspectorProps({
+          activeLeafId: "answer-edited",
+          messages: [
+            message("question-original", null, "user", "Original question"),
+            message("answer-original", "question-original", "assistant", "Original answer"),
+            message("question-edited", null, "user", "Edited question"),
+            message("answer-edited", "question-edited", "assistant", "Edited answer")
+          ],
+          onSelectBranch
+        })}
+      />
+    );
+
+    expect(screen.getByTestId("branch-tree")).toHaveTextContent(
+      "2 versions · 2 messages in the current version"
+    );
+    expect(screen.queryByText(/one version/)).not.toBeInTheDocument();
+    expect(screen.getAllByText("Open version")).toHaveLength(2);
+    expect(screen.getAllByText("Current path")).toHaveLength(1);
+    expect(screen.getAllByText("Branch version")).toHaveLength(2);
+    expect(screen.getAllByText("Current")).toHaveLength(1);
+
+    fireEvent.click(screen.getByRole("button", { name: "Open alternate version, user 1" }));
+    expect(onSelectBranch).toHaveBeenCalledWith("answer-original");
+  });
+
+  it("uses the singular message count for a one-message version", () => {
+    render(
+      <DetailedInspector
+        {...inspectorProps({
+          activeLeafId: "question-only",
+          messages: [message("question-only", null, "user", "Just asked")],
+          runId: null
+        })}
+      />
+    );
+
+    expect(screen.getByTestId("branch-tree")).toHaveTextContent("1 message · one version");
+  });
+
   it("keeps long event errors readable without truncating the message", () => {
     const longError = `Provider rejected the request: ${"nested/path/".repeat(18)}terminal`;
     render(

@@ -288,7 +288,7 @@ function BranchTree({
   const hasForks = branchTreeHasForks(messages);
   const activePathLength = nodes.filter((node) => node.activePath).length;
   const leafCount = nodes.filter((node) => node.childCount === 0).length;
-  const childCountByMessageId = new Map(nodes.map((node) => [node.message.id, node.childCount]));
+  const messageCountLabel = `${activePathLength} ${activePathLength === 1 ? "message" : "messages"}`;
 
   return (
     <section aria-labelledby="details-branch-heading" data-testid="branch-tree">
@@ -301,8 +301,8 @@ function BranchTree({
             {nodes.length === 0
               ? "No messages yet."
               : hasForks
-                ? `${leafCount} versions · ${activePathLength} messages in the current version`
-                : `${activePathLength} messages · one version`}
+                ? `${leafCount} versions · ${messageCountLabel} in the current version`
+                : `${messageCountLabel} · one version`}
           </p>
         </div>
       </div>
@@ -353,9 +353,7 @@ function BranchTree({
                   <span className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs font-medium text-ink-muted">
                     <span>{node.message.role === "user" ? "Question" : "Answer"}</span>
                     {node.childCount > 1 ? <span className="text-caution">Fork point · {node.childCount} choices</span> : null}
-                    {node.message.parentMessageId && (childCountByMessageId.get(node.message.parentMessageId) ?? 0) > 1 ? (
-                      <span className="text-proof">Branch version</span>
-                    ) : null}
+                    {node.forkChoice ? <span className="text-proof">Branch version</span> : null}
                   </span>
                   <span className="mt-1 block break-words text-[13px] leading-5 [display:-webkit-box] [overflow-wrap:anywhere] [-webkit-box-orient:vertical] [-webkit-line-clamp:3]">
                     {node.preview}
@@ -395,7 +393,7 @@ function BranchTree({
               key={node.message.id}
               title={streaming ? "Opening another version is disabled while a response is streaming" : node.preview}
               type="button"
-              onClick={() => onSelect(node.message.id)}
+              onClick={() => onSelect(node.checkoutLeafId)}
             >
               <span className="sr-only" id={`branch-node-${index + 1}-description`}>
                 {node.message.role === "user" ? "Question" : "Answer"}. {node.preview.replace(/[.!?]+$/, "")}.{" "}

@@ -5,8 +5,10 @@ import { getVisibleMessagePath } from "@/lib/domain/branching";
 export type BranchTreeNode = {
   active: boolean;
   activePath: boolean;
+  checkoutLeafId: string;
   childCount: number;
   depth: number;
+  forkChoice: boolean;
   message: ThreadMessage;
   preview: string;
   roleGlyph: "A" | "Q";
@@ -51,13 +53,26 @@ export function latestResumableRunId(thread: {
 }
 
 export function branchTreeHasForks(messages: ThreadMessage[]): boolean {
+  if (messages.filter((message) => !message.parentMessageId).length > 1) {
+    return true;
+  }
+
   const childCountById = childCounts(messages);
   return Array.from(childCountById.values()).some((count) => count > 1);
 }
 
 export function branchTreeNodes(messages: ThreadMessage[], activeLeafId: string | null): BranchTreeNode[] {
   const childCountById = childCounts(messages);
+  const rootCount = messages.filter((message) => !message.parentMessageId).length;
   const messagesById = new Map(messages.map((message) => [message.id, message]));
+  const childrenByParentId = new Map<string, ThreadMessage[]>();
+  for (const message of messages) {
+    if (message.parentMessageId) {
+      const siblings = childrenByParentId.get(message.parentMessageId) ?? [];
+      siblings.push(message);
+      childrenByParentId.set(message.parentMessageId, siblings);
+    }
+  }
   const activePathIds = new Set(visibleMessagePath(messages, activeLeafId).map((message) => message.id));
   const leafId = effectiveActiveLeafId(messages, activeLeafId);
   const depthById = new Map<string, number>();
@@ -74,11 +89,29 @@ export function branchTreeNodes(messages: ThreadMessage[], activeLeafId: string 
     return depth;
   }
 
+  function deepestBranchLeafId(message: ThreadMessage): string {
+    let current = message;
+    const visited = new Set<string>();
+    while (!visited.has(current.id)) {
+      visited.add(current.id);
+      const nextChild = childrenByParentId.get(current.id)?.at(-1);
+      if (!nextChild) {
+        break;
+      }
+      current = nextChild;
+    }
+    return current.id;
+  }
+
   return messages.map((message) => ({
     active: message.id === leafId,
     activePath: activePathIds.has(message.id),
+    checkoutLeafId: deepestBranchLeafId(message),
     childCount: childCountById.get(message.id) ?? 0,
     depth: depthFor(message),
+    forkChoice: message.parentMessageId
+      ? (childCountById.get(message.parentMessageId) ?? 0) > 1
+      : rootCount > 1,
     message,
     preview: plainTextPreview(textFromThreadContent(message.content)) || message.status,
     roleGlyph: message.role === "user" ? "Q" : "A"
