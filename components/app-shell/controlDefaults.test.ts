@@ -17,7 +17,8 @@ function model(input: Partial<CatalogModel> & Pick<CatalogModel, "modelId" | "pr
       nativeWebSearch: false,
       openRouterPerplexitySearch: false,
       reasoning: false,
-      streaming: false
+      streaming: false,
+      toolCalling: false
     },
     contextWindow: 128000,
     defaultParams: {},

@@ -1011,6 +1011,22 @@ describe("run preparation", () => {
     expect(harness.previewRequests).toHaveLength(0);
   });
 
+  it("skips the persisted MCP plan when the run explicitly suppresses tools", async () => {
+    const harness = createHarness({
+      capabilities: { ...baseCapabilities, toolCalling: false },
+      mcpPlan: readyMcpPlan()
+    });
+    const result = await prepareRun(
+      harness.deps,
+      sendInput(successBody({ tools: "none" }))
+    );
+    const prepared = preparedFrom(result);
+
+    expect(prepared.normalizedRequest.mcp).toBeUndefined();
+    expect(prepared.mcpBindings).toBeUndefined();
+    expect(harness.previewRequests[0]?.tools).toBeUndefined();
+  });
+
   it("accepts an MCP snapshot for a provider model with explicit effective tool capabilities", async () => {
     const mcpPlan = readyMcpPlan();
     const harness = createHarness({

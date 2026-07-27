@@ -639,7 +639,12 @@ export function MainThreadPane({
           sendDisabled={activeChatStreaming || uploading || creatingChat || editingMessagePending}
           stopDisabled={!currentRunId}
           streaming={activeChatStreaming}
-          tools={<McpComposerSummary onOpenSettings={openMcpSettings} />}
+          tools={(
+            <McpComposerSummary
+              onOpenSettings={openMcpSettings}
+              toolCallingSupported={currentModel?.capabilities.toolCalling}
+            />
+          )}
           uploading={uploading}
           contextLine={composerContextLine}
           usageStats={composerUsageStats}

@@ -17,7 +17,8 @@ const textOnlyModel: CatalogModel = {
     nativeWebSearch: false,
     openRouterPerplexitySearch: false,
     reasoning: false,
-    streaming: true
+    streaming: true,
+    toolCalling: false
   },
   contextWindow: 4096,
   defaultParams: {},

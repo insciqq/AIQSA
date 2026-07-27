@@ -66,7 +66,8 @@ describe("shell labels", () => {
       nativeWebSearch: true,
       openRouterPerplexitySearch: false,
       reasoning: true,
-      streaming: true
+      streaming: true,
+      toolCalling: true
     },
     contextWindow: 128000,
     defaultParams: {},

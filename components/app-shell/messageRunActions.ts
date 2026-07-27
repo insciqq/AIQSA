@@ -60,6 +60,10 @@ type MessageRunActionsInput = {
   activeChatStreaming: boolean;
 };
 
+function toolsOverride(model: CatalogModel | undefined): { tools: "none" } | Record<string, never> {
+  return model && !model.capabilities.toolCalling ? { tools: "none" } : {};
+}
+
 export function useMessageRunActions({
   activeChat,
   activeChatDetailLoading,
@@ -176,7 +180,8 @@ export function useMessageRunActions({
               system: renderLocalPromptTemplate(systemPrompt)
             },
             provider: selectedProvider,
-            searchStrategy: selectedSearchStrategy
+            searchStrategy: selectedSearchStrategy,
+            ...toolsOverride(currentModel)
           }),
           headers: {
             "content-type": "application/json"
@@ -504,7 +509,8 @@ export function useMessageRunActions({
                 system: renderLocalPromptTemplate(systemPrompt)
               },
               provider: selectedProvider,
-              searchStrategy: selectedSearchStrategy
+              searchStrategy: selectedSearchStrategy,
+              ...toolsOverride(currentModel)
             }),
             headers: {
               "content-type": "application/json"
@@ -636,7 +642,8 @@ export function useMessageRunActions({
               system: renderLocalPromptTemplate(systemPrompt)
             },
             provider: selectedProvider,
-            searchStrategy: selectedSearchStrategy
+            searchStrategy: selectedSearchStrategy,
+            ...toolsOverride(currentModel)
           }),
           headers: {
             "content-type": "application/json"

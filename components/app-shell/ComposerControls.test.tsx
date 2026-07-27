@@ -31,7 +31,8 @@ function catalogModel(modelId: string, displayName: string): CatalogModel {
       nativeWebSearch: true,
       openRouterPerplexitySearch: false,
       reasoning: true,
-      streaming: true
+      streaming: true,
+      toolCalling: true
     },
     contextWindow: 128_000,
     defaultParams: {},

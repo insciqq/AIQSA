@@ -28,7 +28,8 @@ const model: CatalogModel = {
     nativeWebSearch: true,
     openRouterPerplexitySearch: true,
     reasoning: true,
-    streaming: true
+    streaming: true,
+    toolCalling: true
   },
   contextWindow: 400000,
   defaultParams: {},
@@ -131,6 +132,7 @@ function useMessageRunActionsForTest(input: {
   ) => Promise<ChatSummary | null>;
   draft?: string;
   editingMessageId?: string | null;
+  model?: CatalogModel;
   pendingChatFolderId?: string | null;
   persistActiveLeaf?: (chatId: string, messageId: string | null) => Promise<unknown>;
   refreshActiveChat?: (
@@ -220,7 +222,7 @@ function useMessageRunActionsForTest(input: {
       flush: vi.fn(),
       push: vi.fn()
     }),
-    currentModel: model,
+    currentModel: input.model ?? model,
     fetchRun,
     notifyAnswerReady,
     persistActiveLeaf: input.persistActiveLeaf ?? vi.fn(async () => null),
@@ -377,6 +379,48 @@ describe("message run actions", () => {
 
     expect(fetchMock).not.toHaveBeenCalled();
     expect(actions.resetThreadToLatest).not.toHaveBeenCalled();
+  });
+
+  it("suppresses persisted MCP tools for a model without tool calling", async () => {
+    const fetchMock = vi.fn(async (..._args: unknown[]) => new Response("", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const actions = useMessageRunActionsForTest({
+      attachments: [],
+      draft: "Question for Fake QSA",
+      model: {
+        ...model,
+        capabilities: {
+          ...model.capabilities,
+          toolCalling: false
+        }
+      }
+    });
+
+    await actions.submitComposer();
+
+    const [, requestInit] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(JSON.parse(String(requestInit.body))).toMatchObject({ tools: "none" });
+  });
+
+  it("suppresses persisted MCP tools when regenerating with an unsupported model", async () => {
+    const fetchMock = vi.fn(async (..._args: unknown[]) => new Response("", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const actions = useMessageRunActionsForTest({
+      attachments: [],
+      model: {
+        ...model,
+        capabilities: {
+          ...model.capabilities,
+          toolCalling: false
+        }
+      }
+    });
+    prepareRegenerationThread();
+
+    await actions.regenerateMessage("assistant-original");
+
+    const [, requestInit] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(JSON.parse(String(requestInit.body))).toMatchObject({ tools: "none" });
   });
 
   it("restores the draft and skips run creation when pending checkout fails", async () => {

@@ -235,7 +235,8 @@ describe("usePowerAppShellViewModel", () => {
           nativeWebSearch: false,
           openRouterPerplexitySearch: false,
           reasoning: false,
-          streaming: true
+          streaming: true,
+          toolCalling: false
         },
         contextWindow: 1,
         defaultParams: {},
@@ -286,7 +287,8 @@ describe("usePowerAppShellViewModel", () => {
             nativeWebSearch: false,
             openRouterPerplexitySearch: false,
             reasoning: true,
-            streaming: true
+            streaming: true,
+            toolCalling: true
           },
           contextWindow: 1_050_000,
           defaultParams: {},
@@ -370,7 +372,8 @@ describe("usePowerAppShellViewModel", () => {
             nativeWebSearch: false,
             openRouterPerplexitySearch: false,
             reasoning: true,
-            streaming: true
+            streaming: true,
+            toolCalling: true
           },
           contextWindow: 8192,
           defaultParams: {},
@@ -432,7 +435,8 @@ describe("usePowerAppShellViewModel", () => {
             nativeWebSearch: false,
             openRouterPerplexitySearch: false,
             reasoning: true,
-            streaming: true
+            streaming: true,
+            toolCalling: true
           },
           contextWindow: 1_050_000,
           defaultParams: {},

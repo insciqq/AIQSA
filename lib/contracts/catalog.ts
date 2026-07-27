@@ -58,6 +58,7 @@ export type CatalogWireModelCapabilities = {
   reasoning: boolean;
   streaming: boolean;
   text: true;
+  toolCalling: boolean;
 };
 
 export type CatalogWireModel = {
@@ -228,6 +229,7 @@ function decodeCatalogModel(value: unknown): CatalogModel | null {
     typeof capabilities.openRouterPerplexitySearch !== "boolean" ||
     typeof capabilities.reasoning !== "boolean" ||
     typeof capabilities.streaming !== "boolean" ||
+    typeof capabilities.toolCalling !== "boolean" ||
     ("text" in capabilities && capabilities.text !== true)
   ) {
     return null;
@@ -241,7 +243,8 @@ function decodeCatalogModel(value: unknown): CatalogModel | null {
       nativeWebSearch: capabilities.nativeWebSearch,
       openRouterPerplexitySearch: capabilities.openRouterPerplexitySearch,
       reasoning: capabilities.reasoning,
-      streaming: capabilities.streaming
+      streaming: capabilities.streaming,
+      toolCalling: capabilities.toolCalling
     },
     contextWindow: value.contextWindow,
     defaultParams: value.defaultParams,

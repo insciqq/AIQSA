@@ -950,7 +950,9 @@ export async function prepareRun(
     return failure("search_provider_not_available", 400);
   }
 
-  const mcpPlan = deps.mcp ? await deps.mcp.prepare(input.userId) : null;
+  const mcpPlan = deps.mcp && body?.tools !== "none"
+    ? await deps.mcp.prepare(input.userId)
+    : null;
   if (mcpPlan && !mcpPlan.ok) {
     const affected = mcpPlan.issues.map((issue) => issue.name).join(", ");
     return failure(

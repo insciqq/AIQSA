@@ -202,6 +202,43 @@ describe("McpComposerSummary", () => {
     expect(screen.getByTestId("composer-mcp-summary")).toHaveAttribute("title", "Tools. Disabled");
   });
 
+  it("shows model support before enabled MCP readiness and restores it when the model changes", () => {
+    useMcpSettingsStore.setState({
+      loadState: "ready",
+      servers: [{
+        accountLabel: null,
+        description: "Memory",
+        enabled: true,
+        errorCode: null,
+        fields: [],
+        id: "memory",
+        knownToolCount: 1,
+        name: "Memory",
+        oauthAvailable: false,
+        oauthState: null,
+        readiness: "ready",
+        tools: [{ description: null, name: "remember" }]
+      }]
+    });
+
+    const { rerender } = render(
+      <McpComposerSummary onOpenSettings={vi.fn()} toolCallingSupported={false} />
+    );
+
+    expect(screen.getByText("Not supported by this model")).toBeVisible();
+    expect(screen.getByTestId("composer-mcp-summary")).toHaveAttribute(
+      "title",
+      "Tools. Not supported by this model"
+    );
+    expect(screen.queryByText("Enabled")).not.toBeInTheDocument();
+    expect(screen.queryByText("1 tool ready")).not.toBeInTheDocument();
+
+    rerender(<McpComposerSummary onOpenSettings={vi.fn()} toolCallingSupported />);
+
+    expect(screen.getByText("Enabled", { selector: "[data-resource-availability]" })).toBeVisible();
+    expect(screen.getByText("1 tool ready")).toBeVisible();
+  });
+
   it("keeps an initial load failure distinct from an empty catalog", async () => {
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("offline")));
 

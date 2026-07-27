@@ -58,6 +58,7 @@ describe("catalog capability matrix", () => {
       supported: true
     });
     expect(buildCatalogModel(model!, defaultSearchStrategies).capabilities.streaming).toBe(true);
+    expect(buildCatalogModel(model!, defaultSearchStrategies).capabilities.toolCalling).toBe(true);
   });
 
   it("publishes the GPT-5.6 family with its exact limits and model-specific reasoning controls", () => {

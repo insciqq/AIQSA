@@ -7,6 +7,7 @@ export type MatrixModel = {
     openRouterPerplexitySearch: boolean;
     reasoning: boolean;
     streaming: boolean;
+    toolCalling: boolean;
   };
   contextWindow: number;
   defaultParams: Record<string, unknown>;
@@ -67,7 +68,8 @@ function matrixModel(input: {
       nativeWebSearch: input.provider === "openai",
       openRouterPerplexitySearch: true,
       reasoning: true,
-      streaming: true
+      streaming: true,
+      toolCalling: true
     },
     contextWindow: 200000,
     defaultParams: {

@@ -28,9 +28,11 @@ function attentionLabel(input: {
 }
 
 export function McpComposerSummary({
-  onOpenSettings
+  onOpenSettings,
+  toolCallingSupported = true
 }: Readonly<{
   onOpenSettings(): void;
+  toolCallingSupported?: boolean;
 }>) {
   const loadState = useMcpSettingsStore((state) => state.loadState);
   const servers = useMcpSettingsStore((state) => state.servers);
@@ -64,7 +66,9 @@ export function McpComposerSummary({
   const knownToolCount = enabled.reduce((count, server) => count + server.knownToolCount, 0);
   const overToolLimit = knownToolCount > MCP_RUN_PLAN_LIMITS.maxTools;
 
-  const label = loadState === "loading" && servers.length === 0
+  const label = !toolCallingSupported
+    ? "Not supported by this model"
+    : loadState === "loading" && servers.length === 0
     ? "Loading…"
     : loadState === "error" && servers.length === 0
       ? "Unavailable"
@@ -74,7 +78,9 @@ export function McpComposerSummary({
           ? "Disabled"
           : `${ready.length}/${enabled.length} ready · ${readyTools} tool${readyTools === 1 ? "" : "s"}`;
 
-  const lifecycleLabel = loadState === "loading" && servers.length === 0
+  const lifecycleLabel = !toolCallingSupported
+    ? "Not supported by this model"
+    : loadState === "loading" && servers.length === 0
     ? "Loading…"
     : loadState === "error" && servers.length === 0
       ? "Unavailable"
@@ -83,7 +89,7 @@ export function McpComposerSummary({
         : enabled.length === 0
           ? "Disabled"
           : "Enabled";
-  const primaryRunLabel = enabled.length === 0
+  const primaryRunLabel = !toolCallingSupported || enabled.length === 0
     ? null
     : attentionCount > 0
       ? attentionLabel({
@@ -97,10 +103,10 @@ export function McpComposerSummary({
         : readyTools > 0
           ? `${readyTools} tool${readyTools === 1 ? "" : "s"} ready`
           : "0 tools ready";
-  const activatingDetail = activating.length > 0 && primaryRunLabel !== "Activating"
+  const activatingDetail = toolCallingSupported && activating.length > 0 && primaryRunLabel !== "Activating"
     ? `${activating.length} activating`
     : null;
-  const lifecycleTone = loadState === "error" && servers.length === 0
+  const lifecycleTone = toolCallingSupported && loadState === "error" && servers.length === 0
     ? "text-critical"
     : "text-ink-muted";
   const runTruthTone = failedCount > 0
@@ -111,13 +117,17 @@ export function McpComposerSummary({
         ? "text-proof"
         : "text-ink-muted";
   const titleParts = [label];
-  if (activating.length > 0) titleParts.push(`${activating.length} activating`);
-  if (setupCount > 0) titleParts.push(`${setupCount} ${setupCount === 1 ? "needs" : "need"} setup`);
-  if (authorizationCount > 0) {
+  if (toolCallingSupported && activating.length > 0) titleParts.push(`${activating.length} activating`);
+  if (toolCallingSupported && setupCount > 0) {
+    titleParts.push(`${setupCount} ${setupCount === 1 ? "needs" : "need"} setup`);
+  }
+  if (toolCallingSupported && authorizationCount > 0) {
     titleParts.push(`${authorizationCount} ${authorizationCount === 1 ? "needs" : "need"} authorization`);
   }
-  if (failedCount > 0) titleParts.push(`${failedCount} activation${failedCount === 1 ? "" : "s"} failed`);
-  if (overToolLimit) titleParts.push("Tool limit exceeded");
+  if (toolCallingSupported && failedCount > 0) {
+    titleParts.push(`${failedCount} activation${failedCount === 1 ? "" : "s"} failed`);
+  }
+  if (toolCallingSupported && overToolLimit) titleParts.push("Tool limit exceeded");
 
   return (
     <button
@@ -127,7 +137,9 @@ export function McpComposerSummary({
       type="button"
       title={`Tools. ${titleParts.join(". ")}`}
     >
-      {loadState === "loading" ? (
+      {!toolCallingSupported ? (
+        <Wrench className="size-3.5 shrink-0 text-ink-muted" aria-hidden="true" />
+      ) : loadState === "loading" ? (
         <LoaderCircle className="size-3.5 shrink-0 animate-spin text-proof" aria-hidden="true" />
       ) : attentionCount > 0 || overToolLimit || loadState === "error" ? (
         <CircleAlert
@@ -144,7 +156,7 @@ export function McpComposerSummary({
         <span className="block truncate text-xs">
           <span
             className={lifecycleTone}
-            data-resource-availability={servers.length > 0 ? enabled.length > 0 ? "enabled" : "disabled" : undefined}
+            data-resource-availability={toolCallingSupported && servers.length > 0 ? enabled.length > 0 ? "enabled" : "disabled" : undefined}
           >
             {lifecycleLabel}
           </span>

@@ -179,7 +179,8 @@ export function buildCatalogModel(
       openRouterPerplexitySearch,
       reasoning: model.capabilities.reasoning,
       streaming: model.capabilities.streaming,
-      text: true
+      text: true,
+      toolCalling: model.capabilities.toolCalling === true
     },
     contextWindow: model.contextWindow,
     defaultParams,

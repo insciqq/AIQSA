@@ -28,7 +28,8 @@ function validResponse(): CatalogResponse {
             openRouterPerplexitySearch: false,
             reasoning: true,
             streaming: true,
-            text: true
+            text: true,
+            toolCalling: true
           },
           contextWindow: 128_000,
           defaultParams: {},
@@ -97,7 +98,8 @@ describe("catalog wire contract", () => {
       models: [
         {
           capabilities: {
-            documentInputMode: "none"
+            documentInputMode: "none",
+            toolCalling: true
           },
           modelId: "deployment-test",
           provider: "connection-test",
@@ -178,6 +180,15 @@ describe("catalog wire contract", () => {
       catalog: { models: { capabilities: { documentInputMode: string } }[] };
     };
     response.catalog.models[0].capabilities.documentInputMode = "provider_magic";
+
+    expect(decodeCatalogResponse(response)).toBeNull();
+  });
+
+  it("requires the model tool-calling capability", () => {
+    const response = validResponse() as unknown as {
+      catalog: { models: { capabilities: Record<string, unknown> }[] };
+    };
+    delete response.catalog.models[0].capabilities.toolCalling;
 
     expect(decodeCatalogResponse(response)).toBeNull();
   });

@@ -17,7 +17,8 @@ const model: CatalogModel = {
     nativeWebSearch: true,
     openRouterPerplexitySearch: true,
     reasoning: true,
-    streaming: true
+    streaming: true,
+    toolCalling: true
   },
   contextWindow: 400000,
   defaultParams: {

@@ -485,7 +485,8 @@ describe("workspace actions", () => {
             nativeWebSearch: false,
             openRouterPerplexitySearch: false,
             reasoning: false,
-            streaming: true
+            streaming: true,
+            toolCalling: false
           },
           contextWindow: 8_192,
           defaultParams: {},
