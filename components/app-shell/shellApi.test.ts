@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ChatDetailWire, ChatMessageWire } from "@/lib/contracts/chats";
 import {
   chatDetailFromApi,
@@ -6,10 +6,66 @@ import {
   isSseParseError,
   messageIdsFromEvent,
   parseSseBlock,
+  resetSessionExpiredSignalForTest,
   runIdFromEvent,
+  sessionExpiredLoginHref,
+  shellFetch,
   sseParseWarningEvent,
+  subscribeToSessionExpired,
   tokenDeltaFromEvent
 } from "./shellApi";
+
+afterEach(() => {
+  resetSessionExpiredSignalForTest();
+  vi.restoreAllMocks();
+});
+
+describe("shell HTTP session handling", () => {
+  it("raises one sticky session-expired signal for concurrent 401 responses", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      Response.json({ error: "unauthorized" }, { status: 401 })
+    );
+    const firstListener = vi.fn();
+    subscribeToSessionExpired(firstListener);
+
+    const [first, second] = await Promise.all([
+      shellFetch("/api/chats"),
+      shellFetch("/api/me/mcp")
+    ]);
+
+    expect(first.status).toBe(401);
+    expect(second.status).toBe(401);
+    expect(firstListener).toHaveBeenCalledOnce();
+    expect(firstListener).toHaveBeenCalledWith("session_expired");
+
+    const lateListener = vi.fn();
+    subscribeToSessionExpired(lateListener);
+    expect(lateListener).toHaveBeenCalledOnce();
+    expect(lateListener).toHaveBeenCalledWith("session_expired");
+  });
+
+  it("does not signal for authenticated authorization and server failures", async () => {
+    vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(Response.json({ error: "forbidden" }, { status: 403 }))
+      .mockResolvedValueOnce(Response.json({ error: "failed" }, { status: 500 }));
+    const listener = vi.fn();
+    subscribeToSessionExpired(listener);
+
+    await shellFetch("/api/admin");
+    await shellFetch("/api/chats");
+
+    expect(listener).not.toHaveBeenCalled();
+  });
+
+  it("builds a login handoff with only a safe internal destination", () => {
+    expect(sessionExpiredLoginHref("/chat?settings=mcp#tools")).toBe(
+      "/login?next=%2Fchat%3Fsettings%3Dmcp%23tools&reason=session_expired"
+    );
+    expect(sessionExpiredLoginHref("https://evil.example/steal")).toBe(
+      "/login?next=%2F&reason=session_expired"
+    );
+  });
+});
 
 function message(overrides: Partial<ChatMessageWire> = {}): ChatMessageWire {
   return {

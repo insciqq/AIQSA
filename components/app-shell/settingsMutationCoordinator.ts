@@ -1,4 +1,5 @@
 import { responseErrorMessage } from "@/components/app-shell/shellFormatting";
+import { shellFetch } from "@/components/app-shell/shellApi";
 import type { CatalogDefaults } from "@/lib/contracts/catalog";
 import {
   decodeUpdateSettingsResponse,
@@ -125,7 +126,7 @@ function requestBody(patch: SettingsDefaultsPatch): Record<string, unknown> {
 export async function sendSettingsDefaultsPatch(
   patch: SettingsDefaultsPatch
 ): Promise<UserSettingsWire> {
-  const response = await fetch("/api/me/settings", {
+  const response = await shellFetch("/api/me/settings", {
     body: JSON.stringify(requestBody(patch)),
     headers: {
       "content-type": "application/json"

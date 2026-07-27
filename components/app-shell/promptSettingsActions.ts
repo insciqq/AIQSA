@@ -3,6 +3,7 @@ import {
   type PromptEditorDraft,
   usePromptSettingsStore
 } from "@/components/app-shell/promptSettingsStore";
+import { shellFetch } from "@/components/app-shell/shellApi";
 import { errorMessage, responseErrorMessage } from "@/components/app-shell/shellFormatting";
 import type { Catalog, Notice, PromptPreset } from "@/components/app-shell/types";
 import { useCallback, useRef } from "react";
@@ -138,7 +139,7 @@ export function usePromptSettingsActions({
 
     usePromptSettingsStore.getState().setPromptSaving(true);
     try {
-      const response = await fetch("/api/prompts", {
+      const response = await shellFetch("/api/prompts", {
         body: JSON.stringify({
           developerPrompt: settingsPromptEditor.developerPrompt,
           name,
@@ -184,7 +185,7 @@ export function usePromptSettingsActions({
 
     usePromptSettingsStore.getState().setPromptSaving(true);
     try {
-      const response = await fetch(`/api/prompts/${settingsPromptEditor.id}`, {
+      const response = await shellFetch(`/api/prompts/${settingsPromptEditor.id}`, {
         body: JSON.stringify({
           developerPrompt: settingsPromptEditor.developerPrompt,
           name: settingsPromptEditor.name,
@@ -227,7 +228,7 @@ export function usePromptSettingsActions({
 
     usePromptSettingsStore.getState().setPromptSaving(true);
     try {
-      const response = await fetch("/api/prompts", {
+      const response = await shellFetch("/api/prompts", {
         body: JSON.stringify({
           developerPrompt: prompt.developerPrompt ?? "",
           name: `${prompt.name} copy`,
@@ -305,7 +306,7 @@ export function usePromptSettingsActions({
 
     usePromptSettingsStore.getState().setPromptSaving(true);
     try {
-      const response = await fetch(`/api/prompts/${prompt.id}`, {
+      const response = await shellFetch(`/api/prompts/${prompt.id}`, {
         method: "DELETE"
       });
 

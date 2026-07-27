@@ -11,6 +11,66 @@ import type {
   ChatMessageWire,
   WorkspaceChatSummaryWire
 } from "@/lib/contracts/chats";
+import { safeInternalPath } from "@/lib/auth/internalPath";
+import {
+  CLIENT_SESSION_EXPIRED_CODE,
+  clientSessionErrorFromStatus,
+  type ClientSessionErrorCode
+} from "@/lib/contracts/http";
+
+type SessionExpiredListener = (code: ClientSessionErrorCode) => void;
+
+const sessionExpiredListeners = new Set<SessionExpiredListener>();
+let sessionExpiredSignaled = false;
+
+function signalSessionExpired(code: ClientSessionErrorCode): void {
+  if (sessionExpiredSignaled) {
+    return;
+  }
+
+  sessionExpiredSignaled = true;
+  for (const listener of sessionExpiredListeners) {
+    listener(code);
+  }
+}
+
+export function subscribeToSessionExpired(listener: SessionExpiredListener): () => void {
+  sessionExpiredListeners.add(listener);
+  if (sessionExpiredSignaled) {
+    listener(CLIENT_SESSION_EXPIRED_CODE);
+  }
+
+  return () => {
+    sessionExpiredListeners.delete(listener);
+  };
+}
+
+export async function shellFetch(
+  input: RequestInfo | URL,
+  init?: RequestInit
+): Promise<Response> {
+  const response = init === undefined
+    ? await fetch(input)
+    : await fetch(input, init);
+  const sessionError = clientSessionErrorFromStatus(response.status);
+  if (sessionError) {
+    signalSessionExpired(sessionError);
+  }
+  return response;
+}
+
+export function sessionExpiredLoginHref(destination: string): string {
+  const query = new URLSearchParams({
+    next: safeInternalPath(destination),
+    reason: CLIENT_SESSION_EXPIRED_CODE
+  });
+  return `/login?${query.toString()}`;
+}
+
+export function resetSessionExpiredSignalForTest(): void {
+  sessionExpiredListeners.clear();
+  sessionExpiredSignaled = false;
+}
 
 export function parseSseBlock(block: string): RunEventView | null {
   const lines = block.split("\n");

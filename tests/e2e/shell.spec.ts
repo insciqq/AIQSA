@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { PrismaClient } from "@prisma/client";
 import { expect, test, type BrowserContext, type Route } from "@playwright/test";
+import { DEFAULT_BOOTSTRAP_USER_ID } from "../../lib/server/auth/config";
 import { hashPassword } from "../../lib/server/auth/password";
 import {
   expectCenterUnobscured,
@@ -325,6 +326,45 @@ test("signs out from the authenticated account menu and clears the session", asy
   await expect(page.getByRole("heading", { level: 1, name: "Sign in" })).toBeVisible();
   await page.goto("/");
   await expect(page).toHaveURL(/\/login(?:\?|$)/);
+});
+
+test("returns through login with the active draft after the session is revoked", async ({ page }) => {
+  const destination = "/?reauth=417#draft";
+  const draft = "Preserve this question across re-authentication";
+  await signIn(page);
+  await page.goto(destination);
+  await expect(page.getByTestId("app-shell")).toBeVisible();
+
+  const composer = page.getByRole("textbox", { name: "Message" });
+  await composer.fill(draft);
+  const revokeResponse = await page.request.post("/api/admin/action", {
+    data: {
+      action: "revoke_user_sessions",
+      userId: DEFAULT_BOOTSTRAP_USER_ID
+    }
+  });
+  expect(revokeResponse.ok()).toBe(true);
+
+  await Promise.all([
+    page.waitForURL(/\/login\?/),
+    composer.press("Enter")
+  ]);
+  const loginUrl = new URL(page.url());
+  expect(loginUrl.searchParams.get("next")).toBe(destination);
+  expect(loginUrl.searchParams.get("reason")).toBe("session_expired");
+  await expect(page.getByRole("alert").filter({ hasText: "Your session ended" })).toContainText(
+    "Your session ended or was revoked. Sign in again to continue."
+  );
+
+  await page.getByLabel("Email").fill("operator@aiqsa.local");
+  await page.getByRole("textbox", { name: "Password" }).fill("AIQSA-local-2026!");
+  await Promise.all([
+    page.waitForURL((url) => `${url.pathname}${url.search}${url.hash}` === destination),
+    page.getByRole("button", { name: "Sign in" }).click()
+  ]);
+
+  await expect(page.getByTestId("app-shell")).toBeVisible();
+  await expect(page.getByRole("textbox", { name: "Message" })).toHaveValue(draft);
 });
 
 test("closes Account and restores compact navigation focus across the desktop breakpoint", async ({ page }) => {

@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { shellFetch } from "@/components/app-shell/shellApi";
 import { errorMessage } from "@/components/app-shell/shellFormatting";
 import type { Notice } from "@/components/app-shell/types";
 import { decodeWorkspaceChatsResponse } from "@/lib/contracts/chats";
@@ -27,7 +28,7 @@ export function useChatContentSearch(setNotice: (notice: Notice) => void) {
     const controller = new AbortController();
     const timer = window.setTimeout(async () => {
       try {
-        const response = await fetch(`/api/chats?q=${encodeURIComponent(query)}`, {
+        const response = await shellFetch(`/api/chats?q=${encodeURIComponent(query)}`, {
           signal: controller.signal
         });
         if (!response.ok) {

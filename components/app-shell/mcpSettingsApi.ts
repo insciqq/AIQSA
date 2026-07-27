@@ -1,3 +1,4 @@
+import { shellFetch } from "@/components/app-shell/shellApi";
 import type {
   McpReadiness,
   McpSlotValue,
@@ -140,7 +141,7 @@ async function responseJson(response: Response): Promise<unknown> {
 }
 
 export async function loadUserMcpServers(signal?: AbortSignal): Promise<UserMcpServer[]> {
-  const response = await fetch("/api/me/mcp", {
+  const response = await shellFetch("/api/me/mcp", {
     cache: "no-store",
     credentials: "same-origin",
     headers: { accept: "application/json" },
@@ -159,7 +160,7 @@ export async function updateUserMcpServer(
   serverId: string,
   body: UserMcpUpdateRequest
 ): Promise<UserMcpServer> {
-  const response = await fetch(`/api/me/mcp/${encodeURIComponent(serverId)}`, {
+  const response = await shellFetch(`/api/me/mcp/${encodeURIComponent(serverId)}`, {
     body: JSON.stringify(body),
     credentials: "same-origin",
     headers: { accept: "application/json", "content-type": "application/json" },
@@ -175,7 +176,7 @@ export async function updateUserMcpServer(
 }
 
 export async function disconnectUserMcpServer(serverId: string): Promise<"disconnected" | "disconnecting"> {
-  const response = await fetch(`/api/me/mcp/${encodeURIComponent(serverId)}/oauth/disconnect`, {
+  const response = await shellFetch(`/api/me/mcp/${encodeURIComponent(serverId)}/oauth/disconnect`, {
     credentials: "same-origin",
     headers: { accept: "application/json" },
     method: "POST"

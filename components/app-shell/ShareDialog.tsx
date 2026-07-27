@@ -1,6 +1,7 @@
 "use client";
 
 import { responseErrorMessage, errorMessage } from "@/components/app-shell/shellFormatting";
+import { shellFetch } from "@/components/app-shell/shellApi";
 import type { ChatSummary } from "@/components/app-shell/types";
 import { writeClipboardText } from "@/components/clipboard/writeClipboardText";
 import { X } from "lucide-react";
@@ -100,7 +101,7 @@ export function ShareDialog({
     let stale = false;
     void (async () => {
       try {
-        const response = await fetch(`/api/chats/${chatId}/share`);
+        const response = await shellFetch(`/api/chats/${chatId}/share`);
         if (!response.ok) {
           throw new Error(await responseErrorMessage(response, `share_list_failed_${response.status}`));
         }
@@ -133,7 +134,7 @@ export function ShareDialog({
     setCreating(true);
     setActionError(null);
     try {
-      const response = await fetch(`/api/chats/${chatId}/share`, {
+      const response = await shellFetch(`/api/chats/${chatId}/share`, {
         body: JSON.stringify({
           activeLeafMessageId: target.activeLeafMessageId
         }),
@@ -211,7 +212,7 @@ export function ShareDialog({
     setRevokingIds((current) => new Set(current).add(linkId));
     setActionError(null);
     try {
-      const response = await fetch(`/api/shares/${linkId}/revoke`, {
+      const response = await shellFetch(`/api/shares/${linkId}/revoke`, {
         method: "POST"
       });
 

@@ -8,6 +8,7 @@ import {
 } from "@/components/app-shell/composerSessionStore";
 import { errorMessage } from "@/components/app-shell/shellFormatting";
 import { editMessageBranchAction } from "@/components/app-shell/messageEditAction";
+import { shellFetch } from "@/components/app-shell/shellApi";
 import {
   executeMessageRunLifecycle,
   type ConsumeMessageRunStream
@@ -169,7 +170,7 @@ export function useMessageRunActions({
       },
       refreshActiveChat,
       request(signal) {
-        return fetch(`/api/messages/${editedUserMessageId}/regenerate`, {
+        return shellFetch(`/api/messages/${editedUserMessageId}/regenerate`, {
           body: JSON.stringify({
             modelId: selectedModelId,
             controlDefaults: buildControlDraft(),
@@ -494,7 +495,7 @@ export function useMessageRunActions({
         },
         refreshActiveChat,
         request(signal) {
-          return fetch(`/api/chats/${chatIdForSend}/messages`, {
+          return shellFetch(`/api/chats/${chatIdForSend}/messages`, {
             body: JSON.stringify({
               content: {
                 blocks: contentBlocks
@@ -631,7 +632,7 @@ export function useMessageRunActions({
       },
       refreshActiveChat,
       request(signal) {
-        return fetch(`/api/messages/${messageId}/regenerate`, {
+        return shellFetch(`/api/messages/${messageId}/regenerate`, {
           body: JSON.stringify({
             modelId: selectedModelId,
             controlDefaults: buildControlDraft(),

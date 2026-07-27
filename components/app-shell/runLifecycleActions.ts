@@ -1,4 +1,5 @@
 import { useComposerSessionStore } from "@/components/app-shell/composerSessionStore";
+import { shellFetch } from "@/components/app-shell/shellApi";
 import { errorMessage } from "@/components/app-shell/shellFormatting";
 import { isRecord } from "@/components/app-shell/shellValues";
 import { textFromThreadContent } from "@/components/app-shell/threadContent";
@@ -87,7 +88,7 @@ export function useRunLifecycleActions({
         try {
           const formData = new FormData();
           formData.append("file", file);
-          const response = await fetch("/api/uploads", {
+          const response = await shellFetch("/api/uploads", {
             body: formData,
             method: "POST"
           });
@@ -126,7 +127,7 @@ export function useRunLifecycleActions({
   async function fetchRunOutcome(runId: string, chatId: string): Promise<RunFetchOutcome> {
     const surfaceAtRequest = selectRunSurface(useRunSurfaceStore.getState(), chatId);
     try {
-      const response = await fetch(`/api/model-runs/${runId}`);
+      const response = await shellFetch(`/api/model-runs/${runId}`);
       if (!response.ok) {
         return response.status === 404 ? { kind: "not_found" } : { kind: "unknown" };
       }
@@ -276,7 +277,7 @@ export function useRunLifecycleActions({
 
     if (runId) {
       try {
-        const response = await fetch(`/api/model-runs/${runId}/cancel`, {
+        const response = await shellFetch(`/api/model-runs/${runId}/cancel`, {
           method: "POST"
         });
         const result = decodeCancelModelRunResponse(await response.json());

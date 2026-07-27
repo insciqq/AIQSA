@@ -1,4 +1,4 @@
-import { chatSummaryFromApi } from "@/components/app-shell/shellApi";
+import { chatSummaryFromApi, shellFetch } from "@/components/app-shell/shellApi";
 import { errorMessage, responseErrorMessage } from "@/components/app-shell/shellFormatting";
 import { textFromThreadContent } from "@/components/app-shell/threadContent";
 import {
@@ -152,7 +152,7 @@ export function createThreadActions({
     }
 
     try {
-      const response = await fetch(`/api/messages/${messageId}/branch-chat`, {
+      const response = await shellFetch(`/api/messages/${messageId}/branch-chat`, {
         method: "POST"
       });
 
@@ -194,7 +194,7 @@ export function createThreadActions({
       return chat;
     }
 
-    const response = await fetch(`/api/chats/${chatId}`, {
+    const response = await shellFetch(`/api/chats/${chatId}`, {
       body: JSON.stringify({
         activeLeafMessageId: messageId
       }),
@@ -329,7 +329,7 @@ export function createThreadActions({
     }
 
     try {
-      const response = await fetch(`/api/messages/${messageId}`, {
+      const response = await shellFetch(`/api/messages/${messageId}`, {
         method: "DELETE"
       });
 

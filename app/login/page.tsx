@@ -13,6 +13,7 @@ type LoginPageProps = {
     next?: string;
     oauth?: string;
     provider?: string;
+    reason?: string;
     reset?: string;
     verify?: string;
   }>;
@@ -33,6 +34,7 @@ export default async function LoginPage({ searchParams }: LoginPageProps) {
       oauthProvider={isOAuthProviderId(params.provider) ? params.provider : undefined}
       oauthProviders={oauthProviders}
       resetToken={params.reset}
+      sessionExpired={params.reason === "session_expired"}
       verifyToken={params.verify}
     />
   );

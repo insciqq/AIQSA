@@ -3,6 +3,7 @@ import {
   composerSessionKey,
   useComposerSessionStore
 } from "@/components/app-shell/composerSessionStore";
+import { shellFetch } from "@/components/app-shell/shellApi";
 import type { ChatSummary, FolderSummary, Notice } from "@/components/app-shell/types";
 import type { WorkspaceFolderMutationPort } from "@/components/app-shell/useWorkspaceInteractionController";
 import { sortFoldersByOrder, useWorkspaceStore } from "@/components/app-shell/workspaceStore";
@@ -30,7 +31,7 @@ export function createFolderActions({
 
     folderMutation.beginCreate();
     try {
-      const response = await fetch("/api/folders", {
+      const response = await shellFetch("/api/folders", {
         body: JSON.stringify({
           name,
           ...(parentId !== undefined ? { parentId } : {})
@@ -73,7 +74,7 @@ export function createFolderActions({
 
     folderMutation.beginAction(folder.id);
     try {
-      const response = await fetch(`/api/folders/${folder.id}`, {
+      const response = await shellFetch(`/api/folders/${folder.id}`, {
         body: JSON.stringify({ name }),
         headers: {
           "content-type": "application/json"
@@ -117,7 +118,7 @@ export function createFolderActions({
 
     folderMutation.beginAction(folder.id);
     try {
-      const response = await fetch(`/api/folders/${folder.id}`, {
+      const response = await shellFetch(`/api/folders/${folder.id}`, {
         method: "DELETE"
       });
 
@@ -167,7 +168,7 @@ export function createFolderActions({
   async function updateFolderParent(folder: FolderSummary, parentId: string | null) {
     folderMutation.beginAction(folder.id);
     try {
-      const response = await fetch(`/api/folders/${folder.id}`, {
+      const response = await shellFetch(`/api/folders/${folder.id}`, {
         body: JSON.stringify({ parentId }),
         headers: {
           "content-type": "application/json"
@@ -203,7 +204,7 @@ export function createFolderActions({
   async function saveProjectSettings(folder: FolderSummary) {
     folderMutation.beginAction(folder.id);
     try {
-      const response = await fetch(`/api/folders/${folder.id}`, {
+      const response = await shellFetch(`/api/folders/${folder.id}`, {
         body: JSON.stringify({ projectMemory: folderMutation.projectMemoryDraft }),
         headers: {
           "content-type": "application/json"

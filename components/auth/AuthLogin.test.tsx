@@ -41,6 +41,14 @@ describe("AuthLogin", () => {
     expect(screen.getByLabelText("Email")).toHaveFocus();
   });
 
+  it("explains that an expired or revoked session requires another sign-in", () => {
+    render(<AuthLogin nextPath="/workspace" sessionExpired />);
+
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Your session ended or was revoked. Sign in again to continue. (session_expired)"
+    );
+  });
+
   it("shows only configured OAuth providers and preserves a safe internal destination", () => {
     render(
       <AuthLogin

@@ -1,17 +1,19 @@
 "use client";
 
+import { unsupportedAttachmentMessage } from "@/components/app-shell/attachmentCapabilities";
+import { reconcileCurrentComposerAttachments } from "@/components/app-shell/attachmentReconciliation";
 import {
   useComposerControlStore,
   type ComposerControlSnapshot
 } from "@/components/app-shell/composerControlStore";
 import {
-  unsupportedAttachmentMessage
-} from "@/components/app-shell/attachmentCapabilities";
-import { reconcileCurrentComposerAttachments } from "@/components/app-shell/attachmentReconciliation";
-import {
+  chatIdFromComposerSessionKey,
+  folderIdFromComposerSessionKey,
   selectActiveComposerSession,
+  selectComposerSession,
   useComposerSessionStore
 } from "@/components/app-shell/composerSessionStore";
+import { fallbackCatalogModel } from "@/components/app-shell/controlDefaults";
 import { createFolderActions } from "@/components/app-shell/folderActions";
 import { useMessageRunActions } from "@/components/app-shell/messageRunActions";
 import { PowerAppShellView } from "@/components/app-shell/PowerAppShellView";
@@ -39,6 +41,18 @@ import {
   useRunSurfaceStore
 } from "@/components/app-shell/runSurfaceStore";
 import {
+  sessionExpiredLoginHref,
+  shellFetch,
+  subscribeToSessionExpired
+} from "@/components/app-shell/shellApi";
+import { errorMessage } from "@/components/app-shell/shellFormatting";
+import {
+  clearSessionExpiredDraft,
+  rememberSessionExpiredDraft,
+  storedSessionExpiredDraft
+} from "@/components/app-shell/shellStorage";
+import type { SettingsMutationCoordinator } from "@/components/app-shell/settingsMutationCoordinator";
+import {
   createThreadActions,
   type BranchCheckoutSettlement
 } from "@/components/app-shell/threadActions";
@@ -62,11 +76,6 @@ import {
   selectThreadVisibleMessages,
   useThreadStore
 } from "@/components/app-shell/threadStore";
-import {
-  fallbackCatalogModel
-} from "@/components/app-shell/controlDefaults";
-import { errorMessage } from "@/components/app-shell/shellFormatting";
-import type { SettingsMutationCoordinator } from "@/components/app-shell/settingsMutationCoordinator";
 import type {
   Catalog,
   CatalogModel,
@@ -262,6 +271,36 @@ export function PowerAppShell({
   const catalogLoadPromiseRef = useRef<Promise<Catalog | null> | null>(null);
   const shellMountedRef = useRef(true);
   const workspaceRefreshPromiseRef = useRef<Promise<ChatDetail | null> | null>(null);
+  const sessionExpiredHandledRef = useRef(false);
+
+  useEffect(() => subscribeToSessionExpired(() => {
+    if (sessionExpiredHandledRef.current) {
+      return;
+    }
+
+    sessionExpiredHandledRef.current = true;
+    const composerState = useComposerSessionStore.getState();
+    const session = selectComposerSession(composerState, composerState.activeSessionKey);
+    const draft = session.pendingSend?.draft ?? session.draft;
+    if (accountEmail) {
+      rememberSessionExpiredDraft({
+        accountEmail,
+        draft,
+        savedAt: Date.now(),
+        sessionKey: composerState.activeSessionKey
+      });
+    } else {
+      clearSessionExpiredDraft();
+    }
+
+    setNotice({
+      kind: "error",
+      persistent: true,
+      text: "Your session ended. Sign in again to continue."
+    });
+    const destination = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+    window.location.assign(sessionExpiredLoginHref(destination));
+  }), [accountEmail]);
 
   useEffect(
     () => () => {
@@ -487,7 +526,7 @@ export function PowerAppShell({
       load: async () => {
         setCatalogError(null);
         try {
-          const response = await fetch("/api/me/catalog");
+          const response = await shellFetch("/api/me/catalog");
           if (!response.ok) {
             throw new Error("catalog_unavailable");
           }
@@ -546,6 +585,7 @@ export function PowerAppShell({
     });
   });
   const refreshWorkspaceEvent = useEventCallback(refreshWorkspace);
+  const activateBlankWorkspaceEvent = useEventCallback(activateBlankWorkspace);
   const retryWorkspace = useEventCallback(() =>
     refreshWorkspaceEvent(useWorkspaceStore.getState().activeChatId, {
       catalogOverride: useWorkspaceStore.getState().catalog
@@ -581,12 +621,51 @@ export function PowerAppShell({
     shellMountedRef.current = true;
 
     async function bootstrap() {
+      const recoveredDraft = storedSessionExpiredDraft();
+      const ownedRecoveredDraft = recoveredDraft?.accountEmail === accountEmail
+        ? recoveredDraft
+        : null;
+      if (recoveredDraft && !ownedRecoveredDraft) {
+        clearSessionExpiredDraft();
+      }
+      const recoveredChatId = ownedRecoveredDraft
+        ? chatIdFromComposerSessionKey(ownedRecoveredDraft.sessionKey)
+        : null;
       const loadedCatalog = await loadCatalog();
       if (shellMountedRef.current) {
-        await refreshWorkspaceEvent(useWorkspaceStore.getState().activeChatId, {
-          catalogOverride: loadedCatalog
+        await refreshWorkspaceEvent(
+          recoveredChatId ?? useWorkspaceStore.getState().activeChatId,
+          {
+            catalogOverride: loadedCatalog
+          }
+        );
+      }
+      if (!shellMountedRef.current || !ownedRecoveredDraft) {
+        return;
+      }
+
+      const recoveredFolderId = folderIdFromComposerSessionKey(ownedRecoveredDraft.sessionKey);
+      if (recoveredFolderId) {
+        if (!useWorkspaceStore.getState().folders.some((folder) => folder.id === recoveredFolderId)) {
+          clearSessionExpiredDraft();
+          return;
+        }
+        activateBlankWorkspaceEvent(recoveredFolderId);
+      } else if (!recoveredChatId) {
+        activateBlankWorkspaceEvent();
+      } else if (!useWorkspaceStore.getState().chats.some((chat) => chat.id === recoveredChatId)) {
+        clearSessionExpiredDraft();
+        return;
+      }
+
+      const composerState = useComposerSessionStore.getState();
+      const target = selectComposerSession(composerState, ownedRecoveredDraft.sessionKey);
+      if (!target.draft && !target.pendingSend && !target.pendingEdit) {
+        composerState.updateSession(ownedRecoveredDraft.sessionKey, {
+          draft: ownedRecoveredDraft.draft
         });
       }
+      clearSessionExpiredDraft();
     }
 
     void bootstrap();
@@ -594,7 +673,7 @@ export function PowerAppShell({
     return () => {
       shellMountedRef.current = false;
     };
-  }, [loadCatalog, refreshWorkspaceEvent]);
+  }, [accountEmail, activateBlankWorkspaceEvent, loadCatalog, refreshWorkspaceEvent]);
 
   const { commandItems, runCommand } = useCommandPaletteActions({
     activateChat,

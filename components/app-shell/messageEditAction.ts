@@ -1,4 +1,4 @@
-import { normalizeThreadStatus } from "@/components/app-shell/shellApi";
+import { normalizeThreadStatus, shellFetch } from "@/components/app-shell/shellApi";
 import { errorMessage, responseErrorMessage } from "@/components/app-shell/shellFormatting";
 import { textFromPersistedContent } from "@/components/app-shell/threadContent";
 import {
@@ -56,7 +56,7 @@ export async function editMessageBranchAction({
 
   let editedMessage: NonNullable<ReturnType<typeof decodeEditMessageResponse>>["message"];
   try {
-    const response = await fetch(`/api/messages/${editingMessageId}`, {
+    const response = await shellFetch(`/api/messages/${editingMessageId}`, {
       body: JSON.stringify({
         text
       }),

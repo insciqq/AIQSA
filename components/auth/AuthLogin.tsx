@@ -19,6 +19,7 @@ type AuthLoginProps = {
   oauthProvider?: OAuthProviderId;
   oauthProviders?: OAuthProviderId[];
   resetToken?: string;
+  sessionExpired?: boolean;
   verifyToken?: string;
 };
 
@@ -135,6 +136,22 @@ function oauthOutcomeMessage(
 
   return {
     error: `${messages[outcome]} (oauth_${outcome})`,
+    notice: null
+  };
+}
+
+function initialAuthFeedback(
+  sessionExpired: boolean | undefined,
+  outcome: OAuthLoginOutcome | undefined,
+  provider: OAuthProviderId | undefined
+): { error: string | null; notice: string | null } {
+  const oauthMessage = oauthOutcomeMessage(outcome, provider);
+  if (oauthMessage.error || oauthMessage.notice || !sessionExpired) {
+    return oauthMessage;
+  }
+
+  return {
+    error: "Your session ended or was revoked. Sign in again to continue. (session_expired)",
     notice: null
   };
 }
@@ -278,9 +295,10 @@ export function AuthLogin({
   oauthProvider,
   oauthProviders = [],
   resetToken,
+  sessionExpired,
   verifyToken
 }: AuthLoginProps) {
-  const initialOAuthMessage = oauthOutcomeMessage(oauthOutcome, oauthProvider);
+  const initialFeedback = initialAuthFeedback(sessionExpired, oauthOutcome, oauthProvider);
   const proofInputKey = JSON.stringify([verifyToken ?? null, resetToken ?? null, inviteToken ?? null]);
   const previousProofInputKeyRef = useRef(proofInputKey);
   const proofGenerationRef = useRef(0);
@@ -288,9 +306,9 @@ export function AuthLogin({
   const [activeProof, setActiveProof] = useState<ActiveAuthProof>(() =>
     initialAuthProof({ inviteToken, resetToken, verifyToken })
   );
-  const [error, setError] = useState<string | null>(initialOAuthMessage.error);
+  const [error, setError] = useState<string | null>(initialFeedback.error);
   const [mode, setMode] = useState<Mode>(() => modeForAuthProof(activeProof));
-  const [notice, setNotice] = useState<string | null>(initialOAuthMessage.notice);
+  const [notice, setNotice] = useState<string | null>(initialFeedback.notice);
   const [passwordVisible, setPasswordVisible] = useState(false);
   const [pendingAction, setPendingAction] = useState<PendingAction | null>(null);
   const [proofSessionGeneration, setProofSessionGeneration] = useState(0);
@@ -302,10 +320,10 @@ export function AuthLogin({
   const activeVerifyToken = activeProof?.kind === "verify" ? activeProof.token : null;
   const registerLabel = activeInviteToken ? "Create account" : "Request access";
   const submitting = pendingAction !== null;
-  const showInitialOAuthFeedback =
+  const showInitialAuthFeedback =
     mode === "password" &&
-    ((initialOAuthMessage.error !== null && error === initialOAuthMessage.error) ||
-      (initialOAuthMessage.notice !== null && notice === initialOAuthMessage.notice));
+    ((initialFeedback.error !== null && error === initialFeedback.error) ||
+      (initialFeedback.notice !== null && notice === initialFeedback.notice));
 
   useEffect(() => {
     if (proofInputKey === previousProofInputKeyRef.current) {
@@ -729,7 +747,7 @@ export function AuthLogin({
             </h1>
             <p className="mt-2 text-sm leading-6 text-ink-secondary [@media(max-height:32rem)]:!mt-1 [@media(max-height:32rem)]:!text-xs [@media(max-height:32rem)]:!leading-5">{screenCopy.description}</p>
 
-            {showInitialOAuthFeedback ? <AuthFeedback error={error} notice={notice} /> : null}
+            {showInitialAuthFeedback ? <AuthFeedback error={error} notice={notice} /> : null}
 
           {mode === "password" ? (
             <form aria-busy={submitting} className={formClassName} noValidate onSubmit={submitPassword}>
@@ -1109,7 +1127,7 @@ export function AuthLogin({
             </p>
           ) : null}
 
-          {!showInitialOAuthFeedback ? <AuthFeedback error={error} notice={notice} /> : null}
+          {!showInitialAuthFeedback ? <AuthFeedback error={error} notice={notice} /> : null}
           </div>
         </div>
       </section>

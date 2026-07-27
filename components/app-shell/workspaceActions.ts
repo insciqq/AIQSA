@@ -1,6 +1,7 @@
 import {
   chatDetailFromApi,
-  chatSummaryFromApi
+  chatSummaryFromApi,
+  shellFetch
 } from "@/components/app-shell/shellApi";
 import { fallbackCatalogModel } from "@/components/app-shell/controlDefaults";
 import { errorMessage, safeDownloadName } from "@/components/app-shell/shellFormatting";
@@ -207,7 +208,7 @@ export function useWorkspaceActions({
       .chats.find((candidate) => candidate.id === chatId);
     const request = (async () => {
       try {
-        const response = await fetch(`/api/chats/${chatId}`);
+        const response = await shellFetch(`/api/chats/${chatId}`);
         if (!response.ok) {
           throw new Error(`chat_detail_failed_${response.status}`);
         }
@@ -398,7 +399,7 @@ export function useWorkspaceActions({
     const request = (async () => {
       useWorkspaceStore.getState().setWorkspaceLoading(true);
       try {
-        const response = await fetch("/api/chats");
+        const response = await shellFetch("/api/chats");
         if (!response.ok) {
           throw new Error(`workspace_failed_${response.status}`);
         }
@@ -492,7 +493,7 @@ export function useWorkspaceActions({
   ) {
     useWorkspaceStore.getState().setCreatingChat(true);
     try {
-      const response = await fetch("/api/chats", {
+      const response = await shellFetch("/api/chats", {
         body: JSON.stringify({
           folderId
         }),
@@ -539,7 +540,7 @@ export function useWorkspaceActions({
 
   async function updateChatFolder(chatId: string, folderId: string | null) {
     try {
-      const response = await fetch(`/api/chats/${chatId}`, {
+      const response = await shellFetch(`/api/chats/${chatId}`, {
         body: JSON.stringify({ folderId }),
         headers: {
           "content-type": "application/json"
@@ -589,7 +590,7 @@ export function useWorkspaceActions({
     }
 
     try {
-      const response = await fetch(`/api/chats/${chat.id}`, {
+      const response = await shellFetch(`/api/chats/${chat.id}`, {
         method: "DELETE"
       });
 
@@ -631,7 +632,7 @@ export function useWorkspaceActions({
     }
 
     try {
-      const response = await fetch(`/api/chats/${chat.id}`, {
+      const response = await shellFetch(`/api/chats/${chat.id}`, {
         body: JSON.stringify({ title }),
         headers: {
           "content-type": "application/json"
@@ -714,7 +715,7 @@ export function useWorkspaceActions({
 
   async function toggleChatFavorite(chat: ChatSummary) {
     try {
-      const response = await fetch(`/api/chats/${chat.id}`, {
+      const response = await shellFetch(`/api/chats/${chat.id}`, {
         body: JSON.stringify({ pinned: !chat.pinned }),
         headers: {
           "content-type": "application/json"
