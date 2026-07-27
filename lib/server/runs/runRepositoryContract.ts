@@ -267,14 +267,14 @@ export type RunRepository = {
     staleBefore: Date;
   }): Promise<InstallationRecoverableRunRecord[]>;
   findRegenerationSource(
-    assistantMessageId: string,
+    sourceMessageId: string,
     userId: string
   ): Promise<{
     assistantMessage: {
       id: string;
       modelId: string | null;
       provider: string | null;
-    };
+    } | null;
     chat: {
       defaultModelId: string;
       defaultProvider: string;

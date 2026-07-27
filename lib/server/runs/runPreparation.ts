@@ -113,7 +113,7 @@ export type RegenerateRunPreparationSource = Readonly<{
     assistantMessage: Readonly<{
       modelId: string | null;
       provider: string | null;
-    }>;
+    }> | null;
     chat: Readonly<{
       defaultModelId: string;
       defaultProvider: string;
@@ -745,13 +745,13 @@ export async function prepareRun(
       ? body.provider
       : input.source.kind === "send"
         ? chat.defaultProvider
-        : input.source.source.assistantMessage.provider ?? chat.defaultProvider;
+        : input.source.source.assistantMessage?.provider ?? chat.defaultProvider;
   const selectedModelId =
     typeof body?.modelId === "string"
       ? body.modelId
       : input.source.kind === "send"
         ? chat.defaultModelId
-        : input.source.source.assistantMessage.modelId ?? chat.defaultModelId;
+        : input.source.source.assistantMessage?.modelId ?? chat.defaultModelId;
   const requestedSearchStrategy =
     typeof body?.searchStrategy === "string" ? body.searchStrategy : "search-disabled";
   let admissionPlan: ProviderAdmissionPlan | undefined;

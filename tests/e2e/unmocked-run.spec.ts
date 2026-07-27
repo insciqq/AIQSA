@@ -200,6 +200,42 @@ test("runs a fake-provider chat through real routes, Prisma, SSE, and Details", 
   }
 });
 
+test("streams a new answer on the branch created by editing an answered question", async ({ page }) => {
+  const titlePrefix = `${testTitlePrefix} edit branch ${Date.now()}`;
+  const prompt = `${titlePrefix} original`;
+  const editedPrompt = `${titlePrefix} edited`;
+  let chatId: string | null = null;
+
+  try {
+    await prepareFakeBlankChat(page);
+    await page.getByRole("textbox", { name: "Message" }).fill(prompt);
+    await page.getByRole("textbox", { name: "Message" }).press("Enter");
+    chatId = await waitForActiveChatId(page);
+    await expect(page.getByTestId("thread")).toContainText(`Fake answer: ${prompt}`, { timeout: 20_000 });
+    await expect(page.getByTestId("streaming-cursor")).toHaveCount(0, { timeout: 20_000 });
+
+    await page.getByRole("button", { name: "Edit message" }).first().click();
+    await expect(page.getByRole("textbox", { name: "Message" })).toHaveValue(prompt);
+    await page.getByRole("textbox", { name: "Message" }).fill(editedPrompt);
+    await page.getByRole("textbox", { name: "Message" }).press("Enter");
+
+    await expect(page.getByTestId("thread")).toContainText(editedPrompt, { timeout: 20_000 });
+    await expect(page.getByTestId("thread")).toContainText(`Fake answer: ${editedPrompt}`, { timeout: 20_000 });
+    await expect(page.getByTestId("streaming-cursor")).toHaveCount(0, { timeout: 20_000 });
+    await expect(page.getByTestId("run-receipt").last()).toContainText("Run Complete");
+
+    const run = await latestRunForChat(page, chatId);
+    expect(run?.status).toBe("complete");
+    expect(run?.events.map((event) => event.eventType)).toEqual(
+      expect.arrayContaining(["token", "usage", "done"])
+    );
+  } finally {
+    if (chatId) {
+      await page.request.delete(`/api/chats/${chatId}`, { timeout: 5_000 }).catch(() => undefined);
+    }
+  }
+});
+
 test("cancels an in-flight fake-provider stream without leaving the shell stuck", async ({ page }) => {
   const titlePrefix = `${testTitlePrefix} cancel path ${Date.now()}`;
   const prompt = `${titlePrefix} ${"slow token ".repeat(160)}`.trim();

@@ -88,13 +88,105 @@ export function useMessageRunActions({
       return;
     }
 
-    await editMessageBranchAction({
+    const committed = await editMessageBranchAction({
       activeChatIdRef,
       refreshActiveChat,
       resetThreadToLatest,
       sourceChatId,
       sourceSessionKey,
       activeChatStreaming
+    });
+    if (!committed || committed.role !== "user") {
+      return;
+    }
+
+    await startEditedBranchRun(sourceChatId, committed.id);
+  }
+
+  async function startEditedBranchRun(chatId: string, editedUserMessageId: string) {
+    if (useRunLifecycleStore.getState().activeStreams[chatId]) {
+      return;
+    }
+
+    const {
+      developerPrompt,
+      selectedModelId,
+      selectedPromptId,
+      selectedProvider,
+      selectedSearchStrategy,
+      systemPrompt
+    } = useComposerControlStore.getState();
+    const assistantId = `assistant-${Date.now()}`;
+    const assistantMessage: ThreadMessage = {
+      content: "",
+      id: assistantId,
+      modelId: selectedModelId,
+      parentMessageId: editedUserMessageId,
+      provider: selectedProvider,
+      role: "assistant",
+      status: "streaming"
+    };
+
+    mergeStreamChatMessages(chatId, [assistantMessage]);
+    updateStreamChatActiveLeaf(chatId, assistantId);
+    if (activeChatIdRef.current === chatId) {
+      resetThreadToLatest();
+    }
+
+    await executeMessageRunLifecycle({
+      activeChatIdRef,
+      activeStreamAbortRef,
+      chatId,
+      consumeRunStream,
+      createStreamTokenBuffer,
+      failurePrefix: "edit_run_failed",
+      fetchRun,
+      notifyAnswerReady,
+      optimisticAssistantMessageId: assistantId,
+      primeAnswerSound,
+      reconcileMessageIds({ currentRunId, messageIds }) {
+        if (!messageIds.assistantMessageId) {
+          return;
+        }
+
+        const persistedAssistantId = messageIds.assistantMessageId;
+        updateStreamChatActiveLeaf(chatId, persistedAssistantId, assistantId);
+        updateStreamChatMessages(chatId, (current) =>
+          current.map((message) =>
+            message.id === assistantId
+              ? {
+                  ...message,
+                  id: persistedAssistantId,
+                  runId: currentRunId ?? message.runId
+                }
+              : message
+          )
+        );
+      },
+      refreshActiveChat,
+      request(signal) {
+        return fetch(`/api/messages/${editedUserMessageId}/regenerate`, {
+          body: JSON.stringify({
+            modelId: selectedModelId,
+            controlDefaults: buildControlDraft(),
+            params: buildParams(),
+            prompt: {
+              developer: renderLocalPromptTemplate(developerPrompt),
+              presetId: selectedPromptId,
+              system: renderLocalPromptTemplate(systemPrompt)
+            },
+            provider: selectedProvider,
+            searchStrategy: selectedSearchStrategy
+          }),
+          headers: {
+            "content-type": "application/json"
+          },
+          method: "POST",
+          signal
+        });
+      }
+      // The committed branch keeps the readable failed tail: rollback would hide
+      // the edited question again, and the stranded-leaf reconcile owns retry.
     });
   }
 

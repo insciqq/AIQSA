@@ -1579,8 +1579,8 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
           status: { in: activeModelRunStatuses }
         }
       }),
-    findRegenerationSource: async (assistantMessageId, userId) => {
-      const assistantMessage = await prismaClient.message.findFirst({
+    findRegenerationSource: async (sourceMessageId, userId) => {
+      const sourceMessage = await prismaClient.message.findFirst({
         include: {
           chat: {
             select: {
@@ -1611,12 +1611,34 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
             archived: false,
             userId
           },
-          id: assistantMessageId,
-          role: "assistant"
+          id: sourceMessageId,
+          role: { in: ["assistant", "user"] }
         }
       });
 
-      if (!assistantMessage?.parent || assistantMessage.parent.role !== "user") {
+      if (!sourceMessage) {
+        return null;
+      }
+
+      const chat = {
+        defaultModelId: sourceMessage.chat.defaultProviderModel?.id ?? "",
+        defaultProvider: sourceMessage.chat.defaultProviderModel?.connectionId ?? "",
+        id: sourceMessage.chat.id,
+        projectMemory: sourceMessage.chat.folder?.projectMemory ?? null
+      };
+
+      if (sourceMessage.role === "user") {
+        return {
+          assistantMessage: null,
+          chat,
+          userMessage: {
+            content: sourceMessage.content,
+            id: sourceMessage.id
+          }
+        };
+      }
+
+      if (!sourceMessage.parent || sourceMessage.parent.role !== "user") {
         return null;
       }
 
@@ -1632,7 +1654,7 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
           }
         },
         where: {
-          assistantMessageId: assistantMessage.id,
+          assistantMessageId: sourceMessage.id,
           userId
         }
       });
@@ -1640,19 +1662,14 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
 
       return {
         assistantMessage: {
-          id: assistantMessage.id,
+          id: sourceMessage.id,
           modelId: answerBinding?.providerModelId ?? null,
           provider: answerBinding?.connectionId ?? null
         },
-        chat: {
-          defaultModelId: assistantMessage.chat.defaultProviderModel?.id ?? "",
-          defaultProvider: assistantMessage.chat.defaultProviderModel?.connectionId ?? "",
-          id: assistantMessage.chat.id,
-          projectMemory: assistantMessage.chat.folder?.projectMemory ?? null
-        },
+        chat,
         userMessage: {
-          content: assistantMessage.parent.content,
-          id: assistantMessage.parent.id
+          content: sourceMessage.parent.content,
+          id: sourceMessage.parent.id
         }
       };
     },

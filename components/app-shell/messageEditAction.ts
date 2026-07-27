@@ -24,6 +24,11 @@ type MessageEditActionInput = {
   activeChatStreaming: boolean;
 };
 
+export type CommittedEditedMessage = {
+  id: string;
+  role: string;
+};
+
 export async function editMessageBranchAction({
   activeChatIdRef,
   activeChatStreaming,
@@ -31,7 +36,7 @@ export async function editMessageBranchAction({
   resetThreadToLatest,
   sourceChatId,
   sourceSessionKey
-}: MessageEditActionInput) {
+}: MessageEditActionInput): Promise<CommittedEditedMessage | null> {
   const sourceSession = selectComposerSession(
     useComposerSessionStore.getState(),
     sourceSessionKey
@@ -39,14 +44,14 @@ export async function editMessageBranchAction({
   const text = sourceSession.draft.trim();
   const editingMessageId = sourceSession.editingMessageId;
   if (!text || !editingMessageId || activeChatStreaming) {
-    return;
+    return null;
   }
 
   const operation = useComposerSessionStore
     .getState()
     .beginEdit(sourceSessionKey, editingMessageId);
   if (!operation) {
-    return;
+    return null;
   }
 
   let editedMessage: NonNullable<ReturnType<typeof decodeEditMessageResponse>>["message"];
@@ -72,13 +77,14 @@ export async function editMessageBranchAction({
     editedMessage = body.message;
   } catch (error) {
     useComposerSessionStore.getState().finishEdit(operation, errorMessage(error));
-    return;
+    return null;
   }
 
   if (!useComposerSessionStore.getState().isEditCurrent(operation)) {
-    return;
+    return null;
   }
 
+  let committed: CommittedEditedMessage | null = null;
   try {
     let refreshed: ChatDetail | null = null;
     try {
@@ -108,6 +114,9 @@ export async function editMessageBranchAction({
     }
   } finally {
     const settled = useComposerSessionStore.getState().finishEdit(operation, null);
+    if (settled) {
+      committed = { id: editedMessage.id, role: editedMessage.role };
+    }
     if (
       settled &&
       activeChatIdRef.current === sourceChatId &&
@@ -116,4 +125,6 @@ export async function editMessageBranchAction({
       resetThreadToLatest();
     }
   }
+
+  return committed;
 }

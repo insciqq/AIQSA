@@ -78,7 +78,7 @@ function chat(): ChatSummary {
   };
 }
 
-function editResponse(text: string, chatId = "chat-a") {
+function editResponse(text: string, chatId = "chat-a", role: "assistant" | "user" = "user") {
   return Response.json({
     message: {
       chatId,
@@ -89,7 +89,7 @@ function editResponse(text: string, chatId = "chat-a") {
       modelId: "gpt-5.5",
       parentMessageId: null,
       provider: "openai",
-      role: "user",
+      role,
       status: "complete"
     }
   });
@@ -615,12 +615,14 @@ describe("message run actions", () => {
 
   it("keeps a deferred edit owned by A after switching to B", async () => {
     let resolveEdit!: (response: Response) => void;
-    const fetchMock = vi.fn(
-      () =>
-        new Promise<Response>((resolve) => {
-          resolveEdit = resolve;
-        })
-    );
+    const fetchMock = vi
+      .fn(async (..._args: unknown[]) => new Response("", { status: 200 }))
+      .mockImplementationOnce(
+        () =>
+          new Promise<Response>((resolve) => {
+            resolveEdit = resolve;
+          })
+      );
     vi.stubGlobal("fetch", fetchMock);
     const refreshActiveChat = vi.fn(async (chatId: string | null) => {
       useThreadStore.getState().replaceThread(chatId!, {
@@ -667,8 +669,17 @@ describe("message run actions", () => {
       editingMessageId: null
     });
     expect(selectThreadSnapshot(useThreadStore.getState(), "chat-a").messages).toEqual([
-      expect.objectContaining({ content: "Edited answer", id: "message-edited" })
+      expect.objectContaining({ content: "Edited answer", id: "message-edited" }),
+      expect.objectContaining({
+        parentMessageId: "message-edited",
+        role: "assistant",
+        status: "complete"
+      })
     ]);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/messages/message-edited/regenerate",
+      expect.objectContaining({ method: "POST" })
+    );
     expect(actions.resetThreadToLatest).not.toHaveBeenCalled();
     expect(actions.refreshActiveChat).toHaveBeenCalledWith("chat-a", {
       preserveControls: true
@@ -696,7 +707,10 @@ describe("message run actions", () => {
   });
 
   it("uses the committed edit response when canonical detail refresh is unavailable", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => editResponse("Committed edit")));
+    const fetchMock = vi
+      .fn(async (..._args: unknown[]) => new Response("", { status: 200 }))
+      .mockImplementationOnce(async () => editResponse("Committed edit"));
+    vi.stubGlobal("fetch", fetchMock);
     const actions = useMessageRunActionsForTest({
       attachments: [],
       draft: "Committed edit",
@@ -709,9 +723,19 @@ describe("message run actions", () => {
       preserveControls: true
     });
     expect(selectThreadSnapshot(useThreadStore.getState(), "chat-a")).toMatchObject({
-      activeLeafId: "message-edited",
-      messages: [expect.objectContaining({ content: "Committed edit", id: "message-edited" })]
+      messages: [
+        expect.objectContaining({ content: "Committed edit", id: "message-edited" }),
+        expect.objectContaining({
+          parentMessageId: "message-edited",
+          role: "assistant",
+          status: "complete"
+        })
+      ]
     });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/messages/message-edited/regenerate",
+      expect.objectContaining({ method: "POST" })
+    );
     expect(actions.session(composerSessionKey("chat-a"))).toMatchObject({
       draft: "",
       editingMessageId: null,
@@ -722,12 +746,14 @@ describe("message run actions", () => {
 
   it("allows only one same-source edit request until canonical refresh settles", async () => {
     let resolveEdit!: (response: Response) => void;
-    const fetchMock = vi.fn(
-      () =>
-        new Promise<Response>((resolve) => {
-          resolveEdit = resolve;
-        })
-    );
+    const fetchMock = vi
+      .fn(async (..._args: unknown[]) => new Response("", { status: 200 }))
+      .mockImplementationOnce(
+        () =>
+          new Promise<Response>((resolve) => {
+            resolveEdit = resolve;
+          })
+      );
     vi.stubGlobal("fetch", fetchMock);
     const refreshActiveChat = vi.fn(async (chatId: string | null) => {
       useThreadStore.getState().replaceThread(chatId!, {
@@ -763,7 +789,11 @@ describe("message run actions", () => {
     await Promise.all([first, duplicate]);
 
     expect(selectThreadSnapshot(useThreadStore.getState(), "chat-a").messages).toEqual([
-      expect.objectContaining({ content: "First edit", id: "message-edited" })
+      expect.objectContaining({ content: "First edit", id: "message-edited" }),
+      expect.objectContaining({
+        parentMessageId: "message-edited",
+        role: "assistant"
+      })
     ]);
     expect(actions.session(composerSessionKey("chat-a"))).toMatchObject({
       draft: "",
@@ -772,14 +802,17 @@ describe("message run actions", () => {
       pendingEdit: null
     });
     expect(actions.refreshActiveChat).toHaveBeenCalledOnce();
-    expect(actions.resetThreadToLatest).toHaveBeenCalledOnce();
+    expect(
+      fetchMock.mock.calls.filter(([url]) => String(url).includes("/regenerate"))
+    ).toHaveLength(1);
   });
 
   it("clears failed ownership for a retry and retires the edit after canonical success", async () => {
     const fetchMock = vi
-      .fn()
+      .fn(async (..._args: unknown[]) => new Response("", { status: 200 }))
       .mockResolvedValueOnce(Response.json({ error: "edit_conflict" }, { status: 409 }))
-      .mockResolvedValueOnce(editResponse("Retry edit"));
+      .mockResolvedValueOnce(editResponse("Retry edit"))
+      .mockResolvedValueOnce(new Response("", { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);
     const refreshActiveChat = vi.fn(async (chatId: string | null) => {
       useThreadStore.getState().replaceThread(chatId!, {
@@ -813,7 +846,8 @@ describe("message run actions", () => {
     });
 
     await actions.submitComposer();
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock.mock.calls[2]?.[0]).toBe("/api/messages/message-edited/regenerate");
     expect(actions.refreshActiveChat).toHaveBeenCalledOnce();
     expect(actions.session(composerSessionKey("chat-a"))).toMatchObject({
       draft: "",
@@ -821,6 +855,117 @@ describe("message run actions", () => {
       operationError: null,
       pendingEdit: null
     });
+  });
+
+  it("starts a streamed answer run on the committed branch after editing a user message", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(555);
+    const fetchMock = vi
+      .fn(async (..._args: unknown[]) => new Response("", { status: 200 }))
+      .mockImplementationOnce(async () => editResponse("Edited question"));
+    vi.stubGlobal("fetch", fetchMock);
+    const actions = useMessageRunActionsForTest({
+      attachments: [],
+      consumeRunStream: async ({ onMessageIds, onRunId }) => {
+        onRunId("run-edit");
+        onMessageIds({ assistantMessageId: "assistant-edit-persisted" }, "run-edit");
+        return {
+          failed: false,
+          receivedChatUpdate: true,
+          runId: "run-edit"
+        };
+      },
+      draft: "Edited question",
+      editingMessageId: "message-1"
+    });
+
+    await actions.submitComposer();
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/messages/message-edited/regenerate",
+      expect.objectContaining({
+        method: "POST",
+        signal: expect.any(AbortSignal)
+      })
+    );
+    const [, regenerateInit] = fetchMock.mock.calls[1] as unknown as [string, RequestInit];
+    expect(JSON.parse(String(regenerateInit.body))).toMatchObject({
+      modelId: "gpt-5.5",
+      provider: "openai",
+      searchStrategy: "search-disabled"
+    });
+    expect(selectThreadSnapshot(useThreadStore.getState(), "chat-a")).toMatchObject({
+      activeLeafId: "assistant-edit-persisted",
+      messages: [
+        expect.objectContaining({ content: "Edited question", id: "message-edited" }),
+        expect.objectContaining({
+          id: "assistant-edit-persisted",
+          parentMessageId: "message-edited",
+          runId: "run-edit",
+          status: "complete"
+        })
+      ]
+    });
+    expect(actions.fetchRun).toHaveBeenCalledWith("run-edit", "chat-a");
+    expect(actions.notifyAnswerReady).toHaveBeenCalledOnce();
+    expect(useRunLifecycleStore.getState().activeStreams).toEqual({});
+  });
+
+  it("keeps a readable run-error tail on the edited branch when the follow-up run fails to start", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(556);
+    const fetchMock = vi
+      .fn(async (..._args: unknown[]) =>
+        Response.json({ error: "edit_run_failed_500" }, { status: 500 })
+      )
+      .mockImplementationOnce(async () => editResponse("Edited question"));
+    vi.stubGlobal("fetch", fetchMock);
+    const consumeRunStream = vi.fn<ConsumeMessageRunStream>();
+    const actions = useMessageRunActionsForTest({
+      attachments: [],
+      consumeRunStream,
+      draft: "Edited question",
+      editingMessageId: "message-1"
+    });
+
+    await actions.submitComposer();
+
+    expect(consumeRunStream).not.toHaveBeenCalled();
+    expect(selectThreadSnapshot(useThreadStore.getState(), "chat-a")).toMatchObject({
+      activeLeafId: "assistant-556",
+      messages: [
+        expect.objectContaining({ content: "Edited question", id: "message-edited" }),
+        expect.objectContaining({
+          id: "assistant-556",
+          parentMessageId: "message-edited",
+          status: "error"
+        })
+      ]
+    });
+    expect(actions.surface("chat-a").events).toEqual([
+      {
+        data: {
+          message: expect.stringContaining("edit_run_failed_500")
+        },
+        type: "error"
+      }
+    ]);
+    expect(useRunLifecycleStore.getState().activeStreams).toEqual({});
+  });
+
+  it("does not start a run after editing an assistant message", async () => {
+    const fetchMock = vi
+      .fn(async (..._args: unknown[]) => new Response("", { status: 200 }))
+      .mockImplementationOnce(async () => editResponse("Edited answer text", "chat-a", "assistant"));
+    vi.stubGlobal("fetch", fetchMock);
+    const actions = useMessageRunActionsForTest({
+      attachments: [],
+      draft: "Edited answer text",
+      editingMessageId: "assistant-1"
+    });
+
+    await actions.submitComposer();
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(useRunLifecycleStore.getState().activeStreams).toEqual({});
   });
 
   it("does not edit while the active chat streams", async () => {

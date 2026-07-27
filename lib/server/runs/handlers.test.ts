@@ -334,14 +334,18 @@ function createMemoryRepository(
               (!input.runId || run.id === input.runId)
           )
         : [],
-    findRegenerationSource: async (assistantMessageId, userId) =>
-      assistantMessageId === "assistant-message-1" && userId === config.bootstrapUserId
+    findRegenerationSource: async (sourceMessageId, userId) =>
+      (sourceMessageId === "assistant-message-1" || sourceMessageId === "user-message-1") &&
+      userId === config.bootstrapUserId
         ? {
-            assistantMessage: {
-              id: assistantMessageId,
-              modelId: "fake-qsa",
-              provider: "fake"
-            },
+            assistantMessage:
+              sourceMessageId === "assistant-message-1"
+                ? {
+                    id: sourceMessageId,
+                    modelId: "fake-qsa",
+                    provider: "fake"
+                  }
+                : null,
             chat: {
               defaultModelId: "fake-qsa",
               defaultProvider: "fake",
@@ -3407,6 +3411,50 @@ describe("model run route handlers", () => {
     });
     expect(state.completed?.finalText).toBe("Fake answer: Original question\nContext memory: Earlier context");
     expect(routeOrder).toEqual(["createRegenerationRun", "providerStream"]);
+  });
+
+  it("streams an answer run for an edited user message with no assistant sibling", async () => {
+    const { repository, state } = createMemoryRepository(entitledFakeModel);
+    const POST = createRegenerateModelRunHandler({
+      ...authDeps,
+      providers: {
+        fake: createFakeProviderAdapter()
+      },
+      repository
+    });
+    const response = await POST(
+      new Request("http://app.local/api/messages/user-message-1/regenerate", {
+        body: JSON.stringify({
+          modelId: "fake-qsa",
+          params: {},
+          provider: "fake",
+          searchStrategy: "search-disabled"
+        }),
+        headers: {
+          cookie: authCookie(),
+          "content-type": "application/json"
+        },
+        method: "POST"
+      }),
+      {
+        params: {
+          messageId: "user-message-1"
+        }
+      }
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toContain("text/event-stream");
+    const events = parseSse(await response.text());
+    expect(events.map((event) => event.type).slice(-3)).toEqual(["usage", "chat_update", "done"]);
+    expect(events.some((event) => event.type === "token")).toBe(true);
+    expect(state.regenerated).toMatchObject({
+      chatId: "chat-1",
+      modelId: "fake-qsa",
+      provider: "fake",
+      userMessageId: "user-message-1"
+    });
+    expect(state.completed?.finalText).toContain("Fake answer: Original question");
   });
 
   it("rejects foreign regenerate prompt preset ids before creating a run", async () => {
