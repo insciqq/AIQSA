@@ -15,6 +15,7 @@ agent_docs/done_tasks
 !.env.example
 DEPLOY.md
 GITHUB_RELEASE.md
+prepare-secrets.sh
 ops/deploy
 sa.json*
 npm-debug.log*

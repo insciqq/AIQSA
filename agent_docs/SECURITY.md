@@ -24,6 +24,15 @@ Password hashes use versioned `crypto.scrypt` with random salt. A normal access 
 
 Generate `AIQSA_AUTH_SESSION_SECRET`, the base64 32-byte `AIQSA_ENCRYPTION_KEY`, and any bootstrap recovery token with high entropy. Quick Setup state fences use a dedicated HMAC-SHA-256 subkey derived from `AIQSA_AUTH_SESSION_SECRET` under a fixed versioned domain; they never use the encryption key. The encryption key is dedicated to purpose/owner/value-bound versioned AES-256-GCM envelopes for provider credentials, SMTP passwords, MCP shared/personal values, and OAuth tokens; secret fields are write-only over the application API. Back up the encryption key separately and never use it as session or flow-signing material. Keep `AIQSA_BOOTSTRAP_LOGIN_ENABLED` unset except for a short recovery window; prefer `AIQSA_BOOTSTRAP_AUTH_TOKEN_SHA256` when plaintext need not be in the process environment.
 
+Root `prepare-secrets.sh` is a local first-install helper, not a rotation tool.
+It uses OpenSSL for independent random values, stages the complete file with
+mode `0600`, and publishes it without replacing an existing path. It never
+sources or reads an existing `.env` and never prints session, encryption,
+database, or object-storage secret values. It does print a newly generated
+initial administrator password once and stores it in `.env`; protect terminal
+history/output, move that password to a password manager, remove it from `.env`
+after successful bootstrap, and back up `AIQSA_ENCRYPTION_KEY` separately.
+
 Email-verification, password-reset, and invite tokens are high entropy, one time, expiring, and stored only as hashes. Successful email verification consumes every sibling verification token while establishing the password, so concurrent links have exactly one winner; direct invite acceptance likewise serializes by normalized email and locks any existing identity/user plus the token and invite so only one request can create the session. The administrator-managed SMTP password is a write-only purpose-bound encrypted database value; `AIQSA_APP_BASE_URL` remains the trusted public origin used in links. Every send loads one active database snapshot, while connection, command, and complete-send deadlines fail closed and failure cleanup destroys the current plain or TLS socket. Timeout and rejection errors never include credentials, AUTH payloads, message bodies, destination addresses, raw server responses, or token-bearing URLs. Registration reports missing required mail delivery truthfully; reset requests remain generic; requested admin invite delivery reports a partial unavailable/failed outcome without discarding the only recoverable URL.
 
 Retention removes only terminal authentication state: sessions stay until at least the configured window after revocation or expiry, and flow tokens stay until at least that window after consumption or expiry. Active/unexpired credentials are never retention candidates; selection and deletion are bounded and the delete repeats the terminal cutoff predicate.

@@ -22,7 +22,7 @@ AIQSA combines a conversation UI with inspectable execution: users can choose a 
 
 ## Quick start
 
-You need Docker Engine with the Docker Compose plugin.
+You need Docker Engine with the Docker Compose plugin and OpenSSL.
 
 Copy the HTTPS or SSH clone URL from this repository's **Code** menu. This can
 be the upstream repository or your own fork. Then clone it into a stable local
@@ -31,17 +31,22 @@ directory name:
 ```bash
 git clone REPOSITORY_URL aiqsa
 cd aiqsa
-cp .env.example .env
+bash prepare-secrets.sh
 ```
 
-Replace `REPOSITORY_URL` with the copied clone URL.
+Replace `REPOSITORY_URL` with the copied clone URL. The setup script asks only
+for the initial administrator email, creates a private `.env`, generates its
+password and required infrastructure secrets, and prints the administrator
+password once. Save that password in a password manager. If `.env` already
+exists, the script exits without reading or changing it. For an unattended
+setup, pass the email explicitly:
 
-Edit `.env` and fill every value marked **required**. In particular, set:
+```bash
+bash prepare-secrets.sh --admin-email owner@example.com
+```
 
-- a random `AIQSA_AUTH_SESSION_SECRET` (for example, from `openssl rand -hex 32`);
-- a base64 32-byte `AIQSA_ENCRYPTION_KEY` (for example, from `openssl rand -base64 32`);
-- the initial administrator email and password;
-- unique PostgreSQL and object-storage passwords.
+See [Configuration](docs/configuration.md) if you prefer to create `.env`
+manually or need to change optional settings.
 
 Then start AIQSA:
 

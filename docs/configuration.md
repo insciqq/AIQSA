@@ -1,13 +1,36 @@
 # Configuration
 
-AIQSA reads operator settings from `.env` through Docker Compose. Start from the example and keep the resulting file private:
+AIQSA reads operator settings from `.env` through Docker Compose. For a new
+installation, let the setup helper create that file and all required secrets:
+
+```bash
+bash prepare-secrets.sh
+```
+
+The helper prompts only for the initial administrator email, generates the
+initial password and the four infrastructure secrets with OpenSSL, writes the
+new file with mode `0600`, and prints the administrator password once. It never
+prints the infrastructure secret values. If `.env` already exists, it exits
+successfully without reading it, changing it, or repairing missing values; do
+not copy `.env.example` first when using the helper. Non-interactive setup can
+provide the email directly:
+
+```bash
+bash prepare-secrets.sh --admin-email owner@example.com
+```
+
+For a custom target, add `--env-file PATH`; pass that path to Docker Compose
+with `--env-file PATH`. To configure everything manually instead, use:
 
 ```bash
 cp .env.example .env
 chmod 600 .env
 ```
 
-Fill every value marked required. LLM providers and email delivery are configured after sign-in and do not require a restart. Restart the stack only after changing infrastructure or root-of-trust settings:
+Then fill every value marked required with the formats documented below. LLM
+providers and email delivery are configured after sign-in and do not require a
+restart. Restart the stack only after changing infrastructure or root-of-trust
+settings:
 
 ```bash
 docker compose up -d

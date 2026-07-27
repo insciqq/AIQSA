@@ -25,6 +25,16 @@ AIQSA_S3_ACCESS_KEY_ID=aiqsa
 AIQSA_S3_SECRET_ACCESS_KEY=
 ```
 
+For a fresh checkout, root `prepare-secrets.sh` is the canonical convenience
+path. It creates `.env` from `.env.example` only when the target does not exist,
+prompts for `AIQSA_INITIAL_ADMIN_EMAIL` in an interactive terminal (or accepts
+`--admin-email`), and generates the initial password plus the four required
+secrets with OpenSSL. The completed file is published only after preparation
+succeeds and has mode `0600`. An existing target of any kind is a successful
+no-op: the helper does not read it, alter permissions, replace values, or repair
+partial configuration. Consequently the helper is run instead of a preceding
+`cp .env.example .env`; manual creation remains supported.
+
 `AIQSA_AUTH_SESSION_SECRET`, `AIQSA_ENCRYPTION_KEY`, the PostgreSQL password, and the S3/MinIO secret must be deployment-specific high-entropy values. Generate the session secret with `openssl rand -hex 32` or stronger and the encrypted-state key with `openssl rand -base64 32`. Quick Setup derives its state-fence HMAC key from `AIQSA_AUTH_SESSION_SECRET` under the fixed `aiqsa:provider-quick-setup-state-token-key:v1` domain, so no additional environment value is required and changing the session secret invalidates outstanding Quick Setup fences. `AIQSA_ENCRYPTION_KEY` must decode to exactly 32 bytes; purpose/owner/value-bound envelopes use it for MCP values and OAuth tokens, administrator-owned provider credentials, and the SMTP password. It is never reused for sessions or flow signing. Back it up separately from Postgres. Changing or losing it requires an offline migration or re-entry of affected encrypted values. Compose derives the internal `DATABASE_URL`, `POSTGRES_*`, `MINIO_ROOT_*`, and `S3_*` values from these canonical inputs; operators do not duplicate the connection string.
 
 Use URI-safe hexadecimal database/storage secrets because Compose constructs the internal database URL without percent-encoding. Once a persistent volume contains data, changing database initialization credentials does not rewrite that database, and changing the bucket/volume selection exposes a different empty namespace. Such changes require an explicit backed-up datastore migration, not an ordinary env edit.
