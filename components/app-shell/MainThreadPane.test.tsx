@@ -805,17 +805,23 @@ describe("MainThreadPane", () => {
     expect(live).not.toHaveTextContent("Stale MCP");
   });
 
-  it("attaches persisted usage only to the answer with the exact run id", () => {
+  it("keeps every answer's persisted usage after later runs and reload", () => {
     const openRunDetails = vi.fn();
-    const { container } = renderPane({
+    const { container, props, rerender } = renderPane({
       ...readyComposerOverrides,
       lastRun: persistedRun({
         events: [{ eventType: "usage", payload: { totalTokens: 120 }, sequence: 1 }]
       }),
       openRunDetails,
       visibleMessages: [
-        assistantMessage("assistant-history", { runId: "run-history" }),
-        assistantMessage("assistant-current", { runId: "run-current" })
+        assistantMessage("assistant-history", {
+          runId: "run-history",
+          runUsage: { totalTokens: 48 }
+        }),
+        assistantMessage("assistant-current", {
+          runId: "run-current",
+          runUsage: { totalTokens: 120 }
+        })
       ]
     });
 
@@ -823,12 +829,16 @@ describe("MainThreadPane", () => {
     const current = container.querySelector('[data-message-id="assistant-current"]');
     expect(historical).not.toBeNull();
     expect(current).not.toBeNull();
-    expect(within(historical as HTMLElement).queryByText("120 tokens used")).not.toBeInTheDocument();
+    expect(within(historical as HTMLElement).getByText("48 tokens used")).toBeVisible();
 
     fireEvent.click(
       within(current as HTMLElement).getByRole("button", { name: "120 tokens used" })
     );
     expect(openRunDetails).toHaveBeenCalledOnce();
+
+    rerender(<MainThreadPane {...props} lastRun={null} />);
+    expect(within(historical as HTMLElement).getByText("48 tokens used")).toBeVisible();
+    expect(within(current as HTMLElement).getByText("120 tokens used")).toBeVisible();
   });
 
   it("keeps warnings on their originating run across branch changes", () => {

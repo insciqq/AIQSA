@@ -232,6 +232,7 @@ function chatUpdate(): RunChatUpdateRecord {
         parentMessageId: "user-message-1",
         provider: "fake",
         role: "assistant",
+        runUsage: { totalTokens: 5 },
         status: "complete"
       }
     ]
@@ -741,6 +742,13 @@ describe("run execution", () => {
     expect(repository.providerResponseIds).toEqual(["response-1"]);
     expect(repository.completeRuns).toHaveLength(1);
     expect(repository.chatUpdateLoads).toBe(1);
+    expect(events.find((event) => event.type === "chat_update")).toMatchObject({
+      data: {
+        messages: expect.arrayContaining([
+          expect.objectContaining({ id: "assistant-1", runUsage: { totalTokens: 5 } })
+        ])
+      }
+    });
     expect(repository.persistedEvents.some(({ event }) => event.type === "chat_update")).toBe(false);
     expect(eventTypes.slice(-3)).toEqual(["usage", "chat_update", "done"]);
     expect(activeRunControllerRegistry.has("run-1")).toBe(false);

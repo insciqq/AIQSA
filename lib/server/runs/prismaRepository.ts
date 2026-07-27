@@ -1818,7 +1818,9 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
                     }
                   },
                   id: true,
+                  inputTokens: true,
                   normalizedRequest: true,
+                  outputTokens: true,
                   searchRuns: {
                     orderBy: {
                       createdAt: "asc"
@@ -1847,7 +1849,8 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
                       state: true,
                       toolName: true
                     }
-                  }
+                  },
+                  totalTokens: true
                 },
                 take: 1
               }
@@ -1907,6 +1910,16 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
             parentMessageId: message.parentMessageId,
             provider: message.provider,
             role: message.role,
+            runUsage: modelRun
+              ? {
+                  totalTokens: normalizeTokenUsage({
+                    inputTokens: modelRun.inputTokens,
+                    outputTokens: modelRun.outputTokens,
+                    reasoningTokens: 0,
+                    totalTokens: modelRun.totalTokens
+                  }).totalTokens
+                }
+              : null,
             status: message.status
           };
         })

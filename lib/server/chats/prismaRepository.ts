@@ -1,6 +1,7 @@
 import { Prisma } from "@prisma/client";
 import type { ContextTruncationSummary } from "../../domain/contextBudget";
 import { safeExternalHref } from "../../domain/links";
+import { normalizeTokenUsage } from "../../domain/usage";
 import {
   mergeThreadToolActivity,
   projectThreadToolActivity
@@ -239,6 +240,16 @@ function serializeChatDetail(chat: ChatDetailRow): ChatDetailRecord {
         parentMessageId: message.parentMessageId,
         provider: message.provider,
         role: message.role,
+        runUsage: modelRun
+          ? {
+              totalTokens: normalizeTokenUsage({
+                inputTokens: modelRun.inputTokens,
+                outputTokens: modelRun.outputTokens,
+                reasoningTokens: 0,
+                totalTokens: modelRun.totalTokens
+              }).totalTokens
+            }
+          : null,
         status: message.status
       };
     }),

@@ -39,6 +39,7 @@ const message = {
   parentMessageId: null,
   provider: "openai",
   role: "assistant",
+  runUsage: { totalTokens: 10 },
   status: "complete"
 };
 
@@ -202,6 +203,7 @@ describe("chat wire contracts", () => {
     for (const malformedMessage of [
       { ...message, role: "owner" },
       { ...message, status: "finished" },
+      { ...message, runUsage: { totalTokens: -1 } },
       { ...message, artifactSummary: { ...artifactSummary, reasoningText: "not-an-array" } }
     ]) {
       expect(
@@ -210,6 +212,16 @@ describe("chat wire contracts", () => {
         })
       ).toBeNull();
     }
+  });
+
+  it("keeps legacy messages without a run usage projection readable", () => {
+    const { runUsage: _runUsage, ...legacyMessage } = message;
+
+    expect(
+      decodeChatDetailResponse({
+        chat: { ...summary, messages: [legacyMessage], usageStats: null }
+      })?.messages[0]
+    ).toEqual(legacyMessage);
   });
 
   it("decodes terminal updates only when both owners are complete", () => {

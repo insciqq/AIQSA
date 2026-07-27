@@ -200,6 +200,7 @@ export function messageFromApi(message: ChatMessageWire): ThreadMessage {
     provider: message.provider ?? undefined,
     role: message.role === "assistant" ? "assistant" : "user",
     runId: message.modelRunId ?? null,
+    runUsage: message.runUsage,
     status: normalizeThreadStatus(message.status)
   };
 }

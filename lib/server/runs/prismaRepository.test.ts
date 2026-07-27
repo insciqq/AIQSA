@@ -418,6 +418,23 @@ describe("Prisma run repository", () => {
         data: { activeLeafMessageId: assistantMessage.id },
         where: { id: chat.id }
       });
+      await prisma.modelRun.create({
+        data: {
+          assistantMessageId: assistantMessage.id,
+          chatId: chat.id,
+          inputTokens: 8,
+          modelId: "fake-qsa",
+          normalizedRequest: {},
+          outputTokens: 5,
+          provider: "fake",
+          providerRequestPreview: {},
+          reasoningTokens: 0,
+          status: "complete",
+          totalTokens: 0,
+          userId,
+          userMessageId: userMessage.id
+        }
+      });
 
       const update = await createPrismaRunRepository(prisma).getChatUpdateForRun({
         assistantMessageId: assistantMessage.id,
@@ -432,6 +449,12 @@ describe("Prisma run repository", () => {
         id: chat.id,
         messageCount: 2
       });
+      expect(update?.messages).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          id: assistantMessage.id,
+          runUsage: { totalTokens: 13 }
+        })
+      ]));
     });
   });
 

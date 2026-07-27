@@ -79,6 +79,7 @@ function message(overrides: Partial<ChatMessageWire> = {}): ChatMessageWire {
     parentMessageId: null,
     provider: "openai",
     role: "assistant",
+    runUsage: { totalTokens: 55 },
     status: "complete",
     ...overrides
   };
@@ -201,6 +202,7 @@ describe("chat wire mapping", () => {
       expect.objectContaining({
         content: "Provider failed",
         id: "message-error",
+        runUsage: { totalTokens: 55 },
         status: "error"
       }),
       expect.objectContaining({

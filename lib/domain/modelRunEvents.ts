@@ -35,6 +35,7 @@ export type ModelRunChatUpdateData = {
     parentMessageId: string | null;
     provider: string | null;
     role: string;
+    runUsage?: { totalTokens: number } | null;
     status: string;
   }[];
 };

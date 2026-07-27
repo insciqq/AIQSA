@@ -577,7 +577,7 @@ describe("ThreadMessageRow", () => {
         citations: [{ index: 1, title: "Source", url: "https://example.com" }],
         contextTruncation: { approxDroppedTokens: 10, droppedMessages: 1 }
       }),
-      message: assistantMessage({ runId: "run-1" }),
+      message: assistantMessage({ runId: "run-1", runUsage: { totalTokens: 100 } }),
       onOpenRunDetails,
       persistedRun: persistedRun({
         events: [{ eventType: "usage", payload: { totalTokens: 100 }, sequence: 1 }]

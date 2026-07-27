@@ -405,13 +405,25 @@ describe("Prisma chat repository", () => {
         ]
       });
 
-      await expect(repository.getChat({ chatId: chat.id, userId })).resolves.toMatchObject({
+      const detail = await repository.getChat({ chatId: chat.id, userId });
+
+      expect(detail).toMatchObject({
         usageStats: {
           activeBranchMessageCount: 2,
           cachedInputTokens: 3,
           totalTokens: 12
         }
       });
+      expect(detail?.messages).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          id: activeAssistant.id,
+          runUsage: { totalTokens: 12 }
+        }),
+        expect.objectContaining({
+          id: siblingAssistant.id,
+          runUsage: { totalTokens: 999 }
+        })
+      ]));
     });
   });
 

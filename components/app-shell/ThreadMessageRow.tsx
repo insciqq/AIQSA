@@ -638,10 +638,9 @@ function ThreadMessageRowComponent({
   const receipt = deriveRunReceipt({
     artifactSummary,
     messageStatus: message.status,
-    messageRunId: message.runId,
     modelLabel: answerModelLabel,
-    persistedRun,
     runActivity,
+    runUsage: message.runUsage,
     warningCount: runWarnings.length
   });
   const actionableReceiptSegments = new Set<RunReceiptSegmentKind>();

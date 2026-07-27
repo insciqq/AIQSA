@@ -9,6 +9,7 @@ import type {
   ChatSummaryResponseWire,
   CreateChatRequestWire,
   ThreadArtifactSummary,
+  ThreadRunUsage,
   UpdateChatRequestWire,
   WorkspaceChatSummaryWire,
   WorkspaceChatsResponseWire
@@ -32,6 +33,7 @@ export type ChatMessageRecord = {
   parentMessageId: string | null;
   provider: string | null;
   role: string;
+  runUsage?: ThreadRunUsage | null;
   status: string;
 };
 
@@ -180,6 +182,7 @@ function serializeMessage(message: ChatMessageRecord): ChatMessageWire {
     parentMessageId: message.parentMessageId,
     provider: message.provider,
     role: message.role,
+    runUsage: message.runUsage ?? null,
     status: message.status
   };
 }

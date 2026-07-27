@@ -238,6 +238,7 @@ function serializeChatUpdate(
       parentMessageId: message.parentMessageId,
       provider: message.provider,
       role: message.role,
+      runUsage: message.runUsage ?? null,
       status: message.status
     }))
   } satisfies ChatUpdateDataWire;

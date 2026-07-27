@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { PersistedRun, ThreadArtifactSummary } from "./types";
+import type { ThreadArtifactSummary } from "./types";
 import { deriveRunReceipt } from "./runReceipt";
 
 function summary(overrides: Partial<ThreadArtifactSummary> = {}): ThreadArtifactSummary {
@@ -12,27 +12,6 @@ function summary(overrides: Partial<ThreadArtifactSummary> = {}): ThreadArtifact
     searchStrategy: null,
     toolCallCount: 0,
     toolCalls: [],
-    ...overrides
-  };
-}
-
-function persistedRun(overrides: Partial<PersistedRun> = {}): PersistedRun {
-  return {
-    cachedInputTokens: 0,
-    cacheWriteInputTokens: 0,
-    errorPayload: null,
-    estimatedCostMicros: null,
-    events: [],
-    id: "run-1",
-    inputTokens: 900,
-    modelId: "model-1",
-    outputTokens: 334,
-    provider: "provider-1",
-    reasoningTokens: 0,
-    searchRuns: [],
-    status: "complete",
-    toolCalls: [],
-    totalTokens: 1_234,
     ...overrides
   };
 }
@@ -110,40 +89,35 @@ describe("deriveRunReceipt", () => {
     expect(JSON.stringify(receipt)).not.toMatch(/profile|cost|search off|usage|elapsed/i);
   });
 
-  it("includes provider-reported token usage only for the exact answer run", () => {
+  it("includes only terminal message-bound provider usage", () => {
     expect(
       deriveRunReceipt({
-        messageRunId: "run-1",
         messageStatus: "complete",
         modelLabel: null,
-        persistedRun: persistedRun()
+        runUsage: { totalTokens: 1_234 }
       }).facts
     ).toContainEqual({ kind: "usage", label: "1,234 tokens used" });
 
     expect(
       deriveRunReceipt({
-        messageRunId: "run-other",
         messageStatus: "complete",
-        modelLabel: null,
-        persistedRun: persistedRun()
+        modelLabel: null
       }).facts
     ).not.toContainEqual(expect.objectContaining({ kind: "usage" }));
 
     expect(
       deriveRunReceipt({
-        messageRunId: "run-1",
         messageStatus: "complete",
         modelLabel: null,
-        persistedRun: persistedRun({ totalTokens: 0 })
+        runUsage: { totalTokens: 0 }
       }).facts
     ).not.toContainEqual(expect.objectContaining({ kind: "usage" }));
 
     expect(
       deriveRunReceipt({
-        messageRunId: "run-1",
         messageStatus: "streaming",
         modelLabel: null,
-        persistedRun: persistedRun({ status: "streaming" })
+        runUsage: { totalTokens: 1_234 }
       }).facts
     ).not.toContainEqual(expect.objectContaining({ kind: "usage" }));
   });

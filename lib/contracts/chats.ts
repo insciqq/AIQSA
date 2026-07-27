@@ -20,7 +20,12 @@ export type ThreadMessage = {
   provider?: string;
   role: "assistant" | "user";
   runId?: string | null;
+  runUsage?: ThreadRunUsage | null;
   status: "cancelled" | "complete" | "error" | "streaming";
+};
+
+export type ThreadRunUsage = {
+  totalTokens: number;
 };
 
 export type ThreadArtifactSummary = {
@@ -105,6 +110,7 @@ export type ChatMessageWire = {
   parentMessageId: string | null;
   provider: string | null;
   role: string;
+  runUsage?: ThreadRunUsage | null;
   status: string;
 };
 
@@ -241,6 +247,18 @@ function decodeUsageStats(value: unknown): ChatUsageStats | null | undefined {
     cacheWriteInputTokens,
     totalTokens
   };
+}
+
+function decodeThreadRunUsage(value: unknown): ThreadRunUsage | null | undefined {
+  if (value === undefined || value === null) {
+    return value;
+  }
+  if (!isRecord(value)) {
+    return undefined;
+  }
+
+  const totalTokens = nonNegativeInteger(value.totalTokens);
+  return totalTokens === null ? undefined : { totalTokens };
 }
 
 function validOptionalString(record: Record<string, unknown>, key: string): boolean {
@@ -388,6 +406,7 @@ function decodeChatMessageWire(value: unknown): ChatMessageWire | null {
   const modelRunId = nullableString(value.modelRunId);
   const parentMessageId = nullableId(value.parentMessageId);
   const provider = nullableString(value.provider);
+  const runUsage = decodeThreadRunUsage(value.runUsage);
   const role = value.role === "assistant" || value.role === "user" ? value.role : null;
   const status =
     value.status === "queued" ||
@@ -414,6 +433,7 @@ function decodeChatMessageWire(value: unknown): ChatMessageWire | null {
     modelRunId === undefined ||
     parentMessageId === undefined ||
     provider === undefined ||
+    ("runUsage" in value && runUsage === undefined) ||
     !role ||
     !status ||
     !("content" in value)
@@ -432,6 +452,7 @@ function decodeChatMessageWire(value: unknown): ChatMessageWire | null {
     parentMessageId,
     provider,
     role,
+    ...(runUsage !== undefined ? { runUsage } : {}),
     status
   };
 }

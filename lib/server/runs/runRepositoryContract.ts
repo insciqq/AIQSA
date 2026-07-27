@@ -1,4 +1,8 @@
-import type { ChatUsageStats, ThreadArtifactSummary } from "../../contracts/chats";
+import type {
+  ChatUsageStats,
+  ThreadArtifactSummary,
+  ThreadRunUsage
+} from "../../contracts/chats";
 import type { CatalogAdapterKind } from "../../domain/catalog";
 import type { ModelRunResponseProjection, ModelRunStatus } from "../../contracts/runs";
 import type { ModelRunSseEvent, ModelRunUsage } from "../../domain/modelRunEvents";
@@ -90,6 +94,7 @@ export type RunChatUpdateRecord = {
     parentMessageId: string | null;
     provider: string | null;
     role: string;
+    runUsage?: ThreadRunUsage | null;
     status: string;
   }[];
 };

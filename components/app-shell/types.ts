@@ -18,6 +18,7 @@ export type {
   ThreadCitation,
   ThreadGroundingDisplay,
   ThreadMessage,
+  ThreadRunUsage,
   ThreadSearchDetail,
   ThreadToolActivity,
   ThreadToolActivityStatus,
