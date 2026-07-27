@@ -310,6 +310,16 @@ describe("ComposerControls", () => {
     expect(within(dialog).getByRole("button", { name: "Select model" })).toBeVisible();
     expect(within(dialog).getByRole("button", { name: "Reasoning effort" })).toBeVisible();
     expect(within(dialog).getByRole("button", { name: "Search strategy" })).toBeVisible();
+    const answerSetup = within(dialog).getByTestId("run-answer-setup-controls");
+    expect(answerSetup).toHaveClass("sm:grid-cols-2");
+    expect(answerSetup).not.toHaveClass("sm:grid-cols-3");
+    expect(within(dialog).getByRole("button", { name: "Select model" }).parentElement).toHaveClass(
+      "sm:col-span-2"
+    );
+    expect(dialog.querySelector("#composer-model-current-value")).toHaveTextContent("Balanced Research");
+    expect(dialog.querySelector("#composer-reasoning-effort-current-value")).toHaveTextContent(
+      "Standard · Medium"
+    );
     expect(within(dialog).getByRole("button", { name: "Prompt preset" })).toBeVisible();
     expect(within(dialog).getByRole("spinbutton", { name: "Temperature" })).toBeVisible();
     expect(within(dialog).getByRole("spinbutton", { name: "Max output tokens" })).toBeVisible();
@@ -361,13 +371,13 @@ describe("ComposerControls", () => {
   it("omits unusable profile shortcuts while retaining their diagnostics in Run setup", () => {
     const unavailableCatalog: Catalog = {
       ...catalog,
-      runProfiles: [{
+      runProfiles: (catalog.runProfiles ?? []).map((profile) => ({
         available: false,
-        description: "Simple, well-defined questions",
-        id: "fast",
-        label: "Fast",
+        description: profile.description,
+        id: profile.id,
+        label: profile.label,
         unavailableReason: "model_unavailable"
-      }]
+      }))
     };
     renderControls({ catalog: unavailableCatalog });
     expect(screen.queryByTestId("composer-inline-run-profiles")).not.toBeInTheDocument();
@@ -378,16 +388,20 @@ describe("ComposerControls", () => {
     const dialog = openRunSetup();
 
     expect(within(dialog).getByRole("heading", { name: "Profile" })).toBeVisible();
-    const action = within(dialog).getByRole("button", { name: "Use Fast run profile" });
-    const fact = within(dialog).getByText("Unavailable", {
+    const profiles = within(dialog).getByRole("group", { name: "Run profile" });
+    for (const label of ["Fast", "Balanced", "Deep"]) {
+      const action = within(profiles).getByRole("button", { name: `Use ${label} run profile` });
+      expect(action).toBeDisabled();
+      expect(action).toHaveAttribute("title", expect.stringContaining(`${label} is not available`));
+    }
+    const unavailableFacts = within(dialog).getAllByText(/Unavailable profiles cannot be used/, {
       selector: '[data-run-profile-availability="unavailable"]'
     });
-    expect(action).toBeDisabled();
-    expect(fact).toBeVisible();
-    expect(fact.tagName).toBe("SPAN");
-    expect(fact).not.toHaveAttribute("disabled");
-    expect(fact).toHaveClass("border-trace-strong", "bg-control-surface", "text-ink-secondary");
-    expect(fact).not.toHaveClass("border-caution/35", "bg-caution/10", "text-caution");
+    expect(unavailableFacts).toHaveLength(1);
+    expect(unavailableFacts[0]).toBeVisible();
+    expect(unavailableFacts[0].tagName).toBe("P");
+    expect(unavailableFacts[0]).not.toHaveClass("rounded-pill", "border");
+    expect(within(profiles).queryByText("Unavailable", { exact: true })).not.toBeInTheDocument();
     expect(dialog).not.toHaveTextContent("Disabled");
     expect(within(dialog).getByTestId("run-profile-unavailable-reason")).toHaveTextContent(
       "Unavailable profiles cannot be used with your current model access."

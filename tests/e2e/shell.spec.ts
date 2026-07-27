@@ -665,6 +665,16 @@ test("verifies provider controls, prompt preview, Gemini preview, and hidden una
     "OpenRouter / Claude Opus 4.8"
   );
   await expect(runSetup.getByRole("button", { name: "Select model" })).not.toContainText("via OpenRouter");
+  const answerSetup = runSetup.getByTestId("run-answer-setup-controls");
+  const modelIdentityParts = answerSetup.getByRole("button", { name: "Select model" }).locator(".truncate");
+  const reasoningValue = answerSetup.locator("#composer-reasoning-effort-current-value");
+  await expect(modelIdentityParts).toHaveCount(2);
+  await expect
+    .poll(() => modelIdentityParts.evaluateAll((parts) => parts.every((part) => part.scrollWidth <= part.clientWidth)))
+    .toBe(true);
+  await expect
+    .poll(() => reasoningValue.evaluate((value) => value.scrollWidth <= value.clientWidth))
+    .toBe(true);
   await expect(runSetup.getByLabel("Background mode")).toHaveCount(0);
   await expect(runSetup.getByRole("button", { name: "Stream response" })).toHaveAttribute("aria-pressed", "true");
   await expect(runSetup.getByLabel("Temperature")).toBeDisabled();
@@ -3958,6 +3968,8 @@ test("hides unusable profile shortcuts but keeps their diagnostics in portrait R
   for (const name of ["Use Fast run profile", "Use Balanced run profile", "Use Deep run profile"]) {
     await expect(profiles.getByRole("button", { name })).toBeDisabled();
   }
+  await expect(runSetup.locator('[data-run-profile-availability="unavailable"]')).toHaveCount(1);
+  await expect(profiles.getByText("Unavailable", { exact: true })).toHaveCount(0);
   await expect(runSetup.getByTestId("run-profile-unavailable-reason")).toContainText(
     "Unavailable profiles cannot be used with your current model access."
   );

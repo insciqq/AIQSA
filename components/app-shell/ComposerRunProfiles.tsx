@@ -116,6 +116,7 @@ export function ComposerRunProfiles({
             const descriptionId = `${descriptionPrefix}-${profile.id}-description`;
             const availabilityId = `${descriptionPrefix}-${profile.id}-availability`;
             const unavailable = profile.unavailableReason;
+            const showPerSlotAvailability = compact || profile.available;
 
             return (
               <span key={profile.id} className={`relative inline-flex items-center ${compact ? "" : "gap-1.5"}`}>
@@ -133,7 +134,7 @@ export function ComposerRunProfiles({
                   ].join(" ")}
                   type="button"
                   aria-label={`Use ${profile.label} run profile`}
-                  aria-describedby={`${availabilityId} ${descriptionId}`}
+                  aria-describedby={`${showPerSlotAvailability ? `${availabilityId} ` : ""}${descriptionId}`}
                   aria-pressed={active}
                   disabled={disabled || !profile.available}
                   title={`${profile.label}: ${profile.configurationLabel}. ${profile.description}${
@@ -143,11 +144,13 @@ export function ComposerRunProfiles({
                 >
                   {profile.label}
                 </button>
-                <ProfileAvailabilityFact
-                  available={profile.available}
-                  compact={compact}
-                  id={availabilityId}
-                />
+                {showPerSlotAvailability ? (
+                  <ProfileAvailabilityFact
+                    available={profile.available}
+                    compact={compact}
+                    id={availabilityId}
+                  />
+                ) : null}
                 <span className="sr-only" id={descriptionId}>
                   {profile.configurationLabel}. {profile.description}.
                   {unavailable ? ` ${unavailable}` : ""}
@@ -158,7 +161,11 @@ export function ComposerRunProfiles({
         </div>
       </div>
       {!compact && unavailableProfiles.length > 0 ? (
-        <p className="mt-2 text-xs text-ink-muted" data-testid="run-profile-unavailable-reason">
+        <p
+          className="mt-2 text-xs text-ink-muted"
+          data-run-profile-availability="unavailable"
+          data-testid="run-profile-unavailable-reason"
+        >
           {unavailableCopy}
         </p>
       ) : null}

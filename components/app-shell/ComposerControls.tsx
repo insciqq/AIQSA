@@ -442,7 +442,10 @@ export function ComposerControls({
                 aria-labelledby="run-essentials-heading"
               >
                 <h3 className="mb-2 text-xs font-semibold text-ink-secondary" id="run-essentials-heading">Answer setup</h3>
-                <div className="grid min-w-0 gap-2 sm:grid-cols-3">
+                <div
+                  className="grid min-w-0 gap-2 sm:grid-cols-2"
+                  data-testid="run-answer-setup-controls"
+                >
                   <ComposerModelPicker
                     catalog={catalog}
                     catalogUnavailable={catalogUnavailable}

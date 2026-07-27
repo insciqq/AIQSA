@@ -165,7 +165,11 @@ export function ComposerModelPicker({
     <div
       {...boundaryProps}
       ref={boundaryRef}
-      className={["relative col-span-3 min-w-0 sm:col-span-1", className].filter(Boolean).join(" ")}
+      className={[
+        "relative col-span-3 min-w-0",
+        nestedInRunSetup ? "sm:col-span-2" : "sm:col-span-1",
+        className
+      ].filter(Boolean).join(" ")}
     >
       <button
         {...triggerProps}
