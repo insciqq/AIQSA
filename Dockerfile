@@ -40,29 +40,6 @@ ENV NODE_ENV=production
 COPY . .
 RUN npm run build
 
-FROM ${NODE_IMAGE} AS runtime
-
-WORKDIR /app
-
-ENV NEXT_TELEMETRY_DISABLED=1
-ENV NODE_ENV=production
-ENV HOSTNAME=0.0.0.0
-ENV PORT=3000
-
-RUN apt-get update \
-  && apt-get install -y --no-install-recommends ca-certificates openssl \
-  && rm -rf /var/lib/apt/lists/*
-
-COPY --chown=node:node --from=runtime-build /app/.next/standalone ./
-COPY --chown=node:node --from=runtime-build /app/.next/static ./.next/static
-COPY --chown=node:node --from=runtime-build /app/public ./public
-
-USER node
-
-EXPOSE 3000
-
-CMD ["node", "server.js"]
-
 # Retain only the four direct tools roots and let npm preserve their complete
 # locked transitive closure. Deriving their versions from the npm-ci result
 # keeps package-lock.json authoritative without naming transitive packages.
@@ -80,14 +57,16 @@ RUN PRISMA_VERSION="$(node -p "require('./node_modules/prisma/package.json').ver
     "dependencies.tsx=$TSX_VERSION" \
   && npm prune --omit=dev --ignore-scripts --no-audit --no-fund
 
-# Prisma migrations and the installation bootstrap deliberately live outside the
-# long-running application image. Copying the pruned tree into a clean stage
-# prevents deleted build dependencies from remaining in lower image layers.
-FROM ${NODE_IMAGE} AS tools
+# One published image owns both the standalone application and the narrowly
+# pruned installation tools. Compose selects the role by overriding the command.
+FROM ${NODE_IMAGE} AS release
 
 WORKDIR /app
 
 ENV NEXT_TELEMETRY_DISABLED=1
+ENV NODE_ENV=production
+ENV HOSTNAME=0.0.0.0
+ENV PORT=3000
 
 RUN apt-get update \
   && apt-get install -y --no-install-recommends ca-certificates openssl \
@@ -95,7 +74,17 @@ RUN apt-get update \
 
 COPY --chown=node:node --from=tools-deps /app/node_modules ./node_modules
 COPY --chown=node:node . .
+COPY --chown=node:node --from=runtime-build /app/.next/standalone ./runtime
+COPY --chown=node:node --from=runtime-build /app/.next/static ./runtime/.next/static
+COPY --chown=node:node --from=runtime-build /app/public ./runtime/public
 
 USER node
 
-CMD ["sh", "-c", "npm run db:migrate:deploy && npm run db:cutover && npm run db:bootstrap"]
+EXPOSE 3000
+
+CMD ["node", "runtime/server.js"]
+
+# Backward-compatible local target names. Both are byte-identical aliases of
+# the single release image and are not published as separate packages.
+FROM release AS runtime
+FROM release AS tools

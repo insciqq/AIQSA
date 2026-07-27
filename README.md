@@ -1,5 +1,9 @@
 # AIQSA
 
+[![Release](https://github.com/insciqq/AIQSA/actions/workflows/release.yml/badge.svg)](https://github.com/insciqq/AIQSA/actions/workflows/release.yml)
+[![GitHub release](https://img.shields.io/github/v/release/insciqq/AIQSA)](https://github.com/insciqq/AIQSA/releases/latest)
+[![License: AGPL-3.0](https://img.shields.io/github/license/insciqq/AIQSA)](LICENSE)
+
 Self-hosted Question → Search → Answer for people and small teams who want an AI workspace with explicit control over providers, models, search, and run data.
 
 ![AIQSA conversation workspace with model and search controls](docs/assets/ui/product/aiqsa-workspace.png)
@@ -42,7 +46,8 @@ Edit `.env` and fill every value marked **required**. In particular, set:
 Then start AIQSA:
 
 ```bash
-docker compose up -d --build
+docker compose pull
+docker compose up -d
 ```
 
 Open [http://localhost:3000](http://localhost:3000) and sign in with the initial administrator account from `.env`.
@@ -55,14 +60,15 @@ The bundled ToolHive service lets an administrator add remote, npm, PyPI, or dig
 
 ## Updating
 
-AIQSA is built from the current Git checkout and does not update itself. From
-the existing installation directory, create a verified backup, pull the branch
-configured for that clone, and rebuild the stack:
+The default `.env` follows the published `latest` image. From the existing
+installation directory, create a verified backup, update the small Compose
+checkout, pull the current image, and restart the stack:
 
 ```bash
 ops/backup/create.sh /secure/aiqsa-backups
 git pull --ff-only
-docker compose up -d --build
+docker compose pull
+docker compose up -d
 docker compose ps
 curl -fsS http://127.0.0.1:3000/api/health/ready
 ```
@@ -72,7 +78,8 @@ startup job applies committed database migrations before the application
 becomes ready. The local `.env`, existing users, chats, settings, and uploaded
 objects remain in the installation and named Docker volumes. Review release
 notes and changes to `.env.example` before large version jumps or when new
-configuration is required.
+configuration is required. To hold a specific release, set `AIQSA_IMAGE` in
+the same `.env` to a tag such as `ghcr.io/insciqq/aiqsa:0.1.0`.
 
 Stopping the stack first is normally unnecessary. Never run
 `docker compose down -v` during an update: `-v` deletes the persistent database

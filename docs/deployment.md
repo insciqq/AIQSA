@@ -23,7 +23,8 @@ The minimum requirement is a Linux server with Docker Engine and the Docker Comp
 3. Start the stack with the same command used locally:
 
    ```bash
-   docker compose up -d --build
+   docker compose pull
+   docker compose up -d
    ```
 
 4. Point a reverse proxy at `http://127.0.0.1:3000` and issue a TLS certificate. The repository includes an [Nginx starting point](../ops/nginx/README.md); replace its example domain and port with `AIQSA_PORT` before enabling it.
@@ -47,7 +48,7 @@ The default stack stores PostgreSQL, MinIO, and disposable ToolHive state in the
 ```bash
 docker compose stop
 docker compose down
-docker compose up -d --build
+docker compose up -d
 ```
 
 `docker compose down -v` deletes those volumes and therefore the installation data. It still does not reliably delete dynamic sibling MCP containers because they are not Compose project members. Before uninstalling, changing `AIQSA_ENCRYPTION_KEY`, or abandoning a host, preview and then execute exact-marker cleanup:
@@ -99,11 +100,12 @@ From the existing checkout:
 ```bash
 ops/backup/create.sh /secure/aiqsa-backups
 git pull --ff-only
-docker compose up -d --build
+docker compose pull
+docker compose up -d
 docker compose ps
 ```
 
-The one-shot startup job applies committed migrations and safely adopts an existing installation before the application becomes ready. Existing users, chats, settings, and uploaded objects remain in the named volumes.
+The one-shot startup job from the same release image applies committed migrations and safely adopts an existing installation before the application becomes ready. Existing users, chats, settings, and uploaded objects remain in the named volumes. The default `AIQSA_IMAGE` follows `latest`; set it in the existing `.env` to a version tag such as `ghcr.io/insciqq/aiqsa:0.1.0` when you prefer explicit upgrades.
 
 Afterward, check readiness and one real provider path:
 

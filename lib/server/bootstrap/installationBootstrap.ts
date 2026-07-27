@@ -201,7 +201,10 @@ async function hasApplicationRows(tx: Prisma.TransactionClient): Promise<boolean
         UNION ALL SELECT 1 FROM "ProviderGroupCredentialAssignment"
         UNION ALL SELECT 1 FROM "ProviderUserCredentialAssignment"
         UNION ALL SELECT 1 FROM "ProviderRunBinding"
+        -- This code-owned strategy is inserted by its append-only migration
+        -- even on a fresh schema, before installation bootstrap runs.
         UNION ALL SELECT 1 FROM "SearchStrategy"
+          WHERE "strategyId" <> 'gemini-google-search'
         UNION ALL SELECT 1 FROM "Chat"
         UNION ALL SELECT 1 FROM "Message"
         UNION ALL SELECT 1 FROM "ModelRun"

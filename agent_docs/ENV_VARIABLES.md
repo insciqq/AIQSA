@@ -119,8 +119,7 @@ The repository `ops/backup/create.sh` helper deliberately supports only the bund
 ## Advanced Compose Inputs
 
 ```text
-AIQSA_APP_IMAGE=aiqsa-app:local
-AIQSA_TOOLS_IMAGE=aiqsa-tools:local
+AIQSA_IMAGE=ghcr.io/insciqq/aiqsa:latest
 AIQSA_APP_REVISION=
 AIQSA_APP_CPU_LIMIT=2.0
 AIQSA_APP_MEMORY_LIMIT=2g
@@ -137,7 +136,7 @@ AIQSA_MINIO_VOLUME_NAME=aiqsa_minio_data
 AIQSA_TOOLHIVE_VOLUME_NAME=aiqsa_toolhive_data
 ```
 
-The app and tools images may be replaced by prebuilt commit-tagged images with `--no-build`. `AIQSA_APP_REVISION` is privacy-safe backup metadata for release trees without `.git`; it is not passed to the web runtime. CPU/memory values are hard container limits and JSON-file logs rotate at the documented bounds.
+The app, migration/bootstrap, and maintenance services share `AIQSA_IMAGE`. Its default is the public `latest` release; one SemVer or `sha-...` tag in the same `.env` pins every role to one immutable build. `AIQSA_APP_REVISION` is privacy-safe backup metadata for release trees without `.git`; it is not passed to the web runtime. CPU/memory values are hard container limits and JSON-file logs rotate at the documented bounds.
 
 Stable explicit volume names make normal rebuild/update operations independent of checkout-directory naming. The volume-name overrides exist only to adopt already-existing Docker volumes. ToolHive state is sensitive, disposable observed state and is never authoritative for MCP definitions or encrypted credentials. Because explicit volume names do not follow `docker compose -p`, every disposable installation smoke that starts this topology must set unique PostgreSQL, MinIO, and ToolHive volume overrides; routine checks instead use the separate dev Compose file.
 

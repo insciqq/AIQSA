@@ -7,10 +7,10 @@ cp .env.example .env
 chmod 600 .env
 ```
 
-Fill every value marked required. LLM providers and email delivery are configured after sign-in and do not require a restart. Rebuild/restart the stack only after changing infrastructure or root-of-trust settings:
+Fill every value marked required. LLM providers and email delivery are configured after sign-in and do not require a restart. Restart the stack only after changing infrastructure or root-of-trust settings:
 
 ```bash
-docker compose up -d --build
+docker compose up -d
 ```
 
 ## Required settings
@@ -139,7 +139,7 @@ The optional `AIQSA_SMTP_CONNECT_TIMEOUT_MS`, `AIQSA_SMTP_COMMAND_TIMEOUT_MS`, a
 ADR 0022/0023 use a full stopped cutover, not a compatibility mode:
 
 1. Stop the old application and take a coordinated PostgreSQL/object-storage backup.
-2. Keep the old provider and SMTP variables in the private `.env` for the first upgraded `docker compose up -d --build` only. The one-shot tools container holds the installation lock, upgrades MCP envelopes, and imports complete legacy values as disabled, untested encrypted drafts. It performs no provider/SMTP network request.
+2. Keep the old provider and SMTP variables in the private `.env` for the first upgraded `docker compose up -d` only. The one-shot migration container holds the installation lock, upgrades MCP envelopes, and imports complete legacy values as disabled, untested encrypted drafts. It performs no provider/SMTP network request.
 3. Sign in and review each imported draft in Control Center. For providers, review the imported endpoint, models, and credential assignments, then Activate; activation validates every referenced imported key, while model/route diagnostics remain optional. For SMTP, run its exact-draft Test and Activate it.
 4. Remove the old provider keys/base URLs and SMTP connection/password variables from `.env`; they never enter the application container and are not a fallback.
 
@@ -185,8 +185,7 @@ The following advanced Compose settings have bounded defaults and normally need 
 
 | Variable | Default |
 | --- | --- |
-| `AIQSA_APP_IMAGE` | `aiqsa-app:local` |
-| `AIQSA_TOOLS_IMAGE` | `aiqsa-tools:local` |
+| `AIQSA_IMAGE` | `ghcr.io/insciqq/aiqsa:latest` |
 | `AIQSA_APP_REVISION` | blank |
 | `AIQSA_APP_CPU_LIMIT` / `AIQSA_APP_MEMORY_LIMIT` | `2.0` / `2g` |
 | `AIQSA_TOOLS_CPU_LIMIT` / `AIQSA_TOOLS_MEMORY_LIMIT` | `1.0` / `1g` |
@@ -197,7 +196,7 @@ The following advanced Compose settings have bounded defaults and normally need 
 | `AIQSA_MINIO_VOLUME_NAME` | `aiqsa_minio_data` |
 | `AIQSA_TOOLHIVE_VOLUME_NAME` | `aiqsa_toolhive_data` |
 
-`AIQSA_APP_REVISION` is optional release metadata used by backup manifests when the checkout does not contain Git metadata; release automation must export it when invoking the backup helper. The volume-name overrides are for adopting existing Docker volumes during a migration; fresh installations should keep the stable defaults. ToolHive state is disposable observed runtime state, not the source of MCP definitions or credentials.
+`AIQSA_IMAGE` selects the one image used by the app, migration/bootstrap, and maintenance services. Keep `latest` for the simplest update path or use a version tag from [GitHub Releases](https://github.com/insciqq/AIQSA/releases). `AIQSA_APP_REVISION` is optional release metadata used by backup manifests when the checkout does not contain Git metadata; release automation must export it when invoking the backup helper. The volume-name overrides are for adopting existing Docker volumes during a migration; fresh installations should keep the stable defaults. ToolHive state is disposable observed runtime state, not the source of MCP definitions or credentials.
 
 ## Emergency login
 

@@ -8,11 +8,7 @@ x-logging: &default-logging
 
 services:
   app:
-    image: ${AIQSA_APP_IMAGE:-aiqsa-app:local}
-    build:
-      context: .
-      dockerfile: Dockerfile
-      target: runtime
+    image: ${AIQSA_IMAGE:-ghcr.io/insciqq/aiqsa:latest}
     environment:
       AIQSA_APP_BASE_URL: ${AIQSA_APP_BASE_URL:-http://localhost:3000}
       AIQSA_AUTH_SESSION_SECRET: ${AIQSA_AUTH_SESSION_SECRET:?Set AIQSA_AUTH_SESSION_SECRET in .env}
@@ -101,11 +97,7 @@ services:
       - toolhive_data:/var/lib/toolhive
 
   migrate-bootstrap:
-    image: ${AIQSA_TOOLS_IMAGE:-aiqsa-tools:local}
-    build:
-      context: .
-      dockerfile: Dockerfile
-      target: tools
+    image: ${AIQSA_IMAGE:-ghcr.io/insciqq/aiqsa:latest}
     environment:
       AIQSA_ENCRYPTION_KEY: ${AIQSA_ENCRYPTION_KEY:?Set AIQSA_ENCRYPTION_KEY in .env}
       AIQSA_INITIAL_ADMIN_DISPLAY_NAME: ${AIQSA_INITIAL_ADMIN_DISPLAY_NAME:-Administrator}
@@ -149,11 +141,7 @@ services:
   mcp-maintenance:
     profiles:
       - maintenance
-    image: ${AIQSA_TOOLS_IMAGE:-aiqsa-tools:local}
-    build:
-      context: .
-      dockerfile: Dockerfile
-      target: tools
+    image: ${AIQSA_IMAGE:-ghcr.io/insciqq/aiqsa:latest}
     entrypoint: ["npm", "run", "mcp:cleanup", "--"]
     command: []
     environment:
