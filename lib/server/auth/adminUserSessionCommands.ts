@@ -214,6 +214,7 @@ export function createAdminUserSessionCommands(prisma: PrismaClient): AdminUserS
 async function countUserOwnedAppData(tx: Prisma.TransactionClient, userId: string): Promise<number> {
   const [
     accessGrants,
+    authSessionsRevoked,
     attachments,
     chats,
     folders,
@@ -229,6 +230,11 @@ async function countUserOwnedAppData(tx: Prisma.TransactionClient, userId: strin
     tx.accessGrant.count({
       where: {
         userId
+      }
+    }),
+    tx.authSession.count({
+      where: {
+        revokedByUserId: userId
       }
     }),
     tx.attachment.count({
@@ -290,6 +296,7 @@ async function countUserOwnedAppData(tx: Prisma.TransactionClient, userId: strin
 
   return adminOwnedAppDataCount({
     accessGrants,
+    authSessionsRevoked,
     attachments,
     chats,
     folders,

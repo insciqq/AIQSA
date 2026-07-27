@@ -150,6 +150,8 @@ docker compose -f docker-compose.dev.yml exec -T \
 
 Use the standalone `run --rm` Playwright form only when the selected spec requires its configured reset and losing interactive development fixtures is acceptable. The test tree and Playwright configuration own the available spec names and their fixtures.
 
+When a reusable-server slice needs an expired/revoked session, it must update only the exact browser session created by that case and record an explicit test reason. Do not invoke a user-wide admin revoke or disable against the seeded operator: the development stack can contain other live operator sessions even though its data is disposable.
+
 These opt-ins are not a cumulative release pipeline. Exposed-installation readiness is proved by the specific migration, bootstrap, backup/restore, hardening, security, observability, quota, and load work that changed—not by rerunning unrelated integrations for every feature.
 
 ## Test Authoring

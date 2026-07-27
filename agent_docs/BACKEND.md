@@ -120,7 +120,7 @@ Folder names are unique among siblings for each user. Top-level folders use the 
 
 For MCP, `Full access` uses the materialized group-grant path: bootstrap and the development seed ensure one protected `canUse = true`, empty-personal-slot `McpGrant` for every existing server, and the database insert trigger creates the same grant for every future server. Server deletion still cascades through those rows. This grants server use only; personal slot permission, personal encrypted values, and user OAuth identity remain direct-user state.
 
-Admin hard-delete workflows are intentionally narrow. Stale users can be deleted only when they are not active, are not the acting admin, and own no chats, folders, runs, uploads, prompts, settings, shares, usage events, or access grants. Groups can be deleted only with zero members and zero enabled grants. Invites can be deleted only after they are revoked or expired; accepted invites remain audit history by default.
+Admin hard-delete workflows are intentionally narrow. Stale users can be deleted only when they are not active, are not the acting admin, and retain no chats, folders, runs, uploads, prompts, settings, shares, usage events, access grants, or authored session-revocation evidence. Groups can be deleted only with zero members and zero enabled grants. Invites can be deleted only after they are revoked or expired; accepted invites remain audit history by default.
 
 `PromptPreset.isDefault` stores the same current-user prompt default represented by `UserSettings.defaultPromptPresetId`. Prompt default write paths clear the user's other prompt flags before setting the selected prompt, and the partial unique index `PromptPreset_one_default_per_user_idx` enforces at most one default prompt flag per user.
 

@@ -219,7 +219,7 @@ model AuthSession {
   lastSeenAt         DateTime?
   createdAt          DateTime  @default(now())
   updatedAt          DateTime  @updatedAt
-  revokedBy          User?     @relation("AuthSessionRevoker", fields: [revokedByUserId], references: [id], onDelete: SetNull)
+  revokedBy          User?     @relation("AuthSessionRevoker", fields: [revokedByUserId], references: [id], onDelete: Restrict)
   user               User      @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([expiresAt])

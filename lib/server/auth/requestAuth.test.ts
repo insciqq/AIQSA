@@ -5,8 +5,7 @@ import {
   createRequestAuthResolver,
   deleteExpiredSessions,
   resolveAuthToken,
-  revokeRequestSession,
-  revokeUserSessions
+  revokeRequestSession
 } from "./requestAuth";
 import { getAuthConfig, TEST_AUTH_TOKEN } from "./config";
 import { createMemoryAuthSessionStore, createTestUser } from "./testRequestAuth";
@@ -88,7 +87,7 @@ describe("DB-backed request auth", () => {
           cookie: revoked.cookie
         }
       }),
-      revokedReason: "test",
+      revokedReason: "logout",
       sessions: revokedSessions
     });
 
@@ -102,7 +101,7 @@ describe("DB-backed request auth", () => {
     await expect(resolveAuthToken(revoked.token, { sessions: revokedSessions })).resolves.toBeNull();
   });
 
-  it("revokes current and user sessions, and can delete expired rows", async () => {
+  it("revokes the current session and can delete expired rows", async () => {
     const sessions = createMemoryAuthSessionStore();
     const current = await createAuthSession({
       now: new Date("2026-06-01T00:00:00.000Z"),
@@ -126,13 +125,6 @@ describe("DB-backed request auth", () => {
         }),
         revokedReason: "logout",
         sessions
-      })
-    ).resolves.toBe(1);
-    await expect(
-      revokeUserSessions({
-        revokedReason: "admin_revoke",
-        sessions,
-        userId: config.bootstrapUserId
       })
     ).resolves.toBe(1);
     await expect(deleteExpiredSessions({ now: new Date("2026-06-20T00:00:00.000Z"), sessions })).resolves.toBe(2);

@@ -7,6 +7,8 @@ const prisma = new PrismaClient();
 const expectedConstraintNames = [
   "AccessGrant_subject_check",
   "AccessGrant_target_check",
+  "AuthSession_revocation_attribution_check",
+  "AuthSession_revokedByUserId_fkey",
   "Chat_id_activeLeafMessageId_fkey",
   "Message_chatId_parentMessageId_fkey"
 ] as const;
@@ -135,6 +137,8 @@ async function assertConstraintCatalog(): Promise<void> {
     WHERE conname IN (
       'AccessGrant_subject_check',
       'AccessGrant_target_check',
+      'AuthSession_revocation_attribution_check',
+      'AuthSession_revokedByUserId_fkey',
       'Chat_id_activeLeafMessageId_fkey',
       'Message_chatId_parentMessageId_fkey'
     )

@@ -366,6 +366,7 @@ describe("Prisma attachment retention outbox", () => {
       data: {
         expiresAt: new Date("2026-08-01T00:00:00.000Z"),
         revokedAt: new Date("2026-05-01T00:00:00.000Z"),
+        revokedReason: "fixture_retention",
         tokenHash: `old-revoked-${randomUUID()}`,
         userId: user.id
       }
@@ -381,6 +382,7 @@ describe("Prisma attachment retention outbox", () => {
       data: {
         expiresAt: new Date("2026-05-01T00:00:00.000Z"),
         revokedAt: new Date("2026-07-01T00:00:00.000Z"),
+        revokedReason: "fixture_retention",
         tokenHash: `recent-revoked-${randomUUID()}`,
         userId: user.id
       }

@@ -53,20 +53,6 @@ export function createPrismaAuthSessionStore(prisma: PrismaClient): AuthSessionS
 
       return result.count;
     },
-    async revokeUserSessions(input) {
-      const result = await prisma.authSession.updateMany({
-        data: {
-          revokedAt: input.revokedAt,
-          revokedReason: input.revokedReason
-        },
-        where: {
-          revokedAt: null,
-          userId: input.userId
-        }
-      });
-
-      return result.count;
-    },
     async touchSessionActivity(input) {
       await prisma.authSession.updateMany({
         data: { lastSeenAt: input.lastSeenAt },

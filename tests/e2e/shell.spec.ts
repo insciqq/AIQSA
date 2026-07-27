@@ -3,6 +3,8 @@ import { PrismaClient } from "@prisma/client";
 import { expect, test, type BrowserContext, type Route } from "@playwright/test";
 import { DEFAULT_BOOTSTRAP_USER_ID } from "../../lib/server/auth/config";
 import { hashPassword } from "../../lib/server/auth/password";
+import { SESSION_COOKIE_NAME } from "../../lib/server/auth/session";
+import { hashToken } from "../../lib/server/auth/token";
 import {
   expectCenterUnobscured,
   expectNoHorizontalOverflow,
@@ -337,13 +339,43 @@ test("returns through login with the active draft after the session is revoked",
 
   const composer = page.getByRole("textbox", { name: "Message" });
   await composer.fill(draft);
-  const revokeResponse = await page.request.post("/api/admin/action", {
-    data: {
-      action: "revoke_user_sessions",
-      userId: DEFAULT_BOOTSTRAP_USER_ID
-    }
-  });
-  expect(revokeResponse.ok()).toBe(true);
+  const sessionCookie = (await page.context().cookies()).find((cookie) => cookie.name === SESSION_COOKIE_NAME);
+  expect(sessionCookie).toBeDefined();
+  if (!sessionCookie) throw new Error("The signed-in browser session cookie is missing");
+
+  const revocationPrisma = new PrismaClient();
+  const sentinelTokenHash = hashToken(`reauth-sentinel-${randomUUID()}`);
+  try {
+    await revocationPrisma.authSession.create({
+      data: {
+        expiresAt: new Date("2099-01-01T00:00:00.000Z"),
+        tokenHash: sentinelTokenHash,
+        userId: DEFAULT_BOOTSTRAP_USER_ID
+      }
+    });
+    await expect(
+      revocationPrisma.authSession.updateMany({
+        data: {
+          revokedAt: new Date(),
+          revokedReason: "test_session_revocation"
+        },
+        where: {
+          revokedAt: null,
+          tokenHash: hashToken(sessionCookie.value),
+          userId: DEFAULT_BOOTSTRAP_USER_ID
+        }
+      })
+    ).resolves.toEqual({ count: 1 });
+    await expect(
+      revocationPrisma.authSession.findUniqueOrThrow({
+        select: { revokedAt: true },
+        where: { tokenHash: sentinelTokenHash }
+      })
+    ).resolves.toEqual({ revokedAt: null });
+  } finally {
+    await revocationPrisma.authSession.deleteMany({ where: { tokenHash: sentinelTokenHash } });
+    await revocationPrisma.$disconnect();
+  }
 
   await Promise.all([
     page.waitForURL(/\/login\?/),

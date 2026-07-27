@@ -40,12 +40,17 @@ export type CreateAuthSessionInput = {
   userId: string;
 };
 
+export type RequestSessionRevocationReason = "logout";
+
 export type AuthSessionStore = {
   createSession(input: CreateAuthSessionInput): Promise<AuthSessionRecord>;
   deleteExpiredSessions?(now: Date): Promise<number>;
   findSessionByTokenHash(tokenHash: string): Promise<AuthSessionRecord | null>;
-  revokeSessionByTokenHash(input: { revokedAt: Date; revokedReason: string; tokenHash: string }): Promise<number>;
-  revokeUserSessions?(input: { revokedAt: Date; revokedReason: string; userId: string }): Promise<number>;
+  revokeSessionByTokenHash(input: {
+    revokedAt: Date;
+    revokedReason: RequestSessionRevocationReason;
+    tokenHash: string;
+  }): Promise<number>;
   touchSessionActivity?(input: {
     lastSeenAt: Date;
     sessionId: string;
@@ -186,7 +191,7 @@ export async function createAuthSession(input: {
 
 export async function revokeRequestSession(input: {
   request: Request;
-  revokedReason: string;
+  revokedReason: RequestSessionRevocationReason;
   sessions: AuthSessionStore;
 }): Promise<number> {
   const token = getSessionFromRequest(input.request);
@@ -200,20 +205,6 @@ export async function revokeRequestSession(input: {
     revokedReason: input.revokedReason,
     tokenHash: hashToken(token)
   });
-}
-
-export async function revokeUserSessions(input: {
-  revokedReason: string;
-  sessions: AuthSessionStore;
-  userId: string;
-}): Promise<number> {
-  return (
-    (await input.sessions.revokeUserSessions?.({
-      revokedAt: new Date(),
-      revokedReason: input.revokedReason,
-      userId: input.userId
-    })) ?? 0
-  );
 }
 
 export async function deleteExpiredSessions(input: { now?: Date; sessions: AuthSessionStore }): Promise<number> {

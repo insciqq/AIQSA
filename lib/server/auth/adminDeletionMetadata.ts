@@ -28,6 +28,7 @@ export type AdminInviteDeletionSource = Readonly<{
 export type AdminUserOwnedDataSource = Readonly<{
   _count: Readonly<{
     accessGrants: number;
+    authSessionsRevoked: number;
     attachments: number;
     chats: number;
     folders: number;
@@ -44,6 +45,7 @@ export type AdminUserOwnedDataSource = Readonly<{
 
 export type AdminOwnedAppDataCounts = Readonly<{
   accessGrants: number;
+  authSessionsRevoked: number;
   attachments: number;
   chats: number;
   folders: number;
@@ -202,6 +204,7 @@ export function adminUserOwnedDataCount(user: AdminUserOwnedDataSource): number 
 export function adminOwnedAppDataCount(counts: AdminOwnedAppDataCounts): number {
   return (
     counts.accessGrants +
+    counts.authSessionsRevoked +
     counts.attachments +
     counts.chats +
     counts.folders +

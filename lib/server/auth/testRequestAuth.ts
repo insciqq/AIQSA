@@ -102,17 +102,6 @@ export function createMemoryAuthSessionStore(input: {
       record.revokedAt = input.revokedAt;
       return 1;
     },
-    async revokeUserSessions(input) {
-      let revoked = 0;
-      for (const record of records.values()) {
-        if (record.userId === input.userId && !record.revokedAt) {
-          record.revokedAt = input.revokedAt;
-          revoked += 1;
-        }
-      }
-
-      return revoked;
-    },
     async touchSessionActivity(activity) {
       for (const record of records.values()) {
         const lastSeenAt = record.lastSeenAt ? new Date(record.lastSeenAt) : null;

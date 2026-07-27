@@ -19,6 +19,7 @@ const adminDashboardUserSelect = {
   _count: {
     select: {
       accessGrants: true,
+      authSessionsRevoked: true,
       attachments: true,
       chats: true,
       folders: true,

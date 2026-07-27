@@ -86,6 +86,15 @@ async function withAdminData<T>(
         ]
       }
     });
+    await prisma.authSession.deleteMany({
+      where: {
+        user: {
+          email: {
+            endsWith: `@${domain}`
+          }
+        }
+      }
+    });
     await prisma.user.deleteMany({
       where: {
         email: {
@@ -362,24 +371,22 @@ describe("Prisma admin repository", () => {
     });
   });
 
-  it("serializes two active administrators disabling one another and leaves one active", async () => {
-    await withAdminData(async ({ adminId, repository }) => {
-      const bootstrap = await prisma.user.findUniqueOrThrow({
-        select: {
-          role: true,
-          status: true
-        },
-        where: {
-          id: DEFAULT_BOOTSTRAP_USER_ID
-        }
-      });
-      await prisma.user.update({
+  it("serializes reciprocal fixture-admin disables without revoking seeded operator sessions", async () => {
+    await withAdminData(async ({ adminId, domain, repository }) => {
+      const peerAdmin = await prisma.user.create({
         data: {
+          displayName: "Peer Admin Test Operator",
+          email: `peer-operator@${domain}`,
           role: "admin",
           status: "active"
-        },
-        where: {
-          id: DEFAULT_BOOTSTRAP_USER_ID
+        }
+      });
+      const sentinelTokenHash = hashToken(`seeded-operator-session-${domain}`);
+      await prisma.authSession.create({
+        data: {
+          expiresAt: new Date("2099-01-01T00:00:00.000Z"),
+          tokenHash: sentinelTokenHash,
+          userId: DEFAULT_BOOTSTRAP_USER_ID
         }
       });
 
@@ -387,10 +394,10 @@ describe("Prisma admin repository", () => {
         const results = await Promise.all([
           repository.disableUser({
             revokedByUserId: adminId,
-            userId: DEFAULT_BOOTSTRAP_USER_ID
+            userId: peerAdmin.id
           }),
           repository.disableUser({
-            revokedByUserId: DEFAULT_BOOTSTRAP_USER_ID,
+            revokedByUserId: peerAdmin.id,
             userId: adminId
           })
         ]);
@@ -401,7 +408,7 @@ describe("Prisma admin repository", () => {
           },
           where: {
             id: {
-              in: [adminId, DEFAULT_BOOTSTRAP_USER_ID]
+              in: [adminId, peerAdmin.id]
             }
           }
         });
@@ -409,11 +416,26 @@ describe("Prisma admin repository", () => {
         expect(results.sort()).toEqual(["disabled", "last_admin_forbidden"]);
         expect(users.filter((user) => user.status === "active")).toHaveLength(1);
         expect(users.filter((user) => user.status === "disabled")).toHaveLength(1);
+        await expect(
+          prisma.authSession.findUniqueOrThrow({
+            select: {
+              revokedAt: true,
+              revokedByUserId: true,
+              revokedReason: true
+            },
+            where: {
+              tokenHash: sentinelTokenHash
+            }
+          })
+        ).resolves.toEqual({
+          revokedAt: null,
+          revokedByUserId: null,
+          revokedReason: null
+        });
       } finally {
-        await prisma.user.update({
-          data: bootstrap,
+        await prisma.authSession.deleteMany({
           where: {
-            id: DEFAULT_BOOTSTRAP_USER_ID
+            tokenHash: sentinelTokenHash
           }
         });
       }
@@ -1512,6 +1534,76 @@ describe("Prisma admin repository", () => {
       } finally {
         updateMany.mockRestore();
       }
+    });
+  });
+
+  it("enforces a reason and admin actor for revocation while preserving actor history", async () => {
+    await withAdminData(async ({ adminId, domain, repository }) => {
+      const target = await createPasswordUser({
+        displayName: "Attributed Session User",
+        domain,
+        emailLocalPart: "attributed-session",
+        status: "active"
+      });
+      const missingReasonHash = hashToken(`missing-reason-${domain}`);
+      const missingActorHash = hashToken(`missing-actor-${domain}`);
+      const systemHash = hashToken(`system-revocation-${domain}`);
+      const adminHash = hashToken(`admin-revocation-${domain}`);
+      const revokedAt = new Date("2026-07-27T14:24:57.972Z");
+
+      await prisma.authSession.createMany({
+        data: [missingReasonHash, missingActorHash, systemHash, adminHash].map((tokenHash) => ({
+          expiresAt: new Date("2099-01-01T00:00:00.000Z"),
+          tokenHash,
+          userId: target.id
+        }))
+      });
+
+      await expect(
+        prisma.authSession.update({
+          data: { revokedAt },
+          where: { tokenHash: missingReasonHash }
+        })
+      ).rejects.toThrow();
+      await expect(
+        prisma.authSession.update({
+          data: {
+            revokedAt,
+            revokedReason: "admin_revoke_user"
+          },
+          where: { tokenHash: missingActorHash }
+        })
+      ).rejects.toThrow();
+      await expect(
+        prisma.authSession.update({
+          data: {
+            revokedAt,
+            revokedReason: "password_reset"
+          },
+          where: { tokenHash: systemHash }
+        })
+      ).resolves.toMatchObject({
+        revokedAt,
+        revokedByUserId: null,
+        revokedReason: "password_reset"
+      });
+      await expect(
+        repository.revokeUserSessions({
+          revokedByUserId: adminId,
+          userId: target.id
+        })
+      ).resolves.toBe(3);
+
+      await expect(
+        prisma.authSession.findUniqueOrThrow({ where: { tokenHash: adminHash } })
+      ).resolves.toMatchObject({
+        revokedAt: expect.any(Date),
+        revokedByUserId: adminId,
+        revokedReason: "admin_revoke_user"
+      });
+      await expect(prisma.user.delete({ where: { id: adminId } })).rejects.toThrow();
+
+      await prisma.user.delete({ where: { id: target.id } });
     });
   });
 });

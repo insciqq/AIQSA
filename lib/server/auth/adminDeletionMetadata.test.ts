@@ -18,6 +18,7 @@ function ownedDataSource(
   return {
     _count: {
       accessGrants: 0,
+      authSessionsRevoked: 0,
       attachments: 0,
       chats: 0,
       folders: 0,
@@ -317,6 +318,7 @@ describe("admin deletion metadata", () => {
   it("counts every app-owned relation and settings without counting null settings", () => {
     const countFields: Array<keyof AdminUserOwnedDataSource["_count"]> = [
       "accessGrants",
+      "authSessionsRevoked",
       "attachments",
       "chats",
       "folders",
@@ -334,6 +336,7 @@ describe("admin deletion metadata", () => {
     for (const field of countFields) {
       const counts = {
         accessGrants: 0,
+        authSessionsRevoked: 0,
         attachments: 0,
         chats: 0,
         folders: 0,
@@ -356,6 +359,7 @@ describe("admin deletion metadata", () => {
         ownedDataSource(
           {
             accessGrants: 1,
+            authSessionsRevoked: 12,
             attachments: 2,
             chats: 3,
             folders: 4,
@@ -370,10 +374,11 @@ describe("admin deletion metadata", () => {
           {}
         )
       )
-    ).toBe(67);
+    ).toBe(79);
     expect(
       adminOwnedAppDataCount({
         accessGrants: 1,
+        authSessionsRevoked: 13,
         attachments: 2,
         chats: 3,
         folders: 4,
@@ -386,6 +391,6 @@ describe("admin deletion metadata", () => {
         sharedSnapshots: 11,
         usageEvents: 12
       })
-    ).toBe(78);
+    ).toBe(91);
   });
 });
