@@ -8,6 +8,7 @@ export function ComposerOptionPicker({
   className,
   defaultValue,
   disabled,
+  embeddedInMenu = false,
   icon,
   id,
   label,
@@ -15,6 +16,8 @@ export function ComposerOptionPicker({
   onChange,
   options,
   placement = "above",
+  pickerDescription = "Changes apply to the next message.",
+  pickerTitle,
   resting = false,
   restingLabel,
   restingLabelClassName,
@@ -27,13 +30,16 @@ export function ComposerOptionPicker({
   className?: string;
   defaultValue?: string;
   disabled: boolean;
+  embeddedInMenu?: boolean;
   icon?: ReactNode;
   id: string;
   label: string;
   compactResting?: boolean;
   onChange(value: string): void;
-  options: { description?: string; label: string; value: string }[];
+  options: { description?: string; indent?: number; label: string; value: string }[];
   placement?: "above" | "below";
+  pickerDescription?: string;
+  pickerTitle?: string;
   resting?: boolean;
   restingLabel?: string;
   restingLabelClassName?: string;
@@ -41,6 +47,7 @@ export function ComposerOptionPicker({
   summaryLabel?: string;
   value: string;
 }) {
+  const dialogLabel = pickerTitle ?? label;
   const selected = options.find((option) => option.value === value) ?? options[0];
   const fullSelectedLabel = selected?.label ?? value;
   const triggerDescription = accessibleDescription ?? fullSelectedLabel;
@@ -125,21 +132,24 @@ export function ComposerOptionPicker({
           ref={dialogRef}
           className={[
             "pop-enter absolute z-50 flex max-h-[min(24rem,calc(100dvh-6rem))] w-[min(22rem,calc(100vw-2rem))] flex-col overflow-hidden rounded-panel border border-trace-subtle bg-overlay-surface p-3 shadow-overlay max-sm:fixed max-sm:inset-x-2 max-sm:bottom-2 max-sm:top-auto max-sm:w-auto max-sm:max-h-[min(70dvh,30rem)] max-sm:pb-[calc(0.75rem+env(safe-area-inset-bottom))] [@media(max-height:32rem)]:!fixed [@media(max-height:32rem)]:!inset-x-2 [@media(max-height:32rem)]:!bottom-2 [@media(max-height:32rem)]:!top-auto [@media(max-height:32rem)]:!w-auto [@media(max-height:32rem)]:!max-h-[calc(100dvh-1rem-env(safe-area-inset-top)-env(safe-area-inset-bottom))] [@media(max-height:32rem)]:!pb-[calc(0.75rem+env(safe-area-inset-bottom))]",
+            embeddedInMenu
+              ? "sm:static sm:mt-1 sm:max-h-72 sm:w-full sm:shadow-none"
+              : "",
             align === "right" ? "right-0" : "left-0",
             placement === "below" ? "top-12" : "bottom-12"
           ].join(" ")}
           data-testid={`${id}-options`}
-          aria-label={`Choose ${label.toLocaleLowerCase()}`}
+          aria-label={`Choose ${dialogLabel.toLocaleLowerCase()}`}
         >
           <div className="mb-2 flex items-start justify-between gap-3">
             <div className="min-w-0">
-              <h3 className="text-sm font-semibold text-ink">{label}</h3>
-              <p className="mt-0.5 text-xs text-ink-muted">Changes apply to the next message.</p>
+              <h3 className="text-sm font-semibold text-ink">{dialogLabel}</h3>
+              <p className="mt-0.5 text-xs text-ink-muted">{pickerDescription}</p>
             </div>
             <button
               className="grid size-11 shrink-0 place-items-center rounded-control text-ink-muted outline-none hover:bg-control-hover hover:text-ink focus-visible:ring-2 focus-visible:ring-proof/55 lg:size-8 [@media(hover:none)]:!size-11 [@media(pointer:coarse)]:!size-11"
               type="button"
-              aria-label={`Close ${label.toLocaleLowerCase()} picker`}
+              aria-label={`Close ${dialogLabel.toLocaleLowerCase()} picker`}
               onClick={close}
             >
               <X className="size-4" aria-hidden="true" />
@@ -157,6 +167,7 @@ export function ComposerOptionPicker({
             {options.map((option, index) => {
               const active = option.value === value;
               const isDefault = option.value === defaultValue;
+              const indent = Math.min(Math.max(option.indent ?? 0, 0), 5);
 
               return (
                 <button
@@ -172,7 +183,11 @@ export function ComposerOptionPicker({
                   type="button"
                   aria-current={active ? "true" : undefined}
                 >
-                  <span className="min-w-0 flex-1">
+                  <span
+                    className="min-w-0 flex-1"
+                    data-option-depth={indent}
+                    style={{ paddingInlineStart: indent > 0 ? `${indent * 0.75}rem` : undefined }}
+                  >
                     <span className="block break-words text-sm font-semibold leading-5 [overflow-wrap:anywhere]">{option.label}</span>
                     {option.description ? (
                       <span className="mt-0.5 block text-xs leading-5 text-ink-muted">{option.description}</span>

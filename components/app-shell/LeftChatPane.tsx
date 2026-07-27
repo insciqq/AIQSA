@@ -1,3 +1,4 @@
+import { ComposerOptionPicker } from "@/components/app-shell/ComposerOptionPicker";
 import { isImeCompositionEvent } from "@/components/keyboard";
 import type { ChatGroup, ChatSummary, FolderSummary } from "@/components/app-shell/types";
 import {
@@ -122,6 +123,38 @@ function folderPath(folder: FolderSummary, foldersById: ReadonlyMap<string, Fold
   return names.join(" / ");
 }
 
+function folderDepth(folder: FolderSummary, foldersById: ReadonlyMap<string, FolderSummary>): number {
+  const visited = new Set([folder.id]);
+  let depth = 0;
+  let parentId = folder.parentId;
+
+  while (parentId && !visited.has(parentId)) {
+    visited.add(parentId);
+    const parent = foldersById.get(parentId);
+    if (!parent) {
+      break;
+    }
+    depth += 1;
+    parentId = parent.parentId;
+  }
+
+  return Math.min(depth, 5);
+}
+
+function folderDestinationOption(
+  folder: FolderSummary,
+  foldersById: ReadonlyMap<string, FolderSummary>
+) {
+  const path = folderPath(folder, foldersById);
+
+  return {
+    description: path === folder.name ? undefined : path,
+    indent: folderDepth(folder, foldersById),
+    label: folder.name,
+    value: folder.id
+  };
+}
+
 function folderIsDescendant(
   candidate: FolderSummary,
   ancestorId: string,
@@ -230,10 +263,6 @@ function LeftChatPaneComponent({
     layout === "mobile"
       ? "min-h-touch"
       : "min-h-10 [@media(hover:none)]:!min-h-touch [@media(pointer:coarse)]:!min-h-touch";
-  const menuSelectTarget =
-    layout === "mobile"
-      ? "h-touch"
-      : "h-control [@media(hover:none)]:!h-touch [@media(pointer:coarse)]:!h-touch";
   const chatOverflowTarget =
     layout === "mobile"
       ? "min-h-touch w-11"
@@ -893,29 +922,44 @@ function LeftChatPaneComponent({
                     <Pencil className="size-4 text-ink-muted" aria-hidden="true" />
                     Rename
                   </button>
-                  <label className="mt-1 block space-y-1 px-2 py-1 text-xs text-ink-muted">
-                    <span>Move to folder</span>
-                    <select
-                      className={`${menuSelectTarget} w-full rounded-control border border-trace-subtle bg-control-surface px-2 text-sm text-ink ${focusRing}`}
-                      aria-label={`Move folder ${group.name} to folder`}
+                  <div className="mt-1 space-y-1 px-2 py-1 text-xs text-ink-muted">
+                    <span className="block">Move to folder</span>
+                    <ComposerOptionPicker
+                      className="w-full"
                       disabled={folderActionId === group.folder.id}
+                      embeddedInMenu
+                      id={`${idPrefix}move-folder-${group.folder.id}`}
+                      label={`Move folder ${group.name} to folder`}
+                      onChange={(value) => {
+                        if (value !== (group.folder!.parentId ?? "")) {
+                          onMoveFolder(group.folder!, value || null);
+                        }
+                      }}
+                      options={[
+                        {
+                          description: "Place this folder at the workspace root.",
+                          label: "Top level",
+                          value: ""
+                        },
+                        ...folders
+                          .filter(
+                            (folder) =>
+                              folder.id !== group.folder!.id &&
+                              !folderIsDescendant(folder, group.folder!.id, foldersById)
+                          )
+                          .map((folder) => folderDestinationOption(folder, foldersById))
+                      ]}
+                      pickerDescription="Choose a destination. The move applies immediately."
+                      pickerTitle="Move to folder"
+                      placement="below"
+                      summaryLabel={
+                        group.folder.parentId
+                          ? folderPath(foldersById.get(group.folder.parentId)!, foldersById)
+                          : "Top level"
+                      }
                       value={group.folder.parentId ?? ""}
-                      onChange={(event) => onMoveFolder(group.folder!, event.target.value || null)}
-                    >
-                      <option value="">Top level</option>
-                      {folders
-                        .filter(
-                          (folder) =>
-                            folder.id !== group.folder!.id &&
-                            !folderIsDescendant(folder, group.folder!.id, foldersById)
-                        )
-                        .map((folder) => (
-                          <option key={folder.id} value={folder.id}>
-                            {folderPath(folder, foldersById)}
-                          </option>
-                        ))}
-                    </select>
-                  </label>
+                    />
+                  </div>
                   <div className="mt-1 border-t border-trace-subtle pt-1">
                     <button
                       className={`flex ${menuActionTarget} w-full items-center gap-2 rounded-control px-2 text-left text-critical hover:bg-critical/10 disabled:cursor-not-allowed disabled:text-ink-disabled ${focusRing}`}
@@ -1187,22 +1231,40 @@ function LeftChatPaneComponent({
                               <Pencil className="size-4 text-ink-muted" aria-hidden="true" />
                               Rename
                             </button>
-                            <label className="mt-1 block space-y-1 px-2 py-1 text-xs text-ink-muted">
-                              <span>Move to folder</span>
-                              <select
-                                className={`${menuSelectTarget} w-full rounded-control border border-trace-subtle bg-control-surface px-2 text-sm text-ink ${focusRing}`}
-                                aria-label={`Move chat ${chat.title} to folder`}
+                            <div className="mt-1 space-y-1 px-2 py-1 text-xs text-ink-muted">
+                              <span className="block">Move to folder</span>
+                              <ComposerOptionPicker
+                                className="w-full"
+                                disabled={false}
+                                embeddedInMenu
+                                id={`${idPrefix}move-chat-${chat.id}`}
+                                label={`Move chat ${chat.title} to folder`}
+                                onChange={(value) => {
+                                  if (value !== (chat.folderId ?? "")) {
+                                    onMoveChat(chat.id, value || null);
+                                  }
+                                }}
+                                options={[
+                                  {
+                                    description: "Keep this chat outside folders.",
+                                    label: "No folder",
+                                    value: ""
+                                  },
+                                  ...folders.map((folder) =>
+                                    folderDestinationOption(folder, foldersById)
+                                  )
+                                ]}
+                                pickerDescription="Choose a destination. The move applies immediately."
+                                pickerTitle="Move to folder"
+                                placement="below"
+                                summaryLabel={
+                                  chat.folderId && foldersById.has(chat.folderId)
+                                    ? folderPath(foldersById.get(chat.folderId)!, foldersById)
+                                    : "No folder"
+                                }
                                 value={chat.folderId ?? ""}
-                                onChange={(event) => onMoveChat(chat.id, event.target.value || null)}
-                              >
-                                <option value="">No folder</option>
-                                {folders.map((folder) => (
-                                  <option key={folder.id} value={folder.id}>
-                                    {folderPath(folder, foldersById)}
-                                  </option>
-                                ))}
-                              </select>
-                            </label>
+                              />
+                            </div>
                             <button
                               className={`flex ${menuActionTarget} w-full items-center gap-2 rounded-control px-2 text-left text-ink-secondary hover:bg-control-hover hover:text-ink disabled:text-ink-disabled ${focusRing}`}
                               type="button"

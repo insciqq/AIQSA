@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { ComponentProps } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { LeftChatPane } from "./LeftChatPane";
@@ -194,14 +194,27 @@ describe("LeftChatPane", () => {
 
     expect(screen.getByTestId("chat-row-actions").querySelectorAll("button")).toHaveLength(1);
     expect(screen.getByRole("button", { name: "Rename" })).toBeVisible();
-    const moveSelect = screen.getByLabelText("Move chat Planning to folder");
-    expect(moveSelect).toBeVisible();
-    expect(screen.getByRole("option", { name: "No folder" })).toBeVisible();
+    expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
+    const movePickerTrigger = screen.getByRole("button", {
+      name: "Move chat Planning to folder"
+    });
+    expect(movePickerTrigger).toBeVisible();
     expect(screen.getByRole("button", { name: "Share" })).toBeVisible();
     expect(screen.getByRole("button", { name: "Export" })).toBeVisible();
 
-    fireEvent.change(moveSelect, { target: { value: folder.id } });
+    fireEvent.click(movePickerTrigger);
+    const movePicker = screen.getByRole("dialog", { name: "Choose move to folder" });
+    const noFolderRow = within(movePicker).getByText("No folder", { exact: true }).closest("button");
+    const researchRow = within(movePicker).getByText("Research", { exact: true }).closest("button");
+    expect(noFolderRow).not.toBeNull();
+    expect(researchRow).not.toBeNull();
+    expect(noFolderRow).toHaveTextContent("Current");
+    expect(noFolderRow).toHaveFocus();
+    fireEvent.keyDown(noFolderRow!, { key: "ArrowDown" });
+    expect(researchRow).toHaveFocus();
+    fireEvent.keyDown(researchRow!, { key: "Enter" });
     expect(onMoveChat).toHaveBeenCalledWith("chat-1", folder.id);
+    expect(screen.queryByRole("dialog", { name: "Choose move to folder" })).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Add to favorites" }));
     expect(onToggleChatFavorite).toHaveBeenCalledWith(expect.objectContaining({ id: "chat-1" }));
@@ -411,7 +424,10 @@ describe("LeftChatPane", () => {
     for (const name of ["New chat", "New subfolder", "Project settings", "Rename", "Delete folder"]) {
       expect(screen.getByRole("button", { name })).toHaveClass("min-h-touch");
     }
-    expect(screen.getByLabelText("Move folder Research to folder")).toHaveClass("h-touch");
+    expect(screen.getByRole("button", { name: "Move folder Research to folder" })).toHaveClass(
+      "h-touch",
+      "sm:h-control"
+    );
     expect(screen.getByLabelText("Subfolder name for Research")).toHaveClass("min-h-touch");
     expect(screen.getByRole("button", { name: "Create subfolder in Research" })).toHaveClass("size-11");
     expect(screen.getByRole("button", { name: "Cancel subfolder in Research" })).toHaveClass("size-11");
@@ -449,8 +465,19 @@ describe("LeftChatPane", () => {
     for (const name of ["Add to favorites", "Rename", "Share", "Export", "Delete chat"]) {
       expect(screen.getByRole("button", { name })).toHaveClass("min-h-touch");
     }
-    expect(screen.getByLabelText("Move chat Planning to folder")).toHaveClass("h-touch");
+    const mobileMoveChat = screen.getByRole("button", { name: "Move chat Planning to folder" });
+    expect(mobileMoveChat).toHaveClass("h-touch", "sm:h-control");
     expect(screen.getByRole("button", { name: "Add to favorites" })).toHaveFocus();
+    fireEvent.click(mobileMoveChat);
+    const mobilePicker = screen.getByTestId("mobile-move-chat-chat-1-options");
+    expect(mobilePicker).toHaveClass(
+      "max-sm:fixed",
+      "max-sm:bottom-2",
+      "sm:static",
+      "sm:max-h-72",
+      "overflow-hidden"
+    );
+    expect(mobilePicker.querySelector(".overflow-y-auto")).not.toBeNull();
 
     chatView.unmount();
     renderPane({ chatActionId: "chat-1" });
@@ -458,7 +485,10 @@ describe("LeftChatPane", () => {
       expect(screen.getByRole("button", { name })).toHaveClass("min-h-10");
       expect(screen.getByRole("button", { name })).not.toHaveClass("min-h-touch");
     }
-    expect(screen.getByLabelText("Move chat Planning to folder")).toHaveClass("h-control");
+    expect(screen.getByRole("button", { name: "Move chat Planning to folder" })).toHaveClass(
+      "h-touch",
+      "sm:h-control"
+    );
   });
 
   it("communicates selected, favorite, running, and unavailable chat states", () => {
@@ -572,8 +602,73 @@ describe("LeftChatPane", () => {
     expect(screen.getByRole("button", { name: "New subfolder" })).toBeVisible();
     expect(screen.getByRole("button", { name: "Project settings" })).toBeVisible();
     expect(screen.getByRole("button", { name: "Rename" })).toBeVisible();
-    expect(screen.getByLabelText("Move folder Research to folder")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Move folder Research to folder" })).toBeVisible();
     expect(screen.getByRole("button", { name: "Delete folder" })).toBeVisible();
+  });
+
+  it("moves a folder from the shared picker and excludes invalid descendants", () => {
+    const childFolder: FolderSummary = {
+      id: "folder-2",
+      name: "Sources",
+      parentId: folder.id,
+      projectMemory: "",
+      sortOrder: 0
+    };
+    const grandchildFolder: FolderSummary = {
+      id: "folder-3",
+      name: "Primary",
+      parentId: childFolder.id,
+      projectMemory: "",
+      sortOrder: 0
+    };
+    const onMoveFolder = vi.fn();
+    renderPane({
+      chatGroups: [
+        { chats: [], depth: 0, folder, name: folder.name },
+        { chats: [], depth: 1, folder: childFolder, name: childFolder.name },
+        { chats: [], depth: 2, folder: grandchildFolder, name: grandchildFolder.name }
+      ],
+      folderMenuId: childFolder.id,
+      folders: [folder, childFolder, grandchildFolder],
+      onMoveFolder
+    });
+
+    expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Move folder Sources to folder" }));
+    const picker = screen.getByRole("dialog", { name: "Choose move to folder" });
+    const currentRow = within(picker).getByText("Research", { exact: true }).closest("button");
+    expect(currentRow).toHaveTextContent("Current");
+    expect(within(picker).queryByText("Sources", { exact: true })).not.toBeInTheDocument();
+    expect(within(picker).queryByText("Primary", { exact: true })).not.toBeInTheDocument();
+
+    fireEvent.click(within(picker).getByText("Top level", { exact: true }));
+    expect(onMoveFolder).toHaveBeenCalledWith(childFolder, null);
+    expect(screen.queryByRole("dialog", { name: "Choose move to folder" })).not.toBeInTheDocument();
+  });
+
+  it("keeps deep destination paths readable with bounded indentation and local scrolling", () => {
+    const deepFolders = Array.from({ length: 7 }, (_, index): FolderSummary => ({
+      id: `deep-${index}`,
+      name: `Level ${index + 1}`,
+      parentId: index === 0 ? null : `deep-${index - 1}`,
+      projectMemory: "",
+      sortOrder: index
+    }));
+    renderPane({
+      chatActionId: "chat-1",
+      folders: deepFolders
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Move chat Planning to folder" }));
+    const picker = screen.getByRole("dialog", { name: "Choose move to folder" });
+    const deepestLabel = within(picker).getByText("Level 7", { exact: true });
+    const deepestContent = deepestLabel.closest("[data-option-depth]");
+    expect(deepestContent).toHaveAttribute("data-option-depth", "5");
+    expect(deepestContent).toHaveTextContent(
+      "Level 1 / Level 2 / Level 3 / Level 4 / Level 5 / Level 6 / Level 7"
+    );
+    expect(picker).toHaveClass("overflow-hidden", "sm:max-h-72");
+    expect(picker.querySelector(".overflow-y-auto")).toHaveClass("overscroll-contain");
   });
 
   it("keeps New Chat available unless chat creation itself is pending", () => {

@@ -2441,7 +2441,11 @@ test("exposes the workspace and new-chat command on mobile", async ({ page }) =>
   await expect.poll(() => workspace.getByTestId("chat-row-actions").first().evaluate((element) => getComputedStyle(element).opacity)).toBe("1");
 
   await workspace.getByRole("button", { name: `Chat actions ${rowTitle}` }).first().click();
-  await workspace.getByLabel(`Move chat ${rowTitle} to folder`).first().selectOption({ label: folderName });
+  await workspace.getByRole("button", { name: `Move chat ${rowTitle} to folder` }).first().click();
+  await page
+    .getByRole("dialog", { name: "Choose move to folder" })
+    .getByText(folderName, { exact: true })
+    .click();
   await expect(page.getByTestId("shell-notice")).toContainText("Moved:");
 
   await folderSection.getByRole("button", { name: `Chat actions ${rowTitle}` }).first().click();
@@ -3636,16 +3640,20 @@ test("supports the default QSA chat and folder workflow", async ({ browser, page
     .toContain(prompt);
   await page.getByTestId("left-chat-pane").getByRole("button", { name: /Chat actions/ }).first().click();
   await expect(page.getByRole("button", { name: "Rename" })).toBeVisible();
-  const moveChat = page.getByLabel(/Move chat .* to folder/);
+  const moveChat = page.getByRole("button", { name: /Move chat .* to folder/ });
   await expect(moveChat).toBeVisible();
-  await expect(moveChat.getByRole("option", { name: "No folder" })).toBeAttached();
   await expect(page.getByTestId("left-chat-pane").getByRole("button", { name: "Export" })).toBeVisible();
   await expect(page.getByTestId("left-chat-pane").getByRole("button", { name: "Share" })).toBeVisible();
   await expect(page.getByTestId("left-chat-pane").getByRole("button", { name: "Delete chat" })).toBeVisible();
-  await moveChat.selectOption({ label: "No folder" });
+  await moveChat.click();
+  let movePicker = page.getByRole("dialog", { name: "Choose move to folder" });
+  await expect(movePicker.getByText("No folder", { exact: true })).toBeVisible();
+  await movePicker.getByText("No folder", { exact: true }).click();
   await expect(page.getByTestId("shell-notice")).toContainText("Moved:");
   await page.getByTestId("left-chat-pane").getByRole("button", { name: /Chat actions/ }).first().click();
-  await page.getByLabel(/Move chat .* to folder/).selectOption({ label: folderName });
+  await page.getByRole("button", { name: /Move chat .* to folder/ }).click();
+  movePicker = page.getByRole("dialog", { name: "Choose move to folder" });
+  await movePicker.getByText(folderName, { exact: true }).click();
   await expect(page.getByTestId("shell-notice")).toContainText("Moved:");
   await expect(page.getByTestId("details-pane")).toContainText("Details");
   await expect(page.getByTestId("details-pane")).not.toContainText("Current/latest run");
@@ -3871,7 +3879,11 @@ test("manages prompt presets and left-pane folders", async ({ page }) => {
   await expect(page.getByTestId("shell-notice")).toContainText(`Project settings saved: ${renamedFolderName}`);
 
   await page.getByRole("button", { name: `Folder actions ${subfolderName}` }).click();
-  await page.getByLabel(`Move folder ${subfolderName} to folder`).selectOption("");
+  await page.getByRole("button", { name: `Move folder ${subfolderName} to folder` }).click();
+  await page
+    .getByRole("dialog", { name: "Choose move to folder" })
+    .getByText("Top level", { exact: true })
+    .click();
   await expect(page.getByTestId("shell-notice")).toContainText(`Folder moved: ${subfolderName}`);
 
   await page.getByRole("button", { name: `Folder actions ${renamedFolderName}` }).click();
