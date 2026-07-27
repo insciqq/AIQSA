@@ -1,4 +1,6 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { hydrateRoot, type Root } from "react-dom/client";
+import { renderToString } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AuthLogin } from "./AuthLogin";
 
@@ -38,7 +40,37 @@ describe("AuthLogin", () => {
     expect(screen.getByLabelText("Password")).toHaveAttribute("autocomplete", "current-password");
     expect(screen.getByLabelText("Password")).toHaveAccessibleDescription("Case-sensitive");
     expect(screen.getByRole("button", { name: "Show password" })).toHaveAttribute("aria-controls", "password");
-    expect(screen.getByLabelText("Email")).toHaveFocus();
+    expect(screen.getByLabelText("Email")).not.toHaveFocus();
+    expect(screen.getByLabelText("Email")).not.toHaveAttribute("style");
+    expect(screen.getByLabelText("Password")).not.toHaveAttribute("style");
+  });
+
+  it("hydrates stable login markup and handles the first mode-switch click", async () => {
+    const container = document.createElement("div");
+    container.innerHTML = renderToString(<AuthLogin nextPath="/" />);
+    document.body.append(container);
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    let root: Root | null = null;
+
+    await act(async () => {
+      root = hydrateRoot(container, <AuthLogin nextPath="/" />);
+    });
+
+    expect(
+      consoleError.mock.calls.some((call) =>
+        call.some((value) => /hydration|did not match/i.test(String(value)))
+      )
+    ).toBe(false);
+    expect(within(container).getByLabelText("Email")).not.toHaveAttribute("style");
+    expect(within(container).getByLabelText("Password")).not.toHaveAttribute("style");
+
+    fireEvent.click(within(container).getByRole("button", { name: "Request access" }));
+    expect(within(container).getByRole("heading", { level: 1, name: "Request access" })).toBeInTheDocument();
+
+    await act(async () => {
+      root?.unmount();
+    });
+    container.remove();
   });
 
   it("explains that an expired or revoked session requires another sign-in", () => {
@@ -275,9 +307,47 @@ describe("AuthLogin", () => {
   it("shows a readable message for missing email/password credentials", async () => {
     render(<AuthLogin nextPath="/" />);
 
-    fireEvent.submit(screen.getByRole("button", { name: "Sign in" }).closest("form")!);
+    const submit = screen.getByRole("button", { name: "Sign in" });
+    const form = submit.closest("form")!;
+    const resetPassword = screen.getByRole("button", { name: "Reset password" });
+    fireEvent.submit(form);
 
-    expect(await screen.findByRole("alert")).toHaveTextContent("Enter email and password. (credentials_required)");
+    const alert = await screen.findByRole("alert");
+    const email = screen.getByLabelText("Email");
+    const password = screen.getByLabelText("Password");
+
+    expect(alert).toHaveTextContent("Enter email and password. (credentials_required)");
+    expect(form).toContainElement(alert);
+    expect(submit.compareDocumentPosition(alert) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(alert.compareDocumentPosition(resetPassword) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(email).toHaveAttribute("aria-invalid", "true");
+    expect(password).toHaveAttribute("aria-invalid", "true");
+    expect(email).toHaveAttribute("aria-errormessage", alert.id);
+    expect(password).toHaveAttribute("aria-errormessage", alert.id);
+    expect(email).toHaveClass("border-critical/60");
+    expect(password).toHaveClass("border-critical/60");
+  });
+
+  it("marks both credential fields and keeps a rejected login next to its action", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ error: "unauthorized" }), {
+        status: 401
+      })
+    );
+    render(<AuthLogin nextPath="/" />);
+
+    fillCredentialForm();
+    const submit = screen.getByRole("button", { name: "Sign in" });
+    const resetPassword = screen.getByRole("button", { name: "Reset password" });
+    fireEvent.submit(submit.closest("form")!);
+
+    const alert = await screen.findByRole("alert");
+
+    expect(alert).toHaveTextContent("The credentials were not accepted. (unauthorized)");
+    expect(submit.compareDocumentPosition(alert) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(alert.compareDocumentPosition(resetPassword) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getByLabelText("Email")).toHaveAttribute("aria-invalid", "true");
+    expect(screen.getByLabelText("Password")).toHaveAttribute("aria-invalid", "true");
   });
 
   it("shows a readable network error when credential login cannot reach the server", async () => {
@@ -314,7 +384,9 @@ describe("AuthLogin", () => {
     expect(screen.getByLabelText("Password")).toBeDisabled();
     expect(screen.getByRole("button", { name: "Show password" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Reset password" })).toBeDisabled();
-    expect(screen.getByText("Signing in…", { selector: "p" })).toHaveAttribute("role", "status");
+    expect(screen.getAllByText("Signing in…")).toHaveLength(1);
+    expect(screen.getByTestId("auth-submit-spinner")).toBeInTheDocument();
+    expect(screen.queryByText("Signing in…", { selector: "p" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Signing in…" }).closest("form")).toHaveAttribute("aria-busy", "true");
 
     await act(async () => {
@@ -475,7 +547,8 @@ describe("AuthLogin", () => {
     });
     fireEvent.submit(screen.getByRole("button", { name: "Request access" }).closest("form")!);
 
-    expect(await screen.findByRole("heading", { level: 1, name: "Request received" })).toHaveFocus();
+    const outcomeHeading = await screen.findByRole("heading", { level: 1, name: "Request received" });
+    await waitFor(() => expect(outcomeHeading).toHaveFocus());
     expect(
       screen.getByText("Request received. If verification is needed, use the email link before signing in.")
     ).toBeInTheDocument();

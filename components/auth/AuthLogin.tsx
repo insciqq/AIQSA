@@ -49,6 +49,9 @@ type AuthRequestGeneration = {
 const fieldClassName =
   "h-touch w-full rounded-control border border-trace-strong bg-answer-paper px-3.5 text-[15px] text-ink caret-proof outline-none placeholder:text-ink-disabled autofill:bg-answer-paper autofill:text-ink disabled:cursor-not-allowed disabled:text-ink-disabled disabled:opacity-70 focus:border-proof focus:ring-2 focus:ring-proof/20";
 
+const invalidFieldClassName =
+  "border-critical/60 focus:border-critical focus:ring-critical/20";
+
 const focusRingClassName =
   "outline-none focus-visible:ring-2 focus-visible:ring-proof/55 focus-visible:ring-offset-2 focus-visible:ring-offset-answer-paper";
 
@@ -185,22 +188,34 @@ function scrubAuthProofParameters() {
   );
 }
 
-function AuthFeedback({ error, notice }: { error: string | null; notice: string | null }) {
+function AuthFeedback({
+  adjacent = false,
+  error,
+  feedbackId,
+  notice
+}: {
+  adjacent?: boolean;
+  error: string | null;
+  feedbackId?: string;
+  notice: string | null;
+}) {
+  const marginClassName = adjacent ? "" : "mt-5";
+
   return (
     <>
       {notice ? (
-        <div className="mt-5 flex items-start gap-3 border-y border-trace-subtle py-3.5">
+        <div className={`${marginClassName} flex items-start gap-3 border-y border-trace-subtle py-3.5`}>
           <span className="mt-2 size-1.5 shrink-0 rounded-full bg-positive" aria-hidden="true" />
-          <p className="text-sm leading-6 text-ink-secondary" role="status">
+          <p className="text-sm leading-6 text-ink-secondary" id={feedbackId} role="status">
             {notice}
           </p>
         </div>
       ) : null}
 
       {error ? (
-        <div className="mt-5 flex items-start gap-3 border-y border-trace-subtle py-3.5">
+        <div className={`${marginClassName} flex items-start gap-3 border-y border-trace-subtle py-3.5`}>
           <span className="mt-2 size-1.5 shrink-0 rounded-full bg-critical" aria-hidden="true" />
-          <p className="text-sm leading-6 text-ink" role="alert">
+          <p className="text-sm leading-6 text-ink" id={feedbackId} role="alert">
             {error}
           </p>
         </div>
@@ -307,23 +322,34 @@ export function AuthLogin({
     initialAuthProof({ inviteToken, resetToken, verifyToken })
   );
   const [error, setError] = useState<string | null>(initialFeedback.error);
+  const [loginFieldErrorCode, setLoginFieldErrorCode] = useState<string | null>(null);
   const [mode, setMode] = useState<Mode>(() => modeForAuthProof(activeProof));
   const [notice, setNotice] = useState<string | null>(initialFeedback.notice);
   const [passwordVisible, setPasswordVisible] = useState(false);
   const [pendingAction, setPendingAction] = useState<PendingAction | null>(null);
   const [proofSessionGeneration, setProofSessionGeneration] = useState(0);
   const [registrationOutcome, setRegistrationOutcome] = useState<RegistrationOutcome>("request-received");
+  const submitting = pendingAction !== null;
   const firstFieldRef = useRef<HTMLInputElement>(null);
   const modeHeadingRef = useRef<HTMLHeadingElement>(null);
+  const previousModeRef = useRef<Mode | null>(mode === "password" ? mode : null);
+  const previousSubmittingRef = useRef(submitting);
   const activeInviteToken = activeProof?.kind === "invite" ? activeProof.token : null;
   const activeResetToken = activeProof?.kind === "reset" ? activeProof.token : null;
   const activeVerifyToken = activeProof?.kind === "verify" ? activeProof.token : null;
   const registerLabel = activeInviteToken ? "Create account" : "Request access";
-  const submitting = pendingAction !== null;
   const showInitialAuthFeedback =
     mode === "password" &&
     ((initialFeedback.error !== null && error === initialFeedback.error) ||
       (initialFeedback.notice !== null && notice === initialFeedback.notice));
+  const loginEmailInvalid =
+    loginFieldErrorCode === "credentials_required" ||
+    loginFieldErrorCode === "email_invalid" ||
+    loginFieldErrorCode === "email_required" ||
+    loginFieldErrorCode === "unauthorized";
+  const loginPasswordInvalid =
+    loginFieldErrorCode === "credentials_required" ||
+    loginFieldErrorCode === "unauthorized";
 
   useEffect(() => {
     if (proofInputKey === previousProofInputKeyRef.current) {
@@ -336,6 +362,7 @@ export function AuthLogin({
     const nextProof = initialAuthProof({ inviteToken, resetToken, verifyToken });
     setActiveProof(nextProof);
     setError(null);
+    setLoginFieldErrorCode(null);
     setNotice(null);
     setPendingAction(null);
     setPasswordVisible(false);
@@ -437,13 +464,22 @@ export function AuthLogin({
     }
 
     setError(null);
+    setLoginFieldErrorCode(null);
     setNotice(null);
     setPasswordVisible(false);
     setMode(nextMode);
   }
 
   useEffect(() => {
+    const modeChanged = previousModeRef.current !== mode;
+    const requestSettled = previousSubmittingRef.current && !submitting;
+    previousModeRef.current = mode;
+    previousSubmittingRef.current = submitting;
+
     if (submitting) {
+      return;
+    }
+    if (!modeChanged && !requestSettled) {
       return;
     }
 
@@ -461,9 +497,11 @@ export function AuthLogin({
     const email = String(formData.get("email") ?? "").trim();
     const password = String(formData.get("password") ?? "");
     setError(null);
+    setLoginFieldErrorCode(null);
     setNotice(null);
 
     if (!email || !password) {
+      setLoginFieldErrorCode("credentials_required");
       setError(authErrorMessage("credentials_required"));
       return;
     }
@@ -478,7 +516,9 @@ export function AuthLogin({
       }
 
       if (!result.ok) {
-        setError(authErrorMessage(result.error ?? "unauthorized"));
+        const errorCode = result.error ?? "unauthorized";
+        setLoginFieldErrorCode(errorCode);
+        setError(authErrorMessage(errorCode));
         return;
       }
 
@@ -486,6 +526,7 @@ export function AuthLogin({
       (navigateAfterLogin ?? window.location.assign.bind(window.location))(redirectTarget);
     } catch {
       if (requestIsCurrent(owner)) {
+        setLoginFieldErrorCode(null);
         setError(authErrorMessage("network_error"));
       }
     } finally {
@@ -785,9 +826,12 @@ export function AuthLogin({
                   Email
                 </label>
                 <input
+                  aria-describedby={loginEmailInvalid ? "login-feedback" : undefined}
+                  aria-errormessage={loginEmailInvalid ? "login-feedback" : undefined}
+                  aria-invalid={loginEmailInvalid || undefined}
                   autoCapitalize="none"
                   autoComplete="email"
-                  className={fieldClassName}
+                  className={`${fieldClassName} ${loginEmailInvalid ? invalidFieldClassName : ""}`}
                   disabled={submitting}
                   id="email"
                   inputMode="email"
@@ -810,9 +854,11 @@ export function AuthLogin({
                 </div>
                 <div className="relative">
                   <input
-                    aria-describedby="password-help"
+                    aria-describedby={loginPasswordInvalid ? "password-help login-feedback" : "password-help"}
+                    aria-errormessage={loginPasswordInvalid ? "login-feedback" : undefined}
+                    aria-invalid={loginPasswordInvalid || undefined}
                     autoComplete="current-password"
-                    className={`${fieldClassName} pr-14`}
+                    className={`${fieldClassName} pr-14 ${loginPasswordInvalid ? invalidFieldClassName : ""}`}
                     disabled={submitting}
                     id="password"
                     name="password"
@@ -829,9 +875,24 @@ export function AuthLogin({
               </div>
 
               <button className={primaryButtonClassName} disabled={submitting} type="submit">
-                {submitting ? <LoaderCircle className="size-4 animate-spin" aria-hidden="true" /> : null}
+                {submitting ? (
+                  <LoaderCircle
+                    className="size-4 animate-spin"
+                    data-testid="auth-submit-spinner"
+                    aria-hidden="true"
+                  />
+                ) : null}
                 {pendingAction === "login" ? "Signing in…" : "Sign in"}
               </button>
+
+              {!showInitialAuthFeedback ? (
+                <AuthFeedback
+                  adjacent
+                  error={error}
+                  feedbackId="login-feedback"
+                  notice={notice}
+                />
+              ) : null}
 
               <div className="grid gap-2 border-t border-trace-subtle pt-3 sm:grid-cols-2">
                 <button
@@ -1116,18 +1177,9 @@ export function AuthLogin({
             </form>
           ) : null}
 
-          {busyMessage ? (
-            <p
-              aria-live="polite"
-              className="mt-4 flex items-center gap-2 text-sm text-ink-secondary"
-              role="status"
-            >
-              <LoaderCircle className="size-4 shrink-0 animate-spin text-proof" aria-hidden="true" />
-              {busyMessage}
-            </p>
+          {mode !== "password" && !showInitialAuthFeedback ? (
+            <AuthFeedback error={error} notice={notice} />
           ) : null}
-
-          {!showInitialAuthFeedback ? <AuthFeedback error={error} notice={notice} /> : null}
           </div>
         </div>
       </section>

@@ -64,6 +64,24 @@ test("signs in through the visible form with the stable seeded local operator cr
   await expect(page.getByTestId("app-shell")).toBeVisible();
 });
 
+test("hydrates the login screen and honors the first mode-switch click", async ({ page }) => {
+  const hydrationErrors: string[] = [];
+  page.on("console", (message) => {
+    if (
+      message.type() === "error" &&
+      /hydration|hydrated|server rendered html/i.test(message.text())
+    ) {
+      hydrationErrors.push(message.text());
+    }
+  });
+
+  await page.goto("/login");
+  await page.getByRole("button", { name: "Request access" }).click();
+
+  await expect(page.getByRole("heading", { level: 1, name: "Request access" })).toBeVisible();
+  expect(hydrationErrors).toEqual([]);
+});
+
 test("keeps auth forms keyboard-safe and mobile-friendly without exposing recovery login", async ({ page }) => {
   await page.setViewportSize({ height: 844, width: 390 });
   await page.goto("/login");
@@ -72,7 +90,7 @@ test("keeps auth forms keyboard-safe and mobile-friendly without exposing recove
   await expect(page.getByRole("heading", { level: 1, name: "Sign in" })).toBeVisible();
   const email = page.getByLabel("Email");
   const password = page.getByLabel("Password", { exact: true });
-  await expect(email).toBeFocused();
+  await expect(email).not.toBeFocused();
   await expect(email).toHaveAttribute("autocomplete", "email");
   await expect(email).toHaveAttribute("inputmode", "email");
   await expect(password).toHaveAttribute("autocomplete", "current-password");
@@ -84,6 +102,9 @@ test("keeps auth forms keyboard-safe and mobile-friendly without exposing recove
   await page.getByRole("button", { name: "Sign in" }).click();
   const validationAlert = page.getByRole("alert").filter({ hasText: "credentials_required" });
   await expect(validationAlert).toContainText("credentials_required");
+  await expect(email).toHaveAttribute("aria-invalid", "true");
+  await expect(password).toHaveAttribute("aria-invalid", "true");
+  await expect(validationAlert).toBeInViewport();
 
   await email.fill("keyboard.user@example.com");
   await email.press("Tab");
