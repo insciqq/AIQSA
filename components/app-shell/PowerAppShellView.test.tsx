@@ -245,6 +245,10 @@ function baseProps(): PowerAppShellViewProps {
         open: false,
         run: noop,
         show: noop
+      },
+      share: {
+        close: noop,
+        target: null
       }
     },
     session: {
@@ -255,7 +259,6 @@ function baseProps(): PowerAppShellViewProps {
       dismissNotice: noop,
       notice: null,
       shareActiveBranch: noop,
-      sharing: false
     },
     settings: {
       actions: {

@@ -688,6 +688,7 @@ model Chat {
   defaultProviderModel   ProviderModel? @relation("ChatDefaultProviderModel", fields: [defaultProviderModelId], references: [id], onDelete: Restrict)
   messages               Message[]      @relation("ChatMessages")
   modelRuns              ModelRun[]
+  sharedSnapshots        SharedChatSnapshot[]
   user                   User           @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([activeLeafMessageId])
@@ -1049,14 +1050,17 @@ model AttachmentDeletionJob {
 model SharedChatSnapshot {
   id          String    @id @default(uuid())
   ownerUserId String
+  chatId      String?
   slugHash    String    @unique
   title       String
   snapshot    Json
   expiresAt   DateTime?
   revokedAt   DateTime?
   createdAt   DateTime  @default(now())
+  chat        Chat?     @relation(fields: [chatId], references: [id], onDelete: SetNull)
   owner       User      @relation(fields: [ownerUserId], references: [id], onDelete: Cascade)
 
+  @@index([chatId, createdAt])
   @@index([ownerUserId, createdAt])
 }
 

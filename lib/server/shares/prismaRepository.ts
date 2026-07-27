@@ -67,6 +67,7 @@ export function createPrismaShareRepository(prismaClient = prisma): ShareReposit
 
         const share = await tx.sharedChatSnapshot.create({
           data: {
+            chatId: chat.id,
             ownerUserId: userId,
             slugHash,
             snapshot: json(snapshot),
@@ -110,6 +111,23 @@ export function createPrismaShareRepository(prismaClient = prisma): ShareReposit
         snapshot: publicSnapshot(share.snapshot),
         title: share.title
       };
+    },
+    listChatShares: async ({ chatId, now, userId }) => {
+      const shares = await prismaClient.sharedChatSnapshot.findMany({
+        orderBy: { createdAt: "desc" },
+        select: {
+          createdAt: true,
+          id: true
+        },
+        where: {
+          OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
+          chatId,
+          ownerUserId: userId,
+          revokedAt: null
+        }
+      });
+
+      return shares;
     },
     revokeShare: async ({ shareId, userId }) => {
       const result = await prismaClient.sharedChatSnapshot.updateMany({

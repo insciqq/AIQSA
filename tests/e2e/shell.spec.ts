@@ -3695,16 +3695,23 @@ test("supports the default QSA chat and folder workflow", async ({ browser, page
   await expect(page.getByTestId("shell-notice")).toContainText("Message deleted");
   await expect(page.getByRole("textbox", { name: "Message" })).toBeFocused();
 
+  await page.getByRole("button", { name: "Share anonymously" }).click();
+  const shareDialog = page.getByRole("dialog", { name: "Share anonymously" });
+  await expect(shareDialog).toBeVisible();
+  await expect(shareDialog).toContainText("sanitized snapshot");
+  await expect(shareDialog.getByTestId("share-links-empty")).toBeVisible();
   const shareCreation = page.waitForResponse((response) => {
     const pathname = new URL(response.url()).pathname;
     return response.request().method() === "POST" && /^\/api\/chats\/[^/]+\/share$/.test(pathname);
   });
-  await page.getByRole("button", { name: "Share anonymously" }).click();
+  await shareDialog.getByRole("button", { name: "Create public link" }).click();
   const shareCreationResponse = await shareCreation;
   expect(shareCreationResponse.ok()).toBe(true);
-  await expect(page.getByTestId("share-link")).toBeVisible();
-  const shareHref = await page.getByTestId("share-link").getByRole("link").getAttribute("href");
+  await expect(shareDialog.getByTestId("share-link")).toBeVisible();
+  const shareHref = await shareDialog.getByTestId("share-link").getByRole("link").getAttribute("href");
   expect(shareHref).toBeTruthy();
+  await shareDialog.getByRole("button", { name: "Close share dialog" }).click();
+  await expect(shareDialog).toHaveCount(0);
 
   const anonymousContext = await browser.newContext({
     viewport: { height: 844, width: 390 }
@@ -3731,14 +3738,18 @@ test("supports the default QSA chat and folder workflow", async ({ browser, page
     await expect(anonymousPage.getByRole("button", { name: "Open details" })).toHaveCount(0);
     await expectNoHorizontalOverflow(anonymousPage);
 
+    await page.getByRole("button", { name: "Share anonymously" }).click();
+    const reopenedShareDialog = page.getByRole("dialog", { name: "Share anonymously" });
+    await expect(reopenedShareDialog.getByTestId("share-links")).toBeVisible();
     const shareRevocation = page.waitForResponse((response) => {
       const pathname = new URL(response.url()).pathname;
       return response.request().method() === "POST" && /^\/api\/shares\/[^/]+\/revoke$/.test(pathname);
     });
-    await page.getByTestId("share-link").getByRole("button", { name: "Revoke link" }).click();
+    await reopenedShareDialog.getByRole("button", { name: /Revoke link created/ }).click();
     const shareRevocationResponse = await shareRevocation;
     expect(shareRevocationResponse.ok()).toBe(true);
-    await expect(page.getByTestId("shell-notice")).toContainText("Public share link revoked");
+    await expect(reopenedShareDialog.getByTestId("share-links-empty")).toBeVisible();
+    await reopenedShareDialog.getByRole("button", { name: "Close share dialog" }).click();
     await expect(page.getByRole("button", { name: "Share anonymously" })).toBeFocused();
     const revokedShareResponse = await anonymousPage.goto(shareHref!);
     expect(revokedShareResponse?.status()).toBe(404);
@@ -4055,13 +4066,27 @@ for (const viewport of responsiveTouchViewports) {
         await route.fulfill({ contentType: "application/json", json: { chat } });
       });
       if (viewport.label === "landscape") {
+        let landscapeShareLive = false;
         await page.route(`**/api/chats/${chatId}/share`, async (route) => {
+          if (route.request().method() === "GET") {
+            await route.fulfill({
+              contentType: "application/json",
+              json: {
+                shares: landscapeShareLive
+                  ? [{ createdAt: "2026-07-27T12:00:00.000Z", id: "responsive-landscape-share" }]
+                  : []
+              }
+            });
+            return;
+          }
+          landscapeShareLive = true;
           await route.fulfill({
             contentType: "application/json",
             json: { share: { id: "responsive-landscape-share", publicPath: "/s/responsive-landscape-token" } }
           });
         });
         await page.route("**/api/shares/responsive-landscape-share/revoke", async (route) => {
+          landscapeShareLive = false;
           await route.fulfill({
             contentType: "application/json",
             json: { share: { id: "responsive-landscape-share", revoked: true } }
@@ -4138,9 +4163,13 @@ for (const viewport of responsiveTouchViewports) {
       await page.keyboard.press("Escape");
       if (viewport.label === "landscape") {
         await page.getByRole("button", { name: "Share anonymously" }).click();
-        await expect(page.getByTestId("persistent-notice-region")).toContainText(/Share link (copied|created)/);
-        await expect(page.getByTestId("share-link")).toBeVisible();
-        await expect(page.getByTestId("shell-notice-layer")).toHaveCount(0);
+        const landscapeShareDialog = page.getByRole("dialog", { name: "Share anonymously" });
+        await expect(landscapeShareDialog).toBeVisible();
+        await landscapeShareDialog.getByRole("button", { name: "Create public link" }).click();
+        await expect(landscapeShareDialog.getByTestId("share-link")).toBeVisible();
+        await expectWithinViewport(page, landscapeShareDialog.getByRole("button", { name: "Create public link" }));
+        await landscapeShareDialog.getByRole("button", { name: "Close share dialog" }).click();
+        await expect(landscapeShareDialog).toHaveCount(0);
       }
       await expect(
         page.getByTestId("top-rail").locator('button[aria-label^="Account menu for "]')
@@ -4205,9 +4234,13 @@ for (const viewport of responsiveTouchViewports) {
       await accountWorkspace.getByRole("button", { name: "Close workspace" }).click();
       await expect(workspaceBrowseTrigger).toBeFocused();
       if (viewport.label === "landscape") {
-        await page.getByTestId("share-link").getByRole("button", { name: "Revoke link" }).click();
-        await expect(page.getByTestId("shell-notice")).toContainText("Public share link revoked");
-        await page.getByTestId("shell-notice").getByRole("button", { name: "Dismiss notice" }).click();
+        await page.getByRole("button", { name: "Share anonymously" }).click();
+        const landscapeRevokeDialog = page.getByRole("dialog", { name: "Share anonymously" });
+        await expect(landscapeRevokeDialog.getByTestId("share-links")).toBeVisible();
+        await landscapeRevokeDialog.getByRole("button", { name: /Revoke link created/ }).click();
+        await expect(landscapeRevokeDialog.getByTestId("share-links-empty")).toBeVisible();
+        await landscapeRevokeDialog.getByRole("button", { name: "Close share dialog" }).click();
+        await expect(landscapeRevokeDialog).toHaveCount(0);
       }
 
       const composer = page.getByRole("textbox", { name: "Message" });

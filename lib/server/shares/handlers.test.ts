@@ -3,6 +3,7 @@ import { getAuthConfig } from "../auth/config";
 import { createTestAuth } from "../auth/testRequestAuth";
 import {
   createGetPublicShareHandler,
+  createListChatSharesHandler,
   createRevokeShareHandler,
   createShareChatHandler,
   type CreatedShareRecord,
@@ -26,7 +27,11 @@ function authCookie() {
 }
 
 function createMemoryRepository() {
-  const shares = new Map<string, CreatedShareRecord & { revoked?: boolean; slugHash: string }>();
+  const shares = new Map<
+    string,
+    CreatedShareRecord & { chatId: string; revoked?: boolean; slugHash: string }
+  >();
+  let nextShareNumber = 1;
   const repository: ShareRepository = {
     createChatShare: async ({ activeLeafMessageId, chatId, shareToken, slugHash, userId }) => {
       if (chatId !== "chat-1" || userId !== config.bootstrapUserId) {
@@ -46,8 +51,9 @@ function createMemoryRepository() {
       }
 
       const share = {
+        chatId,
         createdAt: new Date("2026-06-06T00:00:00.000Z"),
-        id: "share-1",
+        id: `share-${nextShareNumber}`,
         shareToken,
         slugHash,
         snapshot: {
@@ -64,6 +70,7 @@ function createMemoryRepository() {
         },
         title: "Shared Chat"
       };
+      nextShareNumber += 1;
       shares.set(slugHash, share);
 
       return share;
@@ -75,6 +82,18 @@ function createMemoryRepository() {
       }
 
       return share;
+    },
+    listChatShares: async ({ chatId, userId }) => {
+      if (userId !== config.bootstrapUserId) {
+        return [];
+      }
+
+      return Array.from(shares.values())
+        .filter((candidate) => candidate.chatId === chatId && !candidate.revoked)
+        .map((candidate) => ({
+          createdAt: candidate.createdAt ?? new Date(0),
+          id: candidate.id
+        }));
     },
     revokeShare: async ({ shareId }) => {
       const share = Array.from(shares.values()).find((candidate) => candidate.id === shareId);
@@ -264,6 +283,56 @@ describe("share route handlers", () => {
     expect(revokedResponse.status).toBe(404);
   });
 
+  it("lists only the chat's live links and drops revoked ones", async () => {
+    const { repository } = createMemoryRepository();
+    await repository.createChatShare({
+      activeLeafMessageId: "message-1",
+      chatId: "chat-1",
+      shareToken: "token-a",
+      slugHash: hashShareToken("token-a"),
+      userId: config.bootstrapUserId
+    });
+    await repository.createChatShare({
+      activeLeafMessageId: "message-1",
+      chatId: "chat-1",
+      shareToken: "token-b",
+      slugHash: hashShareToken("token-b"),
+      userId: config.bootstrapUserId
+    });
+
+    const GET = createListChatSharesHandler({
+      repository,
+      resolveAuth: auth.resolveAuth
+    });
+    const listResponse = await GET(
+      new Request("http://app.local/api/chats/chat-1/share", {
+        headers: { cookie: authCookie() }
+      }),
+      { params: { chatId: "chat-1" } }
+    );
+    expect(listResponse.status).toBe(200);
+    const listBody = (await listResponse.json()) as { shares: { createdAt: string; id: string }[] };
+    expect(listBody.shares.map((share) => share.id)).toEqual(["share-1", "share-2"]);
+    expect(listBody.shares[0]?.createdAt).toBe("2026-06-06T00:00:00.000Z");
+    expect(JSON.stringify(listBody)).not.toContain("token-");
+
+    await repository.revokeShare({ shareId: "share-1", userId: config.bootstrapUserId });
+    const afterRevoke = await GET(
+      new Request("http://app.local/api/chats/chat-1/share", {
+        headers: { cookie: authCookie() }
+      }),
+      { params: { chatId: "chat-1" } }
+    );
+    const afterBody = (await afterRevoke.json()) as { shares: { id: string }[] };
+    expect(afterBody.shares.map((share) => share.id)).toEqual(["share-2"]);
+
+    const unauthenticated = await GET(
+      new Request("http://app.local/api/chats/chat-1/share"),
+      { params: { chatId: "chat-1" } }
+    );
+    expect(unauthenticated.status).toBe(401);
+  });
+
   it("serves neutral attachment markers without source attachment metadata", async () => {
     const snapshot = buildPublicShareSnapshot({
       activeLeafMessageId: "message-private",
@@ -303,6 +372,7 @@ describe("share route handlers", () => {
         snapshot,
         title: "Shared"
       })),
+      listChatShares: vi.fn(async () => []),
       revokeShare: vi.fn()
     };
     const GET = createGetPublicShareHandler({ repository });

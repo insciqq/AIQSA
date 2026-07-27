@@ -98,6 +98,8 @@ Adapter defaults and cache/wire details live in `BACKEND.md`; externally verifie
 
 `Share (anonymously)` creates a sanitized public snapshot of the active visible branch. It must not expose raw provider payloads, private attachments, API keys, internal run ids, private folder metadata, or auth data. A branch containing native Gemini grounded live-only provenance is rejected rather than publishing its placeholder or reconstructing content. The public snapshot does not mutate when the private chat changes.
 
+Publishing requires an explicit confirmation: the Share action opens a dialog that explains the sanitized-snapshot semantics, and a link exists only after the confirming create action (ADR 0036). Each snapshot records its source chat, and the chat's live links remain listed in that dialog with per-link revocation, so links are not immortal once the creation notice is dismissed. Stored tokens remain hashes; the full URL is visible only immediately after creation. Legacy snapshots created before the chat link existed are not listed and can be revoked only by their original id.
+
 ## Logging And Retention
 
 `CRITICAL_INVARIANTS.md` owns the durable privacy rule and `BACKEND.md` owns the exact persistence/retention contract. QSA transparency never authorizes duplicated raw request logs or broader provider-payload retention.

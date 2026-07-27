@@ -44,6 +44,7 @@ Every ADR also declares `Amends: none` or a comma-separated list of earlier ADR 
 - `0033-unified-providers-workspace-and-lifecycle-state-language.md` - presents Setup, Connections, and Run profiles as one lazy Providers workspace and gives actual Enabled/Disabled resources one explicit product-wide status/action language.
 - `0034-durable-asynchronous-mcp-activation.md` - turns initial MCP activation into one durable asynchronous trust decision with observable fenced stages and keeps transient user-runtime activation distinct from setup failure.
 - `0035-single-release-image-and-github-distribution.md` - packages every installation role in one non-root GHCR image and makes SemVer GitHub tags the single public image-and-release trigger while GitLab remains the private development remote.
+- `0036-share-confirmation-and-per-chat-link-management.md` - sharing publishes only through an explicit confirmation dialog, snapshots record their source chat, and each chat's live links stay listed and revocable while tokens remain hashed.
 
 ## Superseded ADRs
 

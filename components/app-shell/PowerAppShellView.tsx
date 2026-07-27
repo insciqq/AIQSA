@@ -15,6 +15,7 @@ import type {
   ShellWorkspacePaneView
 } from "@/components/app-shell/powerAppShellViewContracts";
 import { ProjectSettingsDialog } from "@/components/app-shell/ProjectSettingsDialog";
+import { ShareDialog } from "@/components/app-shell/ShareDialog";
 import { PromptWorkbench } from "@/components/app-shell/PromptWorkbench";
 import { SettingsDialog } from "@/components/app-shell/SettingsDialog";
 import { ShellLeftPane } from "@/components/app-shell/ShellLeftPane";
@@ -49,8 +50,7 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
     activeChatTitle,
     adminEntryVisible,
     notice,
-    shareActiveBranch,
-    sharing
+    shareActiveBranch
   } = session;
   const { copyVisibleThread, ...threadPane } = thread;
   const { activeChatStreaming, currentRunId } = threadPane;
@@ -68,7 +68,7 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
     pinningAvailable: inspectorPinningAvailable
   } = details;
   const openRunDetails = useEventCallback(() => openDetails("events"));
-  const { confirmations, palette } = overlays;
+  const { confirmations, palette, share } = overlays;
   const {
     cancelChat: cancelDeleteChat,
     cancelFolder: cancelDeleteFolder,
@@ -356,6 +356,7 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
     inspectorMode === "overlay" ||
     mobileWorkspaceOpen ||
     Boolean(projectSettingsFolder) ||
+    Boolean(share.target) ||
     promptSettings.open ||
     palette.open ||
     Boolean(deleteChatConfirmation) ||
@@ -431,7 +432,6 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
               chatModelLabels={chatModelLabels}
               footer={mobileWorkspaceOpen ? null : desktopAccountFooter}
               pane={workspace.pane}
-              sharing={sharing}
             />
           </div>
 
@@ -446,7 +446,6 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
               detailsOpen={inspectorMode !== "closed"}
               newChatDisabled={!workspace.pane.state.workspaceReady || workspace.pane.state.creatingChat}
               pipeline={pipeline}
-              sharing={sharing}
               onCopyThread={() => void copyVisibleThread()}
               onOpenDetails={() => {
                 if (inspectorMode === "closed") {
@@ -580,11 +579,14 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
                 layout="mobile"
                 pane={mobileWorkspacePane}
                 scrollTopRef={mobileWorkspaceScrollTopRef}
-                sharing={sharing}
               />
             </div>
           </div>
         </>
+      ) : null}
+
+      {share.target ? (
+        <ShareDialog key={share.target.chat.id} target={share.target} onClose={share.close} />
       ) : null}
 
       {projectSettingsFolder ? (

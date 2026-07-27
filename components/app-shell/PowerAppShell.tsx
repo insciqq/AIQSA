@@ -39,10 +39,10 @@ import {
   useRunSurfaceStore
 } from "@/components/app-shell/runSurfaceStore";
 import {
-  createShareMutationCoordinator,
   createThreadActions,
   type BranchCheckoutSettlement
 } from "@/components/app-shell/threadActions";
+import type { ShareDialogTarget } from "@/components/app-shell/ShareDialog";
 import { useAnswerNotification } from "@/components/app-shell/useAnswerNotification";
 import { useChatContentSearch } from "@/components/app-shell/useChatContentSearch";
 import { useCommandPaletteActions } from "@/components/app-shell/useCommandPaletteActions";
@@ -227,7 +227,7 @@ export function PowerAppShell({
   const [settingsNotice, setSettingsNotice] = useState<Notice | null>(null);
   const { chatContentMatchIds, chatContentSearchError, chatContentSearchLoading, chatQuery, setChatQuery } =
     useChatContentSearch(setNotice);
-  const [sharing, setSharing] = useState(false);
+  const [shareDialogTarget, setShareDialogTarget] = useState<ShareDialogTarget | null>(null);
   const activeChatStream = useRunLifecycleStore((state) =>
     activeChatId ? state.activeStreams[activeChatId] : undefined
   );
@@ -256,7 +256,6 @@ export function PowerAppShell({
   const [pendingBranchCheckouts] = useState(
     () => new Map<string, Promise<BranchCheckoutSettlement>>()
   );
-  const [shareMutationCoordinator] = useState(createShareMutationCoordinator);
   const pendingControlDefaultsRef = useRef<{ draft: SavedControlDraft; model: CatalogModel } | null>(null);
   const pendingControlDefaultsTimerRef = useRef<number | null>(null);
   const settingsMutationCoordinatorRef = useRef<SettingsMutationCoordinator | null>(null);
@@ -651,12 +650,14 @@ export function PowerAppShell({
     activateChat,
     closeChatActions: workspaceInteraction.chatMutation.closeActions,
     confirmDeleteMessage: shellOverlays.confirmations.message.request,
+    openShareDialog(target) {
+      shellOverlays.mobileWorkspace.close();
+      setShareDialogTarget(target);
+    },
     pendingBranchCheckouts,
     refreshActiveChat,
     resetThreadToLatest,
-    shareMutationCoordinator,
     setNotice,
-    setSharing,
     activeChatStreaming
   });
 
@@ -722,8 +723,7 @@ export function PowerAppShell({
     adminEntryVisible,
     dismissNotice: () => setNotice(null),
     notice,
-    shareActiveBranch,
-    sharing
+    shareActiveBranch
   } satisfies ShellSessionView;
 
   const workspacePaneView = {
@@ -901,6 +901,10 @@ export function PowerAppShell({
       open: shellOverlays.palette.open,
       run: runCommand,
       show: shellOverlays.palette.show
+    },
+    share: {
+      close: () => setShareDialogTarget(null),
+      target: shareDialogTarget
     }
   } satisfies ShellOverlaysView;
 

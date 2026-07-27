@@ -13,7 +13,6 @@ export type ShellLeftPaneProps = {
   layout?: "desktop" | "mobile";
   pane: ShellWorkspacePaneView;
   scrollTopRef?: { current: number | undefined };
-  sharing: boolean;
 };
 
 export function ShellLeftPane({
@@ -23,8 +22,7 @@ export function ShellLeftPane({
   footer,
   layout = "desktop",
   pane,
-  scrollTopRef,
-  sharing
+  scrollTopRef
 }: ShellLeftPaneProps) {
   const { actions, state } = pane;
 
@@ -60,7 +58,6 @@ export function ShellLeftPane({
       layout={layout}
       newFolderName={state.newFolderName}
       scrollTopRef={scrollTopRef}
-      sharing={sharing}
       subfolderName={state.subfolderName}
       subfolderParentId={state.subfolderParentId}
       workspaceError={state.workspaceError}

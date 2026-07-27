@@ -17,6 +17,11 @@ export type ShareCreateError = {
   error: "grounded_content_not_shareable" | "invalid_active_leaf";
 };
 
+export type ChatShareListRecord = {
+  createdAt: Date | string;
+  id: string;
+};
+
 export type ShareRepository = {
   createChatShare(input: {
     activeLeafMessageId: string | null;
@@ -26,6 +31,11 @@ export type ShareRepository = {
     userId: string;
   }): Promise<CreatedShareRecord | ShareCreateError | null>;
   findPublicShare(slugHash: string, now: Date): Promise<ShareRecord | null>;
+  listChatShares(input: {
+    chatId: string;
+    now: Date;
+    userId: string;
+  }): Promise<ChatShareListRecord[]>;
   revokeShare(input: { shareId: string; userId: string }): Promise<boolean>;
 };
 
@@ -108,6 +118,33 @@ export function createShareChatHandler(deps: ShareHandlerDeps) {
 
     return Response.json({
       share: serializeShare(share)
+    });
+  };
+}
+
+export function createListChatSharesHandler(deps: ShareHandlerDeps) {
+  return async function GET(
+    request: Request,
+    context: { params: Promise<{ chatId: string }> | { chatId: string } }
+  ): Promise<Response> {
+    const auth = await getSession(request, deps);
+    if (!auth.session) {
+      return auth.response;
+    }
+
+    const params = await context.params;
+    const shares = await deps.repository.listChatShares({
+      chatId: params.chatId,
+      now: new Date(),
+      userId: auth.session.userId
+    });
+
+    return Response.json({
+      shares: shares.map((share) => ({
+        createdAt:
+          share.createdAt instanceof Date ? share.createdAt.toISOString() : share.createdAt,
+        id: share.id
+      }))
     });
   };
 }

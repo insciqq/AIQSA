@@ -1,5 +1,6 @@
 import type { ComposerAttachment } from "@/components/chat/Composer";
 import type { CommandItem } from "@/components/command-palette/commandItems";
+import type { ShareDialogTarget } from "@/components/app-shell/ShareDialog";
 import type { PromptSettingsActions } from "@/components/app-shell/promptSettingsActions";
 import type { SettingsSection } from "@/components/app-shell/promptSettingsStore";
 import type { PromptEditorDraft } from "@/components/app-shell/promptSettingsStore";
@@ -43,7 +44,6 @@ export type ShellSessionView = {
   dismissNotice(): void;
   notice: Notice | null;
   shareActiveBranch(): Promise<void> | void;
-  sharing: boolean;
 };
 
 export type ShellWorkspacePaneState = {
@@ -257,6 +257,10 @@ export type ShellOverlaysView = {
     open: boolean;
     run(item: CommandItem): void;
     show(): void;
+  };
+  share: {
+    close(): void;
+    target: ShareDialogTarget | null;
   };
 };
 

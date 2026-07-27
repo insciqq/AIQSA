@@ -73,7 +73,6 @@ type LeftChatPaneProps = {
   onSubfolderNameChange(value: string): void;
   onToggleChatFavorite(chat: ChatSummary): void;
   onToggleFolderCollapsed(folderId: string): void;
-  sharing: boolean;
   scrollTopRef?: { current: number | undefined };
   subfolderName: string;
   subfolderParentId: string | null;
@@ -196,7 +195,6 @@ function LeftChatPaneComponent({
   onToggleChatFavorite,
   onToggleFolderCollapsed,
   scrollTopRef,
-  sharing,
   subfolderName,
   subfolderParentId,
   workspaceError,
@@ -1209,7 +1207,6 @@ function LeftChatPaneComponent({
                               className={`flex ${menuActionTarget} w-full items-center gap-2 rounded-control px-2 text-left text-ink-secondary hover:bg-control-hover hover:text-ink disabled:text-ink-disabled ${focusRing}`}
                               type="button"
                               onClick={() => onShareChat(chat)}
-                              disabled={sharing}
                             >
                               <Share2 className="size-4 text-ink-muted" aria-hidden="true" />
                               Share
@@ -1294,7 +1291,6 @@ function sameLeftPaneData(prev: LeftChatPaneProps, next: LeftChatPaneProps): boo
     prev.layout === next.layout &&
     prev.newFolderName === next.newFolderName &&
     prev.scrollTopRef === next.scrollTopRef &&
-    prev.sharing === next.sharing &&
     prev.subfolderName === next.subfolderName &&
     prev.subfolderParentId === next.subfolderParentId &&
     prev.workspaceError === next.workspaceError &&

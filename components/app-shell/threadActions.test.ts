@@ -1,10 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { resetComposerControlStoreForTest } from "./composerControlStore";
 import {
-  createShareMutationCoordinator,
   createThreadActions,
   type BranchCheckoutSettlement
 } from "./threadActions";
+import type { ShareDialogTarget } from "./ShareDialog";
 import { resetThreadStoreForTest, selectThreadSnapshot, useThreadStore } from "./threadStore";
 import { resetWorkspaceStoreForTest, useWorkspaceStore } from "./workspaceStore";
 import type { ChatDetail, ChatSummary, Notice, ThreadMessage } from "./types";
@@ -89,8 +89,8 @@ function createActionsForTest(input: { activeChatStreaming?: boolean } = {}) {
     string,
     Promise<BranchCheckoutSettlement>
   >();
-  const shareMutationCoordinator = createShareMutationCoordinator();
-  const setSharing = vi.fn();
+  const closeChatActions = vi.fn();
+  const openShareDialog = vi.fn<(target: ShareDialogTarget) => void>();
 
   return {
     actions: createThreadActions({
@@ -99,26 +99,25 @@ function createActionsForTest(input: { activeChatStreaming?: boolean } = {}) {
       activeChatStreaming: input.activeChatStreaming ?? false,
       activeChatTitle: activeChat.title,
       activateChat,
-      closeChatActions: vi.fn(),
+      closeChatActions,
       confirmDeleteMessage,
+      openShareDialog,
       pendingBranchCheckouts,
       refreshActiveChat,
       resetThreadToLatest: vi.fn(),
-      shareMutationCoordinator,
       setNotice: (notice) => {
         notices.push(notice);
-      },
-      setSharing
+      }
     }),
     activateChat,
     chats: () => useWorkspaceStore.getState().chats,
+    closeChatActions,
     confirmDeleteMessage,
     messages: () => selectThreadSnapshot(useThreadStore.getState(), activeChat.id).messages,
     notices,
+    openShareDialog,
     pendingBranchCheckouts,
     refreshActiveChat,
-    setSharing,
-    shareMutationCoordinator,
     thread: () => selectThreadSnapshot(useThreadStore.getState(), activeChat.id)
   };
 }
@@ -378,395 +377,46 @@ describe("thread actions", () => {
     await vi.waitFor(() => expect(composer).toHaveFocus());
   });
 
-  it("keeps a created share link available and revokes it through the notice action", async () => {
-    const shareButton = document.createElement("button");
-    shareButton.setAttribute("aria-label", "Share anonymously");
-    document.body.append(shareButton);
-    const revokeButton = document.createElement("button");
-    document.body.append(revokeButton);
-    revokeButton.focus();
-    const writeText = vi.fn().mockResolvedValue(undefined);
-    Object.defineProperty(navigator, "clipboard", {
-      configurable: true,
-      value: {
-        writeText
-      }
-    });
-    const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
-      const href = String(url);
-
-      if (href === "/api/chats/chat-b/share" && init?.method === "POST") {
-        return Response.json({
-          share: {
-            id: "share-1",
-            publicPath: "/s/share-token"
-          }
-        });
-      }
-
-      if (href === "/api/shares/share-1/revoke" && init?.method === "POST") {
-        return Response.json({
-          share: {
-            id: "share-1",
-            revoked: true
-          }
-        });
-      }
-
-      return new Response("", { status: 500 });
-    });
+  it("opens the share dialog for the visible branch leaf instead of publishing", () => {
+    const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
-    const { actions, notices, setSharing, shareMutationCoordinator } = createActionsForTest();
+    const { actions, notices, openShareDialog } = createActionsForTest();
 
-    await actions.shareChat(chatSummary());
+    actions.shareActiveBranch();
 
-    const shareNotice = notices.at(-1);
-    expect(shareNotice).toMatchObject({
-      action: {
-        label: "Revoke link",
-        tone: "destructive"
-      },
-      href: "http://localhost:3000/s/share-token",
-      kind: "success",
-      persistent: true,
-      secondaryAction: {
-        label: "Copy link",
-        tone: "neutral"
-      }
+    expect(openShareDialog).toHaveBeenCalledWith({
+      activeLeafMessageId: "message-1",
+      chat: expect.objectContaining({ id: "chat-b" })
     });
-    expect(writeText).toHaveBeenCalledWith("http://localhost:3000/s/share-token");
-    expect(shareMutationCoordinator.visibleShare).toMatchObject({
-      chatId: "chat-b",
-      href: "http://localhost:3000/s/share-token",
-      shareId: "share-1"
-    });
-
-    shareNotice?.action?.onClick();
-    await vi.waitFor(() => {
-      expect(fetchMock).toHaveBeenCalledWith("/api/shares/share-1/revoke", {
-        method: "POST"
-      });
-      expect(notices.at(-1)).toMatchObject({
-        kind: "success",
-        text: "Public share link revoked"
-      });
-      expect(shareButton).toHaveFocus();
-    });
-    expect(setSharing.mock.calls).toEqual([[true], [false], [true], [false]]);
-    expect(shareMutationCoordinator.visibleShare).toBeNull();
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(notices).toEqual([]);
   });
 
-  it("serializes rapid share creation and keeps the existing live owner visible", async () => {
-    let resolveCreate!: (response: Response) => void;
-    Object.defineProperty(navigator, "clipboard", {
-      configurable: true,
-      value: {
-        writeText: vi.fn().mockResolvedValue(undefined)
-      }
-    });
-    const fetchMock = vi.fn(
-      () =>
-        new Promise<Response>((resolve) => {
-          resolveCreate = resolve;
-        })
-    );
+  it("opens the share dialog from a chat row with that chat's leaf and closes the row menu", () => {
+    const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
-    const { actions, notices, setSharing, shareMutationCoordinator } = createActionsForTest();
+    const { actions, closeChatActions, openShareDialog } = createActionsForTest();
+    const rowChat = chatSummary({ activeLeafMessageId: "leaf-c", id: "chat-c" });
 
-    const firstCreate = actions.shareChat(chatSummary());
-    const duplicateCreate = actions.shareChat(chatSummary({ id: "chat-c" }));
+    actions.shareChat(rowChat);
 
-    expect(fetchMock).toHaveBeenCalledOnce();
-    expect(setSharing.mock.calls).toEqual([[true]]);
-    resolveCreate(
-      Response.json({
-        share: {
-          id: "share-1",
-          publicPath: "/s/share-token"
-        }
-      })
-    );
-    await Promise.all([firstCreate, duplicateCreate]);
-
-    expect(fetchMock).toHaveBeenCalledOnce();
-    expect(setSharing.mock.calls).toEqual([[true], [false]]);
-    expect(shareMutationCoordinator.visibleShare).toMatchObject({
-      chatId: "chat-b",
-      shareId: "share-1"
+    expect(closeChatActions).toHaveBeenCalledOnce();
+    expect(openShareDialog).toHaveBeenCalledWith({
+      activeLeafMessageId: "leaf-c",
+      chat: expect.objectContaining({ id: "chat-c" })
     });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
 
-    await actions.shareChat(chatSummary({ id: "chat-c" }));
+  it("refuses to open the share dialog for an empty chat", () => {
+    const { actions, notices, openShareDialog } = createActionsForTest();
 
-    expect(fetchMock).toHaveBeenCalledOnce();
+    actions.shareChat(chatSummary({ activeLeafMessageId: null }));
+
+    expect(openShareDialog).not.toHaveBeenCalled();
     expect(notices.at(-1)).toMatchObject({
-      action: { label: "Revoke link" },
-      href: "http://localhost:3000/s/share-token",
-      persistent: true,
-      secondaryAction: { label: "Copy link" },
-      text: "A public share link is already active. Revoke it before creating another."
-    });
-  });
-
-  it("blocks create and duplicate revoke while revocation is pending, then permits a new share", async () => {
-    let resolveRevoke!: (response: Response) => void;
-    Object.defineProperty(navigator, "clipboard", {
-      configurable: true,
-      value: {
-        writeText: vi.fn().mockResolvedValue(undefined)
-      }
-    });
-    const fetchMock = vi.fn((url: string | URL | Request, init?: RequestInit) => {
-      const href = String(url);
-      if (href === "/api/chats/chat-b/share" && init?.method === "POST") {
-        return Promise.resolve(
-          Response.json({ share: { id: "share-1", publicPath: "/s/share-token-1" } })
-        );
-      }
-      if (href === "/api/shares/share-1/revoke" && init?.method === "POST") {
-        return new Promise<Response>((resolve) => {
-          resolveRevoke = resolve;
-        });
-      }
-      if (href === "/api/chats/chat-c/share" && init?.method === "POST") {
-        return Promise.resolve(
-          Response.json({ share: { id: "share-2", publicPath: "/s/share-token-2" } })
-        );
-      }
-
-      return Promise.resolve(new Response("", { status: 500 }));
-    });
-    vi.stubGlobal("fetch", fetchMock);
-    const { actions, notices, setSharing, shareMutationCoordinator } = createActionsForTest();
-
-    await actions.shareChat(chatSummary());
-    const revokeAction = notices.at(-1)?.action;
-    revokeAction?.onClick();
-    revokeAction?.onClick();
-    const blockedCreate = actions.shareChat(chatSummary({ id: "chat-c" }));
-
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(fetchMock).toHaveBeenCalledWith("/api/shares/share-1/revoke", { method: "POST" });
-    expect(setSharing.mock.calls).toEqual([[true], [false], [true]]);
-
-    resolveRevoke(Response.json({ share: { id: "share-1", revoked: true } }));
-    await blockedCreate;
-    await vi.waitFor(() => expect(shareMutationCoordinator.visibleShare).toBeNull());
-
-    await actions.shareChat(chatSummary({ id: "chat-c" }));
-
-    expect(fetchMock).toHaveBeenCalledTimes(3);
-    expect(shareMutationCoordinator.visibleShare).toMatchObject({
-      chatId: "chat-c",
-      href: "http://localhost:3000/s/share-token-2",
-      shareId: "share-2"
-    });
-    expect(setSharing.mock.calls).toEqual([
-      [true],
-      [false],
-      [true],
-      [false],
-      [true],
-      [false]
-    ]);
-  });
-
-  it("keeps a clipboard-failed link visible and revocable through a failed retry", async () => {
-    const shareButton = document.createElement("button");
-    shareButton.setAttribute("aria-label", "Share anonymously");
-    document.body.append(shareButton);
-    const revokeButton = document.createElement("button");
-    document.body.append(revokeButton);
-    revokeButton.focus();
-    Object.defineProperty(navigator, "clipboard", {
-      configurable: true,
-      value: {
-        writeText: vi.fn().mockRejectedValue(new Error("clipboard_denied"))
-      }
-    });
-    let revokeAttempts = 0;
-    const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
-      const href = String(url);
-      if (href === "/api/chats/chat-b/share" && init?.method === "POST") {
-        return Response.json({ share: { id: "share-1", publicPath: "/s/exact-token" } });
-      }
-      if (href === "/api/shares/share-1/revoke" && init?.method === "POST") {
-        revokeAttempts += 1;
-        if (revokeAttempts === 1) {
-          return Response.json({ error: "temporary_failure" }, { status: 503 });
-        }
-        revokeButton.remove();
-        return Response.json({ share: { id: "share-1", revoked: true } });
-      }
-
-      return new Response("", { status: 500 });
-    });
-    vi.stubGlobal("fetch", fetchMock);
-    const { actions, notices, shareMutationCoordinator } = createActionsForTest();
-
-    await actions.shareChat(chatSummary());
-
-    expect(notices.at(-1)).toMatchObject({
-      action: { label: "Revoke link" },
-      href: "http://localhost:3000/s/exact-token",
       kind: "error",
-      persistent: true,
-      secondaryAction: { label: "Copy link" },
-      text: "Share link created, but copying failed. Use Copy link to try again."
+      text: "Send a message before sharing."
     });
-    notices.at(-1)?.action?.onClick();
-    await vi.waitFor(() =>
-      expect(notices.at(-1)).toMatchObject({
-        action: { label: "Retry revoke" },
-        href: "http://localhost:3000/s/exact-token",
-        persistent: true,
-        secondaryAction: { label: "Copy link" }
-      })
-    );
-
-    notices.at(-1)?.action?.onClick();
-    await vi.waitFor(() => {
-      expect(revokeAttempts).toBe(2);
-      expect(notices.at(-1)).toMatchObject({ text: "Public share link revoked" });
-      expect(shareMutationCoordinator.visibleShare).toBeNull();
-      expect(shareButton).toHaveFocus();
-    });
-  });
-
-  it("reports copy failure and lets the user retry the exact live share URL", async () => {
-    const writeText = vi
-      .fn()
-      .mockRejectedValueOnce(new Error("initial_clipboard_denied"))
-      .mockRejectedValueOnce(new Error("retry_clipboard_denied"))
-      .mockResolvedValueOnce(undefined);
-    Object.defineProperty(navigator, "clipboard", {
-      configurable: true,
-      value: { writeText }
-    });
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () =>
-        Response.json({ share: { id: "share-1", publicPath: "/s/copy-retry-token" } })
-      )
-    );
-    const { actions, notices } = createActionsForTest();
-    const href = "http://localhost:3000/s/copy-retry-token";
-
-    await actions.shareChat(chatSummary());
-    notices.at(-1)?.secondaryAction?.onClick();
-
-    await vi.waitFor(() =>
-      expect(notices.at(-1)).toMatchObject({
-        action: { label: "Revoke link" },
-        href,
-        kind: "error",
-        persistent: true,
-        secondaryAction: { label: "Copy link" },
-        text: "Copy failed. Try again or select the URL."
-      })
-    );
-
-    notices.at(-1)?.secondaryAction?.onClick();
-    await vi.waitFor(() =>
-      expect(notices.at(-1)).toMatchObject({
-        action: { label: "Revoke link" },
-        href,
-        kind: "success",
-        persistent: true,
-        secondaryAction: { label: "Copy link" },
-        text: "Share link copied"
-      })
-    );
-    expect(writeText).toHaveBeenNthCalledWith(1, href);
-    expect(writeText).toHaveBeenNthCalledWith(2, href);
-    expect(writeText).toHaveBeenNthCalledWith(3, href);
-  });
-
-  it("does not let a late copy result overwrite revoking status", async () => {
-    let resolveCopy!: () => void;
-    let resolveRevoke!: (response: Response) => void;
-    const writeText = vi
-      .fn()
-      .mockResolvedValueOnce(undefined)
-      .mockImplementationOnce(
-        () =>
-          new Promise<void>((resolve) => {
-            resolveCopy = resolve;
-          })
-      );
-    Object.defineProperty(navigator, "clipboard", {
-      configurable: true,
-      value: { writeText }
-    });
-    vi.stubGlobal(
-      "fetch",
-      vi.fn((url: string | URL | Request, init?: RequestInit) => {
-        if (String(url) === "/api/chats/chat-b/share" && init?.method === "POST") {
-          return Promise.resolve(
-            Response.json({ share: { id: "share-1", publicPath: "/s/revoking-token" } })
-          );
-        }
-        return new Promise<Response>((resolve) => {
-          resolveRevoke = resolve;
-        });
-      })
-    );
-    const { actions, notices } = createActionsForTest();
-
-    await actions.shareChat(chatSummary());
-    notices.at(-1)?.secondaryAction?.onClick();
-    await vi.waitFor(() => expect(notices.at(-1)?.text).toBe("Copying share link…"));
-    notices.at(-1)?.action?.onClick();
-    await vi.waitFor(() => expect(notices.at(-1)?.text).toBe("Revoking public share link."));
-
-    resolveCopy();
-    await Promise.resolve();
-    await Promise.resolve();
-    expect(notices.at(-1)).toMatchObject({
-      action: { disabled: true, label: "Revoking…" },
-      secondaryAction: { disabled: true, label: "Copy link" },
-      text: "Revoking public share link."
-    });
-
-    resolveRevoke(Response.json({ share: { id: "share-1", revoked: true } }));
-    await vi.waitFor(() => expect(notices.at(-1)?.text).toBe("Public share link revoked"));
-  });
-
-  it("does not let a clipboard settlement resurrect a revoked share", async () => {
-    let resolveCopy!: () => void;
-    const writeText = vi
-      .fn()
-      .mockResolvedValueOnce(undefined)
-      .mockImplementationOnce(
-        () =>
-          new Promise<void>((resolve) => {
-            resolveCopy = resolve;
-          })
-      );
-    Object.defineProperty(navigator, "clipboard", {
-      configurable: true,
-      value: { writeText }
-    });
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
-        if (String(url) === "/api/chats/chat-b/share" && init?.method === "POST") {
-          return Response.json({ share: { id: "share-1", publicPath: "/s/revoked-token" } });
-        }
-        return Response.json({ share: { id: "share-1", revoked: true } });
-      })
-    );
-    const { actions, notices, shareMutationCoordinator } = createActionsForTest();
-
-    await actions.shareChat(chatSummary());
-    notices.at(-1)?.secondaryAction?.onClick();
-    await vi.waitFor(() => expect(notices.at(-1)?.text).toBe("Copying share link…"));
-    notices.at(-1)?.action?.onClick();
-    await vi.waitFor(() => expect(notices.at(-1)?.text).toBe("Public share link revoked"));
-
-    resolveCopy();
-    await Promise.resolve();
-    await Promise.resolve();
-    expect(notices.at(-1)).toMatchObject({ text: "Public share link revoked" });
-    expect(shareMutationCoordinator.visibleShare).toBeNull();
   });
 });

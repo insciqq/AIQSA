@@ -96,7 +96,6 @@ function renderPane(overrides: Partial<ComponentProps<typeof LeftChatPane>> = {}
     onSubfolderNameChange: vi.fn(),
     onToggleChatFavorite: vi.fn(),
     onToggleFolderCollapsed: vi.fn(),
-    sharing: false,
     subfolderName: "",
     subfolderParentId: null,
     workspaceError: null,

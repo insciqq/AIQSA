@@ -214,7 +214,6 @@ export function TopRail({
   onShare,
   onStartNewChat,
   pipeline,
-  sharing,
   workspaceButtonRef,
   workspaceAttention = false
 }: {
@@ -231,7 +230,6 @@ export function TopRail({
   onShare(): void;
   onStartNewChat(): void;
   pipeline: PipelineSnapshot;
-  sharing: boolean;
   workspaceButtonRef?: Ref<HTMLButtonElement>;
   workspaceAttention?: boolean;
 }) {
@@ -316,9 +314,7 @@ export function TopRail({
               ].join(" ")}
               type="button"
               aria-label="Share anonymously"
-              aria-busy={sharing || undefined}
               title="Share anonymously"
-              disabled={sharing}
               onClick={onShare}
             >
               <Share2 className="size-4" aria-hidden="true" />

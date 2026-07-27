@@ -27,7 +27,6 @@ function renderTopRail(overrides: Partial<ComponentProps<typeof TopRail>> = {}) 
     detailsOpen: false,
     newChatDisabled: false,
     pipeline: idlePipeline,
-    sharing: false,
     ...callbacks,
     ...overrides
   };
@@ -154,16 +153,6 @@ describe("TopRail", () => {
     expect(closeDetails).toHaveAttribute("aria-expanded", "true");
     fireEvent.click(closeDetails);
     expect(callbacks.onOpenDetails).toHaveBeenCalledTimes(2);
-  });
-
-  it("disables only sharing while the operation is pending", () => {
-    renderTopRail({ sharing: true });
-
-    expect(screen.getByRole("button", { name: "Share anonymously" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Share anonymously" })).toHaveAttribute("aria-busy", "true");
-    expect(screen.getByRole("button", { name: "Open details" })).toBeEnabled();
-    expect(screen.getByRole("button", { name: "Open workspace" })).toBeEnabled();
-    expect(screen.getByRole("button", { name: "Start new chat" })).toBeEnabled();
   });
 
   it("disables only the compact New chat action when its workspace owner is unavailable", () => {
