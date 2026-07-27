@@ -7,7 +7,7 @@ describe("local chat title policy", () => {
     vi.unstubAllEnvs();
   });
 
-  it("normalizes and bounds first-message text deterministically", () => {
+  it("keeps short first-message text exact after whitespace normalization", () => {
     expect(
       titleFromMessageContent({
         blocks: [
@@ -16,12 +16,45 @@ describe("local chat title policy", () => {
         ]
       })
     ).toBe("Explain transaction isolation with a practical example");
+  });
 
-    const longTitle = titleFromMessageContent({
+  it("cuts a long title at the last whole-word boundary without persisting an ellipsis", () => {
+    const title = titleFromMessageContent({
+      blocks: [
+        {
+          text: "Give a short but complete explanation of transaction isolation and practical locking examples",
+          type: "text"
+        }
+      ]
+    });
+
+    expect(title).toBe("Give a short but complete explanation of transaction");
+    expect(title).not.toMatch(/\.\.\.$/);
+    expect(Array.from(title).length).toBeLessThanOrEqual(56);
+  });
+
+  it("uses a bounded code-point fallback for a single long word", () => {
+    const title = titleFromMessageContent({
       blocks: [{ text: "x".repeat(100), type: "text" }]
     });
-    expect(longTitle).toBe(`${"x".repeat(53)}...`);
-    expect(longTitle).toHaveLength(56);
+
+    expect(title).toBe("x".repeat(56));
+    expect(title).not.toContain("...");
+  });
+
+  it("keeps unicode code points intact while cutting at a whole-word boundary", () => {
+    const title = titleFromMessageContent({
+      blocks: [
+        {
+          text: "🧭 Объясни, как многоязычный поиск сохраняет контекст документов для распределённых команд",
+          type: "text"
+        }
+      ]
+    });
+
+    expect(title).toBe("🧭 Объясни, как многоязычный поиск сохраняет контекст");
+    expect(title).not.toContain("�");
+    expect(Array.from(title).length).toBeLessThanOrEqual(56);
   });
 
   it("uses the local placeholder for blank, malformed, and attachment-only content", () => {

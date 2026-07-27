@@ -16,7 +16,7 @@ Streaming is a provider-neutral run capability. Catalog `capabilities.streaming`
 
 1. Question
    - user message;
-   - a first-message chat title is derived locally and transactionally from bounded normalized text; it is not another provider request and creates no provider usage;
+   - a first-message chat title is derived locally and transactionally from bounded normalized text, ending at a whole-word boundary when one exists and storing no display ellipsis; it is not another provider request and creates no provider usage;
    - active branch conversation context from a recursive same-chat ancestor query that materializes only the selected root-to-leaf path;
    - editable system/developer prompt;
    - selected provider and model;

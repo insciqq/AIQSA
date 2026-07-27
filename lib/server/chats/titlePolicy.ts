@@ -1,4 +1,5 @@
 export const defaultChatTitle = "New Chat";
+const maxGeneratedTitleLength = 56;
 
 function textFromContent(content: unknown): string {
   if (typeof content !== "object" || content === null || !("blocks" in content)) {
@@ -32,5 +33,16 @@ export function titleFromMessageContent(content: unknown): string {
     return defaultChatTitle;
   }
 
-  return normalized.length > 56 ? `${normalized.slice(0, 53)}...` : normalized;
+  const characters = Array.from(normalized);
+  if (characters.length <= maxGeneratedTitleLength) {
+    return normalized;
+  }
+
+  const bounded = characters.slice(0, maxGeneratedTitleLength).join("");
+  if (characters[maxGeneratedTitleLength] === " " || bounded.endsWith(" ")) {
+    return bounded.trimEnd();
+  }
+
+  const lastWordBoundary = bounded.lastIndexOf(" ");
+  return lastWordBoundary > 0 ? bounded.slice(0, lastWordBoundary).trimEnd() : bounded;
 }

@@ -3505,7 +3505,8 @@ test("supports the default QSA chat and folder workflow", async ({ browser, page
   test.setTimeout(60_000);
   const suffix = Date.now();
   const folderName = `E2E Folder ${suffix}`;
-  const prompt = `Folder path e2e question ${suffix}`;
+  const expectedAutoTitle = `Folder path e2e question ${suffix} demonstrates`;
+  const prompt = `${expectedAutoTitle} clean automatic title boundaries`;
   const memoryPrompt = `What was my first message in this chat? ${suffix}`;
 
   await page.addInitScript(() => {
@@ -3610,6 +3611,7 @@ test("supports the default QSA chat and folder workflow", async ({ browser, page
   await expect(details.getByRole("tab", { name: "Events" })).toHaveAttribute("aria-selected", "true");
 
   await expect(assistantContentWithText(page, `Fake answer: ${prompt}`)).toBeVisible({ timeout: 20_000 });
+  await expect(page.getByTestId("current-chat-title")).toHaveText(expectedAutoTitle);
   expect(activeChatDetailFetches).toBe(0);
   await expect(page.getByTestId("thread")).toContainText(resetModelLabel);
   await expect(page.getByTestId("streaming-cursor")).toHaveCount(0);
@@ -3617,6 +3619,9 @@ test("supports the default QSA chat and folder workflow", async ({ browser, page
   await expect(details.getByTestId("inspector-event-log")).toContainText("Run complete");
   await details.getByRole("button", { name: "Pin details" }).click();
   await expect(details).toHaveAttribute("data-presentation", "pinned");
+  await expect(
+    page.getByTestId("left-chat-pane").getByRole("button", { exact: true, name: expectedAutoTitle })
+  ).toBeVisible();
   await expect(page.getByTestId("left-chat-pane")).toContainText(String(suffix));
   await page.getByLabel("Search chats").fill(String(suffix));
   await expect(page.getByTestId("left-chat-pane")).toContainText(String(suffix));
@@ -3779,7 +3784,9 @@ test("supports the default QSA chat and folder workflow", async ({ browser, page
     const shareResponse = await anonymousPage.goto(shareHref!);
     expect(shareResponse?.status()).toBe(200);
     await expect(anonymousPage.getByTestId("public-share-view")).toContainText("Read-only snapshot");
-    await expect(anonymousPage.getByRole("heading", { level: 1 })).toBeVisible();
+    const sharedTitle = anonymousPage.getByRole("heading", { level: 1 });
+    await expect(sharedTitle).toHaveText(`Branch: ${expectedAutoTitle}`);
+    await expect(sharedTitle).not.toContainText("...");
     await expect(anonymousPage.getByRole("list", { name: "Shared conversation" })).toBeVisible();
     await expect(
       anonymousPage.getByRole("article", { name: "Shared question" }).filter({ hasText: prompt })

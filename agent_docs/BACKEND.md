@@ -173,7 +173,7 @@ OpenAI Responses and OpenRouter answer adapters sanitize the common old debug-te
 
 ## Chat Titles
 
-The first send in a blank/new chat derives a short deterministic title from local message text inside the run-creation transaction. The update is compare-and-set against `New Chat`/`Untitled QSA`, so a concurrent or existing explicit title wins. Attachment-only or blank text keeps `New Chat`. Title derivation never calls a provider and creates no usage, event, or accounting record.
+The first send in a blank/new chat derives a short deterministic title from local message text inside the run-creation transaction. Normalized multi-word text stops at the last whole-word boundary within the 56-code-point budget and persists no display ellipsis; a single unbroken token uses a bounded code-point fallback, while display surfaces own any visual truncation. The update is compare-and-set against `New Chat`/`Untitled QSA`, so a concurrent or existing explicit title wins. Attachment-only or blank text keeps `New Chat`. Title derivation never calls a provider and creates no usage, event, or accounting record. New share snapshots copy that already-persisted clean chat title unchanged.
 
 ## Provider Adapters
 
