@@ -14,6 +14,7 @@ import {
   type ConsumeMessageRunStream
 } from "@/components/app-shell/messageRunLifecycle";
 import { useRunLifecycleStore } from "@/components/app-shell/runLifecycleStore";
+import { useRunSurfaceStore } from "@/components/app-shell/runSurfaceStore";
 import { mergeThreadMessages } from "@/components/app-shell/runState";
 import { effectiveActiveLeafId } from "@/components/app-shell/threadPath";
 import { selectThreadSnapshot, useThreadStore } from "@/components/app-shell/threadStore";
@@ -343,6 +344,7 @@ export function useMessageRunActions({
     const controlDefaultsForSend = buildControlDraft();
     const paramsForSend = buildParams();
     const sourceComposerChatId = chatIdFromComposerSessionKey(sourceSessionKey);
+    const startedFromBlankWorkspace = sourceComposerChatId === null;
     if (sourceComposerChatId !== activeChatId) {
       return;
     }
@@ -529,6 +531,9 @@ export function useMessageRunActions({
               optimisticUserMessageId: userMessage.id,
               previousLeafId: parentLeafForSend
             });
+            if (startedFromBlankWorkspace) {
+              useRunSurfaceStore.getState().resetSurface(chatIdForSend);
+            }
             return;
           }
 

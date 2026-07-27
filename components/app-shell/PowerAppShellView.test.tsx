@@ -653,6 +653,36 @@ describe("PowerAppShellView compact New chat", () => {
     rerender(renderView({ creatingChat: true }));
     expect(screen.getByRole("button", { name: "Start new chat" })).toBeDisabled();
   });
+
+  it("hides a stale run-error chip until the current conversation owns visible run state", () => {
+    const props = baseProps();
+    const errorEvent = {
+      data: { message: "First send was rejected" },
+      type: "error" as const
+    };
+    const renderView = (withMessage: boolean) => (
+      <PowerAppShellView
+        {...props}
+        details={{
+          ...props.details,
+          events: [errorEvent],
+          messages: withMessage ? [detailsTestMessage] : []
+        }}
+        thread={{
+          ...props.thread,
+          visibleMessages: withMessage ? [detailsTestMessage] : []
+        }}
+      />
+    );
+    const { rerender } = render(renderView(false));
+
+    expect(screen.queryByTestId("pipeline-indicator")).not.toBeInTheDocument();
+
+    rerender(renderView(true));
+    expect(
+      screen.getByRole("button", { name: "Run error - open run events" })
+    ).toBeVisible();
+  });
 });
 
 describe("PowerAppShellView Details composition", () => {

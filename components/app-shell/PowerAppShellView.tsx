@@ -127,13 +127,18 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
     );
   }, [catalog]);
   const pipeline = useMemo(
-    () =>
-      pipelineStage({
+    () => {
+      if (!activeChatId || (messages.length === 0 && !activeChatStreaming)) {
+        return null;
+      }
+
+      return pipelineStage({
         events: runEvents,
         searchEnabled: selectedSearchStrategy !== "search-disabled",
         streaming: activeChatStreaming
-      }),
-    [activeChatStreaming, runEvents, selectedSearchStrategy]
+      });
+    },
+    [activeChatId, activeChatStreaming, messages.length, runEvents, selectedSearchStrategy]
   );
   const runWarnings = useMemo(
     () => {

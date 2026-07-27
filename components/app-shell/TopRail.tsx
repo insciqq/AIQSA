@@ -28,9 +28,9 @@ function PipelineIndicator({
   pipeline
 }: {
   onOpen(): void;
-  pipeline: PipelineSnapshot;
+  pipeline: PipelineSnapshot | null;
 }) {
-  if (pipeline.phase !== "running" && pipeline.phase !== "error") {
+  if (!pipeline || (pipeline.phase !== "running" && pipeline.phase !== "error")) {
     return null;
   }
 
@@ -229,7 +229,7 @@ export function TopRail({
   onOpenWorkspace(): void;
   onShare(): void;
   onStartNewChat(): void;
-  pipeline: PipelineSnapshot;
+  pipeline: PipelineSnapshot | null;
   workspaceButtonRef?: Ref<HTMLButtonElement>;
   workspaceAttention?: boolean;
 }) {

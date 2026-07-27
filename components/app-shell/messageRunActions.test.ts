@@ -1370,6 +1370,55 @@ describe("message run actions", () => {
     ]);
   });
 
+  it("settles a rejected first send as one saved-empty chat with restored feedback", async () => {
+    const createdChat = {
+      ...chat(),
+      id: "chat-rejected",
+      title: "New Chat"
+    };
+    const consumeRunStream = vi.fn();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        Response.json({ error: "mcp_tool_calling_not_supported" }, { status: 400 })
+      )
+    );
+    let actions!: ReturnType<typeof useMessageRunActionsForTest>;
+    const createChat = vi.fn(async () => {
+      useWorkspaceStore.getState().upsertChat(createdChat);
+      useWorkspaceStore.getState().setActiveChatId(createdChat.id);
+      actions.activeChatIdRef.current = createdChat.id;
+      return createdChat;
+    });
+    actions = useMessageRunActionsForTest({
+      activeChat: null,
+      activeChatId: null,
+      attachments: [],
+      consumeRunStream,
+      createChat,
+      draft: "Question that should survive"
+    });
+
+    await actions.submitComposer();
+
+    expect(createChat).toHaveBeenCalledOnce();
+    expect(consumeRunStream).not.toHaveBeenCalled();
+    expect(useWorkspaceStore.getState()).toMatchObject({
+      activeChatId: createdChat.id,
+      chats: expect.arrayContaining([expect.objectContaining({ id: createdChat.id })])
+    });
+    expect(selectThreadSnapshot(useThreadStore.getState(), createdChat.id)).toMatchObject({
+      activeLeafId: null,
+      messages: []
+    });
+    expect(actions.surface(createdChat.id)).toEqual({ events: [], lastRun: null });
+    expect(actions.session(composerSessionKey(createdChat.id))).toMatchObject({
+      draft: "Question that should survive",
+      operationError: "Send failed. Your draft was preserved.",
+      pendingSend: null
+    });
+  });
+
   it("regenerates as a sibling under the original parent and remaps the optimistic assistant id", async () => {
     vi.spyOn(Date, "now").mockReturnValue(123);
     const fetchMock = vi.fn(async () => new Response("", { status: 200 }));

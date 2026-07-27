@@ -566,8 +566,11 @@ describe("MainThreadPane", () => {
     expect(retryActiveChatDetail).toHaveBeenCalledOnce();
   });
 
-  it("centers one composer for a ready empty chat and moves that same composer to the thread tail on submit", () => {
-    const { props, rerender } = renderPane(readyComposerOverrides);
+  it("centers one composer only for a blank workspace and keeps saved-empty feedback at the thread tail", () => {
+    const { props, rerender } = renderPane({
+      ...readyComposerOverrides,
+      activeChatId: null
+    });
 
     const emptyState = screen.getByTestId("thread-empty-state");
     const layout = screen.getByTestId("thread-composer-layout");
@@ -599,6 +602,27 @@ describe("MainThreadPane", () => {
     rerender(
       <MainThreadPane
         {...props}
+        activeChatId="chat-created"
+        operationError="Send failed. Your draft was preserved."
+      />
+    );
+
+    expect(screen.getByTestId("thread-composer-layout")).toHaveAttribute(
+      "data-composer-placement",
+      "thread-tail"
+    );
+    expect(screen.getByTestId("thread-empty-state")).toHaveTextContent(
+      "What are you investigating?"
+    );
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Send failed. Your draft was preserved."
+    );
+    expect(screen.getByTestId("composer-form")).toBe(composer);
+
+    rerender(
+      <MainThreadPane
+        {...props}
+        activeChatId="chat-created"
         visibleMessages={[
           userMessage("question-1", "First question"),
           assistantMessage("answer-1", { status: "streaming" })

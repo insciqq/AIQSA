@@ -274,6 +274,7 @@ export function MainThreadPane({
     !currentModel;
 
   const centeredEmptyConversation =
+    activeChatId === null &&
     visibleMessages.length === 0 &&
     Boolean(catalog) &&
     Boolean(catalog?.models.length) &&
