@@ -15,6 +15,7 @@ import {
   updateAdminMcpServer,
   type AdminMcpClientResult
 } from "@/components/admin/adminMcpApi";
+import { isAdminMcpActivationPending } from "@/components/admin/adminMcpActivation";
 import type {
   AdminMcpCreateRequest,
   AdminMcpDraftTestRequest,
@@ -101,25 +102,32 @@ export function useAdminMcpController({
     ]));
   }, []);
 
-  const refresh = useCallback(async () => {
+  const loadCatalog = useCallback(async (silent: boolean) => {
     if (loadRef.current) return loadRef.current;
     const operation = (async () => {
-      setLoading(true);
-      const result = await requestAdminMcpCatalog(fetcher);
-      if (result.ok) {
-        setServers(sortServers(result.data.servers));
-        setLoaded(true);
-        setError(null);
-      } else {
-        setError(adminMcpErrorMessage(result.error));
+      if (!silent) setLoading(true);
+      try {
+        const result = await requestAdminMcpCatalog(fetcher);
+        if (result.ok) {
+          setServers(sortServers(result.data.servers));
+          setLoaded(true);
+          if (!silent) setError(null);
+        } else if (!silent) {
+          setError(adminMcpErrorMessage(result.error));
+        }
+      } finally {
+        if (!silent) setLoading(false);
       }
-      setLoading(false);
     })();
     loadRef.current = operation;
-    await operation.finally(() => {
+    try {
+      await operation;
+    } finally {
       if (loadRef.current === operation) loadRef.current = null;
-    });
+    }
   }, [fetcher]);
+
+  const refresh = useCallback(() => loadCatalog(false), [loadCatalog]);
 
   useEffect(() => {
     if (!active) {
@@ -132,9 +140,33 @@ export function useAdminMcpController({
     }
   }, [active, loaded, loading, refresh]);
 
+  const activationPending = servers.some((server) =>
+    isAdminMcpActivationPending(server.activation)
+  );
+
+  useEffect(() => {
+    if (!active || !loaded || !activationPending) return;
+
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const poll = async () => {
+      if (cancelled) return;
+      if (typeof document === "undefined" || document.visibilityState !== "hidden") {
+        await loadCatalog(true);
+      }
+      if (!cancelled) timer = setTimeout(() => void poll(), 1_200);
+    };
+
+    timer = setTimeout(() => void poll(), 1_200);
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [active, activationPending, loadCatalog, loaded]);
+
   const runServerMutation = useCallback(async (
     operation: () => Promise<AdminMcpClientResult<AdminMcpServer>>,
-    success: string
+    success: string | ((server: AdminMcpServer) => string)
   ): Promise<AdminMcpServer | null> => {
     if (busyRef.current) return null;
     busyRef.current = true;
@@ -148,7 +180,7 @@ export function useAdminMcpController({
       return null;
     }
     replaceServer(result.data);
-    setNotice(success);
+    setNotice(typeof success === "function" ? success(result.data) : success);
     notifyMutationCommitted(onMutationCommitted);
     return result.data;
   }, [onMutationCommitted, replaceServer]);
@@ -174,15 +206,10 @@ export function useAdminMcpController({
         return created.data;
       }
 
-      const checked = await checkAdminMcpUpdate(created.data.id, {}, fetcher);
-      if (!checked.ok) {
-        setNotice("MCP server draft created, but its automatic validation did not complete.");
-        setError(adminMcpErrorMessage(checked.error));
-        return created.data;
-      }
-      replaceServer(checked.data);
-      setNotice("MCP server draft created and checked. Review the discovered tools before activation.");
-      return checked.data;
+      setNotice(body.activate
+        ? "MCP activation started. Setup continues in the background."
+        : "MCP server draft created.");
+      return created.data;
     } finally {
       busyRef.current = false;
       setBusy(false);
@@ -191,7 +218,7 @@ export function useAdminMcpController({
 
   const booleanMutation = useCallback(async (
     operation: () => Promise<AdminMcpClientResult<AdminMcpServer>>,
-    success: string
+    success: string | ((server: AdminMcpServer) => string)
   ) => Boolean(await runServerMutation(operation, success)), [runServerMutation]);
 
   const update = useCallback((serverId: string, body: AdminMcpUpdateRequest) =>
@@ -214,7 +241,12 @@ export function useAdminMcpController({
     booleanMutation(() => checkAdminMcpUpdate(serverId, body, fetcher), "Update check completed. Review the tested draft."),
   [booleanMutation, fetcher]);
   const activate = useCallback((serverId: string) =>
-    booleanMutation(() => activateAdminMcpDraft(serverId, fetcher), "Tested MCP revision activated."),
+    booleanMutation(
+      () => activateAdminMcpDraft(serverId, fetcher),
+      (server) => isAdminMcpActivationPending(server.activation)
+        ? "MCP activation started. Setup continues in the background."
+        : "Tested MCP revision activated."
+    ),
   [booleanMutation, fetcher]);
   const rollback = useCallback((serverId: string, body: AdminMcpRollbackRequest) =>
     booleanMutation(() => rollbackAdminMcpServer(serverId, body, fetcher), "MCP server rolled back."),

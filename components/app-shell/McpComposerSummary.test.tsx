@@ -10,7 +10,7 @@ describe("McpComposerSummary", () => {
     vi.unstubAllGlobals();
   });
 
-  it("shows aggregate ready tools and routes issues to MCP settings", () => {
+  it("shows runtime failure without mislabeling it as setup work", () => {
     const onOpenSettings = vi.fn();
     useMcpSettingsStore.setState({
       loadState: "ready",
@@ -51,14 +51,16 @@ describe("McpComposerSummary", () => {
     const summary = screen.getByTestId("composer-mcp-summary");
     expect(summary).toHaveClass("text-ink-secondary", "hover:bg-control-hover");
     expect(summary).not.toHaveClass("w-full", "mt-2");
-    expect(summary).toHaveAttribute("title", "Tools. 1/2 ready · 2 tools. 1 need attention");
+    expect(summary).toHaveAttribute("title", "Tools. 1/2 ready · 2 tools. 1 activation failed");
     expect(screen.getByText("Enabled", { selector: "[data-resource-availability]" })).toBeVisible();
-    expect(screen.getByText("1/2 ready")).toHaveClass("text-caution");
+    expect(screen.getByText("Activation failed")).toHaveClass("text-critical");
+    expect(screen.queryByText("2 tools ready")).not.toBeInTheDocument();
+    expect(screen.queryByText(/needs setup/iu)).not.toBeInTheDocument();
     fireEvent.click(summary);
     expect(onOpenSettings).toHaveBeenCalledOnce();
   });
 
-  it("surfaces an enabled known inventory above the run tool limit", () => {
+  it("shows an idle enabled runtime as activating while preserving the tool-limit warning", () => {
     useMcpSettingsStore.setState({
       loadState: "ready",
       servers: [{
@@ -81,9 +83,85 @@ describe("McpComposerSummary", () => {
 
     expect(screen.getByTestId("composer-mcp-summary")).toHaveAttribute(
       "title",
-      "Tools. 0/1 ready · 0 tools. 1 need attention. Tool limit exceeded"
+      "Tools. 0/1 ready · 0 tools. 1 activating. Tool limit exceeded"
     );
-    expect(screen.getByText("0/1 ready")).toBeVisible();
+    expect(screen.getByText("Enabled", { selector: "[data-resource-availability]" })).toBeVisible();
+    expect(screen.getByText("Activating")).toHaveClass("text-proof");
+    expect(screen.queryByText(/needs setup/iu)).not.toBeInTheDocument();
+  });
+
+  it("keeps mixed ready and transient runtimes visibly labeled Activating", () => {
+    useMcpSettingsStore.setState({
+      loadState: "ready",
+      servers: [
+        {
+          accountLabel: null,
+          description: "Memory",
+          enabled: true,
+          errorCode: null,
+          fields: [],
+          id: "memory",
+          knownToolCount: 1,
+          name: "Memory",
+          oauthAvailable: false,
+          oauthState: null,
+          readiness: "ready",
+          tools: [{ description: null, name: "remember" }]
+        },
+        {
+          accountLabel: null,
+          description: "Tasks",
+          enabled: true,
+          errorCode: null,
+          fields: [],
+          id: "tasks",
+          knownToolCount: 1,
+          name: "Tasks",
+          oauthAvailable: false,
+          oauthState: null,
+          readiness: "queued",
+          tools: []
+        }
+      ]
+    });
+
+    render(<McpComposerSummary onOpenSettings={vi.fn()} />);
+
+    expect(screen.getByText("Activating")).toHaveClass("text-proof");
+    expect(screen.queryByText("1 activating")).not.toBeInTheDocument();
+    expect(screen.getByTestId("composer-mcp-summary")).toHaveAttribute(
+      "title",
+      "Tools. 1/2 ready · 1 tool. 1 activating"
+    );
+    expect(screen.queryByText(/needs setup/iu)).not.toBeInTheDocument();
+  });
+
+  it("reserves Needs setup for the exact actionable readiness state", () => {
+    useMcpSettingsStore.setState({
+      loadState: "ready",
+      servers: [{
+        accountLabel: null,
+        description: "Missing personal value",
+        enabled: true,
+        errorCode: "configuration_required",
+        fields: [],
+        id: "setup",
+        knownToolCount: 1,
+        name: "Setup server",
+        oauthAvailable: false,
+        oauthState: null,
+        readiness: "needs_setup",
+        tools: []
+      }]
+    });
+
+    render(<McpComposerSummary onOpenSettings={vi.fn()} />);
+
+    expect(screen.getByText("Needs setup")).toHaveClass("text-caution");
+    expect(screen.getByTestId("composer-mcp-summary")).toHaveAttribute(
+      "title",
+      "Tools. 0/1 ready · 0 tools. 1 needs setup"
+    );
   });
 
   it("keeps the Tools entry visible before any server is configured", () => {
@@ -120,11 +198,7 @@ describe("McpComposerSummary", () => {
 
     render(<McpComposerSummary onOpenSettings={vi.fn()} />);
 
-    expect(screen.getByText("Disabled", { selector: "[data-resource-availability]" })).toHaveClass(
-      "border-trace-strong",
-      "bg-control-surface",
-      "text-ink"
-    );
+    expect(screen.getByText("Disabled", { selector: "[data-resource-availability]" })).toHaveClass("text-ink-muted");
     expect(screen.getByTestId("composer-mcp-summary")).toHaveAttribute("title", "Tools. Disabled");
   });
 

@@ -360,27 +360,36 @@ describe("McpSettingsSection", () => {
     expect(fetchMock.mock.calls.some(([, init]) => init?.method === "PATCH")).toBe(false);
   });
 
-  it("distinguishes progress and idle readiness from attention states", async () => {
+  it("shows queued and idle readiness as active progress rather than setup work", async () => {
     const authorizing = {
       ...userServer("authorizing", "Authorizing server"),
       enabled: true,
       readiness: "authorizing" as const
+    };
+    const queued = {
+      ...userServer("queued", "Queued server"),
+      enabled: true,
+      readiness: "queued" as const
     };
     const idle = {
       ...userServer("idle", "Idle server"),
       enabled: true,
       readiness: "idle" as const
     };
-    vi.stubGlobal("fetch", vi.fn(async () => response({ servers: [authorizing, idle] })));
+    vi.stubGlobal("fetch", vi.fn(async () => response({ servers: [authorizing, queued, idle] })));
 
     render(<McpSettingsSection />);
     await screen.findByRole("heading", { name: "Authorizing server" });
 
     const authorizingReadiness = screen.getByText("Authorizing").closest("p");
-    const idleReadiness = screen.getByText("Idle").closest("p");
+    const queuedReadiness = screen.getByText("Activating").closest("p");
+    const idleReadiness = screen.getByText("Waking up").closest("p");
     expect(authorizingReadiness?.querySelector("svg")).toHaveClass("lucide-loader-circle", "animate-spin");
-    expect(idleReadiness?.querySelector("svg")).toHaveClass("lucide-wrench");
+    expect(queuedReadiness?.querySelector("svg")).toHaveClass("lucide-loader-circle", "animate-spin");
+    expect(idleReadiness?.querySelector("svg")).toHaveClass("lucide-loader-circle", "animate-spin");
     expect(idleReadiness?.querySelector("svg")).not.toHaveClass("lucide-circle-alert");
+    expect(screen.queryByText("Queued")).not.toBeInTheDocument();
+    expect(screen.queryByText("Needs setup")).not.toBeInTheDocument();
   });
 
   it("keeps enabled availability visible beside authorization readiness", async () => {

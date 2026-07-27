@@ -754,8 +754,28 @@ export function createPrismaMcpRuntimeRepository(input: {
     },
 
     listGenerationFingerprints: async () => {
-      const rows = await client.mcpRuntimeGeneration.findMany({ select: { fingerprint: true } });
-      return rows.map((row) => row.fingerprint);
+      const [generations, activations] = await Promise.all([
+        client.mcpRuntimeGeneration.findMany({ select: { fingerprint: true } }),
+        client.mcpActivationJob.findMany({
+          select: { workloadToken: true },
+          where: {
+            stage: {
+              in: [
+                "queued",
+                "resolving",
+                "preparing_runtime",
+                "connecting",
+                "discovering_tools",
+                "publishing"
+              ]
+            }
+          }
+        })
+      ]);
+      return [
+        ...generations.map((row) => row.fingerprint),
+        ...activations.map((row) => row.workloadToken)
+      ];
     },
 
     listDrainedGenerationIds: async () => {

@@ -8,11 +8,13 @@ import type { ReactNode } from "react";
 export function AdminSectionFrame({
   children,
   headerActions,
-  navigation
+  navigation,
+  navigationBlocked = false
 }: Readonly<{
   children: ReactNode;
   headerActions?: ReactNode;
   navigation: AdminSectionNavigation;
+  navigationBlocked?: boolean;
 }>) {
   const { activeSection, activeSectionConfig } = navigation;
 
@@ -30,7 +32,9 @@ export function AdminSectionFrame({
             <>
               <button
                 className={`${quietButton} lg:hidden`}
+                disabled={navigationBlocked}
                 onClick={navigation.openSectionIndex}
+                title={navigationBlocked ? "Finish the current save before changing sections." : undefined}
                 type="button"
               >
                 <ListTree aria-hidden="true" className="size-3.5" />

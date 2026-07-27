@@ -46,8 +46,8 @@ type MainThreadProjectionKeys =
   | "creatingChat"
   | "noticeSlot"
   | "openMcpSettings"
+  | "openPromptLibrary"
   | "openRunDetails"
-  | "openSettings"
   | "pipeline"
   | "retryWorkspace"
   | "runWarnings"
@@ -55,12 +55,18 @@ type MainThreadProjectionKeys =
   | "workspaceLoading"
   | "workspaceReady";
 
+vi.mock("@/components/app-shell/McpSettingsSection", () => ({
+  McpSettingsSection: () => <section data-testid="mcp-settings-section">MCP settings</section>
+}));
+
 vi.mock("@/components/app-shell/ShellLeftPane", () => ({
   ShellLeftPane: ({
+    footer,
     layout,
     pane,
     scrollTopRef
   }: {
+    footer?: ReactNode;
     layout?: "desktop" | "mobile";
     pane: ShellWorkspacePaneView;
     scrollTopRef?: { current: number | undefined };
@@ -102,6 +108,7 @@ vi.mock("@/components/app-shell/ShellLeftPane", () => ({
             Open mobile project settings
           </button>
         ) : null}
+        {footer ? <div data-testid="mock-workspace-account-footer">{footer}</div> : null}
       </aside>
     );
   }
@@ -260,17 +267,17 @@ function baseProps(): PowerAppShellViewProps {
         duplicateSettingsPrompt: async () => undefined,
         editSettingsPrompt: noop,
         newSettingsPrompt: noop,
-        openSettings: noop,
+        openPromptLibrary: noop,
         selectPrompt: () => null,
         setDefaultPromptPreset: async () => undefined,
         setSettingsPromptEditor: noop,
-        updateSettingsPrompt: async () => undefined,
-        usePromptForNextRun: noop
+        updateSettingsPrompt: async () => undefined
       },
       dismissNotice: noop,
       notice: null,
       open: noop,
       openMcp: noop,
+      openPromptLibrary: noop,
       prompt: {
         deleteConfirmation: null,
         editor: {
@@ -280,7 +287,7 @@ function baseProps(): PowerAppShellViewProps {
           systemPrompt: ""
         },
         open: false,
-        section: "prompts",
+        section: "appearance",
         saving: false,
         themeId: "aiqsa"
       },
@@ -552,14 +559,65 @@ describe("PowerAppShellView feature boundary", () => {
 });
 
 describe("PowerAppShellView compact New chat", () => {
-  it("hides conversation-only actions while the prompt-first state has no messages", () => {
+  it("keeps global Account in Workspace while the prompt-first top rail stays conversation-local", () => {
     render(<PowerAppShellView {...baseProps()} />);
 
     expect(screen.queryByRole("button", { name: "Share anonymously" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Open details" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Conversation actions" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Start new chat" })).toBeVisible();
-    expect(screen.getByRole("button", { name: "Account menu" })).toBeVisible();
+    const topRail = screen.getByTestId("top-rail");
+    const workspace = screen.getByTestId("left-chat-pane");
+    expect(topRail).not.toContainElement(screen.getByRole("button", { name: /Account menu/ }));
+    expect(workspace).toContainElement(screen.getByRole("button", { name: /Account menu/ }));
+    expect(screen.getAllByRole("button", { name: /Account menu/ })).toHaveLength(1);
+  });
+
+  it("closes the desktop Account menu and moves focus to Workspace when the viewport becomes compact", async () => {
+    let viewportListener: ((event: MediaQueryListEvent) => void) | null = null;
+    let viewportMatches = true;
+    const removeEventListener = vi.fn();
+    vi.stubGlobal(
+      "matchMedia",
+      vi.fn((query: string) =>
+        ({
+          addEventListener: (_type: "change", listener: (event: MediaQueryListEvent) => void) => {
+            viewportListener = listener;
+          },
+          dispatchEvent: vi.fn(),
+          matches: viewportMatches,
+          media: query,
+          onchange: null,
+          removeEventListener,
+          addListener: vi.fn(),
+          removeListener: vi.fn()
+        }) as unknown as MediaQueryList
+      )
+    );
+    render(<PowerAppShellView {...baseProps()} />);
+
+    const accountTrigger = screen.getByRole("button", { name: /Account menu/ });
+    fireEvent.click(accountTrigger);
+    const paletteItem = await screen.findByRole("menuitem", { name: "Command palette" });
+    await waitFor(() => expect(paletteItem).toHaveFocus());
+
+    act(() => {
+      viewportMatches = false;
+      viewportListener?.({ matches: false } as MediaQueryListEvent);
+    });
+
+    await waitFor(() => expect(screen.queryByRole("menu", { name: "Account" })).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole("button", { name: "Open workspace" })).toHaveFocus());
+    expect(accountTrigger).toHaveAttribute("aria-expanded", "false");
+
+    act(() => {
+      viewportMatches = true;
+      viewportListener?.({ matches: true } as MediaQueryListEvent);
+    });
+
+    await waitFor(() => expect(accountTrigger).toHaveFocus());
+    expect(screen.queryByRole("menu", { name: "Account" })).not.toBeInTheDocument();
+    expect(removeEventListener).toHaveBeenCalled();
   });
 
   it("routes the hydrated top-rail action through the existing blank workspace owner", () => {
@@ -680,7 +738,7 @@ describe("PowerAppShellView Details composition", () => {
     expect(trigger).toHaveFocus();
   });
 
-  it("makes the shell inert while Settings owns notices inside its layout", () => {
+  it("renders Prompt library as a standalone workbench and owns its settings notice", () => {
     const props = baseProps();
     const setSettingsNotice = vi.fn();
     render(
@@ -693,6 +751,7 @@ describe("PowerAppShellView Details composition", () => {
           prompt: {
             ...props.settings.prompt,
             open: true,
+            section: "prompts",
             themeId: "aiqsa"
           }
         }}
@@ -700,14 +759,16 @@ describe("PowerAppShellView Details composition", () => {
     );
 
     const primaryContent = screen.getByTestId("shell-primary-content");
-    const settings = screen.getByRole("dialog", { name: "Settings" });
-    const noticeRegion = screen.getByTestId("settings-notice-region");
+    const workbench = screen.getByTestId("prompt-workbench");
+    const noticeRegion = screen.getByTestId("prompt-workbench-notice-region");
     expect(primaryContent).toHaveAttribute("inert");
     expect(primaryContent).toHaveAttribute("aria-hidden", "true");
-    expect(settings).toBeVisible();
+    expect(workbench).toHaveAttribute("data-presentation", "workbench");
+    expect(screen.queryByTestId("settings-dialog")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("settings-notice-region")).not.toBeInTheDocument();
     expect(screen.getByRole("alert")).toHaveTextContent("Prompt save failed");
     expect(screen.getByRole("alert")).toHaveClass("pointer-events-auto");
-    expect(settings).toContainElement(noticeRegion);
+    expect(workbench).toContainElement(noticeRegion);
     expect(screen.queryByTestId("shell-notice-layer")).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Dismiss notice" }));
@@ -715,49 +776,97 @@ describe("PowerAppShellView Details composition", () => {
     expect(props.session.dismissNotice).not.toHaveBeenCalled();
   });
 
-  it("keeps shell and Settings notice channels independent", () => {
+  it.each(["appearance", "mcp"] as const)(
+    "renders the %s section only in bounded Settings and keeps notices there",
+    (section) => {
+      const props = baseProps();
+      const closeSettings = vi.fn();
+      const setNotice = vi.fn();
+      const setSettingsNotice = vi.fn();
+      render(
+        <PowerAppShellView
+          {...props}
+          session={{
+            ...props.session,
+            dismissNotice: () => setNotice(null),
+            notice: {
+              href: "https://example.test/share/secret",
+              kind: "success",
+              persistent: true,
+              text: "Public link ready"
+            }
+          }}
+          settings={{
+            ...props.settings,
+            actions: {
+              ...props.settings.actions,
+              closeSettings
+            },
+            dismissNotice: () => setSettingsNotice(null),
+            notice: { kind: "error", scope: "settings", text: "Settings update failed" },
+            prompt: { ...props.settings.prompt, open: true, section }
+          }}
+        />
+      );
+
+      const primaryContent = screen.getByTestId("shell-primary-content");
+      const shellNoticeRegion = screen.getByTestId("persistent-notice-region");
+      const settings = screen.getByTestId("settings-dialog");
+      const settingsNoticeRegion = screen.getByTestId("settings-notice-region");
+      expect(primaryContent).toContainElement(shellNoticeRegion);
+      expect(primaryContent).toHaveAttribute("inert");
+      expect(primaryContent).toHaveAttribute("aria-hidden", "true");
+      expect(settings).toBeVisible();
+      expect(screen.queryByTestId("prompt-workbench")).not.toBeInTheDocument();
+      expect(settings).toContainElement(settingsNoticeRegion);
+      expect(settingsNoticeRegion).toHaveTextContent("Settings update failed");
+      expect(settingsNoticeRegion).not.toHaveTextContent("Public link ready");
+      expect(screen.queryByTestId("prompt-workbench-notice-region")).not.toBeInTheDocument();
+      expect(screen.queryByTestId("shell-notice-layer")).not.toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole("button", { name: "Close settings" }));
+      expect(closeSettings).toHaveBeenCalledOnce();
+      expect(setSettingsNotice).toHaveBeenCalledWith(null);
+      expect(setNotice).not.toHaveBeenCalled();
+    }
+  );
+
+  it("makes the Prompt library workbench inert while nested prompt deletion owns the dialog layer", () => {
     const props = baseProps();
-    const closeSettings = vi.fn();
-    const setNotice = vi.fn();
-    const setSettingsNotice = vi.fn();
+    const prompt = {
+      developerPrompt: null,
+      id: "prompt-delete",
+      isDefault: false,
+      name: "Delete candidate",
+      systemPrompt: "Temporary instructions"
+    };
     render(
       <PowerAppShellView
         {...props}
-        session={{
-          ...props.session,
-          dismissNotice: () => setNotice(null),
-          notice: {
-            href: "https://example.test/share/secret",
-            kind: "success",
-            persistent: true,
-            text: "Public link ready"
-          }
-        }}
         settings={{
           ...props.settings,
-          actions: {
-            ...props.settings.actions,
-            closeSettings
-          },
-          dismissNotice: () => setSettingsNotice(null),
-          notice: { kind: "error", scope: "settings", text: "Prompt save failed" },
-          prompt: { ...props.settings.prompt, open: true }
+          prompt: {
+            ...props.settings.prompt,
+            deleteConfirmation: prompt,
+            editor: {
+              developerPrompt: "",
+              id: prompt.id,
+              name: prompt.name,
+              systemPrompt: prompt.systemPrompt
+            },
+            open: true,
+            section: "prompts"
+          }
         }}
       />
     );
 
-    const primaryContent = screen.getByTestId("shell-primary-content");
-    const noticeRegion = screen.getByTestId("persistent-notice-region");
-    expect(primaryContent).toContainElement(noticeRegion);
-    expect(primaryContent).toHaveAttribute("inert");
-    expect(screen.getByTestId("settings-notice-region")).toHaveTextContent("Prompt save failed");
-    expect(screen.getByTestId("settings-notice-region")).not.toHaveTextContent("Public link ready");
-    expect(screen.queryByTestId("shell-notice-layer")).not.toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole("button", { name: "Close settings" }));
-    expect(closeSettings).toHaveBeenCalledOnce();
-    expect(setSettingsNotice).toHaveBeenCalledWith(null);
-    expect(setNotice).not.toHaveBeenCalled();
+    const workbench = screen.getByTestId("prompt-workbench");
+    expect(screen.getByTestId("shell-primary-content")).toHaveAttribute("inert");
+    expect(workbench).toHaveAttribute("inert");
+    expect(workbench).toHaveAttribute("aria-hidden", "true");
+    expect(screen.queryByTestId("settings-dialog")).not.toBeInTheDocument();
+    expect(screen.getByRole("dialog", { name: "Delete prompt Delete candidate" })).toBeVisible();
   });
 
   it("keeps account sign-out pending and exposes retryable network feedback", async () => {
@@ -770,8 +879,8 @@ describe("PowerAppShellView Details composition", () => {
     );
     render(<PowerAppShellView {...baseProps()} />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Account menu" }));
-    expect(screen.getByText("shell.user@example.com")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: /Account menu/ }));
+    expect(screen.getAllByText("shell.user@example.com")).toHaveLength(2);
     fireEvent.click(screen.getByRole("menuitem", { name: "Sign out" }));
     expect(await screen.findByRole("menuitem", { name: "Signing out…" })).toBeDisabled();
 
@@ -794,7 +903,7 @@ describe("PowerAppShellView Details composition", () => {
       />
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Account menu" }));
+    fireEvent.click(screen.getByRole("button", { name: /Account menu/ }));
     expect(screen.getByRole("menuitem", { name: "Control Center" })).toHaveAttribute(
       "href",
       "/admin"
@@ -812,7 +921,7 @@ describe("PowerAppShellView Details composition", () => {
     const props = baseProps();
     const { rerender } = render(<PowerAppShellView {...props} />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Account menu" }));
+    fireEvent.click(screen.getByRole("button", { name: /Account menu/ }));
     fireEvent.click(screen.getByRole("menuitem", { name: "Sign out" }));
     fireEvent.keyDown(screen.getByRole("menu", { name: "Account" }), { key: "Escape" });
     rerender(
@@ -837,6 +946,46 @@ describe("PowerAppShellView Details composition", () => {
 });
 
 describe("PowerAppShellView mobile Workspace composition", () => {
+  it("moves the single visible Account trigger into the drawer and closes Workspace before replacement", async () => {
+    render(<StatefulWorkspaceView />);
+
+    const workspace = screen.getByRole("dialog", { name: "Workspace" });
+    const topRail = screen.getByTestId("top-rail");
+    const accountTrigger = screen.getByRole("button", { name: /Account menu/ });
+    expect(topRail).not.toContainElement(accountTrigger);
+    expect(workspace).toContainElement(accountTrigger);
+    expect(screen.getAllByRole("button", { name: /Account menu/ })).toHaveLength(1);
+    expect(workspace).toHaveClass("z-50");
+
+    fireEvent.click(accountTrigger);
+    expect(workspace).toHaveClass("z-[80]");
+    fireEvent.click(screen.getByRole("menuitem", { name: "Settings" }));
+
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Workspace" })).not.toBeInTheDocument());
+  });
+
+  it("keeps a failed Account action discoverable after the mobile Workspace closes", async () => {
+    let rejectSignOut!: (reason?: unknown) => void;
+    vi.spyOn(globalThis, "fetch").mockImplementation(
+      () =>
+        new Promise<Response>((_resolve, reject) => {
+          rejectSignOut = reject;
+        })
+    );
+    render(<StatefulWorkspaceView />);
+
+    fireEvent.click(screen.getByRole("button", { name: /Account menu/ }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Sign out" }));
+    fireEvent.click(screen.getByRole("button", { name: "Close workspace" }));
+    expect(screen.queryByRole("dialog", { name: "Workspace" })).not.toBeInTheDocument();
+
+    act(() => rejectSignOut(new Error("offline")));
+
+    const workspace = screen.getByRole("button", { name: "Open workspace" });
+    await waitFor(() => expect(screen.getByTestId("workspace-account-attention")).toBeVisible());
+    expect(workspace).toHaveAttribute("aria-describedby", "workspace-account-attention-description");
+  });
+
   it("makes the Workspace inert while its destructive confirmation owns the modal layer", () => {
     const props = baseProps();
     render(

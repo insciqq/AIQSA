@@ -82,7 +82,7 @@ The table is a visual reference. Review normal text, muted text, controls, and s
 
 ### Theme compatibility
 
-The existing IDs `aiqsa`, `graphite`, `verdant`, `classic-dark`, and `neutral` remain valid because they are stored browser preferences. `paper` is appended as a sixth stable choice. They are tonal interpretations of one hierarchy, not old layouts:
+Theme IDs `aiqsa`, `graphite`, `verdant`, `classic-dark`, `neutral`, and `paper` are stable browser-persisted compatibility identifiers and must not be repurposed. They are tonal interpretations of one hierarchy, not separate layouts:
 
 - `neutral`: quiet light neutral with teal proof accent; first-use default;
 - `aiqsa`: warm dark neutral with teal proof accent;
@@ -115,7 +115,8 @@ The answer is a readable document, not a chat bubble stack. Use a 46-48rem answe
 
 Use a 4px base rhythm with primary steps of 4, 8, 12, 16, 24, 32, and 48px. Related controls stay closer than adjacent groups. Large empty areas belong around the answer and composer, not inside padded cards.
 
-- Workspace rail: 16rem when persistent.
+- Workspace rail: 16rem when persistent, with one fixed Account footer below
+  the independently scrolling browse region.
 - Control Center navigation: 15rem when persistent.
 - Conversation top rail: 3.5rem in compact composition and 4rem at desktop, plus the applicable top safe-area inset. It belongs to the answer-paper column and does not span Workspace.
 - Pinned Details: 23rem, available only at `>=1440px`.
@@ -132,7 +133,7 @@ Avoid isolated floating rectangles when a plain section, row, or disclosure comm
 
 ### Shell and workspace
 
-The conversation and composer dominate. A persistent Workspace rail appears at `>=1024px`; below that, Workspace is a modal drawer. The conversation column owns its local top rail. Once a conversation exists, Share and Details remain direct at every width; Copy thread and Branch tree live in one `Conversation actions` menu at every width, while Command palette and Settings live in Account. A blank `New chat` omits those object-specific actions so the prompt is the only dominant task. There is no second permanent action bar.
+The conversation and composer dominate. A persistent Workspace rail appears at `>=1024px`; below that, Workspace is a modal drawer. The conversation column owns its local top rail. Account is a full-width quiet footer row beneath Workspace history, showing the user icon plus the current email with contained truncation; it is never part of the conversation top rail or browse scroller. Its menu opens upward within the safe-area-adjusted Workspace boundary and scrolls locally when height is constrained, with a restrained continuation cue while final actions remain below the fold. Once a conversation exists, Share and Details remain direct at every width; Copy thread and Branch tree live in one `Conversation actions` menu at every width, while Command palette, Prompt library, and Settings live as distinct Account destinations. A blank `New chat` omits those object-specific actions so the prompt is the only dominant task. There is no second permanent action bar.
 
 Chat and folder rows use quiet selected/hover states, stable action space, and text labels where consequence matters. Active-run state is a small factual cue. Nested folders must retain readable indentation without causing page-level horizontal overflow.
 
@@ -140,7 +141,7 @@ Chat and folder rows use quiet selected/hover states, stable action space, and t
 
 - Questions are compact and visually distinct, but not oversized colored bubbles.
 - Answers sit directly on the answer paper with document typography.
-- Answer actions appear in stable reserved space and remain directly available on touch layouts; hover may enhance, never gate a primary touch workflow.
+- Answer actions appear in stable reserved space. Regenerate/Edit/Copy use persistent icon buttons with accessible names and native tooltips; the labeled overflow trigger remains visible at rest on every input mode. Hover may enhance, never gate discovery. Delete and Branch from here remain clearly labeled inside a collision-aware portalled menu that stays within the viewport.
 - Markdown headings begin below the page heading hierarchy. Code, tables, and display math own named local horizontal scrollers.
 - Provider/model metadata is quiet but legible. Internal IDs never substitute for display labels.
 - Loading, queued, streaming, cancelled, failed, and complete states retain a stable answer anchor and truthful language.
@@ -155,13 +156,12 @@ The receipt opens an existing disclosure on its originating answer, or Details �
 
 The resting composer contains:
 
-1. attachment/tools entry;
-2. Message field;
-3. direct Model, configured Profile, and Search controls;
-4. More for the complete Run setup;
-5. Send, or an addressable Stop while cancellation is available.
+1. Message field;
+2. one full, readable provider/model control;
+3. one compact Profile/Search/More row;
+4. one final Tools/Usage/Attach/Send band, or an addressable Stop while cancellation is available.
 
-Model and Search open their existing pickers directly. Entitled configured Fast/Balanced/Deep profiles appear as compact peer actions and apply their complete model/reasoning tuple in one click. More opens the complete setup, including the same Model/Profile/Search owners plus Reasoning and advanced controls. The row keeps the same hierarchy at every width; wrapping may change, meaning and ownership do not.
+Model and Search open their existing pickers directly. Entitled configured Fast/Balanced/Deep profiles appear as one compact peer group and apply their complete model/reasoning tuple in one click only when at least one profile is applicable. If none is applicable, the resting Profile group and its `Unavailable` placeholder are omitted; configured-but-unavailable profiles stay visible and disabled with their reason inside complete Run setup. More opens that setup, including the same Model/Profile/Search owners plus Reasoning and advanced controls. Tools exposes lifecycle plus factual ready-tool state in the final band. The hierarchy stays the same at every width; wrapping may change, meaning and ownership do not. Routine loading/creation uses neutral busy presentation, while caution remains reserved for a state that needs user correction.
 
 Attachment progress, partial failure, edit-branch intent, context warning, unavailable catalog, and send/run errors appear next to the control that can resolve them. The composer remains reachable above the software keyboard and safe-area inset.
 
@@ -169,9 +169,9 @@ In a ready blank chat, that one composer and a short orientation line are center
 
 ### Details and settings
 
-Details is closed by default, opens as an overlay at all widths, and may be pinned only when at least 1440px of useful width remains. It contains Branch and Events inspection, never duplicated next-run editing.
+Details is closed by default, opens as an overlay at all widths, and may be pinned only when at least 1440px of useful width remains. It contains Branch and Events inspection, never duplicated next-run editing. Events uses readable stage language instead of internal codes; Branch renders the current linear path as document content and reserves controls only for actual alternate versions.
 
-Settings is a bounded workspace for Prompts, Appearance, and MCP & tools. On compact/short viewports it becomes one safe-area-aware sheet whose active task owns local scrolling; Prompts switches between separate library and editor views with an explicit Back action. Appearance is a divided comparison list, not a card grid. Dirty-close protection and nested confirmations remain visible parts of the quality contract.
+Settings is a bounded overlay for Appearance and MCP & tools; on compact/short viewports it becomes a safe-area-aware sheet with one local scroll owner. Prompt library is a separate full-viewport Account/Run-setup workbench, not a Settings tab or rounded modal. Persistent chrome gives `Back to chat` clear placement; search and `New prompt` belong to the library header. Only viewports at least 1024px wide **and** taller than 512px use the library/editor split, with independent pane scrolling beneath fixed headers and above the fixed editor footer. Smaller or shorter compositions show one task and a visible `Back to prompts` action. A proof scan edge marks the edited row, the persisted new-chat default stays secondary to content, identity and instructions form explicit groups, `Duplicate` is directly visible, destructive `Delete` lives under `More`, and Save/create is the sole primary action. `FRONTEND.md` owns transition guards, state preservation, focus, and dismissal behavior. Appearance is a divided comparison list, not a card grid.
 
 ## Auth And Public Share Composition
 
@@ -187,25 +187,29 @@ The active destination owns the page title, short scope description, primary act
 
 ### Providers workspace and Quick setup
 
-Providers has one persistent flat task line in this order: `Setup`, `Connections`, `Run profiles`. Use an underline/current-text treatment rather than three filled pills or a second navigation rail. Setup is the default and the other tasks remain visible throughout provider work; they are peer destinations, not Basic/Advanced modes. Their data owners stay lazy, so task labels do not require eager counts.
+Providers has one persistent flat task line in this order: `Setup`, `Connections`, `Run profiles`. Use an underline/current-text treatment rather than three filled pills or a second navigation rail. Keep its narrow/zoom fallback touch- and focus-scrollable, but suppress visible scrollbar chrome. Setup is the default and the other tasks remain visible throughout provider work; they are peer destinations, not Basic/Advanced modes. Their data owners stay lazy, so task labels do not require eager counts.
 
-The default flow is Provider -> API key -> Test & Save -> Ready. Use one focused Setup surface with four provider choices—OpenAI, Anthropic, Gemini, and OpenRouter—a write-only key field, one primary action, one truthful **Testing & saving…** pending state, and a factual success result. On compact screens, use a short 2 × 2 choice grid; at wide widths use one four-choice row. Keep the key plus primary action in the first task viewport; the explanatory guide is optional large-screen context. Ready distinguishes the selected default from the complete reviewed-model set made available. Existing custom/team configuration may appear as quiet nonblocking context, never as an `Advanced` provider-card status or a gate before key entry. Do not animate or label unobservable server phases. A visible contextual **Manage _provider_ connection** action hands off to Connections without competing with **Test & Save**.
+The default composition visualizes Provider -> API key -> Test & Save -> Ready in one focused Setup surface. It shows four provider choices—OpenAI, Anthropic, Gemini, and OpenRouter—a write-only key field, one primary action, one truthful **Testing & saving…** pending state, and a factual result. Compact screens use a short 2 × 2 choice grid; wide screens use one four-choice row. Keep the key plus primary action in the first task viewport; explanatory guidance is optional large-screen context. Any additional required model choice stays inside this vertical scan before the primary commit. Existing custom/team configuration may appear as quiet nonblocking context, never as an `Advanced` provider-card status or gate before key entry. Do not animate or label unobservable server phases. A visible contextual **Manage _provider_ connection** action hands off to Connections without competing with the primary setup action.
 
-Custom OpenAI-compatible setup is a peer task beneath that focused surface, not another branded provider tile. Its Back-connected page uses the same restrained Control Center geometry and one primary vertical scan: endpoint, model id, key, derived request endpoint, Test & Save. Keep optional names/capabilities inside one quiet disclosure and render the factual Ready receipt as document hierarchy with a proof accent, not a dashboard card. Private/local no-auth is an explicit technical exception in the disclosure; it must not make the normal hosted-key path look optional or ambiguous.
+Custom OpenAI-compatible setup is a peer task beneath that focused surface, not another branded provider tile. Its Back-connected page uses the same restrained Control Center geometry and one primary vertical scan: endpoint, model id, key, derived request endpoint, Test & Save. Keep optional configuration inside one quiet disclosure and render the factual Ready receipt as document hierarchy with a proof accent, not a dashboard card.
 
-Never imply that a successful catalog check guarantees future generation or billing. Ready identifies the selected default, every reviewed current model actually installed, and only factual default/profile effects. Key replacement identifies the currently active configuration and makes it clear that a failed test/save leaves it unchanged; every previously available entitled canonical model must remain available under the replacement or the operation fails without writes. Removing the actor's Quick assignment is confirmation-gated, explicitly retains the stored credential and team configuration, and warns that access may stop. Secret fields clear on success, provider/subview change, and close; they never echo a saved value.
+Never imply that a successful catalog check guarantees future generation or billing. Ready presentation names only factual installed/default/profile effects. `FRONTEND.md` and `BACKEND.md` own replacement, assignment removal, atomicity, and secret-lifecycle behavior.
 
 ### Resource and lifecycle work
 
 Users and Access & groups use a full-width directory with the complete row as the selection target and no automatic first selection. One selected resource replaces the index with a dedicated Back-connected detail page. Group detail owns Overview, Members, Models & search, and Tools as peer tasks. `Full access` uses the same row/detail composition with one quiet `Built-in` marker and factual entitlement state; do not turn it into a promotional card, warning, or matrix of disabled toggles. Its Members task stays operational while lifecycle and automatic current/future resource coverage read as stable facts. A persistent desktop master/detail split is not the default composition.
 
-Provider, MCP, and email lifecycle controls use progressive disclosure with draft/test/activate state visible near the action that advances it. Generic Connections entry first shows a full-width connection index; an exact, canonical, or otherwise unambiguous provider-context handoff may open the matching full-width detail directly. Detail uses horizontal peer tasks and never adds a second vertical rail beside the global Control Center rail. Connections, Credentials, and Models inventories use one lightly tinted task canvas around one bounded list panel with a distinct quiet header and divided rows; row menus and pickers must not be clipped by that panel. A virgin `Not configured` connection and a configured disabled connection use factual neutral setup/runtime language instead of warning decoration. Revision, validation, routing, credential assignment, and destructive operations remain reachable without contaminating Quick setup.
+Provider, MCP, and email lifecycle controls use progressive disclosure with draft/test/activate state visible near the action that advances it. MCP's normal first install is one trust decision followed by a persistent activation track: show only real queued, resolution, isolated-runtime preparation, connection, tool-discovery, publication, ready, or failed stages; omit inapplicable stages and never invent percent or ETA. Working stages use proof/neutral progress, ready uses positive, and only a terminal safe failure uses critical treatment. Generic Connections entry first shows a full-width connection index; the header separates total from configured count and gives local refresh an explicit resource name. An exact, canonical, or otherwise unambiguous provider-context handoff may open the matching full-width detail directly. Detail uses horizontal peer tasks and never adds a second vertical rail beside the global Control Center rail. Connections, Credentials, and Models inventories use one lightly tinted task canvas around one bounded list panel with a distinct quiet header and divided rows; row menus and pickers must not be clipped by that panel. A virgin `Not configured` publication fact and a configured disabled runtime fact remain neutral. Concrete prerequisites that block first activation are the exception: group them in one bounded critical-tint callout with a critical icon/title and readable blocker list, while keeping the corrective button proof-colored rather than destructive. Revision, validation, routing, credential assignment, and destructive operations remain reachable without contaminating Quick setup.
+
+MCP import uses one large configuration-document surface rather than a generic single-line field or fake IDE: a bounded viewport-responsive mono editing plane on `composer-surface`, a slim proof scan edge, quiet identity/format chrome, and an attached trust/primary-action strip. The surface owns its rounded boundary and semantic focus/error ring; focus and error color changes settle in roughly 150ms without entrance or layout motion. Short-height viewports reduce the initial editing height while retaining local resize/scroll and reachable actions. Do not duplicate pasted content into a syntax-highlight mirror, inherit ordinary control height, add decorative editor chrome, or introduce a code-editor dependency for this paste-and-review step.
 
 Availability is a first-class binary resource fact across the Control Center and ordinary-user Settings. Render one compact dot-and-label status at the scan point: `Enabled` uses the positive token; `Disabled` uses a bounded high-contrast neutral surface/text combination and never `ink-muted`, `ink-disabled`, caution, or critical. Status and action are always separate elements. Use a soft proof-colored **Enable** button for restoration while the corresponding **Disable** action stays quiet; when setup or authorization is the truthful prerequisite, that action remains accented without hiding the separate Disabled status. Keep solid proof buttons for the local primary decision such as Test & Save, Save, or Activate. Do not apply this binary style to publication, readiness, grants, approvals, invitations, archives, selections, or unavailable form controls.
 
 In dense resource inventories, availability also owns one restrained leading scan edge and surface wash: positive for Enabled and strong neutral for Disabled, never opacity or error color. Selection composes as an independent ring/background and does not erase the resource state. User accounts preserve their four-state language (`Active`, `Disabled`, `Pending`, `Denied`): Active/Disabled share the availability geometry and scan strength, while Pending/Denied retain caution/critical lifecycle semantics. Dependency readiness such as an inactive run-profile deployment remains a separately labeled fact beside the persisted profile state.
 
-At compact widths, list and detail are separate states with an explicit Back action and preserved list query/scroll/selection. Tables may own local horizontal scrolling for comparison data, but a primary workflow must not require dragging a desktop table sideways to reach its action.
+At compact widths, list and detail are separate compositions with an explicit Back action; `FRONTEND.md` owns preserved query, scroll, and selection state. Tables may own local horizontal scrolling for comparison data, but a primary workflow must not require dragging a desktop table sideways to reach its action.
+
+Run-profile and prompt editors make draft state visible beside its owner: invalid fields explain themselves, Save/create is the sole primary commit, and Discard is quiet. Prompt-library rows open content for editing and expose no runtime application action; the new-chat default stays secondary, Duplicate remains visible, and Delete is disclosed through More. `FRONTEND.md` owns dirty-navigation guards, pending mutation blocks, and state reconciliation.
 
 ## Components And Interaction States
 
@@ -215,8 +219,9 @@ Each reusable control defines rest, hover, active, selected, disabled, busy, inv
 - **Fields:** persistent label, optional help, input, and associated error. Placeholder is example text, never the only label. Secret fields state write-only/preserve/replace behavior.
 - **Menus/listboxes:** use native controls when they fit. Reuse existing interaction logic where practical.
 - **Tabs:** represent peer panels only and keep one obvious selected state.
+- **Resource rows:** when the row's primary purpose is to open a dedicated detail, the whole row is the target; do not reduce discovery to a small `Details` action.
 - **Disclosures:** have a visible summary and expanded state. They do not hide the only path to a frequent action.
-- **Dialogs/drawers/sheets:** isolate the background, support an explicit Close, and keep one local scroll owner.
+- **Dialogs/drawers/sheets:** isolate the background, support an explicit Close, and keep one local scroll owner. A full-viewport workbench may instead give each persistent pane its own local scroll owner when the responsive contract explicitly calls for it.
 - **Empty/error states:** explain the resource and give the next valid action. Loading failure must not masquerade as a true empty result.
 - **Skeletons:** approximate stable content geometry and avoid shifting the eventual content.
 - **Confirmations:** name the affected resource and consequence. Typed confirmation is reserved for exceptional irreversible scope, not ordinary deletion.
@@ -228,15 +233,11 @@ Composition follows available space, content, and input capability. Media querie
 - At approximately 1024px and above, workspace/control navigation may be persistent.
 - Below that, navigation is a drawer and the conversation/task owns the viewport.
 - Details pinning is offered only at 1440px and above; overlay remains available everywhere.
-- Validate at 384/390x844, 844x390, 768x1024, 1024x768, 1280x800, and 1440px-or-wider compositions.
+- Validate at 384/390x844, 844x390, 768x1024, 1024x512, 1024x768, 1280x500, 1280x800, and 1440px-or-wider compositions. Prompt library must remain one-task at the 512px-height boundary and at every width below 1024px; its split appears only when both thresholds pass.
 - Use `dvh`, `viewport-fit=cover`, `interactive-widget=resizes-content`, and every relevant safe-area inset.
 - At `(hover: none)` or `(pointer: coarse)`, primary workflow targets are approximately 44x44px so the product remains comfortable on phones and tablets.
 - No primary phone/tablet workflow depends on hover or drag precision.
 - The page itself has no horizontal overflow. Code, tables, formulas, and exceptional data grids own named local scrollers.
-
-## Deferred Accessibility Scope
-
-Dedicated accessibility implementation and conformance are not part of the current product scope. They require a separately approved future task.
 
 ## Motion
 
@@ -277,7 +278,7 @@ AI-specific presentation is evidence constrained:
 
 Before propagating a new recipe, render and critique one representative Research Chat state and one representative Control Center state from real components and deterministic data. Review hierarchy, density, content truth, long text, dark parity, and the smallest supported viewport. Raster concept art may guide composition but never establishes product capabilities or exact copy.
 
-A slice may be marked visually complete only when:
+Every new or changed visual recipe must satisfy these conditions before it becomes the product default:
 
 - it reads as the same system in light and dark themes;
 - primary and secondary actions are unambiguous without badge/color dependence;

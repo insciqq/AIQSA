@@ -106,6 +106,7 @@ describe("AdminUsageSection", () => {
     render(<AdminUsageSection catalog={catalog} usage={populatedUsage()} />);
 
     const summary = screen.getByRole("region", { name: "Usage summary" });
+    expect(within(summary).getByText("Provider-reported · all recorded usage")).toBeVisible();
     expect(summary).toHaveClass("min-w-0", "border-y", "border-trace-subtle");
     expect(within(summary).getByTestId("usage-total-tokens")).toHaveTextContent(
       new Intl.NumberFormat(undefined).format(1000)
@@ -170,6 +171,29 @@ describe("AdminUsageSection", () => {
     expect(within(userTable).getByText("No users in this installation").closest("td")).toHaveAttribute("colspan", "7");
     expect(within(screen.getByTestId("admin-usage-groups-mobile")).getByText("No groups in this installation")).toBeVisible();
     expect(within(screen.getByTestId("admin-usage-users-mobile")).getByText("No users in this installation")).toBeVisible();
+  });
+
+  it("counts detached provider-reported usage even when no retained run remains", () => {
+    const usage = populatedUsage();
+    usage.byUser[1] = {
+      ...usage.byUser[1],
+      inputTokens: 5,
+      lastUsedAt: "2026-07-01T00:00:00.000Z",
+      totalTokens: 5
+    };
+    usage.byGroup[1] = {
+      ...usage.byGroup[1],
+      contributingUsers: 1,
+      inputTokens: 5,
+      lastUsedAt: "2026-07-01T00:00:00.000Z",
+      totalTokens: 5
+    };
+
+    render(<AdminUsageSection catalog={catalog} usage={usage} />);
+
+    expect(screen.getByRole("region", { name: "Usage summary" })).toHaveTextContent(
+      "2 retained runs with reported usage across 2 users and 2 groups"
+    );
   });
 
   it("preserves archived, missing-identity, and no-group context without raw catalog fallbacks", () => {

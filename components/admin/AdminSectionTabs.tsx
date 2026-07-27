@@ -11,6 +11,7 @@ import type { AdminDashboard } from "@/lib/contracts/admin";
 import { useEffect, useRef } from "react";
 
 type AdminSectionTabsProps = Readonly<{
+  navigationBlocked?: boolean;
   navigation: Pick<
     AdminSectionNavigation,
     "activeSection" | "closeSectionIndex" | "onTabKeyDown" | "registerTab" | "selectSection"
@@ -29,7 +30,11 @@ function sectionAttention(
   return section === "invites" ? attention.openInvites : 0;
 }
 
-export function AdminSectionTabs({ navigation, summary = null }: AdminSectionTabsProps) {
+export function AdminSectionTabs({
+  navigation,
+  navigationBlocked = false,
+  summary = null
+}: AdminSectionTabsProps) {
   const activeTabRef = useRef<HTMLButtonElement | null>(null);
   const tablistRef = useRef<HTMLElement | null>(null);
 
@@ -106,6 +111,7 @@ export function AdminSectionTabs({ navigation, summary = null }: AdminSectionTab
                               : "bg-transparent text-ink-secondary hover:bg-control-hover hover:text-ink active:bg-control-pressed"
                           ].join(" ")}
                           data-testid={adminSectionTabId(section.id)}
+                          disabled={navigationBlocked && !active}
                           id={adminSectionTabId(section.id)}
                           key={section.id}
                           onClick={() => navigation.selectSection(section.id)}

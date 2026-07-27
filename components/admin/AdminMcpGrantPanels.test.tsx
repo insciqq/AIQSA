@@ -8,6 +8,7 @@ import { AdminMcpGroupAccessPanel, AdminMcpUserAccessPanel } from "./AdminMcpGra
 const server: AdminMcpServer = {
   activePersonalSlots: [{ label: "API key", slotKey: "api_key" }],
   activeRevision: null,
+  activation: null,
   archivedAt: null,
   description: "Memory",
   draft: {

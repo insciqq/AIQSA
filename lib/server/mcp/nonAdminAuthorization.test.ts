@@ -45,6 +45,7 @@ function rejectingRepository(): McpRepository {
     listAdminServers: unexpected,
     listUserServers: unexpected,
     rebuildRevision: unexpected,
+    requestActivation: unexpected,
     rollbackServer: unexpected,
     setGrant: unexpected,
     testDraft: unexpected,

@@ -766,7 +766,7 @@ test("administrator completes the Quick direct-user picker, retry, Ready, and sa
   await expect(section.getByText("Choose a model available to this key")).toBeVisible();
   await expect(section.getByLabel("API key")).toHaveValue("e2e-quick-write-only-key");
   await section.getByLabel("GPT-5.6 Sol").click();
-  await section.getByRole("button", { name: "Test & Save" }).click();
+  await section.getByRole("button", { name: "Use selected model & save" }).click();
   await expect(section.getByRole("button", { name: "Testing & saving…" })).toBeVisible();
   await expect(section.getByLabel("API key")).toBeDisabled();
   await expect(section.getByLabel("GPT-5.6 Luna")).toBeDisabled();
@@ -777,7 +777,7 @@ test("administrator completes the Quick direct-user picker, retry, Ready, and sa
     "The provider rejected the key or its account catalog could not be reached."
   )).toBeVisible();
   await expect(section.getByLabel("API key")).toHaveValue("e2e-quick-write-only-key");
-  await section.getByRole("button", { name: "Test & Save" }).click();
+  await section.getByRole("button", { name: "Use selected model & save" }).click();
   await expect(section.getByText("Ready to chat")).toBeVisible();
   await expect(section.getByRole("heading", { name: "GPT-5.6 Sol" })).toBeVisible();
   const readyReceipt = section.getByTestId("provider-quick-ready-receipt");
@@ -828,6 +828,11 @@ test("administrator completes the Quick direct-user picker, retry, Ready, and sa
     await expect(section.getByRole("tab", { name: "Setup" })).toBeVisible();
     await expect(section.getByRole("tab", { name: "Connections" })).toBeVisible();
     await expect(section.getByRole("tab", { name: "Run profiles" })).toBeVisible();
+    await expect
+      .poll(() => section.getByTestId("provider-workspace-tabs").evaluate((element) =>
+        getComputedStyle(element).scrollbarWidth
+      ))
+      .toBe("none");
     await expectNoPageOverflow(page);
     const columns = await section.getByTestId("provider-quick-choice-strip").evaluate((element) =>
       getComputedStyle(element).gridTemplateColumns.split(" ").filter(Boolean).length
@@ -1304,6 +1309,11 @@ test("administrator completes the OpenRouter key, model, route, check, and activ
   await expect(connectionIndex).toBeVisible();
   await connectionIndex.getByRole("button", { name: /E2E OpenRouter/ }).click();
   await expect(section.getByRole("heading", { name: "E2E OpenRouter" })).toBeVisible();
+  const activationReadiness = section.getByTestId("provider-activation-readiness");
+  await expect(activationReadiness).toHaveAttribute("data-readiness-tone", "setup");
+  await expect(activationReadiness.getByRole("heading", {
+    name: "Complete setup before activation."
+  })).toBeVisible();
 
   await connectionsWorkspace.getByLabel("API key").fill("e2e-write-only-provider-key");
   await expect(section.getByRole("button", { name: "Save key" })).toBeDisabled();
@@ -1566,8 +1576,12 @@ test("administrator remaps the three composer run profiles in one save", async (
   await expect(section.getByLabel("Fast reasoning mode")).toHaveValue("pro");
   await expect(section.getByLabel("Fast reasoning effort")).toHaveValue("max");
   await section.getByRole("tab", { name: "Connections" }).click();
-  await expect.poll(() => providerCatalogRequests).toBe(1);
-  await section.getByRole("tab", { name: "Run profiles" }).click();
+  const discardConfirmation = page.getByRole("dialog", {
+    name: "Discard Run profile changes"
+  });
+  await expect(discardConfirmation).toBeVisible();
+  await discardConfirmation.getByRole("button", { name: "Cancel" }).click();
+  expect(providerCatalogRequests).toBe(0);
   await expect(section.getByLabel("Fast description")).toHaveValue("Quick factual questions");
   await section.getByRole("button", { name: "Save profiles" }).click();
 
@@ -1581,6 +1595,10 @@ test("administrator remaps the three composer run profiles in one save", async (
     reasoningEffort: "max",
     reasoningMode: "pro"
   });
+  await section.getByRole("tab", { name: "Connections" }).click();
+  await expect.poll(() => providerCatalogRequests).toBe(1);
+  await section.getByRole("tab", { name: "Run profiles" }).click();
+  await expect(section.getByLabel("Fast description")).toHaveValue("Quick factual questions");
 });
 
 test("ordinary user receives real provider-admin denial without provider metadata", async ({ page }) => {

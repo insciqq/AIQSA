@@ -15,7 +15,7 @@ import type {
   RunProfileId
 } from "@/lib/contracts/runProfiles";
 import { RefreshCw, X } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 type ProfileDraft = Pick<
   AdminRunProfile,
@@ -27,6 +27,23 @@ type ProfileDraft = Pick<
   | "reasoningMode"
   | "version"
 >;
+
+type ProfileValidation = Readonly<{
+  description?: string;
+  model?: string;
+  reasoningEffort?: string;
+  reasoningMode?: string;
+}>;
+
+export type AdminRunProfilesEditState = Readonly<{
+  busy: boolean;
+  dirty: boolean;
+}>;
+
+export const EMPTY_ADMIN_RUN_PROFILES_EDIT_STATE: AdminRunProfilesEditState = {
+  busy: false,
+  dirty: false
+};
 
 const fieldLabel = "mb-1 block text-xs font-medium text-ink-secondary";
 
@@ -54,13 +71,55 @@ function valuesWithCurrent(options: string[], current: string): string[] {
   return options.includes(current) ? options : [current, ...options];
 }
 
+function validateProfileDraft(
+  draft: ProfileDraft,
+  models: AdminRunProfileModel[]
+): ProfileValidation {
+  const validation: {
+    description?: string;
+    model?: string;
+    reasoningEffort?: string;
+    reasoningMode?: string;
+  } = {};
+
+  if (!draft.description.trim()) {
+    validation.description = "Enter a description for this composer shortcut.";
+  }
+
+  if (!draft.enabled) {
+    if (draft.providerModelId !== null) {
+      validation.model = "Choose Disabled to turn this profile off.";
+    }
+    return validation;
+  }
+
+  const model = models.find((candidate) => candidate.id === draft.providerModelId);
+  if (!model) {
+    validation.model = "Choose an available model deployment.";
+    return validation;
+  }
+  if (!model.selectable) {
+    validation.model = "This deployment is inactive. Choose an available deployment or disable the profile.";
+    return validation;
+  }
+  if (!model.reasoningModes.includes(draft.reasoningMode)) {
+    validation.reasoningMode = "Choose a reasoning mode supported by this deployment.";
+  }
+  if (!model.reasoningEfforts.includes(draft.reasoningEffort)) {
+    validation.reasoningEffort = "Choose a reasoning effort supported by this deployment.";
+  }
+
+  return validation;
+}
+
 function ProfileRow({
   draft,
   disabled,
   label,
   models,
   onChange,
-  savedProfile
+  savedProfile,
+  validation
 }: {
   disabled: boolean;
   draft: ProfileDraft;
@@ -68,6 +127,7 @@ function ProfileRow({
   models: AdminRunProfileModel[];
   onChange(next: ProfileDraft): void;
   savedProfile: ProfileDraft;
+  validation: ProfileValidation;
 }) {
   const selectedModel = models.find((model) => model.id === draft.providerModelId) ?? null;
   const savedModel = models.find((model) => model.id === savedProfile.providerModelId) ?? null;
@@ -86,6 +146,10 @@ function ProfileRow({
   const efforts = valuesWithCurrent(selectedModel?.reasoningEfforts ?? [], draft.reasoningEffort);
   const modes = valuesWithCurrent(selectedModel?.reasoningModes ?? [], draft.reasoningMode);
   const rowClass = adminAvailabilityRowClass(savedProfile.enabled);
+  const descriptionErrorId = `run-profile-${draft.id}-description-error`;
+  const modelErrorId = `run-profile-${draft.id}-model-error`;
+  const reasoningModeErrorId = `run-profile-${draft.id}-reasoning-mode-error`;
+  const reasoningEffortErrorId = `run-profile-${draft.id}-reasoning-effort-error`;
 
   return (
     <fieldset
@@ -124,6 +188,8 @@ function ProfileRow({
         <label className="mt-3 block min-w-0">
           <span className={fieldLabel}>Description</span>
           <input
+            aria-describedby={validation.description ? descriptionErrorId : undefined}
+            aria-invalid={validation.description ? true : undefined}
             aria-label={`${label} description`}
             className={inputClass}
             disabled={disabled}
@@ -132,12 +198,19 @@ function ProfileRow({
             required
             value={draft.description}
           />
+          {validation.description ? (
+            <span className="mt-1 block text-xs leading-5 text-critical" id={descriptionErrorId}>
+              {validation.description}
+            </span>
+          ) : null}
         </label>
       </div>
       <div className="grid min-w-0 gap-3 sm:grid-cols-2">
         <label className="min-w-0 sm:col-span-2">
           <span className={fieldLabel}>Model deployment</span>
           <select
+            aria-describedby={validation.model ? modelErrorId : undefined}
+            aria-invalid={validation.model ? true : undefined}
             aria-label={`${label} model deployment`}
             className={inputClass}
             disabled={disabled}
@@ -161,10 +234,17 @@ function ProfileRow({
               </option>
             ))}
           </select>
+          {validation.model ? (
+            <span className="mt-1 block text-xs leading-5 text-critical" id={modelErrorId}>
+              {validation.model}
+            </span>
+          ) : null}
         </label>
         <label className="min-w-0">
           <span className={fieldLabel}>Reasoning mode</span>
           <select
+            aria-describedby={validation.reasoningMode ? reasoningModeErrorId : undefined}
+            aria-invalid={validation.reasoningMode ? true : undefined}
             aria-label={`${label} reasoning mode`}
             className={inputClass}
             disabled={disabled || !draft.enabled || !selectedModel?.selectable}
@@ -173,10 +253,17 @@ function ProfileRow({
           >
             {modes.map((mode) => <option key={mode} value={mode}>{mode.replaceAll("_", " ")}</option>)}
           </select>
+          {validation.reasoningMode ? (
+            <span className="mt-1 block text-xs leading-5 text-critical" id={reasoningModeErrorId}>
+              {validation.reasoningMode}
+            </span>
+          ) : null}
         </label>
         <label className="min-w-0">
           <span className={fieldLabel}>Reasoning effort</span>
           <select
+            aria-describedby={validation.reasoningEffort ? reasoningEffortErrorId : undefined}
+            aria-invalid={validation.reasoningEffort ? true : undefined}
             aria-label={`${label} reasoning effort`}
             className={inputClass}
             disabled={disabled || !draft.enabled || !selectedModel?.selectable}
@@ -185,6 +272,11 @@ function ProfileRow({
           >
             {efforts.map((effort) => <option key={effort} value={effort}>{effort.replaceAll("_", " ")}</option>)}
           </select>
+          {validation.reasoningEffort ? (
+            <span className="mt-1 block text-xs leading-5 text-critical" id={reasoningEffortErrorId}>
+              {validation.reasoningEffort}
+            </span>
+          ) : null}
         </label>
       </div>
     </fieldset>
@@ -193,21 +285,27 @@ function ProfileRow({
 
 export function AdminRunProfilesPanel({
   active,
+  onEditStateChange,
+  resetRevision = 0,
   refreshRevision = 0
 }: {
   active: boolean;
+  onEditStateChange?(state: AdminRunProfilesEditState): void;
+  resetRevision?: number;
   refreshRevision?: number;
 }) {
   const controller = useAdminRunProfilesController(active, refreshRevision);
+  const refreshButtonRef = useRef<HTMLButtonElement | null>(null);
   const catalog = controller.state.catalog;
   const [draftState, setDraftState] = useState<{
     catalog: AdminRunProfileCatalog | null;
     drafts: ProfileDraft[];
-  }>({ catalog: null, drafts: [] });
+    resetRevision: number;
+  }>({ catalog: null, drafts: [], resetRevision });
   let drafts = draftState.drafts;
-  if (catalog !== draftState.catalog) {
+  if (catalog !== draftState.catalog || resetRevision !== draftState.resetRevision) {
     drafts = catalog ? draftsFromCatalog(catalog) : [];
-    setDraftState({ catalog, drafts });
+    setDraftState({ catalog, drafts, resetRevision });
   }
 
   const labels = useMemo(
@@ -216,16 +314,20 @@ export function AdminRunProfilesPanel({
   );
   const savedDrafts = catalog ? draftsFromCatalog(catalog) : [];
   const dirty = JSON.stringify(drafts) !== JSON.stringify(savedDrafts);
-  const valid = Boolean(catalog) && drafts.every((draft) => {
-    if (!draft.description.trim()) return false;
-    if (!draft.enabled) return draft.providerModelId === null;
-    const model = catalog?.models.find((candidate) => candidate.id === draft.providerModelId);
-    return Boolean(
-      model?.selectable &&
-      model.reasoningEfforts.includes(draft.reasoningEffort) &&
-      model.reasoningModes.includes(draft.reasoningMode)
-    );
-  });
+  const validations = new Map(
+    drafts.map((draft) => [draft.id, validateProfileDraft(draft, catalog?.models ?? [])])
+  );
+  const valid = Boolean(catalog) && [...validations.values()].every(
+    (validation) => Object.keys(validation).length === 0
+  );
+
+  useEffect(() => {
+    onEditStateChange?.({ busy: controller.state.busy, dirty });
+  }, [controller.state.busy, dirty, onEditStateChange]);
+
+  useEffect(() => () => {
+    onEditStateChange?.(EMPTY_ADMIN_RUN_PROFILES_EDIT_STATE);
+  }, [onEditStateChange]);
 
   return (
     <section aria-busy={controller.state.busy || controller.state.loading} aria-labelledby="run-profiles-title" className="border-b border-trace-subtle bg-answer-paper">
@@ -235,18 +337,52 @@ export function AdminRunProfilesPanel({
           <p className="mt-1 text-xs leading-5 text-ink-muted">
             Map the three one-tap composer profiles to active model deployments and supported reasoning. Search and other generation controls remain independent.
           </p>
+          {controller.state.busy ? (
+            <p className="mt-2 text-xs font-medium text-proof" data-testid="run-profiles-edit-status" role="status">
+              Saving profile changes… Navigation is paused until this finishes.
+            </p>
+          ) : dirty ? (
+            <p
+              className={`mt-2 text-xs font-medium ${valid ? "text-caution" : "text-critical"}`}
+              data-testid="run-profiles-edit-status"
+              role="status"
+            >
+              {valid
+                ? "Unsaved profile changes. Save or discard them before leaving this task."
+                : "Unsaved profile changes need attention. Resolve the highlighted fields before saving."}
+            </p>
+          ) : null}
         </div>
         <div className="flex shrink-0 flex-wrap gap-1">
           <button
             aria-label="Refresh run profiles"
             className={quietButton}
-            disabled={controller.state.busy || controller.state.loading}
+            disabled={controller.state.busy || controller.state.loading || dirty}
             onClick={() => void controller.actions.refresh()}
+            ref={refreshButtonRef}
+            title={dirty ? "Save or discard profile changes before refreshing." : undefined}
             type="button"
           >
             <RefreshCw aria-hidden="true" className={`size-3.5 ${controller.state.loading ? "animate-spin" : ""}`} />
             Refresh
           </button>
+          {dirty ? (
+            <button
+              className={quietButton}
+              disabled={controller.state.busy || controller.state.loading}
+              onClick={() => {
+                setDraftState({
+                  catalog,
+                  drafts: catalog ? draftsFromCatalog(catalog) : [],
+                  resetRevision
+                });
+                window.setTimeout(() => refreshButtonRef.current?.focus(), 0);
+              }}
+              type="button"
+            >
+              Discard changes
+            </button>
+          ) : null}
           <button
             className={primaryButton}
             disabled={controller.state.busy || controller.state.loading || !dirty || !valid}
@@ -304,6 +440,7 @@ export function AdminRunProfilesPanel({
               drafts: updateDraft(current.drafts, draft.id, () => next)
             }))}
             savedProfile={savedDrafts.find((profile) => profile.id === draft.id) ?? draft}
+            validation={validations.get(draft.id) ?? {}}
           />
         ))
       ) : null}

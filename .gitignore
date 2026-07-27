@@ -8,6 +8,8 @@ tsconfig.tsbuildinfo
 coverage/
 playwright-report/
 test-results/
+/docs/assets/ui/_local/
+/docs/assets/ui/concepts/
 
 /agent_docs/active_tasks/*
 !/agent_docs/active_tasks/README.md

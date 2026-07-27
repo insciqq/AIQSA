@@ -34,22 +34,27 @@ function message(
 }
 
 describe("DetailedInspector", () => {
-  it("disables branch version rows with explicit guidance while streaming", () => {
+  it("disables only a real alternate version with explicit guidance while streaming", () => {
     render(
       <DetailedInspector
         {...inspectorProps({
-          activeLeafId: "message-1",
-          messages: [message("message-1", null, "user", "Question")],
+          activeLeafId: "answer-a",
+          messages: [
+            message("question-1", null, "user", "Question"),
+            message("answer-a", "question-1", "assistant", "Current answer"),
+            message("answer-b", "question-1", "assistant", "Alternate answer")
+          ],
           streaming: true
         })}
       />
     );
 
-    const activeBranch = screen.getByRole("button", { name: "Active branch user 1" });
-    expect(activeBranch).toBeDisabled();
-    expect(activeBranch.getAttribute("aria-describedby")).toContain("branch-streaming-guidance");
-    expect(activeBranch).toHaveAccessibleDescription(/Question\. Question\. Active leaf/);
-    expect(screen.getByRole("status")).toHaveTextContent("can’t open another version");
+    const alternateVersion = screen.getByRole("button", { name: "Open alternate version, assistant 3" });
+    expect(alternateVersion).toBeDisabled();
+    expect(alternateVersion.getAttribute("aria-describedby")).toContain("branch-streaming-guidance");
+    expect(alternateVersion).toHaveAccessibleDescription(/Answer\. Alternate answer\. Open this alternate version/);
+    expect(screen.getByRole("status")).toHaveTextContent("cannot be opened");
+    expect(screen.queryByRole("button", { name: /current/i })).not.toBeInTheDocument();
     expect(screen.getByRole("tabpanel")).toHaveAttribute("id", "details-panel-branch");
     expect(screen.getByRole("tabpanel")).toHaveAttribute("tabindex", "0");
     for (const tab of screen.getAllByRole("tab")) {
@@ -74,11 +79,13 @@ describe("DetailedInspector", () => {
       />
     );
 
-    expect(screen.getByTestId("branch-tree")).toHaveTextContent("2 messages on one linear path");
-    expect(screen.getByTestId("branch-tree")).toHaveTextContent("single path");
-    expect(screen.getAllByRole("button", { name: /Open this version, branch/ })).toHaveLength(1);
-    expect(screen.getByRole("button", { name: "Active branch assistant 2" })).toHaveAttribute("aria-disabled", "true");
-    expect(screen.getByText("Active leaf")).toBeVisible();
+    expect(screen.getByTestId("branch-tree")).toHaveTextContent("2 messages · one version");
+    expect(screen.getByTestId("branch-tree")).toHaveTextContent("one version");
+    expect(screen.queryByRole("button", { name: /Open alternate version/ })).not.toBeInTheDocument();
+    expect(screen.getByText("Current").closest("div[data-active-leaf='true']")).toHaveAttribute(
+      "aria-current",
+      "true"
+    );
     expect(screen.queryByText(/Fork point/)).not.toBeInTheDocument();
   });
 
@@ -86,8 +93,8 @@ describe("DetailedInspector", () => {
     render(<DetailedInspector {...inspectorProps({ messages: [], runId: null })} />);
 
     expect(screen.getByTestId("branch-tree")).toHaveTextContent("No conversation yet");
-    expect(screen.getByTestId("branch-tree")).toHaveTextContent("Ask a question to create the first path");
-    expect(screen.queryByRole("button", { name: /branch/i })).not.toBeInTheDocument();
+    expect(screen.getByTestId("branch-tree")).toHaveTextContent("Ask a question to create the first version");
+    expect(screen.queryByRole("button", { name: /Open alternate version/ })).not.toBeInTheDocument();
   });
 
   it("makes real forks, role excerpts, active path, leaf, and version opening unambiguous", () => {
@@ -109,19 +116,17 @@ describe("DetailedInspector", () => {
       />
     );
 
-    expect(screen.getByTestId("branch-tree")).toHaveTextContent("2 paths");
+    expect(screen.getByTestId("branch-tree")).toHaveTextContent("2 versions");
     expect(screen.getByText("Fork point · 2 choices")).toBeVisible();
-    expect(screen.getAllByText("Branch path")).toHaveLength(2);
+    expect(screen.getAllByText("Branch version")).toHaveLength(2);
     expect(screen.getAllByText("Question", { selector: "span" })).toHaveLength(3);
     expect(screen.getAllByText("Answer", { selector: "span" })).toHaveLength(3);
-    const activeLeaf = screen.getByText("Active leaf").closest("button");
+    const activeLeaf = screen.getByText("Current").closest("div[data-active-leaf='true']");
     expect(activeLeaf).toHaveAttribute("aria-current", "true");
-    expect(activeLeaf).toHaveAttribute("aria-disabled", "true");
-    expect(activeLeaf).toHaveAccessibleDescription(/Answer\. Option B is the active branch\. Active leaf/);
     fireEvent.click(activeLeaf!);
     expect(onSelectBranch).not.toHaveBeenCalled();
 
-    fireEvent.click(screen.getByRole("button", { name: "Open this version, branch assistant 4" }));
+    fireEvent.click(screen.getByRole("button", { name: "Open alternate version, assistant 4" }));
     expect(onSelectBranch).toHaveBeenCalledWith("answer-a");
   });
 
@@ -143,6 +148,8 @@ describe("DetailedInspector", () => {
     expect(screen.getByTestId("details-summary")).toHaveClass("max-h-10", "leading-5", "overflow-y-auto");
     expect(screen.getByTestId("details-summary")).toHaveAttribute("title", longError);
     expect(screen.getByTestId("inspector-event-log").querySelector('[data-tone="error"]')).toBeVisible();
+    expect(screen.getByText("Question", { selector: "div" })).toHaveClass("text-ink-secondary");
+    expect(screen.getByTestId("details-mode-label")).toHaveClass("text-xs");
   });
 
   it("exposes clear mode, pin, and close feedback", () => {
@@ -152,21 +159,21 @@ describe("DetailedInspector", () => {
       <DetailedInspector {...inspectorProps({ onClose, onPinToggle })} />
     );
 
-    expect(screen.getByTestId("details-mode-label")).toHaveTextContent("Overlay");
+    expect(screen.getByTestId("details-mode-label")).toHaveTextContent("Opened over chat");
     fireEvent.click(screen.getByRole("button", { name: "Pin details" }));
     fireEvent.click(screen.getByRole("button", { name: "Close details" }));
     expect(onPinToggle).toHaveBeenCalledOnce();
     expect(onClose).toHaveBeenCalledOnce();
 
     rerender(<DetailedInspector {...inspectorProps({ onClose, onPinToggle, pinned: true })} />);
-    expect(screen.getByTestId("details-mode-label")).toHaveTextContent("Pinned");
+    expect(screen.getByTestId("details-mode-label")).toHaveTextContent("Pinned beside chat");
     expect(screen.getByRole("button", { name: "Unpin details" })).toHaveAttribute("aria-pressed", "true");
   });
 
   it("uses factual readable run context without inventing events or exposing an internal run id", () => {
     render(<DetailedInspector {...inspectorProps({ runId: "run-internal-123456789" })} />);
 
-    expect(screen.getByTestId("details-summary")).toHaveTextContent("Run recorded · no events captured");
+    expect(screen.getByTestId("details-summary")).toHaveTextContent("This run was recorded without events");
     expect(screen.getByTestId("details-summary")).not.toHaveTextContent("run-internal");
   });
 
@@ -180,11 +187,11 @@ describe("DetailedInspector", () => {
       />
     );
 
-    expect(screen.getByTestId("details-summary")).toHaveTextContent("Run events available");
+    expect(screen.getByTestId("details-summary")).toHaveTextContent("1 recorded event for this run");
 
     rerender(<DetailedInspector {...inspectorProps({ activeTab: "events", streaming: true })} />);
-    expect(screen.getByTestId("details-summary")).toHaveTextContent("Run active");
-    expect(screen.getByTestId("details-summary")).not.toHaveTextContent("events available");
+    expect(screen.getByTestId("details-summary")).toHaveTextContent("The run is active");
+    expect(screen.getByTestId("details-summary")).toHaveTextContent("No events have arrived yet");
   });
 
   it("keeps the inspection plane and local scroller bounded for compact and short viewports", () => {

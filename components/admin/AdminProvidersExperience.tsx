@@ -3,7 +3,11 @@
 import { AdminProviderQuickSetup } from "@/components/admin/AdminProviderQuickSetup";
 import { AdminProviderCustomSetup } from "@/components/admin/AdminProviderCustomSetup";
 import { AdminProvidersSection } from "@/components/admin/AdminProvidersSection";
-import { AdminRunProfilesPanel } from "@/components/admin/AdminRunProfilesPanel";
+import {
+  AdminRunProfilesPanel,
+  EMPTY_ADMIN_RUN_PROFILES_EDIT_STATE,
+  type AdminRunProfilesEditState
+} from "@/components/admin/AdminRunProfilesPanel";
 import { focusRing, touchTarget } from "@/components/admin/adminPrimitives";
 import { ConfirmationDialog } from "@/components/app-shell/ConfirmationDialog";
 import { useAdminProviderCustomSetupController } from "@/components/admin/useAdminProviderCustomSetupController";
@@ -14,7 +18,7 @@ import type {
   AdminConfirmationRequest
 } from "@/components/admin/useAdminConfirmationController";
 import type { AdminGroup } from "@/lib/contracts/admin";
-import { useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 type ProviderWorkspaceTask = "connections" | "profiles" | "setup";
 
@@ -22,6 +26,7 @@ export type AdminProvidersExperienceProps = Readonly<{
   active: boolean;
   groups: AdminGroup[];
   onMutationCommitted?(): void | Promise<unknown>;
+  onRunProfilesEditStateChange?(state: AdminRunProfilesEditState): void;
   requestConfirmation?: AdminConfirmationController["requestConfirmation"];
 }>;
 
@@ -29,6 +34,7 @@ export function AdminProvidersExperience({
   active,
   groups,
   onMutationCommitted,
+  onRunProfilesEditStateChange,
   requestConfirmation
 }: AdminProvidersExperienceProps) {
   const [workspaceTask, setWorkspaceTask] = useState<ProviderWorkspaceTask>("setup");
@@ -38,6 +44,10 @@ export function AdminProvidersExperience({
   >(null);
   const [connectionEntryId, setConnectionEntryId] = useState<string | null>(null);
   const [localConfirmation, setLocalConfirmation] = useState<AdminConfirmationRequest | null>(null);
+  const [runProfilesEditState, setRunProfilesEditState] = useState<AdminRunProfilesEditState>(
+    EMPTY_ADMIN_RUN_PROFILES_EDIT_STATE
+  );
+  const [runProfilesResetRevision, setRunProfilesResetRevision] = useState(0);
   const requestProviderConfirmation = requestConfirmation ?? setLocalConfirmation;
   const quick = useAdminProviderQuickSetupController(
     active && workspaceTask === "setup" && setupTask === "quick",
@@ -51,6 +61,15 @@ export function AdminProvidersExperience({
     onMutationCommitted
     }
   );
+
+  const handleRunProfilesEditStateChange = useCallback((state: AdminRunProfilesEditState) => {
+    setRunProfilesEditState(state);
+    onRunProfilesEditStateChange?.(state);
+  }, [onRunProfilesEditStateChange]);
+
+  useEffect(() => () => {
+    onRunProfilesEditStateChange?.(EMPTY_ADMIN_RUN_PROFILES_EDIT_STATE);
+  }, [onRunProfilesEditStateChange]);
 
   const leaveSetup = () => {
     quick.actions.leaveQuickSetup();
@@ -76,7 +95,7 @@ export function AdminProvidersExperience({
     setSetupTask("quick");
   };
 
-  const selectWorkspaceTask = (nextTask: ProviderWorkspaceTask) => {
+  const commitWorkspaceTask = (nextTask: ProviderWorkspaceTask) => {
     if (nextTask === workspaceTask) return;
 
     if (workspaceTask === "setup") {
@@ -93,11 +112,34 @@ export function AdminProvidersExperience({
     setWorkspaceTask(nextTask);
   };
 
+  const selectWorkspaceTask = (nextTask: ProviderWorkspaceTask) => {
+    if (nextTask === workspaceTask || runProfilesEditState.busy) return;
+
+    if (workspaceTask === "profiles" && runProfilesEditState.dirty) {
+      requestProviderConfirmation({
+        body: "Unsaved Run profile edits will be lost. Save them first, or discard them to continue.",
+        confirmLabel: "Discard and continue",
+        dialogLabel: "Discard Run profile changes",
+        icon: "x",
+        onConfirm: () => {
+          setRunProfilesResetRevision((revision) => revision + 1);
+          commitWorkspaceTask(nextTask);
+        },
+        testId: "admin-confirm-discard-run-profile-task-changes",
+        title: "Discard Run profile changes?",
+        tone: "warning"
+      });
+      return;
+    }
+
+    commitWorkspaceTask(nextTask);
+  };
+
   return (
     <div className="min-w-0">
       <div
         aria-label="Provider tasks"
-        className="flex min-w-0 gap-6 overflow-x-auto border-b border-trace-subtle px-4 sm:px-6 lg:px-8"
+        className="flex min-w-0 gap-6 overflow-x-auto overscroll-x-contain border-b border-trace-subtle px-4 [scrollbar-width:none] sm:px-6 lg:px-8 [&::-webkit-scrollbar]:hidden"
         data-testid="provider-workspace-tabs"
         role="tablist"
       >
@@ -114,6 +156,7 @@ export function AdminProvidersExperience({
                 : "border-transparent text-ink-muted hover:border-trace-strong hover:text-ink-secondary"
             }`}
             key={task}
+            disabled={runProfilesEditState.busy && workspaceTask !== task}
             onClick={() => selectWorkspaceTask(task)}
             role="tab"
             type="button"
@@ -153,7 +196,11 @@ export function AdminProvidersExperience({
             />
           </div>
           <div hidden={workspaceTask !== "profiles"}>
-            <AdminRunProfilesPanel active={active && workspaceTask === "profiles"} />
+            <AdminRunProfilesPanel
+              active={active && workspaceTask === "profiles"}
+              onEditStateChange={handleRunProfilesEditStateChange}
+              resetRevision={runProfilesResetRevision}
+            />
           </div>
         </div>
       ) : null}

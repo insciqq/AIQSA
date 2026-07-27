@@ -34,6 +34,31 @@ function hasIdentityHash(value: unknown): boolean {
   return isRecord(value) && typeof value.identityHash === "string" && value.identityHash.length > 0;
 }
 
+function isActivation(value: unknown): boolean {
+  if (value === null) return true;
+  if (!isRecord(value)) return false;
+  return (
+    typeof value.id === "string" &&
+    [
+      "queued",
+      "resolving",
+      "preparing_runtime",
+      "connecting",
+      "discovering_tools",
+      "publishing",
+      "ready",
+      "failed"
+    ].includes(String(value.stage)) &&
+    typeof value.requestedAt === "string" &&
+    (value.startedAt === null || typeof value.startedAt === "string") &&
+    (value.completedAt === null || typeof value.completedAt === "string") &&
+    typeof value.updatedAt === "string" &&
+    (value.errorCode === null || typeof value.errorCode === "string") &&
+    Array.isArray(value.issues) &&
+    value.issues.every(isIssue)
+  );
+}
+
 function isServer(value: unknown): value is AdminMcpServer {
   if (!isRecord(value)) return false;
   const validActivePersonalSlots = Array.isArray(value.activePersonalSlots) &&
@@ -54,6 +79,7 @@ function isServer(value: unknown): value is AdminMcpServer {
     validActiveRevision &&
     validDraftTest &&
     validRevisions &&
+    isActivation(value.activation) &&
     typeof value.id === "string" &&
     typeof value.name === "string" &&
     typeof value.namespace === "string" &&

@@ -20,12 +20,11 @@ function ProfileAvailabilityFact({
   if (compact) {
     return (
       <span
-        className={`pointer-events-none absolute right-0.5 top-0.5 size-2 rounded-full ${available ? "bg-positive" : "bg-caution"}`}
+        className="sr-only"
         data-run-profile-availability={available ? "available" : "unavailable"}
         id={id}
-        title={label}
       >
-        <span className="sr-only">{label}</span>
+        {label}
       </span>
     );
   }
@@ -35,7 +34,7 @@ function ProfileAvailabilityFact({
       className={`inline-flex shrink-0 items-center gap-1.5 rounded-pill border px-2.5 py-1 text-xs font-semibold leading-none ${
         available
           ? "border-positive/35 bg-positive/[0.12] text-positive"
-          : "border-caution/35 bg-caution/10 text-caution"
+          : "border-trace-strong bg-control-surface text-ink-secondary"
       }`}
       data-run-profile-availability={available ? "available" : "unavailable"}
       id={id}
@@ -80,16 +79,35 @@ export function ComposerRunProfiles({
     reasoningMode
   });
   const unavailableProfiles = profiles.filter((profile) => !profile.available);
+  const compactState = activeProfile
+    ? null
+    : profiles.some((profile) => profile.available)
+      ? "Custom"
+      : "Unavailable";
   const unavailableCopy = unavailableProfiles.some(
     (profile) => profile.unavailableReason?.includes("administrator configuration")
   )
     ? "Unavailable profiles need model access or an administrator configuration change."
     : "Unavailable profiles cannot be used with your current model access.";
   return (
-    <div data-testid={testId}>
-      <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+    <div className={compact ? "shrink-0" : undefined} data-testid={testId}>
+      <div
+        className={compact
+          ? "inline-flex min-h-touch min-w-0 items-center rounded-control bg-control-surface sm:min-h-control-sm [@media(hover:none)]:!min-h-touch [@media(pointer:coarse)]:!min-h-touch"
+          : "flex min-w-0 flex-wrap items-center gap-1.5"}
+      >
+        {compact ? (
+          <span
+            aria-live="polite"
+            className="shrink-0 px-0 text-xs font-semibold text-ink-muted max-[429px]:text-[11px] min-[430px]:px-1"
+            data-run-profile-state={compactState?.toLowerCase()}
+            data-testid={compactState ? "compact-run-profile-state" : undefined}
+          >
+            {compactState ?? "Profile"}
+          </span>
+        ) : null}
         <div
-          className={compact ? "flex shrink-0 items-center gap-1" : "flex min-w-0 flex-wrap items-center gap-1.5"}
+          className={compact ? "flex shrink-0 items-center" : "flex min-w-0 flex-wrap items-center gap-1.5"}
           role="group"
           aria-label="Run profile"
         >
@@ -104,10 +122,14 @@ export function ComposerRunProfiles({
                 <button
                   className={[
                     "h-touch rounded-control text-xs font-medium outline-none focus-visible:ring-2 focus-visible:ring-proof/55 disabled:cursor-not-allowed disabled:text-ink-disabled disabled:opacity-65 sm:h-control-sm [@media(hover:none)]:!h-touch [@media(pointer:coarse)]:!h-touch",
-                    compact ? "px-2" : "px-3",
+                    compact
+                      ? "min-w-touch px-1 sm:min-w-0 [@media(hover:none)]:!min-w-touch [@media(pointer:coarse)]:!min-w-touch"
+                      : "px-3",
                     active
                       ? "bg-control-selected text-proof"
-                      : "bg-control-surface text-ink-secondary hover:bg-control-hover hover:text-ink"
+                      : compact
+                        ? "text-ink-secondary hover:bg-control-hover hover:text-ink"
+                        : "bg-control-surface text-ink-secondary hover:bg-control-hover hover:text-ink"
                   ].join(" ")}
                   type="button"
                   aria-label={`Use ${profile.label} run profile`}
@@ -134,14 +156,6 @@ export function ComposerRunProfiles({
             );
           })}
         </div>
-        {compact ? (
-          <span
-            className="shrink-0 text-[11px] text-ink-muted"
-            aria-live="polite"
-          >
-            {activeProfile ? null : profiles.some((profile) => profile.available) ? "Custom" : "Unavailable"}
-          </span>
-        ) : null}
       </div>
       {!compact && unavailableProfiles.length > 0 ? (
         <p className="mt-2 text-xs text-ink-muted" data-testid="run-profile-unavailable-reason">

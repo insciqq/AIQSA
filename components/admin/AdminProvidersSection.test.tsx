@@ -178,6 +178,7 @@ describe("AdminProvidersSection", () => {
     expect(screen.getByRole("button", {
       name: "Refresh provider connections"
     })).toBeInTheDocument();
+    expect(screen.getByText("1 connection · 0 configured")).toBeVisible();
   });
 
   it("does not offer Configure credential while the empty key form is already open", () => {
@@ -928,17 +929,21 @@ describe("AdminProvidersSection", () => {
     expect(header).not.toBeNull();
     expect(within(header!).getByText("Disabled")).toBeInTheDocument();
     expect(within(header!).getByText("Changes pending")).toBeInTheDocument();
-    expect(screen.getByText("Connection is disabled.")).toBeInTheDocument();
+    const disabledReadiness = screen.getByTestId("provider-activation-readiness");
+    expect(disabledReadiness).toHaveAttribute("data-readiness-tone", "disabled");
+    expect(within(disabledReadiness).getByText("Connection is disabled.")).toBeInTheDocument();
     expect(screen.queryByText("Ready to activate.")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Activate changes and enable" })).toBeInTheDocument();
 
     const blockedView = controller();
     mocks.useController.mockReturnValue(blockedView);
     rendered.rerender(<AdminProvidersSection active groups={[]} />);
-    expect(screen.getByText("Complete setup before activation.")).toBeInTheDocument();
+    const blockedReadiness = screen.getByTestId("provider-activation-readiness");
+    expect(blockedReadiness).toHaveAttribute("data-readiness-tone", "setup");
+    expect(within(blockedReadiness).getByRole("heading", { name: "Complete setup before activation." })).toBeInTheDocument();
     expect(screen.queryByText(/setup items need attention/i)).not.toBeInTheDocument();
-    expect(screen.getAllByText("Add and enable at least one model.").length).toBeGreaterThan(0);
-    expect(screen.getByRole("button", { name: "Add model" })).toBeInTheDocument();
+    expect(within(blockedReadiness).getByText("Add and enable at least one model.")).toBeInTheDocument();
+    expect(within(blockedReadiness).getByRole("button", { name: "Add model" })).toBeInTheDocument();
   });
 
   it("offers one visible Enable action for an unchanged published connection", () => {

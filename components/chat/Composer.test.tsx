@@ -42,7 +42,7 @@ describe("Composer", () => {
     const send = screen.getByRole("button", { name: "Send message" });
 
     expect(form).toContainElement(surface);
-    expect(form).toHaveClass("bg-answer-paper");
+    expect(form).toHaveClass("w-full", "min-w-0", "bg-answer-paper");
     expect(form).not.toHaveClass("bg-research-canvas");
     expect(messageField).toContainElement(messageLabel);
     expect(messageField).toContainElement(textarea);
@@ -55,7 +55,7 @@ describe("Composer", () => {
     expect(surface).toContainElement(send);
     expect(form).toHaveClass("sm:pb-[max(.75rem,env(safe-area-inset-bottom))]");
     expect(form).toHaveClass("[@media(max-height:32rem)]:!pt-1");
-    expect(controls).toHaveClass("flex", "flex-[1_1_22rem]");
+    expect(controls).toHaveClass("flex", "w-full", "min-w-0");
     expect(textarea).toHaveClass(
       "min-h-14",
       "sm:min-h-[72px]",
@@ -86,6 +86,7 @@ describe("Composer", () => {
         onRemoveAttachment={() => undefined}
         onSend={() => undefined}
         onUploadFiles={() => undefined}
+        tools={<button type="button">Tools</button>}
         value="Ready"
       />
     );
@@ -99,11 +100,12 @@ describe("Composer", () => {
     expect(attachControl).toHaveTextContent("Attach");
     expect(footer).toContainElement(screen.getByRole("button", { name: "Send message" }));
     expect(primaryActions).toContainElement(attachControl);
+    expect(primaryActions).toContainElement(screen.getByRole("button", { name: "Tools" }));
     expect(primaryActions).toContainElement(screen.getByRole("button", { name: "Send message" }));
     expect(screen.queryByTestId("current-context-length")).not.toBeInTheDocument();
   });
 
-  it("lets prompt-first direct controls wrap as a group while keeping primary actions aligned", () => {
+  it("keeps prompt-first direct controls in a compact full-width band above primary actions", () => {
     render(
       <Composer
         attachments={[]}
@@ -118,11 +120,8 @@ describe("Composer", () => {
     );
 
     expect(screen.getByTestId("composer-action-footer")).toHaveClass("flex-wrap");
-    expect(screen.getByTestId("composer-controls-slot")).toHaveClass(
-      "min-w-[min(100%,35rem)]",
-      "flex-[1_1_35rem]"
-    );
-    expect(screen.getByTestId("composer-primary-actions")).toHaveClass("ml-auto");
+    expect(screen.getByTestId("composer-controls-slot")).toHaveClass("w-full", "min-w-0");
+    expect(screen.getByTestId("composer-primary-actions")).toHaveClass("basis-full", "flex-1");
     expect(screen.getByText("Attach", { selector: "span" })).toHaveClass("hidden", "sm:inline");
   });
 
@@ -247,6 +246,29 @@ describe("Composer", () => {
     expect(attachmentControl).toHaveAttribute("data-disabled", "true");
     expect(attachmentControl).toHaveClass("cursor-not-allowed", "text-ink-disabled", "opacity-60");
     expect(attachmentControl).toHaveAttribute("title", "No model is available for this account.");
+    expect(hint).toHaveAttribute("data-tone", "caution");
+    expect(hint).toHaveClass("bg-caution/[0.07]", "text-caution");
+  });
+
+  it("renders routine disabled work as a neutral busy hint", () => {
+    render(
+      <Composer
+        attachments={[]}
+        disabled
+        disabledHint="Loading conversation…"
+        disabledHintTone="busy"
+        onChange={() => undefined}
+        onRemoveAttachment={() => undefined}
+        onSend={() => undefined}
+        value=""
+      />
+    );
+
+    const hint = screen.getByTestId("composer-disabled-hint");
+    expect(hint).toHaveAttribute("data-tone", "busy");
+    expect(hint).toHaveClass("border-trace-subtle", "bg-control-surface/60", "text-ink-secondary");
+    expect(hint).not.toHaveClass("text-caution", "bg-caution/[0.07]");
+    expect(hint.querySelector(".lucide-loader-circle")).toBeInTheDocument();
   });
 
   it("keeps drafting enabled while send is separately disabled", () => {

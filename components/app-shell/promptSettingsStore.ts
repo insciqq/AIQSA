@@ -25,7 +25,8 @@ export type PromptSettingsStore = PromptSettingsSnapshot & {
   editSettingsPrompt(prompt: PromptPreset): void;
   newSettingsPrompt(): void;
   openMcpSettings(): void;
-  openSettings(prompt: PromptPreset | null): void;
+  openPromptLibrary(prompt: PromptPreset | null): void;
+  openSettings(): void;
   setDeletePromptConfirmation(prompt: PromptPreset | null): void;
   setPromptSaving(value: boolean): void;
   setSettingsPromptEditor(update: StateUpdate<PromptEditorDraft>): void;
@@ -57,7 +58,7 @@ export function hasPromptEditorChanges(editor: PromptEditorDraft, prompts: Promp
 export const initialPromptSettingsSnapshot: PromptSettingsSnapshot = {
   deletePromptConfirmation: null,
   promptSaving: false,
-  settingsSection: "prompts",
+  settingsSection: "appearance",
   settingsOpen: false,
   settingsPromptEditor: promptEditorFromPreset(null)
 };
@@ -80,12 +81,15 @@ export const usePromptSettingsStore = create<PromptSettingsStore>((set) => ({
   openMcpSettings() {
     set({ settingsOpen: true, settingsSection: "mcp" });
   },
-  openSettings(prompt) {
+  openPromptLibrary(prompt) {
     set({
       settingsOpen: true,
       settingsSection: "prompts",
       settingsPromptEditor: promptEditorFromPreset(prompt)
     });
+  },
+  openSettings() {
+    set({ settingsOpen: true, settingsSection: "appearance" });
   },
   setDeletePromptConfirmation(prompt) {
     set({ deletePromptConfirmation: prompt });

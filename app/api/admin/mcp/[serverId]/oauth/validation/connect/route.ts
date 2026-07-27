@@ -1,6 +1,6 @@
 import { getAuthConfig } from "@/lib/server/auth/config";
 import { resolveRequestAuth } from "@/lib/server/auth/defaultAuth";
-import { settleDefaultMcpOAuth } from "@/lib/server/mcp/defaultMcp";
+import { settleDefaultMcpOAuth } from "@/lib/server/mcp/defaultActivation";
 import { mcpOAuthService } from "@/lib/server/mcp/defaultOAuth";
 import { kickDefaultMcpRuntime } from "@/lib/server/mcp/defaultRuntime";
 import { createMcpOAuthStartHandler } from "@/lib/server/mcp/oauthHandlers";

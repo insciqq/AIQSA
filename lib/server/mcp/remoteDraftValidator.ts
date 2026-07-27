@@ -21,6 +21,7 @@ import type {
   McpDraftValidationOutcome,
   McpDraftValidator
 } from "./draftValidator";
+import { McpDraftValidationAbortedError } from "./draftValidator";
 
 const MAX_EVIDENCE_TOOLS = 256;
 const MAX_TOOL_DESCRIPTION_LENGTH = 2_048;
@@ -257,7 +258,9 @@ export function createRemoteMcpDraftValidator(
           requestTimeoutMs: input.draft.runtime.callTimeoutMs,
           url: new URL(input.draft.source.url)
         });
+        await input.onProgress?.("connecting");
         await session.initialize({ timeoutMs: input.draft.runtime.startupTimeoutMs });
+        await input.onProgress?.("discovering_tools");
         const tools = await session.listAllTools({ timeoutMs: input.draft.runtime.callTimeoutMs });
         let oauthSecrets: readonly string[] = [];
         try {
@@ -287,6 +290,7 @@ export function createRemoteMcpDraftValidator(
           tools
         });
       } catch (error) {
+        if (error instanceof McpDraftValidationAbortedError) throw error;
         return safeFailure(error);
       } finally {
         await session?.close().catch(() => undefined);

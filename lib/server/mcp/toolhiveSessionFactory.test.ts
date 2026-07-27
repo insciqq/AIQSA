@@ -36,8 +36,12 @@ function localLaunch(): McpRuntimeLaunch & { onToolsChanged(): void } {
 
 describe("ToolHive MCP session factory", () => {
   it("starts a local workload and connects the common SDK to its rewritten proxy URL", async () => {
+    const events: string[] = [];
     const active = session();
-    const directCreate = vi.fn(async () => active);
+    const directCreate = vi.fn(async () => {
+      events.push("direct-connect");
+      return active;
+    });
     const deleteOwnedWorkload = vi.fn(async () => true);
     const ensureReadyWorkload = vi.fn(async (_spec, options: {
       probe(url: string): Promise<void>;
@@ -55,6 +59,9 @@ describe("ToolHive MCP session factory", () => {
       driver: { deleteOwnedWorkload, ensureReadyWorkload }
     });
     const launch = localLaunch();
+    launch.onConnecting = async () => {
+      events.push("connecting-boundary");
+    };
 
     const wrapped = await factory.create(launch);
 
@@ -68,6 +75,7 @@ describe("ToolHive MCP session factory", () => {
       trustedInternalHttp: true,
       url: "http://toolhive-runtime:28471/mcp"
     }));
+    expect(events).toEqual(["connecting-boundary", "direct-connect"]);
     await wrapped.close();
     expect(active.close).toHaveBeenCalledTimes(1);
     expect(deleteOwnedWorkload).not.toHaveBeenCalled();

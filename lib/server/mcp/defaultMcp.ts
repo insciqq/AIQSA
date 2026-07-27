@@ -4,7 +4,6 @@ import { mcpOAuthService } from "./defaultOAuth";
 import { getDefaultToolHiveClient, getDefaultToolHiveDriver } from "./defaultToolHive";
 import type { McpDraftValidator } from "./draftValidator";
 import { createLocalMcpDraftValidator } from "./localDraftValidator";
-import { createMcpOAuthSettler } from "./oauthSettlement";
 import { createPrismaMcpRepository } from "./prismaRepository";
 import { createRemoteMcpDraftValidator } from "./remoteDraftValidator";
 import { createMcpSafeFetch } from "./safeFetch";
@@ -76,8 +75,8 @@ function createDefaultMcpDraftValidator(): McpDraftValidator {
   };
 }
 
-export const mcpRepository = createDefaultMcpRepository({
-  draftValidator: createDefaultMcpDraftValidator()
-});
+export const defaultMcpDraftValidator = createDefaultMcpDraftValidator();
 
-export const settleDefaultMcpOAuth = createMcpOAuthSettler(mcpRepository);
+export const mcpRepository = createDefaultMcpRepository({
+  draftValidator: defaultMcpDraftValidator
+});

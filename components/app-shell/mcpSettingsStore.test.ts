@@ -26,6 +26,7 @@ const server = {
 describe("MCP settings store", () => {
   afterEach(() => {
     resetMcpSettingsStoreForTest();
+    vi.useRealTimers();
     vi.unstubAllGlobals();
     window.history.replaceState(null, "", "/");
   });
@@ -41,6 +42,42 @@ describe("MCP settings store", () => {
 
     await refreshMcpSettings(true);
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("polls an activating server with backoff until readiness becomes terminal", async () => {
+    vi.useFakeTimers();
+    const queued = { ...server, readiness: "queued" as const, tools: [] };
+    const starting = { ...queued, readiness: "starting" as const };
+    const responses = [starting, server];
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      servers: [responses.shift() ?? server]
+    }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    useMcpSettingsStore.setState({
+      loadState: "ready",
+      servers: [{ ...server, enabled: false, readiness: "disabled", tools: [] }]
+    });
+    const observedLoadStates: string[] = [];
+    const unsubscribe = useMcpSettingsStore.subscribe((state) => {
+      observedLoadStates.push(state.loadState);
+    });
+
+    useMcpSettingsStore.getState().replaceServer(queued);
+    await vi.advanceTimersByTimeAsync(749);
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(1);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(useMcpSettingsStore.getState().servers[0]?.readiness).toBe("starting");
+
+    await vi.advanceTimersByTimeAsync(1_500);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(useMcpSettingsStore.getState().servers[0]?.readiness).toBe("ready");
+    expect(observedLoadStates).not.toContain("loading");
+
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    unsubscribe();
   });
 
   it("records and scrubs an OAuth callback outcome", () => {

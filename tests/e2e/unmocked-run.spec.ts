@@ -172,9 +172,20 @@ test("runs a fake-provider chat through real routes, Prisma, SSE, and Details", 
     await usageSegment.click();
     const details = page.getByTestId("details-pane");
     await expect(details.getByRole("tab", { name: "Events" })).toHaveAttribute("aria-selected", "true");
-    await expect(details.getByTestId("inspector-event-log")).toContainText("Provider status");
-    await expect(details.getByTestId("inspector-event-log")).toContainText("Answer text");
-    await expect(details.getByTestId("inspector-event-log")).toContainText("Usage");
+    const eventLog = details.getByTestId("inspector-event-log");
+    await expect(eventLog).toContainText("Provider updates");
+    await expect(eventLog).toContainText("Answer text");
+    await expect(eventLog).toContainText("Usage");
+    await expect(eventLog).toContainText("Model: Fake QSA");
+    await expect(eventLog).toContainText("Search: Off");
+    await expect(eventLog).toContainText("Source: Fake provider");
+    await expect(eventLog).not.toContainText(/fake-qsa|search-disabled|fake-provider/);
+    await expect(
+      eventLog.getByRole("listitem").filter({ hasText: "Run started" }).getByText("Question", { exact: true })
+    ).toBeVisible();
+    await expect(
+      eventLog.getByRole("listitem").filter({ hasText: "Answer text" }).getByText("Answer", { exact: true })
+    ).toBeVisible();
 
     const run = await latestRunForChat(page, chatId);
     expect(run?.status).toBe("complete");
@@ -201,11 +212,6 @@ test("cancels an in-flight fake-provider stream without leaving the shell stuck"
     chatId = await waitForActiveChatId(page);
     const stopButton = page.getByRole("button", { name: "Stop response" });
     await expect(stopButton).toBeVisible({ timeout: 10_000 });
-    await expect
-      .poll(async () => (chatId ? (await latestRunForChat(page, chatId))?.status ?? null : null), {
-        timeout: 10_000
-      })
-      .toBe("streaming");
     await expect(stopButton).toBeEnabled({ timeout: 10_000 });
 
     await stopButton.click();

@@ -28,19 +28,45 @@ import {
   FileText,
   GitBranch,
   Image as ImageIcon,
+  MoreHorizontal,
   Pencil,
   RefreshCw,
   Square,
   Trash2
 } from "lucide-react";
-import { memo, type ReactNode, useState } from "react";
+import {
+  memo,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type ReactNode,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState
+} from "react";
+import { createPortal } from "react-dom";
 
-const ghostActionClass =
-  "grid size-11 place-items-center rounded-control text-ink-muted outline-none hover:bg-control-hover hover:text-ink focus-visible:ring-2 focus-visible:ring-proof/45 disabled:cursor-not-allowed disabled:text-ink-disabled disabled:opacity-50 sm:size-9 [@media(hover:none)]:!size-11 [@media(pointer:coarse)]:!size-11";
+const commonActionClass =
+  "inline-flex h-11 shrink-0 items-center justify-center gap-1.5 rounded-control px-2 text-xs font-medium text-ink-muted outline-none hover:bg-control-hover hover:text-ink focus-visible:ring-2 focus-visible:ring-proof/45 disabled:cursor-not-allowed disabled:text-ink-disabled disabled:opacity-50 sm:h-9 [@media(hover:none)]:!h-11 [@media(pointer:coarse)]:!h-11";
 
-// Reserved-height strip; reveal is opacity-only so hover never shifts layout.
+const iconActionClass =
+  "inline-flex size-11 shrink-0 items-center justify-center rounded-control text-ink-muted outline-none hover:bg-control-hover hover:text-ink focus-visible:ring-2 focus-visible:ring-proof/45 disabled:cursor-not-allowed disabled:text-ink-disabled disabled:opacity-50 sm:size-9 [@media(hover:none)]:!size-11 [@media(pointer:coarse)]:!size-11";
+
+const messageMenuItemClass =
+  "flex min-h-11 w-full items-center gap-2 rounded-control px-3 text-left text-sm font-medium text-ink-secondary outline-none hover:bg-control-hover hover:text-ink focus-visible:bg-control-hover focus-visible:text-ink focus-visible:ring-2 focus-visible:ring-proof/45 disabled:cursor-not-allowed disabled:text-ink-disabled disabled:opacity-50 sm:min-h-9 [@media(hover:none)]:!min-h-11 [@media(pointer:coarse)]:!min-h-11";
+
+// The strip is always present and visible; its fixed minimum height keeps the
+// thread stable while the readable overflow menu opens beside it.
 const actionStripClass =
-  "flex min-h-11 items-center gap-0.5 opacity-0 transition-opacity duration-100 focus-within:opacity-100 group-hover/turn:opacity-100 [@media(hover:none)]:!min-h-11 [@media(hover:none)]:opacity-100 [@media(pointer:coarse)]:!min-h-11 [@media(pointer:coarse)]:opacity-100 sm:min-h-9";
+  "flex min-h-11 items-center gap-0.5 [@media(hover:none)]:!min-h-11 [@media(pointer:coarse)]:!min-h-11 sm:min-h-9";
+
+const messageMenuViewportGutter = 8;
+const messageMenuTriggerGap = 8;
+
+type MessageMenuPlacement = Readonly<{
+  left: number;
+  side: "above" | "below";
+  top: number;
+}>;
 
 type InlineReceiptDisclosure = "citations" | "reasoning" | "search" | "tools";
 
@@ -109,12 +135,208 @@ function TurnActions({
   streaming: boolean;
   targetDescriptionId: string;
 }): ReactNode {
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [menuPlacement, setMenuPlacement] = useState<MessageMenuPlacement | null>(null);
+  const menuVisible = menuOpen && !streaming;
+  const boundaryRef = useRef<HTMLDivElement>(null);
+  const initialMenuFocusRef = useRef<"first" | "last">("first");
+  const menuRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
   const mutableActionDescriptionIds = streaming
     ? `${targetDescriptionId} ${disabledDescriptionId}`
     : targetDescriptionId;
   const editActionDescriptionIds = editPending
     ? `${mutableActionDescriptionIds} ${editPendingDescriptionId}`
     : mutableActionDescriptionIds;
+  const menuId = `message-more-actions-${message.id}`;
+
+  function menuItems(): HTMLButtonElement[] {
+    return Array.from(
+      menuRef.current?.querySelectorAll<HTMLButtonElement>('[role="menuitem"]:not(:disabled)') ?? []
+    );
+  }
+
+  function closeMenu({ restoreFocus = false } = {}) {
+    setMenuOpen(false);
+    setMenuPlacement(null);
+    if (restoreFocus) {
+      window.setTimeout(() => triggerRef.current?.focus({ preventScroll: true }), 0);
+    }
+  }
+
+  function openMenu(initialFocus: "first" | "last" = "first") {
+    initialMenuFocusRef.current = initialFocus;
+    setMenuPlacement(null);
+    setMenuOpen(true);
+  }
+
+  function runMenuAction(action: () => void) {
+    triggerRef.current?.focus({ preventScroll: true });
+    setMenuOpen(false);
+    setMenuPlacement(null);
+    window.setTimeout(action, 0);
+  }
+
+  function moveFocusPastTrigger(backward: boolean) {
+    const trigger = triggerRef.current;
+    const menu = menuRef.current;
+    if (!trigger) return;
+
+    const candidates = Array.from(document.querySelectorAll<HTMLElement>([
+      "a[href]",
+      "button:not([disabled])",
+      "input:not([disabled])",
+      "select:not([disabled])",
+      "textarea:not([disabled])",
+      '[tabindex]:not([tabindex="-1"])'
+    ].join(","))).filter((element) => {
+      if (menu?.contains(element) || element.closest('[hidden], [inert], [aria-hidden="true"]')) {
+        return false;
+      }
+      const style = window.getComputedStyle(element);
+      return style.display !== "none" && style.visibility !== "hidden";
+    });
+    const triggerIndex = candidates.indexOf(trigger);
+    const target = triggerIndex < 0
+      ? trigger
+      : candidates[triggerIndex + (backward ? -1 : 1)] ?? trigger;
+
+    setMenuOpen(false);
+    setMenuPlacement(null);
+    window.setTimeout(() => target.focus({ preventScroll: true }), 0);
+  }
+
+  useLayoutEffect(() => {
+    if (!menuVisible) {
+      return;
+    }
+
+    function placeMenu() {
+      const menu = menuRef.current;
+      const trigger = triggerRef.current;
+      if (!menu || !trigger) {
+        return;
+      }
+
+      const viewportWidth = document.documentElement.clientWidth || window.innerWidth;
+      const viewportHeight = document.documentElement.clientHeight || window.innerHeight;
+      const triggerRect = trigger.getBoundingClientRect();
+      const menuRect = menu.getBoundingClientRect();
+      const menuWidth = Math.min(
+        menuRect.width || 208,
+        Math.max(0, viewportWidth - messageMenuViewportGutter * 2)
+      );
+      const menuHeight = Math.min(
+        menuRect.height || 112,
+        Math.max(0, viewportHeight - messageMenuViewportGutter * 2)
+      );
+      const availableAbove = triggerRect.top - messageMenuTriggerGap - messageMenuViewportGutter;
+      const availableBelow = viewportHeight - triggerRect.bottom - messageMenuTriggerGap - messageMenuViewportGutter;
+      const side = availableBelow >= menuHeight || availableBelow >= availableAbove ? "below" : "above";
+      const idealTop = side === "above"
+        ? triggerRect.top - messageMenuTriggerGap - menuHeight
+        : triggerRect.bottom + messageMenuTriggerGap;
+      const maximumTop = Math.max(messageMenuViewportGutter, viewportHeight - menuHeight - messageMenuViewportGutter);
+      const top = Math.min(Math.max(messageMenuViewportGutter, idealTop), maximumTop);
+      const maximumLeft = Math.max(messageMenuViewportGutter, viewportWidth - menuWidth - messageMenuViewportGutter);
+      const left = Math.min(
+        Math.max(messageMenuViewportGutter, triggerRect.right - menuWidth),
+        maximumLeft
+      );
+
+      setMenuPlacement((current) => (
+        current?.left === left && current.side === side && current.top === top
+          ? current
+          : { left, side, top }
+      ));
+    }
+
+    placeMenu();
+    window.addEventListener("resize", placeMenu);
+    window.addEventListener("scroll", placeMenu, true);
+    return () => {
+      window.removeEventListener("resize", placeMenu);
+      window.removeEventListener("scroll", placeMenu, true);
+    };
+  }, [menuVisible]);
+
+  useEffect(() => {
+    if (!menuVisible) {
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      const items = menuItems();
+      const item = initialMenuFocusRef.current === "last" ? items.at(-1) : items[0];
+      initialMenuFocusRef.current = "first";
+      item?.focus({ preventScroll: true });
+    }, 0);
+
+    function handlePointerDown(event: PointerEvent) {
+      const target = event.target as Node;
+      if (
+        !boundaryRef.current?.contains(target) &&
+        !menuRef.current?.contains(target)
+      ) {
+        closeMenu();
+      }
+    }
+
+    window.addEventListener("pointerdown", handlePointerDown);
+    return () => {
+      window.clearTimeout(timer);
+      window.removeEventListener("pointerdown", handlePointerDown);
+    };
+  }, [menuVisible]);
+
+  useEffect(() => {
+    if (!streaming || !menuOpen) {
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      setMenuOpen(false);
+      setMenuPlacement(null);
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [menuOpen, streaming]);
+
+  function handleMenuKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      closeMenu({ restoreFocus: true });
+      return;
+    }
+
+    if (event.key === "Tab") {
+      event.preventDefault();
+      moveFocusPastTrigger(event.shiftKey);
+      return;
+    }
+
+    const items = menuItems();
+    if (items.length === 0) {
+      return;
+    }
+
+    const currentIndex = items.indexOf(document.activeElement as HTMLButtonElement);
+    let nextIndex: number | null = null;
+    if (event.key === "ArrowDown") {
+      nextIndex = currentIndex < 0 ? 0 : (currentIndex + 1) % items.length;
+    } else if (event.key === "ArrowUp") {
+      nextIndex = currentIndex < 0 ? items.length - 1 : (currentIndex - 1 + items.length) % items.length;
+    } else if (event.key === "Home") {
+      nextIndex = 0;
+    } else if (event.key === "End") {
+      nextIndex = items.length - 1;
+    }
+
+    if (nextIndex !== null) {
+      event.preventDefault();
+      items[nextIndex]?.focus({ preventScroll: true });
+    }
+  }
 
   return (
     <>
@@ -122,20 +344,21 @@ function TurnActions({
         <button
           aria-label="Regenerate message"
           aria-describedby={mutableActionDescriptionIds}
-          className={`${ghostActionClass} hover:text-proof`}
+          className={`${iconActionClass} hover:text-proof`}
           disabled={streaming}
           title={streaming ? "Regenerate is disabled while a response is streaming" : "Regenerate message"}
           type="button"
           onClick={() => onRegenerateMessage(message.id)}
         >
           <RefreshCw className="size-3.5" aria-hidden="true" />
+          <span className="sr-only">Regenerate</span>
         </button>
       ) : null}
       {message.role === "user" || message.role === "assistant" ? (
         <button
           aria-label="Edit message"
           aria-describedby={editActionDescriptionIds}
-          className={`${ghostActionClass} hover:text-proof`}
+          className={`${iconActionClass} hover:text-proof`}
           disabled={streaming || editPending}
           title={
             streaming
@@ -148,40 +371,95 @@ function TurnActions({
           onClick={() => onEditMessage(message)}
         >
           <Pencil className="size-3.5" aria-hidden="true" />
+          <span className="sr-only">Edit</span>
         </button>
       ) : null}
       <button
         aria-label="Copy message"
         aria-describedby={targetDescriptionId}
-        className={`${ghostActionClass} hover:text-proof`}
+        className={`${iconActionClass} hover:text-proof`}
         title="Copy message"
         type="button"
         onClick={() => onCopyMessage(message)}
       >
         <Copy className="size-3.5" aria-hidden="true" />
+        <span className="sr-only">Copy</span>
       </button>
-      <button
-        aria-label="Delete message"
-        aria-describedby={mutableActionDescriptionIds}
-        className={`${ghostActionClass} hover:text-critical`}
-        disabled={streaming}
-        title={streaming ? "Delete is disabled while a response is streaming" : "Delete message"}
-        type="button"
-        onClick={() => onDeleteMessage(message.id)}
-      >
-        <Trash2 className="size-3.5" aria-hidden="true" />
-      </button>
-      <button
-        aria-label="Branch from here"
-        aria-describedby={mutableActionDescriptionIds}
-        className={`${ghostActionClass} hover:text-proof`}
-        disabled={streaming}
-        title={streaming ? "Branching is disabled while a response is streaming" : "Branch from here"}
-        type="button"
-        onClick={() => onBranchFromMessage(message.id)}
-      >
-        <GitBranch className="size-3.5" aria-hidden="true" />
-      </button>
+      <div className="relative" ref={boundaryRef}>
+        <button
+          ref={triggerRef}
+          aria-controls={menuVisible ? menuId : undefined}
+          aria-expanded={menuVisible}
+          aria-haspopup="menu"
+          aria-label="More message actions"
+          aria-describedby={streaming ? `${targetDescriptionId} ${disabledDescriptionId}` : targetDescriptionId}
+          className={commonActionClass}
+          disabled={streaming}
+          title={streaming ? "More actions are unavailable while a response is streaming" : "More message actions"}
+          type="button"
+          onClick={() => (menuOpen ? closeMenu({ restoreFocus: true }) : openMenu())}
+          onKeyDown={(event) => {
+            if (event.key === "ArrowDown") {
+              event.preventDefault();
+              openMenu("first");
+            } else if (event.key === "ArrowUp") {
+              event.preventDefault();
+              openMenu("last");
+            } else if (event.key === "Escape" && menuOpen) {
+              event.preventDefault();
+              closeMenu({ restoreFocus: true });
+            }
+          }}
+        >
+          <MoreHorizontal className="size-3.5" aria-hidden="true" />
+          <span>More</span>
+        </button>
+
+        {menuVisible && typeof document !== "undefined" ? createPortal(
+          <div
+            ref={menuRef}
+            className="pop-enter fixed z-50 max-h-[calc(100dvh-1rem)] w-52 max-w-[calc(100vw-1rem)] overflow-y-auto overscroll-contain rounded-panel border border-trace-subtle bg-overlay-surface p-2 shadow-overlay"
+            data-placement={menuPlacement?.side}
+            id={menuId}
+            role="menu"
+            aria-label="More message actions"
+            style={{
+              left: menuPlacement?.left ?? 0,
+              top: menuPlacement?.top ?? 0,
+              visibility: menuPlacement ? "visible" : "hidden"
+            }}
+            onKeyDown={handleMenuKeyDown}
+          >
+            <button
+              aria-label="Delete message"
+              aria-describedby={mutableActionDescriptionIds}
+              className={`${messageMenuItemClass} text-critical hover:bg-critical/10 hover:text-critical focus-visible:bg-critical/10 focus-visible:text-critical`}
+              disabled={streaming}
+              title={streaming ? "Delete is disabled while a response is streaming" : "Delete message"}
+              type="button"
+              role="menuitem"
+              onClick={() => runMenuAction(() => onDeleteMessage(message.id))}
+            >
+              <Trash2 className="size-4" aria-hidden="true" />
+              Delete
+            </button>
+            <button
+              aria-label="Branch from here"
+              aria-describedby={mutableActionDescriptionIds}
+              className={messageMenuItemClass}
+              disabled={streaming}
+              title={streaming ? "Branching is disabled while a response is streaming" : "Branch from here"}
+              type="button"
+              role="menuitem"
+              onClick={() => runMenuAction(() => onBranchFromMessage(message.id))}
+            >
+              <GitBranch className="size-4 text-ink-muted" aria-hidden="true" />
+              Branch from here
+            </button>
+          </div>,
+          document.body
+        ) : null}
+      </div>
     </>
   );
 }
@@ -386,7 +664,7 @@ function ThreadMessageRowComponent({
 
   return (
     <article
-      className="group/turn px-4 pb-8 pt-2 sm:px-6"
+      className="group/turn px-4 pb-8 pt-2 sm:px-6 [@media(max-height:32rem)]:!pb-2"
       data-message-id={message.id}
       data-role="assistant"
       data-status={message.status}

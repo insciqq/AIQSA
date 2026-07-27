@@ -42,7 +42,7 @@ Separate resource availability from lifecycle actions and make Enabled and Disab
 - Separated ordinary-user MCP availability from `Enable` / `Disable` / setup / OAuth actions, ordered personal setup before OAuth when both are required, blocked repeated OAuth submission, kept operational readiness visible as a separate axis, and exposed the aggregate status plus partial-readiness fact in the composer.
 - Corrected provider Quick Setup, connection, credential, and model scan points; removed the duplicate connection Enable action; surfaced credential restoration directly; and retained explicit saved-versus-unsaved lifecycle truth for run-profile edits.
 - Corrected SMTP Runtime so an absent active snapshot is `Not configured`, removed the redundant detail-footer runtime chip, and kept real active Enabled/Disabled separate from its action.
-- Updated ADR 0033, the ADR index, `FRONTEND.md`, `DESIGN_SYSTEM.md`, `TESTING.md`, and `REVAMP.md` to describe the implemented product-wide contract.
+- Updated ADR 0033, the ADR index, `FRONTEND.md`, `DESIGN_SYSTEM.md`, `TESTING.md`, and the then-current UI assessment to describe the implemented product-wide contract.
 - Verification:
   - `docker compose -f docker-compose.dev.yml exec -T app npm run check` — passed: 305 files / 2514 tests, with 2 files / 13 tests intentionally skipped.
   - `docker compose -f docker-compose.dev.yml exec -T -e PLAYWRIGHT_REUSE_SERVER=1 app npx playwright test tests/e2e/mcp-ui.spec.ts tests/e2e/provider-admin-ui.spec.ts tests/e2e/admin-email-ui.spec.ts tests/e2e/auth-admin.spec.ts --project=chromium` — 18 passed.

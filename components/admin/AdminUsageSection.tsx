@@ -7,7 +7,8 @@ import {
 import type {
   AdminCatalog,
   AdminUsageDashboard,
-  AdminUsageProviderModelRecord
+  AdminUsageProviderModelRecord,
+  AdminUsageTokenTotals
 } from "@/lib/contracts/admin";
 
 type AdminUsageCatalog = Pick<AdminCatalog, "models" | "providers">;
@@ -25,10 +26,21 @@ function countLabel(count: number, singular: string, plural = `${singular}s`): s
   return `${formatNumber(count)} ${count === 1 ? singular : plural}`;
 }
 
+function hasReportedUsage(usage: AdminUsageTokenTotals): boolean {
+  return usage.lastUsedAt !== null || usage.runCount > 0 || [
+    usage.cachedInputTokens,
+    usage.cacheWriteInputTokens,
+    usage.inputTokens,
+    usage.outputTokens,
+    usage.reasoningTokens,
+    usage.totalTokens
+  ].some((value) => value > 0);
+}
+
 function UsageFact({ label, value }: Readonly<{ label: string; value: string }>) {
   return (
     <div className="min-w-0 bg-answer-paper px-3 py-3 sm:px-4">
-      <dt className="text-[11px] font-medium uppercase tracking-[0.08em] text-ink-muted">{label}</dt>
+      <dt className="text-xs font-medium uppercase tracking-[0.08em] text-ink-muted">{label}</dt>
       <dd className="mt-1 break-words font-mono text-sm font-medium tabular-nums text-ink [overflow-wrap:anywhere]">
         {value}
       </dd>
@@ -43,7 +55,7 @@ function MobileUsageFacts({
     <dl className="mt-3 grid min-w-0 grid-cols-2 gap-x-4 gap-y-3">
       {facts.map((fact) => (
         <div className="min-w-0" key={fact.label}>
-          <dt className="text-[10px] font-medium uppercase tracking-[0.08em] text-ink-muted">{fact.label}</dt>
+          <dt className="text-xs font-medium uppercase tracking-[0.08em] text-ink-muted">{fact.label}</dt>
           <dd className="mt-1 break-words font-mono text-xs tabular-nums text-ink-secondary [overflow-wrap:anywhere]">
             {fact.value}
           </dd>
@@ -54,8 +66,8 @@ function MobileUsageFacts({
 }
 
 export function AdminUsageSection({ catalog, usage }: AdminUsageSectionProps) {
-  const usersWithUsage = usage.byUser.filter((user) => user.runCount > 0);
-  const groupsWithUsage = usage.byGroup.filter((group) => group.runCount > 0);
+  const usersWithUsage = usage.byUser.filter(hasReportedUsage);
+  const groupsWithUsage = usage.byGroup.filter(hasReportedUsage);
 
   return (
     <div className="min-w-0 px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
@@ -65,8 +77,8 @@ export function AdminUsageSection({ catalog, usage }: AdminUsageSectionProps) {
       >
         <div className="grid min-w-0 lg:grid-cols-[minmax(15rem,0.78fr)_minmax(0,2.22fr)]">
           <div className="min-w-0 border-b border-trace-subtle py-5 lg:border-b-0 lg:border-r lg:px-1 lg:pr-8">
-            <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-muted">
-              Provider-reported
+            <p className="text-xs font-semibold uppercase tracking-[0.12em] text-ink-muted">
+              Provider-reported · all recorded usage
             </p>
             <p
               className="mt-2 break-words font-mono text-3xl font-semibold tracking-[-0.035em] tabular-nums text-ink [overflow-wrap:anywhere]"
@@ -114,7 +126,7 @@ export function AdminUsageSection({ catalog, usage }: AdminUsageSectionProps) {
                 Current memberships with provider-reported token totals.
               </p>
             </div>
-            <p className="shrink-0 font-mono text-[11px] tabular-nums text-ink-muted">
+            <p className="shrink-0 font-mono text-xs tabular-nums text-ink-muted">
               {countLabel(usage.byGroup.length, "group")}
             </p>
           </div>
@@ -191,7 +203,7 @@ export function AdminUsageSection({ catalog, usage }: AdminUsageSectionProps) {
                 Retained runs with reported usage, ordered by total tokens.
               </p>
             </div>
-            <p className="shrink-0 font-mono text-[11px] tabular-nums text-ink-muted">
+            <p className="shrink-0 font-mono text-xs tabular-nums text-ink-muted">
               {countLabel(usage.byUser.length, "user")}
             </p>
           </div>
@@ -280,7 +292,7 @@ export function AdminUsageSection({ catalog, usage }: AdminUsageSectionProps) {
                               <div className="break-words text-ink-secondary [overflow-wrap:anywhere]">
                                 {usageProviderModelLabel(catalog, topModel)}
                               </div>
-                              <div className="mt-1 font-mono text-[11px] tabular-nums text-ink-muted">
+                              <div className="mt-1 font-mono text-xs tabular-nums text-ink-muted">
                                 {formatNumber(topModel.totalTokens)} tokens
                               </div>
                             </>

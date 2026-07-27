@@ -437,7 +437,42 @@ function mockDashboardFetch(value: unknown = dashboard) {
   return vi.spyOn(globalThis, "fetch").mockResolvedValue(dashboardResponse(value));
 }
 
-function mockAdminFetch() {
+function runProfileCatalogResponse(overrides: Record<string, string> = {}) {
+  const model = {
+    connectionEnabled: true,
+    defaultReasoningEffort: "medium",
+    defaultReasoningMode: "standard",
+    displayName: "GPT 5.5",
+    id: "provider-model-1",
+    modelEnabled: true,
+    providerDisplayName: "OpenAI",
+    reasoningEfforts: ["medium", "high"],
+    reasoningModes: ["standard"],
+    selectable: true
+  };
+  return {
+    models: [model],
+    profiles: ([
+      ["fast", "Fast", "Fast questions"],
+      ["balanced", "Balanced", "Everyday questions"],
+      ["deep", "Deep", "Deep questions"]
+    ] as const).map(([id, label, description], index) => ({
+      description: overrides[id] ?? description,
+      enabled: true,
+      id,
+      label,
+      providerModelId: model.id,
+      reasoningEffort: id === "deep" ? "high" : "medium",
+      reasoningMode: "standard",
+      updatedAt: "2026-07-26T00:00:00.000Z",
+      version: index + 1
+    }))
+  };
+}
+
+function mockAdminFetch(options: {
+  saveRunProfiles?: (body: Record<string, unknown>) => Promise<Response>;
+} = {}) {
   const posts: Record<string, unknown>[] = [];
   const fetch = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
@@ -458,6 +493,24 @@ function mockAdminFetch() {
         ],
         suggestedProvider: null
       });
+    }
+
+    if (url === "/api/admin/run-profiles") {
+      if (init?.method === "PUT" && typeof init.body === "string") {
+        const body = parseRequestRecord(init.body);
+        if (options.saveRunProfiles) {
+          return options.saveRunProfiles(body);
+        }
+        const profileOverrides = Object.fromEntries(
+          Array.isArray(body.profiles)
+            ? body.profiles
+              .filter(isRecord)
+              .map((profile) => [String(profile.id), String(profile.description)])
+            : []
+        );
+        return dashboardResponse(runProfileCatalogResponse(profileOverrides));
+      }
+      return dashboardResponse(runProfileCatalogResponse());
     }
 
     if (url === "/api/admin/action" && init?.body && typeof init.body === "string") {
@@ -542,6 +595,117 @@ describe("AdminPanel", () => {
     expect(screen.getByRole("heading", { name: "Control Center" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Return to chat" })).toHaveAttribute("href", "/");
     await screen.findByTestId("admin-section-providers");
+  });
+
+  it("protects unsaved Run profile edits across section, history, and route navigation", async () => {
+    mockAdminFetch();
+    window.history.replaceState(null, "", "/admin");
+    render(<AdminPanel adminEmail="admin@example.com" adminUserId="admin-1" />);
+
+    await screen.findByTestId("admin-section-providers");
+    expect(screen.getByTestId("admin-console-workspace")).toHaveClass(
+      "grid-rows-[auto_minmax(0,1fr)]"
+    );
+    fireEvent.click(screen.getByRole("tab", { name: "Users" }));
+    await screen.findByTestId("admin-section-users");
+    fireEvent.click(screen.getByRole("tab", { name: "Providers" }));
+    const returnedProviders = await screen.findByTestId("admin-section-providers");
+    fireEvent.click(within(returnedProviders).getByRole("tab", { name: "Run profiles" }));
+    const description = await screen.findByLabelText("Fast description");
+    fireEvent.change(description, { target: { value: "A safer fast profile" } });
+
+    const beforeUnload = new Event("beforeunload", { cancelable: true });
+    window.dispatchEvent(beforeUnload);
+    expect(beforeUnload.defaultPrevented).toBe(true);
+
+    fireEvent.click(screen.getByRole("tab", { name: "Users" }));
+    const sectionConfirmation = await screen.findByTestId(
+      "admin-confirm-discard-run-profile-section-changes"
+    );
+    expect(screen.getByTestId("admin-tab-providers")).toHaveAttribute(
+      "aria-selected",
+      "true"
+    );
+    expect(window.location.search).toBe("");
+    fireEvent.click(within(sectionConfirmation).getByRole("button", { name: "Cancel" }));
+    expect(screen.getByLabelText("Fast description")).toHaveValue("A safer fast profile");
+
+    const modifiedClick = new MouseEvent("click", {
+      bubbles: true,
+      cancelable: true,
+      ctrlKey: true
+    });
+    modifiedClick.preventDefault();
+    screen.getByRole("link", { name: "Return to chat" }).dispatchEvent(modifiedClick);
+    expect(screen.queryByTestId(
+      "admin-confirm-discard-run-profile-return-changes"
+    )).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Fast description")).toHaveValue("A safer fast profile");
+
+    fireEvent.click(screen.getByRole("link", { name: "Return to chat" }));
+    const routeConfirmation = await screen.findByTestId(
+      "admin-confirm-discard-run-profile-return-changes"
+    );
+    expect(routeConfirmation).toHaveTextContent("lost if you return to chat");
+    fireEvent.click(within(routeConfirmation).getByRole("button", { name: "Cancel" }));
+
+    act(() => window.history.back());
+    const historyConfirmation = await screen.findByTestId(
+      "admin-confirm-discard-run-profile-section-changes"
+    );
+    expect(window.location.search).toBe("");
+    fireEvent.click(within(historyConfirmation).getByRole("button", {
+      name: "Confirm discard and leave"
+    }));
+
+    await screen.findByTestId("admin-section-users");
+    expect(screen.getByRole("tab", { name: "Users" })).toHaveAttribute("aria-selected", "true");
+    await waitFor(() => {
+      const afterLeave = new Event("beforeunload", { cancelable: true });
+      window.dispatchEvent(afterLeave);
+      expect(afterLeave.defaultPrevented).toBe(false);
+    });
+  });
+
+  it("pauses Control Center navigation and dashboard refresh while Run profiles save", async () => {
+    const save = deferred<Response>();
+    mockAdminFetch({ saveRunProfiles: () => save.promise });
+    window.history.replaceState(null, "", "/admin");
+    render(<AdminPanel adminEmail="admin@example.com" adminUserId="admin-1" />);
+
+    const providers = await screen.findByTestId("admin-section-providers");
+    fireEvent.click(within(providers).getByRole("tab", { name: "Run profiles" }));
+    fireEvent.change(await screen.findByLabelText("Fast description"), {
+      target: { value: "Saved fast profile" }
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save profiles" }));
+
+    await waitFor(() => expect(screen.getByText("Saving changes…")).toBeInTheDocument());
+    expect(screen.getByRole("tab", { name: "Users" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "All sections" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Refresh Control Center dashboard" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Refresh Control Center dashboard" })).toHaveTextContent(
+      "Refresh dashboard"
+    );
+    expect(screen.getByRole("link", { name: "Return to chat" })).toHaveAttribute(
+      "aria-disabled",
+      "true"
+    );
+    fireEvent.click(screen.getByRole("tab", { name: "Users" }));
+    expect(screen.getByRole("tab", { name: "Providers" })).toHaveAttribute(
+      "aria-selected",
+      "true"
+    );
+
+    await act(async () => {
+      save.resolve(dashboardResponse(runProfileCatalogResponse({ fast: "Saved fast profile" })));
+      await save.promise;
+    });
+
+    await waitFor(() => expect(screen.getByRole("tab", { name: "Users" })).toBeEnabled());
+    expect(screen.getByRole("button", { name: "All sections" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Refresh Control Center dashboard" })).toBeEnabled();
+    expect(screen.getByText("Run profiles saved for future messages.")).toBeInTheDocument();
   });
 
   it("opens the database-backed Email delivery section from shared navigation", async () => {
@@ -857,7 +1021,7 @@ describe("AdminPanel", () => {
     fireEvent.change(screen.getByLabelText("Value"), { target: { value: "allowed-2@example.com" } });
     fireEvent.click(screen.getByRole("checkbox", { name: "reviewers" }));
 
-    fireEvent.click(screen.getByRole("button", { name: "Refresh Control Center" }));
+    fireEvent.click(screen.getByRole("button", { name: "Refresh Control Center dashboard" }));
     await waitFor(() => expect(screen.queryByRole("checkbox", { name: "reviewers" })).not.toBeInTheDocument());
 
     fireEvent.click(screen.getByRole("button", { name: "Save rule" }));
@@ -870,7 +1034,9 @@ describe("AdminPanel", () => {
       })
     );
 
-    fireEvent.click(screen.getByRole("tab", { name: "Invites" }));
+    const invitesTab = screen.getByRole("tab", { name: "Invites" });
+    await waitFor(() => expect(invitesTab).toBeEnabled());
+    fireEvent.click(invitesTab);
     expect(screen.getByLabelText("Email")).toHaveValue("draft@example.com");
     expect(screen.queryByRole("checkbox", { name: "reviewers" })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Create invite" }));
@@ -883,7 +1049,9 @@ describe("AdminPanel", () => {
       })
     );
 
-    fireEvent.click(screen.getByRole("tab", { name: "Users" }));
+    const usersTab = screen.getByRole("tab", { name: "Users" });
+    await waitFor(() => expect(usersTab).toBeEnabled());
+    fireEvent.click(usersTab);
     expect(screen.queryByRole("checkbox", { name: "reviewers" })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Approve user" }));
     await waitFor(() =>
@@ -945,9 +1113,13 @@ describe("AdminPanel", () => {
     expect(sort).toHaveValue("user");
     fireEvent.change(sort, { target: { value: "status" } });
     expect(sort).toHaveValue("status");
-    const direction = within(users).getByRole("button", { name: "Asc" });
+    const direction = within(users).getByRole("button", {
+      name: "Change sort direction to descending"
+    });
     fireEvent.click(direction);
-    expect(within(users).getByRole("button", { name: "Desc" })).toBeInTheDocument();
+    expect(within(users).getByRole("button", {
+      name: "Change sort direction to ascending"
+    })).toHaveTextContent("Descending");
 
     fireEvent.click(screen.getByRole("tab", { name: "Usage" }));
     expectBoundedComparisonTable("Group usage table");
@@ -1694,7 +1866,9 @@ describe("AdminPanel", () => {
       });
     });
 
-    fireEvent.click(screen.getByRole("tab", { name: "Access & groups" }));
+    const accessTab = screen.getByRole("tab", { name: "Access & groups" });
+    await waitFor(() => expect(accessTab).toBeEnabled());
+    fireEvent.click(accessTab);
     const access = await screen.findByTestId("admin-section-access");
     fireEvent.change(within(access).getByLabelText("Search access groups"), {
       target: {
@@ -1718,7 +1892,9 @@ describe("AdminPanel", () => {
       });
     });
 
-    fireEvent.click(screen.getByRole("tab", { name: "Invites" }));
+    const invitesTab = screen.getByRole("tab", { name: "Invites" });
+    await waitFor(() => expect(invitesTab).toBeEnabled());
+    fireEvent.click(invitesTab);
     const invites = await screen.findByTestId("admin-section-invites");
     const revokedRow = findResourceListItem(invites, "revoked@example.com");
     fireEvent.click(within(revokedRow).getByRole("button", { name: "Details" }));

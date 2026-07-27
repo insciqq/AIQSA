@@ -1,4 +1,8 @@
-import { Composer, type ComposerAttachment } from "@/components/chat/Composer";
+import {
+  Composer,
+  type ComposerAttachment,
+  type ComposerHintTone
+} from "@/components/chat/Composer";
 import { attachmentPolicyForModel } from "@/components/app-shell/attachmentCapabilities";
 import { ComposerControls } from "@/components/app-shell/ComposerControls";
 import { McpComposerSummary } from "@/components/app-shell/McpComposerSummary";
@@ -74,9 +78,9 @@ export type MainThreadPaneProps = {
   maxOutputTokens: string;
   notificationSoundEnabled: boolean;
   operationError: string | null;
-  openMcpSettings?(): void;
+  openMcpSettings(): void;
+  openPromptLibrary(): void;
   openRunDetails(): void;
-  openSettings(): void;
   pipeline?: PipelineSnapshot | null;
   reasoningEffort: string;
   reasoningMode: string;
@@ -157,8 +161,8 @@ export function MainThreadPane({
   notificationSoundEnabled,
   operationError,
   openMcpSettings,
+  openPromptLibrary,
   openRunDetails,
-  openSettings,
   pipeline = null,
   reasoningEffort,
   reasoningMode,
@@ -252,6 +256,13 @@ export function MainThreadPane({
             : activeChatDetailError
               ? "Conversation unavailable. Retry loading before sending."
               : composerDisabledHint;
+  const activeDisabledHintTone: ComposerHintTone =
+    creatingChat ||
+    (!catalog && !catalogError) ||
+    (!workspaceReady && !workspaceError) ||
+    activeChatDetailLoading
+      ? "busy"
+      : "caution";
 
   const composerUnavailable =
     creatingChat ||
@@ -432,10 +443,10 @@ export function MainThreadPane({
               ) : (
                 <div className="mx-auto w-full max-w-reading sm:text-center">
                   <h2 className="text-2xl font-semibold leading-8 tracking-[-0.025em] text-ink sm:text-3xl sm:leading-9">
-                    What do you want to investigate?
+                    What are you investigating?
                   </h2>
                   <p className="mt-2 text-sm leading-6 text-ink-secondary">
-                    Ask a question. Search, tools, and every provider run stays inspectable.
+                    Ask a question. Sources and run evidence stay inspectable.
                   </p>
                 </div>
               )}
@@ -556,8 +567,7 @@ export function MainThreadPane({
           attachmentPolicy={attachmentPolicy}
           attachments={attachments}
           controls={
-            <>
-              <ComposerControls
+            <ComposerControls
               backgroundMode={backgroundMode}
               catalog={catalog}
               catalogUnavailable={Boolean(catalogError)}
@@ -584,7 +594,7 @@ export function MainThreadPane({
               onBackgroundModeChange={changeBackgroundMode}
               onMaxOutputTokensChange={changeMaxOutputTokens}
               onMaxOutputTokensCommit={flushPendingModelControlDefaults}
-              onOpenPromptSettings={() => openSettings()}
+              onOpenPromptLibrary={openPromptLibrary}
               onPromptChange={(promptId) => selectPrompt(promptId)}
               onReasoningEffortChange={changeReasoningEffort}
               onReasoningModeChange={changeReasoningMode}
@@ -602,8 +612,6 @@ export function MainThreadPane({
               temperature={temperature}
               usageStats={composerUsageStats}
             />
-              <McpComposerSummary onOpenSettings={openMcpSettings ?? openSettings} />
-            </>
           }
           disabled={composerUnavailable}
           disabledHint={activeDisabledHint}
@@ -614,6 +622,7 @@ export function MainThreadPane({
             !activeChatDetailLoading &&
             !activeChatDetailError
           }
+          disabledHintTone={activeDisabledHintTone}
           editing={Boolean(editingMessageId)}
           editPending={editingMessagePending}
           operationError={operationError}
@@ -630,6 +639,7 @@ export function MainThreadPane({
           sendDisabled={activeChatStreaming || uploading || creatingChat || editingMessagePending}
           stopDisabled={!currentRunId}
           streaming={activeChatStreaming}
+          tools={<McpComposerSummary onOpenSettings={openMcpSettings} />}
           uploading={uploading}
           contextLine={composerContextLine}
           usageStats={composerUsageStats}

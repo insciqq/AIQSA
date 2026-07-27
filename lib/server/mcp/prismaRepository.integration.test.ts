@@ -14,7 +14,10 @@ import { createPrismaMcpRuntimeRepository } from "./runtimeRepository";
 const enabled = process.env.AIQSA_MCP_INTEGRATION_TEST === "1";
 const integration = enabled ? describe : describe.skip;
 const database = new PrismaClient();
-const key = Buffer.alloc(32, 0x35);
+const configuredKey = process.env.AIQSA_ENCRYPTION_KEY
+  ? Buffer.from(process.env.AIQSA_ENCRYPTION_KEY, "base64")
+  : null;
+const key = configuredKey?.length === 32 ? configuredKey : Buffer.alloc(32, 0x35);
 const suffix = randomUUID();
 
 const draft: McpDraftConfiguration = {
@@ -86,19 +89,39 @@ integration("Prisma MCP repository", () => {
   };
   const repository = createPrismaMcpRepository({ draftValidator, encryptionKey: () => key, prisma: database });
   let groupId = "";
+  let adminId = "";
+  let secondAdminId = "";
   let serverId = "";
   const serverIds = new Set<string>();
   let userId = "";
 
   beforeAll(async () => {
-    const [user, group] = await database.$transaction([
+    const [user, group, admin, secondAdmin] = await database.$transaction([
       database.user.create({
         data: { displayName: "MCP integration user", email: `mcp-${suffix}@example.test`, status: "active" }
       }),
-      database.group.create({ data: { name: `MCP integration group ${suffix}` } })
+      database.group.create({ data: { name: `MCP integration group ${suffix}` } }),
+      database.user.create({
+        data: {
+          displayName: "MCP activation admin",
+          email: `mcp-admin-${suffix}@example.test`,
+          role: "admin",
+          status: "active"
+        }
+      }),
+      database.user.create({
+        data: {
+          displayName: "MCP second activation admin",
+          email: `mcp-admin-2-${suffix}@example.test`,
+          role: "admin",
+          status: "active"
+        }
+      })
     ]);
     userId = user.id;
     groupId = group.id;
+    adminId = admin.id;
+    secondAdminId = secondAdmin.id;
     await database.userGroup.create({ data: { groupId, userId } });
   });
 
@@ -111,6 +134,9 @@ integration("Prisma MCP repository", () => {
       await database.mcpServer.deleteMany({ where: { id: { in: ids } } });
     }
     if (userId) await database.user.deleteMany({ where: { id: userId } });
+    if (adminId || secondAdminId) {
+      await database.user.deleteMany({ where: { id: { in: [adminId, secondAdminId].filter(Boolean) } } });
+    }
     if (groupId) await database.group.deleteMany({ where: { id: groupId } });
     await database.$disconnect();
   });
@@ -507,6 +533,205 @@ integration("Prisma MCP repository", () => {
       where: { userId_serverId: { serverId, userId } }
     })).resolves.toMatchObject({ enabled: false });
     await expect(repository.listUserServers(userId)).resolves.toEqual([]);
+  });
+
+  it("atomically queues, exclusively claims, reclaims, fences, and publishes an activation", async () => {
+    const asyncDraft: McpDraftConfiguration = {
+      ...draft,
+      slots: draft.slots.filter((slot) => slot.slotKey !== "workspace-key")
+    };
+    const created = await repository.createServer({
+      activate: true,
+      description: "Async activation server",
+      draft: asyncDraft,
+      name: "Async activation MCP",
+      sharedValues: { "api-key": "async-shared-secret", visibility: "team" },
+      validationUserId: adminId
+    });
+    expect(created).toMatchObject({
+      kind: "ok",
+      value: {
+        activation: { stage: "queued" },
+        activeRevision: null,
+        enabled: false
+      }
+    });
+    if (created.kind !== "ok" || !created.value.activation) return;
+    const asyncServerId = created.value.id;
+    serverIds.add(asyncServerId);
+    const activationId = created.value.activation.id;
+
+    const idempotent = await repository.requestActivation({
+      serverId: asyncServerId,
+      validationUserId: secondAdminId
+    });
+    expect(idempotent).toMatchObject({
+      kind: "ok",
+      value: { activation: { id: activationId, stage: "queued" } }
+    });
+
+    const firstNow = new Date("2026-07-27T18:00:00.000Z");
+    const firstClaim = await repository.claimActivation({
+      now: firstNow,
+      staleBefore: new Date(firstNow.getTime() - 60_000)
+    });
+    expect(firstClaim).toMatchObject({
+      id: activationId,
+      serverId: asyncServerId,
+      validationUserId: adminId,
+      values: {
+        "api-key": "async-shared-secret",
+        visibility: "team"
+      }
+    });
+    if (!firstClaim) return;
+    await expect(repository.heartbeatActivation({
+      id: firstClaim.id,
+      leaseId: firstClaim.leaseId,
+      now: new Date(firstNow.getTime() + 1_000)
+    })).resolves.toBe(true);
+    await expect(repository.claimActivation({
+      now: new Date(firstNow.getTime() + 2_000),
+      staleBefore: new Date(firstNow.getTime() - 58_000)
+    })).resolves.toBeNull();
+
+    await database.mcpActivationJob.update({
+      data: { updatedAt: new Date(firstNow.getTime() - 120_000) },
+      where: { id: activationId }
+    });
+    const reclaimed = await repository.claimActivation({
+      now: new Date(firstNow.getTime() + 3_000),
+      staleBefore: new Date(firstNow.getTime() - 60_000)
+    });
+    expect(reclaimed).toMatchObject({ id: activationId, serverId: asyncServerId });
+    if (!reclaimed) return;
+    expect(reclaimed.leaseId).not.toBe(firstClaim.leaseId);
+    expect(reclaimed.workloadToken).not.toBe(firstClaim.workloadToken);
+    await expect(repository.heartbeatActivation({
+      id: firstClaim.id,
+      leaseId: firstClaim.leaseId,
+      now: new Date(firstNow.getTime() + 4_000)
+    })).resolves.toBe(false);
+    await expect(repository.advanceActivation({
+      id: reclaimed.id,
+      leaseId: reclaimed.leaseId,
+      now: new Date(firstNow.getTime() + 4_000),
+      stage: "publishing"
+    })).resolves.toBe(true);
+
+    const published = await repository.publishActivation({
+      claim: reclaimed,
+      now: new Date(firstNow.getTime() + 5_000),
+      publication: {
+        evidence: { protocolVersion: "2025-06-18" },
+        resolvedArtifact: {
+          exactVersion: "1.0.0",
+          imageRef: "toolhivelocal/example-mcp:async-1-0-0",
+          imageReferenceKind: "toolhive_generated_tag",
+          kind: "toolhive_local",
+          materializer: "npx",
+          packageName: "example-mcp",
+          registryArtifactUrl: "https://registry.example.test/example-mcp-1.0.0.tgz",
+          registryIntegrity: "sha512-YWJjZA==",
+          sourceKind: "npm",
+          toolhiveVersion: "v0.40.1"
+        },
+        toolInventory: [{ description: "Create a task", name: "create_task" }]
+      }
+    });
+    expect(published).toEqual({ kind: "published" });
+    const ready = await repository.listAdminServers();
+    expect(ready.find((server) => server.id === asyncServerId)).toMatchObject({
+      activation: { id: activationId, stage: "ready" },
+      activeRevision: { revisionNumber: 1 },
+      enabled: true
+    });
+
+    const retry = await repository.requestActivation({
+      serverId: asyncServerId,
+      validationUserId: adminId
+    });
+    expect(retry).toMatchObject({ kind: "ok", value: { activation: { stage: "queued" } } });
+    if (retry.kind !== "ok" || !retry.value.activation) return;
+    expect(retry.value.activation.id).not.toBe(activationId);
+    const retryClaim = await repository.claimActivation({
+      now: new Date(firstNow.getTime() + 6_000),
+      staleBefore: new Date(firstNow.getTime() - 54_000)
+    });
+    if (!retryClaim) throw new Error("expected retry activation claim");
+    await expect(repository.failActivation({
+      errorCode: "mcp_draft_test_failed",
+      id: retryClaim.id,
+      issues: [{ code: "connection_failed", path: "source" }],
+      leaseId: retryClaim.leaseId,
+      now: new Date(firstNow.getTime() + 7_000)
+    })).resolves.toBe(true);
+    const afterFailure = (await repository.listAdminServers())
+      .find((server) => server.id === asyncServerId);
+    expect(afterFailure).toMatchObject({
+      activation: {
+        errorCode: "mcp_draft_test_failed",
+        issues: [{ code: "connection_failed", path: "source" }],
+        stage: "failed"
+      },
+      activeRevision: { revisionNumber: 1 },
+      enabled: true
+    });
+    const activeRevisionId = afterFailure?.activeRevision?.id;
+
+    await repository.requestActivation({ serverId: asyncServerId, validationUserId: adminId });
+    const sharedConfigClaim = await repository.claimActivation({
+      now: new Date(firstNow.getTime() + 8_000),
+      staleBefore: new Date(firstNow.getTime() - 52_000)
+    });
+    if (!sharedConfigClaim) throw new Error("expected shared-config fence claim");
+    await repository.updateServer({
+      serverId: asyncServerId,
+      sharedValues: { visibility: "private" }
+    });
+    await expect(repository.advanceActivation({
+      id: sharedConfigClaim.id,
+      leaseId: sharedConfigClaim.leaseId,
+      now: new Date(firstNow.getTime() + 9_000),
+      stage: "publishing"
+    })).resolves.toBe(false);
+    await expect(repository.publishActivation({
+      claim: sharedConfigClaim,
+      now: new Date(firstNow.getTime() + 9_000),
+      publication: { evidence: {}, resolvedArtifact: null, toolInventory: [] }
+    })).resolves.toEqual({ kind: "lease_lost" });
+
+    await repository.requestActivation({ serverId: asyncServerId, validationUserId: adminId });
+    const draftClaim = await repository.claimActivation({
+      now: new Date(firstNow.getTime() + 10_000),
+      staleBefore: new Date(firstNow.getTime() - 50_000)
+    });
+    if (!draftClaim) throw new Error("expected draft fence claim");
+    await repository.updateServer({
+      draft: {
+        ...asyncDraft,
+        source: {
+          args: [],
+          kind: "npm",
+          packageName: "example-mcp",
+          versionSelector: "1.1.0"
+        }
+      },
+      serverId: asyncServerId
+    });
+    await expect(repository.publishActivation({
+      claim: draftClaim,
+      now: new Date(firstNow.getTime() + 11_000),
+      publication: { evidence: {}, resolvedArtifact: null, toolInventory: [] }
+    })).resolves.toEqual({ kind: "lease_lost" });
+    await expect(database.mcpServer.findUniqueOrThrow({
+      select: { activeRevisionId: true, activationJob: true, enabled: true },
+      where: { id: asyncServerId }
+    })).resolves.toMatchObject({
+      activationJob: null,
+      activeRevisionId,
+      enabled: true
+    });
   });
 
   it("hides a deleted server immediately, drains an accepted run, then removes its private graph", async () => {

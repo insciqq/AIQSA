@@ -268,10 +268,13 @@ test("anchors explicit mobile sends on the user turn and keeps long answers stab
   await expect
     .poll(() => page.evaluate(() => window.localStorage.getItem("aiqsa.testStreamMode.1")))
     .toBe("true");
-  await expect(details.getByTestId("inspector-event-log")).toContainText("Search artifacts");
-  await expect(details.getByTestId("inspector-event-log")).toContainText("stream progress e2e");
-  await expect(details.getByTestId("inspector-event-log")).toContainText("Warning");
-  await expect(details.getByTestId("inspector-event-log")).toContainText("Skipped malformed stream frame");
+  const eventLog = details.getByTestId("inspector-event-log");
+  const searchEvent = eventLog.getByRole("listitem").filter({ hasText: "Search evidence" });
+  await expect(searchEvent).toContainText("Search evidence");
+  await expect(searchEvent.getByText("Search", { exact: true })).toBeVisible();
+  await expect(eventLog).toContainText("stream progress e2e");
+  await expect(eventLog).toContainText("Warning");
+  await expect(eventLog).toContainText("Skipped malformed stream frame");
   await details.getByRole("button", { name: "Close details" }).click();
   await expect(page.getByTestId("thread-run-warnings")).toContainText("Skipped malformed stream frame");
   await expect(assistantContentWithText(page, "Anchored answer tail marker")).toBeVisible();
@@ -305,7 +308,14 @@ test("anchors explicit mobile sends on the user turn and keeps long answers stab
 test("signs out from the authenticated account menu and clears the session", async ({ page }) => {
   await signIn(page);
 
-  await page.getByRole("button", { name: "Account menu" }).click();
+  const accountTrigger = page.getByRole("button", { name: /Account menu/ });
+  expect(
+    await accountTrigger.evaluate((element) =>
+      Boolean(element.closest('[data-testid="workspace-account-footer"]'))
+    )
+  ).toBe(true);
+  await expect(page.getByTestId("top-rail").locator('button[aria-label^="Account menu for "]')).toHaveCount(0);
+  await accountTrigger.click();
   await expect(page.getByRole("menu", { name: "Account" })).toContainText("operator@aiqsa.local");
   await Promise.all([
     page.waitForURL(/\/login(?:\?|$)/),
@@ -317,7 +327,26 @@ test("signs out from the authenticated account menu and clears the session", asy
   await expect(page).toHaveURL(/\/login(?:\?|$)/);
 });
 
-test("keeps first-load workspace failure owned by one mobile recovery surface until Retry succeeds", async ({ page }) => {
+test("closes Account and restores compact navigation focus across the desktop breakpoint", async ({ page }) => {
+  await page.setViewportSize({ height: 720, width: 1280 });
+  await signIn(page);
+
+  const accountTrigger = page.getByTestId("left-chat-pane").getByRole("button", { name: /Account menu/ });
+  await expect(accountTrigger).toHaveAccessibleName("Account menu for operator@aiqsa.local");
+  await accountTrigger.click();
+  const paletteItem = page.getByRole("menuitem", { name: "Command palette" });
+  await expect(paletteItem).toBeFocused();
+
+  await page.setViewportSize({ height: 720, width: 800 });
+  await expect(page.getByRole("menu", { name: "Account" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Open workspace" })).toBeFocused();
+
+  await page.setViewportSize({ height: 720, width: 1280 });
+  await expect(page.getByRole("menu", { name: "Account" })).toHaveCount(0);
+  await expect(accountTrigger).toBeFocused();
+});
+
+test("offers first-load workspace recovery in both the conversation and mobile workspace surfaces", async ({ page }) => {
   await page.setViewportSize({ height: 844, width: 390 });
   let catalogReads = 0;
   let workspaceReads = 0;
@@ -366,24 +395,24 @@ test("keeps first-load workspace failure owned by one mobile recovery surface un
   await expect(workspace.getByRole("button", { name: "Start new chat" })).toBeDisabled();
   await expect(workspace.getByRole("button", { name: "New folder" })).toBeDisabled();
   await expect(workspace.getByLabel("Search chats")).toBeDisabled();
-  await expect(workspace.getByTestId("left-workspace-unavailable")).toContainText(
-    "Chats unavailable. Use Retry in the conversation pane."
-  );
+  await expect(workspace.getByTestId("left-workspace-unavailable")).toContainText("Chats unavailable.");
+  const workspaceRetry = workspace.getByRole("button", { name: "Retry workspace" });
+  await expect(workspaceRetry).toBeVisible();
   await expect(workspace.getByText("No chats yet", { exact: true })).toHaveCount(0);
-  await workspace.getByRole("button", { name: "Close workspace" }).click();
 
-  await retry.click();
-  await expect(recovery).toHaveCount(0);
-  await expect(composer).toBeEnabled();
-  await expect(directNewChat).toBeEnabled();
+  await workspaceRetry.click();
   await expect.poll(() => workspaceReads).toBe(2);
   expect(catalogReads).toBe(1);
-  await page.getByRole("button", { name: "Open workspace" }).click();
   await expect(workspace.getByRole("button", { name: "Start new chat" })).toBeEnabled();
   await expect(workspace.getByText("No chats yet", { exact: true })).toBeVisible();
+  await workspace.getByRole("button", { name: "Close workspace" }).click();
+  await expect(recovery).toHaveCount(0);
+  await expect(retry).toHaveCount(0);
+  await expect(composer).toBeEnabled();
+  await expect(directNewChat).toBeEnabled();
 });
 
-test("recovers catalog loading while keeping Settings Appearance usable and prompt actions gated", async ({ page }) => {
+test("recovers catalog loading through Prompt library while Settings Appearance remains usable", async ({ page }) => {
   let catalogReads = 0;
   let workspaceReads = 0;
   await page.route("**/api/me/catalog", async (route) => {
@@ -422,26 +451,28 @@ test("recovers catalog loading while keeping Settings Appearance usable and prom
   await expectRunSummary(page, { model: "Models unavailable" });
 
   await runAccountMenuAction(page, "Settings");
-  const settings = page.getByTestId("settings-dialog");
-  const promptRecovery = settings.getByTestId("settings-prompts-catalog-state");
-  await expect(promptRecovery).toContainText("Prompt library didn’t load");
-  await expect(settings.getByLabel("Prompt name")).toHaveCount(0);
-  await expect(settings.getByRole("button", { name: "New prompt" })).toHaveCount(0);
-
-  await settings.getByRole("button", { name: "Appearance" }).click();
+  let settings = page.getByTestId("settings-dialog");
   await expect(settings.getByRole("heading", { name: "Appearance" })).toBeVisible();
+  await expect(settings.getByRole("button", { name: "Prompts" })).toHaveCount(0);
   await settings.getByRole("radio", { name: /^Use Graphite theme/ }).click();
   await expect(page.locator("html")).toHaveAttribute("data-theme", "graphite");
-  await settings.getByRole("button", { name: "Prompts" }).click();
-  await settings.getByRole("button", { name: "Retry loading prompt library" }).click();
+  await settings.getByRole("button", { name: "Close settings" }).click();
 
-  await expect(settings.getByLabel("Prompt name")).toBeVisible();
+  await runAccountMenuAction(page, "Prompt library");
+  const workbench = page.getByTestId("prompt-workbench");
+  const promptRecovery = workbench.getByTestId("prompt-workbench-catalog-state");
+  await expect(promptRecovery).toContainText("Prompt library didn’t load");
+  await expect(workbench.getByLabel("Prompt name")).toHaveCount(0);
+  await expect(workbench.getByRole("button", { name: "New prompt" })).toHaveCount(0);
+  await workbench.getByRole("button", { name: "Retry loading prompt library" }).click();
+
+  await expect(workbench.getByLabel("Prompt name")).toBeVisible();
   await expect(promptRecovery).toHaveCount(0);
   await expect(catalogState).toHaveCount(0);
   await expect.poll(() => catalogReads).toBe(2);
   await expect.poll(() => workspaceReads).toBe(2);
-  await settings.getByRole("button", { name: "Close settings" }).click();
-  await expect(settings).toHaveCount(0);
+  await workbench.getByRole("button", { name: "Back to chat" }).click();
+  await expect(workbench).toHaveCount(0);
   await expect(composer).toBeEnabled();
 });
 
@@ -468,21 +499,32 @@ test("keeps a closed-menu sign-out failure discoverable and lets the user retry"
   });
 
   await signIn(page);
-  const accountTrigger = page.getByRole("button", { name: "Account menu" });
+  await page.getByRole("button", { name: "Open workspace" }).click();
+  const accountWorkspace = page.getByTestId("workspace-pane-mobile");
+  const accountTrigger = accountWorkspace.getByRole("button", { name: /Account menu/ });
   await accountTrigger.click();
-  await page.getByRole("menuitem", { name: "Sign out" }).click();
-  await expect(page.getByRole("menuitem", { name: "Signing out…" })).toBeDisabled();
+  await accountWorkspace.getByRole("menuitem", { name: "Sign out" }).click();
+  await expect(accountWorkspace.getByRole("menuitem", { name: "Signing out…" })).toBeDisabled();
   await accountTrigger.click();
-  await expect(page.getByRole("menu", { name: "Account" })).toHaveCount(0);
+  await expect(accountWorkspace.getByRole("menu", { name: "Account" })).toHaveCount(0);
+  await accountWorkspace.getByRole("button", { name: "Close workspace" }).click();
+  await expect(accountWorkspace).toHaveCount(0);
   releaseFailure();
 
   await expect(page.getByRole("alert").filter({ hasText: "Sign out failed" })).toContainText(
     "Open Account to retry."
   );
+  const workspaceTrigger = page.getByRole("button", { name: "Open workspace" });
+  await expect(page.getByTestId("workspace-account-attention")).toBeVisible();
+  await expect(workspaceTrigger).toHaveAttribute(
+    "aria-describedby",
+    "workspace-account-attention-description"
+  );
+  await workspaceTrigger.click();
   await expect(page.getByTestId("account-error-cue")).toBeVisible();
-  await expect(accountTrigger).toHaveAttribute("aria-describedby", "account-sign-out-error-description");
+  await expect(accountTrigger).toHaveAttribute("aria-describedby", "mobile-account-sign-out-error-description");
   await accountTrigger.click();
-  const accountMenu = page.getByRole("menu", { name: "Account" });
+  const accountMenu = accountWorkspace.getByRole("menu", { name: "Account" });
   await expect(accountMenu).toContainText("Could not sign out. Try again. (logout_failed)");
   const retrySignOut = accountMenu.getByRole("menuitem", { name: "Sign out" });
   await expect(retrySignOut).toBeEnabled();
@@ -501,7 +543,33 @@ test("keeps a closed-menu sign-out failure discoverable and lets the user retry"
 
 test("verifies provider controls, prompt preview, Gemini preview, and hidden unavailable providers", async ({ page }) => {
   let settingsPatchCount = 0;
-  await installMatrixCatalogFixture(page, undefined, {
+  const providerControlsChat = {
+    activeLeafMessageId: "assistant-provider-controls",
+    createdAt: "2026-06-10T12:00:00.000Z",
+    defaultModelId: "gpt-5.5",
+    defaultPromptPresetId: "prompt-helpful",
+    defaultProvider: "openai",
+    folderId: null,
+    id: "chat-provider-controls",
+    messageCount: 2,
+    messages: [
+      scrollMessage("user-provider-controls", "user", "Provider controls question", null),
+      scrollMessage(
+        "assistant-provider-controls",
+        "assistant",
+        "Provider controls answer",
+        "user-provider-controls"
+      )
+    ],
+    pinned: false,
+    title: "Provider controls chat",
+    updatedAt: "2026-06-10T12:00:02.000Z",
+    usageStats: null
+  };
+  await page.addInitScript(() =>
+    window.localStorage.setItem("aiqsa.activeChatId", "chat-provider-controls")
+  );
+  await installMatrixCatalogFixture(page, { chats: [providerControlsChat], folders: [] }, {
     onSettingsPatch: () => {
       settingsPatchCount += 1;
     }
@@ -693,7 +761,7 @@ test("keeps searchable pickers and command palette keyboard-safe in the narrow s
   await expectNoHorizontalOverflow(page);
 });
 
-test("keeps Settings prompt and Appearance workflows safe in the narrow sheet layout", async ({ page }) => {
+test("keeps standalone Prompt library and Settings Appearance safe in the narrow sheet layout", async ({ page }) => {
   await page.setViewportSize({ height: 844, width: 390 });
   const researchPrompt = {
     developerPrompt: null,
@@ -724,79 +792,99 @@ test("keeps Settings prompt and Appearance workflows safe in the narrow sheet la
   await signIn(page);
   const accountTrigger = await runAccountMenuAction(page, "Settings");
   let settingsDialog = page.getByTestId("settings-dialog");
-  const promptLibraryHeading = settingsDialog.getByRole("heading", { name: "Prompt library" });
-  const promptName = settingsDialog.getByLabel("Prompt name");
-  const closeSettings = settingsDialog.getByRole("button", { name: "Close settings" });
-  await expect(promptLibraryHeading).toBeFocused();
-  await expect(settingsDialog.getByRole("button", { name: "New prompt" })).toBeInViewport();
+  await expect(settingsDialog).toHaveAttribute("aria-label", "Settings");
+  await expect(settingsDialog.getByRole("heading", { name: "Appearance" })).toBeVisible();
+  await expect(settingsDialog.getByRole("button", { name: "Prompts" })).toHaveCount(0);
+  await expect(settingsDialog.getByRole("button", { name: "MCP & tools" })).toBeVisible();
   await expectWithinViewport(page, settingsDialog);
   await expectNoHorizontalOverflow(page);
+  await settingsDialog.getByRole("button", { name: "Close settings" }).click();
 
-  await settingsDialog.getByRole("button", { name: "Edit prompt Research Prompt" }).click();
-  await expect(settingsDialog.getByLabel("Prompt name")).toHaveValue("Research Prompt");
+  let runSetup = await openRunSetup(page);
+  await expect(runSetup.getByRole("button", { name: "Prompt preset" })).toContainText("Helpful Assistant");
+  await runSetup.getByRole("button", { name: "Open library" }).click();
+  let promptWorkbench = page.getByTestId("prompt-workbench");
+  const promptLibraryHeading = promptWorkbench.getByRole("heading", { name: "Prompts" });
+  const promptName = promptWorkbench.getByLabel("Prompt name");
+  await expect(promptWorkbench).toHaveAttribute("aria-label", "Prompt library");
+  await expect(promptWorkbench).toHaveAttribute("data-presentation", "workbench");
+  await expect(promptWorkbench.getByRole("navigation", { name: "Settings sections" })).toHaveCount(0);
+  await expect(promptLibraryHeading).toBeFocused();
+  await expect(promptWorkbench.getByRole("button", { name: "New prompt" })).toBeInViewport();
+  await expect(promptWorkbench.getByTestId("prompt-library-pane")).toBeVisible();
+  await expect(promptWorkbench.getByTestId("prompt-editor-pane")).toBeHidden();
+  await expectWithinViewport(page, promptWorkbench);
+  await expectNoHorizontalOverflow(page);
+
+  await promptWorkbench.getByRole("button", { name: "Edit prompt Research Prompt" }).click();
+  await expect(promptWorkbench.getByLabel("Prompt name")).toHaveValue("Research Prompt");
   await expect(promptName).toBeFocused();
-  await expectWithinViewport(page, settingsDialog);
-  await expectWithinViewport(page, settingsDialog.getByRole("heading", { name: "Settings" }));
+  await expect(promptWorkbench.getByTestId("prompt-library-pane")).toBeHidden();
+  await expect(promptWorkbench.getByTestId("prompt-editor-pane")).toBeVisible();
+  await expect(promptWorkbench.getByTestId("prompt-default-control")).toBeVisible();
+  await expect(promptWorkbench.getByRole("button", { name: "Save changes" })).toBeInViewport();
+  await expectWithinViewport(page, promptWorkbench);
+  await expectWithinViewport(page, promptWorkbench.getByRole("heading", { name: "Research Prompt" }));
+  await expectNoHorizontalOverflow(page);
+  await promptWorkbench.getByRole("button", { name: "Back to prompts" }).click();
+  await expect(promptWorkbench.getByTestId("prompt-library-pane")).toBeVisible();
+  await expect(promptWorkbench.getByRole("button", { name: "Edit prompt Research Prompt" })).toHaveAttribute(
+    "aria-current",
+    "true"
+  );
+  await expectNoHorizontalOverflow(page);
+  await promptWorkbench.getByRole("button", { name: "Edit prompt Research Prompt" }).click();
+  await expect(promptName).toBeFocused();
   await promptName.press("Shift+Tab");
   await expect
     .poll(() =>
-      page.evaluate(() => Boolean(document.activeElement?.closest('[data-testid="settings-dialog"]')))
+      page.evaluate(() => Boolean(document.activeElement?.closest('[data-testid="prompt-workbench"]')))
     )
     .toBe(true);
   await page.keyboard.press("Tab");
   await expect(promptName).toBeFocused();
 
-  await settingsDialog.getByRole("button", { name: "Set selected prompt as default" }).click();
+  await promptWorkbench.getByRole("button", { name: "Set selected prompt as default" }).click();
   await expect(page.getByTestId("shell-notice")).toContainText("Default prompt: Research Prompt");
-  await expect(settingsDialog.getByRole("button", { name: "Delete selected prompt" })).toBeDisabled();
+  await promptWorkbench.getByRole("button", { name: "Prompt actions" }).click();
+  await expect(promptWorkbench.getByRole("menuitem", { name: "Delete selected prompt" })).toBeDisabled();
   expect(promptRequests).toEqual([]);
-  await closeSettings.click();
+  await promptWorkbench.getByRole("button", { name: "Back to prompts" }).click();
+  await promptWorkbench.getByRole("button", { name: "Back to chat" }).click();
   await expect(page.getByTestId("shell-notice")).toHaveCount(0);
 
-  let runSetup = await openRunSetup(page);
-  await expect(runSetup.getByRole("button", { name: "Prompt preset" })).toContainText("Helpful Assistant");
-  await closeRunSetup(page);
-
-  await runAccountMenuAction(page, "Settings");
-  settingsDialog = page.getByTestId("settings-dialog");
-  await settingsDialog.getByRole("button", { name: "Use prompt Research Prompt for next run" }).click();
-  await expect(page.getByTestId("shell-notice")).toContainText("Prompt selected: Research Prompt");
-  expect(promptRequests).toEqual([]);
-  await settingsDialog.getByRole("button", { name: "Close settings" }).click();
-  await expect(page.getByTestId("shell-notice")).toHaveCount(0);
   runSetup = await openRunSetup(page);
+  await expect(runSetup.getByRole("button", { name: "Prompt preset" })).toContainText("Helpful Assistant");
+  await runSetup.getByRole("button", { name: "Prompt preset" }).click();
+  await page.getByTestId("prompt-picker-options").locator('[data-option-value="prompt-research"]').click();
   await expect(runSetup.getByRole("button", { name: "Prompt preset" })).toContainText("Research Prompt");
+  expect(promptRequests).toEqual([]);
   await closeRunSetup(page);
 
-  await runAccountMenuAction(page, "Settings");
-  settingsDialog = page.getByTestId("settings-dialog");
-  await settingsDialog.getByRole("button", { name: "Edit prompt Research Prompt" }).click();
-  await settingsDialog.getByLabel("Prompt name").fill("Research Prompt with unsaved edits");
-  await expect(settingsDialog.getByText("Unsaved changes", { exact: true })).toBeVisible();
-  await expectCenterUnobscured(settingsDialog.getByRole("heading", { name: "Settings" }));
-  await expectCenterUnobscured(settingsDialog.getByRole("button", { name: "Close settings" }));
-
-  await settingsDialog.getByRole("button", { name: "Appearance" }).click();
-  let discardDialog = page.getByRole("dialog", { name: "Discard prompt changes" });
-  await expect(discardDialog).toBeVisible();
-  await expect(discardDialog.getByRole("button", { name: "Keep editing" })).toBeFocused();
-  await discardDialog.getByRole("button", { name: "Keep editing" }).click();
-  await expect(settingsDialog.getByRole("button", { name: "Appearance" })).toBeFocused();
-  await expect(settingsDialog.getByLabel("Prompt name")).toHaveValue("Research Prompt with unsaved edits");
+  runSetup = await openRunSetup(page);
+  await runSetup.getByRole("button", { name: "Open library" }).click();
+  promptWorkbench = page.getByTestId("prompt-workbench");
+  await promptWorkbench.getByRole("button", { name: "Edit prompt Research Prompt" }).click();
+  await promptWorkbench.getByLabel("Prompt name").fill("Research Prompt with unsaved edits");
+  await expect(promptWorkbench.getByText("Unsaved changes", { exact: true })).toBeVisible();
+  await expectCenterUnobscured(promptWorkbench.getByRole("heading", { name: "Research Prompt" }));
+  await expectCenterUnobscured(promptWorkbench.getByRole("button", { name: "Back to prompts" }));
 
   await page.keyboard.press("Escape");
-  discardDialog = page.getByRole("dialog", { name: "Discard prompt changes" });
+  let discardDialog = page.getByRole("dialog", { name: "Discard prompt changes" });
   await expect(discardDialog).toBeVisible();
   await discardDialog.getByRole("button", { name: "Keep editing" }).click();
-  await page.getByTestId("settings-backdrop").dispatchEvent("mousedown");
-  discardDialog = page.getByRole("dialog", { name: "Discard prompt changes" });
-  await expect(discardDialog).toBeVisible();
-  await discardDialog.getByRole("button", { name: "Keep editing" }).click();
-  await expect(settingsDialog).toBeVisible();
+  await expect(page.getByTestId("settings-backdrop")).toHaveCount(0);
+  await expect(promptWorkbench).toBeVisible();
 
-  await settingsDialog.getByRole("button", { name: "Appearance" }).click();
+  await promptWorkbench.getByRole("button", { name: "Back to prompts" }).click();
   discardDialog = page.getByRole("dialog", { name: "Discard prompt changes" });
   await discardDialog.getByRole("button", { name: "Confirm discard changes" }).click();
+  await promptWorkbench.getByRole("button", { name: "Back to chat" }).click();
+  await expect(promptWorkbench).toHaveCount(0);
+
+  await runAccountMenuAction(page, "Settings");
+  settingsDialog = page.getByTestId("settings-dialog");
   const aiqsaTheme = settingsDialog.getByRole("radio", { name: /^Use AIQSA theme/ });
   const graphiteTheme = settingsDialog.getByRole("radio", { name: /^Use Graphite theme/ });
   const verdantTheme = settingsDialog.getByRole("radio", { name: /^Use Verdant theme/ });
@@ -931,6 +1019,59 @@ test("keeps Settings prompt and Appearance workflows safe in the narrow sheet la
   await expectNoHorizontalOverflow(page);
 });
 
+test("uses prompt split view only when both width and height can support it", async ({ page }) => {
+  const thresholdPrompt = {
+    developerPrompt: null,
+    id: "prompt-threshold",
+    isDefault: false,
+    name: "Threshold reviewer",
+    systemPrompt: "Review responsive behavior and report any clipping or ambiguous navigation."
+  };
+  await page.setViewportSize({ height: 512, width: 1024 });
+  await installMatrixCatalogFixture(page, undefined, {
+    catalog: {
+      ...matrixCatalog,
+      promptPresets: [...matrixCatalog.promptPresets, thresholdPrompt]
+    }
+  });
+  await signIn(page);
+  await runAccountMenuAction(page, "Prompt library");
+
+  const workbench = page.getByTestId("prompt-workbench");
+  const workbenchHeader = workbench.getByTestId("prompt-workbench-header");
+  const library = workbench.getByTestId("prompt-library-pane");
+  const editor = workbench.getByTestId("prompt-editor-pane");
+  await expect(page.getByTestId("settings-backdrop")).toHaveCount(0);
+  await expect(library).toBeVisible();
+  await expect(editor).toBeHidden();
+
+  await workbench.getByRole("button", { name: "Edit prompt Threshold reviewer" }).click();
+  await expect(library).toBeHidden();
+  await expect(editor).toBeVisible();
+  await expect(workbenchHeader).toBeHidden();
+  await expect(workbench.getByTestId("prompt-action-region")).toBeInViewport();
+
+  await page.setViewportSize({ height: 500, width: 1280 });
+  await expect(library).toBeHidden();
+  await expect(editor).toBeVisible();
+  await expect(workbenchHeader).toBeHidden();
+  await expect(workbench.getByRole("button", { name: "Back to prompts" })).toBeVisible();
+  await expect(workbench.getByTestId("prompt-action-region")).toBeInViewport();
+
+  await page.setViewportSize({ height: 513, width: 1024 });
+  await expect(library).toBeVisible();
+  await expect(editor).toBeVisible();
+  await expect(workbenchHeader).toBeVisible();
+  await expect(workbench.getByRole("button", { name: "Back to prompts" })).toBeHidden();
+  await expect(workbench.getByTestId("prompt-library-scroll-region")).toHaveCSS("overflow-y", "auto");
+  await expect(workbench.getByTestId("prompt-editor-scroll-region")).toHaveCSS("overflow-y", "auto");
+  await expect(workbench.getByTestId("prompt-action-region")).toBeInViewport();
+
+  const workbenchBox = await workbench.boundingBox();
+  expect(workbenchBox).toEqual({ height: 513, width: 1024, x: 0, y: 0 });
+  await expectNoHorizontalOverflow(page);
+});
+
 test("keeps direct run choices and one complete More setup inside the thread workflow", async ({ page }) => {
   await page.setViewportSize({ height: 900, width: 1440 });
   const composerChat = {
@@ -1011,7 +1152,7 @@ test("keeps direct run choices and one complete More setup inside the thread wor
   await expect(runSetup.getByRole("button", { name: "Select model" })).toBeVisible();
   await expect(runSetup.getByRole("button", { name: "Search strategy" })).toBeVisible();
   await expect(runSetup.getByRole("button", { name: "Prompt preset" })).toBeVisible();
-  await expect(runSetup.getByRole("button", { name: "Manage prompts" })).toBeVisible();
+  await expect(runSetup.getByRole("button", { name: "Open library" })).toBeVisible();
   await expect(runSetup.getByRole("button", { name: "Reasoning effort" })).toBeVisible();
   await expect(runSetup.getByLabel("Temperature")).toBeVisible();
   await expect(runSetup.getByLabel("Max output tokens")).toBeVisible();
@@ -2469,8 +2610,12 @@ test("keeps delayed chat_update scoped to its source chat after switching chats"
   await page.getByRole("button", { name: "Open details" }).click();
   let details = page.getByTestId("details-pane");
   await details.getByRole("tab", { name: "Events" }).click();
-  await expect(details.getByTestId("details-summary")).toHaveText("Branch and run events");
-  await expect(details.getByTestId("inspector-event-log")).toContainText("Events appear here during a run");
+  await expect(details.getByTestId("details-summary")).toHaveText(
+    "Review conversation branches or recorded run events."
+  );
+  await expect(details.getByTestId("inspector-event-log")).toContainText(
+    "Run events will appear here after a response starts."
+  );
   releaseSend();
 
   await expect(page.getByTestId("left-chat-pane")).toContainText("Chat A answered");
@@ -2480,8 +2625,12 @@ test("keeps delayed chat_update scoped to its source chat after switching chats"
   await expect(page.getByTestId("thread")).not.toContainText("Slow question A");
   await expect(page.getByTestId("thread")).not.toContainText("Answer A after switch");
   await expect.poll(() => runFetches).toBe(1);
-  await expect(details.getByTestId("details-summary")).toHaveText("Branch and run events");
-  await expect(details.getByTestId("inspector-event-log")).toContainText("Events appear here during a run");
+  await expect(details.getByTestId("details-summary")).toHaveText(
+    "Review conversation branches or recorded run events."
+  );
+  await expect(details.getByTestId("inspector-event-log")).toContainText(
+    "Run events will appear here after a response starts."
+  );
   await details.getByRole("button", { name: "Close details" }).click();
 
   await page.getByRole("button", { exact: true, name: "Chat A answered" }).click();
@@ -2494,8 +2643,8 @@ test("keeps delayed chat_update scoped to its source chat after switching chats"
   await page.getByRole("button", { name: "Open details" }).click();
   details = page.getByTestId("details-pane");
   await details.getByRole("tab", { name: "Events" }).click();
-  await expect(details.getByTestId("details-summary")).toHaveText("Run events available");
-  await expect(details.getByTestId("inspector-event-log")).toContainText("Run");
+  await expect(details.getByTestId("details-summary")).toHaveText("1 recorded event for this run.");
+  await expect(details.getByTestId("inspector-event-log")).toContainText("Run started");
   await details.getByRole("button", { name: "Close details" }).click();
   await page.getByRole("textbox", { name: "Message" }).fill("Follow-up after A completes");
   await expect(page.getByRole("button", { name: "Send message" })).toBeEnabled();
@@ -3161,24 +3310,30 @@ test("recovers a background run after reload and renders search/reasoning thread
   await signIn(page);
   await expect(page.getByTestId("thread")).toContainText("Recovered answer");
   await expect(page.getByTestId("streaming-cursor")).toHaveCount(0);
-  await expect(page.getByTestId("thread-search-summary")).toContainText("1 search call");
-  await page.getByTestId("thread-citations-block").getByRole("button", { name: /Citations 1/ }).click();
-  await expect(page.getByTestId("thread-citations-block")).toContainText("Recovered source");
+  const answerMetadata = page.getByTestId("answer-metadata-block");
+  const recoveredSearch = answerMetadata.getByRole("button", { name: "1 search call" });
+  await expect(recoveredSearch).toHaveAttribute("aria-expanded", "false");
+  await recoveredSearch.click();
+  await expect(recoveredSearch).toHaveAttribute("aria-expanded", "true");
+  await expect(answerMetadata.getByTestId("thread-search-summary")).toBeVisible();
+  const recoveredCitations = answerMetadata.getByRole("button", { name: "1 citation" });
+  await expect(recoveredCitations).toHaveAttribute("aria-expanded", "false");
+  await recoveredCitations.click();
+  await expect(recoveredCitations).toHaveAttribute("aria-expanded", "true");
+  await expect(answerMetadata.getByTestId("thread-citations-block")).toContainText("Recovered source");
   let runSetup = await openRunSetup(page);
   await runSetup.getByRole("button", { name: "Hide citations" }).click();
   await expect(page.getByTestId("thread-citations-block")).toHaveCount(0);
   await runSetup.getByRole("button", { name: "Show citations" }).click();
   await closeRunSetup(page);
-  const restoredCitations = page
-    .getByTestId("thread-citations-block")
-    .getByRole("button", { name: /Citations 1/ });
+  const restoredCitations = answerMetadata.getByRole("button", { name: "1 citation" });
   await expect(restoredCitations).toHaveAttribute("aria-expanded", "true");
-  await expect(page.getByTestId("thread-citations-block")).toContainText("Recovered source");
+  await expect(answerMetadata.getByTestId("thread-citations-block")).toContainText("Recovered source");
   await restoredCitations.click();
   await expect(restoredCitations).toHaveAttribute("aria-expanded", "false");
   await restoredCitations.click();
   await expect(restoredCitations).toHaveAttribute("aria-expanded", "true");
-  await expect(page.getByTestId("thread-citations-block")).toContainText("Recovered source");
+  await expect(answerMetadata.getByTestId("thread-citations-block")).toContainText("Recovered source");
   await expect(page.getByTestId("thread-reasoning-block")).toHaveCount(0);
   runSetup = await openRunSetup(page);
   await runSetup.getByRole("button", { name: "Show reasoning blocks" }).click();
@@ -3337,8 +3492,8 @@ test("supports the default QSA chat and folder workflow", async ({ browser, page
   await expect(page.getByTestId("current-chat-title")).toHaveText("New chat");
   await expect(page.getByTestId("thread")).not.toContainText("Compare native web search");
 
-  await page.getByRole("button", { name: "Share anonymously" }).click();
-  await expect(page.getByTestId("shell-notice")).toContainText("Send a message before sharing.");
+  await expect(page.getByRole("button", { name: "Share anonymously" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Open details" })).toHaveCount(0);
 
   const newChatRowsBeforeBlank = await page
     .getByTestId("left-chat-pane")
@@ -3405,14 +3560,14 @@ test("supports the default QSA chat and folder workflow", async ({ browser, page
   await expect(page.getByTestId("thread")).toContainText(resetModelLabel);
   await expect(page.getByTestId("streaming-cursor")).toHaveCount(0);
   await expect(page.getByTestId("pipeline-indicator")).toHaveCount(0);
-  await expect(details.getByTestId("inspector-event-log")).toContainText("Done");
+  await expect(details.getByTestId("inspector-event-log")).toContainText("Run complete");
   await details.getByRole("button", { name: "Pin details" }).click();
   await expect(details).toHaveAttribute("data-presentation", "pinned");
   await expect(page.getByTestId("left-chat-pane")).toContainText(String(suffix));
   await page.getByLabel("Search chats").fill(String(suffix));
   await expect(page.getByTestId("left-chat-pane")).toContainText(String(suffix));
   await page.getByLabel("Search chats").fill(`missing ${suffix}`);
-  await expect(page.getByTestId("left-chat-pane")).toContainText("No title or model matches");
+  await expect(page.getByTestId("left-chat-pane")).toContainText("No chats match this search");
   await page.getByLabel("Search chats").fill("");
   await expect(page.getByTestId("current-chat-title")).toBeVisible();
   const desktopConversationHeader = page.getByTestId("top-rail");
@@ -3464,9 +3619,9 @@ test("supports the default QSA chat and folder workflow", async ({ browser, page
   await expect(details.getByLabel("Temperature")).toHaveCount(0);
 
   await page.getByRole("tab", { name: "Events" }).click();
-  await expect(page.getByTestId("inspector-event-log")).toContainText("Run");
-  await expect(page.getByTestId("inspector-event-log")).toContainText("Provider status");
-  await expect(page.getByTestId("inspector-event-log")).toContainText("Done");
+  await expect(page.getByTestId("inspector-event-log")).toContainText("Run started");
+  await expect(page.getByTestId("inspector-event-log")).toContainText("Provider updates");
+  await expect(page.getByTestId("inspector-event-log")).toContainText("Run complete");
   await conversationActions.click();
   await page
     .getByRole("menu", { name: "Conversation actions" })
@@ -3481,21 +3636,33 @@ test("supports the default QSA chat and folder workflow", async ({ browser, page
   await expect(page.getByTestId("token-stats-popover")).toContainText("Provider-reported tokens");
   await page.keyboard.press("Escape");
 
-  await page.getByRole("button", { name: "Branch from here" }).last().click();
+  let latestMessageActions = page.getByTestId("message-actions").last();
+  await latestMessageActions.getByRole("button", { name: "More message actions" }).click();
+  await page
+    .getByRole("menu", { name: "More message actions" })
+    .getByRole("menuitem", { name: "Branch from here" })
+    .click();
   await expect(page.getByTestId("shell-notice")).toContainText("Branched chat:");
   await expect(page.getByTestId("thread")).toContainText(prompt);
   await expect(page.getByTestId("thread")).toContainText(`Fake answer: ${prompt}`);
 
+  // Create a real sibling inside the new chat before extending one path; the
+  // cross-chat Branch action itself intentionally copies only one version.
+  await page.getByRole("button", { name: "Regenerate message" }).last().click();
+  await expect(
+    page.getByRole("button", { name: /^Open alternate version, assistant \d+$/ }).first()
+  ).toBeVisible({ timeout: 10_000 });
+
   await page.getByRole("textbox", { name: "Message" }).fill(memoryPrompt);
-  await page.getByRole("textbox", { name: "Message" }).press("Enter");
+  await page.getByRole("button", { name: "Send message" }).click();
   await expect(assistantContentWithText(page, `Fake answer: ${memoryPrompt}`)).toBeVisible();
   await expect(page.getByTestId("thread")).toContainText(`Context memory: ${prompt}`);
 
   await page.getByRole("tab", { name: "Branch" }).click();
-  await page.getByRole("button", { name: "Open this version, branch assistant 2" }).click();
+  await page.getByRole("button", { name: /^Open alternate version, assistant \d+$/ }).first().click();
   const checkoutPrompt = `Branch checkout e2e ${suffix}`;
   await page.getByRole("textbox", { name: "Message" }).fill(checkoutPrompt);
-  await page.getByRole("textbox", { name: "Message" }).press("Enter");
+  await page.getByRole("button", { name: "Send message" }).click();
   await expect(assistantContentWithText(page, `Fake answer: ${checkoutPrompt}`)).toBeVisible();
   await expect(page.getByTestId("thread")).toContainText(`Context memory: ${prompt}`);
   await expect(page.getByTestId("thread")).not.toContainText(memoryPrompt);
@@ -3507,12 +3674,22 @@ test("supports the default QSA chat and folder workflow", async ({ browser, page
   await expect(page.getByTestId("thread")).toContainText(`Context memory: ${prompt}`);
   await expect(page.getByTestId("thread")).not.toContainText("Regenerated branch draft");
   expect(activeChatDetailFetches).toBe(0);
-  await page.getByRole("button", { name: "Delete message" }).last().click();
+  latestMessageActions = page.getByTestId("message-actions").last();
+  await latestMessageActions.getByRole("button", { name: "More message actions" }).click();
+  await page
+    .getByRole("menu", { name: "More message actions" })
+    .getByRole("menuitem", { name: "Delete message" })
+    .click();
   let messageDeleteDialog = page.getByRole("dialog", { name: "Delete message" });
   await expect(messageDeleteDialog).toContainText("every reply below");
   await messageDeleteDialog.getByRole("button", { name: "Cancel" }).click();
   await expect(assistantContentWithText(page, `Fake answer: ${checkoutPrompt}`)).toBeVisible();
-  await page.getByRole("button", { name: "Delete message" }).last().click();
+  latestMessageActions = page.getByTestId("message-actions").last();
+  await latestMessageActions.getByRole("button", { name: "More message actions" }).click();
+  await page
+    .getByRole("menu", { name: "More message actions" })
+    .getByRole("menuitem", { name: "Delete message" })
+    .click();
   messageDeleteDialog = page.getByRole("dialog", { name: "Delete message" });
   await messageDeleteDialog.getByRole("button", { name: "Confirm delete message" }).click();
   await expect(page.getByTestId("shell-notice")).toContainText("Message deleted");
@@ -3648,27 +3825,31 @@ test("manages prompt presets and left-pane folders", async ({ page }) => {
     .click();
   await expect(page.getByRole("button", { name: `Folder actions ${renamedFolderName}` })).toHaveCount(0);
 
-  await runAccountMenuAction(page, "Settings");
-  await expect(page.getByRole("dialog", { name: "Settings" })).toBeVisible();
+  await runAccountMenuAction(page, "Prompt library");
+  await expect(page.getByRole("dialog", { name: "Prompt library" })).toBeVisible();
   await page.getByRole("button", { name: "New prompt" }).click();
   await page.getByLabel("Prompt name").fill(promptName);
-  await page.getByLabel("Settings system prompt").fill("You are an E2E prompt preset.");
+  await page.getByRole("textbox", { name: "System instructions" }).fill("You are an E2E prompt preset.");
   await page.getByRole("button", { name: "Create prompt" }).click();
   await expect(page.getByTestId("shell-notice")).toContainText(`Prompt saved: ${promptName}`);
   await page.getByRole("button", { name: "Set selected prompt as default" }).click();
   await expect(page.getByTestId("shell-notice")).toContainText(`Default prompt: ${promptName}`);
-  await page.getByRole("button", { name: `Use prompt ${promptName} for next run` }).click();
-  await page.getByRole("button", { name: "Close settings" }).click();
+  await page.getByRole("button", { name: "Back to chat" }).click();
   const runSetup = await openRunSetup(page);
+  await runSetup.getByRole("button", { name: "Prompt preset" }).click();
+  await page.getByTestId("prompt-picker-options").getByText(promptName, { exact: true }).click();
   await expect(runSetup.getByRole("button", { name: "Prompt preset" })).toContainText(promptName);
   await closeRunSetup(page);
 
-  await runAccountMenuAction(page, "Settings");
-  await expect(page.getByRole("dialog", { name: "Settings" })).toBeVisible();
+  await runAccountMenuAction(page, "Prompt library");
+  await expect(page.getByRole("dialog", { name: "Prompt library" })).toBeVisible();
 
-  await page.getByRole("button", { name: "Set prompt Helpful Assistant as default" }).click();
+  await page.getByRole("button", { name: "Edit prompt Helpful Assistant" }).click();
+  await page.getByRole("button", { name: "Set selected prompt as default" }).click();
   await expect(page.getByTestId("shell-notice")).toContainText("Default prompt: Helpful Assistant");
-  await page.getByRole("button", { name: "Delete selected prompt" }).click();
+  await page.getByRole("button", { name: `Edit prompt ${promptName}` }).click();
+  await page.getByRole("button", { name: "Prompt actions" }).click();
+  await page.getByRole("menuitem", { name: "Delete selected prompt" }).click();
   await page
     .getByRole("dialog", { name: `Delete prompt ${promptName}` })
     .getByRole("button", { name: "Confirm delete prompt" })
@@ -3676,6 +3857,61 @@ test("manages prompt presets and left-pane folders", async ({ page }) => {
   await expect(page.getByTestId("shell-notice")).toContainText("Prompt deleted");
 
   await cleanupE2eWorkspace(page);
+});
+
+test("hides unusable profile shortcuts but keeps their diagnostics in portrait Run setup", async ({ page }) => {
+  await page.setViewportSize({ height: 844, width: 384 });
+  const unavailableCatalog = {
+    ...matrixCatalog,
+    defaults: {
+      ...matrixCatalog.defaults,
+      searchStrategyId: "perplexity-tool-search"
+    },
+    runProfiles: matrixCatalog.runProfiles.map((profile) => ({
+      available: false as const,
+      description: profile.description,
+      id: profile.id,
+      label: profile.label,
+      unavailableReason: "model_unavailable"
+    }))
+  } as unknown as typeof matrixCatalog;
+  await installMatrixCatalogFixture(page, undefined, { catalog: unavailableCatalog });
+  await signIn(page);
+
+  const secondary = page.getByTestId("composer-secondary-controls");
+  await expect(secondary.getByTestId("composer-inline-run-profiles")).toHaveCount(0);
+  await expect(page.getByTestId("compact-run-profile-state")).toHaveCount(0);
+  await expect(page.getByTestId("run-profile-summary")).toHaveCount(0);
+  const search = secondary.getByRole("button", { name: "Search strategy" });
+  await expect(search.locator(".lucide-search")).toBeVisible();
+  await expect(search.getByText("Tool", { exact: true })).toBeVisible();
+  await expect(search).toHaveAttribute("title", "Perplexity tool");
+
+  const more = secondary.getByTestId("composer-run-summary");
+  await expect(more).not.toHaveAccessibleName(/Profile/i);
+  const [secondaryBox, searchBox, moreBox] = await Promise.all([
+    secondary.boundingBox(),
+    search.boundingBox(),
+    more.boundingBox()
+  ]);
+  expect(secondaryBox).toBeTruthy();
+  for (const box of [searchBox, moreBox]) {
+    expect(box).toBeTruthy();
+    expect(box!.x).toBeGreaterThanOrEqual(secondaryBox!.x - 1);
+    expect(box!.x + box!.width).toBeLessThanOrEqual(secondaryBox!.x + secondaryBox!.width + 1);
+  }
+
+  const runSetup = await openRunSetup(page);
+  await expect(runSetup.getByRole("heading", { name: "Profile" })).toBeVisible();
+  const profiles = runSetup.getByRole("group", { name: "Run profile" });
+  for (const name of ["Use Fast run profile", "Use Balanced run profile", "Use Deep run profile"]) {
+    await expect(profiles.getByRole("button", { name })).toBeDisabled();
+  }
+  await expect(runSetup.getByTestId("run-profile-unavailable-reason")).toContainText(
+    "Unavailable profiles cannot be used with your current model access."
+  );
+  await closeRunSetup(page);
+  await expectNoHorizontalOverflow(page);
 });
 
 for (const viewport of responsiveTouchViewports) {
@@ -3879,8 +4115,7 @@ for (const viewport of responsiveTouchViewports) {
         "Open workspace",
         "Start new chat",
         "Share anonymously",
-        "Open details",
-        "Account menu"
+        "Open details"
       ]) {
         const action = page.getByRole("button", { name });
         expect(
@@ -3907,10 +4142,39 @@ for (const viewport of responsiveTouchViewports) {
         await expect(page.getByTestId("share-link")).toBeVisible();
         await expect(page.getByTestId("shell-notice-layer")).toHaveCount(0);
       }
-      const accountTrigger = page.getByRole("button", { name: "Account menu" });
+      await expect(
+        page.getByTestId("top-rail").locator('button[aria-label^="Account menu for "]')
+      ).toHaveCount(0);
+      const workspaceBrowseTrigger = page.getByRole("button", { name: "Open workspace" });
+      await workspaceBrowseTrigger.click();
+      const accountWorkspace = page.getByTestId("workspace-pane-mobile");
+      const accountTrigger = accountWorkspace.getByRole("button", { name: /Account menu/ });
+      expect(
+        await accountTrigger.evaluate((element) =>
+          Boolean(element.closest('[data-testid="workspace-account-footer"]'))
+        )
+      ).toBe(true);
+      await expectTouchSafe(accountTrigger);
+      await expectWithinViewport(page, accountTrigger);
+      await expect(accountWorkspace).toHaveCSS("z-index", "50");
       await accountTrigger.click();
-      const accountMenu = page.getByRole("menu", { name: "Account" });
+      await expect(accountWorkspace).toHaveCSS("z-index", "80");
+      const accountMenu = accountWorkspace.getByRole("menu", { name: "Account" });
+      await expect(accountMenu).toHaveCSS("scrollbar-width", "thin");
       await expectWithinViewport(page, accountMenu);
+      await expect(accountMenu.getByText("Account", { exact: true })).toBeVisible();
+      if (viewport.label === "landscape") {
+        await expect(accountWorkspace.getByTestId("account-menu-scroll-cue")).toBeVisible();
+        const [accountMenuBox, workspaceHeaderBox] = await Promise.all([
+          accountMenu.boundingBox(),
+          accountWorkspace.getByRole("heading", { name: "Workspace" }).locator("..").boundingBox()
+        ]);
+        expect(accountMenuBox).toBeTruthy();
+        expect(workspaceHeaderBox).toBeTruthy();
+        expect(accountMenuBox!.y).toBeGreaterThanOrEqual(
+          workspaceHeaderBox!.y + workspaceHeaderBox!.height - 1
+        );
+      }
       const accountEmail = accountMenu.getByText("operator@aiqsa.local");
       await expect(accountEmail).toBeVisible();
       await expectWithinViewport(page, accountEmail);
@@ -3920,8 +4184,26 @@ for (const viewport of responsiveTouchViewports) {
         await expectWithinViewport(page, action);
         await action.click({ trial: true });
       }
+      const [accountMenuBox, accountTriggerBox] = await Promise.all([
+        accountMenu.boundingBox(),
+        accountTrigger.boundingBox()
+      ]);
+      expect(accountMenuBox).toBeTruthy();
+      expect(accountTriggerBox).toBeTruthy();
+      expect(accountMenuBox!.y + accountMenuBox!.height).toBeLessThanOrEqual(accountTriggerBox!.y + 1);
+      if (viewport.label === "landscape") {
+        await page.keyboard.press("Escape");
+        await accountTrigger.press("ArrowUp");
+        const signOut = accountWorkspace.getByRole("menuitem", { name: "Sign out" });
+        await expect(signOut).toBeFocused();
+        await expectCenterUnobscured(signOut);
+        await expectWithinViewport(page, signOut);
+        await expect(accountWorkspace.getByTestId("account-menu-scroll-cue")).toHaveCount(0);
+      }
       await page.keyboard.press("Escape");
       await expect(accountTrigger).toBeFocused();
+      await accountWorkspace.getByRole("button", { name: "Close workspace" }).click();
+      await expect(workspaceBrowseTrigger).toBeFocused();
       if (viewport.label === "landscape") {
         await page.getByTestId("share-link").getByRole("button", { name: "Revoke link" }).click();
         await expect(page.getByTestId("shell-notice")).toContainText("Public share link revoked");
@@ -3942,6 +4224,10 @@ for (const viewport of responsiveTouchViewports) {
         reasoning: "Standard · Medium",
         search: "Off"
       });
+      const compactProfileState = page.getByTestId("compact-run-profile-state");
+      await expect(compactProfileState).toBeVisible();
+      await expect(compactProfileState).toHaveText("Custom");
+      await expectWithinViewport(page, compactProfileState);
       await expectTouchSafe(summary);
       await expectWithinViewport(page, summary);
 
@@ -3976,6 +4262,12 @@ for (const viewport of responsiveTouchViewports) {
       const composerBox = await page.getByTestId("composer-drop-zone").boundingBox();
       expect(composerBox).toBeTruthy();
       expect(composerBox!.height).toBeLessThanOrEqual(280);
+      expect(composerBox!.x).toBeGreaterThanOrEqual(-1);
+      expect(composerBox!.x + composerBox!.width).toBeLessThanOrEqual(viewport.width + 1);
+      const composerFormBox = await page.getByTestId("composer-form").boundingBox();
+      expect(composerFormBox).toBeTruthy();
+      expect(composerFormBox!.x).toBeGreaterThanOrEqual(-1);
+      expect(composerFormBox!.x + composerFormBox!.width).toBeLessThanOrEqual(viewport.width + 1);
       await expectTouchSafe(page.getByRole("button", { name: "Send message" }));
       await expectWithinViewport(page, page.getByRole("button", { name: "Send message" }));
       await expectTouchSafe(page.getByLabel("Attach file").locator(".."));
@@ -3999,22 +4291,39 @@ for (const viewport of responsiveTouchViewports) {
       await lastAssistant.scrollIntoViewIfNeeded();
       const touchActions = lastAssistant.getByRole("toolbar", { name: "Assistant message actions" });
       await expect.poll(() => touchActions.evaluate((element) => getComputedStyle(element).opacity)).toBe("1");
-      for (const action of await touchActions.getByRole("button").all()) {
+      for (const name of ["Regenerate message", "Edit message", "Copy message", "More message actions"]) {
+        const action = touchActions.getByRole("button", { name });
+        await expect(action).toBeVisible();
         await expectTouchSafe(action);
         await expectWithinViewport(page, action);
       }
+      const messageMore = touchActions.getByRole("button", { name: "More message actions" });
+      await messageMore.click();
+      const messageMenu = page.getByRole("menu", { name: "More message actions" });
+      await expectWithinViewport(page, messageMenu);
+      for (const name of ["Delete message", "Branch from here"]) {
+        const action = messageMenu.getByRole("menuitem", { name });
+        await expectTouchSafe(action);
+        await expectWithinViewport(page, action);
+      }
+      await page.keyboard.press("Escape");
+      await expect(messageMore).toBeFocused();
 
-      const searchSummary = page.getByTestId("thread-search-summary");
-      const citations = page.getByTestId("thread-citations-block");
+      const searchReceiptTrigger = page.getByRole("button", { name: "2 search calls" });
+      const answerMetadata = page.getByTestId("answer-metadata-block").filter({ has: searchReceiptTrigger });
+      const citationReceiptTrigger = answerMetadata.getByRole("button", { name: "1 citation" });
+      const reasoningReceiptTrigger = answerMetadata.getByRole("button", { name: "1 reasoning trace" });
+      await searchReceiptTrigger.click();
+      await citationReceiptTrigger.click();
+      await reasoningReceiptTrigger.click();
+      const searchSummary = answerMetadata.getByTestId("thread-search-summary");
+      const citations = answerMetadata.getByTestId("thread-citations-block");
       const reasoning = page.getByTestId("thread-reasoning-block");
-      await searchSummary.getByRole("button").click();
-      await citations.getByRole("button").click();
-      await reasoning.getByRole("button").click();
       await expect(searchSummary).toContainText("request-segment");
       await expect(citations).toContainText("Responsive evidence source");
       await expect(reasoning).toContainText("Responsive reasoning");
-      for (const disclosure of [searchSummary, citations, reasoning]) {
-        await expectTouchSafe(disclosure.getByRole("button"));
+      for (const disclosure of [searchReceiptTrigger, citationReceiptTrigger, reasoningReceiptTrigger]) {
+        await expectTouchSafe(disclosure);
       }
       const codeScroll = page.getByTestId("markdown-code-scroll");
       const tableScroll = page.getByTestId("markdown-table-scroll");
@@ -4128,12 +4437,11 @@ for (const viewport of responsiveTouchViewports) {
       await page.keyboard.press("Escape");
       await expect(detailsTrigger).toBeFocused();
 
-      await accountTrigger.click();
-      await page.getByRole("menu", { name: "Account" }).getByRole("menuitem", { name: "Settings" }).click();
+      const accountRestoreTarget = await runAccountMenuAction(page, "Settings");
       const settings = page.getByTestId("settings-dialog");
       await expectWithinViewport(page, settings);
       await settings.getByRole("button", { name: "Close settings" }).click();
-      await expect(accountTrigger).toBeFocused();
+      await expect(accountRestoreTarget).toBeFocused();
 
       await page.getByLabel("Attach file").setInputFiles([
         { buffer: Buffer.from("Responsive notes"), mimeType: "text/markdown", name: uploadNames[0] },

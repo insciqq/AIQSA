@@ -13,6 +13,7 @@ import {
 const server: AdminMcpServer = {
   activePersonalSlots: [],
   activeRevision: null,
+  activation: null,
   archivedAt: null,
   description: "Team memory",
   draft: {
@@ -43,19 +44,19 @@ describe("adminMcpApi", () => {
   it("decodes the catalog and sends typed create/update requests to narrow endpoints", async () => {
     const fetcher = vi.fn()
       .mockResolvedValueOnce(response({ servers: [server] }))
-      .mockResolvedValueOnce(response({ server }, 201))
+      .mockResolvedValueOnce(response({ server }, 202))
       .mockResolvedValueOnce(response({ server }));
 
     await expect(requestAdminMcpCatalog(fetcher)).resolves.toEqual({
       data: { servers: [server] },
       ok: true
     });
-    await createAdminMcpServer({ draft: server.draft, name: "Memory" }, fetcher);
+    await createAdminMcpServer({ activate: true, draft: server.draft, name: "Memory" }, fetcher);
     await updateAdminMcpServer(server.id, { enabled: true }, fetcher);
 
     expect(fetcher).toHaveBeenNthCalledWith(1, "/api/admin/mcp", { method: "GET" });
     expect(fetcher).toHaveBeenNthCalledWith(2, "/api/admin/mcp", expect.objectContaining({
-      body: JSON.stringify({ draft: server.draft, name: "Memory" }),
+      body: JSON.stringify({ activate: true, draft: server.draft, name: "Memory" }),
       method: "POST"
     }));
     expect(fetcher).toHaveBeenNthCalledWith(3, "/api/admin/mcp/server-1", expect.objectContaining({
@@ -105,6 +106,24 @@ describe("adminMcpApi", () => {
       error: { code: "mcp_admin_response_invalid", issues: [] },
       ok: false
     });
+    await expect(requestAdminMcpCatalog(vi.fn().mockResolvedValue(response({
+      servers: [{
+        ...server,
+        activation: {
+          completedAt: null,
+          errorCode: null,
+          id: "attempt-1",
+          issues: [],
+          requestedAt: "2026-07-22T01:00:00.000Z",
+          stage: "waiting_forever",
+          startedAt: null,
+          updatedAt: "2026-07-22T01:00:00.000Z"
+        }
+      }]
+    })))).resolves.toEqual({
+      error: { code: "mcp_admin_response_invalid", issues: [] },
+      ok: false
+    });
     const failed = await testAdminMcpDraft(server.id, {}, vi.fn().mockResolvedValue(response({
       error: "mcp_draft_test_failed",
       issues: [{ code: "remote_unavailable", path: "source.url" }]
@@ -118,6 +137,26 @@ describe("adminMcpApi", () => {
     });
     if (failed.ok) throw new Error("Expected failure");
     expect(adminMcpErrorMessage(failed.error)).toContain("source.url: remote_unavailable");
+  });
+
+  it("decodes a durable activation receipt from an accepted create response", async () => {
+    const activating: AdminMcpServer = {
+      ...server,
+      activation: {
+        completedAt: null,
+        errorCode: null,
+        id: "attempt-1",
+        issues: [],
+        requestedAt: "2026-07-22T01:00:00.000Z",
+        stage: "preparing_runtime",
+        startedAt: "2026-07-22T01:00:01.000Z",
+        updatedAt: "2026-07-22T01:00:02.000Z"
+      }
+    };
+    const fetcher = vi.fn().mockResolvedValue(response({ server: activating }, 202));
+
+    await expect(createAdminMcpServer({ activate: true, draft: server.draft, name: "Memory" }, fetcher))
+      .resolves.toEqual({ data: activating, ok: true });
   });
 
   it("turns classified local startup issues into setup guidance without exposing process output", () => {

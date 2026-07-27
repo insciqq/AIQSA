@@ -155,7 +155,7 @@ function createControlsProps(overrides: Partial<ComposerControlsProps> = {}): Co
     onBackgroundModeChange: vi.fn(),
     onMaxOutputTokensChange: vi.fn(),
     onMaxOutputTokensCommit: vi.fn(),
-    onOpenPromptSettings: vi.fn(),
+    onOpenPromptLibrary: vi.fn(),
     onPromptChange: vi.fn(),
     onReasoningEffortChange: vi.fn(),
     onReasoningModeChange: vi.fn(),
@@ -196,20 +196,45 @@ describe("ComposerControls", () => {
     expect(controls).toHaveAttribute("data-layout", "direct");
     expect(summary).toHaveTextContent("More");
     expect(summary).not.toHaveClass("w-full");
+    expect(summary).toHaveAttribute("title", "More run settings");
+    expect(within(summary).getByText("More")).toHaveClass("hidden", "min-[430px]:inline");
+    expect(summary).toHaveClass(
+      "[@media(hover:none)]:!min-h-touch",
+      "[@media(pointer:coarse)]:!min-h-touch"
+    );
     expect(screen.getByTestId("run-model-summary")).toHaveTextContent("Balanced Research");
+    expect(screen.getByTestId("run-model-summary-provider")).toHaveTextContent("Fake");
     expect(screen.getByTestId("run-profile-summary")).toHaveTextContent("Profile: Balanced");
+    expect(screen.queryByTestId("compact-run-profile-state")).not.toBeInTheDocument();
     expect(screen.getByTestId("run-reasoning-summary")).toHaveTextContent("Reasoning: Standard · Medium");
     expect(screen.getByTestId("run-search-summary")).toHaveTextContent("Search: Off");
     expect(summary).toHaveAccessibleName(
       "Open more run settings. Profile Balanced. Model Balanced Research. Reasoning Standard mode, Medium effort. Search Off."
     );
     expect(within(controls).getByRole("button", { name: "Select model" })).toBeVisible();
+    expect(within(controls).getByRole("button", { name: "Use Fast run profile" })).toBeVisible();
     expect(within(controls).getByRole("button", { name: "Use Balanced run profile" })).toBeVisible();
     expect(within(controls).getByRole("button", { name: "Use Deep run profile" })).toBeVisible();
-    expect(within(controls).getByRole("button", { name: "Search strategy" })).toBeVisible();
+    const search = within(controls).getByRole("button", { name: "Search strategy" });
+    expect(search).toBeVisible();
+    expect(within(search).getByText("Search")).toHaveClass("max-[429px]:sr-only");
+    expect(search.querySelector(".lucide-search")).toHaveClass("max-[429px]:block");
+    expect(within(search).getAllByText("Off")[0]).toHaveClass("min-[430px]:hidden");
     expect(within(controls).queryByRole("button", { name: "Reasoning effort" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Run settings" })).not.toBeInTheDocument();
     expect(summary.querySelector(".lucide-chevron-right")).not.toBeInTheDocument();
+    expect(screen.getByTestId("composer-secondary-controls")).toContainElement(
+      screen.getByTestId("composer-inline-run-profiles")
+    );
+    expect(screen.getByTestId("composer-inline-run-profiles").firstElementChild).toHaveClass(
+      "bg-control-surface",
+      "min-h-touch"
+    );
+    expect(screen.getByTestId("run-model-summary").closest("div.relative")).toHaveClass(
+      "max-w-full",
+      "flex-[1_1_100%]",
+      "sm:flex-[0_0_20rem]"
+    );
   });
 
   it("routes the direct profile, model, and search controls through the existing actions", () => {
@@ -247,6 +272,10 @@ describe("ComposerControls", () => {
     expect(screen.getByTestId("run-profile-summary")).toHaveTextContent("Profile: Deep");
     expect(screen.getByTestId("run-reasoning-summary")).toHaveTextContent("Reasoning: Pro · Maximum");
     expect(screen.getByTestId("run-search-summary")).toHaveTextContent("Search: Web Search");
+    const search = screen.getByRole("button", { name: "Search strategy" });
+    expect(within(search).getByText("Web")).toHaveClass("min-[430px]:hidden");
+    expect(within(search).getByText("Web Search")).toHaveClass("hidden", "min-[430px]:inline");
+    expect(search).toHaveAttribute("title", "Web Search");
   });
 
   it("keeps the full model identity available while containing a long direct-control label", () => {
@@ -256,6 +285,7 @@ describe("ComposerControls", () => {
     const model = screen.getByTestId("run-model-summary");
     expect(model).toHaveTextContent(longName);
     expect(model).toHaveClass("truncate");
+    expect(screen.getByTestId("run-model-summary-provider")).toHaveTextContent("Fake");
     expect(model.closest("button")).toHaveAttribute("title", `Fake / ${longName}`);
   });
 
@@ -319,13 +349,15 @@ describe("ComposerControls", () => {
 
   it("omits the Profile section only when the server omits every configured slot", () => {
     renderControls({ catalog: { ...catalog, runProfiles: [] } });
+    expect(screen.queryByTestId("composer-inline-run-profiles")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("run-profile-summary")).not.toBeInTheDocument();
     const dialog = openRunSetup();
 
     expect(within(dialog).queryByRole("heading", { name: "Profile" })).not.toBeInTheDocument();
     expect(within(dialog).getByRole("heading", { name: "Answer setup" })).toBeVisible();
   });
 
-  it("separates an unavailable profile fact from its unavailable action", () => {
+  it("omits unusable profile shortcuts while retaining their diagnostics in Run setup", () => {
     const unavailableCatalog: Catalog = {
       ...catalog,
       runProfiles: [{
@@ -337,11 +369,10 @@ describe("ComposerControls", () => {
       }]
     };
     renderControls({ catalog: unavailableCatalog });
-    const compactProfiles = screen.getByTestId("composer-inline-run-profiles");
-    const compactFact = compactProfiles.querySelector('[data-run-profile-availability="unavailable"]');
-    expect(compactFact).toBeVisible();
-    expect(compactFact?.tagName).toBe("SPAN");
-    expect(compactProfiles).toHaveTextContent("Unavailable");
+    expect(screen.queryByTestId("composer-inline-run-profiles")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("compact-run-profile-state")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("run-profile-summary")).not.toBeInTheDocument();
+    expect(screen.getByTestId("composer-run-summary")).not.toHaveAccessibleName(/Profile/i);
 
     const dialog = openRunSetup();
 
@@ -354,6 +385,8 @@ describe("ComposerControls", () => {
     expect(fact).toBeVisible();
     expect(fact.tagName).toBe("SPAN");
     expect(fact).not.toHaveAttribute("disabled");
+    expect(fact).toHaveClass("border-trace-strong", "bg-control-surface", "text-ink-secondary");
+    expect(fact).not.toHaveClass("border-caution/35", "bg-caution/10", "text-caution");
     expect(dialog).not.toHaveTextContent("Disabled");
     expect(within(dialog).getByTestId("run-profile-unavailable-reason")).toHaveTextContent(
       "Unavailable profiles cannot be used with your current model access."
@@ -446,11 +479,11 @@ describe("ComposerControls", () => {
     const { props } = renderControls();
     const dialog = openRunSetup();
 
-    fireEvent.click(within(dialog).getByRole("button", { name: "Manage prompts" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Open library" }));
     expect(screen.queryByRole("dialog", { name: "Run setup" })).not.toBeInTheDocument();
     expect(props.onTemperatureCommit).toHaveBeenCalledOnce();
     expect(props.onMaxOutputTokensCommit).toHaveBeenCalledOnce();
-    await waitFor(() => expect(props.onOpenPromptSettings).toHaveBeenCalledOnce());
+    await waitFor(() => expect(props.onOpenPromptLibrary).toHaveBeenCalledOnce());
   });
 
   it("closes an open setup when bootstrap readiness disables its owner", async () => {
@@ -486,12 +519,17 @@ describe("ComposerControls", () => {
     expect(within(dialog).getByRole("button", { name: "Reasoning effort" })).toBeDisabled();
   });
 
-  it("derives Custom and unavailable profile states instead of inventing a selection", () => {
+  it("derives Custom only for applicable profiles and omits a true-empty profile summary", () => {
     const view = renderControls({ reasoningEffort: "high" });
     expect(screen.getByTestId("run-profile-summary")).toHaveTextContent("Profile: Custom");
+    const customState = screen.getByTestId("compact-run-profile-state");
+    expect(customState).toBeVisible();
+    expect(customState).toHaveTextContent("Custom");
+    expect(customState).toHaveAttribute("data-run-profile-state", "custom");
 
     view.rerender(<ComposerControls {...view.props} catalog={{ ...catalog, runProfiles: [] }} reasoningEffort="high" />);
-    expect(screen.getByTestId("run-profile-summary")).toHaveTextContent("Profile: Unavailable");
+    expect(screen.queryByTestId("run-profile-summary")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("composer-inline-run-profiles")).not.toBeInTheDocument();
   });
 
   it("keeps global command shortcuts from escaping an open Run setup", () => {

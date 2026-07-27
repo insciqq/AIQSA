@@ -14,10 +14,19 @@ import { McpEncryptionError } from "./encryption";
 import type { McpRepository, McpRepositoryResult } from "./repositoryContract";
 
 export type McpHandlerDeps = {
+  onActivationRequested?(): void;
   onRuntimeChanged?(userId?: string): void;
   repository: McpRepository;
   resolveAuth: RequestAuthResolver;
 };
+
+function notifyActivationRequested(deps: McpHandlerDeps): void {
+  try {
+    deps.onActivationRequested?.();
+  } catch {
+    // Persistence is authoritative; the activation scheduler also sweeps periodically.
+  }
+}
 
 function notifyRuntimeChanged(deps: McpHandlerDeps, userId?: string): void {
   try {
@@ -154,19 +163,26 @@ export function createAdminMcpCreateHandler(deps: McpHandlerDeps) {
     const description = typeof body?.description === "undefined" ? "" : descriptionText(body.description, 4_000);
     const draft = validateMcpDraft(body?.draft);
     const sharedValues = slotValues(body?.sharedValues);
-    if (!name || description === null || !draft.ok) {
+    if (!name || description === null || !draft.ok ||
+      (typeof body?.activate !== "undefined" && typeof body.activate !== "boolean")) {
       return errorJson("invalid_draft", 400, draft.ok ? undefined : draft.issues);
     }
     if (!sharedValues) return errorJson("invalid_mcp_values", 400);
     const result = await safely(() => deps.repository.createServer({
+      activate: body?.activate === true,
       description,
       draft: draft.value,
       name,
-      sharedValues
+      sharedValues,
+      validationUserId: auth.session.userId
     }));
     if (result instanceof Response) return result;
     if (result.kind !== "ok") return repositoryError(result);
-    return Response.json({ server: result.value }, { status: 201 });
+    if (body?.activate === true) notifyActivationRequested(deps);
+    return Response.json(
+      { server: result.value },
+      { status: body?.activate === true ? 202 : 201 }
+    );
   };
 }
 
@@ -285,6 +301,16 @@ export function createAdminMcpActivateHandler(deps: McpHandlerDeps) {
     const { serverId } = await context.params;
     const result = await safely(() => deps.repository.activateDraft(serverId));
     if (result instanceof Response) return result;
+    if (result.kind === "revision_required") {
+      const queued = await safely(() => deps.repository.requestActivation({
+        serverId,
+        validationUserId: auth.session.userId
+      }));
+      if (queued instanceof Response) return queued;
+      if (queued.kind !== "ok") return repositoryError(queued);
+      notifyActivationRequested(deps);
+      return Response.json({ server: queued.value }, { status: 202 });
+    }
     if (result.kind !== "ok") return repositoryError(result);
     notifyRuntimeChanged(deps);
     return Response.json({ server: result.value });

@@ -232,7 +232,8 @@ function renderPane(overrides: Partial<ComponentProps<typeof MainThreadPane>> = 
     notificationSoundEnabled: false,
     operationError: null,
     openRunDetails: vi.fn(),
-    openSettings: vi.fn(),
+    openMcpSettings: vi.fn(),
+    openPromptLibrary: vi.fn(),
     reasoningEffort: "none",
     reasoningMode: "standard",
     retryActiveChatDetail: vi.fn(),
@@ -322,26 +323,31 @@ describe("MainThreadPane", () => {
     {
       hint: "Loading models…",
       label: "catalog loading",
+      tone: "busy",
       overrides: {} as Partial<ComponentProps<typeof MainThreadPane>>
     },
     {
       hint: "Loading workspace…",
       label: "workspace loading",
+      tone: "busy",
       overrides: { ...readyComposerOverrides, workspaceLoading: true, workspaceReady: false }
     },
     {
       hint: "Loading conversation…",
       label: "conversation loading",
+      tone: "busy",
       overrides: { ...readyComposerOverrides, activeChatDetailLoading: true }
     },
     {
       hint: "Creating chat…",
       label: "blank-chat creation",
+      tone: "busy",
       overrides: { ...readyComposerOverrides, creatingChat: true }
     },
     {
       hint: "No model is available for this account.",
       label: "no entitled model",
+      tone: "caution",
       overrides: {
         ...readyComposerOverrides,
         catalog: { ...catalog, models: [], providers: [] },
@@ -349,13 +355,14 @@ describe("MainThreadPane", () => {
         currentModel: undefined
       }
     }
-  ])("disables and describes the composer during $label", ({ hint, overrides }) => {
+  ])("disables and describes the composer during $label", ({ hint, overrides, tone }) => {
     renderPane(overrides);
 
     const textarea = screen.getByLabelText("Message");
     const send = screen.getByRole("button", { name: "Send message" });
 
     expect(screen.getByTestId("composer-disabled-hint")).toHaveTextContent(hint);
+    expect(screen.getByTestId("composer-disabled-hint")).toHaveAttribute("data-tone", tone);
     expect(textarea).toBeDisabled();
     expect(textarea).toHaveAccessibleDescription(hint);
     expect(send).toBeDisabled();
@@ -443,7 +450,8 @@ describe("MainThreadPane", () => {
     expect(screen.getByRole("button", { name: "Send message" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Cancel edit" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Edit message" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Branch from here" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "More message actions" }));
+    expect(screen.getByRole("menuitem", { name: "Branch from here" })).toBeEnabled();
 
     rerender(<MainThreadPane {...props} editingMessagePending={false} />);
     expect(screen.getByRole("button", { name: "Send message" })).toBeEnabled();
@@ -565,9 +573,9 @@ describe("MainThreadPane", () => {
     const composer = screen.getByTestId("composer-form");
 
     expect(layout).toHaveAttribute("data-composer-placement", "centered");
-    expect(emptyState).toHaveTextContent("What do you want to investigate?");
+    expect(emptyState).toHaveTextContent("What are you investigating?");
     expect(emptyState).toHaveTextContent(
-      "Ask a question. Search, tools, and every provider run stays inspectable."
+      "Ask a question. Sources and run evidence stay inspectable."
     );
     expect(emptyState).not.toHaveTextContent("New research");
     expect(screen.queryByLabelText("Question, optional Search, Answer")).not.toBeInTheDocument();

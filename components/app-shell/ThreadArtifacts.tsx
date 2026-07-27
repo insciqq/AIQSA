@@ -142,7 +142,7 @@ function SearchSummaryBlockComponent({
         >
           {searchDetails.map((detail, index) => (
             <div className="min-w-0 py-3" key={index}>
-              <div className="mb-2 flex flex-wrap items-center gap-2 text-[11px] text-ink-muted">
+              <div className="mb-2 flex flex-wrap items-center gap-2 text-xs text-ink-muted">
                 <span className="font-mono text-ink-secondary">Search {index + 1}</span>
                 {detail.status ? <span>{detail.status}</span> : null}
                 {detail.provider || detail.modelId ? (
@@ -151,27 +151,27 @@ function SearchSummaryBlockComponent({
               </div>
               {detail.callPreview !== undefined && detail.requestPreview === undefined && detail.responsePreview === undefined ? (
                 <div className="grid gap-1">
-                  <div className="text-[11px] font-medium text-ink-secondary">{searchCallLabel(detail)}</div>
+                  <div className="text-xs font-medium text-ink-secondary">{searchCallLabel(detail)}</div>
                   {searchCallHasOnlyMetadata(detail.callPreview) ? (
                     <div className="border-l-2 border-trace-subtle px-2 py-1 text-ink-muted">
                       OpenAI returned call metadata only for this run. Cited URLs, when available, are shown in Citations.
                     </div>
                   ) : null}
-                  <pre className="max-h-52 max-w-full overflow-auto whitespace-pre-wrap break-words rounded-control bg-control-surface p-2 font-mono text-[11px] leading-5 text-ink-secondary [overflow-wrap:anywhere]">
+                  <pre className="max-h-52 max-w-full overflow-auto whitespace-pre-wrap break-words rounded-control bg-control-surface p-2 font-mono text-xs leading-5 text-ink-secondary [overflow-wrap:anywhere]">
                     {formatPreview(detail.callPreview)}
                   </pre>
                 </div>
               ) : (
                 <div className="grid gap-2">
                   <div>
-                    <div className="mb-1 text-[11px] font-medium text-ink-secondary">Request</div>
-                    <pre className="max-h-52 max-w-full overflow-auto whitespace-pre-wrap break-words rounded-control bg-control-surface p-2 font-mono text-[11px] leading-5 text-ink-secondary [overflow-wrap:anywhere]">
+                    <div className="mb-1 text-xs font-medium text-ink-secondary">Request</div>
+                    <pre className="max-h-52 max-w-full overflow-auto whitespace-pre-wrap break-words rounded-control bg-control-surface p-2 font-mono text-xs leading-5 text-ink-secondary [overflow-wrap:anywhere]">
                       {formatPreview(detail.requestPreview)}
                     </pre>
                   </div>
                   <div>
-                    <div className="mb-1 text-[11px] font-medium text-ink-secondary">Response</div>
-                    <pre className="max-h-52 max-w-full overflow-auto whitespace-pre-wrap break-words rounded-control bg-control-surface p-2 font-mono text-[11px] leading-5 text-ink-secondary [overflow-wrap:anywhere]">
+                    <div className="mb-1 text-xs font-medium text-ink-secondary">Response</div>
+                    <pre className="max-h-52 max-w-full overflow-auto whitespace-pre-wrap break-words rounded-control bg-control-surface p-2 font-mono text-xs leading-5 text-ink-secondary [overflow-wrap:anywhere]">
                       {formatPreview(detail.responsePreview)}
                     </pre>
                   </div>
@@ -343,7 +343,7 @@ function ToolActivityBlockComponent({
         >
           {[...rounds.entries()].map(([round, roundCalls]) => (
             <section className="py-3" key={round} aria-label={`Tool round ${round}`}>
-              <div className="mb-2 flex flex-wrap items-center gap-2 text-[11px] text-ink-muted">
+              <div className="mb-2 flex flex-wrap items-center gap-2 text-xs text-ink-muted">
                 <span className="font-semibold text-ink-secondary">Round {round}</span>
                 <span>
                   {roundCalls.length > 1
@@ -373,7 +373,7 @@ function ToolActivityBlockComponent({
                     </summary>
                     <div className="mt-2 grid gap-2 border-l border-trace-subtle pl-3">
                       {call.externalAccountLabel || call.credentialSources.length > 0 ? (
-                        <div className="flex flex-wrap gap-x-2 gap-y-1 text-[11px] text-ink-muted">
+                        <div className="flex flex-wrap gap-x-2 gap-y-1 text-xs text-ink-muted">
                           {call.externalAccountLabel ? <span>Account: {call.externalAccountLabel}</span> : null}
                           {call.credentialSources.length > 0 ? (
                             <span>Credentials: {call.credentialSources.join(", ")}</span>
@@ -381,19 +381,19 @@ function ToolActivityBlockComponent({
                         </div>
                       ) : null}
                       <div>
-                        <div className="mb-1 text-[11px] font-medium text-ink-secondary">Arguments · sensitive values redacted</div>
-                        <pre className="max-h-48 max-w-full overflow-auto whitespace-pre-wrap break-words rounded-control bg-control-surface p-2 font-mono text-[11px] leading-5 text-ink-secondary [overflow-wrap:anywhere]">
+                        <div className="mb-1 text-xs font-medium text-ink-secondary">Arguments · sensitive values redacted</div>
+                        <pre className="max-h-48 max-w-full overflow-auto whitespace-pre-wrap break-words rounded-control bg-control-surface p-2 font-mono text-xs leading-5 text-ink-secondary [overflow-wrap:anywhere]">
                           {formatPreview(call.argumentsPreview)}
                         </pre>
                       </div>
                       <div>
-                        <div className="mb-1 text-[11px] font-medium text-ink-secondary">Result preview</div>
-                        <pre className="max-h-48 max-w-full overflow-auto whitespace-pre-wrap break-words rounded-control bg-control-surface p-2 font-mono text-[11px] leading-5 text-ink-secondary [overflow-wrap:anywhere]">
+                        <div className="mb-1 text-xs font-medium text-ink-secondary">Result preview</div>
+                        <pre className="max-h-48 max-w-full overflow-auto whitespace-pre-wrap break-words rounded-control bg-control-surface p-2 font-mono text-xs leading-5 text-ink-secondary [overflow-wrap:anywhere]">
                           {formatPreview(call.resultPreview)}
                         </pre>
                       </div>
                       {call.errorMessage ? (
-                        <p className="break-words text-[11px] leading-5 text-critical [overflow-wrap:anywhere]">
+                        <p className="break-words text-xs leading-5 text-critical [overflow-wrap:anywhere]">
                           {call.errorMessage}
                         </p>
                       ) : null}
@@ -479,9 +479,9 @@ function CitationBlockComponent({
                     [{citation.index}] {citation.title}
                   </div>
                 )}
-                <div className="mt-0.5 break-all text-[11px] text-ink-muted">{citation.url}</div>
+                <div className="mt-0.5 break-all text-xs text-ink-muted">{citation.url}</div>
                 {citation.snippet ? (
-                  <div className="mt-1 break-words text-[11px] leading-5 text-ink-secondary [overflow-wrap:anywhere]">
+                  <div className="mt-1 break-words text-xs leading-5 text-ink-secondary [overflow-wrap:anywhere]">
                     {citation.snippet}
                   </div>
                 ) : null}

@@ -13,6 +13,7 @@ import type { AdminProviderQuickSetupProvider } from "@/components/admin/adminPr
 import type { AdminConfirmationController } from "@/components/admin/useAdminConfirmationController";
 import Link from "next/link";
 import { CheckCircle2, KeyRound, ServerCog, ShieldCheck, UserRound } from "lucide-react";
+import { useEffect, useRef } from "react";
 
 export type AdminProviderQuickSetupProps = Readonly<{
   controller: AdminProviderQuickSetupController;
@@ -114,14 +115,33 @@ function ModelChoice({
   controller: AdminProviderQuickSetupController;
 }) {
   const selection = controller.state.selection;
+  const firstCandidateRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    if (!selection) return;
+    firstCandidateRef.current?.focus();
+  }, [selection]);
+
   if (!selection) return null;
   return (
-    <fieldset className="mt-5 border-y border-trace-subtle">
+    <fieldset
+      aria-describedby="provider-quick-model-required"
+      className="mt-5 border-y border-trace-subtle"
+    >
       <legend className="px-0 pb-2 text-xs font-medium text-ink-secondary">
         Choose a model available to this key
       </legend>
+      <p
+        aria-live="polite"
+        className="px-3 pb-2 text-xs leading-5 text-ink-secondary"
+        data-testid="provider-quick-model-required"
+        id="provider-quick-model-required"
+        role="status"
+      >
+        A model choice is required. Choose one to finish setup.
+      </p>
       <div className="divide-y divide-trace-subtle">
-        {selection.candidates.map((candidate) => (
+        {selection.candidates.map((candidate, index) => (
           <label
             className={`flex min-h-touch items-center gap-3 px-3 py-2.5 text-sm text-ink ${
               controller.state.formLocked ? "cursor-not-allowed opacity-60" : "cursor-pointer"
@@ -134,6 +154,8 @@ function ModelChoice({
               disabled={controller.state.formLocked}
               name="provider-quick-model"
               onChange={() => controller.actions.chooseModel(candidate.candidateId)}
+              ref={index === 0 ? firstCandidateRef : undefined}
+              required
               type="radio"
               value={candidate.candidateId}
             />
@@ -174,6 +196,7 @@ function KeyForm({
           Your current key stays active unless this replacement succeeds.
         </p>
       ) : null}
+      <ModelChoice controller={controller} />
       <div className="grid min-w-0 gap-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
         <div className="min-w-0">
           <label
@@ -193,7 +216,7 @@ function KeyForm({
             type="password"
             value={controller.state.secret}
           />
-          <span className="mt-1 block text-[11px] leading-4 text-ink-muted">
+          <span className="mt-1 block text-xs leading-4 text-ink-muted">
             Write-only. Stored keys are never shown again.
           </span>
         </div>
@@ -202,10 +225,13 @@ function KeyForm({
           disabled={submitDisabled}
           type="submit"
         >
-          {controller.state.submitting ? "Testing & saving…" : "Test & Save"}
+          {controller.state.submitting
+            ? "Testing & saving…"
+            : selectionRequired
+              ? "Use selected model & save"
+              : "Test & Save"}
         </button>
       </div>
-      <ModelChoice controller={controller} />
       <div className="mt-3 flex flex-wrap items-center gap-2">
         <ManageConnectionButton
           onManageConnection={onManageConnection}
@@ -284,7 +310,7 @@ function ReadyProvider({
   ) ?? [];
   return (
     <section className="mt-6 border-t border-positive pt-5">
-      <p className="text-[11px] font-semibold uppercase tracking-[0.1em] text-positive">
+      <p className="text-xs font-semibold uppercase tracking-[0.1em] text-positive">
         Ready to chat
       </p>
       <h3 className="mt-2 text-xl font-semibold tracking-tight text-ink">
@@ -382,7 +408,7 @@ function SelectedProviderTask({
     }`}>
       {provider.state === "needs_attention" ? (
         <>
-          <p className="text-[11px] font-semibold uppercase tracking-[0.1em] text-caution">
+          <p className="text-xs font-semibold uppercase tracking-[0.1em] text-caution">
             Setup needs attention
           </p>
           <p className="mt-2 max-w-xl text-sm leading-6 text-ink-secondary">
@@ -391,7 +417,7 @@ function SelectedProviderTask({
         </>
       ) : provider.state === "disabled" ? (
         <>
-          <p className="text-[11px] font-semibold uppercase tracking-[0.1em] text-ink">
+          <p className="text-xs font-semibold uppercase tracking-[0.1em] text-ink">
             Provider disabled
           </p>
           <p className="mt-2 max-w-xl text-sm leading-6 text-ink-secondary">
@@ -514,7 +540,7 @@ export function AdminProviderQuickSetup({
                           <AdminAvailabilityStatus enabled={false} />
                         </span>
                       ) : (
-                        <span className={`mt-1 block text-[11px] ${
+                        <span className={`mt-1 block text-xs ${
                           provider.state === "ready"
                             ? "text-positive"
                             : provider.state === "needs_attention"

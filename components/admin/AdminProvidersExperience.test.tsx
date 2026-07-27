@@ -24,7 +24,11 @@ const connections = vi.hoisted(() => ({
 
 const profiles = vi.hoisted(() => ({
   mounts: 0,
-  props: null as null | { active: boolean }
+  props: null as null | {
+    active: boolean;
+    onEditStateChange?(state: { busy: boolean; dirty: boolean }): void;
+    resetRevision?: number;
+  }
 }));
 
 vi.mock("./adminProviderCustomSetupApi", () => ({
@@ -79,11 +83,24 @@ vi.mock("./AdminProvidersSection", async () => {
 vi.mock("./AdminRunProfilesPanel", async () => {
   const React = await import("react");
   return {
-    AdminRunProfilesPanel: (props: { active: boolean }) => {
+    EMPTY_ADMIN_RUN_PROFILES_EDIT_STATE: { busy: false, dirty: false },
+    AdminRunProfilesPanel: (props: {
+      active: boolean;
+      onEditStateChange?(state: { busy: boolean; dirty: boolean }): void;
+      resetRevision?: number;
+    }) => {
+      const { onEditStateChange, resetRevision } = props;
       const [draft, setDraft] = React.useState("");
+      const [busy, setBusy] = React.useState(false);
       React.useEffect(() => {
         profiles.mounts += 1;
       }, []);
+      React.useEffect(() => {
+        onEditStateChange?.({ busy, dirty: draft.length > 0 });
+      }, [busy, draft, onEditStateChange]);
+      React.useEffect(() => {
+        setDraft("");
+      }, [resetRevision]);
       profiles.props = props;
       return (
         <div data-testid="run-profiles-workspace">
@@ -92,6 +109,8 @@ vi.mock("./AdminRunProfilesPanel", async () => {
             Profile draft
             <input onChange={(event) => setDraft(event.currentTarget.value)} value={draft} />
           </label>
+          <button onClick={() => setBusy(true)} type="button">Start profile save</button>
+          <button onClick={() => setBusy(false)} type="button">Finish profile save</button>
         </div>
       );
     }
@@ -205,6 +224,12 @@ describe("AdminProvidersExperience", () => {
     );
 
     await screen.findByText("Choose a provider to continue.");
+    expect(screen.getByTestId("provider-workspace-tabs")).toHaveClass(
+      "overflow-x-auto",
+      "overscroll-x-contain",
+      "[scrollbar-width:none]",
+      "[&::-webkit-scrollbar]:hidden"
+    );
     expect(screen.getByRole("tab", { name: "Setup" })).toHaveAttribute("aria-selected", "true");
     expect(screen.getByRole("tab", { name: "Connections" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Run profiles" })).toBeInTheDocument();
@@ -356,8 +381,12 @@ describe("AdminProvidersExperience", () => {
     expect(screen.queryByText("GPT-5.6 Sol")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Test & Save" }));
     await screen.findByText("GPT-5.6 Sol");
+    expect(screen.getByTestId("provider-quick-model-required")).toHaveTextContent(
+      "Choose one to finish setup"
+    );
+    expect(screen.getByLabelText("GPT-5.6 Luna")).toHaveFocus();
     fireEvent.click(screen.getByLabelText("GPT-5.6 Sol"));
-    fireEvent.click(screen.getByRole("button", { name: "Test & Save" }));
+    fireEvent.click(screen.getByRole("button", { name: "Use selected model & save" }));
 
     await waitFor(() => expect(api.submit).toHaveBeenCalledTimes(3));
     expect(screen.getByLabelText("GPT-5.6 Luna")).toBeDisabled();
@@ -497,7 +526,7 @@ describe("AdminProvidersExperience", () => {
     }, expect.any(Function), expect.any(AbortSignal)));
   });
 
-  it("clears Setup secrets, preserves management drafts between peer tasks, and refetches Setup on return", async () => {
+  it("clears Setup secrets, guards Run profile drafts, and refetches Setup on return", async () => {
     api.get
       .mockResolvedValueOnce({ data: snapshot(), ok: true })
       .mockResolvedValue({
@@ -535,9 +564,21 @@ describe("AdminProvidersExperience", () => {
       target: { value: "preserved profile draft" }
     });
     fireEvent.click(screen.getByRole("tab", { name: "Connections" }));
+    const firstConfirmation = await screen.findByTestId(
+      "admin-confirm-discard-run-profile-task-changes"
+    );
+    expect(firstConfirmation).toHaveTextContent("Unsaved Run profile edits will be lost");
+    fireEvent.click(within(firstConfirmation).getByRole("button", { name: "Cancel" }));
+    expect(screen.getByText("Profiles active: true")).toBeInTheDocument();
+    expect(screen.getByLabelText("Profile draft")).toHaveValue("preserved profile draft");
+
+    fireEvent.click(screen.getByRole("tab", { name: "Connections" }));
+    fireEvent.click(within(await screen.findByTestId(
+      "admin-confirm-discard-run-profile-task-changes"
+    )).getByRole("button", { name: "Confirm discard and continue" }));
     expect(screen.getByLabelText("Connection draft")).toHaveValue("preserved connection draft");
     fireEvent.click(screen.getByRole("tab", { name: "Run profiles" }));
-    expect(screen.getByLabelText("Profile draft")).toHaveValue("preserved profile draft");
+    expect(screen.getByLabelText("Profile draft")).toHaveValue("");
 
     const refreshesBeforeMutation = api.get.mock.calls.length;
     fireEvent.click(screen.getByRole("tab", { name: "Connections" }));
@@ -574,6 +615,39 @@ describe("AdminProvidersExperience", () => {
     expect(await screen.findByTestId("connections-provider-workspace")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("tab", { name: "Setup" }));
     expect(await screen.findByLabelText("API key")).toHaveValue("");
+  });
+
+  it("blocks peer task navigation while Run profiles are saving", async () => {
+    const onRunProfilesEditStateChange = vi.fn();
+    render(
+      <AdminProvidersExperience
+        active
+        groups={[]}
+        onRunProfilesEditStateChange={onRunProfilesEditStateChange}
+      />
+    );
+    await screen.findByText("Choose a provider to continue.");
+    fireEvent.click(screen.getByRole("tab", { name: "Run profiles" }));
+    await screen.findByTestId("run-profiles-workspace");
+
+    fireEvent.click(screen.getByRole("button", { name: "Start profile save" }));
+
+    expect(screen.getByRole("tab", { name: "Setup" })).toBeDisabled();
+    expect(screen.getByRole("tab", { name: "Connections" })).toBeDisabled();
+    expect(screen.getByRole("tab", { name: "Run profiles" })).toBeEnabled();
+    expect(onRunProfilesEditStateChange).toHaveBeenLastCalledWith({
+      busy: true,
+      dirty: false
+    });
+    fireEvent.click(screen.getByRole("tab", { name: "Setup" }));
+    expect(screen.getByText("Profiles active: true")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Finish profile save" }));
+    expect(onRunProfilesEditStateChange).toHaveBeenLastCalledWith({
+      busy: false,
+      dirty: false
+    });
+    expect(screen.getByRole("tab", { name: "Setup" })).toBeEnabled();
   });
 
   it("keeps Ready visible and offers Connections after a raced replacement", async () => {

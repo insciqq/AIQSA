@@ -1,6 +1,5 @@
 import {
   MCP_RUN_PLAN_LIMITS,
-  type McpReadiness,
   type McpSlotValue,
   type UserMcpConfigurationField,
   type UserMcpServer
@@ -34,6 +33,10 @@ import {
   refreshMcpSettings,
   useMcpSettingsStore
 } from "./mcpSettingsStore";
+import {
+  mcpReadinessPresentation,
+  type McpReadinessPresentation
+} from "./mcpReadiness";
 
 const focusRing =
   "outline-none focus-visible:ring-2 focus-visible:ring-proof/55 focus-visible:ring-offset-2 focus-visible:ring-offset-overlay-surface";
@@ -41,20 +44,6 @@ const touchTarget = "[@media(hover:none)]:!min-h-touch [@media(pointer:coarse)]:
 const actionButtonBase = `inline-flex min-h-touch items-center justify-center gap-2 rounded-control px-3 text-sm font-medium disabled:cursor-not-allowed disabled:text-ink-disabled disabled:opacity-60 sm:min-h-control ${touchTarget} ${focusRing}`;
 const neutralButton = `${actionButtonBase} bg-control-surface text-ink-secondary hover:bg-control-hover hover:text-ink`;
 const enableButton = `${actionButtonBase} ${enableActionTone}`;
-
-const readinessLabels: Record<McpReadiness, string> = {
-  authorizing: "Authorizing",
-  disabled: "Disabled",
-  idle: "Idle",
-  needs_authorization: "Needs authorization",
-  needs_setup: "Needs setup",
-  queued: "Queued",
-  ready: "Ready",
-  reauthorization_required: "Reauthorization required",
-  restarting: "Restarting",
-  starting: "Starting",
-  unavailable: "Unavailable"
-};
 
 function readableCode(code: string): string {
   const label = code.replace(/^mcp_/u, "").replaceAll("_", " ");
@@ -85,10 +74,10 @@ function errorText(error: unknown, server: UserMcpServer): string {
   return "The MCP server could not be updated. Try again.";
 }
 
-function readinessTone(readiness: McpReadiness): string {
-  if (readiness === "ready") return "text-positive";
-  if (readiness === "unavailable" || readiness === "reauthorization_required") return "text-critical";
-  if (readiness === "needs_setup" || readiness === "needs_authorization") return "text-caution";
+function readinessTone(kind: McpReadinessPresentation["kind"]): string {
+  if (kind === "ready") return "text-positive";
+  if (kind === "failed") return "text-critical";
+  if (kind === "attention") return "text-caution";
   return "text-ink-secondary";
 }
 
@@ -218,6 +207,7 @@ function ServerCard({
   const connected = server.oauthState === "ready" || server.oauthState === "reauthorization_required";
   const needsOAuth = server.oauthAvailable && server.oauthState !== "ready";
   const missingPersonalField = server.fields.find((field) => field.source === "missing");
+  const readiness = mcpReadinessPresentation(server.readiness);
   const lifecycleActionLabel = server.enabled
     ? "Disable"
     : missingPersonalField
@@ -254,15 +244,17 @@ function ServerCard({
           </div>
           {server.description ? <p className="mt-1 max-w-3xl text-sm leading-6 text-ink-secondary">{server.description}</p> : null}
           {server.enabled ? (
-            <p className={`mt-2 flex items-center gap-1.5 text-xs font-medium ${readinessTone(server.readiness)}`}>
-              {server.readiness === "ready"
+            <p
+              aria-live="polite"
+              className={`mt-2 flex items-center gap-1.5 text-xs font-medium ${readinessTone(readiness.kind)}`}
+              role="status"
+            >
+              {readiness.kind === "ready"
                 ? <CircleCheck className="size-3.5" aria-hidden="true" />
-                : server.readiness === "authorizing" || server.readiness === "starting" || server.readiness === "queued" || server.readiness === "restarting"
+                : readiness.kind === "progress"
                   ? <LoaderCircle className="size-3.5 animate-spin" aria-hidden="true" />
-                  : server.readiness === "idle"
-                    ? <Wrench className="size-3.5" aria-hidden="true" />
-                    : <CircleAlert className="size-3.5" aria-hidden="true" />}
-              {readinessLabels[server.readiness]}
+                  : <CircleAlert className="size-3.5" aria-hidden="true" />}
+              {readiness.label}
               {server.errorCode ? ` · ${readableCode(server.errorCode)}` : ""}
             </p>
           ) : null}

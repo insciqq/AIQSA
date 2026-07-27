@@ -190,6 +190,26 @@ body {
   color: rgb(var(--ink));
 }
 
+.account-menu-scrollbar {
+  scrollbar-color: rgb(var(--trace-strong)) transparent;
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+}
+
+.account-menu-scrollbar::-webkit-scrollbar {
+  width: 6px;
+}
+
+.account-menu-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.account-menu-scrollbar::-webkit-scrollbar-thumb {
+  border: 1px solid rgb(var(--overlay-surface));
+  border-radius: 9999px;
+  background: rgb(var(--trace-strong));
+}
+
 /* Prevent iOS focus zoom from invalidating the dynamic-viewport composer and sheets. */
 @media (max-width: 1023px), (hover: none), (pointer: coarse) {
   input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]),

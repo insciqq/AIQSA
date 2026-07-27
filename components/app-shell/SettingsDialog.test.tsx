@@ -1,75 +1,48 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { UserMcpServer } from "@/lib/contracts/mcp";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { PromptEditorDraft } from "./promptSettingsStore";
 import { resetMcpSettingsStoreForTest, useMcpSettingsStore } from "./mcpSettingsStore";
 import { SettingsDialog } from "./SettingsDialog";
 
-const prompts = [
-  {
-    developerPrompt: null,
-    id: "prompt-default",
-    isDefault: true,
-    name: "Helpful Assistant",
-    systemPrompt: "Be helpful."
-  },
-  {
-    developerPrompt: "Check assumptions.",
-    id: "prompt-custom",
-    isDefault: false,
-    name: "Research Prompt",
-    systemPrompt: "Research carefully."
-  }
-];
-
-const defaultEditor: PromptEditorDraft = {
-  developerPrompt: "",
-  id: "prompt-default",
-  name: "Helpful Assistant",
-  systemPrompt: "Be helpful."
+const mcpServer: UserMcpServer = {
+  accountLabel: null,
+  description: "Personal memory",
+  enabled: false,
+  errorCode: null,
+  fields: [{
+    configured: false,
+    label: "API key",
+    sensitive: true,
+    slotKey: "api_key",
+    source: "missing",
+    valueType: "secret"
+  }],
+  id: "memory",
+  knownToolCount: 1,
+  name: "Memory",
+  oauthAvailable: false,
+  oauthState: null,
+  readiness: "needs_setup",
+  tools: []
 };
 
-const customEditor: PromptEditorDraft = {
-  developerPrompt: "Check assumptions.",
-  id: "prompt-custom",
-  name: "Research Prompt",
-  systemPrompt: "Research carefully."
-};
+type SettingsDialogProps = Parameters<typeof SettingsDialog>[0];
 
-function renderDialog(
-  editor: PromptEditorDraft = defaultEditor,
-  overrides: Partial<Parameters<typeof SettingsDialog>[0]> = {}
-) {
-  const props = {
-    currentPromptId: "prompt-default",
-    defaultPromptId: "prompt-default",
-    editor,
+function renderDialog(overrides: Partial<SettingsDialogProps> = {}) {
+  const props: SettingsDialogProps = {
+    initialSection: "appearance",
     onClose: vi.fn(),
-    onCreatePrompt: vi.fn(),
-    onDeletePrompt: vi.fn(),
-    onDuplicatePrompt: vi.fn(),
-    onEditPrompt: vi.fn(),
-    onEditorChange: vi.fn(),
-    onNewPrompt: vi.fn(),
-    onSetDefaultPrompt: vi.fn(),
     onThemeChange: vi.fn(),
-    onUpdatePrompt: vi.fn(),
-    onUsePrompt: vi.fn(),
-    prompts,
-    saving: false,
-    themeId: "aiqsa" as const
+    themeId: "aiqsa"
   };
-
   const renderProps = { ...props, ...overrides };
   const view = render(<SettingsDialog {...renderProps} />);
 
-  return {
-    ...renderProps,
-    ...view,
-    rerenderEditor(nextEditor: PromptEditorDraft) {
-      view.rerender(<SettingsDialog {...renderProps} editor={nextEditor} />);
-    }
-  };
+  return { ...renderProps, ...view };
+}
+
+function setMcpServer() {
+  useMcpSettingsStore.setState({ loadState: "ready", servers: [mcpServer] });
 }
 
 function confirmDiscard() {
@@ -89,549 +62,73 @@ describe("SettingsDialog", () => {
     vi.unstubAllGlobals();
   });
 
-  it("opens directly on the MCP section when requested", () => {
-    renderDialog(defaultEditor, { initialSection: "mcp" });
+  it("contains only Appearance and MCP settings and can open either section directly", () => {
+    const appearanceView = renderDialog();
+    const settings = screen.getByRole("dialog", { name: "Settings" });
+    const navigation = within(settings).getByRole("navigation", { name: "Settings sections" });
+
+    expect(within(settings).getByRole("heading", { name: "Settings" })).toBeVisible();
+    expect(within(settings).getByRole("heading", { name: "Appearance" })).toBeVisible();
+    expect(within(navigation).getByRole("button", { name: "Appearance" })).toHaveAttribute(
+      "aria-current",
+      "page"
+    );
+    expect(within(navigation).getByRole("button", { name: "MCP & tools" })).toBeVisible();
+    expect(within(navigation).queryByRole("button", { name: "Prompts" })).not.toBeInTheDocument();
+    expect(screen.queryByText("Prompt library")).not.toBeInTheDocument();
+
+    appearanceView.unmount();
+    renderDialog({ initialSection: "mcp" });
 
     expect(screen.getByRole("heading", { name: "MCP & tools" })).toBeVisible();
     expect(screen.getByRole("button", { name: "MCP & tools" })).toHaveAttribute("aria-current", "page");
+    expect(screen.getByText("No MCP servers available")).toBeVisible();
   });
 
-  it("protects unsaved personal MCP values when Settings closes", () => {
-    useMcpSettingsStore.setState({
-      loadState: "ready",
-      servers: [{
-        accountLabel: null,
-        description: "Personal memory",
-        enabled: false,
-        errorCode: null,
-        fields: [{
-          configured: false,
-          label: "API key",
-          sensitive: true,
-          slotKey: "api_key",
-          source: "missing",
-          valueType: "secret"
-        }],
-        id: "memory",
-        knownToolCount: 1,
-        name: "Memory",
-        oauthAvailable: false,
-        oauthState: null,
-        readiness: "needs_setup",
-        tools: []
-      }]
-    });
-    const props = renderDialog(defaultEditor, { initialSection: "mcp" });
-
-    fireEvent.change(screen.getByLabelText("API key"), { target: { value: "personal-secret" } });
-    expect(screen.getByText("Unsaved personal values")).toBeVisible();
-    fireEvent.click(screen.getByRole("button", { name: "Close settings" }));
-
-    expect(screen.getByRole("dialog", { name: "Discard MCP settings changes" })).toBeVisible();
-    fireEvent.click(screen.getByRole("button", { name: "Keep editing" }));
-    expect(screen.getByLabelText("API key")).toHaveValue("personal-secret");
-
-    fireEvent.click(screen.getByRole("button", { name: "Close settings" }));
-    confirmDiscard();
-    expect(props.onClose).toHaveBeenCalledOnce();
-  });
-
-  it("blocks close and section replacement while an MCP value save is in flight", async () => {
-    const server: UserMcpServer = {
-      accountLabel: null,
-      description: "Personal memory",
-      enabled: false,
-      errorCode: null,
-      fields: [{
-        configured: false,
-        label: "API key",
-        sensitive: true,
-        slotKey: "api_key",
-        source: "missing",
-        valueType: "secret"
-      }],
-      id: "memory",
-      knownToolCount: 1,
-      name: "Memory",
-      oauthAvailable: false,
-      oauthState: null,
-      readiness: "needs_setup",
-      tools: []
-    };
-    const savedResponse = new Response(JSON.stringify({
-      server: {
-        ...server,
-        fields: server.fields.map((field) => ({ ...field, configured: true, source: "personal" }))
-      }
-    }), {
-      headers: { "content-type": "application/json" },
-      status: 200
-    });
-    let resolveSave!: (response: Response) => void;
-    const pendingSave = new Promise<Response>((resolve) => {
-      resolveSave = resolve;
-    });
-    vi.stubGlobal("fetch", vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
-      if (init?.method === "PATCH") return pendingSave;
-      return new Response(JSON.stringify({ servers: [server] }), {
-        headers: { "content-type": "application/json" },
-        status: 200
-      });
-    }));
-    useMcpSettingsStore.setState({ loadState: "ready", servers: [server] });
-    const props = renderDialog(defaultEditor, { initialSection: "mcp" });
-
-    fireEvent.change(screen.getByLabelText("API key"), { target: { value: "personal-secret" } });
-    fireEvent.click(screen.getByRole("button", { name: "Save personal values" }));
-
-    await waitFor(() => expect(screen.getByRole("button", { name: "Close settings" })).toBeDisabled());
-    expect(screen.getByRole("button", { name: "Prompts" })).toBeDisabled();
-    expect(screen.getByTestId("settings-dialog")).toHaveAttribute("aria-busy", "true");
-    expect(screen.getByRole("button", { name: "Close settings" })).toHaveAttribute(
-      "title",
-      "Wait for the MCP update to finish"
-    );
-    fireEvent.mouseDown(screen.getByTestId("settings-backdrop"));
-    fireEvent.keyDown(document, { key: "Escape" });
-    expect(props.onClose).not.toHaveBeenCalled();
-
-    resolveSave(savedResponse);
-    await waitFor(() => expect(screen.getByRole("button", { name: "Close settings" })).toBeEnabled());
-    expect(screen.queryByText("Unsaved personal values")).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Close settings" }));
-    expect(props.onClose).toHaveBeenCalledOnce();
-    expect(screen.queryByRole("dialog", { name: "Discard MCP settings changes" })).not.toBeInTheDocument();
-  });
-
-  it("keeps editing, next-run selection, and the user default as separate actions", () => {
+  it("keeps the bounded overlay safe in short viewports with local scrolling and a clean backdrop close", () => {
     const props = renderDialog();
-
-    fireEvent.click(screen.getByRole("button", { name: "Edit prompt Research Prompt" }));
-    expect(props.onEditPrompt).toHaveBeenCalledWith(prompts[1]);
-    expect(props.onUsePrompt).not.toHaveBeenCalled();
-
-    fireEvent.click(screen.getByRole("button", { name: "Use prompt Research Prompt for next run" }));
-    expect(props.onUsePrompt).toHaveBeenCalledWith("prompt-custom");
-
-    fireEvent.click(screen.getByRole("button", { name: "Set prompt Research Prompt as default" }));
-    expect(props.onSetDefaultPrompt).toHaveBeenCalledWith("prompt-custom");
-    expect(screen.getByText(/Next run:/).parentElement).toHaveTextContent("Helpful Assistant");
-    expect(screen.getByText(/User default:/).parentElement).toHaveTextContent("Helpful Assistant");
-    expect(screen.getByText(/Selection alone does not change the next run/)).toBeVisible();
-  });
-
-  it("emits editor updates and explicit save, duplicate, and delete actions", () => {
-    const props = renderDialog({
-      ...customEditor,
-      name: "Research Prompt draft"
-    });
-
-    fireEvent.change(screen.getByLabelText("Settings system prompt"), {
-      target: { value: "Updated system." }
-    });
-    expect(props.onEditorChange).toHaveBeenCalledWith({
-      developerPrompt: "Check assumptions.",
-      id: "prompt-custom",
-      name: "Research Prompt draft",
-      systemPrompt: "Updated system."
-    });
-
-    fireEvent.click(screen.getByRole("button", { name: "Update prompt" }));
-    expect(props.onUpdatePrompt).toHaveBeenCalledOnce();
-
-    fireEvent.click(screen.getByRole("button", { name: "Duplicate prompt Research Prompt" }));
-    expect(screen.getByRole("dialog", { name: "Discard prompt changes" })).toBeInTheDocument();
-    confirmDiscard();
-    expect(props.onEditPrompt).toHaveBeenCalledWith(prompts[1]);
-    expect(props.onDuplicatePrompt).toHaveBeenCalledWith(prompts[1]);
-  });
-
-  it("closes dirty discard ownership before requesting the external delete confirmation", async () => {
-    const props = renderDialog({ ...customEditor, name: "Research Prompt draft" });
-
-    fireEvent.click(screen.getByRole("button", { name: "Delete selected prompt" }));
-    expect(screen.getByRole("dialog", { name: "Discard prompt changes" })).toBeVisible();
-    confirmDiscard();
-
-    expect(screen.queryByRole("dialog", { name: "Discard prompt changes" })).not.toBeInTheDocument();
-    expect(props.onDeletePrompt).not.toHaveBeenCalled();
-    await waitFor(() => expect(props.onDeletePrompt).toHaveBeenCalledWith(prompts[1]));
-  });
-
-  it("derives readable delete protection from the selected default prompt id", () => {
-    const props = renderDialog(undefined, {
-      currentPromptId: "prompt-custom",
-      defaultPromptId: "prompt-custom",
-      editor: defaultEditor,
-      prompts: [
-        {
-          ...prompts[0],
-          isDefault: false
-        },
-        {
-          ...prompts[1],
-          isDefault: true
-        }
-      ]
-    });
-
-    expect(screen.getByRole("button", { name: "Delete prompt Helpful Assistant" })).not.toBeDisabled();
-    expect(screen.getByRole("button", { name: "Delete prompt Research Prompt" })).toBeDisabled();
-    expect(screen.getByText("Protected while this is the user default.")).toBeVisible();
-
-    fireEvent.click(screen.getByRole("button", { name: "Delete selected prompt" }));
-    expect(props.onDeletePrompt).toHaveBeenCalledWith(expect.objectContaining({ id: "prompt-default" }));
-  });
-
-  it("puts focus in the editor, closes cleanly on Escape, and restores the opener", async () => {
-    const trigger = document.createElement("button");
-    trigger.textContent = "Open settings";
-    document.body.appendChild(trigger);
-    trigger.focus();
-
-    const props = renderDialog();
-
-    await waitFor(() => expect(screen.getByLabelText("Prompt name")).toHaveFocus());
-
-    fireEvent.keyDown(document, { key: "Escape" });
-    expect(props.onClose).toHaveBeenCalledOnce();
-
-    props.unmount();
-    expect(trigger).toHaveFocus();
-    trigger.remove();
-  });
-
-  it("uses separate prompt library and editor panes on narrow layouts, then returns without losing the library", async () => {
-    vi.stubGlobal(
-      "matchMedia",
-      vi.fn((query: string) =>
-        ({
-          matches: query === "(max-width: 1023px)",
-          media: query
-        }) as MediaQueryList
-      )
-    );
-    const props = renderDialog();
-
-    const libraryHeading = screen.getByRole("heading", { name: "Prompt library" });
-    const editorHeading = screen.getByRole("heading", { name: "Helpful Assistant" });
-    expect(libraryHeading.closest("section")).toHaveClass("order-1", "lg:order-1");
-    expect(editorHeading.closest("section")).toHaveClass("order-2", "lg:order-2");
-    expect(screen.getByTestId("settings-prompt-library-pane")).toHaveClass("block");
-    expect(screen.getByTestId("settings-prompt-editor-pane")).toHaveClass("hidden");
-    expect(screen.getByRole("button", { name: "New prompt" })).toBeVisible();
-    await waitFor(() => expect(libraryHeading).toHaveFocus());
-
-    fireEvent.click(screen.getByRole("button", { name: "Edit prompt Research Prompt" }));
-    expect(props.onEditPrompt).toHaveBeenCalledWith(prompts[1]);
-    props.rerenderEditor(customEditor);
-
-    await waitFor(() => expect(screen.getByLabelText("Prompt name")).toHaveFocus());
-    expect(screen.getByTestId("settings-prompt-library-pane")).toHaveClass("hidden");
-    expect(screen.getByTestId("settings-prompt-editor-pane")).toHaveClass("block");
-    expect(screen.getByLabelText("Prompt name")).toHaveValue("Research Prompt");
-
-    fireEvent.click(screen.getByRole("button", { name: "Back to prompts" }));
-    expect(screen.getByTestId("settings-prompt-library-pane")).toHaveClass("block");
-    expect(screen.getByTestId("settings-prompt-editor-pane")).toHaveClass("hidden");
-    expect(screen.getByRole("button", { name: "Edit prompt Research Prompt" })).toHaveAttribute(
-      "aria-current",
-      "true"
-    );
-  });
-
-  it("opens the already-selected prompt from the compact library", () => {
-    const props = renderDialog();
-
-    fireEvent.click(screen.getByRole("button", { name: "Edit prompt Helpful Assistant" }));
-
-    expect(screen.getByTestId("settings-prompt-editor-pane")).toHaveClass("block");
-    expect(screen.getByTestId("settings-prompt-library-pane")).toHaveClass("hidden");
-    expect(props.onEditPrompt).not.toHaveBeenCalled();
-  });
-
-  it("routes close, Escape, and backdrop dismissal through dirty confirmation", () => {
-    const props = renderDialog({
-      ...defaultEditor,
-      name: "Changed name"
-    });
-
-    fireEvent.click(screen.getByRole("button", { name: "Close settings" }));
-    const firstConfirmation = screen.getByRole("dialog", { name: "Discard prompt changes" });
-    expect(firstConfirmation).toBeInTheDocument();
-    expect(screen.getByTestId("settings-dialog")).toHaveAttribute("aria-hidden", "true");
-    expect(screen.getByTestId("settings-dialog")).toHaveAttribute("inert");
-
-    fireEvent.keyDown(firstConfirmation, { key: "Escape" });
-    expect(screen.queryByRole("dialog", { name: "Discard prompt changes" })).not.toBeInTheDocument();
-    expect(props.onClose).not.toHaveBeenCalled();
-
-    fireEvent.keyDown(document, { key: "Escape" });
-    fireEvent.click(screen.getByRole("button", { name: "Keep editing" }));
-    expect(props.onClose).not.toHaveBeenCalled();
-
-    fireEvent.mouseDown(screen.getByTestId("settings-backdrop"));
-    expect(screen.getByRole("dialog", { name: "Discard prompt changes" })).toBeInTheDocument();
-    confirmDiscard();
-    expect(props.onClose).toHaveBeenCalledOnce();
-  });
-
-  it("closes directly from a clean backdrop click", () => {
-    const props = renderDialog();
-
-    fireEvent.mouseDown(screen.getByTestId("settings-backdrop"));
-    expect(props.onClose).toHaveBeenCalledOnce();
-  });
-
-  it("yields modal semantics and keyboard ownership to an external child confirmation", () => {
-    const props = renderDialog(undefined, { nestedDialogOpen: true });
-    const settings = screen.getByTestId("settings-dialog");
-
-    expect(settings).toHaveAttribute("aria-hidden", "true");
-    expect(settings).toHaveAttribute("inert");
-    fireEvent.keyDown(document, { key: "Escape" });
-    expect(props.onClose).not.toHaveBeenCalled();
-  });
-
-  it("requires confirmation before dirty section, edit, and new-prompt transitions", () => {
-    const dirtyEditor = {
-      ...defaultEditor,
-      name: "Changed name"
-    };
-
-    const sectionProps = renderDialog(dirtyEditor);
-    const appearanceSection = screen.getByRole("button", { name: "Appearance" });
-    appearanceSection.focus();
-    fireEvent.click(appearanceSection);
-    expect(screen.getByRole("dialog", { name: "Discard prompt changes" })).toBeInTheDocument();
-    expect(screen.queryByRole("heading", { name: "Appearance" })).not.toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole("button", { name: "Keep editing" }));
-    expect(screen.getByLabelText("Prompt name")).toHaveValue("Changed name");
-    expect(appearanceSection).toHaveFocus();
-
-    fireEvent.click(screen.getByRole("button", { name: "Appearance" }));
-    confirmDiscard();
-    expect(sectionProps.onEditPrompt).toHaveBeenCalledWith(prompts[0]);
-    expect(screen.getByRole("heading", { name: "Appearance" })).toBeVisible();
-    sectionProps.unmount();
-
-    const editProps = renderDialog(dirtyEditor);
-    fireEvent.click(screen.getByRole("button", { name: "Edit prompt Research Prompt" }));
-    confirmDiscard();
-    expect(editProps.onEditPrompt).toHaveBeenCalledWith(prompts[1]);
-    editProps.unmount();
-
-    const newProps = renderDialog(dirtyEditor);
-    fireEvent.click(screen.getByRole("button", { name: "New prompt" }));
-    confirmDiscard();
-    expect(newProps.onNewPrompt).toHaveBeenCalledOnce();
-  });
-
-  it("shows dirty validation and saving feedback while locking editor-replacing actions", () => {
-    const empty = renderDialog({
-      developerPrompt: "",
-      id: null,
-      name: "",
-      systemPrompt: ""
-    });
-
-    expect(screen.getByLabelText("Prompt name")).toHaveAttribute("aria-invalid", "true");
-    expect(screen.getByLabelText("Settings system prompt")).toHaveAttribute("aria-invalid", "true");
-    expect(screen.getByTestId("prompt-name-required-indicator")).toHaveClass("text-critical");
-    expect(screen.getByTestId("system-prompt-required-indicator")).toHaveClass("text-critical");
-    expect(screen.getByText("Enter a prompt name.")).toBeVisible();
-    expect(screen.getByText("Enter system instructions.")).toBeVisible();
-    expect(screen.getByRole("button", { name: "Create prompt" })).toBeDisabled();
-    empty.unmount();
-
-    const savingProps = renderDialog(
-      {
-        ...customEditor,
-        name: "Research Prompt draft"
-      },
-      { saving: true }
-    );
-    expect(screen.getByText("Saving prompt…")).toBeVisible();
-    expect(screen.getByTestId("settings-dialog")).toHaveAttribute("aria-busy", "true");
-    expect(screen.getByLabelText("Prompt name")).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Update prompt" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Close settings" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Appearance" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "New prompt" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Edit prompt Helpful Assistant" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Use prompt Research Prompt for next run" })).toBeDisabled();
-
-    fireEvent.mouseDown(screen.getByTestId("settings-backdrop"));
-    fireEvent.keyDown(document, { key: "Escape" });
-    expect(savingProps.onClose).not.toHaveBeenCalled();
-  });
-
-  it("keeps valid required metadata neutral and owns API notices inside the dialog flow", () => {
-    const onDismissNotice = vi.fn();
-    renderDialog(undefined, {
-      notice: {
-        kind: "error",
-        scope: "settings",
-        text: "Prompt creation failed with HTTP 500"
-      },
-      onDismissNotice
-    });
-
-    expect(screen.getByTestId("prompt-name-required-indicator")).toHaveClass("text-ink-muted");
-    expect(screen.getByTestId("prompt-name-required-indicator")).not.toHaveClass("text-critical");
-    expect(screen.getByTestId("system-prompt-required-indicator")).toHaveClass("text-ink-muted");
-    expect(screen.getByTestId("settings-notice-region")).toContainElement(screen.getByRole("alert"));
-
-    fireEvent.click(screen.getByRole("button", { name: "Dismiss notice" }));
-    expect(onDismissNotice).toHaveBeenCalledOnce();
-  });
-
-  it("blocks prompt mutations behind catalog recovery while keeping Appearance available", async () => {
-    const onRetryCatalog = vi.fn();
-    renderDialog(undefined, {
-      onRetryCatalog,
-      promptCatalogError: "catalog_unavailable",
-      promptCatalogState: "error"
-    });
-
-    const recovery = screen.getByTestId("settings-prompts-catalog-state");
-    expect(recovery).toHaveTextContent("Prompt library didn’t load");
-    expect(recovery).toHaveTextContent("catalog_unavailable");
-    await waitFor(() => expect(screen.getByRole("heading", { name: "Prompt library didn’t load" })).toHaveFocus());
-    expect(screen.queryByLabelText("Prompt name")).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "New prompt" })).not.toBeInTheDocument();
-    expect(screen.queryByText("No prompt presets yet")).not.toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole("button", { name: "Retry loading prompt library" }));
-    expect(onRetryCatalog).toHaveBeenCalledOnce();
-
-    fireEvent.click(screen.getByRole("button", { name: "Appearance" }));
-    expect(screen.getByRole("heading", { name: "Appearance" })).toBeVisible();
-  });
-
-  it("keeps long prompt names and instruction previews readable in the library", () => {
-    const longName = `Research ${"workflow ".repeat(14)}`.trim();
-    const longSystem = `Verify assumptions and cite primary sources. ${"Preserve nuance. ".repeat(12)}`.trim();
-    renderDialog(undefined, {
-      currentPromptId: "long-prompt",
-      defaultPromptId: "long-prompt",
-      editor: {
-        developerPrompt: "",
-        id: "long-prompt",
-        name: longName,
-        systemPrompt: longSystem
-      },
-      prompts: [
-        {
-          developerPrompt: null,
-          id: "long-prompt",
-          isDefault: true,
-          name: longName,
-          systemPrompt: longSystem
-        }
-      ]
-    });
-
-    const library = screen.getByRole("list", { name: "Prompt presets" });
-    expect(within(library).getByText(longName)).toBeVisible();
-    expect(within(library).getByText(longSystem)).toBeVisible();
-    expect(within(library).getByRole("button", { name: `Edit prompt ${longName}` })).toHaveAttribute(
-      "aria-current",
-      "true"
-    );
-  });
-
-  it("keeps every prompt action touch-safe for hoverless and coarse pointers without inflating desktop controls", () => {
-    renderDialog();
-
-    const settings = screen.getByRole("dialog", { name: "Settings" });
-    const close = within(settings).getByRole("button", { name: "Close settings" });
-    expect(close).toHaveClass(
-      "sm:size-9",
-      "[@media(hover:none)]:!size-11",
-      "[@media(pointer:coarse)]:!size-11"
-    );
-
-    for (const action of within(settings).getAllByRole("button")) {
-      if (action === close) {
-        continue;
-      }
-      expect(action).toHaveClass(
-        "[@media(hover:none)]:!min-h-touch",
-        "[@media(pointer:coarse)]:!min-h-touch"
-      );
-    }
-
-    expect(screen.getByRole("button", { name: "Prompts" })).toHaveClass("sm:min-h-control");
-    expect(screen.getByRole("button", { name: "Update prompt" })).toHaveClass("sm:min-h-control");
-    expect(screen.getByRole("button", { name: "Use selected prompt for next run" })).toHaveClass(
-      "sm:min-h-control-sm"
-    );
-    expect(screen.getByRole("button", { name: "New prompt" })).toHaveClass("sm:min-h-control-sm");
-
-    const name = screen.getByLabelText("Prompt name");
-    expect(name).toHaveClass(
-      "sm:h-control",
-      "[@media(hover:none)]:!h-touch",
-      "[@media(pointer:coarse)]:!h-touch"
-    );
-    expect(screen.getByLabelText("Settings system prompt")).toHaveClass("min-h-48");
-    expect(screen.getByLabelText("Developer prompt")).toHaveClass("min-h-36");
-
-    fireEvent.click(screen.getByRole("button", { name: "Appearance" }));
-    for (const theme of screen.getAllByRole("radio")) {
-      expect(theme).toHaveClass("min-h-touch");
-    }
-  });
-
-  it("contains the Settings workspace inside short landscape safe areas with local scrolling", () => {
-    renderDialog();
-
     const backdrop = screen.getByTestId("settings-backdrop");
+    const dialog = screen.getByRole("dialog", { name: "Settings" });
+
     expect(backdrop.className).toContain("sm:pl-[max(1.25rem,env(safe-area-inset-left))]");
     expect(backdrop.className).toContain("sm:pr-[max(1.25rem,env(safe-area-inset-right))]");
     expect(backdrop.className).toContain("[@media(max-height:32rem)]:!pt-[max(.5rem,env(safe-area-inset-top))]");
     expect(backdrop.className).toContain(
       "[@media(max-height:32rem)]:!pb-[max(.5rem,env(safe-area-inset-bottom))]"
     );
-
-    const dialog = screen.getByRole("dialog", { name: "Settings" });
     expect(dialog).toHaveAttribute("aria-modal", "true");
     expect(dialog).toHaveClass(
       "h-[100dvh]",
+      "max-w-4xl",
       "overflow-hidden",
+      "sm:rounded-panel",
       "[@media(max-height:32rem)]:!h-full",
       "[@media(max-height:32rem)]:!max-h-full"
     );
     expect(dialog.className).toContain("pl-[env(safe-area-inset-left)]");
     expect(dialog.className).toContain("pr-[env(safe-area-inset-right)]");
-
-    const promptsWorkspace = screen.getByTestId("settings-prompts-scroll");
-    expect(promptsWorkspace).toHaveClass("min-h-0", "flex-1", "overflow-hidden");
-    expect(screen.getByTestId("settings-prompt-library-pane")).toHaveClass(
-      "min-h-0",
-      "overflow-y-auto",
-      "overscroll-contain"
-    );
-    expect(screen.getByRole("button", { name: "Prompts" })).toHaveAttribute("aria-current", "page");
-
-    fireEvent.click(screen.getByRole("button", { name: "Appearance" }));
     expect(screen.getByTestId("settings-appearance-scroll")).toHaveClass(
       "min-h-0",
       "flex-1",
       "overflow-y-auto",
       "overscroll-contain"
     );
-    expect(screen.getByRole("button", { name: "Appearance" })).toHaveAttribute("aria-current", "page");
+    expect(screen.getByRole("button", { name: "Close settings" })).toHaveClass(
+      "sm:size-9",
+      "[@media(hover:none)]:!size-11",
+      "[@media(pointer:coarse)]:!size-11"
+    );
+    for (const theme of screen.getAllByRole("radio")) {
+      expect(theme).toHaveClass("min-h-touch");
+    }
+
+    fireEvent.mouseDown(backdrop);
+    expect(props.onClose).toHaveBeenCalledOnce();
   });
 
-  it("describes local-only palettes and supports radio Arrow/Home/End selection", () => {
-    const props = renderDialog(undefined, {
-      themeId: "graphite"
-    });
+  it("describes local-only palettes and supports radio Arrow, Home, End, and direct selection", () => {
+    const props = renderDialog({ themeId: "graphite" });
 
-    fireEvent.click(screen.getByRole("button", { name: "Appearance" }));
     expect(screen.getByText("This theme is saved only in this browser and does not follow your account.")).toBeVisible();
     expect(screen.queryByText(/same-site cookie|first paint/i)).not.toBeInTheDocument();
     expect(screen.getByText(/Choose an AIQSA palette/)).toBeVisible();
@@ -665,8 +162,160 @@ describe("SettingsDialog", () => {
 
     fireEvent.click(verdant);
     expect(props.onThemeChange).toHaveBeenLastCalledWith("verdant");
-
     fireEvent.click(classicDark);
     expect(props.onThemeChange).toHaveBeenLastCalledWith("classic-dark");
+  });
+
+  it("owns Settings notices inside the dialog and dismisses only that channel", () => {
+    const onDismissNotice = vi.fn();
+    renderDialog({
+      notice: {
+        kind: "error",
+        scope: "settings",
+        text: "MCP settings update failed"
+      },
+      onDismissNotice
+    });
+
+    const settings = screen.getByRole("dialog", { name: "Settings" });
+    const noticeRegion = screen.getByTestId("settings-notice-region");
+    expect(settings).toContainElement(noticeRegion);
+    expect(noticeRegion).toContainElement(screen.getByRole("alert"));
+    expect(screen.getByRole("alert")).toHaveTextContent("MCP settings update failed");
+
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss notice" }));
+    expect(onDismissNotice).toHaveBeenCalledOnce();
+  });
+
+  it("routes dirty close, Escape, and backdrop paths through one inert MCP discard dialog", () => {
+    setMcpServer();
+    const props = renderDialog({ initialSection: "mcp" });
+    const settings = screen.getByTestId("settings-dialog");
+
+    fireEvent.change(screen.getByLabelText("API key"), { target: { value: "personal-secret" } });
+    expect(screen.getByText("Unsaved personal values")).toBeVisible();
+    expect(screen.getByText("Unsaved MCP values")).toBeVisible();
+
+    fireEvent.click(screen.getByRole("button", { name: "Close settings" }));
+    let discard = screen.getByRole("dialog", { name: "Discard MCP settings changes" });
+    expect(settings).toHaveAttribute("aria-hidden", "true");
+    expect(settings).toHaveAttribute("inert");
+
+    fireEvent.keyDown(discard, { key: "Escape" });
+    expect(screen.queryByRole("dialog", { name: "Discard MCP settings changes" })).not.toBeInTheDocument();
+    expect(settings).not.toHaveAttribute("aria-hidden");
+    expect(settings).not.toHaveAttribute("inert");
+    expect(screen.getByLabelText("API key")).toHaveValue("personal-secret");
+    expect(props.onClose).not.toHaveBeenCalled();
+
+    fireEvent.keyDown(document, { key: "Escape" });
+    discard = screen.getByRole("dialog", { name: "Discard MCP settings changes" });
+    fireEvent.click(within(discard).getByRole("button", { name: "Keep editing" }));
+    expect(props.onClose).not.toHaveBeenCalled();
+
+    fireEvent.mouseDown(screen.getByTestId("settings-backdrop"));
+    expect(screen.getByRole("dialog", { name: "Discard MCP settings changes" })).toBeVisible();
+    confirmDiscard();
+    expect(props.onClose).toHaveBeenCalledOnce();
+  });
+
+  it("protects a dirty MCP draft before replacing it with Appearance", () => {
+    setMcpServer();
+    const props = renderDialog({ initialSection: "mcp" });
+
+    fireEvent.change(screen.getByLabelText("API key"), { target: { value: "personal-secret" } });
+    fireEvent.click(screen.getByRole("button", { name: "Appearance" }));
+
+    let discard = screen.getByRole("dialog", { name: "Discard MCP settings changes" });
+    fireEvent.click(within(discard).getByRole("button", { name: "Keep editing" }));
+    expect(screen.getByRole("button", { name: "MCP & tools" })).toHaveAttribute("aria-current", "page");
+    expect(screen.getByLabelText("API key")).toHaveValue("personal-secret");
+
+    fireEvent.click(screen.getByRole("button", { name: "Appearance" }));
+    discard = screen.getByRole("dialog", { name: "Discard MCP settings changes" });
+    fireEvent.click(within(discard).getByRole("button", { name: "Confirm discard changes" }));
+
+    expect(screen.getByRole("heading", { name: "Appearance" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Appearance" })).toHaveAttribute("aria-current", "page");
+    expect(screen.queryByLabelText("API key")).not.toBeInTheDocument();
+    expect(props.onClose).not.toHaveBeenCalled();
+  });
+
+  it("blocks close and section replacement while an MCP value save is in flight", async () => {
+    const savedServer: UserMcpServer = {
+      ...mcpServer,
+      fields: mcpServer.fields.map((field) => ({
+        ...field,
+        configured: true,
+        source: "personal"
+      }))
+    };
+    const savedResponse = new Response(JSON.stringify({ server: savedServer }), {
+      headers: { "content-type": "application/json" },
+      status: 200
+    });
+    let resolveSave!: (response: Response) => void;
+    const pendingSave = new Promise<Response>((resolve) => {
+      resolveSave = resolve;
+    });
+    vi.stubGlobal("fetch", vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === "PATCH") {
+        return pendingSave;
+      }
+      return new Response(JSON.stringify({ servers: [mcpServer] }), {
+        headers: { "content-type": "application/json" },
+        status: 200
+      });
+    }));
+    setMcpServer();
+    const props = renderDialog({ initialSection: "mcp" });
+
+    fireEvent.change(screen.getByLabelText("API key"), { target: { value: "personal-secret" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save personal values" }));
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "Close settings" })).toBeDisabled());
+    expect(screen.getByRole("button", { name: "Appearance" })).toBeDisabled();
+    expect(screen.getByTestId("settings-dialog")).toHaveAttribute("aria-busy", "true");
+    expect(screen.getByRole("button", { name: "Close settings" })).toHaveAttribute(
+      "title",
+      "Wait for the MCP update to finish"
+    );
+    fireEvent.mouseDown(screen.getByTestId("settings-backdrop"));
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(props.onClose).not.toHaveBeenCalled();
+
+    resolveSave(savedResponse);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Close settings" })).toBeEnabled());
+    expect(screen.queryByText("Unsaved personal values")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Close settings" }));
+    expect(props.onClose).toHaveBeenCalledOnce();
+    expect(screen.queryByRole("dialog", { name: "Discard MCP settings changes" })).not.toBeInTheDocument();
+  });
+
+  it("contains keyboard focus, closes cleanly on Escape, and restores the opener on unmount", () => {
+    const trigger = document.createElement("button");
+    trigger.textContent = "Open Settings";
+    document.body.appendChild(trigger);
+    trigger.focus();
+
+    const props = renderDialog();
+    const close = screen.getByRole("button", { name: "Close settings" });
+    const selectedTheme = screen.getByRole("radio", { name: /Use AIQSA theme/ });
+
+    expect(trigger).toHaveFocus();
+    fireEvent.keyDown(document, { key: "Tab" });
+    expect(close).toHaveFocus();
+
+    selectedTheme.focus();
+    fireEvent.keyDown(document, { key: "Tab" });
+    expect(close).toHaveFocus();
+
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(props.onClose).toHaveBeenCalledOnce();
+
+    props.unmount();
+    expect(trigger).toHaveFocus();
+    trigger.remove();
   });
 });

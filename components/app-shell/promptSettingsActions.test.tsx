@@ -238,25 +238,26 @@ describe("prompt settings actions", () => {
     ]);
   });
 
-  it("uses a prompt for the next run without persisting it as the default", () => {
+  it("opens the prompt library without changing the composer selection", () => {
     const catalogRef = { current: createCatalog() as Catalog | null };
     const { notices, persistUserDefaults, result } = renderPromptSettingsActions(catalogRef);
+    useComposerControlStore.getState().applyPrompt(promptDefault);
 
     act(() => {
-      result.current.usePromptForNextRun("prompt-custom");
+      result.current.openPromptLibrary("prompt-custom");
     });
 
+    expect(usePromptSettingsStore.getState()).toMatchObject({
+      settingsOpen: true,
+      settingsSection: "prompts",
+      settingsPromptEditor: expect.objectContaining({ id: "prompt-custom" })
+    });
     expect(useComposerControlStore.getState()).toMatchObject({
-      developerPrompt: "Check assumptions.",
-      selectedPromptId: "prompt-custom",
-      systemPrompt: "Research carefully."
+      selectedPromptId: "prompt-default",
+      systemPrompt: "Be helpful."
     });
     expect(persistUserDefaults).not.toHaveBeenCalled();
-    expect(notices).toContainEqual({
-      kind: "success",
-      scope: "settings",
-      text: "Prompt selected: Research Prompt"
-    });
+    expect(notices).toEqual([]);
   });
 
   it("selects known next-run prompts without persisting and ignores missing prompt ids", () => {

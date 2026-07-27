@@ -11,11 +11,14 @@ export function ComposerOptionPicker({
   icon,
   id,
   label,
+  compactResting = false,
   onChange,
   options,
   placement = "above",
   resting = false,
   restingLabel,
+  restingLabelClassName,
+  narrowSummaryLabel,
   summaryLabel,
   value
 }: {
@@ -27,11 +30,14 @@ export function ComposerOptionPicker({
   icon?: ReactNode;
   id: string;
   label: string;
+  compactResting?: boolean;
   onChange(value: string): void;
   options: { description?: string; label: string; value: string }[];
   placement?: "above" | "below";
   resting?: boolean;
   restingLabel?: string;
+  restingLabelClassName?: string;
+  narrowSummaryLabel?: string;
   summaryLabel?: string;
   value: string;
 }) {
@@ -74,7 +80,8 @@ export function ComposerOptionPicker({
         {...triggerProps}
         ref={triggerRef}
         className={[
-          "flex h-touch w-full min-w-0 items-center justify-between gap-2 rounded-control px-3 text-left text-xs outline-none focus-visible:ring-2 focus-visible:ring-proof/55 disabled:cursor-not-allowed disabled:text-ink-disabled sm:h-control [@media(hover:none)]:!h-touch [@media(pointer:coarse)]:!h-touch",
+          "flex h-touch w-full min-w-0 items-center justify-between rounded-control text-left text-xs outline-none focus-visible:ring-2 focus-visible:ring-proof/55 disabled:cursor-not-allowed disabled:text-ink-disabled sm:h-control [@media(hover:none)]:!h-touch [@media(pointer:coarse)]:!h-touch",
+          compactResting ? "gap-1 px-2 max-[429px]:gap-0.5 max-[429px]:px-1.5" : "gap-2 px-3",
           resting
             ? "bg-control-surface text-ink hover:bg-control-hover"
             : "border border-trace-subtle bg-answer-paper text-ink hover:bg-control-hover"
@@ -87,12 +94,23 @@ export function ComposerOptionPicker({
         title={triggerDescription}
         onClick={toggle}
       >
-        <span className="flex min-w-0 items-center gap-2">
+        <span className={`flex min-w-0 items-center ${compactResting ? "gap-1 max-[429px]:gap-0.5" : "gap-2"}`}>
           {icon}
-          <span className="flex min-w-0 items-baseline gap-1.5">
-            {resting ? <span className="shrink-0 text-[11px] text-ink-muted">{restingLabel ?? label}</span> : null}
+          <span className={`flex min-w-0 items-baseline ${compactResting ? "gap-1" : "gap-1.5"}`}>
+            {resting ? (
+              <span
+                className={["shrink-0 text-xs text-ink-muted", restingLabelClassName].filter(Boolean).join(" ")}
+              >
+                {restingLabel ?? label}
+              </span>
+            ) : null}
             <span className="truncate text-sm font-medium" id={`${id}-current-value`}>
-              {summaryLabel ?? fullSelectedLabel}
+              {narrowSummaryLabel ? (
+                <>
+                  <span className="text-xs min-[430px]:hidden">{narrowSummaryLabel}</span>
+                  <span className="hidden min-[430px]:inline">{summaryLabel ?? fullSelectedLabel}</span>
+                </>
+              ) : summaryLabel ?? fullSelectedLabel}
             </span>
           </span>
         </span>

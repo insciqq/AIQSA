@@ -10,6 +10,7 @@ import type {
   McpDraftValidationOutcome,
   McpDraftValidator
 } from "./draftValidator";
+import { McpDraftValidationAbortedError } from "./draftValidator";
 import {
   localResolvedArtifactJson,
   parseMcpLocalResolvedArtifact,
@@ -236,23 +237,26 @@ export function createLocalMcpDraftValidator(
       const environment = environmentForDraft(input.draft, input.values);
       if (environment.envVars === null) return environment.outcome;
 
+      if (source.kind !== "oci") await input.onProgress?.("resolving");
       const resolution = source.kind === "oci" ? null : await resolvePackage(source);
       if (resolution?.kind === "invalid") {
         return { issues: [resolution.issue], kind: "invalid" };
       }
       const launchImage = source.kind === "oci" ? source.image : resolution!.value.protocolImage;
-      const generationToken = randomToken();
+      const generationToken = input.workloadToken ?? randomToken();
       if (!/^[a-z0-9]{24,64}$/u.test(generationToken)) {
         return invalid("mcp_local_validation_identity_invalid", "source");
       }
 
       let session: McpRuntimeSession | null = null;
       try {
+        await input.onProgress?.("preparing_runtime");
         session = await options.sessions.create({
           callTimeoutMs: input.draft.runtime.callTimeoutMs,
           fingerprint: generationToken.padEnd(64, "0").slice(0, 64),
           generationId: `validation-${generationToken}`,
           headers: {},
+          onConnecting: () => input.onProgress?.("connecting") ?? Promise.resolve(),
           onToolsChanged() {},
           redactionValues: sensitiveValues(input.draft, input.values),
           retryAt: null,
@@ -264,6 +268,7 @@ export function createLocalMcpDraftValidator(
             image: launchImage
           }
         });
+        await input.onProgress?.("discovering_tools");
         const tools = await session.listTools();
         const secrets = sensitiveValues(input.draft, input.values);
         const serializedTools = JSON.stringify(tools);
@@ -308,6 +313,7 @@ export function createLocalMcpDraftValidator(
           toolInventory: inventory.inventory
         };
       } catch (error) {
+        if (error instanceof McpDraftValidationAbortedError) throw error;
         return await localFailure(error, {
           client: options.client,
           draft: input.draft,

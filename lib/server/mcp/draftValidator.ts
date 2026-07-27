@@ -8,10 +8,18 @@ import type {
 
 export type McpDraftValidationInput = Readonly<{
   draft: McpDraftConfiguration;
+  onProgress?(stage: McpDraftValidationStage): Promise<void>;
   serverId?: string;
   validationUserId?: string;
   values: Readonly<Record<string, McpSlotValue>>;
+  workloadToken?: string;
 }>;
+
+export type McpDraftValidationStage =
+  | "resolving"
+  | "preparing_runtime"
+  | "connecting"
+  | "discovering_tools";
 
 export type McpDraftValidationOutcome =
   | Readonly<{
@@ -33,6 +41,13 @@ export class McpDraftValidationUnavailableError extends Error {
   constructor() {
     super("mcp_draft_validation_unavailable");
     this.name = "McpDraftValidationUnavailableError";
+  }
+}
+
+export class McpDraftValidationAbortedError extends Error {
+  constructor() {
+    super("mcp_draft_validation_aborted");
+    this.name = "McpDraftValidationAbortedError";
   }
 }
 

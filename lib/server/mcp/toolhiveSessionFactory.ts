@@ -26,6 +26,7 @@ export function createToolHiveMcpSessionFactory(input: Readonly<{
           image: local.image
         }, {
           probe: async (url) => {
+            await launch.onConnecting?.();
             const candidate = await input.directSessions.create({
               ...launch,
               allowPrivateNetwork: true,

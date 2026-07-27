@@ -1,7 +1,7 @@
 import { defineConfig, devices } from "@playwright/test";
 
 const baseURL = "http://127.0.0.1:3000";
-const fakeProviderTokenDelayMs = process.env.AIQSA_FAKE_PROVIDER_TOKEN_DELAY_MS?.trim() || "150";
+const fakeProviderTokenDelayMs = process.env.AIQSA_FAKE_PROVIDER_TOKEN_DELAY_MS?.trim() || "10";
 const encryptionKey = process.env.AIQSA_ENCRYPTION_KEY?.trim() ||
   "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
 

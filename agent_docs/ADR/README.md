@@ -42,6 +42,7 @@ Every ADR also declares `Amends: none` or a comma-separated list of earlier ADR 
 - `0031-native-gemini-interactions-and-live-only-grounding.md` - replaces first-class Gemini compatibility with one native stateless Interactions v1 adapter and makes actual Google Search-grounded output validated, transient, non-shareable, and non-replayable without any fallback.
 - `0032-direct-custom-openai-compatible-setup.md` - adds one administrator-first custom Chat endpoint/model/key Test & Save path with direct access, atomic control-plane creation, and explicit fail-closed keyless local authentication.
 - `0033-unified-providers-workspace-and-lifecycle-state-language.md` - presents Setup, Connections, and Run profiles as one lazy Providers workspace and gives actual Enabled/Disabled resources one explicit product-wide status/action language.
+- `0034-durable-asynchronous-mcp-activation.md` - turns initial MCP activation into one durable asynchronous trust decision with observable fenced stages and keeps transient user-runtime activation distinct from setup failure.
 
 ## Superseded ADRs
 

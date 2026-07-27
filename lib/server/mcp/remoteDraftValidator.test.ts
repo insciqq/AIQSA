@@ -108,6 +108,7 @@ const safeFetch: McpClientSessionOptions["fetch"] = async () => new Response("un
 
 describe("remote MCP draft validator", () => {
   it("discovers a static-header remote draft through the injected safe session", async () => {
+    const progress: string[] = [];
     const harness = sessionHarness({
       tools: [
         tool({ description: "Create a task", name: "create_task" }),
@@ -120,6 +121,9 @@ describe("remote MCP draft validator", () => {
     });
     const outcome = await validator.validate({
       draft: remoteDraft(),
+      onProgress: async (stage) => {
+        progress.push(stage);
+      },
       values: {
         authorization: SECRET,
         retries: 3,
@@ -147,6 +151,7 @@ describe("remote MCP draft validator", () => {
       ]
     });
     expect(harness.events).toEqual(["initialize", "listAllTools", "close"]);
+    expect(progress).toEqual(["connecting", "discovering_tools"]);
     expect(harness.options).toHaveLength(1);
     expect(harness.options[0]).toMatchObject({
       fetch: safeFetch,

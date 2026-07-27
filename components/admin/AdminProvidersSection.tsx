@@ -46,6 +46,7 @@ import type { AdminProviderConnection } from "@/lib/contracts/adminProviders";
 import {
   Check,
   ChevronRight,
+  CircleAlert,
   MoreHorizontal,
   Pencil,
   Plus,
@@ -144,6 +145,9 @@ function ConnectionIndex({
     connection.family,
     providerFamilyLabel(connection.family)
   ].join(" ").toLocaleLowerCase().includes(normalizedQuery));
+  const configuredCount = connections.filter(
+    (connection) => presentProviderConnection(connection).publicationState !== "not_configured"
+  ).length;
 
   return (
     <section
@@ -157,7 +161,7 @@ function ConnectionIndex({
             <div>
               <h3 className="text-sm font-semibold text-ink">Connections</h3>
               <p className="mt-0.5 text-xs text-ink-muted">
-                {connections.length} configured
+                {connections.length} {connections.length === 1 ? "connection" : "connections"} · {configuredCount} configured
               </p>
             </div>
             <div className="flex flex-wrap items-center gap-1">
@@ -169,7 +173,7 @@ function ConnectionIndex({
                 type="button"
               >
                 <RefreshCw aria-hidden="true" className={`size-3.5 ${controller.state.loading ? "animate-spin" : ""}`} />
-                Refresh
+                Refresh connections
               </button>
               <button className={primaryButton} disabled={controller.state.busy} onClick={onCreate} type="button">
                 <Plus aria-hidden="true" className="size-3.5" />
@@ -405,9 +409,26 @@ function ConnectionDetail({
           </div>
         </div>
 
-        <div className={`mt-4 flex flex-col gap-3 border-l-2 pl-3 sm:flex-row sm:items-center sm:justify-between ${readinessTone === "ready" ? "border-positive" : readinessTone === "attention" ? "border-caution" : "border-trace-strong"}`}>
-          <div className="min-w-0">
-            <p className={`text-sm font-medium ${readinessTone === "ready" ? "text-positive" : readinessTone === "attention" ? "text-caution" : runtimeDisabled ? "text-ink" : "text-ink-secondary"}`}>
+        <section
+          className={[
+            "mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between",
+            readinessTone === "setup"
+              ? "rounded-control border border-critical/30 bg-critical/10 px-3.5 py-3"
+              : `border-l-2 pl-3 ${readinessTone === "ready" ? "border-positive" : readinessTone === "attention" ? "border-caution" : "border-trace-strong"}`
+          ].join(" ")}
+          aria-labelledby="provider-activation-readiness-heading"
+          data-readiness-tone={readinessTone}
+          data-testid="provider-activation-readiness"
+        >
+          <div className="flex min-w-0 items-start gap-2.5">
+            {readinessTone === "setup" ? (
+              <CircleAlert className="mt-0.5 size-4 shrink-0 text-critical" aria-hidden="true" />
+            ) : null}
+            <div className="min-w-0">
+            <h3
+              className={`text-sm font-semibold ${readinessTone === "setup" ? "text-critical" : readinessTone === "ready" ? "text-positive" : readinessTone === "attention" ? "text-caution" : runtimeDisabled ? "text-ink" : "text-ink-secondary"}`}
+              id="provider-activation-readiness-heading"
+            >
               {runtimeDisabled
                 ? "Connection is disabled."
                 : firstSetupHasBlockers
@@ -417,9 +438,9 @@ function ConnectionDetail({
                 : ui.publication.kind === "active" && connection.enabled
                   ? "Provider is active and ready for new runs."
                   : "Ready to activate."}
-            </p>
+            </h3>
             {ui.readiness.blockers.length ? (
-              <ul className="mt-1 list-disc space-y-1 pl-4 text-xs leading-5 text-ink-muted">
+              <ul className={`mt-1 list-disc space-y-1 pl-4 text-xs leading-5 ${readinessTone === "setup" ? "text-ink-secondary marker:text-critical" : "text-ink-muted"}`}>
                 {ui.readiness.blockers.map((blocker) => <li key={blocker.code}>{blocker.message}</li>)}
               </ul>
             ) : (
@@ -429,6 +450,7 @@ function ConnectionDetail({
                   : "Activation revalidates the current endpoint, models, and referenced keys on the server."}
               </p>
             )}
+            </div>
           </div>
           {ui.primaryAction && !primaryActionIsAlreadyOpen && !primaryActionIsAlreadyInHeader ? (
             <button
@@ -441,7 +463,7 @@ function ConnectionDetail({
               {ui.primaryAction.label}
             </button>
           ) : null}
-        </div>
+        </section>
 
         {activationNeedsOverride ? (
           <div className="mt-4 flex flex-col gap-3 rounded-control bg-caution/10 px-3 py-2.5 text-xs leading-5 text-caution sm:flex-row sm:items-center sm:justify-between">

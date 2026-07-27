@@ -2,7 +2,7 @@
 
 Self-hosted Question → Search → Answer for people and small teams who want an AI workspace with explicit control over providers, models, search, and run data.
 
-![AIQSA conversation workspace with model and search controls](docs/assets/aiqsa-workspace.png)
+![AIQSA conversation workspace with model and search controls](docs/assets/ui/product/aiqsa-workspace.png)
 
 AIQSA combines a conversation UI with inspectable execution: users can choose a concrete model and search strategy for each run, then review citations, reasoning, events, usage, and branch history. Workspace data stays in your PostgreSQL database and private S3-compatible storage; content selected for a run is sent to the configured AI provider.
 

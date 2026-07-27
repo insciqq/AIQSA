@@ -5,9 +5,13 @@ export async function register(): Promise<void> {
   );
   startDefaultRunRecoveryScheduler();
   try {
+    const { getDefaultMcpActivationCoordinator } = await import(
+      "./lib/server/mcp/defaultActivation"
+    );
     const { getDefaultMcpRuntimeCoordinator } = await import(
       "./lib/server/mcp/defaultRuntime"
     );
+    getDefaultMcpActivationCoordinator();
     getDefaultMcpRuntimeCoordinator();
   } catch {
     // MCP is an optional subsystem. A missing/invalid MCP deployment setting must

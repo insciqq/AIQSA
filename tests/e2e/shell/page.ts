@@ -2,12 +2,25 @@ import { expect, type Locator, type Page } from "@playwright/test";
 
 export async function runAccountMenuAction(
   page: Page,
-  name: "Command palette" | "Settings"
+  name: "Command palette" | "Prompt library" | "Settings"
 ): Promise<Locator> {
-  const trigger = page.getByRole("button", { name: "Account menu" });
+  const desktopTrigger = page.getByTestId("left-chat-pane").getByRole("button", { name: /Account menu/ });
+  if (await desktopTrigger.isVisible()) {
+    await desktopTrigger.click();
+    await page.getByRole("menu", { name: "Account" }).getByRole("menuitem", { name }).click();
+    return desktopTrigger;
+  }
+
+  const restoreTarget = page.getByRole("button", { name: "Open workspace" });
+  const workspace = page.getByTestId("workspace-pane-mobile");
+  if (!(await workspace.isVisible())) {
+    await restoreTarget.click();
+  }
+
+  const trigger = workspace.getByRole("button", { name: /Account menu/ });
   await trigger.click();
-  await page.getByRole("menu", { name: "Account" }).getByRole("menuitem", { name }).click();
-  return trigger;
+  await workspace.getByRole("menu", { name: "Account" }).getByRole("menuitem", { name }).click();
+  return restoreTarget;
 }
 
 export async function expectComposerBeforeDetails(page: Page): Promise<void> {

@@ -1,12 +1,14 @@
+/* eslint-disable @next/next/no-html-link-for-pages -- Control Center exits use a full-document navigation so native beforeunload protection owns document-level draft safety. */
 import { quietButton } from "@/components/admin/adminPrimitives";
 import { formatTime } from "@/components/admin/adminViewUtils";
 import { ArrowLeft, Clock, RefreshCw } from "lucide-react";
-import Link from "next/link";
+import type { MouseEvent } from "react";
 
 export type AdminConsoleHeaderProps = Readonly<{
   adminEmail: string;
   lastLoadedAt: Date | null;
   loading: boolean;
+  onReturnToChatClick?(event: MouseEvent<HTMLAnchorElement>): void;
   onRefresh(): void;
   submitting: boolean;
 }>;
@@ -15,6 +17,7 @@ export function AdminConsoleHeader({
   adminEmail,
   lastLoadedAt,
   loading,
+  onReturnToChatClick,
   onRefresh,
   submitting
 }: AdminConsoleHeaderProps) {
@@ -29,10 +32,26 @@ export function AdminConsoleHeader({
         </p>
       </div>
       <div className="flex flex-wrap items-center gap-2 sm:[@media(max-height:32rem)]:!flex-nowrap sm:[@media(max-height:32rem)]:!gap-1">
-        <Link className={quietButton} href="/">
+        <a
+          aria-disabled={submitting || undefined}
+          className={`${quietButton} ${
+            submitting
+              ? "cursor-not-allowed bg-control-surface text-ink-disabled opacity-60 hover:bg-control-surface hover:text-ink-disabled active:bg-control-surface"
+              : ""
+          }`}
+          href="/"
+          onClick={(event) => {
+            if (submitting) {
+              event.preventDefault();
+              return;
+            }
+            onReturnToChatClick?.(event);
+          }}
+          tabIndex={submitting ? -1 : undefined}
+        >
           <ArrowLeft className="size-3.5" aria-hidden="true" />
           Return to chat
-        </Link>
+        </a>
         <span
           aria-live="polite"
           className="inline-flex min-h-control-sm items-center gap-1.5 px-2 text-xs text-ink-muted"
@@ -46,14 +65,14 @@ export function AdminConsoleHeader({
               : `Updated ${formatTime(lastLoadedAt)}`}
         </span>
         <button
-          aria-label="Refresh Control Center"
+          aria-label="Refresh Control Center dashboard"
           className={quietButton}
-          disabled={loading}
+          disabled={loading || submitting}
           onClick={() => onRefresh()}
           type="button"
         >
           <RefreshCw className="size-3.5" aria-hidden="true" />
-          Refresh
+          Refresh dashboard
         </button>
       </div>
     </header>

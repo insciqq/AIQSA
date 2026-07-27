@@ -65,6 +65,7 @@ export function useAdminMcpSectionState(): AdminMcpSectionState {
           });
           setImported(true);
           setImportError(null);
+          setImportValueState("");
           setMode("create");
           setCompactDetailOpen(true);
         } catch (error) {

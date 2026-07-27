@@ -163,7 +163,7 @@ describe("AdminUsersSection", () => {
     fireEvent.change(screen.getByLabelText("Search users"), { target: { value: "pending@example.com" } });
     fireEvent.click(within(screen.getByRole("group", { name: "User status filters" })).getByRole("button", { name: "pending" }));
     fireEvent.change(screen.getByLabelText("Sort users"), { target: { value: "lastSession" } });
-    fireEvent.click(screen.getByRole("button", { name: "Asc" }));
+    fireEvent.click(screen.getByRole("button", { name: "Change sort direction to descending" }));
     fireEvent.click(screen.getByRole("button", { name: "Previous users page" }));
     fireEvent.click(screen.getByRole("button", { name: "Next users page" }));
 
@@ -206,6 +206,47 @@ describe("AdminUsersSection", () => {
     expect(screen.getByRole("button", { name: "Save groups" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Revoke sessions" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Disable user" })).toBeDisabled();
+  });
+
+  it("enables group saving only for a changed active-user membership draft", () => {
+    const active = createUser();
+    const fixture = createFixture({ selectedUser: active, view: { compactDetailOpen: true } });
+    const view = render(<AdminUsersSection {...fixture.props} />);
+
+    expect(screen.getByRole("button", { name: "Save groups" })).toBeDisabled();
+    expect(screen.getByText("Group memberships are up to date")).toBeVisible();
+
+    view.rerender(
+      <AdminUsersSection
+        {...fixture.props}
+        data={{ ...fixture.props.data, selectedUserGroupIds: [] }}
+      />
+    );
+    expect(screen.getByRole("button", { name: "Save groups" })).toBeEnabled();
+    expect(screen.getByText("Unsaved group changes")).toBeVisible();
+  });
+
+  it("ignores archived memberships when comparing the saved active-group draft", () => {
+    const active = createUser({
+      groups: [
+        { groupId: "group-operators", name: "Operators", role: "member" },
+        { groupId: "group-archived", name: "Archived group", role: "member" }
+      ]
+    });
+    const fixture = createFixture({ selectedUser: active, view: { compactDetailOpen: true } });
+    render(
+      <AdminUsersSection
+        {...fixture.props}
+        data={{
+          ...fixture.props.data,
+          selectedUserGroupIds: ["group-operators"]
+        }}
+      />
+    );
+
+    expect(screen.getByRole("button", { name: "Save groups" })).toBeDisabled();
+    expect(screen.getByText("Group memberships are up to date")).toBeVisible();
+    expect(screen.queryByRole("checkbox", { name: "Archived group" })).not.toBeInTheDocument();
   });
 
   it("keeps catalog-backed and unavailable model grants truthful", () => {

@@ -28,12 +28,11 @@ export type PromptSettingsActions = {
   duplicateSettingsPrompt(prompt: PromptPreset): Promise<void>;
   editSettingsPrompt(prompt: PromptPreset): void;
   newSettingsPrompt(): void;
-  openSettings(promptId?: string | null): void;
+  openPromptLibrary(promptId?: string | null): void;
   selectPrompt(promptId: string): PromptPreset | null;
   setDefaultPromptPreset(promptId: string): Promise<void>;
   setSettingsPromptEditor(draft: PromptEditorDraft): void;
   updateSettingsPrompt(): Promise<void>;
-  usePromptForNextRun(promptId: string): void;
 };
 
 function sortPrompts(prompts: PromptPreset[]) {
@@ -98,13 +97,13 @@ export function usePromptSettingsActions({
     usePromptSettingsStore.getState().closeSettings();
   }
 
-  function openSettings(promptId = selectedPromptId()) {
+  function openPromptLibrary(promptId = selectedPromptId()) {
     const prompt =
       catalog?.promptPresets.find((candidate) => candidate.id === promptId) ??
       currentPrompt ??
       catalog?.promptPresets[0] ??
       null;
-    usePromptSettingsStore.getState().openSettings(prompt);
+    usePromptSettingsStore.getState().openPromptLibrary(prompt);
   }
 
   function newSettingsPrompt() {
@@ -128,18 +127,6 @@ export function usePromptSettingsActions({
     applyPromptToComposer(prompt);
 
     return prompt;
-  }
-
-  function usePromptForNextRun(promptId: string) {
-    const prompt = selectPrompt(promptId);
-    if (!prompt) {
-      return;
-    }
-
-    setSettingsNotice({
-      kind: "success",
-      text: `Prompt selected: ${prompt.name}`
-    });
   }
 
   async function createSettingsPrompt() {
@@ -381,11 +368,10 @@ export function usePromptSettingsActions({
     duplicateSettingsPrompt,
     editSettingsPrompt,
     newSettingsPrompt,
-    openSettings,
+    openPromptLibrary,
     selectPrompt,
     setDefaultPromptPreset,
     setSettingsPromptEditor,
-    updateSettingsPrompt,
-    usePromptForNextRun
+    updateSettingsPrompt
   };
 }

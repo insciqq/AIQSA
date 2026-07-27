@@ -2,7 +2,7 @@
 
 import { summarizeInspectorEvents } from "@/components/app-shell/eventLog";
 import { branchTreeHasForks, branchTreeNodes } from "@/components/app-shell/threadPath";
-import type { RunEventView, ThreadMessage } from "@/components/app-shell/types";
+import type { Catalog, RunEventView, ThreadMessage } from "@/components/app-shell/types";
 import {
   InspectorTabs,
   inspectorPanelId,
@@ -24,6 +24,7 @@ import {
 export function DetailedInspector({
   activeLeafId,
   activeTab,
+  catalog = null,
   errorText,
   events,
   messages,
@@ -38,6 +39,7 @@ export function DetailedInspector({
 }: {
   activeLeafId: string | null;
   activeTab: InspectorTabId;
+  catalog?: Catalog | null;
   errorText: string | null;
   events: RunEventView[];
   messages: ThreadMessage[];
@@ -60,10 +62,10 @@ export function DetailedInspector({
           <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5">
             <h2 className="text-base font-semibold tracking-[-0.01em] text-ink" id="details-heading">Details</h2>
             <span
-              className="text-[11px] font-medium uppercase tracking-[0.08em] text-ink-muted"
+              className="text-xs font-medium text-ink-muted"
               data-testid="details-mode-label"
             >
-              {pinned ? "Pinned view" : "Overlay view"}
+              {pinned ? "Pinned beside chat" : "Opened over chat"}
             </span>
           </div>
           <p
@@ -73,10 +75,14 @@ export function DetailedInspector({
           >
             {errorText ?? (
               streaming
-                ? events.length > 0 ? "Run active · live events available" : "Run active"
+                ? events.length > 0
+                  ? `${events.length} ${events.length === 1 ? "event" : "events"} recorded so far. The run is still active.`
+                  : "The run is active. No events have arrived yet."
                 : runId
-                  ? events.length > 0 ? "Run events available" : "Run recorded · no events captured"
-                  : "Branch and run events"
+                  ? events.length > 0
+                    ? `${events.length} recorded ${events.length === 1 ? "event" : "events"} for this run.`
+                    : "This run was recorded without events."
+                  : "Review conversation branches or recorded run events."
             )}
           </p>
         </div>
@@ -115,7 +121,9 @@ export function DetailedInspector({
         tabIndex={0}
       >
         <div className="min-w-0">
-          {activeTab === "events" ? <EventLog events={events} /> : null}
+          {activeTab === "events" ? (
+            <EventLog catalog={catalog} events={events} runRecorded={Boolean(runId)} streaming={streaming} />
+          ) : null}
 
           {activeTab === "branch" ? (
             <BranchTree
@@ -143,18 +151,28 @@ export function DetailedInspector({
   );
 }
 
-function EventLog({ events }: { events: RunEventView[] }) {
-  const summaries = summarizeInspectorEvents(events);
+function EventLog({
+  catalog,
+  events,
+  runRecorded,
+  streaming
+}: {
+  catalog: Catalog | null;
+  events: RunEventView[];
+  runRecorded: boolean;
+  streaming: boolean;
+}) {
+  const summaries = summarizeInspectorEvents(events, catalog);
 
   return (
     <section aria-labelledby="details-events-heading">
       <div className="flex items-start gap-3">
         <Activity className="mt-0.5 size-4 shrink-0 text-proof" aria-hidden="true" />
         <div className="min-w-0">
-          <p className="text-[11px] font-medium uppercase tracking-[0.09em] text-ink-muted">Run trace</p>
+          <p className="text-xs font-medium text-ink-muted">Run timeline</p>
           <h3 className="mt-0.5 text-[15px] font-semibold text-ink" id="details-events-heading">Events</h3>
           <p className="mt-1 text-xs leading-5 text-ink-secondary">
-            Chronological run evidence. Repeated provider, token, tool, and artifact updates are compacted at their first occurrence.
+            Recorded events in order. Repeated text, provider, tool, and usage updates are grouped while their counts and recorded details stay visible.
           </p>
         </div>
       </div>
@@ -162,13 +180,17 @@ function EventLog({ events }: { events: RunEventView[] }) {
       <ol className="mt-4 border-y border-trace-subtle" data-testid="inspector-event-log">
         {summaries.length === 0 ? (
           <li className="bg-control-surface px-3 py-5 text-xs leading-5 text-ink-secondary">
-            Events appear here during a run. Details stays closed until you open it.
+            {streaming
+              ? "The run is active. No events have arrived yet."
+              : runRecorded
+                ? "This run has no recorded events."
+                : "Run events will appear here after a response starts."}
           </li>
         ) : (
           summaries.map((item, index) => (
             <li
               className={[
-                "relative grid min-w-0 grid-cols-[2.75rem_minmax(0,1fr)] gap-3 border-b border-trace-subtle px-2 py-3 text-xs last:border-b-0 sm:grid-cols-[3rem_minmax(0,1fr)] sm:px-3",
+                "relative grid min-w-0 grid-cols-[4.25rem_minmax(0,1fr)] gap-2 border-b border-trace-subtle px-2 py-3 text-xs last:border-b-0 sm:grid-cols-[4.5rem_minmax(0,1fr)] sm:gap-3 sm:px-3",
                 item.tone === "error"
                   ? "bg-critical/[0.055]"
                   : item.tone === "warning"
@@ -178,11 +200,11 @@ function EventLog({ events }: { events: RunEventView[] }) {
               data-tone={item.tone}
               key={item.id}
             >
-              <span className="sr-only">Event {index + 1}, stage {item.stage}.</span>
-              <div className="border-r border-trace-subtle pr-2 font-mono text-[10px] leading-4 text-ink-muted" aria-hidden="true">
-                <div className="text-ink-disabled">{String(index + 1).padStart(2, "0")}</div>
+              <span className="sr-only">Event {index + 1}, {eventStageLabel(item.stage)}.</span>
+              <div className="border-r border-trace-subtle pr-2 text-xs leading-4 text-ink-muted" aria-hidden="true">
+                <div className="font-mono text-ink-disabled">{String(index + 1).padStart(2, "0")}</div>
                 <div className="mt-1 break-words font-semibold text-ink-secondary [overflow-wrap:anywhere]">
-                  {item.stage}
+                  {eventStageLabel(item.stage)}
                 </div>
               </div>
               <div className="min-w-0">
@@ -206,7 +228,7 @@ function EventLog({ events }: { events: RunEventView[] }) {
                 </p>
                 {item.detail ? (
                   <div
-                    className="mt-1 break-words font-mono text-[11px] leading-5 text-ink-muted [overflow-wrap:anywhere]"
+                    className="mt-1 break-words font-mono text-xs leading-5 text-ink-muted [overflow-wrap:anywhere]"
                     title={item.detail}
                   >
                     {item.detail}
@@ -219,6 +241,20 @@ function EventLog({ events }: { events: RunEventView[] }) {
       </ol>
     </section>
   );
+}
+
+function eventStageLabel(stage: string): string {
+  const labels: Record<string, string> = {
+    A: "Answer",
+    API: "Usage",
+    ART: "Evidence",
+    Q: "Question",
+    RUN: "Run",
+    S: "Search",
+    TOOL: "Tool"
+  };
+
+  return labels[stage] ?? stage.replace(/[_-]+/g, " ");
 }
 
 function EventToneIcon({ tone }: { tone: "default" | "error" | "success" | "warning" }) {
@@ -259,115 +295,117 @@ function BranchTree({
       <div className="flex items-start gap-3">
         <GitBranch className="mt-0.5 size-4 shrink-0 text-proof" aria-hidden="true" />
         <div className="min-w-0">
-          <p className="text-[11px] font-medium uppercase tracking-[0.09em] text-ink-muted">Conversation path</p>
+          <p className="text-xs font-medium text-ink-muted">Conversation versions</p>
           <h3 className="mt-0.5 text-[15px] font-semibold text-ink" id="details-branch-heading">Branches</h3>
           <p className="mt-1 text-xs leading-5 text-ink-secondary">
             {nodes.length === 0
-              ? "Messages appear here after the conversation begins."
+              ? "No messages yet."
               : hasForks
-                ? `${leafCount} paths · ${activePathLength} messages on the active path`
-                : `${activePathLength} messages on one linear path`}
+                ? `${leafCount} versions · ${activePathLength} messages in the current version`
+                : `${activePathLength} messages · one version`}
           </p>
         </div>
       </div>
 
       {nodes.length > 0 && !hasForks ? (
         <p className="mt-4 border-l border-trace-strong bg-control-surface px-3 py-2.5 text-xs leading-5 text-ink-secondary">
-          This chat has a single path. Edit, regenerate, or Branch from here to create branches.
+          This conversation has one version. Edit, regenerate, or use Branch from here to create another.
         </p>
       ) : null}
-      {streaming && nodes.length > 0 ? (
+      {streaming && hasForks && nodes.some((node) => !node.activePath) ? (
         <p className="mt-3 border-l border-caution/60 bg-caution/[0.06] px-3 py-2.5 text-xs leading-5 text-ink-secondary" id="branch-streaming-guidance" role="status">
-          You can’t open another version while a response is streaming. Stop or finish the response first.
+          Another version cannot be opened while this response is streaming. Stop it or wait for it to finish.
         </p>
       ) : null}
 
       {nodes.length === 0 ? (
         <div className="mt-4 border-y border-trace-subtle bg-control-surface px-3 py-5 text-xs leading-5 text-ink-secondary">
-          No conversation yet. Ask a question to create the first path.
+          No conversation yet. Ask a question to create the first version.
         </div>
       ) : null}
 
       <div className="mt-4 border-y border-trace-subtle text-xs empty:hidden">
-        {nodes.map((node, index) => (
-          <button
-            aria-label={`${node.active ? "Active branch" : "Open this version, branch"} ${node.message.role} ${index + 1}`}
-            aria-disabled={node.active || streaming}
-            aria-current={node.active ? "true" : undefined}
-            aria-describedby={[
-              `branch-node-${index + 1}-description`,
-              streaming ? "branch-streaming-guidance" : null
-            ].filter(Boolean).join(" ")}
-            className={[
-              "group relative grid min-h-touch w-full min-w-0 grid-cols-[minmax(0,1fr)_auto] items-start gap-2 border-b border-trace-subtle px-2 py-3 text-left outline-none last:border-b-0 focus-visible:z-10 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-proof/55 disabled:cursor-not-allowed disabled:opacity-55 sm:gap-3 sm:px-3",
-              node.active
+        {nodes.map((node, index) => {
+          const alternateVersion = hasForks && !node.activePath;
+          const rowClassName = [
+            "group relative grid min-h-touch w-full min-w-0 grid-cols-[minmax(0,1fr)_auto] items-start gap-2 border-b border-trace-subtle px-2 py-3 text-left outline-none last:border-b-0 sm:gap-3 sm:px-3",
+            alternateVersion
+              ? "bg-overlay-surface text-ink-secondary hover:bg-control-hover hover:text-ink focus-visible:z-10 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-proof/55 disabled:cursor-not-allowed disabled:opacity-55"
+              : node.active
                 ? "bg-control-selected text-ink before:absolute before:inset-y-2 before:left-0 before:w-0.5 before:rounded-pill before:bg-proof"
-                : node.activePath
-                  ? "bg-proof/[0.025] text-ink hover:bg-control-hover"
-                  : "bg-overlay-surface text-ink-secondary hover:bg-control-hover hover:text-ink"
-            ].join(" ")}
-            data-active-leaf={node.active ? "true" : undefined}
-            data-depth={node.depth}
-            disabled={streaming}
-            key={node.message.id}
-            title={
-              streaming
-                ? "Opening another version is disabled while a response is streaming"
-                : node.active
-                  ? "Current active leaf"
-                  : node.preview
-            }
-            type="button"
-            onClick={() => {
-              if (!node.active) {
-                onSelect(node.message.id);
-              }
-            }}
-          >
-            <span className="sr-only" id={`branch-node-${index + 1}-description`}>
-              {node.message.role === "user" ? "Question" : "Answer"}. {node.preview.replace(/[.!?]+$/, "")}.{" "}
-              {node.childCount > 1 ? `Fork point with ${node.childCount} choices. ` : ""}
-              {node.active
-                ? "Active leaf."
-                : `${node.activePath ? "On the active path. " : ""}Open this version.`}
-            </span>
-            <span className="flex min-w-0 items-start gap-2" style={{ paddingLeft: `${Math.min(node.depth, 5) * 10}px` }}>
-              <span
-                className={[
-                  "grid size-6 shrink-0 place-items-center rounded-full border font-mono text-[10px] font-semibold",
-                  node.activePath
-                    ? "border-proof/35 bg-proof/[0.08] text-proof"
-                    : "border-trace-subtle bg-control-surface text-ink-muted"
-                ].join(" ")}
-                aria-hidden="true"
+                : "bg-proof/[0.025] text-ink"
+          ].join(" ");
+          const rowContent = (
+            <>
+              <span className="flex min-w-0 items-start gap-2" style={{ paddingLeft: `${Math.min(node.depth, 5) * 10}px` }}>
+                <span
+                  className={[
+                    "grid size-6 shrink-0 place-items-center rounded-full border font-mono text-xs font-semibold",
+                    node.activePath
+                      ? "border-proof/35 bg-proof/[0.08] text-proof"
+                      : "border-trace-subtle bg-control-surface text-ink-muted"
+                  ].join(" ")}
+                  aria-hidden="true"
+                >
+                  {node.roleGlyph}
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs font-medium text-ink-muted">
+                    <span>{node.message.role === "user" ? "Question" : "Answer"}</span>
+                    {node.childCount > 1 ? <span className="text-caution">Fork point · {node.childCount} choices</span> : null}
+                    {node.message.parentMessageId && (childCountByMessageId.get(node.message.parentMessageId) ?? 0) > 1 ? (
+                      <span className="text-proof">Branch version</span>
+                    ) : null}
+                  </span>
+                  <span className="mt-1 block break-words text-[13px] leading-5 [display:-webkit-box] [overflow-wrap:anywhere] [-webkit-box-orient:vertical] [-webkit-line-clamp:3]">
+                    {node.preview}
+                  </span>
+                </span>
+              </span>
+              <span className={`pt-0.5 text-xs ${node.active ? "font-semibold text-proof" : "font-medium text-ink-secondary group-hover:text-ink"}`}>
+                {node.active ? "Current" : alternateVersion ? "Open version" : "Current path"}
+              </span>
+            </>
+          );
+
+          if (!alternateVersion) {
+            return (
+              <div
+                aria-current={node.active ? "true" : undefined}
+                className={rowClassName}
+                data-active-leaf={node.active ? "true" : undefined}
+                data-depth={node.depth}
+                key={node.message.id}
               >
-                {node.roleGlyph}
+                {rowContent}
+              </div>
+            );
+          }
+
+          return (
+            <button
+              aria-label={`Open alternate version, ${node.message.role} ${index + 1}`}
+              aria-describedby={[
+                `branch-node-${index + 1}-description`,
+                streaming ? "branch-streaming-guidance" : null
+              ].filter(Boolean).join(" ")}
+              className={rowClassName}
+              data-depth={node.depth}
+              disabled={streaming}
+              key={node.message.id}
+              title={streaming ? "Opening another version is disabled while a response is streaming" : node.preview}
+              type="button"
+              onClick={() => onSelect(node.message.id)}
+            >
+              <span className="sr-only" id={`branch-node-${index + 1}-description`}>
+                {node.message.role === "user" ? "Question" : "Answer"}. {node.preview.replace(/[.!?]+$/, "")}.{" "}
+                {node.childCount > 1 ? `Fork point with ${node.childCount} choices. ` : ""}
+                Open this alternate version.
               </span>
-              <span className="min-w-0 flex-1">
-                <span className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] font-medium text-ink-muted">
-                  <span>{node.message.role === "user" ? "Question" : "Answer"}</span>
-                  {node.childCount > 1 ? <span className="text-caution">Fork point · {node.childCount} choices</span> : null}
-                  {node.message.parentMessageId && (childCountByMessageId.get(node.message.parentMessageId) ?? 0) > 1 ? (
-                    <span className="text-proof">Branch path</span>
-                  ) : null}
-                </span>
-                <span className="mt-1 block break-words text-[13px] leading-5 [display:-webkit-box] [overflow-wrap:anywhere] [-webkit-box-orient:vertical] [-webkit-line-clamp:3]">
-                  {node.preview}
-                </span>
-              </span>
-            </span>
-            {node.active ? (
-              <span className="pt-0.5 text-[11px] font-semibold text-proof">
-                Active leaf
-              </span>
-            ) : (
-              <span className="pt-0.5 text-[11px] font-medium text-ink-secondary group-hover:text-ink">
-                <span className="sm:hidden">Open</span>
-                <span className="hidden sm:inline">Open this version</span>
-              </span>
-            )}
-          </button>
-        ))}
+              {rowContent}
+            </button>
+          );
+        })}
       </div>
     </section>
   );

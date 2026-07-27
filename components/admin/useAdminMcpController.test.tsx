@@ -7,6 +7,7 @@ function mcpServer(overrides: Partial<AdminMcpServer> = {}): AdminMcpServer {
   return {
     activePersonalSlots: [],
     activeRevision: null,
+    activation: null,
     archivedAt: null,
     description: "Team tools",
     draft: {
@@ -98,40 +99,79 @@ describe("useAdminMcpController", () => {
     expect(fetcher).toHaveBeenLastCalledWith("/api/admin/mcp/server-1", { method: "DELETE" });
   });
 
-  it("automatically checks a newly created non-OAuth server", async () => {
-    const draft = mcpServer();
-    const checked = mcpServer({
-      draftTested: true,
-      draftTest: {
-        draftHash: "a".repeat(64),
-        evidence: {},
-        identityHash: "b".repeat(64),
-        resolvedArtifact: null,
-        testedAt: "2026-07-22T01:00:00.000Z",
-        toolInventory: []
+  it("returns an accepted activation immediately without a second check request", async () => {
+    const activating = mcpServer({
+      activation: {
+        completedAt: null,
+        errorCode: null,
+        id: "attempt-1",
+        issues: [],
+        requestedAt: "2026-07-22T01:00:00.000Z",
+        stage: "queued",
+        startedAt: null,
+        updatedAt: "2026-07-22T01:00:00.000Z"
       }
     });
     const fetcher = vi.fn()
       .mockResolvedValueOnce(response({ servers: [] }))
-      .mockResolvedValueOnce(response({ server: draft }, 201))
-      .mockResolvedValueOnce(response({ server: checked }));
+      .mockResolvedValueOnce(response({ server: activating }, 202));
     const { result } = renderHook(() => useAdminMcpController({ active: true, fetcher }));
     await waitFor(() => expect(result.current.state.loaded).toBe(true));
 
     await act(async () => {
       expect(await result.current.actions.create({
-        description: draft.description,
-        draft: draft.draft,
-        name: draft.name
-      })).toEqual(checked);
+        activate: true,
+        description: activating.description,
+        draft: activating.draft,
+        name: activating.name
+      })).toEqual(activating);
     });
 
-    expect(fetcher).toHaveBeenNthCalledWith(3, "/api/admin/mcp/server-1/check-update", expect.objectContaining({
-      body: "{}",
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(fetcher).toHaveBeenNthCalledWith(2, "/api/admin/mcp", expect.objectContaining({
+      body: JSON.stringify({
+        activate: true,
+        description: activating.description,
+        draft: activating.draft,
+        name: activating.name
+      }),
       method: "POST"
     }));
-    expect(result.current.state.selectedServer?.draftTested).toBe(true);
-    expect(result.current.state.notice).toMatch(/created and checked/i);
+    expect(result.current.state.selectedServer?.activation?.stage).toBe("queued");
+    expect(result.current.state.notice).toMatch(/activation started/i);
+  });
+
+  it("polls a transient activation receipt until it reaches a terminal stage", async () => {
+    const queued = mcpServer({
+      activation: {
+        completedAt: null,
+        errorCode: null,
+        id: "attempt-1",
+        issues: [],
+        requestedAt: "2026-07-22T01:00:00.000Z",
+        stage: "discovering_tools",
+        startedAt: "2026-07-22T01:00:01.000Z",
+        updatedAt: "2026-07-22T01:00:02.000Z"
+      }
+    });
+    const ready = mcpServer({
+      activation: {
+        ...queued.activation!,
+        completedAt: "2026-07-22T01:00:04.000Z",
+        stage: "ready",
+        updatedAt: "2026-07-22T01:00:04.000Z"
+      }
+    });
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(response({ servers: [queued] }))
+      .mockResolvedValueOnce(response({ servers: [ready] }));
+    const { result } = renderHook(() => useAdminMcpController({ active: true, fetcher }));
+
+    await waitFor(() => expect(result.current.state.selectedServer?.activation?.stage).toBe("ready"), {
+      timeout: 2_500
+    });
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(result.current.state.loading).toBe(false);
   });
 
   it("waits for validation OAuth before automatically checking an OAuth draft", async () => {

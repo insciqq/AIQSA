@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import type {
+  AdminMcpActivationSummary,
   AdminMcpServer,
   McpConfigurationSlot,
   McpDraftConfiguration,
@@ -35,9 +36,30 @@ import {
 } from "./encryption";
 import { buildMcpOAuthPolicy, mcpOAuthPolicyFingerprint } from "./oauthPolicy";
 import { parseMcpLocalResolvedArtifact } from "./localArtifact";
-import type { McpRepository, McpRepositoryResult } from "./repositoryContract";
+import type {
+  McpActivationClaim,
+  McpActivationCoordinatorRepository,
+  McpActivationPublishResult
+} from "./activationCoordinator";
+import type {
+  McpRepository,
+  McpRepositoryError,
+  McpRepositoryResult
+} from "./repositoryContract";
 
 const adminServerInclude = {
+  activationJob: {
+    select: {
+      completedAt: true,
+      errorCode: true,
+      id: true,
+      issues: true,
+      requestedAt: true,
+      stage: true,
+      startedAt: true,
+      updatedAt: true
+    }
+  },
   activeRevision: {
     select: {
       configuration: true,
@@ -209,6 +231,33 @@ function toolInventoryFrom(value: unknown): McpToolInventoryEntry[] | null {
   return tools;
 }
 
+function activationIssuesFrom(value: unknown): McpValidationIssue[] {
+  if (!Array.isArray(value)) return [];
+  return value.slice(0, 20).flatMap((candidate) => {
+    if (!isRecord(candidate) || typeof candidate.code !== "string" ||
+      typeof candidate.path !== "string" || candidate.code.length > 128 ||
+      candidate.path.length > 128) return [];
+    return [{ code: candidate.code, path: candidate.path }];
+  });
+}
+
+function serializeActivation(
+  job: AdminServerRecord["activationJob"]
+): AdminMcpActivationSummary | null {
+  return job
+    ? {
+        completedAt: job.completedAt?.toISOString() ?? null,
+        errorCode: job.errorCode,
+        id: job.id,
+        issues: activationIssuesFrom(job.issues),
+        requestedAt: job.requestedAt.toISOString(),
+        stage: job.stage,
+        startedAt: job.startedAt?.toISOString() ?? null,
+        updatedAt: job.updatedAt.toISOString()
+      }
+    : null;
+}
+
 function validationEvidenceFrom(value: unknown, fallbackTestedAt: Date): McpValidationEvidence {
   if (isRecord(value)) {
     const evidence = jsonObjectFrom(value.evidence);
@@ -374,6 +423,7 @@ function serializeAdminServer(
     }
   }
   return {
+    activation: serializeActivation(record.activationJob),
     activePersonalSlots: record.activeRevision
       ? draftFrom(record.activeRevision.configuration).slots
           .filter((slot) => slot.policy.kind === "personal" ||
@@ -708,12 +758,12 @@ function draftValidationValues(input: {
   return { issues, values };
 }
 
-function validationResultContainsOneTimeSecret(input: {
+function validationResultContainsSensitiveValue(input: {
   draft: McpDraftConfiguration;
   evidence: McpJsonObject;
-  oneTimeValues: Record<string, McpSlotValue>;
   resolvedArtifact: McpJsonObject | null;
   toolInventory: readonly McpToolInventoryEntry[];
+  values: Readonly<Record<string, McpSlotValue>>;
 }): boolean {
   const output: McpJsonObject = {
     evidence: input.evidence,
@@ -724,7 +774,7 @@ function validationResultContainsOneTimeSecret(input: {
     }))
   };
   return input.draft.slots.some((slot) => {
-    const value = input.oneTimeValues[slot.slotKey];
+    const value = input.values[slot.slotKey];
     return slot.sensitive && typeof value === "string" && value.length > 0 && jsonContainsString(output, value);
   });
 }
@@ -740,18 +790,108 @@ async function lockMcpServer(tx: Prisma.TransactionClient, serverId: string): Pr
   return rows.length === 1;
 }
 
+const LIVE_ACTIVATION_STAGES = [
+  "queued",
+  "resolving",
+  "preparing_runtime",
+  "connecting",
+  "discovering_tools",
+  "publishing"
+] as const;
+
+function activationToken(): string {
+  return randomUUID().replaceAll("-", "");
+}
+
+type ActivationEnqueueResult = { kind: "ok" } | McpRepositoryError;
+
+export type PrismaMcpRepository = McpRepository & McpActivationCoordinatorRepository;
+
 export function createPrismaMcpRepository(input: {
   draftValidator?: McpDraftValidator;
   encryptionKey?: () => Buffer;
   oauthRedirectUri?: (serverId: string) => string;
   oauthValidationRedirectUri?: (serverId: string) => string;
   prisma?: PrismaClient;
-} = {}): McpRepository {
+} = {}): PrismaMcpRepository {
   const client = input.prisma ?? prisma;
   const draftValidator = input.draftValidator ?? unavailableMcpDraftValidator;
   const encryptionKey = input.encryptionKey ?? getMcpEncryptionKey;
 
-  const repository: McpRepository = {
+  async function enqueueActivationLocked(
+    tx: Prisma.TransactionClient,
+    serverId: string,
+    validationUserId: string,
+    key: Buffer,
+    expectedDraftHash?: string
+  ): Promise<ActivationEnqueueResult> {
+    const [server, validationUser] = await Promise.all([
+      tx.mcpServer.findUnique({
+        include: {
+          activationJob: true,
+          revisions: { select: { configuration: true } }
+        },
+        where: { id: serverId }
+      }),
+      tx.user.findFirst({
+        select: { id: true },
+        where: { id: validationUserId, role: "admin", status: "active" }
+      })
+    ]);
+    if (!server || server.archivedAt) return { kind: "not_found" };
+    if (!validationUser) {
+      return {
+        issues: [{ code: "validation_identity_invalid", path: "activation" }],
+        kind: "invalid_values"
+      };
+    }
+
+    const draft = draftFrom(server.draft);
+    const draftHash = hashCanonicalMcpValue(draft);
+    if (expectedDraftHash && expectedDraftHash !== draftHash) return { kind: "draft_changed" };
+    const lineageIssues = slotLineageIssues(draft, server.revisions);
+    if (lineageIssues.length) {
+      return { issues: lineageIssues, kind: "draft_validation_failed" };
+    }
+    const shared = readStoredValues(
+      server.sharedConfigEnvelope,
+      key,
+      server.sharedConfigEnvelope
+        ? mcpSharedConfigEnvelopeContext(server.id, server.sharedConfigVersion)
+        : undefined
+    );
+    const validation = draftValidationValues({
+      draft,
+      oneTimeValues: {},
+      sharedValues: shared.values
+    });
+    if (validation.issues.length) {
+      return { issues: validation.issues, kind: "invalid_values" };
+    }
+
+    const existing = server.activationJob;
+    if (existing && LIVE_ACTIVATION_STAGES.includes(
+      existing.stage as (typeof LIVE_ACTIVATION_STAGES)[number]
+    ) && existing.draftHash === draftHash &&
+      existing.sharedConfigVersion === server.sharedConfigVersion) {
+      return { kind: "ok" };
+    }
+
+    await tx.mcpActivationJob.deleteMany({ where: { serverId } });
+    await tx.mcpActivationJob.create({
+      data: {
+        draftHash,
+        id: randomUUID(),
+        serverId,
+        sharedConfigVersion: server.sharedConfigVersion,
+        validationUserId,
+        workloadToken: activationToken()
+      }
+    });
+    return { kind: "ok" };
+  }
+
+  const repository: PrismaMcpRepository = {
     activateDraft: async (serverId) => {
       const key = encryptionKey();
       return client.$transaction(async (tx) => {
@@ -818,6 +958,7 @@ export function createPrismaMcpRepository(input: {
           revisionId = revision.id;
         }
 
+        await tx.mcpActivationJob.deleteMany({ where: { serverId } });
         await tx.mcpServer.update({
           data: { activeRevisionId: revisionId, enabled: true },
           where: { id: serverId }
@@ -838,6 +979,7 @@ export function createPrismaMcpRepository(input: {
           where: { archivedAt: null, id: serverId }
         });
         if (tombstoned.count !== 1) return { kind: "not_found" as const };
+        await tx.mcpActivationJob.deleteMany({ where: { serverId } });
         await tx.mcpUserServer.updateMany({
           data: { desiredRuntimeGenerationId: null, enabled: false },
           where: { serverId }
@@ -846,33 +988,75 @@ export function createPrismaMcpRepository(input: {
       });
     },
 
-    createServer: async ({ description, draft, name, sharedValues }) => {
+    createServer: async ({ activate, description, draft, name, sharedValues, validationUserId }) => {
       const issues = valueIssues(draft.slots, sharedValues, (slot) => slot.policy.kind === "shared");
       if (issues.length) return { issues, kind: "invalid_values" };
       const key = encryptionKey();
       const now = new Date();
       const stored = applyStoredValuePatch(emptyStoredValues(), sharedValues, now);
+      if (activate) {
+        const validation = draftValidationValues({
+          draft,
+          oneTimeValues: {},
+          sharedValues: stored.values
+        });
+        if (validation.issues.length) {
+          return { issues: validation.issues, kind: "invalid_values" };
+        }
+        if (!validationUserId) {
+          return {
+            issues: [{ code: "validation_identity_invalid", path: "activation" }],
+            kind: "invalid_values"
+          };
+        }
+      }
       const serverId = randomUUID();
       const sharedConfigVersion = Object.keys(sharedValues).length ? 1 : 0;
-      const server = await client.mcpServer.create({
-        data: {
-          description,
-          displayName: name,
-          draft: draft as Prisma.InputJsonValue,
-          id: serverId,
-          namespace: namespace(),
-          sharedConfigEnvelope: Object.keys(stored.values).length
-            ? encryptMcpEnvelope(
-                stored,
-                key,
-                mcpSharedConfigEnvelopeContext(serverId, sharedConfigVersion)
-              )
-            : null,
-          sharedConfigVersion
-        },
-        select: { id: true }
+      return client.$transaction(async (tx) => {
+        if (activate) {
+          const validationUser = await tx.user.findFirst({
+            select: { id: true },
+            where: { id: validationUserId!, role: "admin", status: "active" }
+          });
+          if (!validationUser) {
+            return {
+              issues: [{ code: "validation_identity_invalid", path: "activation" }],
+              kind: "invalid_values" as const
+            };
+          }
+        }
+        const server = await tx.mcpServer.create({
+          data: {
+            description,
+            displayName: name,
+            draft: draft as Prisma.InputJsonValue,
+            id: serverId,
+            namespace: namespace(),
+            sharedConfigEnvelope: Object.keys(stored.values).length
+              ? encryptMcpEnvelope(
+                  stored,
+                  key,
+                  mcpSharedConfigEnvelopeContext(serverId, sharedConfigVersion)
+                )
+              : null,
+            sharedConfigVersion
+          },
+          select: { id: true }
+        });
+        if (activate) {
+          await tx.mcpActivationJob.create({
+            data: {
+              draftHash: hashCanonicalMcpValue(draft),
+              id: randomUUID(),
+              serverId: server.id,
+              sharedConfigVersion,
+              validationUserId: validationUserId!,
+              workloadToken: activationToken()
+            }
+          });
+        }
+        return adminResult(tx, server.id, key, input.oauthValidationRedirectUri);
       });
-      return adminResult(client, server.id, key, input.oauthValidationRedirectUri);
     },
 
     listAdminServers: async () => {
@@ -929,6 +1113,7 @@ export function createPrismaMcpRepository(input: {
           },
           where: { id: serverId }
         });
+        await tx.mcpActivationJob.deleteMany({ where: { serverId } });
         return { kind: "ok" as const };
       });
       if (prepared.kind !== "ok") return prepared;
@@ -939,6 +1124,304 @@ export function createPrismaMcpRepository(input: {
       });
       if (tested.kind !== "ok") return tested;
       return repository.activateDraft(serverId);
+    },
+
+    requestActivation: async ({ expectedDraftHash, serverId, validationUserId }) => {
+      const key = encryptionKey();
+      return client.$transaction(async (tx) => {
+        if (!await lockMcpServer(tx, serverId)) return { kind: "not_found" as const };
+        const queued = await enqueueActivationLocked(
+          tx,
+          serverId,
+          validationUserId,
+          key,
+          expectedDraftHash
+        );
+        if (queued.kind !== "ok") return queued;
+        return adminResult(tx, serverId, key, input.oauthValidationRedirectUri);
+      });
+    },
+
+    claimActivation: async ({ now, staleBefore }) => client.$transaction(async (tx) => {
+      const [candidate] = await tx.$queryRaw<Array<{
+        id: string;
+        leaseId: string | null;
+        startedAt: Date | null;
+      }>>`
+        SELECT job."id", job."leaseId", job."startedAt"
+        FROM "McpActivationJob" AS job
+        JOIN "McpServer" AS server ON server."id" = job."serverId"
+        WHERE job."stage" NOT IN ('ready', 'failed')
+          AND (job."leaseId" IS NULL OR job."updatedAt" < ${staleBefore})
+          AND server."archivedAt" IS NULL
+        ORDER BY job."requestedAt" ASC
+        FOR UPDATE OF job SKIP LOCKED
+        LIMIT 1
+      `;
+      if (!candidate) return null;
+
+      const leaseId = randomUUID();
+      const claimed = await tx.mcpActivationJob.update({
+        data: {
+          completedAt: null,
+          errorCode: null,
+          issues: Prisma.DbNull,
+          leaseId,
+          stage: candidate.leaseId ? "queued" : undefined,
+          startedAt: candidate.startedAt ?? now,
+          updatedAt: now,
+          ...(candidate.leaseId ? { workloadToken: activationToken() } : {})
+        },
+        where: { id: candidate.id }
+      });
+      const server = await tx.mcpServer.findFirst({
+        select: {
+          archivedAt: true,
+          draft: true,
+          revisions: { select: { configuration: true } },
+          sharedConfigEnvelope: true,
+          sharedConfigVersion: true
+        },
+        where: { archivedAt: null, id: claimed.serverId }
+      });
+      if (!server || hashCanonicalMcpValue(draftFrom(server.draft)) !== claimed.draftHash ||
+        server.sharedConfigVersion !== claimed.sharedConfigVersion) {
+        await tx.mcpActivationJob.deleteMany({ where: { id: claimed.id, leaseId } });
+        return null;
+      }
+      const draft = draftFrom(server.draft);
+      const lineageIssues = slotLineageIssues(draft, server.revisions);
+      const shared = readStoredValues(
+        server.sharedConfigEnvelope,
+        encryptionKey(),
+        server.sharedConfigEnvelope
+          ? mcpSharedConfigEnvelopeContext(claimed.serverId, server.sharedConfigVersion)
+          : undefined
+      );
+      const validation = draftValidationValues({
+        draft,
+        oneTimeValues: {},
+        sharedValues: shared.values
+      });
+      const issues = [...lineageIssues, ...validation.issues].slice(0, 20);
+      if (issues.length) {
+        await tx.mcpActivationJob.update({
+          data: {
+            completedAt: now,
+            errorCode: "mcp_activation_values_invalid",
+            issues: issues as Prisma.InputJsonValue,
+            leaseId: null,
+            stage: "failed",
+            updatedAt: now
+          },
+          where: { id: claimed.id }
+        });
+        return null;
+      }
+      return {
+        draft,
+        id: claimed.id,
+        leaseId,
+        serverId: claimed.serverId,
+        validationUserId: claimed.validationUserId,
+        values: validation.values,
+        workloadToken: claimed.workloadToken
+      } satisfies McpActivationClaim;
+    }),
+
+    heartbeatActivation: async ({ id, leaseId, now }) => {
+      const updated = await client.mcpActivationJob.updateMany({
+        data: { updatedAt: now },
+        where: {
+          id,
+          leaseId,
+          stage: { in: [...LIVE_ACTIVATION_STAGES] }
+        }
+      });
+      return updated.count === 1;
+    },
+
+    advanceActivation: async ({ id, leaseId, now, stage }) => {
+      const updated = await client.mcpActivationJob.updateMany({
+        data: { stage, updatedAt: now },
+        where: {
+          id,
+          leaseId,
+          stage: { in: [...LIVE_ACTIVATION_STAGES] }
+        }
+      });
+      return updated.count === 1;
+    },
+
+    failActivation: async ({ errorCode, id, issues, leaseId, now }) => {
+      const updated = await client.mcpActivationJob.updateMany({
+        data: {
+          completedAt: now,
+          errorCode,
+          issues: issues.length ? issues as Prisma.InputJsonValue : Prisma.DbNull,
+          leaseId: null,
+          stage: "failed",
+          updatedAt: now
+        },
+        where: {
+          id,
+          leaseId,
+          stage: { in: [...LIVE_ACTIVATION_STAGES] }
+        }
+      });
+      return updated.count === 1;
+    },
+
+    publishActivation: async ({ claim, now, publication }): Promise<McpActivationPublishResult> => {
+      return client.$transaction(async (tx): Promise<McpActivationPublishResult> => {
+        if (!await lockMcpServer(tx, claim.serverId)) return { kind: "lease_lost" };
+        const [job, server, validationUser] = await Promise.all([
+          tx.mcpActivationJob.findFirst({
+            where: {
+              id: claim.id,
+              leaseId: claim.leaseId,
+              serverId: claim.serverId,
+              stage: "publishing"
+            }
+          }),
+          tx.mcpServer.findFirst({
+            select: {
+              draft: true,
+              revisions: {
+                select: {
+                  configuration: true,
+                  createdAt: true,
+                  draftHash: true,
+                  id: true,
+                  resolvedArtifact: true,
+                  revisionNumber: true,
+                  validationEvidence: true
+                }
+              },
+              sharedConfigVersion: true
+            },
+            where: { archivedAt: null, id: claim.serverId }
+          }),
+          claim.validationUserId
+            ? tx.user.findFirst({
+                select: { id: true },
+                where: { id: claim.validationUserId, role: "admin", status: "active" }
+              })
+            : Promise.resolve(null)
+        ]);
+        if (!job || !server || job.draftHash !== hashCanonicalMcpValue(draftFrom(server.draft)) ||
+          job.sharedConfigVersion !== server.sharedConfigVersion) {
+          return { kind: "lease_lost" };
+        }
+        if (!validationUser || job.validationUserId !== validationUser.id) {
+          return {
+            issues: [{ code: "validation_identity_invalid", path: "activation" }],
+            kind: "invalid"
+          };
+        }
+
+        const draft = draftFrom(server.draft);
+        const lineageIssues = slotLineageIssues(draft, server.revisions);
+        if (lineageIssues.length) return { issues: lineageIssues, kind: "invalid" };
+        const evidence = jsonObjectFrom(publication.evidence);
+        const resolvedArtifact = publication.resolvedArtifact === null
+          ? null
+          : jsonObjectFrom(publication.resolvedArtifact);
+        const inventory = toolInventoryFrom(publication.toolInventory);
+        if (!evidence || !inventory ||
+          (publication.resolvedArtifact !== null && !resolvedArtifact) ||
+          validationResultContainsSensitiveValue({
+            draft,
+            evidence: evidence ?? {},
+            resolvedArtifact,
+            toolInventory: inventory ?? [],
+            values: claim.values
+          })) {
+          return {
+            issues: [{ code: "validator_result_invalid", path: "validator" }],
+            kind: "invalid"
+          };
+        }
+
+        const draftHash = job.draftHash;
+        const identityHash = revisionIdentityHash({
+          draftHash,
+          evidence,
+          resolvedArtifact,
+          toolInventory: inventory
+        });
+        const existingRevision = server.revisions.find(
+          (revision) => storedRevisionIdentityHash(revision) === identityHash
+        );
+        const accepted = await tx.mcpActivationJob.updateMany({
+          data: {
+            completedAt: now,
+            errorCode: null,
+            issues: Prisma.DbNull,
+            leaseId: null,
+            stage: "ready",
+            updatedAt: now
+          },
+          where: {
+            id: claim.id,
+            leaseId: claim.leaseId,
+            serverId: claim.serverId,
+            stage: "publishing"
+          }
+        });
+        if (accepted.count !== 1) return { kind: "lease_lost" };
+
+        let revisionId = existingRevision?.id;
+        if (!revisionId) {
+          const latestRevisionNumber = server.revisions.reduce(
+            (latest, revision) => Math.max(latest, revision.revisionNumber),
+            0
+          );
+          const validationEvidence: McpValidationEvidence = {
+            evidence,
+            testedAt: now.toISOString(),
+            toolInventory: inventory
+          };
+          const revision = await tx.mcpRevision.create({
+            data: {
+              configuration: draft as Prisma.InputJsonValue,
+              draftHash,
+              identityHash,
+              revisionNumber: latestRevisionNumber + 1,
+              serverId: claim.serverId,
+              validationEvidence: validationEvidence as Prisma.InputJsonValue,
+              ...(resolvedArtifact ? {
+                resolvedArtifact: resolvedArtifact as Prisma.InputJsonValue
+              } : {})
+            },
+            select: { id: true }
+          });
+          revisionId = revision.id;
+        }
+
+        const draftTestEvidence: McpDraftTestSummary = {
+          draftHash,
+          evidence,
+          identityHash,
+          resolvedArtifact,
+          testedAt: now.toISOString(),
+          toolInventory: inventory
+        };
+        await tx.mcpServer.update({
+          data: {
+            activeRevisionId: revisionId,
+            draftTestEvidence: draftTestEvidence as Prisma.InputJsonValue,
+            enabled: true,
+            testedDraftHash: draftHash
+          },
+          where: { id: claim.serverId }
+        });
+        await tx.mcpUserServer.updateMany({
+          data: { desiredRuntimeGenerationId: null },
+          where: { enabled: true, serverId: claim.serverId }
+        });
+        return { kind: "published" };
+      });
     },
 
     rollbackServer: async ({ revisionId, serverId }) => {
@@ -966,6 +1449,7 @@ export function createPrismaMcpRepository(input: {
         if (revisionArtifactStatus(revision) === "missing") {
           return { kind: "artifact_missing" as const };
         }
+        await tx.mcpActivationJob.deleteMany({ where: { serverId } });
         await tx.mcpServer.update({
           data: { activeRevisionId: revision.id },
           where: { id: serverId }
@@ -1103,12 +1587,12 @@ export function createPrismaMcpRepository(input: {
           kind: "draft_validation_failed" as const
         };
       }
-      if (validationResultContainsOneTimeSecret({
+      if (validationResultContainsSensitiveValue({
         draft,
         evidence,
-        oneTimeValues,
         resolvedArtifact,
-        toolInventory
+        toolInventory,
+        values: validationInput.values
       })) {
         return {
           issues: [{ code: "unsafe_validation_evidence", path: "validator" }],
@@ -1156,15 +1640,19 @@ export function createPrismaMcpRepository(input: {
           if (issues.length) return { issues, kind: "invalid_values" as const };
         }
         const data: Prisma.McpServerUpdateInput = {};
+        const draftChanged = Boolean(
+          draft && hashCanonicalMcpValue(draft) !== hashCanonicalMcpValue(draftFrom(existing.draft))
+        );
+        const sharedConfigChanged = Boolean(sharedValues && Object.keys(sharedValues).length);
         if (description !== undefined) data.description = description;
         if (name !== undefined) data.displayName = name;
         if (enabled !== undefined) data.enabled = enabled;
-        if (draft && hashCanonicalMcpValue(draft) !== hashCanonicalMcpValue(draftFrom(existing.draft))) {
+        if (draftChanged) {
           data.draft = draft as Prisma.InputJsonValue;
           data.draftTestEvidence = Prisma.DbNull;
           data.testedDraftHash = null;
         }
-        if (sharedValues && Object.keys(sharedValues).length) {
+        if (sharedConfigChanged) {
           const sharedConfigVersion = existing.sharedConfigVersion + 1;
           const stored = applyStoredValuePatch(
             readStoredValues(
@@ -1174,7 +1662,7 @@ export function createPrismaMcpRepository(input: {
                 ? mcpSharedConfigEnvelopeContext(existing.id, existing.sharedConfigVersion)
                 : undefined
             ),
-            sharedValues,
+            sharedValues!,
             new Date()
           );
           data.sharedConfigEnvelope = Object.keys(stored.values).length
@@ -1187,6 +1675,13 @@ export function createPrismaMcpRepository(input: {
           data.sharedConfigVersion = sharedConfigVersion;
         }
         if (Object.keys(data).length) await tx.mcpServer.update({ data, where: { id: serverId } });
+        if (draftChanged || sharedConfigChanged) {
+          await tx.mcpActivationJob.deleteMany({ where: { serverId } });
+        } else if (enabled === false) {
+          await tx.mcpActivationJob.deleteMany({
+            where: { serverId, stage: { in: [...LIVE_ACTIVATION_STAGES] } }
+          });
+        }
         if (enabled === false) {
           await tx.mcpUserServer.updateMany({
             data: { desiredRuntimeGenerationId: null, enabled: false },

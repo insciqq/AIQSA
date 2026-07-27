@@ -101,6 +101,27 @@ export type McpDraftTestSummary = McpValidationEvidence & {
   resolvedArtifact: McpJsonObject | null;
 };
 
+export type McpActivationStage =
+  | "queued"
+  | "resolving"
+  | "preparing_runtime"
+  | "connecting"
+  | "discovering_tools"
+  | "publishing"
+  | "ready"
+  | "failed";
+
+export type AdminMcpActivationSummary = {
+  completedAt: string | null;
+  errorCode: string | null;
+  id: string;
+  issues: readonly McpValidationIssue[];
+  requestedAt: string;
+  stage: McpActivationStage;
+  startedAt: string | null;
+  updatedAt: string;
+};
+
 export type McpRevisionSummary = {
   artifactStatus: "available" | "missing" | "not_applicable" | "unknown";
   createdAt: string;
@@ -128,6 +149,7 @@ export type AdminMcpPersonalSlotSummary = {
 };
 
 export type AdminMcpServer = {
+  activation: AdminMcpActivationSummary | null;
   activePersonalSlots: AdminMcpPersonalSlotSummary[];
   activeRevision: McpRevisionSummary | null;
   archivedAt: string | null;
@@ -224,6 +246,7 @@ export type McpErrorResponse = {
 };
 
 export type AdminMcpCreateRequest = {
+  activate?: boolean;
   description?: string;
   draft: McpDraftConfiguration;
   name: string;

@@ -528,7 +528,7 @@ test("admin manages approvals, rules, invites, session revocation, and disabling
     userPage = await userContext.newPage();
     await loginWithPassword(userPage, approvedEmail, approvedPassword);
     await expect(userPage.getByTestId("app-shell")).toBeVisible();
-    await userPage.getByRole("button", { name: "Account menu" }).click();
+    await userPage.getByRole("button", { name: /Account menu/ }).click();
     await expect(userPage.getByRole("menu", { name: "Account" }).getByRole("menuitem", { name: "Control Center" })).toHaveCount(0);
     await userPage.keyboard.press("Escape");
     await expect.poll(() => browserFetchStatus(userPage!, "/api/admin")).toBe(403);
@@ -707,7 +707,7 @@ test("admin console keeps all redesigned sections operable end to end", async ({
 
     await page.goto("/");
     await expect(page.getByTestId("app-shell")).toBeVisible();
-    await page.getByRole("button", { name: "Account menu" }).click();
+    await page.getByRole("button", { name: /Account menu/ }).click();
     const adminEntry = page.getByRole("menu", { name: "Account" }).getByRole("menuitem", {
       name: "Control Center"
     });

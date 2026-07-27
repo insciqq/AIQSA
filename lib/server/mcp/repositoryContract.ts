@@ -20,10 +20,12 @@ export type McpRepositoryResult<T> = { kind: "ok"; value: T } | McpRepositoryErr
 export type McpRepository = {
   activateDraft(serverId: string): Promise<McpRepositoryResult<AdminMcpServer>>;
   createServer(input: {
+    activate?: boolean;
     description: string;
     draft: McpDraftConfiguration;
     name: string;
     sharedValues: Record<string, McpSlotValue | null>;
+    validationUserId?: string;
   }): Promise<McpRepositoryResult<AdminMcpServer>>;
   deleteServer(serverId: string): Promise<McpRepositoryResult<AdminMcpServer>>;
   listAdminServers(): Promise<AdminMcpServer[]>;
@@ -34,6 +36,11 @@ export type McpRepository = {
     revisionId: string;
     serverId: string;
     validationUserId?: string;
+  }): Promise<McpRepositoryResult<AdminMcpServer>>;
+  requestActivation(input: {
+    expectedDraftHash?: string;
+    serverId: string;
+    validationUserId: string;
   }): Promise<McpRepositoryResult<AdminMcpServer>>;
   rollbackServer(input: {
     revisionId: string;

@@ -49,6 +49,8 @@ export type ComposerUsageStats = {
   totalTokens: number;
 };
 
+export type ComposerHintTone = "busy" | "caution";
+
 export type ComposerProps = {
   attachmentPolicy?: ComposerAttachmentPolicy;
   attachments: ComposerAttachment[];
@@ -57,6 +59,7 @@ export type ComposerProps = {
   disabled?: boolean;
   disabledHint?: string | null;
   disabledHintLive?: boolean;
+  disabledHintTone?: ComposerHintTone;
   editing?: boolean;
   editPending?: boolean;
   onChange(value: string): void;
@@ -71,6 +74,7 @@ export type ComposerProps = {
   sendDisabled?: boolean;
   stopDisabled?: boolean;
   streaming?: boolean;
+  tools?: ReactNode;
   uploading?: boolean;
   usageStats?: ComposerUsageStats | null;
   value: string;
@@ -105,6 +109,7 @@ export function Composer({
   disabled = false,
   disabledHint = null,
   disabledHintLive = true,
+  disabledHintTone = "caution",
   editing = false,
   editPending = false,
   onChange,
@@ -119,6 +124,7 @@ export function Composer({
   sendDisabled = false,
   stopDisabled = false,
   streaming = false,
+  tools,
   uploading = false,
   usageStats = null,
   value
@@ -329,7 +335,7 @@ export function Composer({
 
   return (
     <form
-      className="shrink-0 bg-answer-paper pb-[max(.5rem,env(safe-area-inset-bottom))] pl-[max(.5rem,env(safe-area-inset-left))] pr-[max(.5rem,env(safe-area-inset-right))] pt-2 sm:pb-[max(.75rem,env(safe-area-inset-bottom))] sm:pl-[max(1rem,env(safe-area-inset-left))] sm:pr-[max(1rem,env(safe-area-inset-right))] [@media(max-height:32rem)]:!pb-[max(.25rem,env(safe-area-inset-bottom))] [@media(max-height:32rem)]:!pt-1"
+      className="w-full min-w-0 shrink-0 bg-answer-paper pb-[max(.5rem,env(safe-area-inset-bottom))] pl-[max(.5rem,env(safe-area-inset-left))] pr-[max(.5rem,env(safe-area-inset-right))] pt-2 sm:pb-[max(.75rem,env(safe-area-inset-bottom))] sm:pl-[max(1rem,env(safe-area-inset-left))] sm:pr-[max(1rem,env(safe-area-inset-right))] [@media(max-height:32rem)]:!pb-[max(.25rem,env(safe-area-inset-bottom))] [@media(max-height:32rem)]:!pt-1"
       data-testid="composer-form"
       onSubmit={(event) => {
         event.preventDefault();
@@ -397,11 +403,20 @@ export function Composer({
 
           {disabledHint ? (
             <div
-              className="border-b border-caution/20 bg-caution/[0.07] px-3 py-2 text-xs text-caution"
+              className={[
+                "flex items-center gap-2 border-b px-3 py-2 text-xs",
+                disabledHintTone === "busy"
+                  ? "border-trace-subtle bg-control-surface/60 text-ink-secondary"
+                  : "border-caution/20 bg-caution/[0.07] text-caution"
+              ].join(" ")}
+              data-tone={disabledHintTone}
               data-testid="composer-disabled-hint"
               id="composer-disabled-hint"
               role={disabledHintLive ? "status" : undefined}
             >
+              {disabledHintTone === "busy" ? (
+                <Loader2 className="size-3.5 shrink-0 animate-spin text-proof" aria-hidden="true" />
+              ) : null}
               {disabledHint}
             </div>
           ) : null}
@@ -456,7 +471,7 @@ export function Composer({
           ) : null}
 
           <div className="px-4 pb-2 pt-3 [@media(max-height:32rem)]:!px-3 [@media(max-height:32rem)]:!pb-1 [@media(max-height:32rem)]:!pt-1" data-testid="composer-message-field">
-            <label className={promptFirst ? "sr-only" : "block text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-muted"} htmlFor="composer">
+            <label className={promptFirst ? "sr-only" : "block text-xs font-semibold uppercase tracking-[0.12em] text-ink-muted"} htmlFor="composer">
               Message
             </label>
             <textarea
@@ -485,14 +500,12 @@ export function Composer({
           </div>
 
           <div
-            className={`flex min-w-0 items-center border-t border-trace-subtle px-2 py-2 sm:px-3 [@media(max-height:32rem)]:!py-1 ${promptFirst ? "flex-wrap gap-1" : "flex-wrap gap-2"}`}
+            className="flex min-w-0 flex-wrap items-center gap-2 border-t border-trace-subtle px-2 py-2 sm:px-3 [@media(max-height:32rem)]:!gap-1 [@media(max-height:32rem)]:!py-1"
             data-testid="composer-action-footer"
           >
             {controls ? (
               <div
-                className={promptFirst
-                  ? "flex min-w-[min(100%,35rem)] flex-[1_1_35rem] items-center gap-0.5"
-                  : "flex min-w-[min(100%,19rem)] flex-[1_1_22rem] items-center gap-1"}
+                className="flex w-full min-w-0 items-center"
                 data-testid="composer-controls-slot"
               >
                 {controls}
@@ -500,14 +513,14 @@ export function Composer({
             ) : null}
 
             <div
-                className={promptFirst
-                  ? "ml-auto flex min-w-0 shrink-0 items-center justify-end gap-0.5"
-                  : "flex min-w-0 flex-[1_1_auto] items-center justify-end gap-1.5"}
+              className="flex min-w-0 flex-1 basis-full items-center gap-1"
               data-testid="composer-primary-actions"
             >
+              {tools}
+              <span className="min-w-0 flex-1" aria-hidden="true" />
               {contextLine && !promptFirst ? (
                 <div
-                  className="relative flex min-w-0 items-center gap-1 text-[11px] text-ink-muted"
+                  className="relative flex min-w-0 items-center gap-1 text-xs text-ink-muted"
                   data-testid="composer-usage-line"
                   ref={usagePopoverRef}
                 >

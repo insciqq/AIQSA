@@ -22,6 +22,7 @@ const server: AdminMcpServer = {
       toolInventory: [{ description: "Old description", name: "remember" }]
     }
   },
+  activation: null,
   archivedAt: null,
   description: "Team memory tools",
   draft: {
@@ -184,39 +185,71 @@ describe("AdminMcpServersSection", () => {
     expect(view.actions.update).toHaveBeenCalledWith("server-1", { enabled: true });
   });
 
-  it("normalizes pasted npx configuration for review and keeps imported secrets in password fields", async () => {
+  it("normalizes trailing-comma uvx configuration from the document editor and keeps secrets in password fields", async () => {
     const view = viewController();
     render(<TestSection controller={view.controller} />);
 
     fireEvent.click(screen.getByRole("button", { name: "New server" }));
     expect(screen.getByRole("heading", { name: "Add an MCP server" })).toBeInTheDocument();
-    fireEvent.change(screen.getByLabelText("Configuration JSON, URL, or install command"), {
+    expect(screen.getByText("Configuration document")).toBeInTheDocument();
+    expect(screen.getByText("Trailing commas accepted")).toBeInTheDocument();
+    const editor = screen.getByLabelText("Configuration JSON, URL, or install command");
+    expect(editor).toHaveClass("h-[clamp(18rem,36dvh,22rem)]", "min-h-72", "resize-y", "font-mono");
+    expect(editor).not.toHaveClass("min-h-control");
+    fireEvent.change(editor, {
       target: {
-        value: JSON.stringify({
-          mcpServers: {
-            mem0: {
-              args: ["-y", "@mem0/mcp-server@2.0.0"],
-              command: "npx",
-              env: { MEM0_API_KEY: "top-secret" }
-            }
-          }
-        })
+        value: `{
+  "mcpServers": {
+    "mem0": {
+      "command": "uvx",
+      "args": ["mem0-mcp-server",],
+      "env": {
+        "MEM0_API_KEY": "fixture-secret",
+      },
+    },
+  },
+}`
       }
     });
-    fireEvent.click(screen.getByRole("button", { name: "Normalize and review" }));
+    expect(screen.getByText("11 lines")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Parse" }));
 
     expect(screen.getByLabelText("Display name")).toHaveValue("mem0");
-    expect(screen.getByLabelText("Source")).toHaveValue("npm");
+    expect(screen.getByLabelText("Display name")).toHaveFocus();
+    expect(screen.getByLabelText("Source")).toHaveValue("pypi");
     const secret = screen.getByLabelText("New shared value for MEM0_API_KEY");
     expect(secret).toHaveAttribute("type", "password");
-    expect(secret).toHaveValue("top-secret");
+    expect(secret).toHaveValue("fixture-secret");
 
-    fireEvent.click(screen.getByRole("button", { name: "Create draft" }));
+    fireEvent.click(screen.getByRole("button", { name: "Activate" }));
     await waitFor(() => expect(view.actions.create).toHaveBeenCalledTimes(1));
     expect(view.actions.create).toHaveBeenCalledWith(expect.objectContaining({
+      activate: true,
       name: "mem0",
-      sharedValues: { mem0_api_key: "top-secret" }
+      sharedValues: { mem0_api_key: "fixture-secret" }
     }));
+  });
+
+  it("keeps malformed JSON in the document editor with an associated recoverable error", async () => {
+    const view = viewController();
+    render(<TestSection controller={view.controller} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "New server" }));
+    const editor = screen.getByLabelText("Configuration JSON, URL, or install command");
+    const malformed = '{"command": "uvx", "args": ["server",],,}';
+    fireEvent.change(editor, { target: { value: malformed } });
+    fireEvent.click(screen.getByRole("button", { name: "Parse" }));
+
+    expect(editor).toHaveAttribute("aria-invalid", "true");
+    expect(editor).toHaveAttribute("aria-describedby", "mcp-import-help mcp-import-error");
+    await waitFor(() => expect(editor).toHaveFocus());
+    expect(editor).toHaveValue(malformed);
+    expect(screen.getByRole("alert")).toHaveTextContent(/configuration needs attention/i);
+    expect(screen.getByRole("alert")).toHaveTextContent(/not valid JSON/i);
+
+    fireEvent.change(editor, { target: { value: `${malformed} ` } });
+    expect(editor).not.toHaveAttribute("aria-invalid");
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 
   it("prepares the official hosted Notion snippet for same-origin OAuth", async () => {
@@ -233,7 +266,7 @@ describe("AdminMcpServersSection", () => {
         })
       }
     });
-    fireEvent.click(screen.getByRole("button", { name: "Normalize and review" }));
+    fireEvent.click(screen.getByRole("button", { name: "Parse" }));
 
     expect(screen.getByLabelText("Display name")).toHaveValue("notion");
     expect(screen.getByLabelText("Mode")).toHaveValue("oauth");
@@ -241,7 +274,7 @@ describe("AdminMcpServersSection", () => {
       .toHaveValue("https://mcp.notion.com");
     expect(screen.getByText(/pre-fills the MCP endpoint origin/i)).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "Create draft" }));
+    fireEvent.click(screen.getByRole("button", { name: "Continue to authorization" }));
     await waitFor(() => expect(view.actions.create).toHaveBeenCalledTimes(1));
     expect(view.actions.create).toHaveBeenCalledWith(expect.objectContaining({
       draft: expect.objectContaining({
@@ -253,6 +286,7 @@ describe("AdminMcpServersSection", () => {
       }),
       name: "notion"
     }));
+    expect(view.actions.create).not.toHaveBeenCalledWith(expect.objectContaining({ activate: true }));
   });
 
   it("uses an in-flow irreversible confirmation before deleting", () => {
@@ -289,6 +323,84 @@ describe("AdminMcpServersSection", () => {
     render(<TestSection controller={viewController(update).controller} />);
 
     expect(screen.getByRole("button", { name: "Activate tested revision" })).toBeInTheDocument();
+  });
+
+  it("shows the exact background activation stage without asking for another activation", () => {
+    const activating: AdminMcpServer = {
+      ...server,
+      activeRevision: null,
+      enabled: false,
+      activation: {
+        completedAt: null,
+        errorCode: null,
+        id: "attempt-1",
+        issues: [],
+        requestedAt: "2026-07-22T01:00:00.000Z",
+        stage: "discovering_tools",
+        startedAt: "2026-07-22T01:00:01.000Z",
+        updatedAt: "2026-07-22T01:00:02.000Z"
+      }
+    };
+    render(<TestSection controller={viewController(activating).controller} />);
+
+    const receipt = screen.getByTestId("admin-mcp-activation-progress");
+    expect(within(receipt).getByRole("heading", { name: "Activating MCP" })).toBeInTheDocument();
+    expect(within(receipt).getByText("Discovering tools")).toBeInTheDocument();
+    expect(within(receipt).getByText("Step 3 of 4")).toBeInTheDocument();
+    const catalogRow = screen.getByRole("listitem");
+    expect(within(catalogRow).getByText("Disabled")).toBeInTheDocument();
+    expect(catalogRow).toHaveAttribute("data-resource-availability-row", "disabled");
+    expect(screen.queryByRole("button", { name: "Activate tested revision" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Validate draft" })).not.toBeInTheDocument();
+  });
+
+  it("uses the OCI stage sequence without a package-resolution step", () => {
+    const oci: AdminMcpServer = {
+      ...server,
+      activeRevision: null,
+      activation: {
+        completedAt: null,
+        errorCode: null,
+        id: "attempt-oci",
+        issues: [],
+        requestedAt: "2026-07-22T01:00:00.000Z",
+        stage: "preparing_runtime",
+        startedAt: "2026-07-22T01:00:01.000Z",
+        updatedAt: "2026-07-22T01:00:02.000Z"
+      },
+      draft: {
+        ...server.draft,
+        source: { args: [], image: "ghcr.io/example/mcp:1", kind: "oci" }
+      }
+    };
+    render(<TestSection controller={viewController(oci).controller} />);
+
+    const receipt = screen.getByTestId("admin-mcp-activation-progress");
+    expect(within(receipt).getByText("Preparing runtime")).toBeInTheDocument();
+    expect(within(receipt).getByText("Step 2 of 5")).toBeInTheDocument();
+  });
+
+  it("keeps a failed activation receipt actionable through the existing retry", () => {
+    const failed: AdminMcpServer = {
+      ...server,
+      activation: {
+        completedAt: "2026-07-22T01:00:03.000Z",
+        errorCode: "mcp_draft_test_failed",
+        id: "attempt-1",
+        issues: [{ code: "remote_unavailable", path: "source.url" }],
+        requestedAt: "2026-07-22T01:00:00.000Z",
+        stage: "failed",
+        startedAt: "2026-07-22T01:00:01.000Z",
+        updatedAt: "2026-07-22T01:00:03.000Z"
+      }
+    };
+    const view = viewController(failed);
+    render(<TestSection controller={view.controller} />);
+
+    const receipt = screen.getByTestId("admin-mcp-activation-failed");
+    expect(within(receipt).getByText(/source.url: remote_unavailable/i)).toBeInTheDocument();
+    fireEvent.click(within(receipt).getByRole("button", { name: "Retry activation" }));
+    expect(view.actions.activate).toHaveBeenCalledWith("server-1");
   });
 
   it("distinguishes missing revision artifacts and requires explicit draft replacement to rebuild", async () => {

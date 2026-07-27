@@ -71,11 +71,24 @@ test("keeps multi-MCP enablement, personal secrets, OAuth return, and composer s
     }
   ];
   const patchBodies: Array<{ id: string; value: Record<string, unknown> }> = [];
+  let todoistActivationPolls = 0;
 
   await page.route("**/api/me/mcp**", async (route) => {
     const request = route.request();
     const path = new URL(request.url()).pathname;
     if (request.method() === "GET" && path === "/api/me/mcp") {
+      if (servers.some((server) => server.id === "todoist" && server.readiness === "queued")) {
+        todoistActivationPolls += 1;
+        if (todoistActivationPolls >= 2) {
+          servers = servers.map((server) => server.id === "todoist"
+            ? {
+                ...server,
+                readiness: "ready",
+                tools: [{ description: `${server.name} test tool`, name: `${server.id}_tool` }]
+              }
+            : server);
+        }
+      }
       await route.fulfill({ contentType: "application/json", json: { servers } });
       return;
     }
@@ -88,14 +101,17 @@ test("keeps multi-MCP enablement, personal secrets, OAuth return, and composer s
         const enabled = typeof value.enabled === "boolean" ? value.enabled : server.enabled;
         const configured = id === "mem0" && Boolean((value.values as Record<string, unknown> | undefined)?.api_key);
         const ready = enabled && (id !== "mem0" || configured || server.fields[0]?.source === "personal");
+        const activating = id === "todoist" && enabled && !server.enabled;
         return {
           ...server,
           enabled,
           fields: configured
             ? server.fields.map((field) => ({ ...field, configured: true, source: "personal" }))
             : server.fields,
-          readiness: enabled ? ready ? "ready" : "needs_setup" : "disabled",
-          tools: ready ? [{ description: `${server.name} test tool`, name: `${server.id}_tool` }] : []
+          readiness: enabled ? activating ? "queued" : ready ? "ready" : "needs_setup" : "disabled",
+          tools: ready && !activating
+            ? [{ description: `${server.name} test tool`, name: `${server.id}_tool` }]
+            : []
         };
       });
       await route.fulfill({
@@ -133,6 +149,14 @@ test("keeps multi-MCP enablement, personal secrets, OAuth return, and composer s
 
   await settings.getByRole("button", { name: "Enable Mem0" }).click();
   await settings.getByRole("button", { name: "Enable Todoist" }).click();
+  await expect(settings.getByText("Activating", { exact: true })).toBeVisible();
+  await expect(summary).toHaveAttribute("title", /1 activating/u);
+  await expect(summary).not.toHaveAttribute("title", /needs setup/u);
+
+  await settings.getByRole("button", { name: "Close settings" }).click();
+  await expect(summary.getByText("Activating", { exact: true })).toBeVisible();
+  await summary.click();
+  settings = page.getByTestId("settings-dialog");
   await expect(settings.getByText("Ready", { exact: true })).toHaveCount(2);
   await expect(settings.locator('[data-resource-availability="enabled"]')).toHaveCount(2);
   await expect(settings.locator('[data-resource-availability="disabled"]')).toHaveCount(1);

@@ -94,6 +94,7 @@ function existingServer(): AdminMcpServer {
   return {
     activePersonalSlots: [],
     activeRevision: active,
+    activation: null,
     archivedAt: null,
     description: "Existing server used to prove compact catalog search state.",
     draft: {
@@ -124,6 +125,16 @@ function serverFromCreate(body: AdminMcpCreateRequest): AdminMcpServer {
   return {
     activePersonalSlots: [],
     activeRevision: null,
+    activation: body.activate ? {
+      completedAt: null,
+      errorCode: null,
+      id: "browser-activation",
+      issues: [],
+      requestedAt: fixedTime,
+      stage: "queued",
+      startedAt: null,
+      updatedAt: fixedTime
+    } : null,
     archivedAt: null,
     description: body.description ?? "",
     draft: body.draft,
@@ -192,6 +203,26 @@ test("admin MCP task workspace preserves compact context and drives the tested r
     requests.push({ body, method, path });
 
     if (method === "GET" && path === "/api/admin/mcp") {
+      const pending = servers.find((server) => server.activation?.stage === "queued");
+      if (pending) {
+        const active = revision("active-revision", 2, "activated-identity", "available");
+        const missing = revision("missing-revision", 1, "missing-identity", "missing");
+        servers = servers.map((server) => server.id === pending.id ? {
+          ...server,
+          activeRevision: active,
+          activation: {
+            ...pending.activation!,
+            completedAt: fixedTime,
+            stage: "ready",
+            startedAt: fixedTime,
+            updatedAt: fixedTime
+          },
+          draftTest: testedDraft("activated-identity"),
+          draftTested: true,
+          enabled: true,
+          revisions: [active, missing]
+        } : server);
+      }
       await route.fulfill({ contentType: "application/json", json: { servers } });
       return;
     }
@@ -199,7 +230,7 @@ test("admin MCP task workspace preserves compact context and drives the tested r
     if (method === "POST" && path === "/api/admin/mcp") {
       const created = serverFromCreate(body as AdminMcpCreateRequest);
       servers = [...servers, created];
-      await route.fulfill({ contentType: "application/json", json: { server: created }, status: 201 });
+      await route.fulfill({ contentType: "application/json", json: { server: created }, status: body?.activate ? 202 : 201 });
       return;
     }
 
@@ -311,23 +342,46 @@ test("admin MCP task workspace preserves compact context and drives the tested r
   await search.fill("");
 
   await section.getByRole("button", { name: "New server" }).click();
-  await section.getByLabel("Configuration JSON, URL, or install command").fill(JSON.stringify({
-    mcpServers: {
-      "browser-mcp": {
-        args: ["-y", "@example/mcp@1.0.0"],
-        command: "npx",
-        env: { API_KEY: "browser-write-only-secret" }
-      }
-    }
-  }));
-  await section.getByRole("button", { name: "Normalize and review" }).click();
+  const importEditor = section.getByLabel("Configuration JSON, URL, or install command");
+  const normalizeImport = section.getByRole("button", { name: "Parse" });
+  expect((await importEditor.boundingBox())?.height ?? 0).toBeGreaterThanOrEqual(280);
+
+  await page.setViewportSize({ height: 844, width: 390 });
+  await expectNoHorizontalOverflow(page);
+  await importEditor.scrollIntoViewIfNeeded();
+  expect((await importEditor.boundingBox())?.height ?? 0).toBeGreaterThanOrEqual(280);
+  await expectTouchSafe(normalizeImport);
+
+  await page.setViewportSize({ height: 390, width: 844 });
+  await expectNoHorizontalOverflow(page);
+  await importEditor.scrollIntoViewIfNeeded();
+  expect((await importEditor.boundingBox())?.height ?? 0).toBeGreaterThanOrEqual(150);
+  await normalizeImport.scrollIntoViewIfNeeded();
+  await expectTouchSafe(normalizeImport);
+
+  await page.setViewportSize({ height: 900, width: 768 });
+  await importEditor.fill(`{
+  "mcpServers": {
+    "browser-mcp": {
+      "args": ["-y", "@example/mcp@1.0.0",],
+      "command": "npx",
+      "env": { "API_KEY": "browser-write-only-secret", },
+    },
+  },
+}`);
+  await normalizeImport.click();
   await expect(section.getByLabel("Display name")).toHaveValue("browser-mcp");
+  await expect(section.getByLabel("Display name")).toBeFocused();
   await expect(section.getByLabel("Source")).toHaveValue("npm");
   const importedSecret = section.getByLabel("New shared value for API_KEY");
   await expect(importedSecret).toHaveAttribute("type", "password");
   await expect(importedSecret).toHaveValue("browser-write-only-secret");
-  await section.getByRole("button", { name: "Create draft" }).click();
-  await expect(section.getByText(/created and checked/u)).toBeVisible();
+
+  await page.setViewportSize({ height: 900, width: 1440 });
+  await expectNoHorizontalOverflow(page);
+  await section.getByRole("button", { name: "Activate" }).click();
+  await expect(section.getByText(/activation started/u)).toBeVisible();
+  await expect(section.getByTestId("admin-mcp-activation-progress")).toContainText("Starting");
 
   await page.setViewportSize({ height: 844, width: 390 });
   await expectNoHorizontalOverflow(page);
@@ -347,13 +401,9 @@ test("admin MCP task workspace preserves compact context and drives the tested r
   await page.setViewportSize({ height: 900, width: 1440 });
   await expectNoHorizontalOverflow(page);
   await section.getByRole("button", { name: /Validate & tools/u }).click();
-  await section.getByRole("button", { name: "Test draft" }).click();
-  await expect(section.getByText("Draft tested and tool inventory refreshed.")).toBeVisible();
-
   await section.getByRole("button", { name: /Overview Publication and trust/u }).click();
-  await section.getByRole("button", { name: "Activate tested revision" }).click();
-  await expect(section.getByText("Tested MCP revision activated.")).toBeVisible();
   await expect(section.getByText("Active revision tested")).toBeVisible();
+  await expect(section.getByRole("button", { name: "Activate tested revision" })).toHaveCount(0);
 
   await section.getByRole("button", { name: /Revisions Rollback and rebuild/u }).click();
   const missingRevision = section.getByRole("heading", { name: "Revision 1" }).locator("xpath=ancestor::section[1]");
@@ -363,11 +413,12 @@ test("admin MCP task workspace preserves compact context and drives the tested r
   await expect(section.getByText(/newly materialized MCP revision activated/u)).toBeVisible();
 
   await section.getByRole("button", { name: /Runtime Availability to users/u }).click();
-  await expect(section.getByText("ENABLED", { exact: true })).toBeVisible();
+  const runtimeDetail = section.getByTestId("mcp-server-task-detail");
+  await expect(runtimeDetail.locator('[data-resource-availability="enabled"]')).toHaveText("Enabled");
   await section.getByRole("button", { name: "Disable" }).click();
-  await expect(section.getByText("DISABLED", { exact: true })).toBeVisible();
+  await expect(runtimeDetail.locator('[data-resource-availability="disabled"]')).toHaveText("Disabled");
   await section.getByRole("button", { name: "Enable" }).click();
-  await expect(section.getByText("ENABLED", { exact: true })).toBeVisible();
+  await expect(runtimeDetail.locator('[data-resource-availability="enabled"]')).toHaveText("Enabled");
 
   await section.getByRole("button", { name: /Delete Irreversible removal/u }).click();
   await section.getByRole("button", { name: "Delete…" }).click();
@@ -376,9 +427,11 @@ test("admin MCP task workspace preserves compact context and drives the tested r
   await expect(section.getByRole("listitem").filter({ hasText: "browser-mcp" })).toHaveCount(0);
 
   expect(requests).toEqual(expect.arrayContaining([
-    expect.objectContaining({ method: "POST", path: "/api/admin/mcp/browser-mcp/check-update" }),
-    expect.objectContaining({ method: "POST", path: "/api/admin/mcp/browser-mcp/test" }),
-    expect.objectContaining({ method: "POST", path: "/api/admin/mcp/browser-mcp/activate" }),
+    expect.objectContaining({
+      body: expect.objectContaining({ activate: true }),
+      method: "POST",
+      path: "/api/admin/mcp"
+    }),
     expect.objectContaining({
       body: expect.objectContaining({ replaceDraft: true, revisionId: "missing-revision" }),
       method: "POST",
@@ -388,5 +441,10 @@ test("admin MCP task workspace preserves compact context and drives the tested r
     expect.objectContaining({ body: { enabled: true }, method: "PATCH", path: "/api/admin/mcp/browser-mcp" }),
     expect.objectContaining({ method: "DELETE", path: "/api/admin/mcp/browser-mcp" })
   ]));
+  expect(requests.filter((request) => [
+    "/api/admin/mcp/browser-mcp/check-update",
+    "/api/admin/mcp/browser-mcp/test",
+    "/api/admin/mcp/browser-mcp/activate"
+  ].includes(request.path))).toEqual([]);
   expect(JSON.stringify(servers)).not.toContain("browser-write-only-secret");
 });

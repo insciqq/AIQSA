@@ -17,7 +17,10 @@ export type McpOAuthSettler = (
   input: McpOAuthSettlementInput
 ) => Promise<McpOAuthSettlementResult>;
 
-export function createMcpOAuthSettler(repository: McpRepository): McpOAuthSettler {
+export function createMcpOAuthSettler(
+  repository: McpRepository,
+  onActivationRequested?: () => void
+): McpOAuthSettler {
   return async (input) => {
     if (input.purpose === "user") {
       const updated = await repository.updateUserServer({
@@ -30,22 +33,18 @@ export function createMcpOAuthSettler(repository: McpRepository): McpOAuthSettle
         : { kind: "failed" };
     }
 
-    const tested = await repository.testDraft({
+    const queued = await repository.requestActivation({
       expectedDraftHash: input.configurationIdentity,
-      oneTimeValues: {},
       serverId: input.serverId,
       validationUserId: input.userId
     });
-    if (tested.kind !== "ok" ||
-      tested.value.draftTest?.draftHash !== input.configurationIdentity ||
-      !tested.value.draftTested) {
+    if (queued.kind !== "ok" || queued.value.activation?.stage === "failed") {
       return { kind: "failed" };
     }
-
-    const activated = await repository.activateDraft(input.serverId);
-    if (activated.kind !== "ok" || !activated.value.enabled ||
-      activated.value.activeRevision?.draftHash !== input.configurationIdentity) {
-      return { kind: "failed" };
+    try {
+      onActivationRequested?.();
+    } catch {
+      // The durable queue is authoritative; the periodic scheduler will recover a missed kick.
     }
     return { kind: "ok" };
   };

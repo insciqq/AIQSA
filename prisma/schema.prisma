@@ -82,6 +82,17 @@ enum McpRuntimeState {
   stopping
 }
 
+enum McpActivationStage {
+  queued
+  resolving
+  preparing_runtime
+  connecting
+  discovering_tools
+  publishing
+  ready
+  failed
+}
+
 enum ModelRunToolCallState {
   pending
   running
@@ -132,6 +143,7 @@ model User {
   folders                       Folder[]
   groups                        UserGroup[]
   mcpGrants                     McpGrant[]
+  mcpActivationJobs             McpActivationJob[]
   mcpOAuthConnections           McpOAuthConnection[]
   mcpUserServers                McpUserServer[]
   modelRuns                     ModelRun[]
@@ -785,12 +797,35 @@ model McpServer {
   createdAt            DateTime             @default(now())
   updatedAt            DateTime             @updatedAt
   activeRevision       McpRevision?         @relation("ActiveMcpRevision", fields: [activeRevisionId], references: [id], onDelete: SetNull)
+  activationJob        McpActivationJob?
   grants               McpGrant[]
   oauthConnections     McpOAuthConnection[]
   revisions            McpRevision[]        @relation("McpServerRevisions")
   userServers          McpUserServer[]
 
   @@index([enabled, archivedAt])
+}
+
+model McpActivationJob {
+  id                  String             @id @default(uuid())
+  serverId            String             @unique
+  draftHash           String
+  sharedConfigVersion Int
+  validationUserId    String?
+  stage               McpActivationStage @default(queued)
+  errorCode           String?
+  issues              Json?
+  leaseId             String?
+  workloadToken       String             @unique
+  requestedAt         DateTime           @default(now())
+  startedAt           DateTime?
+  completedAt         DateTime?
+  updatedAt           DateTime           @updatedAt
+  server              McpServer          @relation(fields: [serverId], references: [id], onDelete: Cascade)
+  validationUser      User?              @relation(fields: [validationUserId], references: [id], onDelete: SetNull)
+
+  @@index([stage, updatedAt])
+  @@index([validationUserId])
 }
 
 model McpRevision {

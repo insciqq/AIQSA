@@ -15,6 +15,16 @@ function adminServer(input: Readonly<{
   const testedDraftHash = input.testedDraftHash === undefined ? DRAFT_HASH : input.testedDraftHash;
   const activeDraftHash = input.activeDraftHash === undefined ? DRAFT_HASH : input.activeDraftHash;
   return {
+    activation: {
+      completedAt: null,
+      errorCode: null,
+      id: "activation-1",
+      issues: [],
+      requestedAt: "2026-07-23T00:00:00.000Z",
+      stage: "queued",
+      startedAt: null,
+      updatedAt: "2026-07-23T00:00:00.000Z"
+    },
     activePersonalSlots: [],
     activeRevision: activeDraftHash ? {
       artifactStatus: "not_applicable",
@@ -79,20 +89,23 @@ function userServer(enabled: boolean): UserMcpServer {
 
 function repository(input: Readonly<{
   activateDraft?: McpRepository["activateDraft"];
+  requestActivation?: McpRepository["requestActivation"];
   testDraft?: McpRepository["testDraft"];
   updateUserServer?: McpRepository["updateUserServer"];
 }> = {}): McpRepository {
   return {
     activateDraft: input.activateDraft ?? vi.fn(async () => ({ kind: "ok", value: adminServer() })),
+    requestActivation: input.requestActivation ?? vi.fn(async () => ({ kind: "ok", value: adminServer() })),
     testDraft: input.testDraft ?? vi.fn(async () => ({ kind: "ok", value: adminServer() })),
     updateUserServer: input.updateUserServer ?? vi.fn(async () => ({ kind: "ok", value: userServer(true) }))
   } as McpRepository;
 }
 
 describe("MCP OAuth settlement", () => {
-  it("tests and activates only the flow-bound administrator draft", async () => {
+  it("queues only the flow-bound administrator draft and kicks background activation", async () => {
     const storage = repository();
-    const settle = createMcpOAuthSettler(storage);
+    const onActivationRequested = vi.fn();
+    const settle = createMcpOAuthSettler(storage, onActivationRequested);
 
     await expect(settle({
       configurationIdentity: DRAFT_HASH,
@@ -101,25 +114,20 @@ describe("MCP OAuth settlement", () => {
       userId: "admin-1"
     })).resolves.toEqual({ kind: "ok" });
 
-    expect(storage.testDraft).toHaveBeenCalledWith({
+    expect(storage.requestActivation).toHaveBeenCalledWith({
       expectedDraftHash: DRAFT_HASH,
-      oneTimeValues: {},
       serverId: "server-1",
       validationUserId: "admin-1"
     });
-    expect(storage.activateDraft).toHaveBeenCalledWith("server-1");
+    expect(onActivationRequested).toHaveBeenCalledOnce();
+    expect(storage.testDraft).not.toHaveBeenCalled();
+    expect(storage.activateDraft).not.toHaveBeenCalled();
     expect(storage.updateUserServer).not.toHaveBeenCalled();
   });
 
-  it("fails closed before activation when validation rejects or returns another draft", async () => {
+  it("fails closed when the flow-bound draft cannot be queued", async () => {
     const rejected = repository({
-      testDraft: vi.fn(async () => ({ kind: "draft_changed" as const }))
-    });
-    const mismatched = repository({
-      testDraft: vi.fn(async () => ({
-        kind: "ok" as const,
-        value: adminServer({ testedDraftHash: "another-draft" })
-      }))
+      requestActivation: vi.fn(async () => ({ kind: "draft_changed" as const }))
     });
     const input = {
       configurationIdentity: DRAFT_HASH,
@@ -129,16 +137,27 @@ describe("MCP OAuth settlement", () => {
     };
 
     await expect(createMcpOAuthSettler(rejected)(input)).resolves.toEqual({ kind: "failed" });
-    await expect(createMcpOAuthSettler(mismatched)(input)).resolves.toEqual({ kind: "failed" });
+    expect(rejected.testDraft).not.toHaveBeenCalled();
     expect(rejected.activateDraft).not.toHaveBeenCalled();
-    expect(mismatched.activateDraft).not.toHaveBeenCalled();
   });
 
-  it("verifies that activation published and enabled the same draft", async () => {
+  it("does not claim settlement for a terminal failed activation", async () => {
     const storage = repository({
-      activateDraft: vi.fn(async () => ({
+      requestActivation: vi.fn(async () => ({
         kind: "ok" as const,
-        value: adminServer({ activeDraftHash: "another-draft" })
+        value: {
+          ...adminServer(),
+          activation: {
+            completedAt: "2026-07-23T00:00:01.000Z",
+            errorCode: "mcp_draft_test_failed",
+            id: "activation-1",
+            issues: [],
+            requestedAt: "2026-07-23T00:00:00.000Z",
+            stage: "failed" as const,
+            startedAt: "2026-07-23T00:00:00.000Z",
+            updatedAt: "2026-07-23T00:00:01.000Z"
+          }
+        }
       }))
     });
 
@@ -167,6 +186,7 @@ describe("MCP OAuth settlement", () => {
     });
     expect(storage.testDraft).not.toHaveBeenCalled();
     expect(storage.activateDraft).not.toHaveBeenCalled();
+    expect(storage.requestActivation).not.toHaveBeenCalled();
   });
 
   it("reports user enablement failures without claiming settlement", async () => {

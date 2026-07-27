@@ -18,7 +18,7 @@ import {
   Trash2,
   X
 } from "lucide-react";
-import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 type LeftChatPaneProps = {
   activeChatId: string | null;
@@ -41,6 +41,7 @@ type LeftChatPaneProps = {
   folderActionId: string | null;
   folderMenuId: string | null;
   folders: FolderSummary[];
+  footer?: ReactNode;
   layout?: "desktop" | "mobile";
   newFolderName: string;
   onActivateChat(chat: ChatSummary): void;
@@ -62,6 +63,7 @@ type LeftChatPaneProps = {
   onMoveFolder(folder: FolderSummary, folderId: string | null): void;
   onNewFolderNameChange(value: string): void;
   onOpenProjectSettings(folder: FolderSummary): void;
+  onRetryWorkspace(): void;
   onSaveChatTitle(chat: ChatSummary): void;
   onSaveFolder(folder: FolderSummary): void;
   onShareChat(chat: ChatSummary): void;
@@ -161,6 +163,7 @@ function LeftChatPaneComponent({
   folderActionId,
   folderMenuId,
   folders,
+  footer,
   layout = "desktop",
   newFolderName,
   onActivateChat,
@@ -182,6 +185,7 @@ function LeftChatPaneComponent({
   onMoveFolder,
   onNewFolderNameChange,
   onOpenProjectSettings,
+  onRetryWorkspace,
   onSaveChatTitle,
   onSaveFolder,
   onShareChat,
@@ -591,7 +595,7 @@ function LeftChatPaneComponent({
 
       <nav
         ref={navigationRef}
-        className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto px-2 pb-[max(0.75rem,env(safe-area-inset-bottom))]"
+        className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto px-2 pb-3"
         aria-label="Workspace chats and folders"
         onScroll={(event) => {
           if (scrollTopRef) {
@@ -604,7 +608,7 @@ function LeftChatPaneComponent({
             {queryActive ? "Search results" : "History"}
           </span>
           {!queryActive && workspaceReady ? (
-            <span className="text-[11px] tabular-nums text-ink-muted">
+            <span className="text-xs tabular-nums text-ink-muted">
               {resultCount} {resultCount === 1 ? "chat" : "chats"}
             </span>
           ) : null}
@@ -627,7 +631,14 @@ function LeftChatPaneComponent({
             className="mx-2 border-l-2 border-critical px-3 py-1.5 text-xs leading-5 text-critical"
             data-testid="left-workspace-unavailable"
           >
-            Chats unavailable. Use Retry in the conversation pane.
+            <p>Chats unavailable.</p>
+            <button
+              className={`mt-2 inline-flex min-h-control-sm items-center rounded-control border border-critical/25 px-2.5 font-medium hover:bg-critical/10 lg:hidden ${focusRing}`}
+              onClick={onRetryWorkspace}
+              type="button"
+            >
+              Retry workspace
+            </button>
           </div>
         ) : null}
         {queryActive ? (
@@ -745,7 +756,7 @@ function LeftChatPaneComponent({
                       {group.folder.projectMemory.trim() ? (
                         <span className="size-1.5 shrink-0 rounded-pill bg-positive" title="Project memory configured" />
                       ) : null}
-                      <span className="shrink-0 text-[11px] tabular-nums text-ink-muted" aria-hidden="true">
+                      <span className="shrink-0 text-xs tabular-nums text-ink-muted" aria-hidden="true">
                         {folderChatCount}
                       </span>
                     </button>
@@ -794,7 +805,7 @@ function LeftChatPaneComponent({
                     <div className="truncate text-sm font-medium text-ink" title={group.name}>
                       {group.name}
                     </div>
-                    <div className="mt-0.5 text-[11px] text-ink-muted">
+                    <div className="mt-0.5 text-xs text-ink-muted">
                       {group.folder.projectMemory.trim() ? "Project memory configured" : "No project memory"}
                     </div>
                   </div>
@@ -1070,7 +1081,7 @@ function LeftChatPaneComponent({
                                 ) : null}
                               </span>
                               {showMetadata || matchLabel ? (
-                                <span className="flex min-w-0 items-center gap-1.5 text-[11px] leading-4 text-ink-muted">
+                                <span className="flex min-w-0 items-center gap-1.5 text-xs leading-4 text-ink-muted">
                                   {showMetadata ? (
                                     <span className="min-w-0 truncate" title={`${providerModel} · Updated ${updated}`}>
                                       {providerModel}
@@ -1152,7 +1163,7 @@ function LeftChatPaneComponent({
                               <div className="truncate text-sm font-medium text-ink" title={chat.title}>
                                 {chat.title}
                               </div>
-                              <div className="mt-0.5 truncate text-[11px] text-ink-muted" title={providerModel}>
+                              <div className="mt-0.5 truncate text-xs text-ink-muted" title={providerModel}>
                                 {providerModel}
                                 {running ? " · Response running" : unavailable ? " · Unavailable for new runs" : ""}
                               </div>
@@ -1235,7 +1246,7 @@ function LeftChatPaneComponent({
         {chatGroups.length === 0 && workspaceReady && !workspaceLoading && !chatContentSearchLoading ? (
           <div className="px-5 py-10 text-center" data-testid="workspace-empty-state">
             <p className="text-sm font-medium text-ink-secondary">
-              {queryActive ? "No title or model matches" : "No chats yet"}
+              {queryActive ? "No chats match this search" : "No chats yet"}
             </p>
             <p className="mt-1 text-xs leading-5 text-ink-muted">
               {queryActive ? "Try a different title, model, or phrase." : "New conversations will appear here."}
@@ -1243,6 +1254,16 @@ function LeftChatPaneComponent({
           </div>
         ) : null}
       </nav>
+      {footer ? (
+        <footer
+          className={`relative shrink-0 border-t border-trace-subtle px-3 pt-2 ${
+            layout === "mobile" ? "pb-2" : "pb-[max(0.5rem,env(safe-area-inset-bottom))]"
+          }`}
+          data-testid="workspace-account-footer"
+        >
+          {footer}
+        </footer>
+      ) : null}
     </aside>
   );
 }
@@ -1269,6 +1290,7 @@ function sameLeftPaneData(prev: LeftChatPaneProps, next: LeftChatPaneProps): boo
     prev.folderActionId === next.folderActionId &&
     prev.folderMenuId === next.folderMenuId &&
     prev.folders === next.folders &&
+    prev.footer === next.footer &&
     prev.layout === next.layout &&
     prev.newFolderName === next.newFolderName &&
     prev.scrollTopRef === next.scrollTopRef &&

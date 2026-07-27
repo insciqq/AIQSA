@@ -29,10 +29,11 @@ describe("prompt settings store", () => {
     resetPromptSettingsStoreForTest();
   });
 
-  it("opens and edits the Settings prompt editor from prompt presets", () => {
-    usePromptSettingsStore.getState().openSettings(prompts[0]);
+  it("opens and edits the standalone prompt library from prompt presets", () => {
+    usePromptSettingsStore.getState().openPromptLibrary(prompts[0]);
     expect(usePromptSettingsStore.getState()).toMatchObject({
       settingsOpen: true,
+      settingsSection: "prompts",
       settingsPromptEditor: promptEditorFromPreset(prompts[0])
     });
 
@@ -43,8 +44,19 @@ describe("prompt settings store", () => {
     expect(usePromptSettingsStore.getState().settingsPromptEditor).toEqual(promptEditorFromPreset(null));
   });
 
+  it("opens general Settings on Appearance without replacing the prompt draft", () => {
+    usePromptSettingsStore.getState().openPromptLibrary(prompts[0]);
+    usePromptSettingsStore.getState().openSettings();
+
+    expect(usePromptSettingsStore.getState()).toMatchObject({
+      settingsOpen: true,
+      settingsSection: "appearance",
+      settingsPromptEditor: promptEditorFromPreset(prompts[0])
+    });
+  });
+
   it("opens MCP settings without changing the current prompt draft", () => {
-    usePromptSettingsStore.getState().openSettings(prompts[0]);
+    usePromptSettingsStore.getState().openPromptLibrary(prompts[0]);
     usePromptSettingsStore.getState().openMcpSettings();
 
     expect(usePromptSettingsStore.getState()).toMatchObject({
@@ -108,7 +120,7 @@ describe("prompt settings store", () => {
   });
 
   it("supports direct and functional editor transitions without resetting unrelated Settings state", () => {
-    usePromptSettingsStore.getState().openSettings(prompts[0]);
+    usePromptSettingsStore.getState().openPromptLibrary(prompts[0]);
     usePromptSettingsStore.getState().setPromptSaving(true);
     usePromptSettingsStore.getState().setSettingsPromptEditor((editor) => ({
       ...editor,

@@ -1,5 +1,6 @@
 import type { UserMcpServer } from "@/lib/contracts/mcp";
 import { loadUserMcpServers } from "./mcpSettingsApi";
+import { hasTransitioningMcpServer } from "./mcpReadiness";
 import { create } from "zustand";
 
 export type McpOAuthOutcome = Readonly<{
@@ -27,6 +28,7 @@ export const useMcpSettingsStore = create<McpSettingsStore>((set) => ({
     set((state) => ({
       servers: state.servers.map((candidate) => candidate.id === server.id ? server : candidate)
     }));
+    syncMcpReadinessPolling(true);
   },
   servers: [],
   setError(error) {
@@ -38,8 +40,50 @@ export const useMcpSettingsStore = create<McpSettingsStore>((set) => ({
 }));
 
 let loadPromise: Promise<UserMcpServer[]> | null = null;
+let readinessPollAttempt = 0;
+let readinessPollInFlight = false;
+let readinessPollTimer: number | null = null;
+const readinessPollDelaysMs = [750, 1_500, 2_500, 4_000, 6_000] as const;
 const oauthAuthorizingPrefix = "aiqsa:mcp:authorizing:";
 const oauthAuthorizingTtlMs = 10 * 60_000;
+
+function stopMcpReadinessPolling(): void {
+  if (readinessPollTimer !== null && typeof window !== "undefined") {
+    window.clearTimeout(readinessPollTimer);
+  }
+  readinessPollAttempt = 0;
+  readinessPollTimer = null;
+}
+
+function syncMcpReadinessPolling(reset = false): void {
+  if (!hasTransitioningMcpServer(useMcpSettingsStore.getState().servers)) {
+    stopMcpReadinessPolling();
+    return;
+  }
+  if (typeof window === "undefined" || typeof document === "undefined") return;
+  if (reset) {
+    readinessPollAttempt = 0;
+    if (readinessPollTimer !== null) window.clearTimeout(readinessPollTimer);
+    readinessPollTimer = null;
+  }
+  if (document.visibilityState !== "visible" || readinessPollInFlight || readinessPollTimer !== null) return;
+
+  const delay = readinessPollDelaysMs[Math.min(readinessPollAttempt, readinessPollDelaysMs.length - 1)]!;
+  readinessPollTimer = window.setTimeout(async () => {
+    readinessPollTimer = null;
+    if (document.visibilityState !== "visible") return;
+    readinessPollInFlight = true;
+    try {
+      await refreshMcpSettings(true, { background: true });
+    } catch {
+      // A transient catalog failure must not turn activation progress into a false terminal state.
+    } finally {
+      readinessPollInFlight = false;
+      readinessPollAttempt += 1;
+      syncMcpReadinessPolling();
+    }
+  }, delay);
+}
 
 function oauthAuthorizingKey(serverId: string): string {
   return `${oauthAuthorizingPrefix}${serverId}`;
@@ -65,20 +109,32 @@ export function isMcpOAuthAuthorizing(serverId: string): boolean {
   return true;
 }
 
-export async function refreshMcpSettings(force = false): Promise<UserMcpServer[]> {
+export async function refreshMcpSettings(
+  force = false,
+  options: Readonly<{ background?: boolean }> = {}
+): Promise<UserMcpServer[]> {
   const current = useMcpSettingsStore.getState();
-  if (!force && current.loadState === "ready") return current.servers;
+  if (!force && current.loadState === "ready") {
+    syncMcpReadinessPolling();
+    return current.servers;
+  }
   if (loadPromise) return loadPromise;
 
-  useMcpSettingsStore.setState({ error: null, loadState: "loading" });
+  const preserveCurrentState = options.background === true && current.servers.length > 0;
+  useMcpSettingsStore.setState(preserveCurrentState
+    ? { error: null }
+    : { error: null, loadState: "loading" });
   loadPromise = loadUserMcpServers().then(
     (servers) => {
       useMcpSettingsStore.setState({ error: null, loadState: "ready", servers });
+      syncMcpReadinessPolling();
       return servers;
     },
     (error: unknown) => {
       const code = error instanceof Error ? error.message : "mcp_request_failed";
-      useMcpSettingsStore.setState({ error: code, loadState: "error" });
+      useMcpSettingsStore.setState(preserveCurrentState
+        ? { error: code }
+        : { error: code, loadState: "error" });
       throw error;
     }
   ).finally(() => {
@@ -103,6 +159,8 @@ export function consumeMcpOAuthReturn(url: URL): McpOAuthOutcome | null {
 
 export function resetMcpSettingsStoreForTest(): void {
   loadPromise = null;
+  readinessPollInFlight = false;
+  stopMcpReadinessPolling();
   if (typeof window !== "undefined") {
     for (let index = window.sessionStorage.length - 1; index >= 0; index -= 1) {
       const key = window.sessionStorage.key(index);

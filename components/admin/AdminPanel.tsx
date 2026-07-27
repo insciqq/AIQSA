@@ -11,6 +11,10 @@ import { AdminInvitesSection } from "@/components/admin/AdminInvitesSection";
 import { AdminMcpGroupAccessPanel, AdminMcpUserAccessPanel } from "@/components/admin/AdminMcpGrantPanels";
 import { AdminMcpServersSection } from "@/components/admin/AdminMcpServersSection";
 import { AdminProvidersExperience } from "@/components/admin/AdminProvidersExperience";
+import {
+  EMPTY_ADMIN_RUN_PROFILES_EDIT_STATE,
+  type AdminRunProfilesEditState
+} from "@/components/admin/AdminRunProfilesPanel";
 import { AdminSafetySection } from "@/components/admin/AdminSafetySection";
 import { AdminSectionFrame } from "@/components/admin/AdminSectionFrame";
 import { AdminSectionTabs } from "@/components/admin/AdminSectionTabs";
@@ -37,11 +41,14 @@ import { useAdminInvitesController, type AdminInvitesController } from "@/compon
 import { useAdminMcpController, type AdminMcpController } from "@/components/admin/useAdminMcpController";
 import { useAdminMcpSectionState, type AdminMcpSectionState } from "@/components/admin/useAdminMcpSectionState";
 import { useAdminOperationalFocus } from "@/components/admin/useAdminOperationalFocus";
-import { useAdminSectionNavigation } from "@/components/admin/useAdminSectionNavigation";
+import {
+  useAdminSectionNavigation,
+  type AdminBlockedNavigation
+} from "@/components/admin/useAdminSectionNavigation";
 import { useAdminUsersController, type AdminUsersController } from "@/components/admin/useAdminUsersController";
 import type { AdminDashboard } from "@/lib/contracts/admin";
 import { Link2, Plus } from "lucide-react";
-import { useCallback } from "react";
+import { useCallback, useEffect, useRef, useState, type MouseEvent } from "react";
 
 type AdminPanelProps = Readonly<{
   adminEmail: string;
@@ -111,6 +118,7 @@ function AdminSectionContent({
   mcp,
   mcpSection,
   onMutationCommitted,
+  onRunProfilesEditStateChange,
   requestConfirmation,
   onRequestRevokeAllSessions,
   submitting,
@@ -126,6 +134,7 @@ function AdminSectionContent({
   mcp: AdminMcpController;
   mcpSection: AdminMcpSectionState;
   onMutationCommitted(): void | Promise<unknown>;
+  onRunProfilesEditStateChange(state: AdminRunProfilesEditState): void;
   requestConfirmation: AdminConfirmationController["requestConfirmation"];
   onRequestRevokeAllSessions(): void;
   submitting: boolean;
@@ -154,6 +163,7 @@ function AdminSectionContent({
           active
           groups={dashboard.groups}
           onMutationCommitted={onMutationCommitted}
+          onRunProfilesEditStateChange={onRunProfilesEditStateChange}
           requestConfirmation={requestConfirmation}
         />
       );
@@ -191,8 +201,29 @@ function AdminSectionContent({
 }
 
 export function AdminPanel({ adminEmail, adminUserId }: AdminPanelProps) {
+  const [runProfilesEditState, setRunProfilesEditState] = useState<AdminRunProfilesEditState>(
+    EMPTY_ADMIN_RUN_PROFILES_EDIT_STATE
+  );
+  const runProfilesEditStateRef = useRef(runProfilesEditState);
+  const navigationBlockedRef = useRef(false);
+  const requestNavigationConfirmationRef = useRef<(
+    (navigation: AdminBlockedNavigation) => void
+  ) | null>(null);
+  const canSelectSection = useCallback(() => (
+    !navigationBlockedRef.current && !runProfilesEditStateRef.current.dirty
+  ), []);
+  const canExitAdmin = useCallback(() => (
+    !navigationBlockedRef.current && !runProfilesEditStateRef.current.dirty
+  ), []);
+  const onNavigationBlocked = useCallback((navigation: AdminBlockedNavigation) => {
+    requestNavigationConfirmationRef.current?.(navigation);
+  }, []);
   const feedback = useAdminFeedback();
-  const navigation = useAdminSectionNavigation();
+  const navigation = useAdminSectionNavigation({
+    canExitAdmin,
+    canSelectSection,
+    onNavigationBlocked
+  });
   const resource = useAdminDashboardResource({ feedback });
   const actionRunner = useAdminActionRunner({
     feedback,
@@ -203,7 +234,106 @@ export function AdminPanel({ adminEmail, adminUserId }: AdminPanelProps) {
   const fieldErrors = useAdminFieldErrors(feedback);
   const operationalFocus = useAdminOperationalFocus();
   const nowMs = resource.lastLoadedAt?.getTime() ?? 0;
-  const actionsDisabled = Boolean(actionRunner.submitting);
+  const actionsDisabled = Boolean(actionRunner.submitting || runProfilesEditState.busy);
+  const allowUnloadRef = useRef(false);
+  const allowReturnToChatRef = useRef(false);
+  const returnToChatLinkRef = useRef<HTMLAnchorElement | null>(null);
+
+  useEffect(() => {
+    runProfilesEditStateRef.current = runProfilesEditState;
+  }, [runProfilesEditState]);
+
+  useEffect(() => {
+    navigationBlockedRef.current = actionsDisabled;
+  }, [actionsDisabled]);
+
+  useEffect(() => {
+    requestNavigationConfirmationRef.current = (blockedNavigation) => {
+      if (navigationBlockedRef.current) {
+        return;
+      }
+      if (!runProfilesEditStateRef.current.dirty) {
+        blockedNavigation.proceed();
+        return;
+      }
+
+      const returningToChat = blockedNavigation.target.kind === "exit" &&
+        new URL(blockedNavigation.target.href, window.location.href).pathname === "/";
+      const leavingAdmin = blockedNavigation.target.kind === "exit";
+      confirmation.requestConfirmation({
+        body: returningToChat
+          ? "Unsaved Run profile edits will be lost if you return to chat."
+          : leavingAdmin
+            ? "Unsaved Run profile edits will be lost if you leave Control Center."
+            : "Unsaved Run profile edits will be lost if you leave Providers.",
+        confirmLabel: returningToChat ? "Discard and return" : "Discard and leave",
+        dialogLabel: "Discard Run profile changes",
+        icon: "x",
+        onConfirm: () => {
+          if (leavingAdmin) {
+            allowUnloadRef.current = true;
+          }
+          blockedNavigation.proceed();
+          if (leavingAdmin) {
+            window.setTimeout(() => {
+              allowUnloadRef.current = false;
+            }, 1_000);
+          }
+        },
+        testId: returningToChat
+          ? "admin-confirm-discard-run-profile-return-changes"
+          : leavingAdmin
+            ? "admin-confirm-discard-run-profile-exit-changes"
+            : "admin-confirm-discard-run-profile-section-changes",
+        title: returningToChat
+          ? "Discard Run profile changes?"
+          : leavingAdmin
+            ? "Leave Control Center?"
+            : "Discard Run profile changes?",
+        tone: "warning"
+      });
+    };
+    return () => {
+      requestNavigationConfirmationRef.current = null;
+    };
+  }, [confirmation]);
+
+  useEffect(() => {
+    if (!runProfilesEditState.dirty && !runProfilesEditState.busy) {
+      return;
+    }
+
+    const protectUnsavedChanges = (event: BeforeUnloadEvent) => {
+      if (allowUnloadRef.current) {
+        return;
+      }
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", protectUnsavedChanges);
+    return () => window.removeEventListener("beforeunload", protectUnsavedChanges);
+  }, [runProfilesEditState.busy, runProfilesEditState.dirty]);
+
+  const requestReturnToChat = useCallback((event: MouseEvent<HTMLAnchorElement>) => {
+    if (allowReturnToChatRef.current) {
+      allowReturnToChatRef.current = false;
+      return;
+    }
+    if (actionsDisabled) {
+      event.preventDefault();
+      return;
+    }
+    if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) {
+      return;
+    }
+    returnToChatLinkRef.current = event.currentTarget;
+    if (!navigation.requestExit(event.currentTarget.href, () => {
+      allowReturnToChatRef.current = true;
+      returnToChatLinkRef.current?.click();
+    })) {
+      event.preventDefault();
+    }
+  }, [actionsDisabled, navigation]);
 
   const users = useAdminUsersController({
     actionsDisabled,
@@ -273,7 +403,7 @@ export function AdminPanel({ adminEmail, adminUserId }: AdminPanelProps) {
     >
       <div
         aria-hidden={confirmation.confirmation ? true : undefined}
-        className="mx-auto grid min-h-[100dvh] min-w-0 max-w-[1680px] bg-answer-paper lg:grid-cols-[15rem_minmax(0,1fr)] lg:grid-rows-[auto_1fr]"
+        className="mx-auto grid min-h-[100dvh] min-w-0 max-w-[1680px] grid-rows-[auto_minmax(0,1fr)] bg-answer-paper lg:grid-cols-[15rem_minmax(0,1fr)]"
         data-testid="admin-console-workspace"
         inert={confirmation.confirmation ? true : undefined}
       >
@@ -282,6 +412,7 @@ export function AdminPanel({ adminEmail, adminUserId }: AdminPanelProps) {
             adminEmail={adminEmail}
             lastLoadedAt={resource.lastLoadedAt}
             loading={resource.loading}
+            onReturnToChatClick={requestReturnToChat}
             onRefresh={() => void resource.refresh()}
             submitting={actionsDisabled}
           />
@@ -291,7 +422,11 @@ export function AdminPanel({ adminEmail, adminUserId }: AdminPanelProps) {
           compactVisible={navigation.sectionIndexOpen}
           testId="admin-section-index-pane"
         >
-          <AdminSectionTabs navigation={navigation} summary={resource.dashboard?.navigation ?? null} />
+          <AdminSectionTabs
+            navigation={navigation}
+            navigationBlocked={actionsDisabled}
+            summary={resource.dashboard?.navigation ?? null}
+          />
         </AdminResourceIndexPane>
         <AdminResourceDetailPane
           className="bg-answer-paper lg:col-start-2 lg:row-start-2"
@@ -313,6 +448,7 @@ export function AdminPanel({ adminEmail, adminUserId }: AdminPanelProps) {
                 />
               }
               navigation={navigation}
+              navigationBlocked={actionsDisabled}
             >
               <div>
                 <AdminSectionContent
@@ -326,6 +462,7 @@ export function AdminPanel({ adminEmail, adminUserId }: AdminPanelProps) {
                   mcp={mcp}
                   mcpSection={mcpSection}
                   onMutationCommitted={resource.refresh}
+                  onRunProfilesEditStateChange={setRunProfilesEditState}
                   requestConfirmation={confirmation.requestConfirmation}
                   onRequestRevokeAllSessions={requestRevokeAllSessions}
                   submitting={actionsDisabled}

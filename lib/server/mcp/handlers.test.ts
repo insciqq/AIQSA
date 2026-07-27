@@ -5,7 +5,7 @@ import type {
   UserMcpServer
 } from "@/lib/contracts/mcp";
 import type { AuthenticatedSession, RequestAuthResolver } from "@/lib/server/auth/requestAuth";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   createAdminMcpActivateHandler,
   createAdminMcpCatalogHandler,
@@ -93,7 +93,8 @@ function adminServer(input: Partial<AdminMcpServer> = {}): AdminMcpServer {
     sharedValues: {},
     updatedAt: NOW,
     validationOAuth: null,
-    ...input
+    ...input,
+    activation: input.activation ?? null
   };
 }
 
@@ -132,6 +133,7 @@ class MemoryMcpRepository implements McpRepository {
   sharedValues: Record<string, McpSlotValue | null> = {};
   createCalls: Array<Parameters<McpRepository["createServer"]>[0]> = [];
   rebuildCalls: Array<Parameters<McpRepository["rebuildRevision"]>[0]> = [];
+  activationCalls: Array<Parameters<McpRepository["requestActivation"]>[0]> = [];
   rollbackCalls: Array<Parameters<McpRepository["rollbackServer"]>[0]> = [];
   testDraftCalls: Array<Parameters<McpRepository["testDraft"]>[0]> = [];
   updateCalls: Array<Parameters<McpRepository["updateServer"]>[0]> = [];
@@ -187,6 +189,16 @@ class MemoryMcpRepository implements McpRepository {
     this.sharedValues = { ...input.sharedValues };
     this.admin = adminServer({
       activeRevision: null,
+      activation: input.activate ? {
+        completedAt: null,
+        errorCode: null,
+        id: "activation-1",
+        issues: [],
+        requestedAt: NOW,
+        stage: "queued",
+        startedAt: null,
+        updatedAt: NOW
+      } : null,
       description: input.description,
       draft: input.draft,
       draftTest: null,
@@ -228,6 +240,28 @@ class MemoryMcpRepository implements McpRepository {
     const failure = this.consumeFailure<AdminMcpServer>();
     if (failure) return failure;
     if (input.serverId !== this.admin.id || input.revisionId !== revision.id) return { kind: "not_found" };
+    return { kind: "ok", value: this.admin };
+  }
+
+  async requestActivation(
+    input: Parameters<McpRepository["requestActivation"]>[0]
+  ): Promise<McpRepositoryResult<AdminMcpServer>> {
+    this.activationCalls.push(input);
+    const failure = this.consumeFailure<AdminMcpServer>();
+    if (failure) return failure;
+    this.admin = {
+      ...this.admin,
+      activation: {
+        completedAt: null,
+        errorCode: null,
+        id: "activation-1",
+        issues: [],
+        requestedAt: NOW,
+        stage: "queued",
+        startedAt: null,
+        updatedAt: NOW
+      }
+    };
     return { kind: "ok", value: this.admin };
   }
 
@@ -719,6 +753,58 @@ describe("MCP handler input validation", () => {
     }), routeContext)).status).toBe(200);
     expect(repository.activateCalls).toEqual([SERVER_ID]);
     expect(repository.rollbackCalls).toEqual([{ revisionId: revision.id, serverId: SERVER_ID }]);
+  });
+
+  it("acknowledges atomic create-and-activate immediately and kicks background work", async () => {
+    const repository = new MemoryMcpRepository();
+    const onActivationRequested = vi.fn();
+    const create = createAdminMcpCreateHandler({
+      onActivationRequested,
+      repository,
+      resolveAuth
+    });
+    const response = await create(request({
+      body: {
+        activate: true,
+        draft,
+        name: "Async MCP",
+        sharedValues: { "api-key": "persisted-secret" }
+      },
+      contentType: "application/json",
+      user: "admin"
+    }));
+
+    expect(response.status).toBe(202);
+    await expect(response.json()).resolves.toMatchObject({
+      server: { activation: { stage: "queued" } }
+    });
+    expect(repository.createCalls[0]).toMatchObject({
+      activate: true,
+      validationUserId: "admin"
+    });
+    expect(onActivationRequested).toHaveBeenCalledOnce();
+  });
+
+  it("queues an untested draft from Activate without a second activation request", async () => {
+    const repository = new MemoryMcpRepository();
+    const onActivationRequested = vi.fn();
+    repository.nextError = { kind: "revision_required" };
+    const activate = createAdminMcpActivateHandler({
+      onActivationRequested,
+      repository,
+      resolveAuth
+    });
+    const response = await activate(request({ method: "POST", user: "admin" }), routeContext);
+
+    expect(response.status).toBe(202);
+    await expect(response.json()).resolves.toMatchObject({
+      server: { activation: { stage: "queued" } }
+    });
+    expect(repository.activationCalls).toEqual([{
+      serverId: SERVER_ID,
+      validationUserId: "admin"
+    }]);
+    expect(onActivationRequested).toHaveBeenCalledOnce();
   });
 
   it("checks for package updates and rebuilds a selected revision through explicit actions", async () => {

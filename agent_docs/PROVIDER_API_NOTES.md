@@ -2,13 +2,15 @@
 
 ## Ownership
 
-This conditional document owns externally verified provider constraints, documentation links, dated smoke observations, and provider-specific caveats. `BACKEND.md` owns AIQSA adapter behavior/defaults; `QSA_PIPELINE.md` owns product semantics; `ENV_VARIABLES.md` owns configuration names; executable adapter tests own exact request/response mapping.
+This conditional document owns official provider references, externally mutable constraints, one last-verified marker per boundary, and provider-specific caveats. `BACKEND.md` owns AIQSA adapter behavior/defaults; `QSA_PIPELINE.md` owns product semantics; `ENV_VARIABLES.md` owns configuration names; executable adapter tests own exact request/response mapping.
 
-Provider documentation was checked on 2026-04-26 and the current search/upload/routing constraints were rechecked on 2026-06-14. GPT-5.5/GPT-5.6 context, OpenAI PDF token, and Anthropic usage contracts were rechecked on 2026-07-18. The OpenAI Responses/Chat support direction and the OpenAI, Anthropic, and OpenRouter model-catalog contracts were rechecked on 2026-07-24 for ADR 0022 and the credential-test implementation. Current OpenAI/Claude/Gemini model sets were rechecked on 2026-07-26 for ADR 0030; stable native Gemini Interactions v1, streaming, function calling, Google Search, tool-combination, Search-Suggestions display/retention, and API-version contracts were rechecked on 2026-07-26 for ADR 0031. Reverify the affected source and update that date when a provider-facing change depends on mutable external behavior.
+Reverify the affected primary sources whenever provider-facing work depends on mutable behavior, then replace the section's single marker. Do not append a verification chronology here; durable rationale belongs in ADRs and significant completion evidence belongs in `done_tasks/`.
 
 Provider smokes require the standing permission and limits in `CRITICAL_INVARIANTS.md`. Default automation uses fake providers; never print, inspect, persist, or commit key values, and do not run large-context/deep-research/large-attachment/long-background calls without fresh approval.
 
 ## OpenAI Responses API
+
+Last verified: 2026-07-26.
 
 Primary references:
 
@@ -35,18 +37,20 @@ Externally constrained facts:
 - GPT-5.6 has the concrete `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna` model ids. Each documents a 1,050,000-token context window and 128,000 maximum output tokens.
 - GPT-5.5 likewise documents a 1,050,000-token context window and 128,000 maximum output tokens; `1m` is only shorthand, while catalog and UI limits retain the exact value.
 - GPT-5.6 supports efforts `none`, `low`, `medium`, `high`, `xhigh`, and `max`. Its independent `reasoning.mode` is `standard` by default or `pro`; Pro is not a separate model slug and trades additional latency, tokens, and cost for more work.
-- The 2026-06-06 low-token `gpt-5.5` smoke rejected effort `minimal`. Current supported direct-model effort metadata must therefore not infer that value; the guide's default is `medium`.
+- Supported direct-model effort metadata for `gpt-5.5` must not infer `minimal`; the reviewed default is `medium`.
 - Explicit effort `none` is materially different from omitting the reasoning object for a reasoning-default model. A terminal `status: incomplete` is not a complete answer.
 - Authenticated `GET /v1/models` returns the model identifiers available to the key. AIQSA uses that bounded read-only catalog for credential preflight and activation-time model-presence evidence; it does not treat catalog presence as a guarantee that a later generation will succeed.
-- A 2026-07-24 live `gpt-5.5` Responses diagnostic rejected `max_output_tokens: 1` but succeeded with `16` and `reasoning.effort: none`; a production OpenRouter reasoning route likewise rejected the former ultra-small diagnostic while succeeding with a normal bounded request. AIQSA therefore allows up to 1,000 output tokens for explicitly confirmed generation diagnostics across adapters; this is a safety cap rather than a provider-wide minimum claim, and diagnostic output is discarded.
+- Ultra-small generation diagnostics are not portable across current models and routes. AIQSA allows up to 1,000 output tokens for an explicitly confirmed diagnostic; this is a safety cap rather than a provider-wide minimum claim, and diagnostic output is discarded.
 - Native `web_search` uses the Responses tool contract and may return call/action sources and/or message annotations. It does not require a backend regex intent gate.
-- A 2026-07-23 low-token Responses smoke combined native `web_search` with two custom functions and `parallel_tool_calls: true`; the API returned HTTP 200 and both function calls in one response. Merely offering native web search therefore must not make AIQSA serialize independent custom or MCP calls sequentially.
+- Native `web_search` and parallel custom functions can coexist. Merely offering native web search must not make AIQSA serialize independent custom or MCP calls sequentially.
 - Prompt caching is automatic where eligible; `prompt_cache_key` and retention hints influence routing/retention and must not expose a raw local chat id. GPT-5.6 replaces the older `prompt_cache_retention` field with `prompt_cache_options`; its currently documented TTL is `30m`.
 - Image input may use URLs, data URLs, or provider file ids where the model supports vision. Native PDF file input is model-capability dependent, and direct PDF parsing includes both extracted text and page images in context; provider-hosted File Search/vector stores are a separate provider-specific product from direct file input.
 
 Current AIQSA request construction, polling, tool bridging, attachment mapping, redaction, and normalized event/result behavior live only in `BACKEND.md` and adapter tests.
 
 ## Anthropic Messages API
+
+Last verified: 2026-07-26.
 
 Primary references:
 
@@ -75,6 +79,8 @@ Current AIQSA defaults and request/event normalization live in `BACKEND.md` and 
 
 ## Gemini Native Interactions API
 
+Last verified: 2026-07-26.
+
 Primary references:
 
 - `https://ai.google.dev/gemini-api/docs/models`
@@ -88,21 +94,23 @@ Primary references:
 - `https://ai.google.dev/gemini-api/docs/tool-combination`
 - `https://ai.google.dev/gemini-api/terms`
 
-Externally constrained facts and dated evidence:
+Externally constrained facts:
 
 - Stable native v1 Interactions uses `POST https://generativelanguage.googleapis.com/v1/interactions`; the Gemini API key is sent through `x-goog-api-key`. AIQSA uses `store: false`, supplies complete local context, and does not depend on provider-side interaction history.
 - Models catalog entries use identifiers such as `models/gemini-...`. AIQSA strips only that leading wrapper before exact reviewed-policy comparison; it does not normalize arbitrary names or import every result.
-- On 2026-07-26 the current reviewed explicit model ids were `gemini-3.6-flash`, `gemini-3.5-flash`, `gemini-3.5-flash-lite`, and `gemini-3.1-pro-preview`. Their reviewed catalog controls use a 1,000,000-token context window and at most 65,536 output tokens, with model-specific `minimal`/`low`/`medium`/`high` reasoning-effort choices. Explicit ids are preferred to hot-swapping latest aliases.
+- The reviewed explicit model ids are `gemini-3.6-flash`, `gemini-3.5-flash`, `gemini-3.5-flash-lite`, and `gemini-3.1-pro-preview`. Their reviewed catalog controls use a 1,000,000-token context window and at most 65,536 output tokens, with model-specific `minimal`/`low`/`medium`/`high` reasoning-effort choices. Explicit ids are preferred to hot-swapping latest aliases.
 - Interactions expresses generation controls under `generation_config`, accepts native typed input/step arrays, returns step types such as model output, thought and function calls/results, and exposes cumulative token fields including cached and thought totals. Streaming uses named SSE events and a final done proof; stream EOF alone is not successful completion.
 - Native function continuations require the provider-returned thought/signature steps. Dropping, merging, or fabricating them can invalidate the next request. They are request-critical private state, not display or logging metadata.
 - Native Google Search is a hosted `{ "type": "google_search" }` tool. It can produce search call/result steps, URL citation annotations, and exact `search_suggestions` markup. The documentation requires Suggestions to accompany the grounded content; current terms constrain storage/use of Search Suggestions and citation Links. AIQSA chooses the stricter permitted product boundary: the complete grounded answer, Suggestions, Links, and search result/signature data are live-only and are never durable chat context.
 - The Search-plus-function/MCP combination is deliberately rejected even where some native tool combinations may be documented. This keeps exact provider search results/Suggestions out of the recoverable client-tool checkpoint; broadening it requires a new persistence/privacy proof.
-- A bounded authenticated catalog check on 2026-07-26 returned HTTP 200 and 57 rows, including image/audio/embedding/media identifiers. That result is direct evidence that blind catalog import is unsafe; Quick setup intersects only the reviewed chat candidates above.
-- A bounded native research probe on 2026-07-26 used Gemini 3.6 Flash with `store: false` and Google Search. It returned search-call, search-result, thought, and model-output steps plus Suggestions markup. Observed markup was limited to `a`, `circle`, `div`, `path`, `style`, and `svg` with a small attribute set; that observation informed a closed allowlist but remains mutable provider evidence, not permission to accept future tags automatically.
+- Authenticated catalogs contain non-chat image, audio, embedding, and media identifiers. Blind import is unsafe; Quick setup intersects only the reviewed chat candidates above.
+- Search Suggestions are untrusted provider markup and pass a closed allowlist. Newly observed tags or attributes require explicit review rather than automatic acceptance.
 
 Current catalog intersection, native request mapping, stream parser, tool bridge, signature replay, live-only grounding fence, and safe smoke behavior live in `BACKEND.md`, `SECURITY.md`, and focused tests.
 
 ## OpenRouter
+
+Last verified: 2026-07-24.
 
 Primary references:
 
@@ -128,28 +136,29 @@ Externally constrained facts:
 - OpenRouter documents Gemini thinking levels through `minimal`, `low`, `medium`, and `high`; documented `xhigh` maps down to `high`, so it is not a distinct Gemini capability.
 - Provider routing supports `order`, `only`, `allow_fallbacks`, `require_parameters`, `data_collection`, `sort`, and `zdr`. Sticky `session_id` can improve cache routing; explicit `cache_control` support depends on the downstream provider/model.
 - OpenRouter's Responses API is currently labelled beta and stateless: every request supplies its full history and no server-side conversation state is persisted. AIQSA must not reuse native OpenAI stored-background/retrieve/cancel assumptions for that endpoint merely because its request surface is Responses-compatible.
-- The current catalog uses `google/gemini-3.5-flash` and the live `~google/gemini-pro-latest` alias. The removed `google/gemini-3-pro-preview` can return no endpoints and must not be inferred as available.
-- The 2026-06-06 tiny `perplexity/sonar-pro-search` smoke succeeded with denied data collection, Perplexity-only routing, throughput sort, and `require_parameters: false`; forcing `require_parameters: true` failed. This is a dated observation, not a provider-wide guarantee.
-- OpenRouter web-search server tools exist, but AIQSA's current Perplexity integration is an explicit provider-neutral tool executor rather than the removed regex pre-search path.
+- The current catalog uses `google/gemini-3.5-flash` and the live `~google/gemini-pro-latest` alias. `google/gemini-3-pro-preview` can return no endpoints and must not be inferred as available.
+- The current `perplexity/sonar-pro-search` route uses denied data collection, Perplexity-only routing, throughput sort, and `require_parameters: false`; do not strengthen that flag without revalidating the selected route.
+- OpenRouter web-search server tools exist, but AIQSA integrates Perplexity only through the explicit provider-neutral tool executor.
 - Native PDF routing is capability-dependent. OpenRouter file content plus its native PDF parser plugin avoids silently selecting a router-side parser/OCR fallback; unknown custom models must not be assumed native-capable.
-- A 2026-07-24 live check confirmed valid account catalogs for the configured OpenAI, Anthropic, and OpenRouter keys, successful tiny OpenAI/Anthropic generation diagnostics, and successful OpenRouter route discovery/generation. OpenRouter endpoint tags were canonical lowercase while the saved display-derived selection used title case, so AIQSA compares route tags case-insensitively while preserving the configured value in safe evidence.
+- OpenRouter endpoint tags are canonicalized independently of display casing, so AIQSA compares route tags case-insensitively while preserving the configured value in safe evidence.
 
 Current answer streaming/non-streaming behavior, routing defaults, Perplexity tool transcript/limits, PDF mapping, previews, and error normalization live in `BACKEND.md` and adapter tests.
 
 ## MCP And Hosted Notion
 
-Primary references checked on 2026-07-22:
+Last verified: 2026-07-23.
+
+Primary references:
 
 - `https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization`
 - `https://developers.notion.com/docs/mcp`
 - `https://mcp.notion.com/mcp`
 
-Externally constrained facts and verification:
+Externally constrained facts:
 
 - Remote MCP authorization is a protected-resource OAuth flow, not AI-provider sign-in. AIQSA uses Authorization Code with S256 PKCE plus protected-resource/authorization-server discovery, dynamic client registration or Client ID Metadata Documents, refresh, and revocation when advertised; the administrator owns the allowed resource, authorization-server origins, scopes, and callback policy.
 - The hosted Notion endpoint returned the expected protected-resource challenge. Its public metadata advertised the canonical MCP resource, authorization code and refresh grants, S256 PKCE, dynamic registration, Client ID Metadata Documents, introspection, and revocation.
-- A deterministic in-process official-SDK Streamable HTTP/OAuth fixture verifies AIQSA discovery, callback, encrypted token settlement, refresh/retry, inventory, and tool-call behavior without external credentials.
-- On 2026-07-23 an operator completed real hosted-Notion validation consent and AIQSA accepted the callback/token settlement. That run did not complete post-consent tool discovery/call before its disposable development state was reset, so full hosted-Notion end-to-end interoperability remains unverified. Automation must distinguish the observed consent callback from a successful tool call and must not treat metadata-only checks as either one.
+- Hosted Notion consent or public metadata does not prove post-consent tool discovery and execution. Automation and operator reports must distinguish those boundaries from a successful end-to-end tool call.
 - ToolHive v0.40.1's interactive remote OAuth flow is not used for this path because it owns a local loopback/browser lifecycle rather than AIQSA's user-bound web callback. AIQSA's official MCP SDK wrapper owns remote sessions and OAuth; ToolHive owns only local stdio workload lifecycle.
 
 Current MCP policy, persistence, source matrix, readiness, and tool-loop behavior live in `BACKEND.md`, `SECURITY.md`, and ADR 0021 rather than this mutable external-facts note.
@@ -158,4 +167,4 @@ Current MCP policy, persistence, source matrix, readiness, and tool-loop behavio
 
 AIQSA owns conversation memory server-side and translates one normalized provider-neutral run request into provider-specific input. Provider continuation ids support refresh/cancel, not primary chat memory. Text documents use bounded extracted text; original PDF/image bytes are resolved privately only for an explicitly capable selected model and are redacted from inspectable payloads.
 
-Those are implementation/security boundaries owned by `BACKEND.md` and `SECURITY.md`; this file should change only when external provider constraints or dated observations change.
+Those are implementation/security boundaries owned by `BACKEND.md` and `SECURITY.md`; this file changes only when an external provider constraint changes or its last-verified marker is refreshed.

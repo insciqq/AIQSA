@@ -4,14 +4,15 @@ import { adminSectionPanelId, adminSectionTabId } from "./adminSections";
 import { AdminInactiveSectionPanels, AdminSectionTabs } from "./AdminSectionTabs";
 import {
   useAdminSectionNavigation,
-  type AdminSectionNavigation
+  type AdminSectionNavigation,
+  type AdminSectionNavigationOptions
 } from "./useAdminSectionNavigation";
 
-function renderNavigation() {
+function renderNavigation(options: AdminSectionNavigationOptions = {}) {
   let currentNavigation: AdminSectionNavigation | null = null;
 
   function Harness() {
-    const navigation = useAdminSectionNavigation();
+    const navigation = useAdminSectionNavigation(options);
     currentNavigation = navigation;
 
     return (
@@ -55,6 +56,7 @@ function renderNavigation() {
 
 describe("useAdminSectionNavigation", () => {
   afterEach(() => {
+    vi.unstubAllGlobals();
     window.history.replaceState(null, "", "/");
   });
 
@@ -138,6 +140,176 @@ describe("useAdminSectionNavigation", () => {
     const accepted = fireEvent.keyDown(screen.getByRole("tab", { name: "Providers" }), { key: "PageDown" });
     expect(accepted).toBe(true);
     expect(screen.getByRole("tab", { name: "Providers" })).toHaveAttribute("aria-selected", "true");
+  });
+
+  it("keeps the current section and URL when guarded click or keyboard navigation is refused", async () => {
+    window.history.replaceState(null, "", "/admin");
+    const canSelectSection = vi.fn((section: AdminSectionNavigation["activeSection"]) => (
+      section !== "users"
+    ));
+    const onNavigationBlocked = vi.fn();
+    renderNavigation({ canSelectSection, onNavigationBlocked });
+    await waitFor(() => expect(screen.getByTestId("active-panel")).toHaveTextContent("Providers"));
+
+    fireEvent.click(screen.getByRole("tab", { name: "Users" }));
+    expect(screen.getByTestId("active-panel")).toHaveTextContent("Providers");
+    expect(window.location.search).toBe("");
+
+    screen.getByRole("tab", { name: "Providers" }).focus();
+    fireEvent.keyDown(screen.getByRole("tab", { name: "Providers" }), { key: "ArrowRight" });
+    expect(screen.getByRole("tab", { name: "Providers" })).toHaveFocus();
+    expect(screen.getByTestId("active-panel")).toHaveTextContent("Providers");
+    expect(onNavigationBlocked).toHaveBeenCalledTimes(2);
+  });
+
+  it("rolls a refused Back traversal to its origin and replays the same entry after approval", async () => {
+    window.history.replaceState(null, "", "/admin");
+    let guarded = false;
+    const canSelectSection = vi.fn((section: AdminSectionNavigation["activeSection"]) => (
+      !guarded || section !== "users"
+    ));
+    const blocked: Parameters<NonNullable<AdminSectionNavigationOptions["onNavigationBlocked"]>>[0][] = [];
+    renderNavigation({
+      canSelectSection,
+      onNavigationBlocked: (navigation) => blocked.push(navigation)
+    });
+    await waitFor(() => expect(screen.getByTestId("active-panel")).toHaveTextContent("Providers"));
+
+    fireEvent.click(screen.getByRole("tab", { name: "Users" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Providers" }));
+    expect(window.location.search).toBe("");
+    guarded = true;
+
+    act(() => window.history.back());
+    await waitFor(() => expect(blocked).toHaveLength(1));
+    expect(window.location.search).toBe("");
+    expect(screen.getByTestId("active-panel")).toHaveTextContent("Providers");
+
+    // Cancel means leaving the supplied retry unused. A second Back still
+    // targets the same Users entry instead of a rewritten duplicate.
+    act(() => window.history.back());
+    await waitFor(() => expect(blocked).toHaveLength(2));
+    expect(window.location.search).toBe("");
+
+    act(() => blocked[1]!.proceed());
+    await waitFor(() => expect(window.location.search).toBe("?section=users"));
+    expect(screen.getByTestId("active-panel")).toHaveTextContent("Users");
+  });
+
+  it("guards and exactly replays a non-adjacent app-owned history jump", async () => {
+    window.history.replaceState(null, "", "/admin");
+    let guarded = false;
+    const blocked: Parameters<NonNullable<AdminSectionNavigationOptions["onNavigationBlocked"]>>[0][] = [];
+    renderNavigation({
+      canSelectSection: (section) => !guarded || section !== "users",
+      onNavigationBlocked: (navigation) => blocked.push(navigation)
+    });
+    await waitFor(() => expect(screen.getByTestId("active-panel")).toHaveTextContent("Providers"));
+
+    fireEvent.click(screen.getByRole("tab", { name: "Users" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Access & groups" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Providers" }));
+    expect(window.location.search).toBe("");
+    guarded = true;
+
+    act(() => window.history.go(-2));
+    await waitFor(() => expect(blocked).toHaveLength(1));
+    expect(window.location.search).toBe("");
+    expect(screen.getByTestId("active-panel")).toHaveTextContent("Providers");
+
+    act(() => blocked[0]!.proceed());
+    await waitFor(() => expect(window.location.search).toBe("?section=users"));
+    expect(screen.getByTestId("active-panel")).toHaveTextContent("Users");
+  });
+
+  it("rebases an unmarked current entry before creating a contiguous owned history session", async () => {
+    window.history.replaceState({ route: "initial" }, "", "/admin");
+    renderNavigation();
+    await waitFor(() => expect(screen.getByTestId("active-panel")).toHaveTextContent("Providers"));
+    const initialSession = window.history.state.aiqsaControlCenter.sessionId as string;
+
+    window.history.pushState({ route: "foreign" }, "", "/admin#foreign");
+    fireEvent.click(screen.getByRole("tab", { name: "Users" }));
+
+    const pushedView = window.history.state.aiqsaControlCenter;
+    expect(pushedView).toMatchObject({
+      entryId: expect.any(String),
+      position: 1,
+      previousEntryId: expect.any(String),
+      sessionId: expect.any(String),
+      view: "section"
+    });
+    expect(pushedView.sessionId).not.toBe(initialSession);
+
+    act(() => window.history.back());
+    await waitFor(() => expect(window.history.state.aiqsaControlCenter.entryId).toBe(
+      pushedView.previousEntryId
+    ));
+    expect(window.location.hash).toBe("#foreign");
+    expect(window.history.state).toMatchObject({
+      aiqsaControlCenter: {
+        entryId: pushedView.previousEntryId,
+        position: 0,
+        previousEntryId: null,
+        sessionId: pushedView.sessionId,
+        view: "section"
+      },
+      route: "foreign"
+    });
+  });
+
+  it("does not wrap the shared History API while it marks Control Center entries", async () => {
+    window.history.replaceState({ route: "admin" }, "", "/admin");
+    const pushState = window.history.pushState;
+    const replaceState = window.history.replaceState;
+    renderNavigation();
+
+    await waitFor(() => expect(screen.getByTestId("active-panel")).toHaveTextContent("Providers"));
+    expect(window.history.pushState).toBe(pushState);
+    expect(window.history.replaceState).toBe(replaceState);
+    expect(window.history.state).toMatchObject({
+      aiqsaControlCenter: {
+        entryId: expect.any(String),
+        position: 0,
+        previousEntryId: null,
+        sessionId: expect.any(String),
+        view: "section"
+      },
+      route: "admin"
+    });
+  });
+
+  it("rolls back and replays a guarded Forward between marked Control Center entries", async () => {
+    window.history.replaceState(null, "", "/admin");
+    let guarded = false;
+    const canSelectSection = vi.fn((section: AdminSectionNavigation["activeSection"]) => (
+      !guarded || section !== "users"
+    ));
+    const blocked: Parameters<NonNullable<AdminSectionNavigationOptions["onNavigationBlocked"]>>[0][] = [];
+    renderNavigation({
+      canSelectSection,
+      onNavigationBlocked: (navigation) => blocked.push(navigation)
+    });
+    await waitFor(() => expect(screen.getByTestId("active-panel")).toHaveTextContent("Providers"));
+
+    fireEvent.click(screen.getByRole("tab", { name: "Users" }));
+    act(() => window.history.back());
+    await waitFor(() => expect(screen.getByTestId("active-panel")).toHaveTextContent("Providers"));
+    guarded = true;
+
+    act(() => window.history.forward());
+    await waitFor(() => expect(blocked).toHaveLength(1));
+    expect(window.location.search).toBe("");
+    expect(screen.getByTestId("active-panel")).toHaveTextContent("Providers");
+
+    // Cancelling leaves the replay callback unused, so the same Forward entry
+    // remains available and retains its original state.
+    act(() => window.history.forward());
+    await waitFor(() => expect(blocked).toHaveLength(2));
+    act(() => blocked[1]!.proceed());
+
+    await waitFor(() => expect(window.location.search).toBe("?section=users"));
+    expect(screen.getByTestId("active-panel")).toHaveTextContent("Users");
   });
 
   it("does not steal valid focus and restores the active operational tab after an opener disappears", async () => {

@@ -65,6 +65,7 @@ function renderPane(overrides: Partial<ComponentProps<typeof LeftChatPane>> = {}
     folderActionId: null,
     folderMenuId: null,
     folders: [folder],
+    footer: <button aria-label="Account menu">Account</button>,
     newFolderName: "",
     onActivateChat: vi.fn(),
     onCancelChatEdit: vi.fn(),
@@ -85,6 +86,7 @@ function renderPane(overrides: Partial<ComponentProps<typeof LeftChatPane>> = {}
     onMoveFolder: vi.fn(),
     onNewFolderNameChange: vi.fn(),
     onOpenProjectSettings: vi.fn(),
+    onRetryWorkspace: vi.fn(),
     onSaveChatTitle: vi.fn(),
     onSaveFolder: vi.fn(),
     onShareChat: vi.fn(),
@@ -174,6 +176,11 @@ describe("LeftChatPane", () => {
     expect(screen.getByTestId("chat-search-control")).toHaveClass("bg-control-surface");
     expect(screen.getByTestId("chat-row")).toHaveClass("bg-control-selected");
     expect(screen.getByTestId("active-chat-marker")).toHaveClass("bg-proof");
+    const navigation = screen.getByRole("navigation", { name: "Workspace chats and folders" });
+    const footer = screen.getByTestId("workspace-account-footer");
+    expect(footer).toHaveClass("shrink-0", "border-t", "border-trace-subtle");
+    expect(navigation.nextElementSibling).toBe(footer);
+    expect(footer).toContainElement(screen.getByRole("button", { name: "Account menu" }));
     expect(screen.getByRole("dialog", { name: "Actions for Planning" })).toHaveClass(
       "bg-overlay-surface",
       "border-trace-subtle"
@@ -279,6 +286,15 @@ describe("LeftChatPane", () => {
     fireEvent.scroll(navigation);
 
     expect(scrollTopRef.current).toBe(211);
+  });
+
+  it("updates the non-scrolling footer through the memoized workspace pane", () => {
+    const { rerender, ...view } = renderPane({ footer: <span>Account one</span> });
+
+    expect(screen.getByTestId("workspace-account-footer")).toHaveTextContent("Account one");
+    rerender(<LeftChatPane {...view} footer={<span>Account two</span>} />);
+
+    expect(screen.getByTestId("workspace-account-footer")).toHaveTextContent("Account two");
   });
 
   it("makes mobile inline rename controls touch-safe while desktop editors stay compact", () => {
@@ -570,10 +586,12 @@ describe("LeftChatPane", () => {
     expect(screen.getByRole("button", { name: "Start new chat" })).toBeDisabled();
   });
 
-  it("gates workspace mutations and genuine empty copy until initial hydration succeeds", () => {
+  it("gates workspace mutations and offers local recovery until initial hydration succeeds", () => {
+    const onRetryWorkspace = vi.fn();
     const { rerender, ...view } = renderPane({
       chatGroups: [],
       folders: [],
+      onRetryWorkspace,
       workspaceError: "workspace_failed_500",
       workspaceReady: false
     });
@@ -581,9 +599,9 @@ describe("LeftChatPane", () => {
     expect(screen.getByRole("button", { name: "Start new chat" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "New folder" })).toBeDisabled();
     expect(screen.getByRole("textbox", { name: "Search chats" })).toBeDisabled();
-    expect(screen.getByTestId("left-workspace-unavailable")).toHaveTextContent(
-      "Use Retry in the conversation pane"
-    );
+    expect(screen.getByTestId("left-workspace-unavailable")).toHaveTextContent("Chats unavailable");
+    fireEvent.click(screen.getByRole("button", { name: "Retry workspace" }));
+    expect(onRetryWorkspace).toHaveBeenCalledOnce();
     expect(screen.queryByText("workspace_failed_500")).not.toBeInTheDocument();
     expect(screen.queryByText("No chats yet")).not.toBeInTheDocument();
 

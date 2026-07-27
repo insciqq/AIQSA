@@ -54,6 +54,45 @@ describe("adminMcpDraft", () => {
     });
   });
 
+  it("accepts trailing commas in MCP JSON without changing commas inside strings", () => {
+    const normalized = normalizeMcpImport(`{
+      "mcpServers": {
+        "mem0": {
+          "command": "uvx",
+          "args": ["mem0-mcp-server",],
+          "env": {
+            "MEM0_API_KEY": "fixture,} value,]",
+          },
+        },
+      },
+    }`);
+
+    expect(normalized).toMatchObject({
+      name: "mem0",
+      draft: {
+        auth: { mode: "static" },
+        source: {
+          args: [],
+          kind: "pypi",
+          packageName: "mem0-mcp-server"
+        },
+        slots: [expect.objectContaining({
+          target: { kind: "environment", name: "MEM0_API_KEY" }
+        })]
+      },
+      sharedValues: { mem0_api_key: "fixture,} value,]" }
+    });
+  });
+
+  it("keeps malformed JSON and broader JSON5 syntax invalid", () => {
+    expect(() => normalizeMcpImport('{"mcpServers": {,}}'))
+      .toThrow(/not valid JSON/i);
+    expect(() => normalizeMcpImport('{"command": "uvx" "args": []}'))
+      .toThrow(/not valid JSON/i);
+    expect(() => normalizeMcpImport('{// comment\n"command": "uvx", "args": ["server"]}'))
+      .toThrow(/not valid JSON/i);
+  });
+
   it("normalizes direct URLs and common uvx and OCI launch shapes", () => {
     expect(normalizeMcpImport("https://mcp.notion.com/mcp")).toMatchObject({
       draft: {
@@ -195,15 +234,16 @@ describe("adminMcpDraft", () => {
   });
 
   it("uses a pasted install command to resolve a JSON config with a bare executable", () => {
-    const normalized = normalizeMcpImport(`${JSON.stringify({
-      mcpServers: {
+    const normalized = normalizeMcpImport(`{
+      "mcpServers": {
         "canvas-local": {
-          args: ["--verbose"],
-          command: "canvas-local-mcp",
-          env: { CANVAS_BASE_URL: "https://canvas.example.edu" }
-        }
-      }
-    }, null, 2)}\npip install canvas-local-mcp==0.1.1`);
+          "args": ["--verbose",],
+          "command": "canvas-local-mcp",
+          "env": { "CANVAS_BASE_URL": "https://canvas.example.edu", },
+        },
+      },
+    }
+    pip install canvas-local-mcp==0.1.1`);
 
     expect(normalized).toMatchObject({
       name: "canvas-local",

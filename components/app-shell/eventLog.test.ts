@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import type { Catalog } from "./types";
 import { summarizeInspectorEvents } from "./eventLog";
 
 describe("summarizeInspectorEvents", () => {
@@ -98,24 +99,26 @@ describe("summarizeInspectorEvents", () => {
     ]);
 
     expect(summaries.map((summary) => [summary.label, summary.value])).toEqual([
-      ["Run", "streaming"],
-      ["Assistant message", "created"],
-      ["Provider status", "2 updates"],
-      ["Context window", "dropped 3 messages"],
-      ["Citations", "1"],
-      ["Answer text", "4 chunks"],
+      ["Run started", "Streaming"],
+      ["Answer created", "Ready for response text"],
+      ["Provider updates", "2 recorded updates"],
+      ["Earlier context omitted", "3 earlier messages omitted"],
+      ["Citations recorded", "1 citation"],
+      ["Answer text", "4 text updates"],
       ["Warning", "Skipped malformed stream frame"],
       ["Usage", "13 tokens"],
-      ["Done", "complete"]
+      ["Run complete", "Complete"]
     ]);
-    expect(summaries[0]?.detail).toBe("OpenAI / gpt-5.5");
+    expect(summaries[0]?.detail).toBe("Provider: OpenAI · Model: GPT-5.5");
     expect(JSON.stringify(summaries)).not.toContain("hello world");
     expect(JSON.stringify(summaries)).not.toContain("assistant-1");
-    expect(summaries.find((summary) => summary.label === "Answer text")?.detail).toBe("19 characters");
-    expect(summaries.find((summary) => summary.label === "Provider status")?.detail).toBe("completed");
-    expect(summaries.find((summary) => summary.label === "Context window")?.detail).toBe("~42 estimated tokens");
+    expect(summaries.find((summary) => summary.label === "Answer text")?.detail).toBe("19 characters received");
+    expect(summaries.find((summary) => summary.label === "Provider updates")?.detail).toBe("Status: Completed");
+    expect(summaries.find((summary) => summary.label === "Earlier context omitted")?.detail).toBe(
+      "About 42 estimated tokens omitted"
+    );
     expect(summaries.find((summary) => summary.label === "Usage")?.detail).toBe(
-      "input 10 / cached 4 / cache write 1 / output 3 / reasoning 0 / total 13"
+      "Input: 10 · Cached: 4 · Cache write: 1 · Output: 3 · Reasoning: 0 · Total: 13"
     );
     expect(JSON.stringify(summaries)).not.toContain("est. cost");
   });
@@ -180,27 +183,156 @@ describe("summarizeInspectorEvents", () => {
     ]);
 
     expect(summaries.map((summary) => [summary.label, summary.value])).toEqual([
-      ["Tool calls", "2"],
-      ["Search artifacts", "2"],
-      ["Citations", "1"],
-      ["Tool results", "2"]
+      ["Tool calls", "2 calls"],
+      ["Search evidence", "2 recorded items"],
+      ["Citations recorded", "1 citation"],
+      ["Tool results", "2 results"]
     ]);
     expect(summaries.find((summary) => summary.label === "Tool calls")?.stage).toBe("TOOL");
     expect(summaries.find((summary) => summary.label === "Tool results")?.stage).toBe("TOOL");
-    expect(summaries.find((summary) => summary.label === "Search artifacts")?.stage).toBe("S");
-    expect(summaries.find((summary) => summary.label === "Citations")?.stage).toBe("S");
-    expect(summaries.find((summary) => summary.label === "Search artifacts")).toEqual(
+    expect(summaries.find((summary) => summary.label === "Search evidence")?.stage).toBe("S");
+    expect(summaries.find((summary) => summary.label === "Citations recorded")?.stage).toBe("S");
+    expect(summaries.find((summary) => summary.label === "Search evidence")).toEqual(
       expect.objectContaining({
-        detail: "openrouter / perplexity-tool-search / completed",
+        detail: "Provider: OpenRouter · Strategy: Perplexity tool search · Status: Completed",
         tone: "success"
       })
     );
     expect(summaries.find((summary) => summary.label === "Tool results")).toEqual(
       expect.objectContaining({
-        detail: `search_via_perplexity / error / round 2 / ${longToolError}`,
+        detail: `Tool: search_via_perplexity · Status: Error · Round: 2 · Error: ${longToolError}`,
         tone: "error"
       })
     );
+  });
+
+  it("uses catalog display names and readable states instead of ordinary raw identifiers", () => {
+    const catalog = {
+      models: [{ displayName: "Fake QSA", modelId: "fake-qsa", provider: "fake" }],
+      searchStrategies: [{ displayName: "No search", kind: "none", strategyId: "search-disabled" }]
+    } as Catalog;
+    const summaries = summarizeInspectorEvents([
+      {
+        data: { modelId: "fake-qsa", provider: "fake", status: "streaming" },
+        type: "run_start"
+      },
+      {
+        data: {
+          artifactType: "summary",
+          payload: {
+            model: "fake-qsa",
+            provider: "fake",
+            searchStrategy: "search-disabled",
+            source: "fake-provider",
+            status: "completed"
+          }
+        },
+        type: "artifact"
+      }
+    ], catalog);
+
+    expect(summaries[0]?.detail).toBe("Provider: Fake · Model: Fake QSA");
+    expect(summaries[0]?.value).toBe("Streaming");
+    expect(summaries[1]?.detail).toBe(
+      "Provider: Fake · Model: Fake QSA · Status: Completed · Search: Off · Source: Fake provider"
+    );
+    expect(JSON.stringify(summaries)).not.toMatch(/fake-qsa|search-disabled|fake-provider/);
+  });
+
+  it("resolves production connection UUIDs and upstream model identifiers through the catalog", () => {
+    const providerId = "00000000-0000-4000-8000-000000001103";
+    const modelId = "00000000-0000-4000-8000-000000001206";
+    const upstreamModelId = "claude-opus-4-8-20260701";
+    const catalog = {
+      models: [{
+        displayName: "Claude Opus 4.8",
+        modelId,
+        provider: providerId,
+        providerFamily: "anthropic",
+        upstreamModelId
+      }],
+      providers: [{
+        family: "anthropic",
+        id: providerId,
+        models: [modelId],
+        name: "Primary Anthropic"
+      }]
+    } as Catalog;
+    const summaries = summarizeInspectorEvents([
+      {
+        data: { modelId, provider: providerId, status: "streaming" },
+        type: "run_start"
+      },
+      {
+        data: {
+          artifactType: "summary",
+          payload: {
+            model: upstreamModelId,
+            provider: "anthropic",
+            status: "completed"
+          }
+        },
+        type: "artifact"
+      }
+    ], catalog);
+
+    expect(summaries[0]?.detail).toBe("Provider: Primary Anthropic · Model: Claude Opus 4.8");
+    expect(summaries[1]?.detail).toBe(
+      "Provider: Primary Anthropic · Model: Claude Opus 4.8 · Status: Completed"
+    );
+    expect(JSON.stringify(summaries)).not.toMatch(new RegExp(`${providerId}|${modelId}|${upstreamModelId}`));
+  });
+
+  it("does not expose unresolved opaque identifiers from historical runs", () => {
+    const providerId = "00000000-0000-4000-8000-000000009901";
+    const modelId = "00000000-0000-4000-8000-000000009902";
+    const summaries = summarizeInspectorEvents([{
+      data: { modelId, provider: providerId, status: "streaming" },
+      type: "run_start"
+    }], { models: [], providers: [] } as unknown as Catalog);
+
+    expect(summaries[0]?.detail).toBe("Provider: Unavailable · Model: Unavailable");
+    expect(JSON.stringify(summaries)).not.toMatch(new RegExp(`${providerId}|${modelId}`));
+  });
+
+  it("prefers an exact connection when same-family deployments share an upstream identifier", () => {
+    const primaryProviderId = "00000000-0000-4000-8000-000000001103";
+    const secondaryProviderId = "00000000-0000-4000-8000-000000001303";
+    const upstreamModelId = "claude-shared-runtime-id";
+    const catalog = {
+      models: [
+        {
+          displayName: "Claude Enterprise",
+          modelId: "00000000-0000-4000-8000-000000001206",
+          provider: primaryProviderId,
+          providerFamily: "anthropic",
+          upstreamModelId
+        },
+        {
+          displayName: "Claude Sandbox",
+          modelId: "00000000-0000-4000-8000-000000001306",
+          provider: secondaryProviderId,
+          providerFamily: "anthropic",
+          upstreamModelId
+        }
+      ],
+      providers: [
+        { family: "anthropic", id: primaryProviderId, models: [], name: "Primary Anthropic" },
+        { family: "anthropic", id: secondaryProviderId, models: [], name: "Sandbox Anthropic" }
+      ]
+    } as unknown as Catalog;
+    const summaries = summarizeInspectorEvents([{
+      data: {
+        artifactType: "summary",
+        payload: { model: upstreamModelId, provider: primaryProviderId, status: "completed" }
+      },
+      type: "artifact"
+    }], catalog);
+
+    expect(summaries[0]?.detail).toBe(
+      "Provider: Primary Anthropic · Model: Claude Enterprise · Status: Completed"
+    );
+    expect(JSON.stringify(summaries)).not.toContain(upstreamModelId);
   });
 
   it("preserves long structured error details and distinguishes cancellation from completion", () => {
@@ -228,14 +360,14 @@ describe("summarizeInspectorEvents", () => {
         value: longMessage
       })
     );
-    expect(summaries.find((summary) => summary.label === "Cancelled")).toEqual(
+    expect(summaries.find((summary) => summary.label === "Run stopped")).toEqual(
       expect.objectContaining({
         stage: "A",
         tone: "warning",
-        value: "response stopped"
+        value: "Response stopped"
       })
     );
-    expect(summaries.some((summary) => summary.label === "Done" && summary.tone === "success")).toBe(false);
+    expect(summaries.some((summary) => summary.label === "Run complete" && summary.tone === "success")).toBe(false);
   });
 
   it("attributes a pre-token provider failure to the started answer stage", () => {
@@ -268,10 +400,10 @@ describe("summarizeInspectorEvents", () => {
 
     expect(summaries).toContainEqual(
       expect.objectContaining({
-        detail: "no reasoning summary captured",
-        label: "Reasoning artifacts",
+        detail: "No reasoning summary was recorded.",
+        label: "Reasoning recorded",
         tone: "default",
-        value: "1"
+        value: "1 recorded item"
       })
     );
     expect(JSON.stringify(summaries)).not.toContain("rs_123");

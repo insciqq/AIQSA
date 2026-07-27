@@ -432,6 +432,63 @@ function normalizedCommandImport(text: string): NormalizedMcpImport {
   };
 }
 
+function withoutJsonTrailingCommas(text: string): string {
+  let inString = false;
+  let escaping = false;
+  let normalized = "";
+
+  for (let index = 0; index < text.length; index += 1) {
+    const character = text[index]!;
+    if (inString) {
+      normalized += character;
+      if (escaping) {
+        escaping = false;
+      } else if (character === "\\") {
+        escaping = true;
+      } else if (character === '"') {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (character === '"') {
+      inString = true;
+      normalized += character;
+      continue;
+    }
+
+    if (character === ",") {
+      let nextIndex = index + 1;
+      while (nextIndex < text.length && /\s/u.test(text[nextIndex]!)) nextIndex += 1;
+
+      let previousIndex = index - 1;
+      while (previousIndex >= 0 && /\s/u.test(text[previousIndex]!)) previousIndex -= 1;
+
+      const next = text[nextIndex];
+      const previous = text[previousIndex];
+      const followsValue = previous !== undefined && !"{[,:".includes(previous);
+      if (followsValue && (next === "}" || next === "]")) {
+        normalized += " ";
+        continue;
+      }
+    }
+
+    normalized += character;
+  }
+
+  return normalized;
+}
+
+function parseMcpImportJson(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch (strictError) {
+    const normalized = withoutJsonTrailingCommas(text);
+    if (normalized === text) throw strictError;
+    return JSON.parse(normalized);
+  }
+}
+
 function splitJsonWithSourceHint(text: string): Readonly<{
   decoded: unknown;
   sourceHint: McpSource;
@@ -442,7 +499,7 @@ function splitJsonWithSourceHint(text: string): Readonly<{
     if (!suffix) continue;
     let decoded: unknown;
     try {
-      decoded = JSON.parse(text.slice(0, index + 1));
+      decoded = parseMcpImportJson(text.slice(0, index + 1));
     } catch {
       // A nested object may end before the complete JSON document. Keep looking.
       continue;
@@ -528,10 +585,15 @@ export function normalizeMcpImport(raw: string): NormalizedMcpImport {
   let decoded: unknown;
   let sourceHint: McpSource | null = null;
   try {
-    decoded = JSON.parse(text);
+    decoded = parseMcpImportJson(text);
   } catch {
     const combined = splitJsonWithSourceHint(text);
-    if (!combined) return normalizedCommandImport(text);
+    if (!combined) {
+      if (text.startsWith("{") || text.startsWith("[")) {
+        throw new Error("The MCP configuration is not valid JSON. Trailing commas are accepted; check quotes, commas, and brackets.");
+      }
+      return normalizedCommandImport(text);
+    }
     decoded = combined.decoded;
     sourceHint = combined.sourceHint;
   }

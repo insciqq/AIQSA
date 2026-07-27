@@ -1,8 +1,31 @@
 import { MCP_RUN_PLAN_LIMITS } from "@/lib/contracts/mcp";
-import { AvailabilityStatus } from "@/components/resource-lifecycle/AvailabilityStatus";
 import { CircleAlert, LoaderCircle, Wrench } from "lucide-react";
 import { useEffect } from "react";
+import { mcpReadinessPresentation } from "./mcpReadiness";
 import { refreshMcpSettings, useMcpSettingsStore } from "./mcpSettingsStore";
+
+function attentionLabel(input: {
+  authorization: number;
+  counted: boolean;
+  failed: number;
+  setup: number;
+}): string {
+  const total = input.authorization + input.failed + input.setup;
+  if (input.failed === total) {
+    if (!input.counted && total === 1) return "Activation failed";
+    return `${total} activation${total === 1 ? "" : "s"} failed`;
+  }
+  if (input.setup === total) {
+    if (!input.counted && total === 1) return "Needs setup";
+    return `${total} ${total === 1 ? "needs" : "need"} setup`;
+  }
+  if (input.authorization === total) {
+    if (!input.counted && total === 1) return "Needs authorization";
+    return `${total} ${total === 1 ? "needs" : "need"} authorization`;
+  }
+  if (!input.counted) return "Needs attention";
+  return `${total} need attention`;
+}
 
 export function McpComposerSummary({
   onOpenSettings
@@ -16,7 +39,7 @@ export function McpComposerSummary({
     void refreshMcpSettings().catch(() => undefined);
     const refreshVisible = () => {
       if (document.visibilityState === "visible") {
-        void refreshMcpSettings(true).catch(() => undefined);
+        void refreshMcpSettings(true, { background: true }).catch(() => undefined);
       }
     };
     const timer = window.setInterval(refreshVisible, 15_000);
@@ -29,8 +52,15 @@ export function McpComposerSummary({
 
   const enabled = servers.filter((server) => server.enabled);
   const ready = enabled.filter((server) => server.readiness === "ready");
+  const activating = enabled.filter((server) =>
+    mcpReadinessPresentation(server.readiness).kind === "progress");
+  const setupCount = enabled.filter((server) => server.readiness === "needs_setup").length;
+  const authorizationCount = enabled.filter((server) =>
+    server.readiness === "needs_authorization" || server.readiness === "reauthorization_required").length;
+  const failedCount = enabled.filter((server) =>
+    mcpReadinessPresentation(server.readiness).kind === "failed").length;
+  const attentionCount = setupCount + authorizationCount + failedCount;
   const readyTools = ready.reduce((count, server) => count + server.tools.length, 0);
-  const issues = enabled.length - ready.length;
   const knownToolCount = enabled.reduce((count, server) => count + server.knownToolCount, 0);
   const overToolLimit = knownToolCount > MCP_RUN_PLAN_LIMITS.maxTools;
 
@@ -44,34 +74,94 @@ export function McpComposerSummary({
           ? "Disabled"
           : `${ready.length}/${enabled.length} ready · ${readyTools} tool${readyTools === 1 ? "" : "s"}`;
 
-  const visibleState = loadState === "loading" && servers.length === 0
-    ? <span className="text-ink-muted">Loading…</span>
+  const lifecycleLabel = loadState === "loading" && servers.length === 0
+    ? "Loading…"
     : loadState === "error" && servers.length === 0
-      ? <span className="text-critical">Unavailable</span>
+      ? "Unavailable"
       : servers.length === 0
-        ? <span className="text-ink-muted">Not configured</span>
-        : <AvailabilityStatus enabled={enabled.length > 0} />;
+        ? "Not configured"
+        : enabled.length === 0
+          ? "Disabled"
+          : "Enabled";
+  const primaryRunLabel = enabled.length === 0
+    ? null
+    : attentionCount > 0
+      ? attentionLabel({
+          authorization: authorizationCount,
+          counted: false,
+          failed: failedCount,
+          setup: setupCount
+        })
+      : activating.length > 0
+        ? "Activating"
+        : readyTools > 0
+          ? `${readyTools} tool${readyTools === 1 ? "" : "s"} ready`
+          : "0 tools ready";
+  const activatingDetail = activating.length > 0 && primaryRunLabel !== "Activating"
+    ? `${activating.length} activating`
+    : null;
+  const lifecycleTone = loadState === "error" && servers.length === 0
+    ? "text-critical"
+    : "text-ink-muted";
+  const runTruthTone = failedCount > 0
+    ? "text-critical"
+    : attentionCount > 0
+      ? "text-caution"
+      : activating.length > 0
+        ? "text-proof"
+        : "text-ink-muted";
+  const titleParts = [label];
+  if (activating.length > 0) titleParts.push(`${activating.length} activating`);
+  if (setupCount > 0) titleParts.push(`${setupCount} ${setupCount === 1 ? "needs" : "need"} setup`);
+  if (authorizationCount > 0) {
+    titleParts.push(`${authorizationCount} ${authorizationCount === 1 ? "needs" : "need"} authorization`);
+  }
+  if (failedCount > 0) titleParts.push(`${failedCount} activation${failedCount === 1 ? "" : "s"} failed`);
+  if (overToolLimit) titleParts.push("Tool limit exceeded");
 
   return (
     <button
-      className="inline-flex min-h-touch min-w-0 shrink items-center gap-2 rounded-control px-2.5 text-left text-xs text-ink-secondary outline-none hover:bg-control-hover hover:text-ink focus-visible:ring-2 focus-visible:ring-proof/55 sm:min-h-control"
+      className="inline-flex min-h-touch min-w-0 max-w-36 shrink-0 items-center gap-2 rounded-control px-2 text-left text-xs text-ink-secondary outline-none hover:bg-control-hover hover:text-ink focus-visible:ring-2 focus-visible:ring-proof/55 sm:min-h-control sm:max-w-52"
       data-testid="composer-mcp-summary"
       onClick={onOpenSettings}
       type="button"
-      title={`Tools. ${label}${issues > 0 ? `. ${issues} need attention` : ""}${overToolLimit ? ". Tool limit exceeded" : ""}`}
+      title={`Tools. ${titleParts.join(". ")}`}
     >
       {loadState === "loading" ? (
         <LoaderCircle className="size-3.5 shrink-0 animate-spin text-proof" aria-hidden="true" />
-      ) : issues > 0 || overToolLimit || loadState === "error" ? (
-        <CircleAlert className="size-3.5 shrink-0 text-caution" aria-hidden="true" />
+      ) : attentionCount > 0 || overToolLimit || loadState === "error" ? (
+        <CircleAlert
+          className={`size-3.5 shrink-0 ${failedCount > 0 ? "text-critical" : "text-caution"}`}
+          aria-hidden="true"
+        />
+      ) : activating.length > 0 ? (
+        <LoaderCircle className="size-3.5 shrink-0 animate-spin text-proof" aria-hidden="true" />
       ) : (
         <Wrench className="size-3.5 shrink-0 text-ink-muted" aria-hidden="true" />
       )}
-      <span className="shrink-0 font-medium text-ink">Tools</span>
-      {visibleState}
-      {issues > 0 ? (
-        <span className="shrink-0 font-medium text-caution">{ready.length}/{enabled.length} ready</span>
-      ) : null}
+      <span className="min-w-0 leading-4">
+        <span className="block font-medium text-ink">Tools</span>
+        <span className="block truncate text-xs">
+          <span
+            className={lifecycleTone}
+            data-resource-availability={servers.length > 0 ? enabled.length > 0 ? "enabled" : "disabled" : undefined}
+          >
+            {lifecycleLabel}
+          </span>
+          {primaryRunLabel ? (
+            <>
+              <span className="text-ink-muted" aria-hidden="true"> · </span>
+              <span className={runTruthTone} data-testid="composer-tools-run-truth">{primaryRunLabel}</span>
+            </>
+          ) : null}
+          {activatingDetail ? (
+            <>
+              <span className="text-ink-muted" aria-hidden="true"> · </span>
+              <span className="text-proof">{activatingDetail}</span>
+            </>
+          ) : null}
+        </span>
+      </span>
     </button>
   );
 }

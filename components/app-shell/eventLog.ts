@@ -1,5 +1,6 @@
 import { providerDisplayName } from "./providerDisplay";
 import { isRecord } from "./shellValues";
+import type { Catalog } from "./types";
 
 export type InspectorRunEvent = {
   data: unknown;
@@ -72,6 +73,111 @@ function fullDetail(value: unknown): string {
   return jsonText(value).trim();
 }
 
+const readableAcronyms: Readonly<Record<string, string>> = {
+  api: "API",
+  gpt: "GPT",
+  http: "HTTP",
+  https: "HTTPS",
+  id: "ID",
+  mcp: "MCP",
+  qsa: "QSA",
+  sse: "SSE",
+  url: "URL"
+};
+
+function readableIdentifier(value: string): string {
+  const words = value.replace(/[_-]+/g, " ").trim().split(/\s+/).filter(Boolean);
+  return words
+    .map((word, index) => {
+      const acronym = readableAcronyms[word.toLowerCase()];
+      if (acronym) {
+        return acronym;
+      }
+
+      return index === 0 ? `${word[0]?.toUpperCase() ?? ""}${word.slice(1)}` : word.toLowerCase();
+    })
+    .join(" ");
+}
+
+const opaqueUuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function providerLabel(catalog: Catalog | null, provider: string): string {
+  const providers = catalog?.providers ?? [];
+  const exact = providers.find((candidate) => candidate.id === provider);
+  if (exact) {
+    return exact.name;
+  }
+
+  const familyMatches = providers.filter((candidate) => candidate.family === provider);
+  if (familyMatches.length === 1) {
+    return familyMatches[0]!.name;
+  }
+
+  const fallback = providerDisplayName(provider);
+  return fallback === provider && opaqueUuidPattern.test(provider) ? "Unavailable" : fallback;
+}
+
+function sharedModelDisplayName(models: Catalog["models"]): string | null {
+  if (models.length === 0) {
+    return null;
+  }
+
+  const names = new Set(models.map((model) => model.displayName));
+  return names.size === 1 ? models[0]!.displayName : null;
+}
+
+function modelDisplayName(catalog: Catalog | null, provider: string | null, modelId: string): string {
+  const models = catalog?.models ?? [];
+  const providerEntry = provider
+    ? (catalog?.providers ?? []).find((candidate) => candidate.id === provider)
+    : undefined;
+  const identifierMatches = models.filter(
+    (model) => model.modelId === modelId || model.upstreamModelId === modelId
+  );
+  const providerMatches = identifierMatches.filter((model) =>
+    !provider ||
+    model.provider === provider ||
+    model.providerFamily === provider ||
+    Boolean(providerEntry?.family && model.providerFamily === providerEntry.family)
+  );
+  const connectionMatches = provider
+    ? identifierMatches.filter((model) => model.provider === provider)
+    : [];
+  const exactIdentifierMatches = identifierMatches.filter((model) => model.modelId === modelId);
+  const exactProviderMatches = providerMatches.filter((model) => model.modelId === modelId);
+  const exactConnectionMatches = connectionMatches.filter((model) => model.modelId === modelId);
+
+  for (const candidates of [
+    exactConnectionMatches,
+    connectionMatches,
+    exactProviderMatches,
+    providerMatches,
+    exactIdentifierMatches,
+    identifierMatches
+  ]) {
+    const displayName = sharedModelDisplayName(candidates);
+    if (displayName) {
+      return displayName;
+    }
+  }
+
+  const gptModel = /^gpt-(.+)$/i.exec(modelId);
+  if (gptModel) {
+    return `GPT-${gptModel[1]}`;
+  }
+
+  return opaqueUuidPattern.test(modelId) ? "Unavailable" : readableIdentifier(modelId);
+}
+
+function searchStrategyDisplayName(catalog: Catalog | null, strategyId: string): string {
+  if (strategyId === "none" || strategyId === "search-disabled") {
+    return "Off";
+  }
+
+  return catalog?.searchStrategies.find((strategy) => strategy.strategyId === strategyId)?.displayName ??
+    readableIdentifier(strategyId);
+}
+
 function artifactType(event: InspectorRunEvent): string | null {
   return event.type === "artifact" && isRecord(event.data) && typeof event.data.artifactType === "string"
     ? event.data.artifactType
@@ -107,26 +213,33 @@ function payloadProblem(payload: Record<string, unknown>): string | null {
   return nestedMessage(payload.error) ?? (hasFailureStatus ? stringField(payload, "message") : null);
 }
 
-function artifactDetail(type: string, payload: unknown): string {
+function artifactDetail(type: string, payload: unknown, catalog: Catalog | null): string {
   if (!isRecord(payload)) {
     return compactJson(payload);
   }
 
   if (type === "summary") {
     const problem = payloadProblem(payload);
+    const provider = stringField(payload, "provider");
+    const model = stringField(payload, "model");
+    const stage = stringField(payload, "stage");
+    const status = stringField(payload, "status");
+    const reason = stringField(payload, "reason");
+    const searchStrategy = stringField(payload, "searchStrategy");
+    const source = stringField(payload, "source");
     return [
-      stringField(payload, "provider"),
-      stringField(payload, "model"),
-      stringField(payload, "stage"),
-      stringField(payload, "status"),
-      stringField(payload, "reason"),
-      typeof payload.attempt === "number" ? `attempt ${payload.attempt}` : null,
-      stringField(payload, "searchStrategy"),
-      stringField(payload, "source"),
-      problem ? `error: ${problem}` : null
+      provider ? `Provider: ${providerLabel(catalog, provider)}` : null,
+      model ? `Model: ${modelDisplayName(catalog, provider, model)}` : null,
+      stage ? `Stage: ${readableIdentifier(stage)}` : null,
+      status ? `Status: ${readableIdentifier(status)}` : null,
+      reason ? `Reason: ${readableIdentifier(reason)}` : null,
+      typeof payload.attempt === "number" ? `Attempt: ${payload.attempt}` : null,
+      searchStrategy ? `Search: ${searchStrategyDisplayName(catalog, searchStrategy)}` : null,
+      source ? `Source: ${readableIdentifier(source)}` : null,
+      problem ? `Error: ${problem}` : null
     ]
       .filter((part): part is string => Boolean(part))
-      .join(" / ");
+      .join(" · ");
   }
 
   if (type === "citation") {
@@ -137,30 +250,39 @@ function artifactDetail(type: string, payload: unknown): string {
 
   if (type === "search") {
     const citationCount = numberField(payload, "citationCount");
+    const provider = stringField(payload, "provider");
+    const strategy = stringField(payload, "strategy") ?? stringField(payload, "strategyId");
+    const model = stringField(payload, "model");
+    const status = stringField(payload, "status");
+    const query = stringField(payload, "query");
+    const url = stringField(payload, "url");
+    const problem = payloadProblem(payload);
     return [
-      stringField(payload, "provider"),
-      stringField(payload, "strategy") ?? stringField(payload, "strategyId"),
-      stringField(payload, "model"),
-      stringField(payload, "status"),
-      stringField(payload, "query") ? compactText(stringField(payload, "query")!) : null,
-      stringField(payload, "url"),
-      citationCount !== null ? `${citationCount} citation${citationCount === 1 ? "" : "s"}` : null,
-      payloadProblem(payload)
+      provider ? `Provider: ${providerLabel(catalog, provider)}` : null,
+      strategy ? `Strategy: ${searchStrategyDisplayName(catalog, strategy)}` : null,
+      model ? `Model: ${modelDisplayName(catalog, provider, model)}` : null,
+      status ? `Status: ${readableIdentifier(status)}` : null,
+      query ? `Query: ${compactText(query)}` : null,
+      url ? `URL: ${url}` : null,
+      citationCount !== null ? `Citations: ${citationCount}` : null,
+      problem ? `Error: ${problem}` : null
     ]
       .filter((part): part is string => Boolean(part))
-      .join(" / ");
+      .join(" · ");
   }
 
   if (type === "tool_call" || type === "tool_result") {
     const problem = payloadProblem(payload);
+    const name = stringField(payload, "name");
+    const status = stringField(payload, "status");
     return [
-      stringField(payload, "name"),
-      stringField(payload, "status"),
-      typeof payload.round === "number" ? `round ${payload.round}` : null,
-      problem
+      name ? `Tool: ${name}` : null,
+      status ? `Status: ${readableIdentifier(status)}` : null,
+      typeof payload.round === "number" ? `Round: ${payload.round}` : null,
+      problem ? `Error: ${problem}` : null
     ]
       .filter((part): part is string => Boolean(part))
-      .join(" / ");
+      .join(" · ");
   }
 
   if (type === "reasoning") {
@@ -182,7 +304,7 @@ function artifactDetail(type: string, payload: unknown): string {
         .join(" / ")
         .trim();
 
-      return text ? compactText(text) : "no reasoning summary captured";
+      return text ? compactText(text) : "No reasoning summary was recorded.";
     }
 
     if (typeof payload.reasoning === "string" && payload.reasoning.trim()) {
@@ -193,7 +315,7 @@ function artifactDetail(type: string, payload: unknown): string {
       return compactText(payload.delta.trim());
     }
 
-    return "no reasoning summary captured";
+    return "No reasoning summary was recorded.";
   }
 
   return stringField(payload, "message") ?? stringField(payload, "status") ?? compactJson(payload);
@@ -332,11 +454,11 @@ function artifactStage(type: string, payload: unknown): string {
 
 function artifactLabel(type: string): string {
   const labels: Record<string, string> = {
-    citation: "Citations",
-    context_truncated: "Context window",
-    reasoning: "Reasoning artifacts",
-    search: "Search artifacts",
-    summary: "Provider status",
+    citation: "Citations recorded",
+    context_truncated: "Earlier context omitted",
+    reasoning: "Reasoning recorded",
+    search: "Search evidence",
+    summary: "Provider updates",
     tool_call: "Tool calls",
     tool_result: "Tool results"
   };
@@ -346,7 +468,7 @@ function artifactLabel(type: string): string {
   }
 
   const words = type.replace(/[_-]+/g, " ").trim();
-  return words ? `${words[0]!.toUpperCase()}${words.slice(1)} artifacts` : "Artifacts";
+  return words ? `${words[0]!.toUpperCase()}${words.slice(1)} recorded` : "Evidence recorded";
 }
 
 function artifactSummary(type: string, aggregate: ArtifactAggregate): InspectorEventSummary {
@@ -355,12 +477,12 @@ function artifactSummary(type: string, aggregate: ArtifactAggregate): InspectorE
     const droppedTokens = numberField(aggregate.latest, "approxDroppedTokens") ?? 0;
 
     return {
-      detail: droppedTokens > 0 ? `~${droppedTokens} estimated tokens` : undefined,
+      detail: droppedTokens > 0 ? `About ${droppedTokens} estimated tokens omitted` : undefined,
       id: "artifact-context-truncated",
-      label: "Context window",
+      label: "Earlier context omitted",
       stage: "Q",
       tone: "warning",
-      value: `dropped ${droppedMessages} message${droppedMessages === 1 ? "" : "s"}`
+      value: `${droppedMessages} earlier message${droppedMessages === 1 ? "" : "s"} omitted`
     };
   }
 
@@ -372,19 +494,25 @@ function artifactSummary(type: string, aggregate: ArtifactAggregate): InspectorE
     tone: aggregate.tone,
     value:
       type === "summary"
-        ? `${aggregate.count} update${aggregate.count === 1 ? "" : "s"}`
-        : `${aggregate.count}`
+        ? `${aggregate.count} recorded update${aggregate.count === 1 ? "" : "s"}`
+        : type === "citation"
+          ? `${aggregate.count} citation${aggregate.count === 1 ? "" : "s"}`
+          : type === "tool_call"
+            ? `${aggregate.count} call${aggregate.count === 1 ? "" : "s"}`
+            : type === "tool_result"
+              ? `${aggregate.count} result${aggregate.count === 1 ? "" : "s"}`
+              : `${aggregate.count} recorded item${aggregate.count === 1 ? "" : "s"}`
   };
 }
 
 function tokenSummary(count: number, characterCount: number): InspectorEventSummary {
   return {
-    detail: `${characterCount} character${characterCount === 1 ? "" : "s"}`,
+    detail: `${characterCount} character${characterCount === 1 ? "" : "s"} received`,
     id: "answer-text",
     label: "Answer text",
     stage: "A",
     tone: "default",
-    value: `${count} chunk${count === 1 ? "" : "s"}`
+    value: `${count} text update${count === 1 ? "" : "s"}`
   };
 }
 
@@ -398,13 +526,13 @@ function usageSummary(data: Record<string, unknown>, count: number): InspectorEv
 
   return {
     detail: [
-      `input ${input}`,
-      `cached ${cached}`,
-      `cache write ${cacheWrite}`,
-      `output ${output}`,
-      `reasoning ${reasoning}`,
-      `total ${total}`
-    ].join(" / "),
+      `Input: ${input}`,
+      `Cached: ${cached}`,
+      `Cache write: ${cacheWrite}`,
+      `Output: ${output}`,
+      `Reasoning: ${reasoning}`,
+      `Total: ${total}`
+    ].join(" · "),
     id: "usage",
     label: "Usage",
     stage: "API",
@@ -420,10 +548,10 @@ function terminalSummary(event: InspectorRunEvent, index: number, stage: string)
     return {
       detail: eventDetail(event),
       id: `done-${index}`,
-      label: "Cancelled",
+      label: "Run stopped",
       stage,
       tone: "warning",
-      value: "response stopped"
+      value: "Response stopped"
     };
   }
 
@@ -431,24 +559,27 @@ function terminalSummary(event: InspectorRunEvent, index: number, stage: string)
     return {
       detail: eventDetail(event),
       id: `done-${index}`,
-      label: "Run ended",
+      label: "Run ended with an error",
       stage,
       tone: "error",
-      value: status
+      value: readableIdentifier(status)
     };
   }
 
   return {
     detail: eventDetail(event),
     id: `done-${index}`,
-    label: "Done",
+    label: "Run complete",
     stage,
     tone: "success",
-    value: status
+    value: readableIdentifier(status)
   };
 }
 
-export function summarizeInspectorEvents(events: InspectorRunEvent[]): InspectorEventSummary[] {
+export function summarizeInspectorEvents(
+  events: InspectorRunEvent[],
+  catalog: Catalog | null = null
+): InspectorEventSummary[] {
   const summaries: InspectorEventSummary[] = [];
   const artifactGroups = new Map<string, ArtifactAggregate>();
   const unknownGroups = new Map<string, { count: number; summaryIndex: number }>();
@@ -458,19 +589,21 @@ export function summarizeInspectorEvents(events: InspectorRunEvent[]): Inspector
 
   events.forEach((event, eventIndex) => {
     if (event.type === "run_start") {
-      const detail = isRecord(event.data)
-        ? [stringField(event.data, "provider"), stringField(event.data, "modelId")]
-            .map((part, index) => (index === 0 && part ? providerDisplayName(part) : part))
-            .filter((part): part is string => Boolean(part))
-            .join(" / ")
-        : "";
+      const provider = stringField(event.data, "provider");
+      const model = stringField(event.data, "modelId");
+      const detail = [
+        provider ? `Provider: ${providerLabel(catalog, provider)}` : null,
+        model ? `Model: ${modelDisplayName(catalog, provider, model)}` : null
+      ]
+        .filter((part): part is string => Boolean(part))
+        .join(" · ");
       summaries.push({
         detail: detail || undefined,
         id: `run-${eventIndex}`,
-        label: "Run",
+        label: "Run started",
         stage: "Q",
         tone: "default",
-        value: eventMessage(event) || "started"
+        value: readableIdentifier(eventMessage(event) || "Started")
       });
       currentStage = "Q";
       return;
@@ -479,10 +612,10 @@ export function summarizeInspectorEvents(events: InspectorRunEvent[]): Inspector
     if (event.type === "message_start") {
       summaries.push({
         id: `message-${eventIndex}`,
-        label: "Assistant message",
+        label: "Answer created",
         stage: "A",
         tone: "default",
-        value: "created"
+        value: "Ready for response text"
       });
       currentStage = "A";
       return;
@@ -514,7 +647,7 @@ export function summarizeInspectorEvents(events: InspectorRunEvent[]): Inspector
       const type = artifactType(event) ?? "artifact";
       const payload = artifactPayload(event);
       const nextTone = artifactTone(type, payload);
-      const nextDetail = artifactDetail(type, payload);
+      const nextDetail = artifactDetail(type, payload, catalog);
       const nextStage = artifactStage(type, payload);
       const current = artifactGroups.get(type);
 

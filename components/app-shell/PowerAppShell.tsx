@@ -196,6 +196,7 @@ export function PowerAppShell({
   const settingsSection = usePromptSettingsStore((state) => state.settingsSection);
   const settingsPromptEditor = usePromptSettingsStore((state) => state.settingsPromptEditor);
   const openMcpSettings = usePromptSettingsStore((state) => state.openMcpSettings);
+  const openGeneralSettings = usePromptSettingsStore((state) => state.openSettings);
   const setSettingsPromptFromPreset = usePromptSettingsStore((state) => state.setSettingsPromptFromPreset);
   const appearance = useShellAppearanceController();
   const {
@@ -424,7 +425,7 @@ export function PowerAppShell({
     setCatalog,
     setNotice: setSettingsNotice
   });
-  const { openSettings, selectPrompt } = promptSettingsActions;
+  const { openPromptLibrary, selectPrompt } = promptSettingsActions;
 
   const {
     createFolder,
@@ -607,7 +608,7 @@ export function PowerAppShell({
     closePalette: shellOverlays.palette.close,
     inspectorMode,
     inspectorPinningAvailable,
-    openSettings,
+    openSettings: openGeneralSettings,
     searchOptions,
     selectModel,
     selectPrompt,
@@ -868,8 +869,9 @@ export function PowerAppShell({
     actions: promptSettingsActions,
     dismissNotice: () => setSettingsNotice(null),
     notice: settingsNotice,
-    open: openSettings,
+    open: openGeneralSettings,
     openMcp: openMcpSettings,
+    openPromptLibrary,
     prompt: {
       deleteConfirmation: deletePromptConfirmation,
       editor: settingsPromptEditor,

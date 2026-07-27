@@ -227,6 +227,7 @@ export type ShellSettingsView = {
   notice: Notice | null;
   open(): void;
   openMcp(): void;
+  openPromptLibrary(): void;
   prompt: {
     deleteConfirmation: PromptPreset | null;
     editor: PromptEditorDraft;

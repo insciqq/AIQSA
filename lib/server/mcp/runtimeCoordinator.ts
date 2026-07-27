@@ -23,6 +23,7 @@ export type McpRuntimeLaunch = {
   generationId: string;
   headers: Record<string, string>;
   inventoryRefreshRequired?: boolean;
+  onConnecting?(): Promise<void>;
   redactionValues: readonly string[];
   oauthConnectionId?: string;
   retryAt: Date | null;

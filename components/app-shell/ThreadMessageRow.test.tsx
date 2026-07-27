@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { ComponentProps } from "react";
 import { describe, expect, it, vi } from "vitest";
 import type { PersistedRun, ThreadArtifactSummary, ThreadMessage } from "./types";
@@ -79,6 +79,7 @@ describe("ThreadMessageRow", () => {
     const assistant = container.querySelector('article[data-role="assistant"]');
     expect(assistant).toHaveAttribute("data-message-id", "assistant-readable");
     expect(assistant).toHaveAttribute("data-status", "complete");
+    expect(assistant).toHaveClass("[@media(max-height:32rem)]:!pb-2");
     expect(screen.getByRole("article", { name: "Answer" })).toBe(assistant);
     expect(assistant?.firstElementChild).toHaveClass("max-w-reading");
     expect(screen.queryByText("Assistant")).not.toBeInTheDocument();
@@ -94,18 +95,27 @@ describe("ThreadMessageRow", () => {
     const assistantToolbar = screen.getByRole("toolbar", { name: "Assistant message actions" });
     expect(assistantToolbar).toHaveAccessibleDescription("Answer: Answer");
     expect(assistantToolbar).toHaveClass("min-h-11");
-    expect(assistantToolbar).toHaveClass("opacity-0");
-    expect(assistantToolbar).toHaveClass("focus-within:opacity-100");
-    expect(assistantToolbar).toHaveClass("group-hover/turn:opacity-100");
-    expect(assistantToolbar).toHaveClass("[@media(hover:none)]:opacity-100");
+    expect(assistantToolbar).not.toHaveClass("opacity-0");
     expect(within(assistantToolbar).getAllByRole("button").map((button) => button.getAttribute("aria-label"))).toEqual([
       "Regenerate message",
       "Edit message",
       "Copy message",
+      "More message actions"
+    ]);
+    expect(within(assistantToolbar).getByText("Regenerate")).toHaveClass("sr-only");
+    expect(within(assistantToolbar).getByText("Edit")).toHaveClass("sr-only");
+    expect(within(assistantToolbar).getByText("Copy")).toHaveClass("sr-only");
+    expect(within(assistantToolbar).getByText("More")).toBeVisible();
+    for (const action of within(assistantToolbar).getAllByRole("button")) {
+      expect(action).toHaveAccessibleDescription("Answer: Answer");
+    }
+    fireEvent.click(within(assistantToolbar).getByRole("button", { name: "More message actions" }));
+    const assistantMenu = screen.getByRole("menu", { name: "More message actions" });
+    expect(within(assistantMenu).getAllByRole("menuitem").map((item) => item.getAttribute("aria-label"))).toEqual([
       "Delete message",
       "Branch from here"
     ]);
-    for (const action of within(assistantToolbar).getAllByRole("button")) {
+    for (const action of within(assistantMenu).getAllByRole("menuitem")) {
       expect(action).toHaveAccessibleDescription("Answer: Answer");
     }
     expect(
@@ -138,15 +148,14 @@ describe("ThreadMessageRow", () => {
     expect(within(userToolbar).getAllByRole("button").map((button) => button.getAttribute("aria-label"))).toEqual([
       "Edit message",
       "Copy message",
-      "Delete message",
-      "Branch from here"
+      "More message actions"
     ]);
     for (const action of within(userToolbar).getAllByRole("button")) {
       expect(action).toHaveAccessibleDescription("Question: Question");
     }
   });
 
-  it("calls every assistant action with the message or message id it owns", () => {
+  it("calls every assistant action with the message or message id it owns", async () => {
     const message = assistantMessage({ id: "assistant-actions" });
     const onBranchFromMessage = vi.fn();
     const onCopyMessage = vi.fn();
@@ -165,17 +174,21 @@ describe("ThreadMessageRow", () => {
     fireEvent.click(screen.getByRole("button", { name: "Regenerate message" }));
     fireEvent.click(screen.getByRole("button", { name: "Edit message" }));
     fireEvent.click(screen.getByRole("button", { name: "Copy message" }));
-    fireEvent.click(screen.getByRole("button", { name: "Delete message" }));
-    fireEvent.click(screen.getByRole("button", { name: "Branch from here" }));
+    const more = screen.getByRole("button", { name: "More message actions" });
+    fireEvent.click(more);
+    fireEvent.click(screen.getByRole("menuitem", { name: "Delete message" }));
+    await waitFor(() => expect(onDeleteMessage).toHaveBeenCalledWith("assistant-actions"));
+    fireEvent.click(more);
+    fireEvent.click(screen.getByRole("menuitem", { name: "Branch from here" }));
 
     expect(onRegenerateMessage).toHaveBeenCalledWith("assistant-actions");
     expect(onEditMessage).toHaveBeenCalledWith(message);
     expect(onCopyMessage).toHaveBeenCalledWith(message);
     expect(onDeleteMessage).toHaveBeenCalledWith("assistant-actions");
-    expect(onBranchFromMessage).toHaveBeenCalledWith("assistant-actions");
+    await waitFor(() => expect(onBranchFromMessage).toHaveBeenCalledWith("assistant-actions"));
   });
 
-  it("calls every available user action and does not offer regenerate", () => {
+  it("calls every available user action and does not offer regenerate", async () => {
     const message: ThreadMessage = {
       content: "Question",
       id: "user-actions",
@@ -201,14 +214,18 @@ describe("ThreadMessageRow", () => {
     expect(screen.queryByRole("button", { name: "Regenerate message" })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Edit message" }));
     fireEvent.click(screen.getByRole("button", { name: "Copy message" }));
-    fireEvent.click(screen.getByRole("button", { name: "Delete message" }));
-    fireEvent.click(screen.getByRole("button", { name: "Branch from here" }));
+    const more = screen.getByRole("button", { name: "More message actions" });
+    fireEvent.click(more);
+    fireEvent.click(screen.getByRole("menuitem", { name: "Delete message" }));
+    await waitFor(() => expect(onDeleteMessage).toHaveBeenCalledWith("user-actions"));
+    fireEvent.click(more);
+    fireEvent.click(screen.getByRole("menuitem", { name: "Branch from here" }));
 
     expect(onRegenerateMessage).not.toHaveBeenCalled();
     expect(onEditMessage).toHaveBeenCalledWith(message);
     expect(onCopyMessage).toHaveBeenCalledWith(message);
     expect(onDeleteMessage).toHaveBeenCalledWith("user-actions");
-    expect(onBranchFromMessage).toHaveBeenCalledWith("user-actions");
+    await waitFor(() => expect(onBranchFromMessage).toHaveBeenCalledWith("user-actions"));
   });
 
   it("gates mutable actions during a response without gating Copy", () => {
@@ -217,8 +234,11 @@ describe("ThreadMessageRow", () => {
     expect(screen.getByRole("button", { name: "Regenerate message" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Edit message" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Copy message" })).toBeEnabled();
-    expect(screen.getByRole("button", { name: "Branch from here" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Delete message" })).toBeDisabled();
+    const more = screen.getByRole("button", { name: "More message actions" });
+    expect(more).toBeDisabled();
+    expect(more).toHaveAccessibleDescription(/unavailable while a response is streaming/i);
+    fireEvent.click(more);
+    expect(screen.queryByRole("menu", { name: "More message actions" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Edit message" })).toHaveAttribute(
       "title",
       "Edit is disabled while a response is streaming"
@@ -226,9 +246,20 @@ describe("ThreadMessageRow", () => {
     expect(screen.getByRole("button", { name: "Edit message" })).toHaveAccessibleDescription(
       /unavailable while a response is streaming/i
     );
-    expect(screen.getByRole("button", { name: "Delete message" })).toHaveAccessibleDescription(
-      /unavailable while a response is streaming/i
-    );
+  });
+
+  it("dismisses an open uncommon-action menu when streaming starts", async () => {
+    const view = renderRow();
+    fireEvent.click(screen.getByRole("button", { name: "More message actions" }));
+    expect(screen.getByRole("menu", { name: "More message actions" })).toBeVisible();
+
+    view.rerender(<ThreadMessageRow {...view.props} streaming />);
+
+    expect(screen.queryByRole("menu", { name: "More message actions" })).not.toBeInTheDocument();
+    const more = screen.getByRole("button", { name: "More message actions" });
+    expect(more).toBeDisabled();
+    expect(more).toHaveAttribute("aria-expanded", "false");
+    await waitFor(() => expect(more).not.toHaveAttribute("aria-controls"));
   });
 
   it("gates only edit replacement while an edited branch is saving", () => {
@@ -243,8 +274,104 @@ describe("ThreadMessageRow", () => {
     );
     expect(screen.getByRole("button", { name: "Regenerate message" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Copy message" })).toBeEnabled();
-    expect(screen.getByRole("button", { name: "Delete message" })).toBeEnabled();
-    expect(screen.getByRole("button", { name: "Branch from here" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "More message actions" }));
+    expect(screen.getByRole("menuitem", { name: "Delete message" })).toBeEnabled();
+    expect(screen.getByRole("menuitem", { name: "Branch from here" })).toBeEnabled();
+  });
+
+  it("supports keyboard entry and Escape focus restoration for uncommon actions", async () => {
+    renderRow();
+    const trigger = screen.getByRole("button", { name: "More message actions" });
+    trigger.focus();
+
+    fireEvent.keyDown(trigger, { key: "ArrowDown" });
+    const menu = await screen.findByRole("menu", { name: "More message actions" });
+    await waitFor(() => expect(within(menu).getByRole("menuitem", { name: "Delete message" })).toHaveFocus());
+    fireEvent.keyDown(menu, { key: "End" });
+    expect(within(menu).getByRole("menuitem", { name: "Branch from here" })).toHaveFocus();
+
+    fireEvent.keyDown(menu, { key: "Escape" });
+    await waitFor(() => expect(trigger).toHaveFocus());
+    expect(screen.queryByRole("menu", { name: "More message actions" })).not.toBeInTheDocument();
+
+    fireEvent.keyDown(trigger, { key: "ArrowUp" });
+    const reopenedMenu = await screen.findByRole("menu", { name: "More message actions" });
+    await waitFor(() => expect(
+      within(reopenedMenu).getByRole("menuitem", { name: "Branch from here" })
+    ).toHaveFocus());
+  });
+
+  it("keeps Tab order deterministic when the uncommon-action menu is portalled", async () => {
+    const view = renderRow();
+    view.rerender(
+      <>
+        <ThreadMessageRow {...view.props} />
+        <button type="button">After message</button>
+      </>
+    );
+    const trigger = screen.getByRole("button", { name: "More message actions" });
+
+    fireEvent.keyDown(trigger, { key: "ArrowDown" });
+    let menu = await screen.findByRole("menu", { name: "More message actions" });
+    await waitFor(() => expect(within(menu).getByRole("menuitem", { name: "Delete message" })).toHaveFocus());
+    fireEvent.keyDown(menu, { key: "Tab" });
+    await waitFor(() => expect(screen.getByRole("button", { name: "After message" })).toHaveFocus());
+    expect(screen.queryByRole("menu", { name: "More message actions" })).not.toBeInTheDocument();
+
+    fireEvent.keyDown(trigger, { key: "ArrowUp" });
+    menu = await screen.findByRole("menu", { name: "More message actions" });
+    await waitFor(() => expect(within(menu).getByRole("menuitem", { name: "Branch from here" })).toHaveFocus());
+    fireEvent.keyDown(menu, { key: "Tab", shiftKey: true });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Copy message" })).toHaveFocus());
+    expect(screen.queryByRole("menu", { name: "More message actions" })).not.toBeInTheDocument();
+  });
+
+  it("portals and prefers placing the uncommon-action menu below when both sides fit", async () => {
+    const zeroRect = {
+      bottom: 0,
+      height: 0,
+      left: 0,
+      right: 0,
+      top: 0,
+      width: 0,
+      x: 0,
+      y: 0,
+      toJSON: () => ({})
+    } as DOMRect;
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+      if (this.tagName === "BUTTON" && this.getAttribute("aria-label") === "More message actions") {
+        return {
+          ...zeroRect,
+          bottom: 344,
+          height: 44,
+          left: 256,
+          right: 300,
+          top: 300,
+          width: 44,
+          x: 256,
+          y: 300
+        };
+      }
+      if (this.getAttribute("role") === "menu") {
+        return {
+          ...zeroRect,
+          bottom: 120,
+          height: 120,
+          right: 208,
+          width: 208
+        };
+      }
+      return zeroRect;
+    });
+    renderRow();
+
+    fireEvent.click(screen.getByRole("button", { name: "More message actions" }));
+    const menu = await screen.findByRole("menu", { name: "More message actions" });
+
+    await waitFor(() => expect(menu).toHaveAttribute("data-placement", "below"));
+    expect(menu.parentElement).toBe(document.body);
+    expect(menu).toHaveClass("fixed", "max-w-[calc(100vw-1rem)]");
+    expect(menu).toHaveStyle({ top: "352px", visibility: "visible" });
   });
 
   it("renders an optimistic empty assistant as a generic working state", () => {

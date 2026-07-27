@@ -132,6 +132,43 @@ describe("AdminRunProfilesPanel", () => {
     });
   });
 
+  it("explains invalid drafts inline and lets the administrator discard them safely", async () => {
+    const fetcher = apiFetch();
+    const onEditStateChange = vi.fn();
+    vi.stubGlobal("fetch", fetcher);
+    render(
+      <AdminRunProfilesPanel
+        active
+        onEditStateChange={onEditStateChange}
+      />
+    );
+
+    const description = await screen.findByLabelText("Fast description");
+    fireEvent.change(description, { target: { value: "" } });
+
+    expect(description).toHaveAttribute("aria-invalid", "true");
+    expect(screen.getByText("Enter a description for this composer shortcut.")).toBeInTheDocument();
+    expect(screen.getByTestId("run-profiles-edit-status")).toHaveTextContent(
+      "Unsaved profile changes need attention"
+    );
+    expect(screen.getByRole("button", { name: "Save profiles" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Refresh run profiles" })).toBeDisabled();
+    expect(onEditStateChange).toHaveBeenLastCalledWith({ busy: false, dirty: true });
+
+    fireEvent.click(screen.getByRole("button", { name: "Discard changes" }));
+
+    expect(description).toHaveValue("Fast questions");
+    expect(description).not.toHaveAttribute("aria-invalid");
+    expect(screen.queryByTestId("run-profiles-edit-status")).not.toBeInTheDocument();
+    await waitFor(() => expect(onEditStateChange).toHaveBeenLastCalledWith({
+      busy: false,
+      dirty: false
+    }));
+    await waitFor(() => expect(screen.getByRole("button", {
+      name: "Refresh run profiles"
+    })).toHaveFocus());
+  });
+
   it("separates profile enablement from an inactive model deployment", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => Response.json({
       models,

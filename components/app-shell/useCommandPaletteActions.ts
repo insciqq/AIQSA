@@ -102,7 +102,7 @@ export function useCommandPaletteActions({
         current: settingsOpen,
         id: "action:open-settings",
         kind: "action",
-        keywords: ["settings", "prompts", "prompt manager"],
+        keywords: ["settings", "appearance", "mcp", "tools"],
         label: "Open settings",
         subtitle: "Settings"
       }

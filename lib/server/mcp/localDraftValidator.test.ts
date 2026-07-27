@@ -68,6 +68,7 @@ function detail(image = GENERATED_IMAGE) {
 
 describe("local MCP draft validation", () => {
   it("materializes an exact npm package, inventories tools, and deletes the validation workload", async () => {
+    const progress: string[] = [];
     const active = session();
     const create = vi.fn(async () => active);
     const deleteOwnedWorkload = vi.fn(async () => true);
@@ -90,13 +91,19 @@ describe("local MCP draft validation", () => {
           sourceKind: "npm"
         }
       }),
-      randomToken: () => TOKEN,
+      randomToken: () => {
+        throw new Error("persisted workload token must win");
+      },
       sessions: { create }
     });
 
     const outcome = await validator.validate({
       draft,
-      values: { "api-key": "super-secret", mode: "safe" }
+      onProgress: async (stage) => {
+        progress.push(stage);
+      },
+      values: { "api-key": "super-secret", mode: "safe" },
+      workloadToken: TOKEN
     });
 
     expect(create).toHaveBeenCalledWith(expect.objectContaining({
@@ -133,6 +140,7 @@ describe("local MCP draft validation", () => {
     expect(JSON.stringify(outcome)).not.toContain("super-secret");
     expect(active.close).toHaveBeenCalledTimes(1);
     expect(deleteOwnedWorkload).toHaveBeenCalledWith(TOKEN);
+    expect(progress).toEqual(["resolving", "preparing_runtime", "discovering_tools"]);
   });
 
   it("rejects a package artifact when ToolHive did not return a generated image", async () => {

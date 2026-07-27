@@ -10,7 +10,9 @@ import {
   quietButton
 } from "@/components/admin/adminPrimitives";
 import { AdminUserStatus } from "@/components/admin/AdminUserStatus";
+import { activeDraftGroupIds } from "@/components/admin/adminDraftGroups";
 import {
+  activeGroupIdsForUser,
   entitlementCountLabel,
   hasEntitlements,
   type AdminSortDirection,
@@ -132,7 +134,7 @@ function UserListRow({
       <span className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-start gap-2 md:items-center">
         <span className="min-w-0">
           <span className="block break-words text-sm font-medium text-ink [overflow-wrap:anywhere]">
-            {user.displayName}{isSelf ? <span className="ml-2 text-[11px] font-medium text-proof">You</span> : null}
+            {user.displayName}{isSelf ? <span className="ml-2 text-xs font-medium text-proof">You</span> : null}
           </span>
           <span className="mt-0.5 block break-words text-xs text-ink-muted [overflow-wrap:anywhere]">{user.email ?? "No email"}</span>
         </span>
@@ -140,20 +142,20 @@ function UserListRow({
       </span>
       <span className="grid min-w-0 grid-cols-2 gap-2 md:contents">
         <span className="block min-w-0">
-          <span className="mb-1 block text-[10px] font-medium uppercase tracking-[0.08em] text-ink-muted md:hidden">Groups</span>
+          <span className="mb-1 block text-xs font-medium uppercase tracking-[0.08em] text-ink-muted md:hidden">Groups</span>
           <GroupChips groups={user.groups} />
         </span>
         <span className="block text-xs capitalize text-ink-secondary">
-          <span className="mb-1 block text-[10px] font-medium uppercase tracking-[0.08em] text-ink-muted md:hidden">Role</span>
+          <span className="mb-1 block text-xs font-medium uppercase tracking-[0.08em] text-ink-muted md:hidden">Role</span>
           {user.role}
         </span>
         <span className="block text-xs text-ink-secondary">
-          <span className="mb-1 block text-[10px] font-medium uppercase tracking-[0.08em] text-ink-muted md:hidden">Access</span>
+          <span className="mb-1 block text-xs font-medium uppercase tracking-[0.08em] text-ink-muted md:hidden">Access</span>
           {entitlementCountLabel(user.effectiveEntitlements)}
         </span>
         <span className="flex min-w-0 items-end justify-between gap-3 text-xs text-ink-muted md:items-center">
           <span className="min-w-0 break-words [overflow-wrap:anywhere]">
-            <span className="mb-1 block text-[10px] font-medium uppercase tracking-[0.08em] text-ink-muted md:hidden">Last session</span>
+            <span className="mb-1 block text-xs font-medium uppercase tracking-[0.08em] text-ink-muted md:hidden">Last session</span>
             {formatDate(user.lastSessionAt)}
           </span>
           <ChevronRight aria-hidden="true" className="mb-0.5 size-4 shrink-0 text-ink-muted transition-transform group-hover/user-row:translate-x-0.5 group-hover/user-row:text-ink-secondary md:mb-0" />
@@ -189,7 +191,7 @@ function EffectiveAccess({
     <div className="grid gap-4 text-xs text-ink-secondary">
       {user.effectiveEntitlements.providers.length ? (
         <div>
-          <p className="text-[11px] font-medium uppercase tracking-[0.08em] text-ink-muted">Providers</p>
+          <p className="text-xs font-medium uppercase tracking-[0.08em] text-ink-muted">Providers</p>
           <p className="mt-1 break-words leading-5 [overflow-wrap:anywhere]">
             {user.effectiveEntitlements.providers.map((provider) => providerDisplayName(catalog, provider)).join(", ")}
           </p>
@@ -197,7 +199,7 @@ function EffectiveAccess({
       ) : null}
       {user.effectiveEntitlements.models.length ? (
         <div>
-          <p className="text-[11px] font-medium uppercase tracking-[0.08em] text-ink-muted">Models</p>
+          <p className="text-xs font-medium uppercase tracking-[0.08em] text-ink-muted">Models</p>
           <div className="mt-1 divide-y divide-trace-subtle border-y border-trace-subtle">
             {availableModelGrants.map(({ label, model }) => (
               <p className="break-words py-2 [overflow-wrap:anywhere]" key={`${model.provider}:${model.modelId}`}>
@@ -212,7 +214,7 @@ function EffectiveAccess({
                 <p className="mt-2 leading-5 text-ink-muted">
                   These grants remain effective records, but their provider/model pairs are absent from the current catalog.
                 </p>
-                <ul className="mt-2 grid gap-1 font-mono text-[11px] text-ink-muted">
+                <ul className="mt-2 grid gap-1 font-mono text-xs text-ink-muted">
                   {catalogMissingModelGrants.map(({ model }) => (
                     <li className="break-all" key={`${model.provider}:${model.modelId}`}>
                       {model.provider} / {model.modelId}
@@ -226,7 +228,7 @@ function EffectiveAccess({
       ) : null}
       {user.effectiveEntitlements.searchStrategies.length ? (
         <div>
-          <p className="text-[11px] font-medium uppercase tracking-[0.08em] text-ink-muted">Search</p>
+          <p className="text-xs font-medium uppercase tracking-[0.08em] text-ink-muted">Search</p>
           <p className="mt-1 break-words leading-5 [overflow-wrap:anywhere]">
             {user.effectiveEntitlements.searchStrategies
               .map((strategy) => searchStrategyDisplayName(catalog, strategy))
@@ -259,6 +261,11 @@ function AdminUserDetail({ actions, data, detailRef, groupsEditorRef, mcpAccess,
 
   const isSelf = selectedUser.id === adminUserId;
   const deletion = userDeletionInfo(selectedUser, adminUserId);
+  const savedGroupIds = activeGroupIdsForUser(selectedUser, groups).sort();
+  const draftGroupIds = activeDraftGroupIds(groups, selectedUserGroupIds).sort();
+  const groupsDirty =
+    savedGroupIds.length !== draftGroupIds.length ||
+    savedGroupIds.some((groupId, index) => groupId !== draftGroupIds[index]);
 
   return (
     <article
@@ -271,7 +278,7 @@ function AdminUserDetail({ actions, data, detailRef, groupsEditorRef, mcpAccess,
       <AdminTaskBackButton alwaysVisible label="Back to users" onClick={actions.onBackToList} />
       <div className="flex min-w-0 items-start justify-between gap-4 border-b border-trace-subtle pb-5">
         <div className="min-w-0">
-          <p className="text-[11px] font-semibold uppercase tracking-[0.1em] text-ink-muted">Selected user</p>
+          <p className="text-xs font-semibold uppercase tracking-[0.1em] text-ink-muted">Selected user</p>
           <h3 className="mt-2 break-words text-xl font-semibold tracking-tight text-ink [overflow-wrap:anywhere]">
             {selectedUser.displayName}
           </h3>
@@ -301,6 +308,11 @@ function AdminUserDetail({ actions, data, detailRef, groupsEditorRef, mcpAccess,
                 ? "These groups are applied when the pending user is approved."
                 : "Group changes apply to future catalog and run entitlement checks."}
             </p>
+            {selectedUser.status === "active" ? (
+              <p className={`text-xs font-medium ${groupsDirty ? "text-proof" : "text-ink-muted"}`} role="status">
+                {groupsDirty ? "Unsaved group changes" : "Group memberships are up to date"}
+              </p>
+            ) : null}
           </div>
         ) : (
           <div className="mt-3"><GroupChips groups={selectedUser.groups} /></div>
@@ -340,7 +352,7 @@ function AdminUserDetail({ actions, data, detailRef, groupsEditorRef, mcpAccess,
 
           {selectedUser.status === "active" && !isSelf ? (
             <>
-              <button className={primaryButton} disabled={status.actionsDisabled} onClick={() => actions.onSaveGroups(selectedUser)} type="button">
+              <button className={primaryButton} disabled={status.actionsDisabled || !groupsDirty} onClick={() => actions.onSaveGroups(selectedUser)} type="button">
                 <Save aria-hidden="true" className="size-3.5" />
                 Save groups
               </button>
@@ -416,7 +428,11 @@ export function AdminUsersSection({ actions, data, focus, mcpAccess, status, vie
             {(["all", "pending", "active", "disabled", "denied"] as const).map((userStatus) => (
               <button
                 aria-pressed={view.statusFilter === userStatus}
-                className={view.statusFilter === userStatus ? primaryButton : quietButton}
+                className={`${quietButton} ${
+                  view.statusFilter === userStatus
+                    ? "border-proof/35 bg-control-selected text-ink hover:bg-control-selected"
+                    : ""
+                }`}
                 key={userStatus}
                 onClick={() => actions.onStatusFilterChange(userStatus)}
                 type="button"
@@ -437,8 +453,13 @@ export function AdminUsersSection({ actions, data, focus, mcpAccess, status, vie
                 {sortOptions.map((option) => <option key={option.key} value={option.key}>{option.label}</option>)}
               </select>
             </label>
-            <button className={`${quietButton} self-end`} onClick={() => actions.onSort(view.sortKey)} type="button">
-              {view.sortDirection === "asc" ? "Asc" : "Desc"}
+            <button
+              aria-label={`Change sort direction to ${view.sortDirection === "asc" ? "descending" : "ascending"}`}
+              className={`${quietButton} self-end`}
+              onClick={() => actions.onSort(view.sortKey)}
+              type="button"
+            >
+              {view.sortDirection === "asc" ? "Ascending" : "Descending"}
             </button>
           </div>
         </div>
@@ -452,7 +473,7 @@ export function AdminUsersSection({ actions, data, focus, mcpAccess, status, vie
             <button aria-label="Previous users page" className={quietButton} disabled={view.pageIndex <= 0} onClick={actions.onPreviousPage} type="button">
               <ChevronLeft aria-hidden="true" className="size-3.5" />
             </button>
-            <span className="font-mono text-[11px] text-ink-secondary">{view.pageIndex + 1}/{view.pageCount}</span>
+            <span className="font-mono text-xs text-ink-secondary">{view.pageIndex + 1}/{view.pageCount}</span>
             <button aria-label="Next users page" className={quietButton} disabled={view.pageIndex >= view.pageCount - 1} onClick={actions.onNextPage} type="button">
               <ChevronRight aria-hidden="true" className="size-3.5" />
             </button>
@@ -462,7 +483,7 @@ export function AdminUsersSection({ actions, data, focus, mcpAccess, status, vie
         <div className="min-w-0 overflow-hidden rounded-panel border border-trace-subtle" data-testid="admin-users-list">
           {data.pageUsers.length ? (
             <div
-              className={`hidden gap-3 border-b border-trace-subtle bg-control-surface px-5 py-2 text-[11px] font-medium uppercase tracking-[0.08em] text-ink-muted ${userDirectoryColumns} md:grid`}
+              className={`hidden gap-3 border-b border-trace-subtle bg-control-surface px-5 py-2 text-xs font-medium uppercase tracking-[0.08em] text-ink-muted ${userDirectoryColumns} md:grid`}
               data-testid="admin-users-header"
             >
               <span>User</span><span>Groups</span><span>Role</span><span>Access</span><span>Last session</span>

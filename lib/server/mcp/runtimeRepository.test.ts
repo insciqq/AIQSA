@@ -812,6 +812,36 @@ describe("Prisma MCP runtime desired-state snapshots", () => {
     await expect(repository.loadAcceptedGeneration("generation-tampered", NOW)).resolves.toBeNull();
   });
 
+  it("retains both user-runtime and live activation workload identities during orphan cleanup", async () => {
+    const activationFindMany = vi.fn(async () => [{ workloadToken: "activation-workload" }]);
+    const generationFindMany = vi.fn(async () => [{ fingerprint: "runtime-fingerprint" }]);
+    const client = {
+      mcpActivationJob: { findMany: activationFindMany },
+      mcpRuntimeGeneration: { findMany: generationFindMany }
+    } as unknown as PrismaClient;
+    const repository = createPrismaMcpRuntimeRepository({ prisma: client });
+
+    await expect(repository.listGenerationFingerprints?.()).resolves.toEqual([
+      "runtime-fingerprint",
+      "activation-workload"
+    ]);
+    expect(activationFindMany).toHaveBeenCalledWith({
+      select: { workloadToken: true },
+      where: {
+        stage: {
+          in: [
+            "queued",
+            "resolving",
+            "preparing_runtime",
+            "connecting",
+            "discovering_tools",
+            "publishing"
+          ]
+        }
+      }
+    });
+  });
+
   it("finalizes only tombstoned server graphs that have no runtime generations", async () => {
     const calls: string[] = [];
     const tx = {

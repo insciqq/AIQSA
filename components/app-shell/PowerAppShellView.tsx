@@ -7,6 +7,7 @@ import {
   MessageDeleteConfirmationDialog,
   PromptDeleteConfirmationDialog
 } from "@/components/app-shell/ConfirmationDialog";
+import { AccountMenu } from "@/components/app-shell/AccountMenu";
 import { DetailedInspector } from "@/components/app-shell/InspectorPanels";
 import { MainThreadPane } from "@/components/app-shell/MainThreadPane";
 import type {
@@ -14,6 +15,7 @@ import type {
   ShellWorkspacePaneView
 } from "@/components/app-shell/powerAppShellViewContracts";
 import { ProjectSettingsDialog } from "@/components/app-shell/ProjectSettingsDialog";
+import { PromptWorkbench } from "@/components/app-shell/PromptWorkbench";
 import { SettingsDialog } from "@/components/app-shell/SettingsDialog";
 import { ShellLeftPane } from "@/components/app-shell/ShellLeftPane";
 import { ShellNotice } from "@/components/app-shell/ShellNotice";
@@ -148,10 +150,18 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
   );
   const [signingOut, setSigningOut] = useState(false);
   const [signOutError, setSignOutError] = useState<string | null>(null);
+  const [desktopAccountMenuOpen, setDesktopAccountMenuOpen] = useState(false);
+  const [accountBreakpointFocusTransferred, setAccountBreakpointFocusTransferred] = useState(false);
+  const [mobileAccountMenuOpen, setMobileAccountMenuOpen] = useState(false);
+  const desktopAccountButtonRef = useRef<HTMLButtonElement>(null);
+  const mobileWorkspaceButtonRef = useRef<HTMLButtonElement>(null);
   const mobileWorkspaceScrollTopRef = useRef<number | undefined>(undefined);
   const cancelDeleteChatEvent = useEventCallback(cancelDeleteChat);
   const cancelDeleteFolderEvent = useEventCallback(cancelDeleteFolder);
-  const closeMobileWorkspaceEvent = useEventCallback(closeMobileWorkspace);
+  const closeMobileWorkspaceEvent = useEventCallback(() => {
+    setMobileAccountMenuOpen(false);
+    closeMobileWorkspace();
+  });
   const closeMobileWorkspaceForDesktop = useCallback(() => {
     if (deleteChatConfirmation) {
       cancelDeleteChatEvent();
@@ -191,6 +201,47 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
     desktopViewport.addEventListener("change", handleDesktopViewport);
     return () => desktopViewport.removeEventListener("change", handleDesktopViewport);
   }, [closeMobileWorkspaceForDesktop, mobileWorkspaceOpen]);
+  useEffect(() => {
+    if (
+      (!desktopAccountMenuOpen && !accountBreakpointFocusTransferred) ||
+      typeof window.matchMedia !== "function"
+    ) {
+      return;
+    }
+
+    const desktopViewport = window.matchMedia(mobileWorkspaceDesktopMediaQuery);
+    function preserveAccountFocusAcrossBreakpoint(event: Pick<MediaQueryListEvent, "matches">) {
+      if (!event.matches && desktopAccountMenuOpen) {
+        setDesktopAccountMenuOpen(false);
+        setAccountBreakpointFocusTransferred(true);
+        window.setTimeout(() => mobileWorkspaceButtonRef.current?.focus({ preventScroll: true }), 0);
+        return;
+      }
+
+      if (event.matches && accountBreakpointFocusTransferred) {
+        setAccountBreakpointFocusTransferred(false);
+        window.setTimeout(() => desktopAccountButtonRef.current?.focus({ preventScroll: true }), 0);
+      }
+    }
+
+    preserveAccountFocusAcrossBreakpoint(desktopViewport);
+    desktopViewport.addEventListener("change", preserveAccountFocusAcrossBreakpoint);
+    return () => desktopViewport.removeEventListener("change", preserveAccountFocusAcrossBreakpoint);
+  }, [accountBreakpointFocusTransferred, desktopAccountMenuOpen]);
+  useEffect(() => {
+    if (!accountBreakpointFocusTransferred) {
+      return;
+    }
+
+    function releaseTransferredAccountFocus(event: FocusEvent) {
+      if (event.target !== mobileWorkspaceButtonRef.current) {
+        setAccountBreakpointFocusTransferred(false);
+      }
+    }
+
+    document.addEventListener("focusin", releaseTransferredAccountFocus);
+    return () => document.removeEventListener("focusin", releaseTransferredAccountFocus);
+  }, [accountBreakpointFocusTransferred]);
   const closeDetails = useCallback(() => {
     setInspectorMode("closed");
   }, [setInspectorMode]);
@@ -207,6 +258,75 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
       setSigningOut(false);
     }
   }, [signingOut]);
+  const openPaletteFromMobileAccount = useEventCallback(() => {
+    closeMobileWorkspaceEvent();
+    window.setTimeout(palette.show, 0);
+  });
+  const openPromptLibraryFromMobileAccount = useEventCallback(() => {
+    closeMobileWorkspaceEvent();
+    window.setTimeout(settings.openPromptLibrary, 0);
+  });
+  const openSettingsFromMobileAccount = useEventCallback(() => {
+    closeMobileWorkspaceEvent();
+    window.setTimeout(settings.open, 0);
+  });
+  const desktopAccountFooter = useMemo(
+    () => (
+      <AccountMenu
+        ref={desktopAccountButtonRef}
+        accountEmail={accountEmail}
+        adminHref={adminEntryVisible ? "/admin" : null}
+        onOpenChange={setDesktopAccountMenuOpen}
+        onOpenPalette={palette.show}
+        onOpenPromptLibrary={settings.openPromptLibrary}
+        onOpenSettings={settings.open}
+        onSignOut={handleSignOut}
+        open={desktopAccountMenuOpen}
+        signOutError={signOutError}
+        signingOut={signingOut}
+      />
+    ),
+    [
+      accountEmail,
+      adminEntryVisible,
+      desktopAccountMenuOpen,
+      handleSignOut,
+      palette.show,
+      settings.open,
+      settings.openPromptLibrary,
+      signOutError,
+      signingOut
+    ]
+  );
+  const mobileAccountFooter = useMemo(
+    () => (
+      <AccountMenu
+        accountEmail={accountEmail}
+        adminHref={adminEntryVisible ? "/admin" : null}
+        idPrefix="mobile-"
+        layout="mobile"
+        onOpenChange={setMobileAccountMenuOpen}
+        onOpenPalette={openPaletteFromMobileAccount}
+        onOpenPromptLibrary={openPromptLibraryFromMobileAccount}
+        onOpenSettings={openSettingsFromMobileAccount}
+        onSignOut={handleSignOut}
+        open={mobileAccountMenuOpen}
+        signOutError={signOutError}
+        signingOut={signingOut}
+      />
+    ),
+    [
+      accountEmail,
+      adminEntryVisible,
+      handleSignOut,
+      mobileAccountMenuOpen,
+      openPaletteFromMobileAccount,
+      openPromptLibraryFromMobileAccount,
+      openSettingsFromMobileAccount,
+      signOutError,
+      signingOut
+    ]
+  );
   const detailsSurfaceRef = useDialogFocus<HTMLElement>({
     active: inspectorMode !== "closed",
     autoFocus: inspectorMode === "overlay",
@@ -218,6 +338,7 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
     <DetailedInspector
       activeLeafId={renderActiveLeafId}
       activeTab={inspectorActiveTab}
+      catalog={composer.catalog}
       errorText={currentErrorText}
       events={runEvents}
       messages={messages}
@@ -259,15 +380,15 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
       ...workspace.pane.actions,
       activateChat(chat) {
         workspace.pane.actions.activateChat(chat);
-        closeMobileWorkspace();
+        closeMobileWorkspaceEvent();
       },
       createChat(folderId) {
         const result = workspace.pane.actions.createChat(folderId);
-        closeMobileWorkspace();
+        closeMobileWorkspaceEvent();
         return result;
       },
       openProjectSettings(folder) {
-        closeMobileWorkspace();
+        closeMobileWorkspaceEvent();
         window.setTimeout(() => workspace.pane.actions.openProjectSettings(folder), 0);
       }
     },
@@ -308,6 +429,7 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
               activeChatId={activeChatId}
               availableChatModelKeys={availableChatModelKeys}
               chatModelLabels={chatModelLabels}
+              footer={mobileWorkspaceOpen ? null : desktopAccountFooter}
               pane={workspace.pane}
               sharing={sharing}
             />
@@ -318,10 +440,8 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
             data-testid="conversation-column"
           >
             <TopRail
-              accountEmail={accountEmail}
               activeChatId={activeChatId}
               activeChatTitle={activeChatTitle}
-              adminHref={adminEntryVisible ? "/admin" : null}
               conversationActionsAvailable={messages.length > 0}
               detailsOpen={inspectorMode !== "closed"}
               newChatDisabled={!workspace.pane.state.workspaceReady || workspace.pane.state.creatingChat}
@@ -336,15 +456,12 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
                 }
               }}
               onOpenBranches={() => openDetails("branch")}
-              onOpenPalette={palette.show}
               onOpenPipeline={() => openDetails("events")}
-              onOpenSettings={settings.open}
               onOpenWorkspace={workspace.mobile.show}
               onShare={() => void shareActiveBranch()}
-              onSignOut={() => void handleSignOut()}
               onStartNewChat={() => void workspace.pane.actions.createChat()}
-              signOutError={signOutError}
-              signingOut={signingOut}
+              workspaceButtonRef={mobileWorkspaceButtonRef}
+              workspaceAttention={Boolean(signOutError)}
             />
 
             <MainThreadPane
@@ -354,8 +471,8 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
               creatingChat={workspace.pane.state.creatingChat}
               noticeSlot={persistentNoticeSlot}
               openMcpSettings={settings.openMcp}
+              openPromptLibrary={settings.openPromptLibrary}
               openRunDetails={openRunDetails}
-              openSettings={settings.open}
               pipeline={pipeline}
               retryWorkspace={workspace.pane.actions.retry}
               runWarnings={runWarnings}
@@ -422,11 +539,13 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
             className="fixed inset-0 z-40 bg-scrim/55 lg:hidden"
             data-testid="workspace-pane-mobile-backdrop"
             role="presentation"
-            onMouseDown={closeMobileWorkspace}
+            onMouseDown={closeMobileWorkspaceEvent}
           />
           <div
             ref={mobileWorkspaceDialogRef}
-            className="pop-enter fixed bottom-[max(0.5rem,env(safe-area-inset-bottom))] left-[max(0.5rem,env(safe-area-inset-left))] top-[max(0.5rem,env(safe-area-inset-top))] z-50 flex flex-col overflow-hidden rounded-panel border border-trace-subtle bg-workspace-rail shadow-overlay lg:hidden"
+            className={`pop-enter fixed bottom-[max(0.5rem,env(safe-area-inset-bottom))] left-[max(0.5rem,env(safe-area-inset-left))] top-[max(0.5rem,env(safe-area-inset-top))] flex flex-col overflow-hidden rounded-panel border border-trace-subtle bg-workspace-rail shadow-overlay lg:hidden ${
+              mobileAccountMenuOpen ? "z-[80]" : "z-50"
+            }`}
             data-testid="workspace-pane-mobile"
             role="dialog"
             aria-modal="true"
@@ -447,7 +566,7 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
                 type="button"
                 aria-label="Close workspace"
                 title="Close workspace"
-                onClick={closeMobileWorkspace}
+                onClick={closeMobileWorkspaceEvent}
               >
                 <X className="size-4" aria-hidden="true" />
               </button>
@@ -457,6 +576,7 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
                 activeChatId={activeChatId}
                 availableChatModelKeys={availableChatModelKeys}
                 chatModelLabels={chatModelLabels}
+                footer={mobileAccountFooter}
                 layout="mobile"
                 pane={mobileWorkspacePane}
                 scrollTopRef={mobileWorkspaceScrollTopRef}
@@ -484,37 +604,48 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
       ) : null}
 
       {promptSettings.open ? (
-        <SettingsDialog
-          currentPromptId={selectedPromptId}
-          defaultPromptId={catalog?.defaults.promptPresetId ?? null}
-          editor={promptSettings.editor}
-          initialSection={promptSettings.section}
-          notice={settingsNotice}
-          promptCatalogError={catalogError}
-          promptCatalogState={catalog ? "ready" : catalogError ? "error" : "loading"}
-          prompts={catalog?.promptPresets ?? []}
-          saving={promptSettings.saving}
-          nestedDialogOpen={Boolean(promptSettings.deletePromptConfirmation)}
-          themeId={promptSettings.themeId}
-          onClose={() => {
-            if (settingsNotice) {
-              settings.dismissNotice();
-            }
-            promptSettingsActions.closeSettings();
-          }}
-          onCreatePrompt={() => void promptSettingsActions.createSettingsPrompt()}
-          onDeletePrompt={(prompt) => void promptSettingsActions.deleteSettingsPrompt(prompt)}
-          onDuplicatePrompt={(prompt) => void promptSettingsActions.duplicateSettingsPrompt(prompt)}
-          onEditPrompt={promptSettingsActions.editSettingsPrompt}
-          onEditorChange={promptSettingsActions.setSettingsPromptEditor}
-          onNewPrompt={promptSettingsActions.newSettingsPrompt}
-          onRetryCatalog={composer.retryCatalog}
-          onDismissNotice={settings.dismissNotice}
-          onSetDefaultPrompt={(promptId) => void promptSettingsActions.setDefaultPromptPreset(promptId)}
-          onThemeChange={updateTheme}
-          onUpdatePrompt={() => void promptSettingsActions.updateSettingsPrompt()}
-          onUsePrompt={promptSettingsActions.usePromptForNextRun}
-        />
+        promptSettings.section === "prompts" ? (
+          <PromptWorkbench
+            defaultPromptId={catalog?.defaults.promptPresetId ?? null}
+            editor={promptSettings.editor}
+            nestedDialogOpen={Boolean(promptSettings.deletePromptConfirmation)}
+            notice={settingsNotice}
+            promptCatalogError={catalogError}
+            promptCatalogState={catalog ? "ready" : catalogError ? "error" : "loading"}
+            prompts={catalog?.promptPresets ?? []}
+            saving={promptSettings.saving}
+            onClose={() => {
+              if (settingsNotice) {
+                settings.dismissNotice();
+              }
+              promptSettingsActions.closeSettings();
+            }}
+            onCreatePrompt={() => void promptSettingsActions.createSettingsPrompt()}
+            onDeletePrompt={(prompt) => void promptSettingsActions.deleteSettingsPrompt(prompt)}
+            onDuplicatePrompt={(prompt) => void promptSettingsActions.duplicateSettingsPrompt(prompt)}
+            onEditPrompt={promptSettingsActions.editSettingsPrompt}
+            onEditorChange={promptSettingsActions.setSettingsPromptEditor}
+            onNewPrompt={promptSettingsActions.newSettingsPrompt}
+            onRetryCatalog={composer.retryCatalog}
+            onDismissNotice={settings.dismissNotice}
+            onSetDefaultPrompt={(promptId) => void promptSettingsActions.setDefaultPromptPreset(promptId)}
+            onUpdatePrompt={() => void promptSettingsActions.updateSettingsPrompt()}
+          />
+        ) : (
+          <SettingsDialog
+            initialSection={promptSettings.section}
+            notice={settingsNotice}
+            themeId={promptSettings.themeId}
+            onClose={() => {
+              if (settingsNotice) {
+                settings.dismissNotice();
+              }
+              promptSettingsActions.closeSettings();
+            }}
+            onDismissNotice={settings.dismissNotice}
+            onThemeChange={updateTheme}
+          />
+        )
       ) : null}
 
       {deleteChatConfirmation ? (

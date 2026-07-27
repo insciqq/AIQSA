@@ -25,7 +25,7 @@ import {
   MessageSquareText,
   Radio,
   ScrollText,
-  Settings,
+  Search as SearchIcon,
   SlidersHorizontal,
   Wrench,
   X
@@ -58,6 +58,20 @@ function compactSearchStrategyLabel(strategy: CatalogSearchStrategy | undefined)
   }
 
   return strategy.kind === "none" ? "Off" : strategy.displayName;
+}
+
+function narrowSearchStrategyLabel(strategy: CatalogSearchStrategy | undefined): string | undefined {
+  if (!strategy) {
+    return undefined;
+  }
+
+  const labels: Record<CatalogSearchStrategy["kind"], string> = {
+    gemini_google_search: "Google",
+    none: "Off",
+    openai_native_web_search: "Web",
+    perplexity_tool_search: "Tool"
+  };
+  return labels[strategy.kind];
 }
 
 function reasoningAccessibleDescription(effort: string, mode: string): string {
@@ -93,7 +107,7 @@ export function ComposerControls({
   onBackgroundModeChange,
   onMaxOutputTokensChange,
   onMaxOutputTokensCommit,
-  onOpenPromptSettings,
+  onOpenPromptLibrary,
   onPromptChange,
   onReasoningEffortChange,
   onReasoningModeChange,
@@ -137,7 +151,7 @@ export function ComposerControls({
   onBackgroundModeChange(value: boolean): void;
   onMaxOutputTokensChange(value: string): void;
   onMaxOutputTokensCommit?(): void;
-  onOpenPromptSettings(): void;
+  onOpenPromptLibrary(): void;
   onPromptChange(promptId: string): void;
   onReasoningEffortChange(value: string): void;
   onReasoningModeChange(value: string): void;
@@ -192,13 +206,14 @@ export function ComposerControls({
   const currentSearchStrategy = searchOptions.find((strategy) => strategy.strategyId === selectedSearchStrategy);
   const resolvedProfiles = resolveRunProfiles(catalog);
   const hasConfiguredProfiles = resolvedProfiles.length > 0;
+  const hasAvailableProfiles = resolvedProfiles.some((profile) => profile.available);
   const activeProfile = findActiveRunProfile(resolvedProfiles, {
     modelId: selectedModelId,
     provider: selectedProvider,
     reasoningEffort,
     reasoningMode
   });
-  const profileLabel = activeProfile?.label ?? (resolvedProfiles.some((profile) => profile.available) ? "Custom" : "Unavailable");
+  const profileLabel = hasAvailableProfiles ? (activeProfile?.label ?? "Custom") : null;
   const modelLabel = currentModel
     ? currentModel.displayName
     : catalogUnavailable
@@ -218,9 +233,15 @@ export function ComposerControls({
     cacheWriteInputTokens: 0,
     totalTokens: 0
   };
-  const summaryDescription = `Open more run settings. Profile ${profileLabel}. Model ${modelLabel}. Reasoning ${
-    reasoningSupported ? reasoningAccessibleDescription(reasoningEffort, reasoningMode) : "not supported"
-  }. Search ${searchSummary}.`;
+  const summaryDescription = [
+    "Open more run settings.",
+    profileLabel ? `Profile ${profileLabel}.` : null,
+    `Model ${modelLabel}.`,
+    `Reasoning ${
+      reasoningSupported ? reasoningAccessibleDescription(reasoningEffort, reasoningMode) : "not supported"
+    }.`,
+    `Search ${searchSummary}.`
+  ].filter((segment): segment is string => segment !== null).join(" ");
 
   const commitNumericDrafts = useCallback(() => {
     onTemperatureCommit?.();
@@ -251,14 +272,15 @@ export function ComposerControls({
 
   return (
     <div
-      className="relative flex min-w-0 flex-1 flex-wrap items-center gap-1"
+      className="relative flex min-w-0 flex-1 flex-wrap items-center gap-1.5"
+      data-density={compact ? "prompt-first" : "thread-tail"}
       data-layout="direct"
       data-testid="composer-control-bar"
     >
       <ComposerModelPicker
         catalog={catalog}
         catalogUnavailable={catalogUnavailable}
-        className={compact ? "max-w-[15rem] flex-[1_1_9rem]" : "max-w-[18rem] flex-[1_1_11rem]"}
+        className="max-w-full flex-[1_1_100%] sm:flex-[0_0_20rem]"
         currentModel={currentModel}
         disabled={disabled}
         idPrefix="composer-inline-model"
@@ -273,71 +295,85 @@ export function ComposerControls({
         onSelectModel={onSelectModel}
       />
 
-      {hasConfiguredProfiles ? (
-        <ComposerRunProfiles
-          catalog={catalog}
-          compact
-          disabled={disabled || streaming}
-          reasoningEffort={reasoningEffort}
-          reasoningMode={reasoningMode}
-          selectedModelId={selectedModelId}
-          selectedProvider={selectedProvider}
-          testId="composer-inline-run-profiles"
-          onSelect={onRunProfileChange}
-        />
-      ) : null}
-
-      <ComposerOptionPicker
-        align="right"
-        className={compact ? "max-w-[10rem] flex-[1_1_7rem]" : "max-w-[12rem] flex-[1_1_8rem]"}
-        id="composer-inline-search"
-        label="Search strategy"
-        restingLabel="Search"
-        disabled={disabled || !currentModel || streaming}
-        options={searchOptions.map((strategy) => ({
-          description: searchStrategyDescription(strategy),
-          label: strategy.displayName,
-          value: strategy.strategyId
-        }))}
-        defaultValue={catalog?.defaults.searchStrategyId}
-        resting
-        summaryLabel={compactSearchStrategyLabel(currentSearchStrategy)}
-        value={selectedSearchStrategy}
-        onChange={onSearchStrategyChange}
-      />
-
-      <span className="sr-only" data-testid="run-profile-summary">Profile: {profileLabel}</span>
-      <span className="sr-only" data-testid="run-search-summary">Search: {searchSummary}</span>
-
-      <button
-        ref={runSetupTriggerRef}
-        className="inline-flex min-h-touch min-w-0 shrink-0 items-center gap-1.5 rounded-control px-2.5 text-left text-xs font-medium text-ink-secondary outline-none hover:bg-control-hover hover:text-ink focus-visible:ring-2 focus-visible:ring-proof/55 disabled:cursor-not-allowed disabled:text-ink-disabled disabled:opacity-65 sm:min-h-control"
-        type="button"
-        aria-label={summaryDescription}
-        aria-controls="composer-run-setup-panel"
-        aria-expanded={runSetupOpen}
-        aria-haspopup="dialog"
-        data-testid="composer-run-summary"
-        disabled={disabled}
-        onClick={() => {
-          if (runSetupOpen) {
-            closeRunSetup();
-            return;
-          }
-          setInlineModelPickerOpen(false);
-          setRunSetupOpen(true);
-        }}
+      <div
+        className="flex min-w-0 flex-[999_1_20rem] items-center gap-0.5 min-[430px]:gap-1"
+        data-testid="composer-secondary-controls"
       >
-        <SlidersHorizontal className="size-3.5 shrink-0 text-ink-muted" aria-hidden="true" />
-        <span className="sr-only">{modelLabel}. Profile: {profileLabel}. Search: {searchSummary}. </span>
-        <span className="shrink-0">More</span>
-        <span
-          className="hidden"
-          data-testid="run-reasoning-summary"
+        {hasAvailableProfiles ? (
+          <ComposerRunProfiles
+            catalog={catalog}
+            compact
+            disabled={disabled || streaming}
+            reasoningEffort={reasoningEffort}
+            reasoningMode={reasoningMode}
+            selectedModelId={selectedModelId}
+            selectedProvider={selectedProvider}
+            testId="composer-inline-run-profiles"
+            onSelect={onRunProfileChange}
+          />
+        ) : null}
+
+        <ComposerOptionPicker
+          align="right"
+          className="min-w-20 max-w-[10rem] flex-[1_1_5rem] min-[430px]:min-w-[5.5rem] min-[430px]:flex-[1_1_5.5rem]"
+          compactResting
+          id="composer-inline-search"
+          icon={<SearchIcon className="hidden size-3.5 shrink-0 text-ink-muted max-[429px]:block" aria-hidden="true" />}
+          label="Search strategy"
+          restingLabel="Search"
+          restingLabelClassName="max-[429px]:sr-only"
+          narrowSummaryLabel={narrowSearchStrategyLabel(currentSearchStrategy)}
+          disabled={disabled || !currentModel || streaming}
+          options={searchOptions.map((strategy) => ({
+            description: searchStrategyDescription(strategy),
+            label: strategy.displayName,
+            value: strategy.strategyId
+          }))}
+          defaultValue={catalog?.defaults.searchStrategyId}
+          resting
+          summaryLabel={compactSearchStrategyLabel(currentSearchStrategy)}
+          value={selectedSearchStrategy}
+          onChange={onSearchStrategyChange}
+        />
+
+        <button
+          ref={runSetupTriggerRef}
+          className="inline-flex min-h-touch min-w-touch shrink-0 items-center justify-center gap-1 rounded-control px-1.5 text-left text-xs font-medium text-ink-secondary outline-none hover:bg-control-hover hover:text-ink focus-visible:ring-2 focus-visible:ring-proof/55 disabled:cursor-not-allowed disabled:text-ink-disabled disabled:opacity-65 sm:min-h-control [@media(hover:none)]:!min-h-touch [@media(pointer:coarse)]:!min-h-touch"
+          type="button"
+          aria-label={summaryDescription}
+          aria-controls="composer-run-setup-panel"
+          aria-expanded={runSetupOpen}
+          aria-haspopup="dialog"
+          data-testid="composer-run-summary"
+          disabled={disabled}
+          title="More run settings"
+          onClick={() => {
+            if (runSetupOpen) {
+              closeRunSetup();
+              return;
+            }
+            setInlineModelPickerOpen(false);
+            setRunSetupOpen(true);
+          }}
         >
-          Reasoning: {reasoningSummary}
-        </span>
-      </button>
+          <SlidersHorizontal className="size-3.5 shrink-0 text-ink-muted" aria-hidden="true" />
+          <span className="sr-only">
+            {modelLabel}. {profileLabel ? `Profile: ${profileLabel}. ` : ""}Search: {searchSummary}.
+          </span>
+          <span className="hidden shrink-0 min-[430px]:inline">More</span>
+          <span
+            className="hidden"
+            data-testid="run-reasoning-summary"
+          >
+            Reasoning: {reasoningSummary}
+          </span>
+        </button>
+      </div>
+
+      {profileLabel ? (
+        <span className="sr-only" data-testid="run-profile-summary">Profile: {profileLabel}</span>
+      ) : null}
+      <span className="sr-only" data-testid="run-search-summary">Search: {searchSummary}</span>
 
       {runSetupOpen ? (
         <>
@@ -461,17 +497,17 @@ export function ComposerControls({
               <div data-testid="run-setup-advanced">
                 <section className="mt-5 border-t border-trace-subtle pt-4" aria-labelledby="run-prompt-heading">
                   <div className="mb-2 flex items-center justify-between gap-3">
-                    <h3 className="text-xs font-semibold text-ink-secondary" id="run-prompt-heading">Prompt</h3>
+                    <h3 className="text-xs font-semibold text-ink-secondary" id="run-prompt-heading">Prompt preset</h3>
                     <button
                       className="inline-flex h-touch shrink-0 items-center gap-1.5 rounded-control px-2 text-xs font-medium text-ink-secondary hover:bg-control-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-proof/55 sm:h-control-sm [@media(hover:none)]:!h-touch [@media(pointer:coarse)]:!h-touch"
                       type="button"
                       onClick={() => {
                         closeRunSetup();
-                        window.setTimeout(onOpenPromptSettings, 0);
+                        window.setTimeout(onOpenPromptLibrary, 0);
                       }}
                     >
-                      <Settings className="size-3.5" aria-hidden="true" />
-                      Manage prompts
+                      <ScrollText className="size-3.5" aria-hidden="true" />
+                      Open library
                     </button>
                   </div>
                   <ComposerPromptPicker

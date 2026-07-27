@@ -94,12 +94,16 @@ function GrantToggle({ checked, disabled, label, onToggle }: Readonly<{
     <button
       aria-label={label}
       aria-pressed={checked}
-      className={checked ? primaryButton : quietButton}
+      className={`${quietButton} ${
+        checked
+          ? "border-proof/35 bg-control-selected text-ink hover:bg-control-selected"
+          : ""
+      }`}
       disabled={disabled}
       onClick={() => onToggle(!checked)}
       type="button"
     >
-      {checked ? <Check aria-hidden="true" className="size-3.5" /> : null}
+      {checked ? <Check aria-hidden="true" className="size-3.5 text-proof" /> : null}
       {checked ? "Granted" : "Not granted"}
     </button>
   );
@@ -134,12 +138,12 @@ function AccessGroupRow({ catalog, group, onSelect }: Readonly<{
         <span className="flex flex-wrap items-center gap-2">
           <span className="break-words text-sm font-medium text-ink [overflow-wrap:anywhere]">{group.name}</span>
           {group.systemRole === "full_access" ? (
-            <span className="rounded-pill border border-trace-subtle bg-control-surface px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-ink-muted">
+            <span className="rounded-pill border border-trace-subtle bg-control-surface px-2 py-0.5 text-xs font-semibold uppercase tracking-[0.08em] text-ink-muted">
               Built-in
             </span>
           ) : null}
         </span>
-        <span className="mt-0.5 block text-[11px] text-ink-muted">
+        <span className="mt-0.5 block text-xs text-ink-muted">
           {group.archivedAt ? `Archived ${formatDate(group.archivedAt)}` : "Active group"}
         </span>
       </span>
@@ -149,12 +153,12 @@ function AccessGroupRow({ catalog, group, onSelect }: Readonly<{
       <span className="min-w-0 text-xs leading-5 text-ink-secondary">
         {groupAccessSummary(catalog, group)}
         {!group.archivedAt && counts.providers + counts.models + counts.search > 0 ? (
-          <span className="mt-0.5 block font-mono text-[10px] text-ink-muted">
+          <span className="mt-0.5 block font-mono text-xs text-ink-muted">
             {counts.providers} provider · {counts.models} model · {counts.search} search
           </span>
         ) : null}
       </span>
-      <span className={`w-fit rounded-pill border px-2 py-0.5 text-[11px] capitalize ${accessState.className}`}>
+      <span className={`w-fit rounded-pill border px-2 py-0.5 text-xs capitalize ${accessState.className}`}>
         {accessState.label}
       </span>
       <ChevronRight aria-hidden="true" className="size-4 shrink-0 text-ink-muted transition-transform group-hover/access-row:translate-x-0.5 group-hover/access-row:text-ink-secondary" />
@@ -171,7 +175,7 @@ function CreateGroupTask({ actions, draft, status }: Readonly<{
     <div className="mx-auto max-w-5xl px-4 py-5 sm:px-6 lg:px-8 lg:py-7" data-testid="admin-access-group-create">
       <AdminTaskBackButton alwaysVisible label="Back to access groups" onClick={actions.onBackToList} />
       <div className="max-w-2xl border-b border-trace-subtle pb-5">
-        <p className="text-[11px] font-semibold uppercase tracking-[0.1em] text-ink-muted">New access group</p>
+        <p className="text-xs font-semibold uppercase tracking-[0.1em] text-ink-muted">New access group</p>
         <h3 className="mt-2 text-xl font-semibold tracking-tight text-ink">Create an access group</h3>
         <p className="mt-2 text-sm leading-6 text-ink-secondary">
           Create the group first, then add members and choose its model, search, and tool access.
@@ -236,7 +240,7 @@ function GroupOverview({ actions, data, draft, status }: Readonly<{
               ["Search", counts.search]
             ].map(([label, value]) => (
               <div className="min-w-0" key={String(label)}>
-                <dt className="text-[11px] font-medium uppercase tracking-[0.08em] text-ink-muted">{label}</dt>
+                <dt className="text-xs font-medium uppercase tracking-[0.08em] text-ink-muted">{label}</dt>
                 <dd className="mt-1 font-mono text-sm text-ink">{value}</dd>
               </div>
             ))}
@@ -502,7 +506,7 @@ function ModelsAndSearch({ actions, catalog, group, status }: Readonly<{
               <div className="flex min-w-0 flex-col gap-2 py-3 sm:flex-row sm:items-center sm:justify-between" key={`${group.id}:search:${strategy.strategyId}`}>
                 <div className="min-w-0">
                   <p className="break-words text-sm font-medium text-ink [overflow-wrap:anywhere]">{strategy.displayName}</p>
-                  <p className="mt-1 break-all font-mono text-[11px] text-ink-muted">{strategy.strategyId}</p>
+                  <p className="mt-1 break-all font-mono text-xs text-ink-muted">{strategy.strategyId}</p>
                 </div>
                 <GrantToggle
                   checked={checked}
@@ -552,11 +556,11 @@ function GroupDetail({
       <AdminTaskBackButton alwaysVisible label="Back to access groups" onClick={actions.onBackToList} />
       <div className="flex min-w-0 items-start justify-between gap-4 border-b border-trace-subtle pb-5">
         <div className="min-w-0">
-          <p className="text-[11px] font-semibold uppercase tracking-[0.1em] text-ink-muted">Access group</p>
+          <p className="text-xs font-semibold uppercase tracking-[0.1em] text-ink-muted">Access group</p>
           <div className="mt-2 flex flex-wrap items-center gap-2">
             <h3 className="break-words text-xl font-semibold tracking-tight text-ink [overflow-wrap:anywhere]">{group.name}</h3>
             {group.systemRole === "full_access" ? (
-              <span className="rounded-pill border border-trace-subtle bg-control-surface px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-ink-muted">
+              <span className="rounded-pill border border-trace-subtle bg-control-surface px-2 py-0.5 text-xs font-semibold uppercase tracking-[0.08em] text-ink-muted">
                 Built-in
               </span>
             ) : null}
@@ -566,7 +570,7 @@ function GroupDetail({
         <span className={`shrink-0 rounded-pill border px-2 py-1 text-xs capitalize ${accessState.className}`}>{accessState.label}</span>
       </div>
 
-      <div className="flex gap-1 border-b border-trace-subtle py-2" role="group" aria-label="Access group views">
+      <div className="grid grid-cols-2 border-b border-trace-subtle sm:flex" role="group" aria-label="Access group views">
         {([
           ["overview", "Overview"],
           ["members", "Members"],
@@ -575,7 +579,11 @@ function GroupDetail({
         ] as const).map(([view, label]) => (
           <button
             aria-pressed={draft.activeView === view}
-            className={draft.activeView === view ? primaryButton : quietButton}
+            className={`min-h-touch border-b-2 px-3 text-sm font-medium outline-none transition-colors focus-visible:ring-2 focus-visible:ring-proof/55 sm:min-h-control ${
+              draft.activeView === view
+                ? "border-proof bg-control-selected text-ink"
+                : "border-transparent text-ink-muted hover:border-trace-strong hover:bg-control-hover hover:text-ink-secondary"
+            }`}
             key={view}
             onClick={() => actions.onSelectView(view)}
             type="button"
@@ -659,7 +667,7 @@ export function AdminAccessGroupsSection(props: AdminAccessGroupsSectionProps) {
 
         <div className="min-w-0 overflow-hidden rounded-panel border border-trace-subtle" data-testid="admin-access-groups-list">
           {data.visibleGroups.length ? (
-            <div className="hidden grid-cols-[minmax(12rem,1.4fr)_minmax(7rem,0.55fr)_minmax(14rem,1fr)_minmax(8rem,0.6fr)_auto] gap-4 border-b border-trace-subtle bg-control-surface px-5 py-2 text-[11px] font-medium uppercase tracking-[0.08em] text-ink-muted md:grid">
+            <div className="hidden grid-cols-[minmax(12rem,1.4fr)_minmax(7rem,0.55fr)_minmax(14rem,1fr)_minmax(8rem,0.6fr)_auto] gap-4 border-b border-trace-subtle bg-control-surface px-5 py-2 text-xs font-medium uppercase tracking-[0.08em] text-ink-muted md:grid">
               <span>Group</span><span>Members</span><span>Models & search</span><span>Status</span><span aria-hidden="true" />
             </div>
           ) : null}
