@@ -471,11 +471,11 @@ export function Composer({
           ) : null}
 
           <div className="px-4 pb-2 pt-3 [@media(max-height:32rem)]:!px-3 [@media(max-height:32rem)]:!pb-1 [@media(max-height:32rem)]:!pt-1" data-testid="composer-message-field">
-            <label className={promptFirst ? "sr-only" : "block text-xs font-semibold uppercase tracking-[0.12em] text-ink-muted"} htmlFor="composer">
+            <label className="sr-only" htmlFor="composer">
               Message
             </label>
             <textarea
-              className={`${promptFirst ? "" : "mt-1"} block max-h-[200px] min-h-14 w-full min-w-0 resize-none bg-transparent text-[15px] leading-7 text-ink outline-none placeholder:text-ink-muted disabled:cursor-not-allowed disabled:text-ink-disabled sm:min-h-[72px] [@media(max-height:32rem)]:!max-h-20 [@media(max-height:32rem)]:!min-h-10 [@media(max-height:32rem)]:!leading-6 [@media(hover:none)]:!min-h-touch [@media(pointer:coarse)]:!min-h-touch`}
+              className="block max-h-[200px] min-h-14 w-full min-w-0 resize-none bg-transparent text-[15px] leading-7 text-ink outline-none placeholder:text-ink-muted disabled:cursor-not-allowed disabled:text-ink-disabled sm:min-h-[72px] [@media(max-height:32rem)]:!max-h-20 [@media(max-height:32rem)]:!min-h-10 [@media(max-height:32rem)]:!leading-6 [@media(hover:none)]:!min-h-touch [@media(pointer:coarse)]:!min-h-touch"
               aria-describedby={disabledHint ? "composer-disabled-hint" : undefined}
               disabled={disabled}
               id="composer"

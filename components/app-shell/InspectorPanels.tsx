@@ -61,12 +61,14 @@ export function DetailedInspector({
         <div className="min-w-0 flex-1">
           <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5">
             <h2 className="text-base font-semibold tracking-[-0.01em] text-ink" id="details-heading">Details</h2>
-            <span
-              className="text-xs font-medium text-ink-muted"
-              data-testid="details-mode-label"
-            >
-              {pinned ? "Pinned beside chat" : "Opened over chat"}
-            </span>
+            {pinned ? (
+              <span
+                className="text-xs font-medium text-ink-muted"
+                data-testid="details-mode-label"
+              >
+                Pinned beside chat
+              </span>
+            ) : null}
           </div>
           <p
             className={`mt-1 max-h-10 overflow-y-auto break-words text-xs leading-5 [overflow-wrap:anywhere] ${errorText ? "text-critical" : streaming ? "text-proof" : "text-ink-muted"}`}

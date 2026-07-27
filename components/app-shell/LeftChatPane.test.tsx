@@ -123,6 +123,27 @@ describe("LeftChatPane", () => {
     expect(onCloseMenus).toHaveBeenCalledTimes(2);
   });
 
+  it("clears chat search on Escape without closing a sibling row menu", () => {
+    const onChatQueryChange = vi.fn();
+    const onCloseMenus = vi.fn();
+    renderPane({
+      chatActionId: "chat-1",
+      chatQuery: "planning",
+      onChatQueryChange,
+      onCloseMenus
+    });
+
+    const search = screen.getByRole("textbox", { name: "Search chats" });
+    fireEvent.keyDown(search, { key: "Escape" });
+    expect(onChatQueryChange).toHaveBeenCalledOnce();
+    expect(onChatQueryChange).toHaveBeenCalledWith("");
+    expect(onCloseMenus).not.toHaveBeenCalled();
+
+    fireEvent.keyDown(search, { key: "Escape", keyCode: 229 });
+    expect(onChatQueryChange).toHaveBeenCalledOnce();
+    expect(onCloseMenus).not.toHaveBeenCalled();
+  });
+
   it("restores the menu trigger when a completed action closes the menu", async () => {
     const { rerender, ...view } = renderPane({ chatActionId: "chat-1", layout: "mobile" });
     const trigger = screen.getByRole("button", { name: "Chat actions Planning" });
@@ -492,7 +513,7 @@ describe("LeftChatPane", () => {
   });
 
   it("communicates selected, favorite, running, and unavailable chat states", () => {
-    renderPane({
+    const { rerender, ...view } = renderPane({
       activeRunChatIds: new Set(["chat-1"]),
       availableChatModelKeys: new Set(),
       chatGroups: [
@@ -513,6 +534,10 @@ describe("LeftChatPane", () => {
     expect(chat).toHaveAttribute("aria-current", "page");
     expect(chat).toHaveAccessibleDescription(/Favorite.*Response running.*Model unavailable for new runs/);
     expect(screen.getByText("Unavailable")).toBeVisible();
+
+    rerender(<LeftChatPane {...view} chatModelLabels={new Map()} />);
+    expect(screen.getByText("Unavailable model")).toBeVisible();
+    expect(screen.queryByText("Unavailable")).not.toBeInTheDocument();
   });
 
   it("labels title, model, and server message matches without searching loaded messages locally", () => {

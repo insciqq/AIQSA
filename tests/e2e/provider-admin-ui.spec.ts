@@ -754,7 +754,7 @@ test("administrator completes the Quick direct-user picker, retry, Ready, and sa
   await expect(section.getByRole("tab", { name: "Setup" })).toHaveAttribute("aria-selected", "true");
   await expect(section.getByTestId("provider-connections-workspace")).toHaveCount(0);
 
-  await section.getByRole("button", { name: /OpenAI Not connected/ }).click();
+  await section.getByRole("button", { name: /OpenAI Not configured/ }).click();
   await section.getByLabel("API key").fill("e2e-quick-write-only-key");
   const keyBox = await section.getByLabel("API key").boundingBox();
   const saveBox = await section.getByRole("button", { name: "Test & Save" }).boundingBox();
@@ -1294,7 +1294,7 @@ test("administrator completes the OpenRouter key, model, route, check, and activ
   await page.goto("/admin");
   const section = page.getByTestId("admin-section-providers");
   await expect(section.getByRole("heading", { exact: true, name: "Providers" })).toBeVisible();
-  await section.getByRole("button", { name: /OpenRouter Not connected/ }).click();
+  await section.getByRole("button", { name: /OpenRouter Not configured/ }).click();
   await section.getByRole("button", { name: "Manage OpenRouter connection" }).click();
   const connectionsWorkspace = section.getByTestId("provider-connections-workspace");
   await expect(connectionsWorkspace).toBeVisible();
@@ -1640,6 +1640,13 @@ test("ordinary user receives real provider-admin denial without provider metadat
   }
 
   await page.goto("/admin");
-  await expect(page.getByTestId("admin-denied")).toContainText("Admin access required");
+  const denied = page.getByTestId("admin-denied");
+  await expect(denied).toContainText("Admin access required");
+  await expect(denied).toContainText("Control Center");
+  const deniedBox = await denied.boundingBox();
+  const viewport = page.viewportSize();
+  expect(deniedBox).toBeTruthy();
+  expect(viewport).toBeTruthy();
+  expect(Math.abs(deniedBox!.y + deniedBox!.height / 2 - viewport!.height / 2)).toBeLessThanOrEqual(2);
   await expect(page.getByRole("tab", { name: "Providers" })).toHaveCount(0);
 });

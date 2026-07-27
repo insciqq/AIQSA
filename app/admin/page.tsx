@@ -43,9 +43,9 @@ export default async function AdminPage() {
 
   if (user.role !== "admin") {
     return (
-      <main className="min-h-[100dvh] overflow-x-hidden bg-research-canvas pb-[max(1rem,env(safe-area-inset-bottom))] pl-[max(1rem,env(safe-area-inset-left))] pr-[max(1rem,env(safe-area-inset-right))] pt-[max(1rem,env(safe-area-inset-top))] text-ink">
+      <main className="flex min-h-[100dvh] items-center justify-center overflow-x-hidden bg-research-canvas pb-[max(1rem,env(safe-area-inset-bottom))] pl-[max(1rem,env(safe-area-inset-left))] pr-[max(1rem,env(safe-area-inset-right))] pt-[max(1rem,env(safe-area-inset-top))] text-ink">
         <section
-          className="mx-auto flex max-w-[720px] items-start gap-3 border-t border-critical bg-answer-paper px-1 py-5 sm:px-4"
+          className="flex w-full max-w-[720px] items-start gap-3 border-t border-critical bg-answer-paper px-1 py-5 sm:px-4"
           data-testid="admin-denied"
         >
           <div className="grid size-9 shrink-0 place-items-center rounded-control bg-critical/10 text-critical">
@@ -54,7 +54,7 @@ export default async function AdminPage() {
           <div className="min-w-0">
             <h1 className="text-sm font-semibold">Admin access required</h1>
             <p className="mt-1 text-sm text-ink-secondary">
-              Signed-in users without the admin role cannot view user-management data.
+              Only administrators can open the Control Center and manage access, providers, tools, email delivery, and other installation settings.
             </p>
             <Link
               className="mt-4 inline-flex min-h-touch items-center rounded-control bg-control-surface px-4 text-sm font-medium text-ink hover:bg-control-hover"

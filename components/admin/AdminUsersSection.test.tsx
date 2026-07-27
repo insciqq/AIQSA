@@ -201,9 +201,18 @@ describe("AdminUsersSection", () => {
   it("keeps active mutations disabled while another action runs", () => {
     const active = createUser();
     const fixture = createFixture({ selectedUser: active, view: { compactDetailOpen: true } });
-    render(<AdminUsersSection {...fixture.props} status={{ actionsDisabled: true }} />);
+    render(
+      <AdminUsersSection
+        {...fixture.props}
+        data={{ ...fixture.props.data, selectedUserGroupIds: [] }}
+        status={{ actionsDisabled: true }}
+      />
+    );
 
-    expect(screen.getByRole("button", { name: "Save groups" })).toBeDisabled();
+    const saveGroups = screen.getByRole("button", { name: "Save groups" });
+    expect(saveGroups).toBeDisabled();
+    expect(saveGroups).toHaveClass("bg-control-surface");
+    expect(saveGroups).not.toHaveClass("bg-proof");
     expect(screen.getByRole("button", { name: "Revoke sessions" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Disable user" })).toBeDisabled();
   });
@@ -213,7 +222,11 @@ describe("AdminUsersSection", () => {
     const fixture = createFixture({ selectedUser: active, view: { compactDetailOpen: true } });
     const view = render(<AdminUsersSection {...fixture.props} />);
 
+    const accountActions = screen.getByRole("heading", { level: 4, name: "Account actions" }).nextElementSibling;
+    expect(accountActions).toHaveClass("flex", "flex-wrap");
     expect(screen.getByRole("button", { name: "Save groups" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Save groups" })).toHaveClass("bg-control-surface");
+    expect(screen.getByRole("button", { name: "Save groups" })).not.toHaveClass("bg-proof");
     expect(screen.getByText("Group memberships are up to date")).toBeVisible();
 
     view.rerender(
@@ -223,6 +236,7 @@ describe("AdminUsersSection", () => {
       />
     );
     expect(screen.getByRole("button", { name: "Save groups" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Save groups" })).toHaveClass("bg-proof");
     expect(screen.getByText("Unsaved group changes")).toBeVisible();
   });
 

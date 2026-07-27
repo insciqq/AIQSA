@@ -193,7 +193,7 @@ describe("DetailedInspector", () => {
     expect(screen.getByTestId("details-summary")).toHaveAttribute("title", longError);
     expect(screen.getByTestId("inspector-event-log").querySelector('[data-tone="error"]')).toBeVisible();
     expect(screen.getByText("Question", { selector: "div" })).toHaveClass("text-ink-secondary");
-    expect(screen.getByTestId("details-mode-label")).toHaveClass("text-xs");
+    expect(screen.queryByTestId("details-mode-label")).not.toBeInTheDocument();
   });
 
   it("exposes clear mode, pin, and close feedback", () => {
@@ -203,7 +203,7 @@ describe("DetailedInspector", () => {
       <DetailedInspector {...inspectorProps({ onClose, onPinToggle })} />
     );
 
-    expect(screen.getByTestId("details-mode-label")).toHaveTextContent("Opened over chat");
+    expect(screen.queryByTestId("details-mode-label")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Pin details" }));
     fireEvent.click(screen.getByRole("button", { name: "Close details" }));
     expect(onPinToggle).toHaveBeenCalledOnce();

@@ -71,6 +71,15 @@ export type AdminInvitesSectionProps = Readonly<{
   status: AdminInvitesSectionStatus;
 }>;
 
+const inviteFilterLabels: Record<AdminInviteStatusFilter, string> = {
+  accepted: "Accepted",
+  all: "All",
+  expired: "Expired",
+  open: "Open",
+  revoked: "Revoked",
+  soon: "Expiring soon"
+};
+
 function inviteLinkDeliveryCopy(delivery: AdminInviteEmailDelivery | null): string {
   if (delivery === "sent") return "The invitation email was sent. Copy this link now if you also want a manual fallback; it cannot be recovered later.";
   if (delivery === "unavailable") return "Email delivery is not configured. Copy and share this create-account link now; it cannot be recovered later.";
@@ -245,7 +254,7 @@ export function AdminInvitesSection(props: AdminInvitesSectionProps) {
                 onClick={() => actions.changeStatusFilter(filter)}
                 type="button"
               >
-                <span className="capitalize">{filter}</span>
+                <span>{inviteFilterLabels[filter]}</span>
               </button>
             ))}
           </div>

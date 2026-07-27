@@ -442,6 +442,17 @@ test("admin manages approvals, rules, invites, session revocation, and disabling
     await approvedDetail.getByRole("button", { name: "Approve user" }).click();
     await approvedDetail.getByRole("button", { name: "Back to users" }).click();
     await expect(userRow(page, approvedEmail).getByText("active")).toBeVisible();
+    await userRow(page, approvedEmail).click();
+    const activeApprovedDetail = page.getByTestId("admin-user-detail");
+    const saveGroups = activeApprovedDetail.getByRole("button", { name: "Save groups" });
+    await expect(saveGroups).toBeDisabled();
+    await expect(saveGroups).toHaveClass(/\bbg-control-surface\b/);
+    const detailBox = await activeApprovedDetail.boundingBox();
+    const saveGroupsBox = await saveGroups.boundingBox();
+    expect(detailBox).toBeTruthy();
+    expect(saveGroupsBox).toBeTruthy();
+    expect(saveGroupsBox!.width).toBeLessThan(detailBox!.width / 2);
+    await activeApprovedDetail.getByRole("button", { name: "Back to users" }).click();
 
     const rejectedRow = userRow(page, rejectedEmail);
     await expect(rejectedRow.getByText("pending")).toBeVisible();
@@ -462,6 +473,7 @@ test("admin manages approvals, rules, invites, session revocation, and disabling
 
     await openAdminSection(page, adminSection("invites"));
     const invites = page.getByTestId("admin-section-invites");
+    await expect(invites.getByRole("button", { name: "Expiring soon" })).toBeVisible();
     await invites.getByRole("button", { name: "New invite" }).click();
     await invites.getByLabel("Email", { exact: true }).fill(inviteEmail);
     await invites.getByLabel(group.name).check();

@@ -3609,6 +3609,7 @@ test("supports the default QSA chat and folder workflow", async ({ browser, page
   await pipeline.click();
   let details = page.getByTestId("details-pane");
   await expect(details.getByRole("tab", { name: "Events" })).toHaveAttribute("aria-selected", "true");
+  await expect(details.getByTestId("details-mode-label")).toHaveCount(0);
 
   await expect(assistantContentWithText(page, `Fake answer: ${prompt}`)).toBeVisible({ timeout: 20_000 });
   await expect(page.getByTestId("current-chat-title")).toHaveText(expectedAutoTitle);
@@ -3619,6 +3620,7 @@ test("supports the default QSA chat and folder workflow", async ({ browser, page
   await expect(details.getByTestId("inspector-event-log")).toContainText("Run complete");
   await details.getByRole("button", { name: "Pin details" }).click();
   await expect(details).toHaveAttribute("data-presentation", "pinned");
+  await expect(details.getByTestId("details-mode-label")).toHaveText("Pinned beside chat");
   await expect(
     page.getByTestId("left-chat-pane").getByRole("button", { exact: true, name: expectedAutoTitle })
   ).toBeVisible();
@@ -3627,7 +3629,8 @@ test("supports the default QSA chat and folder workflow", async ({ browser, page
   await expect(page.getByTestId("left-chat-pane")).toContainText(String(suffix));
   await page.getByLabel("Search chats").fill(`missing ${suffix}`);
   await expect(page.getByTestId("left-chat-pane")).toContainText("No chats match this search");
-  await page.getByLabel("Search chats").fill("");
+  await page.getByLabel("Search chats").press("Escape");
+  await expect(page.getByLabel("Search chats")).toHaveValue("");
   await expect(page.getByTestId("current-chat-title")).toBeVisible();
   const desktopConversationHeader = page.getByTestId("top-rail");
   await expect(desktopConversationHeader).toBeVisible();
@@ -3673,6 +3676,14 @@ test("supports the default QSA chat and folder workflow", async ({ browser, page
   await expect(page.getByTestId("token-stats-popover")).toContainText("/ 7.4k safe input · 8.2k total context");
   await expect(page.getByTestId("token-stats-popover")).toContainText("Total messages");
   await expect(page.getByTestId("token-stats-popover")).toContainText("Provider-reported tokens");
+  const composerMessageLabel = page.locator('label[for="composer"]');
+  await expect(composerMessageLabel).toHaveClass(/\bsr-only\b/);
+  await expect
+    .poll(() => composerMessageLabel.evaluate((element) => {
+      const style = window.getComputedStyle(element);
+      return `${style.position}:${style.width}:${style.height}:${style.overflow}`;
+    }))
+    .toBe("absolute:1px:1px:hidden");
   await expect(page.getByTestId("token-stats-popover")).toContainText("Total tokens cached");
   await expect(page.getByTestId("token-stats-popover")).not.toContainText("cost");
   await page.keyboard.press("Escape");

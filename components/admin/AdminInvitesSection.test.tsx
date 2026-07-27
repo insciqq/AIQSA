@@ -86,11 +86,13 @@ describe("AdminInvitesSection", () => {
     expect(screen.getByTestId("admin-invites-detail-pane")).toHaveClass("hidden", "lg:block");
     expect(screen.queryByRole("table")).not.toBeInTheDocument();
     fireEvent.change(screen.getByLabelText("Search invites"), { target: { value: "accepted" } });
-    fireEvent.click(screen.getByRole("button", { name: "accepted" }));
+    fireEvent.click(screen.getByRole("button", { name: "Expiring soon" }));
+    fireEvent.click(screen.getByRole("button", { name: "Accepted" }));
     fireEvent.click(within(screen.getByTestId("admin-invite-row")).getByRole("button", { name: "Details" }));
 
     expect(sectionActions.changeQuery).toHaveBeenCalledWith("accepted");
-    expect(sectionActions.changeStatusFilter).toHaveBeenCalledWith("accepted");
+    expect(sectionActions.changeStatusFilter).toHaveBeenNthCalledWith(1, "soon");
+    expect(sectionActions.changeStatusFilter).toHaveBeenNthCalledWith(2, "accepted");
     expect(sectionActions.selectInvite).toHaveBeenCalledWith(openInvite.id);
   });
 

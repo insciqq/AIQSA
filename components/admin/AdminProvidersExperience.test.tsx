@@ -286,11 +286,11 @@ describe("AdminProvidersExperience", () => {
     );
 
     await screen.findByText("Choose a provider to continue.");
-    expect(screen.getByRole("button", { name: /Gemini Not connected/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Gemini Not configured/ })).toBeInTheDocument();
     expect(screen.queryByLabelText("API key")).not.toBeInTheDocument();
     expect(connections.mounts).toBe(0);
     expect(profiles.mounts).toBe(0);
-    fireEvent.click(screen.getByRole("button", { name: /OpenAI Not connected/ }));
+    fireEvent.click(screen.getByRole("button", { name: /OpenAI Not configured/ }));
     const key = screen.getByLabelText("API key");
     expect(key).toHaveAttribute("type", "password");
     fireEvent.change(key, { target: { value: "browser-only-key" } });
@@ -331,7 +331,7 @@ describe("AdminProvidersExperience", () => {
     api.submit.mockReturnValueOnce(pending.promise);
     render(<AdminProvidersExperience active groups={[]} />);
     await screen.findByText("Choose a provider to continue.");
-    fireEvent.click(screen.getByRole("button", { name: /OpenAI Not connected/ }));
+    fireEvent.click(screen.getByRole("button", { name: /OpenAI Not configured/ }));
     fireEvent.change(screen.getByLabelText("API key"), { target: { value: "one-key" } });
     fireEvent.click(screen.getByRole("button", { name: "Test & Save" }));
 
@@ -371,7 +371,7 @@ describe("AdminProvidersExperience", () => {
       .mockResolvedValue({ data: reconciledSnapshot, ok: true });
     render(<AdminProvidersExperience active groups={[]} />);
     await screen.findByText("Choose a provider to continue.");
-    fireEvent.click(screen.getByRole("button", { name: /OpenAI Not connected/ }));
+    fireEvent.click(screen.getByRole("button", { name: /OpenAI Not configured/ }));
     fireEvent.change(screen.getByLabelText("API key"), { target: { value: "first-key" } });
     fireEvent.click(screen.getByRole("button", { name: "Test & Save" }));
     await screen.findByText("GPT-5.6 Sol");
@@ -542,7 +542,7 @@ describe("AdminProvidersExperience", () => {
       />
     );
     await screen.findByText("Choose a provider to continue.");
-    fireEvent.click(screen.getByRole("button", { name: /OpenAI Not connected/ }));
+    fireEvent.click(screen.getByRole("button", { name: /OpenAI Not configured/ }));
     fireEvent.change(screen.getByLabelText("API key"), { target: { value: "must-clear" } });
     expect(connections.mounts).toBe(0);
     fireEvent.click(screen.getByRole("button", { name: "Manage OpenAI connection" }));
@@ -606,7 +606,7 @@ describe("AdminProvidersExperience", () => {
     });
     render(<AdminProvidersExperience active groups={[]} />);
     await screen.findByText("Choose a provider to continue.");
-    fireEvent.click(screen.getByRole("button", { name: /OpenAI Not connected/ }));
+    fireEvent.click(screen.getByRole("button", { name: /OpenAI Not configured/ }));
     fireEvent.change(screen.getByLabelText("API key"), { target: { value: "unsupported-key" } });
     fireEvent.click(screen.getByRole("button", { name: "Test & Save" }));
 
@@ -704,7 +704,7 @@ describe("AdminProvidersExperience", () => {
     });
     render(<AdminProvidersExperience active groups={[]} />);
     await screen.findByText("Choose a provider to continue.");
-    fireEvent.click(screen.getByRole("button", { name: /OpenAI Not connected/ }));
+    fireEvent.click(screen.getByRole("button", { name: /OpenAI Not configured/ }));
     fireEvent.change(screen.getByLabelText("API key"), { target: { value: "one-key" } });
     fireEvent.click(screen.getByRole("button", { name: "Test & Save" }));
 
@@ -748,7 +748,7 @@ describe("AdminProvidersExperience", () => {
     expect(profiles.props?.active).toBe(true);
     fireEvent.click(screen.getByRole("tab", { name: "Setup" }));
     await screen.findByText("Choose a provider to continue.");
-    fireEvent.click(screen.getByRole("button", { name: /OpenAI Not connected/ }));
+    fireEvent.click(screen.getByRole("button", { name: /OpenAI Not configured/ }));
     fireEvent.change(screen.getByLabelText("API key"), { target: { value: "one-key" } });
     fireEvent.click(screen.getByRole("button", { name: "Test & Save" }));
 

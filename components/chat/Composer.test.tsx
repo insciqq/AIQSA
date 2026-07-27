@@ -47,6 +47,8 @@ describe("Composer", () => {
     expect(messageField).toContainElement(messageLabel);
     expect(messageField).toContainElement(textarea);
     expect(messageLabel).toHaveAttribute("for", "composer");
+    expect(messageLabel).toHaveClass("sr-only");
+    expect(textarea).not.toHaveClass("mt-1");
     expect(surface).toHaveClass("bg-composer-surface", "border-trace-strong/70");
     expect(messageField).toHaveClass("px-4", "pt-3");
     expect(surface).toContainElement(textarea);

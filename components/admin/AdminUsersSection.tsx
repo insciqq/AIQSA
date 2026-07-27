@@ -331,7 +331,7 @@ function AdminUserDetail({ actions, data, detailRef, groupsEditorRef, mcpAccess,
 
       <section className="py-5">
         <h4 className="text-sm font-semibold text-ink">Account actions</h4>
-        <div className="mt-3 grid max-w-xl gap-2">
+        <div className="mt-3 flex max-w-xl flex-wrap items-center gap-2">
           {selectedUser.status === "pending" ? (
             <>
               <button
@@ -352,7 +352,12 @@ function AdminUserDetail({ actions, data, detailRef, groupsEditorRef, mcpAccess,
 
           {selectedUser.status === "active" && !isSelf ? (
             <>
-              <button className={primaryButton} disabled={status.actionsDisabled || !groupsDirty} onClick={() => actions.onSaveGroups(selectedUser)} type="button">
+              <button
+                className={groupsDirty && !status.actionsDisabled ? primaryButton : quietButton}
+                disabled={status.actionsDisabled || !groupsDirty}
+                onClick={() => actions.onSaveGroups(selectedUser)}
+                type="button"
+              >
                 <Save aria-hidden="true" className="size-3.5" />
                 Save groups
               </button>

@@ -939,7 +939,7 @@ describe("AdminPanel", () => {
     fireEvent.change(within(invites).getByLabelText("Email"), { target: { value: "draft@example.com" } });
     fireEvent.click(within(invites).getByRole("checkbox", { name: "reviewers" }));
     fireEvent.change(within(invites).getByLabelText("Search invites"), { target: { value: "open" } });
-    fireEvent.click(within(invites).getByRole("button", { name: "open" }));
+    fireEvent.click(within(invites).getByRole("button", { name: "Open" }));
 
     fireEvent.click(screen.getByRole("tab", { name: "Access rules" }));
     const rules = await screen.findByTestId("admin-section-access-rules");
@@ -965,7 +965,7 @@ describe("AdminPanel", () => {
     expect(screen.getByLabelText("Email")).toHaveValue("draft@example.com");
     expect(screen.getByRole("checkbox", { name: "reviewers" })).toBeChecked();
     expect(screen.getByLabelText("Search invites")).toHaveValue("open");
-    expect(screen.getByRole("button", { name: "open" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: "Open" })).toHaveAttribute("aria-pressed", "true");
 
     fireEvent.click(screen.getByRole("tab", { name: "Access rules" }));
     expect(screen.getByLabelText("Kind")).toHaveValue("domain");
@@ -1651,7 +1651,7 @@ describe("AdminPanel", () => {
     expect(within(acceptedRow).getByText("accepted")).toBeInTheDocument();
     expect(within(revokedRow).getByText("revoked")).toBeInTheDocument();
 
-    fireEvent.click(within(invites).getByRole("button", { name: "accepted" }));
+    fireEvent.click(within(invites).getByRole("button", { name: "Accepted" }));
     expect(within(invites).getByText("accepted@example.com")).toBeInTheDocument();
     expect(within(invites).queryByText("open@example.com")).not.toBeInTheDocument();
   });

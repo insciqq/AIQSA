@@ -605,6 +605,18 @@ function LeftChatPaneComponent({
             value={chatQuery}
             disabled={!workspaceReady}
             onChange={(event) => onChatQueryChange(event.target.value)}
+            onKeyDown={(event) => {
+              if (isImeCompositionEvent(event)) {
+                event.stopPropagation();
+                return;
+              }
+
+              if (event.key === "Escape" && chatQuery) {
+                event.preventDefault();
+                event.stopPropagation();
+                onChatQueryChange("");
+              }
+            }}
           />
           {chatQuery ? (
             <button
@@ -1130,7 +1142,7 @@ function LeftChatPaneComponent({
                                       {duplicate ? ` · ${updated}` : ""}
                                     </span>
                                   ) : null}
-                                  {unavailable ? (
+                                  {unavailable && providerModel !== "Unavailable model" ? (
                                     <span
                                       className="shrink-0 text-caution"
                                       title="Unavailable for new runs"

@@ -156,8 +156,12 @@ describe("AdminPage", () => {
 
     render(await AdminPage());
 
+    expect(screen.getByRole("main")).toHaveClass("flex", "items-center", "justify-center");
     expect(screen.getByTestId("admin-denied")).toBeVisible();
+    expect(screen.getByTestId("admin-denied")).toHaveClass("w-full", "max-w-[720px]");
     expect(screen.getByRole("heading", { level: 1, name: "Admin access required" })).toBeVisible();
+    expect(screen.getByText(/open the Control Center and manage access, providers, tools, email delivery/)).toBeVisible();
+    expect(screen.queryByText(/user-management data/)).not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Return to workspace" })).toHaveAttribute("href", "/");
     expect(adminPageMocks.redirect).not.toHaveBeenCalled();
     expect(adminPageMocks.adminPanel).not.toHaveBeenCalled();

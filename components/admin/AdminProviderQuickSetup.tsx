@@ -27,7 +27,7 @@ function stateLabel(provider: AdminProviderQuickSetupProvider): string {
   if (provider.state === "disabled") return "Disabled";
   if (provider.state === "needs_attention") return "Needs attention";
   if (provider.state === "advanced_required") return "Custom setup exists";
-  return "Not connected";
+  return "Not configured";
 }
 
 function ManageConnectionButton({
