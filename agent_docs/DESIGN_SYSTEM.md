@@ -1,6 +1,6 @@
 # DESIGN_SYSTEM
 
-This is the binding visual contract for AIQSA's clean-slate Research Chat and Control Center. `FRONTEND.md` owns behavior, state, responsive access, and control ownership. ADRs 0025, 0028, and 0030 own the product-level presentation, task-first composition, direct controls, and compact evidence decisions. This file owns visual hierarchy, semantic tokens, component recipes, motion, content presentation, and visual quality gates.
+This is the binding visual contract for AIQSA's clean-slate Research Chat and Control Center. `FRONTEND.md` owns behavior, state, responsive access, and control ownership. ADRs 0025, 0028, 0030, and 0037 own the product-level presentation, task-first composition, direct controls, compact evidence, and title-free conversation-action decisions. This file owns visual hierarchy, semantic tokens, component recipes, motion, content presentation, and visual quality gates.
 
 All runtime UI consumes this system's product-semantic tokens directly. Compatibility aliases such as `surface-*`, `content-*`, `separator-*`, and generic color-named accents are not part of the component API and must not return.
 
@@ -45,7 +45,7 @@ Components consume semantic tokens only. Raw product colors, palette-specific Ta
 |---|---|
 | `research-canvas` | Page and application background. |
 | `workspace-rail` | Workspace and Control Center navigation plus the compact Workspace drawer. |
-| `answer-paper` | Conversation column, its local top rail, and document plane; not a card around each answer. |
+| `answer-paper` | Conversation column, its title-free edge actions, and document plane; not a card around each answer. |
 | `composer-surface` | Composer and focused editing surfaces. |
 | `control-surface` | Inputs, quiet buttons, and repeated interactive rows. |
 | `overlay-surface` | Menus, dialogs, sheets, and the Details inspection plane in overlay or pinned form. |
@@ -118,7 +118,7 @@ Use a 4px base rhythm with primary steps of 4, 8, 12, 16, 24, 32, and 48px. Rela
 - Workspace rail: 16rem when persistent, with one fixed Account footer below
   the independently scrolling browse region.
 - Control Center navigation: 15rem when persistent.
-- Conversation top rail: 3.5rem in compact composition and 4rem at desktop, plus the applicable top safe-area inset. It belongs to the answer-paper column and does not span Workspace.
+- Conversation edge-action rail: at most 3rem plus the applicable top safe-area inset. It belongs to the answer-paper column, has no full-width resting fill or separator, stays in normal flow, and collapses to the safe-area inset when desktop has no visible conversation action.
 - Pinned Details: 23rem, available only at `>=1440px`.
 - Answer column: max 46-48rem with responsive inline padding.
 - Dense list rows: 36-44px for precise pointers; at least 44px for coarse pointers.
@@ -133,7 +133,7 @@ Avoid isolated floating rectangles when a plain section, row, or disclosure comm
 
 ### Shell and workspace
 
-The conversation and composer dominate. A persistent Workspace rail appears at `>=1024px`; below that, Workspace is a modal drawer. The conversation column owns its local top rail. Account is a full-width quiet footer row beneath Workspace history, showing the user icon plus the current email with contained truncation; it is never part of the conversation top rail or browse scroller. Its menu opens upward within the safe-area-adjusted Workspace boundary and scrolls locally when height is constrained, with a restrained continuation cue while final actions remain below the fold. Once a conversation exists, Share and Details remain direct at every width; Copy thread and Branch tree live in one `Conversation actions` menu at every width, while Command palette, Prompt library, and Settings live as distinct Account destinations. A blank `New chat` omits those object-specific actions so the prompt is the only dominant task. There is no second permanent action bar.
+The conversation and composer dominate. A persistent Workspace rail appears at `>=1024px`; below that, Workspace is a modal drawer. The conversation column owns one compact edge-action rail with no visible chat title, full-width surface, or divider; a visually hidden page heading preserves semantic structure while Workspace selection owns visible chat identity. Because the rail stays in normal flow, answer text never scrolls beneath its buttons. Account is a full-width quiet footer row beneath Workspace history, showing the user icon plus the current email with contained truncation; it is never part of the conversation actions or browse scroller. Its menu opens upward within the safe-area-adjusted Workspace boundary and scrolls locally when height is constrained, with a restrained continuation cue while final actions remain below the fold. Once a conversation exists, Share and Details remain direct at every width; Copy thread and Branch tree live in one `Conversation actions` menu at every width, while Command palette, Prompt library, and Settings live as distinct Account destinations. A blank `New chat` omits those object-specific actions so the prompt is the only dominant task, and desktop collapses the empty action rail. There is no second permanent action bar or replacement title chip.
 
 Chat and folder rows use quiet selected/hover states, stable action space, and text labels where consequence matters. Active-run state is a small factual cue. Nested folders must retain readable indentation without causing page-level horizontal overflow.
 

@@ -2,7 +2,7 @@
 
 ## Product Invariants
 
-1. ADRs 0025 and 0028 define the shipped Research Chat and task-first Control Center presentation while retaining the capability-preservation and explicit-control-ownership requirements of ADRs 0009 and 0011. The existing routes have one presentation tree and one state owner; parallel classic/new renderers and legacy visual-token aliases must not return. WCAG conformance and dedicated accessibility work remain explicitly deferred.
+1. ADRs 0025, 0028, and 0037 define the shipped Research Chat and task-first Control Center presentation while retaining the capability-preservation and explicit-control-ownership requirements of ADRs 0009 and 0011. The existing routes have one presentation tree and one state owner; parallel classic/new renderers and legacy visual-token aliases must not return. WCAG conformance and dedicated accessibility work remain explicitly deferred.
 2. First use defaults to the light `neutral` theme. Existing `aiqsa`, `graphite`, `verdant`, `classic-dark`, and `neutral` theme IDs and stored preferences remain valid; the appended light `paper` id is equally stable. Every theme must render the same semantic hierarchy with declared light/dark scheme metadata and complete dark-mode parity.
 3. Provider, model, prompt, search, and parameter changes affect future messages only.
 4. Existing message content with descendants is not edited in place; edits create branches.

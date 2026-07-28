@@ -41,23 +41,30 @@ function renderTopRail(overrides: Partial<ComponentProps<typeof TopRail>> = {}) 
 afterEach(cleanup);
 
 describe("TopRail", () => {
-  it("renders the current chat title once and gives a blank workspace an unambiguous title", () => {
+  it("keeps one semantic chat heading without rendering title chrome over the conversation", () => {
     const { rerender, props } = renderTopRail();
 
-    expect(screen.getByTestId("top-rail")).toHaveClass(
-      "border-trace-subtle",
-      "bg-answer-paper"
-    );
-    expect(screen.getByRole("heading", { level: 1, name: "Research notes" })).toBeVisible();
+    expect(screen.getByTestId("top-rail")).toHaveClass("bg-transparent", "justify-between");
+    expect(screen.getByTestId("top-rail")).not.toHaveClass("border-b");
+    expect(screen.getByTestId("top-rail")).not.toHaveClass("border-trace-subtle");
+    expect(screen.getByTestId("top-rail")).not.toHaveClass("bg-answer-paper");
+    expect(screen.getByRole("heading", { level: 1, name: "Research notes" })).toHaveClass("sr-only");
     expect(screen.getByTestId("current-chat-title")).toHaveTextContent("Research notes");
-    expect(screen.getByTestId("current-chat-title")).toHaveClass("truncate", "text-ink");
-    expect(screen.getByTestId("current-chat-title")).not.toHaveClass("sr-only");
+    expect(screen.getByTestId("current-chat-title")).toHaveClass("sr-only");
     expect(screen.getAllByText("Research notes")).toHaveLength(1);
     expect(screen.queryByLabelText("AIQSA")).not.toBeInTheDocument();
 
-    rerender(<TopRail {...props} activeChatId={null} activeChatTitle="Ignored title" />);
+    rerender(
+      <TopRail
+        {...props}
+        activeChatId={null}
+        activeChatTitle="Ignored title"
+        conversationActionsAvailable={false}
+      />
+    );
 
-    expect(screen.getByRole("heading", { level: 1, name: "New chat" })).toBeVisible();
+    expect(screen.getByRole("heading", { level: 1, name: "New chat" })).toHaveClass("sr-only");
+    expect(screen.getByTestId("top-rail")).toHaveClass("lg:h-[env(safe-area-inset-top)]");
   });
 
   it("keeps idle and settled pipeline decoration out of the top bar", () => {
@@ -193,16 +200,16 @@ describe("TopRail", () => {
     });
 
     expect(screen.queryByLabelText("AIQSA")).not.toBeInTheDocument();
-    expect(screen.getByTestId("current-chat-title")).toHaveClass("truncate", "text-ink");
+    expect(screen.getByTestId("current-chat-title")).toHaveClass("sr-only");
     expect(screen.getByRole("button", { name: "Open workspace" })).toHaveClass(
       "[@media(hover:none)]:!size-11"
     );
     const newChat = screen.getByRole("button", { name: "Start new chat" });
     expect(newChat).toHaveClass("lg:hidden", "[@media(hover:none)]:!size-11");
-    expect(screen.getByRole("group", { name: "Workspace controls" })).toHaveClass(
-      "border-r",
-      "border-trace-subtle",
-      "lg:hidden"
+    expect(screen.getByRole("group", { name: "Workspace controls" })).toHaveClass("lg:hidden");
+    expect(screen.getByRole("group", { name: "Workspace controls" })).not.toHaveClass("border-r");
+    expect(screen.getByRole("group", { name: "Workspace controls" })).not.toHaveClass(
+      "border-trace-subtle"
     );
     expect(screen.getByRole("group", { name: "Conversation controls" })).toContainElement(
       screen.getByRole("button", { name: "Share anonymously" })

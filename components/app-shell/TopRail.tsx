@@ -235,6 +235,10 @@ export function TopRail({
 }) {
   const chatTitle = activeChatId ? activeChatTitle : "New chat";
   const detailsLabel = detailsOpen ? "Close details" : "Open details";
+  const desktopActionsVisible =
+    conversationActionsAvailable ||
+    pipeline?.phase === "running" ||
+    pipeline?.phase === "error";
   const iconActionClass = [
     "grid size-9 shrink-0 place-items-center rounded-control text-ink-muted hover:bg-control-hover hover:text-ink max-lg:size-11 [@media(hover:none)]:!size-11 [@media(pointer:coarse)]:!size-11",
     actionFocusClass
@@ -242,63 +246,63 @@ export function TopRail({
 
   return (
     <header
-      className="grid h-[calc(3.5rem+env(safe-area-inset-top))] shrink-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-2 border-b border-trace-subtle bg-answer-paper pb-0 pl-[max(.5rem,env(safe-area-inset-left))] pr-[max(.5rem,env(safe-area-inset-right))] pt-[env(safe-area-inset-top)] sm:pl-[max(.75rem,env(safe-area-inset-left))] sm:pr-[max(.75rem,env(safe-area-inset-right))] lg:h-[calc(4rem+env(safe-area-inset-top))] lg:pl-5 lg:pr-[max(1rem,env(safe-area-inset-right))]"
+      className={[
+        "relative flex h-[calc(3rem+env(safe-area-inset-top))] shrink-0 items-center justify-between gap-2 bg-transparent pb-0 pl-[max(.5rem,env(safe-area-inset-left))] pr-[max(.5rem,env(safe-area-inset-right))] pt-[env(safe-area-inset-top)] sm:pl-[max(.75rem,env(safe-area-inset-left))] sm:pr-[max(.75rem,env(safe-area-inset-right))]",
+        desktopActionsVisible
+          ? "lg:h-[calc(3rem+env(safe-area-inset-top))] lg:pl-0 lg:pr-[max(.75rem,env(safe-area-inset-right))]"
+          : "lg:h-[env(safe-area-inset-top)] lg:gap-0 lg:px-0"
+      ].join(" ")}
       data-testid="top-rail"
     >
-      <div className="flex min-w-0 items-center gap-1 sm:gap-1.5">
-        <div
-          className="flex shrink-0 items-center border-r border-trace-subtle pr-0.5 lg:hidden"
-          role="group"
-          aria-label="Workspace controls"
-          data-testid="compact-workspace-controls"
+      <h1 className="sr-only" data-testid="current-chat-title" title={chatTitle}>
+        {chatTitle}
+      </h1>
+
+      <div
+        className="flex shrink-0 items-center lg:hidden"
+        role="group"
+        aria-label="Workspace controls"
+        data-testid="compact-workspace-controls"
+      >
+        <button
+          ref={workspaceButtonRef}
+          className={`${iconActionClass} lg:hidden`}
+          type="button"
+          aria-label="Open workspace"
+          aria-describedby={workspaceAttention ? "workspace-account-attention-description" : undefined}
+          title={workspaceAttention ? "Open workspace — Account needs attention" : "Open workspace"}
+          data-testid="mobile-workspace-button"
+          onClick={onOpenWorkspace}
         >
-          <button
-            ref={workspaceButtonRef}
-            className={`${iconActionClass} lg:hidden`}
-            type="button"
-            aria-label="Open workspace"
-            aria-describedby={workspaceAttention ? "workspace-account-attention-description" : undefined}
-            title={workspaceAttention ? "Open workspace — Account needs attention" : "Open workspace"}
-            data-testid="mobile-workspace-button"
-            onClick={onOpenWorkspace}
-          >
-            <span className="relative grid size-4 place-items-center" aria-hidden="true">
-              <Menu className="size-4" />
-              {workspaceAttention ? (
-                <span
-                  className="absolute -right-1 -top-1 size-2 rounded-full border border-answer-paper bg-critical"
-                  data-testid="workspace-account-attention"
-                />
-              ) : null}
-            </span>
-          </button>
-          {workspaceAttention ? (
-            <span className="sr-only" id="workspace-account-attention-description">
-              Account needs attention. Open Workspace and then Account to review it.
-            </span>
-          ) : null}
-          <button
-            className={`${iconActionClass} lg:hidden disabled:cursor-not-allowed disabled:text-ink-disabled disabled:opacity-55`}
-            type="button"
-            aria-label="Start new chat"
-            title="Start new chat"
-            data-testid="mobile-new-chat-button"
-            disabled={newChatDisabled}
-            onClick={onStartNewChat}
-          >
-            <Plus className="size-4" aria-hidden="true" />
-          </button>
-        </div>
-        <h1
-          className="min-w-0 flex-1 truncate px-1.5 text-sm font-semibold tracking-[-0.01em] text-ink sm:px-2 sm:text-[0.9375rem] lg:px-0 lg:text-base"
-          data-testid="current-chat-title"
-          title={chatTitle}
+          <span className="relative grid size-4 place-items-center" aria-hidden="true">
+            <Menu className="size-4" />
+            {workspaceAttention ? (
+              <span
+                className="absolute -right-1 -top-1 size-2 rounded-full border border-answer-paper bg-critical"
+                data-testid="workspace-account-attention"
+              />
+            ) : null}
+          </span>
+        </button>
+        {workspaceAttention ? (
+          <span className="sr-only" id="workspace-account-attention-description">
+            Account needs attention. Open Workspace and then Account to review it.
+          </span>
+        ) : null}
+        <button
+          className={`${iconActionClass} lg:hidden disabled:cursor-not-allowed disabled:text-ink-disabled disabled:opacity-55`}
+          type="button"
+          aria-label="Start new chat"
+          title="Start new chat"
+          data-testid="mobile-new-chat-button"
+          disabled={newChatDisabled}
+          onClick={onStartNewChat}
         >
-          {chatTitle}
-        </h1>
+          <Plus className="size-4" aria-hidden="true" />
+        </button>
       </div>
 
-      <div className="flex min-w-0 items-center justify-end gap-0.5 sm:gap-1">
+      <div className="ml-auto flex min-w-0 items-center justify-end gap-0.5 sm:gap-1">
         <PipelineIndicator pipeline={pipeline} onOpen={onOpenPipeline} />
         {conversationActionsAvailable ? (
           <div

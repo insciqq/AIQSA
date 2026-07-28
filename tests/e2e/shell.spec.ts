@@ -24,7 +24,11 @@ import {
   reasoningOptionValues,
   selectModel
 } from "./shell/composer";
-import { expectComposerBeforeDetails, runAccountMenuAction } from "./shell/page";
+import {
+  expectComposerBeforeDetails,
+  expectConversationControlsBeforeThread,
+  runAccountMenuAction
+} from "./shell/page";
 import {
   closeResponsiveTouchStream,
   emitResponsiveTouchEvent,
@@ -3581,6 +3585,7 @@ test("supports the default QSA chat and folder workflow", async ({ browser, page
 
   await expect(page.getByRole("button", { name: "Share anonymously" })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Open details" })).toHaveCount(0);
+  await expect(page.getByTestId("top-rail")).toHaveCSS("height", "0px");
 
   const newChatRowsBeforeBlank = await page
     .getByTestId("left-chat-pane")
@@ -3663,9 +3668,10 @@ test("supports the default QSA chat and folder workflow", async ({ browser, page
   await expect(page.getByTestId("left-chat-pane")).toContainText("No chats match this search");
   await page.getByLabel("Search chats").press("Escape");
   await expect(page.getByLabel("Search chats")).toHaveValue("");
-  await expect(page.getByTestId("current-chat-title")).toBeVisible();
+  await expect(page.getByTestId("current-chat-title")).toHaveClass(/\bsr-only\b/);
   const desktopConversationHeader = page.getByTestId("top-rail");
   await expect(desktopConversationHeader).toBeVisible();
+  await expectConversationControlsBeforeThread(page);
   const conversationActions = desktopConversationHeader.getByRole("button", {
     name: "Conversation actions"
   });
@@ -4240,8 +4246,16 @@ for (const viewport of responsiveTouchViewports) {
       await signIn(page);
       const currentChatTitle = page.getByTestId("current-chat-title");
       await expect(currentChatTitle).toHaveAttribute("title", title);
-      await expect(currentChatTitle).toBeVisible();
-      await expectWithinViewport(page, currentChatTitle);
+      await expect(currentChatTitle).toHaveClass(/\bsr-only\b/);
+      await expect
+        .poll(() =>
+          currentChatTitle.evaluate((element) => {
+            const style = window.getComputedStyle(element);
+            return `${style.position}:${style.width}:${style.height}:${style.overflow}`;
+          })
+        )
+        .toBe("absolute:1px:1px:hidden");
+      await expectConversationControlsBeforeThread(page);
       await expect(page.getByRole("toolbar", { name: "Chat actions" })).toBeHidden();
       const viewportMeta = page.locator('meta[name="viewport"]');
       await expect(viewportMeta).toHaveAttribute("content", /viewport-fit=cover/);
