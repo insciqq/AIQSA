@@ -9,6 +9,7 @@ const api = vi.hoisted(() => ({
 }));
 
 const customApi = vi.hoisted(() => ({
+  discover: vi.fn(),
   submit: vi.fn()
 }));
 
@@ -33,6 +34,7 @@ const profiles = vi.hoisted(() => ({
 
 vi.mock("./adminProviderCustomSetupApi", () => ({
   adminProviderCustomSetupErrorMessage: (error: { code: string }) => error.code,
+  discoverAdminProviderCustomModels: customApi.discover,
   submitAdminProviderCustomSetup: customApi.submit
 }));
 
@@ -192,6 +194,7 @@ describe("AdminProvidersExperience", () => {
     api.clear.mockReset();
     api.get.mockReset();
     api.submit.mockReset();
+    customApi.discover.mockReset();
     customApi.submit.mockReset();
     connections.mounts = 0;
     connections.props = null;
@@ -201,6 +204,16 @@ describe("AdminProvidersExperience", () => {
   });
 
   it("keeps custom OpenAI-compatible setup separate and deep-links its Ready connection", async () => {
+    customApi.discover.mockResolvedValue({
+      data: {
+        checkedAt: "2026-07-26T09:59:00.000Z",
+        modelCount: 2,
+        models: [{ id: "vendor/model-1" }, { id: "vendor/model-2" }],
+        source: "models_catalog",
+        status: "valid"
+      },
+      ok: true
+    });
     customApi.submit.mockResolvedValue({
       data: {
         authenticationMode: "bearer",
@@ -209,6 +222,10 @@ describe("AdminProvidersExperience", () => {
         connectionId: "custom-connection-1",
         defaultChanged: true,
         modelDisplayName: "vendor/model-1",
+        models: [
+          { modelDisplayName: "vendor/model-1", providerModelId: "custom-model-1" },
+          { modelDisplayName: "vendor/model-2", providerModelId: "custom-model-2" }
+        ],
         outcome: "ready",
         providerModelId: "custom-model-1"
       },
@@ -230,21 +247,37 @@ describe("AdminProvidersExperience", () => {
       "[scrollbar-width:none]",
       "[&::-webkit-scrollbar]:hidden"
     );
-    expect(screen.getByRole("tab", { name: "Setup" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("tab", { name: "Quick setup" })).toHaveAttribute("aria-selected", "true");
     expect(screen.getByRole("tab", { name: "Connections" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Run profiles" })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Connect custom endpoint" }));
+    fireEvent.click(screen.getByRole("button", { name: "Custom OpenAI-compatible" }));
     expect(screen.getByRole("heading", { name: "Connect a custom endpoint" })).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText(/^API root/), {
       target: { value: "https://llm.example.test/v1" }
     });
-    fireEvent.change(screen.getByLabelText("Model ID"), {
-      target: { value: "vendor/model-1" }
-    });
     fireEvent.change(screen.getByLabelText(/^API key/), {
       target: { value: "browser-only-key" }
     });
-    expect(screen.getByText("https://llm.example.test/v1/chat/completions"))
+    fireEvent.click(screen.getByRole("button", { name: "Discover models" }));
+    const modelChoice = await screen.findByRole("button", {
+      name: "Add models reported by this endpoint (2)"
+    });
+    fireEvent.click(modelChoice);
+    fireEvent.click(screen.getByRole("option", { name: /vendor\/model-1/ }));
+    fireEvent.click(screen.getByRole("button", {
+      name: "Add models reported by this endpoint (2)"
+    }));
+    fireEvent.click(screen.getByRole("option", { name: /vendor\/model-2/ }));
+    expect(customApi.discover).toHaveBeenCalledWith(expect.objectContaining({
+      apiRoot: "https://llm.example.test/v1",
+      secret: "browser-only-key"
+    }), expect.any(Function), expect.any(AbortSignal));
+    fireEvent.click(screen.getByText("Advanced settings"));
+    fireEvent.click(screen.getByLabelText("Hosted web search"));
+    fireEvent.click(screen.getByLabelText("Image generation (future workflows)"));
+    expect(screen.getByText(/Image support is recorded now but is not yet runnable/))
+      .toBeInTheDocument();
+    expect(screen.getByText("https://llm.example.test/v1/responses"))
       .toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Test & Save" }));
 
@@ -255,7 +288,12 @@ describe("AdminProvidersExperience", () => {
     expect(customApi.submit.mock.calls[0]?.[0]).toEqual(expect.objectContaining({
       apiRoot: "https://llm.example.test/v1",
       authenticationMode: "bearer",
-      modelId: "vendor/model-1",
+      capabilities: expect.objectContaining({
+        nativeImageGeneration: true,
+        nativeSearch: true
+      }),
+      modelIds: ["vendor/model-1", "vendor/model-2"],
+      protocol: "responses",
       secret: "browser-only-key"
     }));
     await waitFor(() => expect(onMutationCommitted).toHaveBeenCalledOnce());
@@ -585,7 +623,7 @@ describe("AdminProvidersExperience", () => {
     fireEvent.click(screen.getByRole("button", { name: "Simulate Connections mutation" }));
     await waitFor(() => expect(onMutationCommitted).toHaveBeenCalledOnce());
     expect(api.get).toHaveBeenCalledTimes(refreshesBeforeMutation);
-    fireEvent.click(screen.getByRole("tab", { name: "Setup" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Quick setup" }));
     await screen.findByText("Ready to chat");
     expect(screen.queryByTestId("connections-provider-workspace")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Connection draft")).not.toBeInTheDocument();
@@ -613,7 +651,7 @@ describe("AdminProvidersExperience", () => {
     const manageButton = await screen.findByRole("button", { name: "Manage provider connection" });
     fireEvent.click(manageButton);
     expect(await screen.findByTestId("connections-provider-workspace")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("tab", { name: "Setup" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Quick setup" }));
     expect(await screen.findByLabelText("API key")).toHaveValue("");
   });
 
@@ -632,14 +670,14 @@ describe("AdminProvidersExperience", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Start profile save" }));
 
-    expect(screen.getByRole("tab", { name: "Setup" })).toBeDisabled();
+    expect(screen.getByRole("tab", { name: "Quick setup" })).toBeDisabled();
     expect(screen.getByRole("tab", { name: "Connections" })).toBeDisabled();
     expect(screen.getByRole("tab", { name: "Run profiles" })).toBeEnabled();
     expect(onRunProfilesEditStateChange).toHaveBeenLastCalledWith({
       busy: true,
       dirty: false
     });
-    fireEvent.click(screen.getByRole("tab", { name: "Setup" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Quick setup" }));
     expect(screen.getByText("Profiles active: true")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Finish profile save" }));
@@ -647,7 +685,7 @@ describe("AdminProvidersExperience", () => {
       busy: false,
       dirty: false
     });
-    expect(screen.getByRole("tab", { name: "Setup" })).toBeEnabled();
+    expect(screen.getByRole("tab", { name: "Quick setup" })).toBeEnabled();
   });
 
   it("keeps Ready visible and offers Connections after a raced replacement", async () => {
@@ -671,7 +709,7 @@ describe("AdminProvidersExperience", () => {
     expect(screen.getByLabelText("API key")).toBeEnabled();
     fireEvent.click(screen.getByRole("button", { name: "Manage provider connection" }));
     expect(await screen.findByTestId("connections-provider-workspace")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("tab", { name: "Setup" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Quick setup" }));
     await screen.findByText("Ready to chat");
     fireEvent.click(screen.getByRole("button", { name: "Replace API key" }));
     expect(screen.getByLabelText("API key")).toHaveValue("");
@@ -746,7 +784,7 @@ describe("AdminProvidersExperience", () => {
     await screen.findByTestId("run-profiles-workspace");
     expect(connections.props?.active).toBe(false);
     expect(profiles.props?.active).toBe(true);
-    fireEvent.click(screen.getByRole("tab", { name: "Setup" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Quick setup" }));
     await screen.findByText("Choose a provider to continue.");
     fireEvent.click(screen.getByRole("button", { name: /OpenAI Not configured/ }));
     fireEvent.change(screen.getByLabelText("API key"), { target: { value: "one-key" } });

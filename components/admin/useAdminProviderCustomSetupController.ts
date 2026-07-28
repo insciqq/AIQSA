@@ -2,10 +2,14 @@
 
 import {
   ADMIN_PROVIDER_CUSTOM_DEFAULT_CAPABILITIES,
+  MAX_ADMIN_PROVIDER_CUSTOM_SETUP_MODELS,
+  type AdminProviderCustomDiscoveredModel,
+  type AdminProviderCustomProtocol,
   type AdminProviderCustomSetupReadyResult
 } from "@/lib/contracts/adminProviderCustomSetup";
 import {
   adminProviderCustomSetupErrorMessage,
+  discoverAdminProviderCustomModels,
   submitAdminProviderCustomSetup
 } from "@/components/admin/adminProviderCustomSetupApi";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -20,11 +24,15 @@ type AdminProviderCustomSetupForm = {
   connectionDisplayName: string;
   contextWindow: number;
   defaultMaxOutputTokens: number;
+  imageGeneration: boolean;
   modelDisplayName: string;
   modelId: string;
+  selectedModelIds: string[];
+  protocol: AdminProviderCustomProtocol;
   secret: string;
   streaming: boolean;
   toolCalling: boolean;
+  webSearch: boolean;
 };
 
 function initialForm(): AdminProviderCustomSetupForm {
@@ -35,11 +43,15 @@ function initialForm(): AdminProviderCustomSetupForm {
     contextWindow: ADMIN_PROVIDER_CUSTOM_DEFAULT_CAPABILITIES.contextWindow,
     defaultMaxOutputTokens:
       ADMIN_PROVIDER_CUSTOM_DEFAULT_CAPABILITIES.defaultMaxOutputTokens,
+    imageGeneration: false,
     modelDisplayName: "",
     modelId: "",
+    selectedModelIds: [],
+    protocol: "chat_completions",
     secret: "",
     streaming: ADMIN_PROVIDER_CUSTOM_DEFAULT_CAPABILITIES.streaming,
-    toolCalling: ADMIN_PROVIDER_CUSTOM_DEFAULT_CAPABILITIES.toolCalling
+    toolCalling: ADMIN_PROVIDER_CUSTOM_DEFAULT_CAPABILITIES.toolCalling,
+    webSearch: false
   };
 }
 
@@ -50,6 +62,11 @@ export function useAdminProviderCustomSetupController(
   const { onMutationCommitted } = options;
   const [form, setForm] = useState(initialForm);
   const [submitting, setSubmitting] = useState(false);
+  const [discovering, setDiscovering] = useState(false);
+  const [discoveredModels, setDiscoveredModels] = useState<
+    AdminProviderCustomDiscoveredModel[] | null
+  >(null);
+  const [discoveryError, setDiscoveryError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [errorCode, setErrorCode] = useState<string | null>(null);
   const [ready, setReady] = useState<AdminProviderCustomSetupReadyResult | null>(null);
@@ -63,6 +80,7 @@ export function useAdminProviderCustomSetupController(
     abortRef.current = null;
     submittingRef.current = false;
     setSubmitting(false);
+    setDiscovering(false);
   }, []);
 
   const leave = useCallback(() => {
@@ -71,6 +89,8 @@ export function useAdminProviderCustomSetupController(
     setError(null);
     setErrorCode(null);
     setReady(null);
+    setDiscoveredModels(null);
+    setDiscoveryError(null);
   }, [cancel]);
 
   useEffect(() => {
@@ -93,16 +113,33 @@ export function useAdminProviderCustomSetupController(
 
   const update = useCallback((patch: Partial<AdminProviderCustomSetupForm>) => {
     if (submittingRef.current) return;
-    setForm((current) => ({ ...current, ...patch }));
+    setForm((current) => ({
+      ...current,
+      ...patch,
+      ...(
+        "allowPrivateNetwork" in patch ||
+        "apiRoot" in patch ||
+        "secret" in patch
+          ? { selectedModelIds: [] }
+          : {}
+      )
+    }));
+    if (
+      "allowPrivateNetwork" in patch ||
+      "apiRoot" in patch ||
+      "secret" in patch
+    ) {
+      setDiscoveredModels(null);
+      setDiscoveryError(null);
+    }
     setError(null);
     setErrorCode(null);
     setReady(null);
   }, []);
 
-  const submit = useCallback(async () => {
+  const discoverModels = useCallback(async () => {
     if (submittingRef.current) return false;
     const apiRoot = form.apiRoot.trim();
-    const modelId = form.modelId.trim();
     const secret = form.secret.trim();
     const authenticationMode = secret ? "bearer" as const : "none" as const;
     let protocol: string | null = null;
@@ -113,13 +150,118 @@ export function useAdminProviderCustomSetupController(
     }
     if (
       !apiRoot ||
-      !modelId ||
+      (authenticationMode === "none" &&
+        (!form.allowPrivateNetwork || protocol !== "http:"))
+    ) {
+      const code = "provider_configuration_invalid";
+      setDiscoveryError(adminProviderCustomSetupErrorMessage({ code }));
+      return false;
+    }
+
+    const generation = ++generationRef.current;
+    const abort = new AbortController();
+    abortRef.current?.abort();
+    abortRef.current = abort;
+    submittingRef.current = true;
+    setDiscovering(true);
+    setDiscoveryError(null);
+    setDiscoveredModels(null);
+    const result = await discoverAdminProviderCustomModels({
+      allowPrivateNetwork: form.allowPrivateNetwork,
+      apiRoot,
+      authenticationMode,
+      ...(secret ? { secret } : {})
+    }, fetch, abort.signal);
+    if (generation !== generationRef.current) return false;
+
+    abortRef.current = null;
+    submittingRef.current = false;
+    setDiscovering(false);
+    if (!result.ok) {
+      if (result.error.code === "request_aborted") return false;
+      setDiscoveryError(adminProviderCustomSetupErrorMessage(result.error));
+      return false;
+    }
+    setDiscoveredModels(result.data.models);
+    setForm((current) => ({
+      ...current,
+      selectedModelIds: result.data.models.length === 1
+        ? [result.data.models[0]!.id]
+        : []
+    }));
+    return true;
+  }, [form.allowPrivateNetwork, form.apiRoot, form.secret]);
+
+  const selectDiscoveredModel = useCallback((modelId: string) => {
+    if (submittingRef.current) return;
+    setForm((current) => current.selectedModelIds.includes(modelId) ||
+      current.selectedModelIds.length >= MAX_ADMIN_PROVIDER_CUSTOM_SETUP_MODELS
+      ? current
+      : {
+          ...current,
+          selectedModelIds: [...current.selectedModelIds, modelId]
+        });
+    setError(null);
+    setErrorCode(null);
+    setReady(null);
+  }, []);
+
+  const removeDiscoveredModel = useCallback((modelId: string) => {
+    if (submittingRef.current) return;
+    setForm((current) => ({
+      ...current,
+      selectedModelIds: current.selectedModelIds.filter((id) => id !== modelId)
+    }));
+    setError(null);
+    setErrorCode(null);
+    setReady(null);
+  }, []);
+
+  const clearDiscoveredModels = useCallback(() => {
+    if (submittingRef.current) return;
+    setForm((current) => ({ ...current, selectedModelIds: [] }));
+    setError(null);
+    setErrorCode(null);
+    setReady(null);
+  }, []);
+
+  const selectAllDiscoveredModels = useCallback(() => {
+    if (submittingRef.current) return;
+    setForm((current) => ({
+      ...current,
+      selectedModelIds: (discoveredModels ?? [])
+        .slice(0, MAX_ADMIN_PROVIDER_CUSTOM_SETUP_MODELS)
+        .map(({ id }) => id)
+    }));
+    setError(null);
+    setErrorCode(null);
+    setReady(null);
+  }, [discoveredModels]);
+
+  const submit = useCallback(async () => {
+    if (submittingRef.current) return false;
+    const apiRoot = form.apiRoot.trim();
+    const modelId = form.modelId.trim();
+    const usesDiscoveredModels = Boolean(discoveredModels?.length);
+    const modelIds = usesDiscoveredModels ? form.selectedModelIds : [];
+    const secret = form.secret.trim();
+    const authenticationMode = secret ? "bearer" as const : "none" as const;
+    let protocol: string | null = null;
+    try {
+      protocol = new URL(apiRoot).protocol;
+    } catch {
+      protocol = null;
+    }
+    if (
+      !apiRoot ||
+      (usesDiscoveredModels ? modelIds.length < 1 : !modelId) ||
       !Number.isInteger(form.contextWindow) ||
       form.contextWindow < 1 ||
       !Number.isInteger(form.defaultMaxOutputTokens) ||
       form.defaultMaxOutputTokens < 1 ||
       (authenticationMode === "none" &&
-        (!form.allowPrivateNetwork || protocol !== "http:"))
+        (!form.allowPrivateNetwork || protocol !== "http:" ||
+          form.protocol !== "chat_completions"))
     ) {
       const code = "provider_configuration_invalid";
       setErrorCode(code);
@@ -143,6 +285,8 @@ export function useAdminProviderCustomSetupController(
         ...ADMIN_PROVIDER_CUSTOM_DEFAULT_CAPABILITIES,
         contextWindow: form.contextWindow,
         defaultMaxOutputTokens: form.defaultMaxOutputTokens,
+        nativeImageGeneration: form.imageGeneration,
+        nativeSearch: form.webSearch,
         streaming: form.streaming,
         toolCalling: form.toolCalling
       },
@@ -150,10 +294,11 @@ export function useAdminProviderCustomSetupController(
       ...(form.connectionDisplayName.trim()
         ? { connectionDisplayName: form.connectionDisplayName.trim() }
         : {}),
-      ...(form.modelDisplayName.trim()
+      ...(form.modelDisplayName.trim() && (!usesDiscoveredModels || modelIds.length === 1)
         ? { modelDisplayName: form.modelDisplayName.trim() }
         : {}),
-      modelId,
+      ...(usesDiscoveredModels ? { modelIds } : { modelId }),
+      protocol: form.protocol,
       ...(secret ? { secret } : {})
     }, fetch, abort.signal);
     if (generation !== generationRef.current) return false;
@@ -172,19 +317,27 @@ export function useAdminProviderCustomSetupController(
     setReady(result.data);
     void Promise.resolve(onMutationCommitted?.()).catch(() => undefined);
     return true;
-  }, [form, onMutationCommitted]);
+  }, [discoveredModels, form, onMutationCommitted]);
 
   return {
     actions: {
+      clearDiscoveredModels,
+      discoverModels,
       leave,
+      removeDiscoveredModel,
+      selectAllDiscoveredModels,
+      selectDiscoveredModel,
       submit,
       update
     },
     state: {
       error,
       errorCode,
+      discoveredModels,
+      discovering,
+      discoveryError,
       form,
-      formLocked: submitting,
+      formLocked: submitting || discovering,
       ready,
       submitting
     }

@@ -112,6 +112,15 @@ describe("provider connection configuration", () => {
 });
 
 describe("provider model configuration", () => {
+  it("round-trips an optional declared image-generation capability", () => {
+    expect(normalizeProviderModelConfiguration({
+      adapterKind: "openai_responses_compatible",
+      capabilities: { ...capabilities, nativeImageGeneration: true },
+      defaultParams: {},
+      upstreamModelId: "image-capable-model"
+    }).capabilities.nativeImageGeneration).toBe(true);
+  });
+
   it("accepts the explicit native Gemini Interactions adapter kind", () => {
     expect(normalizeProviderModelConfiguration({
       adapterKind: "gemini_interactions_native",

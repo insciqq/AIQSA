@@ -104,6 +104,7 @@ function service(overrides: Partial<Record<keyof AdminProviderService, unknown>>
     deleteCredential: vi.fn(),
     deleteModel: vi.fn(),
     disable: vi.fn(),
+    discoverCompatibleModels: vi.fn(),
     discoverOpenRouterEndpoints: vi.fn(),
     discoverOpenRouterModels: vi.fn(),
     enable: vi.fn(),
@@ -243,6 +244,33 @@ describe("admin provider HTTP handlers", () => {
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ models: [expect.objectContaining({ id: "vendor/model" })] });
     expect(discoverOpenRouterModels).toHaveBeenCalledWith({
+      connectionId: "connection-1",
+      credentialId: "credential-1",
+      signal: request.signal
+    });
+  });
+
+  it("exposes only compatible model ids from the selected stored credential", async () => {
+    const discoverCompatibleModels = vi.fn(async () => [
+      { id: "vendor/model-a" },
+      { id: "vendor/model-b" }
+    ]);
+    const handler = createAdminProviderConnectionActionHandler({
+      resolveAuth: resolver(auth()),
+      service: service({ discoverCompatibleModels })
+    });
+    const request = jsonRequest("http://localhost/api/admin/providers/connection-1/actions", {
+      action: "discover_compatible_models",
+      credentialId: "credential-1"
+    });
+
+    const response = await handler(request, { params: { connectionId: "connection-1" } });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      models: [{ id: "vendor/model-a" }, { id: "vendor/model-b" }]
+    });
+    expect(discoverCompatibleModels).toHaveBeenCalledWith({
       connectionId: "connection-1",
       credentialId: "credential-1",
       signal: request.signal

@@ -1,6 +1,9 @@
 import {
   ADMIN_PROVIDER_CUSTOM_AUTHENTICATION_MODES,
+  ADMIN_PROVIDER_CUSTOM_PROTOCOLS,
+  MAX_ADMIN_PROVIDER_CUSTOM_SETUP_MODELS,
   type AdminProviderCustomAuthenticationMode,
+  type AdminProviderCustomProtocol,
   type AdminProviderCustomSetupRequest
 } from "../../../contracts/adminProviderCustomSetup";
 import type { AdminProviderModelCapabilities } from "../../../contracts/adminProviders";
@@ -49,6 +52,12 @@ function authenticationMode(
   ) ? value as AdminProviderCustomAuthenticationMode : null;
 }
 
+function protocol(value: unknown): AdminProviderCustomProtocol | null {
+  return ADMIN_PROVIDER_CUSTOM_PROTOCOLS.includes(value as AdminProviderCustomProtocol)
+    ? value as AdminProviderCustomProtocol
+    : null;
+}
+
 async function requireAdmin(
   request: Request,
   deps: AdminProviderCustomSetupHandlerDeps
@@ -78,6 +87,8 @@ function configurationError(error: unknown): boolean {
     error instanceof Error && (
       error.message === "provider_credential_secret_invalid" ||
       error.message === "provider_custom_setup_authentication_invalid" ||
+      error.message === "provider_custom_setup_models_invalid" ||
+      error.message === "provider_custom_setup_protocol_invalid" ||
       error.message === "provider_custom_setup_name_invalid"
     )
   );
@@ -124,14 +135,35 @@ export function createAdminProviderCustomSetupHandler(
       "defaultParams",
       "modelDisplayName",
       "modelId",
+      "modelIds",
+      "protocol",
       "secret"
     ]);
     if (Object.keys(body).some((key) => !allowedKeys.has(key))) {
       return errorJson("provider_configuration_invalid", 400);
     }
     const mode = authenticationMode(body.authenticationMode);
+    const selectedProtocol = body.protocol === undefined
+      ? "chat_completions" as const
+      : protocol(body.protocol);
     const apiRoot = boundedText(body.apiRoot, 2_048);
-    const modelId = boundedText(body.modelId, 256);
+    const modelId = body.modelId === undefined
+      ? undefined
+      : boundedText(body.modelId, 256) ?? null;
+    const modelIds = body.modelIds === undefined
+      ? undefined
+      : Array.isArray(body.modelIds) &&
+          body.modelIds.length >= 1 &&
+          body.modelIds.length <= MAX_ADMIN_PROVIDER_CUSTOM_SETUP_MODELS
+        ? body.modelIds.map((value) => boundedText(value, 256))
+        : null;
+    const normalizedModelIds = Array.isArray(modelIds) && modelIds.every(
+      (value): value is string => value !== null
+    ) && new Set(modelIds).size === modelIds.length
+      ? modelIds
+      : modelIds === undefined
+        ? undefined
+        : null;
     const connectionDisplayName = body.connectionDisplayName === undefined
       ? undefined
       : boundedText(body.connectionDisplayName, 160) ?? null;
@@ -143,12 +175,17 @@ export function createAdminProviderCustomSetupHandler(
       : boundedText(body.secret, 16_384) ?? null;
     if (
       !mode ||
+      !selectedProtocol ||
       !apiRoot ||
-      !modelId ||
+      modelId === null ||
+      normalizedModelIds === null ||
+      ((modelId === undefined) === (normalizedModelIds === undefined)) ||
       typeof body.allowPrivateNetwork !== "boolean" ||
       body.confirmPaidRequest !== true ||
       connectionDisplayName === null ||
       modelDisplayName === null ||
+      (normalizedModelIds !== undefined &&
+        normalizedModelIds.length > 1 && modelDisplayName !== undefined) ||
       secret === null ||
       (body.capabilities !== undefined && !isRecord(body.capabilities)) ||
       (body.defaultParams !== undefined && !isRecord(body.defaultParams)) ||
@@ -170,7 +207,9 @@ export function createAdminProviderCustomSetupHandler(
         ? {}
         : { defaultParams: body.defaultParams }),
       ...(modelDisplayName === undefined ? {} : { modelDisplayName }),
-      modelId,
+      ...(modelId === undefined ? {} : { modelId }),
+      ...(normalizedModelIds === undefined ? {} : { modelIds: normalizedModelIds }),
+      protocol: selectedProtocol,
       ...(secret === undefined ? {} : { secret })
     };
     return safely(async () => Response.json(await deps.service.setup({

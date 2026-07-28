@@ -396,7 +396,8 @@ export async function loadProviderAdmissionPlan(
   let technicalSearchConfiguration: RunSearchStrategyConfiguration | undefined;
   if (strategy.kind === "openai_native_web_search") {
     if (
-      answer.snapshot.model.adapterKind !== "openai_responses_native" ||
+      (answer.snapshot.model.adapterKind !== "openai_responses_native" &&
+        answer.snapshot.model.adapterKind !== "openai_responses_compatible") ||
       !answer.modelConfiguration.capabilities.nativeSearch
     ) {
       throw new ProviderAdmissionError("search_strategy_not_available");

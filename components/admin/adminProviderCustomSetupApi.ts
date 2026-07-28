@@ -1,7 +1,10 @@
 import type {
+  AdminProviderCustomDiscoveryRequest,
+  AdminProviderCustomDiscoveryResult,
   AdminProviderCustomSetupReadyResult,
   AdminProviderCustomSetupRequest
 } from "@/lib/contracts/adminProviderCustomSetup";
+import { MAX_ADMIN_PROVIDER_CUSTOM_SETUP_MODELS } from "@/lib/contracts/adminProviderCustomSetup";
 
 type Fetcher = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
@@ -11,6 +14,10 @@ export type AdminProviderCustomSetupClientError = Readonly<{
 
 export type AdminProviderCustomSetupClientResult =
   | Readonly<{ data: AdminProviderCustomSetupReadyResult; ok: true }>
+  | Readonly<{ error: AdminProviderCustomSetupClientError; ok: false }>;
+
+export type AdminProviderCustomDiscoveryClientResult =
+  | Readonly<{ data: AdminProviderCustomDiscoveryResult; ok: true }>
   | Readonly<{ error: AdminProviderCustomSetupClientError; ok: false }>;
 
 const forbiddenResponseKeys = new Set([
@@ -71,6 +78,7 @@ function ready(value: unknown): AdminProviderCustomSetupReadyResult | null {
       "connectionId",
       "defaultChanged",
       "modelDisplayName",
+      "models",
       "outcome",
       "providerModelId"
     ]) ||
@@ -80,12 +88,87 @@ function ready(value: unknown): AdminProviderCustomSetupReadyResult | null {
     !safeText(value.connectionId, 128) ||
     typeof value.defaultChanged !== "boolean" ||
     !safeText(value.modelDisplayName, 160) ||
+    !Array.isArray(value.models) ||
+    value.models.length < 1 ||
+    value.models.length > MAX_ADMIN_PROVIDER_CUSTOM_SETUP_MODELS ||
+    value.models.some((model) =>
+      !record(model) ||
+      !exactKeys(model, ["modelDisplayName", "providerModelId"]) ||
+      !safeText(model.modelDisplayName, 160) ||
+      !safeText(model.providerModelId, 128)
+    ) ||
+    !record(value.models[0]) ||
+    value.models[0].modelDisplayName !== value.modelDisplayName ||
+    value.models[0].providerModelId !== value.providerModelId ||
     value.outcome !== "ready" ||
     !safeText(value.providerModelId, 128)
   ) {
     return null;
   }
   return value as AdminProviderCustomSetupReadyResult;
+}
+
+function discovery(value: unknown): AdminProviderCustomDiscoveryResult | null {
+  if (
+    !record(value) ||
+    containsForbiddenMaterial(value) ||
+    !exactKeys(value, ["checkedAt", "modelCount", "models", "source", "status"]) ||
+    !timestamp(value.checkedAt) ||
+    !Number.isInteger(value.modelCount) ||
+    Number(value.modelCount) < 0 ||
+    Number(value.modelCount) > 1_000 ||
+    !Array.isArray(value.models) ||
+    value.models.length !== value.modelCount ||
+    value.models.some((model) =>
+      !record(model) ||
+      !exactKeys(model, ["id"]) ||
+      !safeText(model.id, 256)
+    ) ||
+    value.source !== "models_catalog" ||
+    value.status !== "valid"
+  ) {
+    return null;
+  }
+  return value as AdminProviderCustomDiscoveryResult;
+}
+
+export async function discoverAdminProviderCustomModels(
+  body: AdminProviderCustomDiscoveryRequest,
+  fetcher: Fetcher = fetch,
+  signal?: AbortSignal
+): Promise<AdminProviderCustomDiscoveryClientResult> {
+  try {
+    const response = await fetcher("/api/admin/providers/custom-setup/discover", {
+      body: JSON.stringify(body),
+      credentials: "same-origin",
+      headers: { "content-type": "application/json" },
+      method: "POST",
+      signal
+    });
+    const value = await response.json().catch(() => null);
+    if (!response.ok) {
+      return {
+        error: {
+          code: record(value) && typeof value.error === "string"
+            ? value.error
+            : "provider_custom_setup_discovery_failed"
+        },
+        ok: false
+      };
+    }
+    const data = discovery(value);
+    return data
+      ? { data, ok: true }
+      : {
+          error: { code: "provider_custom_setup_discovery_response_invalid" },
+          ok: false
+        };
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      return { error: { code: "request_aborted" }, ok: false };
+    }
+    return { error: { code: "network_error" }, ok: false };
+  }
 }
 
 export async function submitAdminProviderCustomSetup(
@@ -137,6 +220,10 @@ export function adminProviderCustomSetupErrorMessage(
     provider_custom_setup_catalog_unavailable:
       "The setup was tested but could not be made available to your account.",
     provider_custom_setup_failed: "The custom provider could not be configured.",
+    provider_custom_setup_discovery_failed:
+      "This endpoint did not return a usable /models catalog. You can still enter a model ID manually.",
+    provider_custom_setup_discovery_response_invalid:
+      "The model catalog response was not safe to use. Enter a model ID manually.",
     provider_custom_setup_response_invalid:
       "The provider API returned an unexpected response. Refresh and try again.",
     provider_custom_setup_stale:

@@ -634,7 +634,8 @@ function validateSearchStrategyForModel(
   }
 
   if (searchStrategy === "openai-native-web-search") {
-    return adapterKind === "openai_responses_native" && capabilities.nativeSearch
+    return (adapterKind === "openai_responses_native" ||
+      adapterKind === "openai_responses_compatible") && capabilities.nativeSearch
       ? null
       : { code: "search_strategy_not_supported_by_model", status: 400 };
   }

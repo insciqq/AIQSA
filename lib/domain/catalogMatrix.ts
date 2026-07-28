@@ -83,7 +83,8 @@ export function availableSearchStrategiesForModel(
 
     if (
       strategy.kind === "openai_native_web_search" &&
-      model.adapterKind === "openai_responses_native" &&
+      (model.adapterKind === "openai_responses_native" ||
+        model.adapterKind === "openai_responses_compatible") &&
       model.capabilities.nativeSearch
     ) {
       strategyIds.add(strategy.strategyId);
@@ -174,6 +175,7 @@ export function buildCatalogModel(
       imageInput: model.capabilities.vision,
       nativeWebSearch:
         (model.adapterKind === "openai_responses_native" ||
+          model.adapterKind === "openai_responses_compatible" ||
           model.adapterKind === "gemini_interactions_native") &&
         model.capabilities.nativeSearch,
       openRouterPerplexitySearch,

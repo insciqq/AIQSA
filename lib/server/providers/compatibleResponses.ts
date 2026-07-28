@@ -21,10 +21,6 @@ export type CompatibleResponsesAdapterOptions = {
 };
 
 function compatibleRequest(request: ProviderRunRequest): ProviderRunRequest {
-  if (request.searchStrategy === "openai-native-web-search") {
-    throw new Error("compatible_responses_native_search_unsupported");
-  }
-
   return {
     ...request,
     params: {
@@ -37,9 +33,12 @@ function compatibleRequest(request: ProviderRunRequest): ProviderRunRequest {
   };
 }
 
-function stripNativeExtensions(body: OpenAIResponsesRequestBody): Record<string, unknown> {
+function stripNativeExtensions(
+  body: OpenAIResponsesRequestBody,
+  preserveWebSearchSources: boolean
+): Record<string, unknown> {
   const {
-    include: _include,
+    include,
     metadata: _metadata,
     previous_response_id: _previousResponseId,
     prompt_cache_key: _promptCacheKey,
@@ -51,6 +50,7 @@ function stripNativeExtensions(body: OpenAIResponsesRequestBody): Record<string,
   return {
     ...portable,
     background: false,
+    ...(preserveWebSearchSources && include ? { include } : {}),
     store: false
   };
 }
@@ -59,7 +59,11 @@ export function buildCompatibleResponsesRequest(
   request: ProviderRunRequest,
   options: Readonly<{ maxAttachmentTextChars?: number }> = {}
 ): Record<string, unknown> {
-  return stripNativeExtensions(buildOpenAIResponsesRequest(compatibleRequest(request), options));
+  const portableRequest = compatibleRequest(request);
+  return stripNativeExtensions(
+    buildOpenAIResponsesRequest(portableRequest, options),
+    portableRequest.searchStrategy === "openai-native-web-search"
+  );
 }
 
 export function createCompatibleResponsesAdapter(
@@ -73,7 +77,10 @@ export function createCompatibleResponsesAdapter(
       });
       return {
         ...preview,
-        body: stripNativeExtensions(preview.body),
+        body: stripNativeExtensions(
+          preview.body,
+          portableRequest.searchStrategy === "openai-native-web-search"
+        ),
         provider: "openai-compatible"
       };
     },

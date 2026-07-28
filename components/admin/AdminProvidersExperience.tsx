@@ -144,7 +144,7 @@ export function AdminProvidersExperience({
         role="tablist"
       >
         {([
-          ["setup", "Setup"],
+          ["setup", "Quick setup"],
           ["connections", "Connections"],
           ["profiles", "Run profiles"]
         ] as const).map(([task, label]) => (

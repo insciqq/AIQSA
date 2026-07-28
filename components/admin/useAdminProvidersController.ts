@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  discoverAdminCompatibleModels,
   adminProviderErrorMessage,
   createAdminProviderConnection,
   createAdminProviderCredential,
@@ -20,6 +21,7 @@ import {
   type AdminProviderClientResult
 } from "./adminProvidersApi";
 import type {
+  AdminCompatibleDiscoveredModel,
   AdminOpenRouterDiscoveredEndpoint,
   AdminOpenRouterDiscoveredModel,
   AdminProviderConnection
@@ -247,6 +249,12 @@ export function useAdminProvidersController(
         modelId: string
       ): Promise<AdminOpenRouterDiscoveredEndpoint[] | null> => runScopedDiscovery(
         () => discoverAdminOpenRouterEndpoints(connectionId, credentialId, modelId)
+      ),
+      discoverCompatibleModels: (
+        connectionId: string,
+        credentialId: string
+      ): Promise<AdminCompatibleDiscoveredModel[] | null> => runScopedDiscovery(
+        () => discoverAdminCompatibleModels(connectionId, credentialId)
       ),
       discoverModels: (
         connectionId: string,

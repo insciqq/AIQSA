@@ -115,11 +115,15 @@ function readyMcpPlan(): McpRunPlanResult {
 }
 
 function compatibleAdmissionPlan(
-  adapterKind: "openai_chat_completions_compatible" | "openai_responses_compatible"
+  adapterKind: "openai_chat_completions_compatible" | "openai_responses_compatible",
+  options: Readonly<{
+    nativeSearch?: boolean;
+    searchStrategyId?: string;
+  }> = {}
 ): ProviderAdmissionPlan {
   const capabilities: ProviderModelCapabilities = {
     ...baseCapabilities,
-    nativeSearch: false,
+    nativeSearch: options.nativeSearch ?? false,
     toolCalling: true
   };
   const defaultParams = {
@@ -156,7 +160,7 @@ function compatibleAdmissionPlan(
       }
     },
     fingerprint: "a".repeat(64),
-    requestedSearchStrategyId: "search-disabled",
+    requestedSearchStrategyId: options.searchStrategyId ?? "search-disabled",
     selection: {
       providerConnectionId: "connection-compatible",
       providerModelId: "deployment-compatible"
@@ -1087,6 +1091,32 @@ describe("run preparation", () => {
     expect(prepared.providerRequest.tools?.map((tool) => tool.name)).toEqual([
       "mcp_team_lookup_1"
     ]);
+  });
+
+  it("keeps declared hosted web search on a compatible Responses run", async () => {
+    const plan = compatibleAdmissionPlan("openai_responses_compatible", {
+      nativeSearch: true,
+      searchStrategyId: "openai-native-web-search"
+    });
+    const harness = createHarness();
+    const result = await prepareRun(
+      {
+        ...harness.deps,
+        allowFakeProvider: false,
+        providerAdmission: { async load() { return plan; } }
+      },
+      sendInput(successBody({
+        modelId: plan.selection.providerModelId,
+        provider: plan.selection.providerConnectionId,
+        searchStrategy: "openai-native-web-search"
+      }))
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.code);
+    const prepared = materializePreparedRunData(result.prepared);
+    expect(prepared.normalizedRequest.searchStrategy).toBe("openai-native-web-search");
+    expect(prepared.providerRequest.searchStrategy).toBe("openai-native-web-search");
   });
 
   it("rejects an initial MCP request when its exact provider tool schema exceeds context", async () => {

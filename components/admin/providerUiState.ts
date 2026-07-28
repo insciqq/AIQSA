@@ -63,10 +63,17 @@ function activeAssignments(connection: AdminProviderConnection) {
   return connection.assignments.filter((assignment) => assignment.group.archivedAt === null);
 }
 
+function activeUserAssignments(connection: AdminProviderConnection) {
+  return (connection.userAssignments ?? []).filter(
+    (assignment) => assignment.user.status === "active"
+  );
+}
+
 function referencedCredentialIds(connection: AdminProviderConnection): string[] {
   return [...new Set([
     ...(connection.defaultCredentialId ? [connection.defaultCredentialId] : []),
-    ...activeAssignments(connection).map((assignment) => assignment.credentialId)
+    ...activeAssignments(connection).map((assignment) => assignment.credentialId),
+    ...activeUserAssignments(connection).map((assignment) => assignment.credentialId)
   ])];
 }
 
@@ -162,6 +169,7 @@ export function providerReadiness(connection: AdminProviderConnection): Provider
   );
   const usableCredentials = connection.credentials.filter(credentialIsUsable);
   const assignments = activeAssignments(connection);
+  const userAssignments = activeUserAssignments(connection);
 
   if (usableCredentials.length === 0) {
     blockers.push({
@@ -185,10 +193,14 @@ export function providerReadiness(connection: AdminProviderConnection): Provider
     });
   }
 
-  if (connection.unassignedPolicy === "require_assignment" && assignments.length === 0) {
+  if (
+    connection.unassignedPolicy === "require_assignment" &&
+    assignments.length === 0 &&
+    userAssignments.length === 0
+  ) {
     blockers.push({
       code: "group_assignment_required",
-      message: "Assign a credential to at least one active group."
+      message: "Assign a credential to at least one active user or group."
     });
   }
 
@@ -201,7 +213,7 @@ export function providerReadiness(connection: AdminProviderConnection): Provider
         code: "referenced_credential_unusable",
         credentialIds: unusableIds,
         message:
-          "A configured default or active-group assignment references an unusable credential."
+          "A configured default, active-user, or active-group assignment references an unusable credential."
       });
     }
   }

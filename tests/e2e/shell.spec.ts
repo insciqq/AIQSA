@@ -2423,7 +2423,9 @@ test("opens a second blank New Chat while another active run is still running", 
           event("done", { runId, status: "complete" })
         ];
         const encoder = new TextEncoder();
-        const baseDelay = sendCount === 1 ? 220 : 60;
+        const chunkDelays = sendCount === 1
+          ? [100, 200, 300, 5_000, 5_200]
+          : chunks.map((_, index) => 60 * (index + 1));
 
         return new Response(
           new ReadableStream<Uint8Array>({
@@ -2434,7 +2436,7 @@ test("opens a second blank New Chat while another active run is still running", 
                   if (index === chunks.length - 1) {
                     controller.close();
                   }
-                }, baseDelay * (index + 1));
+                }, chunkDelays[index]);
               });
             }
           }),

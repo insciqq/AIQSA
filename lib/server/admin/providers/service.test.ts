@@ -684,6 +684,84 @@ describe("admin provider service", () => {
     expect(listModelEndpoints).toHaveBeenCalledWith("vendor/model", { signal: undefined });
   });
 
+  it("discovers id-only compatible models with the exact stored bearer credential", async () => {
+    const envelope = encryptProviderCredentialSecret({
+      credentialId: "credential-compatible",
+      key: KEY,
+      secret: "compatible-draft-key",
+      valueId: providerCredentialDraftValueId(2)
+    });
+    const testCatalog = vi.fn<AdminProviderCredentialTester["test"]>(async (input) => {
+      const secret = typeof input.secret === "function"
+        ? await input.secret()
+        : input.secret;
+      expect(secret).toBe("compatible-draft-key");
+      return { method: "models_catalog", modelIds: ["vendor/a", "vendor/b"] };
+    });
+    const providers = createAdminProviderService({
+      credentialTester: credentialTester(testCatalog),
+      encryptionKey: () => KEY,
+      repository: repository({
+        async loadDiscoveryCandidate() {
+          return {
+            connection: {
+              configuration: {
+                allowPrivateNetwork: false,
+                apiRoot: "https://compatible.example.test/v1",
+                authenticationMode: "bearer"
+              },
+              family: "openai_compatible",
+              id: "connection-compatible"
+            },
+            credential: {
+              id: "credential-compatible",
+              source: { draftVersion: 2, envelope, kind: "draft" }
+            }
+          };
+        }
+      }),
+      tester: tester()
+    });
+
+    await expect(providers.discoverCompatibleModels({
+      connectionId: "connection-compatible",
+      credentialId: "credential-compatible"
+    })).resolves.toEqual([{ id: "vendor/a" }, { id: "vendor/b" }]);
+    expect(testCatalog).toHaveBeenCalledOnce();
+  });
+
+  it("discovers compatible models without inventing a secret for explicit no-auth", async () => {
+    const testCatalog = vi.fn<AdminProviderCredentialTester["test"]>(async (input) => {
+      expect(input.secret).toBeNull();
+      return { method: "models_catalog", modelIds: ["local-a", "local-b"] };
+    });
+    const providers = createAdminProviderService({
+      credentialTester: credentialTester(testCatalog),
+      repository: repository({
+        async loadDiscoveryCandidate() {
+          return {
+            connection: {
+              configuration: {
+                allowPrivateNetwork: true,
+                apiRoot: "http://127.0.0.1:11434/v1",
+                authenticationMode: "none"
+              },
+              family: "openai_compatible",
+              id: "connection-local"
+            },
+            credential: { id: "credential-local", source: null }
+          };
+        }
+      }),
+      tester: tester()
+    });
+
+    await expect(providers.discoverCompatibleModels({
+      connectionId: "connection-local",
+      credentialId: "credential-local"
+    })).resolves.toEqual([{ id: "local-a" }, { id: "local-b" }]);
+  });
+
   it("refreshes the exact active tuple and records authoritative unavailable results", async () => {
     const envelope = encryptProviderCredentialSecret({
       credentialId: "credential-active",

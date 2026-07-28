@@ -139,7 +139,18 @@ describe("Prisma admin provider repository", () => {
             id: "credential-1",
             label: "Primary",
             testedAt: NOW,
-            updatedAt: NOW
+            updatedAt: NOW,
+            userAssignments: [{
+              connectionId: "connection-1",
+              credentialId: "credential-1",
+              updatedAt: NOW,
+              user: {
+                displayName: "Admin",
+                email: "admin@example.test",
+                id: "admin-1",
+                status: "active"
+              }
+            }]
           }],
           defaultCredentialId: "credential-1",
           displayName: "Compatible",
@@ -167,6 +178,17 @@ describe("Prisma admin provider repository", () => {
       draftSecretConfigured: true,
       id: "credential-1"
     });
+    expect(result[0]?.userAssignments).toEqual([{
+      connectionId: "connection-1",
+      credentialId: "credential-1",
+      updatedAt: NOW.toISOString(),
+      user: {
+        displayName: "Admin",
+        email: "admin@example.test",
+        id: "admin-1",
+        status: "active"
+      }
+    }]);
     expect(JSON.stringify(result)).not.toContain("private-draft-ciphertext");
     expect(JSON.stringify(result)).not.toContain("secretEnvelope");
   });
@@ -594,5 +616,103 @@ describe("Prisma admin provider repository", () => {
     expect(update?.data).not.toHaveProperty("status");
     expect(update?.data).not.toHaveProperty("evidence");
     expect(JSON.stringify(update)).not.toContain("active-envelope");
+  });
+
+  it("deletes a Custom connection and its removable configuration graph atomically", async () => {
+    const deleteConnection = vi.fn(async () => undefined);
+    const db = transactional({
+      accessGrant: { deleteMany: vi.fn(async () => ({ count: 1 })) },
+      chat: { updateMany: vi.fn(async () => ({ count: 1 })) },
+      providerConnection: {
+        delete: deleteConnection,
+        findUnique: vi.fn(async () => ({
+          enabled: true,
+          family: "openai_compatible",
+          templateKey: null
+        })),
+        update: vi.fn(async () => undefined)
+      },
+      providerCredential: {
+        deleteMany: vi.fn(async () => ({ count: 1 })),
+        findMany: vi.fn(async () => [{ id: "credential-1" }]),
+        updateMany: vi.fn(async () => ({ count: 1 }))
+      },
+      providerCredentialVersion: {
+        deleteMany: vi.fn(async () => ({ count: 1 }))
+      },
+      providerDraftCheck: { deleteMany: vi.fn(async () => ({ count: 1 })) },
+      providerGroupCredentialAssignment: {
+        deleteMany: vi.fn(async () => ({ count: 0 }))
+      },
+      providerModel: {
+        deleteMany: vi.fn(async () => ({ count: 1 })),
+        findMany: vi.fn(async () => [{ id: "model-1" }])
+      },
+      providerModelCredentialCheck: {
+        deleteMany: vi.fn(async () => ({ count: 1 }))
+      },
+      providerRunBinding: {
+        count: vi.fn(async () => 0),
+        updateMany: vi.fn(async () => ({ count: 0 }))
+      },
+      providerUserCredentialAssignment: {
+        deleteMany: vi.fn(async () => ({ count: 1 }))
+      },
+      runProfile: { count: vi.fn(async () => 0) },
+      searchStrategy: { count: vi.fn(async () => 0) },
+      userSettings: { updateMany: vi.fn(async () => ({ count: 1 })) }
+    });
+    const repository = createPrismaAdminProviderRepository(db as unknown as PrismaClient);
+
+    await expect(repository.deleteConnection("connection-1")).resolves.toEqual({
+      status: "deleted"
+    });
+    expect(deleteConnection).toHaveBeenCalledWith({ where: { id: "connection-1" } });
+    expect(db.userSettings.updateMany).toHaveBeenCalledWith({
+      data: { defaultProviderModelId: null },
+      where: { defaultProviderModelId: { in: ["model-1"] } }
+    });
+    expect(db.accessGrant.deleteMany).toHaveBeenCalledWith({
+      where: {
+        OR: [
+          { providerConnectionId: "connection-1" },
+          { providerModelId: { in: ["model-1"] } }
+        ]
+      }
+    });
+  });
+
+  it("keeps a Custom connection behind every live-run, profile, and search hard fence", async () => {
+    const deleteConnection = vi.fn();
+    const db = transactional({
+      providerConnection: {
+        delete: deleteConnection,
+        findUnique: vi.fn(async () => ({
+          enabled: true,
+          family: "openai_compatible",
+          templateKey: null
+        }))
+      },
+      providerCredential: { findMany: vi.fn(async () => [{ id: "credential-1" }]) },
+      providerCredentialVersion: { deleteMany: vi.fn(async () => ({ count: 0 })) },
+      providerModel: { findMany: vi.fn(async () => [{ id: "model-1" }]) },
+      providerRunBinding: {
+        count: vi.fn(async () => 1),
+        updateMany: vi.fn(async () => ({ count: 0 }))
+      },
+      runProfile: { count: vi.fn(async () => 2) },
+      searchStrategy: { count: vi.fn(async () => 3) }
+    });
+    const repository = createPrismaAdminProviderRepository(db as unknown as PrismaClient);
+
+    await expect(repository.deleteConnection("connection-1")).resolves.toEqual({
+      blockers: [
+        { count: 3, kind: "search_references" },
+        { count: 2, kind: "run_profiles" },
+        { count: 1, kind: "run_bindings" }
+      ],
+      status: "conflict"
+    });
+    expect(deleteConnection).not.toHaveBeenCalled();
   });
 });

@@ -39,7 +39,7 @@ describe("catalog capability matrix", () => {
       ...opaqueNative,
       adapterKind: "openai_responses_compatible" as const
     };
-    expect(availableSearchStrategiesForModel(compatible, defaultSearchStrategies)).not.toContain(
+    expect(availableSearchStrategiesForModel(compatible, defaultSearchStrategies)).toContain(
       "openai-native-web-search"
     );
   });

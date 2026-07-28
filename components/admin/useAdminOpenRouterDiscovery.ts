@@ -1,6 +1,7 @@
 "use client";
 
 import type {
+  AdminCompatibleDiscoveredModel,
   AdminOpenRouterDiscoveredEndpoint,
   AdminOpenRouterDiscoveredModel,
   AdminProviderConnection,
@@ -52,6 +53,10 @@ export type OpenRouterDiscoveryResource<T, TIdentity> = Readonly<{
 }>;
 
 export type AdminOpenRouterDiscoverySession = Readonly<{
+  compatibleModels: OpenRouterDiscoveryResource<
+    AdminCompatibleDiscoveredModel,
+    OpenRouterModelDiscoveryIdentity
+  >;
   endpoints: OpenRouterDiscoveryResource<
     AdminOpenRouterDiscoveredEndpoint,
     OpenRouterEndpointDiscoveryIdentity
@@ -69,6 +74,10 @@ type UseAdminOpenRouterDiscoveryOptions = Readonly<{
     credentialId: string,
     modelId: string
   ): Promise<AdminOpenRouterDiscoveredEndpoint[] | null>;
+  loadCompatibleModels?(
+    connectionId: string,
+    credentialId: string
+  ): Promise<AdminCompatibleDiscoveredModel[] | null>;
   loadModels(
     connectionId: string,
     credentialId: string
@@ -77,6 +86,7 @@ type UseAdminOpenRouterDiscoveryOptions = Readonly<{
 }>;
 
 const DEFAULT_MODEL_ERROR = "OpenRouter models could not be loaded. Try again.";
+const DEFAULT_COMPATIBLE_MODEL_ERROR = "Compatible endpoint models could not be loaded. Try again.";
 const DEFAULT_ENDPOINT_ERROR = "OpenRouter providers could not be loaded. Try again.";
 
 const idleState = Object.freeze({
@@ -161,13 +171,16 @@ function cachedState<T>(
 
 export function useAdminOpenRouterDiscovery({
   endpointErrorMessage = DEFAULT_ENDPOINT_ERROR,
+  loadCompatibleModels,
   loadEndpoints,
   loadModels,
   modelErrorMessage = DEFAULT_MODEL_ERROR
 }: UseAdminOpenRouterDiscoveryOptions): AdminOpenRouterDiscoverySession {
+  const compatibleModelCacheRef = useRef<DiscoveryCache<AdminCompatibleDiscoveredModel>>(new Map());
   const modelCacheRef = useRef<DiscoveryCache<AdminOpenRouterDiscoveredModel>>(new Map());
   const endpointCacheRef = useRef<DiscoveryCache<AdminOpenRouterDiscoveredEndpoint>>(new Map());
   const modelLoaderRef = useRef(loadModels);
+  const compatibleModelLoaderRef = useRef(loadCompatibleModels);
   const endpointLoaderRef = useRef(loadEndpoints);
   const requestIdRef = useRef(0);
   const mountedRef = useRef(true);
@@ -181,9 +194,10 @@ export function useAdminOpenRouterDiscovery({
   }, []);
 
   useEffect(() => {
+    compatibleModelLoaderRef.current = loadCompatibleModels;
     modelLoaderRef.current = loadModels;
     endpointLoaderRef.current = loadEndpoints;
-  }, [loadEndpoints, loadModels]);
+  }, [loadCompatibleModels, loadEndpoints, loadModels]);
 
   const notify = useCallback(() => {
     if (mountedRef.current) setRevision((revision) => revision + 1);
@@ -271,6 +285,27 @@ export function useAdminOpenRouterDiscovery({
     mode
   }), [modelErrorMessage, run]);
 
+  const getCompatibleModels = useCallback((identity: OpenRouterModelDiscoveryIdentity | null) =>
+    cachedState(
+      compatibleModelCacheRef.current,
+      identity ? modelCacheKey(identity) : null
+    ), []);
+
+  const runCompatibleModels = useCallback((
+    identity: OpenRouterModelDiscoveryIdentity | null,
+    mode: DiscoveryMode
+  ) => run({
+    cache: compatibleModelCacheRef.current,
+    errorMessage: DEFAULT_COMPATIBLE_MODEL_ERROR,
+    identity,
+    key: modelCacheKey,
+    loader: (current) => compatibleModelLoaderRef.current?.(
+      current.connectionId,
+      current.credentialId
+    ) ?? Promise.resolve(null),
+    mode
+  }), [run]);
+
   const getEndpoints = useCallback((identity: OpenRouterEndpointDiscoveryIdentity | null) =>
     cachedState(endpointCacheRef.current, identity ? endpointCacheKey(identity) : null), []);
 
@@ -291,6 +326,12 @@ export function useAdminOpenRouterDiscovery({
   }), [endpointErrorMessage, run]);
 
   return useMemo(() => ({
+    compatibleModels: {
+      get: getCompatibleModels,
+      load: (identity) => runCompatibleModels(identity, "load"),
+      refresh: (identity) => runCompatibleModels(identity, "refresh"),
+      retry: (identity) => runCompatibleModels(identity, "retry")
+    },
     endpoints: {
       get: getEndpoints,
       load: (identity) => runEndpoints(identity, "load"),
@@ -303,5 +344,12 @@ export function useAdminOpenRouterDiscovery({
       refresh: (identity) => runModels(identity, "refresh"),
       retry: (identity) => runModels(identity, "retry")
     }
-  }), [getEndpoints, getModels, runEndpoints, runModels]);
+  }), [
+    getCompatibleModels,
+    getEndpoints,
+    getModels,
+    runCompatibleModels,
+    runEndpoints,
+    runModels
+  ]);
 }

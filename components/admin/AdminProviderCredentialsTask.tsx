@@ -14,7 +14,7 @@ import { presentProviderCredential } from "@/components/admin/providerAdvancedVi
 import type { AdminConfirmationController } from "@/components/admin/useAdminConfirmationController";
 import type { AdminProvidersController } from "@/components/admin/useAdminProvidersController";
 import type { AdminProviderConnection } from "@/lib/contracts/adminProviders";
-import { KeyRound, MoreHorizontal, Plus, TestTube2, Trash2 } from "lucide-react";
+import { Check, KeyRound, MoreHorizontal, Plus, TestTube2, Trash2 } from "lucide-react";
 import { useState } from "react";
 
 const fieldLabel = "mb-1 block text-xs font-medium text-ink-secondary";
@@ -229,6 +229,26 @@ export function AdminProviderCredentialsTask({
                       >
                         Rotate
                       </button>
+                      {credential.draftSecretConfigured && credential.activeVersion ? (
+                        <button
+                          aria-label={`Activate replacement for ${credential.label} credential`}
+                          className={primaryButton}
+                          disabled={controller.state.busy}
+                          onClick={() => void controller.actions.connectionAction(
+                            connection.id,
+                            {
+                              action: "activate",
+                              confirmUnavailable: false,
+                              enableConnection: true
+                            },
+                            "Replacement key activated for new runs."
+                          )}
+                          type="button"
+                        >
+                          <Check aria-hidden="true" className="size-3.5" />
+                          Activate replacement
+                        </button>
+                      ) : null}
                       <button
                         aria-label={`${credential.enabled ? "Disable" : "Enable"} ${credential.label} credential`}
                         className={credential.enabled ? quietButton : enableButton}

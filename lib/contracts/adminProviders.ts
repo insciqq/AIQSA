@@ -27,6 +27,10 @@ export type AdminProviderModelCapabilities = {
   contextWindow?: number;
   defaultMaxOutputTokens?: number;
   nativeBackground?: boolean;
+  /** Administrator-declared support for OpenAI-compatible image generation.
+   * AIQSA records this for future image workflows; the current QSA run pipeline
+   * does not expose image generation as a runnable tool. */
+  nativeImageGeneration?: boolean;
   nativePdfInput: boolean;
   nativeSearch: boolean;
   parallelToolCalls?: boolean;
@@ -133,6 +137,18 @@ export type AdminProviderGroupCredentialAssignment = {
   updatedAt: string;
 };
 
+export type AdminProviderUserCredentialAssignment = {
+  connectionId: string;
+  credentialId: string;
+  updatedAt: string;
+  user: {
+    displayName: string;
+    email: string | null;
+    id: string;
+    status: "active" | "denied" | "disabled" | "pending";
+  };
+};
+
 export type AdminProviderConnection = {
   activatedAt: string | null;
   activeChecks: AdminProviderActiveCheck[];
@@ -152,6 +168,8 @@ export type AdminProviderConnection = {
   models: AdminProviderModel[];
   unassignedPolicy: AdminProviderUnassignedPolicy;
   updatedAt: string;
+  /** Optional for backward-compatible decoding of older catalog snapshots. */
+  userAssignments?: AdminProviderUserCredentialAssignment[];
 };
 
 /** Secret mutation requests are write-only. No response DTO contains this shape. */
@@ -191,6 +209,11 @@ export type AdminOpenRouterDiscoveredModel = {
   outputModalities: string[];
   pricing: Record<string, string>;
   supportedParameters: string[];
+};
+
+/** A compatible endpoint catalog exposes only validated model ids. */
+export type AdminCompatibleDiscoveredModel = {
+  id: string;
 };
 
 export type AdminOpenRouterDiscoveredEndpoint = {

@@ -95,6 +95,10 @@ function controller() {
     deleteConnection: vi.fn().mockResolvedValue(true),
     deleteCredential: vi.fn().mockResolvedValue(true),
     deleteModel: vi.fn().mockResolvedValue(true),
+    discoverCompatibleModels: vi.fn().mockResolvedValue([
+      { id: "local/model-a" },
+      { id: "local/model-b" }
+    ]),
     discoverEndpoints: vi.fn().mockResolvedValue([{
       name: "Provider A endpoint",
       providerName: "Provider A",
@@ -677,6 +681,58 @@ describe("AdminProvidersSection", () => {
     );
   });
 
+  it("offers activation beside a saved replacement key", () => {
+    const replacementConnection: AdminProviderConnection = {
+      ...connection,
+      activeConfig: connection.draftConfig,
+      activeVersion: 1,
+      credentials: [{
+        ...connection.credentials[0]!,
+        activeVersion: {
+          activatedAt: "2026-07-23T00:00:00.000Z",
+          id: "version-1",
+          revokedAt: null,
+          testedAt: "2026-07-23T00:00:00.000Z",
+          version: 1
+        },
+        draftSecretConfigured: true,
+        draftVersion: 2
+      }],
+      enabled: true,
+      models: [providerModel({
+        activeConfig: providerModel().draftConfig,
+        activeVersion: 1
+      })],
+      unassignedPolicy: "require_assignment",
+      userAssignments: [{
+        connectionId: connection.id,
+        credentialId: "credential-1",
+        updatedAt: "2026-07-23T00:00:00.000Z",
+        user: {
+          displayName: "Admin",
+          email: "admin@example.test",
+          id: "admin-1",
+          status: "active"
+        }
+      }]
+    };
+    const view = controller();
+    view.state.connections = [replacementConnection];
+    view.state.selectedConnection = replacementConnection;
+    mocks.useController.mockReturnValue(view);
+    render(<AdminProvidersSection active groups={[]} />);
+
+    openTask("Credentials");
+    fireEvent.click(screen.getByRole("button", {
+      name: "Activate replacement for Primary credential"
+    }));
+    expect(view.actions.connectionAction).toHaveBeenCalledWith(
+      connection.id,
+      { action: "activate", confirmUnavailable: false, enableConnection: true },
+      "Replacement key activated for new runs."
+    );
+  });
+
   it("supports the OpenRouter key to model to ordered provider draft flow", async () => {
     const view = controller();
     view.actions.discoverEndpoints.mockResolvedValue([
@@ -753,6 +809,57 @@ describe("AdminProvidersSection", () => {
           upstreamModelId: "vendor/fetched-model"
         }),
         displayName: "Fetched Model"
+      })
+    ));
+  });
+
+  it("offers the same searchable model picker for a saved custom connection", async () => {
+    const customConnection: AdminProviderConnection = {
+      ...connection,
+      displayName: "Custom gateway",
+      draftConfig: {
+        allowPrivateNetwork: false,
+        apiRoot: "https://compatible.example.test/v1",
+        authenticationMode: "bearer"
+      },
+      family: "openai_compatible",
+      id: "connection-custom"
+    };
+    const view = controller();
+    view.state.connections = [customConnection];
+    view.state.selectedConnection = customConnection;
+    mocks.useController.mockReturnValue(view);
+    render(<AdminProvidersSection active groups={[]} />);
+
+    openConnection("Custom gateway");
+    fireEvent.click(screen.getByRole("tab", { name: "Models" }));
+    const modelsRegion = screen.getByTestId("provider-task-models");
+    fireEvent.click(within(modelsRegion).getByRole("button", { name: "Add model" }));
+
+    await waitFor(() => expect(view.actions.discoverCompatibleModels).toHaveBeenCalledWith(
+      "connection-custom",
+      "credential-1"
+    ));
+    fireEvent.click(screen.getByRole("button", { name: "Endpoint model" }));
+    fireEvent.change(screen.getByRole("combobox", { name: "Search models" }), {
+      target: { value: "model-b" }
+    });
+    fireEvent.click(screen.getByRole("option", { name: /local\/model-b/ }));
+
+    expect(screen.getByRole("textbox", { name: "Upstream model ID" }))
+      .toHaveValue("local/model-b");
+    expect(screen.getByRole("textbox", { name: "Display name" }))
+      .toHaveValue("local/model-b");
+    fireEvent.click(screen.getByRole("button", { name: "Save model" }));
+
+    await waitFor(() => expect(view.actions.createModel).toHaveBeenCalledWith(
+      "connection-custom",
+      expect.objectContaining({
+        configuration: expect.objectContaining({
+          adapterKind: "openai_responses_compatible",
+          upstreamModelId: "local/model-b"
+        }),
+        displayName: "local/model-b"
       })
     ));
   });

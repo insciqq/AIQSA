@@ -1,4 +1,5 @@
 import type {
+  AdminCompatibleDiscoveredModel,
   AdminOpenRouterDiscoveredEndpoint,
   AdminOpenRouterDiscoveredModel,
   AdminProviderConnection,
@@ -65,13 +66,20 @@ function isConnection(value: unknown): value is AdminProviderConnection {
     Array.isArray(value.credentials) && value.credentials.every(isCredential) &&
     Array.isArray(value.models) && value.models.every(isModel) &&
     Array.isArray(value.assignments) && Array.isArray(value.draftChecks) &&
-    Array.isArray(value.activeChecks);
+    Array.isArray(value.activeChecks) &&
+    (value.userAssignments === undefined || Array.isArray(value.userAssignments));
 }
 
 function isDiscoveredModel(value: unknown): value is AdminOpenRouterDiscoveredModel {
   return record(value) && typeof value.id === "string" && typeof value.name === "string" &&
     stringArray(value.inputModalities) && stringArray(value.outputModalities) &&
     stringArray(value.supportedParameters) && record(value.pricing);
+}
+
+function isCompatibleDiscoveredModel(value: unknown): value is AdminCompatibleDiscoveredModel {
+  return record(value) && Object.keys(value).length === 1 &&
+    typeof value.id === "string" && value.id.trim().length > 0 && value.id.length <= 256 &&
+    !/[\u0000-\u001f\u007f]/u.test(value.id);
 }
 
 function isDiscoveredEndpoint(value: unknown): value is AdminOpenRouterDiscoveredEndpoint {
@@ -194,6 +202,24 @@ export function discoverAdminOpenRouterEndpoints(
     json("POST", { action: "discover_endpoints", credentialId, modelId }),
     (value) => record(value) && Array.isArray(value.endpoints) && value.endpoints.every(isDiscoveredEndpoint)
       ? value.endpoints
+      : null,
+    fetcher
+  );
+}
+
+export function discoverAdminCompatibleModels(
+  connectionId: string,
+  credentialId: string,
+  fetcher: Fetcher = fetch
+) {
+  return request(
+    `/api/admin/providers/${encoded(connectionId)}/actions`,
+    json("POST", { action: "discover_compatible_models", credentialId }),
+    (value) => record(value) && !containsSecretMaterial(value) &&
+      Array.isArray(value.models) && value.models.length <= 1_000 &&
+      value.models.every(isCompatibleDiscoveredModel) &&
+      new Set(value.models.map((model) => model.id)).size === value.models.length
+      ? value.models
       : null,
     fetcher
   );
@@ -333,8 +359,8 @@ export function adminProviderErrorMessage(error: AdminProviderClientError): stri
     provider_credential_not_found: "This credential no longer exists or has no usable key.",
     provider_credential_test_failed: "The provider rejected the key or its account catalog could not be reached.",
     provider_delete_conflict: "Remove the listed references or disable this resource instead.",
-    provider_discovery_failed: "OpenRouter discovery failed. Check the key, endpoint, and account access.",
-    provider_discovery_unsupported: "Remote model discovery is available only for OpenRouter connections.",
+    provider_discovery_failed: "Model discovery failed. Check the credential, endpoint, and account access.",
+    provider_discovery_unsupported: "Remote model discovery is available only for OpenRouter and Custom compatible connections.",
     provider_draft_stale: "The draft changed in another request. Refresh and retry.",
     provider_draft_test_failed: "The connectivity test failed. The prior active configuration was not changed.",
     provider_family_adapter_mismatch: "The selected protocol does not match this provider family.",

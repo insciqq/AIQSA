@@ -2,10 +2,11 @@ import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useAdminProviderCustomSetupController } from "./useAdminProviderCustomSetupController";
 
-const api = vi.hoisted(() => ({ submit: vi.fn() }));
+const api = vi.hoisted(() => ({ discover: vi.fn(), submit: vi.fn() }));
 
 vi.mock("./adminProviderCustomSetupApi", () => ({
   adminProviderCustomSetupErrorMessage: (error: { code: string }) => error.code,
+  discoverAdminProviderCustomModels: api.discover,
   submitAdminProviderCustomSetup: api.submit
 }));
 
@@ -16,6 +17,7 @@ const ready = {
   connectionId: "connection-1",
   defaultChanged: true,
   modelDisplayName: "Model 1",
+  models: [{ modelDisplayName: "Model 1", providerModelId: "model-1" }],
   outcome: "ready" as const,
   providerModelId: "model-1"
 };
@@ -45,6 +47,7 @@ function deferred<T>() {
 
 describe("useAdminProviderCustomSetupController", () => {
   beforeEach(() => {
+    api.discover.mockReset();
     api.submit.mockReset();
   });
 
@@ -104,6 +107,50 @@ describe("useAdminProviderCustomSetupController", () => {
       modelId: "local-model"
     }));
     expect(api.submit.mock.calls[0]?.[0]).not.toHaveProperty("secret");
+  });
+
+  it("submits every explicitly selected discovered model in selection order", async () => {
+    api.discover.mockResolvedValue({
+      data: {
+        checkedAt: "2026-07-26T10:00:00.000Z",
+        modelCount: 2,
+        models: [{ id: "vendor/a" }, { id: "vendor/b" }],
+        source: "models_catalog",
+        status: "valid"
+      },
+      ok: true
+    });
+    api.submit.mockResolvedValue({
+      data: {
+        ...ready,
+        models: [
+          { modelDisplayName: "vendor/b", providerModelId: "model-b" },
+          { modelDisplayName: "vendor/a", providerModelId: "model-a" }
+        ]
+      },
+      ok: true
+    });
+    const { result } = renderHook(() => useAdminProviderCustomSetupController(true));
+    act(() => result.current.actions.update({
+      apiRoot: "https://llm.example.test/v1",
+      secret: "browser-only-key"
+    }));
+
+    await act(async () => {
+      await result.current.actions.discoverModels();
+    });
+    act(() => {
+      result.current.actions.selectDiscoveredModel("vendor/b");
+      result.current.actions.selectDiscoveredModel("vendor/a");
+    });
+    await act(async () => {
+      await result.current.actions.submit();
+    });
+
+    expect(api.submit.mock.calls[0]?.[0]).toEqual(expect.objectContaining({
+      modelIds: ["vendor/b", "vendor/a"]
+    }));
+    expect(api.submit.mock.calls[0]?.[0]).not.toHaveProperty("modelId");
   });
 
   it("blocks keyless public setup before any request", async () => {

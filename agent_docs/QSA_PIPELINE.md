@@ -72,12 +72,12 @@ Current providers:
 
 - fake provider for deterministic tests;
 - native OpenAI Responses as the first-class OpenAI path;
-- custom OpenAI-compatible Responses and Chat Completions as separate explicit Advanced protocols, with a direct simple Chat endpoint/model/key setup;
+- custom OpenAI-compatible Responses and Chat Completions as explicit protocols in the direct endpoint/key/discovered-or-manual-model setup;
 - Anthropic Messages API;
 - Gemini through Google's native stateless Interactions v1 API, including native SSE, custom-function continuation, and optional hosted Google Search, with no compatibility fallback;
 - OpenRouter Chat Completions-compatible API;
 - administrator-selected OpenRouter search deployments for provider-neutral search tools;
-- Provider-neutral run-tool contracts for web search, with OpenAI Responses and OpenRouter Chat Completions bridge boundaries.
+- Provider-neutral run-tool contracts for web search, with native or explicitly declared compatible OpenAI Responses, Gemini Interactions, and OpenRouter Chat Completions bridge boundaries. Custom image-generation declarations remain future configuration evidence and do not create a runnable QSA capability.
 
 Adapter defaults and cache/wire details live in `BACKEND.md`; externally verified constraints live in `PROVIDER_API_NOTES.md`.
 
@@ -86,7 +86,7 @@ Adapter defaults and cache/wire details live in `BACKEND.md`; externally verifie
 - Treat Search as an explicit strategy selected per run.
 - Send/regenerate requests carry the selected strategy in the run body and a `controlDefaults` snapshot. After validation, the backend commits that snapshot to current-user defaults inside the same transaction as the guarded run graph; provider execution starts only after this complete commit. The visible composer state therefore survives immediate reloads even if a separate settings autosave was still in flight, while pre-create rejection, insert-time active-run conflict, or defaults failure leaves both the graph and defaults unchanged.
 - Explicit `search-disabled` is preserved as No Search and survives model/chat switching.
-- Selected `openai-native-web-search` sends OpenAI Responses the hosted `web_search` tool with `tool_choice: "auto"`; the model decides whether to search.
+- Selected `openai-native-web-search` sends native OpenAI Responses or an explicitly declared compatible Responses deployment the hosted `web_search` tool with `tool_choice: "auto"`; the model decides whether to search. Compatible catalog discovery does not prove tool support, so the administrator declaration and normal run failure boundary remain explicit.
 - Selected `gemini-google-search` offers the native Gemini hosted Search tool only to an eligible native deployment. If the model does not call it, the answer remains an ordinary durable run. Once an actual native search call begins, the adapter emits a persistence fence and withholds all answer text until non-empty Search Suggestions pass the strict parser; the live result then shows the exact isolated Suggestions plus transient sanitized citation Links. The grounded answer, Suggestions, Links, search result/signature data, and provider markup are never persisted, logged, replayed as context, or publicly shared. Reload shows explicit provenance and a neutral placeholder. Gemini Search cannot be combined with MCP/client functions in the same run.
 - Selected `perplexity-tool-search` lets an entitled OpenAI, Gemini, or OpenRouter answer model decide whether to call the provider-neutral `search_via_perplexity` tool against full branch context. The enabled strategy and search-model policy are server-authoritative; posted search params may change only bounded canonical output-token and temperature controls, never provider routing/privacy. No call creates no `SearchRun`; each actual call records search/citation/usage/error artifacts, and failures are returned to the answer model so it can still synthesize a useful answer. Execution is bounded and ends with a no-tool synthesis round. Current implementation also forwards bounded extracted PDF/document text to OpenRouter/Perplexity without a separate attachment confirmation; this is a known privacy limitation awaiting query-only, fail-closed remediation, so do not describe the current path as sending only the generated query. Exact bridge/transcript/streaming mechanics live in `BACKEND.md`.
 - Perplexity search runs only through the explicit provider-neutral `perplexity-tool-search` strategy. Settings store concrete strategy ids, and entitlement/model validation rejects unknown or unavailable values before execution.

@@ -29,6 +29,10 @@ function service(
       connectionId: "connection-1",
       defaultChanged: true,
       modelDisplayName: "vendor/model-1",
+      models: [{
+        modelDisplayName: "vendor/model-1",
+        providerModelId: "model-1"
+      }],
       outcome: "ready" as const,
       providerModelId: "model-1"
     })),
@@ -70,6 +74,7 @@ describe("custom provider setup handler", () => {
       connectionId: "connection-1",
       defaultChanged: false,
       modelDisplayName: "Lab model",
+      models: [{ modelDisplayName: "Lab model", providerModelId: "model-1" }],
       outcome: "ready" as const,
       providerModelId: "model-1"
     }));
@@ -115,6 +120,7 @@ describe("custom provider setup handler", () => {
       connectionId: "connection-1",
       defaultChanged: false,
       modelDisplayName: "Lab model",
+      models: [{ modelDisplayName: "Lab model", providerModelId: "model-1" }],
       outcome: "ready",
       providerModelId: "model-1"
     });
@@ -135,6 +141,27 @@ describe("custom provider setup handler", () => {
 
     expect(response.status).toBe(200);
     expect(setup.mock.calls[0]![0].request).not.toHaveProperty("secret");
+  });
+
+  it("accepts an ordered bounded multi-model selection without a manual model id", async () => {
+    const setup = vi.fn(service().setup);
+    const response = await createAdminProviderCustomSetupHandler({
+      resolveAuth: vi.fn(async () => session),
+      service: service({ setup })
+    })(post({
+      allowPrivateNetwork: false,
+      apiRoot: "https://llm.example.test/v1",
+      authenticationMode: "bearer",
+      confirmPaidRequest: true,
+      modelIds: ["vendor/model-a", "vendor/model-b"],
+      secret: "write-only-key"
+    }));
+
+    expect(response.status).toBe(200);
+    expect(setup.mock.calls[0]![0].request).toMatchObject({
+      modelIds: ["vendor/model-a", "vendor/model-b"]
+    });
+    expect(setup.mock.calls[0]![0].request).not.toHaveProperty("modelId");
   });
 
   it.each([
@@ -162,6 +189,23 @@ describe("custom provider setup handler", () => {
       modelId: "model-1",
       secret: "key",
       unexpected: true
+    }, 400],
+    [{
+      allowPrivateNetwork: false,
+      apiRoot: "https://llm.example.test/v1",
+      authenticationMode: "bearer",
+      confirmPaidRequest: true,
+      modelId: "model-1",
+      modelIds: ["model-1"],
+      secret: "key"
+    }, 400],
+    [{
+      allowPrivateNetwork: false,
+      apiRoot: "https://llm.example.test/v1",
+      authenticationMode: "bearer",
+      confirmPaidRequest: true,
+      modelIds: ["model-1", "model-1"],
+      secret: "key"
     }, 400]
   ])("rejects malformed or ambiguous request bodies", async (body, expectedStatus) => {
     const customService = service();

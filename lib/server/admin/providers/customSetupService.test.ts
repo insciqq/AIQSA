@@ -30,22 +30,37 @@ function harness(options: {
     status: "ready";
   };
   testStatus?: "available" | "unavailable";
+  unavailableModelId?: string;
 } = {}) {
   const test = vi.fn(async (input: { model: { upstreamModelId: string } }) => ({
     evidence: {
-      detail: options.testStatus === "unavailable" ? "model_missing" as const : "ok" as const,
+      detail: options.testStatus === "unavailable" ||
+        options.unavailableModelId === input.model.upstreamModelId
+        ? "model_missing" as const
+        : "ok" as const,
       method: "tiny_generation" as const,
       selectedProviders: [],
       upstreamModelId: input.model.upstreamModelId
     },
-    status: options.testStatus ?? "available" as const
+    status: options.testStatus === "unavailable" ||
+      options.unavailableModelId === input.model.upstreamModelId
+      ? "unavailable" as const
+      : "available" as const
   }));
   const commit = vi.fn(async (_plan: AdminProviderCustomSetupCommitPlan) => options.commit ?? ({
     defaultChanged: true,
     status: "ready" as const
   }));
   const encryptionKey = vi.fn(() => Buffer.alloc(32, 9));
-  const ids = ["connection-1", "model-1", "credential-1", "version-1", "grant-1"];
+  const ids = [
+    "connection-1",
+    "model-1",
+    "credential-1",
+    "version-1",
+    "grant-1",
+    "search-grant-1",
+    "extra-grant-1"
+  ];
   const times = [CHECKED_AT, COMMITTED_AT];
   const service = createAdminProviderCustomSetupService({
     encryptionKey,
@@ -68,6 +83,10 @@ describe("custom OpenAI-compatible provider setup service", () => {
       connectionId: "connection-1",
       defaultChanged: true,
       modelDisplayName: "vendor/model-1",
+      models: [{
+        modelDisplayName: "vendor/model-1",
+        providerModelId: "model-1"
+      }],
       outcome: "ready",
       providerModelId: "model-1"
     });
@@ -89,7 +108,7 @@ describe("custom OpenAI-compatible provider setup service", () => {
     const plan = commit.mock.calls[0]![0];
     expect(plan.credential.secretEnvelope).toEqual(expect.any(String));
     expect(plan.credential.secretEnvelope).not.toContain("exact-secret");
-    expect(plan.model.configuration.capabilities).toMatchObject({
+    expect(plan.models[0]!.configuration.capabilities).toMatchObject({
       contextWindow: 8_192,
       defaultMaxOutputTokens: 1_024,
       toolCalling: false
@@ -129,6 +148,64 @@ describe("custom OpenAI-compatible provider setup service", () => {
     });
   });
 
+  it("maps Responses and declared hosted web search into runnable configuration and entitlement", async () => {
+    const { commit, service, test } = harness();
+    await service.setup({
+      actor: ACTOR,
+      request: request({
+        capabilities: {
+          contextWindow: 16_384,
+          nativeImageGeneration: true,
+          nativePdfInput: false,
+          nativeSearch: true,
+          pdf: false,
+          reasoning: false,
+          streaming: true,
+          vision: false
+        },
+        protocol: "responses"
+      })
+    });
+
+    expect(test).toHaveBeenCalledWith(expect.objectContaining({
+      model: expect.objectContaining({
+        adapterKind: "openai_responses_compatible",
+        capabilities: expect.objectContaining({
+          nativeImageGeneration: true,
+          nativeSearch: true
+        })
+      })
+    }));
+    expect(commit.mock.calls[0]![0]).toMatchObject({
+      searchGrantId: "search-grant-1"
+    });
+  });
+
+  it.each([
+    request({
+      capabilities: {
+        nativePdfInput: false,
+        nativeSearch: true,
+        pdf: false,
+        reasoning: false,
+        vision: false
+      },
+      protocol: "chat_completions"
+    }),
+    request({
+      allowPrivateNetwork: true,
+      apiRoot: "http://127.0.0.1:11434/v1",
+      authenticationMode: "none",
+      protocol: "responses",
+      secret: undefined
+    })
+  ])("rejects protocol/tool combinations the runtime cannot honor", async (candidate) => {
+    const { commit, service, test } = harness();
+    await expect(service.setup({ actor: ACTOR, request: candidate })).rejects.toBeInstanceOf(Error);
+    expect(test).not.toHaveBeenCalled();
+    expect(commit).not.toHaveBeenCalled();
+  });
+
   it.each([
     request({ authenticationMode: "none", secret: undefined }),
     request({
@@ -146,11 +223,66 @@ describe("custom OpenAI-compatible provider setup service", () => {
     expect(commit).not.toHaveBeenCalled();
   });
 
+  it.each([
+    request({ modelIds: ["vendor/a"] }),
+    request({ modelId: undefined, modelIds: [] }),
+    request({ modelId: undefined, modelIds: ["vendor/a", "vendor/a"] }),
+    request({
+      modelId: undefined,
+      modelIds: Array.from({ length: 33 }, (_, index) => `vendor/${index}`)
+    }),
+    request({
+      modelDisplayName: "Ambiguous name",
+      modelId: undefined,
+      modelIds: ["vendor/a", "vendor/b"]
+    })
+  ])("rejects an invalid multi-model shape before remote or database work", async (candidate) => {
+    const { commit, service, test } = harness();
+    await expect(service.setup({ actor: ACTOR, request: candidate })).rejects.toBeInstanceOf(Error);
+    expect(test).not.toHaveBeenCalled();
+    expect(commit).not.toHaveBeenCalled();
+  });
+
   it("never commits when the exact tiny generation is unavailable", async () => {
     const { commit, service } = harness({ testStatus: "unavailable" });
     await expect(service.setup({ actor: ACTOR, request: request() })).rejects.toMatchObject({
       code: "provider_custom_setup_test_failed"
     });
+    expect(commit).not.toHaveBeenCalled();
+  });
+
+  it("tests every selected model in order and commits the complete graph once", async () => {
+    const { commit, service, test } = harness();
+
+    const result = await service.setup({
+      actor: ACTOR,
+      request: request({ modelId: undefined, modelIds: ["vendor/a", "vendor/b"] })
+    });
+
+    expect(test).toHaveBeenCalledTimes(2);
+    expect(test.mock.calls.map(([input]) => input.model.upstreamModelId)).toEqual([
+      "vendor/a",
+      "vendor/b"
+    ]);
+    expect(commit).toHaveBeenCalledOnce();
+    expect(commit.mock.calls[0]![0].models.map((model) =>
+      model.configuration.upstreamModelId)).toEqual(["vendor/a", "vendor/b"]);
+    expect(result.models).toEqual([
+      { modelDisplayName: "vendor/a", providerModelId: "model-1" },
+      { modelDisplayName: "vendor/b", providerModelId: "credential-1" }
+    ]);
+    expect(result.providerModelId).toBe("model-1");
+  });
+
+  it("writes nothing when any selected model fails its exact test", async () => {
+    const { commit, service, test } = harness({ unavailableModelId: "vendor/b" });
+
+    await expect(service.setup({
+      actor: ACTOR,
+      request: request({ modelId: undefined, modelIds: ["vendor/a", "vendor/b"] })
+    })).rejects.toMatchObject({ code: "provider_custom_setup_test_failed" });
+
+    expect(test).toHaveBeenCalledTimes(2);
     expect(commit).not.toHaveBeenCalled();
   });
 

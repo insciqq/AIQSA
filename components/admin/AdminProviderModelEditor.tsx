@@ -381,6 +381,7 @@ export function AdminProviderModelEditor({
   );
   const modelState = discovery.models.get(modelIdentity);
   const catalogModels = modelState.items;
+  const compatibleModelState = discovery.compatibleModels.get(modelIdentity);
   const selectedCatalogModel = catalogModels.find(({ id }) => id === form.upstreamModelId);
   const terminalPath = form.adapterKind.includes("responses")
     ? "responses"
@@ -393,8 +394,10 @@ export function AdminProviderModelEditor({
   useEffect(() => {
     if (connection.family === "openrouter" && modelIdentity) {
       void discovery.models.load(modelIdentity);
+    } else if (connection.family === "openai_compatible" && modelIdentity) {
+      void discovery.compatibleModels.load(modelIdentity);
     }
-  }, [connection.family, discovery.models, modelIdentity]);
+  }, [connection.family, discovery.compatibleModels, discovery.models, modelIdentity]);
 
   function updateCapability(
     key: keyof AdminProviderModelCapabilities,
@@ -470,6 +473,8 @@ export function AdminProviderModelEditor({
         <p className={helpText}>
           {connection.family === "openrouter"
             ? "Choose a model available to the selected account. AIQSA fills its safe defaults automatically."
+            : connection.family === "openai_compatible"
+              ? "Choose an ID reported by this endpoint, or enter one manually when /models is unavailable."
             : "Configure the concrete upstream deployment used by this connection."}
         </p>
       </div>
@@ -589,25 +594,100 @@ export function AdminProviderModelEditor({
           </label>
         </div>
       ) : (
-        <div className="grid gap-3 md:grid-cols-2">
-          <label>
-            <span className={fieldLabel}>Display name</span>
-            <input className={inputClass} disabled={controller.state.busy} maxLength={160} onChange={(event) => setForm({ ...form, displayName: event.currentTarget.value })} required value={form.displayName} />
-          </label>
-          <label>
-            <span className={fieldLabel}>Upstream model ID</span>
-            <input className={`${inputClass} font-mono text-xs`} disabled={controller.state.busy} maxLength={256} onChange={(event) => setForm({ ...form, upstreamModelId: event.currentTarget.value })} required value={form.upstreamModelId} />
-          </label>
+        <div className="grid gap-3">
           {compatibleAdapters ? (
-            <label className="md:col-span-2">
-              <span className={fieldLabel}>Protocol</span>
-              <select className={inputClass} disabled={controller.state.busy} onChange={(event) => setForm({ ...form, adapterKind: event.currentTarget.value as AdminProviderAdapterKind })} value={form.adapterKind}>
-                <option value="openai_responses_compatible">Responses</option>
-                <option value="openai_chat_completions_compatible">Chat Completions</option>
-              </select>
-              <span className={helpText}>Required explicitly; compatible authentication does not prove the wire protocol.</span>
-            </label>
+            <div className="grid gap-3">
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
+                {connection.credentials.length > 1 ? (
+                  <label className="min-w-0 flex-1">
+                    <span className={fieldLabel}>Credential used for discovery</span>
+                    <select
+                      className={inputClass}
+                      disabled={controller.state.busy}
+                      onChange={(event) => setCredentialId(event.currentTarget.value)}
+                      value={credentialId}
+                    >
+                      {connection.credentials.map((candidate) => (
+                        <option
+                          disabled={!credentialCanDiscover(candidate)}
+                          key={candidate.id}
+                          value={candidate.id}
+                        >
+                          {candidate.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                ) : (
+                  <div className="min-w-0 flex-1">
+                    <span className={fieldLabel}>Models available to credential</span>
+                    <p className="break-words text-sm text-ink">
+                      {credential?.label ?? "No usable credential"}
+                    </p>
+                  </div>
+                )}
+                <button
+                  className={quietButton}
+                  disabled={!modelIdentity || compatibleModelState.status === "loading"}
+                  onClick={() => void discovery.compatibleModels.refresh(modelIdentity)}
+                  type="button"
+                >
+                  <RefreshCw
+                    aria-hidden="true"
+                    className={`size-3.5 ${compatibleModelState.status === "loading" ? "animate-spin" : ""}`}
+                  />
+                  Refresh catalog
+                </button>
+              </div>
+
+              <AdminSearchablePicker
+                description="Search the bounded IDs reported by this endpoint's /models catalog. Selecting an ID fills this draft; it does not import capabilities."
+                disabled={!modelIdentity}
+                emptyDescription="This endpoint returned no model IDs. Refresh it, review the credential, or enter an exact ID manually below."
+                emptyTitle="No models reported by this endpoint"
+                error={compatibleModelState.error}
+                items={compatibleModelState.items.map((model) => ({
+                  id: model.id,
+                  label: model.id,
+                  secondaryText: "Reported by /models"
+                }))}
+                label="Endpoint model"
+                loading={compatibleModelState.status === "loading"}
+                noun={{ plural: "models", singular: "model" }}
+                onRetry={() => void discovery.compatibleModels.retry(modelIdentity)}
+                onSelect={(model) => setForm({
+                  ...form,
+                  displayName: model.id,
+                  upstreamModelId: model.id
+                })}
+                placeholder="Choose a reported model"
+                searchPlaceholder="Search model IDs"
+                selectedFallbackLabel={form.upstreamModelId || "Configured model"}
+                selectedId={form.upstreamModelId || null}
+              />
+            </div>
           ) : null}
+
+          <div className="grid gap-3 md:grid-cols-2">
+            <label>
+              <span className={fieldLabel}>Display name</span>
+              <input className={inputClass} disabled={controller.state.busy} maxLength={160} onChange={(event) => setForm({ ...form, displayName: event.currentTarget.value })} required value={form.displayName} />
+            </label>
+            <label>
+              <span className={fieldLabel}>Upstream model ID</span>
+              <input className={`${inputClass} font-mono text-xs`} disabled={controller.state.busy} maxLength={256} onChange={(event) => setForm({ ...form, upstreamModelId: event.currentTarget.value })} required value={form.upstreamModelId} />
+            </label>
+            {compatibleAdapters ? (
+              <label className="md:col-span-2">
+                <span className={fieldLabel}>Protocol</span>
+                <select className={inputClass} disabled={controller.state.busy} onChange={(event) => setForm({ ...form, adapterKind: event.currentTarget.value as AdminProviderAdapterKind })} value={form.adapterKind}>
+                  <option value="openai_responses_compatible">Responses</option>
+                  <option value="openai_chat_completions_compatible">Chat Completions</option>
+                </select>
+                <span className={helpText}>Required explicitly; compatible authentication does not prove the wire protocol.</span>
+              </label>
+            ) : null}
+          </div>
         </div>
       )}
 

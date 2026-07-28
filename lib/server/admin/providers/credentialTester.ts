@@ -5,6 +5,7 @@ import {
 } from "../../providers/network";
 import {
   normalizeProviderConnectionConfiguration,
+  providerAuthenticationMode,
   type ProviderConnectionConfiguration,
   type ProviderFamily
 } from "../../providers/providerConfiguration";
@@ -25,7 +26,7 @@ export const MAX_PROVIDER_CREDENTIAL_TEST_MODELS = 1_000;
 export type AdminProviderCredentialTesterInput = Readonly<{
   connection: ProviderConnectionConfiguration;
   family: ProviderFamily;
-  secret: ProviderCredentialSource;
+  secret: ProviderCredentialSource | null;
   signal?: AbortSignal;
 }>;
 
@@ -100,8 +101,9 @@ function catalogPath(family: ProviderFamily): string {
   return family === "gemini" ? "models?pageSize=1000" : "models";
 }
 
-function authenticationHeaders(family: ProviderFamily, secret: string): Headers {
+function authenticationHeaders(family: ProviderFamily, secret: string | null): Headers {
   const headers = new Headers({ accept: "application/json" });
+  if (secret === null) return headers;
   if (family === "anthropic") {
     headers.set("anthropic-version", "2023-06-01");
     headers.set("x-api-key", secret);
@@ -120,10 +122,17 @@ export function createAdminProviderCredentialTester(
     async test(input) {
       try {
         const connection = normalizeProviderConnectionConfiguration(input.connection);
-        const secret = await resolveProviderCredentialSource(
-          input.secret,
-          "provider_credential_test_failed"
-        );
+        const authenticationMode = providerAuthenticationMode(connection);
+        const secret = authenticationMode === "none"
+          ? input.secret === null
+            ? null
+            : (() => { throw new AdminProviderCredentialTestError(); })()
+          : input.secret === null
+            ? (() => { throw new AdminProviderCredentialTestError(); })()
+            : await resolveProviderCredentialSource(
+                input.secret,
+                "provider_credential_test_failed"
+              );
         const fetchFn = createProviderSafeFetch({
           configuration: connection,
           ...options.network

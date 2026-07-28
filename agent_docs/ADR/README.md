@@ -47,6 +47,7 @@ Every ADR also declares `Amends: none` or a comma-separated list of earlier ADR 
 - `0036-share-confirmation-and-per-chat-link-management.md` - sharing publishes only through an explicit confirmation dialog, snapshots record their source chat, and each chat's live links stay listed and revocable while tokens remain hashed.
 - `0037-unobstructed-conversation-action-rail.md` - removes the repeated visible chat title and full-width header surface; ADR 0038 replaces its desktop normal-flow row with a right-gutter overlay that reserves no vertical strip and still cannot cover the reading column.
 - `0038-reading-first-conversation-chrome.md` - starts desktop chat at the top, gates settled message controls/evidence by hover/focus or touch activation, restores intent-gated compact composer collapse, and makes Run setup profiles a consistent divided list.
+- `0039-custom-provider-discovery-tools-and-lifecycle.md` - makes Custom a first-class Quick-setup choice, adds bounded transient id-only discovery in Quick setup and saved connections, atomically bootstraps an ordered tested model selection, enables explicit compatible protocol/tool declarations and Responses web search, exposes replacement activation, and removes self-contained Custom graphs behind recovery/profile/search fences.
 
 ## Superseded ADRs
 

@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   adminProviderErrorMessage,
   createAdminProviderCredential,
+  discoverAdminCompatibleModels,
   getAdminProviderConnections,
   testAdminProviderCredential
 } from "./adminProvidersApi";
@@ -108,5 +109,40 @@ describe("admin provider browser API", () => {
         method: "POST"
       })
     );
+  });
+
+  it("decodes compatible discovery as id-only rows and never accepts secret material", async () => {
+    const fetcher = vi.fn(async () => Response.json({
+      models: [{ id: "vendor/model-a" }, { id: "vendor/model-b" }]
+    }));
+    await expect(discoverAdminCompatibleModels(
+      "connection/one",
+      "credential/one",
+      fetcher
+    )).resolves.toEqual({
+      data: [{ id: "vendor/model-a" }, { id: "vendor/model-b" }],
+      ok: true
+    });
+    expect(fetcher).toHaveBeenCalledWith(
+      "/api/admin/providers/connection%2Fone/actions",
+      expect.objectContaining({
+        body: JSON.stringify({
+          action: "discover_compatible_models",
+          credentialId: "credential/one"
+        }),
+        method: "POST"
+      })
+    );
+
+    await expect(discoverAdminCompatibleModels(
+      "connection/one",
+      "credential/one",
+      vi.fn(async () => Response.json({
+        models: [{ id: "vendor/model-a", secret: "must-not-enter-state" }]
+      }))
+    )).resolves.toMatchObject({
+      error: { code: "provider_admin_response_invalid" },
+      ok: false
+    });
   });
 });

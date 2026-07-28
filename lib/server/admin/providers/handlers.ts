@@ -304,6 +304,16 @@ export function createAdminProviderConnectionActionHandler(deps: AdminProviderHa
         });
         return Response.json({ models });
       }
+      if (action === "discover_compatible_models") {
+        const credentialId = text(body.credentialId, 128);
+        if (!credentialId) return errorJson("provider_action_invalid", 400);
+        const models = await deps.service.discoverCompatibleModels({
+          connectionId,
+          credentialId,
+          signal: request.signal
+        });
+        return Response.json({ models });
+      }
       if (action === "discover_endpoints") {
         const credentialId = text(body.credentialId, 128);
         const modelId = text(body.modelId, 256);

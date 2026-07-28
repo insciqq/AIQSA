@@ -48,6 +48,23 @@ Externally constrained facts:
 
 Current AIQSA request construction, polling, tool bridging, attachment mapping, redaction, and normalized event/result behavior live only in `BACKEND.md` and adapter tests.
 
+## Compatible OpenAI Gateways And codex-lb
+
+Last verified: 2026-07-28.
+
+Primary references:
+
+- `https://soju06.github.io/codex-lb/client-setup/`
+- `https://github.com/Soju06/codex-lb/blob/main/CHANGELOG.md`
+
+Externally constrained facts:
+
+- codex-lb's OpenAI-compatible client configuration uses the deployment's `/v1` API root. A root that omits `/v1` may resolve to the web application rather than the JSON catalog/API, so AIQSA keeps protocol and canonical API root explicit instead of guessing from a hostname.
+- The codex-lb changelog reports an OpenAI-compatible image API backed by its `image_generation` capability from v1.16.0 and forwarding for standalone web search from v1.22.0. Those project capabilities do not prove that a particular deployment, account, or selected model currently enables either tool.
+- A successful `/models` catalog request proves only safe catalog reachability for the supplied authentication candidate. OpenAPI path presence, catalog membership, and administrator capability declarations are not substitutes for an authenticated tool-specific smoke.
+
+AIQSA's compatible Responses web-search mapping and future-only image-generation declaration live in `BACKEND.md`; this note does not promote image generation into a runnable chat capability.
+
 ## Anthropic Messages API
 
 Last verified: 2026-07-26.

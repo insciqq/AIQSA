@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { loadProviderAdmissionPlan } from "./admission";
 
 function fullAccessAdmissionDb(input: Readonly<{
+  compatibleResponses?: boolean;
   directCredential?: boolean;
 }> = {}) {
   const accessGrantCount = vi.fn(async () => 0);
@@ -25,7 +26,9 @@ function fullAccessAdmissionDb(input: Readonly<{
     providerModel: {
       findFirst: vi.fn(async () => ({
         activeConfig: {
-          adapterKind: "openai_responses_native",
+          adapterKind: input.compatibleResponses
+            ? "openai_responses_compatible"
+            : "openai_responses_native",
           capabilities: {
             nativePdfInput: true,
             nativeSearch: true,
@@ -42,13 +45,15 @@ function fullAccessAdmissionDb(input: Readonly<{
         connection: {
           activeConfig: {
             allowPrivateNetwork: false,
-            apiRoot: "https://api.openai.com/v1"
+            apiRoot: input.compatibleResponses
+              ? "https://compatible.example.test/v1"
+              : "https://api.openai.com/v1"
           },
           activeVersion: 1,
           defaultCredentialId: null,
           displayName: "OpenAI",
           enabled: true,
-          family: "openai",
+          family: input.compatibleResponses ? "openai_compatible" : "openai",
           id: "connection-future",
           unassignedPolicy: "use_default"
         },
@@ -176,6 +181,27 @@ describe("provider admission", () => {
     expect(plan.answer.credentialSource).toBe("user");
     expect(plan.requestedSearchStrategyId).toBe("future-native-search");
     expect(accessGrantCount).not.toHaveBeenCalled();
+  });
+
+  it("admits declared hosted web search for compatible Responses", async () => {
+    const { db } = fullAccessAdmissionDb({ compatibleResponses: true });
+
+    await expect(loadProviderAdmissionPlan(
+      db as unknown as Prisma.TransactionClient,
+      {
+        providerConnectionId: "connection-future",
+        providerModelId: "deployment-future",
+        searchStrategyId: "future-native-search",
+        userId: "user-1"
+      }
+    )).resolves.toMatchObject({
+      answer: {
+        snapshot: {
+          model: { adapterKind: "openai_responses_compatible" },
+          providerFamily: "openai_compatible"
+        }
+      }
+    });
   });
 
   it("does not let full access bypass credential selection", async () => {

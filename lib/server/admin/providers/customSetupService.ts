@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import {
   ADMIN_PROVIDER_CUSTOM_DEFAULT_CAPABILITIES,
+  MAX_ADMIN_PROVIDER_CUSTOM_SETUP_MODELS,
   type AdminProviderCustomSetupErrorCode,
   type AdminProviderCustomSetupReadyResult,
   type AdminProviderCustomSetupRequest
@@ -92,14 +93,61 @@ function connectionConfiguration(
 }
 
 function modelConfiguration(
-  request: AdminProviderCustomSetupRequest
+  request: AdminProviderCustomSetupRequest,
+  upstreamModelId: string
 ): ProviderModelConfiguration {
-  return normalizeProviderModelConfiguration({
-    adapterKind: "openai_chat_completions_compatible",
+  const protocol = request.protocol ?? "chat_completions";
+  const configuration = normalizeProviderModelConfiguration({
+    adapterKind: protocol === "responses"
+      ? "openai_responses_compatible"
+      : "openai_chat_completions_compatible",
     capabilities: request.capabilities ?? ADMIN_PROVIDER_CUSTOM_DEFAULT_CAPABILITIES,
     defaultParams: request.defaultParams ?? {},
-    upstreamModelId: request.modelId
+    upstreamModelId
   });
+  if (
+    (request.authenticationMode === "none" && protocol === "responses") ||
+    ((configuration.capabilities.nativeSearch ||
+      configuration.capabilities.nativeImageGeneration) && protocol !== "responses")
+  ) {
+    throw new Error("provider_custom_setup_protocol_invalid");
+  }
+  return configuration;
+}
+
+function requestedModelIds(request: AdminProviderCustomSetupRequest): string[] {
+  const hasManualModel = request.modelId !== undefined;
+  const hasDiscoveredModels = request.modelIds !== undefined;
+  if (hasManualModel === hasDiscoveredModels) {
+    throw new Error("provider_custom_setup_models_invalid");
+  }
+  const candidates = hasDiscoveredModels ? request.modelIds! : [request.modelId!];
+  if (
+    candidates.length < 1 ||
+    candidates.length > MAX_ADMIN_PROVIDER_CUSTOM_SETUP_MODELS
+  ) {
+    throw new Error("provider_custom_setup_models_invalid");
+  }
+
+  const output: string[] = [];
+  const seen = new Set<string>();
+  for (const candidate of candidates) {
+    const normalized = typeof candidate === "string" ? candidate.trim() : "";
+    if (
+      !normalized ||
+      normalized.length > 256 ||
+      /[\u0000-\u001f\u007f]/u.test(normalized) ||
+      seen.has(normalized)
+    ) {
+      throw new Error("provider_custom_setup_models_invalid");
+    }
+    seen.add(normalized);
+    output.push(normalized);
+  }
+  if (output.length > 1 && request.modelDisplayName !== undefined) {
+    throw new Error("provider_custom_setup_models_invalid");
+  }
+  return output;
 }
 
 function validatedEvidence(
@@ -144,15 +192,20 @@ export function createAdminProviderCustomSetupService(input: Readonly<{
     }>): Promise<AdminProviderCustomSetupReadyResult> {
       const request = inputValue.request;
       const connection = connectionConfiguration(request);
-      const model = modelConfiguration(request);
+      const upstreamModelIds = requestedModelIds(request);
+      const modelConfigurations = upstreamModelIds.map((upstreamModelId) =>
+        modelConfiguration(request, upstreamModelId)
+      );
       const connectionName = displayName(
         request.connectionDisplayName,
         defaultConnectionDisplayName(connection.apiRoot)
       );
-      const modelName = displayName(
-        request.modelDisplayName,
+      const modelNames = modelConfigurations.map((model, index) => displayName(
+        index === 0 && modelConfigurations.length === 1
+          ? request.modelDisplayName
+          : undefined,
         model.upstreamModelId.slice(0, MAX_DISPLAY_NAME_LENGTH)
-      );
+      ));
 
       let secret: string | null;
       if (request.authenticationMode === "bearer") {
@@ -168,33 +221,39 @@ export function createAdminProviderCustomSetupService(input: Readonly<{
       }
 
       const connectionId = idFactory();
-      const providerModelId = idFactory();
+      const providerModelIds = modelConfigurations.map(() => idFactory());
       const credentialId = idFactory();
       const credentialVersionId = idFactory();
-      const grantId = idFactory();
+      const grantIds = modelConfigurations.map(() => idFactory());
+      const searchGrantId = modelConfigurations[0]!.capabilities.nativeSearch
+        ? idFactory()
+        : undefined;
 
-      let testOutcome: AdminProviderDraftTestOutcome;
-      try {
-        testOutcome = await input.tester.test({
-          connection,
-          connectionDisplayName: connectionName,
-          connectionId,
-          credentialId,
-          credentialVersionIdentity: credentialVersionId,
-          model,
-          modelDisplayName: modelName,
-          providerFamily: "openai_compatible",
-          providerModelId,
-          secret,
-          signal: inputValue.signal
-        });
-      } catch {
-        throw new AdminProviderCustomSetupServiceError(
-          "provider_custom_setup_test_failed"
-        );
+      const evidence: AdminProviderTestEvidence[] = [];
+      for (const [index, model] of modelConfigurations.entries()) {
+        let testOutcome: AdminProviderDraftTestOutcome;
+        try {
+          testOutcome = await input.tester.test({
+            connection,
+            connectionDisplayName: connectionName,
+            connectionId,
+            credentialId,
+            credentialVersionIdentity: credentialVersionId,
+            model,
+            modelDisplayName: modelNames[index]!,
+            providerFamily: "openai_compatible",
+            providerModelId: providerModelIds[index]!,
+            secret,
+            signal: inputValue.signal
+          });
+        } catch {
+          throw new AdminProviderCustomSetupServiceError(
+            "provider_custom_setup_test_failed"
+          );
+        }
+        evidence.push(validatedEvidence(testOutcome, model));
       }
       const checkedAt = now();
-      const evidence = validatedEvidence(testOutcome, model);
       const commit = await input.repository.commit({
         actor: inputValue.actor,
         checkedAt,
@@ -218,14 +277,15 @@ export function createAdminProviderCustomSetupService(input: Readonly<{
               }),
           versionId: credentialVersionId
         },
-        evidence,
-        grantId,
-        model: {
+        models: modelConfigurations.map((model, index) => ({
           configuration: model,
-          displayName: modelName,
-          id: providerModelId
-        },
-        now: now()
+          displayName: modelNames[index]!,
+          evidence: evidence[index]!,
+          grantId: grantIds[index]!,
+          id: providerModelIds[index]!
+        })),
+        now: now(),
+        ...(searchGrantId ? { searchGrantId } : {})
       });
       if (commit === "catalog_unavailable") {
         throw new AdminProviderCustomSetupServiceError(
@@ -244,9 +304,13 @@ export function createAdminProviderCustomSetupService(input: Readonly<{
         connectionDisplayName: connectionName,
         connectionId,
         defaultChanged: commit.defaultChanged,
-        modelDisplayName: modelName,
+        modelDisplayName: modelNames[0]!,
+        models: providerModelIds.map((providerModelId, index) => ({
+          modelDisplayName: modelNames[index]!,
+          providerModelId
+        })),
         outcome: "ready",
-        providerModelId
+        providerModelId: providerModelIds[0]!
       };
     }
   };

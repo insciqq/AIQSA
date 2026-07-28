@@ -32,14 +32,15 @@ export type AdminProviderCustomSetupCommitPlan = Readonly<{
     secretEnvelope: string | null;
     versionId: string;
   }>;
-  evidence: AdminProviderTestEvidence;
-  grantId: string;
-  model: Readonly<{
+  models: ReadonlyArray<Readonly<{
     configuration: ProviderModelConfiguration;
     displayName: string;
+    evidence: AdminProviderTestEvidence;
+    grantId: string;
     id: string;
-  }>;
+  }>>;
   now: Date;
+  searchGrantId?: string;
 }>;
 
 export type AdminProviderCustomSetupCommitResult =
@@ -65,6 +66,7 @@ export type AdminProviderCustomSetupSafeResult = Pick<
   | "connectionId"
   | "defaultChanged"
   | "modelDisplayName"
+  | "models"
   | "outcome"
   | "providerModelId"
 >;

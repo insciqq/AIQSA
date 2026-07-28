@@ -3,6 +3,8 @@
 Status: Accepted
 Amends: 0021-admin-managed-mcp-tools-and-isolated-runtime, 0025-clean-slate-research-chat-and-control-center, 0026-personal-provider-quick-setup, 0028-task-first-control-center-and-direct-provider-setup, 0032-direct-custom-openai-compatible-setup
 
+Amendment note: ADR 0039 renames the visible **Setup** task to **Quick setup** and presents Custom as its fifth equal provider choice while retaining this record's lazy task ownership, isolated Custom page, and lifecycle-state language.
+
 ## Context
 
 Provider setup and the complete provider control plane were presented as two different pages: Quick setup was the default page, while a small **Advanced configuration** link opened another page that repeated Providers navigation and then introduced its own Connections and Run profiles tabs. That split hid important management work, made the contextual handoff easy to miss, and described ordinary connection/model/key lifecycle work as a special mode.

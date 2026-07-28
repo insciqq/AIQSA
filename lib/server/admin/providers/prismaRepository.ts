@@ -216,6 +216,31 @@ async function repeatableRead<Value>(
   throw new Error("provider_transaction_conflict");
 }
 
+async function serializable<Value>(
+  prisma: PrismaClient,
+  operation: (tx: Prisma.TransactionClient) => Promise<Value>
+): Promise<Value> {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      return await prisma.$transaction(operation, {
+        isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+        maxWait: 10_000,
+        timeout: 30_000
+      });
+    } catch (error) {
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === "P2034" &&
+        attempt < 2
+      ) {
+        continue;
+      }
+      throw error;
+    }
+  }
+  throw new Error("provider_transaction_conflict");
+}
+
 function sourceMatches(
   candidate: ProviderDraftTestCandidate,
   credential: {
@@ -312,6 +337,18 @@ export function createPrismaAdminProviderRepository(
                       select: { archivedAt: true, id: true, name: true }
                     }
                   }
+                },
+                userAssignments: {
+                  include: {
+                    user: {
+                      select: {
+                        displayName: true,
+                        email: true,
+                        id: true,
+                        status: true
+                      }
+                    }
+                  }
                 }
               },
               orderBy: { createdAt: "asc" }
@@ -394,7 +431,20 @@ export function createPrismaAdminProviderRepository(
           updatedAt: model.updatedAt.toISOString()
         })),
         unassignedPolicy: connection.unassignedPolicy,
-        updatedAt: connection.updatedAt.toISOString()
+        updatedAt: connection.updatedAt.toISOString(),
+        userAssignments: connection.credentials.flatMap((credential) =>
+          (credential.userAssignments ?? []).map((assignment) => ({
+            connectionId: assignment.connectionId,
+            credentialId: assignment.credentialId,
+            updatedAt: assignment.updatedAt.toISOString(),
+            user: {
+              displayName: assignment.user.displayName,
+              email: assignment.user.email,
+              id: assignment.user.id,
+              status: assignment.user.status
+            }
+          }))
+        )
       }));
     },
 
@@ -888,6 +938,17 @@ export function createPrismaAdminProviderRepository(
         where: { connectionId: input.connectionId, id: input.credentialId }
       });
       if (!credential) return null;
+      let keyless = false;
+      try {
+        keyless = normalizeProviderConnectionConfiguration(
+          connection.draftConfig
+        ).authenticationMode === "none";
+      } catch {
+        return null;
+      }
+      const activeNoAuth = keyless && Boolean(
+        credential.activeVersion && !credential.activeVersion.revokedAt
+      );
       const source = credential.draftSecretEnvelope
         ? {
             draftVersion: credential.draftVersion,
@@ -901,7 +962,7 @@ export function createPrismaAdminProviderRepository(
               versionId: credential.activeVersion.id
             }
           : null;
-      if (!source) return null;
+      if (!source && !activeNoAuth) return null;
       return {
         connection: {
           configuration: connection.draftConfig,
@@ -1289,13 +1350,83 @@ export function createPrismaAdminProviderRepository(
     },
 
     async deleteConnection(connectionId) {
-      return repeatableRead(prisma, async (tx) => {
+      return serializable(prisma, async (tx) => {
         const connection = await tx.providerConnection.findUnique({
-          select: { enabled: true, templateKey: true },
+          select: { enabled: true, family: true, templateKey: true },
           where: { id: connectionId }
         });
         if (!connection) return { status: "not_found" } as const;
         await cleanupProviderReferences(tx, { connectionId });
+
+        if (connection.family === "openai_compatible" && !connection.templateKey) {
+          const [models, credentials, runBindings] = await Promise.all([
+            tx.providerModel.findMany({
+              select: { id: true },
+              where: { connectionId }
+            }),
+            tx.providerCredential.findMany({
+              select: { id: true },
+              where: { connectionId }
+            }),
+            tx.providerRunBinding.count({ where: { connectionId } })
+          ]);
+          const modelIds = models.map(({ id }) => id);
+          const credentialIds = credentials.map(({ id }) => id);
+          const [searchReferences, runProfiles] = await Promise.all([
+            tx.searchStrategy.count({
+              where: { providerModelId: { in: modelIds } }
+            }),
+            tx.runProfile.count({
+              where: { providerModelId: { in: modelIds } }
+            })
+          ]);
+          const hardBlockers = blockers([
+            searchReferences
+              ? { count: searchReferences, kind: "search_references" }
+              : null,
+            runProfiles ? { count: runProfiles, kind: "run_profiles" } : null,
+            runBindings ? { count: runBindings, kind: "run_bindings" } : null
+          ]);
+          const hardConflict = conflict(hardBlockers);
+          if (hardConflict) return hardConflict;
+
+          await tx.userSettings.updateMany({
+            data: { defaultProviderModelId: null },
+            where: { defaultProviderModelId: { in: modelIds } }
+          });
+          await tx.chat.updateMany({
+            data: { defaultProviderModelId: null },
+            where: { defaultProviderModelId: { in: modelIds } }
+          });
+          await tx.providerConnection.update({
+            data: { defaultCredentialId: null },
+            where: { id: connectionId }
+          });
+          await tx.providerGroupCredentialAssignment.deleteMany({ where: { connectionId } });
+          await tx.providerUserCredentialAssignment.deleteMany({ where: { connectionId } });
+          await tx.accessGrant.deleteMany({
+            where: {
+              OR: [
+                { providerConnectionId: connectionId },
+                { providerModelId: { in: modelIds } }
+              ]
+            }
+          });
+          await tx.providerDraftCheck.deleteMany({ where: { connectionId } });
+          await tx.providerModelCredentialCheck.deleteMany({ where: { connectionId } });
+          await tx.providerCredential.updateMany({
+            data: { activeVersionId: null },
+            where: { id: { in: credentialIds } }
+          });
+          await tx.providerCredentialVersion.deleteMany({
+            where: { credentialId: { in: credentialIds } }
+          });
+          await tx.providerCredential.deleteMany({ where: { connectionId } });
+          await tx.providerModel.deleteMany({ where: { connectionId } });
+          await tx.providerConnection.delete({ where: { id: connectionId } });
+          return { status: "deleted" } as const;
+        }
+
         const [models, credentials, accessGrants, activeChildren, runBindings] = await Promise.all([
           tx.providerModel.count({ where: { connectionId } }),
           tx.providerCredential.count({ where: { connectionId } }),

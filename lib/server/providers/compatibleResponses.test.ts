@@ -76,10 +76,15 @@ describe("compatible Responses adapter", () => {
     expect(adapter.retrieve).toBeUndefined();
   });
 
-  it("rejects native hosted search", () => {
-    expect(() => buildCompatibleResponsesRequest(
+  it("serializes standard hosted web search while remaining stateless", () => {
+    expect(buildCompatibleResponsesRequest(
       request({ searchStrategy: "openai-native-web-search" })
-    )).toThrow("compatible_responses_native_search_unsupported");
+    )).toMatchObject({
+      background: false,
+      include: ["web_search_call.action.sources"],
+      store: false,
+      tools: [{ type: "web_search" }]
+    });
   });
 
   it("normalizes a completed non-streaming response", async () => {

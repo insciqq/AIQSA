@@ -751,7 +751,7 @@ test("administrator completes the Quick direct-user picker, retry, Ready, and sa
   const section = page.getByTestId("admin-section-providers");
   await expect(section.getByRole("heading", { exact: true, name: "Providers" }).last()).toBeVisible();
   await expect(section.getByLabel("API key")).toHaveCount(0);
-  await expect(section.getByRole("tab", { name: "Setup" })).toHaveAttribute("aria-selected", "true");
+  await expect(section.getByRole("tab", { name: "Quick setup" })).toHaveAttribute("aria-selected", "true");
   await expect(section.getByTestId("provider-connections-workspace")).toHaveCount(0);
 
   await section.getByRole("button", { name: /OpenAI Not configured/ }).click();
@@ -825,7 +825,7 @@ test("administrator completes the Quick direct-user picker, retry, Ready, and sa
     await page.setViewportSize(viewport);
     await section.getByRole("link", { name: "Start chatting" }).scrollIntoViewIfNeeded();
     await expect(section.getByRole("link", { name: "Start chatting" })).toBeVisible();
-    await expect(section.getByRole("tab", { name: "Setup" })).toBeVisible();
+    await expect(section.getByRole("tab", { name: "Quick setup" })).toBeVisible();
     await expect(section.getByRole("tab", { name: "Connections" })).toBeVisible();
     await expect(section.getByRole("tab", { name: "Run profiles" })).toBeVisible();
     await expect
@@ -837,7 +837,7 @@ test("administrator completes the Quick direct-user picker, retry, Ready, and sa
     const columns = await section.getByTestId("provider-quick-choice-strip").evaluate((element) =>
       getComputedStyle(element).gridTemplateColumns.split(" ").filter(Boolean).length
     );
-    expect(columns).toBe(viewport.width < 640 ? 2 : 4);
+    expect(columns).toBe(viewport.width < 640 ? 2 : viewport.width < 1024 ? 3 : 5);
   }
 
   const catalogResponse = page.waitForResponse((response) =>
@@ -986,7 +986,8 @@ test("administrator completes the Quick direct-user picker, retry, Ready, and sa
   }
 });
 
-test("administrator completes the separate Custom compatible setup on wide and compact screens", async ({ page }) => {
+test("administrator discovers and configures a Custom compatible provider on wide and compact screens", async ({ page }) => {
+  const discovered: Record<string, unknown>[] = [];
   const submitted: Record<string, unknown>[] = [];
   let receipt = 0;
 
@@ -1010,6 +1011,13 @@ test("administrator completes the separate Custom compatible setup on wide and c
     const body = route.request().postDataJSON() as Record<string, unknown>;
     submitted.push(body);
     receipt += 1;
+    const selectedModelIds = Array.isArray(body.modelIds)
+      ? body.modelIds.filter((value): value is string => typeof value === "string")
+      : [];
+    const readyModels = selectedModelIds.map((modelDisplayName, index) => ({
+      modelDisplayName,
+      providerModelId: `custom-model-${receipt}-${index + 1}`
+    }));
     await route.fulfill({
       contentType: "application/json",
       json: {
@@ -1018,9 +1026,30 @@ test("administrator completes the separate Custom compatible setup on wide and c
         connectionDisplayName: `Fixture Compatible ${receipt}`,
         connectionId: `custom-connection-${receipt}`,
         defaultChanged: receipt === 1,
-        modelDisplayName: `Fixture Model ${receipt}`,
+        modelDisplayName: readyModels[0]?.modelDisplayName ?? `Fixture Model ${receipt}`,
+        models: readyModels.length ? readyModels : [{
+          modelDisplayName: `Fixture Model ${receipt}`,
+          providerModelId: `custom-model-${receipt}`
+        }],
         outcome: "ready",
-        providerModelId: `custom-model-${receipt}`
+        providerModelId: readyModels[0]?.providerModelId ?? `custom-model-${receipt}`
+      }
+    });
+  });
+  await page.route("**/api/admin/providers/custom-setup/discover", async (route) => {
+    expect(route.request().method()).toBe("POST");
+    const body = route.request().postDataJSON() as Record<string, unknown>;
+    discovered.push(body);
+    const viewport = page.viewportSize();
+    const modelId = `fixture/model-${viewport?.width ?? 0}`;
+    await route.fulfill({
+      contentType: "application/json",
+      json: {
+        checkedAt: now,
+        modelCount: 2,
+        models: [{ id: modelId }, { id: "fixture/alternate" }],
+        source: "models_catalog",
+        status: "valid"
       }
     });
   });
@@ -1034,12 +1063,12 @@ test("administrator completes the separate Custom compatible setup on wide and c
     { height: 844, width: 390 }
   ]) {
     await page.setViewportSize(viewport);
-    await expect(section.getByRole("tab", { name: "Setup" })).toBeVisible();
+    await expect(section.getByRole("tab", { name: "Quick setup" })).toBeVisible();
     await expect(section.getByRole("tab", { name: "Connections" })).toBeVisible();
     await expect(section.getByRole("tab", { name: "Run profiles" })).toBeVisible();
     await expect(section.getByTestId("provider-quick-choice-strip").getByRole("button"))
-      .toHaveCount(4);
-    await section.getByRole("button", { name: "Connect custom endpoint" }).click();
+      .toHaveCount(5);
+    await section.getByRole("button", { name: "Custom OpenAI-compatible" }).click();
     await expect(section.getByRole("heading", { name: "Connect a custom endpoint" })).toBeVisible();
     await expect(section.getByLabel("API root")).toBeVisible();
     await expect(section.getByLabel("Model ID")).toBeVisible();
@@ -1047,15 +1076,27 @@ test("administrator completes the separate Custom compatible setup on wide and c
     await expect(section.getByLabel("Context window")).toBeHidden();
     await expectNoPageOverflow(page);
 
+    const key = `e2e-custom-write-only-key-${viewport.width}`;
+    await section.getByLabel("API root").fill("https://llm.fixture.invalid/v1");
+    await section.getByLabel("API key").fill(key);
+    await section.getByRole("button", { name: "Discover models" }).click();
+    await section.getByRole("button", { name: "Add models reported by this endpoint (2)" }).click();
+    await section.getByRole("option", { name: new RegExp(`fixture/model-${viewport.width}`) })
+      .click();
+    await section.getByRole("button", { name: "Add models reported by this endpoint (2)" }).click();
+    await section.getByRole("option", { name: /fixture\/alternate/ }).click();
+
     await section.getByText("Advanced settings", { exact: true }).click();
     await expect(section.getByLabel("Context window")).toBeVisible();
     await expect(section.getByLabel("Default max output")).toBeVisible();
+    await section.getByLabel("Hosted web search").check();
+    await section.getByLabel("Image generation (future workflows)").check();
+    await expect(section.getByText(/Image support is recorded now but is not yet runnable/))
+      .toBeVisible();
+    await expect(section.getByText("https://llm.fixture.invalid/v1/responses"))
+      .toBeVisible();
     await expectNoPageOverflow(page);
 
-    const key = `e2e-custom-write-only-key-${viewport.width}`;
-    await section.getByLabel("API root").fill("https://llm.fixture.invalid/v1");
-    await section.getByLabel("Model ID").fill(`fixture/model-${viewport.width}`);
-    await section.getByLabel("API key").fill(key);
     await section.getByRole("button", { name: "Test & Save" }).click();
     await expect(section.getByText("Ready to chat", { exact: true })).toBeVisible();
     const ready = section.getByTestId("provider-custom-ready-receipt");
@@ -1065,20 +1106,260 @@ test("administrator completes the separate Custom compatible setup on wide and c
     await expectNoPageOverflow(page);
 
     await section.getByRole("button", { name: "Add another provider" }).click();
-    await expect(section.getByRole("button", { name: "Connect custom endpoint" })).toBeVisible();
+    await expect(section.getByRole("button", { name: "Custom OpenAI-compatible" })).toBeVisible();
   }
 
+  expect(discovered).toHaveLength(2);
+  for (const [index, body] of discovered.entries()) {
+    expect(body).toEqual({
+      allowPrivateNetwork: false,
+      apiRoot: "https://llm.fixture.invalid/v1",
+      authenticationMode: "bearer",
+      secret: `e2e-custom-write-only-key-${index === 0 ? 1440 : 390}`
+    });
+  }
   expect(submitted).toHaveLength(2);
   for (const [index, body] of submitted.entries()) {
     expect(body).toMatchObject({
       allowPrivateNetwork: false,
       apiRoot: "https://llm.fixture.invalid/v1",
       authenticationMode: "bearer",
+      capabilities: expect.objectContaining({
+        nativeImageGeneration: true,
+        nativeSearch: true
+      }),
       confirmPaidRequest: true,
-      modelId: `fixture/model-${index === 0 ? 1440 : 390}`,
+      modelIds: [
+        `fixture/model-${index === 0 ? 1440 : 390}`,
+        "fixture/alternate"
+      ],
+      protocol: "responses",
       secret: `e2e-custom-write-only-key-${index === 0 ? 1440 : 390}`
     });
   }
+});
+
+test("administrator activates a Custom replacement and deletes its complete configuration", async ({ page }) => {
+  const connectionConfiguration = {
+    allowPrivateNetwork: false,
+    apiRoot: "https://lifecycle.fixture.invalid/v1",
+    authenticationMode: "bearer" as const
+  };
+  const modelConfiguration: AdminProviderModelConfiguration = {
+    adapterKind: "openai_responses_compatible",
+    capabilities: {
+      nativeImageGeneration: true,
+      nativePdfInput: false,
+      nativeSearch: true,
+      pdf: false,
+      reasoning: false,
+      streaming: true,
+      vision: false
+    },
+    defaultParams: { background: false, store: false, stream: true },
+    upstreamModelId: "fixture/lifecycle-model"
+  };
+  let connection: AdminProviderConnection | null = {
+    activatedAt: now,
+    activeChecks: [{
+      checkedAt: now,
+      connectionVersion: 1,
+      credentialId: "custom-lifecycle-credential",
+      credentialVersionId: "custom-lifecycle-version-1",
+      evidence: {
+        detail: "ok",
+        method: "models_catalog",
+        selectedProviders: [],
+        upstreamModelId: "fixture/lifecycle-model"
+      },
+      latestRefreshError: null,
+      modelVersion: 1,
+      providerModelId: "custom-lifecycle-model",
+      refreshFailedAt: null,
+      status: "available"
+    }],
+    activeConfig: connectionConfiguration,
+    activeVersion: 1,
+    assignments: [],
+    createdAt: now,
+    credentials: [{
+      activatedAt: now,
+      activeVersion: {
+        activatedAt: now,
+        id: "custom-lifecycle-version-1",
+        revokedAt: null,
+        testedAt: now,
+        version: 1
+      },
+      createdAt: now,
+      draftSecretConfigured: true,
+      draftVersion: 2,
+      enabled: true,
+      id: "custom-lifecycle-credential",
+      label: "Primary",
+      testedAt: now,
+      updatedAt: now
+    }],
+    defaultCredentialId: null,
+    displayName: "Lifecycle Custom",
+    draftChecks: [],
+    draftConfig: connectionConfiguration,
+    draftVersion: 1,
+    enabled: true,
+    family: "openai_compatible",
+    id: "custom-lifecycle",
+    models: [{
+      activatedAt: now,
+      activeConfig: modelConfiguration,
+      activeVersion: 1,
+      connectionId: "custom-lifecycle",
+      createdAt: now,
+      displayName: "Lifecycle Model",
+      draftConfig: modelConfiguration,
+      draftVersion: 1,
+      enabled: true,
+      id: "custom-lifecycle-model",
+      updatedAt: now
+    }],
+    unassignedPolicy: "require_assignment",
+    updatedAt: now,
+    userAssignments: [{
+      connectionId: "custom-lifecycle",
+      credentialId: "custom-lifecycle-credential",
+      updatedAt: now,
+      user: {
+        displayName: "Administrator",
+        email: "admin@example.test",
+        id: DEFAULT_BOOTSTRAP_USER_ID,
+        status: "active"
+      }
+    }]
+  };
+  const activationBodies: Record<string, unknown>[] = [];
+  const compatibleDiscoveryBodies: Record<string, unknown>[] = [];
+  const deletionBodies: Record<string, unknown>[] = [];
+
+  await page.route("**/api/admin/providers**", async (route) => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    const method = request.method();
+    const body = method === "GET" ? {} : request.postDataJSON() as Record<string, unknown>;
+
+    if (method === "GET" && path === "/api/admin/providers/quick-setup") {
+      await route.fulfill({
+        contentType: "application/json",
+        json: {
+          providers: [
+            { provider: "openai", providerDisplayName: "OpenAI", quickSetupAssigned: false, state: "not_configured", stateToken: "state-openai" },
+            { provider: "anthropic", providerDisplayName: "Anthropic", quickSetupAssigned: false, state: "not_configured", stateToken: "state-anthropic" },
+            { provider: "gemini", providerDisplayName: "Gemini", quickSetupAssigned: false, state: "not_configured", stateToken: "state-gemini" },
+            { provider: "openrouter", providerDisplayName: "OpenRouter", quickSetupAssigned: false, state: "not_configured", stateToken: "state-openrouter" }
+          ],
+          suggestedProvider: null
+        }
+      });
+      return;
+    }
+    if (method === "GET" && path === "/api/admin/providers") {
+      await route.fulfill({
+        contentType: "application/json",
+        json: { connections: connection ? [connection] : [] }
+      });
+      return;
+    }
+    if (method === "POST" && path === "/api/admin/providers/custom-lifecycle/actions") {
+      if (body.action === "discover_compatible_models") {
+        compatibleDiscoveryBodies.push(body);
+        await route.fulfill({
+          contentType: "application/json",
+          json: {
+            models: [
+              { id: "fixture/lifecycle-model" },
+              { id: "fixture/second-model" }
+            ]
+          }
+        });
+        return;
+      }
+      activationBodies.push(body);
+      if (!connection) throw new Error("Custom lifecycle fixture was already deleted");
+      connection = {
+        ...connection,
+        activeChecks: connection.activeChecks.map((check) => ({
+          ...check,
+          credentialVersionId: "custom-lifecycle-version-2"
+        })),
+        credentials: connection.credentials.map((credential) => ({
+          ...credential,
+          activeVersion: {
+            activatedAt: now,
+            id: "custom-lifecycle-version-2",
+            revokedAt: null,
+            testedAt: now,
+            version: 2
+          },
+          draftSecretConfigured: false
+        }))
+      };
+      await route.fulfill({
+        contentType: "application/json",
+        json: { connections: [connection] }
+      });
+      return;
+    }
+    if (method === "DELETE" && path === "/api/admin/providers/custom-lifecycle") {
+      deletionBodies.push(body);
+      connection = null;
+      await route.fulfill({ contentType: "application/json", json: { connections: [] } });
+      return;
+    }
+    await route.fulfill({
+      contentType: "application/json",
+      json: { error: "unexpected_custom_lifecycle_request", method, path },
+      status: 400
+    });
+  });
+
+  await signInWithLocalToken(page);
+  await page.goto("/admin");
+  const section = page.getByTestId("admin-section-providers");
+  await section.getByRole("tab", { name: "Connections" }).click();
+  await section.getByTestId("provider-connection-index")
+    .getByRole("button", { name: /Lifecycle Custom/ }).click();
+  await section.getByRole("tab", { name: "Models" }).click();
+  await section.getByTestId("provider-task-models")
+    .getByRole("button", { name: "Add model" }).click();
+  await expect.poll(() => compatibleDiscoveryBodies.length).toBe(1);
+  await section.getByRole("button", { name: "Endpoint model" }).click();
+  await section.getByRole("option", { name: /fixture\/second-model/ }).click();
+  await expect(section.getByRole("textbox", { name: "Upstream model ID" }))
+    .toHaveValue("fixture/second-model");
+  expect(compatibleDiscoveryBodies).toEqual([{
+    action: "discover_compatible_models",
+    credentialId: "custom-lifecycle-credential"
+  }]);
+  await section.getByRole("tab", { name: "Credentials" }).click();
+  await expect(section.getByText("Replacement pending", { exact: true })).toBeVisible();
+  await section.getByRole("button", {
+    name: "Activate replacement for Primary credential"
+  }).click();
+  await expect(section.getByText("Replacement key activated for new runs.")).toBeVisible();
+  await expect(section.getByRole("button", {
+    name: "Activate replacement for Primary credential"
+  })).toHaveCount(0);
+  expect(activationBodies).toEqual([{
+    action: "activate",
+    confirmUnavailable: false,
+    enableConnection: true
+  }]);
+
+  await section.getByLabel("More actions for Lifecycle Custom connection").click();
+  await section.getByRole("button", { name: "Delete Lifecycle Custom connection" }).click();
+  const confirmation = page.getByTestId("admin-confirm-delete-provider-connection");
+  await expect(confirmation).toContainText("encrypted credentials, assignments, model grants, and model defaults");
+  await confirmation.getByRole("button", { name: "Delete connection and configuration" }).click();
+  await expect(section.getByText("No provider connections")).toBeVisible();
+  expect(deletionBodies).toEqual([{ confirmed: true }]);
 });
 
 test("administrator completes the OpenRouter key, model, route, check, and activation flow", async ({ page }) => {

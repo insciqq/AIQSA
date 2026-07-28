@@ -388,12 +388,18 @@ function ConnectionDetail({
                   className={dangerButton}
                   disabled={controller.state.busy}
                   onClick={() => requestConfirmation({
-                    body: "The connection can be deleted only after child credentials, models, grants, defaults, profiles, search references, and live run bindings are removed.",
-                    confirmLabel: "Delete connection",
+                    body: connection.family === "openai_compatible"
+                      ? "AIQSA will remove this custom connection, its models, encrypted credentials, assignments, model grants, and model defaults together. Active or recoverable runs, Run profiles, and model-backed search strategies still block deletion so history and automation stay valid."
+                      : "The connection can be deleted only after child credentials, models, grants, defaults, profiles, search references, and live run bindings are removed.",
+                    confirmLabel: connection.family === "openai_compatible"
+                      ? "Delete connection and configuration"
+                      : "Delete connection",
                     dialogLabel: `Delete ${connection.displayName} connection`,
                     icon: "trash",
                     onConfirm: async () => {
-                      await controller.actions.deleteConnection(connection.id);
+                      if (await controller.actions.deleteConnection(connection.id)) {
+                        onBack();
+                      }
                     },
                     testId: "admin-confirm-delete-provider-connection",
                     title: `Delete “${connection.displayName}”?`,
@@ -562,6 +568,7 @@ export function AdminProvidersSection({
 }: AdminProvidersSectionProps) {
   const controller = useAdminProvidersController(active, { onMutationCommitted });
   const discovery = useAdminOpenRouterDiscovery({
+    loadCompatibleModels: controller.actions.discoverCompatibleModels,
     loadEndpoints: controller.actions.discoverEndpoints,
     loadModels: controller.actions.discoverModels
   });

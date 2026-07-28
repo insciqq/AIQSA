@@ -127,6 +127,33 @@ describe("admin provider credential tester", () => {
     }
   });
 
+  it("omits authorization only for an explicit keyless private HTTP connection", async () => {
+    const requests: McpPinnedHttpRequest[] = [];
+    const tester = createAdminProviderCredentialTester({
+      network: {
+        dispatch: async (request) => {
+          requests.push(request);
+          return catalog(["local-model"]);
+        },
+        lookupHostname: async () => [{ address: "127.0.0.1", family: 4 as const }]
+      }
+    });
+
+    await expect(tester.test({
+      connection: {
+        allowPrivateNetwork: true,
+        apiRoot: "http://127.0.0.1:8080/v1",
+        authenticationMode: "none"
+      },
+      family: "openai_compatible",
+      secret: null
+    })).resolves.toEqual({
+      method: "models_catalog",
+      modelIds: ["local-model"]
+    });
+    expect(requests[0]?.headers.has("authorization")).toBe(false);
+  });
+
   it("normalizes Gemini catalog resource names before policy matching", async () => {
     const tester = createAdminProviderCredentialTester({
       network: {

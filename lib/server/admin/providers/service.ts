@@ -278,7 +278,7 @@ export function createAdminProviderService(input: Readonly<{
   async function testCredentialCatalog(value: {
     connection: AdminProviderConnectionConfiguration;
     family: string;
-    secret: ProviderCredentialSource;
+    secret: ProviderCredentialSource | null;
     signal?: AbortSignal;
   }): Promise<AdminProviderCredentialTestOutcome> {
     try {
@@ -305,6 +305,9 @@ export function createAdminProviderService(input: Readonly<{
       candidate.connection.configuration
     );
     const source = candidate.credential.source;
+    if (!source) {
+      throw new AdminProviderServiceError("provider_credential_not_found");
+    }
     const bearerToken = credentialSecretSource(candidate.credential.id, source);
     return (input.createDiscoveryClient ?? createOpenRouterDiscoveryClient)({
       allowPrivateNetwork: configuration.allowPrivateNetwork,
@@ -352,6 +355,43 @@ export function createAdminProviderService(input: Readonly<{
       const client = await discoveryClient(value);
       try {
         return await client.listModels({ signal: value.signal });
+      } catch {
+        throw new AdminProviderServiceError("provider_discovery_failed");
+      }
+    },
+
+    async discoverCompatibleModels(value: {
+      connectionId: string;
+      credentialId: string;
+      signal?: AbortSignal;
+    }) {
+      const candidate = await input.repository.loadDiscoveryCandidate(value);
+      if (!candidate) {
+        throw new AdminProviderServiceError("provider_credential_not_found");
+      }
+      if (candidate.connection.family !== "openai_compatible") {
+        throw new AdminProviderServiceError("provider_discovery_unsupported");
+      }
+      const configuration = normalizeProviderConnectionConfiguration(
+        candidate.connection.configuration
+      );
+      const authenticationMode = configuration.authenticationMode ?? "bearer";
+      if ((authenticationMode === "none") !== (candidate.credential.source === null)) {
+        throw new AdminProviderServiceError("provider_credential_not_found");
+      }
+      try {
+        const outcome = await testCredentialCatalog({
+          connection: configuration,
+          family: "openai_compatible",
+          secret: candidate.credential.source === null
+            ? null
+            : credentialSecretSource(
+                candidate.credential.id,
+                candidate.credential.source
+              ),
+          signal: value.signal
+        });
+        return outcome.modelIds.map((id) => ({ id }));
       } catch {
         throw new AdminProviderServiceError("provider_discovery_failed");
       }

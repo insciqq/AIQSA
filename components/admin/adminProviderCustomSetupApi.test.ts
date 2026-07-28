@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import { submitAdminProviderCustomSetup } from "./adminProviderCustomSetupApi";
+import {
+  discoverAdminProviderCustomModels,
+  submitAdminProviderCustomSetup
+} from "./adminProviderCustomSetupApi";
 
 const request = {
   allowPrivateNetwork: false,
@@ -17,11 +20,53 @@ const ready = {
   connectionId: "connection-1",
   defaultChanged: true,
   modelDisplayName: "Model 1",
+  models: [{ modelDisplayName: "Model 1", providerModelId: "model-1" }],
   outcome: "ready",
   providerModelId: "model-1"
 };
 
 describe("custom provider setup API", () => {
+  it("decodes only bounded model IDs from Custom discovery", async () => {
+    const body = {
+      checkedAt: "2026-07-26T10:00:00.000Z",
+      modelCount: 2,
+      models: [{ id: "model-b" }, { id: "model-a" }],
+      source: "models_catalog",
+      status: "valid"
+    } as const;
+    const fetcher = vi.fn(async () => Response.json(body));
+    await expect(discoverAdminProviderCustomModels({
+      allowPrivateNetwork: false,
+      apiRoot: "https://llm.example.test/v1",
+      authenticationMode: "bearer",
+      secret: "browser-only-key"
+    }, fetcher)).resolves.toEqual({ data: body, ok: true });
+    expect(fetcher).toHaveBeenCalledWith(
+      "/api/admin/providers/custom-setup/discover",
+      expect.objectContaining({ method: "POST" })
+    );
+  });
+
+  it("rejects discovery responses containing endpoint or credential material", async () => {
+    const result = await discoverAdminProviderCustomModels({
+      allowPrivateNetwork: false,
+      apiRoot: "https://llm.example.test/v1",
+      authenticationMode: "bearer",
+      secret: "browser-only-key"
+    }, vi.fn(async () => Response.json({
+      apiRoot: "https://leaked.example.test/v1",
+      checkedAt: "2026-07-26T10:00:00.000Z",
+      modelCount: 1,
+      models: [{ id: "model-a" }],
+      source: "models_catalog",
+      status: "valid"
+    })));
+    expect(result).toEqual({
+      error: { code: "provider_custom_setup_discovery_response_invalid" },
+      ok: false
+    });
+  });
+
   it("sends one same-origin write-only request and decodes the safe receipt", async () => {
     const fetcher = vi.fn(async () => Response.json(ready));
     await expect(submitAdminProviderCustomSetup(request, fetcher)).resolves.toEqual({

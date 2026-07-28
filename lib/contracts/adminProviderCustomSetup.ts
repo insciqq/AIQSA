@@ -8,10 +8,18 @@ export const ADMIN_PROVIDER_CUSTOM_AUTHENTICATION_MODES = [
 export type AdminProviderCustomAuthenticationMode =
   (typeof ADMIN_PROVIDER_CUSTOM_AUTHENTICATION_MODES)[number];
 
+export const ADMIN_PROVIDER_CUSTOM_PROTOCOLS = ["chat_completions", "responses"] as const;
+export type AdminProviderCustomProtocol =
+  (typeof ADMIN_PROVIDER_CUSTOM_PROTOCOLS)[number];
+
+/** A multi-model bootstrap performs one paid tiny-generation test per model. */
+export const MAX_ADMIN_PROVIDER_CUSTOM_SETUP_MODELS = 32;
+
 export const ADMIN_PROVIDER_CUSTOM_DEFAULT_CAPABILITIES = {
   contextWindow: 8_192,
   defaultMaxOutputTokens: 1_024,
   nativePdfInput: false,
+  nativeImageGeneration: false,
   nativeSearch: false,
   parallelToolCalls: false,
   pdf: false,
@@ -31,8 +39,30 @@ export type AdminProviderCustomSetupRequest = Readonly<{
   connectionDisplayName?: string;
   defaultParams?: Record<string, unknown>;
   modelDisplayName?: string;
-  modelId: string;
+  /** Manual fallback. Exactly one of modelId or modelIds is accepted. */
+  modelId?: string;
+  /** Explicit ids selected from discovery, in default-preference order. */
+  modelIds?: string[];
+  /** Defaults to Chat Completions for backward compatibility. */
+  protocol?: AdminProviderCustomProtocol;
   secret?: string;
+}>;
+
+export type AdminProviderCustomDiscoveryRequest = Readonly<{
+  allowPrivateNetwork: boolean;
+  apiRoot: string;
+  authenticationMode: AdminProviderCustomAuthenticationMode;
+  secret?: string;
+}>;
+
+export type AdminProviderCustomDiscoveredModel = Readonly<{ id: string }>;
+
+export type AdminProviderCustomDiscoveryResult = Readonly<{
+  checkedAt: string;
+  modelCount: number;
+  models: AdminProviderCustomDiscoveredModel[];
+  source: "models_catalog";
+  status: "valid";
 }>;
 
 export type AdminProviderCustomSetupReadyResult = Readonly<{
@@ -42,6 +72,10 @@ export type AdminProviderCustomSetupReadyResult = Readonly<{
   connectionId: string;
   defaultChanged: boolean;
   modelDisplayName: string;
+  models: ReadonlyArray<Readonly<{
+    modelDisplayName: string;
+    providerModelId: string;
+  }>>;
   outcome: "ready";
   providerModelId: string;
 }>;

@@ -164,7 +164,7 @@ describe("providerUiState", () => {
     });
   });
 
-  it("requires a default only for use_default and an active-group assignment for require_assignment", () => {
+  it("requires a default only for use_default and accepts active user or group assignments", () => {
     const useDefault = providerReadiness(connection({ defaultCredentialId: null }));
     expect(useDefault.blockers.map((blocker) => blocker.code)).toEqual([
       "default_credential_required"
@@ -193,6 +193,21 @@ describe("providerUiState", () => {
         }]
       }).blockers
     ).toEqual([]);
+
+    expect(providerReadiness({
+      ...requireAssignment,
+      userAssignments: [{
+        connectionId: requireAssignment.id,
+        credentialId: "credential-1",
+        updatedAt: timestamp,
+        user: {
+          displayName: "Admin",
+          email: "admin@example.test",
+          id: "admin-1",
+          status: "active"
+        }
+      }]
+    }).blockers).toEqual([]);
   });
 
   it("ignores archived assignments and calls out an enabled model separately", () => {

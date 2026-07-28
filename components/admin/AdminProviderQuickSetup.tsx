@@ -12,7 +12,7 @@ import type { AdminProviderQuickSetupController } from "@/components/admin/useAd
 import type { AdminProviderQuickSetupProvider } from "@/components/admin/adminProviderQuickSetupApi";
 import type { AdminConfirmationController } from "@/components/admin/useAdminConfirmationController";
 import Link from "next/link";
-import { CheckCircle2, KeyRound, ServerCog, ShieldCheck, UserRound } from "lucide-react";
+import { CheckCircle2, KeyRound, ShieldCheck, UserRound } from "lucide-react";
 import { useEffect, useRef } from "react";
 
 export type AdminProviderQuickSetupProps = Readonly<{
@@ -515,7 +515,7 @@ export function AdminProviderQuickSetup({
           <div className="grid gap-8 xl:grid-cols-[minmax(0,1fr)_20rem] xl:gap-10">
             <div className="min-w-0">
               <div
-                className="grid min-w-0 grid-cols-2 gap-px overflow-hidden rounded-panel border border-trace-subtle bg-trace-subtle sm:grid-cols-4"
+                className="grid min-w-0 grid-cols-2 gap-px overflow-hidden rounded-panel border border-trace-subtle bg-trace-subtle sm:grid-cols-3 lg:grid-cols-5"
                 data-testid="provider-quick-choice-strip"
               >
                 {providers.map((provider) => {
@@ -555,17 +555,18 @@ export function AdminProviderQuickSetup({
                     </button>
                   );
                 })}
-              </div>
-
-              <div className="mt-3 flex justify-end">
                 <button
-                  className={quietButton}
+                  className={`min-w-0 bg-answer-paper px-2 py-3 text-left text-ink hover:bg-control-hover sm:px-4 sm:py-4 ${focusRing} ${touchTarget}`}
                   disabled={controller.state.formLocked}
                   onClick={onOpenCustom}
                   type="button"
                 >
-                  <ServerCog aria-hidden="true" className="size-3.5" />
-                  Connect custom endpoint
+                  <span className="block break-words text-sm font-semibold sm:text-base">
+                    Custom
+                  </span>
+                  <span className="mt-1 block text-xs text-ink-muted">
+                    OpenAI-compatible
+                  </span>
                 </button>
               </div>
 
@@ -590,10 +591,14 @@ export function AdminProviderQuickSetup({
         ) : (
           <>
             <SnapshotFeedback controller={controller} />
-            <div className="mt-4">
-              <button className={quietButton} onClick={onOpenCustom} type="button">
-                <ServerCog aria-hidden="true" className="size-3.5" />
-                Connect custom endpoint
+            <div className="mt-4 grid max-w-52 overflow-hidden rounded-panel border border-trace-subtle">
+              <button
+                className={`bg-answer-paper px-4 py-4 text-left text-ink hover:bg-control-hover ${focusRing} ${touchTarget}`}
+                onClick={onOpenCustom}
+                type="button"
+              >
+                <span className="block text-base font-semibold">Custom</span>
+                <span className="mt-1 block text-xs text-ink-muted">OpenAI-compatible</span>
               </button>
             </div>
           </>

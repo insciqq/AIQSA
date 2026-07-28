@@ -10,6 +10,7 @@ export type ProviderModelCapabilities = {
   defaultMaxOutputTokens?: number;
   nativePdfInput: boolean;
   nativeBackground?: boolean;
+  nativeImageGeneration?: boolean;
   nativeSearch: boolean;
   parallelToolCalls?: boolean;
   pdf: boolean;

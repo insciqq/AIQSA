@@ -27,14 +27,7 @@ function plan(
       secretEnvelope: "encrypted-envelope",
       versionId: "credential-version-1"
     },
-    evidence: {
-      detail: "ok",
-      method: "tiny_generation",
-      selectedProviders: [],
-      upstreamModelId: "vendor/model-1"
-    },
-    grantId: "grant-1",
-    model: {
+    models: [{
       configuration: {
         adapterKind: "openai_chat_completions_compatible",
         capabilities: {
@@ -53,23 +46,31 @@ function plan(
         upstreamModelId: "vendor/model-1"
       },
       displayName: "Model 1",
+      evidence: {
+        detail: "ok",
+        method: "tiny_generation",
+        selectedProviders: [],
+        upstreamModelId: "vendor/model-1"
+      },
+      grantId: "grant-1",
       id: "model-1"
-    },
+    }],
     now,
     ...overrides
   };
 }
 
-function readyModel(commitPlan: AdminProviderCustomSetupCommitPlan) {
+function readyModel(commitPlan: AdminProviderCustomSetupCommitPlan, index = 0) {
+  const model = commitPlan.models[index]!;
   return {
-    activeConfig: commitPlan.model.configuration,
+    activeConfig: model.configuration,
     activeCredentialChecks: [{
       connectionId: commitPlan.connection.id,
       connectionVersion: 1,
       credentialId: commitPlan.credential.id,
       credentialVersionId: commitPlan.credential.versionId,
       modelVersion: 1,
-      providerModelId: commitPlan.model.id,
+      providerModelId: model.id,
       status: "available"
     }],
     activeVersion: 1,
@@ -101,12 +102,13 @@ function readyModel(commitPlan: AdminProviderCustomSetupCommitPlan) {
     },
     connectionId: commitPlan.connection.id,
     enabled: true,
-    id: commitPlan.model.id,
+    id: model.id,
     templateKey: null
   };
 }
 
 function harness(options: Readonly<{
+  grantModelIds?: string[];
   models?: unknown[];
   sessionRevoked?: boolean;
 }> = {}) {
@@ -115,15 +117,16 @@ function harness(options: Readonly<{
     $queryRaw: vi.fn(async () => []),
     accessGrant: {
       create: vi.fn(async () => undefined),
-      findMany: vi.fn(async () => [{
+      findFirst: vi.fn(async () => null),
+      findMany: vi.fn(async () => (options.grantModelIds ?? [commitPlan.models[0]!.id]).map((providerModelId) => ({
         enabled: true,
         groupId: null,
         providerConnectionId: null,
         providerModel: { connectionId: commitPlan.connection.id },
-        providerModelId: commitPlan.model.id,
+        providerModelId,
         searchStrategy: null,
         userId: commitPlan.actor.userId
-      }])
+      })))
     },
     authSession: {
       findUnique: vi.fn(async () => ({
@@ -247,6 +250,61 @@ describe("Prisma custom provider setup repository", () => {
         secretEnvelope: null,
         testEvidence: expect.objectContaining({ authenticationMode: "none" })
       })
+    });
+  });
+
+  it("publishes every selected model, check, and grant inside the same transaction", async () => {
+    const base = plan();
+    const second = {
+      ...base.models[0]!,
+      configuration: {
+        ...base.models[0]!.configuration,
+        upstreamModelId: "vendor/model-2"
+      },
+      displayName: "Model 2",
+      evidence: {
+        ...base.models[0]!.evidence,
+        upstreamModelId: "vendor/model-2"
+      },
+      grantId: "grant-2",
+      id: "model-2"
+    };
+    const multi = plan({ models: [base.models[0]!, second] });
+    const { repository, transaction, tx } = harness({
+      grantModelIds: ["model-1", "model-2"],
+      models: [readyModel(multi), readyModel(multi, 1)]
+    });
+
+    await expect(repository.commit(multi)).resolves.toMatchObject({ status: "ready" });
+
+    expect(transaction).toHaveBeenCalledOnce();
+    expect(tx.providerModel.create).toHaveBeenCalledTimes(2);
+    expect(tx.providerModelCredentialCheck.create).toHaveBeenCalledTimes(2);
+    expect(tx.accessGrant.create).toHaveBeenCalledTimes(2);
+    expect(tx.userSettings.update).toHaveBeenCalledWith({
+      data: { defaultProviderModelId: "model-1" },
+      where: { userId: "admin" }
+    });
+  });
+
+  it("adds a direct hosted-search entitlement when setup declares web search", async () => {
+    const { commitPlan, repository, tx } = harness();
+    await expect(repository.commit(plan({
+      ...commitPlan,
+      searchGrantId: "search-grant-1"
+    }))).resolves.toMatchObject({ status: "ready" });
+
+    expect(tx.accessGrant.create).toHaveBeenCalledTimes(2);
+    expect(tx.accessGrant.create).toHaveBeenLastCalledWith({
+      data: {
+        enabled: true,
+        groupId: null,
+        id: "search-grant-1",
+        providerConnectionId: null,
+        providerModelId: null,
+        searchStrategy: "openai-native-web-search",
+        userId: "admin"
+      }
     });
   });
 

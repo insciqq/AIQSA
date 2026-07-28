@@ -140,6 +140,8 @@ async function applyCustomSetupPlan(
   exposeFake: boolean
 ): Promise<Exclude<AdminProviderCustomSetupCommitResult, "catalog_unavailable">> {
   await lockActorState(tx, plan);
+  const primaryModel = plan.models[0];
+  if (!primaryModel) throw new CustomSetupCatalogUnavailableError();
   const [actor, session, settings] = await Promise.all([
     tx.user.findUnique({
       select: { id: true, role: true, status: true },
@@ -180,21 +182,23 @@ async function applyCustomSetupPlan(
       unassignedPolicy: "require_assignment"
     }
   });
-  await tx.providerModel.create({
-    data: {
-      activatedAt: plan.now,
-      activeConfig: json(plan.model.configuration),
-      activeVersion: 1,
-      connectionId: plan.connection.id,
-      displayName: plan.model.displayName,
-      draftConfig: json(plan.model.configuration),
-      draftVersion: 1,
-      enabled: true,
-      id: plan.model.id,
-      provider: "openai_compatible",
-      ...modelLegacyFields(plan.model.configuration)
-    }
-  });
+  for (const model of plan.models) {
+    await tx.providerModel.create({
+      data: {
+        activatedAt: plan.now,
+        activeConfig: json(model.configuration),
+        activeVersion: 1,
+        connectionId: plan.connection.id,
+        displayName: model.displayName,
+        draftConfig: json(model.configuration),
+        draftVersion: 1,
+        enabled: true,
+        id: model.id,
+        provider: "openai_compatible",
+        ...modelLegacyFields(model.configuration)
+      }
+    });
+  }
   await tx.providerCredential.create({
     data: {
       activatedAt: plan.now,
@@ -233,47 +237,72 @@ async function applyCustomSetupPlan(
       userId: plan.actor.userId
     }
   });
-  await tx.providerModelCredentialCheck.create({
-    data: {
-      checkedAt: plan.checkedAt,
-      connectionId: plan.connection.id,
-      connectionVersion: 1,
-      credentialId: plan.credential.id,
-      credentialVersionId: plan.credential.versionId,
-      evidence: json(plan.evidence),
-      modelVersion: 1,
-      providerModelId: plan.model.id,
-      status: "available"
+  for (const model of plan.models) {
+    await tx.providerModelCredentialCheck.create({
+      data: {
+        checkedAt: plan.checkedAt,
+        connectionId: plan.connection.id,
+        connectionVersion: 1,
+        credentialId: plan.credential.id,
+        credentialVersionId: plan.credential.versionId,
+        evidence: json(model.evidence),
+        modelVersion: 1,
+        providerModelId: model.id,
+        status: "available"
+      }
+    });
+    await tx.accessGrant.create({
+      data: {
+        enabled: true,
+        groupId: null,
+        id: model.grantId,
+        providerConnectionId: null,
+        providerModelId: model.id,
+        searchStrategy: null,
+        userId: plan.actor.userId
+      }
+    });
+  }
+  if (plan.searchGrantId) {
+    const existingSearchGrant = await tx.accessGrant.findFirst({
+      select: { id: true },
+      where: {
+        enabled: true,
+        searchStrategy: "openai-native-web-search",
+        userId: plan.actor.userId
+      }
+    });
+    if (!existingSearchGrant) {
+      await tx.accessGrant.create({
+        data: {
+          enabled: true,
+          groupId: null,
+          id: plan.searchGrantId,
+          providerConnectionId: null,
+          providerModelId: null,
+          searchStrategy: "openai-native-web-search",
+          userId: plan.actor.userId
+        }
+      });
     }
-  });
-  await tx.accessGrant.create({
-    data: {
-      enabled: true,
-      groupId: null,
-      id: plan.grantId,
-      providerConnectionId: null,
-      providerModelId: plan.model.id,
-      searchStrategy: null,
-      userId: plan.actor.userId
-    }
-  });
+  }
 
   const eligibleModelIds = await eligibleProviderModelIds(
     tx,
     plan.actor.userId,
     exposeFake
   );
-  if (!eligibleModelIds.has(plan.model.id)) {
+  if (plan.models.some((model) => !eligibleModelIds.has(model.id))) {
     throw new CustomSetupCatalogUnavailableError();
   }
   const priorDefaultUsable = Boolean(
     settings.defaultProviderModelId && eligibleModelIds.has(settings.defaultProviderModelId)
   );
   const defaultChanged = !priorDefaultUsable &&
-    settings.defaultProviderModelId !== plan.model.id;
+    settings.defaultProviderModelId !== primaryModel.id;
   if (!priorDefaultUsable) {
     await tx.userSettings.update({
-      data: { defaultProviderModelId: plan.model.id },
+      data: { defaultProviderModelId: primaryModel.id },
       where: { userId: plan.actor.userId }
     });
   }

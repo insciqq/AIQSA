@@ -5,8 +5,10 @@ import {
   primaryButton,
   quietButton
 } from "@/components/admin/adminPrimitives";
+import { AdminSearchablePicker } from "@/components/admin/AdminSearchablePicker";
 import type { AdminProviderCustomSetupController } from "@/components/admin/useAdminProviderCustomSetupController";
-import { ArrowLeft, ChevronDown, KeyRound, ServerCog } from "lucide-react";
+import { MAX_ADMIN_PROVIDER_CUSTOM_SETUP_MODELS } from "@/lib/contracts/adminProviderCustomSetup";
+import { ArrowLeft, ChevronDown, KeyRound, ServerCog, X } from "lucide-react";
 import Link from "next/link";
 
 const fieldLabel = "mb-1 block text-xs font-medium text-ink-secondary";
@@ -18,9 +20,10 @@ export type AdminProviderCustomSetupProps = Readonly<{
   onManageConnection(connectionId: string): void;
 }>;
 
-function requestEndpoint(apiRoot: string): string {
+function requestEndpoint(apiRoot: string, protocol: "chat_completions" | "responses"): string {
   const root = apiRoot.trim().replace(/\/+$/u, "");
-  return root ? `${root}/chat/completions` : "API root + /chat/completions";
+  const path = protocol === "responses" ? "responses" : "chat/completions";
+  return root ? `${root}/${path}` : `API root + /${path}`;
 }
 
 export function AdminProviderCustomSetup({
@@ -38,10 +41,14 @@ export function AdminProviderCustomSetup({
             Ready to chat
           </p>
           <h2 className="mt-2 break-words text-xl font-semibold tracking-tight text-ink">
-            {ready.modelDisplayName}
+            {ready.models.length === 1
+              ? ready.modelDisplayName
+              : `${ready.models.length} models are ready`}
           </h2>
           <p className="mt-2 text-sm leading-6 text-ink-secondary">
-            The custom Chat Completions endpoint passed its exact model test and is available to your administrator account.
+            The custom OpenAI-compatible endpoint passed {ready.models.length === 1
+              ? "its exact model test"
+              : `all ${ready.models.length} exact model tests`} and is available to your administrator account.
           </p>
           <div
             className="mt-4 border-l-2 border-positive/50 pl-3 text-xs leading-5 text-ink-secondary"
@@ -54,6 +61,9 @@ export function AdminProviderCustomSetup({
                 : "No API key is sent to this private endpoint."}
             </p>
             <p>Access: assigned directly to this administrator.</p>
+            <p>
+              Models: {ready.models.map(({ modelDisplayName }) => modelDisplayName).join(", ")}.
+            </p>
             <p>Default selection: {ready.defaultChanged ? "updated" : "unchanged"}.</p>
           </div>
           <div className="mt-5 flex flex-wrap items-center gap-2">
@@ -75,21 +85,26 @@ export function AdminProviderCustomSetup({
   }
 
   const noKey = !form.secret.trim();
-  const endpoint = requestEndpoint(form.apiRoot);
+  const endpoint = requestEndpoint(form.apiRoot, form.protocol);
+  const discoveredModels = controller.state.discoveredModels ?? [];
+  const hasDiscoveredCatalog = discoveredModels.length > 0;
+  const availableDiscoveredModels = discoveredModels.filter(
+    ({ id }) => !form.selectedModelIds.includes(id)
+  );
   const noKeyAllowed = form.allowPrivateNetwork && (() => {
     try {
       return new URL(form.apiRoot.trim()).protocol === "http:";
     } catch {
       return false;
     }
-  })();
+  })() && form.protocol === "chat_completions";
 
   return (
     <div className="min-w-0 px-4 py-5 sm:px-6 lg:px-8 lg:py-7">
       <div className="max-w-4xl">
         <button className={quietButton} onClick={onBack} type="button">
           <ArrowLeft aria-hidden="true" className="size-3.5" />
-          Back to provider setup
+          Back to Quick setup
         </button>
 
         <div className="mt-5 max-w-3xl">
@@ -102,7 +117,7 @@ export function AdminProviderCustomSetup({
                 Connect a custom endpoint
               </h2>
               <p className="mt-1 text-sm leading-6 text-ink-secondary">
-                Use an OpenAI-compatible Chat Completions API. AIQSA tests this exact model before saving anything.
+                Discover models from an OpenAI-compatible endpoint, choose one or more, then let AIQSA test every selected model before saving anything.
               </p>
             </div>
           </div>
@@ -135,20 +150,6 @@ export function AdminProviderCustomSetup({
               </span>
             </label>
             <label>
-              <span className={fieldLabel}>Model ID</span>
-              <input
-                className={`${inputClass} font-mono text-xs`}
-                disabled={controller.state.formLocked}
-                maxLength={256}
-                onChange={(event) => controller.actions.update({
-                  modelId: event.currentTarget.value
-                })}
-                placeholder="vendor/model-name"
-                required
-                value={form.modelId}
-              />
-            </label>
-            <label>
               <span className={fieldLabel}>API key</span>
               <span className="relative block">
                 <KeyRound
@@ -171,6 +172,133 @@ export function AdminProviderCustomSetup({
                 Write-only. It may be empty only for an explicitly allowed local/private HTTP endpoint.
               </span>
             </label>
+            <div className="flex items-end">
+              <button
+                className={`${quietButton} w-full justify-center`}
+                disabled={
+                  controller.state.formLocked ||
+                  !form.apiRoot.trim() ||
+                  (noKey && !noKeyAllowed)
+                }
+                onClick={() => void controller.actions.discoverModels()}
+                type="button"
+              >
+                {controller.state.discovering ? "Discovering models…" : "Discover models"}
+              </button>
+            </div>
+          </div>
+
+          <div className="rounded-control border border-trace-subtle bg-control-surface/40 p-3">
+            {hasDiscoveredCatalog ? (
+              <div className="grid gap-3">
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                  <div className="min-w-0">
+                    <p className={fieldLabel}>Selected models</p>
+                    <p className="text-[11px] leading-4 text-ink-muted">
+                      {form.selectedModelIds.length} of {discoveredModels.length} selected · up to {MAX_ADMIN_PROVIDER_CUSTOM_SETUP_MODELS}. The first selection has default preference when your current default is unusable.
+                    </p>
+                  </div>
+                  <div className="flex shrink-0 flex-wrap gap-1">
+                    <button
+                      className={quietButton}
+                      disabled={controller.state.formLocked || form.selectedModelIds.length === Math.min(
+                        discoveredModels.length,
+                        MAX_ADMIN_PROVIDER_CUSTOM_SETUP_MODELS
+                      )}
+                      onClick={controller.actions.selectAllDiscoveredModels}
+                      type="button"
+                    >
+                      {discoveredModels.length > MAX_ADMIN_PROVIDER_CUSTOM_SETUP_MODELS
+                        ? `Select first ${MAX_ADMIN_PROVIDER_CUSTOM_SETUP_MODELS}`
+                        : "Select all"}
+                    </button>
+                    <button
+                      className={quietButton}
+                      disabled={controller.state.formLocked || form.selectedModelIds.length === 0}
+                      onClick={controller.actions.clearDiscoveredModels}
+                      type="button"
+                    >
+                      Clear
+                    </button>
+                  </div>
+                </div>
+
+                {availableDiscoveredModels.length > 0 &&
+                form.selectedModelIds.length < MAX_ADMIN_PROVIDER_CUSTOM_SETUP_MODELS ? (
+                  <AdminSearchablePicker
+                    description="Catalog entries are discovery evidence only. AIQSA saves and tests only the IDs you explicitly add."
+                    disabled={controller.state.formLocked}
+                    items={availableDiscoveredModels.map((model) => ({
+                      id: model.id,
+                      label: model.id,
+                      secondaryText: "Reported by /models"
+                    }))}
+                    label={`Add models reported by this endpoint (${discoveredModels.length})`}
+                    noun={{ plural: "models", singular: "model" }}
+                    onSelect={(model) => controller.actions.selectDiscoveredModel(model.id)}
+                    placeholder="Add a model"
+                    searchPlaceholder="Search model IDs"
+                    selectedId={null}
+                  />
+                ) : null}
+
+                {form.selectedModelIds.length ? (
+                  <div aria-label="Models selected for setup" className="divide-y divide-trace-subtle rounded-control bg-answer-paper" role="list">
+                    {form.selectedModelIds.map((modelId, index) => (
+                      <div
+                        className="flex min-w-0 items-center justify-between gap-3 px-3 py-2"
+                        key={modelId}
+                        role="listitem"
+                      >
+                        <span className="min-w-0">
+                          <span className="block break-all font-mono text-xs text-ink">{modelId}</span>
+                          {index === 0 ? (
+                            <span className="mt-0.5 block text-[11px] text-ink-muted">First/default candidate</span>
+                          ) : null}
+                        </span>
+                        <button
+                          aria-label={`Remove ${modelId}`}
+                          className={quietButton}
+                          disabled={controller.state.formLocked}
+                          onClick={() => controller.actions.removeDiscoveredModel(modelId)}
+                          type="button"
+                        >
+                          <X aria-hidden="true" className="size-3.5" />
+                          Remove
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="border-l-2 border-caution pl-3 text-xs leading-5 text-caution" role="status">
+                    Choose at least one reported model before Test & Save.
+                  </p>
+                )}
+              </div>
+            ) : (
+              <label>
+                <span className={fieldLabel}>Model ID</span>
+                <input
+                  className={`${inputClass} font-mono text-xs`}
+                  disabled={controller.state.formLocked}
+                  maxLength={256}
+                  onChange={(event) => controller.actions.update({
+                    modelId: event.currentTarget.value
+                  })}
+                  placeholder="vendor/model-name"
+                  required
+                  value={form.modelId}
+                />
+                <span className={helpText}>
+                  Discover models first when the endpoint supports /models, or enter an exact ID manually.
+                </span>
+              </label>
+            )}
+            {controller.state.discoveryError ? (
+              <p className="mt-2 border-l-2 border-caution pl-3 text-xs leading-5 text-caution" role="status">
+                {controller.state.discoveryError}
+              </p>
+            ) : null}
           </div>
 
           <div className="rounded-control bg-control-surface/60 px-3 py-2.5">
@@ -204,6 +332,63 @@ export function AdminProviderCustomSetup({
                 Allow only this exact configured private or local endpoint. This also permits HTTP and an empty API-key field; DNS and destination checks still fail closed.
               </label>
               <label>
+                <span className={fieldLabel}>OpenAI-compatible protocol</span>
+                <select
+                  className={inputClass}
+                  disabled={controller.state.formLocked}
+                  onChange={(event) => {
+                    const protocol = event.currentTarget.value === "responses"
+                      ? "responses" as const
+                      : "chat_completions" as const;
+                    controller.actions.update({
+                      protocol,
+                      ...(protocol === "chat_completions"
+                        ? { imageGeneration: false, webSearch: false }
+                        : {})
+                    });
+                  }}
+                  value={form.protocol}
+                >
+                  <option value="chat_completions">Chat Completions</option>
+                  <option value="responses">Responses</option>
+                </select>
+                <span className={helpText}>
+                  Hosted tools require Responses and bearer authentication.
+                </span>
+              </label>
+              <div className="rounded-control border border-trace-subtle bg-answer-paper p-3">
+                <p className={fieldLabel}>Hosted tools declared by the administrator</p>
+                <label className="flex min-h-control items-center gap-2 text-xs text-ink-secondary">
+                  <input
+                    checked={form.webSearch}
+                    className="size-4 accent-proof"
+                    disabled={controller.state.formLocked}
+                    onChange={(event) => controller.actions.update({
+                      protocol: event.currentTarget.checked ? "responses" : form.protocol,
+                      webSearch: event.currentTarget.checked
+                    })}
+                    type="checkbox"
+                  />
+                  Hosted web search
+                </label>
+                <label className="flex min-h-control items-center gap-2 text-xs text-ink-secondary">
+                  <input
+                    checked={form.imageGeneration}
+                    className="size-4 accent-proof"
+                    disabled={controller.state.formLocked}
+                    onChange={(event) => controller.actions.update({
+                      imageGeneration: event.currentTarget.checked,
+                      protocol: event.currentTarget.checked ? "responses" : form.protocol
+                    })}
+                    type="checkbox"
+                  />
+                  Image generation (future workflows)
+                </label>
+                <p className="mt-1 text-[11px] leading-4 text-ink-muted">
+                  Web search is usable in QSA runs. Image support is recorded now but is not yet runnable in chat.
+                </p>
+              </div>
+              <label>
                 <span className={fieldLabel}>Connection name (optional)</span>
                 <input
                   className={inputClass}
@@ -216,19 +401,25 @@ export function AdminProviderCustomSetup({
                   value={form.connectionDisplayName}
                 />
               </label>
-              <label>
-                <span className={fieldLabel}>Model name (optional)</span>
-                <input
-                  className={inputClass}
-                  disabled={controller.state.formLocked}
-                  maxLength={160}
-                  onChange={(event) => controller.actions.update({
-                    modelDisplayName: event.currentTarget.value
-                  })}
-                  placeholder="Uses model ID"
-                  value={form.modelDisplayName}
-                />
-              </label>
+              {!hasDiscoveredCatalog || form.selectedModelIds.length <= 1 ? (
+                <label>
+                  <span className={fieldLabel}>Model name (optional)</span>
+                  <input
+                    className={inputClass}
+                    disabled={controller.state.formLocked}
+                    maxLength={160}
+                    onChange={(event) => controller.actions.update({
+                      modelDisplayName: event.currentTarget.value
+                    })}
+                    placeholder="Uses model ID"
+                    value={form.modelDisplayName}
+                  />
+                </label>
+              ) : (
+                <div className="rounded-control bg-answer-paper px-3 py-2.5 text-xs leading-5 text-ink-muted">
+                  Multiple selected models use their exact upstream IDs as display names. You can rename them later in Connections → Models.
+                </div>
+              )}
               <label>
                 <span className={fieldLabel}>Context window</span>
                 <input
@@ -301,7 +492,9 @@ export function AdminProviderCustomSetup({
               disabled={
                 controller.state.formLocked ||
                 !form.apiRoot.trim() ||
-                !form.modelId.trim() ||
+                (hasDiscoveredCatalog
+                  ? form.selectedModelIds.length === 0
+                  : !form.modelId.trim()) ||
                 (noKey && !noKeyAllowed)
               }
               type="submit"
@@ -309,7 +502,9 @@ export function AdminProviderCustomSetup({
               {controller.state.submitting ? "Testing & saving…" : "Test & Save"}
             </button>
             <p className="text-[11px] leading-4 text-ink-muted">
-              Sends one small generation request and may use a small amount of provider quota.
+              Sends {hasDiscoveredCatalog && form.selectedModelIds.length > 1
+                ? `${form.selectedModelIds.length} small generation requests (one per model)`
+                : "one small generation request"} and may use a small amount of provider quota. Nothing is saved unless every selected model passes.
             </p>
           </div>
         </form>

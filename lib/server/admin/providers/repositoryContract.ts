@@ -33,7 +33,8 @@ export type ProviderDiscoveryCandidate = Readonly<{
   };
   credential: {
     id: string;
-    source: ProviderCredentialSecretSource;
+    /** Null is valid only for an explicit active no-auth compatible credential. */
+    source: ProviderCredentialSecretSource | null;
   };
 }>;
 

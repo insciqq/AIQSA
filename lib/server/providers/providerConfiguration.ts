@@ -177,6 +177,7 @@ export function normalizeProviderModelCapabilities(value: unknown): ProviderMode
   const optional = [
     "backgroundStreaming",
     "nativeBackground",
+    "nativeImageGeneration",
     "parallelToolCalls",
     "streaming",
     "toolCalling"
@@ -207,6 +208,9 @@ export function normalizeProviderModelCapabilities(value: unknown): ProviderMode
       : {}),
     nativePdfInput: value.nativePdfInput as boolean,
     ...(typeof value.nativeBackground === "boolean" ? { nativeBackground: value.nativeBackground } : {}),
+    ...(typeof value.nativeImageGeneration === "boolean"
+      ? { nativeImageGeneration: value.nativeImageGeneration }
+      : {}),
     nativeSearch: value.nativeSearch as boolean,
     ...(typeof value.parallelToolCalls === "boolean" ? { parallelToolCalls: value.parallelToolCalls } : {}),
     pdf: value.pdf as boolean,

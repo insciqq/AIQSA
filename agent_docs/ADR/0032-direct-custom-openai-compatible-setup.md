@@ -3,7 +3,7 @@
 Status: Accepted
 Amends: 0022-admin-managed-llm-provider-control-plane, 0026-personal-provider-quick-setup, 0028-task-first-control-center-and-direct-provider-setup
 
-Amendment note: ADR 0033 keeps this atomic Custom setup contract but presents Custom as a Setup subtask and hands its exact created connection to the peer Connections task instead of a separate Advanced page.
+Amendment note: ADR 0033 keeps this atomic Custom setup contract but presents Custom as a Setup subtask and hands its exact created connection to the peer Connections task instead of a separate Advanced page. ADR 0039 makes Custom the fifth Quick-setup choice, replaces manual-only discovery and fixed Chat with discovery-first explicit Chat/Responses selection, permits an ordered bounded set of discovered models behind per-model tests and one atomic commit, adds the same id-only discovery picker to saved Custom connections, and adds reviewed hosted-tool declarations plus fenced whole-graph deletion.
 
 ## Context
 
