@@ -11,6 +11,7 @@ import {
   type Implementation,
   type ServerCapabilities
 } from "@modelcontextprotocol/sdk/types.js";
+import packageMetadata from "@/package.json";
 import { canonicalMcpJson, hashCanonicalMcpValue } from "./definitions";
 
 type SessionOperation = "call_tool" | "close" | "initialize" | "list_tools" | "session";
@@ -511,7 +512,7 @@ export class McpClientSession {
       requestInit: { headers: staticHeaders }
     });
     this.client = new Client(
-      { name: "aiqsa", version: "0.1.0" },
+      { name: "aiqsa", version: packageMetadata.version },
       {
         capabilities: {},
         listChanged: {

@@ -105,7 +105,7 @@ docker compose up -d
 docker compose ps
 ```
 
-The one-shot startup job from the same release image applies committed migrations and safely adopts an existing installation before the application becomes ready. Existing users, chats, settings, and uploaded objects remain in the named volumes. The default `AIQSA_IMAGE` follows `latest`; set it in the existing `.env` to a version tag such as `ghcr.io/insciqq/aiqsa:0.1.0` when you prefer explicit upgrades.
+The one-shot startup job from the same release image applies committed migrations and safely adopts an existing installation before the application becomes ready. Existing users, chats, settings, and uploaded objects remain in the named volumes. The default `AIQSA_IMAGE` follows `latest`; set it in the existing `.env` to a version tag such as `ghcr.io/insciqq/aiqsa:X.Y.Z` when you prefer explicit upgrades.
 
 Afterward, check readiness and one real provider path:
 

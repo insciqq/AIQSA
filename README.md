@@ -84,7 +84,7 @@ becomes ready. The local `.env`, existing users, chats, settings, and uploaded
 objects remain in the installation and named Docker volumes. Review release
 notes and changes to `.env.example` before large version jumps or when new
 configuration is required. To hold a specific release, set `AIQSA_IMAGE` in
-the same `.env` to a tag such as `ghcr.io/insciqq/aiqsa:0.1.0`.
+the same `.env` to a tag such as `ghcr.io/insciqq/aiqsa:X.Y.Z`.
 
 Stopping the stack first is normally unnecessary. Never run
 `docker compose down -v` during an update: `-v` deletes the persistent database
