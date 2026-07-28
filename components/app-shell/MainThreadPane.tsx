@@ -334,13 +334,13 @@ export function MainThreadPane({
         data-composer-placement={centeredEmptyConversation ? "centered" : "thread-tail"}
         data-testid="thread-composer-layout"
       >
-        <div className={centeredEmptyConversation ? "flex shrink-0 flex-col" : "flex min-h-0 flex-1 flex-col"}>
+        <div className={centeredEmptyConversation ? "relative flex shrink-0 flex-col" : "relative flex min-h-0 flex-1 flex-col"}>
           <div
             ref={threadScrollRef}
             className={
               centeredEmptyConversation
                 ? "shrink-0 [overflow-anchor:none]"
-                : "min-h-0 flex-1 overflow-y-auto overscroll-contain [overflow-anchor:none]"
+                : "min-h-0 flex-1 overflow-y-auto overscroll-contain pt-[calc(3.25rem+env(safe-area-inset-top))] [overflow-anchor:none] lg:pt-0"
             }
             data-testid="thread"
             onScroll={(event) => {
@@ -594,21 +594,21 @@ export function MainThreadPane({
           </div>
           {showJumpToLatest ? (
             <div
-              className="pointer-events-none flex shrink-0 justify-center bg-answer-paper px-4 py-1.5"
+              className="pointer-events-none absolute inset-x-0 bottom-3 z-20 flex justify-center px-4"
               data-testid="jump-to-latest-region"
             >
               <button
-                className="pointer-events-auto inline-flex h-touch items-center gap-2 rounded-pill border border-trace-subtle bg-overlay-surface px-4 text-xs font-medium text-ink shadow-float outline-none hover:bg-control-hover focus-visible:ring-2 focus-visible:ring-proof/55 sm:h-control [@media(hover:none)]:!h-touch [@media(pointer:coarse)]:!h-touch"
+                className="pointer-events-auto grid size-11 place-items-center rounded-pill border border-trace-subtle bg-overlay-surface text-ink shadow-float outline-none hover:bg-control-hover focus-visible:ring-2 focus-visible:ring-proof/55 [@media(hover:none)]:!size-11 [@media(pointer:coarse)]:!size-11"
                 type="button"
                 aria-label="Jump to latest message"
                 data-testid="jump-to-latest"
+                title="Jump to latest message"
                 onClick={() => {
                   expandComposerReadingMode();
                   jumpToLatest();
                 }}
               >
-                <ArrowDown className="size-3.5 text-proof" aria-hidden="true" />
-                Latest
+                <ArrowDown className="size-4 text-proof" aria-hidden="true" />
               </button>
             </div>
           ) : null}

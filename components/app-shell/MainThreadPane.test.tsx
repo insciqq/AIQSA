@@ -422,7 +422,7 @@ describe("MainThreadPane", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("Upload response was malformed");
   });
 
-  it("renders direct Model, Profile, and Search controls plus one complete More setup", () => {
+  it("renders direct model, profile-picker, and Search controls plus one complete More setup", () => {
     const selectRunProfile = vi.fn();
     renderPane({
       catalog: deepProfileCatalog,
@@ -444,9 +444,15 @@ describe("MainThreadPane", () => {
     expect(screen.getByTestId("run-profile-summary")).toHaveTextContent("Profile: Deep");
     expect(screen.getByTestId("run-search-summary")).toHaveTextContent("Search: Off");
     expect(within(controls).getByRole("button", { name: "Select model" })).toBeVisible();
-    const directDeep = within(controls).getByRole("button", { name: "Use Deep run profile" });
-    expect(directDeep).toHaveAttribute("aria-pressed", "true");
-    fireEvent.click(directDeep);
+    const directProfile = within(controls).getByRole("button", { name: "Run profile" });
+    expect(directProfile).toHaveTextContent("Deep");
+    expect(directProfile).toHaveAttribute("title", "Current run profile: Deep");
+    fireEvent.click(directProfile);
+    fireEvent.click(
+      screen
+        .getByTestId("composer-inline-profile-options")
+        .querySelector('[data-option-value="deep"]')!
+    );
     expect(selectRunProfile).toHaveBeenCalledWith("deep");
     expect(within(controls).getByRole("button", { name: "Search strategy" })).toBeVisible();
     expect(more).toHaveTextContent("More");
@@ -1086,10 +1092,20 @@ describe("MainThreadPane", () => {
       visibleMessages: [userMessage("question-1")]
     });
 
-    fireEvent.click(screen.getByRole("button", { name: "Jump to latest message" }));
+    const latest = screen.getByRole("button", { name: "Jump to latest message" });
+    fireEvent.click(latest);
 
-    expect(screen.getByTestId("jump-to-latest-region")).not.toHaveClass("absolute");
-    expect(screen.getByTestId("thread")).toHaveClass("min-h-0", "flex-1", "[overflow-anchor:none]");
+    expect(screen.getByTestId("jump-to-latest-region")).toHaveClass("absolute", "bottom-3");
+    expect(screen.getByTestId("jump-to-latest-region")).not.toHaveClass("bg-answer-paper");
+    expect(latest).toHaveTextContent("");
+    expect(latest.querySelector(".lucide-arrow-down")).toBeInTheDocument();
+    expect(screen.getByTestId("thread")).toHaveClass(
+      "min-h-0",
+      "flex-1",
+      "pt-[calc(3.25rem+env(safe-area-inset-top))]",
+      "lg:pt-0",
+      "[overflow-anchor:none]"
+    );
     expect(screen.queryByRole("toolbar", { name: "Chat actions" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Copy thread" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Branch tree" })).not.toBeInTheDocument();

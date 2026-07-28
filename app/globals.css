@@ -13,6 +13,15 @@
   container-type: inline-size;
 }
 
+.top-rail-reading-veil {
+  background: linear-gradient(
+    to bottom,
+    rgb(var(--answer-paper) / 0.82) 0%,
+    rgb(var(--answer-paper) / 0.42) 68%,
+    rgb(var(--answer-paper) / 0) 100%
+  );
+}
+
 @media (min-width: 1024px) {
   [data-desktop-action-clearance="true"] [data-testid="thread"],
   [data-desktop-action-clearance="true"] [data-testid="persistent-notice-region"] {

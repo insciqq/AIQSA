@@ -68,8 +68,8 @@ function narrowSearchStrategyLabel(strategy: CatalogSearchStrategy | undefined):
   const labels: Record<CatalogSearchStrategy["kind"], string> = {
     gemini_google_search: "Google",
     none: "Off",
-    openai_native_web_search: "Web",
-    perplexity_tool_search: "Tool"
+    openai_native_web_search: "OAI",
+    perplexity_tool_search: "PPLXTY"
   };
   return labels[strategy.kind];
 }
@@ -300,16 +300,28 @@ export function ComposerControls({
         data-testid="composer-secondary-controls"
       >
         {hasAvailableProfiles ? (
-          <ComposerRunProfiles
-            catalog={catalog}
-            compact
+          <ComposerOptionPicker
+            accessibleDescription={`Current run profile: ${profileLabel ?? "Custom"}`}
+            className="min-w-20 max-w-[9rem] shrink-0 flex-[0_1_9rem]"
             disabled={disabled || streaming}
-            reasoningEffort={reasoningEffort}
-            reasoningMode={reasoningMode}
-            selectedModelId={selectedModelId}
-            selectedProvider={selectedProvider}
-            testId="composer-inline-run-profiles"
-            onSelect={onRunProfileChange}
+            compactResting
+            id="composer-inline-profile"
+            label="Run profile"
+            options={resolvedProfiles
+              .filter((profile) => profile.available)
+              .map((profile) => ({
+                description: `${profile.description} · ${profile.configurationLabel}`,
+                label: profile.label,
+                value: profile.id
+              }))}
+            pickerDescription="Applies the configured model and reasoning together."
+            pickerTitle="Profile"
+            resting
+            restingLabel="Profile"
+            restingLabelClassName="sr-only"
+            summaryLabel={profileLabel ?? "Custom"}
+            value={activeProfile?.id ?? ""}
+            onChange={(profileId) => onRunProfileChange(profileId as RunProfileId)}
           />
         ) : null}
 

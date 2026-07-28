@@ -182,27 +182,24 @@ export function ComposerModelPicker({
         title={fullModelSummary}
         onClick={toggle}
       >
-        <span className="flex min-w-0 flex-1 items-baseline gap-2">
-          <span className="shrink-0 text-xs font-medium text-ink-muted">Model</span>
-          <span className="flex min-w-0 flex-1 items-baseline gap-1.5">
-            {currentModel ? (
-              <>
-                <span
-                  className="max-w-[35%] shrink-0 truncate text-xs font-medium text-ink-secondary"
-                  data-testid={valueTestId ? `${valueTestId}-provider` : undefined}
-                >
-                  {selectedProviderName}
-                </span>
-                <span className="shrink-0 text-ink-muted" aria-hidden="true">/</span>
-              </>
-            ) : null}
-            <span
-              className="min-w-0 flex-1 truncate text-sm font-semibold text-ink"
-              data-testid={valueTestId}
-              id={`${idPrefix}-current-value`}
-            >
-              {modelSummary}
-            </span>
+        <span className="flex min-w-0 flex-1 items-baseline gap-1.5">
+          {currentModel ? (
+            <>
+              <span
+                className="max-w-[35%] shrink-0 truncate text-xs font-medium text-ink-secondary"
+                data-testid={valueTestId ? `${valueTestId}-provider` : undefined}
+              >
+                {selectedProviderName}
+              </span>
+              <span className="shrink-0 text-ink-muted" aria-hidden="true">/</span>
+            </>
+          ) : null}
+          <span
+            className="min-w-0 flex-1 truncate text-sm font-semibold text-ink"
+            data-testid={valueTestId}
+            id={`${idPrefix}-current-value`}
+          >
+            {modelSummary}
           </span>
         </span>
         <ChevronDown className="size-4 shrink-0 text-ink-muted" aria-hidden="true" />

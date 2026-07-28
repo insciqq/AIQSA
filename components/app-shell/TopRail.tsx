@@ -4,10 +4,10 @@ import {
   Copy,
   GitBranch,
   Menu,
-  MoreHorizontal,
+  MoreVertical,
   PanelRight,
-  Plus,
-  Share2
+  Share2,
+  SquarePen
 } from "lucide-react";
 import {
   useEffect,
@@ -40,7 +40,7 @@ function PipelineIndicator({
   return (
     <button
       className={[
-        "pipeline-indicator inline-flex h-9 min-w-9 shrink-0 items-center justify-center gap-2 rounded-control px-2.5 text-xs font-medium max-lg:h-touch max-lg:min-w-touch [@media(hover:none)]:!h-touch [@media(hover:none)]:!min-w-touch [@media(pointer:coarse)]:!h-touch [@media(pointer:coarse)]:!min-w-touch",
+        "pipeline-indicator inline-flex h-9 min-w-9 shrink-0 items-center justify-center gap-2 rounded-pill px-2.5 text-xs font-medium max-lg:h-touch max-lg:min-w-touch [@media(hover:none)]:!h-touch [@media(hover:none)]:!min-w-touch [@media(pointer:coarse)]:!h-touch [@media(pointer:coarse)]:!min-w-touch",
         actionFocusClass,
         error
           ? "bg-critical/10 text-critical hover:bg-critical/15"
@@ -154,7 +154,7 @@ function ConversationActionsMenu({
       <button
         ref={triggerRef}
         className={[
-          "grid size-9 shrink-0 place-items-center rounded-control text-ink-muted hover:bg-control-hover hover:text-ink max-lg:size-11 [@media(hover:none)]:!size-11 [@media(pointer:coarse)]:!size-11",
+          "grid size-9 shrink-0 place-items-center rounded-pill text-ink-muted hover:bg-control-hover hover:text-ink max-lg:size-11 [@media(hover:none)]:!size-11 [@media(pointer:coarse)]:!size-11",
           actionFocusClass
         ].join(" ")}
         type="button"
@@ -174,7 +174,7 @@ function ConversationActionsMenu({
           }
         }}
       >
-        <MoreHorizontal className="size-4" aria-hidden="true" />
+        <MoreVertical className="size-4" aria-hidden="true" />
       </button>
 
       {open ? (
@@ -240,27 +240,32 @@ export function TopRail({
     pipeline?.phase === "running" ||
     pipeline?.phase === "error";
   const iconActionClass = [
-    "grid size-9 shrink-0 place-items-center rounded-control text-ink-muted hover:bg-control-hover hover:text-ink max-lg:size-11 [@media(hover:none)]:!size-11 [@media(pointer:coarse)]:!size-11",
+    "grid size-9 shrink-0 place-items-center rounded-pill text-ink-muted hover:bg-control-hover hover:text-ink max-lg:size-11 [@media(hover:none)]:!size-11 [@media(pointer:coarse)]:!size-11",
     actionFocusClass
   ].join(" ");
 
   return (
     <header
       className={[
-        "relative flex h-[calc(3rem+env(safe-area-inset-top))] shrink-0 items-center justify-between gap-2 bg-transparent pb-0 pl-[max(.5rem,env(safe-area-inset-left))] pr-[max(.5rem,env(safe-area-inset-right))] pt-[env(safe-area-inset-top)] sm:pl-[max(.75rem,env(safe-area-inset-left))] sm:pr-[max(.75rem,env(safe-area-inset-right))] lg:pointer-events-none lg:absolute lg:inset-x-0 lg:top-0 lg:z-30 lg:shrink lg:pl-0",
+        "pointer-events-none absolute inset-x-0 top-0 z-30 flex h-[calc(4rem+env(safe-area-inset-top))] items-start justify-between gap-2 bg-transparent pb-3 pl-[max(.5rem,env(safe-area-inset-left))] pr-[max(.5rem,env(safe-area-inset-right))] pt-[calc(.5rem+env(safe-area-inset-top))] sm:pl-[max(.75rem,env(safe-area-inset-left))] sm:pr-[max(.75rem,env(safe-area-inset-right))] lg:h-[calc(3rem+env(safe-area-inset-top))] lg:items-center lg:pb-0 lg:pl-0 lg:pt-[env(safe-area-inset-top)]",
         desktopActionsVisible
-          ? "lg:h-[calc(3rem+env(safe-area-inset-top))] lg:pr-[max(.75rem,env(safe-area-inset-right))]"
+          ? "lg:pr-[max(.75rem,env(safe-area-inset-right))]"
           : "lg:h-[env(safe-area-inset-top)] lg:gap-0 lg:px-0"
       ].join(" ")}
       data-desktop-actions-visible={desktopActionsVisible ? "true" : undefined}
       data-testid="top-rail"
     >
+      <span
+        className="top-rail-reading-veil absolute inset-0"
+        data-testid="top-rail-reading-veil"
+        aria-hidden="true"
+      />
       <h1 className="sr-only" data-testid="current-chat-title" title={chatTitle}>
         {chatTitle}
       </h1>
 
       <div
-        className="flex shrink-0 items-center lg:hidden"
+        className="pointer-events-auto relative flex shrink-0 items-center rounded-pill border border-trace-subtle bg-overlay-surface/95 p-0.5 shadow-float lg:hidden"
         role="group"
         aria-label="Workspace controls"
         data-testid="compact-workspace-controls"
@@ -299,22 +304,22 @@ export function TopRail({
           disabled={newChatDisabled}
           onClick={onStartNewChat}
         >
-          <Plus className="size-4" aria-hidden="true" />
+          <SquarePen className="size-4" aria-hidden="true" />
         </button>
       </div>
 
-      <div className="ml-auto flex min-w-0 items-center justify-end gap-0.5 sm:gap-1 lg:pointer-events-auto">
+      <div className="pointer-events-auto relative ml-auto flex min-w-0 items-center justify-end gap-1">
         <PipelineIndicator pipeline={pipeline} onOpen={onOpenPipeline} />
         {conversationActionsAvailable ? (
           <div
-            className="flex shrink-0 items-center"
+            className="flex shrink-0 items-center rounded-pill border border-trace-subtle bg-overlay-surface/95 p-0.5 shadow-float"
             role="group"
             aria-label="Conversation controls"
             data-testid="conversation-controls"
           >
             <button
               className={[
-                "inline-flex size-11 shrink-0 items-center justify-center rounded-control text-ink-muted hover:bg-control-hover hover:text-ink disabled:cursor-not-allowed disabled:text-ink-disabled disabled:opacity-60 lg:h-9 lg:w-auto lg:min-w-9 lg:gap-2 lg:px-3 lg:text-xs lg:font-medium lg:text-ink-secondary [@media(hover:none)]:!size-11 [@media(pointer:coarse)]:!size-11",
+                "inline-flex size-11 shrink-0 items-center justify-center rounded-pill text-ink-muted hover:bg-control-hover hover:text-ink disabled:cursor-not-allowed disabled:text-ink-disabled disabled:opacity-60 lg:h-9 lg:w-auto lg:min-w-9 lg:gap-2 lg:px-3 lg:text-xs lg:font-medium lg:text-ink-secondary [@media(hover:none)]:!size-11 [@media(pointer:coarse)]:!size-11",
                 actionFocusClass
               ].join(" ")}
               type="button"
@@ -327,7 +332,7 @@ export function TopRail({
             </button>
             <button
               className={[
-                "inline-flex size-11 shrink-0 items-center justify-center rounded-control lg:h-9 lg:w-auto lg:min-w-9 lg:gap-2 lg:px-3 lg:text-xs lg:font-medium [@media(hover:none)]:!size-11 [@media(pointer:coarse)]:!size-11",
+                "inline-flex size-11 shrink-0 items-center justify-center rounded-pill lg:h-9 lg:w-auto lg:min-w-9 lg:gap-2 lg:px-3 lg:text-xs lg:font-medium [@media(hover:none)]:!size-11 [@media(pointer:coarse)]:!size-11",
                 detailsOpen
                   ? "bg-control-selected text-ink hover:bg-control-hover"
                   : "text-ink-secondary hover:bg-control-hover hover:text-ink",

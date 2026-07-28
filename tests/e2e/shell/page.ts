@@ -40,29 +40,8 @@ export async function expectConversationControlsClearOfThread(page: Page): Promi
 
   await expect(actionRail).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
   await expect(actionRail).toHaveCSS("border-bottom-width", "0px");
-
-  if (!desktop) {
-    await expect
-      .poll(async () => {
-        const [actionRailBox, conversationControlsBox, threadBox] = await Promise.all([
-          actionRail.boundingBox(),
-          conversationControls.boundingBox(),
-          thread.boundingBox()
-        ]);
-        if (!actionRailBox || !conversationControlsBox || !threadBox) {
-          return false;
-        }
-        const threadTop = threadBox.y + 1;
-        return (
-          actionRailBox.y + actionRailBox.height <= threadTop &&
-          conversationControlsBox.y + conversationControlsBox.height <= threadTop
-        );
-      })
-      .toBe(true);
-    return;
-  }
-
   await expect(actionRail).toHaveCSS("position", "absolute");
+  await expect(page.getByTestId("top-rail-reading-veil")).toBeVisible();
   await expect
     .poll(async () => {
       const [actionRailBox, conversationControlsBox, threadBox, contentBoxes] = await Promise.all([
@@ -91,7 +70,10 @@ export async function expectConversationControlsClearOfThread(page: Page): Promi
         controls.top < content.bottom &&
         controls.bottom > content.top
       );
-      return threadBox.y <= actionRailBox.y + 1 && !intersectsContent;
+      const overlaysThread =
+        threadBox.y <= actionRailBox.y + 1 &&
+        actionRailBox.y + actionRailBox.height > threadBox.y;
+      return overlaysThread && (!desktop || !intersectsContent);
     })
     .toBe(true);
 }

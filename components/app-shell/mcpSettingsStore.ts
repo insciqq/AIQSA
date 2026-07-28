@@ -120,7 +120,7 @@ export async function refreshMcpSettings(
   }
   if (loadPromise) return loadPromise;
 
-  const preserveCurrentState = options.background === true && current.servers.length > 0;
+  const preserveCurrentState = options.background === true && current.loadState !== "idle";
   useMcpSettingsStore.setState(preserveCurrentState
     ? { error: null }
     : { error: null, loadState: "loading" });

@@ -46,12 +46,17 @@ describe("TopRail", () => {
 
     expect(screen.getByTestId("top-rail")).toHaveClass("bg-transparent", "justify-between");
     expect(screen.getByTestId("top-rail")).toHaveClass(
-      "lg:absolute",
-      "lg:pointer-events-none"
+      "absolute",
+      "pointer-events-none"
     );
     expect(screen.getByTestId("top-rail")).not.toHaveClass("border-b");
     expect(screen.getByTestId("top-rail")).not.toHaveClass("border-trace-subtle");
     expect(screen.getByTestId("top-rail")).not.toHaveClass("bg-answer-paper");
+    expect(screen.getByTestId("top-rail-reading-veil")).toHaveClass(
+      "top-rail-reading-veil",
+      "absolute",
+      "inset-0"
+    );
     expect(screen.getByRole("heading", { level: 1, name: "Research notes" })).toHaveClass("sr-only");
     expect(screen.getByTestId("current-chat-title")).toHaveTextContent("Research notes");
     expect(screen.getByTestId("current-chat-title")).toHaveClass("sr-only");
@@ -211,12 +216,22 @@ describe("TopRail", () => {
     const newChat = screen.getByRole("button", { name: "Start new chat" });
     expect(newChat).toHaveClass("lg:hidden", "[@media(hover:none)]:!size-11");
     expect(screen.getByRole("group", { name: "Workspace controls" })).toHaveClass("lg:hidden");
-    expect(screen.getByRole("group", { name: "Workspace controls" })).not.toHaveClass("border-r");
-    expect(screen.getByRole("group", { name: "Workspace controls" })).not.toHaveClass(
-      "border-trace-subtle"
+    expect(screen.getByRole("group", { name: "Workspace controls" })).toHaveClass(
+      "pointer-events-auto",
+      "rounded-pill",
+      "border-trace-subtle",
+      "bg-overlay-surface/95",
+      "shadow-float"
     );
-    expect(screen.getByRole("group", { name: "Conversation controls" })).toContainElement(
+    const conversationControls = screen.getByRole("group", { name: "Conversation controls" });
+    expect(conversationControls).toContainElement(
       screen.getByRole("button", { name: "Share anonymously" })
+    );
+    expect(conversationControls).toHaveClass(
+      "rounded-pill",
+      "border-trace-subtle",
+      "bg-overlay-surface/95",
+      "shadow-float"
     );
     expect(screen.queryByRole("button", { name: "Copy thread" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Branch tree" })).not.toBeInTheDocument();

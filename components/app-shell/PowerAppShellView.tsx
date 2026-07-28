@@ -373,7 +373,7 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
   const shellNotice = notice;
   const persistentNoticeSlot = shellNotice?.persistent ? (
     <div
-      className="shrink-0 border-b border-trace-subtle bg-answer-paper px-3 py-2"
+      className="shrink-0 border-b border-trace-subtle bg-answer-paper px-3 pb-2 pt-[calc(4rem+env(safe-area-inset-top))] lg:py-2"
       data-testid="persistent-notice-region"
     >
       <div className="mx-auto flex w-full max-w-reading justify-center">

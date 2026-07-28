@@ -206,16 +206,21 @@ describe("ComposerControls", () => {
     expect(screen.getByTestId("run-model-summary")).toHaveTextContent("Balanced Research");
     expect(screen.getByTestId("run-model-summary-provider")).toHaveTextContent("Fake");
     expect(screen.getByTestId("run-profile-summary")).toHaveTextContent("Profile: Balanced");
-    expect(screen.queryByTestId("compact-run-profile-state")).not.toBeInTheDocument();
     expect(screen.getByTestId("run-reasoning-summary")).toHaveTextContent("Reasoning: Standard · Medium");
     expect(screen.getByTestId("run-search-summary")).toHaveTextContent("Search: Off");
     expect(summary).toHaveAccessibleName(
       "Open more run settings. Profile Balanced. Model Balanced Research. Reasoning Standard mode, Medium effort. Search Off."
     );
-    expect(within(controls).getByRole("button", { name: "Select model" })).toBeVisible();
-    expect(within(controls).getByRole("button", { name: "Use Fast run profile" })).toBeVisible();
-    expect(within(controls).getByRole("button", { name: "Use Balanced run profile" })).toBeVisible();
-    expect(within(controls).getByRole("button", { name: "Use Deep run profile" })).toBeVisible();
+    const model = within(controls).getByRole("button", { name: "Select model" });
+    expect(model).toBeVisible();
+    expect(within(model).queryByText("Model", { exact: true })).not.toBeInTheDocument();
+    const profile = within(controls).getByRole("button", { name: "Run profile" });
+    expect(profile).toBeVisible();
+    expect(profile).toHaveTextContent("Balanced");
+    expect(within(profile).getByText("Profile", { exact: true })).toHaveClass("sr-only");
+    expect(within(controls).queryByRole("button", { name: "Use Fast run profile" })).not.toBeInTheDocument();
+    expect(within(controls).queryByRole("button", { name: "Use Balanced run profile" })).not.toBeInTheDocument();
+    expect(within(controls).queryByRole("button", { name: "Use Deep run profile" })).not.toBeInTheDocument();
     const search = within(controls).getByRole("button", { name: "Search strategy" });
     expect(search).toBeVisible();
     expect(within(search).getByText("Search")).toHaveClass("max-[429px]:sr-only");
@@ -224,13 +229,8 @@ describe("ComposerControls", () => {
     expect(within(controls).queryByRole("button", { name: "Reasoning effort" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Run settings" })).not.toBeInTheDocument();
     expect(summary.querySelector(".lucide-chevron-right")).not.toBeInTheDocument();
-    expect(screen.getByTestId("composer-secondary-controls")).toContainElement(
-      screen.getByTestId("composer-inline-run-profiles")
-    );
-    expect(screen.getByTestId("composer-inline-run-profiles").firstElementChild).toHaveClass(
-      "bg-control-surface",
-      "min-h-touch"
-    );
+    expect(screen.getByTestId("composer-secondary-controls")).toContainElement(profile);
+    expect(profile).toHaveClass("bg-control-surface", "h-touch");
     expect(screen.getByTestId("run-model-summary").closest("div.relative")).toHaveClass(
       "max-w-full",
       "flex-[1_1_100%]",
@@ -241,7 +241,13 @@ describe("ComposerControls", () => {
   it("routes the direct profile, model, and search controls through the existing actions", () => {
     const { props } = renderControls();
 
-    fireEvent.click(screen.getByRole("button", { name: "Use Deep run profile" }));
+    fireEvent.click(screen.getByRole("button", { name: "Run profile" }));
+    expect(screen.getByRole("dialog", { name: "Choose profile" })).toBeVisible();
+    fireEvent.click(
+      screen
+        .getByTestId("composer-inline-profile-options")
+        .querySelector('[data-option-value="deep"]')!
+    );
     expect(props.onRunProfileChange).toHaveBeenCalledWith("deep");
 
     fireEvent.click(screen.getByRole("button", { name: "Select model" }));
@@ -273,10 +279,28 @@ describe("ComposerControls", () => {
     expect(screen.getByTestId("run-profile-summary")).toHaveTextContent("Profile: Deep");
     expect(screen.getByTestId("run-reasoning-summary")).toHaveTextContent("Reasoning: Pro · Maximum");
     expect(screen.getByTestId("run-search-summary")).toHaveTextContent("Search: Web Search");
+    expect(screen.getByRole("button", { name: "Run profile" })).toHaveTextContent("Deep");
     const search = screen.getByRole("button", { name: "Search strategy" });
-    expect(within(search).getByText("Web")).toHaveClass("min-[430px]:hidden");
+    expect(within(search).getByText("OAI")).toHaveClass("min-[430px]:hidden");
     expect(within(search).getByText("Web Search")).toHaveClass("hidden", "min-[430px]:inline");
     expect(search).toHaveAttribute("title", "Web Search");
+  });
+
+  it("uses a provider-specific narrow label for Perplexity search", () => {
+    const perplexity = {
+      displayName: "Perplexity tool",
+      kind: "perplexity_tool_search" as const,
+      strategyId: "perplexity-tool-search"
+    };
+    renderControls({
+      searchOptions: [perplexity],
+      selectedSearchStrategy: perplexity.strategyId
+    });
+
+    const search = screen.getByRole("button", { name: "Search strategy" });
+    expect(within(search).getByText("PPLXTY")).toHaveClass("min-[430px]:hidden");
+    expect(within(search).getByText("Perplexity tool")).toHaveClass("hidden", "min-[430px]:inline");
+    expect(search).toHaveAttribute("title", "Perplexity tool");
   });
 
   it("keeps the full model identity available while containing a long direct-control label", () => {
@@ -361,7 +385,7 @@ describe("ComposerControls", () => {
 
   it("omits the Profile section only when the server omits every configured slot", () => {
     renderControls({ catalog: { ...catalog, runProfiles: [] } });
-    expect(screen.queryByTestId("composer-inline-run-profiles")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Run profile" })).not.toBeInTheDocument();
     expect(screen.queryByTestId("run-profile-summary")).not.toBeInTheDocument();
     const dialog = openRunSetup();
 
@@ -381,8 +405,7 @@ describe("ComposerControls", () => {
       }))
     };
     renderControls({ catalog: unavailableCatalog });
-    expect(screen.queryByTestId("composer-inline-run-profiles")).not.toBeInTheDocument();
-    expect(screen.queryByTestId("compact-run-profile-state")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Run profile" })).not.toBeInTheDocument();
     expect(screen.queryByTestId("run-profile-summary")).not.toBeInTheDocument();
     expect(screen.getByTestId("composer-run-summary")).not.toHaveAccessibleName(/Profile/i);
 
@@ -538,14 +561,14 @@ describe("ComposerControls", () => {
   it("derives Custom only for applicable profiles and omits a true-empty profile summary", () => {
     const view = renderControls({ reasoningEffort: "high" });
     expect(screen.getByTestId("run-profile-summary")).toHaveTextContent("Profile: Custom");
-    const customState = screen.getByTestId("compact-run-profile-state");
-    expect(customState).toBeVisible();
-    expect(customState).toHaveTextContent("Custom");
-    expect(customState).toHaveAttribute("data-run-profile-state", "custom");
+    const profile = screen.getByRole("button", { name: "Run profile" });
+    expect(profile).toBeVisible();
+    expect(profile).toHaveTextContent("Custom");
+    expect(profile).toHaveAttribute("title", "Current run profile: Custom");
 
     view.rerender(<ComposerControls {...view.props} catalog={{ ...catalog, runProfiles: [] }} reasoningEffort="high" />);
     expect(screen.queryByTestId("run-profile-summary")).not.toBeInTheDocument();
-    expect(screen.queryByTestId("composer-inline-run-profiles")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Run profile" })).not.toBeInTheDocument();
   });
 
   it("keeps global command shortcuts from escaping an open Run setup", () => {

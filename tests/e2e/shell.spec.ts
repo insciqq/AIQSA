@@ -4115,12 +4115,11 @@ test("hides unusable profile shortcuts but keeps their diagnostics in portrait R
   await signIn(page);
 
   const secondary = page.getByTestId("composer-secondary-controls");
-  await expect(secondary.getByTestId("composer-inline-run-profiles")).toHaveCount(0);
-  await expect(page.getByTestId("compact-run-profile-state")).toHaveCount(0);
+  await expect(secondary.getByRole("button", { name: "Run profile" })).toHaveCount(0);
   await expect(page.getByTestId("run-profile-summary")).toHaveCount(0);
   const search = secondary.getByRole("button", { name: "Search strategy" });
   await expect(search.locator(".lucide-search")).toBeVisible();
-  await expect(search.getByText("Tool", { exact: true })).toBeVisible();
+  await expect(search.getByText("PPLXTY", { exact: true })).toBeVisible();
   await expect(search).toHaveAttribute("title", "Perplexity tool");
 
   const more = secondary.getByTestId("composer-run-summary");
@@ -4492,10 +4491,25 @@ for (const viewport of responsiveTouchViewports) {
         reasoning: "Standard · Medium",
         search: "Off"
       });
-      const compactProfileState = page.getByTestId("compact-run-profile-state");
-      await expect(compactProfileState).toBeVisible();
-      await expect(compactProfileState).toHaveText("Custom");
-      await expectWithinViewport(page, compactProfileState);
+      const directModel = page.getByRole("button", { name: "Select model" }).first();
+      await expect(directModel).not.toContainText("Model");
+      const profileTrigger = page.getByRole("button", { name: "Run profile" });
+      await expect(profileTrigger).toBeVisible();
+      await expect(profileTrigger).toContainText("Custom");
+      await expectTouchSafe(profileTrigger);
+      await expectWithinViewport(page, profileTrigger);
+      await profileTrigger.click();
+      const profilePicker = page.getByTestId("composer-inline-profile-options");
+      await expectWithinViewport(page, profilePicker);
+      for (const label of ["Deep"]) {
+        const profile = profilePicker.getByRole("button", { name: new RegExp(`^${label}`) });
+        await expect(profile).toBeVisible();
+        await expectTouchSafe(profile);
+      }
+      await expect(profilePicker.getByRole("button", { name: /^Fast/ })).toHaveCount(0);
+      await expect(profilePicker.getByRole("button", { name: /^Balanced/ })).toHaveCount(0);
+      await page.keyboard.press("Escape");
+      await expect(profileTrigger).toBeFocused();
       await expectTouchSafe(summary);
       await expectWithinViewport(page, summary);
 

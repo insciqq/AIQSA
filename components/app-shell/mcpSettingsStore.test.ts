@@ -44,6 +44,31 @@ describe("MCP settings store", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
+  it("keeps a stable configured-empty state visible during background refresh", async () => {
+    let resolveResponse!: (response: Response) => void;
+    const fetchMock = vi.fn(() => new Promise<Response>((resolve) => {
+      resolveResponse = resolve;
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    useMcpSettingsStore.setState({ loadState: "ready", servers: [] });
+    const observedLoadStates: string[] = [];
+    const unsubscribe = useMcpSettingsStore.subscribe((state) => {
+      observedLoadStates.push(state.loadState);
+    });
+
+    const refresh = refreshMcpSettings(true, { background: true });
+
+    expect(useMcpSettingsStore.getState()).toMatchObject({ loadState: "ready", servers: [] });
+    expect(observedLoadStates).not.toContain("loading");
+
+    resolveResponse(new Response(JSON.stringify({ servers: [server] }), { status: 200 }));
+    await refresh;
+
+    expect(useMcpSettingsStore.getState()).toMatchObject({ loadState: "ready", servers: [server] });
+    expect(observedLoadStates).not.toContain("loading");
+    unsubscribe();
+  });
+
   it("polls an activating server with backoff until readiness becomes terminal", async () => {
     vi.useFakeTimers();
     const queued = { ...server, readiness: "queued" as const, tools: [] };
