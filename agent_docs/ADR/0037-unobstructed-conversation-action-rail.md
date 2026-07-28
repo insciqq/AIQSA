@@ -3,6 +3,8 @@
 Status: Accepted
 Amends: 0025-clean-slate-research-chat-and-control-center
 
+Amendment note: ADR 0038 replaces decisions 1 and 4's desktop normal-flow geometry with a top-right action footprint and responsive reading-column clearance. Compact normal-flow placement, the hidden title, direct actions, and the non-overlap outcome remain current.
+
 ## Context
 
 The Research Chat repeated the selected chat title inside a full-width conversation header. The Workspace already owns chat identity and selection, while the repeated title, answer-paper fill, separator, and 56-64px rail reduced the calm reading area without adding a distinct action. Share, Details, live run inspection, and compact Workspace/New chat access still need stable placement.

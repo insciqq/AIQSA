@@ -26,7 +26,7 @@ import {
 } from "./shell/composer";
 import {
   expectComposerBeforeDetails,
-  expectConversationControlsBeforeThread,
+  expectConversationControlsClearOfThread,
   runAccountMenuAction
 } from "./shell/page";
 import {
@@ -2211,23 +2211,105 @@ test("supports message copy plus user and assistant edit branches", async ({ pag
   });
 
   await signIn(page);
+  await page.evaluate(() => document.documentElement.removeAttribute("data-motion"));
   await expect(page.getByTestId("thread")).toContainText("Original assistant answer");
   await expect(page.getByTestId("thread-complete-answer-spacer")).toBeVisible();
 
-  await page.getByRole("button", { name: "Copy message" }).last().click();
+  const assistantArticle = page.locator('article[data-role="assistant"]').last();
+  const assistantSurface = assistantArticle.locator('[data-message-interaction-surface="true"]');
+  const assistantActions = assistantArticle.getByRole("toolbar", { name: "Assistant message actions" });
+  const restingAssistantBackground = await assistantSurface.evaluate(
+    (element) => getComputedStyle(element).backgroundColor
+  );
+  await expect(assistantActions).toBeHidden();
+  const [assistantArticleBox, assistantSurfaceBox] = await Promise.all([
+    assistantArticle.boundingBox(),
+    assistantSurface.boundingBox()
+  ]);
+  expect(assistantArticleBox).not.toBeNull();
+  expect(assistantSurfaceBox).not.toBeNull();
+  const articleBox = assistantArticleBox as NonNullable<typeof assistantArticleBox>;
+  const surfaceBox = assistantSurfaceBox as NonNullable<typeof assistantSurfaceBox>;
+  const gutterX = surfaceBox.x - articleBox.x > 8
+    ? articleBox.x + 2
+    : articleBox.x + articleBox.width - 2;
+  expect(gutterX < surfaceBox.x || gutterX > surfaceBox.x + surfaceBox.width).toBe(true);
+  await page.mouse.move(gutterX, surfaceBox.y + surfaceBox.height / 2);
+  await page.waitForTimeout(200);
+  await expect(assistantActions).toBeHidden();
+  expect(
+    await assistantSurface.evaluate((element) => getComputedStyle(element).backgroundColor)
+  ).toBe(restingAssistantBackground);
+
+  await assistantSurface.hover();
+  expect(
+    await assistantSurface.evaluate((element) => getComputedStyle(element).transitionDuration)
+  ).toBe("0.15s, 0.15s");
+  expect(
+    await assistantSurface.evaluate((element) => getComputedStyle(element).transitionTimingFunction)
+  ).toBe("cubic-bezier(0.4, 0, 0.2, 1), cubic-bezier(0.4, 0, 0.2, 1)");
+  expect(
+    await assistantActions.evaluate((element) => getComputedStyle(element).display)
+  ).toBe("flex");
+  await expect(assistantActions).toBeVisible();
+  await expect.poll(() =>
+    assistantSurface.evaluate((element) => getComputedStyle(element).backgroundColor)
+  ).not.toBe(restingAssistantBackground);
+  await expect(assistantActions.getByRole("button")).toHaveCount(4);
+  const assistantActionLabels = await assistantActions.locator("button").evaluateAll((buttons) =>
+    buttons.map((button) => button.getAttribute("aria-label"))
+  );
+  await assistantSurface.click({ position: { x: 4, y: 4 } });
+  await page.mouse.move(0, 0);
+  await expect.poll(() =>
+    assistantSurface.evaluate((element) => getComputedStyle(element).backgroundColor)
+  ).toBe(restingAssistantBackground);
+  await expect(assistantActions).toBeHidden();
+  await assistantSurface.hover();
+  await expect(assistantActions).toBeVisible();
+  await assistantActions.getByRole("button", { name: "Copy message" }).click();
   await expect(page.getByTestId("shell-notice")).toContainText("Message copied");
   await expect
     .poll(() => page.evaluate(() => window.localStorage.getItem("aiqsa.testClipboard") ?? ""))
     .toBe("Original assistant answer");
 
-  await page.getByRole("button", { name: "Edit message" }).last().click();
+  await assistantActions.getByRole("button", { name: "Edit message" }).click();
   await expect(page.getByRole("textbox", { name: "Message" })).toHaveValue("Original assistant answer");
   await page.getByRole("textbox", { name: "Message" }).fill("Edited assistant answer");
   await page.getByRole("textbox", { name: "Message" }).press("Enter");
   await expect(page.getByTestId("thread")).toContainText("Edited assistant answer");
   await expect(page.getByTestId("thread")).not.toContainText("Original assistant answer");
 
-  await page.getByRole("button", { name: "Edit message" }).first().click();
+  const userArticle = page.locator('article[data-role="user"]').first();
+  const userSurface = userArticle.locator('[data-message-interaction-surface="true"]');
+  const userActions = userArticle.getByRole("toolbar", { name: "User message actions" });
+  await expect(userActions).toBeHidden();
+  await userSurface.hover();
+  await expect(userActions).toBeVisible();
+  await expect.poll(() =>
+    userSurface.evaluate((element) => getComputedStyle(element).backgroundColor)
+  ).not.toBe("rgba(0, 0, 0, 0)");
+  const userActionLabels = await userActions.locator("button").evaluateAll((buttons) =>
+    buttons.map((button) => button.getAttribute("aria-label"))
+  );
+  expect(userActionLabels).toEqual(assistantActionLabels);
+  await expect.poll(async () => {
+    const [surfaceBox, actionsBox] = await Promise.all([
+      userSurface.boundingBox(),
+      userActions.boundingBox()
+    ]);
+    if (!surfaceBox || !actionsBox) return Number.POSITIVE_INFINITY;
+    return Math.abs(surfaceBox.x + surfaceBox.width - 8 - (actionsBox.x + actionsBox.width));
+  }).toBeLessThanOrEqual(1);
+  await expect.poll(async () => {
+    const [surfaceBox, actionsBox] = await Promise.all([
+      userSurface.boundingBox(),
+      userActions.boundingBox()
+    ]);
+    if (!surfaceBox || !actionsBox) return Number.POSITIVE_INFINITY;
+    return Math.abs(surfaceBox.y + surfaceBox.height - (actionsBox.y + actionsBox.height / 2));
+  }).toBeLessThanOrEqual(1);
+  await userActions.getByRole("button", { name: "Edit message" }).click();
   await expect(page.getByRole("textbox", { name: "Message" })).toHaveValue("Original user prompt");
   await page.getByRole("textbox", { name: "Message" }).fill("Edited user prompt");
   await page.getByRole("textbox", { name: "Message" }).press("Enter");
@@ -3401,6 +3483,15 @@ test("recovers a background run after reload and renders search/reasoning thread
   await expect(page.getByTestId("thread")).toContainText("Recovered answer");
   await expect(page.getByTestId("streaming-cursor")).toHaveCount(0);
   const answerMetadata = page.getByTestId("answer-metadata-block");
+  const recoveredAnswer = page.locator('article[data-role="assistant"]').last();
+  await expect(answerMetadata).toHaveCount(0);
+  await recoveredAnswer.hover();
+  await expect(answerMetadata).toHaveCount(0);
+  const recoveredActions = recoveredAnswer.getByRole("toolbar", { name: "Assistant message actions" });
+  await expect(recoveredActions).toBeVisible();
+  await recoveredActions.getByRole("button", { name: "More message actions" }).click();
+  await page.getByRole("menuitem", { name: "Show run details" }).click();
+  await expect(answerMetadata).toBeVisible();
   const recoveredSearch = answerMetadata.getByRole("button", { name: "1 search call" });
   await expect(recoveredSearch).toHaveAttribute("aria-expanded", "false");
   await recoveredSearch.click();
@@ -3651,13 +3742,17 @@ test("supports the default QSA chat and folder workflow", async ({ browser, page
   await expect(assistantContentWithText(page, `Fake answer: ${prompt}`)).toBeVisible({ timeout: 20_000 });
   await expect(page.getByTestId("current-chat-title")).toHaveText(expectedAutoTitle);
   expect(activeChatDetailFetches).toBe(0);
-  await expect(page.getByTestId("thread")).toContainText(resetModelLabel);
   await expect(page.getByTestId("streaming-cursor")).toHaveCount(0);
   await expect(page.getByTestId("pipeline-indicator")).toHaveCount(0);
   await expect(details.getByTestId("inspector-event-log")).toContainText("Run complete");
   await details.getByRole("button", { name: "Pin details" }).click();
   await expect(details).toHaveAttribute("data-presentation", "pinned");
   await expect(details.getByTestId("details-mode-label")).toHaveText("Pinned beside chat");
+  const completedAnswer = page.locator('article[data-role="assistant"]').last();
+  await completedAnswer.hover();
+  await completedAnswer.getByRole("button", { name: "More message actions" }).click();
+  await page.getByRole("menuitem", { name: "Show run details" }).click();
+  await expect(completedAnswer).toContainText(resetModelLabel);
   await expect(
     page.getByTestId("left-chat-pane").getByRole("button", { exact: true, name: expectedAutoTitle })
   ).toBeVisible();
@@ -3671,7 +3766,7 @@ test("supports the default QSA chat and folder workflow", async ({ browser, page
   await expect(page.getByTestId("current-chat-title")).toHaveClass(/\bsr-only\b/);
   const desktopConversationHeader = page.getByTestId("top-rail");
   await expect(desktopConversationHeader).toBeVisible();
-  await expectConversationControlsBeforeThread(page);
+  await expectConversationControlsClearOfThread(page);
   const conversationActions = desktopConversationHeader.getByRole("button", {
     name: "Conversation actions"
   });
@@ -3748,7 +3843,9 @@ test("supports the default QSA chat and folder workflow", async ({ browser, page
   await expect(page.getByTestId("token-stats-popover")).toContainText("Provider-reported tokens");
   await page.keyboard.press("Escape");
 
-  let latestMessageActions = page.getByTestId("message-actions").last();
+  let latestAssistant = page.locator('article[data-role="assistant"]').last();
+  await latestAssistant.hover();
+  let latestMessageActions = latestAssistant.getByTestId("message-actions");
   await latestMessageActions.getByRole("button", { name: "More message actions" }).click();
   await page
     .getByRole("menu", { name: "More message actions" })
@@ -3760,7 +3857,9 @@ test("supports the default QSA chat and folder workflow", async ({ browser, page
 
   // Create a real sibling inside the new chat before extending one path; the
   // cross-chat Branch action itself intentionally copies only one version.
-  await page.getByRole("button", { name: "Regenerate message" }).last().click();
+  latestAssistant = page.locator('article[data-role="assistant"]').last();
+  await latestAssistant.hover();
+  await latestAssistant.getByRole("button", { name: "Regenerate message" }).click();
   await expect(
     page.getByRole("button", { name: /^Open alternate version, assistant \d+$/ }).first()
   ).toBeVisible({ timeout: 10_000 });
@@ -3780,13 +3879,17 @@ test("supports the default QSA chat and folder workflow", async ({ browser, page
   await expect(page.getByTestId("thread")).not.toContainText(memoryPrompt);
   await page.getByRole("tab", { name: "Branch" }).click();
   activeChatDetailFetches = 0;
-  await page.getByRole("button", { name: /Regenerate message/ }).last().click();
+  latestAssistant = page.locator('article[data-role="assistant"]').last();
+  await latestAssistant.hover();
+  await latestAssistant.getByRole("button", { name: /Regenerate message/ }).click();
   await expect(page.getByTestId("streaming-cursor")).toHaveCount(0);
   await expect(assistantContentWithText(page, `Fake answer: ${checkoutPrompt}`)).toBeVisible();
   await expect(page.getByTestId("thread")).toContainText(`Context memory: ${prompt}`);
   await expect(page.getByTestId("thread")).not.toContainText("Regenerated branch draft");
   expect(activeChatDetailFetches).toBe(0);
-  latestMessageActions = page.getByTestId("message-actions").last();
+  latestAssistant = page.locator('article[data-role="assistant"]').last();
+  await latestAssistant.hover();
+  latestMessageActions = latestAssistant.getByTestId("message-actions");
   await latestMessageActions.getByRole("button", { name: "More message actions" }).click();
   await page
     .getByRole("menu", { name: "More message actions" })
@@ -3796,7 +3899,9 @@ test("supports the default QSA chat and folder workflow", async ({ browser, page
   await expect(messageDeleteDialog).toContainText("every reply below");
   await messageDeleteDialog.getByRole("button", { name: "Cancel" }).click();
   await expect(assistantContentWithText(page, `Fake answer: ${checkoutPrompt}`)).toBeVisible();
-  latestMessageActions = page.getByTestId("message-actions").last();
+  latestAssistant = page.locator('article[data-role="assistant"]').last();
+  await latestAssistant.hover();
+  latestMessageActions = latestAssistant.getByTestId("message-actions");
   await latestMessageActions.getByRole("button", { name: "More message actions" }).click();
   await page
     .getByRole("menu", { name: "More message actions" })
@@ -4036,8 +4141,8 @@ test("hides unusable profile shortcuts but keeps their diagnostics in portrait R
   for (const name of ["Use Fast run profile", "Use Balanced run profile", "Use Deep run profile"]) {
     await expect(profiles.getByRole("button", { name })).toBeDisabled();
   }
-  await expect(runSetup.locator('[data-run-profile-availability="unavailable"]')).toHaveCount(1);
-  await expect(profiles.getByText("Unavailable", { exact: true })).toHaveCount(0);
+  await expect(profiles.locator('[data-run-profile-availability="unavailable"]')).toHaveCount(3);
+  await expect(profiles.getByText("Unavailable", { exact: true })).toHaveCount(3);
   await expect(runSetup.getByTestId("run-profile-unavailable-reason")).toContainText(
     "Unavailable profiles cannot be used with your current model access."
   );
@@ -4255,7 +4360,7 @@ for (const viewport of responsiveTouchViewports) {
           })
         )
         .toBe("absolute:1px:1px:hidden");
-      await expectConversationControlsBeforeThread(page);
+      await expectConversationControlsClearOfThread(page);
       await expect(page.getByRole("toolbar", { name: "Chat actions" })).toBeHidden();
       const viewportMeta = page.locator('meta[name="viewport"]');
       await expect(viewportMeta).toHaveAttribute("content", /viewport-fit=cover/);
@@ -4414,6 +4519,39 @@ for (const viewport of responsiveTouchViewports) {
         search: "Off"
       });
 
+      const thread = page.getByTestId("thread");
+      await expect(page.getByTestId("composer-form")).not.toHaveAttribute(
+        "data-reading-collapsed"
+      );
+      await thread.evaluate((element) => {
+        element.scrollTop = 0;
+        element.dispatchEvent(new Event("scroll"));
+        element.dispatchEvent(new Event("touchmove", { bubbles: true }));
+        element.scrollTop = 72;
+        element.dispatchEvent(new Event("scroll"));
+        element.scrollTop = 144;
+        element.dispatchEvent(new Event("scroll"));
+      });
+      if (viewport.width < 640 || viewport.height <= 512) {
+        await expect(page.getByTestId("composer-form")).toHaveAttribute(
+          "data-reading-collapsed",
+          "true"
+        );
+        await expect(page.getByTestId("composer-actions-disclosure")).toHaveAttribute(
+          "aria-hidden",
+          "true"
+        );
+        await expect(composer).toBeVisible();
+        await composer.click();
+        await expect(page.getByTestId("composer-form")).not.toHaveAttribute(
+          "data-reading-collapsed"
+        );
+      } else {
+        await expect(page.getByTestId("composer-form")).not.toHaveAttribute(
+          "data-reading-collapsed"
+        );
+      }
+
       await page.getByTestId("token-stats-button").click();
       const contextStats = page.getByTestId("token-stats-popover");
       await expect(contextStats).toContainText("Current context");
@@ -4450,8 +4588,22 @@ for (const viewport of responsiveTouchViewports) {
 
       const lastAssistant = page.locator('article[data-role="assistant"]').last();
       await lastAssistant.scrollIntoViewIfNeeded();
+      const touchSurface = lastAssistant.locator('[data-message-interaction-surface="true"]');
       const touchActions = lastAssistant.getByRole("toolbar", { name: "Assistant message actions" });
-      await expect.poll(() => touchActions.evaluate((element) => getComputedStyle(element).opacity)).toBe("1");
+      const restingTouchBackground = await touchSurface.evaluate(
+        (element) => getComputedStyle(element).backgroundColor
+      );
+      await expect(touchActions).toBeHidden();
+      await expect(lastAssistant.getByTestId("answer-metadata-block")).toHaveCount(0);
+      await expect(lastAssistant.getByTestId("assistant-message-content")).toContainText(
+        "Responsive latest bottom marker"
+      );
+      await lastAssistant.getByTestId("assistant-message-content").click();
+      await expect(lastAssistant).toHaveAttribute("data-mobile-controls-open", "true");
+      await expect(touchActions).toBeVisible();
+      await expect.poll(() =>
+        touchSurface.evaluate((element) => getComputedStyle(element).backgroundColor)
+      ).toBe(restingTouchBackground);
       for (const name of ["Regenerate message", "Edit message", "Copy message", "More message actions"]) {
         const action = touchActions.getByRole("button", { name });
         await expect(action).toBeVisible();
@@ -4462,7 +4614,7 @@ for (const viewport of responsiveTouchViewports) {
       await messageMore.click();
       const messageMenu = page.getByRole("menu", { name: "More message actions" });
       await expectWithinViewport(page, messageMenu);
-      for (const name of ["Delete message", "Branch from here"]) {
+      for (const name of ["Show run details", "Delete message", "Branch from here"]) {
         const action = messageMenu.getByRole("menuitem", { name });
         await expectTouchSafe(action);
         await expectWithinViewport(page, action);
@@ -4470,8 +4622,16 @@ for (const viewport of responsiveTouchViewports) {
       await page.keyboard.press("Escape");
       await expect(messageMore).toBeFocused();
 
-      const searchReceiptTrigger = page.getByRole("button", { name: "2 search calls" });
-      const answerMetadata = page.getByTestId("answer-metadata-block").filter({ has: searchReceiptTrigger });
+      const artifactAssistant = page.locator('[data-message-id="responsive-assistant-2"]');
+      const answerMetadata = artifactAssistant.getByTestId("answer-metadata-block");
+      await expect(answerMetadata).toHaveCount(0);
+      await artifactAssistant.getByTestId("assistant-message-content").click({ position: { x: 8, y: 8 } });
+      await expect(artifactAssistant).toHaveAttribute("data-mobile-controls-open", "true");
+      const artifactActions = artifactAssistant.getByRole("toolbar", { name: "Assistant message actions" });
+      await artifactActions.getByRole("button", { name: "More message actions" }).click();
+      await page.getByRole("menuitem", { name: "Show run details" }).click();
+      await expect(answerMetadata).toBeVisible();
+      const searchReceiptTrigger = answerMetadata.getByRole("button", { name: "2 search calls" });
       const citationReceiptTrigger = answerMetadata.getByRole("button", { name: "1 citation" });
       const reasoningReceiptTrigger = answerMetadata.getByRole("button", { name: "1 reasoning trace" });
       await searchReceiptTrigger.click();
@@ -4516,7 +4676,6 @@ for (const viewport of responsiveTouchViewports) {
       await expect.poll(() => tableScroll.evaluate((element) => element.scrollLeft)).toBeGreaterThan(0);
       await expectNoHorizontalOverflow(page);
 
-      const thread = page.getByTestId("thread");
       await thread.evaluate((element) => {
         element.scrollTop = 0;
         element.dispatchEvent(new Event("scroll"));
@@ -4620,7 +4779,16 @@ for (const viewport of responsiveTouchViewports) {
       for (const remove of await page.getByRole("button", { name: /^Remove responsive-/ }).all()) {
         await expectTouchSafe(remove);
       }
-      await page.getByRole("button", { name: "Edit message" }).first().click();
+      const firstUserMessage = page.locator('article[data-role="user"]').first();
+      const firstUserActions = firstUserMessage.getByRole("toolbar", { name: "User message actions" });
+      await expect(firstUserActions).toBeHidden();
+      await firstUserMessage.click();
+      for (const name of ["Regenerate message", "Edit message", "Copy message", "More message actions"]) {
+        const action = firstUserActions.getByRole("button", { name });
+        await expect(action).toBeVisible();
+        await expectTouchSafe(action);
+      }
+      await firstUserActions.getByRole("button", { name: "Edit message" }).click();
       await expect(page.getByTestId("edit-branch-strip")).toBeVisible();
       await expectTouchSafe(page.getByRole("button", { name: "Cancel edit" }));
       await expectWithinViewport(page, page.getByRole("button", { name: "Send message" }));

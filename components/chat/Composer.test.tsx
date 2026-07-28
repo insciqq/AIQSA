@@ -127,7 +127,7 @@ describe("Composer", () => {
     expect(screen.getByText("Attach", { selector: "span" })).toHaveClass("hidden", "sm:inline");
   });
 
-  it("keeps the resting controls and action available without a reading-collapse state", () => {
+  it("keeps the resting controls and action expanded by default", () => {
     render(
       <Composer
         attachments={[]}
@@ -142,8 +142,73 @@ describe("Composer", () => {
     expect(screen.getByTestId("composer-form")).not.toHaveAttribute("data-reading-collapsed");
     expect(screen.getByRole("button", { name: "Run setup" })).toBeVisible();
     expect(screen.getByRole("button", { name: "Send message" })).toBeVisible();
-    expect(screen.queryByTestId("composer-controls-disclosure")).not.toBeInTheDocument();
-    expect(screen.queryByTestId("composer-actions-disclosure")).not.toBeInTheDocument();
+    expect(screen.getByTestId("composer-actions-disclosure")).not.toHaveAttribute("aria-hidden");
+  });
+
+  it("leaves only the Message field exposed in compact reading mode and expands after pointer activation", () => {
+    const onRequestExpanded = vi.fn();
+    render(
+      <Composer
+        attachments={[]}
+        controls={<button type="button">Run setup</button>}
+        onChange={() => undefined}
+        onRemoveAttachment={() => undefined}
+        onRequestExpanded={onRequestExpanded}
+        onSend={() => undefined}
+        readingCollapsed
+        value=""
+      />
+    );
+
+    const form = screen.getByTestId("composer-form");
+    const disclosure = screen.getByTestId("composer-actions-disclosure");
+    const message = screen.getByRole("textbox", { name: "Message" });
+
+    expect(form).toHaveAttribute("data-reading-collapsed", "true");
+    expect(screen.getByTestId("composer-message-field")).toHaveClass(
+      "grid",
+      "grid-cols-[minmax(0,1fr)_auto]"
+    );
+    expect(disclosure).toHaveAttribute("aria-hidden", "true");
+    expect(disclosure).toHaveAttribute("inert");
+    expect(disclosure).toHaveClass("grid-rows-[0fr]", "opacity-0");
+    expect(message).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Run setup" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Send message" })).not.toBeInTheDocument();
+
+    fireEvent.pointerDown(message);
+    fireEvent.focus(message);
+    expect(onRequestExpanded).not.toHaveBeenCalled();
+    fireEvent.click(message);
+    expect(onRequestExpanded).toHaveBeenCalledOnce();
+
+    fireEvent.blur(message);
+    fireEvent.focus(message);
+    expect(onRequestExpanded).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps a labeled Stop action beside Message while compact reading mode is streaming", () => {
+    const onStop = vi.fn();
+    render(
+      <Composer
+        attachments={[]}
+        controls={<button type="button">Run setup</button>}
+        onChange={() => undefined}
+        onRemoveAttachment={() => undefined}
+        onSend={() => undefined}
+        onStop={onStop}
+        readingCollapsed
+        streaming
+        value=""
+      />
+    );
+
+    const stop = screen.getByTestId("composer-reading-stop");
+    expect(stop).toHaveAccessibleName("Stop response");
+    expect(stop).toHaveTextContent("Stop");
+    fireEvent.click(stop);
+    expect(onStop).toHaveBeenCalledOnce();
+    expect(screen.queryByRole("button", { name: "Send message" })).not.toBeInTheDocument();
   });
 
   it("sends on Enter and keeps Shift+Enter for new lines", () => {

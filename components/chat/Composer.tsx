@@ -64,6 +64,7 @@ export type ComposerProps = {
   editPending?: boolean;
   onChange(value: string): void;
   onCancelEdit?(): void;
+  onRequestExpanded?(): void;
   onRemoveAttachment(id: string): void;
   onRejectedFiles?(files: readonly File[]): void;
   onSend(): void;
@@ -71,6 +72,7 @@ export type ComposerProps = {
   onUploadFiles?(files: FileList | readonly File[]): void;
   operationError?: string | null;
   promptFirst?: boolean;
+  readingCollapsed?: boolean;
   sendDisabled?: boolean;
   stopDisabled?: boolean;
   streaming?: boolean;
@@ -84,13 +86,25 @@ function hasFileTransfer(dataTransfer: DataTransfer): boolean {
   return dataTransfer.files.length > 0 || Array.from(dataTransfer.types).includes("Files");
 }
 
-function StopAction({ onStop, stopDisabled }: { onStop(): void; stopDisabled: boolean }) {
+function StopAction({
+  inlineReadingMode = false,
+  onStop,
+  stopDisabled
+}: {
+  inlineReadingMode?: boolean;
+  onStop(): void;
+  stopDisabled: boolean;
+}) {
   return (
     <button
-      className="inline-flex h-touch min-w-[72px] items-center justify-center gap-2 rounded-control bg-critical px-3 text-sm font-semibold text-proof-contrast outline-none hover:bg-critical/85 focus-visible:ring-2 focus-visible:ring-critical/55 disabled:cursor-not-allowed disabled:opacity-50 sm:h-control [@media(hover:none)]:!h-touch [@media(pointer:coarse)]:!h-touch"
+      className={[
+        "inline-flex h-touch min-w-[72px] items-center justify-center gap-2 rounded-control bg-critical text-sm font-semibold text-proof-contrast outline-none hover:bg-critical/85 focus-visible:ring-2 focus-visible:ring-critical/55 disabled:cursor-not-allowed disabled:opacity-50 [@media(hover:none)]:!h-touch [@media(pointer:coarse)]:!h-touch",
+        inlineReadingMode ? "shrink-0 px-2" : "px-3 sm:h-control"
+      ].join(" ")}
       type="button"
       aria-label="Stop response"
       aria-describedby={stopDisabled ? "composer-stop-disabled-hint" : undefined}
+      data-testid={inlineReadingMode ? "composer-reading-stop" : undefined}
       title="Stop response"
       disabled={stopDisabled}
       onClick={onStop}
@@ -114,6 +128,7 @@ export function Composer({
   editPending = false,
   onChange,
   onCancelEdit,
+  onRequestExpanded,
   onRemoveAttachment,
   onRejectedFiles,
   onSend,
@@ -121,6 +136,7 @@ export function Composer({
   onUploadFiles,
   operationError = null,
   promptFirst = false,
+  readingCollapsed = false,
   sendDisabled = false,
   stopDisabled = false,
   streaming = false,
@@ -130,6 +146,7 @@ export function Composer({
   value
 }: ComposerProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const pointerMessageActivationRef = useRef(false);
   const usagePopoverRef = useRef<HTMLDivElement>(null);
   const usageTriggerRef = useRef<HTMLButtonElement>(null);
   const dragDepthRef = useRef(0);
@@ -336,6 +353,7 @@ export function Composer({
   return (
     <form
       className="w-full min-w-0 shrink-0 bg-answer-paper pb-[max(.5rem,env(safe-area-inset-bottom))] pl-[max(.5rem,env(safe-area-inset-left))] pr-[max(.5rem,env(safe-area-inset-right))] pt-2 sm:pb-[max(.75rem,env(safe-area-inset-bottom))] sm:pl-[max(1rem,env(safe-area-inset-left))] sm:pr-[max(1rem,env(safe-area-inset-right))] [@media(max-height:32rem)]:!pb-[max(.25rem,env(safe-area-inset-bottom))] [@media(max-height:32rem)]:!pt-1"
+      data-reading-collapsed={readingCollapsed ? "true" : undefined}
       data-testid="composer-form"
       onSubmit={(event) => {
         event.preventDefault();
@@ -470,12 +488,23 @@ export function Composer({
             </ul>
           ) : null}
 
-          <div className="px-4 pb-2 pt-3 [@media(max-height:32rem)]:!px-3 [@media(max-height:32rem)]:!pb-1 [@media(max-height:32rem)]:!pt-1" data-testid="composer-message-field">
+          <div
+            className={[
+              "px-4 pb-2 pt-3 [@media(max-height:32rem)]:!px-3 [@media(max-height:32rem)]:!pb-1 [@media(max-height:32rem)]:!pt-1",
+              readingCollapsed
+                ? "grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2 !px-3 !py-0.5"
+                : ""
+            ].join(" ")}
+            data-testid="composer-message-field"
+          >
             <label className="sr-only" htmlFor="composer">
               Message
             </label>
             <textarea
-              className="block max-h-[200px] min-h-14 w-full min-w-0 resize-none bg-transparent text-[15px] leading-7 text-ink outline-none placeholder:text-ink-muted disabled:cursor-not-allowed disabled:text-ink-disabled sm:min-h-[72px] [@media(max-height:32rem)]:!max-h-20 [@media(max-height:32rem)]:!min-h-10 [@media(max-height:32rem)]:!leading-6 [@media(hover:none)]:!min-h-touch [@media(pointer:coarse)]:!min-h-touch"
+              className={[
+                "block max-h-[200px] min-h-14 w-full min-w-0 resize-none bg-transparent text-[15px] leading-7 text-ink outline-none placeholder:text-ink-muted disabled:cursor-not-allowed disabled:text-ink-disabled sm:min-h-[72px] [@media(max-height:32rem)]:!max-h-20 [@media(max-height:32rem)]:!min-h-10 [@media(max-height:32rem)]:!leading-6 [@media(hover:none)]:!min-h-touch [@media(pointer:coarse)]:!min-h-touch",
+                readingCollapsed ? "!max-h-11 !min-h-11 !leading-6 sm:!min-h-11" : ""
+              ].join(" ")}
               aria-describedby={disabledHint ? "composer-disabled-hint" : undefined}
               disabled={disabled}
               id="composer"
@@ -484,6 +513,24 @@ export function Composer({
               rows={1}
               value={value}
               onChange={(event) => onChange(event.target.value)}
+              onBlur={() => {
+                pointerMessageActivationRef.current = false;
+              }}
+              onClick={() => {
+                pointerMessageActivationRef.current = false;
+                onRequestExpanded?.();
+              }}
+              onFocus={() => {
+                if (!pointerMessageActivationRef.current) {
+                  onRequestExpanded?.();
+                }
+              }}
+              onPointerCancel={() => {
+                pointerMessageActivationRef.current = false;
+              }}
+              onPointerDown={() => {
+                pointerMessageActivationRef.current = true;
+              }}
               onKeyDown={(event) => {
                 if (isImeCompositionEvent(event)) {
                   return;
@@ -497,12 +544,29 @@ export function Composer({
                 }
               }}
             />
+            {readingCollapsed && streaming && onStop ? (
+              <StopAction
+                inlineReadingMode
+                stopDisabled={stopDisabled}
+                onStop={onStop}
+              />
+            ) : null}
           </div>
 
           <div
-            className="flex min-w-0 flex-wrap items-center gap-2 border-t border-trace-subtle px-2 py-2 sm:px-3 [@media(max-height:32rem)]:!gap-1 [@media(max-height:32rem)]:!py-1"
-            data-testid="composer-action-footer"
+            className={[
+              "grid transition-[grid-template-rows,opacity] duration-150 ease-out motion-reduce:transition-none",
+              readingCollapsed ? "grid-rows-[0fr] opacity-0" : "grid-rows-[1fr] opacity-100"
+            ].join(" ")}
+            aria-hidden={readingCollapsed || undefined}
+            data-testid="composer-actions-disclosure"
+            inert={readingCollapsed || undefined}
           >
+            <div className={readingCollapsed ? "min-h-0 overflow-hidden" : "min-h-0 overflow-visible"}>
+              <div
+                className="flex min-w-0 flex-wrap items-center gap-2 border-t border-trace-subtle px-2 py-2 sm:px-3 [@media(max-height:32rem)]:!gap-1 [@media(max-height:32rem)]:!py-1"
+                data-testid="composer-action-footer"
+              >
             {controls ? (
               <div
                 className="flex w-full min-w-0 items-center"
@@ -653,9 +717,11 @@ export function Composer({
                   Send
                 </button>
               )}
+              </div>
             </div>
           </div>
         </div>
+      </div>
       </div>
     </form>
   );

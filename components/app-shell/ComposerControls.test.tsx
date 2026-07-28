@@ -344,15 +344,16 @@ describe("ComposerControls", () => {
     const { props } = renderControls();
     const dialog = openRunSetup();
 
-    const availabilityFacts = within(dialog).getAllByText("Available", {
-      selector: '[data-run-profile-availability="available"]'
-    });
+    const availabilityFacts = dialog.querySelectorAll(
+      '[data-run-profile-availability="available"]'
+    );
     expect(availabilityFacts).toHaveLength(3);
     for (const fact of availabilityFacts) {
       expect(fact).toBeVisible();
       expect(fact.tagName).toBe("SPAN");
       expect(fact).not.toHaveAttribute("disabled");
     }
+    expect(within(dialog).getByText("Selected", { exact: true })).toBeVisible();
 
     fireEvent.click(within(dialog).getByRole("button", { name: "Use Deep run profile" }));
     expect(props.onRunProfileChange).toHaveBeenCalledWith("deep");
@@ -401,7 +402,7 @@ describe("ComposerControls", () => {
     expect(unavailableFacts[0]).toBeVisible();
     expect(unavailableFacts[0].tagName).toBe("P");
     expect(unavailableFacts[0]).not.toHaveClass("rounded-pill", "border");
-    expect(within(profiles).queryByText("Unavailable", { exact: true })).not.toBeInTheDocument();
+    expect(within(profiles).getAllByText("Unavailable", { exact: true })).toHaveLength(3);
     expect(dialog).not.toHaveTextContent("Disabled");
     expect(within(dialog).getByTestId("run-profile-unavailable-reason")).toHaveTextContent(
       "Unavailable profiles cannot be used with your current model access."

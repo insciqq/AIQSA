@@ -1,6 +1,6 @@
 # DESIGN_SYSTEM
 
-This is the binding visual contract for AIQSA's clean-slate Research Chat and Control Center. `FRONTEND.md` owns behavior, state, responsive access, and control ownership. ADRs 0025, 0028, 0030, and 0037 own the product-level presentation, task-first composition, direct controls, compact evidence, and title-free conversation-action decisions. This file owns visual hierarchy, semantic tokens, component recipes, motion, content presentation, and visual quality gates.
+This is the binding visual contract for AIQSA's clean-slate Research Chat and Control Center. `FRONTEND.md` owns behavior, state, responsive access, and control ownership. ADRs 0025, 0028, 0030, 0037, and 0038 own the product-level presentation, task-first composition, direct controls, compact evidence, title-free conversation actions, and intent-gated message chrome. This file owns visual hierarchy, semantic tokens, component recipes, motion, content presentation, and visual quality gates.
 
 All runtime UI consumes this system's product-semantic tokens directly. Compatibility aliases such as `surface-*`, `content-*`, `separator-*`, and generic color-named accents are not part of the component API and must not return.
 
@@ -13,7 +13,7 @@ The two primary contexts are:
 - **Research Chat:** ask, read, inspect evidence, branch, and continue.
 - **Control Center:** connect an installation, manage access, and inspect operational state.
 
-The domain vocabulary is question, answer, evidence, source, branch, event, trace, workspace, and run. Prefer those words over generic dashboard language. The signature visual element is the **Run receipt**: a compact, evidence-backed trace line that makes an answer's real search/tool/run state inspectable without turning the page into telemetry.
+The domain vocabulary is question, answer, evidence, source, branch, event, trace, workspace, and run. Prefer those words over generic dashboard language. The signature interaction is the **message reveal sequence**: one quiet whole-turn hover/keyboard highlight followed by an anchored action dock, keeping reading primary while making the exact question or answer actionable. Touch may reveal the dock but never turns that transient highlight into a selected state. Its deliberate secondary evidence surface is the **Run receipt**, available from that answer's More menu rather than resting in the reading path.
 
 Use these hierarchy rules in order:
 
@@ -33,7 +33,7 @@ Reject these defaults:
 - fake activity, confidence, citations, stages, or completion claims;
 - a shrunken desktop table presented as a mobile workflow.
 
-The deliberately distinctive choice is the Run receipt. It is justified by the product's Question -> Search -> Answer trace and must remain structural and factual; the rest of the interface stays restrained.
+The deliberately distinctive choice is the message reveal sequence paired with an explicitly requested Run receipt. It is justified by the product's Question -> Search -> Answer trace and must remain structural and factual; the rest of the interface stays restrained.
 
 ## Semantic Color System
 
@@ -118,7 +118,7 @@ Use a 4px base rhythm with primary steps of 4, 8, 12, 16, 24, 32, and 48px. Rela
 - Workspace rail: 16rem when persistent, with one fixed Account footer below
   the independently scrolling browse region.
 - Control Center navigation: 15rem when persistent.
-- Conversation edge-action rail: at most 3rem plus the applicable top safe-area inset. It belongs to the answer-paper column, has no full-width resting fill or separator, stays in normal flow, and collapses to the safe-area inset when desktop has no visible conversation action.
+- Conversation edge-action rail: at most 3rem plus the applicable top safe-area inset. It belongs to the answer-paper column and has no full-width resting fill or separator. Compact input keeps it in normal flow. Desktop overlays it at the top-right without consuming vertical reading space; below a 78rem conversation-column width the thread yields only a 16rem right footprint, while wider centered content clears it naturally. It collapses to the safe-area inset when desktop has no visible conversation action.
 - Pinned Details: 23rem, available only at `>=1440px`.
 - Answer column: max 46-48rem with responsive inline padding.
 - Dense list rows: 36-44px for precise pointers; at least 44px for coarse pointers.
@@ -133,7 +133,7 @@ Avoid isolated floating rectangles when a plain section, row, or disclosure comm
 
 ### Shell and workspace
 
-The conversation and composer dominate. A persistent Workspace rail appears at `>=1024px`; below that, Workspace is a modal drawer. The conversation column owns one compact edge-action rail with no visible chat title, full-width surface, or divider; a visually hidden page heading preserves semantic structure while Workspace selection owns visible chat identity. Because the rail stays in normal flow, answer text never scrolls beneath its buttons. Account is a full-width quiet footer row beneath Workspace history, showing the user icon plus the current email with contained truncation; it is never part of the conversation actions or browse scroller. Its menu opens upward within the safe-area-adjusted Workspace boundary and scrolls locally when height is constrained, with a restrained continuation cue while final actions remain below the fold. Once a conversation exists, Share and Details remain direct at every width; Copy thread and Branch tree live in one `Conversation actions` menu at every width, while Command palette, Prompt library, and Settings live as distinct Account destinations. A blank `New chat` omits those object-specific actions so the prompt is the only dominant task, and desktop collapses the empty action rail. There is no second permanent action bar or replacement title chip.
+The conversation and composer dominate. A persistent Workspace rail appears at `>=1024px`; below that, Workspace is a modal drawer. The conversation column owns one compact edge-action rail with no visible chat title, full-width surface, or divider; a visually hidden page heading preserves semantic structure while Workspace selection owns visible chat identity. Compact input keeps the rail above the thread. Desktop starts the thread at the top and places the rail in a protected right-side action footprint, shifting only narrow reading geometry far enough left to prevent any button/text intersection. Account is a full-width quiet footer row beneath Workspace history, showing the user icon plus the current email with contained truncation; it is never part of the conversation actions or browse scroller. Its menu opens upward within the safe-area-adjusted Workspace boundary and scrolls locally when height is constrained, with a restrained continuation cue while final actions remain below the fold. Once a conversation exists, Share and Details remain direct at every width; Copy thread and Branch tree live in one `Conversation actions` menu at every width, while Command palette, Prompt library, and Settings live as distinct Account destinations. A blank `New chat` omits those object-specific actions so the prompt is the only dominant task, and desktop collapses the empty action rail. There is no second permanent action bar or replacement title chip.
 
 Chat and folder rows use quiet selected/hover states, stable action space, and text labels where consequence matters. Active-run state is a small factual cue. Nested folders must retain readable indentation without causing page-level horizontal overflow.
 
@@ -141,14 +141,14 @@ Chat and folder rows use quiet selected/hover states, stable action space, and t
 
 - Questions are compact and visually distinct, but not oversized colored bubbles.
 - Answers sit directly on the answer paper with document typography.
-- Answer actions appear in stable reserved space. Regenerate/Edit/Copy use persistent icon buttons with accessible names and native tooltips; the labeled overflow trigger remains visible at rest on every input mode. Hover may enhance, never gate discovery. Delete and Branch from here remain clearly labeled inside a collision-aware portalled menu that stays within the viewport.
+- Questions and answers rest as content-first text. Fine-pointer hover belongs only to the bounded exact-message surface, leaving the full-width row gutter inert. That hover or keyboard-visible focus softly highlights the whole surface with the same symmetric 150ms standard easing on entry and exit; the Regenerate/Edit/Copy/More dock appears as one stable unit at the bottom-right edge for either role, without an independent fade, scale, or slide. Compact/coarse/no-hover tap reveals the dock with only momentary pressed feedback and never leaves the turn selected or highlighted. The dock overlays reserved inter-turn breathing room instead of shifting message text. Delete and Branch from here remain clearly labeled inside a collision-aware portalled menu that stays within the viewport.
 - Markdown headings begin below the page heading hierarchy. Code, tables, and display math own named local horizontal scrollers.
 - Provider/model metadata is quiet but legible. Internal IDs never substitute for display labels.
 - Loading, queued, streaming, cancelled, failed, and complete states retain a stable answer anchor and truthful language.
 
 ### Run receipt
 
-Each non-streaming assistant answer owns one compact evidence block below its answer body. It may show only facts bound to that message: terminal status, stored provider/model identity, bounded search/tool/citation/reasoning/context evidence, message-bound warnings, and final provider usage from a terminal persisted run with the exact same run id. Search and citation details expand within this same block instead of creating adjacent stacked summary panels. Profile or elapsed time appears only when the accepted run carries that exact historical fact; current composer/catalog defaults are never used to reconstruct it. Unavailable facts are omitted, never estimated.
+Each non-streaming assistant answer owns one compact evidence block below its answer body, but hover, focus, and message tap never render it. `More` → `Show run details` is its only presentation owner; `Hide run details` removes it again. When explicitly revealed, it may show only facts bound to that message: terminal status, stored provider/model identity, bounded search/tool/citation/reasoning/context evidence, message-bound warnings, and final provider usage from a terminal persisted run with the exact same run id. Search and citation details expand within this same block instead of creating adjacent stacked summary panels. Profile or elapsed time appears only when the accepted run carries that exact historical fact; current composer/catalog defaults are never used to reconstruct it. Unavailable facts are omitted, never estimated.
 
 The receipt opens an existing disclosure on its originating answer, or Details → Events only when the exact same persisted run and real events are currently loaded. A segment without that truthful destination stays noninteractive text, so an older answer can never open the latest answer's trace. The receipt invents no audit feed, resource, or tab; Branch and Events remain the only Details destinations.
 
@@ -161,11 +161,13 @@ The resting composer contains:
 3. one compact Profile/Search/More row;
 4. one final Tools/Usage/Attach/Send band, or an addressable Stop while cancellation is available.
 
-Model and Search open their existing pickers directly. Entitled configured Fast/Balanced/Deep profiles appear as one compact peer group and apply their complete model/reasoning tuple in one click only when at least one profile is applicable. If none is applicable, the resting Profile group and its `Unavailable` placeholder are omitted; configured-but-unavailable profiles stay visible and disabled with their reason inside complete Run setup. More opens that setup, including the same Model/Profile/Search owners plus Reasoning and advanced controls. Tools exposes lifecycle plus factual ready-tool state in the final band. The hierarchy stays the same at every width; wrapping may change, meaning and ownership do not. Routine loading/creation uses neutral busy presentation, while caution remains reserved for a state that needs user correction.
+Model and Search open their existing pickers directly. Entitled configured Fast/Balanced/Deep profiles appear as one compact peer group and apply their complete model/reasoning tuple in one click only when at least one profile is applicable. If none is applicable, the resting Profile group and its `Unavailable` placeholder are omitted. Complete Run setup uses one full-width divided profile list: each configured row keeps a stable label and purpose, an explicit Available/Unavailable/Selected state, and the concrete configuration only when available; unavailable rows stay disabled and the shared reason remains readable. More opens that setup, including the same Model/Profile/Search owners plus Reasoning and advanced controls. Tools exposes lifecycle plus factual ready-tool state in the final band. The hierarchy stays the same at every width; wrapping may change, meaning and ownership do not. Routine loading/creation uses neutral busy presentation, while caution remains reserved for a state that needs user correction.
 
 Attachment progress, partial failure, edit-branch intent, context warning, unavailable catalog, and send/run errors appear next to the control that can resolve them. The composer remains reachable above the software keyboard and safe-area inset.
 
 The composer's accessible Message label is visually suppressed in both blank and active-chat states; the `Ask AIQSA…` placeholder carries the resting visual cue without consuming another line. In a ready blank chat, that one composer and a short orientation line are centered as one group in the available conversation stage. This prompt-first variant visually removes the separate Usage line, keeps the same direct Model/Profile/Search plus More controls, and may render Attach without text at compact width; it still uses the same owners and disclosures. Once first-send creation begins or any message exists, the same composer occupies the thread tail and restores the ordinary conversation/action composition. Do not render a second start composer, suggestion-card dashboard, or different empty-state control hierarchy.
+
+Below `sm`, or at no more than 32rem height, deliberate reading movement may collapse an empty idle thread-tail composer to one bounded `Ask AIQSA…` Message row. A real wheel/touch gesture plus 48px of consecutive movement in either direction is required; direction reversal resets the count and application-owned scroll never qualifies. Pointer click or keyboard focus restores the complete composer. Drafts, attachments, upload/edit/error/unavailable states force it open, and an addressable live run keeps a labeled Stop beside Message. Density comes from disclosure, never from shrinking the 44px touch target.
 
 ### Details and settings
 

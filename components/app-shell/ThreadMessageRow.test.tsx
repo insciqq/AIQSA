@@ -70,8 +70,14 @@ function renderRow(overrides: Partial<ComponentProps<typeof ThreadMessageRow>> =
   return { props, ...render(<ThreadMessageRow {...props} />) };
 }
 
+async function revealRunDetails() {
+  fireEvent.click(screen.getByRole("button", { name: "More message actions" }));
+  fireEvent.click(await screen.findByRole("menuitem", { name: "Show run details" }));
+  await waitFor(() => expect(screen.getByTestId("answer-metadata-block")).toBeVisible());
+}
+
 describe("ThreadMessageRow", () => {
-  it("uses the shared reading measure and exposes stable message and toolbar semantics", () => {
+  it("uses one highlighted reading surface and the same positioned action dock for both roles", async () => {
     const { container, unmount } = renderRow({
       message: assistantMessage({ id: "assistant-readable" })
     });
@@ -79,22 +85,23 @@ describe("ThreadMessageRow", () => {
     const assistant = container.querySelector('article[data-role="assistant"]');
     expect(assistant).toHaveAttribute("data-message-id", "assistant-readable");
     expect(assistant).toHaveAttribute("data-status", "complete");
-    expect(assistant).toHaveClass("[@media(max-height:32rem)]:!pb-2");
+    expect(assistant).toHaveAttribute("tabindex", "0");
+    expect(assistant).toHaveClass("[@media(max-height:32rem)]:!pb-7");
     expect(screen.getByRole("article", { name: "Answer" })).toBe(assistant);
     expect(assistant?.firstElementChild).toHaveClass("max-w-reading");
     expect(screen.queryByText("Assistant")).not.toBeInTheDocument();
-    expect(screen.getByText("Fake / Fake QSA")).toBeVisible();
+    expect(screen.queryByText("Fake / Fake QSA")).not.toBeInTheDocument();
     expect(screen.getByTestId("assistant-message-content")).toHaveClass(
       "text-[16px]",
       "text-ink"
     );
-    expect(screen.getByTestId("run-receipt")).toHaveTextContent(
-      "Run Complete · Fake / Fake QSA"
-    );
+    expect(assistant?.firstElementChild).toHaveAttribute("data-message-interaction-surface", "true");
+    expect(screen.queryByTestId("run-receipt")).not.toBeInTheDocument();
 
     const assistantToolbar = screen.getByRole("toolbar", { name: "Assistant message actions" });
+    expect(assistantToolbar).toHaveAttribute("data-message-controls-kind", "actions");
     expect(assistantToolbar).toHaveAccessibleDescription("Answer: Answer");
-    expect(assistantToolbar).toHaveClass("min-h-11");
+    expect(assistantToolbar).toHaveClass("absolute", "bottom-0", "right-2", "min-h-11");
     expect(assistantToolbar).not.toHaveClass("opacity-0");
     expect(within(assistantToolbar).getAllByRole("button").map((button) => button.getAttribute("aria-label"))).toEqual([
       "Regenerate message",
@@ -105,13 +112,14 @@ describe("ThreadMessageRow", () => {
     expect(within(assistantToolbar).getByText("Regenerate")).toHaveClass("sr-only");
     expect(within(assistantToolbar).getByText("Edit")).toHaveClass("sr-only");
     expect(within(assistantToolbar).getByText("Copy")).toHaveClass("sr-only");
-    expect(within(assistantToolbar).getByText("More")).toBeVisible();
+    expect(within(assistantToolbar).getByText("More")).toHaveClass("sr-only");
     for (const action of within(assistantToolbar).getAllByRole("button")) {
       expect(action).toHaveAccessibleDescription("Answer: Answer");
     }
     fireEvent.click(within(assistantToolbar).getByRole("button", { name: "More message actions" }));
     const assistantMenu = screen.getByRole("menu", { name: "More message actions" });
     expect(within(assistantMenu).getAllByRole("menuitem").map((item) => item.getAttribute("aria-label"))).toEqual([
+      "Show run details",
       "Delete message",
       "Branch from here"
     ]);
@@ -122,6 +130,15 @@ describe("ThreadMessageRow", () => {
       screen.getByTestId("assistant-message-content").compareDocumentPosition(assistantToolbar) &
         Node.DOCUMENT_POSITION_FOLLOWING
     ).toBeTruthy();
+    fireEvent.click(within(assistantMenu).getByRole("menuitem", { name: "Show run details" }));
+    await waitFor(() =>
+      expect(screen.getByTestId("run-receipt")).toHaveTextContent(
+        "Run Complete · Fake / Fake QSA"
+      )
+    );
+    fireEvent.click(within(assistantToolbar).getByRole("button", { name: "More message actions" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Hide run details" }));
+    await waitFor(() => expect(screen.queryByTestId("run-receipt")).not.toBeInTheDocument());
     unmount();
 
     const { container: userContainer } = renderRow({
@@ -136,22 +153,51 @@ describe("ThreadMessageRow", () => {
     });
     const user = userContainer.querySelector('article[data-role="user"]');
     expect(user).toHaveAttribute("data-message-id", "user-readable");
+    expect(user).toHaveAttribute("tabindex", "0");
     expect(screen.getByRole("article", { name: "Question" })).toBe(user);
     expect(user?.firstElementChild).toHaveClass("max-w-reading");
+    expect(user?.firstElementChild).toHaveAttribute("data-message-interaction-surface", "true");
     expect(screen.queryByText("User")).not.toBeInTheDocument();
     expect(screen.getByText("Question").closest("div.rounded-panel")).toHaveClass(
       "bg-control-surface"
     );
     const userToolbar = screen.getByRole("toolbar", { name: "User message actions" });
-    expect(userToolbar).toHaveClass("min-h-11");
+    expect(userToolbar).toHaveAttribute("data-message-controls-kind", "actions");
+    expect(userToolbar).toHaveClass("absolute", "bottom-0", "right-2", "min-h-11");
     expect(userToolbar).toHaveAccessibleDescription("Question: Question");
     expect(within(userToolbar).getAllByRole("button").map((button) => button.getAttribute("aria-label"))).toEqual([
+      "Regenerate message",
       "Edit message",
       "Copy message",
       "More message actions"
     ]);
     for (const action of within(userToolbar).getAllByRole("button")) {
       expect(action).toHaveAccessibleDescription("Question: Question");
+    }
+  });
+
+  it("uses a noninteractive touch on the message as the contextual-control disclosure", () => {
+    vi.stubGlobal(
+      "matchMedia",
+      vi.fn(() => ({ matches: true }))
+    );
+    try {
+      const message = assistantMessage({ id: "assistant-touch" });
+      const onCopyMessage = vi.fn();
+      const onToggleMobileControls = vi.fn();
+      renderRow({ message, onCopyMessage, onToggleMobileControls });
+
+      fireEvent.click(screen.getByRole("article", { name: "Answer" }));
+      expect(onToggleMobileControls).not.toHaveBeenCalled();
+
+      fireEvent.click(screen.getByTestId("assistant-message-content"));
+      expect(onToggleMobileControls).toHaveBeenCalledWith("assistant-touch");
+
+      fireEvent.click(screen.getByRole("button", { name: "Copy message" }));
+      expect(onCopyMessage).toHaveBeenCalledWith(message);
+      expect(onToggleMobileControls).toHaveBeenCalledOnce();
+    } finally {
+      vi.unstubAllGlobals();
     }
   });
 
@@ -188,7 +234,7 @@ describe("ThreadMessageRow", () => {
     await waitFor(() => expect(onBranchFromMessage).toHaveBeenCalledWith("assistant-actions"));
   });
 
-  it("calls every available user action and does not offer regenerate", async () => {
+  it("calls the same visible user actions as the assistant dock", async () => {
     const message: ThreadMessage = {
       content: "Question",
       id: "user-actions",
@@ -211,7 +257,7 @@ describe("ThreadMessageRow", () => {
       onRegenerateMessage
     });
 
-    expect(screen.queryByRole("button", { name: "Regenerate message" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Regenerate message" }));
     fireEvent.click(screen.getByRole("button", { name: "Edit message" }));
     fireEvent.click(screen.getByRole("button", { name: "Copy message" }));
     const more = screen.getByRole("button", { name: "More message actions" });
@@ -221,7 +267,7 @@ describe("ThreadMessageRow", () => {
     fireEvent.click(more);
     fireEvent.click(screen.getByRole("menuitem", { name: "Branch from here" }));
 
-    expect(onRegenerateMessage).not.toHaveBeenCalled();
+    expect(onRegenerateMessage).toHaveBeenCalledWith("user-actions");
     expect(onEditMessage).toHaveBeenCalledWith(message);
     expect(onCopyMessage).toHaveBeenCalledWith(message);
     expect(onDeleteMessage).toHaveBeenCalledWith("user-actions");
@@ -286,7 +332,7 @@ describe("ThreadMessageRow", () => {
 
     fireEvent.keyDown(trigger, { key: "ArrowDown" });
     const menu = await screen.findByRole("menu", { name: "More message actions" });
-    await waitFor(() => expect(within(menu).getByRole("menuitem", { name: "Delete message" })).toHaveFocus());
+    await waitFor(() => expect(within(menu).getByRole("menuitem", { name: "Show run details" })).toHaveFocus());
     fireEvent.keyDown(menu, { key: "End" });
     expect(within(menu).getByRole("menuitem", { name: "Branch from here" })).toHaveFocus();
 
@@ -313,7 +359,7 @@ describe("ThreadMessageRow", () => {
 
     fireEvent.keyDown(trigger, { key: "ArrowDown" });
     let menu = await screen.findByRole("menu", { name: "More message actions" });
-    await waitFor(() => expect(within(menu).getByRole("menuitem", { name: "Delete message" })).toHaveFocus());
+    await waitFor(() => expect(within(menu).getByRole("menuitem", { name: "Show run details" })).toHaveFocus());
     fireEvent.keyDown(menu, { key: "Tab" });
     await waitFor(() => expect(screen.getByRole("button", { name: "After message" })).toHaveFocus());
     expect(screen.queryByRole("menu", { name: "More message actions" })).not.toBeInTheDocument();
@@ -402,13 +448,15 @@ describe("ThreadMessageRow", () => {
     expect(container.querySelector('article[data-role="assistant"]')).toHaveAttribute("aria-busy", "true");
   });
 
-  it("distinguishes cancelled, failed, and empty complete answers", () => {
+  it("distinguishes cancelled, failed, and empty complete answers after explicit detail disclosure", async () => {
     const { rerender } = renderRow({
       message: assistantMessage({ content: "Partial result", status: "cancelled" })
     });
 
     expect(screen.getByText("Partial result")).toBeVisible();
     expect(screen.getByTestId("assistant-cancelled-state")).toHaveTextContent("Response stopped");
+    expect(screen.queryByTestId("run-receipt")).not.toBeInTheDocument();
+    await revealRunDetails();
     expect(screen.getByTestId("run-receipt")).toHaveTextContent("Run Stopped");
     expect(screen.queryByTestId("streaming-cursor")).not.toBeInTheDocument();
 
@@ -505,7 +553,7 @@ describe("ThreadMessageRow", () => {
     expect(warnings.querySelectorAll("li")).toHaveLength(2);
   });
 
-  it("keeps run, search, and citations in one compact metadata block with inline details", () => {
+  it("keeps run, search, and citations hidden until More explicitly reveals one evidence block", async () => {
     const onOpenRunDetails = vi.fn();
     renderRow({
       artifactSummary: artifactSummary({
@@ -537,6 +585,8 @@ describe("ThreadMessageRow", () => {
       showReasoningBlocks: true
     });
 
+    expect(screen.queryByTestId("answer-metadata-block")).not.toBeInTheDocument();
+    await revealRunDetails();
     const metadata = screen.getByTestId("answer-metadata-block");
     const searchDisclosure = within(metadata).getByRole("button", { name: "1 search call" });
     const citationDisclosure = within(metadata).getByRole("button", { name: "1 citation" });
@@ -569,7 +619,7 @@ describe("ThreadMessageRow", () => {
     expect(onOpenRunDetails).not.toHaveBeenCalled();
   });
 
-  it("routes status, usage, warnings, context, model, and hidden evidence to Details Events", () => {
+  it("routes status, usage, warnings, context, model, and hidden evidence to Details Events", async () => {
     const onOpenRunDetails = vi.fn();
     renderRow({
       artifactSummary: artifactSummary({
@@ -585,6 +635,7 @@ describe("ThreadMessageRow", () => {
       runWarnings: ["Provider warning"],
       showCitations: false
     });
+    await revealRunDetails();
 
     for (const name of [
       "Run Complete",
@@ -600,7 +651,7 @@ describe("ThreadMessageRow", () => {
     expect(onOpenRunDetails).toHaveBeenCalledTimes(6);
   });
 
-  it("does not route a historical receipt into another answer's Details events", () => {
+  it("does not route a historical receipt into another answer's Details events", async () => {
     const onOpenRunDetails = vi.fn();
     renderRow({
       artifactSummary: artifactSummary({
@@ -615,6 +666,7 @@ describe("ThreadMessageRow", () => {
       }),
       showCitations: false
     });
+    await revealRunDetails();
 
     expect(screen.queryByRole("button", { name: "Run Complete" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Fake / Fake QSA" })).not.toBeInTheDocument();
@@ -624,7 +676,7 @@ describe("ThreadMessageRow", () => {
     expect(onOpenRunDetails).not.toHaveBeenCalled();
   });
 
-  it("shows tool activity by default and hides only its inline projection", () => {
+  it("shows tool activity by default and hides only its inline projection", async () => {
     const artifactSummary = {
       citationCount: 0,
       citations: [],
@@ -652,6 +704,7 @@ describe("ThreadMessageRow", () => {
     const { props, rerender } = renderRow({ artifactSummary });
 
     expect(screen.getByTestId("thread-tool-activity")).toHaveTextContent("Mem0");
+    await revealRunDetails();
 
     rerender(<ThreadMessageRow {...props} artifactSummary={artifactSummary} showToolActivity={false} />);
     expect(screen.queryByTestId("thread-tool-activity")).not.toBeInTheDocument();

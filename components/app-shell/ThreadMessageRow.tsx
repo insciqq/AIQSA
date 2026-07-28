@@ -28,6 +28,7 @@ import {
   FileText,
   GitBranch,
   Image as ImageIcon,
+  ListTree,
   MoreHorizontal,
   Pencil,
   RefreshCw,
@@ -37,6 +38,7 @@ import {
 import {
   memo,
   type KeyboardEvent as ReactKeyboardEvent,
+  type MouseEvent as ReactMouseEvent,
   type ReactNode,
   useEffect,
   useLayoutEffect,
@@ -45,19 +47,14 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 
-const commonActionClass =
-  "inline-flex h-11 shrink-0 items-center justify-center gap-1.5 rounded-control px-2 text-xs font-medium text-ink-muted outline-none hover:bg-control-hover hover:text-ink focus-visible:ring-2 focus-visible:ring-proof/45 disabled:cursor-not-allowed disabled:text-ink-disabled disabled:opacity-50 sm:h-9 [@media(hover:none)]:!h-11 [@media(pointer:coarse)]:!h-11";
-
 const iconActionClass =
   "inline-flex size-11 shrink-0 items-center justify-center rounded-control text-ink-muted outline-none hover:bg-control-hover hover:text-ink focus-visible:ring-2 focus-visible:ring-proof/45 disabled:cursor-not-allowed disabled:text-ink-disabled disabled:opacity-50 sm:size-9 [@media(hover:none)]:!size-11 [@media(pointer:coarse)]:!size-11";
 
 const messageMenuItemClass =
   "flex min-h-11 w-full items-center gap-2 rounded-control px-3 text-left text-sm font-medium text-ink-secondary outline-none hover:bg-control-hover hover:text-ink focus-visible:bg-control-hover focus-visible:text-ink focus-visible:ring-2 focus-visible:ring-proof/45 disabled:cursor-not-allowed disabled:text-ink-disabled disabled:opacity-50 sm:min-h-9 [@media(hover:none)]:!min-h-11 [@media(pointer:coarse)]:!min-h-11";
 
-// The strip is always present and visible; its fixed minimum height keeps the
-// thread stable while the readable overflow menu opens beside it.
 const actionStripClass =
-  "flex min-h-11 items-center gap-0.5 [@media(hover:none)]:!min-h-11 [@media(pointer:coarse)]:!min-h-11 sm:min-h-9";
+  "absolute bottom-0 right-2 z-10 flex min-h-11 translate-y-1/2 items-center gap-0.5 rounded-panel border border-trace-subtle bg-overlay-surface p-0.5 shadow-float [@media(hover:none)]:!min-h-11 [@media(pointer:coarse)]:!min-h-11 sm:min-h-9";
 
 const messageMenuViewportGutter = 8;
 const messageMenuTriggerGap = 8;
@@ -120,6 +117,8 @@ function TurnActions({
   onDeleteMessage,
   onEditMessage,
   onRegenerateMessage,
+  onToggleRunDetails,
+  runDetailsOpen,
   streaming,
   targetDescriptionId
 }: {
@@ -132,6 +131,8 @@ function TurnActions({
   onDeleteMessage(messageId: string): void;
   onEditMessage(message: ThreadMessage): void;
   onRegenerateMessage(messageId: string): void;
+  onToggleRunDetails(): void;
+  runDetailsOpen: boolean;
   streaming: boolean;
   targetDescriptionId: string;
 }): ReactNode {
@@ -340,20 +341,18 @@ function TurnActions({
 
   return (
     <>
-      {message.role === "assistant" ? (
-        <button
-          aria-label="Regenerate message"
-          aria-describedby={mutableActionDescriptionIds}
-          className={`${iconActionClass} hover:text-proof`}
-          disabled={streaming}
-          title={streaming ? "Regenerate is disabled while a response is streaming" : "Regenerate message"}
-          type="button"
-          onClick={() => onRegenerateMessage(message.id)}
-        >
-          <RefreshCw className="size-3.5" aria-hidden="true" />
-          <span className="sr-only">Regenerate</span>
-        </button>
-      ) : null}
+      <button
+        aria-label="Regenerate message"
+        aria-describedby={mutableActionDescriptionIds}
+        className={`${iconActionClass} hover:text-proof`}
+        disabled={streaming}
+        title={streaming ? "Regenerate is disabled while a response is streaming" : "Regenerate message"}
+        type="button"
+        onClick={() => onRegenerateMessage(message.id)}
+      >
+        <RefreshCw className="size-3.5" aria-hidden="true" />
+        <span className="sr-only">Regenerate</span>
+      </button>
       {message.role === "user" || message.role === "assistant" ? (
         <button
           aria-label="Edit message"
@@ -393,7 +392,8 @@ function TurnActions({
           aria-haspopup="menu"
           aria-label="More message actions"
           aria-describedby={streaming ? `${targetDescriptionId} ${disabledDescriptionId}` : targetDescriptionId}
-          className={commonActionClass}
+          className={iconActionClass}
+          data-message-menu-trigger="true"
           disabled={streaming}
           title={streaming ? "More actions are unavailable while a response is streaming" : "More message actions"}
           type="button"
@@ -412,7 +412,7 @@ function TurnActions({
           }}
         >
           <MoreHorizontal className="size-3.5" aria-hidden="true" />
-          <span>More</span>
+          <span className="sr-only">More</span>
         </button>
 
         {menuVisible && typeof document !== "undefined" ? createPortal(
@@ -430,6 +430,19 @@ function TurnActions({
             }}
             onKeyDown={handleMenuKeyDown}
           >
+            {message.role === "assistant" ? (
+              <button
+                aria-label={runDetailsOpen ? "Hide run details" : "Show run details"}
+                aria-describedby={targetDescriptionId}
+                className={messageMenuItemClass}
+                type="button"
+                role="menuitem"
+                onClick={() => runMenuAction(onToggleRunDetails)}
+              >
+                <ListTree className="size-4 text-ink-muted" aria-hidden="true" />
+                {runDetailsOpen ? "Hide run details" : "Show run details"}
+              </button>
+            ) : null}
             <button
               aria-label="Delete message"
               aria-describedby={mutableActionDescriptionIds}
@@ -470,12 +483,14 @@ function ThreadMessageRowComponent({
   editPending = false,
   justCompleted = false,
   message,
+  mobileControlsOpen = false,
   onBranchFromMessage,
   onCopyMessage,
   onDeleteMessage,
   onEditMessage,
   onOpenRunDetails,
   onRegenerateMessage,
+  onToggleMobileControls,
   persistedRun = null,
   runActivity = null,
   runWarnings = [],
@@ -489,12 +504,14 @@ function ThreadMessageRowComponent({
   editPending?: boolean;
   justCompleted?: boolean;
   message: ThreadMessage;
+  mobileControlsOpen?: boolean;
   onBranchFromMessage(messageId: string): void;
   onCopyMessage(message: ThreadMessage): void;
   onDeleteMessage(messageId: string): void;
   onEditMessage(message: ThreadMessage): void;
   onOpenRunDetails(): void;
   onRegenerateMessage(messageId: string): void;
+  onToggleMobileControls?(messageId: string): void;
   persistedRun?: PersistedRun | null;
   runActivity?: PipelineSnapshot | null;
   runWarnings?: string[];
@@ -506,6 +523,7 @@ function ThreadMessageRowComponent({
   const disabledDescriptionId = `message-actions-disabled-${message.id}`;
   const editPendingDescriptionId = `message-edit-pending-${message.id}`;
   const targetDescriptionId = `message-actions-target-${message.id}`;
+  const [runDetailsOpen, setRunDetailsOpen] = useState(false);
   const [expandedDisclosures, setExpandedDisclosures] = useState<ReadonlySet<InlineReceiptDisclosure>>(
     () => new Set()
   );
@@ -563,6 +581,8 @@ function ThreadMessageRowComponent({
       onDeleteMessage={onDeleteMessage}
       onEditMessage={onEditMessage}
       onRegenerateMessage={onRegenerateMessage}
+      onToggleRunDetails={() => setRunDetailsOpen((open) => !open)}
+      runDetailsOpen={runDetailsOpen}
       targetDescriptionId={targetDescriptionId}
     />
   );
@@ -578,17 +598,49 @@ function ThreadMessageRowComponent({
       Another edited branch is saving. Wait for it to finish before editing a message.
     </span>
   ) : null;
+  function handleMobileMessageClick(event: ReactMouseEvent<HTMLElement>) {
+    if (
+      !onToggleMobileControls ||
+      typeof window === "undefined" ||
+      typeof window.matchMedia !== "function" ||
+      !window.matchMedia(
+        "(max-width: 639px), (max-height: 32rem), (hover: none), (pointer: coarse)"
+      ).matches
+    ) {
+      return;
+    }
+
+    const target = event.target;
+    if (!(target instanceof Element) || !target.closest('[data-message-interaction-surface="true"]')) {
+      return;
+    }
+    if (
+      target.closest(
+        "a, button, input, select, textarea, summary, [contenteditable='true'], [data-message-controls-surface='true'], [data-message-details-surface='true']"
+      )
+    ) {
+      return;
+    }
+
+    onToggleMobileControls(message.id);
+  }
 
   if (message.role === "user") {
     return (
       <article
-        className="group/turn px-4 pb-2 pt-8 sm:px-6"
+        className="group/turn px-4 pb-7 pt-8 outline-none sm:px-6"
+        data-mobile-controls-open={mobileControlsOpen ? "true" : undefined}
         data-message-id={message.id}
         data-role="user"
         data-status={message.status}
         aria-label="Question"
+        tabIndex={0}
+        onClick={handleMobileMessageClick}
       >
-        <div className="mx-auto w-full max-w-reading">
+        <div
+          className="relative mx-auto w-full max-w-reading rounded-panel px-2 py-2"
+          data-message-interaction-surface="true"
+        >
           <div
             className="ml-auto w-fit max-w-[min(36rem,88%)] break-words rounded-panel bg-control-surface px-4 py-3 text-[15px] leading-6 text-ink [overflow-wrap:anywhere]"
             data-thread-message-content="true"
@@ -617,7 +669,9 @@ function ThreadMessageRowComponent({
             ) : null}
           </div>
           <div
-            className={`ml-auto w-fit justify-end ${actionStripClass}`}
+            className={actionStripClass}
+            data-message-controls-kind="actions"
+            data-message-controls-surface="true"
             data-testid="message-actions"
             role="toolbar"
             aria-label="User message actions"
@@ -663,14 +717,20 @@ function ThreadMessageRowComponent({
 
   return (
     <article
-      className="group/turn px-4 pb-8 pt-2 sm:px-6 [@media(max-height:32rem)]:!pb-2"
+      className="group/turn px-4 pb-10 pt-2 outline-none sm:px-6 [@media(max-height:32rem)]:!pb-7"
+      data-mobile-controls-open={mobileControlsOpen ? "true" : undefined}
       data-message-id={message.id}
       data-role="assistant"
       data-status={message.status}
       aria-label="Answer"
       aria-busy={message.status === "streaming" || undefined}
+      tabIndex={0}
+      onClick={handleMobileMessageClick}
     >
-      <div className="mx-auto w-full max-w-reading">
+      <div
+        className="relative mx-auto w-full max-w-reading rounded-panel px-3 py-3 sm:px-4"
+        data-message-interaction-surface="true"
+      >
         {message.status === "streaming" && answerModelLabel ? (
           <div
             className="mb-3 truncate text-xs leading-5 text-ink-muted"
@@ -806,9 +866,10 @@ function ThreadMessageRowComponent({
             </aside>
           ) : null}
         </div>
-        {message.status !== "streaming" ? (
+        {message.status !== "streaming" && runDetailsOpen ? (
           <div
-            className="mt-5 border-y border-trace-subtle py-2.5"
+            className="fade-in-soft mt-5 border-y border-trace-subtle py-2.5"
+            data-message-details-surface="true"
             data-testid="answer-metadata-block"
           >
             <RunReceipt
@@ -840,6 +901,8 @@ function ThreadMessageRowComponent({
         ) : null}
         <div
           className={actionStripClass}
+          data-message-controls-kind="actions"
+          data-message-controls-surface="true"
           data-testid="message-actions"
           role="toolbar"
           aria-label="Assistant message actions"

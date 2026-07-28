@@ -586,16 +586,18 @@ export function useMessageRunActions({
     const original = threadBeforeRegenerate.messages.find(
       (message) => message.id === messageId
     );
-    if (!original || original.role !== "assistant") {
+    if (!original) {
       return;
     }
+    const regenerationParentMessageId =
+      original.role === "assistant" ? original.parentMessageId : original.id;
 
     const assistantId = `assistant-regen-${Date.now()}`;
     const assistantMessage: ThreadMessage = {
       content: "",
       id: assistantId,
       modelId: selectedModelId,
-      parentMessageId: original.parentMessageId,
+      parentMessageId: regenerationParentMessageId,
       provider: selectedProvider,
       role: "assistant",
       status: "streaming"
@@ -662,7 +664,7 @@ export function useMessageRunActions({
         if (kind === "rejected") {
           rollbackOptimisticRun({
             chatId: chatIdForRegenerate,
-            expectedParentMessageId: original.parentMessageId,
+            expectedParentMessageId: regenerationParentMessageId,
             optimisticAssistantMessageId: assistantId,
             previousLeafId: threadBeforeRegenerate.activeLeafId
           });

@@ -3,7 +3,7 @@
 Status: Accepted
 Amends: 0009-conversation-first-ui-revamp, 0010-neutral-light-theme, 0016-responsive-composer-disclosure, 0018-intent-gated-mobile-reading-mode
 
-Amendment note: ADR 0028 replaces this ADR's Personal/Team/Advanced navigation, bare `/admin` default, separate Groups/Model access destinations, inherited resource split panes, and bottom-only blank-chat composer. ADR 0030 replaces decisions 18-20 and the related ADR 0011 statement with direct Model/configured-Profile/Search controls plus More over the same composer owner, and consolidates completed search/citation/run evidence. Its capability-preservation, single-view-layer, adaptive Research Chat, theme, and migration decisions remain current.
+Amendment note: ADR 0028 replaces this ADR's Personal/Team/Advanced navigation, bare `/admin` default, separate Groups/Model access destinations, inherited resource split panes, and bottom-only blank-chat composer. ADR 0030 replaces decisions 18-20 and the related ADR 0011 statement with direct Model/configured-Profile/Search controls plus More over the same composer owner, and consolidates completed search/citation/run evidence. ADR 0038 makes settled evidence contextual and restores intent-gated compact composer reading without changing that owner. Its capability-preservation, single-view-layer, adaptive Research Chat, theme, and migration decisions remain current.
 
 ## Context
 

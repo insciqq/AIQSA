@@ -247,11 +247,12 @@ export function TopRail({
   return (
     <header
       className={[
-        "relative flex h-[calc(3rem+env(safe-area-inset-top))] shrink-0 items-center justify-between gap-2 bg-transparent pb-0 pl-[max(.5rem,env(safe-area-inset-left))] pr-[max(.5rem,env(safe-area-inset-right))] pt-[env(safe-area-inset-top)] sm:pl-[max(.75rem,env(safe-area-inset-left))] sm:pr-[max(.75rem,env(safe-area-inset-right))]",
+        "relative flex h-[calc(3rem+env(safe-area-inset-top))] shrink-0 items-center justify-between gap-2 bg-transparent pb-0 pl-[max(.5rem,env(safe-area-inset-left))] pr-[max(.5rem,env(safe-area-inset-right))] pt-[env(safe-area-inset-top)] sm:pl-[max(.75rem,env(safe-area-inset-left))] sm:pr-[max(.75rem,env(safe-area-inset-right))] lg:pointer-events-none lg:absolute lg:inset-x-0 lg:top-0 lg:z-30 lg:shrink lg:pl-0",
         desktopActionsVisible
-          ? "lg:h-[calc(3rem+env(safe-area-inset-top))] lg:pl-0 lg:pr-[max(.75rem,env(safe-area-inset-right))]"
+          ? "lg:h-[calc(3rem+env(safe-area-inset-top))] lg:pr-[max(.75rem,env(safe-area-inset-right))]"
           : "lg:h-[env(safe-area-inset-top)] lg:gap-0 lg:px-0"
       ].join(" ")}
+      data-desktop-actions-visible={desktopActionsVisible ? "true" : undefined}
       data-testid="top-rail"
     >
       <h1 className="sr-only" data-testid="current-chat-title" title={chatTitle}>
@@ -302,7 +303,7 @@ export function TopRail({
         </button>
       </div>
 
-      <div className="ml-auto flex min-w-0 items-center justify-end gap-0.5 sm:gap-1">
+      <div className="ml-auto flex min-w-0 items-center justify-end gap-0.5 sm:gap-1 lg:pointer-events-auto">
         <PipelineIndicator pipeline={pipeline} onOpen={onOpenPipeline} />
         {conversationActionsAvailable ? (
           <div

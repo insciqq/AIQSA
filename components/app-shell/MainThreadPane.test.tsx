@@ -275,8 +275,29 @@ function renderPane(overrides: Partial<ComponentProps<typeof MainThreadPane>> = 
   return { props, ...render(<MainThreadPane {...props} />) };
 }
 
+function installCompactComposerViewport() {
+  vi.stubGlobal(
+    "matchMedia",
+    vi.fn(() =>
+      ({
+        addEventListener: vi.fn(),
+        matches: true,
+        removeEventListener: vi.fn()
+      }) as unknown as MediaQueryList
+    )
+  );
+}
+
+async function revealMessageRunDetails(messageRow: HTMLElement) {
+  fireEvent.click(within(messageRow).getByRole("button", { name: "More message actions" }));
+  fireEvent.click(await screen.findByRole("menuitem", { name: "Show run details" }));
+  await waitFor(() => {
+    expect(within(messageRow).getByTestId("answer-metadata-block")).toBeVisible();
+  });
+}
+
 describe("MainThreadPane", () => {
-  it("resolves runtime model identities to display names and uses a neutral missing-model fallback", () => {
+  it("resolves runtime model identities to display names and uses a neutral missing-model fallback", async () => {
     const runtimeModel: CatalogModel = {
       ...model,
       displayName: "Claude Opus 4.8",
@@ -304,6 +325,9 @@ describe("MainThreadPane", () => {
       })]
     });
 
+    const runtimeAnswer = view.container.querySelector('[data-message-id="answer-runtime"]');
+    expect(runtimeAnswer).not.toBeNull();
+    await revealMessageRunDetails(runtimeAnswer as HTMLElement);
     expect(screen.getByText("Anthropic production / Claude Opus 4.8")).toBeVisible();
     expect(screen.queryByText(runtimeModel.upstreamModelId!)).not.toBeInTheDocument();
 
@@ -316,6 +340,9 @@ describe("MainThreadPane", () => {
         })]}
       />
     );
+    const missingAnswer = view.container.querySelector('[data-message-id="answer-missing"]');
+    expect(missingAnswer).not.toBeNull();
+    await revealMessageRunDetails(missingAnswer as HTMLElement);
     expect(screen.getByText("Model unavailable")).toBeVisible();
     expect(screen.queryByText("long-upstream-model-id-that-is-no-longer-available")).not.toBeInTheDocument();
   });
@@ -829,7 +856,7 @@ describe("MainThreadPane", () => {
     expect(live).not.toHaveTextContent("Stale MCP");
   });
 
-  it("keeps every answer's persisted usage after later runs and reload", () => {
+  it("keeps every answer's persisted usage after later runs and reload", async () => {
     const openRunDetails = vi.fn();
     const { container, props, rerender } = renderPane({
       ...readyComposerOverrides,
@@ -853,6 +880,8 @@ describe("MainThreadPane", () => {
     const current = container.querySelector('[data-message-id="assistant-current"]');
     expect(historical).not.toBeNull();
     expect(current).not.toBeNull();
+    await revealMessageRunDetails(historical as HTMLElement);
+    await revealMessageRunDetails(current as HTMLElement);
     expect(within(historical as HTMLElement).getByText("48 tokens used")).toBeVisible();
 
     fireEvent.click(
@@ -1066,6 +1095,141 @@ describe("MainThreadPane", () => {
     expect(screen.queryByRole("button", { name: "Branch tree" })).not.toBeInTheDocument();
     expect(screen.queryByRole("combobox", { name: "Chat folder" })).not.toBeInTheDocument();
     expect(jumpToLatest).toHaveBeenCalledOnce();
+  });
+
+  it("collapses idle compact controls only after deliberate scroll intent and expands for focus or draft", async () => {
+    installCompactComposerViewport();
+    try {
+      const handleThreadScroll = vi.fn();
+      const { props, rerender } = renderPane({
+        ...readyComposerOverrides,
+        handleThreadScroll,
+        visibleMessages: [assistantMessage("assistant-reading")]
+      });
+      const thread = screen.getByTestId("thread");
+
+      fireEvent.scroll(thread, { target: { scrollTop: 60 } });
+      fireEvent.scroll(thread, { target: { scrollTop: 120 } });
+      expect(screen.getByTestId("composer-form")).not.toHaveAttribute(
+        "data-reading-collapsed"
+      );
+      handleThreadScroll.mockClear();
+
+      fireEvent.wheel(thread, { deltaY: 60 });
+      fireEvent.scroll(thread, { target: { scrollTop: 100 } });
+      fireEvent.scroll(thread, { target: { scrollTop: 160 } });
+
+      await waitFor(() =>
+        expect(screen.getByTestId("composer-form")).toHaveAttribute(
+          "data-reading-collapsed",
+          "true"
+        )
+      );
+      expect(screen.getByTestId("composer-actions-disclosure")).toHaveAttribute(
+        "aria-hidden",
+        "true"
+      );
+      expect(screen.getByRole("textbox", { name: "Message" })).toBeVisible();
+      expect(handleThreadScroll).toHaveBeenCalledTimes(2);
+
+      fireEvent.focus(screen.getByRole("textbox", { name: "Message" }));
+      await waitFor(() =>
+        expect(screen.getByTestId("composer-form")).not.toHaveAttribute(
+          "data-reading-collapsed"
+        )
+      );
+
+      fireEvent.blur(screen.getByRole("textbox", { name: "Message" }));
+      fireEvent.wheel(thread, { deltaY: -60 });
+      fireEvent.scroll(thread, { target: { scrollTop: 260 } });
+      fireEvent.scroll(thread, { target: { scrollTop: 200 } });
+      await waitFor(() =>
+        expect(screen.getByTestId("composer-form")).toHaveAttribute(
+          "data-reading-collapsed",
+          "true"
+        )
+      );
+
+      rerender(<MainThreadPane {...props} draft="A protected draft" />);
+      await waitFor(() =>
+        expect(screen.getByTestId("composer-form")).not.toHaveAttribute(
+          "data-reading-collapsed"
+        )
+      );
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("keeps compact run start expanded until Stop is addressable, then exposes Stop after scrolling", async () => {
+    installCompactComposerViewport();
+    try {
+      const stopCurrentRun = vi.fn();
+      const { props, rerender } = renderPane({
+        ...readyComposerOverrides,
+        activeChatStreaming: true,
+        currentRunId: null,
+        stopCurrentRun,
+        visibleMessages: [assistantMessage("assistant-streaming", { status: "streaming" })]
+      });
+      const thread = screen.getByTestId("thread");
+
+      fireEvent.wheel(thread, { deltaY: 80 });
+      fireEvent.scroll(thread, { target: { scrollTop: 100 } });
+      fireEvent.scroll(thread, { target: { scrollTop: 180 } });
+      expect(screen.getByTestId("composer-form")).not.toHaveAttribute(
+        "data-reading-collapsed"
+      );
+
+      rerender(<MainThreadPane {...props} currentRunId="run-1" />);
+      fireEvent.wheel(thread, { deltaY: 60 });
+      fireEvent.scroll(thread, { target: { scrollTop: 200 } });
+      fireEvent.scroll(thread, { target: { scrollTop: 260 } });
+
+      const stop = await screen.findByTestId("composer-reading-stop");
+      expect(stop).toHaveAccessibleName("Stop response");
+      expect(stop).toBeEnabled();
+      fireEvent.click(stop);
+      expect(stopCurrentRun).toHaveBeenCalledOnce();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("reveals controls for only the compact message the reader taps", () => {
+    installCompactComposerViewport();
+    try {
+      const { container } = renderPane({
+        ...readyComposerOverrides,
+        visibleMessages: [
+          userMessage("question-mobile"),
+          assistantMessage("answer-mobile", { parentMessageId: "question-mobile" })
+        ]
+      });
+      const question = container.querySelector<HTMLElement>(
+        '[data-message-id="question-mobile"]'
+      );
+      const answer = container.querySelector<HTMLElement>(
+        '[data-message-id="answer-mobile"]'
+      );
+
+      expect(question).not.toHaveAttribute("data-mobile-controls-open");
+      expect(answer).not.toHaveAttribute("data-mobile-controls-open");
+
+      fireEvent.click(within(answer as HTMLElement).getByTestId("assistant-message-content"));
+      expect(answer).toHaveAttribute("data-mobile-controls-open", "true");
+      expect(question).not.toHaveAttribute("data-mobile-controls-open");
+
+      fireEvent.click(
+        (question as HTMLElement).querySelector<HTMLElement>(
+          '[data-message-interaction-surface="true"]'
+        ) as HTMLElement
+      );
+      expect(question).toHaveAttribute("data-mobile-controls-open", "true");
+      expect(answer).not.toHaveAttribute("data-mobile-controls-open");
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it("renders the custom chat delete confirmation dialog", () => {

@@ -441,7 +441,12 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
           </div>
 
           <div
-            className="flex min-h-0 min-w-0 flex-col bg-answer-paper"
+            className="relative flex min-h-0 min-w-0 flex-col bg-answer-paper"
+            data-desktop-action-clearance={
+              messages.length > 0 || pipeline?.phase === "running" || pipeline?.phase === "error"
+                ? "true"
+                : undefined
+            }
             data-testid="conversation-column"
           >
             <TopRail

@@ -697,7 +697,7 @@ describe("PowerAppShellView Details composition", () => {
     expect(shell).toHaveClass("h-dvh", "bg-research-canvas", "text-ink");
     expect(rail).toHaveClass("bg-workspace-rail", "lg:grid");
     expect(rail).toContainElement(screen.getByTestId("left-chat-pane"));
-    expect(conversation).toHaveClass("bg-answer-paper", "flex-col");
+    expect(conversation).toHaveClass("bg-answer-paper", "flex-col", "relative");
     expect(conversation).toContainElement(screen.getByTestId("top-rail"));
     expect(conversation).toContainElement(screen.getByTestId("main-thread-pane"));
     expect(screen.queryByTestId("details-pane")).not.toBeInTheDocument();

@@ -45,6 +45,10 @@ describe("TopRail", () => {
     const { rerender, props } = renderTopRail();
 
     expect(screen.getByTestId("top-rail")).toHaveClass("bg-transparent", "justify-between");
+    expect(screen.getByTestId("top-rail")).toHaveClass(
+      "lg:absolute",
+      "lg:pointer-events-none"
+    );
     expect(screen.getByTestId("top-rail")).not.toHaveClass("border-b");
     expect(screen.getByTestId("top-rail")).not.toHaveClass("border-trace-subtle");
     expect(screen.getByTestId("top-rail")).not.toHaveClass("bg-answer-paper");

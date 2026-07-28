@@ -4,42 +4,24 @@ import {
   type RunProfileId
 } from "@/components/app-shell/runProfiles";
 import type { Catalog } from "@/components/app-shell/types";
+import { Check } from "lucide-react";
 import { useId } from "react";
 
-function ProfileAvailabilityFact({
+function CompactProfileAvailabilityFact({
   available,
-  compact,
   id
 }: Readonly<{
   available: boolean;
-  compact: boolean;
   id: string;
 }>) {
   const label = available ? "Available" : "Unavailable";
 
-  if (compact) {
-    return (
-      <span
-        className="sr-only"
-        data-run-profile-availability={available ? "available" : "unavailable"}
-        id={id}
-      >
-        {label}
-      </span>
-    );
-  }
-
   return (
     <span
-      className={`inline-flex shrink-0 items-center gap-1.5 rounded-pill border px-2.5 py-1 text-xs font-semibold leading-none ${
-        available
-          ? "border-positive/35 bg-positive/[0.12] text-positive"
-          : "border-trace-strong bg-control-surface text-ink-secondary"
-      }`}
+      className="sr-only"
       data-run-profile-availability={available ? "available" : "unavailable"}
       id={id}
     >
-      <span aria-hidden="true" className="size-2 rounded-full bg-current" />
       {label}
     </span>
   );
@@ -91,12 +73,8 @@ export function ComposerRunProfiles({
     : "Unavailable profiles cannot be used with your current model access.";
   return (
     <div className={compact ? "shrink-0" : undefined} data-testid={testId}>
-      <div
-        className={compact
-          ? "inline-flex min-h-touch min-w-0 items-center rounded-control bg-control-surface sm:min-h-control-sm [@media(hover:none)]:!min-h-touch [@media(pointer:coarse)]:!min-h-touch"
-          : "flex min-w-0 flex-wrap items-center gap-1.5"}
-      >
-        {compact ? (
+      {compact ? (
+        <div className="inline-flex min-h-touch min-w-0 items-center rounded-control bg-control-surface sm:min-h-control-sm [@media(hover:none)]:!min-h-touch [@media(pointer:coarse)]:!min-h-touch">
           <span
             aria-live="polite"
             className="shrink-0 px-0 text-xs font-semibold text-ink-muted max-[429px]:text-[11px] min-[430px]:px-1"
@@ -105,61 +83,111 @@ export function ComposerRunProfiles({
           >
             {compactState ?? "Profile"}
           </span>
-        ) : null}
+          <div className="flex shrink-0 items-center" role="group" aria-label="Run profile">
+            {profiles.map((profile) => {
+              const active = activeProfile?.id === profile.id;
+              const descriptionId = `${descriptionPrefix}-${profile.id}-description`;
+              const availabilityId = `${descriptionPrefix}-${profile.id}-availability`;
+              const unavailable = profile.unavailableReason;
+
+              return (
+                <span key={profile.id} className="relative inline-flex items-center">
+                  <button
+                    className={[
+                      "h-touch rounded-control text-xs font-medium outline-none focus-visible:ring-2 focus-visible:ring-proof/55 disabled:cursor-not-allowed disabled:text-ink-disabled disabled:opacity-65 sm:h-control-sm [@media(hover:none)]:!h-touch [@media(pointer:coarse)]:!h-touch",
+                      "min-w-touch px-1 sm:min-w-0 [@media(hover:none)]:!min-w-touch [@media(pointer:coarse)]:!min-w-touch",
+                      active
+                        ? "bg-control-selected text-proof"
+                        : "text-ink-secondary hover:bg-control-hover hover:text-ink"
+                    ].join(" ")}
+                    type="button"
+                    aria-label={`Use ${profile.label} run profile`}
+                    aria-describedby={`${availabilityId} ${descriptionId}`}
+                    aria-pressed={active}
+                    disabled={disabled || !profile.available}
+                    title={`${profile.label}: ${profile.configurationLabel}. ${profile.description}${
+                      unavailable ? `. ${unavailable}` : ""
+                    }`}
+                    onClick={() => onSelect(profile.id)}
+                  >
+                    {profile.label}
+                  </button>
+                  <CompactProfileAvailabilityFact available={profile.available} id={availabilityId} />
+                  <span className="sr-only" id={descriptionId}>
+                    {profile.configurationLabel}. {profile.description}.
+                    {unavailable ? ` ${unavailable}` : ""}
+                  </span>
+                </span>
+              );
+            })}
+          </div>
+        </div>
+      ) : (
         <div
-          className={compact ? "flex shrink-0 items-center" : "flex min-w-0 flex-wrap items-center gap-1.5"}
+          className="overflow-hidden rounded-panel border border-trace-subtle bg-control-surface/35"
           role="group"
           aria-label="Run profile"
         >
-          {profiles.map((profile) => {
+          {profiles.map((profile, index) => {
             const active = activeProfile?.id === profile.id;
             const descriptionId = `${descriptionPrefix}-${profile.id}-description`;
             const availabilityId = `${descriptionPrefix}-${profile.id}-availability`;
             const unavailable = profile.unavailableReason;
-            const showPerSlotAvailability = compact || profile.available;
+            const stateLabel = active ? "Selected" : profile.available ? "Available" : "Unavailable";
 
             return (
-              <span key={profile.id} className={`relative inline-flex items-center ${compact ? "" : "gap-1.5"}`}>
-                <button
+              <button
+                className={[
+                  "grid min-h-[4.5rem] w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-3 px-3.5 py-3 text-left outline-none transition-colors focus-visible:relative focus-visible:z-10 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-proof/55 sm:px-4",
+                  index > 0 ? "border-t border-trace-subtle" : "",
+                  active
+                    ? "bg-control-selected"
+                    : profile.available
+                      ? "hover:bg-control-hover"
+                      : "cursor-not-allowed bg-answer-paper/35"
+                ].join(" ")}
+                type="button"
+                aria-label={`Use ${profile.label} run profile`}
+                aria-describedby={`${availabilityId} ${descriptionId}`}
+                aria-pressed={active}
+                disabled={disabled || !profile.available}
+                key={profile.id}
+                title={`${profile.label}: ${profile.configurationLabel}. ${profile.description}${
+                  unavailable ? `. ${unavailable}` : ""
+                }`}
+                onClick={() => onSelect(profile.id)}
+              >
+                <span className="min-w-0">
+                  <span className="block text-sm font-semibold text-ink">{profile.label}</span>
+                  <span className="mt-0.5 block text-xs leading-5 text-ink-secondary">
+                    {profile.description}
+                  </span>
+                  {profile.available ? (
+                    <span className="mt-1 block break-words font-mono text-[11px] leading-4 text-ink-muted [overflow-wrap:anywhere]">
+                      {profile.configurationLabel}
+                    </span>
+                  ) : null}
+                </span>
+                <span
                   className={[
-                    "h-touch rounded-control text-xs font-medium outline-none focus-visible:ring-2 focus-visible:ring-proof/55 disabled:cursor-not-allowed disabled:text-ink-disabled disabled:opacity-65 sm:h-control-sm [@media(hover:none)]:!h-touch [@media(pointer:coarse)]:!h-touch",
-                    compact
-                      ? "min-w-touch px-1 sm:min-w-0 [@media(hover:none)]:!min-w-touch [@media(pointer:coarse)]:!min-w-touch"
-                      : "px-3",
-                    active
-                      ? "bg-control-selected text-proof"
-                      : compact
-                        ? "text-ink-secondary hover:bg-control-hover hover:text-ink"
-                        : "bg-control-surface text-ink-secondary hover:bg-control-hover hover:text-ink"
+                    "inline-flex shrink-0 items-center gap-1.5 text-xs font-semibold",
+                    active ? "text-proof" : profile.available ? "text-positive" : "text-ink-muted"
                   ].join(" ")}
-                  type="button"
-                  aria-label={`Use ${profile.label} run profile`}
-                  aria-describedby={`${showPerSlotAvailability ? `${availabilityId} ` : ""}${descriptionId}`}
-                  aria-pressed={active}
-                  disabled={disabled || !profile.available}
-                  title={`${profile.label}: ${profile.configurationLabel}. ${profile.description}${
-                    unavailable ? `. ${unavailable}` : ""
-                  }`}
-                  onClick={() => onSelect(profile.id)}
+                  data-run-profile-availability={profile.available ? "available" : "unavailable"}
+                  id={availabilityId}
                 >
-                  {profile.label}
-                </button>
-                {showPerSlotAvailability ? (
-                  <ProfileAvailabilityFact
-                    available={profile.available}
-                    compact={compact}
-                    id={availabilityId}
-                  />
-                ) : null}
+                  {active ? <Check className="size-3.5" aria-hidden="true" /> : null}
+                  {stateLabel}
+                </span>
                 <span className="sr-only" id={descriptionId}>
                   {profile.configurationLabel}. {profile.description}.
                   {unavailable ? ` ${unavailable}` : ""}
                 </span>
-              </span>
+              </button>
             );
           })}
         </div>
-      </div>
+      )}
       {!compact && unavailableProfiles.length > 0 ? (
         <p
           className="mt-2 text-xs text-ink-muted"

@@ -7,6 +7,7 @@ import { attachmentPolicyForModel } from "@/components/app-shell/attachmentCapab
 import { ComposerControls } from "@/components/app-shell/ComposerControls";
 import { McpComposerSummary } from "@/components/app-shell/McpComposerSummary";
 import { ThreadMessageRow } from "@/components/app-shell/ThreadMessageRow";
+import { useCompactComposerReadingMode } from "@/components/app-shell/useCompactComposerReadingMode";
 import type { PipelineSnapshot } from "@/components/app-shell/runState";
 import type { RunProfileId } from "@/components/app-shell/runProfiles";
 import type {
@@ -22,7 +23,7 @@ import type {
 } from "@/components/app-shell/types";
 import { ArrowDown, CircleAlert, LoaderCircle, RotateCcw } from "lucide-react";
 import type { ReactNode, RefObject } from "react";
-import { useMemo } from "react";
+import { useCallback, useMemo, useState } from "react";
 
 const noRunWarnings: string[] = [];
 
@@ -201,6 +202,21 @@ export function MainThreadPane({
   workspaceLoading,
   workspaceReady
 }: MainThreadPaneProps) {
+  const [mobileControlsState, setMobileControlsState] = useState<{
+    chatId: string | null;
+    messageId: string | null;
+  }>(() => ({ chatId: activeChatId, messageId: null }));
+  const mobileControlsMessageId =
+    mobileControlsState.chatId === activeChatId ? mobileControlsState.messageId : null;
+
+  const toggleMobileMessageControls = useCallback((messageId: string) => {
+    setMobileControlsState((current) => ({
+      chatId: activeChatId,
+      messageId:
+        current.chatId === activeChatId && current.messageId === messageId ? null : messageId
+    }));
+  }, [activeChatId]);
+
   const modelLabels = useMemo(
     () => {
       const providerLabels = new Map(
@@ -284,6 +300,26 @@ export function MainThreadPane({
     !activeChatDetailError &&
     !catalogError &&
     !workspaceError;
+  const composerReadingForceExpanded =
+    composerUnavailable ||
+    Boolean(activeDisabledHint) ||
+    visibleMessages.length === 0 ||
+    draft.length > 0 ||
+    attachments.length > 0 ||
+    Boolean(editingMessageId) ||
+    editingMessagePending ||
+    uploading ||
+    Boolean(operationError) ||
+    (activeChatStreaming && !currentRunId);
+  const {
+    collapsed: composerReadingCollapsed,
+    expand: expandComposerReadingMode,
+    handleScroll: handleComposerReadingScroll,
+    noteScrollIntent: noteComposerReadingScrollIntent
+  } = useCompactComposerReadingMode({
+    forceExpanded: composerReadingForceExpanded,
+    resetKey: activeChatId
+  });
 
   return (
     <section className="flex min-h-0 min-w-0 flex-1 flex-col bg-answer-paper" data-testid="main-thread-pane">
@@ -307,7 +343,16 @@ export function MainThreadPane({
                 : "min-h-0 flex-1 overflow-y-auto overscroll-contain [overflow-anchor:none]"
             }
             data-testid="thread"
-            onScroll={handleThreadScroll}
+            onScroll={(event) => {
+              handleThreadScroll();
+              handleComposerReadingScroll(event.currentTarget);
+            }}
+            onTouchMove={noteComposerReadingScrollIntent}
+            onWheel={(event) => {
+              if (event.deltaY !== 0) {
+                noteComposerReadingScrollIntent();
+              }
+            }}
           >
           {catalogError ? (
             <div className="grid min-h-[260px] place-items-center px-4 py-10" data-testid="catalog-error-state" role="alert">
@@ -497,6 +542,7 @@ export function MainThreadPane({
                 justCompleted={justCompleted}
                 key={message.id}
                 message={message}
+                mobileControlsOpen={mobileControlsMessageId === message.id}
                 persistedRun={message.runId && message.runId === lastRun?.id ? lastRun : null}
                 runActivity={visibleRunActivity}
                 runWarnings={messageRunWarnings}
@@ -510,6 +556,7 @@ export function MainThreadPane({
                 onEditMessage={handleEditMessage}
                 onOpenRunDetails={openRunDetails}
                 onRegenerateMessage={handleRegenerateMessage}
+                onToggleMobileControls={toggleMobileMessageControls}
               />
             );
               })
@@ -555,7 +602,10 @@ export function MainThreadPane({
                 type="button"
                 aria-label="Jump to latest message"
                 data-testid="jump-to-latest"
-                onClick={jumpToLatest}
+                onClick={() => {
+                  expandComposerReadingMode();
+                  jumpToLatest();
+                }}
               >
                 <ArrowDown className="size-3.5 text-proof" aria-hidden="true" />
                 Latest
@@ -628,6 +678,7 @@ export function MainThreadPane({
           editPending={editingMessagePending}
           operationError={operationError}
           promptFirst={centeredEmptyConversation}
+          readingCollapsed={composerReadingCollapsed}
           onChange={composerActions.changeDraft}
           onCancelEdit={composerActions.cancelMessageEdit}
           onRemoveAttachment={composerActions.removeAttachment}
@@ -650,6 +701,7 @@ export function MainThreadPane({
           contextLine={composerContextLine}
           usageStats={composerUsageStats}
           value={draft}
+          onRequestExpanded={expandComposerReadingMode}
         />
       </div>
     </section>

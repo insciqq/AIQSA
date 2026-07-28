@@ -3,6 +3,8 @@
 Status: Accepted
 Amends: 0011-explicit-next-run-control-ownership, 0016-responsive-composer-disclosure, 0022-admin-managed-llm-provider-control-plane, 0025-clean-slate-research-chat-and-control-center, 0026-personal-provider-quick-setup, 0028-task-first-control-center-and-direct-provider-setup
 
+Amendment note: ADR 0038 keeps the consolidated completed-answer evidence model but gates its settled presentation behind the originating answer's explicit `More` → `Show run details`; message hover/focus/tap reveals only the shared action dock. Direct next-run control ownership is unchanged.
+
 Amendment note: ADR 0031 completely replaces this record's Gemini OpenAI-compatible runtime decision with native stateless Interactions v1 and live-only Google Search grounding. The reviewed Gemini model set and one-key Quick provisioning decision remain in force.
 
 ## Context

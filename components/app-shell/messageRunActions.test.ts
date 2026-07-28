@@ -1486,6 +1486,45 @@ describe("message run actions", () => {
     expect(useRunLifecycleStore.getState().activeStreams).toEqual({});
   });
 
+  it("regenerates from a user message into the same assistant-sibling branch shape", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(124);
+    const fetchMock = vi.fn(async () => new Response("", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const actions = useMessageRunActionsForTest({
+      attachments: [],
+      consumeRunStream: async ({ onMessageIds, onRunId }) => {
+        onRunId("run-from-user");
+        onMessageIds({ assistantMessageId: "assistant-from-user" }, "run-from-user");
+        return {
+          failed: false,
+          receivedChatUpdate: true,
+          runId: "run-from-user"
+        };
+      }
+    });
+    prepareRegenerationThread();
+
+    await actions.regenerateMessage("user-original");
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/messages/user-original/regenerate",
+      expect.objectContaining({ method: "POST" })
+    );
+    expect(selectThreadSnapshot(useThreadStore.getState(), "chat-a")).toMatchObject({
+      activeLeafId: "assistant-from-user",
+      messages: [
+        expect.objectContaining({ id: "user-original" }),
+        expect.objectContaining({ id: "assistant-original", status: "complete" }),
+        expect.objectContaining({
+          id: "assistant-from-user",
+          parentMessageId: "user-original",
+          runId: "run-from-user",
+          status: "complete"
+        })
+      ]
+    });
+  });
+
   it("rolls back a rejected regenerate to the prior assistant", async () => {
     vi.spyOn(Date, "now").mockReturnValue(456);
     vi.stubGlobal(
