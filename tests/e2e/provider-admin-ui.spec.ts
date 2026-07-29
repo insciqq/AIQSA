@@ -965,7 +965,7 @@ test("administrator completes the Quick direct-user picker, retry, Ready, and sa
       credentialVersionId: true,
       providerModelId: true
     },
-    where: { modelRunId_role: { modelRunId: runId, role: "answer" } }
+    where: { modelRunId_bindingKey: { bindingKey: "answer", modelRunId: runId } }
   })).resolves.toEqual({
     connectionId: installedFixture.connectionId,
     credentialSource: "user",

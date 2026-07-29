@@ -132,8 +132,10 @@ describe("useAdminSectionNavigation", () => {
 
     await press("Providers", "ArrowLeft", "Safety");
     await press("Safety", "ArrowRight", "Providers");
-    await press("Providers", "ArrowDown", "Users");
-    await press("Users", "ArrowUp", "Providers");
+    await press("Providers", "ArrowDown", "Search");
+    await press("Search", "ArrowDown", "Users");
+    await press("Users", "ArrowUp", "Search");
+    await press("Search", "ArrowUp", "Providers");
     await press("Providers", "End", "Safety");
     await press("Safety", "Home", "Providers");
 
@@ -145,7 +147,7 @@ describe("useAdminSectionNavigation", () => {
   it("keeps the current section and URL when guarded click or keyboard navigation is refused", async () => {
     window.history.replaceState(null, "", "/admin");
     const canSelectSection = vi.fn((section: AdminSectionNavigation["activeSection"]) => (
-      section !== "users"
+      section !== "search" && section !== "users"
     ));
     const onNavigationBlocked = vi.fn();
     renderNavigation({ canSelectSection, onNavigationBlocked });

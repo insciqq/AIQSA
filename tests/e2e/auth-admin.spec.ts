@@ -25,6 +25,7 @@ async function listAuthEmails(request: APIRequestContext): Promise<TestEmail[]> 
 
 const adminSections = [
   { id: "providers", label: "Providers" },
+  { id: "search", label: "Search" },
   { id: "users", label: "Users" },
   { id: "access", label: "Access & groups" },
   { id: "invites", label: "Invites" },
@@ -741,6 +742,18 @@ test("admin console keeps all redesigned sections operable end to end", async ({
       await openAdminSection(page, section);
       await expectNoPageOverflow(page);
     }
+
+    await page.setViewportSize({ height: 500, width: 1_440 });
+    await page.goto("/admin?section=search");
+    const searchSection = page.getByTestId("admin-section-search");
+    const searchCatalog = searchSection.getByRole("list", { name: "Search integration catalog" });
+    await expect(searchCatalog).toBeVisible();
+    await searchCatalog.getByRole("button").first().click();
+    await expect(searchSection.getByText("User option", { exact: true })).toBeVisible();
+    await expect(searchSection.getByText(/Active engine revision/)).toBeVisible();
+    await expect(searchSection.getByText("Compatible answer models", { exact: true })).toBeVisible();
+    await expectNoPageOverflow(page);
+    await page.setViewportSize({ height: 900, width: 1_440 });
 
     await page.goto("/admin");
     await expect(page.getByTestId("admin-section-providers")).toBeVisible();

@@ -86,11 +86,32 @@ describe("composer control store", () => {
     expect(useComposerControlStore.getState()).toMatchObject({
       selectedModelId: "x-ai/grok",
       selectedProvider: "openrouter",
+      selectedSearchOptionIds: ["perplexity-tool-search"],
       selectedSearchStrategy: "perplexity-tool-search",
       reasoningMode: "pro",
       showCitations: false,
       showReasoningBlocks: true,
       showToolActivity: false
+    });
+  });
+
+  it("keeps the legacy singleton field synchronized with a multi-engine plan", () => {
+    useComposerControlStore
+      .getState()
+      .setSelectedSearchPlan(["codex-search", "perplexity-search"], "model_choice");
+
+    expect(useComposerControlStore.getState()).toMatchObject({
+      searchPlanMode: "model_choice",
+      selectedSearchOptionIds: ["codex-search", "perplexity-search"],
+      selectedSearchStrategy: "codex-search"
+    });
+
+    useComposerControlStore.getState().setSelectedSearchStrategy("search-disabled");
+
+    expect(useComposerControlStore.getState()).toMatchObject({
+      searchPlanMode: "all_selected",
+      selectedSearchOptionIds: [],
+      selectedSearchStrategy: "search-disabled"
     });
   });
 });

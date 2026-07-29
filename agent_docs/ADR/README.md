@@ -51,6 +51,7 @@ Every ADR also declares `Amends: none` or a comma-separated list of earlier ADR 
 - `0040-brokered-saas-oauth-behind-generic-remote-mcp.md` - keeps upstream SaaS OAuth and service-specific tools inside independently deployed remote MCP servers, requires separate MCP-audienced and upstream token families with complete refresh/revocation isolation, uses a hardened public Tracker MCP fork as the first conformance target without adding Tracker knowledge to AIQSA, and gates the initial rollout to read-only tools.
 - `0041-same-origin-mcp-oauth-resource-autobinding.md` - lets a blank generic MCP protected-resource override bind only to same-origin standards metadata, preserves exact cross-origin/issuer review and stable policy fingerprints, and uses browser-safe GET navigation for Connect/Reconnect without weakening CSP.
 - `0042-bounded-compatible-model-capability-discovery.md` - admits only bounded non-secret context/reasoning hints from compatible `/models`, keeps protocol and hosted tools explicit, and offers reported reasoning or the reviewed GPT-5.6 Sol fallback in both Custom setup and saved-model editing.
+- `0043-admin-managed-multi-engine-search-plans.md` - creates a separate administrator Search control plane, typed replaceable engine adapters, entitlement-safe user options, and bounded multi-engine plans with fan-out or model-choice orchestration.
 
 ## Superseded ADRs
 

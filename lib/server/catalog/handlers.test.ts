@@ -85,6 +85,7 @@ describe("catalog handler", () => {
       "promptPresetId",
       "provider",
       "searchStrategyId",
+      "searchPlan",
       "showCitations",
       "showReasoningBlocks",
       "showToolActivity"

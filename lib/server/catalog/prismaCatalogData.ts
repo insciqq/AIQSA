@@ -22,6 +22,12 @@ import {
   type ProviderModelConfiguration
 } from "@/lib/server/providers/providerConfiguration";
 import { resolveProviderModelCapabilities } from "@/lib/server/providers/providerModelCapabilities";
+import {
+  compatibleTechnicalAdapter,
+  builtInSearchDraft,
+  normalizeSearchDraft,
+  searchExecutionModes
+} from "@/lib/server/search/configuration";
 import type {
   PrismaClient,
   ProviderConnection,
@@ -50,6 +56,7 @@ type UserSettingsRow = {
   defaultProviderModel: { connectionId: string } | null;
   defaultProviderModelId: string | null;
   defaultSearchStrategyId: string;
+  defaultSearchPlan: unknown;
   showCitations: boolean;
   showReasoningBlocks: boolean;
   showToolActivity: boolean;
@@ -123,6 +130,16 @@ const supportedSearchStrategies = new Map<string, SearchStrategyCatalogEntry["ki
   ["perplexity-tool-search", "perplexity_tool_search"],
   ["search-disabled", "none"]
 ]);
+
+type CatalogSearchStrategyRow = SearchStrategy & {
+  activeRevision?: null | {
+    adapterKind: string;
+    configuration: unknown;
+    credentialMode: string;
+    id: string;
+    providerModelId: string | null;
+  };
+};
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -331,21 +348,74 @@ export function providerModelToCatalogEntry(
 }
 
 export function searchStrategyToCatalogEntry(
-  strategy: SearchStrategy
+  strategy: CatalogSearchStrategyRow
 ): SearchStrategyCatalogEntry | null {
-  const kind = supportedSearchStrategies.get(strategy.strategyId);
-  if (!kind || strategy.kind !== kind) {
+  const fixedKind = supportedSearchStrategies.get(strategy.strategyId);
+  const kind = fixedKind ?? (strategy.kind === "provider_model_web_search"
+    ? "provider_model_web_search"
+    : null);
+  if (!kind || (fixedKind && strategy.kind !== fixedKind)) {
+    return null;
+  }
+  const revision = strategy.activeRevision === undefined
+    ? (() => {
+        const configuration = builtInSearchDraft({
+          config: strategy.config,
+          kind: strategy.kind,
+          providerModelId: strategy.providerModelId
+        });
+        return {
+          adapterKind: String(configuration.adapterKind),
+          configuration,
+          credentialMode: String(configuration.credentialMode),
+          id: strategy.activeRevisionId ?? `legacy:${strategy.id}`,
+          providerModelId: strategy.providerModelId
+        };
+      })()
+    : strategy.activeRevision;
+  if (!revision) return null;
+
+  if (kind === "none") {
+    return {
+      adapterKind: "none",
+      config: {},
+      description: strategy.description,
+      displayName: strategy.displayName,
+      executionModes: [],
+      kind,
+      privacy: "answer_provider",
+      provider: strategy.provider,
+      revisionId: revision.id,
+      strategyId: strategy.strategyId
+    };
+  }
+  let draft;
+  try {
+    draft = normalizeSearchDraft(revision.configuration);
+  } catch {
+    return null;
+  }
+  if (
+    revision.adapterKind !== draft.adapterKind ||
+    revision.credentialMode !== draft.credentialMode ||
+    revision.providerModelId !== draft.providerModelId
+  ) {
     return null;
   }
 
   return {
-    config: isRecord(strategy.config) ? strategy.config : {},
+    adapterKind: draft.adapterKind,
+    config: { ...draft },
     description: strategy.description,
     displayName: strategy.displayName,
+    executionModes: searchExecutionModes(draft.adapterKind),
     kind,
     ...(strategy.modelId ? { modelId: strategy.modelId } : {}),
+    privacy: draft.adapterKind === "provider_model_client" ? "query_only" : "answer_provider",
+    protocol: draft.protocol,
     provider: strategy.provider,
     ...(strategy.providerModelId ? { providerModelId: strategy.providerModelId } : {}),
+    revisionId: revision.id,
     strategyId: strategy.strategyId
   };
 }
@@ -353,21 +423,21 @@ export function searchStrategyToCatalogEntry(
 export function filterExposedSearchStrategies(input: {
   availableProviderModels: CatalogProviderModelRow[];
   entitlements: ResolvedEntitlements;
-  searchStrategies: SearchStrategy[];
-}): SearchStrategy[] {
+  searchStrategies: CatalogSearchStrategyRow[];
+}): CatalogSearchStrategyRow[] {
   const availableProviderModels = new Map(
     input.availableProviderModels.map((model) => [model.id, model])
   );
 
   return input.searchStrategies.filter((strategy) => {
-    const kind = supportedSearchStrategies.get(strategy.strategyId);
-    if (!kind || strategy.kind !== kind) {
+    const entry = searchStrategyToCatalogEntry(strategy);
+    if (!entry) {
       return false;
     }
     if (!canAccessSearchStrategy(input.entitlements, strategy.strategyId)) {
       return false;
     }
-    if (kind !== "perplexity_tool_search") {
+    if (entry.adapterKind !== "provider_model_client") {
       return true;
     }
 
@@ -380,7 +450,8 @@ export function filterExposedSearchStrategies(input: {
     }
     const configuration = activeModelConfiguration(technicalModel);
     return Boolean(
-      configuration?.adapterKind === "openrouter_chat_completions" &&
+      entry.protocol && configuration &&
+      compatibleTechnicalAdapter(entry.protocol, configuration.adapterKind) &&
       configuration.capabilities.nativeSearch
     );
   });
@@ -487,10 +558,23 @@ export function createPrismaCatalogDataLoader({
         }
       }),
       prisma.searchStrategy.findMany({
+        include: {
+          activeRevision: {
+            select: {
+              adapterKind: true,
+              configuration: true,
+              credentialMode: true,
+              id: true,
+              providerModelId: true
+            }
+          }
+        },
         orderBy: {
           strategyId: "asc"
         },
         where: {
+          activeRevisionId: { not: null },
+          archivedAt: null,
           enabled: true
         }
       }),
@@ -509,7 +593,7 @@ export function createPrismaCatalogDataLoader({
     const exposedSearchStrategies = filterExposedSearchStrategies({
       availableProviderModels: availableModels,
       entitlements,
-      searchStrategies
+      searchStrategies: searchStrategies as CatalogSearchStrategyRow[]
     });
 
     return {
@@ -538,6 +622,7 @@ export function createPrismaCatalogDataLoader({
         defaultProviderConnectionId: user.settings.defaultProviderModel?.connectionId ?? null,
         defaultProviderModelId: user.settings.defaultProviderModelId,
         defaultSearchStrategyId: user.settings.defaultSearchStrategyId,
+        defaultSearchPlan: user.settings.defaultSearchPlan,
         showCitations: user.settings.showCitations,
         showReasoningBlocks: user.settings.showReasoningBlocks,
         showToolActivity: user.settings.showToolActivity

@@ -3,6 +3,31 @@ import type { ContextTruncationSummary } from "../../domain/contextBudget";
 import type { SearchRunParamControls } from "../../domain/runParams";
 import type { ModelToolCall, RunTool } from "../tools/types";
 import type { McpRunPlanSnapshot } from "../mcp/runPlan";
+import type {
+  SearchAdapterKind,
+  SearchCredentialMode,
+  SearchPlanMode,
+  SearchProtocol
+} from "../../domain/search";
+
+export type NormalizedSearchPlanOption = Readonly<{
+  adapterKind: SearchAdapterKind;
+  config: Readonly<Record<string, unknown>>;
+  credentialMode: SearchCredentialMode;
+  executionModes: readonly SearchPlanMode[];
+  modelId: string | null;
+  optionId: string;
+  protocol: SearchProtocol;
+  provider: string;
+  providerModelId: string | null;
+  revisionId: string;
+  searchStrategyRowId: string;
+}>;
+
+export type NormalizedSearchPlan = Readonly<{
+  mode: SearchPlanMode;
+  options: readonly NormalizedSearchPlanOption[];
+}>;
 
 export type ProviderModelCapabilities = {
   backgroundStreaming?: boolean;
@@ -61,6 +86,7 @@ export type NormalizedRunRequest = {
   };
   provider: string;
   searchPolicy?: ProviderSearchPolicy;
+  searchPlan?: NormalizedSearchPlan;
   searchStrategy: string | null;
 };
 

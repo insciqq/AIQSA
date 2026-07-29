@@ -87,7 +87,7 @@ import { decodeCatalogResponse } from "@/lib/contracts/catalog";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   resolveModelControlDefaults,
-  resolveModelSearchStrategy,
+  resolveModelSearchPlan,
   type SavedControlDraft
 } from "@/components/app-shell/powerAppShellData";
 
@@ -101,6 +101,8 @@ export function workspaceDefaultControlsFingerprint(state: ComposerControlSnapsh
     selectedModelId: state.selectedModelId,
     selectedPromptId: state.selectedPromptId,
     selectedProvider: state.selectedProvider,
+    selectedSearchOptionIds: state.selectedSearchOptionIds,
+    searchPlanMode: state.searchPlanMode,
     selectedSearchStrategy: state.selectedSearchStrategy,
     streamMode: state.streamMode,
     systemPrompt: state.systemPrompt,
@@ -182,6 +184,8 @@ export function PowerAppShell({
   const selectedModelId = useComposerControlStore((state) => state.selectedModelId);
   const selectedPromptId = useComposerControlStore((state) => state.selectedPromptId);
   const selectedProvider = useComposerControlStore((state) => state.selectedProvider);
+  const selectedSearchOptionIds = useComposerControlStore((state) => state.selectedSearchOptionIds);
+  const searchPlanMode = useComposerControlStore((state) => state.searchPlanMode);
   const selectedSearchStrategy = useComposerControlStore((state) => state.selectedSearchStrategy);
   const showCitations = useComposerControlStore((state) => state.showCitations);
   const showReasoningBlocks = useComposerControlStore((state) => state.showReasoningBlocks);
@@ -195,7 +199,7 @@ export function PowerAppShell({
   const setDraft = useComposerSessionStore((state) => state.setDraft);
   const setSelectedModelId = useComposerControlStore((state) => state.setSelectedModelId);
   const setSelectedProvider = useComposerControlStore((state) => state.setSelectedProvider);
-  const setSelectedSearchStrategy = useComposerControlStore((state) => state.setSelectedSearchStrategy);
+  const setSelectedSearchPlan = useComposerControlStore((state) => state.setSelectedSearchPlan);
   const setShowCitations = useComposerControlStore((state) => state.setShowCitations);
   const setShowReasoningBlocks = useComposerControlStore((state) => state.setShowReasoningBlocks);
   const setShowToolActivity = useComposerControlStore((state) => state.setShowToolActivity);
@@ -374,9 +378,13 @@ export function PowerAppShell({
     const timer = window.setTimeout(() => {
       setSelectedProvider(fallback.provider);
       setSelectedModelId(fallback.modelId);
-      setSelectedSearchStrategy(
-        resolveModelSearchStrategy(fallback, catalog.defaults.controlValues, catalog.defaults.searchStrategyId)
+      const plan = resolveModelSearchPlan(
+        fallback,
+        catalog.defaults.searchPlan,
+        catalog.defaults.searchStrategyId,
+        catalog.searchStrategies
       );
+      setSelectedSearchPlan(plan.optionIds, plan.mode);
       const defaults = resolveModelControlDefaults(fallback, catalog.defaults.controlValues);
       applyControlDefaults(defaults);
     }, 0);
@@ -384,7 +392,7 @@ export function PowerAppShell({
     return () => {
       window.clearTimeout(timer);
     };
-  }, [applyControlDefaults, catalog, currentModel, setSelectedModelId, setSelectedProvider, setSelectedSearchStrategy]);
+  }, [applyControlDefaults, catalog, currentModel, setSelectedModelId, setSelectedProvider, setSelectedSearchPlan]);
 
   const {
     containerRef: threadScrollRef,
@@ -412,6 +420,7 @@ export function PowerAppShell({
     persistUserDefaults,
     selectModel,
     selectRunProfile,
+    selectSearchPlan,
     selectSearchStrategy,
     toggleCitationsVisibility,
     toggleReasoningBlockVisibility,
@@ -509,7 +518,7 @@ export function PowerAppShell({
     setNotice,
     setSelectedModelId,
     setSelectedProvider,
-    setSelectedSearchStrategy,
+    setSelectedSearchPlan,
     workspaceRefreshPromiseRef
   });
 
@@ -557,13 +566,13 @@ export function PowerAppShell({
           setCatalogError(null);
           setSelectedProvider(defaultModel?.provider ?? "");
           setSelectedModelId(defaultModel?.modelId ?? "");
-          setSelectedSearchStrategy(
-            resolveModelSearchStrategy(
-              defaultModel,
-              nextCatalog.defaults.controlValues,
-              nextCatalog.defaults.searchStrategyId
-            )
+          const defaultSearchPlan = resolveModelSearchPlan(
+            defaultModel,
+            nextCatalog.defaults.searchPlan,
+            nextCatalog.defaults.searchStrategyId,
+            nextCatalog.searchStrategies
           );
+          setSelectedSearchPlan(defaultSearchPlan.optionIds, defaultSearchPlan.mode);
           applyPrompt(prompt);
           setSettingsPromptFromPreset(prompt);
           setShowCitations(nextCatalog.defaults.showCitations);
@@ -906,14 +915,17 @@ export function PowerAppShell({
     reasoningMode,
     retryCatalog,
     searchOptions,
+    searchPlanMode,
     selectModel,
     selectPrompt,
     selectRunProfile,
+    selectSearchPlan,
     selectSearchStrategy,
     selectedModelId,
     selectedPromptId,
     selectedProvider,
     selectedProviderName,
+    selectedSearchOptionIds,
     selectedSearchStrategy,
     showCitations,
     showReasoningBlocks,

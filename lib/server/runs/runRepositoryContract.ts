@@ -11,6 +11,13 @@ import type { ResolvedEntitlements } from "../auth/entitlements";
 import type { McpRunPlanBinding } from "../mcp/runPlan";
 import type { ProviderAdmissionPlan } from "../providerRuntime/admission";
 import type {
+  SearchAdapterKind,
+  SearchCredentialMode,
+  SearchPlanMode,
+  SearchProtocol
+} from "../../domain/search";
+import type { SearchPlan } from "../../domain/search";
+import type {
   AdvanceToolLoopCallBatchResult,
   BeginToolLoopProviderRoundResult,
   CheckpointedToolLoopRun,
@@ -38,10 +45,17 @@ export type RunModelConfiguration = {
 };
 
 export type RunSearchStrategyConfiguration = {
+  adapterKind?: SearchAdapterKind;
   config: Record<string, unknown>;
+  credentialMode?: SearchCredentialMode;
+  executionModes?: SearchPlanMode[];
   kind: string;
   modelId: string | null;
+  protocol?: SearchProtocol;
   provider: string;
+  providerModelId?: string | null;
+  revisionId?: string;
+  searchStrategyRowId?: string;
   strategyId: string;
 };
 
@@ -140,6 +154,7 @@ export type AcceptedRunDefaults = {
   promptPresetId: string | null;
   provider: string;
   searchStrategy: string | null;
+  searchPlan?: SearchPlan;
   userId: string;
 };
 
@@ -242,10 +257,14 @@ export type RunRepository = {
   }>;
   createSearchRun(input: {
     artifacts: unknown;
+    durationMs?: number;
+    invocationId?: string;
     modelId: string | null;
     modelRunId: string;
     provider: string;
+    query?: string;
     requestPreview: Record<string, unknown>;
+    searchRevisionId?: string;
     status: "complete" | "error";
     strategyId: string;
   }): Promise<void>;

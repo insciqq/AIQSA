@@ -28,7 +28,7 @@ export type LockedProviderCredentialVersion = Readonly<{
 }>;
 
 export type ProviderRuntimeStore = Readonly<{
-  loadBinding(runId: string, role: ProviderRunBindingRole): Promise<StoredProviderRunBinding | null>;
+  loadBinding(runId: string, bindingKey: string): Promise<StoredProviderRunBinding | null>;
   withLockedCredential<Value>(
     credentialId: string,
     credentialVersionId: string,
@@ -37,7 +37,7 @@ export type ProviderRuntimeStore = Readonly<{
 }>;
 
 export type ProviderRuntimeResolver = Readonly<{
-  resolve(runId: string, role: ProviderRunBindingRole): Promise<ProviderRuntimeBinding>;
+  resolve(runId: string, role: ProviderRunBindingRole, bindingKey?: string): Promise<ProviderRuntimeBinding>;
 }>;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -75,8 +75,8 @@ export function createProviderRuntimeResolver(input: Readonly<{
   const encryptionKey = input.encryptionKey ?? getSecretEncryptionKey;
 
   return {
-    async resolve(runId, role) {
-      const binding = await input.store.loadBinding(runId, role);
+    async resolve(runId, role, bindingKey = role) {
+      const binding = await input.store.loadBinding(runId, bindingKey);
       if (!binding) {
         throw new Error("provider_run_binding_not_found");
       }
@@ -183,7 +183,7 @@ export function createPrismaProviderRuntimeStore(
   prisma: RuntimePrisma
 ): ProviderRuntimeStore {
   return {
-    async loadBinding(runId, role) {
+    async loadBinding(runId, bindingKey) {
       return prisma.providerRunBinding.findUnique({
         select: {
           connectionId: true,
@@ -193,9 +193,9 @@ export function createPrismaProviderRuntimeStore(
           providerModelId: true
         },
         where: {
-          modelRunId_role: {
+          modelRunId_bindingKey: {
+            bindingKey,
             modelRunId: runId,
-            role
           }
         }
       });

@@ -16,6 +16,11 @@ import {
   validatePassword
 } from "@/lib/server/auth/password";
 import { ensureFullAccessGroup } from "@/lib/server/auth/fullAccessGroup";
+import {
+  builtInSearchDraft,
+  normalizeSearchDraft,
+  searchDraftHash
+} from "@/lib/server/search/configuration";
 
 const BOOTSTRAP_LOCK_KEY = "aiqsa:installation-bootstrap:v1";
 const INITIAL_PROMPT_NAME = "Helpful Assistant";
@@ -381,16 +386,35 @@ async function synchronizeCodeOwnedCatalog(tx: Prisma.TransactionClient): Promis
   for (const strategy of defaultSearchStrategies.filter(
     (candidate) => candidate.kind !== "perplexity_tool_search"
   )) {
-    await tx.searchStrategy.upsert({
+    const draft = builtInSearchDraft({ config: strategy.config, kind: strategy.kind });
+    const draftHash = strategy.kind === "none"
+      ? `bootstrap:${strategy.strategyId}`
+      : searchDraftHash(normalizeSearchDraft(draft));
+    const stored = await tx.searchStrategy.upsert({
       create: {
+        adapterKind: String(draft.adapterKind),
         config: json(strategy.config),
+        credentialMode: String(draft.credentialMode),
         description: strategy.description,
         displayName: strategy.displayName,
+        draft: json(draft),
+        draftTestEvidence: json({
+          checkedAt: new Date().toISOString(),
+          method: "configuration",
+          normalizedSourceCount: 0,
+          protocol: draft.protocol,
+          status: "available"
+        }),
         enabled: true,
+        // SearchStrategy participates in the composite active-revision
+        // relation. Supply the fresh-row identity explicitly so PostgreSQL
+        // never sees a null id through Prisma's upsert path.
+        id: randomNodeUuid(),
         kind: strategy.kind,
         modelId: strategy.modelId ?? null,
         provider: strategy.provider,
-        strategyId: strategy.strategyId
+        strategyId: strategy.strategyId,
+        testedDraftHash: draftHash
       },
       update: {
         config: json(strategy.config),
@@ -404,6 +428,25 @@ async function synchronizeCodeOwnedCatalog(tx: Prisma.TransactionClient): Promis
         strategyId: strategy.strategyId
       }
     });
+    if (!stored.activeRevisionId) {
+      const revision = await tx.searchIntegrationRevision.create({
+        data: {
+          adapterKind: String(draft.adapterKind),
+          configuration: json(draft),
+          credentialMode: String(draft.credentialMode),
+          draftHash,
+          id: randomNodeUuid(),
+          providerModelId: null,
+          revisionNumber: 1,
+          searchStrategyId: stored.id,
+          validationEvidence: json({ method: "bootstrap", status: "available" })
+        }
+      });
+      await tx.searchStrategy.update({
+        data: { activeRevisionId: revision.id, activatedAt: new Date() },
+        where: { id: stored.id }
+      });
+    }
   }
 }
 

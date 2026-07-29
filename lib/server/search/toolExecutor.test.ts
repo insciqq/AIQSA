@@ -1,0 +1,263 @@
+import { textMessageContent } from "../../domain/content";
+import type { NormalizedSearchPlanOption, ProviderRunRequest } from "../providers/types";
+import type { ProviderRuntimeBinding } from "../providers/runtimeFactory";
+import type { ModelToolCall } from "../tools/types";
+import {
+  createSearchPlanToolRouter,
+  searchExecutionsFromToolResult
+} from "./toolExecutor";
+import { describe, expect, it, vi } from "vitest";
+
+function option(id: string, overrides: Partial<NormalizedSearchPlanOption> = {}): NormalizedSearchPlanOption {
+  return {
+    adapterKind: "provider_model_client",
+    config: {
+      maxResults: 8,
+      modelCapabilities: {
+        nativePdfInput: false,
+        nativeSearch: true,
+        pdf: false,
+        reasoning: false,
+        streaming: true,
+        toolCalling: false,
+        vision: false
+      },
+      modelDefaultParams: { temperature: 0 },
+      queryMaxCharacters: 100,
+      timeoutMs: 5_000
+    },
+    credentialMode: "provider_model",
+    executionModes: ["all_selected", "model_choice"],
+    modelId: `model-${id}`,
+    optionId: id,
+    protocol: "openai_responses_web_search",
+    provider: `provider-${id}`,
+    providerModelId: `provider-model-${id}`,
+    revisionId: `revision-${id}`,
+    searchStrategyRowId: `integration-${id}`,
+    ...overrides
+  };
+}
+
+function answerRequest(): ProviderRunRequest {
+  return {
+    attachmentIds: ["private-attachment"],
+    attachments: [{
+      byteSize: 10,
+      extractedText: "private attachment text",
+      fileName: "private.txt",
+      id: "private-attachment",
+      kind: "text",
+      metadata: {},
+      mimeType: "text/plain",
+      status: "ready"
+    }],
+    chatId: "chat-1",
+    content: textMessageContent("private current question"),
+    context: {
+      messages: [{
+        content: textMessageContent("private transcript"),
+        id: "private-message",
+        role: "user"
+      }],
+      mode: "branch_path"
+    },
+    modelCapabilities: {
+      nativePdfInput: false,
+      nativeSearch: false,
+      pdf: true,
+      reasoning: true,
+      streaming: true,
+      toolCalling: true,
+      vision: false
+    },
+    modelId: "answer-model",
+    params: {},
+    prompt: {
+      developer: "private developer prompt",
+      presetId: null,
+      system: "private system prompt"
+    },
+    provider: "answer-provider",
+    searchStrategy: null
+  };
+}
+
+function runtime(input: Readonly<{
+  fail?: string;
+  onRequest?(request: ProviderRunRequest): void;
+  sourceUrl?: string;
+}> = {}): ProviderRuntimeBinding {
+  return {
+    adapter: {
+      buildRequestPreview: () => ({ protocol: "responses" }),
+      async *stream(request) {
+        input.onRequest?.(request);
+        if (input.fail) throw new Error(input.fail);
+        return {
+          finalProviderResponsePreview: {
+            sources: [{ title: `Source ${request.modelId}`, url: input.sourceUrl ?? `https://example.com/${request.modelId}` }]
+          },
+          finalText: `Finding from ${request.modelId}`,
+          usage: {
+            inputTokens: 2,
+            outputTokens: 3,
+            reasoningTokens: 0,
+            totalTokens: 5
+          }
+        };
+      }
+    }
+  };
+}
+
+function hangingRuntime(): ProviderRuntimeBinding {
+  return {
+    adapter: {
+      buildRequestPreview: () => ({}),
+      async *stream(_request, options) {
+        await new Promise<never>((_resolve, reject) => {
+          options?.signal?.addEventListener(
+            "abort",
+            () => reject(options.signal?.reason ?? new Error("aborted")),
+            { once: true }
+          );
+        });
+        throw new Error("unreachable");
+      }
+    }
+  };
+}
+
+function call(name: string, query = "bounded query"): ModelToolCall {
+  return { arguments: { query }, id: "call-1", name };
+}
+
+describe("Search plan tool router", () => {
+  it("fans one query out concurrently, shares query-only context, and merges duplicate URLs deterministically", async () => {
+    const requests: ProviderRunRequest[] = [];
+    const first = option("first");
+    const second = option("second");
+    const router = createSearchPlanToolRouter({
+      plan: { mode: "all_selected", options: [first, second] },
+      runtimes: {
+        first: runtime({ onRequest: (request) => requests.push(request), sourceUrl: "https://example.com/shared#one" }),
+        second: runtime({ onRequest: (request) => requests.push(request), sourceUrl: "https://example.com/shared#two" })
+      }
+    })!;
+
+    const result = await router.execute(call(router.tools[0]!.name), answerRequest());
+
+    expect(result.status).toBe("complete");
+    expect(requests).toHaveLength(2);
+    for (const request of requests) {
+      expect(request.attachmentIds).toEqual([]);
+      expect(request.attachments).toEqual([]);
+      expect(request.context?.messages).toHaveLength(1);
+      expect(JSON.stringify(request)).toContain("bounded query");
+      expect(JSON.stringify(request)).not.toContain("private transcript");
+      expect(JSON.stringify(request)).not.toContain("private attachment text");
+      expect(JSON.stringify(request)).not.toContain("private system prompt");
+    }
+    const preview = result.rawPreview?.finalProviderResponsePreview as Record<string, unknown>;
+    expect(preview.sources).toEqual([expect.objectContaining({
+      engines: [
+        { optionId: "first", rank: 1 },
+        { optionId: "second", rank: 1 }
+      ],
+      url: "https://example.com/shared"
+    })]);
+    expect(JSON.stringify(preview)).not.toContain("Finding from");
+    expect(searchExecutionsFromToolResult(result).map((execution) => execution.optionId)).toEqual([
+      "first",
+      "second"
+    ]);
+  });
+
+  it("returns successful evidence with a per-engine warning on partial failure", async () => {
+    const first = option("first");
+    const second = option("second");
+    const router = createSearchPlanToolRouter({
+      plan: { mode: "all_selected", options: [first, second] },
+      runtimes: {
+        first: runtime(),
+        second: runtime({ fail: "engine_unavailable" })
+      }
+    })!;
+
+    const result = await router.execute(call(router.tools[0]!.name), answerRequest());
+
+    expect(result.status).toBe("complete");
+    expect(result.content[0]).toMatchObject({ text: expect.stringContaining("second: engine_unavailable") });
+    expect(searchExecutionsFromToolResult(result)).toEqual([
+      expect.objectContaining({ optionId: "first", status: "complete" }),
+      expect.objectContaining({ optionId: "second", status: "error", warning: "engine_unavailable" })
+    ]);
+  });
+
+  it("returns an explicit tool error when every selected engine fails", async () => {
+    const first = option("first");
+    const second = option("second");
+    const router = createSearchPlanToolRouter({
+      plan: { mode: "all_selected", options: [first, second] },
+      runtimes: {
+        first: runtime({ fail: "first_failed" }),
+        second: runtime({ fail: "second_failed" })
+      }
+    })!;
+
+    const result = await router.execute(call(router.tools[0]!.name), answerRequest());
+
+    expect(result.status).toBe("error");
+    expect(result.content[0]).toMatchObject({ text: expect.stringContaining("Search warnings") });
+  });
+
+  it("exposes separate deterministic tools in model-choice mode and invokes only the chosen engine", async () => {
+    const firstRequest = vi.fn();
+    const secondRequest = vi.fn();
+    const first = option("first");
+    const second = option("second");
+    const router = createSearchPlanToolRouter({
+      plan: { mode: "model_choice", options: [first, second] },
+      runtimes: {
+        first: runtime({ onRequest: firstRequest }),
+        second: runtime({ onRequest: secondRequest })
+      }
+    })!;
+
+    expect(router.tools.map((tool) => tool.name)).toEqual(["search_1_first", "search_2_second"]);
+    await router.execute(call(router.tools[1]!.name), answerRequest());
+    expect(firstRequest).not.toHaveBeenCalled();
+    expect(secondRequest).toHaveBeenCalledOnce();
+  });
+
+  it("bounds each engine call with its configured timeout", async () => {
+    const timed = option("timed", { config: { ...option("base").config, timeoutMs: 5 } });
+    const router = createSearchPlanToolRouter({
+      plan: { mode: "all_selected", options: [timed] },
+      runtimes: { timed: hangingRuntime() }
+    })!;
+
+    const result = await router.execute(call(router.tools[0]!.name), answerRequest());
+
+    expect(result.status).toBe("error");
+    expect(searchExecutionsFromToolResult(result)[0]).toMatchObject({ warning: "search_timeout" });
+  });
+
+  it("propagates caller cancellation instead of converting it to an engine warning", async () => {
+    const selected = option("selected");
+    const router = createSearchPlanToolRouter({
+      plan: { mode: "all_selected", options: [selected] },
+      runtimes: { selected: hangingRuntime() }
+    })!;
+    const controller = new AbortController();
+    const execution = router.execute(
+      call(router.tools[0]!.name),
+      answerRequest(),
+      { signal: controller.signal }
+    );
+    controller.abort(new Error("run_cancelled"));
+
+    await expect(execution).rejects.toThrow("run_cancelled");
+  });
+});

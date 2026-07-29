@@ -15,6 +15,10 @@ import {
 } from "../../domain/providerParams";
 import { validateRunAccess } from "../auth/entitlements";
 import {
+  decodeSearchPlan,
+  legacySearchStrategyFromPlan
+} from "../../domain/search";
+import {
   ProviderAdmissionError,
   type ProviderAdmissionPlan
 } from "../providerRuntime/admission";
@@ -35,6 +39,7 @@ import { mcpRunTools } from "../mcp/toolExecutor";
 import { providerToolBridges } from "../tools/bridges";
 import type { ProviderToolBridge } from "../tools/types";
 import { perplexityWebSearchTool } from "../tools/perplexitySearch";
+import { createSearchPlanToolRouter } from "../search/toolExecutor";
 import { applyProviderRequestContextBudget } from "./runContextBudget";
 import type {
   AcceptedRunDefaults,
@@ -87,6 +92,7 @@ export type RunPreparationDeps = Readonly<{
     load(input: {
       providerConnectionId: string;
       providerModelId: string;
+      searchPlan?: import("../../domain/search").SearchPlan;
       searchStrategyId: string;
       userId: string;
     }): Promise<ProviderAdmissionPlan>;
@@ -740,6 +746,11 @@ export async function prepareRun(
   input: RunPreparationInput
 ): Promise<RunPreparationResult> {
   const body = input.body;
+  const decodedSearchPlan = decodeSearchPlan(body?.searchPlan, body?.searchStrategy);
+  if (!decodedSearchPlan.ok) {
+    return failure(decodedSearchPlan.code, 400);
+  }
+  const requestedSearchPlan = decodedSearchPlan.plan;
   const chat = input.source.kind === "send" ? input.source.chat : input.source.source.chat;
   const selectedProvider =
     typeof body?.provider === "string"
@@ -753,14 +764,12 @@ export async function prepareRun(
       : input.source.kind === "send"
         ? chat.defaultModelId
         : input.source.source.assistantMessage?.modelId ?? chat.defaultModelId;
-  const requestedSearchStrategy =
-    typeof body?.searchStrategy === "string" ? body.searchStrategy : "search-disabled";
+  const requestedSearchStrategy = legacySearchStrategyFromPlan(requestedSearchPlan);
   let admissionPlan: ProviderAdmissionPlan | undefined;
   let adapter: ProviderAdapter;
   let executionProvider = selectedProvider;
   let executionModelId = selectedModelId;
   let modelConfiguration: RunModelConfiguration | null;
-  let plannedSearchAdapter: ProviderSearchAdapter | undefined;
   let toolBridge: ProviderToolBridge | undefined;
 
   if (deps.providerAdmission) {
@@ -768,6 +777,7 @@ export async function prepareRun(
       admissionPlan = await deps.providerAdmission.load({
         providerConnectionId: selectedProvider,
         providerModelId: selectedModelId,
+        searchPlan: requestedSearchPlan,
         searchStrategyId: requestedSearchStrategy,
         userId: input.userId
       });
@@ -789,12 +799,6 @@ export async function prepareRun(
     modelConfiguration = admissionPlan.answer.modelConfiguration;
     executionProvider = admissionPlan.answer.snapshot.providerFamily;
     executionModelId = admissionPlan.answer.snapshot.model.upstreamModelId;
-    if (admissionPlan.search) {
-      plannedSearchAdapter = createProviderPreviewRuntimeBinding(
-        admissionPlan.search.snapshot,
-        deps.allowFakeProvider === true
-      ).searchAdapter;
-    }
   } else {
     const selectedAdapter = deps.providers[selectedProvider];
     if (!selectedAdapter) {
@@ -803,13 +807,17 @@ export async function prepareRun(
     adapter = selectedAdapter;
     toolBridge = providerToolBridges[selectedProvider as keyof typeof providerToolBridges];
     const entitlements = await deps.repository.loadEntitlements(input.userId);
-    const access = validateRunAccess(entitlements, {
-      modelId: selectedModelId,
-      provider: selectedProvider,
-      searchStrategy: requestedSearchStrategy
-    });
-    if (!access.ok) {
-      return failure(access.code, 403);
+    for (const searchStrategy of requestedSearchPlan.optionIds.length
+      ? requestedSearchPlan.optionIds
+      : ["search-disabled"]) {
+      const access = validateRunAccess(entitlements, {
+        modelId: selectedModelId,
+        provider: selectedProvider,
+        searchStrategy
+      });
+      if (!access.ok) {
+        return failure(access.code, 403);
+      }
     }
     modelConfiguration = null;
   }
@@ -837,8 +845,16 @@ export async function prepareRun(
     modelConfiguration.adapterKind ?? legacyAdapterKind(executionProvider);
   const parameterProvider = parameterDialect(executionAdapterKind, executionProvider);
 
-  if (!admissionPlan && !(await deps.repository.isSearchStrategyEnabled(requestedSearchStrategy))) {
-    return failure("search_strategy_not_available", 403);
+  if (!admissionPlan) {
+    const enabled = await Promise.all(
+      (requestedSearchPlan.optionIds.length
+        ? requestedSearchPlan.optionIds
+        : ["search-disabled"]
+      ).map((strategyId) => deps.repository.isSearchStrategyEnabled(strategyId))
+    );
+    if (enabled.some((value) => !value)) {
+      return failure("search_strategy_not_available", 403);
+    }
   }
 
   const paramsBody = normalizeParams(body);
@@ -891,9 +907,14 @@ export async function prepareRun(
   ) {
     return failure("search_provider_not_available", 400);
   }
+  // Provider-admitted plans use the provider-neutral Search router, including
+  // the migrated Perplexity option. Keep the singleton policy path only for
+  // installations still using the legacy repository admission boundary.
+  const legacyPerplexitySearch = !admissionPlan &&
+    requestedSearchStrategy === perplexityToolSearchStrategyId;
   let searchPolicy: ProviderSearchPolicy | undefined;
-  if (requestedSearchStrategy === perplexityToolSearchStrategyId) {
-    const strategyConfiguration = admissionPlan?.searchConfiguration ??
+  if (legacyPerplexitySearch) {
+    const strategyConfiguration =
       await deps.repository.loadSearchStrategyConfiguration(requestedSearchStrategy);
     if (
       !strategyConfiguration ||
@@ -903,11 +924,10 @@ export async function prepareRun(
       return failure("search_strategy_not_available", 403);
     }
 
-    const searchModelConfiguration = admissionPlan?.search?.modelConfiguration ??
-      await deps.repository.loadModelConfiguration(
-        strategyConfiguration.provider,
-        strategyConfiguration.modelId
-      );
+    const searchModelConfiguration = await deps.repository.loadModelConfiguration(
+      strategyConfiguration.provider,
+      strategyConfiguration.modelId
+    );
     if (!searchModelConfiguration) {
       return failure("search_strategy_not_available", 403);
     }
@@ -931,13 +951,15 @@ export async function prepareRun(
     return failure(invalidRunParamsError, 400);
   }
   const runParams = mergeModelParams(parameterProvider, defaultParams, paramValidation.params);
-  const searchStrategy = requestedSearchStrategy;
+  const searchStrategy = admissionPlan?.searches?.find((candidate) =>
+    candidate.configuration.adapterKind === "answer_provider_hosted")?.optionId ??
+    requestedSearchStrategy;
   const searchAdapter =
-    searchStrategy === perplexityToolSearchStrategyId
-      ? plannedSearchAdapter ?? deps.searchProviders?.openrouter
+    legacyPerplexitySearch && searchStrategy === perplexityToolSearchStrategyId
+      ? deps.searchProviders?.openrouter
       : undefined;
 
-  const searchCompatibility = validateSearchStrategyForModel(
+  const searchCompatibility = admissionPlan ? null : validateSearchStrategyForModel(
     executionAdapterKind,
     executionModelId,
     searchStrategy,
@@ -947,7 +969,7 @@ export async function prepareRun(
     return failure(searchCompatibility.code, searchCompatibility.status);
   }
 
-  if (searchStrategy === perplexityToolSearchStrategyId && !searchAdapter) {
+  if (legacyPerplexitySearch && !searchAdapter) {
     return failure("search_provider_not_available", 400);
   }
 
@@ -972,7 +994,9 @@ export async function prepareRun(
   });
   if (mcpCompatibility) return failure(mcpCompatibility.code, mcpCompatibility.status);
   if (
-    requestedSearchStrategy === geminiGoogleSearchStrategyId &&
+    (admissionPlan?.searches?.some((candidate) =>
+      candidate.configuration.protocol === "gemini_google_search") ??
+      requestedSearchStrategy === geminiGoogleSearchStrategyId) &&
     mcpPlan?.ok &&
     mcpPlan.snapshot.servers.length > 0
   ) {
@@ -1009,10 +1033,40 @@ export async function prepareRun(
     prompt,
     provider: executionProvider,
     ...(searchPolicy ? { searchPolicy } : {}),
+    ...(admissionPlan?.searches
+      ? {
+          searchPlan: {
+            mode: requestedSearchPlan.mode,
+            options: admissionPlan.searches.map((candidate) => ({
+              adapterKind: candidate.configuration.adapterKind!,
+              config: candidate.configuration.config,
+              credentialMode: candidate.configuration.credentialMode!,
+              executionModes: candidate.configuration.executionModes ?? [],
+              modelId: candidate.configuration.modelId,
+              optionId: candidate.optionId,
+              protocol: candidate.configuration.protocol!,
+              provider: candidate.configuration.provider,
+              providerModelId: candidate.configuration.providerModelId ?? null,
+              revisionId: candidate.revisionId,
+              searchStrategyRowId: candidate.integrationId
+            }))
+          }
+        }
+      : {}),
     searchStrategy
   };
+  const plannedSearchTools = unbudgetedNormalizedRequest.searchPlan
+    ? createSearchPlanToolRouter({
+        plan: unbudgetedNormalizedRequest.searchPlan,
+        runtimes: {}
+      })?.tools ?? []
+    : [];
   const clientTools = [
-    ...(searchStrategy === perplexityToolSearchStrategyId ? [perplexityWebSearchTool] : []),
+    ...(plannedSearchTools.length
+      ? plannedSearchTools
+      : searchStrategy === perplexityToolSearchStrategyId
+        ? [perplexityWebSearchTool]
+        : []),
     ...mcpRunTools(unbudgetedNormalizedRequest.mcp)
   ];
   const unbudgetedProviderRequest: ProviderRunRequest = {
@@ -1038,11 +1092,20 @@ export async function prepareRun(
   };
   const providerRequestPreview = adapter.buildRequestPreview(providerRequest);
   const defaults: PreparedRunDefaultsData = {
-    controlDefaults: runControlDefaultsFromBody(body, parameterControls, searchStrategy),
+    // `searchStrategy` may point at the hosted member of a mixed plan because
+    // that is the value the answer adapter must serialize. The compatibility
+    // mirror in user defaults, however, always follows the first user-selected
+    // option; `searchPlan` remains the authoritative complete value.
+    controlDefaults: runControlDefaultsFromBody(
+      body,
+      parameterControls,
+      requestedSearchStrategy
+    ),
     modelId: selectedModelId,
     promptPresetId: prompt.presetId,
     provider: selectedProvider,
-    searchStrategy,
+    searchStrategy: requestedSearchStrategy,
+    searchPlan: requestedSearchPlan,
     userId: input.userId
   };
 

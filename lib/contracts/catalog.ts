@@ -4,6 +4,13 @@ import {
   type CatalogRunProfile,
   type RunProfileId
 } from "./runProfiles";
+import {
+  decodeSearchPlan,
+  type SearchAdapterKind,
+  type SearchPlan,
+  type SearchPlanMode,
+  type SearchProtocol
+} from "./search";
 
 export type ReasoningEffort = string;
 export type ReasoningMode = string;
@@ -75,8 +82,13 @@ export type CatalogWireModel = {
 };
 
 export type CatalogWireSearchStrategy = {
+  adapterKind?: SearchAdapterKind;
   displayName: string;
-  kind: "gemini_google_search" | "none" | "openai_native_web_search" | "perplexity_tool_search";
+  executionModes?: SearchPlanMode[];
+  kind: "gemini_google_search" | "none" | "openai_native_web_search" | "perplexity_tool_search" | "provider_model_web_search";
+  privacy?: "answer_provider" | "query_only";
+  protocol?: SearchProtocol;
+  revisionId?: string;
   strategyId: string;
 };
 
@@ -89,10 +101,7 @@ export type CatalogModel = Omit<
   upstreamModelId?: string;
 };
 
-export type CatalogSearchStrategy = Pick<
-  CatalogWireSearchStrategy,
-  "displayName" | "kind" | "strategyId"
->;
+export type CatalogSearchStrategy = CatalogWireSearchStrategy;
 
 export type CatalogSearchStrategyKind = CatalogSearchStrategy["kind"];
 
@@ -110,6 +119,7 @@ export type CatalogDefaults = {
   promptPresetId: string | null;
   provider: string;
   searchStrategyId: string;
+  searchPlan?: SearchPlan;
   showCitations: boolean;
   showReasoningBlocks: boolean;
   showToolActivity: boolean;
@@ -305,15 +315,42 @@ function decodeSearchStrategy(value: unknown): CatalogSearchStrategy | null {
     (value.kind !== "none" &&
       value.kind !== "gemini_google_search" &&
       value.kind !== "openai_native_web_search" &&
-      value.kind !== "perplexity_tool_search") ||
+      value.kind !== "perplexity_tool_search" &&
+      value.kind !== "provider_model_web_search") ||
     !nonEmptyString(value.strategyId)
   ) {
     return null;
   }
 
+  const adapterKind = value.adapterKind;
+  const executionModes = value.executionModes;
+  const privacy = value.privacy;
+  const protocol = value.protocol;
+  if (
+    (adapterKind !== undefined &&
+      adapterKind !== "answer_provider_hosted" &&
+      adapterKind !== "provider_model_client") ||
+    (executionModes !== undefined &&
+      (!Array.isArray(executionModes) || executionModes.some((mode) =>
+        mode !== "all_selected" && mode !== "model_choice"))) ||
+    (privacy !== undefined && privacy !== "answer_provider" && privacy !== "query_only") ||
+    (protocol !== undefined &&
+      protocol !== "gemini_google_search" &&
+      protocol !== "openai_responses_web_search" &&
+      protocol !== "openrouter_perplexity_chat") ||
+    (value.revisionId !== undefined && !nonEmptyString(value.revisionId))
+  ) {
+    return null;
+  }
+
   return {
+    ...(adapterKind ? { adapterKind } : {}),
     displayName: value.displayName,
+    ...(executionModes ? { executionModes: executionModes as SearchPlanMode[] } : {}),
     kind: value.kind,
+    ...(privacy ? { privacy } : {}),
+    ...(protocol ? { protocol } : {}),
+    ...(value.revisionId ? { revisionId: value.revisionId } : {}),
     strategyId: value.strategyId
   };
 }
@@ -397,6 +434,9 @@ export function decodeCatalogResponse(value: unknown): Catalog | null {
   const providers = catalog.providers.map(decodeCatalogProvider);
   const runProfiles = catalog.runProfiles.map(decodeRunProfile);
   const searchStrategies = catalog.searchStrategies.map(decodeSearchStrategy);
+  const decodedSearchPlan = defaults.searchPlan === undefined
+    ? null
+    : decodeSearchPlan(defaults.searchPlan, defaults.searchStrategyId);
   const runProfileIds = new Set(
     runProfiles.flatMap((profile) => profile ? [profile.id] : [])
   );
@@ -406,7 +446,8 @@ export function decodeCatalogResponse(value: unknown): Catalog | null {
     providers.some((provider) => provider === null) ||
     runProfiles.some((profile) => profile === null) ||
     runProfileIds.size !== runProfiles.length ||
-    searchStrategies.some((strategy) => strategy === null)
+    searchStrategies.some((strategy) => strategy === null) ||
+    (defaults.searchPlan !== undefined && !decodedSearchPlan?.ok)
   ) {
     return null;
   }
@@ -418,6 +459,7 @@ export function decodeCatalogResponse(value: unknown): Catalog | null {
       promptPresetId: defaults.promptPresetId,
       provider: defaults.provider,
       searchStrategyId: defaults.searchStrategyId,
+      ...(decodedSearchPlan?.ok ? { searchPlan: decodedSearchPlan.plan } : {}),
       showCitations: defaults.showCitations,
       showReasoningBlocks: defaults.showReasoningBlocks,
       showToolActivity: defaults.showToolActivity

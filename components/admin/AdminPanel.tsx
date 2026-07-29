@@ -16,6 +16,7 @@ import {
   type AdminRunProfilesEditState
 } from "@/components/admin/AdminRunProfilesPanel";
 import { AdminSafetySection } from "@/components/admin/AdminSafetySection";
+import { AdminSearchSection } from "@/components/admin/AdminSearchSection";
 import { AdminSectionFrame } from "@/components/admin/AdminSectionFrame";
 import { AdminSectionTabs } from "@/components/admin/AdminSectionTabs";
 import { AdminUsageSection } from "@/components/admin/AdminUsageSection";
@@ -165,6 +166,13 @@ function AdminSectionContent({
           onMutationCommitted={onMutationCommitted}
           onRunProfilesEditStateChange={onRunProfilesEditStateChange}
           requestConfirmation={requestConfirmation}
+        />
+      );
+    case "search":
+      return (
+        <AdminSearchSection
+          active
+          onMutationCommitted={onMutationCommitted}
         />
       );
     case "invites":

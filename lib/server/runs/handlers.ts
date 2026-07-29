@@ -7,6 +7,7 @@ import type {
 } from "../../contracts/runs";
 import type { RequestAuthResolver } from "../auth/requestAuth";
 import type { ProviderRuntimeResolver } from "../providerRuntime/runtimeResolver";
+import type { ProviderRuntimeBinding } from "../providers/runtimeFactory";
 import type { ProviderAdapter, ProviderSearchAdapter } from "../providers/types";
 import type { ProviderToolBridge } from "../tools/types";
 import type { StorageAdapter } from "../uploads/storage";
@@ -127,10 +128,12 @@ function isProviderAdmissionConflictError(
 async function acceptedRuntimeBinding(
   deps: RunHandlerDeps,
   runId: string,
-  hasProviderPlan: boolean
+  hasProviderPlan: boolean,
+  searchOptionIds: readonly string[] = []
 ): Promise<{
   adapter: ProviderAdapter;
   searchAdapter?: ProviderSearchAdapter;
+  searchRuntimes: Record<string, ProviderRuntimeBinding>;
   toolBridge?: ProviderToolBridge;
 } | null> {
   if (!hasProviderPlan) return null;
@@ -140,17 +143,23 @@ async function acceptedRuntimeBinding(
 
   const answer = await deps.providerRuntime.resolve(runId, "answer");
   let searchAdapter: ProviderSearchAdapter | undefined;
-  try {
-    searchAdapter = (await deps.providerRuntime.resolve(runId, "search")).searchAdapter;
-  } catch (error) {
-    if (!(error instanceof Error) || error.message !== "provider_run_binding_not_found") {
-      throw error;
+  const searchRuntimes: Record<string, ProviderRuntimeBinding> = {};
+  for (const optionId of searchOptionIds) {
+    try {
+      const runtime = await deps.providerRuntime.resolve(runId, "search", `search:${optionId}`);
+      searchRuntimes[optionId] = runtime;
+      searchAdapter ??= runtime.searchAdapter;
+    } catch (error) {
+      if (!(error instanceof Error) || error.message !== "provider_run_binding_not_found") {
+        throw error;
+      }
     }
   }
 
   return {
     adapter: answer.adapter,
     ...(searchAdapter ? { searchAdapter } : {}),
+    searchRuntimes,
     ...(answer.toolBridge ? { toolBridge: answer.toolBridge } : {})
   };
 }
@@ -312,7 +321,8 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
     const runtime = await acceptedRuntimeBinding(
       deps,
       created.runId,
-      Boolean(preparedData.providerAdmissionPlan)
+      Boolean(preparedData.providerAdmissionPlan),
+      preparedData.normalizedRequest.searchPlan?.options.map((option) => option.optionId) ?? []
     );
     return createRunExecutionResponse({
       adapter: runtime?.adapter ?? preparation.adapter,
@@ -320,6 +330,7 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
       prepared: preparedData,
       repository: deps.repository,
       searchAdapter: runtime?.searchAdapter ?? preparation.searchAdapter,
+      ...(runtime?.searchRuntimes ? { searchRuntimes: runtime.searchRuntimes } : {}),
       toolBridge: runtime?.toolBridge ?? preparation.toolBridge,
       userId: auth.userId
     });
@@ -418,7 +429,8 @@ export function createRegenerateModelRunHandler(deps: RunHandlerDeps) {
     const runtime = await acceptedRuntimeBinding(
       deps,
       created.runId,
-      Boolean(preparedData.providerAdmissionPlan)
+      Boolean(preparedData.providerAdmissionPlan),
+      preparedData.normalizedRequest.searchPlan?.options.map((option) => option.optionId) ?? []
     );
     return createRunExecutionResponse({
       adapter: runtime?.adapter ?? preparation.adapter,
@@ -426,6 +438,7 @@ export function createRegenerateModelRunHandler(deps: RunHandlerDeps) {
       prepared: preparedData,
       repository: deps.repository,
       searchAdapter: runtime?.searchAdapter ?? preparation.searchAdapter,
+      ...(runtime?.searchRuntimes ? { searchRuntimes: runtime.searchRuntimes } : {}),
       toolBridge: runtime?.toolBridge ?? preparation.toolBridge,
       userId: auth.userId
     });

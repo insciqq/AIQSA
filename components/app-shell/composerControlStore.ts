@@ -1,5 +1,6 @@
 import type { PromptPreset } from "@/components/app-shell/types";
 import type { SavedControlDraft } from "@/components/app-shell/powerAppShellData";
+import type { SearchPlanMode } from "@/lib/domain/search";
 import { create } from "zustand";
 
 type StateUpdate<T> = T | ((current: T) => T);
@@ -10,6 +11,8 @@ export type ComposerModelSelection = {
   modelId: string;
   provider: string;
   searchStrategyId: string;
+  searchOptionIds?: readonly string[];
+  searchPlanMode?: SearchPlanMode;
 };
 
 export type ComposerControlSnapshot = {
@@ -21,6 +24,8 @@ export type ComposerControlSnapshot = {
   selectedModelId: string;
   selectedPromptId: string | null;
   selectedProvider: string;
+  selectedSearchOptionIds: string[];
+  searchPlanMode: SearchPlanMode;
   selectedSearchStrategy: string;
   showCitations: boolean;
   showReasoningBlocks: boolean;
@@ -42,6 +47,7 @@ export type ComposerControlStore = ComposerControlSnapshot & {
   setSelectedModelId(value: string): void;
   setSelectedPromptId(value: string | null): void;
   setSelectedProvider(value: string): void;
+  setSelectedSearchPlan(optionIds: readonly string[], mode: SearchPlanMode): void;
   setSelectedSearchStrategy(value: string): void;
   setShowCitations(update: StateUpdate<boolean>): void;
   setShowReasoningBlocks(update: StateUpdate<boolean>): void;
@@ -60,6 +66,8 @@ export const initialComposerControlSnapshot: ComposerControlSnapshot = {
   selectedModelId: "gpt-5.5",
   selectedPromptId: null,
   selectedProvider: "openai",
+  selectedSearchOptionIds: ["openai-native-web-search"],
+  searchPlanMode: "all_selected",
   selectedSearchStrategy: "openai-native-web-search",
   showCitations: true,
   showReasoningBlocks: false,
@@ -85,7 +93,19 @@ export const useComposerControlStore = create<ComposerControlStore>((set) => ({
       temperature: defaults.temperature
     });
   },
-  applyModelSelection({ controlDefaults, modelId, provider, searchStrategyId }) {
+  applyModelSelection({
+    controlDefaults,
+    modelId,
+    provider,
+    searchOptionIds,
+    searchPlanMode,
+    searchStrategyId
+  }) {
+    const optionIds = searchOptionIds
+      ? [...searchOptionIds]
+      : searchStrategyId === "search-disabled"
+        ? []
+        : [searchStrategyId];
     set({
       backgroundMode: controlDefaults.backgroundMode,
       maxOutputTokens: controlDefaults.maxOutputTokens,
@@ -93,6 +113,8 @@ export const useComposerControlStore = create<ComposerControlStore>((set) => ({
       reasoningMode: controlDefaults.reasoningMode,
       selectedModelId: modelId,
       selectedProvider: provider,
+      selectedSearchOptionIds: optionIds,
+      searchPlanMode: searchPlanMode ?? "all_selected",
       selectedSearchStrategy: searchStrategyId,
       streamMode: controlDefaults.streamMode,
       temperature: controlDefaults.temperature
@@ -129,8 +151,20 @@ export const useComposerControlStore = create<ComposerControlStore>((set) => ({
   setSelectedProvider(value) {
     set({ selectedProvider: value });
   },
+  setSelectedSearchPlan(optionIds, mode) {
+    const selectedSearchOptionIds = [...optionIds];
+    set({
+      searchPlanMode: mode,
+      selectedSearchOptionIds,
+      selectedSearchStrategy: selectedSearchOptionIds[0] ?? "search-disabled"
+    });
+  },
   setSelectedSearchStrategy(value) {
-    set({ selectedSearchStrategy: value });
+    set({
+      searchPlanMode: "all_selected",
+      selectedSearchOptionIds: value === "search-disabled" ? [] : [value],
+      selectedSearchStrategy: value
+    });
   },
   setShowCitations(update) {
     set((state) => ({ showCitations: applyUpdate(state.showCitations, update) }));

@@ -107,7 +107,13 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
       save: saveProjectSettings
     }
   } = workspace;
-  const { catalog, catalogError, selectedPromptId, selectedSearchStrategy } = composer;
+  const {
+    catalog,
+    catalogError,
+    selectedPromptId,
+    selectedSearchOptionIds,
+    selectedSearchStrategy
+  } = composer;
 
   const availableChatModelKeys = useMemo(
     () => (catalog ? new Set(catalog.models.map((model) => `${model.provider}:${model.modelId}`)) : null),
@@ -134,11 +140,11 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
 
       return pipelineStage({
         events: runEvents,
-        searchEnabled: selectedSearchStrategy !== "search-disabled",
+        searchEnabled: selectedSearchOptionIds.length > 0,
         streaming: activeChatStreaming
       });
     },
-    [activeChatId, activeChatStreaming, messages.length, runEvents, selectedSearchStrategy]
+    [activeChatId, activeChatStreaming, messages.length, runEvents, selectedSearchOptionIds.length]
   );
   const runWarnings = useMemo(
     () => {

@@ -165,7 +165,10 @@ npm run db:gemini:migration:contract
 npm run db:full-access:migration:contract
 npm run db:control-plane:migration:contract
 npm run db:retention:migration:contract
+npm run db:search:migration:contract
 ```
+
+The Search control-plane migration contract starts from a pre-ADR-0043 schema and proves singleton defaults, grants, accepted provider bindings, and historical Search runs survive while every concrete option gains an active revision and new multi-binding constraints admit several technical engines. Search changes additionally require deterministic plan/combination, admin lifecycle, catalog/admission, query-only adapter, fan-out/recovery, repository, composer, and Control Center tests. Browser coverage opens the real Search destination through its API at a wide-short viewport and retains the existing viewport-bounded Run setup regression. Real gateway proof remains one explicit sanitized operator-authorized smoke, never routine Vitest or Playwright input.
 
 Browser slices may reuse the running disposable app without resetting local fixtures:
 

@@ -1685,6 +1685,10 @@ describe("model run route handlers", () => {
       modelId: "fake-qsa",
       promptPresetId: "prompt-1",
       provider: "fake",
+      searchPlan: {
+        mode: "all_selected",
+        optionIds: []
+      },
       searchStrategy: "search-disabled",
       userId: config.bootstrapUserId
     });
@@ -3406,6 +3410,10 @@ describe("model run route handlers", () => {
       modelId: "fake-qsa",
       promptPresetId: "prompt-regen",
       provider: "fake",
+      searchPlan: {
+        mode: "all_selected",
+        optionIds: []
+      },
       searchStrategy: "search-disabled",
       userId: config.bootstrapUserId
     });

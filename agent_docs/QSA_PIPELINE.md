@@ -8,7 +8,7 @@ The core product is a transparent QSA workflow:
 Question -> Search -> Answer
 ```
 
-The common conversation path stays calm while giving the operator precise control over API request shape, model parameters, search strategy, streamed events, response artifacts, branch state, and provider-reported usage.
+The common conversation path stays calm while giving the operator precise control over API request shape, model parameters, the Search plan, streamed events, response artifacts, branch state, and provider-reported usage.
 
 Streaming is a provider-neutral run capability. Catalog `capabilities.streaming` says a model/adapter can stream normalized run events; catalog `parameterControls.stream.supported` says the composer exposes a per-run Stream toggle for that model. OpenAI, Gemini, and OpenRouter currently expose the toggle, while other streaming providers can keep adapter-owned defaults until their user-facing control is deliberately enabled.
 
@@ -26,8 +26,9 @@ Streaming is a provider-neutral run capability. Catalog `capabilities.streaming`
 
 2. Search
    - optional but first-class;
-   - one explicit strategy is selected from the backend-filtered current-user/model catalog, prepared with server-owned strategy/model/routing policy, and revalidated with fresh entitlements immediately before provider execution;
-   - unsupported or removed ids are rejected; the product behavior of each current strategy is owned by `Search Strategy` below;
+   - the user selects an ordered plan of zero to three options from the backend-filtered current-user/model catalog and, for a multi-option plan, chooses `all_selected` or `model_choice` orchestration;
+   - each option resolves to one enabled tested active Search-integration revision and, where needed, an exact technical provider-model credential binding; run admission revalidates readiness, compatibility, entitlement, and the complete combination immediately before provider execution;
+   - unsupported, archived, stale, duplicate, over-limit, or incompatible ids and combinations are rejected without substituting another engine; the product behavior is owned by `Search Plans And Integrations` below;
    - live activity never guesses a provider's internal stage: the active tail and application rail say `Working…` while the exact stage is unknown, `Searching…` only after an already-consumed search/citation event proves it, and `Answering…` only after answer tokens arrive. Completed search activity becomes a count-first collapsed thread disclosure, with detailed event/artifact records available on demand.
 
 3. Answer
@@ -53,7 +54,8 @@ For every model run, the app can show:
 - context-window truncation summary when oldest prior turns were omitted;
 - provider-specific request preview;
 - selected API parameters;
-- selected concrete search strategy;
+- selected ordered Search plan and orchestration mode;
+- exact Search option/revision bindings plus separately attributable actual engine invocations;
 - attachment references and preprocessing summaries;
 - streamed event log;
 - final response preview;
@@ -81,18 +83,21 @@ Current providers:
 
 Adapter defaults and cache/wire details live in `BACKEND.md`; externally verified constraints live in `PROVIDER_API_NOTES.md`.
 
-## Search Strategy
+## Search Plans And Integrations
 
-- Treat Search as an explicit strategy selected per run.
-- Send/regenerate requests carry the selected strategy in the run body and a `controlDefaults` snapshot. After validation, the backend commits that snapshot to current-user defaults inside the same transaction as the guarded run graph; provider execution starts only after this complete commit. The visible composer state therefore survives immediate reloads even if a separate settings autosave was still in flight, while pre-create rejection, insert-time active-run conflict, or defaults failure leaves both the graph and defaults unchanged.
-- Explicit `search-disabled` is preserved as No Search and survives model/chat switching.
-- Selected `openai-native-web-search` sends native OpenAI Responses or an explicitly declared compatible Responses deployment the hosted `web_search` tool with `tool_choice: "auto"`; the model decides whether to search. Compatible catalog discovery does not prove tool support, so the administrator declaration and normal run failure boundary remain explicit.
-- Selected `gemini-google-search` offers the native Gemini hosted Search tool only to an eligible native deployment. If the model does not call it, the answer remains an ordinary durable run. Once an actual native search call begins, the adapter emits a persistence fence and withholds all answer text until non-empty Search Suggestions pass the strict parser; the live result then shows the exact isolated Suggestions plus transient sanitized citation Links. The grounded answer, Suggestions, Links, search result/signature data, and provider markup are never persisted, logged, replayed as context, or publicly shared. Reload shows explicit provenance and a neutral placeholder. Gemini Search cannot be combined with MCP/client functions in the same run.
-- Selected `perplexity-tool-search` lets an entitled OpenAI, Gemini, or OpenRouter answer model decide whether to call the provider-neutral `search_via_perplexity` tool against full branch context. The enabled strategy and search-model policy are server-authoritative; posted search params may change only bounded canonical output-token and temperature controls, never provider routing/privacy. No call creates no `SearchRun`; each actual call records search/citation/usage/error artifacts, and failures are returned to the answer model so it can still synthesize a useful answer. Execution is bounded and ends with a no-tool synthesis round. Current implementation also forwards bounded extracted PDF/document text to OpenRouter/Perplexity without a separate attachment confirmation; this is a known privacy limitation awaiting query-only, fail-closed remediation, so do not describe the current path as sending only the generated query. Exact bridge/transcript/streaming mechanics live in `BACKEND.md`.
-- Perplexity search runs only through the explicit provider-neutral `perplexity-tool-search` strategy. Settings store concrete strategy ids, and entitlement/model validation rejects unknown or unavailable values before execution.
-- Expose only search strategies allowed for the current user/model through the backend catalog.
-- Store ordinary citations/annotations/search result metadata as response artifacts. Citation URLs are sanitized through the shared link-safety helper before persistence/read-back/rendering; unsafe schemes render inertly. Native Gemini grounded citations are the deliberate exception: their Links and associated answer remain transient under ADR 0031.
-- Show live Search state only when current events prove it, distinguish selected-off from backend-skipped, and turn completed activity into a count-first collapsed thread disclosure while keeping detailed artifacts in model-run events and APIs.
+- Search is an explicit per-run plan. Its ordered `optionIds` contain zero to three current Search options and its mode is `all_selected` or `model_choice`. An empty plan is Off; `search-disabled` remains only the compatibility/default representation of Off and is never treated as an engine invocation.
+- Send/regenerate requests carry `searchPlan` plus a `controlDefaults` snapshot. The bounded compatibility decoder still accepts an old singleton `searchStrategy` and normalizes it to one option. After validation, the backend commits the defaults and guarded run graph together before provider execution, so immediate reload preserves the visible plan and a rejected run changes neither graph nor defaults.
+- Search options are safe catalog projections of administrator-managed integrations. A mutable draft must be tested, explicitly activated into an immutable revision, and enabled before publication. Archive removes the option from future catalogs without rewriting grants, defaults, accepted bindings, executions, or history.
+- `all_selected` exposes one provider-neutral search action and concurrently invokes every selected client engine with the same bounded generated query. It is available only when every option supports fan-out. `model_choice` exposes each compatible client engine separately and may also combine at most one supported provider-hosted option; the answer model can invoke none, one, or several within the common tool-loop limits.
+- Every client-search invocation receives only the bounded generated query, an empty attachment set, and reviewed result/timeout parameters. It never receives branch messages, system/developer prompts, attachment bytes, or extracted document text. The old Perplexity option now uses this query-only boundary and an empty query fails closed.
+- Fan-out runs concurrently with per-engine timeouts and caller cancellation. Successful evidence is merged deterministically by plan order and engine-local rank, safe normalized URLs are deduplicated while retaining every contributing option/rank, and no semantic relevance score is invented. Partial success keeps successful sources plus per-engine warnings; total failure returns an explicit search/tool error and never calls an unselected fallback.
+- Each actual client-engine call creates a separately attributable `SearchRun` with exact option/revision/invocation identity, bounded query and request preview, normalized sources/errors, duration, and reported usage. Merely selecting an option creates no execution. Hosted provider activity retains its existing normalized event/artifact provenance.
+- `openai-native-web-search` sends native OpenAI Responses or an explicitly declared compatible Responses deployment the hosted `web_search` tool with `tool_choice: "auto"`; the model decides whether to search. Compatible catalog discovery does not prove tool support, so explicit administrator configuration and the normal run failure boundary remain authoritative.
+- `gemini-google-search` remains one exclusive native option. Once an actual native search begins, the adapter withholds answer text until non-empty Search Suggestions pass the strict parser; the grounded answer, Suggestions, Links, search result/signature data, and provider markup remain live-only, non-shareable, and non-replayable under ADR 0031. Gemini Search cannot be combined with another Search option or MCP/client functions.
+- Perplexity search runs only through an explicit selected client integration using the reviewed OpenRouter/Perplexity protocol. The technical model, credential precedence, routing/privacy defaults, output bounds, and active revision are server-authoritative; no hostname or upstream model-id special case exists.
+- Expose only enabled, ready, entitled, model-compatible options and modes through the backend catalog. A model switch visibly reconciles or removes incompatible selections; direct stale requests fail closed.
+- Store ordinary citations/annotations/search result metadata as response artifacts. Citation URLs pass through the shared link-safety helper before persistence/read-back/rendering; unsafe schemes render inertly. Native Gemini grounded citations are the deliberate transient exception.
+- Show live Search state only when current events prove it, distinguish selected-off from backend-skipped, and turn completed activity into a count-first collapsed thread disclosure while keeping detailed per-engine artifacts in model-run events and APIs.
 
 ## Sharing
 

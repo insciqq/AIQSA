@@ -172,6 +172,8 @@ function useMessageRunActionsForTest(input: {
     selectedModelId: "gpt-5.5",
     selectedPromptId: null,
     selectedProvider: "openai",
+    selectedSearchOptionIds: [],
+    searchPlanMode: "all_selected",
     selectedSearchStrategy: "search-disabled",
     systemPrompt: ""
   });
@@ -565,6 +567,7 @@ describe("message run actions", () => {
     useComposerControlStore.setState({
       selectedModelId: "later-model",
       selectedProvider: "later-provider",
+      selectedSearchOptionIds: ["later-search"],
       selectedSearchStrategy: "later-search"
     });
 
@@ -1464,6 +1467,10 @@ describe("message run actions", () => {
         system: ""
       },
       provider: "openai",
+      searchPlan: {
+        mode: "all_selected",
+        optionIds: []
+      },
       searchStrategy: "search-disabled"
     });
     expect(selectThreadSnapshot(useThreadStore.getState(), "chat-a")).toMatchObject({

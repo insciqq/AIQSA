@@ -18,6 +18,11 @@ import type { ProviderRuntimeBinding } from "../providers/runtimeFactory";
 import type { ProviderRuntimeResolver } from "../providerRuntime/runtimeResolver";
 import { providerToolBridges } from "../tools/bridges";
 import { createPerplexitySearchToolExecutor, perplexityWebSearchTool } from "../tools/perplexitySearch";
+import {
+  createSearchPlanToolRouter,
+  searchExecutionsFromToolResult,
+  type SearchExecutionEvidence
+} from "../search/toolExecutor";
 import type { ModelToolCall, RunTool, ToolExecutionResult } from "../tools/types";
 import type { StorageAdapter } from "../uploads/storage";
 import {
@@ -130,6 +135,24 @@ async function resolveSearchRuntime(
     return (await deps.providerRuntime.resolve(runId, "search")).searchAdapter;
   }
   return deps.searchProviders?.[provider];
+}
+
+async function resolvePlanSearchRuntime(
+  deps: RunRecoveryDeps,
+  runId: string,
+  option: NonNullable<CheckpointedToolLoopRun["normalizedRequest"]["searchPlan"]>["options"][number]
+): Promise<ProviderRuntimeBinding | null> {
+  if (deps.providerRuntime) {
+    return deps.providerRuntime.resolve(runId, "search", `search:${option.optionId}`);
+  }
+  const adapter = deps.providers[option.provider];
+  if (!adapter) return null;
+  return {
+    adapter,
+    ...(deps.searchProviders?.[option.provider]
+      ? { searchAdapter: deps.searchProviders[option.provider] }
+      : {})
+  };
 }
 
 type ProcessBootSweepState = {
@@ -282,6 +305,31 @@ async function persistRecoveredSearchRun(input: Readonly<{
   });
 }
 
+async function persistRecoveredPlanSearchExecution(input: Readonly<{
+  execution: SearchExecutionEvidence;
+  modelRunId: string;
+  repository: RunRecoveryRepository;
+}>): Promise<void> {
+  await input.repository.createSearchRun({
+    artifacts: {
+      invocationId: input.execution.invocationId,
+      sources: input.execution.sources,
+      usage: input.execution.usage,
+      ...(input.execution.warning ? { warning: input.execution.warning } : {})
+    },
+    durationMs: input.execution.durationMs,
+    invocationId: input.execution.invocationId,
+    modelId: input.execution.modelId,
+    modelRunId: input.modelRunId,
+    provider: input.execution.provider,
+    query: input.execution.query,
+    requestPreview: { ...input.execution.requestPreview },
+    searchRevisionId: input.execution.revisionId,
+    status: input.execution.status,
+    strategyId: input.execution.optionId
+  });
+}
+
 function reportedUsage(refreshed: ProviderRunRefreshResult): ModelRunUsage | null {
   if (refreshed.result) {
     return refreshed.result.usage;
@@ -362,6 +410,20 @@ async function settleToolLoopRecoveryError(
   });
 }
 
+type RecoverySearchExecutor = Readonly<{
+  execute(
+    call: ModelToolCall,
+    request: ProviderRunRequest,
+    runId: string,
+    signal: AbortSignal
+  ): Promise<ToolExecutionResult>;
+  legacy: null | Readonly<{
+    modelId: string;
+    strategyId: string;
+  }>;
+  tools: readonly RunTool[];
+}>;
+
 type RecoveryToolContext = Readonly<{
   deps: RunRecoveryDeps;
   durations: Map<string, number>;
@@ -369,9 +431,57 @@ type RecoveryToolContext = Readonly<{
   persistedUsageKeys: ReadonlySet<string>;
   run: CheckpointedToolLoopRun;
   runtime(): RunRecoveryMcpRuntime;
-  searchExecutor: ReturnType<typeof createPerplexitySearchToolExecutor> | null;
+  searchExecutor: RecoverySearchExecutor | null;
+  searchToolNames: ReadonlySet<string>;
   usageAttributions: RunUsageAttribution[];
 }>;
+
+function isRecoveredSearchCall(context: RecoveryToolContext, name: string): boolean {
+  return context.searchToolNames.has(name);
+}
+
+async function recordRecoveredSearchResult(input: Readonly<{
+  call: ModelToolCall;
+  context: RecoveryToolContext;
+  result: ToolExecutionResult;
+}>): Promise<void> {
+  const legacy = input.context.searchExecutor?.legacy;
+  if (legacy) {
+    const usageKey = `openrouter\u0000${legacy.modelId}`;
+    if (input.result.usage && !input.context.persistedUsageKeys.has(usageKey)) {
+      input.context.usageAttributions.push({
+        modelId: legacy.modelId,
+        provider: "openrouter",
+        usage: input.result.usage
+      });
+    }
+    await persistRecoveredSearchRun({
+      call: input.call,
+      modelRunId: input.context.run.id,
+      repository: input.context.deps.repository,
+      result: input.result,
+      searchModelId: legacy.modelId,
+      strategyId: legacy.strategyId
+    });
+    return;
+  }
+
+  for (const execution of searchExecutionsFromToolResult(input.result)) {
+    const usageKey = `${execution.provider}\u0000${execution.modelId ?? "search"}`;
+    if (execution.modelId && !input.context.persistedUsageKeys.has(usageKey)) {
+      input.context.usageAttributions.push({
+        modelId: execution.modelId,
+        provider: execution.provider,
+        usage: execution.usage
+      });
+    }
+    await persistRecoveredPlanSearchExecution({
+      execution,
+      modelRunId: input.context.run.id,
+      repository: input.context.deps.repository
+    });
+  }
+}
 
 async function executePersistedToolCall(
   persisted: PersistedToolLoopCall,
@@ -408,26 +518,8 @@ async function executePersistedToolCall(
         "A persisted tool result is invalid and cannot be replayed safely."
       );
     }
-    const searchUsageKey = context.searchExecutor
-      ? `openrouter\u0000${context.run.normalizedRequest.searchPolicy!.modelId}`
-      : null;
-    if (result.usage && context.searchExecutor && call.name === context.searchExecutor.tool.name &&
-      !context.persistedUsageKeys.has(searchUsageKey!)) {
-      context.usageAttributions.push({
-        modelId: context.run.normalizedRequest.searchPolicy!.modelId,
-        provider: "openrouter",
-        usage: result.usage
-      });
-    }
-    if (context.searchExecutor && call.name === context.searchExecutor.tool.name) {
-      await persistRecoveredSearchRun({
-        call,
-        modelRunId: context.run.id,
-        repository: context.deps.repository,
-        result,
-        searchModelId: context.run.normalizedRequest.searchPolicy!.modelId,
-        strategyId: context.run.normalizedRequest.searchPolicy!.strategyId
-      });
+    if (context.searchExecutor && isRecoveredSearchCall(context, call.name)) {
+      await recordRecoveredSearchResult({ call, context, result });
     }
     return {
       call,
@@ -439,27 +531,14 @@ async function executePersistedToolCall(
 
   let result: ToolExecutionResult;
   try {
-    if (context.searchExecutor && call.name === context.searchExecutor.tool.name) {
+    if (context.searchExecutor && isRecoveredSearchCall(context, call.name)) {
       result = await context.searchExecutor.execute(
         call,
-        { request: context.providerRequest, runId: context.run.id },
-        { signal }
+        context.providerRequest,
+        context.run.id,
+        signal
       );
-      if (result.usage) {
-        context.usageAttributions.push({
-          modelId: context.run.normalizedRequest.searchPolicy!.modelId,
-          provider: "openrouter",
-          usage: result.usage
-        });
-      }
-      await persistRecoveredSearchRun({
-        call,
-        modelRunId: context.run.id,
-        repository: context.deps.repository,
-        result,
-        searchModelId: context.run.normalizedRequest.searchPolicy!.modelId,
-        strategyId: context.run.normalizedRequest.searchPolicy!.strategyId
-      });
+      await recordRecoveredSearchResult({ call, context, result });
     } else {
       const route = resolveMcpRunTool(context.run.normalizedRequest.mcp, call.name);
       const generationId = claim.call.mcpBinding?.runtimeGenerationId;
@@ -484,7 +563,7 @@ async function executePersistedToolCall(
     result = toolExecutionErrorResult(
       call,
       error,
-      context.searchExecutor && call.name === context.searchExecutor.tool.name ? "Search" : "Tool"
+      context.searchExecutor && isRecoveredSearchCall(context, call.name) ? "Search" : "Tool"
     );
   }
   if (signal.aborted) throw new ToolLoopRecoveryStopped();
@@ -612,7 +691,8 @@ async function recoverCheckpointedToolLoop(
       ...run.normalizedRequest,
       attachments
     };
-    const searchEnabled = run.normalizedRequest.searchStrategy === "perplexity-tool-search";
+    const searchEnabled = !run.normalizedRequest.searchPlan &&
+      run.normalizedRequest.searchStrategy === "perplexity-tool-search";
     const searchPolicy = run.normalizedRequest.searchPolicy;
     const searchAdapter = searchPolicy
       ? await resolveSearchRuntime(deps, run.id, searchPolicy.provider)
@@ -623,11 +703,52 @@ async function recoverCheckpointedToolLoop(
         "The saved search tool policy is no longer available."
       );
     }
-    const searchExecutor = searchEnabled
+    const legacySearchExecutor = searchEnabled
       ? createPerplexitySearchToolExecutor({ searchAdapter: searchAdapter!, searchPolicy: searchPolicy! })
       : null;
+    const planRuntimes: Record<string, ProviderRuntimeBinding> = {};
+    for (const option of run.normalizedRequest.searchPlan?.options ?? []) {
+      if (option.adapterKind !== "provider_model_client") continue;
+      const optionRuntime = await resolvePlanSearchRuntime(deps, run.id, option);
+      if (!optionRuntime) {
+        throw new ToolLoopRecoveryError(
+          "search_policy_not_available",
+          `The saved search binding for ${option.optionId} is no longer available.`
+        );
+      }
+      planRuntimes[option.optionId] = optionRuntime;
+    }
+    const planSearchRouter = run.normalizedRequest.searchPlan
+      ? createSearchPlanToolRouter({
+          plan: run.normalizedRequest.searchPlan,
+          runtimes: planRuntimes
+        })
+      : null;
+    const searchExecutor: RecoverySearchExecutor | null = planSearchRouter
+      ? {
+          execute: (call, request, _runId, executionSignal) =>
+            planSearchRouter.execute(call, request, { signal: executionSignal }),
+          legacy: null,
+          tools: planSearchRouter.tools
+        }
+      : legacySearchExecutor
+        ? {
+            execute: (call, request, recoveredRunId, executionSignal) =>
+              legacySearchExecutor.execute(
+                call,
+                { request, runId: recoveredRunId },
+                { signal: executionSignal }
+              ),
+            legacy: {
+              modelId: searchPolicy!.modelId,
+              strategyId: searchPolicy!.strategyId
+            },
+            tools: [perplexityWebSearchTool]
+          }
+        : null;
+    const searchToolNames = new Set(searchExecutor?.tools.map((tool) => tool.name) ?? []);
     const tools: RunTool[] = [
-      ...(searchExecutor ? [perplexityWebSearchTool] : []),
+      ...(searchExecutor?.tools ?? []),
       ...mcpRunTools(run.normalizedRequest.mcp)
     ];
     if (tools.length === 0) {
@@ -650,6 +771,7 @@ async function recoverCheckpointedToolLoop(
         return runtime;
       },
       searchExecutor,
+      searchToolNames,
       usageAttributions
     };
     const sequence = { value: await deps.repository.nextRunEventSequence(run.id) };
@@ -737,7 +859,7 @@ async function recoverCheckpointedToolLoop(
       const persisted = await deps.repository.persistToolLoopCallBatch({
         calls: calls.map((call, ordinal) => {
           const route = resolveMcpRunTool(run.normalizedRequest.mcp, call.name);
-          if (!route && (!searchExecutor || call.name !== searchExecutor.tool.name)) {
+          if (!route && !searchToolNames.has(call.name)) {
             throw new ToolLoopRecoveryError(
               "unsupported_tool_call",
               `The provider requested unsupported tool ${call.name}.`

@@ -1,4 +1,5 @@
 import type { ProviderModelCatalogEntry, SearchStrategyCatalogEntry } from "./catalog";
+import type { SearchPlan, SearchPlanMode } from "./search";
 import type {
   CatalogWireModel,
   CatalogWireModelCapabilities,
@@ -20,6 +21,58 @@ const defaultOpenRouterRoutePreferences: OpenRouterRoutePreferences = {
   sort: "throughput",
   zdr: false
 };
+
+type SearchCombinationOption = Omit<Pick<
+  SearchStrategyCatalogEntry,
+  "adapterKind" | "executionModes" | "kind" | "protocol" | "strategyId"
+>, "executionModes"> & {
+  executionModes?: readonly SearchPlanMode[];
+};
+
+/**
+ * Combination policy shared by defaults, settings, model switching, and the
+ * composer. It mirrors server admission without exposing provider secrets.
+ */
+export function isSearchCombinationCompatible(
+  optionIds: readonly string[],
+  options: readonly SearchCombinationOption[],
+  mode: SearchPlanMode
+): boolean {
+  const selected = optionIds.map((optionId) =>
+    options.find((option) => option.strategyId === optionId));
+  if (selected.some((option) => !option || option.kind === "none")) return false;
+  const concrete = selected as SearchCombinationOption[];
+  if (concrete.length > 1) {
+    if (concrete.some((option) => option.protocol === "gemini_google_search")) return false;
+    if (concrete.filter((option) => option.adapterKind === "answer_provider_hosted").length > 1) {
+      return false;
+    }
+    if (mode === "all_selected" && concrete.some((option) =>
+      option.executionModes?.includes("all_selected") !== true)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+export function reconcileSearchPlanSelection(
+  optionIds: readonly string[],
+  mode: SearchPlanMode,
+  options: readonly SearchCombinationOption[]
+): SearchPlan {
+  const selected: string[] = [];
+  for (const optionId of optionIds) {
+    if (selected.length >= 3 || selected.includes(optionId)) continue;
+    if (isSearchCombinationCompatible([...selected, optionId], options, "model_choice")) {
+      selected.push(optionId);
+    }
+  }
+  if (selected.length === 0) return { mode: "all_selected", optionIds: [] };
+  return {
+    mode: isSearchCombinationCompatible(selected, options, mode) ? mode : "model_choice",
+    optionIds: selected
+  };
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -94,6 +147,17 @@ export function availableSearchStrategiesForModel(
     if (strategy.kind === "perplexity_tool_search") {
       const isAnswerModel = model.modelId !== strategy.providerModelId;
 
+      if (isAnswerModel && model.capabilities.toolCalling) {
+        strategyIds.add(strategy.strategyId);
+      }
+      continue;
+    }
+
+    if (
+      strategy.kind === "provider_model_web_search" &&
+      strategy.adapterKind === "provider_model_client"
+    ) {
+      const isAnswerModel = model.modelId !== strategy.providerModelId;
       if (isAnswerModel && model.capabilities.toolCalling) {
         strategyIds.add(strategy.strategyId);
       }
@@ -198,8 +262,15 @@ export function buildCatalogModel(
 
 export function toCatalogSearchStrategy(strategy: SearchStrategyCatalogEntry): CatalogSearchStrategy {
   return {
+    ...(strategy.adapterKind && strategy.adapterKind !== "none"
+      ? { adapterKind: strategy.adapterKind }
+      : {}),
     displayName: strategy.displayName,
+    ...(strategy.executionModes ? { executionModes: strategy.executionModes } : {}),
     kind: strategy.kind,
+    ...(strategy.privacy ? { privacy: strategy.privacy } : {}),
+    ...(strategy.protocol ? { protocol: strategy.protocol } : {}),
+    ...(strategy.revisionId ? { revisionId: strategy.revisionId } : {}),
     strategyId: strategy.strategyId
   };
 }

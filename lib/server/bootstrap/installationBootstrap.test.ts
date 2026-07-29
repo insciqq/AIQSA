@@ -76,7 +76,9 @@ function createBootstrapTransaction(input: {
     providerConnectionUpsert: record("providerConnection.upsert", { id: "connection-id" }),
     providerModelUpsert: record("providerModel.upsert", { id: "model-id" }),
     runProfileUpsert: record("runProfile.upsert", { id: "profile-id" }),
-    searchStrategyUpsert: record("searchStrategy.upsert", { id: "strategy-id" }),
+    searchIntegrationRevisionCreate: record("searchIntegrationRevision.create", { id: "search-revision-id" }),
+    searchStrategyUpdate: record("searchStrategy.update", { id: "strategy-id" }),
+    searchStrategyUpsert: record("searchStrategy.upsert", { activeRevisionId: null, id: "strategy-id" }),
     userCreate: record("user.create", { id: USER_ID }),
     userFindUnique: record("user.findUnique", user),
     userGroupUpsert: record("userGroup.upsert", {}),
@@ -117,7 +119,11 @@ function createBootstrapTransaction(input: {
     runProfile: {
       upsert: spies.runProfileUpsert
     },
+    searchIntegrationRevision: {
+      create: spies.searchIntegrationRevisionCreate
+    },
     searchStrategy: {
+      update: spies.searchStrategyUpdate,
       upsert: spies.searchStrategyUpsert
     },
     user: {
@@ -349,6 +355,16 @@ describe("installation bootstrap", () => {
     expect(fixture.spies.searchStrategyUpsert).toHaveBeenCalledTimes(
       bootstrapSearchStrategies.length
     );
+    for (const [args] of fixture.spies.searchStrategyUpsert.mock.calls) {
+      expect((args as { create: { id: string } }).create.id).toMatch(
+        /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+      );
+    }
+    for (const [args] of fixture.spies.searchIntegrationRevisionCreate.mock.calls) {
+      expect((args as { data: { id: string } }).data.id).toMatch(
+        /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+      );
+    }
 
     const productionFoundationCalls = JSON.stringify({
       identities: fixture.spies.authIdentityCreate.mock.calls,

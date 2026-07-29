@@ -7,6 +7,7 @@ import {
   type ProviderId
 } from "./providerParams";
 import type { ModelParameterControls } from "../contracts/catalog";
+import type { SearchAdapterKind, SearchPlanMode, SearchProtocol } from "./search";
 
 export type { ModelParameterControls } from "../contracts/catalog";
 
@@ -52,9 +53,14 @@ export type SearchStrategyCatalogEntry = {
   modelId?: string;
   providerModelId?: string;
   displayName: string;
-  kind: "gemini_google_search" | "none" | "openai_native_web_search" | "perplexity_tool_search";
+  kind: "gemini_google_search" | "none" | "openai_native_web_search" | "perplexity_tool_search" | "provider_model_web_search";
   description: string;
   config: Record<string, unknown>;
+  adapterKind?: SearchAdapterKind | "none";
+  executionModes?: SearchPlanMode[];
+  privacy?: "answer_provider" | "query_only";
+  protocol?: SearchProtocol;
+  revisionId?: string;
 };
 
 type ProviderModelTemplate = Omit<

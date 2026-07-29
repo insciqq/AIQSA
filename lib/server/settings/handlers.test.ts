@@ -150,6 +150,7 @@ describe("settings handler", () => {
       "defaultPromptPresetId",
       "defaultProvider",
       "defaultSearchStrategyId",
+      "defaultSearchPlan",
       "showCitations",
       "showReasoningBlocks",
       "showToolActivity"

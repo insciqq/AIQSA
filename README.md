@@ -8,12 +8,13 @@ Self-hosted Question → Search → Answer for people and small teams who want a
 
 ![AIQSA conversation workspace with model and search controls](docs/assets/ui/product/aiqsa-workspace.png)
 
-AIQSA combines a conversation UI with inspectable execution: users can choose a concrete model and search strategy for each run, then review citations, reasoning, events, usage, and branch history. Workspace data stays in your PostgreSQL database and private S3-compatible storage; content selected for a run is sent to the configured AI provider.
+AIQSA combines a conversation UI with inspectable execution: users can choose a concrete model and an ordered plan of up to three entitled search engines for each run, then review citations, per-engine evidence, reasoning, events, usage, and branch history. Workspace data stays in your PostgreSQL database and private S3-compatible storage; content selected for a run is sent to the configured AI provider, while client search engines receive only the generated bounded query.
 
 ## Highlights
 
 - Native OpenAI, Anthropic, Gemini Interactions, and OpenRouter provider adapters, plus manual OpenAI-compatible Chat endpoints.
-- Optional OpenAI web search, native Gemini Google Search, and Perplexity search through OpenRouter.
+- Admin-managed typed search integrations, including OpenAI-compatible Responses web search, native Gemini Google Search, and Perplexity through OpenRouter.
+- Zero-to-three-engine user search plans with concurrent fan-out or model-choice orchestration and exact per-engine attribution.
 - Branchable conversations, saved chats, projects, prompt presets, and attachments.
 - Inspectable citations, reasoning, provider events, request previews, and token usage.
 - Multi-user accounts, invitations, access rules, model entitlements, and an admin console.
@@ -57,7 +58,7 @@ docker compose up -d
 
 Open [http://localhost:3000](http://localhost:3000) and sign in with the initial administrator account from `.env`.
 
-Then open `Control Center -> Providers`. Choose OpenAI, Anthropic, Gemini, or OpenRouter, paste its API key, and select **Test & Save**; AIQSA installs every current reviewed chat model visible to that key, chooses one recommended default, and links straight back to chat. For another OpenAI-compatible Chat API, choose **Connect custom endpoint**, enter its API root, manual model ID, and key, then use the same **Test & Save** flow. The normal single-administrator path does not require group setup. The first administrator is already an owner of the built-in, undeletable `Full access` group, whose explicit members are entitled to all current and future providers, models, search strategies, and MCP servers; credentials and personal MCP secrets remain separate. Provider keys and SMTP settings are database-managed and are not normal `.env` inputs.
+Then open `Control Center -> Providers`. Choose OpenAI, Anthropic, Gemini, or OpenRouter, paste its API key, and select **Test & Save**; AIQSA installs every current reviewed chat model visible to that key, chooses one recommended default, and links straight back to chat. For another OpenAI-compatible API, choose **Connect custom endpoint**, enter its API root, model ID, protocol, and key, then use the same **Test & Save** flow. `Control Center -> Search` separately manages typed search integrations and their Test → Activate → Enable lifecycle. The normal single-administrator path does not require group setup. The first administrator is already an owner of the built-in, undeletable `Full access` group, whose explicit members are entitled to all current and future providers, models, Search options, and MCP servers; credentials and personal MCP secrets remain separate. Provider keys and SMTP settings are database-managed and are not normal `.env` inputs.
 
 That is enough for local use. A domain, SMTP server, and OAuth credentials are optional. PostgreSQL and uploaded objects live in named Docker volumes, so a normal rebuild or update does not erase them.
 

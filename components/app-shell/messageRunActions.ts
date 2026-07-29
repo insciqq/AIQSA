@@ -119,6 +119,8 @@ export function useMessageRunActions({
       selectedModelId,
       selectedPromptId,
       selectedProvider,
+      selectedSearchOptionIds,
+      searchPlanMode,
       selectedSearchStrategy,
       systemPrompt
     } = useComposerControlStore.getState();
@@ -182,6 +184,10 @@ export function useMessageRunActions({
               system: renderLocalPromptTemplate(systemPrompt)
             },
             provider: selectedProvider,
+            searchPlan: {
+              mode: searchPlanMode,
+              optionIds: selectedSearchOptionIds
+            },
             searchStrategy: selectedSearchStrategy,
             ...toolsOverride(currentModel)
           }),
@@ -331,6 +337,8 @@ export function useMessageRunActions({
       selectedModelId,
       selectedPromptId,
       selectedProvider,
+      selectedSearchOptionIds,
+      searchPlanMode,
       selectedSearchStrategy,
       systemPrompt
     } = useComposerControlStore.getState();
@@ -512,6 +520,10 @@ export function useMessageRunActions({
                 system: renderLocalPromptTemplate(systemPrompt)
               },
               provider: selectedProvider,
+              searchPlan: {
+                mode: searchPlanMode,
+                optionIds: selectedSearchOptionIds
+              },
               searchStrategy: selectedSearchStrategy,
               ...toolsOverride(currentModel)
             }),
@@ -561,6 +573,8 @@ export function useMessageRunActions({
       selectedModelId,
       selectedPromptId,
       selectedProvider,
+      selectedSearchOptionIds,
+      searchPlanMode,
       selectedSearchStrategy,
       systemPrompt
     } = useComposerControlStore.getState();
@@ -650,6 +664,10 @@ export function useMessageRunActions({
               system: renderLocalPromptTemplate(systemPrompt)
             },
             provider: selectedProvider,
+            searchPlan: {
+              mode: searchPlanMode,
+              optionIds: selectedSearchOptionIds
+            },
             searchStrategy: selectedSearchStrategy,
             ...toolsOverride(currentModel)
           }),

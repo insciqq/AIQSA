@@ -65,7 +65,7 @@ Externally constrained facts:
 - The permitted live deployment smoke returned seven model rows and bounded per-model reasoning metadata, but the shapes are gateway-owned and untrusted. AIQSA retains only allowlisted integer/boolean/short-option hints and never returns arbitrary row metadata to the browser.
 - The same deployment accepted `reasoning_effort` through both Chat Completions and Responses. A separate Responses request with the hosted `web_search` tool completed with a `web_search_call`; this proves that exact tested deployment/account path, not codex-lb installations generally. Smoke evidence retained only status and output-type facts, never answer text or credentials.
 
-AIQSA's compatible Responses web-search mapping and future-only image-generation declaration live in `BACKEND.md`; this note does not promote image generation into a runnable chat capability.
+AIQSA represents that verified Search path as an ordinary `provider_model_client` integration using the typed `openai_responses_web_search` protocol and the existing provider-model credential binding. The product contains no codex-lb hostname, deployment, or upstream model-id branch; another compatible Responses deployment can use the same lifecycle and adapter after its own exact draft test. Search execution/privacy and the future-only image-generation declaration live in `BACKEND.md`; this note does not promote image generation into a runnable chat capability.
 
 ## Anthropic Messages API
 
@@ -157,11 +157,11 @@ Externally constrained facts:
 - OpenRouter's Responses API is currently labelled beta and stateless: every request supplies its full history and no server-side conversation state is persisted. AIQSA must not reuse native OpenAI stored-background/retrieve/cancel assumptions for that endpoint merely because its request surface is Responses-compatible.
 - The current catalog uses `google/gemini-3.5-flash` and the live `~google/gemini-pro-latest` alias. `google/gemini-3-pro-preview` can return no endpoints and must not be inferred as available.
 - The current `perplexity/sonar-pro-search` route uses denied data collection, Perplexity-only routing, throughput sort, and `require_parameters: false`; do not strengthen that flag without revalidating the selected route.
-- OpenRouter web-search server tools exist, but AIQSA integrates Perplexity only through the explicit provider-neutral tool executor.
+- OpenRouter web-search server tools exist, but AIQSA integrates Perplexity only through an explicit selected typed client Search integration. The answer model receives the provider-neutral Search-plan tool; the technical OpenRouter request receives only its generated bounded query.
 - Native PDF routing is capability-dependent. OpenRouter file content plus its native PDF parser plugin avoids silently selecting a router-side parser/OCR fallback; unknown custom models must not be assumed native-capable.
 - OpenRouter endpoint tags are canonicalized independently of display casing, so AIQSA compares route tags case-insensitively while preserving the configured value in safe evidence.
 
-Current answer streaming/non-streaming behavior, routing defaults, Perplexity tool transcript/limits, PDF mapping, previews, and error normalization live in `BACKEND.md` and adapter tests.
+Current answer streaming/non-streaming behavior, routing defaults, query-only Perplexity Search limits, PDF mapping for answer requests, previews, and error normalization live in `BACKEND.md` and adapter tests.
 
 ## MCP OAuth, Hosted Notion, And Brokered SaaS
 

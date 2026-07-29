@@ -7,12 +7,59 @@ import {
 import {
   availableSearchStrategiesForModel,
   buildCatalogModel,
+  isSearchCombinationCompatible,
   normalizeOpenRouterRoutePreferences,
+  reconcileSearchPlanSelection,
   resolveSearchStrategyId,
   toCatalogSearchStrategy
 } from "./catalogMatrix";
 
 describe("catalog capability matrix", () => {
+  it("enforces bounded Search combination policy without provider-id branches", () => {
+    const options = [
+      {
+        adapterKind: "provider_model_client" as const,
+        executionModes: ["all_selected", "model_choice"] as const,
+        kind: "provider_model_web_search" as const,
+        protocol: "openai_responses_web_search" as const,
+        strategyId: "client-a"
+      },
+      {
+        adapterKind: "provider_model_client" as const,
+        executionModes: ["all_selected", "model_choice"] as const,
+        kind: "provider_model_web_search" as const,
+        protocol: "openai_responses_web_search" as const,
+        strategyId: "client-b"
+      },
+      {
+        adapterKind: "answer_provider_hosted" as const,
+        executionModes: ["model_choice"] as const,
+        kind: "gemini_google_search" as const,
+        protocol: "gemini_google_search" as const,
+        strategyId: "native-exclusive"
+      }
+    ];
+
+    expect(isSearchCombinationCompatible(
+      ["client-a", "client-b"],
+      options,
+      "all_selected"
+    )).toBe(true);
+    expect(isSearchCombinationCompatible(
+      ["native-exclusive", "client-a"],
+      options,
+      "model_choice"
+    )).toBe(false);
+    expect(reconcileSearchPlanSelection(
+      ["client-a", "native-exclusive", "client-b", "client-a"],
+      "all_selected",
+      options
+    )).toEqual({
+      mode: "all_selected",
+      optionIds: ["client-a", "client-b"]
+    });
+  });
+
   it("exposes native OpenAI web search and Perplexity as separate OpenAI strategies", () => {
     const model = defaultProviderModels.find((entry) => entry.provider === "openai" && entry.modelId === "gpt-5.5");
 

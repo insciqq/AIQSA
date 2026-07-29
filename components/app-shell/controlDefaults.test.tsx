@@ -707,7 +707,7 @@ describe("control default freshness", () => {
       reasoningMode: "pro",
       selectedModelId: "gpt-5.6-sol",
       selectedProvider: "openai",
-      selectedSearchStrategy: "search-disabled",
+      selectedSearchStrategy: "openai-native-web-search",
       streamMode: true,
       temperature: "0.4"
     });
@@ -726,14 +726,17 @@ describe("control default freshness", () => {
           maxOutputTokens: "64000",
           reasoningEffort: "max",
           reasoningMode: "pro",
-          searchStrategyId: "search-disabled",
+          searchStrategyId: "openai-native-web-search",
           streamMode: true,
           temperature: "0.4"
         }
       },
       defaultModelId: "gpt-5.6-sol",
       defaultProvider: "openai",
-      defaultSearchStrategyId: "search-disabled"
+      defaultSearchPlan: {
+        mode: "all_selected",
+        optionIds: ["openai-native-web-search"]
+      }
     });
     expect(Object.keys(jsonBodies(fetchMock)[0]?.defaultControlValues as Record<string, unknown>)).toEqual([
       "openai:gpt-5.6-sol"

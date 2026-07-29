@@ -10,6 +10,7 @@ import { chatSummaryFromApi, messageFromApi } from "@/components/app-shell/shell
 import { isRecord } from "@/components/app-shell/shellValues";
 import type {
   CatalogModel,
+  CatalogSearchStrategy,
   ChatSummary,
   RunEventView,
   ThreadMessage
@@ -19,7 +20,15 @@ import {
   decodeChatUpdateData,
   type ChatDetailWire as ApiChatDetail
 } from "@/lib/contracts/chats";
-import { resolveSearchStrategyId } from "@/lib/domain/catalogMatrix";
+import {
+  reconcileSearchPlanSelection,
+  resolveSearchStrategyId
+} from "@/lib/domain/catalogMatrix";
+import {
+  decodeSearchPlan,
+  SEARCH_DISABLED_STRATEGY_ID,
+  type SearchPlan
+} from "@/lib/domain/search";
 
 const RESUME_POLL_HORIZON_MS = 5 * 60 * 1000;
 const RESUME_POLL_INITIAL_DELAY_MS = 1500;
@@ -103,6 +112,22 @@ function resolveModelSearchStrategy(
   return resolveSearchStrategyId(model, preferred);
 }
 
+function resolveModelSearchPlan(
+  model: Pick<CatalogModel, "searchStrategyIds"> | null | undefined,
+  preferredPlan: unknown,
+  fallbackSearchStrategyId?: string | null,
+  strategies?: readonly CatalogSearchStrategy[]
+): SearchPlan {
+  const decoded = decodeSearchPlan(preferredPlan, fallbackSearchStrategyId);
+  if (!decoded.ok || !model) return { mode: "all_selected", optionIds: [] };
+  const available = new Set(model.searchStrategyIds);
+  const optionIds = decoded.plan.optionIds.filter((optionId) =>
+    optionId !== SEARCH_DISABLED_STRATEGY_ID && available.has(optionId));
+  return strategies
+    ? reconcileSearchPlanSelection(optionIds, decoded.plan.mode, strategies)
+    : { mode: decoded.plan.mode, optionIds };
+}
+
 function resolveModelControlDefaults(
   model: CatalogModel,
   controlValues?: Record<string, unknown>
@@ -164,6 +189,7 @@ export {
   chatUpdateFromEvent,
   modelControlKey,
   resolveModelControlDefaults,
+  resolveModelSearchPlan,
   resolveModelSearchStrategy,
   savedControlDraft
 };

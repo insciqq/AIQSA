@@ -6,6 +6,7 @@ import type {
   UserSettingsUpdate,
   UserSettingsUpdateResult
 } from "./handlers";
+import { decodeSearchPlan } from "../../domain/search";
 
 export type SettingsTransactionClient = Pick<
   Prisma.TransactionClient,
@@ -17,6 +18,7 @@ type LockedSettingsRow = {
   defaultProviderConnectionId: string | null;
   defaultProviderModelId: string | null;
   defaultSearchStrategyId: string;
+  defaultSearchPlan: unknown;
   id: string;
 };
 
@@ -32,12 +34,17 @@ function serializeSettings(settings: {
   } | null;
   defaultPromptPresetId: string | null;
   defaultSearchStrategyId: string;
+  defaultSearchPlan: unknown;
   showCitations: boolean;
   showReasoningBlocks: boolean;
   showToolActivity: boolean;
 }): UserSettingsRecord {
   const defaultProviderConnectionId = settings.defaultProviderModel?.connectionId ?? null;
   const defaultProviderModelId = settings.defaultProviderModel?.id ?? null;
+  const decodedSearchPlan = decodeSearchPlan(
+    settings.defaultSearchPlan,
+    settings.defaultSearchStrategyId
+  );
 
   return {
     defaultControlValues: settings.defaultControlValues,
@@ -47,6 +54,9 @@ function serializeSettings(settings: {
     defaultPromptPresetId: settings.defaultPromptPresetId,
     defaultProvider: defaultProviderConnectionId ?? "",
     defaultSearchStrategyId: settings.defaultSearchStrategyId,
+    defaultSearchPlan: decodedSearchPlan.ok
+      ? decodedSearchPlan.plan
+      : { mode: "all_selected", optionIds: [] },
     showCitations: settings.showCitations,
     showReasoningBlocks: settings.showReasoningBlocks,
     showToolActivity: settings.showToolActivity
@@ -57,9 +67,22 @@ function settingsUpdateData(
   update: UserSettingsUpdate,
   currentControlValues: unknown
 ): Prisma.UserSettingsUpdateInput {
-  const { defaultControlValues, defaultProviderModelId, ...rest } = update;
+  const { defaultControlValues, defaultProviderModelId, defaultSearchPlan, ...rest } = update;
+  const normalizedSearchPlan = defaultSearchPlan ?? (
+    update.defaultSearchStrategyId !== undefined
+      ? {
+          mode: "all_selected" as const,
+          optionIds: update.defaultSearchStrategyId === "search-disabled"
+            ? []
+            : [update.defaultSearchStrategyId]
+        }
+      : undefined
+  );
   const data: Prisma.UserSettingsUpdateInput = {
     ...rest,
+    ...(normalizedSearchPlan !== undefined
+      ? { defaultSearchPlan: normalizedSearchPlan as Prisma.InputJsonObject }
+      : {}),
     ...(typeof defaultProviderModelId !== "undefined"
       ? {
           defaultProviderModel: defaultProviderModelId
@@ -92,7 +115,8 @@ function settingsUpdateData(
 function changesDefaultSelection(update: UserSettingsUpdate): boolean {
   return (
     Object.prototype.hasOwnProperty.call(update, "defaultProviderModelId") ||
-    Object.prototype.hasOwnProperty.call(update, "defaultSearchStrategyId")
+    Object.prototype.hasOwnProperty.call(update, "defaultSearchStrategyId") ||
+    Object.prototype.hasOwnProperty.call(update, "defaultSearchPlan")
   );
 }
 
@@ -109,14 +133,23 @@ function validDefaultSelection(
     return updatesModel && !Object.prototype.hasOwnProperty.call(update, "defaultSearchStrategyId");
   }
 
-  const searchStrategyId = update.defaultSearchStrategyId ?? current.defaultSearchStrategyId;
+  const updatesLegacySearch = Object.prototype.hasOwnProperty.call(
+    update,
+    "defaultSearchStrategyId"
+  );
+  const decodedPlan = decodeSearchPlan(
+    update.defaultSearchPlan ?? (updatesLegacySearch ? undefined : current.defaultSearchPlan),
+    update.defaultSearchStrategyId ?? current.defaultSearchStrategyId
+  );
+  if (!decodedPlan.ok) return false;
   const model = validationModels.find(
     (candidate) =>
       candidate.modelId === modelId &&
       (updatesModel || candidate.provider === current.defaultProviderConnectionId)
   );
 
-  return Boolean(model?.searchStrategyIds.includes(searchStrategyId));
+  return Boolean(model && decodedPlan.plan.optionIds.every((searchStrategyId) =>
+    model.searchStrategyIds.includes(searchStrategyId)));
 }
 
 export async function applySettingsUpdateInTransaction(
@@ -136,7 +169,8 @@ export async function applySettingsUpdateInTransaction(
       settings."defaultControlValues",
       settings."defaultProviderModelId",
       model."connectionId" AS "defaultProviderConnectionId",
-      settings."defaultSearchStrategyId"
+      settings."defaultSearchStrategyId",
+      settings."defaultSearchPlan"
     FROM "UserSettings" AS settings
     LEFT JOIN "ProviderModel" AS model
       ON model."id" = settings."defaultProviderModelId"
@@ -206,6 +240,7 @@ export async function applySettingsUpdateInTransaction(
         }
       },
       defaultSearchStrategyId: true,
+      defaultSearchPlan: true,
       showCitations: true,
       showReasoningBlocks: true,
       showToolActivity: true

@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { Prisma, PrismaClient } from "@prisma/client";
 import { defaultProviderModels, defaultSearchStrategies } from "../lib/domain/catalog";
 import {
@@ -11,6 +12,11 @@ import {
 } from "../lib/domain/runProfiles";
 import { hashCanonicalMcpValue } from "../lib/server/mcp/definitions";
 import { ensureFullAccessGroup } from "../lib/server/auth/fullAccessGroup";
+import {
+  builtInSearchDraft,
+  normalizeSearchDraft,
+  searchDraftHash
+} from "../lib/server/search/configuration";
 import {
   assertLocalSeedRuntime,
   ensureLocalFixturePasswordHash,
@@ -572,6 +578,7 @@ async function main() {
         defaultFolderId: null,
         defaultPromptPresetId: user.promptPresetId,
         defaultProviderModelId: fakeProviderModelId,
+        defaultSearchPlan: asJson({ mode: "all_selected", optionIds: [] }),
         defaultSearchStrategyId: "search-disabled",
         showCitations: true,
         showReasoningBlocks: false,
@@ -580,6 +587,7 @@ async function main() {
       },
       update: {
         defaultProviderModelId: fakeProviderModelId,
+        defaultSearchPlan: asJson({ mode: "all_selected", optionIds: [] }),
         defaultSearchStrategyId: "search-disabled"
       },
       where: { userId: user.id }
@@ -638,16 +646,36 @@ async function main() {
     if (strategy.kind === "perplexity_tool_search" && !providerModelId) {
       throw new Error(`Missing seeded search deployment: ${strategy.strategyId}`);
     }
-    await prisma.searchStrategy.upsert({
+    const draft = builtInSearchDraft({
+      config: strategy.config,
+      kind: strategy.kind,
+      providerModelId
+    });
+    const draftHash = strategy.kind === "none"
+      ? `seed:${strategy.strategyId}`
+      : searchDraftHash(normalizeSearchDraft(draft));
+    const stored = await prisma.searchStrategy.upsert({
       create: {
+        adapterKind: String(draft.adapterKind),
         config: asJson(strategy.config),
+        credentialMode: String(draft.credentialMode),
         description: strategy.description,
         displayName: strategy.displayName,
+        draft: asJson(draft),
+        draftTestEvidence: asJson({
+          checkedAt: new Date().toISOString(),
+          method: "configuration",
+          normalizedSourceCount: 0,
+          protocol: draft.protocol,
+          status: "available"
+        }),
+        id: randomUUID(),
         kind: strategy.kind,
         modelId: strategy.modelId ?? null,
         provider: strategy.provider,
         providerModelId,
-        strategyId: strategy.strategyId
+        strategyId: strategy.strategyId,
+        testedDraftHash: draftHash
       },
       update: {
         config: asJson(strategy.config),
@@ -662,6 +690,25 @@ async function main() {
         strategyId: strategy.strategyId
       }
     });
+    if (!stored.activeRevisionId) {
+      const revision = await prisma.searchIntegrationRevision.create({
+        data: {
+          adapterKind: String(draft.adapterKind),
+          configuration: asJson(draft),
+          credentialMode: String(draft.credentialMode),
+          draftHash,
+          id: randomUUID(),
+          providerModelId,
+          revisionNumber: 1,
+          searchStrategyId: stored.id,
+          validationEvidence: asJson({ method: "seed", status: "available" })
+        }
+      });
+      await prisma.searchStrategy.update({
+        data: { activeRevisionId: revision.id, activatedAt: new Date() },
+        where: { id: stored.id }
+      });
+    }
   }
 
   await prisma.userSettings.upsert({
@@ -670,6 +717,7 @@ async function main() {
       defaultFolderId: null,
       defaultPromptPresetId: ids.promptPreset,
       defaultProviderModelId: fakeProviderModelId,
+      defaultSearchPlan: asJson({ mode: "all_selected", optionIds: [] }),
       defaultSearchStrategyId: "search-disabled",
       showCitations: true,
       showReasoningBlocks: false,
@@ -678,6 +726,7 @@ async function main() {
     },
     update: {
       defaultProviderModelId: fakeProviderModelId,
+      defaultSearchPlan: asJson({ mode: "all_selected", optionIds: [] }),
       defaultSearchStrategyId: "search-disabled"
     },
     where: {

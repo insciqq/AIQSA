@@ -2,6 +2,7 @@ import { ComposerModelPicker } from "@/components/app-shell/ComposerModelPicker"
 import { ComposerOptionPicker } from "@/components/app-shell/ComposerOptionPicker";
 import { ComposerPromptPicker } from "@/components/app-shell/ComposerPromptPicker";
 import { ComposerRunProfiles } from "@/components/app-shell/ComposerRunProfiles";
+import { ComposerSearchPicker } from "@/components/app-shell/ComposerSearchPicker";
 import { formatTokenCount } from "@/components/app-shell/shellFormatting";
 import {
   findActiveRunProfile,
@@ -25,12 +26,12 @@ import {
   MessageSquareText,
   Radio,
   ScrollText,
-  Search as SearchIcon,
   SlidersHorizontal,
   Wrench,
   X
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import type { SearchPlanMode } from "@/lib/domain/search";
 
 const reasoningEffortLabels: Record<string, string> = {
   high: "High",
@@ -69,7 +70,8 @@ function narrowSearchStrategyLabel(strategy: CatalogSearchStrategy | undefined):
     gemini_google_search: "Google",
     none: "Off",
     openai_native_web_search: "OAI",
-    perplexity_tool_search: "PPLXTY"
+    perplexity_tool_search: "PPLXTY",
+    provider_model_web_search: "Web"
   };
   return labels[strategy.kind];
 }
@@ -112,6 +114,7 @@ export function ComposerControls({
   onReasoningEffortChange,
   onReasoningModeChange,
   onRunProfileChange,
+  onSearchPlanChange,
   onSearchStrategyChange,
   onSelectModel,
   onStreamModeChange,
@@ -125,11 +128,13 @@ export function ComposerControls({
   reasoningEffort,
   reasoningMode,
   searchOptions,
+  searchPlanMode = "all_selected",
   selectedModelId,
   selectedPromptId,
   selectedProvider,
   selectedProviderName,
   selectedSearchStrategy,
+  selectedSearchOptionIds = selectedSearchStrategy === "search-disabled" ? [] : [selectedSearchStrategy],
   showCitations,
   showReasoningBlocks,
   showToolActivity,
@@ -156,6 +161,7 @@ export function ComposerControls({
   onReasoningEffortChange(value: string): void;
   onReasoningModeChange(value: string): void;
   onRunProfileChange(profileId: RunProfileId): void;
+  onSearchPlanChange?(optionIds: readonly string[], mode: SearchPlanMode): void;
   onSearchStrategyChange(strategyId: string): void;
   onSelectModel(model: CatalogModel): void;
   onStreamModeChange(value: boolean): void;
@@ -169,10 +175,12 @@ export function ComposerControls({
   reasoningEffort: string;
   reasoningMode: string;
   searchOptions: CatalogSearchStrategy[];
+  searchPlanMode?: SearchPlanMode;
   selectedModelId: string;
   selectedPromptId: string | null;
   selectedProvider: string;
   selectedProviderName: string;
+  selectedSearchOptionIds?: string[];
   selectedSearchStrategy: string;
   showCitations: boolean;
   showReasoningBlocks: boolean;
@@ -203,7 +211,10 @@ export function ComposerControls({
           value: reasoningEffort
         }
       ];
-  const currentSearchStrategy = searchOptions.find((strategy) => strategy.strategyId === selectedSearchStrategy);
+  const selectedSearchStrategies = selectedSearchOptionIds.flatMap((optionId) => {
+    const strategy = searchOptions.find((candidate) => candidate.strategyId === optionId);
+    return strategy ? [strategy] : [];
+  });
   const resolvedProfiles = resolveRunProfiles(catalog);
   const hasConfiguredProfiles = resolvedProfiles.length > 0;
   const hasAvailableProfiles = resolvedProfiles.some((profile) => profile.available);
@@ -226,7 +237,20 @@ export function ComposerControls({
   const reasoningSummary = reasoningSupported
     ? compactReasoningLabel(reasoningEffort, reasoningMode)
     : "Not supported";
-  const searchSummary = compactSearchStrategyLabel(currentSearchStrategy) ?? "Unavailable";
+  const searchSummary = selectedSearchStrategies.length === 0
+    ? selectedSearchOptionIds.length > 0
+      ? "Unavailable"
+      : "Off"
+    : selectedSearchStrategies.length === 1
+      ? selectedSearchStrategies[0]!.displayName
+      : `${selectedSearchStrategies.length} engines`;
+  const changeSearchPlan = (optionIds: readonly string[], mode: SearchPlanMode) => {
+    if (onSearchPlanChange) {
+      onSearchPlanChange(optionIds, mode);
+      return;
+    }
+    onSearchStrategyChange(optionIds[0] ?? "search-disabled");
+  };
   const contextStats = usageStats ?? {
     activeBranchMessageCount: 0,
     cachedInputTokens: 0,
@@ -325,27 +349,15 @@ export function ComposerControls({
           />
         ) : null}
 
-        <ComposerOptionPicker
+        <ComposerSearchPicker
           align="right"
           className="min-w-20 max-w-[10rem] flex-[1_1_5rem] min-[430px]:min-w-[5.5rem] min-[430px]:flex-[1_1_5.5rem]"
-          compactResting
-          id="composer-inline-search"
-          icon={<SearchIcon className="hidden size-3.5 shrink-0 text-ink-muted max-[429px]:block" aria-hidden="true" />}
-          label="Search strategy"
-          restingLabel="Search"
-          restingLabelClassName="max-[429px]:sr-only"
-          narrowSummaryLabel={narrowSearchStrategyLabel(currentSearchStrategy)}
           disabled={disabled || !currentModel || streaming}
-          options={searchOptions.map((strategy) => ({
-            description: searchStrategyDescription(strategy),
-            label: strategy.displayName,
-            value: strategy.strategyId
-          }))}
-          defaultValue={catalog?.defaults.searchStrategyId}
-          resting
-          summaryLabel={compactSearchStrategyLabel(currentSearchStrategy)}
-          value={selectedSearchStrategy}
-          onChange={onSearchStrategyChange}
+          id="composer-inline-search"
+          mode={searchPlanMode}
+          onChange={changeSearchPlan}
+          options={searchOptions}
+          selectedOptionIds={selectedSearchOptionIds}
         />
 
         <button
@@ -488,24 +500,55 @@ export function ComposerControls({
                     onChange={onReasoningEffortChange}
                   />
 
-                  <ComposerOptionPicker
+                  <ComposerSearchPicker
                     align="right"
-                    id="search-select"
-                    label="Search strategy"
-                    restingLabel="Search"
+                    className="min-w-0"
                     disabled={disabled || !currentModel || streaming}
-                    options={searchOptions.map((strategy) => ({
-                      description: searchStrategyDescription(strategy),
-                      label: strategy.displayName,
-                      value: strategy.strategyId
-                    }))}
-                    defaultValue={catalog?.defaults.searchStrategyId}
+                    id="search-select"
+                    mode={searchPlanMode}
+                    onChange={changeSearchPlan}
+                    options={searchOptions}
                     placement="below"
-                    resting
-                    summaryLabel={compactSearchStrategyLabel(currentSearchStrategy)}
-                    value={selectedSearchStrategy}
-                    onChange={onSearchStrategyChange}
+                    selectedOptionIds={selectedSearchOptionIds}
+                    setup
                   />
+                </div>
+                <div
+                  className="mt-3 border-l-2 border-proof/60 bg-proof/[0.04] px-3 py-2.5"
+                  data-testid="run-search-plan-details"
+                >
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <p className="text-xs font-semibold text-ink-secondary">Search plan</p>
+                    <span className="text-[11px] text-ink-muted">
+                      {selectedSearchStrategies.length > 1
+                        ? searchPlanMode === "all_selected"
+                          ? "All selected per search"
+                          : "Model chooses"
+                        : selectedSearchStrategies.length === 1
+                          ? "Single engine"
+                          : "Off"}
+                    </span>
+                  </div>
+                  {selectedSearchStrategies.length ? (
+                    <ol className="mt-2 grid gap-1.5 text-xs text-ink">
+                      {selectedSearchStrategies.map((strategy, index) => (
+                        <li className="flex min-w-0 items-start gap-2" key={strategy.strategyId}>
+                          <span className="font-mono text-[11px] text-ink-muted">{index + 1}.</span>
+                          <span className="min-w-0 flex-1">
+                            <span className="block break-words font-medium">{strategy.displayName}</span>
+                            <span className="mt-0.5 block text-[11px] leading-4 text-ink-muted">
+                              {strategy.privacy === "query_only"
+                                ? "Generated query only"
+                                : "Inside answer-provider context"}
+                              {strategy.revisionId ? ` · active revision ${strategy.revisionId.slice(0, 8)}` : ""}
+                            </span>
+                          </span>
+                        </li>
+                      ))}
+                    </ol>
+                  ) : (
+                    <p className="mt-1 text-[11px] text-ink-muted">No web engine will be offered to the next run.</p>
+                  )}
                 </div>
               </section>
 

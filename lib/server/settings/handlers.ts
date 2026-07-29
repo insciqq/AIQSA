@@ -1,6 +1,8 @@
 import type { CatalogWireModel } from "../../contracts/catalog";
 import type { UserSettingsWire } from "../../contracts/settings";
 import type { RequestAuthResolver } from "../auth/requestAuth";
+import { decodeSearchPlan, legacySearchStrategyFromPlan, type SearchPlan } from "../../domain/search";
+import { isSearchCombinationCompatible } from "../../domain/catalogMatrix";
 import {
   resolveCurrentUserCatalogSelection,
   type CatalogSelectionData,
@@ -22,6 +24,7 @@ export type UserSettingsUpdate = Partial<{
   defaultProviderModelId: string | null;
   defaultPromptPresetId: string | null;
   defaultSearchStrategyId: string;
+  defaultSearchPlan: SearchPlan;
   showCitations: boolean;
   showReasoningBlocks: boolean;
   showToolActivity: boolean;
@@ -223,6 +226,28 @@ function buildSettingsUpdate(
     }
 
     update.defaultSearchStrategyId = strategyId;
+    if (!("defaultSearchPlan" in body)) {
+      update.defaultSearchPlan = {
+        mode: "all_selected",
+        optionIds: strategyId === "search-disabled" ? [] : [strategyId]
+      };
+    }
+  }
+
+  if ("defaultSearchPlan" in body) {
+    if (!defaultModel) return { error: "default_search_unavailable" };
+    const decoded = decodeSearchPlan(body.defaultSearchPlan);
+    if (!decoded.ok || decoded.plan.optionIds.some((strategyId) =>
+      !defaultModel?.searchStrategyIds.includes(strategyId)) ||
+      (decoded.ok && !isSearchCombinationCompatible(
+        decoded.plan.optionIds,
+        data.searchStrategies,
+        decoded.plan.mode
+      ))) {
+      return { error: "default_search_unavailable" };
+    }
+    update.defaultSearchPlan = decoded.plan;
+    update.defaultSearchStrategyId = legacySearchStrategyFromPlan(decoded.plan);
   }
 
   if ("defaultPromptPresetId" in body) {
@@ -268,12 +293,17 @@ function buildSettingsUpdate(
 }
 
 function serializeSettings(settings: UserSettingsRecord): UserSettingsWire {
+  const decodedSearchPlan = decodeSearchPlan(
+    settings.defaultSearchPlan,
+    settings.defaultSearchStrategyId
+  );
   return {
     defaultControlValues: isRecord(settings.defaultControlValues) ? settings.defaultControlValues : {},
     defaultModelId: settings.defaultModelId,
     defaultPromptPresetId: settings.defaultPromptPresetId,
     defaultProvider: settings.defaultProvider,
     defaultSearchStrategyId: settings.defaultSearchStrategyId,
+    ...(decodedSearchPlan.ok ? { defaultSearchPlan: decodedSearchPlan.plan } : {}),
     showCitations: settings.showCitations,
     showReasoningBlocks: settings.showReasoningBlocks,
     showToolActivity: settings.showToolActivity

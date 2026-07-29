@@ -1,6 +1,6 @@
 {
   "name": "aiqsa",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "private": true,
   "description": "Self-hosted multi-user Question-Search-Answer web app with explicit AI provider, model, and search control.",
   "license": "AGPL-3.0-only",
@@ -30,6 +30,7 @@
     "db:integrity:smoke": "prisma generate && tsx prisma/schema-integrity-smoke.ts",
     "db:migration:contract": "tsx prisma/scripts/tests/schema-integrity-migration-contract.ts",
     "db:retention:migration:contract": "tsx prisma/scripts/tests/attachment-retention-migration-contract.ts",
+    "db:search:migration:contract": "tsx prisma/scripts/tests/search-control-plane-migration-contract.ts",
     "db:seed": "prisma generate && prisma db seed",
     "db:seed:smoke": "prisma generate && tsx prisma/seed-smoke.ts",
     "db:test:bootstrap": "npm run db:migrate:deploy && npm run db:seed",

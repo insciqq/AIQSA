@@ -23,6 +23,7 @@ import type {
 } from "@/components/app-shell/types";
 import { ArrowDown, CircleAlert, LoaderCircle, RotateCcw } from "lucide-react";
 import type { ReactNode, RefObject } from "react";
+import type { SearchPlanMode } from "@/lib/domain/search";
 import { useCallback, useMemo, useState } from "react";
 
 const noRunWarnings: string[] = [];
@@ -90,14 +91,17 @@ export type MainThreadPaneProps = {
   retryWorkspace(): void;
   runWarnings?: RunWarning[];
   searchOptions: CatalogSearchStrategy[];
+  searchPlanMode: SearchPlanMode;
   selectModel(model: CatalogModel): void;
   selectPrompt(promptId: string): void;
   selectRunProfile(profileId: RunProfileId): void;
+  selectSearchPlan(optionIds: readonly string[], mode: SearchPlanMode): void;
   selectSearchStrategy(strategyId: string): void;
   selectedModelId: string;
   selectedPromptId: string | null;
   selectedProvider: string;
   selectedProviderName: string;
+  selectedSearchOptionIds: string[];
   selectedSearchStrategy: string;
   showCitations: boolean;
   showJumpToLatest: boolean;
@@ -172,14 +176,17 @@ export function MainThreadPane({
   retryWorkspace,
   runWarnings = [],
   searchOptions,
+  searchPlanMode,
   selectModel,
   selectPrompt,
   selectRunProfile,
+  selectSearchPlan,
   selectSearchStrategy,
   selectedModelId,
   selectedPromptId,
   selectedProvider,
   selectedProviderName,
+  selectedSearchOptionIds,
   selectedSearchStrategy,
   showCitations,
   showJumpToLatest,
@@ -632,10 +639,12 @@ export function MainThreadPane({
               reasoningEffort={reasoningEffort}
               reasoningMode={reasoningMode}
               searchOptions={searchOptions}
+              searchPlanMode={searchPlanMode}
               selectedModelId={selectedModelId}
               selectedPromptId={selectedPromptId}
               selectedProvider={selectedProvider}
               selectedProviderName={selectedProviderName}
+              selectedSearchOptionIds={selectedSearchOptionIds}
               selectedSearchStrategy={selectedSearchStrategy}
               showCitations={showCitations}
               showReasoningBlocks={showReasoningBlocks}
@@ -650,6 +659,7 @@ export function MainThreadPane({
               onReasoningEffortChange={changeReasoningEffort}
               onReasoningModeChange={changeReasoningMode}
               onRunProfileChange={selectRunProfile}
+              onSearchPlanChange={selectSearchPlan}
               onSearchStrategyChange={selectSearchStrategy}
               onSelectModel={selectModel}
               onStreamModeChange={changeStreamMode}

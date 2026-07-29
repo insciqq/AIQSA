@@ -107,8 +107,12 @@ function requestBody(patch: SettingsDefaultsPatch): Record<string, unknown> {
     ...(Object.prototype.hasOwnProperty.call(patch, "promptPresetId")
       ? { defaultPromptPresetId: patch.promptPresetId }
       : {}),
-    ...(Object.prototype.hasOwnProperty.call(patch, "searchStrategyId")
+    ...(Object.prototype.hasOwnProperty.call(patch, "searchStrategyId") &&
+      !Object.prototype.hasOwnProperty.call(patch, "searchPlan")
       ? { defaultSearchStrategyId: patch.searchStrategyId }
+      : {}),
+    ...(Object.prototype.hasOwnProperty.call(patch, "searchPlan")
+      ? { defaultSearchPlan: patch.searchPlan }
       : {}),
     ...(Object.prototype.hasOwnProperty.call(patch, "showCitations")
       ? { showCitations: patch.showCitations }
@@ -164,6 +168,14 @@ function reconciledPatch(
   }
   if (Object.prototype.hasOwnProperty.call(sent, "searchStrategyId")) {
     patch.searchStrategyId = settings.defaultSearchStrategyId;
+  }
+  if (Object.prototype.hasOwnProperty.call(sent, "searchPlan")) {
+    patch.searchPlan = settings.defaultSearchPlan ?? {
+      mode: "all_selected",
+      optionIds: settings.defaultSearchStrategyId === "search-disabled"
+        ? []
+        : [settings.defaultSearchStrategyId]
+    };
   }
   if (Object.prototype.hasOwnProperty.call(sent, "showCitations")) {
     patch.showCitations = settings.showCitations;

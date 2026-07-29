@@ -21,6 +21,7 @@ import type {
   ProviderRunResult,
   ProviderSearchAdapter
 } from "../providers/types";
+import type { ProviderRuntimeBinding } from "../providers/runtimeFactory";
 import type { AiqsaMcpToolCallResult } from "../mcp/clientSession";
 import { getDefaultMcpRuntimeCoordinator } from "../mcp/defaultRuntime";
 import {
@@ -30,6 +31,11 @@ import {
 } from "../mcp/toolExecutor";
 import { providerToolBridges } from "../tools/bridges";
 import { createPerplexitySearchToolExecutor, perplexityWebSearchTool } from "../tools/perplexitySearch";
+import {
+  createSearchPlanToolRouter,
+  searchExecutionsFromToolResult,
+  type SearchExecutionEvidence
+} from "../search/toolExecutor";
 import type {
   ModelToolCall,
   ProviderToolBridge,
@@ -171,6 +177,7 @@ export type RunExecutionInput = Readonly<{
     ensureAcceptedGeneration(generationId: string): Promise<boolean>;
   }>;
   searchAdapter?: ProviderSearchAdapter;
+  searchRuntimes?: Readonly<Record<string, ProviderRuntimeBinding>>;
   toolBridge?: ProviderToolBridge;
   userId: string;
 }>;
@@ -562,6 +569,31 @@ async function persistToolSearchRun(input: Readonly<{
   });
 }
 
+async function persistPlanSearchExecution(input: Readonly<{
+  execution: SearchExecutionEvidence;
+  modelRunId: string;
+  repository: RunExecutionRepository;
+}>): Promise<void> {
+  await input.repository.createSearchRun({
+    artifacts: {
+      invocationId: input.execution.invocationId,
+      sources: input.execution.sources,
+      usage: input.execution.usage,
+      ...(input.execution.warning ? { warning: input.execution.warning } : {})
+    },
+    durationMs: input.execution.durationMs,
+    invocationId: input.execution.invocationId,
+    modelId: input.execution.modelId,
+    modelRunId: input.modelRunId,
+    provider: input.execution.provider,
+    query: input.execution.query,
+    requestPreview: { ...input.execution.requestPreview },
+    searchRevisionId: input.execution.revisionId,
+    status: input.execution.status,
+    strategyId: input.execution.optionId
+  });
+}
+
 export function createRunExecutionResponse(input: RunExecutionInput): Response {
   const encoder = new TextEncoder();
   const sequence: RunEventSequence = { value: 0 };
@@ -718,7 +750,8 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
         }
 
         const searchPolicy = normalizedRequest.searchPolicy;
-        const searchEnabled = normalizedRequest.searchStrategy === "perplexity-tool-search";
+        const searchEnabled = !normalizedRequest.searchPlan &&
+          normalizedRequest.searchStrategy === "perplexity-tool-search";
         if (searchEnabled && (!input.searchAdapter || !searchPolicy ||
           searchPolicy.strategyId !== normalizedRequest.searchStrategy)) {
           throw new RunPipelineError("search_policy_not_available", "Search policy is not available");
@@ -729,8 +762,18 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
               searchPolicy: searchPolicy!
             })
           : null;
+        const searchPlanRouter = normalizedRequest.searchPlan
+          ? createSearchPlanToolRouter({
+              plan: normalizedRequest.searchPlan,
+              runtimes: input.searchRuntimes ?? {}
+            })
+          : null;
+        const searchToolNames = new Set([
+          ...(searchExecutor ? [searchExecutor.tool.name] : []),
+          ...(searchPlanRouter?.tools.map((tool) => tool.name) ?? [])
+        ]);
         const tools: RunTool[] = [
-          ...(searchExecutor ? [perplexityWebSearchTool] : []),
+          ...(searchPlanRouter?.tools ?? (searchExecutor ? [perplexityWebSearchTool] : [])),
           ...mcpRunTools(normalizedRequest.mcp)
         ];
         if (tools.length === 0) {
@@ -776,6 +819,17 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
                   searchModelId: searchPolicy!.modelId,
                   strategyId: searchPolicy!.strategyId
                 });
+              } else if (searchPlanRouter && searchToolNames.has(call.name)) {
+                for (const execution of searchExecutionsFromToolResult(result)) {
+                  if (hasReportedUsage(execution.usage)) {
+                    rememberReportedUsage(execution.provider, execution.modelId ?? "search", execution.usage);
+                  }
+                  await persistPlanSearchExecution({
+                    execution,
+                    modelRunId: runId,
+                    repository: input.repository
+                  });
+                }
               }
               for (const artifact of result.artifacts ?? []) {
                 await emit(controller, encoder, input.repository, runId, sequence, artifact);
@@ -896,7 +950,9 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
 
               let result: ToolExecutionResult;
               try {
-                if (searchExecutor && call.name === searchExecutor.tool.name) {
+                if (searchPlanRouter && searchToolNames.has(call.name)) {
+                  result = await searchPlanRouter.execute(call, request, { signal: context.signal });
+                } else if (searchExecutor && call.name === searchExecutor.tool.name) {
                   result = await searchExecutor.execute(call, { request, runId }, { signal: context.signal });
                 } else {
                   const route = resolveMcpRunTool(normalizedRequest.mcp, call.name);
@@ -922,7 +978,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
                 result = toolExecutionErrorResult(
                   call,
                   error,
-                  searchExecutor && call.name === searchExecutor.tool.name ? "Search" : "Tool"
+                  searchToolNames.has(call.name) ? "Search" : "Tool"
                 );
               }
               const storedResult = snapshotToolExecutionResult(
@@ -993,7 +1049,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
             const persisted = await input.repository.persistToolLoopCallBatch({
               calls: calls.map((call, ordinal) => {
                 const route = resolveMcpRunTool(normalizedRequest.mcp, call.name);
-                if (!route && (!searchExecutor || call.name !== searchExecutor.tool.name)) {
+                if (!route && !searchToolNames.has(call.name)) {
                   throw new RunPipelineError("unsupported_tool_call", `Unsupported tool ${call.name}`);
                 }
                 return {
@@ -1155,7 +1211,10 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
           }
         }
 
-        const hasClientTools = normalizedRequest.searchStrategy === "perplexity-tool-search" ||
+        const hasClientSearch = (normalizedRequest.searchPlan?.options.some((option) =>
+          option.adapterKind === "provider_model_client") ?? false) ||
+          (!normalizedRequest.searchPlan && normalizedRequest.searchStrategy === "perplexity-tool-search");
+        const hasClientTools = hasClientSearch ||
           (normalizedRequest.mcp?.tools.length ?? 0) > 0;
         const providerResult = hasClientTools
           ? await runProviderToolLoop(input.prepared.providerRequest)

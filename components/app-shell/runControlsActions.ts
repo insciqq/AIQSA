@@ -16,7 +16,6 @@ import type { Catalog, CatalogModel, Notice } from "@/components/app-shell/types
 import {
   modelControlKey,
   resolveModelControlDefaults,
-  resolveModelSearchStrategy,
   savedControlDraft,
   type SavedControlDraft
 } from "@/components/app-shell/powerAppShellData";
@@ -26,7 +25,11 @@ import {
   type RunProfileId
 } from "@/components/app-shell/runProfiles";
 import { useWorkspaceStore } from "@/components/app-shell/workspaceStore";
-import { resolveSearchStrategyId } from "@/lib/domain/catalogMatrix";
+import {
+  reconcileSearchPlanSelection,
+  resolveSearchStrategyId
+} from "@/lib/domain/catalogMatrix";
+import type { SearchPlanMode } from "@/lib/domain/search";
 
 type PendingControlDefaults = {
   draft: SavedControlDraft;
@@ -70,6 +73,22 @@ export function useRunControlsActions({
       liveCatalog?.models.find((model) => model.provider === selectedProvider && model.modelId === selectedModelId) ??
       currentModel
     );
+  }
+
+  function compatibleSearchPlan(
+    model: CatalogModel,
+    optionIds: readonly string[],
+    mode: SearchPlanMode
+  ): { mode: SearchPlanMode; optionIds: string[] } {
+    const availableIds = new Set(model.searchStrategyIds);
+    const nextIds = optionIds.filter((optionId, index) =>
+      optionId !== "search-disabled" &&
+      availableIds.has(optionId) &&
+      optionIds.indexOf(optionId) === index
+    ).slice(0, 3);
+    const strategies = currentCatalogFromStore()?.searchStrategies ?? [];
+    const plan = reconcileSearchPlanSelection(nextIds, mode, strategies);
+    return { mode: plan.mode, optionIds: [...plan.optionIds] };
   }
 
   function buildParams() {
@@ -439,22 +458,26 @@ export function useRunControlsActions({
 
   function selectModel(model: CatalogModel) {
     const currentCatalog = currentCatalogFromStore();
-    const selectedSearchStrategy = useComposerControlStore.getState().selectedSearchStrategy;
-    const nextSearchStrategy = resolveModelSearchStrategy(
+    const store = useComposerControlStore.getState();
+    const nextSearchPlan = compatibleSearchPlan(
       model,
-      currentCatalog?.defaults.controlValues,
-      selectedSearchStrategy
+      store.selectedSearchOptionIds,
+      store.searchPlanMode
     );
+    const nextSearchStrategy = nextSearchPlan.optionIds[0] ?? "search-disabled";
     const controlDefaults = resolveModelControlDefaults(model, currentCatalog?.defaults.controlValues);
     useComposerControlStore.getState().applyModelSelection({
       controlDefaults,
       modelId: model.modelId,
       provider: model.provider,
+      searchOptionIds: nextSearchPlan.optionIds,
+      searchPlanMode: nextSearchPlan.mode,
       searchStrategyId: nextSearchStrategy
     });
     void persistUserDefaults({
       modelId: model.modelId,
       provider: model.provider,
+      searchPlan: nextSearchPlan,
       searchStrategyId: nextSearchStrategy
     });
   }
@@ -470,11 +493,12 @@ export function useRunControlsActions({
     const store = useComposerControlStore.getState();
     const selectedModel = selectedModelFromStore();
     const sameModel = selectedModel ? modelControlKey(selectedModel) === modelControlKey(model) : false;
-    const nextSearchStrategy = resolveModelSearchStrategy(
+    const nextSearchPlan = compatibleSearchPlan(
       model,
-      currentCatalog.defaults.controlValues,
-      store.selectedSearchStrategy
+      store.selectedSearchOptionIds,
+      store.searchPlanMode
     );
+    const nextSearchStrategy = nextSearchPlan.optionIds[0] ?? "search-disabled";
     const targetDraft = {
       ...storedDraftForModel(model),
       ...(sameModel ? currentControlDraft({}, model) : {}),
@@ -496,6 +520,8 @@ export function useRunControlsActions({
       controlDefaults,
       modelId: model.modelId,
       provider: model.provider,
+      searchOptionIds: nextSearchPlan.optionIds,
+      searchPlanMode: nextSearchPlan.mode,
       searchStrategyId: nextSearchStrategy
     });
     void persistUserDefaults({
@@ -504,6 +530,7 @@ export function useRunControlsActions({
       },
       modelId: model.modelId,
       provider: model.provider,
+      searchPlan: nextSearchPlan,
       searchStrategyId: nextSearchStrategy
     });
 
@@ -512,13 +539,30 @@ export function useRunControlsActions({
 
   function selectSearchStrategy(strategyId: string) {
     const nextSearchStrategy = resolveSearchStrategyId(currentModel, strategyId);
-    useComposerControlStore.getState().setSelectedSearchStrategy(nextSearchStrategy);
+    selectSearchPlan(
+      nextSearchStrategy === "search-disabled" ? [] : [nextSearchStrategy],
+      "all_selected"
+    );
+  }
+
+  function selectSearchPlan(optionIds: readonly string[], mode: SearchPlanMode) {
+    const model = selectedModelFromStore();
+    const plan = model
+      ? compatibleSearchPlan(model, optionIds, mode)
+      : { mode, optionIds: [...optionIds].slice(0, 3) };
+    const nextSearchStrategy = plan.optionIds[0] ?? "search-disabled";
+    useComposerControlStore.getState().setSelectedSearchPlan(plan.optionIds, plan.mode);
     if (currentModel) {
-      persistCurrentModelControlDefaultsWithPending(currentModel, { searchStrategyId: nextSearchStrategy });
+      persistCurrentModelControlDefaultsWithPending(
+        currentModel,
+        { searchStrategyId: nextSearchStrategy },
+        { searchPlan: plan, searchStrategyId: nextSearchStrategy }
+      );
       return;
     }
 
     void persistUserDefaults({
+      searchPlan: plan,
       searchStrategyId: nextSearchStrategy
     });
   }
@@ -609,6 +653,7 @@ export function useRunControlsActions({
     persistUserDefaults,
     selectModel,
     selectRunProfile,
+    selectSearchPlan,
     selectSearchStrategy,
     toggleCitationsVisibility,
     toggleReasoningBlockVisibility,

@@ -684,6 +684,10 @@ describe("run preparation", () => {
       modelId: "fake-qsa",
       promptPresetId: "preset-1",
       provider: "fake",
+      searchPlan: {
+        mode: "all_selected",
+        optionIds: []
+      },
       searchStrategy: "search-disabled",
       userId: "user-1"
     });
@@ -1117,6 +1121,159 @@ describe("run preparation", () => {
     const prepared = materializePreparedRunData(result.prepared);
     expect(prepared.normalizedRequest.searchStrategy).toBe("openai-native-web-search");
     expect(prepared.providerRequest.searchStrategy).toBe("openai-native-web-search");
+  });
+
+  it("routes a provider-admitted multi-engine plan without requiring the legacy Perplexity service", async () => {
+    const base = compatibleAdmissionPlan("openai_responses_compatible");
+    const optionIds = ["perplexity-tool-search", "company-search"];
+    const searches: NonNullable<ProviderAdmissionPlan["searches"]> = optionIds.map(
+      (optionId, ordinal) => ({
+        bindingKey: `search:${optionId}`,
+        configuration: {
+          adapterKind: "provider_model_client",
+          config: {
+            maxResults: 8,
+            modelCapabilities: { ...baseCapabilities, toolCalling: true },
+            modelDefaultParams: {},
+            queryMaxCharacters: 500,
+            timeoutMs: 15_000
+          },
+          credentialMode: "provider_model",
+          executionModes: ["all_selected", "model_choice"],
+          kind: optionId === "perplexity-tool-search"
+            ? "perplexity_tool_search"
+            : "provider_model_web_search",
+          modelId: `search-model-${ordinal + 1}`,
+          protocol: optionId === "perplexity-tool-search"
+            ? "openrouter_perplexity_chat"
+            : "openai_responses_web_search",
+          provider: optionId === "perplexity-tool-search" ? "openrouter" : "openai_compatible",
+          providerModelId: `technical-${ordinal + 1}`,
+          revisionId: `revision-${ordinal + 1}`,
+          searchStrategyRowId: `integration-${ordinal + 1}`,
+          strategyId: optionId
+        },
+        integrationId: `integration-${ordinal + 1}`,
+        optionId,
+        ordinal,
+        revisionId: `revision-${ordinal + 1}`,
+        role: base.answer
+      })
+    );
+    const plan: ProviderAdmissionPlan = {
+      ...base,
+      requestedSearchPlan: { mode: "all_selected", optionIds },
+      requestedSearchStrategyId: optionIds[0]!,
+      searches
+    };
+    const harness = createHarness({ searchProviderAvailable: false });
+    const result = await prepareRun(
+      {
+        ...harness.deps,
+        allowFakeProvider: false,
+        providerAdmission: { async load() { return plan; } }
+      },
+      sendInput(successBody({
+        modelId: plan.selection.providerModelId,
+        provider: plan.selection.providerConnectionId,
+        searchPlan: { mode: "all_selected", optionIds }
+      }))
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.code);
+    const prepared = materializePreparedRunData(result.prepared);
+    expect(prepared.normalizedRequest.searchPolicy).toBeUndefined();
+    expect(prepared.providerRequest.tools?.map((tool) => tool.name)).toEqual([
+      "search_selected_engines"
+    ]);
+  });
+
+  it("keeps the first selected option as the legacy default mirror in a mixed hosted plan", async () => {
+    const base = compatibleAdmissionPlan("openai_responses_compatible", {
+      nativeSearch: true
+    });
+    const optionIds = ["company-search", "openai-native-web-search"];
+    const plan: ProviderAdmissionPlan = {
+      ...base,
+      requestedSearchPlan: { mode: "model_choice", optionIds },
+      requestedSearchStrategyId: optionIds[0]!,
+      searches: [
+        {
+          bindingKey: "search:company-search",
+          configuration: {
+            adapterKind: "provider_model_client",
+            config: {
+              maxResults: 8,
+              modelCapabilities: { ...baseCapabilities, nativeSearch: true },
+              modelDefaultParams: {},
+              queryMaxCharacters: 500,
+              timeoutMs: 15_000
+            },
+            credentialMode: "provider_model",
+            executionModes: ["all_selected", "model_choice"],
+            kind: "provider_model_web_search",
+            modelId: "search-model",
+            protocol: "openai_responses_web_search",
+            provider: "openai_compatible",
+            providerModelId: "technical-search-model",
+            revisionId: "revision-client",
+            searchStrategyRowId: "integration-client",
+            strategyId: optionIds[0]!
+          },
+          integrationId: "integration-client",
+          optionId: optionIds[0]!,
+          ordinal: 0,
+          revisionId: "revision-client",
+          role: base.answer
+        },
+        {
+          bindingKey: null,
+          configuration: {
+            adapterKind: "answer_provider_hosted",
+            config: {
+              maxResults: 8,
+              queryMaxCharacters: 500,
+              timeoutMs: 15_000
+            },
+            credentialMode: "answer_provider",
+            executionModes: ["model_choice"],
+            kind: "openai_native_web_search",
+            modelId: null,
+            protocol: "openai_responses_web_search",
+            provider: "openai_compatible",
+            providerModelId: null,
+            revisionId: "revision-hosted",
+            searchStrategyRowId: "integration-hosted",
+            strategyId: optionIds[1]!
+          },
+          integrationId: "integration-hosted",
+          optionId: optionIds[1]!,
+          ordinal: 1,
+          revisionId: "revision-hosted"
+        }
+      ]
+    };
+    const result = await prepareRun(
+      {
+        ...createHarness().deps,
+        allowFakeProvider: false,
+        providerAdmission: { async load() { return plan; } }
+      },
+      sendInput(successBody({
+        modelId: plan.selection.providerModelId,
+        provider: plan.selection.providerConnectionId,
+        searchPlan: { mode: "model_choice", optionIds }
+      }))
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.code);
+    const prepared = materializePreparedRunData(result.prepared);
+    expect(prepared.normalizedRequest.searchStrategy).toBe("openai-native-web-search");
+    expect(prepared.defaults.searchPlan).toEqual({ mode: "model_choice", optionIds });
+    expect(prepared.defaults.searchStrategy).toBe("company-search");
+    expect(prepared.defaults.controlDefaults.searchStrategyId).toBe("company-search");
   });
 
   it("rejects an initial MCP request when its exact provider tool schema exceeds context", async () => {

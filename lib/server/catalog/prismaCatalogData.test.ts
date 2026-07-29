@@ -193,10 +193,18 @@ function entitlements(input: {
 
 function searchStrategy(overrides: Partial<SearchStrategy>): SearchStrategy {
   return {
+    activatedAt: now,
+    activeRevisionId: "search-revision",
+    adapterKind: "none",
+    archivedAt: null,
     config: {},
+    credentialMode: "answer_provider",
     createdAt: now,
     description: "Search",
     displayName: "Search",
+    draft: {},
+    draftTestEvidence: null,
+    draftVersion: 1,
     enabled: true,
     id: "search-row",
     kind: "none",
@@ -204,6 +212,7 @@ function searchStrategy(overrides: Partial<SearchStrategy>): SearchStrategy {
     provider: "system",
     providerModelId: null,
     strategyId: "search-disabled",
+    testedDraftHash: null,
     updatedAt: now,
     ...overrides
   };

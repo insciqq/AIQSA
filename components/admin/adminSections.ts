@@ -4,6 +4,7 @@ import {
   Globe2,
   Link2,
   Mail,
+  Search,
   ServerCog,
   ShieldAlert,
   Users,
@@ -18,6 +19,7 @@ export type AdminSectionId =
   | "invites"
   | "mcp"
   | "providers"
+  | "search"
   | "safety"
   | "usage"
   | "users";
@@ -50,6 +52,13 @@ export const adminSections = [
     group: "ai-setup",
     id: "providers",
     label: "Providers"
+  },
+  {
+    Icon: Search,
+    description: "Add, test, activate, publish, and inspect replaceable Search engines.",
+    group: "ai-setup",
+    id: "search",
+    label: "Search"
   },
   {
     Icon: Users,

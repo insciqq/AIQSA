@@ -15,6 +15,7 @@ import {
 } from "../../domain/runProfiles";
 import {
   buildCatalogModel,
+  reconcileSearchPlanSelection,
   resolveSearchStrategyId,
   toCatalogSearchStrategy
 } from "../../domain/catalogMatrix";
@@ -23,6 +24,7 @@ import {
   canAccessSearchStrategy,
   type ResolvedEntitlements
 } from "../auth/entitlements";
+import { decodeSearchPlan } from "../../domain/search";
 
 export type CatalogSettingsRecord = {
   defaultControlValues: unknown;
@@ -32,6 +34,7 @@ export type CatalogSettingsRecord = {
   defaultPromptPresetId: string | null;
   defaultProvider: string;
   defaultSearchStrategyId: string;
+  defaultSearchPlan?: unknown;
   showCitations: boolean;
   showReasoningBlocks: boolean;
   showToolActivity: boolean;
@@ -143,6 +146,20 @@ export function buildCurrentUserCatalog(input: CatalogData): CurrentUserCatalogW
       reasoningMode: profile.reasoningMode
     }];
   });
+  const decodedDefaultPlan = decodeSearchPlan(
+    input.settings.defaultSearchPlan,
+    input.settings.defaultSearchStrategyId
+  );
+  const compatibleDefaultOptionIds = decodedDefaultPlan.ok
+    ? decodedDefaultPlan.plan.optionIds.filter((optionId) =>
+        defaultModel?.searchStrategyIds.includes(optionId)
+      )
+    : [];
+  const compatibleDefaultPlan = reconcileSearchPlanSelection(
+    compatibleDefaultOptionIds,
+    decodedDefaultPlan.ok ? decodedDefaultPlan.plan.mode : "all_selected",
+    entitledStrategies
+  );
 
   return {
     defaults: {
@@ -157,6 +174,10 @@ export function buildCurrentUserCatalog(input: CatalogData): CurrentUserCatalogW
         defaultModel,
         input.settings.defaultSearchStrategyId
       ),
+      searchPlan: {
+        mode: compatibleDefaultPlan.mode,
+        optionIds: compatibleDefaultPlan.optionIds
+      },
       showCitations: input.settings.showCitations,
       showReasoningBlocks: input.settings.showReasoningBlocks,
       showToolActivity: input.settings.showToolActivity

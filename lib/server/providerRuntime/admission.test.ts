@@ -287,4 +287,91 @@ describe("provider admission", () => {
     });
     expect(findUnique).not.toHaveBeenCalled();
   });
+
+  it("admits an ordered multi-engine client plan with exact revision and binding keys", async () => {
+    const { db } = fullAccessAdmissionDb({ compatibleResponses: true });
+    const answerModel = await db.providerModel.findFirst();
+    const model = (id: string) => ({
+      ...answerModel,
+      activeConfig: {
+        ...answerModel.activeConfig,
+        adapterKind: "openai_responses_compatible",
+        capabilities: { ...answerModel.activeConfig.capabilities, nativeSearch: true },
+        upstreamModelId: `upstream-${id}`
+      },
+      id
+    });
+    const multiDb = {
+      ...db,
+      providerModel: {
+        findFirst: vi.fn(async (args?: { where?: { id?: string } }) =>
+          model(args?.where?.id ?? "deployment-future")),
+        findUnique: vi.fn(async () => ({ connectionId: "connection-future" }))
+      },
+      searchStrategy: {
+        findFirst: vi.fn(async (args?: { where?: { strategyId?: string } }) => {
+          const optionId = args?.where?.strategyId ?? "missing";
+          const ordinal = optionId === "search-alpha" ? 1 : 2;
+          return {
+            activeRevision: {
+              adapterKind: "provider_model_client",
+              configuration: {
+                adapterKind: "provider_model_client",
+                credentialMode: "provider_model",
+                maxResults: 8,
+                protocol: "openai_responses_web_search",
+                providerModelId: `technical-${ordinal}`,
+                queryMaxCharacters: 500,
+                timeoutMs: 15_000
+              },
+              credentialMode: "provider_model",
+              id: `revision-${ordinal}`,
+              providerModelId: `technical-${ordinal}`
+            },
+            config: {},
+            enabled: true,
+            id: `integration-${ordinal}`,
+            kind: "provider_model_web_search",
+            providerModelId: `technical-${ordinal}`,
+            strategyId: optionId
+          };
+        })
+      }
+    };
+
+    const plan = await loadProviderAdmissionPlan(
+      multiDb as unknown as Prisma.TransactionClient,
+      {
+        providerConnectionId: "connection-future",
+        providerModelId: "deployment-future",
+        searchPlan: {
+          mode: "all_selected",
+          optionIds: ["search-alpha", "search-beta"]
+        },
+        searchStrategyId: "search-alpha",
+        userId: "user-1"
+      }
+    );
+
+    expect(plan.searches).toEqual([
+      expect.objectContaining({
+        bindingKey: "search:search-alpha",
+        integrationId: "integration-1",
+        optionId: "search-alpha",
+        ordinal: 0,
+        revisionId: "revision-1"
+      }),
+      expect.objectContaining({
+        bindingKey: "search:search-beta",
+        integrationId: "integration-2",
+        optionId: "search-beta",
+        ordinal: 1,
+        revisionId: "revision-2"
+      })
+    ]);
+    expect(plan.requestedSearchPlan).toEqual({
+      mode: "all_selected",
+      optionIds: ["search-alpha", "search-beta"]
+    });
+  });
 });

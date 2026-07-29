@@ -23,8 +23,9 @@ import { visibleMessagePath } from "@/components/app-shell/threadPath";
 import {
   chatDetailBodyFromUnknown,
   chatUpdateFromEvent,
-  resolveModelSearchStrategy
+  resolveModelSearchPlan
 } from "@/components/app-shell/powerAppShellData";
+import type { SearchPlanMode } from "@/lib/domain/search";
 import {
   decodeChatSummaryResponse,
   decodeWorkspaceChatsResponse
@@ -69,7 +70,7 @@ type WorkspaceActionsInput = {
   setNotice(notice: Notice): void;
   setSelectedModelId(value: string): void;
   setSelectedProvider(value: string): void;
-  setSelectedSearchStrategy(value: string): void;
+  setSelectedSearchPlan(optionIds: readonly string[], mode: SearchPlanMode): void;
   workspaceRefreshPromiseRef: MutableRef<Promise<ChatDetail | null> | null>;
 };
 
@@ -86,7 +87,7 @@ export function useWorkspaceActions({
   setNotice,
   setSelectedModelId,
   setSelectedProvider,
-  setSelectedSearchStrategy,
+  setSelectedSearchPlan,
   workspaceRefreshPromiseRef
 }: WorkspaceActionsInput) {
   function summaryFromDetail(detail: ChatDetail): ChatSummary {
@@ -252,13 +253,13 @@ export function useWorkspaceActions({
 
     setSelectedProvider(model?.provider ?? chat.defaultProvider);
     setSelectedModelId(model?.modelId ?? chat.defaultModelId);
-    setSelectedSearchStrategy(
-      resolveModelSearchStrategy(
-        model,
-        catalogOverride?.defaults.controlValues,
-        catalogOverride?.defaults.searchStrategyId
-      )
+    const searchPlan = resolveModelSearchPlan(
+      model,
+      catalogOverride?.defaults.searchPlan,
+      catalogOverride?.defaults.searchStrategyId,
+      catalogOverride?.searchStrategies
     );
+    setSelectedSearchPlan(searchPlan.optionIds, searchPlan.mode);
     applyModelControlDefaults(model, catalogOverride?.defaults.controlValues);
 
     const prompt = chat.defaultPromptPresetId

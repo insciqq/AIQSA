@@ -215,13 +215,19 @@ async function persistAcceptedRunDefaults(
         [modelControlKey(defaults)]: { ...defaults.controlDefaults }
       },
       defaultProviderModelId: defaults.modelId,
+      defaultSearchPlan: defaults.searchPlan ?? {
+        mode: "all_selected",
+        optionIds: searchStrategyId === "search-disabled" ? [] : [searchStrategyId]
+      },
       defaultSearchStrategyId: searchStrategyId
     },
     [
       {
         modelId: defaults.modelId,
         provider: defaults.provider,
-        searchStrategyIds: [searchStrategyId]
+        searchStrategyIds: defaults.searchPlan?.optionIds.length
+          ? [...defaults.searchPlan.optionIds]
+          : [searchStrategyId]
       }
     ]
   );
@@ -338,6 +344,9 @@ async function insertAcceptedProviderRunBindings(
     current = await loadProviderAdmissionPlan(tx, {
       providerConnectionId: input.plan.selection.providerConnectionId,
       providerModelId: input.plan.selection.providerModelId,
+      ...(input.plan.requestedSearchPlan
+        ? { searchPlan: input.plan.requestedSearchPlan }
+        : {}),
       searchStrategyId: input.plan.requestedSearchStrategyId,
       userId: input.userId
     });
@@ -351,12 +360,20 @@ async function insertAcceptedProviderRunBindings(
     throw new ProviderAdmissionConflictError();
   }
 
-  const roles: Array<{ role: "answer" | "search"; value: ProviderAdmissionRole }> = [
-    { role: "answer", value: current.answer },
-    ...(current.search ? [{ role: "search" as const, value: current.search }] : [])
+  const roles: Array<{
+    bindingKey: string;
+    role: "answer" | "search";
+    value: ProviderAdmissionRole;
+  }> = [
+    { bindingKey: "answer", role: "answer", value: current.answer },
+    ...(current.searches ?? []).flatMap((search) =>
+      search.role && search.bindingKey
+        ? [{ bindingKey: search.bindingKey, role: "search" as const, value: search.role }]
+        : [])
   ];
   await tx.providerRunBinding.createMany({
-    data: roles.map(({ role, value }) => ({
+    data: roles.map(({ bindingKey, role, value }) => ({
+      bindingKey,
       connectionId: value.snapshot.connectionId,
       credentialId: value.snapshot.credentialId,
       credentialSource: value.credentialSource,
@@ -370,6 +387,19 @@ async function insertAcceptedProviderRunBindings(
       role
     }))
   });
+  if ((current.searches?.length ?? 0) > 0) {
+    await tx.searchRunBinding.createMany({
+      data: current.searches!.map((search) => ({
+        mode: current.requestedSearchPlan?.mode ?? "all_selected",
+        modelRunId: input.runId,
+        optionId: search.optionId,
+        ordinal: search.ordinal,
+        revisionId: search.revisionId,
+        searchStrategyId: search.integrationId,
+        technicalBindingKey: search.bindingKey
+      }))
+    });
+  }
 }
 
 async function repeatableReadTransaction<Value>(
@@ -1349,6 +1379,18 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
       );
     },
     createSearchRun: async (input) => {
+      if (input.invocationId) {
+        const existingInvocation = await prismaClient.searchRun.findUnique({
+          select: { id: true },
+          where: {
+            modelRunId_invocationId: {
+              invocationId: input.invocationId,
+              modelRunId: input.modelRunId
+            }
+          }
+        });
+        if (existingInvocation) return;
+      }
       const artifacts = isRecord(input.artifacts) ? input.artifacts : null;
       const toolCall = artifacts && isRecord(artifacts.toolCall) ? artifacts.toolCall : null;
       const providerCallId = toolCall && typeof toolCall.id === "string" ? toolCall.id : null;
@@ -1367,10 +1409,14 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
       await prismaClient.searchRun.create({
         data: {
           artifacts: json(input.artifacts),
+          durationMs: input.durationMs,
+          invocationId: input.invocationId,
           modelId: input.modelId,
           modelRunId: input.modelRunId,
           provider: input.provider,
+          query: input.query,
           requestPreview: json(input.requestPreview),
+          searchRevisionId: input.searchRevisionId,
           status: input.status,
           strategyId: input.strategyId
         }

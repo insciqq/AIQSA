@@ -1,9 +1,12 @@
+import { decodeSearchPlan, type SearchPlan } from "./search";
+
 export type UserSettingsWire = {
   defaultControlValues: Record<string, unknown>;
   defaultModelId: string;
   defaultPromptPresetId: string | null;
   defaultProvider: string;
   defaultSearchStrategyId: string;
+  defaultSearchPlan?: SearchPlan;
   showCitations: boolean;
   showReasoningBlocks: boolean;
   showToolActivity: boolean;
@@ -35,6 +38,9 @@ export function decodeUpdateSettingsResponse(value: unknown): UpdateSettingsResp
   }
 
   const settings = value.settings;
+  const defaultSearchPlan = settings.defaultSearchPlan === undefined
+    ? null
+    : decodeSearchPlan(settings.defaultSearchPlan, settings.defaultSearchStrategyId);
   if (
     !isRecord(settings.defaultControlValues) ||
     !isString(settings.defaultModelId) ||
@@ -43,7 +49,8 @@ export function decodeUpdateSettingsResponse(value: unknown): UpdateSettingsResp
     !isNonEmptyString(settings.defaultSearchStrategyId) ||
     typeof settings.showCitations !== "boolean" ||
     typeof settings.showReasoningBlocks !== "boolean" ||
-    typeof settings.showToolActivity !== "boolean"
+    typeof settings.showToolActivity !== "boolean" ||
+    (settings.defaultSearchPlan !== undefined && !defaultSearchPlan?.ok)
   ) {
     return null;
   }
@@ -55,6 +62,9 @@ export function decodeUpdateSettingsResponse(value: unknown): UpdateSettingsResp
       defaultPromptPresetId: settings.defaultPromptPresetId,
       defaultProvider: settings.defaultProvider,
       defaultSearchStrategyId: settings.defaultSearchStrategyId,
+      ...(defaultSearchPlan?.ok
+        ? { defaultSearchPlan: defaultSearchPlan.plan }
+        : {}),
       showCitations: settings.showCitations,
       showReasoningBlocks: settings.showReasoningBlocks,
       showToolActivity: settings.showToolActivity

@@ -124,7 +124,7 @@ function useWorkspaceActionsForTest(input: {
   const resumeChatRun = vi.fn();
   const setSelectedModelId = vi.fn();
   const setSelectedProvider = vi.fn();
-  const setSelectedSearchStrategy = vi.fn();
+  const setSelectedSearchPlan = vi.fn();
   const setNotice = vi.fn();
   const chatMutation = {
     closeActions: vi.fn(),
@@ -149,7 +149,7 @@ function useWorkspaceActionsForTest(input: {
     setNotice,
     setSelectedModelId,
     setSelectedProvider,
-    setSelectedSearchStrategy,
+    setSelectedSearchPlan,
     workspaceRefreshPromiseRef
   });
 
@@ -172,7 +172,7 @@ function useWorkspaceActionsForTest(input: {
     setNotice,
     setSelectedModelId,
     setSelectedProvider,
-    setSelectedSearchStrategy,
+    setSelectedSearchPlan,
     setComposerState(
       nextDraft: string,
       nextAttachments: ComposerAttachment[],
@@ -526,7 +526,7 @@ describe("workspace actions", () => {
     expect(state.actions.reapplyActiveChatDefaults(recoveredCatalog)).toBe(true);
     expect(state.setSelectedProvider).toHaveBeenCalledWith("openai");
     expect(state.setSelectedModelId).toHaveBeenCalledWith("gpt-5.5");
-    expect(state.setSelectedSearchStrategy).toHaveBeenCalledWith("search-disabled");
+    expect(state.setSelectedSearchPlan).toHaveBeenCalledWith([], "all_selected");
     expect(state.applyModelControlDefaults).toHaveBeenCalledWith(
       recoveredCatalog.models[0],
       recoveredCatalog.defaults.controlValues

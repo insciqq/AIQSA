@@ -352,6 +352,7 @@ model UserSettings {
   defaultPromptPresetId   String?
   defaultFolderId         String?
   defaultSearchStrategyId String         @default("openai-native-web-search")
+  defaultSearchPlan       Json           @default("{\"mode\":\"all_selected\",\"optionIds\":[]}")
   defaultControlValues    Json           @default("{}")
   showCitations           Boolean        @default(true)
   showReasoningBlocks     Boolean        @default(false)
@@ -452,6 +453,7 @@ model ProviderModel {
   providerRunBindings    ProviderRunBinding[]
   runProfiles            RunProfile[]
   searchStrategies       SearchStrategy[]
+  searchRevisions        SearchIntegrationRevision[]
   chatDefaults           Chat[]                         @relation("ChatDefaultProviderModel")
   userDefaults           UserSettings[]                 @relation("UserDefaultProviderModel")
 
@@ -628,6 +630,7 @@ model ProviderModelCredentialCheck {
 model ProviderRunBinding {
   id                  String                     @id @default(uuid())
   modelRunId          String
+  bindingKey          String                     @default("answer")
   role                ProviderRunRole
   connectionId        String?
   providerModelId     String?
@@ -642,54 +645,112 @@ model ProviderRunBinding {
   model               ProviderModel?             @relation(fields: [connectionId, providerModelId], references: [connectionId, id], onDelete: Restrict, onUpdate: Restrict, map: "ProviderRunBinding_model_fkey")
   modelRun            ModelRun                   @relation(fields: [modelRunId], references: [id], onDelete: Cascade)
 
-  @@unique([modelRunId, role])
+  @@unique([modelRunId, bindingKey])
+  @@index([modelRunId, role])
   @@index([connectionId, providerModelId], map: "ProviderRunBinding_connection_model_idx")
   @@index([credentialId, credentialVersionId], map: "ProviderRunBinding_credential_version_idx")
   @@index([recoverableUntil])
 }
 
 model SearchStrategy {
-  id              String         @id @default(uuid())
-  strategyId      String         @unique
-  provider        String
-  modelId         String?
-  providerModelId String?
-  displayName     String
-  kind            String
-  description     String
-  enabled         Boolean        @default(true)
-  config          Json
-  createdAt       DateTime       @default(now())
-  updatedAt       DateTime       @updatedAt
-  providerModel   ProviderModel? @relation(fields: [providerModelId], references: [id], onDelete: Restrict)
+  id                String                      @id @default(uuid())
+  strategyId        String                      @unique
+  provider          String
+  modelId           String?
+  providerModelId   String?
+  displayName       String
+  kind              String
+  description       String
+  enabled           Boolean                     @default(true)
+  config            Json
+  adapterKind       String                      @default("answer_provider_hosted")
+  credentialMode    String                      @default("answer_provider")
+  draft             Json                        @default("{}")
+  draftVersion      Int                         @default(1)
+  testedDraftHash   String?
+  draftTestEvidence Json?
+  activeRevisionId  String?                     @unique
+  activatedAt       DateTime?
+  archivedAt        DateTime?
+  createdAt         DateTime                    @default(now())
+  updatedAt         DateTime                    @updatedAt
+  activeRevision    SearchIntegrationRevision?  @relation("ActiveSearchRevision", fields: [id, activeRevisionId], references: [searchStrategyId, id], onDelete: Restrict, onUpdate: Restrict, map: "SearchStrategy_activeRevision_fkey")
+  providerModel     ProviderModel?              @relation(fields: [providerModelId], references: [id], onDelete: Restrict)
+  revisions         SearchIntegrationRevision[] @relation("SearchIntegrationRevisions")
+  runBindings       SearchRunBinding[]
 
+  @@unique([id, activeRevisionId])
+  @@index([providerModelId])
+  @@index([enabled, archivedAt])
+}
+
+model SearchIntegrationRevision {
+  id                 String             @id @default(uuid())
+  searchStrategyId   String
+  revisionNumber     Int
+  adapterKind        String
+  credentialMode     String
+  configuration      Json
+  providerModelId    String?
+  validationEvidence Json
+  draftHash          String
+  createdAt          DateTime           @default(now())
+  activeFor          SearchStrategy?    @relation("ActiveSearchRevision")
+  providerModel      ProviderModel?     @relation(fields: [providerModelId], references: [id], onDelete: Restrict)
+  searchStrategy     SearchStrategy     @relation("SearchIntegrationRevisions", fields: [searchStrategyId], references: [id], onDelete: Restrict)
+  runBindings        SearchRunBinding[]
+  searchRuns         SearchRun[]
+
+  @@unique([searchStrategyId, revisionNumber])
+  @@unique([searchStrategyId, draftHash])
+  @@unique([searchStrategyId, id])
   @@index([providerModelId])
 }
 
+model SearchRunBinding {
+  id                  String                    @id @default(uuid())
+  modelRunId          String
+  searchStrategyId    String
+  revisionId          String
+  optionId            String
+  ordinal             Int
+  mode                String
+  technicalBindingKey String?
+  createdAt           DateTime                  @default(now())
+  modelRun            ModelRun                  @relation(fields: [modelRunId], references: [id], onDelete: Cascade)
+  revision            SearchIntegrationRevision @relation(fields: [revisionId], references: [id], onDelete: Restrict)
+  searchStrategy      SearchStrategy            @relation(fields: [searchStrategyId], references: [id], onDelete: Restrict)
+
+  @@unique([modelRunId, ordinal])
+  @@unique([modelRunId, optionId])
+  @@index([revisionId])
+  @@index([searchStrategyId])
+}
+
 model Chat {
-  id                     String         @id @default(uuid())
+  id                     String               @id @default(uuid())
   userId                 String
   folderId               String?
   title                  String
   activeLeafMessageId    String?
   defaultProviderModelId String?
   defaultPromptPresetId  String?
-  pinned                 Boolean        @default(false)
-  archived               Boolean        @default(false)
-  totalInputTokens       Int            @default(0)
-  totalOutputTokens      Int            @default(0)
-  totalReasoningTokens   Int            @default(0)
-  createdAt              DateTime       @default(now())
-  updatedAt              DateTime       @updatedAt
+  pinned                 Boolean              @default(false)
+  archived               Boolean              @default(false)
+  totalInputTokens       Int                  @default(0)
+  totalOutputTokens      Int                  @default(0)
+  totalReasoningTokens   Int                  @default(0)
+  createdAt              DateTime             @default(now())
+  updatedAt              DateTime             @updatedAt
   /// The migration uses PostgreSQL's column-scoped SET NULL so deleting the leaf clears only activeLeafMessageId, never Chat.id.
-  activeLeafMessage      Message?       @relation("ChatActiveLeaf", fields: [id, activeLeafMessageId], references: [chatId, id], onDelete: SetNull, onUpdate: Restrict, map: "Chat_id_activeLeafMessageId_fkey")
+  activeLeafMessage      Message?             @relation("ChatActiveLeaf", fields: [id, activeLeafMessageId], references: [chatId, id], onDelete: SetNull, onUpdate: Restrict, map: "Chat_id_activeLeafMessageId_fkey")
   attachments            Attachment[]
-  folder                 Folder?        @relation(fields: [folderId], references: [id], onDelete: SetNull)
-  defaultProviderModel   ProviderModel? @relation("ChatDefaultProviderModel", fields: [defaultProviderModelId], references: [id], onDelete: Restrict)
-  messages               Message[]      @relation("ChatMessages")
+  folder                 Folder?              @relation(fields: [folderId], references: [id], onDelete: SetNull)
+  defaultProviderModel   ProviderModel?       @relation("ChatDefaultProviderModel", fields: [defaultProviderModelId], references: [id], onDelete: Restrict)
+  messages               Message[]            @relation("ChatMessages")
   modelRuns              ModelRun[]
   sharedSnapshots        SharedChatSnapshot[]
-  user                   User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user                   User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([activeLeafMessageId])
   @@index([defaultProviderModelId])
@@ -759,6 +820,7 @@ model ModelRun {
   mcpRunBindings               McpRunBinding[]
   providerRunBindings          ProviderRunBinding[]
   searchRuns                   SearchRun[]
+  searchRunBindings            SearchRunBinding[]
   toolCalls                    ModelRunToolCall[]
   user                         User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
   userMessage                  Message              @relation("UserMessageRun", fields: [userMessageId], references: [id], onDelete: Restrict)
@@ -995,19 +1057,26 @@ model ModelRunToolCall {
 }
 
 model SearchRun {
-  id             String          @id @default(uuid())
-  modelRunId     String
-  strategyId     String
-  provider       String
-  modelId        String?
-  requestPreview Json
-  artifacts      Json
-  status         SearchRunStatus
-  createdAt      DateTime        @default(now())
-  updatedAt      DateTime        @updatedAt
-  modelRun       ModelRun        @relation(fields: [modelRunId], references: [id], onDelete: Cascade)
+  id               String                     @id @default(uuid())
+  modelRunId       String
+  strategyId       String
+  searchRevisionId String?
+  invocationId     String?
+  query            String?
+  provider         String
+  modelId          String?
+  requestPreview   Json
+  artifacts        Json
+  durationMs       Int?
+  status           SearchRunStatus
+  createdAt        DateTime                   @default(now())
+  updatedAt        DateTime                   @updatedAt
+  modelRun         ModelRun                   @relation(fields: [modelRunId], references: [id], onDelete: Cascade)
+  searchRevision   SearchIntegrationRevision? @relation(fields: [searchRevisionId], references: [id], onDelete: Restrict)
 
+  @@unique([modelRunId, invocationId])
   @@index([strategyId])
+  @@index([searchRevisionId])
 }
 
 model Attachment {

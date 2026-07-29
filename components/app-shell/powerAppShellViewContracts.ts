@@ -25,6 +25,7 @@ import type {
   ThreadMessage
 } from "@/components/app-shell/types";
 import type { RefObject } from "react";
+import type { SearchPlanMode } from "@/lib/domain/search";
 
 export const powerAppShellViewFeatureKeys = [
   "session",
@@ -183,14 +184,17 @@ export type ShellComposerView = {
   reasoningMode: string;
   retryCatalog(): void;
   searchOptions: CatalogSearchStrategy[];
+  searchPlanMode: SearchPlanMode;
   selectModel(model: CatalogModel): void;
   selectPrompt(promptId: string): void;
   selectRunProfile(profileId: RunProfileId): void;
+  selectSearchPlan(optionIds: readonly string[], mode: SearchPlanMode): void;
   selectSearchStrategy(strategyId: string): void;
   selectedModelId: string;
   selectedPromptId: string | null;
   selectedProvider: string;
   selectedProviderName: string;
+  selectedSearchOptionIds: string[];
   selectedSearchStrategy: string;
   showCitations: boolean;
   showReasoningBlocks: boolean;
