@@ -48,6 +48,7 @@ Every ADR also declares `Amends: none` or a comma-separated list of earlier ADR 
 - `0037-unobstructed-conversation-action-rail.md` - removes the repeated visible chat title and full-width header surface; ADR 0038 replaces its desktop normal-flow row with a right-gutter overlay that reserves no vertical strip and still cannot cover the reading column.
 - `0038-reading-first-conversation-chrome.md` - starts desktop chat at the top, gates settled message controls/evidence by hover/focus or touch activation, restores intent-gated compact composer collapse, and makes Run setup profiles a consistent divided list.
 - `0039-custom-provider-discovery-tools-and-lifecycle.md` - makes Custom a first-class Quick-setup choice, adds bounded transient id-only discovery in Quick setup and saved connections, atomically bootstraps an ordered tested model selection, enables explicit compatible protocol/tool declarations and Responses web search, exposes replacement activation, and removes self-contained Custom graphs behind recovery/profile/search fences.
+- `0040-brokered-saas-oauth-behind-generic-remote-mcp.md` - keeps upstream SaaS OAuth and service-specific tools inside independently deployed remote MCP servers, requires separate MCP-audienced and upstream token families with complete refresh/revocation isolation, uses a hardened public Tracker MCP fork as the first conformance target without adding Tracker knowledge to AIQSA, and gates the initial rollout to read-only tools.
 
 ## Superseded ADRs
 

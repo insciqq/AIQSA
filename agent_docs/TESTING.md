@@ -105,6 +105,8 @@ The MCP protocol fixture is local and credential-free. Prisma and ToolHive cover
 
 ```bash
 docker compose -f docker-compose.dev.yml exec -T app \
+  npx vitest run lib/server/mcp/oauthService.test.ts
+docker compose -f docker-compose.dev.yml exec -T app \
   npx vitest run lib/server/mcp/remoteRuntime.integration.test.ts
 docker compose -f docker-compose.dev.yml exec -T \
   -e AIQSA_MCP_INTEGRATION_TEST=1 app \
@@ -114,7 +116,13 @@ docker compose -f docker-compose.dev.yml exec -T \
   npx vitest run lib/server/mcp/toolhive.integration.test.ts
 ```
 
-The ToolHive case controls sibling Docker resources and may pull the reviewed digest-pinned fixture. Package-registry materialization and hosted Notion consent/tool-call checks require the corresponding external authority; metadata discovery alone is not end-to-end verification.
+`oauthService.test.ts` includes the provider-neutral brokered-OAuth regression:
+one reusable MCP client registration, two isolated users, distinct upstream and
+MCP token families, exact resource/client/callback/S256 binding, one bounded
+read call, refresh rotation, revocation, disconnect, and reconnect. It uses no
+Tracker code, package, service, credential, or provider-name branch.
+
+The ToolHive case controls sibling Docker resources and may pull the reviewed digest-pinned fixture. Package-registry materialization, hosted Notion consent/tool-call checks, and a brokered-SaaS live consent require the corresponding external authority; metadata discovery alone is not end-to-end verification. Live broker evidence must be sanitized and may report stable booleans/counts only; it must not print OAuth material, account email, organization identity, task text, comments, or raw upstream responses.
 
 MCP installation-activation changes require focused coordinator/repository tests
 for enqueue idempotency, claim/heartbeat/reclaim, draft and shared-version

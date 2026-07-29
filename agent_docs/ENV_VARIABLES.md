@@ -79,6 +79,12 @@ AIQSA_TOOLHIVE_URL=http://toolhive-runtime:8080
 
 `AIQSA_TOOLHIVE_URL` is internal Compose wiring, not a normal operator endpoint override and not a browser-visible variable. Both Compose files hardcode it to the pinned ToolHive service on the private `mcp-control` network. ToolHive and its dynamic proxy endpoints are not published to the host. MCP server endpoints, source selectors, OAuth policy, shared values, and user values live in the administrator/user persistence model rather than `.env`.
 
+Brokered upstream SaaS configuration also does not add AIQSA environment
+variables. Its OAuth client id/secret, upstream callback, organization routing,
+token encryption keyring, and provider-specific limits belong to the separately
+deployed remote MCP. AIQSA configures only the existing generic MCP resource,
+authorization-origin allowlist, scopes, grants, and per-user MCP connection.
+
 The long-running app and the maintenance service receive `AIQSA_ENCRYPTION_KEY`. The maintenance CLI derives the same opaque ToolHive ownership marker from that key; changing the key before exact-marker cleanup makes old workloads undiscoverable by the new installation identity.
 
 ## SMTP Safety Bounds
@@ -112,6 +118,10 @@ Each provider is enabled only when its client id and secret are both usable. Cal
 - `/api/auth/oauth/yandex/callback`
 
 There is no separate redirect variable. AIQSA stores only the stable provider identity metadata, not OAuth access/refresh tokens. Missing or partial credentials hide the provider and its routes return not found.
+
+These Google/Yandex variables are login identity only. They are not reused for
+remote MCP authorization or delegated access to an upstream SaaS; a brokered
+MCP runs its own independent consent flow.
 
 ## Uploads
 

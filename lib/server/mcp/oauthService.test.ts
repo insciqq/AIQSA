@@ -17,6 +17,8 @@ import { McpOAuthError, McpOAuthService } from "./oauthService";
 const SERVER_URL = "https://mcp.fixture.test/mcp";
 const AUTH_ORIGIN = "https://auth.fixture.test";
 const REDIRECT_URI = "https://aiqsa.fixture.test/api/me/mcp/server-1/oauth/callback";
+const BROKER_SERVER_URL = "https://broker.fixture.test/mcp";
+const BROKER_AUTH_ORIGIN = "https://broker-auth.fixture.test";
 
 function fixturePolicy(): McpOAuthPolicy {
   return {
@@ -33,7 +35,18 @@ function fixturePolicy(): McpOAuthPolicy {
   };
 }
 
+function brokerPolicy(): McpOAuthPolicy {
+  return {
+    ...fixturePolicy(),
+    allowedAuthorizationServerOrigins: [BROKER_AUTH_ORIGIN],
+    requestedScopes: ["remote.read"],
+    resource: BROKER_SERVER_URL,
+    serverUrl: BROKER_SERVER_URL
+  };
+}
+
 class MemoryOAuthRepository implements McpOAuthRepository {
+  readonly allowedUserIds: ReadonlySet<string>;
   readonly clients = new Map<string, McpOAuthStoredClient>();
   readonly connections = new Map<string, McpOAuthStoredConnection>();
   readonly ineligibleConnectionIds = new Set<string>();
@@ -45,8 +58,12 @@ class MemoryOAuthRepository implements McpOAuthRepository {
   policyAvailable = true;
   validationPrepareCalls = 0;
 
-  constructor(policy: McpOAuthPolicy = fixturePolicy()) {
+  constructor(
+    policy: McpOAuthPolicy = fixturePolicy(),
+    additionalUserIds: readonly string[] = []
+  ) {
     this.policy = policy;
+    this.allowedUserIds = new Set([policy.userId, ...additionalUserIds]);
   }
 
   async createConnection(input: Parameters<McpOAuthRepository["createConnection"]>[0]):
@@ -54,6 +71,8 @@ class MemoryOAuthRepository implements McpOAuthRepository {
     if (input.configurationIdentity !== this.policy.configurationIdentity) {
       return { kind: "configuration_changed" };
     }
+    const connectionPolicy = this.policyForUser(input.userId);
+    if (!connectionPolicy) return { kind: "not_found" };
     for (const [id, connection] of this.connections) {
       if (connection.userId === input.userId && connection.purpose === input.purpose &&
         connection.state === "ready") {
@@ -70,7 +89,7 @@ class MemoryOAuthRepository implements McpOAuthRepository {
         : null,
       externalAccountLabel: input.externalAccountLabel,
       id,
-      policy: this.policy,
+      policy: connectionPolicy,
       policyFingerprint: input.policyFingerprint,
       purpose: input.purpose,
       scopes: input.tokens.scope?.split(" ") ?? this.policy.requestedScopes,
@@ -131,16 +150,17 @@ class MemoryOAuthRepository implements McpOAuthRepository {
     Promise<McpOAuthPolicy | null> {
     this.validationPrepareCalls += 1;
     return this.policy.purpose === "validation" && input.redirectUri === this.policy.redirectUri &&
-      input.serverId === this.policy.serverId && input.userId === this.policy.userId
-      ? this.policy
+      input.serverId === this.policy.serverId
+      ? this.policyForUser(input.userId)
       : null;
   }
 
   async loadPolicy(input: { purpose: McpOAuthPurpose; redirectUri: string; serverId: string; userId: string }):
     Promise<McpOAuthPolicy | null> {
-    return this.policyAvailable && input.purpose === this.policy.purpose && input.redirectUri === this.policy.redirectUri &&
-      input.serverId === this.policy.serverId && input.userId === this.policy.userId
-      ? this.policy
+    return this.policyAvailable && input.purpose === this.policy.purpose &&
+      input.redirectUri === this.policy.redirectUri &&
+      input.serverId === this.policy.serverId
+      ? this.policyForUser(input.userId)
       : null;
   }
 
@@ -216,6 +236,11 @@ class MemoryOAuthRepository implements McpOAuthRepository {
     };
     this.clients.set(input.registrationKey, client);
     return client;
+  }
+
+  private policyForUser(userId: string): McpOAuthPolicy | null {
+    if (!this.allowedUserIds.has(userId)) return null;
+    return userId === this.policy.userId ? this.policy : { ...this.policy, userId };
   }
 }
 
@@ -306,11 +331,311 @@ class StandardsOAuthFixture {
   };
 }
 
+type BrokerAuthorizationCode = Readonly<{
+  challenge: string;
+  clientId: string;
+  redirectUri: string;
+  resource: string;
+  subject: string;
+}>;
+
+type BrokerUpstreamGrant = Readonly<{
+  accessToken: string;
+  refreshToken: string;
+  subject: string;
+}>;
+
+class BrokeredOAuthFixture {
+  readonly authorizationCodes = new Map<string, BrokerAuthorizationCode>();
+  readonly downstreamTokens = new Set<string>();
+  readonly readSubjects: string[] = [];
+  readonly revokedDownstreamTokens: string[] = [];
+  readonly upstreamGrants = new Map<string, BrokerUpstreamGrant>();
+  readonly upstreamTokens = new Set<string>();
+  dcrCalls = 0;
+  refreshCalls = 0;
+  sequence = 0;
+
+  readonly #tokenToGrant = new Map<string, string>();
+
+  approve(authorizationUrl: string, subject: string): { code: string; state: string } {
+    const url = new URL(authorizationUrl);
+    expect(url.origin).toBe(BROKER_AUTH_ORIGIN);
+    expect(url.pathname).toBe("/authorize");
+    expect(url.searchParams.get("client_id")).toBe("broker-client");
+    expect(url.searchParams.get("redirect_uri")).toBe(REDIRECT_URI);
+    expect(url.searchParams.get("resource")).toBe(BROKER_SERVER_URL);
+    expect(url.searchParams.get("scope")).toBe("remote.read");
+    expect(url.searchParams.get("code_challenge_method")).toBe("S256");
+    const state = url.searchParams.get("state");
+    const codeChallenge = url.searchParams.get("code_challenge");
+    if (!state || !codeChallenge) throw new Error("invalid broker authorization request");
+    const code = `broker-code-${++this.sequence}`;
+    this.authorizationCodes.set(code, {
+      challenge: codeChallenge,
+      clientId: "broker-client",
+      redirectUri: REDIRECT_URI,
+      resource: BROKER_SERVER_URL,
+      subject
+    });
+    return { code, state };
+  }
+
+  readonly fetch = async (input: string | URL, init?: RequestInit): Promise<Response> => {
+    const url = new URL(input.toString());
+    if (url.toString() === BROKER_SERVER_URL) {
+      const authorization = new Headers(init?.headers).get("authorization");
+      const token = authorization?.startsWith("Bearer ")
+        ? authorization.slice("Bearer ".length)
+        : null;
+      const grantId = token ? this.#tokenToGrant.get(token) : undefined;
+      const grant = grantId ? this.upstreamGrants.get(grantId) : undefined;
+      if (!token || !grantId || !grant || !token.startsWith("broker-mcp-at-")) {
+        return Response.json({ error: "invalid_token" }, { status: 401 });
+      }
+      this.readSubjects.push(grant.subject);
+      return Response.json({ open_issue_count: 2 });
+    }
+    if (url.origin === "https://broker.fixture.test" &&
+      url.pathname.startsWith("/.well-known/oauth-protected-resource")) {
+      return Response.json({
+        authorization_servers: [BROKER_AUTH_ORIGIN],
+        resource: BROKER_SERVER_URL,
+        resource_name: "Brokered SaaS",
+        scopes_supported: ["remote.read"]
+      });
+    }
+    if (url.toString() === `${BROKER_AUTH_ORIGIN}/.well-known/oauth-authorization-server`) {
+      return Response.json({
+        authorization_endpoint: `${BROKER_AUTH_ORIGIN}/authorize`,
+        code_challenge_methods_supported: ["S256"],
+        grant_types_supported: ["authorization_code", "refresh_token"],
+        issuer: BROKER_AUTH_ORIGIN,
+        registration_endpoint: `${BROKER_AUTH_ORIGIN}/register`,
+        response_types_supported: ["code"],
+        revocation_endpoint: `${BROKER_AUTH_ORIGIN}/revoke`,
+        revocation_endpoint_auth_methods_supported: ["client_secret_basic"],
+        token_endpoint: `${BROKER_AUTH_ORIGIN}/token`,
+        token_endpoint_auth_methods_supported: ["client_secret_basic"]
+      });
+    }
+    if (url.toString() === `${BROKER_AUTH_ORIGIN}/register`) {
+      this.dcrCalls += 1;
+      const body = JSON.parse(String(init?.body)) as OAuthClientMetadata;
+      expect(body.redirect_uris).toEqual([REDIRECT_URI]);
+      expect(body.scope).toBe("remote.read");
+      return Response.json({
+        ...body,
+        client_id: "broker-client",
+        client_secret: "broker-client-secret",
+        token_endpoint_auth_method: "client_secret_basic"
+      }, { status: 201 });
+    }
+    if (url.toString() === `${BROKER_AUTH_ORIGIN}/token`) {
+      const authorization = new Headers(init?.headers).get("authorization");
+      expect(authorization).toBe(
+        `Basic ${Buffer.from("broker-client:broker-client-secret", "utf8").toString("base64")}`
+      );
+      const body = new URLSearchParams(String(init?.body));
+      expect(body.get("resource")).toBe(BROKER_SERVER_URL);
+      if (body.get("grant_type") === "authorization_code") {
+        return this.exchangeAuthorizationCode(body);
+      }
+      if (body.get("grant_type") === "refresh_token") {
+        return this.exchangeRefreshToken(body);
+      }
+      return Response.json({ error: "unsupported_grant_type" }, { status: 400 });
+    }
+    if (url.toString() === `${BROKER_AUTH_ORIGIN}/revoke`) {
+      const body = new URLSearchParams(String(init?.body));
+      const token = body.get("token");
+      if (token) {
+        this.revokedDownstreamTokens.push(token);
+        const grantId = this.#tokenToGrant.get(token);
+        if (grantId) this.#deleteGrant(grantId);
+      }
+      return new Response(null, { status: 200 });
+    }
+    return Response.json({ error: "fixture_not_found" }, { status: 404 });
+  };
+
+  private exchangeAuthorizationCode(body: URLSearchParams): Response {
+    const code = body.get("code");
+    const verifier = body.get("code_verifier");
+    const authorization = code ? this.authorizationCodes.get(code) : undefined;
+    if (!code || !verifier || !authorization ||
+      authorization.challenge !== challenge(verifier) ||
+      authorization.clientId !== "broker-client" ||
+      authorization.redirectUri !== body.get("redirect_uri") ||
+      authorization.resource !== body.get("resource")) {
+      return Response.json({ error: "invalid_grant" }, { status: 400 });
+    }
+    this.authorizationCodes.delete(code);
+    const grantId = `grant-${authorization.subject}-${this.sequence}`;
+    const grant = {
+      accessToken: `upstream-access-${authorization.subject}-${this.sequence}`,
+      refreshToken: `upstream-refresh-${authorization.subject}-${this.sequence}`,
+      subject: authorization.subject
+    };
+    this.upstreamGrants.set(grantId, grant);
+    this.upstreamTokens.add(grant.accessToken);
+    this.upstreamTokens.add(grant.refreshToken);
+    return this.#issueDownstream(grantId);
+  }
+
+  private exchangeRefreshToken(body: URLSearchParams): Response {
+    const refreshToken = body.get("refresh_token");
+    const grantId = refreshToken ? this.#tokenToGrant.get(refreshToken) : undefined;
+    const grant = grantId ? this.upstreamGrants.get(grantId) : undefined;
+    if (!refreshToken || !grantId || !grant) {
+      return Response.json({ error: "invalid_grant" }, { status: 400 });
+    }
+    this.refreshCalls += 1;
+    this.#deleteTokenMappings(grantId);
+    const rotatedGrant = {
+      accessToken: `upstream-access-${grant.subject}-refresh-${this.refreshCalls}`,
+      refreshToken: `upstream-refresh-${grant.subject}-refresh-${this.refreshCalls}`,
+      subject: grant.subject
+    };
+    this.upstreamGrants.set(grantId, rotatedGrant);
+    this.upstreamTokens.add(rotatedGrant.accessToken);
+    this.upstreamTokens.add(rotatedGrant.refreshToken);
+    return this.#issueDownstream(grantId);
+  }
+
+  #issueDownstream(grantId: string): Response {
+    const suffix = ++this.sequence;
+    const accessToken = `broker-mcp-at-${suffix}`;
+    const refreshToken = `broker-mcp-rt-${suffix}`;
+    this.downstreamTokens.add(accessToken);
+    this.downstreamTokens.add(refreshToken);
+    this.#tokenToGrant.set(accessToken, grantId);
+    this.#tokenToGrant.set(refreshToken, grantId);
+    return Response.json({
+      access_token: accessToken,
+      expires_in: 3_600,
+      refresh_token: refreshToken,
+      scope: "remote.read",
+      token_type: "Bearer"
+    } satisfies OAuthTokens);
+  }
+
+  #deleteGrant(grantId: string): void {
+    this.#deleteTokenMappings(grantId);
+    this.upstreamGrants.delete(grantId);
+  }
+
+  #deleteTokenMappings(grantId: string): void {
+    for (const [token, mappedGrantId] of this.#tokenToGrant) {
+      if (mappedGrantId === grantId) this.#tokenToGrant.delete(token);
+    }
+  }
+}
+
 function challenge(verifier: string): string {
   return createHash("sha256").update(verifier).digest("base64url");
 }
 
 describe("generic MCP OAuth service", () => {
+  it("keeps brokered upstream grants private and isolated across users", async () => {
+    const repository = new MemoryOAuthRepository(brokerPolicy(), ["user-2"]);
+    const fixture = new BrokeredOAuthFixture();
+    const service = new McpOAuthService({
+      fetchForPolicy: () => fixture.fetch,
+      now: () => repository.now,
+      repository
+    });
+    const connect = async (userId: string, state: string) => {
+      const started = await service.startAuthorization({
+        forceReconnect: true,
+        purpose: "user",
+        redirectUri: REDIRECT_URI,
+        serverId: "server-1",
+        state,
+        userId
+      });
+      if (started.kind !== "redirect") throw new Error("expected redirect");
+      const approval = fixture.approve(started.authorizationUrl, `external-${userId}`);
+      expect(approval.state).toBe(state);
+      expect(new URL(started.authorizationUrl).searchParams.get("code_challenge"))
+        .toBe(challenge(started.flow.codeVerifier));
+      return service.completeAuthorization({
+        authorizationCode: approval.code,
+        flow: started.flow
+      });
+    };
+
+    const userOne = await connect("user-1", "broker-state-1");
+    const userTwo = await connect("user-2", "broker-state-2");
+    expect(fixture.dcrCalls).toBe(1);
+    expect(fixture.upstreamGrants.size).toBe(2);
+    expect(userOne.tokens.access_token).not.toBe(userTwo.tokens.access_token);
+    expect(userOne.tokens.refresh_token).not.toBe(userTwo.tokens.refresh_token);
+    expect([...fixture.downstreamTokens]).toEqual(expect.arrayContaining([
+      userOne.tokens.access_token,
+      userOne.tokens.refresh_token,
+      userTwo.tokens.access_token,
+      userTwo.tokens.refresh_token
+    ]));
+    expect([...fixture.downstreamTokens].some((token) => fixture.upstreamTokens.has(token)))
+      .toBe(false);
+
+    const userOneProvider = await service.createRuntimeProvider(userOne.id);
+    const userOneRuntimeFetch = await service.createRuntimeFetch(userOne.id, fixture.fetch);
+    const readResponse = await userOneRuntimeFetch(BROKER_SERVER_URL, {
+      headers: { authorization: `Bearer ${userOne.tokens.access_token}` },
+      method: "POST"
+    });
+    expect(readResponse.status).toBe(200);
+    expect(await readResponse.json()).toEqual({ open_issue_count: 2 });
+    expect(fixture.readSubjects).toEqual(["external-user-1"]);
+    const upstreamToken = [...fixture.upstreamTokens][0];
+    await expect(fixture.fetch(BROKER_SERVER_URL, {
+      headers: { authorization: `Bearer ${upstreamToken}` },
+      method: "POST"
+    }).then((response) => response.status)).resolves.toBe(401);
+
+    repository.connections.set(userTwo.id, {
+      ...userTwo,
+      expiresAt: new Date(userTwo.expiresAt!.getTime() + 7_200_000)
+    });
+    repository.now = new Date(userOne.expiresAt!.getTime() - 30_000);
+    const refreshed = await Promise.all(
+      Array.from({ length: 8 }, () => userOneProvider.tokens())
+    );
+    expect(fixture.refreshCalls).toBe(1);
+    const refreshedAccessToken = refreshed[0]?.access_token;
+    const refreshedRefreshToken = refreshed[0]?.refresh_token;
+    expect(refreshedAccessToken).toMatch(/^broker-mcp-at-/u);
+    expect(refreshedRefreshToken).toMatch(/^broker-mcp-rt-/u);
+    expect(refreshed.every((tokens) => tokens?.access_token === refreshedAccessToken)).toBe(true);
+    expect(repository.connections.get(userTwo.id)?.tokens).toEqual(userTwo.tokens);
+
+    await expect(service.disconnect({
+      purpose: "user",
+      serverId: "server-1",
+      userId: "user-1"
+    })).resolves.toBe("disconnected");
+    expect(fixture.revokedDownstreamTokens).toEqual(expect.arrayContaining([
+      refreshedAccessToken,
+      refreshedRefreshToken
+    ]));
+    expect(fixture.revokedDownstreamTokens.some((token) => fixture.upstreamTokens.has(token)))
+      .toBe(false);
+    expect(fixture.upstreamGrants.size).toBe(1);
+    expect([...fixture.upstreamGrants.values()].map((grant) => grant.subject))
+      .toEqual(["external-user-2"]);
+    expect(repository.connections.get(userTwo.id)?.state).toBe("ready");
+
+    const reconnectedUserOne = await connect("user-1", "broker-state-reconnect");
+    expect(reconnectedUserOne.tokens.access_token).not.toBe(refreshedAccessToken);
+    expect(fixture.dcrCalls).toBe(1);
+    expect(fixture.upstreamGrants.size).toBe(2);
+    expect([...fixture.upstreamGrants.values()].map((grant) => grant.subject).sort())
+      .toEqual(["external-user-1", "external-user-2"]);
+    expect(repository.connections.get(userTwo.id)?.tokens).toEqual(userTwo.tokens);
+  });
+
   it("discovers, registers, exchanges, singleflights refresh, reuses registration, and revokes", async () => {
     const repository = new MemoryOAuthRepository();
     const fixture = new StandardsOAuthFixture();
