@@ -135,6 +135,12 @@ for reported metadata, the disclosed GPT-5.6 Sol fallback, explicit disable,
 and Responses hosted search. A real gateway remains an opt-in sanitized smoke,
 never routine Vitest input.
 
+Overlay geometry cases normally inherit deterministic `data-motion=off`, but a
+case that protects positioning from entrance-animation properties must remove
+that attribute before opening the surface. The wide-screen Run setup case does
+so and waits for the actual `pop-enter` animation before asserting viewport
+bounds and local overflow.
+
 The ToolHive case controls sibling Docker resources and may pull the reviewed digest-pinned fixture. Package-registry materialization, hosted Notion consent/tool-call checks, and a brokered-SaaS live consent require the corresponding external authority; metadata discovery alone is not end-to-end verification. Live broker evidence must be sanitized and may report stable booleans/counts only; it must not print OAuth material, account email, organization identity, task text, comments, or raw upstream responses.
 
 MCP installation-activation changes require focused coordinator/repository tests

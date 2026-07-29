@@ -851,6 +851,7 @@ test("keeps a tall wide-screen Run setup inside the viewport with one local scro
   await page.setViewportSize({ height: 800, width: 1_600 });
   await installMatrixCatalogFixture(page);
   await signIn(page);
+  await page.evaluate(() => document.documentElement.removeAttribute("data-motion"));
 
   const runSetup = await openRunSetup(page);
   const content = runSetup.getByTestId("run-setup-content");
