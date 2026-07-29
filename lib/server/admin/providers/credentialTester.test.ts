@@ -108,7 +108,13 @@ describe("admin provider credential tester", () => {
 
     await expect(tester.test(input(family))).resolves.toEqual({
       method: "models_catalog",
-      modelIds: ["model-b", "model-a"]
+      modelIds: ["model-b", "model-a"],
+      ...(family === "openai_compatible" ? {
+        models: [
+          { capabilities: {}, id: "model-b" },
+          { capabilities: {}, id: "model-a" }
+        ]
+      } : {})
     });
     expect(requests).toHaveLength(1);
     const request = requests[0]!;
@@ -149,7 +155,8 @@ describe("admin provider credential tester", () => {
       secret: null
     })).resolves.toEqual({
       method: "models_catalog",
-      modelIds: ["local-model"]
+      modelIds: ["local-model"],
+      models: [{ capabilities: {}, id: "local-model" }]
     });
     expect(requests[0]?.headers.has("authorization")).toBe(false);
   });
@@ -196,6 +203,48 @@ describe("admin provider credential tester", () => {
     expect(source).toHaveBeenCalledOnce();
     expect(requests[0]?.headers.get("authorization")).toBe("Bearer lazy-exact-secret");
     expect(JSON.stringify(result)).not.toContain("lazy-exact-secret");
+  });
+
+  it("returns only bounded compatible reasoning and token metadata", async () => {
+    const tester = createAdminProviderCredentialTester({
+      network: {
+        dispatch: async () => Response.json({
+          data: [{
+            contextWindow: 272_000,
+            id: "gpt-5.6-sol",
+            ignoredCredentialHint: "must-not-enter-the-result",
+            metadata: {
+              default_reasoning_level: "low",
+              default_reasoning_mode: "standard",
+              internal_route: "must-not-enter-the-result",
+              supported_reasoning_levels: ["low", "medium", "high", "xhigh", "max", "ultra"],
+              supported_reasoning_modes: ["standard", "pro"]
+            },
+            supportsReasoning: true
+          }]
+        }),
+        lookupHostname: publicLookup
+      }
+    });
+
+    const result = await tester.test(input("openai_compatible"));
+
+    expect(result).toEqual({
+      method: "models_catalog",
+      modelIds: ["gpt-5.6-sol"],
+      models: [{
+        capabilities: {
+          contextWindow: 272_000,
+          defaultReasoningEffort: "low",
+          defaultReasoningMode: "standard",
+          reasoning: true,
+          reasoningEfforts: ["low", "medium", "high", "xhigh", "max", "ultra"],
+          reasoningModes: ["standard", "pro"]
+        },
+        id: "gpt-5.6-sol"
+      }]
+    });
+    expect(JSON.stringify(result)).not.toContain("must-not-enter-the-result");
   });
 
   it.each([

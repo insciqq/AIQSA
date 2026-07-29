@@ -26,11 +26,22 @@ const ready = {
 };
 
 describe("custom provider setup API", () => {
-  it("decodes only bounded model IDs from Custom discovery", async () => {
+  it("decodes only bounded model IDs and safe capability hints from Custom discovery", async () => {
     const body = {
       checkedAt: "2026-07-26T10:00:00.000Z",
       modelCount: 2,
-      models: [{ id: "model-b" }, { id: "model-a" }],
+      models: [
+        {
+          capabilities: {
+            contextWindow: 272_000,
+            defaultReasoningEffort: "low",
+            reasoning: true,
+            reasoningEfforts: ["low", "medium", "high"]
+          },
+          id: "model-b"
+        },
+        { capabilities: {}, id: "model-a" }
+      ],
       source: "models_catalog",
       status: "valid"
     } as const;
@@ -57,7 +68,29 @@ describe("custom provider setup API", () => {
       apiRoot: "https://leaked.example.test/v1",
       checkedAt: "2026-07-26T10:00:00.000Z",
       modelCount: 1,
-      models: [{ id: "model-a" }],
+      models: [{ capabilities: {}, id: "model-a" }],
+      source: "models_catalog",
+      status: "valid"
+    })));
+    expect(result).toEqual({
+      error: { code: "provider_custom_setup_discovery_response_invalid" },
+      ok: false
+    });
+  });
+
+  it("rejects contradictory or duplicate reasoning hints", async () => {
+    const result = await discoverAdminProviderCustomModels({
+      allowPrivateNetwork: false,
+      apiRoot: "https://llm.example.test/v1",
+      authenticationMode: "bearer",
+      secret: "browser-only-key"
+    }, vi.fn(async () => Response.json({
+      checkedAt: "2026-07-26T10:00:00.000Z",
+      modelCount: 1,
+      models: [{
+        capabilities: { reasoning: false, reasoningEfforts: ["low", "low"] },
+        id: "model-a"
+      }],
       source: "models_catalog",
       status: "valid"
     })));

@@ -11,6 +11,10 @@ export type McpOAuthPolicy = Readonly<{
   redirectUri: string;
   requestedScopes: readonly string[];
   resource: string;
+  /** Missing means an administrator explicitly reviewed `resource` (and keeps
+   * older encrypted policy envelopes backward compatible). Auto mode may bind
+   * only to a same-origin resource identifier returned by RFC 9728 discovery. */
+  resourceMode?: "auto_same_origin";
   serverId: string;
   serverUrl: string;
   userId: string;
@@ -25,6 +29,33 @@ function normalizedResource(draft: McpDraftConfiguration): string {
   resource.hash = "";
   resource.search = "";
   return resource.toString();
+}
+
+function canonicalResource(value: string): string | null {
+  try {
+    const resource = new URL(value);
+    if (resource.username || resource.password || resource.hash || resource.search) return null;
+    return resource.toString();
+  } catch {
+    return null;
+  }
+}
+
+/** Resolve an automatically configured resource only inside the MCP endpoint's
+ * reviewed origin. Cross-origin discovery still requires an explicit admin
+ * policy value and therefore fails closed. */
+export function bindMcpOAuthPolicyResource(
+  policy: McpOAuthPolicy,
+  discoveredResource: string | null | undefined
+): McpOAuthPolicy | null {
+  if (!discoveredResource) return policy;
+  const resource = canonicalResource(discoveredResource);
+  if (!resource) return null;
+  if (policy.resourceMode !== "auto_same_origin") {
+    return resource === canonicalResource(policy.resource) ? policy : null;
+  }
+  if (new URL(resource).origin !== new URL(policy.serverUrl).origin) return null;
+  return { ...policy, resource };
 }
 
 function sortedUnique(values: readonly string[]): string[] {
@@ -53,6 +84,7 @@ export function buildMcpOAuthPolicy(input: Readonly<{
   if (input.draft.auth.mode !== "oauth" || input.draft.source.kind !== "remote") {
     throw new Error("mcp_oauth_policy_invalid");
   }
+  const explicitResource = input.draft.auth.protectedResource !== undefined;
   return {
     allowPrivateNetwork: input.draft.source.allowPrivateNetwork === true,
     allowedAuthorizationServerOrigins: effectiveAuthorizationServerOrigins(input.draft),
@@ -61,6 +93,7 @@ export function buildMcpOAuthPolicy(input: Readonly<{
     redirectUri: new URL(input.redirectUri).toString(),
     requestedScopes: sortedUnique(input.draft.auth.scopes),
     resource: normalizedResource(input.draft),
+    ...(explicitResource ? {} : { resourceMode: "auto_same_origin" as const }),
     serverId: input.serverId,
     serverUrl: new URL(input.draft.source.url).toString(),
     userId: input.userId,
@@ -78,6 +111,8 @@ export function mcpOAuthPolicyFingerprint(
     | "redirectUri"
     | "requestedScopes"
     | "resource"
+    | "resourceMode"
+    | "serverUrl"
   >,
   clientId: string
 ): string {
@@ -87,7 +122,9 @@ export function mcpOAuthPolicyFingerprint(
     clientIdMetadataDocumentUrl: policy.clientIdMetadataDocumentUrl ?? null,
     redirectUri: policy.redirectUri,
     requestedScopes: sortedUnique(policy.requestedScopes),
-    resource: new URL(policy.resource).toString()
+    resource: policy.resourceMode === "auto_same_origin"
+      ? { autoSameOriginFor: new URL(policy.serverUrl).toString() }
+      : new URL(policy.resource).toString()
   });
 }
 

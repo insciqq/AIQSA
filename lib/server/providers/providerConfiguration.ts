@@ -3,6 +3,8 @@ import type { ProviderModelCapabilities } from "./types";
 const MAX_API_ROOT_LENGTH = 2_048;
 const MAX_DEFAULT_PARAMS_BYTES = 32 * 1_024;
 const MAX_PROVIDER_ROUTE_COUNT = 16;
+const MAX_REASONING_CONTROL_COUNT = 16;
+const MAX_REASONING_CONTROL_LENGTH = 32;
 
 export const providerAdapterKinds = [
   "anthropic_messages",
@@ -77,6 +79,21 @@ function boundedText(value: unknown, maxLength: number): value is string {
     value.length <= maxLength &&
     !/[\u0000-\u001f\u007f]/u.test(value)
   );
+}
+
+function optionalReasoningControls(value: unknown): string[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.length < 1 || value.length > MAX_REASONING_CONTROL_COUNT) {
+    throw new ProviderConfigurationError("provider_model_capabilities_invalid");
+  }
+  const normalized = value.map((entry) => boundedText(entry, MAX_REASONING_CONTROL_LENGTH)
+    ? entry.trim()
+    : null);
+  if (normalized.some((entry) => entry === null) ||
+    new Set(normalized).size !== normalized.length) {
+    throw new ProviderConfigurationError("provider_model_capabilities_invalid");
+  }
+  return normalized as string[];
 }
 
 function jsonByteLength(value: unknown): number {
@@ -197,6 +214,31 @@ export function normalizeProviderModelCapabilities(value: unknown): ProviderMode
   ) {
     throw new ProviderConfigurationError("provider_model_capabilities_invalid");
   }
+  const reasoningEfforts = optionalReasoningControls(value.reasoningEfforts);
+  const reasoningModes = optionalReasoningControls(value.reasoningModes);
+  const defaultReasoningEffort = value.defaultReasoningEffort === undefined
+    ? undefined
+    : boundedText(value.defaultReasoningEffort, MAX_REASONING_CONTROL_LENGTH)
+      ? value.defaultReasoningEffort.trim()
+      : null;
+  const defaultReasoningMode = value.defaultReasoningMode === undefined
+    ? undefined
+    : boundedText(value.defaultReasoningMode, MAX_REASONING_CONTROL_LENGTH)
+      ? value.defaultReasoningMode.trim()
+      : null;
+  if (
+    defaultReasoningEffort === null ||
+    defaultReasoningMode === null ||
+    (!value.reasoning && (
+      reasoningEfforts || reasoningModes || defaultReasoningEffort || defaultReasoningMode
+    )) ||
+    (reasoningEfforts && (!defaultReasoningEffort || !reasoningEfforts.includes(defaultReasoningEffort))) ||
+    (!reasoningEfforts && defaultReasoningEffort) ||
+    (reasoningModes && (!defaultReasoningMode || !reasoningModes.includes(defaultReasoningMode))) ||
+    (!reasoningModes && defaultReasoningMode)
+  ) {
+    throw new ProviderConfigurationError("provider_model_capabilities_invalid");
+  }
 
   return {
     ...(typeof value.backgroundStreaming === "boolean"
@@ -215,6 +257,10 @@ export function normalizeProviderModelCapabilities(value: unknown): ProviderMode
     ...(typeof value.parallelToolCalls === "boolean" ? { parallelToolCalls: value.parallelToolCalls } : {}),
     pdf: value.pdf as boolean,
     reasoning: value.reasoning as boolean,
+    ...(defaultReasoningEffort ? { defaultReasoningEffort } : {}),
+    ...(defaultReasoningMode ? { defaultReasoningMode } : {}),
+    ...(reasoningEfforts ? { reasoningEfforts } : {}),
+    ...(reasoningModes ? { reasoningModes } : {}),
     ...(typeof value.streaming === "boolean" ? { streaming: value.streaming } : {}),
     ...(typeof value.toolCalling === "boolean" ? { toolCalling: value.toolCalling } : {}),
     vision: value.vision as boolean

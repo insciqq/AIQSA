@@ -114,7 +114,10 @@ describe("useAdminProviderCustomSetupController", () => {
       data: {
         checkedAt: "2026-07-26T10:00:00.000Z",
         modelCount: 2,
-        models: [{ id: "vendor/a" }, { id: "vendor/b" }],
+        models: [
+          { capabilities: {}, id: "vendor/a" },
+          { capabilities: {}, id: "vendor/b" }
+        ],
         source: "models_catalog",
         status: "valid"
       },
@@ -148,6 +151,13 @@ describe("useAdminProviderCustomSetupController", () => {
     });
 
     expect(api.submit.mock.calls[0]?.[0]).toEqual(expect.objectContaining({
+      capabilities: expect.objectContaining({
+        defaultReasoningEffort: "medium",
+        defaultReasoningMode: "standard",
+        reasoning: true,
+        reasoningEfforts: ["none", "low", "medium", "high", "xhigh", "max"],
+        reasoningModes: ["standard", "pro"]
+      }),
       modelIds: ["vendor/b", "vendor/a"]
     }));
     expect(api.submit.mock.calls[0]?.[0]).not.toHaveProperty("modelId");

@@ -32,7 +32,7 @@ describe("custom provider model discovery handler", () => {
     expect(response.status).toBe(401);
   });
 
-  it("returns only ordered model IDs from the safe catalog tester", async () => {
+  it("returns ordered models with an empty safe capability contract for an id-only tester", async () => {
     const test = vi.fn(async () => ({
       method: "models_catalog" as const,
       modelIds: ["model-b", "model-a"]
@@ -64,7 +64,10 @@ describe("custom provider model discovery handler", () => {
     expect(JSON.parse(text)).toEqual({
       checkedAt: "2026-07-28T12:00:00.000Z",
       modelCount: 2,
-      models: [{ id: "model-b" }, { id: "model-a" }],
+      models: [
+        { capabilities: {}, id: "model-b" },
+        { capabilities: {}, id: "model-a" }
+      ],
       source: "models_catalog",
       status: "valid"
     });

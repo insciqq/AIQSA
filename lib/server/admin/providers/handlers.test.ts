@@ -250,10 +250,10 @@ describe("admin provider HTTP handlers", () => {
     });
   });
 
-  it("exposes only compatible model ids from the selected stored credential", async () => {
+  it("exposes only compatible model ids and bounded capabilities from the selected stored credential", async () => {
     const discoverCompatibleModels = vi.fn(async () => [
-      { id: "vendor/model-a" },
-      { id: "vendor/model-b" }
+      { capabilities: { reasoning: true, reasoningEfforts: ["low", "high"] }, id: "vendor/model-a" },
+      { capabilities: {}, id: "vendor/model-b" }
     ]);
     const handler = createAdminProviderConnectionActionHandler({
       resolveAuth: resolver(auth()),
@@ -268,7 +268,10 @@ describe("admin provider HTTP handlers", () => {
 
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({
-      models: [{ id: "vendor/model-a" }, { id: "vendor/model-b" }]
+      models: [
+        { capabilities: { reasoning: true, reasoningEfforts: ["low", "high"] }, id: "vendor/model-a" },
+        { capabilities: {}, id: "vendor/model-b" }
+      ]
     });
     expect(discoverCompatibleModels).toHaveBeenCalledWith({
       connectionId: "connection-1",

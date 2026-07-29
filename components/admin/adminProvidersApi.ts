@@ -77,7 +77,46 @@ function isDiscoveredModel(value: unknown): value is AdminOpenRouterDiscoveredMo
 }
 
 function isCompatibleDiscoveredModel(value: unknown): value is AdminCompatibleDiscoveredModel {
-  return record(value) && Object.keys(value).length === 1 &&
+  if (!record(value) || Object.keys(value).sort().join(",") !== "capabilities,id" ||
+    !record(value.capabilities)) return false;
+  const capabilities = value.capabilities;
+  const allowed = new Set([
+    "contextWindow",
+    "defaultMaxOutputTokens",
+    "defaultReasoningEffort",
+    "defaultReasoningMode",
+    "reasoning",
+    "reasoningEfforts",
+    "reasoningModes"
+  ]);
+  const controls = (candidate: unknown) => Array.isArray(candidate) &&
+    candidate.length >= 1 && candidate.length <= 16 &&
+    candidate.every((entry) => typeof entry === "string" && entry === entry.trim() &&
+      entry.length > 0 && entry.length <= 32 && !/[\u0000-\u001f\u007f]/u.test(entry)) &&
+    new Set(candidate).size === candidate.length;
+  const hasReasoningDetails = capabilities.defaultReasoningEffort !== undefined ||
+    capabilities.defaultReasoningMode !== undefined ||
+    capabilities.reasoningEfforts !== undefined || capabilities.reasoningModes !== undefined;
+  return Object.keys(capabilities).every((key) => allowed.has(key)) &&
+    (capabilities.contextWindow === undefined ||
+      (Number.isInteger(capabilities.contextWindow) && Number(capabilities.contextWindow) > 0 &&
+        Number(capabilities.contextWindow) <= 10_000_000)) &&
+    (capabilities.defaultMaxOutputTokens === undefined ||
+      (Number.isInteger(capabilities.defaultMaxOutputTokens) &&
+        Number(capabilities.defaultMaxOutputTokens) > 0 &&
+        Number(capabilities.defaultMaxOutputTokens) <= 10_000_000)) &&
+    (capabilities.reasoning === undefined || typeof capabilities.reasoning === "boolean") &&
+    (!hasReasoningDetails || capabilities.reasoning === true) &&
+    (capabilities.reasoningEfforts === undefined || controls(capabilities.reasoningEfforts)) &&
+    (capabilities.reasoningModes === undefined || controls(capabilities.reasoningModes)) &&
+    (capabilities.defaultReasoningEffort === undefined ||
+      (typeof capabilities.defaultReasoningEffort === "string" &&
+        Array.isArray(capabilities.reasoningEfforts) &&
+        capabilities.reasoningEfforts.includes(capabilities.defaultReasoningEffort))) &&
+    (capabilities.defaultReasoningMode === undefined ||
+      (typeof capabilities.defaultReasoningMode === "string" &&
+        Array.isArray(capabilities.reasoningModes) &&
+        capabilities.reasoningModes.includes(capabilities.defaultReasoningMode))) &&
     typeof value.id === "string" && value.id.trim().length > 0 && value.id.length <= 256 &&
     !/[\u0000-\u001f\u007f]/u.test(value.id);
 }

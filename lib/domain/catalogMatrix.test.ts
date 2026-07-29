@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { defaultProviderModels, defaultSearchStrategies } from "./catalog";
+import {
+  defaultProviderModels,
+  defaultSearchStrategies,
+  fallbackParameterControls
+} from "./catalog";
 import {
   availableSearchStrategiesForModel,
   buildCatalogModel,
@@ -59,6 +63,44 @@ describe("catalog capability matrix", () => {
     });
     expect(buildCatalogModel(model!, defaultSearchStrategies).capabilities.streaming).toBe(true);
     expect(buildCatalogModel(model!, defaultSearchStrategies).capabilities.toolCalling).toBe(true);
+  });
+
+  it("uses reported compatible reasoning controls or the GPT-5.6 Sol fallback", () => {
+    const fallback = fallbackParameterControls({
+      adapterKind: "openai_responses_compatible",
+      provider: "opaque-compatible-connection",
+      supportsReasoning: true
+    });
+    expect(fallback.reasoningEffort).toEqual({
+      defaultValue: "medium",
+      options: ["none", "low", "medium", "high", "xhigh", "max"],
+      supported: true
+    });
+    expect(fallback.reasoningMode).toEqual({
+      defaultValue: "standard",
+      options: ["standard", "pro"],
+      supported: true
+    });
+
+    const reported = fallbackParameterControls({
+      adapterKind: "openai_responses_compatible",
+      defaultReasoningEffort: "low",
+      defaultReasoningMode: "balanced",
+      provider: "opaque-compatible-connection",
+      reasoningEfforts: ["low", "high", "ultra"],
+      reasoningModes: ["balanced", "deep"],
+      supportsReasoning: true
+    });
+    expect(reported.reasoningEffort).toEqual({
+      defaultValue: "low",
+      options: ["low", "high", "ultra"],
+      supported: true
+    });
+    expect(reported.reasoningMode).toEqual({
+      defaultValue: "balanced",
+      options: ["balanced", "deep"],
+      supported: true
+    });
   });
 
   it("publishes the GPT-5.6 family with its exact limits and model-specific reasoning controls", () => {

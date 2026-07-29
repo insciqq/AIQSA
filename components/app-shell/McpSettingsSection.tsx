@@ -260,29 +260,28 @@ function ServerCard({
           ) : null}
         </div>
         {!server.enabled && needsOAuth && !missingPersonalField ? (
-          <form
-            action={userMcpOAuthAction(server.id, server.oauthState === "reauthorization_required")}
-            className="shrink-0"
-            method="post"
-            onSubmit={() => {
+          <a
+            aria-disabled={authorizing || undefined}
+            aria-label={`${server.oauthState === "reauthorization_required" ? "Reconnect" : "Connect"} ${server.name} to enable`}
+            aria-busy={authorizing || undefined}
+            className={`${enableButton} shrink-0 ${authorizing ? "pointer-events-none opacity-60" : ""}`}
+            href={userMcpOAuthAction(server.id, server.oauthState === "reauthorization_required")}
+            onClick={(event) => {
+              if (authorizing) {
+                event.preventDefault();
+                return;
+              }
               markMcpOAuthAuthorizing(server.id);
               setAuthorizing(true);
               setError(null);
             }}
+            tabIndex={authorizing ? -1 : undefined}
           >
-            <button
-              aria-label={`${server.oauthState === "reauthorization_required" ? "Reconnect" : "Connect"} ${server.name} to enable`}
-              aria-busy={authorizing || undefined}
-              className={`${enableButton} shrink-0`}
-              disabled={authorizing}
-              type="submit"
-            >
-              {authorizing ? <LoaderCircle className="size-4 animate-spin" aria-hidden="true" /> : <KeyRound className="size-4" aria-hidden="true" />}
-              {authorizing
-                ? "Authorizing"
-                : server.oauthState === "reauthorization_required" ? "Reconnect to enable" : "Connect to enable"}
-            </button>
-          </form>
+            {authorizing ? <LoaderCircle className="size-4 animate-spin" aria-hidden="true" /> : <KeyRound className="size-4" aria-hidden="true" />}
+            {authorizing
+              ? "Authorizing"
+              : server.oauthState === "reauthorization_required" ? "Reconnect to enable" : "Connect to enable"}
+          </a>
         ) : (
           <button
             aria-busy={busy === "toggle" || undefined}
@@ -326,24 +325,24 @@ function ServerCard({
             </div>
             <div className="flex flex-wrap gap-2">
               {!server.enabled && needsOAuth ? null : (
-                <form
-                  action={userMcpOAuthAction(server.id, connected)}
-                  method="post"
-                  onSubmit={() => {
+                <a
+                  aria-disabled={authorizing || undefined}
+                  aria-busy={authorizing || undefined}
+                  className={`${neutralButton} ${authorizing ? "pointer-events-none opacity-60" : ""}`}
+                  href={userMcpOAuthAction(server.id, connected)}
+                  onClick={(event) => {
+                    if (authorizing) {
+                      event.preventDefault();
+                      return;
+                    }
                     markMcpOAuthAuthorizing(server.id);
                     setAuthorizing(true);
                   }}
+                  tabIndex={authorizing ? -1 : undefined}
                 >
-                  <button
-                    aria-busy={authorizing || undefined}
-                    className={neutralButton}
-                    disabled={authorizing}
-                    type="submit"
-                  >
-                    {authorizing ? <LoaderCircle className="size-4 animate-spin" aria-hidden="true" /> : <KeyRound className="size-4" aria-hidden="true" />}
-                    {authorizing ? "Authorizing" : connected ? "Reconnect" : "Connect"}
-                  </button>
-                </form>
+                  {authorizing ? <LoaderCircle className="size-4 animate-spin" aria-hidden="true" /> : <KeyRound className="size-4" aria-hidden="true" />}
+                  {authorizing ? "Authorizing" : connected ? "Reconnect" : "Connect"}
+                </a>
               )}
               {connected ? (
                 <button

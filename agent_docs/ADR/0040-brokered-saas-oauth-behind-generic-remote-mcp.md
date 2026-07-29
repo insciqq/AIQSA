@@ -3,6 +3,11 @@
 Status: Accepted
 Amends: 0021-admin-managed-mcp-tools-and-isolated-runtime
 
+Amendment note: ADR 0041 permits generic same-origin protected-resource
+autobinding when the administrator leaves the override empty and uses browser
+GET navigation for the remote OAuth handoff. Explicit and cross-origin policy
+remain exact.
+
 ## Context
 
 ADR 0021 made administrator-managed remote MCP servers and per-user MCP OAuth a

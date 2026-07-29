@@ -50,7 +50,7 @@ Current AIQSA request construction, polling, tool bridging, attachment mapping, 
 
 ## Compatible OpenAI Gateways And codex-lb
 
-Last verified: 2026-07-28.
+Last verified: 2026-07-29.
 
 Primary references:
 
@@ -62,6 +62,8 @@ Externally constrained facts:
 - codex-lb's OpenAI-compatible client configuration uses the deployment's `/v1` API root. A root that omits `/v1` may resolve to the web application rather than the JSON catalog/API, so AIQSA keeps protocol and canonical API root explicit instead of guessing from a hostname.
 - The codex-lb changelog reports an OpenAI-compatible image API backed by its `image_generation` capability from v1.16.0 and forwarding for standalone web search from v1.22.0. Those project capabilities do not prove that a particular deployment, account, or selected model currently enables either tool.
 - A successful `/models` catalog request proves only safe catalog reachability for the supplied authentication candidate. OpenAPI path presence, catalog membership, and administrator capability declarations are not substitutes for an authenticated tool-specific smoke.
+- The permitted live deployment smoke returned seven model rows and bounded per-model reasoning metadata, but the shapes are gateway-owned and untrusted. AIQSA retains only allowlisted integer/boolean/short-option hints and never returns arbitrary row metadata to the browser.
+- The same deployment accepted `reasoning_effort` through both Chat Completions and Responses. A separate Responses request with the hosted `web_search` tool completed with a `web_search_call`; this proves that exact tested deployment/account path, not codex-lb installations generally. Smoke evidence retained only status and output-type facts, never answer text or credentials.
 
 AIQSA's compatible Responses web-search mapping and future-only image-generation declaration live in `BACKEND.md`; this note does not promote image generation into a runnable chat capability.
 
@@ -180,6 +182,7 @@ Externally constrained facts:
 
 - Remote MCP authorization is a protected-resource OAuth flow, not AI-provider sign-in. AIQSA uses Authorization Code with S256 PKCE plus protected-resource/authorization-server discovery, dynamic client registration or Client ID Metadata Documents, refresh, and revocation when advertised; the administrator owns the allowed resource, authorization-server origins, scopes, and callback policy.
 - The hosted Notion endpoint returned the expected protected-resource challenge. Its public metadata advertised the canonical MCP resource, authorization code and refresh grants, S256 PKCE, dynamic registration, Client ID Metadata Documents, introspection, and revocation.
+- Same-origin MCP endpoints may publish a canonical resource with a different path from the Streamable HTTP URL: verified services included both an endpoint-path resource and an origin-root resource. Path equality is therefore not portable, while accepting a discovered resource outside the configured endpoint origin would broaden trust.
 - Hosted Notion consent or public metadata does not prove post-consent tool discovery and execution. Automation and operator reports must distinguish those boundaries from a successful end-to-end tool call.
 - ToolHive v0.40.1's interactive remote OAuth flow is not used for this path because it owns a local loopback/browser lifecycle rather than AIQSA's user-bound web callback. AIQSA's official MCP SDK wrapper owns remote sessions and OAuth; ToolHive owns only local stdio workload lifecycle.
 - A standards-conforming remote MCP may redirect its own authorization endpoint

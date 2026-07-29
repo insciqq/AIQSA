@@ -391,7 +391,7 @@ export function createAdminProviderService(input: Readonly<{
               ),
           signal: value.signal
         });
-        return outcome.modelIds.map((id) => ({ id }));
+        return outcome.models ?? outcome.modelIds.map((id) => ({ capabilities: {}, id }));
       } catch {
         throw new AdminProviderServiceError("provider_discovery_failed");
       }

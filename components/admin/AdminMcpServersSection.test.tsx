@@ -136,18 +136,16 @@ describe("AdminMcpServersSection", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /Validate & tools/i }));
     expect(screen.getByText("External account: AIQSA test workspace")).toBeInTheDocument();
-    const checkConnection = screen.getByRole("button", { name: "Check connection" });
-    expect(checkConnection.closest("form")).toHaveAttribute(
-      "action",
+    const checkConnection = screen.getByRole("link", { name: "Check connection" });
+    expect(checkConnection).toHaveAttribute(
+      "href",
       "/api/admin/mcp/server-1/oauth/validation/connect"
     );
-    expect(checkConnection.closest("form")).toHaveAttribute("method", "post");
-    const reconnect = screen.getByRole("button", { name: "Reconnect" });
-    expect(reconnect.closest("form")).toHaveAttribute(
-      "action",
+    const reconnect = screen.getByRole("link", { name: "Reconnect" });
+    expect(reconnect).toHaveAttribute(
+      "href",
       "/api/admin/mcp/server-1/oauth/validation/reconnect"
     );
-    expect(reconnect.closest("form")).toHaveAttribute("method", "post");
     expect(screen.getByText(/\+1 added · 1 changed · −0 removed/)).toBeInTheDocument();
 
     fireEvent.change(screen.getByLabelText("Test workspace"), { target: { value: "one-use-only" } });

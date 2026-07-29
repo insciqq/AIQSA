@@ -3,6 +3,10 @@
 Status: Accepted
 Amends: 0022-admin-managed-llm-provider-control-plane, 0032-direct-custom-openai-compatible-setup, 0033-unified-providers-workspace-and-lifecycle-state-language
 
+Amendment note: ADR 0042 replaces the id-only/no-capability-import discovery
+clause with a strict bounded compatible-model hint contract plus explicit
+reasoning and hosted-search choices.
+
 ## Context
 
 The first Custom setup contract required a manually typed model ID, fixed every simple setup to Chat Completions, placed Custom below the reviewed provider choices, and left ordinary provider deletion deliberately shallow. In practice, OpenAI-compatible gateways commonly expose a bounded `/models` catalog and may implement Responses hosted tools. A Custom setup also creates direct-user assignments, grants, defaults, a model, and a credential that the management UI cannot all remove independently. That made model entry unnecessarily error-prone, hid replacement activation, and made a newly created Custom connection effectively undeletable.

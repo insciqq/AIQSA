@@ -36,6 +36,10 @@ export type AdminProviderModelCapabilities = {
   parallelToolCalls?: boolean;
   pdf: boolean;
   reasoning: boolean;
+  defaultReasoningEffort?: string;
+  defaultReasoningMode?: string;
+  reasoningEfforts?: string[];
+  reasoningModes?: string[];
   streaming?: boolean;
   toolCalling?: boolean;
   vision: boolean;
@@ -211,8 +215,21 @@ export type AdminOpenRouterDiscoveredModel = {
   supportedParameters: string[];
 };
 
-/** A compatible endpoint catalog exposes only validated model ids. */
+export type AdminCompatibleDiscoveredCapabilities = {
+  contextWindow?: number;
+  defaultMaxOutputTokens?: number;
+  defaultReasoningEffort?: string;
+  defaultReasoningMode?: string;
+  reasoning?: boolean;
+  reasoningEfforts?: string[];
+  reasoningModes?: string[];
+};
+
+/** A compatible endpoint catalog exposes a validated id plus only bounded,
+ * non-secret capability hints. Administrators still choose the wire protocol
+ * and hosted tools explicitly. */
 export type AdminCompatibleDiscoveredModel = {
+  capabilities: AdminCompatibleDiscoveredCapabilities;
   id: string;
 };
 

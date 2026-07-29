@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { installMatrixCatalogFixture } from "./shell/catalogFixture";
 import { expectNoHorizontalOverflow, expectTouchSafe, expectWithinViewport } from "./support/layoutAssertions";
 import { signInWithLocalToken as signIn } from "./support/localAuth";
 
@@ -18,6 +19,7 @@ type FakeMcpServer = {
 };
 
 test("keeps multi-MCP enablement, personal secrets, OAuth return, and composer summary coherent", async ({ page }) => {
+  await installMatrixCatalogFixture(page);
   let servers: FakeMcpServer[] = [
     {
       accountLabel: null,

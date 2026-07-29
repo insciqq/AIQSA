@@ -108,6 +108,46 @@ function ready(value: unknown): AdminProviderCustomSetupReadyResult | null {
   return value as AdminProviderCustomSetupReadyResult;
 }
 
+function discoveredCapabilities(value: unknown): boolean {
+  if (!record(value)) return false;
+  const allowed = new Set([
+    "contextWindow",
+    "defaultMaxOutputTokens",
+    "defaultReasoningEffort",
+    "defaultReasoningMode",
+    "reasoning",
+    "reasoningEfforts",
+    "reasoningModes"
+  ]);
+  if (Object.keys(value).some((key) => !allowed.has(key))) return false;
+  const controls = (candidate: unknown) => Array.isArray(candidate) &&
+    candidate.length >= 1 && candidate.length <= 16 &&
+    candidate.every((entry) => safeText(entry, 32) && entry === entry.trim()) &&
+    new Set(candidate).size === candidate.length;
+  const hasReasoningDetails = value.defaultReasoningEffort !== undefined ||
+    value.defaultReasoningMode !== undefined || value.reasoningEfforts !== undefined ||
+    value.reasoningModes !== undefined;
+  return (value.contextWindow === undefined ||
+      (Number.isInteger(value.contextWindow) && Number(value.contextWindow) > 0 &&
+        Number(value.contextWindow) <= 10_000_000)) &&
+    (value.defaultMaxOutputTokens === undefined ||
+      (Number.isInteger(value.defaultMaxOutputTokens) &&
+        Number(value.defaultMaxOutputTokens) > 0 &&
+        Number(value.defaultMaxOutputTokens) <= 10_000_000)) &&
+    (value.reasoning === undefined || typeof value.reasoning === "boolean") &&
+    (!hasReasoningDetails || value.reasoning === true) &&
+    (value.reasoningEfforts === undefined || controls(value.reasoningEfforts)) &&
+    (value.reasoningModes === undefined || controls(value.reasoningModes)) &&
+    (value.defaultReasoningEffort === undefined ||
+      (typeof value.defaultReasoningEffort === "string" &&
+        Array.isArray(value.reasoningEfforts) &&
+        value.reasoningEfforts.includes(value.defaultReasoningEffort))) &&
+    (value.defaultReasoningMode === undefined ||
+      (typeof value.defaultReasoningMode === "string" &&
+        Array.isArray(value.reasoningModes) &&
+        value.reasoningModes.includes(value.defaultReasoningMode)));
+}
+
 function discovery(value: unknown): AdminProviderCustomDiscoveryResult | null {
   if (
     !record(value) ||
@@ -121,7 +161,8 @@ function discovery(value: unknown): AdminProviderCustomDiscoveryResult | null {
     value.models.length !== value.modelCount ||
     value.models.some((model) =>
       !record(model) ||
-      !exactKeys(model, ["id"]) ||
+      !exactKeys(model, ["capabilities", "id"]) ||
+      !discoveredCapabilities(model.capabilities) ||
       !safeText(model.id, 256)
     ) ||
     value.source !== "models_catalog" ||

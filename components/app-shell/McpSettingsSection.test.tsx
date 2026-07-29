@@ -163,16 +163,14 @@ describe("McpSettingsSection", () => {
 
     render(<McpSettingsSection />);
     await screen.findByRole("heading", { name: "Notion" });
-    const connect = screen.getByRole("button", { name: "Connect" });
-    const form = connect.closest("form");
-    expect(form).toHaveAttribute("action", "/api/me/mcp/notion/oauth/connect");
-    expect(form).toHaveAttribute("method", "post");
-    form?.addEventListener("submit", (event) => event.preventDefault());
+    const connect = screen.getByRole("link", { name: "Connect" });
+    expect(connect).toHaveAttribute("href", "/api/me/mcp/notion/oauth/connect");
+    connect.addEventListener("click", (event) => event.preventDefault());
     fireEvent.click(connect);
 
     expect(screen.getByText("Authorizing in your browser…")).toBeVisible();
-    expect(screen.getByRole("button", { name: "Authorizing" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Authorizing" })).toHaveAttribute("aria-busy", "true");
+    expect(screen.getByRole("link", { name: "Authorizing" })).toHaveAttribute("aria-disabled", "true");
+    expect(screen.getByRole("link", { name: "Authorizing" })).toHaveAttribute("aria-busy", "true");
     expect(isMcpOAuthAuthorizing("notion")).toBe(true);
   });
 
@@ -188,14 +186,11 @@ describe("McpSettingsSection", () => {
 
     render(<McpSettingsSection />);
     await screen.findByRole("heading", { name: "Notion" });
-    const connectToEnable = screen.getByRole("button", { name: "Connect Notion to enable" });
+    const connectToEnable = screen.getByRole("link", { name: "Connect Notion to enable" });
     expect(screen.getByText("Disabled", { selector: "[data-resource-availability]" })).toBeVisible();
     expect(connectToEnable).toHaveClass("border-proof/25", "bg-proof/[0.08]", "text-proof");
-    const form = connectToEnable.closest("form");
-    expect(form).toHaveAttribute("action", "/api/me/mcp/notion/oauth/connect");
-    expect(form).toHaveAttribute("method", "post");
-    expect(screen.queryAllByRole("link")).toHaveLength(0);
-    form?.addEventListener("submit", (event) => event.preventDefault());
+    expect(connectToEnable).toHaveAttribute("href", "/api/me/mcp/notion/oauth/connect");
+    connectToEnable.addEventListener("click", (event) => event.preventDefault());
     fireEvent.click(connectToEnable);
 
     expect(screen.getAllByText("Authorizing in your browser…")).toHaveLength(1);
@@ -227,12 +222,12 @@ describe("McpSettingsSection", () => {
     render(<McpSettingsSection />);
     await screen.findByRole("heading", { name: "Notion" });
     expect(screen.getByRole("button", { name: "Complete setup for Notion" })).toBeVisible();
-    expect(screen.queryByRole("button", { name: "Connect Notion to enable" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Connect Notion to enable" })).not.toBeInTheDocument();
 
     fireEvent.change(screen.getByLabelText("API key"), { target: { value: "personal-token" } });
     fireEvent.click(screen.getByRole("button", { name: "Save personal values" }));
 
-    expect(await screen.findByRole("button", { name: "Connect Notion to enable" })).toBeVisible();
+    expect(await screen.findByRole("link", { name: "Connect Notion to enable" })).toBeVisible();
     expect(screen.queryByRole("button", { name: "Complete setup for Notion" })).not.toBeInTheDocument();
   });
 
@@ -259,9 +254,8 @@ describe("McpSettingsSection", () => {
     fireEvent.click(screen.getByRole("button", { name: "Enable Notion" }));
 
     expect(await screen.findByText("Connect Notion to an external account before enabling it.")).toBeVisible();
-    const reconnect = screen.getByRole("button", { name: "Reconnect" });
-    expect(reconnect.closest("form")).toHaveAttribute("action", "/api/me/mcp/notion/oauth/reconnect");
-    expect(reconnect.closest("form")).toHaveAttribute("method", "post");
+    const reconnect = screen.getByRole("link", { name: "Reconnect" });
+    expect(reconnect).toHaveAttribute("href", "/api/me/mcp/notion/oauth/reconnect");
     expect(screen.queryByText(/invalid_mcp_values/u)).not.toBeInTheDocument();
   });
 
@@ -410,6 +404,6 @@ describe("McpSettingsSection", () => {
       selector: "[data-resource-availability]"
     })).toBeVisible();
     expect(within(card!).getByText("Needs authorization")).toHaveClass("text-caution");
-    expect(within(card!).getByRole("button", { name: "Connect" })).toBeVisible();
+    expect(within(card!).getByRole("link", { name: "Connect" })).toBeVisible();
   });
 });

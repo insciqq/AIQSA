@@ -847,6 +847,33 @@ test("keeps searchable pickers and command palette keyboard-safe in the narrow s
   await expectNoHorizontalOverflow(page);
 });
 
+test("keeps a tall wide-screen Run setup inside the viewport with one local scroll owner", async ({ page }) => {
+  await page.setViewportSize({ height: 800, width: 1_600 });
+  await installMatrixCatalogFixture(page);
+  await signIn(page);
+
+  const runSetup = await openRunSetup(page);
+  const content = runSetup.getByTestId("run-setup-content");
+  await expectWithinViewport(page, runSetup);
+  await expect.poll(() => content.evaluate((element) => ({
+    clientHeight: element.clientHeight,
+    maxHeight: getComputedStyle(element.parentElement!).maxHeight,
+    scrollHeight: element.scrollHeight
+  }))).toMatchObject({
+    maxHeight: expect.not.stringMatching(/^none$/u)
+  });
+  const sizes = await content.evaluate((element) => ({
+    clientHeight: element.clientHeight,
+    scrollHeight: element.scrollHeight
+  }));
+  expect(sizes.scrollHeight).toBeGreaterThan(sizes.clientHeight);
+
+  await content.evaluate((element) => { element.scrollTop = element.scrollHeight; });
+  await expect(runSetup.getByRole("heading", { name: "Display preferences" })).toBeInViewport();
+  await expectWithinViewport(page, runSetup);
+  await closeRunSetup(page);
+});
+
 test("keeps standalone Prompt library and Settings Appearance safe in the narrow sheet layout", async ({ page }) => {
   await page.setViewportSize({ height: 844, width: 390 });
   const researchPrompt = {

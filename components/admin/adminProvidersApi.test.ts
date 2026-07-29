@@ -111,16 +111,36 @@ describe("admin provider browser API", () => {
     );
   });
 
-  it("decodes compatible discovery as id-only rows and never accepts secret material", async () => {
+  it("decodes compatible discovery as bounded capability rows and rejects secret material", async () => {
     const fetcher = vi.fn(async () => Response.json({
-      models: [{ id: "vendor/model-a" }, { id: "vendor/model-b" }]
+      models: [
+        {
+          capabilities: {
+            defaultReasoningEffort: "medium",
+            reasoning: true,
+            reasoningEfforts: ["low", "medium", "high"]
+          },
+          id: "vendor/model-a"
+        },
+        { capabilities: {}, id: "vendor/model-b" }
+      ]
     }));
     await expect(discoverAdminCompatibleModels(
       "connection/one",
       "credential/one",
       fetcher
     )).resolves.toEqual({
-      data: [{ id: "vendor/model-a" }, { id: "vendor/model-b" }],
+      data: [
+        {
+          capabilities: {
+            defaultReasoningEffort: "medium",
+            reasoning: true,
+            reasoningEfforts: ["low", "medium", "high"]
+          },
+          id: "vendor/model-a"
+        },
+        { capabilities: {}, id: "vendor/model-b" }
+      ],
       ok: true
     });
     expect(fetcher).toHaveBeenCalledWith(
@@ -138,7 +158,24 @@ describe("admin provider browser API", () => {
       "connection/one",
       "credential/one",
       vi.fn(async () => Response.json({
-        models: [{ id: "vendor/model-a", secret: "must-not-enter-state" }]
+        models: [{ capabilities: {}, id: "vendor/model-a", secret: "must-not-enter-state" }]
+      }))
+    )).resolves.toMatchObject({
+      error: { code: "provider_admin_response_invalid" },
+      ok: false
+    });
+
+    await expect(discoverAdminCompatibleModels(
+      "connection/one",
+      "credential/one",
+      vi.fn(async () => Response.json({
+        models: [{
+          capabilities: {
+            reasoning: false,
+            reasoningEfforts: ["low", "low"]
+          },
+          id: "vendor/model-a"
+        }]
       }))
     )).resolves.toMatchObject({
       error: { code: "provider_admin_response_invalid" },

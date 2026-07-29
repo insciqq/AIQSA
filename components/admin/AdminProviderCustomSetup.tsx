@@ -6,10 +6,15 @@ import {
   quietButton
 } from "@/components/admin/adminPrimitives";
 import { AdminSearchablePicker } from "@/components/admin/AdminSearchablePicker";
+import {
+  reasoningCapabilitiesSummary,
+  reasoningForChoice
+} from "@/components/admin/adminProviderReasoning";
 import type { AdminProviderCustomSetupController } from "@/components/admin/useAdminProviderCustomSetupController";
 import { MAX_ADMIN_PROVIDER_CUSTOM_SETUP_MODELS } from "@/lib/contracts/adminProviderCustomSetup";
 import { ArrowLeft, ChevronDown, KeyRound, ServerCog, X } from "lucide-react";
 import Link from "next/link";
+import { useId } from "react";
 
 const fieldLabel = "mb-1 block text-xs font-medium text-ink-secondary";
 const helpText = "mt-1 block text-[11px] leading-4 text-ink-muted";
@@ -31,6 +36,8 @@ export function AdminProviderCustomSetup({
   onBack,
   onManageConnection
 }: AdminProviderCustomSetupProps) {
+  const reasoningControlId = useId();
+  const reasoningHelpId = useId();
   const { form, ready } = controller.state;
 
   if (ready) {
@@ -90,6 +97,13 @@ export function AdminProviderCustomSetup({
   const hasDiscoveredCatalog = discoveredModels.length > 0;
   const availableDiscoveredModels = discoveredModels.filter(
     ({ id }) => !form.selectedModelIds.includes(id)
+  );
+  const selectedDiscoveredModels = discoveredModels.filter(({ id }) =>
+    form.selectedModelIds.includes(id)
+  );
+  const selectedReasoning = reasoningForChoice(
+    form.reasoningChoice,
+    selectedDiscoveredModels
   );
   const noKeyAllowed = form.allowPrivateNetwork && (() => {
     try {
@@ -356,6 +370,24 @@ export function AdminProviderCustomSetup({
                   Hosted tools require Responses and bearer authentication.
                 </span>
               </label>
+              <div>
+                <label className={fieldLabel} htmlFor={reasoningControlId}>Reasoning controls</label>
+                <select
+                  aria-describedby={reasoningHelpId}
+                  className={inputClass}
+                  disabled={controller.state.formLocked}
+                  id={reasoningControlId}
+                  onChange={(event) => controller.actions.update({
+                    reasoningChoice: event.currentTarget.value as typeof form.reasoningChoice
+                  })}
+                  value={form.reasoningChoice}
+                >
+                  <option value="automatic">Use reported metadata; GPT-5.6 Sol fallback</option>
+                  <option value="openai_gpt_5_6_sol">OpenAI GPT-5.6 Sol profile</option>
+                  <option value="disabled">Not supported</option>
+                </select>
+                <p className={helpText} id={reasoningHelpId}>{reasoningCapabilitiesSummary(selectedReasoning)}</p>
+              </div>
               <div className="rounded-control border border-trace-subtle bg-answer-paper p-3">
                 <p className={fieldLabel}>Hosted tools declared by the administrator</p>
                 <label className="flex min-h-control items-center gap-2 text-xs text-ink-secondary">

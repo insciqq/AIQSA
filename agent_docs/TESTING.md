@@ -122,6 +122,19 @@ MCP token families, exact resource/client/callback/S256 binding, one bounded
 read call, refresh rotation, revocation, disconnect, and reconnect. It uses no
 Tracker code, package, service, credential, or provider-name branch.
 
+Same-origin MCP resource autobinding additionally requires `oauthPolicy` and
+service/repository cases for origin-root/path resources, explicit-policy
+compatibility, malformed/cross-origin rejection, callback rebinding, and stable
+fingerprints. Route/component coverage proves browser Connect/Reconnect use
+authenticated GET navigation while compatibility POST remains available.
+
+Compatible-provider discovery changes require credential/API decoder tests for
+the bounded capability allowlist and secret non-reflection, configuration and
+catalog tests for reasoning options/defaults, and component/controller tests
+for reported metadata, the disclosed GPT-5.6 Sol fallback, explicit disable,
+and Responses hosted search. A real gateway remains an opt-in sanitized smoke,
+never routine Vitest input.
+
 The ToolHive case controls sibling Docker resources and may pull the reviewed digest-pinned fixture. Package-registry materialization, hosted Notion consent/tool-call checks, and a brokered-SaaS live consent require the corresponding external authority; metadata discovery alone is not end-to-end verification. Live broker evidence must be sanitized and may report stable booleans/counts only; it must not print OAuth material, account email, organization identity, task text, comments, or raw upstream responses.
 
 MCP installation-activation changes require focused coordinator/repository tests

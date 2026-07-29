@@ -12,6 +12,10 @@ import {
   discoverAdminProviderCustomModels,
   submitAdminProviderCustomSetup
 } from "@/components/admin/adminProviderCustomSetupApi";
+import {
+  reasoningForChoice,
+  type AdminProviderReasoningChoice
+} from "@/components/admin/adminProviderReasoning";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 export type UseAdminProviderCustomSetupControllerOptions = Readonly<{
@@ -29,6 +33,7 @@ type AdminProviderCustomSetupForm = {
   modelId: string;
   selectedModelIds: string[];
   protocol: AdminProviderCustomProtocol;
+  reasoningChoice: AdminProviderReasoningChoice;
   secret: string;
   streaming: boolean;
   toolCalling: boolean;
@@ -48,6 +53,7 @@ function initialForm(): AdminProviderCustomSetupForm {
     modelId: "",
     selectedModelIds: [],
     protocol: "chat_completions",
+    reasoningChoice: "automatic",
     secret: "",
     streaming: ADMIN_PROVIDER_CUSTOM_DEFAULT_CAPABILITIES.streaming,
     toolCalling: ADMIN_PROVIDER_CUSTOM_DEFAULT_CAPABILITIES.toolCalling,
@@ -185,6 +191,11 @@ export function useAdminProviderCustomSetupController(
     setDiscoveredModels(result.data.models);
     setForm((current) => ({
       ...current,
+      ...(result.data.models.length === 1 ? {
+        contextWindow: result.data.models[0]!.capabilities.contextWindow ?? current.contextWindow,
+        defaultMaxOutputTokens:
+          result.data.models[0]!.capabilities.defaultMaxOutputTokens ?? current.defaultMaxOutputTokens
+      } : {}),
       selectedModelIds: result.data.models.length === 1
         ? [result.data.models[0]!.id]
         : []
@@ -246,6 +257,10 @@ export function useAdminProviderCustomSetupController(
     const modelIds = usesDiscoveredModels ? form.selectedModelIds : [];
     const secret = form.secret.trim();
     const authenticationMode = secret ? "bearer" as const : "none" as const;
+    const selectedDiscoveredModels = (discoveredModels ?? []).filter(({ id }) =>
+      modelIds.includes(id)
+    );
+    const reasoning = reasoningForChoice(form.reasoningChoice, selectedDiscoveredModels);
     let protocol: string | null = null;
     try {
       protocol = new URL(apiRoot).protocol;
@@ -287,6 +302,7 @@ export function useAdminProviderCustomSetupController(
         defaultMaxOutputTokens: form.defaultMaxOutputTokens,
         nativeImageGeneration: form.imageGeneration,
         nativeSearch: form.webSearch,
+        ...reasoning,
         streaming: form.streaming,
         toolCalling: form.toolCalling
       },

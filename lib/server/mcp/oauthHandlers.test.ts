@@ -92,14 +92,14 @@ describe("MCP OAuth web handlers", () => {
     })).resolves.toMatch(/^ey/u);
   });
 
-  it("starts a user flow with a signed HttpOnly cookie and no token response", async () => {
+  it.each(["GET", "POST"])("starts a user flow over %s with a signed HttpOnly cookie and no token response", async (method) => {
     const operations = service();
     const handler = createMcpOAuthStartHandler(deps({ service: operations }), {
       forceReconnect: false,
       purpose: "user"
     });
     const response = await handler(
-      new Request("https://aiqsa.example.test/api/me/mcp/server-1/oauth/connect", { method: "POST" }),
+      new Request("https://aiqsa.example.test/api/me/mcp/server-1/oauth/connect", { method }),
       routeContext()
     );
     expect(response.status).toBe(303);

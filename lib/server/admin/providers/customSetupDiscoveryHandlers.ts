@@ -114,7 +114,7 @@ export function createAdminProviderCustomDiscoveryHandler(
       const result: AdminProviderCustomDiscoveryResult = {
         checkedAt: now().toISOString(),
         modelCount: outcome.modelIds.length,
-        models: outcome.modelIds.map((id) => ({ id })),
+        models: outcome.models ?? outcome.modelIds.map((id) => ({ capabilities: {}, id })),
         source: "models_catalog",
         status: "valid"
       };

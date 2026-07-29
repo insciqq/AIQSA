@@ -1047,7 +1047,10 @@ test("administrator discovers and configures a Custom compatible provider on wid
       json: {
         checkedAt: now,
         modelCount: 2,
-        models: [{ id: modelId }, { id: "fixture/alternate" }],
+        models: [
+          { capabilities: {}, id: modelId },
+          { capabilities: {}, id: "fixture/alternate" }
+        ],
         source: "models_catalog",
         status: "valid"
       }
@@ -1089,6 +1092,10 @@ test("administrator discovers and configures a Custom compatible provider on wid
     await section.getByText("Advanced settings", { exact: true }).click();
     await expect(section.getByLabel("Context window")).toBeVisible();
     await expect(section.getByLabel("Default max output")).toBeVisible();
+    await expect(section.getByLabel("Reasoning controls"))
+      .toHaveValue("automatic");
+    await expect(section.getByText(/Effort: none, low, medium, high, xhigh, max; default medium/))
+      .toBeVisible();
     await section.getByLabel("Hosted web search").check();
     await section.getByLabel("Image generation (future workflows)").check();
     await expect(section.getByText(/Image support is recorded now but is not yet runnable/))
@@ -1125,8 +1132,13 @@ test("administrator discovers and configures a Custom compatible provider on wid
       apiRoot: "https://llm.fixture.invalid/v1",
       authenticationMode: "bearer",
       capabilities: expect.objectContaining({
+        defaultReasoningEffort: "medium",
+        defaultReasoningMode: "standard",
         nativeImageGeneration: true,
-        nativeSearch: true
+        nativeSearch: true,
+        reasoning: true,
+        reasoningEfforts: ["none", "low", "medium", "high", "xhigh", "max"],
+        reasoningModes: ["standard", "pro"]
       }),
       confirmPaidRequest: true,
       modelIds: [

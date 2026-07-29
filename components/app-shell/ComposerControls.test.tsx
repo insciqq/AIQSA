@@ -323,7 +323,9 @@ describe("ComposerControls", () => {
       "overflow-hidden",
       "sm:w-[min(44rem,calc(100vw-2rem))]",
       "sm:top-1/2",
+      "sm:max-h-[calc(100dvh_-_2rem_-_env(safe-area-inset-top)_-_env(safe-area-inset-bottom))]",
       "sm:-translate-y-1/2",
+      "[@media(max-height:32rem)]:!max-h-[calc(100dvh_-_1rem_-_env(safe-area-inset-top)_-_env(safe-area-inset-bottom))]",
       "[@media(max-height:32rem)]:!translate-y-0"
     );
     expect(screen.getByTestId("run-setup-backdrop")).toHaveClass("bg-scrim/55");

@@ -312,8 +312,13 @@ export function providerModelToCatalogEntry(
     outputTokenPriceMicros: model.outputTokenPriceMicros,
     parameterControls: resolveProviderModelParameterControls({
       adapterKind: configuration.adapterKind as CatalogAdapterKind,
+      defaultMaxOutputTokens: resolvedCapabilities.defaultMaxOutputTokens,
+      defaultReasoningEffort: resolvedCapabilities.defaultReasoningEffort,
+      defaultReasoningMode: resolvedCapabilities.defaultReasoningMode,
       defaultParams: configuration.defaultParams,
       providerFamily: model.connection.family,
+      reasoningEfforts: resolvedCapabilities.reasoningEfforts,
+      reasoningModes: resolvedCapabilities.reasoningModes,
       supportsReasoning: capabilities.reasoning,
       supportsStreaming: capabilities.streaming,
       upstreamModelId: configuration.upstreamModelId

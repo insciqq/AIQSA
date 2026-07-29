@@ -16,6 +16,7 @@ import type {
 } from "@modelcontextprotocol/sdk/shared/auth.js";
 import { createMcpSafeFetch } from "./safeFetch";
 import {
+  bindMcpOAuthPolicyResource,
   mcpOAuthPolicyFingerprint,
   mcpOAuthRegistrationKey,
   sanitizeMcpOAuthAccountLabel,
@@ -187,6 +188,15 @@ function discoveryState(input: Awaited<ReturnType<typeof discoverOAuthServerInfo
       : {}),
     ...(input.resourceMetadata ? { resourceMetadata: input.resourceMetadata } : {})
   };
+}
+
+function policyForDiscovery(
+  policy: McpOAuthPolicy,
+  state: OAuthDiscoveryState
+): McpOAuthPolicy {
+  const resolved = bindMcpOAuthPolicyResource(policy, state.resourceMetadata?.resource);
+  if (!resolved) throw new McpOAuthError("mcp_oauth_policy_forbidden");
+  return resolved;
 }
 
 function resourceLabel(state: OAuthDiscoveryState, policy: McpOAuthPolicy): string | null {
@@ -409,15 +419,18 @@ export class McpOAuthService {
     state: string;
     userId: string;
   }>): Promise<McpOAuthStartResult> {
-    const policy = input.purpose === "validation"
+    const loadedPolicy = input.purpose === "validation"
       ? await this.#repository.prepareValidationPolicy(input)
       : await this.#repository.loadPolicy(input);
-    if (!policy) throw new McpOAuthError("mcp_oauth_not_available");
-    this.#validatePolicy(policy);
-    const fetchFn = this.#oauthFetch(policy);
+    if (!loadedPolicy) throw new McpOAuthError("mcp_oauth_not_available");
+    this.#validatePolicy(loadedPolicy);
+    const fetchFn = this.#oauthFetch(loadedPolicy);
     let discovered: OAuthDiscoveryState;
+    let policy: McpOAuthPolicy;
     try {
-      discovered = discoveryState(await discoverOAuthServerInfo(policy.serverUrl, { fetchFn }));
+      discovered = discoveryState(await discoverOAuthServerInfo(loadedPolicy.serverUrl, { fetchFn }));
+      policy = policyForDiscovery(loadedPolicy, discovered);
+      this.#validatePolicy(policy);
       validateDiscovery(discovered, policy, this.allowInsecureHttp);
     } catch (error) {
       if (error instanceof McpOAuthError) throw error;
@@ -488,15 +501,20 @@ export class McpOAuthService {
     authorizationCode: string;
     flow: McpOAuthFlowBinding;
   }>): Promise<McpOAuthStoredConnection> {
-    const policy = await this.#repository.loadPolicy(input.flow);
-    if (!policy || policy.configurationIdentity !== input.flow.configurationIdentity ||
-      policy.redirectUri !== input.flow.redirectUri) {
+    const loadedPolicy = await this.#repository.loadPolicy(input.flow);
+    if (!loadedPolicy || loadedPolicy.configurationIdentity !== input.flow.configurationIdentity ||
+      loadedPolicy.redirectUri !== input.flow.redirectUri) {
       throw new McpOAuthError("mcp_oauth_configuration_changed");
     }
-    this.#validatePolicy(policy);
+    this.#validatePolicy(loadedPolicy);
     const client = await this.#repository.findClient(input.flow.registrationKey);
     if (!client || client.id !== input.flow.oauthClientId ||
-      client.clientInformation.client_id !== input.flow.clientId ||
+      client.clientInformation.client_id !== input.flow.clientId) {
+      throw new McpOAuthError("mcp_oauth_configuration_changed");
+    }
+    const policy = policyForDiscovery(loadedPolicy, client.discoveryState);
+    this.#validatePolicy(policy);
+    if (
       mcpOAuthPolicyFingerprint(policy, client.clientInformation.client_id) !== input.flow.policyFingerprint) {
       throw new McpOAuthError("mcp_oauth_configuration_changed");
     }
@@ -528,6 +546,7 @@ export class McpOAuthService {
         policyFingerprint: input.flow.policyFingerprint,
         purpose: policy.purpose,
         redirectUri: policy.redirectUri,
+        resource: policy.resource,
         serverId: policy.serverId,
         tokens: provider.capturedTokens,
         userId: policy.userId

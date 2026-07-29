@@ -25,6 +25,7 @@ import {
   mcpOAuthTokenEnvelopeContext
 } from "./encryption";
 import {
+  bindMcpOAuthPolicyResource,
   buildMcpOAuthPolicy,
   mcpOAuthPolicyFingerprint,
   type McpOAuthPolicy,
@@ -85,6 +86,7 @@ export interface McpOAuthRepository {
     policyFingerprint: string;
     purpose: McpOAuthPurpose;
     redirectUri: string;
+    resource: string;
     serverId: string;
     tokens: OAuthTokens;
     userId: string;
@@ -509,10 +511,12 @@ export function createPrismaMcpOAuthRepository(input: Readonly<{
       const now = new Date();
       const tokens = checkedTokens(inputValue.tokens);
       return client.$transaction(async (tx) => {
-        const policy = await policyForSubject(tx, inputValue);
-        if (!policy || policy.configurationIdentity !== inputValue.configurationIdentity) {
+        const loadedPolicy = await policyForSubject(tx, inputValue);
+        if (!loadedPolicy || loadedPolicy.configurationIdentity !== inputValue.configurationIdentity) {
           return { kind: "configuration_changed" as const };
         }
+        const policy = bindMcpOAuthPolicyResource(loadedPolicy, inputValue.resource);
+        if (!policy) return { kind: "configuration_changed" as const };
         if (mcpOAuthPolicyFingerprint(policy, inputValue.clientId) !== inputValue.policyFingerprint) {
           return { kind: "configuration_changed" as const };
         }

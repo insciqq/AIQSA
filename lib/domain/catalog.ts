@@ -672,8 +672,13 @@ export const defaultProviderModels: ProviderModelCatalogEntry[] =
 
 export function resolveProviderModelParameterControls(input: {
   adapterKind: CatalogAdapterKind;
+  defaultMaxOutputTokens?: number;
+  defaultReasoningEffort?: string;
+  defaultReasoningMode?: string;
   defaultParams: Record<string, unknown>;
   providerFamily: string;
+  reasoningEfforts?: readonly string[];
+  reasoningModes?: readonly string[];
   supportsReasoning: boolean;
   supportsStreaming: boolean;
   upstreamModelId: string;
@@ -688,7 +693,12 @@ export function resolveProviderModelParameterControls(input: {
   return template?.parameterControls ?? fallbackParameterControls({
     adapterKind: input.adapterKind,
     defaultParams: input.defaultParams,
+    defaultMaxOutputTokens: input.defaultMaxOutputTokens,
+    defaultReasoningEffort: input.defaultReasoningEffort,
+    defaultReasoningMode: input.defaultReasoningMode,
     provider: input.providerFamily,
+    reasoningEfforts: input.reasoningEfforts,
+    reasoningModes: input.reasoningModes,
     supportsReasoning: input.supportsReasoning,
     supportsStreaming: input.supportsStreaming
   });
@@ -697,7 +707,12 @@ export function resolveProviderModelParameterControls(input: {
 export function fallbackParameterControls(input: {
   adapterKind?: CatalogAdapterKind;
   defaultParams?: Record<string, unknown>;
+  defaultMaxOutputTokens?: number;
+  defaultReasoningEffort?: string;
+  defaultReasoningMode?: string;
   provider: string;
+  reasoningEfforts?: readonly string[];
+  reasoningModes?: readonly string[];
   supportsReasoning: boolean;
   supportsStreaming?: boolean;
 }): ModelParameterControls {
@@ -706,16 +721,42 @@ export function fallbackParameterControls(input: {
   const maxOutputTokens =
     numberValue(defaultParams.maxOutputTokens, 0) ||
     numberValue(defaultParams.maxTokens, 0) ||
-    numberValue(defaultParams.max_output_tokens, 1024);
+    numberValue(defaultParams.max_output_tokens, input.defaultMaxOutputTokens ?? 1024);
   const nativeResponses = input.adapterKind === "openai_responses_native";
   const openRouter = input.adapterKind === "openrouter_chat_completions";
   const streamDefault = booleanValue(defaultParams.stream, openRouter);
   const rawReasoningEffort = reasoning.effort;
-  const defaultReasoningEffort =
+  const configuredReasoningEffort =
     typeof rawReasoningEffort === "string" &&
     fallbackReasoningEfforts.includes(rawReasoningEffort as (typeof fallbackReasoningEfforts)[number])
       ? rawReasoningEffort
       : "medium";
+  const compatibleOpenAI = input.adapterKind === "openai_chat_completions_compatible" ||
+    input.adapterKind === "openai_responses_compatible";
+  const reasoningEfforts = input.reasoningEfforts?.length
+    ? [...input.reasoningEfforts]
+    : compatibleOpenAI
+      ? ["none", "low", "medium", "high", "xhigh", "max"]
+      : ["none", "low", "medium", "high"];
+  const defaultReasoningEffort = input.defaultReasoningEffort &&
+    reasoningEfforts.includes(input.defaultReasoningEffort)
+    ? input.defaultReasoningEffort
+    : reasoningEfforts.includes(configuredReasoningEffort)
+      ? configuredReasoningEffort
+      : reasoningEfforts[0] ?? "none";
+  const reasoningModes = input.adapterKind === "openai_responses_compatible"
+    ? input.reasoningModes?.length
+      ? [...input.reasoningModes]
+      : compatibleOpenAI && !input.reasoningEfforts?.length
+        ? ["standard", "pro"]
+        : []
+    : [];
+  const defaultReasoningMode = input.defaultReasoningMode &&
+    reasoningModes.includes(input.defaultReasoningMode)
+    ? input.defaultReasoningMode
+    : reasoningModes.includes("standard")
+      ? "standard"
+      : reasoningModes[0];
 
   return controls({
     background: {
@@ -729,10 +770,17 @@ export function fallbackParameterControls(input: {
     reasoningEffort: input.supportsReasoning
       ? {
           defaultValue: defaultReasoningEffort,
-          options: ["none", "low", "medium", "high"],
+          options: reasoningEfforts,
           supported: true
         }
       : noReasoningControls,
+    ...(input.supportsReasoning && defaultReasoningMode ? {
+      reasoningMode: {
+        defaultValue: defaultReasoningMode,
+        options: reasoningModes,
+        supported: true
+      }
+    } : {}),
     stream: {
       defaultValue: streamDefault,
       supported: Boolean(input.supportsStreaming && typeof defaultParams.stream === "boolean")
@@ -751,7 +799,11 @@ export function parameterControlsForModel(input: {
   defaultParams?: Record<string, unknown>;
   modelCapabilities?: {
     defaultMaxOutputTokens?: number;
+    defaultReasoningEffort?: string;
+    defaultReasoningMode?: string;
     reasoning?: boolean;
+    reasoningEfforts?: readonly string[];
+    reasoningModes?: readonly string[];
     streaming?: boolean;
   };
   modelId: string;
@@ -766,14 +818,19 @@ export function parameterControlsForModel(input: {
     return defaultEntry.parameterControls;
   }
 
-    return fallbackParameterControls({
-      adapterKind: input.adapterKind,
-      defaultParams:
+  return fallbackParameterControls({
+    adapterKind: input.adapterKind,
+    defaultMaxOutputTokens: input.modelCapabilities?.defaultMaxOutputTokens,
+    defaultReasoningEffort: input.modelCapabilities?.defaultReasoningEffort,
+    defaultReasoningMode: input.modelCapabilities?.defaultReasoningMode,
+    defaultParams:
       input.defaultParams ??
       (typeof input.modelCapabilities?.defaultMaxOutputTokens === "number"
         ? { maxOutputTokens: input.modelCapabilities.defaultMaxOutputTokens }
         : {}),
     provider: input.provider,
+    reasoningEfforts: input.modelCapabilities?.reasoningEfforts,
+    reasoningModes: input.modelCapabilities?.reasoningModes,
     supportsReasoning: input.supportsReasoning ?? Boolean(input.modelCapabilities?.reasoning),
     supportsStreaming: Boolean(input.modelCapabilities?.streaming)
   });

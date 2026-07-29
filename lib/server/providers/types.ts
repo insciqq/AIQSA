@@ -15,6 +15,10 @@ export type ProviderModelCapabilities = {
   parallelToolCalls?: boolean;
   pdf: boolean;
   reasoning: boolean;
+  defaultReasoningEffort?: string;
+  defaultReasoningMode?: string;
+  reasoningEfforts?: string[];
+  reasoningModes?: string[];
   streaming?: boolean;
   toolCalling?: boolean;
   vision: boolean;

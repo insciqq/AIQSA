@@ -343,6 +343,7 @@ describe("Prisma MCP OAuth repository", () => {
       policyFingerprint,
       purpose: "user",
       redirectUri: REDIRECT_URI,
+      resource: policy.resource,
       serverId: SERVER_ID,
       tokens: {
         access_token: "access-secret",
@@ -426,6 +427,7 @@ describe("Prisma MCP OAuth repository", () => {
       policyFingerprint,
       purpose: "user",
       redirectUri: REDIRECT_URI,
+      resource: policy.resource,
       serverId: SERVER_ID,
       tokens: { access_token: "must-not-persist", token_type: "Bearer" },
       userId: USER_ID

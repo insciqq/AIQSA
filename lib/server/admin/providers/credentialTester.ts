@@ -17,6 +17,10 @@ import {
   createProviderSafeFetch,
   type ProviderSafeFetchOptions
 } from "../../providers/providerSafeFetch";
+import type {
+  AdminCompatibleDiscoveredCapabilities,
+  AdminCompatibleDiscoveredModel
+} from "../../../contracts/adminProviders";
 
 const MAX_CREDENTIAL_TEST_BODY_BYTES = 2 * 1024 * 1024;
 const MAX_MODEL_ID_LENGTH = 256;
@@ -33,6 +37,7 @@ export type AdminProviderCredentialTesterInput = Readonly<{
 export type AdminProviderCredentialTestOutcome = Readonly<{
   method: "models_catalog";
   modelIds: string[];
+  models?: AdminCompatibleDiscoveredModel[];
 }>;
 
 export type AdminProviderCredentialTester = Readonly<{
@@ -66,7 +71,98 @@ function modelId(value: unknown): string | null {
     : null;
 }
 
-function modelIdsFromCatalog(value: unknown, family: ProviderFamily): string[] {
+function firstInteger(values: readonly unknown[]): number | undefined {
+  return values.find((value): value is number =>
+    Number.isInteger(value) && Number(value) > 0 && Number(value) <= 10_000_000
+  ) as number | undefined;
+}
+
+function safeControl(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const normalized = value.trim();
+  return normalized && normalized.length <= 32 && !/[\u0000-\u001f\u007f]/u.test(normalized)
+    ? normalized
+    : null;
+}
+
+function controlOptions(value: unknown): string[] {
+  if (!Array.isArray(value) || value.length > 16) return [];
+  const options: string[] = [];
+  for (const candidate of value) {
+    const option = safeControl(isRecord(candidate) ? candidate.effort ?? candidate.mode : candidate);
+    if (!option || options.includes(option)) continue;
+    options.push(option);
+  }
+  return options;
+}
+
+function compatibleCapabilities(entry: Record<string, unknown>): AdminCompatibleDiscoveredCapabilities {
+  const capabilities = isRecord(entry.capabilities) ? entry.capabilities : {};
+  const metadata = isRecord(entry.metadata) ? entry.metadata : {};
+  const reasoningEfforts = controlOptions(
+    metadata.supported_reasoning_levels ??
+    entry.supported_reasoning_levels ??
+    metadata.reasoning_efforts ??
+    entry.reasoning_efforts
+  );
+  const reasoningModes = controlOptions(
+    metadata.supported_reasoning_modes ??
+    entry.supported_reasoning_modes ??
+    metadata.reasoning_modes ??
+    entry.reasoning_modes
+  );
+  const reportedReasoning = [
+    entry.supportsReasoning,
+    entry.supports_reasoning,
+    capabilities.supports_reasoning,
+    metadata.supports_reasoning
+  ].find((value): value is boolean => typeof value === "boolean");
+  const reasoning = reportedReasoning ?? (reasoningEfforts.length > 0 ? true : undefined);
+  const defaultReasoningEffort = safeControl(
+    metadata.default_reasoning_level ??
+    entry.default_reasoning_level ??
+    metadata.default_reasoning_effort ??
+    entry.default_reasoning_effort
+  );
+  const defaultReasoningMode = safeControl(
+    metadata.default_reasoning_mode ?? entry.default_reasoning_mode
+  );
+  const contextWindow = firstInteger([
+    entry.contextWindow,
+    entry.context_length,
+    capabilities.context_length,
+    metadata.context_window
+  ]);
+  const defaultMaxOutputTokens = firstInteger([
+    entry.maxOutputTokens,
+    entry.max_output_tokens,
+    capabilities.max_output_tokens,
+    metadata.max_output_tokens
+  ]);
+
+  return {
+    ...(contextWindow ? { contextWindow } : {}),
+    ...(defaultMaxOutputTokens ? { defaultMaxOutputTokens } : {}),
+    ...(reasoning === undefined ? {} : { reasoning }),
+    ...(reasoning && reasoningEfforts.length ? {
+      reasoningEfforts,
+      defaultReasoningEffort: defaultReasoningEffort && reasoningEfforts.includes(defaultReasoningEffort)
+        ? defaultReasoningEffort
+        : reasoningEfforts[0]!
+    } : {}),
+    ...(reasoning && reasoningModes.length ? {
+      reasoningModes,
+      defaultReasoningMode: defaultReasoningMode && reasoningModes.includes(defaultReasoningMode)
+        ? defaultReasoningMode
+        : reasoningModes[0]!
+    } : {})
+  };
+}
+
+function modelsFromCatalog(
+  value: unknown,
+  family: ProviderFamily
+): AdminCompatibleDiscoveredModel[] {
   if (!isRecord(value)) {
     throw new AdminProviderCredentialTestError();
   }
@@ -79,7 +175,7 @@ function modelIdsFromCatalog(value: unknown, family: ProviderFamily): string[] {
     throw new AdminProviderCredentialTestError();
   }
 
-  const output: string[] = [];
+  const output: AdminCompatibleDiscoveredModel[] = [];
   const seen = new Set<string>();
   for (const entry of entries) {
     const rawId = isRecord(entry)
@@ -91,7 +187,12 @@ function modelIdsFromCatalog(value: unknown, family: ProviderFamily): string[] {
     if (!id) throw new AdminProviderCredentialTestError();
     if (seen.has(id)) continue;
     seen.add(id);
-    output.push(id);
+    output.push({
+      capabilities: family === "openai_compatible" && isRecord(entry)
+        ? compatibleCapabilities(entry)
+        : {},
+      id
+    });
   }
   return output;
 }
@@ -157,9 +258,11 @@ export function createAdminProviderCredentialTester(
           } catch {
             throw new AdminProviderCredentialTestError();
           }
+          const models = modelsFromCatalog(catalog, input.family);
           return {
             method: "models_catalog",
-            modelIds: modelIdsFromCatalog(catalog, input.family)
+            modelIds: models.map(({ id }) => id),
+            ...(input.family === "openai_compatible" ? { models } : {})
           };
         } finally {
           timeout.clear();

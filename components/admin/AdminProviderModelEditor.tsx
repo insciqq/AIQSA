@@ -14,6 +14,13 @@ import {
 } from "@/components/admin/adminPrimitives";
 import type { AdminProvidersController } from "@/components/admin/useAdminProvidersController";
 import {
+  applyReasoningCapabilities,
+  reasoningCapabilitiesEqual,
+  reasoningCapabilitiesSummary,
+  reasoningForChoice,
+  type AdminProviderReasoningChoice
+} from "@/components/admin/adminProviderReasoning";
+import {
   openRouterEndpointDiscoveryIdentity,
   openRouterModelDiscoveryIdentity,
   type AdminOpenRouterDiscoverySession
@@ -35,7 +42,7 @@ import {
   Search,
   X
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 
 const fieldLabel = "mb-1 block text-xs font-medium text-ink-secondary";
 const helpText = "mt-1 text-[11px] leading-4 text-ink-muted";
@@ -373,6 +380,8 @@ export function AdminProviderModelEditor({
   });
   const [formError, setFormError] = useState<string | null>(null);
   const advancedRef = useRef<HTMLDetailsElement>(null);
+  const reasoningControlId = useId();
+  const reasoningHelpId = useId();
   const compatibleAdapters = connection.family === "openai_compatible";
   const credential = connection.credentials.find(({ id }) => id === credentialId) ?? null;
   const modelIdentity = useMemo(
@@ -382,6 +391,21 @@ export function AdminProviderModelEditor({
   const modelState = discovery.models.get(modelIdentity);
   const catalogModels = modelState.items;
   const compatibleModelState = discovery.compatibleModels.get(modelIdentity);
+  const selectedCompatibleModel = compatibleModelState.items.find(
+    ({ id }) => id === form.upstreamModelId
+  );
+  const automaticReasoning = reasoningForChoice(
+    "automatic",
+    selectedCompatibleModel ? [selectedCompatibleModel] : []
+  );
+  const solReasoning = reasoningForChoice("openai_gpt_5_6_sol", []);
+  const reasoningChoice: AdminProviderReasoningChoice | "custom" = !form.capabilities.reasoning
+    ? "disabled"
+    : reasoningCapabilitiesEqual(form.capabilities, automaticReasoning)
+      ? "automatic"
+      : reasoningCapabilitiesEqual(form.capabilities, solReasoning)
+        ? "openai_gpt_5_6_sol"
+        : "custom";
   const selectedCatalogModel = catalogModels.find(({ id }) => id === form.upstreamModelId);
   const terminalPath = form.adapterKind.includes("responses")
     ? "responses"
@@ -407,6 +431,28 @@ export function AdminProviderModelEditor({
     if (value === undefined) delete capabilities[key];
     else Object.assign(capabilities, { [key]: value });
     setForm({ ...form, capabilities });
+  }
+
+  function changeCompatibleAdapter(adapterKind: AdminProviderAdapterKind) {
+    const capabilities = { ...form.capabilities };
+    if (adapterKind === "openai_chat_completions_compatible") {
+      capabilities.nativeSearch = false;
+      capabilities.nativeImageGeneration = false;
+    }
+    setForm({ ...form, adapterKind, capabilities });
+  }
+
+  function changeReasoning(choice: AdminProviderReasoningChoice) {
+    setForm({
+      ...form,
+      capabilities: applyReasoningCapabilities(
+        form.capabilities,
+        reasoningForChoice(
+          choice,
+          selectedCompatibleModel ? [selectedCompatibleModel] : []
+        )
+      )
+    });
   }
 
   function submit() {
@@ -641,7 +687,7 @@ export function AdminProviderModelEditor({
               </div>
 
               <AdminSearchablePicker
-                description="Search the bounded IDs reported by this endpoint's /models catalog. Selecting an ID fills this draft; it does not import capabilities."
+                description="Search the bounded IDs reported by this endpoint's /models catalog. Selecting an ID also applies bounded context and reasoning metadata when available."
                 disabled={!modelIdentity}
                 emptyDescription="This endpoint returned no model IDs. Refresh it, review the credential, or enter an exact ID manually below."
                 emptyTitle="No models reported by this endpoint"
@@ -655,11 +701,27 @@ export function AdminProviderModelEditor({
                 loading={compatibleModelState.status === "loading"}
                 noun={{ plural: "models", singular: "model" }}
                 onRetry={() => void discovery.compatibleModels.retry(modelIdentity)}
-                onSelect={(model) => setForm({
-                  ...form,
-                  displayName: model.id,
-                  upstreamModelId: model.id
-                })}
+                onSelect={(model) => {
+                  const discovered = compatibleModelState.items.find(({ id }) => id === model.id);
+                  const capabilities = applyReasoningCapabilities(
+                    form.capabilities,
+                    reasoningForChoice("automatic", discovered ? [discovered] : [])
+                  );
+                  setForm({
+                    ...form,
+                    capabilities: {
+                      ...capabilities,
+                      ...(discovered?.capabilities?.contextWindow
+                        ? { contextWindow: discovered.capabilities.contextWindow }
+                        : {}),
+                      ...(discovered?.capabilities?.defaultMaxOutputTokens
+                        ? { defaultMaxOutputTokens: discovered.capabilities.defaultMaxOutputTokens }
+                        : {})
+                    },
+                    displayName: model.id,
+                    upstreamModelId: model.id
+                  });
+                }}
                 placeholder="Choose a reported model"
                 searchPlaceholder="Search model IDs"
                 selectedFallbackLabel={form.upstreamModelId || "Configured model"}
@@ -680,7 +742,7 @@ export function AdminProviderModelEditor({
             {compatibleAdapters ? (
               <label className="md:col-span-2">
                 <span className={fieldLabel}>Protocol</span>
-                <select className={inputClass} disabled={controller.state.busy} onChange={(event) => setForm({ ...form, adapterKind: event.currentTarget.value as AdminProviderAdapterKind })} value={form.adapterKind}>
+                <select className={inputClass} disabled={controller.state.busy} onChange={(event) => changeCompatibleAdapter(event.currentTarget.value as AdminProviderAdapterKind)} value={form.adapterKind}>
                   <option value="openai_responses_compatible">Responses</option>
                   <option value="openai_chat_completions_compatible">Chat Completions</option>
                 </select>
@@ -690,6 +752,56 @@ export function AdminProviderModelEditor({
           </div>
         </div>
       )}
+
+      {compatibleAdapters ? (
+        <section className="grid gap-3 rounded-control border border-trace-subtle bg-answer-paper p-3" aria-labelledby="compatible-model-features">
+          <div>
+            <h4 className="text-xs font-semibold text-ink" id="compatible-model-features">OpenAI-compatible model features</h4>
+            <p className={helpText}>These controls are part of the model contract and appear in Run setup after activation.</p>
+          </div>
+          <div className="grid gap-3 md:grid-cols-2">
+            <div>
+              <label className={fieldLabel} htmlFor={reasoningControlId}>Reasoning controls</label>
+              <select
+                aria-describedby={reasoningHelpId}
+                className={inputClass}
+                disabled={controller.state.busy}
+                id={reasoningControlId}
+                onChange={(event) => changeReasoning(event.currentTarget.value as AdminProviderReasoningChoice)}
+                value={reasoningChoice}
+              >
+                {reasoningChoice === "custom" ? <option value="custom" disabled>Current custom metadata</option> : null}
+                <option value="automatic">Use reported metadata; GPT-5.6 Sol fallback</option>
+                <option value="openai_gpt_5_6_sol">OpenAI GPT-5.6 Sol profile</option>
+                <option value="disabled">Not supported</option>
+              </select>
+              <p className={helpText} id={reasoningHelpId}>{reasoningCapabilitiesSummary(form.capabilities)}</p>
+            </div>
+            <label className={`flex min-h-control items-start gap-2 rounded-control bg-control-surface px-3 py-2 text-xs text-ink-secondary ${touchTarget}`}>
+              <input
+                checked={form.capabilities.nativeSearch === true}
+                className="mt-0.5 size-4 shrink-0 accent-proof"
+                disabled={controller.state.busy}
+                onChange={(event) => setForm({
+                  ...form,
+                  adapterKind: event.currentTarget.checked
+                    ? "openai_responses_compatible"
+                    : form.adapterKind,
+                  capabilities: {
+                    ...form.capabilities,
+                    nativeSearch: event.currentTarget.checked
+                  }
+                })}
+                type="checkbox"
+              />
+              <span>
+                <span className="block font-medium text-ink">Hosted web search (`web_search`)</span>
+                <span className="mt-0.5 block leading-4 text-ink-muted">Enabling this selects Responses, where AIQSA can serialize the hosted tool and citations.</span>
+              </span>
+            </label>
+          </div>
+        </section>
+      ) : null}
 
       <details className="group rounded-control bg-control-surface/60" ref={advancedRef}>
         <summary className={`flex min-h-control cursor-pointer list-none items-center justify-between gap-3 rounded-control px-3 py-2 text-xs font-medium text-ink-secondary hover:bg-control-hover ${focusRing} ${touchTarget}`}>
@@ -711,7 +823,9 @@ export function AdminProviderModelEditor({
           <fieldset>
             <legend className={fieldLabel}>Capability overrides</legend>
             <div className="flex flex-wrap gap-2">
-              {([['reasoning', 'Reasoning'], ['vision', 'Vision'], ['pdf', 'PDF'], ['nativePdfInput', 'Native PDF input'], ['nativeSearch', 'Native search'], ['toolCalling', 'Tools'], ['streaming', 'Streaming'], ['parallelToolCalls', 'Parallel tools']] as const).map(([key, label]) => (
+              {([['reasoning', 'Reasoning'], ['vision', 'Vision'], ['pdf', 'PDF'], ['nativePdfInput', 'Native PDF input'], ['nativeSearch', 'Native search'], ['toolCalling', 'Tools'], ['streaming', 'Streaming'], ['parallelToolCalls', 'Parallel tools']] as const)
+                .filter(([key]) => !compatibleAdapters || (key !== "reasoning" && key !== "nativeSearch"))
+                .map(([key, label]) => (
                 <label className={`flex min-h-control items-center gap-2 rounded-control bg-answer-paper px-3 text-xs text-ink-secondary ${touchTarget}`} key={key}>
                   <input checked={form.capabilities[key] === true} className="size-4 accent-proof" disabled={controller.state.busy} onChange={(event) => updateCapability(key, event.currentTarget.checked)} type="checkbox" />
                   {label}

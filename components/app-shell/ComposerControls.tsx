@@ -397,7 +397,7 @@ export function ComposerControls({
           />
           <div
             ref={runSetupDialogRef}
-            className="pop-enter fixed inset-x-0 bottom-0 z-[70] flex max-h-[calc(100dvh-max(.5rem,env(safe-area-inset-top)))] flex-col overflow-hidden rounded-t-panel border-t border-trace-subtle bg-overlay-surface pb-[env(safe-area-inset-bottom)] shadow-overlay sm:inset-x-auto sm:bottom-auto sm:left-1/2 sm:top-1/2 sm:max-h-[calc(100dvh-2rem-env(safe-area-inset-top)-env(safe-area-inset-bottom))] sm:w-[min(44rem,calc(100vw-2rem))] sm:-translate-x-1/2 sm:-translate-y-1/2 sm:rounded-panel sm:border [@media(max-height:32rem)]:!top-[max(.5rem,env(safe-area-inset-top))] [@media(max-height:32rem)]:!max-h-[calc(100dvh-1rem-env(safe-area-inset-top)-env(safe-area-inset-bottom))] [@media(max-height:32rem)]:!translate-y-0"
+            className="pop-enter fixed inset-x-0 bottom-0 z-[70] flex max-h-[calc(100dvh_-_max(.5rem,env(safe-area-inset-top)))] flex-col overflow-hidden rounded-t-panel border-t border-trace-subtle bg-overlay-surface pb-[env(safe-area-inset-bottom)] shadow-overlay sm:inset-x-auto sm:bottom-auto sm:left-1/2 sm:top-1/2 sm:max-h-[calc(100dvh_-_2rem_-_env(safe-area-inset-top)_-_env(safe-area-inset-bottom))] sm:w-[min(44rem,calc(100vw-2rem))] sm:-translate-x-1/2 sm:-translate-y-1/2 sm:rounded-panel sm:border [@media(max-height:32rem)]:!top-[max(.5rem,env(safe-area-inset-top))] [@media(max-height:32rem)]:!max-h-[calc(100dvh_-_1rem_-_env(safe-area-inset-top)_-_env(safe-area-inset-bottom))] [@media(max-height:32rem)]:!translate-y-0"
             data-testid="run-setup-sheet"
             id="composer-run-setup-panel"
             role="dialog"

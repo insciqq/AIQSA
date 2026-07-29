@@ -112,6 +112,57 @@ describe("provider connection configuration", () => {
 });
 
 describe("provider model configuration", () => {
+  it("normalizes bounded declared reasoning controls", () => {
+    expect(normalizeProviderModelConfiguration({
+      adapterKind: "openai_responses_compatible",
+      capabilities: {
+        ...capabilities,
+        defaultReasoningEffort: "medium",
+        defaultReasoningMode: "standard",
+        reasoningEfforts: ["low", "medium", "high", "ultra"],
+        reasoningModes: ["standard", "pro"]
+      },
+      defaultParams: {},
+      upstreamModelId: "reasoning-model"
+    }).capabilities).toMatchObject({
+      defaultReasoningEffort: "medium",
+      defaultReasoningMode: "standard",
+      reasoningEfforts: ["low", "medium", "high", "ultra"],
+      reasoningModes: ["standard", "pro"]
+    });
+  });
+
+  it.each([
+    {
+      ...capabilities,
+      defaultReasoningEffort: "medium",
+      reasoningEfforts: ["low", "high"]
+    },
+    {
+      ...capabilities,
+      defaultReasoningMode: "standard"
+    },
+    {
+      ...capabilities,
+      reasoning: false,
+      reasoningEfforts: ["low"]
+    },
+    {
+      ...capabilities,
+      reasoningEfforts: Array.from({ length: 17 }, (_value, index) => `level-${index}`)
+    }
+  ])("rejects inconsistent or unbounded reasoning metadata", (invalidCapabilities) => {
+    expectCode(
+      () => normalizeProviderModelConfiguration({
+        adapterKind: "openai_responses_compatible",
+        capabilities: invalidCapabilities,
+        defaultParams: {},
+        upstreamModelId: "reasoning-model"
+      }),
+      "provider_model_capabilities_invalid"
+    );
+  });
+
   it("round-trips an optional declared image-generation capability", () => {
     expect(normalizeProviderModelConfiguration({
       adapterKind: "openai_responses_compatible",

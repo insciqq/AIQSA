@@ -5,7 +5,11 @@ import type {
   OAuthTokens
 } from "@modelcontextprotocol/sdk/shared/auth.js";
 import { describe, expect, it } from "vitest";
-import type { McpOAuthPolicy, McpOAuthPurpose } from "./oauthPolicy";
+import {
+  bindMcpOAuthPolicyResource,
+  type McpOAuthPolicy,
+  type McpOAuthPurpose
+} from "./oauthPolicy";
 import type {
   McpOAuthRepository,
   McpOAuthRepositoryResult,
@@ -73,6 +77,8 @@ class MemoryOAuthRepository implements McpOAuthRepository {
     }
     const connectionPolicy = this.policyForUser(input.userId);
     if (!connectionPolicy) return { kind: "not_found" };
+    const resolvedPolicy = bindMcpOAuthPolicyResource(connectionPolicy, input.resource);
+    if (!resolvedPolicy) return { kind: "configuration_changed" };
     for (const [id, connection] of this.connections) {
       if (connection.userId === input.userId && connection.purpose === input.purpose &&
         connection.state === "ready") {
@@ -89,7 +95,7 @@ class MemoryOAuthRepository implements McpOAuthRepository {
         : null,
       externalAccountLabel: input.externalAccountLabel,
       id,
-      policy: connectionPolicy,
+      policy: resolvedPolicy,
       policyFingerprint: input.policyFingerprint,
       purpose: input.purpose,
       scopes: input.tokens.scope?.split(" ") ?? this.policy.requestedScopes,
@@ -253,6 +259,7 @@ class StandardsOAuthFixture {
   metadataDocumentSupported = false;
   refreshCalls = 0;
   revokedHints: string[] = [];
+  resource = SERVER_URL;
 
   readonly fetch = async (input: string | URL, init?: RequestInit): Promise<Response> => {
     const url = new URL(input.toString());
@@ -260,7 +267,7 @@ class StandardsOAuthFixture {
       url.pathname.startsWith("/.well-known/oauth-protected-resource")) {
       return Response.json({
         authorization_servers: [AUTH_ORIGIN],
-        resource: SERVER_URL,
+        resource: this.resource,
         resource_name: "Fixture Workspace",
         scopes_supported: ["mcp.read", "mcp.write"]
       });
@@ -297,7 +304,7 @@ class StandardsOAuthFixture {
     if (url.toString() === `${AUTH_ORIGIN}/token`) {
       expect(new Headers(init?.headers).get("authorization")).toMatch(/^Basic /u);
       const body = new URLSearchParams(String(init?.body));
-      expect(body.get("resource")).toBe(SERVER_URL);
+      expect(body.get("resource")).toBe(this.resource);
       if (body.get("grant_type") === "authorization_code") {
         expect(body.get("code")).toBe("fixture-code");
         expect(body.get("code_verifier")).toBe(this.authorizationCodeVerifier);
@@ -537,6 +544,65 @@ function challenge(verifier: string): string {
 }
 
 describe("generic MCP OAuth service", () => {
+  it("adopts a discovered same-origin protected resource when the draft omitted it", async () => {
+    const repository = new MemoryOAuthRepository({
+      ...fixturePolicy(),
+      resourceMode: "auto_same_origin"
+    });
+    const fixture = new StandardsOAuthFixture();
+    fixture.resource = "https://mcp.fixture.test/";
+    const service = new McpOAuthService({
+      fetchForPolicy: () => fixture.fetch,
+      repository
+    });
+
+    const started = await service.startAuthorization({
+      forceReconnect: false,
+      purpose: "user",
+      redirectUri: REDIRECT_URI,
+      serverId: "server-1",
+      state: "auto-resource-state",
+      userId: "user-1"
+    });
+    expect(started.kind).toBe("redirect");
+    if (started.kind !== "redirect") return;
+    expect(new URL(started.authorizationUrl).searchParams.get("resource"))
+      .toBe("https://mcp.fixture.test/");
+    fixture.authorizationCodeVerifier = started.flow.codeVerifier;
+
+    const connection = await service.completeAuthorization({
+      authorizationCode: "fixture-code",
+      flow: started.flow
+    });
+    expect(connection.policy).toMatchObject({
+      resource: "https://mcp.fixture.test/",
+      resourceMode: "auto_same_origin"
+    });
+    await expect(service.createRuntimeProvider(connection.id)).resolves.toBeTruthy();
+  });
+
+  it("rejects an auto-discovered protected resource outside the MCP origin", async () => {
+    const repository = new MemoryOAuthRepository({
+      ...fixturePolicy(),
+      resourceMode: "auto_same_origin"
+    });
+    const fixture = new StandardsOAuthFixture();
+    fixture.resource = "https://unreviewed.example.test/resource";
+    const service = new McpOAuthService({
+      fetchForPolicy: () => fixture.fetch,
+      repository
+    });
+
+    await expect(service.startAuthorization({
+      forceReconnect: false,
+      purpose: "user",
+      redirectUri: REDIRECT_URI,
+      serverId: "server-1",
+      state: "cross-origin-state",
+      userId: "user-1"
+    })).rejects.toMatchObject({ code: "mcp_oauth_policy_forbidden" });
+  });
+
   it("keeps brokered upstream grants private and isolated across users", async () => {
     const repository = new MemoryOAuthRepository(brokerPolicy(), ["user-2"]);
     const fixture = new BrokeredOAuthFixture();

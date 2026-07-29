@@ -289,7 +289,7 @@ function AuthEditor({
       {oauth ? (
         <div className="grid min-w-0 gap-3 md:grid-cols-2">
           <label>
-            <span className={fieldLabel}>Protected resource</span>
+            <span className={fieldLabel}>Protected resource override (optional)</span>
             <input
               className={inputClass}
               disabled={disabled}
@@ -297,10 +297,11 @@ function AuthEditor({
                 ...draft,
                 auth: { ...oauth, protectedResource: event.currentTarget.value || undefined }
               })}
-              placeholder="Defaults to the MCP endpoint"
+              placeholder="Auto-discovered from the MCP endpoint"
               type="url"
               value={oauth.protectedResource ?? ""}
             />
+            <span className={helpText}>Leave empty to accept only a same-origin resource identifier returned by OAuth discovery. Cross-origin resources require this explicit reviewed override.</span>
           </label>
           <label>
             <span className={fieldLabel}>Client ID metadata document URL</span>

@@ -684,7 +684,7 @@ describe("admin provider service", () => {
     expect(listModelEndpoints).toHaveBeenCalledWith("vendor/model", { signal: undefined });
   });
 
-  it("discovers id-only compatible models with the exact stored bearer credential", async () => {
+  it("discovers bounded compatible model metadata with the exact stored bearer credential", async () => {
     const envelope = encryptProviderCredentialSecret({
       credentialId: "credential-compatible",
       key: KEY,
@@ -696,7 +696,21 @@ describe("admin provider service", () => {
         ? await input.secret()
         : input.secret;
       expect(secret).toBe("compatible-draft-key");
-      return { method: "models_catalog", modelIds: ["vendor/a", "vendor/b"] };
+      return {
+        method: "models_catalog",
+        modelIds: ["vendor/a", "vendor/b"],
+        models: [
+          {
+            capabilities: {
+              defaultReasoningEffort: "medium",
+              reasoning: true,
+              reasoningEfforts: ["low", "medium", "high"]
+            },
+            id: "vendor/a"
+          },
+          { capabilities: {}, id: "vendor/b" }
+        ]
+      };
     });
     const providers = createAdminProviderService({
       credentialTester: credentialTester(testCatalog),
@@ -726,7 +740,17 @@ describe("admin provider service", () => {
     await expect(providers.discoverCompatibleModels({
       connectionId: "connection-compatible",
       credentialId: "credential-compatible"
-    })).resolves.toEqual([{ id: "vendor/a" }, { id: "vendor/b" }]);
+    })).resolves.toEqual([
+      {
+        capabilities: {
+          defaultReasoningEffort: "medium",
+          reasoning: true,
+          reasoningEfforts: ["low", "medium", "high"]
+        },
+        id: "vendor/a"
+      },
+      { capabilities: {}, id: "vendor/b" }
+    ]);
     expect(testCatalog).toHaveBeenCalledOnce();
   });
 
@@ -759,7 +783,10 @@ describe("admin provider service", () => {
     await expect(providers.discoverCompatibleModels({
       connectionId: "connection-local",
       credentialId: "credential-local"
-    })).resolves.toEqual([{ id: "local-a" }, { id: "local-b" }]);
+    })).resolves.toEqual([
+      { capabilities: {}, id: "local-a" },
+      { capabilities: {}, id: "local-b" }
+    ]);
   });
 
   it("refreshes the exact active tuple and records authoritative unavailable results", async () => {

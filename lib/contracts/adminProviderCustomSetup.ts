@@ -1,4 +1,7 @@
-import type { AdminProviderModelCapabilities } from "./adminProviders";
+import type {
+  AdminCompatibleDiscoveredModel,
+  AdminProviderModelCapabilities
+} from "./adminProviders";
 
 export const ADMIN_PROVIDER_CUSTOM_AUTHENTICATION_MODES = [
   "bearer",
@@ -55,7 +58,7 @@ export type AdminProviderCustomDiscoveryRequest = Readonly<{
   secret?: string;
 }>;
 
-export type AdminProviderCustomDiscoveredModel = Readonly<{ id: string }>;
+export type AdminProviderCustomDiscoveredModel = Readonly<AdminCompatibleDiscoveredModel>;
 
 export type AdminProviderCustomDiscoveryResult = Readonly<{
   checkedAt: string;

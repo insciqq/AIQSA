@@ -367,18 +367,28 @@ function OAuthValidation({ controller, server }: Readonly<{
         {connection?.connectedAt ? <div className="mt-1 text-[11px] opacity-80">Last connected {new Date(connection.connectedAt).toLocaleString()}</div> : null}
       </div>
       <div className="mt-3 flex flex-wrap gap-2">
-        <form action={`/api/admin/mcp/${encoded}/oauth/validation/connect`} method="post">
-          <button className={ready ? quietButton : primaryButton} disabled={archived} type="submit">
+        {archived ? (
+          <button className={ready ? quietButton : primaryButton} disabled type="button">
             {ready ? "Check connection" : "Connect"}
             <ExternalLink aria-hidden="true" className="size-3.5" />
           </button>
-        </form>
-        <form action={`/api/admin/mcp/${encoded}/oauth/validation/reconnect`} method="post">
-          <button className={quietButton} disabled={archived} type="submit">
+        ) : (
+          <a className={ready ? quietButton : primaryButton} href={`/api/admin/mcp/${encoded}/oauth/validation/connect`}>
+            {ready ? "Check connection" : "Connect"}
+            <ExternalLink aria-hidden="true" className="size-3.5" />
+          </a>
+        )}
+        {archived ? (
+          <button className={quietButton} disabled type="button">
             Reconnect
             <ExternalLink aria-hidden="true" className="size-3.5" />
           </button>
-        </form>
+        ) : (
+          <a className={quietButton} href={`/api/admin/mcp/${encoded}/oauth/validation/reconnect`}>
+            Reconnect
+            <ExternalLink aria-hidden="true" className="size-3.5" />
+          </a>
+        )}
         <button
           className={quietButton}
           disabled={archived || controller.state.busy || !connection || connection.state === "disconnected" || disconnecting}

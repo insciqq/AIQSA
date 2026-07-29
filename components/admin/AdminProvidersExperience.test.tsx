@@ -208,7 +208,10 @@ describe("AdminProvidersExperience", () => {
       data: {
         checkedAt: "2026-07-26T09:59:00.000Z",
         modelCount: 2,
-        models: [{ id: "vendor/model-1" }, { id: "vendor/model-2" }],
+        models: [
+          { capabilities: {}, id: "vendor/model-1" },
+          { capabilities: {}, id: "vendor/model-2" }
+        ],
         source: "models_catalog",
         status: "valid"
       },
@@ -273,6 +276,8 @@ describe("AdminProvidersExperience", () => {
       secret: "browser-only-key"
     }), expect.any(Function), expect.any(AbortSignal));
     fireEvent.click(screen.getByText("Advanced settings"));
+    expect(screen.getByRole("combobox", { name: /^Reasoning controls/ }))
+      .toHaveValue("automatic");
     fireEvent.click(screen.getByLabelText("Hosted web search"));
     fireEvent.click(screen.getByLabelText("Image generation (future workflows)"));
     expect(screen.getByText(/Image support is recorded now but is not yet runnable/))
@@ -289,8 +294,13 @@ describe("AdminProvidersExperience", () => {
       apiRoot: "https://llm.example.test/v1",
       authenticationMode: "bearer",
       capabilities: expect.objectContaining({
+        defaultReasoningEffort: "medium",
+        defaultReasoningMode: "standard",
         nativeImageGeneration: true,
-        nativeSearch: true
+        nativeSearch: true,
+        reasoning: true,
+        reasoningEfforts: ["none", "low", "medium", "high", "xhigh", "max"],
+        reasoningModes: ["standard", "pro"]
       }),
       modelIds: ["vendor/model-1", "vendor/model-2"],
       protocol: "responses",

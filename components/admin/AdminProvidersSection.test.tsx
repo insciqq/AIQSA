@@ -96,8 +96,8 @@ function controller() {
     deleteCredential: vi.fn().mockResolvedValue(true),
     deleteModel: vi.fn().mockResolvedValue(true),
     discoverCompatibleModels: vi.fn().mockResolvedValue([
-      { id: "local/model-a" },
-      { id: "local/model-b" }
+      { capabilities: {}, id: "local/model-a" },
+      { capabilities: {}, id: "local/model-b" }
     ]),
     discoverEndpoints: vi.fn().mockResolvedValue([{
       name: "Provider A endpoint",
@@ -850,6 +850,11 @@ describe("AdminProvidersSection", () => {
       .toHaveValue("local/model-b");
     expect(screen.getByRole("textbox", { name: "Display name" }))
       .toHaveValue("local/model-b");
+    expect(screen.getByRole("combobox", { name: /^Reasoning controls/ }))
+      .toHaveValue("automatic");
+    expect(screen.getByText(/Effort: none, low, medium, high, xhigh, max; default medium/))
+      .toBeInTheDocument();
+    fireEvent.click(screen.getByRole("checkbox", { name: /Hosted web search/ }));
     fireEvent.click(screen.getByRole("button", { name: "Save model" }));
 
     await waitFor(() => expect(view.actions.createModel).toHaveBeenCalledWith(
@@ -857,6 +862,14 @@ describe("AdminProvidersSection", () => {
       expect.objectContaining({
         configuration: expect.objectContaining({
           adapterKind: "openai_responses_compatible",
+          capabilities: expect.objectContaining({
+            defaultReasoningEffort: "medium",
+            defaultReasoningMode: "standard",
+            nativeSearch: true,
+            reasoning: true,
+            reasoningEfforts: ["none", "low", "medium", "high", "xhigh", "max"],
+            reasoningModes: ["standard", "pro"]
+          }),
           upstreamModelId: "local/model-b"
         }),
         displayName: "local/model-b"

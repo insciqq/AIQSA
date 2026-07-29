@@ -7,10 +7,12 @@ import { createMcpOAuthStartHandler } from "@/lib/server/mcp/oauthHandlers";
 
 export const runtime = "nodejs";
 
-export const POST = createMcpOAuthStartHandler({
+const start = createMcpOAuthStartHandler({
   getConfig: getAuthConfig,
   onRuntimeChanged: kickDefaultMcpRuntime,
   resolveAuth: resolveRequestAuth,
   settleAuthorization: settleDefaultMcpOAuth,
   service: mcpOAuthService
 }, { forceReconnect: true, purpose: "user" });
+
+export { start as GET, start as POST };
