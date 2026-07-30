@@ -127,6 +127,7 @@ export type ProviderRunResult = {
 
 export type ProviderRunOptions = {
   signal?: AbortSignal;
+  timeoutMs?: number;
 };
 
 export type ProviderRunRefreshResult = {
@@ -160,6 +161,7 @@ export type ProviderSearchResult = {
 
 export type ProviderSearchOptions = {
   signal?: AbortSignal;
+  timeoutMs?: number;
 };
 
 export type ProviderAdapter = {

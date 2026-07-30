@@ -1,4 +1,5 @@
 import type {
+  AdminProviderQuickSetupConnectionSummary,
   AdminProviderQuickSetupProviderId,
   AdminProviderQuickSetupState
 } from "../../../contracts/adminProviderQuickSetup";
@@ -92,4 +93,7 @@ export type AdminProviderQuickSetupRepository = Readonly<{
     now: Date;
     provider: AdminProviderQuickSetupProviderId;
   }>): Promise<AdminProviderQuickSetupInspection>;
+  listConfiguredConnections(input: AdminProviderQuickSetupActor & Readonly<{
+    now: Date;
+  }>): Promise<AdminProviderQuickSetupConnectionSummary[]>;
 }>;

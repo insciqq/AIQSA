@@ -241,7 +241,7 @@ describe("OpenRouter Perplexity search adapter", () => {
     ]);
   });
 
-  it("forwards the exact abort signal to the transport client", async () => {
+  it("forwards the exact abort signal and Search timeout to the transport client", async () => {
     const controller = new AbortController();
     const createChatCompletion = vi.fn<OpenRouterChatClient["createChatCompletion"]>(async () =>
       successfulResponse()
@@ -250,11 +250,11 @@ describe("OpenRouter Perplexity search adapter", () => {
       client: { createChatCompletion }
     });
 
-    await adapter.search(searchRequest(), { signal: controller.signal });
+    await adapter.search(searchRequest(), { signal: controller.signal, timeoutMs: 300_000 });
 
     expect(createChatCompletion).toHaveBeenCalledWith(
       expect.any(Object),
-      { signal: controller.signal }
+      { signal: controller.signal, timeoutMs: 300_000 }
     );
   });
 

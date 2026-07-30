@@ -1,5 +1,9 @@
 import { textMessageContent } from "../../domain/content";
-import type { NormalizedSearchPlanOption, ProviderRunRequest } from "../providers/types";
+import type {
+  NormalizedSearchPlanOption,
+  ProviderRunOptions,
+  ProviderRunRequest
+} from "../providers/types";
 import type { ProviderRuntimeBinding } from "../providers/runtimeFactory";
 import type { ModelToolCall } from "../tools/types";
 import {
@@ -85,14 +89,16 @@ function answerRequest(): ProviderRunRequest {
 
 function runtime(input: Readonly<{
   fail?: string;
+  onOptions?(options: ProviderRunOptions | undefined): void;
   onRequest?(request: ProviderRunRequest): void;
   sourceUrl?: string;
 }> = {}): ProviderRuntimeBinding {
   return {
     adapter: {
       buildRequestPreview: () => ({ protocol: "responses" }),
-      async *stream(request) {
+      async *stream(request, options) {
         input.onRequest?.(request);
+        input.onOptions?.(options);
         if (input.fail) throw new Error(input.fail);
         return {
           finalProviderResponsePreview: {
@@ -136,12 +142,17 @@ function call(name: string, query = "bounded query"): ModelToolCall {
 describe("Search plan tool router", () => {
   it("fans one query out concurrently, shares query-only context, and merges duplicate URLs deterministically", async () => {
     const requests: ProviderRunRequest[] = [];
+    const runOptions: Array<ProviderRunOptions | undefined> = [];
     const first = option("first");
     const second = option("second");
     const router = createSearchPlanToolRouter({
       plan: { mode: "all_selected", options: [first, second] },
       runtimes: {
-        first: runtime({ onRequest: (request) => requests.push(request), sourceUrl: "https://example.com/shared#one" }),
+        first: runtime({
+          onOptions: (options) => runOptions.push(options),
+          onRequest: (request) => requests.push(request),
+          sourceUrl: "https://example.com/shared#one"
+        }),
         second: runtime({ onRequest: (request) => requests.push(request), sourceUrl: "https://example.com/shared#two" })
       }
     })!;
@@ -150,6 +161,7 @@ describe("Search plan tool router", () => {
 
     expect(result.status).toBe("complete");
     expect(requests).toHaveLength(2);
+    expect(runOptions[0]).toMatchObject({ timeoutMs: 5_000 });
     for (const request of requests) {
       expect(request.attachmentIds).toEqual([]);
       expect(request.attachments).toEqual([]);

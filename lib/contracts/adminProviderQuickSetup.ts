@@ -30,7 +30,16 @@ export type AdminProviderQuickSetupProviderSnapshot = Readonly<{
   stateToken: string;
 }>;
 
+export type AdminProviderQuickSetupConnectionSummary = Readonly<{
+  activeModelCount: number;
+  displayName: string;
+  enabled: boolean;
+  family: string;
+  id: string;
+}>;
+
 export type AdminProviderQuickSetupSnapshot = Readonly<{
+  configuredConnections: AdminProviderQuickSetupConnectionSummary[];
   providers: AdminProviderQuickSetupProviderSnapshot[];
   suggestedProvider: AdminProviderQuickSetupProviderId | null;
 }>;

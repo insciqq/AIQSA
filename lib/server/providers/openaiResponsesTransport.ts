@@ -9,6 +9,7 @@ export type OpenAIResponseObject = Record<string, unknown>;
 
 export type OpenAIResponsesClientRequestOptions = {
   signal?: AbortSignal;
+  timeoutMs?: number;
 };
 
 export type OpenAIResponsesClient = {
@@ -100,7 +101,7 @@ export function createFetchOpenAIResponsesClient(input: {
     body: OpenAIResponseObject,
     options?: OpenAIResponsesClientRequestOptions
   ) {
-    const timeout = withTimeoutSignal(options?.signal);
+    const timeout = withTimeoutSignal(options?.signal, options?.timeoutMs);
     try {
       const response = await fetchFn(`${baseUrl}/responses`, {
         body: JSON.stringify(body),
@@ -149,7 +150,7 @@ export function createFetchOpenAIResponsesClient(input: {
       }
     },
     async retrieve(responseId, options) {
-      const timeout = withTimeoutSignal(options?.signal);
+      const timeout = withTimeoutSignal(options?.signal, options?.timeoutMs);
       try {
         const response = await fetchFn(`${baseUrl}/responses/${responseId}`, {
           headers,

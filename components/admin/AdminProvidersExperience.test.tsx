@@ -151,9 +151,17 @@ function snapshot(options: {
   gemini?: Parameters<typeof provider>[1];
   openai?: Parameters<typeof provider>[1];
   openrouter?: Parameters<typeof provider>[1];
+  configuredConnections?: Array<{
+    activeModelCount: number;
+    displayName: string;
+    enabled: boolean;
+    family: string;
+    id: string;
+  }>;
   suggestedProvider?: "anthropic" | "gemini" | "openai" | "openrouter" | null;
 } = {}) {
   return {
+    configuredConnections: options.configuredConnections ?? [],
     providers: [
       provider("openai", options.openai),
       provider("anthropic", options.anthropic),
@@ -201,6 +209,35 @@ describe("AdminProvidersExperience", () => {
     profiles.mounts = 0;
     profiles.props = null;
     api.get.mockResolvedValue({ data: snapshot(), ok: true });
+  });
+
+  it("shows configured connections immediately and opens the exact connection", async () => {
+    api.get.mockResolvedValue({
+      data: snapshot({
+        configuredConnections: [{
+          activeModelCount: 8,
+          displayName: "codex-lb",
+          enabled: true,
+          family: "openai_compatible",
+          id: "custom-codex-lb"
+        }]
+      }),
+      ok: true
+    });
+    render(<AdminProvidersExperience active groups={[]} />);
+
+    expect(await screen.findByRole("heading", { name: "Configured connections" })).toBeVisible();
+    expect(screen.getByRole("button", { name: /Custom 1 configured/ })).toBeVisible();
+    const connection = screen.getByTestId("provider-configured-connection-custom-codex-lb");
+    expect(connection).toHaveTextContent("codex-lb");
+    expect(connection).toHaveTextContent("8 active models");
+    expect(connection).toHaveTextContent("Enabled");
+    expect(connections.mounts).toBe(0);
+
+    fireEvent.click(connection);
+    expect(await screen.findByText("Entry connection: custom-codex-lb")).toBeVisible();
+    expect(connections.props?.entryConnectionId).toBe("custom-codex-lb");
+    expect(connections.props?.entryProvider).toBeNull();
   });
 
   it("keeps custom OpenAI-compatible setup separate and deep-links its Ready connection", async () => {

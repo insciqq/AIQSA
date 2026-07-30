@@ -159,7 +159,10 @@ export function createAdminSearchTester(prisma: PrismaClient): AdminSearchTester
           searchStrategy: "perplexity-tool-search",
           strategyId: "perplexity-tool-search"
         };
-        const result = await runtime.searchAdapter.search(searchRequest, { signal });
+        const result = await runtime.searchAdapter.search(searchRequest, {
+          signal,
+          timeoutMs: draft.timeoutMs
+        });
         normalizedSourceCount = safeSourceCount(result.artifacts) +
           safeSourceCount(result.finalProviderResponsePreview);
       } else if (draft.protocol === "openai_responses_web_search") {
@@ -167,7 +170,7 @@ export function createAdminSearchTester(prisma: PrismaClient): AdminSearchTester
         const stream = runtime.adapter.stream({
           ...request,
           searchStrategy: "openai-native-web-search"
-        }, { signal });
+        }, { signal, timeoutMs: draft.timeoutMs });
         let next = await stream.next();
         while (!next.done) {
           if (next.value.type === "artifact") events.push(next.value.data);

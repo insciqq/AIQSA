@@ -450,6 +450,7 @@ const ISOLATED_TABLES = [
   "ProviderRunBinding",
   "PromptPreset",
   "RunProfile",
+  "SearchIntegrationRevision",
   "SearchStrategy",
   "User",
   "UserGroup",
@@ -500,6 +501,10 @@ async function createIsolatedQuickSetupDatabase(): Promise<Readonly<{
     );
     await administrationDatabase.$executeRawUnsafe(
       `INSERT INTO ${schema}."RunProfile" SELECT * FROM ${sourceSchema}."RunProfile"`
+    );
+    await administrationDatabase.$executeRawUnsafe(
+      `INSERT INTO ${schema}."SearchIntegrationRevision" ` +
+      `SELECT * FROM ${sourceSchema}."SearchIntegrationRevision"`
     );
     await administrationDatabase.$executeRawUnsafe(
       `INSERT INTO ${schema}."SearchStrategy" SELECT * FROM ${sourceSchema}."SearchStrategy"`

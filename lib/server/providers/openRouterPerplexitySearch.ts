@@ -57,7 +57,10 @@ export function createOpenRouterPerplexitySearchAdapter(
         maxAttachmentTextChars: options.maxAttachmentTextChars
       });
       const response = await options.client.createChatCompletion(body, {
-        signal: searchOptions.signal
+        signal: searchOptions.signal,
+        ...(typeof searchOptions.timeoutMs === "number"
+          ? { timeoutMs: searchOptions.timeoutMs }
+          : {})
       });
       const responseError = openRouterResponseError(response);
       if (responseError) {

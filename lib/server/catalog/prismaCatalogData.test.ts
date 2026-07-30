@@ -477,6 +477,7 @@ describe("prisma catalog data loader", () => {
     const strategies = filterExposedSearchStrategies({
       availableProviderModels: [providerBackedSearchModel()],
       entitlements: entitlements({ searches: ["perplexity-tool-search"] }),
+      exposedProviderModels: [],
       searchStrategies: [
         searchStrategy({ strategyId: "search-disabled" }),
         searchStrategy({
@@ -503,6 +504,31 @@ describe("prisma catalog data loader", () => {
       "search-disabled",
       "perplexity-tool-search"
     ]);
+  });
+
+  it("publishes hosted Search only when an entitled available answer model can run it", () => {
+    const hosted = searchStrategy({
+      adapterKind: "answer_provider_hosted",
+      credentialMode: "answer_provider",
+      kind: "openai_native_web_search",
+      provider: "openai",
+      strategyId: "openai-native-web-search"
+    });
+    const answer = providerModel();
+    const input = {
+      availableProviderModels: [answer],
+      entitlements: entitlements({ searches: ["openai-native-web-search"] }),
+      searchStrategies: [hosted]
+    };
+
+    expect(filterExposedSearchStrategies({
+      ...input,
+      exposedProviderModels: []
+    })).toEqual([]);
+    expect(filterExposedSearchStrategies({
+      ...input,
+      exposedProviderModels: [answer]
+    }).map((strategy) => strategy.strategyId)).toEqual(["openai-native-web-search"]);
   });
 
   it("stops before catalog queries when the user or settings are missing", async () => {

@@ -33,7 +33,7 @@ const catalog: AdminSearchCatalog = {
       protocol: "openai_responses_web_search",
       providerModelId: "technical-1",
       queryMaxCharacters: 500,
-      timeoutMs: 15_000
+      timeoutMs: 300_000
     },
     draftDirty: false,
     draftTestEvidence: {
@@ -54,6 +54,7 @@ const catalog: AdminSearchCatalog = {
       upstreamModelId: "opaque-search-model"
     },
     ready: true,
+    readiness: "ready",
     strategyId: "company-search-12345678",
     system: false
   }],
@@ -78,6 +79,18 @@ describe("AdminSearchSection", () => {
     expect(screen.getByText("User option")).toBeVisible();
     expect(screen.getByText(/Active engine revision 1/)).toBeVisible();
     expect(screen.getByText("Compatible answer models")).toBeVisible();
+    expect(screen.getByText("5 min")).toBeVisible();
+
+    const configurationTab = screen.getByRole("tab", { name: "Configuration" });
+    fireEvent.click(configurationTab);
+    await waitFor(() => expect(configurationTab).toHaveAttribute("aria-selected", "true"));
+    const timeout = await screen.findByRole("spinbutton", { name: /Engine timeout, seconds/ });
+    expect(timeout).toHaveValue(300);
+    fireEvent.change(timeout, { target: { value: "420" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save draft" }));
+    await waitFor(() => expect(api.update).toHaveBeenCalledWith(expect.objectContaining({
+      draft: expect.objectContaining({ timeoutMs: 420_000 })
+    })));
 
     fireEvent.click(screen.getByRole("tab", { name: "Diagnostics" }));
     expect(screen.getByRole("region", { name: "Search diagnostics" })).toHaveTextContent(
@@ -90,5 +103,28 @@ describe("AdminSearchSection", () => {
       id: "integration-1"
     }));
     expect(await screen.findByText("Search draft tested.")).toBeVisible();
+  });
+
+  it("separates enabled state from unavailable runtime dependencies", async () => {
+    api.list.mockResolvedValue({
+      ok: true,
+      search: {
+        ...catalog,
+        integrations: [{
+          ...catalog.integrations[0],
+          ready: false,
+          readiness: "provider_model_unavailable"
+        }]
+      }
+    });
+    render(<AdminSearchSection active />);
+
+    const index = await screen.findByRole("list", { name: "Search integration catalog" });
+    expect(within(index).getByText("Technical model unavailable")).toBeVisible();
+    fireEvent.click(within(index).getByRole("button", { name: /Company Search/i }));
+    expect(within(screen.getByTestId("admin-search-detail-pane"))
+      .getAllByText("Technical model unavailable").length).toBeGreaterThan(0);
+    expect(within(screen.getByTestId("admin-search-detail-pane")).getAllByText("Enabled").length)
+      .toBeGreaterThan(0);
   });
 });

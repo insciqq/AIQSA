@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   buildCompatibleResponsesRequest,
   createCompatibleResponsesAdapter
@@ -88,20 +88,22 @@ describe("compatible Responses adapter", () => {
   });
 
   it("normalizes a completed non-streaming response", async () => {
+    const create = vi.fn(async () => ({
+      id: "response-1",
+      model: "compatible-model",
+      output_text: "Compatible answer",
+      status: "completed",
+      usage: { input_tokens: 5, output_tokens: 2, total_tokens: 7 }
+    }));
     const client: OpenAIResponsesClient = {
       cancel: async () => ({}),
-      create: async () => ({
-        id: "response-1",
-        model: "compatible-model",
-        output_text: "Compatible answer",
-        status: "completed",
-        usage: { input_tokens: 5, output_tokens: 2, total_tokens: 7 }
-      }),
+      create,
       retrieve: async () => ({})
     };
     const adapter = createCompatibleResponsesAdapter({ client });
     const events = [];
-    const stream = adapter.stream(request());
+    const signal = new AbortController().signal;
+    const stream = adapter.stream(request(), { signal, timeoutMs: 300_000 });
     let next = await stream.next();
     while (!next.done) {
       events.push(next.value);
@@ -111,5 +113,6 @@ describe("compatible Responses adapter", () => {
     expect(next.value.finalText).toBe("Compatible answer");
     expect(events.some((event) => event.type === "usage")).toBe(true);
     expect(events.some((event) => event.type === "token")).toBe(true);
+    expect(create).toHaveBeenCalledWith(expect.any(Object), { signal, timeoutMs: 300_000 });
   });
 });

@@ -107,7 +107,7 @@ function configuration(option: NormalizedSearchPlanOption): {
     queryMaxCharacters: Number.isSafeInteger(config.queryMaxCharacters)
       ? Number(config.queryMaxCharacters)
       : 500,
-    timeoutMs: Number.isSafeInteger(config.timeoutMs) ? Number(config.timeoutMs) : 15_000
+    timeoutMs: Number.isSafeInteger(config.timeoutMs) ? Number(config.timeoutMs) : 300_000
   };
 }
 
@@ -152,7 +152,8 @@ async function consumeProviderSearch(
   runtime: ProviderRuntimeBinding,
   request: ProviderRunRequest,
   option: NormalizedSearchPlanOption,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  timeoutMs?: number
 ): Promise<{
   artifacts: ModelRunSseEvent[];
   finalText: string;
@@ -181,7 +182,7 @@ async function consumeProviderSearch(
       searchStrategy: "perplexity-tool-search",
       strategyId: option.optionId
     };
-    const result = await runtime.searchAdapter.search(searchRequest, { signal });
+    const result = await runtime.searchAdapter.search(searchRequest, { signal, timeoutMs });
     return {
       artifacts: result.artifacts,
       finalText: result.finalText,
@@ -200,7 +201,7 @@ async function consumeProviderSearch(
   const stream = runtime.adapter.stream({
     ...request,
     searchStrategy: "openai-native-web-search"
-  }, { signal });
+  }, { signal, timeoutMs });
   let next = await stream.next();
   while (!next.done) {
     if (next.value.type === "artifact") artifacts.push(next.value);
@@ -261,7 +262,8 @@ async function executeOne(input: Readonly<{
       input.runtime,
       request,
       input.option,
-      timeoutController.signal
+      timeoutController.signal,
+      configuration(input.option).timeoutMs
     );
     return {
       durationMs: Date.now() - started,

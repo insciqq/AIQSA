@@ -7,6 +7,7 @@ import {
 
 export type OpenRouterChatClientRequestOptions = {
   signal?: AbortSignal;
+  timeoutMs?: number;
 };
 
 export type OpenRouterChatClient = {
@@ -75,7 +76,7 @@ export function createFetchOpenRouterChatClient(input: {
     body: Record<string, unknown>,
     options?: OpenRouterChatClientRequestOptions
   ) {
-    const timeout = withTimeoutSignal(options?.signal);
+    const timeout = withTimeoutSignal(options?.signal, options?.timeoutMs);
     try {
       const response = await fetchFn(`${baseUrl}/chat/completions`, {
         body: JSON.stringify(body),

@@ -59,7 +59,7 @@ export function normalizeSearchDraft(value: unknown): AdminSearchDraft {
     protocol,
     providerModelId: providerModelId(value.providerModelId ?? null),
     queryMaxCharacters: boundedInteger(value.queryMaxCharacters ?? 500, 32, 1_000),
-    timeoutMs: boundedInteger(value.timeoutMs ?? 15_000, 1_000, 30_000)
+    timeoutMs: boundedInteger(value.timeoutMs ?? 300_000, 5_000, 900_000)
   };
 
   const hosted = adapterKind === "answer_provider_hosted";
@@ -151,6 +151,6 @@ export function builtInSearchDraft(input: Readonly<{
         : "openai_responses_web_search",
     providerModelId: input.providerModelId ?? null,
     queryMaxCharacters: 500,
-    timeoutMs: 15_000
+    timeoutMs: 300_000
   };
 }

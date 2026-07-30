@@ -23,6 +23,12 @@ export type AdminSearchTestEvidence = {
   status: "available" | "unavailable";
 };
 
+export type AdminSearchReadiness =
+  | "activation_required"
+  | "compatible_model_unavailable"
+  | "provider_model_unavailable"
+  | "ready";
+
 export type AdminSearchIntegration = {
   activeRevision: null | {
     activatedAt: string;
@@ -48,6 +54,7 @@ export type AdminSearchIntegration = {
     upstreamModelId: string;
   };
   ready: boolean;
+  readiness: AdminSearchReadiness;
   strategyId: string;
   system: boolean;
 };
@@ -133,7 +140,11 @@ function integration(value: unknown): value is AdminSearchIntegration {
       (isRecord(providerModel) && string(providerModel.connectionDisplayName) &&
         string(providerModel.displayName) && string(providerModel.id) &&
         string(providerModel.upstreamModelId))) &&
-    typeof value.ready === "boolean" && string(value.strategyId) && typeof value.system === "boolean"
+    typeof value.ready === "boolean" &&
+    (value.readiness === "activation_required" ||
+      value.readiness === "compatible_model_unavailable" ||
+      value.readiness === "provider_model_unavailable" || value.readiness === "ready") &&
+    string(value.strategyId) && typeof value.system === "boolean"
   );
 }
 

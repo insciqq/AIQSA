@@ -9,18 +9,72 @@ import {
   touchTarget
 } from "@/components/admin/adminPrimitives";
 import type { AdminProviderQuickSetupController } from "@/components/admin/useAdminProviderQuickSetupController";
-import type { AdminProviderQuickSetupProvider } from "@/components/admin/adminProviderQuickSetupApi";
+import type {
+  AdminProviderQuickSetupConnection,
+  AdminProviderQuickSetupProvider
+} from "@/components/admin/adminProviderQuickSetupApi";
 import type { AdminConfirmationController } from "@/components/admin/useAdminConfirmationController";
 import Link from "next/link";
-import { CheckCircle2, KeyRound, ShieldCheck, UserRound } from "lucide-react";
+import { CheckCircle2, ChevronRight, KeyRound, ShieldCheck, UserRound } from "lucide-react";
 import { useEffect, useRef } from "react";
 
 export type AdminProviderQuickSetupProps = Readonly<{
   controller: AdminProviderQuickSetupController;
-  onManageConnection(): void;
+  onManageConnection(connectionId?: string): void;
   onOpenCustom(): void;
   requestConfirmation: AdminConfirmationController["requestConfirmation"];
 }>;
+
+function familyLabel(family: string): string {
+  if (family === "openai") return "OpenAI";
+  if (family === "openai_compatible") return "OpenAI-compatible";
+  if (family === "openrouter") return "OpenRouter";
+  return family.split("_").map((part) =>
+    part ? `${part[0].toUpperCase()}${part.slice(1)}` : part
+  ).join(" ");
+}
+
+function ConfiguredConnections({
+  connections,
+  onManageConnection
+}: Readonly<{
+  connections: readonly AdminProviderQuickSetupConnection[];
+  onManageConnection(connectionId?: string): void;
+}>) {
+  if (!connections.length) return null;
+  return (
+    <section className="mt-6" aria-labelledby="provider-configured-connections-title">
+      <div className="flex items-baseline justify-between gap-3 border-b border-trace-subtle pb-2">
+        <h3 className="text-xs font-semibold text-ink" id="provider-configured-connections-title">
+          Configured connections
+        </h3>
+        <span className="text-[11px] text-ink-muted">{connections.length} total</span>
+      </div>
+      <div className="divide-y divide-trace-subtle">
+        {connections.map((connection) => (
+          <button
+            className={`flex min-h-touch w-full min-w-0 items-center gap-3 px-1 py-3 text-left hover:bg-control-hover ${focusRing} ${touchTarget}`}
+            data-testid={`provider-configured-connection-${connection.id}`}
+            key={connection.id}
+            onClick={() => onManageConnection(connection.id)}
+            type="button"
+          >
+            <span className="min-w-0 flex-1">
+              <span className="block break-words text-sm font-medium text-ink [overflow-wrap:anywhere]">
+                {connection.displayName}
+              </span>
+              <span className="mt-0.5 block text-xs text-ink-muted">
+                {familyLabel(connection.family)} · {connection.activeModelCount} active model{connection.activeModelCount === 1 ? "" : "s"}
+              </span>
+            </span>
+            <AdminAvailabilityStatus enabled={connection.enabled} />
+            <ChevronRight aria-hidden="true" className="size-4 shrink-0 text-ink-muted" />
+          </button>
+        ))}
+      </div>
+    </section>
+  );
+}
 
 function stateLabel(provider: AdminProviderQuickSetupProvider): string {
   if (provider.state === "ready") return "Ready";
@@ -40,7 +94,7 @@ function ManageConnectionButton({
   return (
     <button
       className={`${quietButton} border border-trace-strong bg-answer-paper`}
-      onClick={onManageConnection}
+      onClick={() => onManageConnection()}
       type="button"
     >
       Manage {providerDisplayName} connection
@@ -65,7 +119,7 @@ function SetupFeedback({
       {advancedRecommended ? (
         <button
           className={`${quietButton} mt-2 text-critical hover:text-critical`}
-          onClick={onManageConnection}
+          onClick={() => onManageConnection()}
           type="button"
         >
           Manage provider connection
@@ -504,6 +558,10 @@ export function AdminProviderQuickSetup({
   requestConfirmation
 }: AdminProviderQuickSetupProps) {
   const providers = controller.state.snapshot?.providers ?? [];
+  const configuredConnections = controller.state.snapshot?.configuredConnections ?? [];
+  const customConnectionCount = configuredConnections.filter(
+    (connection) => connection.family === "openai_compatible"
+  ).length;
   return (
     <div className="min-w-0 px-4 py-4 sm:px-6 lg:px-8 lg:py-7">
       <div className="max-w-6xl">
@@ -565,12 +623,18 @@ export function AdminProviderQuickSetup({
                     Custom
                   </span>
                   <span className="mt-1 block text-xs text-ink-muted">
-                    OpenAI-compatible
+                    {customConnectionCount
+                      ? `${customConnectionCount} configured`
+                      : "OpenAI-compatible"}
                   </span>
                 </button>
               </div>
 
               <SnapshotFeedback controller={controller} />
+              <ConfiguredConnections
+                connections={configuredConnections}
+                onManageConnection={onManageConnection}
+              />
 
               {controller.state.selectedProvider ? (
                 <SelectedProviderTask
@@ -591,6 +655,10 @@ export function AdminProviderQuickSetup({
         ) : (
           <>
             <SnapshotFeedback controller={controller} />
+            <ConfiguredConnections
+              connections={configuredConnections}
+              onManageConnection={onManageConnection}
+            />
             <div className="mt-4 grid max-w-52 overflow-hidden rounded-panel border border-trace-subtle">
               <button
                 className={`bg-answer-paper px-4 py-4 text-left text-ink hover:bg-control-hover ${focusRing} ${touchTarget}`}

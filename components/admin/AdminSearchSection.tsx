@@ -84,7 +84,7 @@ function emptyForm(providerModels: readonly AdminSearchProviderModelOption[]): S
         : "openai_responses_web_search",
       providerModelId: providerModel?.id ?? null,
       queryMaxCharacters: 500,
-      timeoutMs: 15_000
+      timeoutMs: 300_000
     }
   };
 }
@@ -107,6 +107,26 @@ function adapterLabel(integration: AdminSearchIntegration): string {
   return integration.adapterKind === "answer_provider_hosted"
     ? "Inside answer provider request"
     : "Query-only provider model";
+}
+
+function readinessLabel(integration: AdminSearchIntegration): string {
+  if (integration.readiness === "ready") {
+    return `Active revision ${integration.activeRevision?.revisionNumber ?? ""}`.trim();
+  }
+  if (integration.readiness === "provider_model_unavailable") {
+    return "Technical model unavailable";
+  }
+  if (integration.readiness === "compatible_model_unavailable") {
+    return "Compatible answer model unavailable";
+  }
+  return "Activation required";
+}
+
+function durationLabel(milliseconds: number): string {
+  const seconds = Math.round(milliseconds / 1_000);
+  return seconds >= 60 && seconds % 60 === 0
+    ? `${seconds / 60} min`
+    : `${seconds} sec`;
 }
 
 function testState(integration: AdminSearchIntegration): string {
@@ -230,7 +250,7 @@ function SearchCatalogIndex({
                     <span className="mt-0.5 block truncate text-[11px] text-ink-muted">{protocolLabel(integration.draft.protocol)}</span>
                     <span className={`mt-1 inline-flex items-center gap-1 text-[10px] ${integration.ready ? "text-positive" : "text-caution"}`}>
                       {integration.ready ? <CheckCircle2 aria-hidden="true" className="size-3" /> : <CircleAlert aria-hidden="true" className="size-3" />}
-                      {integration.ready ? `Active revision ${integration.activeRevision?.revisionNumber ?? ""}` : "Activation required"}
+                      {readinessLabel(integration)}
                     </span>
                   </span>
                   <AdminAvailabilityStatus enabled={integration.enabled} />
@@ -322,8 +342,9 @@ function SearchFormFields({
           <input className={`${inputClass} mt-1.5`} disabled={disabled} max={1000} min={32} onChange={(event) => updateDraft({ queryMaxCharacters: Number(event.currentTarget.value) })} type="number" value={form.draft.queryMaxCharacters} />
         </label>
         <label>
-          <span className={fieldLabel}>Timeout, ms</span>
-          <input className={`${inputClass} mt-1.5`} disabled={disabled} max={30000} min={1000} onChange={(event) => updateDraft({ timeoutMs: Number(event.currentTarget.value) })} step={500} type="number" value={form.draft.timeoutMs} />
+          <span className={fieldLabel}>Engine timeout, seconds</span>
+          <input className={`${inputClass} mt-1.5`} disabled={disabled} max={900} min={5} onChange={(event) => updateDraft({ timeoutMs: Number(event.currentTarget.value) * 1_000 })} step={5} type="number" value={form.draft.timeoutMs / 1_000} />
+          <span className={helpText}>Per engine. Selected engines run concurrently; maximum 15 minutes.</span>
         </label>
       </div>
     </div>
@@ -445,10 +466,11 @@ function DetailTask({
       </div>
       <dl className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
         <Fact label="Availability"><AdminAvailabilityStatus enabled={integration.enabled} /></Fact>
-        <Fact label="Readiness">{integration.ready ? `Active revision ${integration.activeRevision?.revisionNumber}` : "Activation required"}</Fact>
+        <Fact label="Readiness">{readinessLabel(integration)}</Fact>
         <Fact label="Draft">{testState(integration)}</Fact>
         <Fact label="Execution">{adapterLabel(integration)}</Fact>
         <Fact label="Protocol">{protocolLabel(integration.draft.protocol)}</Fact>
+        <Fact label="Draft engine timeout">{durationLabel(integration.draft.timeoutMs)}</Fact>
         <Fact label="Stable option id"><span className="font-mono text-xs">{integration.strategyId}</span></Fact>
       </dl>
       <div className="flex flex-wrap gap-2 border-t border-trace-subtle pt-4">
@@ -633,7 +655,7 @@ export function AdminSearchSection({
                   <h3 className="mt-1 break-words text-lg font-semibold text-ink">{selected.displayName}</h3>
                   <p className="mt-1 max-w-3xl text-xs leading-5 text-ink-muted">{selected.description}</p>
                 </div>
-                <div className="flex shrink-0 items-center gap-2"><AdminAvailabilityStatus enabled={selected.enabled} /><span className={selected.ready ? "text-xs text-positive" : "text-xs text-caution"}>{selected.ready ? "Ready" : "Activation required"}</span></div>
+                <div className="flex shrink-0 items-center gap-2"><AdminAvailabilityStatus enabled={selected.enabled} /><span className={selected.ready ? "text-xs text-positive" : "text-xs text-caution"}>{selected.ready ? "Ready" : readinessLabel(selected)}</span></div>
               </div>
               <TaskTabs onSelect={setTask} selected={task} />
               <DetailTask busy={busy} catalog={search} form={form} integration={selected} onAction={runAction} onSave={() => void commit(

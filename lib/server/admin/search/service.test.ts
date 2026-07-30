@@ -46,6 +46,90 @@ function technicalModel() {
 }
 
 describe("admin Search service", () => {
+  it("reports dependency-aware readiness instead of treating every active revision as ready", async () => {
+    const technical = {
+      ...technicalModel(),
+      activatedAt: NOW,
+      connection: {
+        activeConfig: {},
+        activeVersion: 1,
+        activatedAt: NOW,
+        displayName: "Compatible gateway",
+        enabled: true
+      }
+    };
+    const baseRow = {
+      activeRevision: {
+        configuration: draft,
+        id: "revision-1",
+        revisionNumber: 1
+      },
+      activeRevisionId: "revision-1",
+      activatedAt: NOW,
+      adapterKind: draft.adapterKind,
+      archivedAt: null,
+      credentialMode: draft.credentialMode,
+      description: "Search",
+      displayName: "Search",
+      draft,
+      draftTestEvidence: null,
+      draftVersion: 1,
+      enabled: true,
+      id: "integration-1",
+      providerModel: technicalModel(),
+      strategyId: "company-search",
+      testedDraftHash: searchDraftHash(draft)
+    };
+    const prisma = {
+      providerModel: { findMany: vi.fn(async () => [technical]) },
+      searchStrategy: {
+        findMany: vi.fn(async () => [
+          baseRow,
+          {
+            ...baseRow,
+            activeRevision: {
+              configuration: {
+                ...draft,
+                adapterKind: "answer_provider_hosted",
+                credentialMode: "answer_provider",
+                protocol: "gemini_google_search",
+                providerModelId: null
+              },
+              id: "revision-google",
+              revisionNumber: 1
+            },
+            activeRevisionId: "revision-google",
+            adapterKind: "answer_provider_hosted",
+            credentialMode: "answer_provider",
+            displayName: "Google Search",
+            draft: {
+              ...draft,
+              adapterKind: "answer_provider_hosted",
+              credentialMode: "answer_provider",
+              protocol: "gemini_google_search",
+              providerModelId: null
+            },
+            id: "integration-google",
+            providerModel: null,
+            strategyId: "gemini-google-search"
+          }
+        ])
+      }
+    } as unknown as PrismaClient;
+    const search = createAdminSearchService({ prisma, tester: { test: vi.fn() } });
+
+    const catalog = await search.list();
+
+    expect(catalog.integrations).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "integration-1", readiness: "ready", ready: true }),
+      expect.objectContaining({
+        id: "integration-google",
+        readiness: "compatible_model_unavailable",
+        ready: false
+      })
+    ]));
+  });
+
   it("creates only a typed, disabled provider-model integration without endpoint or secret data", async () => {
     const create = vi.fn(async () => undefined);
     const prisma = {

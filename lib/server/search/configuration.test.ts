@@ -19,6 +19,7 @@ const clientDraft = {
 describe("Search adapter configuration", () => {
   it("normalizes a bounded provider-model client integration", () => {
     expect(normalizeSearchDraft(clientDraft)).toEqual(clientDraft);
+    expect(normalizeSearchDraft({ ...clientDraft, timeoutMs: 300_000 }).timeoutMs).toBe(300_000);
     expect(searchExecutionModes(clientDraft.adapterKind)).toEqual(["all_selected", "model_choice"]);
   });
 
@@ -29,7 +30,7 @@ describe("Search adapter configuration", () => {
     expect(() => normalizeSearchDraft({ ...clientDraft, credentialMode: "answer_provider" })).toThrow(
       "search_configuration_invalid"
     );
-    expect(() => normalizeSearchDraft({ ...clientDraft, timeoutMs: 300_000 })).toThrow(
+    expect(() => normalizeSearchDraft({ ...clientDraft, timeoutMs: 900_001 })).toThrow(
       "search_configuration_invalid"
     );
   });

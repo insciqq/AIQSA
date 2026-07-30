@@ -30,7 +30,11 @@ function service(overrides: Partial<AdminProviderQuickSetupService> = {}): Admin
       provider: "openai" as const,
       providerDisplayName: "OpenAI"
     })),
-    getSnapshot: vi.fn(async () => ({ providers: [], suggestedProvider: null })),
+    getSnapshot: vi.fn(async () => ({
+      configuredConnections: [],
+      providers: [],
+      suggestedProvider: null
+    })),
     setup: vi.fn(async () => ({
       checkedAt: "2026-07-26T10:00:00.000Z",
       defaultChanged: true,

@@ -4,6 +4,8 @@ import type {
   AdminSearchCatalog,
   AdminSearchDraft,
   AdminSearchIntegration,
+  AdminSearchProviderModelOption,
+  AdminSearchReadiness,
   AdminSearchTestEvidence
 } from "../../../contracts/adminSearch";
 import {
@@ -110,7 +112,7 @@ function testEvidence(value: unknown): AdminSearchTestEvidence | null {
 
 function activeRevision(value: {
   activatedAt: Date | null;
-  activeRevision: null | { id: string; revisionNumber: number };
+  activeRevision: null | { configuration: unknown; id: string; revisionNumber: number };
 }): AdminSearchIntegration["activeRevision"] {
   return value.activeRevision && value.activatedAt
     ? {
@@ -130,7 +132,7 @@ function providerModelConfiguration(value: unknown) {
 }
 
 type SearchRow = Awaited<ReturnType<PrismaClient["searchStrategy"]["findMany"]>>[number] & {
-  activeRevision: null | { id: string; revisionNumber: number };
+  activeRevision: null | { configuration: unknown; id: string; revisionNumber: number };
   providerModel: null | {
     activeConfig: unknown;
     connection: { displayName: string };
@@ -139,12 +141,42 @@ type SearchRow = Awaited<ReturnType<PrismaClient["searchStrategy"]["findMany"]>>
   };
 };
 
-function serializeIntegration(row: SearchRow): AdminSearchIntegration {
+function integrationReadiness(
+  row: SearchRow,
+  providerModels: readonly AdminSearchProviderModelOption[]
+): AdminSearchReadiness {
+  if (!row.activeRevisionId || !row.activeRevision) return "activation_required";
+  let active: AdminSearchDraft;
+  try {
+    active = normalizeSearchDraft(row.activeRevision.configuration);
+  } catch {
+    return "activation_required";
+  }
+  if (active.adapterKind === "provider_model_client") {
+    const model = providerModels.find((candidate) => candidate.id === active.providerModelId);
+    return model?.enabled && compatibleTechnicalAdapter(active.protocol, model.adapterKind) &&
+      model.nativeSearch
+      ? "ready"
+      : "provider_model_unavailable";
+  }
+  return providerModels.some((model) =>
+    model.enabled && compatibleTechnicalAdapter(active.protocol, model.adapterKind) &&
+    model.nativeSearch
+  )
+    ? "ready"
+    : "compatible_model_unavailable";
+}
+
+function serializeIntegration(
+  row: SearchRow,
+  providerModels: readonly AdminSearchProviderModelOption[]
+): AdminSearchIntegration {
   const draft = normalizedDraft(row.draft);
   const configuration = row.providerModel?.activeConfig
     ? providerModelConfiguration(row.providerModel.activeConfig)
     : null;
   const evidence = testEvidence(row.draftTestEvidence);
+  const readiness = integrationReadiness(row, providerModels);
   return {
     activeRevision: activeRevision(row),
     adapterKind: row.adapterKind as AdminSearchIntegration["adapterKind"],
@@ -169,9 +201,10 @@ function serializeIntegration(row: SearchRow): AdminSearchIntegration {
           upstreamModelId: configuration.upstreamModelId
         }
       : null,
-    // Readiness belongs to the immutable active revision. Editing a later
-    // draft clears draft evidence, but must not unpublish the accepted one.
-    ready: Boolean(row.activeRevisionId),
+    // Readiness belongs to the immutable active revision and its live
+    // dependencies. Editing a later draft must not unpublish the accepted one.
+    ready: readiness === "ready",
+    readiness,
     strategyId: row.strategyId,
     system: SYSTEM_SEARCH_IDS.has(row.strategyId)
   };
@@ -222,7 +255,7 @@ export function createAdminSearchService(input: Readonly<{
     const [integrations, providerModels] = await Promise.all([
       input.prisma.searchStrategy.findMany({
         include: {
-          activeRevision: { select: { id: true, revisionNumber: true } },
+          activeRevision: { select: { configuration: true, id: true, revisionNumber: true } },
           providerModel: {
             include: { connection: { select: { displayName: true } } }
           }
@@ -235,6 +268,7 @@ export function createAdminSearchService(input: Readonly<{
             select: {
               activeConfig: true,
               activeVersion: true,
+              activatedAt: true,
               displayName: true,
               enabled: true
             }
@@ -244,24 +278,26 @@ export function createAdminSearchService(input: Readonly<{
         where: { activeConfig: { not: Prisma.DbNull }, activeVersion: { gt: 0 } }
       })
     ]);
+    const providerModelOptions: AdminSearchProviderModelOption[] = providerModels.flatMap((model) => {
+      const configuration = providerModelConfiguration(model.activeConfig);
+      if (!configuration) return [];
+      return [{
+        adapterKind: configuration.adapterKind,
+        connectionDisplayName: model.connection.displayName,
+        displayName: model.displayName,
+        enabled: model.enabled && Boolean(model.activatedAt) && model.connection.enabled &&
+          model.connection.activeVersion > 0 && Boolean(model.connection.activatedAt) &&
+          model.connection.activeConfig !== null,
+        id: model.id,
+        nativeSearch: configuration.capabilities.nativeSearch,
+        upstreamModelId: configuration.upstreamModelId
+      }];
+    });
     return {
       integrations: (integrations as SearchRow[])
         .filter((row) => row.strategyId !== "search-disabled")
-        .map(serializeIntegration),
-      providerModels: providerModels.flatMap((model) => {
-        const configuration = providerModelConfiguration(model.activeConfig);
-        if (!configuration) return [];
-        return [{
-          adapterKind: configuration.adapterKind,
-          connectionDisplayName: model.connection.displayName,
-          displayName: model.displayName,
-          enabled: model.enabled && model.connection.enabled &&
-            model.connection.activeVersion > 0 && model.connection.activeConfig !== null,
-          id: model.id,
-          nativeSearch: configuration.capabilities.nativeSearch,
-          upstreamModelId: configuration.upstreamModelId
-        }];
-      })
+        .map((row) => serializeIntegration(row, providerModelOptions)),
+      providerModels: providerModelOptions
     };
   }
 

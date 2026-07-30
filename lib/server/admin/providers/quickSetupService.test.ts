@@ -39,6 +39,9 @@ function inspection(
 }
 
 function fixture(input: {
+  configuredConnections?: Awaited<ReturnType<NonNullable<
+    AdminProviderQuickSetupRepository["listConfiguredConnections"]
+  >>>;
   inspections?: Partial<Record<AdminProviderQuickSetupProviderId, AdminProviderQuickSetupInspection>>;
   modelIds?: string[];
   repositoryCommit?: AdminProviderQuickSetupRepository["commit"];
@@ -60,7 +63,8 @@ function fixture(input: {
     commit,
     inspect: vi.fn(async (
       value: Parameters<AdminProviderQuickSetupRepository["inspect"]>[0]
-    ) => inspections[value.provider])
+    ) => inspections[value.provider]),
+    listConfiguredConnections: vi.fn(async () => input.configuredConnections ?? [])
   };
   const test = vi.fn(async () => {
     order.push("network");
@@ -87,6 +91,25 @@ async function expectedState(
 }
 
 describe("provider Quick setup service", () => {
+  it("returns only the repository's sanitized configured-connection summaries", async () => {
+    const configuredConnections = [{
+      activeModelCount: 8,
+      displayName: "Compatible gateway",
+      enabled: true,
+      family: "openai_compatible",
+      id: "connection-compatible"
+    }];
+    const value = fixture({ configuredConnections });
+
+    await expect(value.service.getSnapshot(actor)).resolves.toMatchObject({
+      configuredConnections
+    });
+    expect(value.repository.listConfiguredConnections).toHaveBeenCalledWith({
+      ...actor,
+      now: checkedAt
+    });
+  });
+
   it("derives a deterministic domain-separated state-token key", () => {
     const derived = deriveAdminProviderQuickSetupStateTokenKey(sessionSecret);
     const otherDomain = createHmac("sha256", Buffer.from(sessionSecret, "utf8"))

@@ -3,6 +3,7 @@ import {
   type AdminProviderQuickSetupClearRequest,
   type AdminProviderQuickSetupClearResult,
   type AdminProviderQuickSetupCandidate,
+  type AdminProviderQuickSetupConnectionSummary,
   type AdminProviderQuickSetupModelDisplay,
   type AdminProviderQuickSetupProviderId,
   type AdminProviderQuickSetupProviderSnapshot,
@@ -16,6 +17,7 @@ import {
 export type AdminProviderQuickSetupId = AdminProviderQuickSetupProviderId;
 export type AdminProviderQuickSetupModel = AdminProviderQuickSetupModelDisplay;
 export type AdminProviderQuickSetupChoice = AdminProviderQuickSetupCandidate;
+export type AdminProviderQuickSetupConnection = AdminProviderQuickSetupConnectionSummary;
 export type AdminProviderQuickSetupProvider = AdminProviderQuickSetupProviderSnapshot;
 export type AdminProviderQuickSetupSelectionResult =
   AdminProviderQuickSetupSelectionRequiredResult;
@@ -137,13 +139,34 @@ function provider(value: unknown): AdminProviderQuickSetupProvider | null {
   };
 }
 
+function configuredConnection(value: unknown): AdminProviderQuickSetupConnection | null {
+  if (!record(value) || !exactKeys(value, [
+    "activeModelCount",
+    "displayName",
+    "enabled",
+    "family",
+    "id"
+  ]) || !Number.isSafeInteger(value.activeModelCount) || Number(value.activeModelCount) < 0 ||
+    Number(value.activeModelCount) > 10_000 || !safeText(value.displayName, 160) ||
+    typeof value.enabled !== "boolean" || !safeText(value.family, 80) ||
+    !safeText(value.id, 160)) {
+    return null;
+  }
+  return value as AdminProviderQuickSetupConnection;
+}
+
 function snapshot(value: unknown): AdminProviderQuickSetupSnapshot | null {
   if (!record(value) || containsForbiddenMaterial(value) ||
-    !exactKeys(value, ["providers", "suggestedProvider"]) ||
+    !exactKeys(value, ["configuredConnections", "providers", "suggestedProvider"]) ||
     (value.suggestedProvider !== null && !providerId(value.suggestedProvider)) ||
+    !Array.isArray(value.configuredConnections) || value.configuredConnections.length > 128 ||
     !Array.isArray(value.providers) || value.providers.length !== 4) {
     return null;
   }
+  const configuredConnections = value.configuredConnections.map(configuredConnection);
+  if (configuredConnections.some((entry) => entry === null) ||
+    new Set(configuredConnections.map((entry) => entry!.id)).size !==
+      configuredConnections.length) return null;
   const providers = value.providers.map(provider);
   if (providers.some((entry) => entry === null)) return null;
   const ids = providers.map((entry) => entry!.provider);
@@ -154,6 +177,7 @@ function snapshot(value: unknown): AdminProviderQuickSetupSnapshot | null {
     return null;
   }
   return {
+    configuredConnections: configuredConnections as AdminProviderQuickSetupConnection[],
     providers: providers as AdminProviderQuickSetupProvider[],
     suggestedProvider: value.suggestedProvider
   };

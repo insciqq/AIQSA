@@ -615,6 +615,16 @@ async function expectNoPageOverflow(page: Page): Promise<void> {
 
 test("administrator completes the Quick direct-user picker, retry, Ready, and safe replacement journey", async ({ page }) => {
   const upstream = await startLocalResponsesServer();
+  const enabledMcpPreferences = await prisma.mcpUserServer.findMany({
+    select: { id: true },
+    where: { enabled: true, userId: DEFAULT_BOOTSTRAP_USER_ID }
+  });
+  if (enabledMcpPreferences.length) {
+    await prisma.mcpUserServer.updateMany({
+      data: { enabled: false },
+      where: { id: { in: enabledMcpPreferences.map(({ id }) => id) } }
+    });
+  }
   const fixtureState: { current: QuickChatFixture | null } = { current: null };
   const trackedChatIds: string[] = [];
   const trackedRunIds: string[] = [];
@@ -649,6 +659,13 @@ test("administrator completes the Quick direct-user picker, retry, Ready, and sa
       await route.fulfill({
         contentType: "application/json",
         json: {
+          configuredConnections: configured ? [{
+            activeModelCount: 3,
+            displayName: "Quick OpenAI",
+            enabled: true,
+            family: "openai",
+            id: "quick-openai-connection"
+          }] : [],
           providers: [
             {
               ...(configured ? { model: { displayName: "GPT-5.6 Sol" } } : {}),
@@ -791,6 +808,11 @@ test("administrator completes the Quick direct-user picker, retry, Ready, and sa
   await expect(readyReceipt).toContainText("Run profiles filled: Deep.");
   await expect(section.getByRole("link", { name: "Start chatting" })).toHaveAttribute("href", "/");
   await expect(section.getByText("e2e-quick-write-only-key")).toHaveCount(0);
+  await expect(section.getByRole("heading", { name: "Configured connections" })).toBeVisible();
+  await expect(section.getByTestId("provider-configured-connection-quick-openai-connection"))
+    .toContainText("Quick OpenAI");
+  await expect(section.getByTestId("provider-configured-connection-quick-openai-connection"))
+    .toContainText("OpenAI · 3 active models");
 
   await expect(section.getByRole("button", { name: /OpenAI Ready/ })).toBeVisible();
   await section.getByRole("button", { name: "Replace API key" }).click();
@@ -882,7 +904,8 @@ test("administrator completes the Quick direct-user picker, retry, Ready, and sa
     /^\/api\/chats\/[^/]+\/messages$/u.test(new URL(response.url()).pathname)
   );
   await page.getByRole("button", { name: "Send message" }).click();
-  expect((await messageResponse).ok()).toBe(true);
+  const completedMessageResponse = await messageResponse;
+  expect(completedMessageResponse.ok(), await completedMessageResponse.text()).toBe(true);
   const chatId = await waitForActiveChatId(page);
   trackedChatIds.push(chatId);
   await expect.poll(() => messageRequests.length).toBe(1);
@@ -981,7 +1004,16 @@ test("administrator completes the Quick direct-user picker, retry, Ready, and sa
         await cleanupQuickChatFixture(fixtureState.current, trackedChatIds, trackedRunIds);
       }
     } finally {
-      await upstream.close();
+      try {
+        if (enabledMcpPreferences.length) {
+          await prisma.mcpUserServer.updateMany({
+            data: { enabled: true },
+            where: { id: { in: enabledMcpPreferences.map(({ id }) => id) } }
+          });
+        }
+      } finally {
+        await upstream.close();
+      }
     }
   }
 });
@@ -996,6 +1028,13 @@ test("administrator discovers and configures a Custom compatible provider on wid
     await route.fulfill({
       contentType: "application/json",
       json: {
+        configuredConnections: [{
+          activeModelCount: 2,
+          displayName: "Existing Compatible",
+          enabled: true,
+          family: "openai_compatible",
+          id: "existing-compatible"
+        }],
         providers: [
           { provider: "openai", providerDisplayName: "OpenAI", quickSetupAssigned: false, state: "not_configured", stateToken: "state-openai" },
           { provider: "anthropic", providerDisplayName: "Anthropic", quickSetupAssigned: false, state: "not_configured", stateToken: "state-anthropic" },
@@ -1060,6 +1099,9 @@ test("administrator discovers and configures a Custom compatible provider on wid
   await signInWithLocalToken(page);
   await page.goto("/admin");
   const section = page.getByTestId("admin-section-providers");
+  await expect(section.getByRole("button", { name: /Custom 1 configured/ })).toBeVisible();
+  await expect(section.getByTestId("provider-configured-connection-existing-compatible"))
+    .toContainText("OpenAI-compatible · 2 active models");
 
   for (const viewport of [
     { height: 900, width: 1440 },
@@ -1071,7 +1113,7 @@ test("administrator discovers and configures a Custom compatible provider on wid
     await expect(section.getByRole("tab", { name: "Run profiles" })).toBeVisible();
     await expect(section.getByTestId("provider-quick-choice-strip").getByRole("button"))
       .toHaveCount(5);
-    await section.getByRole("button", { name: "Custom OpenAI-compatible" }).click();
+    await section.getByRole("button", { name: /Custom 1 configured/ }).click();
     await expect(section.getByRole("heading", { name: "Connect a custom endpoint" })).toBeVisible();
     await expect(section.getByLabel("API root")).toBeVisible();
     await expect(section.getByLabel("Model ID")).toBeVisible();
@@ -1113,7 +1155,7 @@ test("administrator discovers and configures a Custom compatible provider on wid
     await expectNoPageOverflow(page);
 
     await section.getByRole("button", { name: "Add another provider" }).click();
-    await expect(section.getByRole("button", { name: "Custom OpenAI-compatible" })).toBeVisible();
+    await expect(section.getByRole("button", { name: /Custom 1 configured/ })).toBeVisible();
   }
 
   expect(discovered).toHaveLength(2);
@@ -1261,6 +1303,7 @@ test("administrator activates a Custom replacement and deletes its complete conf
       await route.fulfill({
         contentType: "application/json",
         json: {
+          configuredConnections: [],
           providers: [
             { provider: "openai", providerDisplayName: "OpenAI", quickSetupAssigned: false, state: "not_configured", stateToken: "state-openai" },
             { provider: "anthropic", providerDisplayName: "Anthropic", quickSetupAssigned: false, state: "not_configured", stateToken: "state-anthropic" },
@@ -1393,6 +1436,7 @@ test("administrator completes the OpenRouter key, model, route, check, and activ
       await route.fulfill({
         contentType: "application/json",
         json: {
+          configuredConnections: [],
           providers: [
             { provider: "openai", providerDisplayName: "OpenAI", quickSetupAssigned: false, state: "not_configured", stateToken: "state-openai" },
             { provider: "anthropic", providerDisplayName: "Anthropic", quickSetupAssigned: false, state: "not_configured", stateToken: "state-anthropic" },
@@ -1818,6 +1862,7 @@ test("administrator remaps the three composer run profiles in one save", async (
     await route.fulfill({
       contentType: "application/json",
       json: {
+        configuredConnections: [],
         providers: [
           { provider: "openai", providerDisplayName: "OpenAI", quickSetupAssigned: false, state: "not_configured", stateToken: "state-openai" },
           { provider: "anthropic", providerDisplayName: "Anthropic", quickSetupAssigned: false, state: "not_configured", stateToken: "state-anthropic" },

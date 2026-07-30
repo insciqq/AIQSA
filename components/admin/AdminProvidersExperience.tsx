@@ -169,7 +169,7 @@ export function AdminProvidersExperience({
       {workspaceTask === "setup" && setupTask === "quick" ? (
         <AdminProviderQuickSetup
           controller={quick}
-          onManageConnection={() => openConnection()}
+          onManageConnection={(connectionId) => openConnection(connectionId ?? null)}
           onOpenCustom={openCustom}
           requestConfirmation={requestProviderConfirmation}
         />

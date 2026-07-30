@@ -128,7 +128,10 @@ export function createOpenAIResponsesAdapter(options: OpenAIResponsesAdapterOpti
         maxAttachmentTextChars: options.maxAttachmentTextChars
       });
       if (body.stream === true) {
-        const response = await lifecycle.openStream(body, { signal: runOptions.signal });
+        const response = await lifecycle.openStream(body, {
+          signal: runOptions.signal,
+          ...(typeof runOptions.timeoutMs === "number" ? { timeoutMs: runOptions.timeoutMs } : {})
+        });
         if (!response.body) {
           throw new Error("openai_stream_body_missing");
         }
@@ -142,7 +145,10 @@ export function createOpenAIResponsesAdapter(options: OpenAIResponsesAdapterOpti
         });
       }
 
-      const execution = lifecycle.createAndPoll(body, { signal: runOptions.signal });
+      const execution = lifecycle.createAndPoll(body, {
+        signal: runOptions.signal,
+        ...(typeof runOptions.timeoutMs === "number" ? { timeoutMs: runOptions.timeoutMs } : {})
+      });
       let providerResponseId: string | undefined;
       let next = await execution.next();
 

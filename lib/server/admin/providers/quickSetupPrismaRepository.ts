@@ -1287,6 +1287,54 @@ export function createPrismaAdminProviderQuickSetupRepository(
       return (await loadQuickSetupState(prisma as unknown as QuickSetupDb, input)).inspection;
     },
 
+    async listConfiguredConnections(input) {
+      const [actor, session] = await Promise.all([
+        prisma.user.findUnique({
+          select: { role: true, status: true },
+          where: { id: input.userId }
+        }),
+        prisma.authSession.findUnique({
+          select: { expiresAt: true, revokedAt: true, userId: true },
+          where: { id: input.sessionId }
+        })
+      ]);
+      if (actor?.role !== "admin" || actor.status !== "active" ||
+        !session || session.userId !== input.userId || session.revokedAt ||
+        session.expiresAt <= input.now) {
+        return [];
+      }
+      const connections = await prisma.providerConnection.findMany({
+        orderBy: [{ displayName: "asc" }, { id: "asc" }],
+        select: {
+          displayName: true,
+          enabled: true,
+          family: true,
+          id: true,
+          models: {
+            select: { id: true },
+            where: {
+              activeConfig: { not: Prisma.DbNull },
+              activeVersion: { gt: 0 },
+              activatedAt: { not: null },
+              enabled: true
+            }
+          }
+        },
+        where: {
+          activeConfig: { not: Prisma.DbNull },
+          activeVersion: { gt: 0 },
+          activatedAt: { not: null }
+        }
+      });
+      return connections.map((connection) => ({
+        activeModelCount: connection.models.length,
+        displayName: connection.displayName,
+        enabled: connection.enabled,
+        family: connection.family,
+        id: connection.id
+      }));
+    },
+
     async commit(plan) {
       for (let attempt = 0; attempt < 3; attempt += 1) {
         try {

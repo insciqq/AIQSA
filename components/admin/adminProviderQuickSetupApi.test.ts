@@ -9,6 +9,13 @@ const checkedAt = "2026-07-26T03:00:00.000Z";
 
 function snapshot() {
   return {
+    configuredConnections: [{
+      activeModelCount: 8,
+      displayName: "Compatible gateway",
+      enabled: true,
+      family: "openai_compatible",
+      id: "connection-compatible"
+    }],
     providers: [
       {
         provider: "openai",

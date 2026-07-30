@@ -155,6 +155,9 @@ export function createAdminProviderQuickSetupService(input: Readonly<{
       const inspections = await Promise.all(ADMIN_PROVIDER_QUICK_SETUP_PROVIDERS.map((provider) =>
         input.repository.inspect({ ...actor, now: inspectedAt, provider })
       ));
+      const configuredConnections = inspections.every((inspection) => inspection.authorized)
+        ? await input.repository.listConfiguredConnections({ ...actor, now: inspectedAt })
+        : [];
       const key = stateTokenKey();
       const readyDefaults = inspections.filter(
         (inspection) => inspection.state === "ready" && inspection.actingUserDefault
@@ -168,6 +171,7 @@ export function createAdminProviderQuickSetupService(input: Readonly<{
           ? simpleConfigured[0].provider
           : null;
       return {
+        configuredConnections,
         providers: inspections.map((inspection) => providerSnapshot(inspection, key)),
         suggestedProvider
       };

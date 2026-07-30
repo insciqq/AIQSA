@@ -33,7 +33,8 @@ const search: AdminSearchCatalog = {
     executionModes: ["all_selected", "model_choice"],
     id: "integration-1",
     providerModel: null,
-    ready: false,
+  ready: false,
+    readiness: "activation_required",
     strategyId: "company-search-12345678",
     system: false
   }],

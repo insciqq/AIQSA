@@ -633,6 +633,49 @@ describe("Prisma provider Quick setup eligibility", () => {
   });
 });
 
+describe("Prisma provider Quick setup connection summaries", () => {
+  it("returns active connection facts without endpoint or credential material", async () => {
+    const findMany = vi.fn(async () => [{
+      displayName: "Compatible gateway",
+      enabled: true,
+      family: "openai_compatible",
+      id: "connection-compatible",
+      models: [{ id: "model-one" }, { id: "model-two" }]
+    }]);
+    const repository = createPrismaAdminProviderQuickSetupRepository({
+      authSession: {
+        findUnique: vi.fn(async () => ({
+          expiresAt: new Date("2027-01-01T00:00:00.000Z"),
+          revokedAt: null,
+          userId: "admin"
+        }))
+      },
+      providerConnection: { findMany },
+      user: {
+        findUnique: vi.fn(async () => ({ role: "admin", status: "active" }))
+      }
+    } as never);
+
+    const summaries = await repository.listConfiguredConnections({
+      now,
+      sessionId: "session-admin",
+      userId: "admin"
+    });
+
+    expect(summaries).toEqual([{
+      activeModelCount: 2,
+      displayName: "Compatible gateway",
+      enabled: true,
+      family: "openai_compatible",
+      id: "connection-compatible"
+    }]);
+    expect(JSON.stringify(summaries)).not.toMatch(/apiRoot|credential|secret/i);
+    expect(findMany).toHaveBeenCalledWith(expect.objectContaining({
+      orderBy: [{ displayName: "asc" }, { id: "asc" }]
+    }));
+  });
+});
+
 describe("Prisma provider Quick setup profile planning", () => {
   const untouchedProfiles = [
     { enabled: false, id: "fast", providerModelId: null, updatedByUserId: null, version: 1 },

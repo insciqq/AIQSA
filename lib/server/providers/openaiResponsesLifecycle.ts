@@ -213,7 +213,12 @@ export function createOpenAIResponsesLifecycle(options: OpenAIResponsesLifecycle
       const deadline = new OpenAIBackgroundDeadline(pollTimeoutMs, requestOptions.signal);
 
       try {
-        let response = await deadline.run(() => options.client.create(body, { signal: deadline.signal }));
+        let response = await deadline.run(() => options.client.create(body, {
+          signal: deadline.signal,
+          ...(typeof requestOptions.timeoutMs === "number"
+            ? { timeoutMs: requestOptions.timeoutMs }
+            : {})
+        }));
         const providerResponseId = stringValue(response.id);
 
         deadline.throwIfInterrupted();
@@ -237,7 +242,12 @@ export function createOpenAIResponsesLifecycle(options: OpenAIResponsesLifecycle
           pollCount += 1;
           try {
             response = await deadline.run(() =>
-              options.client.retrieve(providerResponseId, { signal: deadline.signal })
+              options.client.retrieve(providerResponseId, {
+                signal: deadline.signal,
+                ...(typeof requestOptions.timeoutMs === "number"
+                  ? { timeoutMs: requestOptions.timeoutMs }
+                  : {})
+              })
             );
             retryableRetrieveErrors = 0;
           } catch (error) {
@@ -280,7 +290,7 @@ export function createOpenAIResponsesLifecycle(options: OpenAIResponsesLifecycle
         throw new Error("openai_streaming_client_not_available");
       }
 
-      return options.client.stream(body, { signal: requestOptions.signal });
+      return options.client.stream(body, requestOptions);
     },
     async refresh(providerResponseId) {
       try {

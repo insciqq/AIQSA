@@ -14,6 +14,7 @@ import { isTestModeAllowedEnv } from "@/lib/server/auth/csrf";
 import { loadEntitlementsForUser } from "@/lib/server/auth/dbEntitlements";
 import type { CatalogData } from "@/lib/server/catalog/currentUserCatalog";
 import { isRunProfileId } from "@/lib/domain/runProfiles";
+import { availableSearchStrategiesForModel } from "@/lib/domain/catalogMatrix";
 import {
   normalizeProviderConnectionConfiguration,
   normalizeProviderDefaultParams,
@@ -423,6 +424,7 @@ export function searchStrategyToCatalogEntry(
 export function filterExposedSearchStrategies(input: {
   availableProviderModels: CatalogProviderModelRow[];
   entitlements: ResolvedEntitlements;
+  exposedProviderModels: CatalogProviderModelRow[];
   searchStrategies: CatalogSearchStrategyRow[];
 }): CatalogSearchStrategyRow[] {
   const availableProviderModels = new Map(
@@ -438,7 +440,12 @@ export function filterExposedSearchStrategies(input: {
       return false;
     }
     if (entry.adapterKind !== "provider_model_client") {
-      return true;
+      if (entry.kind === "none") return true;
+      return input.exposedProviderModels.some((model) => {
+        const catalogModel = providerModelToCatalogEntry(model);
+        return Boolean(catalogModel &&
+          availableSearchStrategiesForModel(catalogModel, [entry]).includes(entry.strategyId));
+      });
     }
 
     if (!strategy.providerModelId) {
@@ -593,6 +600,7 @@ export function createPrismaCatalogDataLoader({
     const exposedSearchStrategies = filterExposedSearchStrategies({
       availableProviderModels: availableModels,
       entitlements,
+      exposedProviderModels: exposedModels,
       searchStrategies: searchStrategies as CatalogSearchStrategyRow[]
     });
 

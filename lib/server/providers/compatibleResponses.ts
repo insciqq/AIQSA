@@ -92,7 +92,10 @@ export function createCompatibleResponsesAdapter(
         if (!options.client.stream) {
           throw new Error("compatible_responses_stream_unavailable");
         }
-        const response = await options.client.stream(body, { signal: runOptions.signal });
+        const response = await options.client.stream(body, {
+          signal: runOptions.signal,
+          ...(typeof runOptions.timeoutMs === "number" ? { timeoutMs: runOptions.timeoutMs } : {})
+        });
         if (!response.body) {
           throw new Error("compatible_responses_stream_body_missing");
         }
@@ -105,7 +108,10 @@ export function createCompatibleResponsesAdapter(
         });
       }
 
-      const response = await options.client.create(body, { signal: runOptions.signal });
+      const response = await options.client.create(body, {
+        signal: runOptions.signal,
+        ...(typeof runOptions.timeoutMs === "number" ? { timeoutMs: runOptions.timeoutMs } : {})
+      });
       if (typeof response.usage === "object" && response.usage !== null) {
         yield { data: extractOpenAIUsage(response), type: "usage" };
       }
