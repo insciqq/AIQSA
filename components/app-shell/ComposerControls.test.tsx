@@ -265,6 +265,19 @@ describe("ComposerControls", () => {
     expect(props.onSearchStrategyChange).toHaveBeenCalledWith("web-search");
   });
 
+  it("edits the exact Reasoning mode and effort from one wide direct control", () => {
+    const { props } = renderControls({ reasoningEffort: "max", reasoningMode: "pro" });
+    fireEvent.click(screen.getByRole("button", { name: "Reasoning Pro · Maximum" }));
+    const dialog = screen.getByRole("dialog", { name: "Reasoning settings" });
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Standard" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "High" }));
+
+    expect(props.onReasoningModeChange).toHaveBeenCalledWith("standard");
+    expect(props.onReasoningEffortChange).toHaveBeenCalledWith("high");
+    expect(dialog).toHaveTextContent("Saved for this exact model");
+  });
+
   it("prints exact non-default profile, mode, effort, and search names", () => {
     renderControls({
       currentModel: deepModel,
@@ -286,7 +299,7 @@ describe("ComposerControls", () => {
     expect(search).toHaveAttribute("title", "Web Search");
   });
 
-  it("uses a provider-specific narrow label for Perplexity search", () => {
+  it("retains an incompatible selected Search engine as unavailable", () => {
     const perplexity = {
       displayName: "Perplexity tool",
       kind: "perplexity_tool_search" as const,
@@ -298,9 +311,8 @@ describe("ComposerControls", () => {
     });
 
     const search = screen.getByRole("button", { name: "Search strategy" });
-    expect(within(search).getByText("PPLXTY")).toHaveClass("min-[430px]:hidden");
-    expect(within(search).getByText("Perplexity tool")).toHaveClass("hidden", "min-[430px]:inline");
-    expect(search).toHaveAttribute("title", "Perplexity tool");
+    expect(within(search).getByText("0 active · 1 unavailable")).toBeVisible();
+    expect(search).toHaveAttribute("title", "0 active · 1 unavailable");
   });
 
   it("keeps the full model identity available while containing a long direct-control label", () => {

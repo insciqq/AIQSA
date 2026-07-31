@@ -93,6 +93,8 @@ export type RunPreparationDeps = Readonly<{
       providerConnectionId: string;
       providerModelId: string;
       searchPlan?: import("../../domain/search").SearchPlan;
+      searchPreferencePlan?: import("../../domain/search").SearchPlan | null;
+      searchPreferenceSource?: "organization" | "personal";
       searchStrategyId: string;
       userId: string;
     }): Promise<ProviderAdmissionPlan>;
@@ -500,8 +502,7 @@ function clamp(value: number, min: number, max: number): number {
 
 function runControlDefaultsFromBody(
   body: Readonly<Record<string, unknown>> | null,
-  controls: ReturnType<typeof parameterControlsForModel>,
-  searchStrategy: string | null
+  controls: ReturnType<typeof parameterControlsForModel>
 ): Record<string, boolean | string> {
   const input =
     typeof body?.controlDefaults === "object" && body.controlDefaults !== null && !Array.isArray(body.controlDefaults)
@@ -541,8 +542,6 @@ function runControlDefaultsFromBody(
   if (typeof input.streamMode === "boolean" && controls.stream.supported) {
     next.streamMode = input.streamMode;
   }
-
-  next.searchStrategyId = searchStrategy ?? "search-disabled";
 
   return next;
 }
@@ -751,6 +750,21 @@ export async function prepareRun(
     return failure(decodedSearchPlan.code, 400);
   }
   const requestedSearchPlan = decodedSearchPlan.plan;
+  let requestedSearchPreference: {
+    plan: import("../../domain/search").SearchPlan | null;
+    source: "organization" | "personal";
+  } | null = null;
+  if (body && ("searchPreferencePlan" in body || "searchPreferenceSource" in body)) {
+    if (body.searchPreferenceSource === "organization") {
+      requestedSearchPreference = { plan: null, source: "organization" };
+    } else if (body.searchPreferenceSource === "personal") {
+      const decodedPreference = decodeSearchPlan(body.searchPreferencePlan);
+      if (!decodedPreference.ok) return failure(decodedPreference.code, 400);
+      requestedSearchPreference = { plan: decodedPreference.plan, source: "personal" };
+    } else {
+      return failure("search_preference_invalid", 400);
+    }
+  }
   const chat = input.source.kind === "send" ? input.source.chat : input.source.source.chat;
   const selectedProvider =
     typeof body?.provider === "string"
@@ -778,6 +792,12 @@ export async function prepareRun(
         providerConnectionId: selectedProvider,
         providerModelId: selectedModelId,
         searchPlan: requestedSearchPlan,
+        ...(requestedSearchPreference
+          ? {
+              searchPreferencePlan: requestedSearchPreference.plan,
+              searchPreferenceSource: requestedSearchPreference.source
+            }
+          : {}),
         searchStrategyId: requestedSearchStrategy,
         userId: input.userId
       });
@@ -1095,20 +1115,15 @@ export async function prepareRun(
   };
   const providerRequestPreview = adapter.buildRequestPreview(providerRequest);
   const defaults: PreparedRunDefaultsData = {
-    // `searchStrategy` may point at the hosted member of a mixed plan because
-    // that is the value the answer adapter must serialize. The compatibility
-    // mirror in user defaults, however, always follows the first user-selected
-    // option; `searchPlan` remains the authoritative complete value.
-    controlDefaults: runControlDefaultsFromBody(
-      body,
-      parameterControls,
-      requestedSearchStrategy
-    ),
+    controlDefaults: runControlDefaultsFromBody(body, parameterControls),
     modelId: selectedModelId,
     promptPresetId: prompt.presetId,
     provider: selectedProvider,
     searchStrategy: requestedSearchStrategy,
     searchPlan: requestedSearchPlan,
+    ...(requestedSearchPreference && deps.providerAdmission
+      ? { searchPreferencePlan: requestedSearchPreference.plan }
+      : {}),
     userId: input.userId
   };
 

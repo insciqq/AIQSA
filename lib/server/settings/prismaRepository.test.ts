@@ -313,7 +313,7 @@ describe("Prisma settings repository", () => {
     });
   });
 
-  it("rejects a stale search patch waiting behind a concurrent model change", async () => {
+  it("applies a global Search preference waiting behind a concurrent model change", async () => {
     await withSettingsUser(async ({ nextModel, userId, validationModels }) => {
       const settingsRepository = createTestSettingsRepository(validationModels);
       let staleSearchPatch: ReturnType<typeof settingsRepository.updateSettings> | undefined;
@@ -326,6 +326,7 @@ describe("Prisma settings repository", () => {
           FOR UPDATE
         `;
         staleSearchPatch = settingsRepository.updateSettings(userId, {
+          defaultSearchPlan: { mode: "all_selected", optionIds: [] },
           defaultSearchStrategyId: "search-disabled"
         });
         await tx.userSettings.update({
@@ -343,9 +344,12 @@ describe("Prisma settings repository", () => {
         });
       });
 
-      await expect(staleSearchPatch).resolves.toEqual({
-        error: "default_search_unavailable",
-        kind: "invalid"
+      await expect(staleSearchPatch).resolves.toMatchObject({
+        kind: "updated",
+        settings: {
+          defaultModelId: nextModel.id,
+          defaultSearchPlan: { mode: "all_selected", optionIds: [] }
+        }
       });
       await expect(
         prisma.userSettings.findUniqueOrThrow({
@@ -356,6 +360,7 @@ describe("Prisma settings repository", () => {
                 id: true
               }
             },
+            defaultSearchPlan: true,
             defaultSearchStrategyId: true
           },
           where: {
@@ -367,7 +372,8 @@ describe("Prisma settings repository", () => {
           connectionId: nextModel.connectionId,
           id: nextModel.id
         },
-        defaultSearchStrategyId: "next-search"
+        defaultSearchPlan: { mode: "all_selected", optionIds: [] },
+        defaultSearchStrategyId: "search-disabled"
       });
     });
   });

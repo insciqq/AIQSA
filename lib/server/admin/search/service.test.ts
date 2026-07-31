@@ -83,6 +83,13 @@ describe("admin Search service", () => {
     };
     const prisma = {
       providerModel: { findMany: vi.fn(async () => [technical]) },
+      searchPolicy: {
+        findUnique: vi.fn(async () => ({
+          defaultPlan: { mode: "all_selected", optionIds: [] },
+          updatedAt: NOW,
+          version: 1
+        }))
+      },
       searchStrategy: {
         findMany: vi.fn(async () => [
           baseRow,
@@ -242,5 +249,71 @@ describe("admin Search service", () => {
       })
     );
     expect(update).not.toHaveBeenCalled();
+  });
+
+  it("validates and compare-and-swaps the installation Search recommendation", async () => {
+    const updateMany = vi.fn(async () => ({ count: 1 }));
+    const activeRow = {
+      activeRevision: { configuration: draft, id: "revision-1", revisionNumber: 1 },
+      activeRevisionId: "revision-1",
+      activatedAt: NOW,
+      adapterKind: draft.adapterKind,
+      archivedAt: null,
+      credentialMode: draft.credentialMode,
+      description: "Query-only evidence",
+      displayName: "Company Search",
+      draft,
+      draftTestEvidence: null,
+      draftVersion: 1,
+      enabled: true,
+      id: "integration-1",
+      providerModel: technicalModel(),
+      strategyId: "company-search",
+      testedDraftHash: searchDraftHash(draft)
+    };
+    const prisma = {
+      providerModel: { findMany: vi.fn(async () => [{
+        ...technicalModel(),
+        activatedAt: NOW,
+        connection: {
+          activeConfig: {},
+          activeVersion: 1,
+          activatedAt: NOW,
+          displayName: "Compatible gateway",
+          enabled: true
+        }
+      }]) },
+      searchPolicy: {
+        findUnique: vi.fn(async () => ({
+          defaultPlan: { mode: "all_selected", optionIds: [] },
+          updatedAt: NOW,
+          version: 3
+        })),
+        updateMany
+      },
+      searchStrategy: { findMany: vi.fn(async () => [activeRow]) }
+    } as unknown as PrismaClient;
+    const search = createAdminSearchService({ prisma, tester: { test: vi.fn() } });
+
+    await search.updatePolicy({
+      defaultPlan: { mode: "all_selected", optionIds: ["company-search"] },
+      expectedVersion: 3,
+      userId: "admin-1"
+    });
+
+    expect(updateMany).toHaveBeenCalledWith({
+      data: {
+        defaultPlan: { mode: "all_selected", optionIds: ["company-search"] },
+        updatedByUserId: "admin-1",
+        version: { increment: 1 }
+      },
+      where: { id: "installation", version: 3 }
+    });
+    updateMany.mockResolvedValueOnce({ count: 0 });
+    await expect(search.updatePolicy({
+      defaultPlan: { mode: "all_selected", optionIds: ["company-search"] },
+      expectedVersion: 3,
+      userId: "admin-1"
+    })).rejects.toMatchObject({ code: "search_policy_stale" });
   });
 });

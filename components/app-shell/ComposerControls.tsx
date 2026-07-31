@@ -3,6 +3,7 @@ import { ComposerOptionPicker } from "@/components/app-shell/ComposerOptionPicke
 import { ComposerPromptPicker } from "@/components/app-shell/ComposerPromptPicker";
 import { ComposerRunProfiles } from "@/components/app-shell/ComposerRunProfiles";
 import { ComposerSearchPicker } from "@/components/app-shell/ComposerSearchPicker";
+import { ComposerReasoningPicker } from "@/components/app-shell/ComposerReasoningPicker";
 import { formatTokenCount } from "@/components/app-shell/shellFormatting";
 import {
   findActiveRunProfile,
@@ -97,6 +98,7 @@ function searchStrategyDescription(strategy: CatalogSearchStrategy): string {
 
 export function ComposerControls({
   backgroundMode,
+  compatibleSearchOptionIds,
   catalog,
   catalogUnavailable = false,
   compact = false,
@@ -116,6 +118,7 @@ export function ComposerControls({
   onRunProfileChange,
   onSearchPlanChange,
   onSearchStrategyChange,
+  onUseOrganizationSearchDefault,
   onSelectModel,
   onStreamModeChange,
   onTemperatureChange,
@@ -128,6 +131,7 @@ export function ComposerControls({
   reasoningEffort,
   reasoningMode,
   searchOptions,
+  searchPreferenceSource = "personal",
   searchPlanMode = "all_selected",
   selectedModelId,
   selectedPromptId,
@@ -144,6 +148,7 @@ export function ComposerControls({
   usageStats = null
 }: {
   backgroundMode: boolean;
+  compatibleSearchOptionIds?: string[];
   catalog: Catalog | null;
   catalogUnavailable?: boolean;
   compact?: boolean;
@@ -163,6 +168,7 @@ export function ComposerControls({
   onRunProfileChange(profileId: RunProfileId): void;
   onSearchPlanChange?(optionIds: readonly string[], mode: SearchPlanMode): void;
   onSearchStrategyChange(strategyId: string): void;
+  onUseOrganizationSearchDefault?(): void;
   onSelectModel(model: CatalogModel): void;
   onStreamModeChange(value: boolean): void;
   onTemperatureChange(value: string): void;
@@ -175,6 +181,7 @@ export function ComposerControls({
   reasoningEffort: string;
   reasoningMode: string;
   searchOptions: CatalogSearchStrategy[];
+  searchPreferenceSource?: "organization" | "personal";
   searchPlanMode?: SearchPlanMode;
   selectedModelId: string;
   selectedPromptId: string | null;
@@ -190,6 +197,9 @@ export function ComposerControls({
   temperature: string;
   usageStats?: ComposerUsageStats | null;
 }) {
+  const resolvedCompatibleSearchOptionIds = compatibleSearchOptionIds ??
+    currentModel?.searchStrategyIds.filter((strategyId) => strategyId !== "search-disabled") ??
+    searchOptions.filter((strategy) => strategy.kind !== "none").map((strategy) => strategy.strategyId);
   const runSetupTriggerRef = useRef<HTMLButtonElement>(null);
   const [inlineModelPickerOpen, setInlineModelPickerOpen] = useState(false);
   const [setupModelPickerOpen, setSetupModelPickerOpen] = useState(false);
@@ -349,15 +359,29 @@ export function ComposerControls({
           />
         ) : null}
 
+        {reasoningSupported ? (
+          <ComposerReasoningPicker
+            controls={currentParameterControls}
+            disabled={disabled || streaming}
+            effort={reasoningEffort}
+            mode={reasoningMode}
+            onEffortChange={onReasoningEffortChange}
+            onModeChange={onReasoningModeChange}
+          />
+        ) : null}
+
         <ComposerSearchPicker
           align="right"
           className="min-w-20 max-w-[10rem] flex-[1_1_5rem] min-[430px]:min-w-[5.5rem] min-[430px]:flex-[1_1_5.5rem]"
           disabled={disabled || !currentModel || streaming}
           id="composer-inline-search"
           mode={searchPlanMode}
+          compatibleOptionIds={resolvedCompatibleSearchOptionIds}
           onChange={changeSearchPlan}
+          onUseOrganizationDefault={onUseOrganizationSearchDefault}
           options={searchOptions}
           selectedOptionIds={selectedSearchOptionIds}
+          preferenceSource={searchPreferenceSource}
         />
 
         <button
@@ -506,10 +530,13 @@ export function ComposerControls({
                     disabled={disabled || !currentModel || streaming}
                     id="search-select"
                     mode={searchPlanMode}
+                    compatibleOptionIds={resolvedCompatibleSearchOptionIds}
                     onChange={changeSearchPlan}
+                    onUseOrganizationDefault={onUseOrganizationSearchDefault}
                     options={searchOptions}
                     placement="below"
                     selectedOptionIds={selectedSearchOptionIds}
+                    preferenceSource={searchPreferenceSource}
                     setup
                   />
                 </div>

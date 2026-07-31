@@ -55,6 +55,13 @@ export function createAdminSearchIntegration(input: Readonly<{
   return request("/api/admin/search", json(input, "POST"), fetcher);
 }
 
+export function updateAdminSearchPolicy(input: Readonly<{
+  defaultPlan: AdminSearchCatalog["policy"]["defaultPlan"];
+  expectedVersion: number;
+}>, fetcher?: Fetcher): Promise<AdminSearchApiResult> {
+  return request("/api/admin/search", json(input, "PATCH"), fetcher);
+}
+
 export function updateAdminSearchIntegration(input: Readonly<{
   description: string;
   displayName: string;
@@ -86,9 +93,11 @@ export function adminSearchErrorMessage(code: string): string {
     search_admin_action_failed: "The Search action failed.",
     search_catalog_malformed: "The Search catalog response was invalid.",
     search_configuration_invalid: "Review the Search configuration and bounded limits.",
+    search_default_unavailable: "Choose only active, ready Search integrations with compatible execution modes.",
     search_draft_stale: "This draft changed elsewhere. Reload and apply your edit again.",
     search_integration_material_identity_changed: "Engine identity cannot change after activation. Add a new integration instead.",
     search_provider_model_not_available: "Choose an enabled provider model with a compatible native-search protocol.",
+    search_policy_stale: "The organization Search default changed elsewhere. Reload and apply your edit again.",
     search_system_integration_forbidden: "This built-in integration cannot be archived.",
     search_test_failed: "The provider search test did not produce a usable terminal result."
   };

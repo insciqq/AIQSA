@@ -156,6 +156,7 @@ function baseProps(): PowerAppShellViewProps {
     composer: {
       attachments: [],
       backgroundMode: false,
+      compatibleSearchOptionIds: [],
       catalog: null,
       catalogError: null,
       changeBackgroundMode: noop,
@@ -191,6 +192,7 @@ function baseProps(): PowerAppShellViewProps {
       reasoningMode: "standard",
       retryCatalog: noop,
       searchOptions: [],
+      searchPreferenceSource: "personal",
       searchPlanMode: "all_selected",
       selectModel: noop,
       selectPrompt: noop,
@@ -215,7 +217,8 @@ function baseProps(): PowerAppShellViewProps {
       toggleReasoningBlockVisibility: noop,
       toggleToolActivityVisibility: noop,
       uploadFiles: noop,
-      uploading: false
+      uploading: false,
+      useOrganizationSearchDefault: noop
     },
     details: {
       activeLeafId: null,

@@ -7,7 +7,8 @@ const api = vi.hoisted(() => ({
   create: vi.fn(),
   list: vi.fn(),
   run: vi.fn(),
-  update: vi.fn()
+  update: vi.fn(),
+  updatePolicy: vi.fn()
 }));
 
 vi.mock("./adminSearchApi", () => ({
@@ -15,7 +16,8 @@ vi.mock("./adminSearchApi", () => ({
   createAdminSearchIntegration: api.create,
   requestAdminSearchCatalog: api.list,
   runAdminSearchAction: api.run,
-  updateAdminSearchIntegration: api.update
+  updateAdminSearchIntegration: api.update,
+  updateAdminSearchPolicy: api.updatePolicy
 }));
 
 const catalog: AdminSearchCatalog = {
@@ -58,6 +60,11 @@ const catalog: AdminSearchCatalog = {
     strategyId: "company-search-12345678",
     system: false
   }],
+  policy: {
+    defaultPlan: { mode: "all_selected", optionIds: [] },
+    updatedAt: "2026-07-29T12:00:00.000Z",
+    version: 1
+  },
   providerModels: []
 };
 
@@ -67,6 +74,7 @@ describe("AdminSearchSection", () => {
     api.list.mockReset().mockResolvedValue({ ok: true, search: catalog });
     api.run.mockReset().mockResolvedValue({ ok: true, search: catalog });
     api.update.mockReset().mockResolvedValue({ ok: true, search: catalog });
+    api.updatePolicy.mockReset().mockResolvedValue({ ok: true, search: catalog });
   });
 
   it("presents Search as an index/detail task workspace with factual route and diagnostics", async () => {
@@ -105,6 +113,22 @@ describe("AdminSearchSection", () => {
     expect(await screen.findByText("Search draft tested.")).toBeVisible();
   });
 
+  it("saves a version-fenced organization recommendation without changing grants", async () => {
+    render(<AdminSearchSection active />);
+    const policy = await screen.findByRole("region", { name: "Recommended Search plan" });
+    fireEvent.click(within(policy).getByRole("button", { name: "Company Search" }));
+    fireEvent.click(within(policy).getByRole("button", { name: "Save default" }));
+
+    await waitFor(() => expect(api.updatePolicy).toHaveBeenCalledWith({
+      defaultPlan: {
+        mode: "all_selected",
+        optionIds: ["company-search-12345678"]
+      },
+      expectedVersion: 1
+    }));
+    expect(await screen.findByText("Organization Search default saved.")).toBeVisible();
+  });
+
   it("separates enabled state from unavailable runtime dependencies", async () => {
     api.list.mockResolvedValue({
       ok: true,
@@ -126,5 +150,44 @@ describe("AdminSearchSection", () => {
       .getAllByText("Technical model unavailable").length).toBeGreaterThan(0);
     expect(within(screen.getByTestId("admin-search-detail-pane")).getAllByText("Enabled").length)
       .toBeGreaterThan(0);
+  });
+
+  it("lets an administrator remove an unavailable engine from the recommendation", async () => {
+    api.list.mockResolvedValue({
+      ok: true,
+      search: {
+        ...catalog,
+        integrations: [{
+          ...catalog.integrations[0],
+          ready: false,
+          readiness: "provider_model_unavailable"
+        }],
+        policy: {
+          ...catalog.policy,
+          defaultPlan: {
+            mode: "all_selected",
+            optionIds: ["company-search-12345678"]
+          }
+        }
+      }
+    });
+    render(<AdminSearchSection active />);
+
+    const policy = await screen.findByRole("region", { name: "Recommended Search plan" });
+    const save = within(policy).getByRole("button", { name: "Save default" });
+    expect(save).toBeDisabled();
+    fireEvent.click(within(policy).getByRole("button", {
+      name: "Remove unavailable Company Search"
+    }));
+    expect(save).toBeEnabled();
+    fireEvent.click(save);
+
+    await waitFor(() => expect(api.updatePolicy).toHaveBeenCalledWith({
+      defaultPlan: {
+        mode: "all_selected",
+        optionIds: []
+      },
+      expectedVersion: 1
+    }));
   });
 });

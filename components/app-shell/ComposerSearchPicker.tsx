@@ -12,8 +12,15 @@ function optionDescription(option: CatalogSearchStrategy): string {
   return `${privacy} · ${option.executionModes?.includes("all_selected") ? "fan-out ready" : "model choice only"}`;
 }
 
-function summary(options: readonly CatalogSearchStrategy[], selectedIds: readonly string[]): string {
+function summary(
+  options: readonly CatalogSearchStrategy[],
+  selectedIds: readonly string[],
+  compatibleIds: ReadonlySet<string>
+): string {
   if (selectedIds.length === 0) return "Off";
+  const active = selectedIds.filter((optionId) => compatibleIds.has(optionId)).length;
+  const unavailable = selectedIds.length - active;
+  if (unavailable > 0) return `${active} active · ${unavailable} unavailable`;
   if (selectedIds.length === 1) {
     return options.find((option) => option.strategyId === selectedIds[0])?.displayName ?? "1 engine";
   }
@@ -31,23 +38,29 @@ function narrowLabel(option: CatalogSearchStrategy | undefined): string {
 export function ComposerSearchPicker({
   align = "left",
   className = "",
+  compatibleOptionIds,
   disabled,
   id,
   mode,
   onChange,
+  onUseOrganizationDefault,
   options,
   placement = "above",
+  preferenceSource = "personal",
   selectedOptionIds,
   setup = false
 }: Readonly<{
   align?: "left" | "right";
   className?: string;
+  compatibleOptionIds?: readonly string[];
   disabled: boolean;
   id: string;
   mode: SearchPlanMode;
   onChange(optionIds: string[], mode: SearchPlanMode): void;
+  onUseOrganizationDefault?(): void;
   options: readonly CatalogSearchStrategy[];
   placement?: "above" | "below";
+  preferenceSource?: "organization" | "personal";
   selectedOptionIds: readonly string[];
   setup?: boolean;
 }>) {
@@ -60,10 +73,14 @@ export function ComposerSearchPicker({
     restoreFocus: () => triggerRef.current
   });
   const available = useMemo(() => options.filter((option) => option.kind !== "none"), [options]);
+  const compatible = useMemo(
+    () => new Set(compatibleOptionIds ?? available.map((option) => option.strategyId)),
+    [available, compatibleOptionIds]
+  );
   const selected = selectedOptionIds.filter((idValue) =>
     available.some((option) => option.strategyId === idValue));
-  const unavailable = selectedOptionIds.length > 0 && selected.length === 0;
-  const label = unavailable ? "Unavailable" : summary(available, selected);
+  const unavailableCount = selected.filter((optionId) => !compatible.has(optionId)).length;
+  const label = summary(available, selected, compatible);
   const singleOption = selected.length === 1
     ? available.find((option) => option.strategyId === selected[0])
     : undefined;
@@ -112,7 +129,7 @@ export function ComposerSearchPicker({
           <Search aria-hidden="true" className="hidden size-3.5 shrink-0 text-ink-muted max-[429px]:block" />
           <span className="shrink-0 text-xs text-ink-muted max-[429px]:sr-only">Search</span>
           <span className="truncate text-sm font-medium text-ink">
-            {selected.length <= 1 && !unavailable ? (
+            {selected.length <= 1 && unavailableCount === 0 ? (
               <>
                 <span className="min-[430px]:hidden">{narrowLabel(singleOption)}</span>
                 <span className="hidden min-[430px]:inline">{label}</span>
@@ -150,6 +167,7 @@ export function ComposerSearchPicker({
             </button>
             {available.map((option) => {
               const active = selected.includes(option.strategyId);
+              const modelCompatible = compatible.has(option.strategyId);
               const capped = !active && selected.length >= 3;
               const incompatible = !active && !isSearchCombinationCompatible(
                 [...selected, option.strategyId],
@@ -160,14 +178,18 @@ export function ComposerSearchPicker({
                 <button
                   aria-pressed={active}
                   className={`flex min-h-touch w-full items-start justify-between gap-3 rounded-control px-3 py-2.5 text-left outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-proof/55 disabled:cursor-not-allowed disabled:opacity-45 ${active ? "bg-control-selected" : "hover:bg-control-hover"}`}
-                  disabled={capped || incompatible}
+                  disabled={!active && (!modelCompatible || capped || incompatible)}
                   data-option-value={option.strategyId}
                   key={option.strategyId}
                   onClick={() => toggle(option)}
                   type="button"
-                  title={incompatible ? "This engine cannot be combined with the current selection" : undefined}
+                  title={!modelCompatible
+                    ? "Unavailable for this model; your saved preference is retained"
+                    : incompatible
+                      ? "This engine cannot be combined with the current selection"
+                      : undefined}
                 >
-                  <span className="min-w-0 flex-1"><span className="block break-words text-sm font-semibold text-ink">{option.displayName}</span><span className="mt-0.5 block text-xs leading-5 text-ink-muted">{optionDescription(option)}</span></span>
+                  <span className="min-w-0 flex-1"><span className="block break-words text-sm font-semibold text-ink">{option.displayName}</span><span className="mt-0.5 block text-xs leading-5 text-ink-muted">{modelCompatible ? optionDescription(option) : "Unavailable for this model · preference retained"}</span></span>
                   <span className={`mt-0.5 grid size-5 shrink-0 place-items-center rounded-control border ${active ? "border-proof bg-proof text-proof-contrast" : "border-trace-strong"}`}>{active ? <Check aria-hidden="true" className="size-3.5" /> : null}</span>
                 </button>
               );
@@ -188,6 +210,21 @@ export function ComposerSearchPicker({
               </div>
               {!allSelectedAvailable ? <p className="mt-2 text-[11px] leading-4 text-caution">This combination includes an engine that cannot fan out. Model chooses is required.</p> : null}
             </fieldset>
+          ) : null}
+          {preferenceSource === "personal" && onUseOrganizationDefault ? (
+            <div className="mt-3 border-t border-trace-subtle pt-3">
+              <button
+                className="min-h-touch w-full rounded-control px-3 py-2 text-left text-xs font-medium text-ink-secondary outline-none hover:bg-control-hover focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-proof/55"
+                onClick={() => {
+                  onUseOrganizationDefault();
+                  setOpen(false);
+                }}
+                type="button"
+              >
+                Use organization default
+              </button>
+              <p className="mt-1 px-3 text-[11px] leading-4 text-ink-muted">Future admin recommendations apply only when you have access.</p>
+            </div>
           ) : null}
         </div>
       ) : null}

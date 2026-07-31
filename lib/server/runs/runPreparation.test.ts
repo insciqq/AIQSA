@@ -679,7 +679,6 @@ describe("run preparation", () => {
       controlDefaults: {
         maxOutputTokens: "8192",
         reasoningEffort: "high",
-        searchStrategyId: "search-disabled",
         temperature: "0"
       },
       modelId: "fake-qsa",
@@ -1274,7 +1273,70 @@ describe("run preparation", () => {
     expect(prepared.normalizedRequest.searchStrategy).toBe("openai-native-web-search");
     expect(prepared.defaults.searchPlan).toEqual({ mode: "model_choice", optionIds });
     expect(prepared.defaults.searchStrategy).toBe("company-search");
-    expect(prepared.defaults.controlDefaults.searchStrategyId).toBe("company-search");
+    expect(prepared.defaults.controlDefaults).not.toHaveProperty("searchStrategyId");
+  });
+
+  it("keeps a full personal Search preference separate from the effective run plan", async () => {
+    const plan = compatibleAdmissionPlan("openai_responses_compatible");
+    const admissionLoad = vi.fn(async () => plan);
+    const preferencePlan = {
+      mode: "model_choice" as const,
+      optionIds: ["company-search", "secondary-search"]
+    };
+    const result = await prepareRun(
+      {
+        ...createHarness().deps,
+        allowFakeProvider: false,
+        providerAdmission: { load: admissionLoad }
+      },
+      sendInput(successBody({
+        modelId: plan.selection.providerModelId,
+        provider: plan.selection.providerConnectionId,
+        searchPlan: { mode: "all_selected", optionIds: [] },
+        searchPreferencePlan: preferencePlan,
+        searchPreferenceSource: "personal"
+      }))
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.code);
+    const prepared = materializePreparedRunData(result.prepared);
+    expect(admissionLoad).toHaveBeenCalledWith(expect.objectContaining({
+      searchPlan: { mode: "all_selected", optionIds: [] },
+      searchPreferencePlan: preferencePlan,
+      searchPreferenceSource: "personal"
+    }));
+    expect(prepared.defaults.searchPlan).toEqual({ mode: "all_selected", optionIds: [] });
+    expect(prepared.defaults.searchPreferencePlan).toEqual(preferencePlan);
+    expect(prepared.defaults.controlDefaults).not.toHaveProperty("searchStrategyId");
+  });
+
+  it("records organization inheritance as null without copying the current recommendation", async () => {
+    const plan = compatibleAdmissionPlan("openai_responses_compatible");
+    const admissionLoad = vi.fn(async () => plan);
+    const result = await prepareRun(
+      {
+        ...createHarness().deps,
+        allowFakeProvider: false,
+        providerAdmission: { load: admissionLoad }
+      },
+      sendInput(successBody({
+        modelId: plan.selection.providerModelId,
+        provider: plan.selection.providerConnectionId,
+        searchPlan: { mode: "all_selected", optionIds: [] },
+        searchPreferencePlan: { mode: "all_selected", optionIds: ["current-default"] },
+        searchPreferenceSource: "organization"
+      }))
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.code);
+    const prepared = materializePreparedRunData(result.prepared);
+    expect(admissionLoad).toHaveBeenCalledWith(expect.objectContaining({
+      searchPreferencePlan: null,
+      searchPreferenceSource: "organization"
+    }));
+    expect(prepared.defaults.searchPreferencePlan).toBeNull();
   });
 
   it("rejects an initial MCP request when its exact provider tool schema exceeds context", async () => {

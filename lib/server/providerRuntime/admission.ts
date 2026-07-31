@@ -57,6 +57,8 @@ export type ProviderAdmissionPlan = Readonly<{
   fingerprint: string;
   requestedSearchStrategyId: string;
   requestedSearchPlan?: SearchPlan;
+  requestedSearchPreferencePlan?: SearchPlan | null;
+  requestedSearchPreferenceSource?: "organization" | "personal";
   search?: ProviderAdmissionRole;
   searchConfiguration?: RunSearchStrategyConfiguration;
   searches?: readonly Readonly<{
@@ -413,6 +415,8 @@ export async function loadProviderAdmissionPlan(
     providerConnectionId: string;
     providerModelId: string;
     searchPlan?: SearchPlan;
+    searchPreferencePlan?: SearchPlan | null;
+    searchPreferenceSource?: "organization" | "personal";
     searchStrategyId: string;
     userId: string;
   }
@@ -439,6 +443,58 @@ export async function loadProviderAdmissionPlan(
   const fullAccess = memberships.some(
     (membership) => membership.group.systemRole === FULL_ACCESS_GROUP_SYSTEM_ROLE
   );
+  if (input.searchPreferenceSource === "personal") {
+    if (!input.searchPreferencePlan) {
+      throw new ProviderAdmissionError("search_strategy_not_available");
+    }
+    const preferenceStrategies: Array<{
+      adapterKind: string;
+      executionModes: readonly string[];
+      protocol: string;
+    }> = [];
+    for (const optionId of input.searchPreferencePlan.optionIds) {
+      const strategy = await db.searchStrategy.findFirst({
+        include: { activeRevision: true },
+        where: {
+          activeRevisionId: { not: null },
+          archivedAt: null,
+          enabled: true,
+          strategyId: optionId
+        }
+      });
+      if (!strategy || !(await hasSearchEntitlement(db, {
+        fullAccess,
+        groupIds,
+        strategyId: optionId,
+        userId: input.userId
+      })) || !strategy.activeRevision) {
+        throw new ProviderAdmissionError("search_strategy_not_available");
+      }
+      let draft;
+      try {
+        draft = normalizeSearchDraft(strategy.activeRevision.configuration);
+      } catch {
+        throw new ProviderAdmissionError("search_strategy_not_available");
+      }
+      preferenceStrategies.push({
+        adapterKind: draft.adapterKind,
+        executionModes: searchExecutionModes(draft.adapterKind),
+        protocol: draft.protocol
+      });
+    }
+    if (preferenceStrategies.length > 1 && (
+      preferenceStrategies.some((strategy) => strategy.protocol === "gemini_google_search") ||
+      preferenceStrategies.filter((strategy) =>
+        strategy.adapterKind === "answer_provider_hosted").length > 1 ||
+      (input.searchPreferencePlan.mode === "all_selected" &&
+        preferenceStrategies.some((strategy) => !strategy.executionModes.includes("all_selected")))
+    )) {
+      throw new ProviderAdmissionError("search_strategy_not_available");
+    }
+  } else if (input.searchPreferenceSource !== undefined &&
+    input.searchPreferenceSource !== "organization") {
+    throw new ProviderAdmissionError("search_strategy_not_available");
+  }
   const answer = await loadRole(db, {
     connectionId: input.providerConnectionId,
     fullAccess,
@@ -608,6 +664,12 @@ export async function loadProviderAdmissionPlan(
     answer,
     requestedSearchStrategyId: input.searchStrategyId,
     requestedSearchPlan,
+    ...(input.searchPreferenceSource
+      ? {
+          requestedSearchPreferencePlan: input.searchPreferencePlan ?? null,
+          requestedSearchPreferenceSource: input.searchPreferenceSource
+        }
+      : {}),
     ...(search ? { search } : {}),
     ...(technicalSearchConfiguration
       ? { searchConfiguration: technicalSearchConfiguration }

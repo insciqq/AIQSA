@@ -207,17 +207,12 @@ export function usePowerAppShellViewModel({
     [catalog, selectedPromptId]
   );
   const searchOptions = useMemo<CatalogSearchStrategy[]>(() => {
-    const ids = currentModel?.searchStrategyIds ?? ["search-disabled"];
-
-    return ids.map(
-      (strategyId) =>
-        catalog?.searchStrategies.find((strategy) => strategy.strategyId === strategyId) ?? {
-          displayName: searchStrategyDescription(strategyId),
-          kind: "none",
-          strategyId
-        }
-    );
-  }, [catalog, currentModel]);
+    return catalog?.searchStrategies ?? [];
+  }, [catalog]);
+  const compatibleSearchOptionIds = useMemo(
+    () => currentModel?.searchStrategyIds.filter((strategyId) => strategyId !== "search-disabled") ?? [],
+    [currentModel]
+  );
   const selectedProviderName =
     catalog?.providers.find((provider) => provider.id === selectedProvider)?.name ?? providerDisplayName(selectedProvider);
   const selectedSearchLabel =
@@ -307,6 +302,7 @@ export function usePowerAppShellViewModel({
     composerDisabledHint,
     composerContextStats,
     composerUsageStats,
+    compatibleSearchOptionIds,
     currentErrorText,
     currentModel,
     currentParameterControls,

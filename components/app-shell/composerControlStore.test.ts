@@ -55,8 +55,7 @@ describe("composer control store", () => {
         temperature: "0.7"
       },
       modelId: "gpt-5.6-sol",
-      provider: "openai",
-      searchStrategyId: "search-disabled"
+      provider: "openai"
     });
     unsubscribe();
 
@@ -67,7 +66,7 @@ describe("composer control store", () => {
       reasoningMode: "pro",
       selectedModelId: "gpt-5.6-sol",
       selectedProvider: "openai",
-      selectedSearchStrategy: "search-disabled",
+      selectedSearchStrategy: "openai-native-web-search",
       streamMode: false,
       temperature: "0.7"
     });

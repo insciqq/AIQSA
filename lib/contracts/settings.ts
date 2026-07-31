@@ -7,6 +7,8 @@ export type UserSettingsWire = {
   defaultProvider: string;
   defaultSearchStrategyId: string;
   defaultSearchPlan?: SearchPlan;
+  organizationSearchPlan?: SearchPlan;
+  searchPreferenceSource?: "organization" | "personal";
   showCitations: boolean;
   showReasoningBlocks: boolean;
   showToolActivity: boolean;
@@ -41,6 +43,7 @@ export function decodeUpdateSettingsResponse(value: unknown): UpdateSettingsResp
   const defaultSearchPlan = settings.defaultSearchPlan === undefined
     ? null
     : decodeSearchPlan(settings.defaultSearchPlan, settings.defaultSearchStrategyId);
+  const organizationSearchPlan = decodeSearchPlan(settings.organizationSearchPlan);
   if (
     !isRecord(settings.defaultControlValues) ||
     !isString(settings.defaultModelId) ||
@@ -50,7 +53,9 @@ export function decodeUpdateSettingsResponse(value: unknown): UpdateSettingsResp
     typeof settings.showCitations !== "boolean" ||
     typeof settings.showReasoningBlocks !== "boolean" ||
     typeof settings.showToolActivity !== "boolean" ||
-    (settings.defaultSearchPlan !== undefined && !defaultSearchPlan?.ok)
+    (settings.defaultSearchPlan !== undefined && !defaultSearchPlan?.ok) ||
+    !organizationSearchPlan.ok ||
+    (settings.searchPreferenceSource !== "organization" && settings.searchPreferenceSource !== "personal")
   ) {
     return null;
   }
@@ -65,6 +70,8 @@ export function decodeUpdateSettingsResponse(value: unknown): UpdateSettingsResp
       ...(defaultSearchPlan?.ok
         ? { defaultSearchPlan: defaultSearchPlan.plan }
         : {}),
+      organizationSearchPlan: organizationSearchPlan.plan,
+      searchPreferenceSource: settings.searchPreferenceSource,
       showCitations: settings.showCitations,
       showReasoningBlocks: settings.showReasoningBlocks,
       showToolActivity: settings.showToolActivity

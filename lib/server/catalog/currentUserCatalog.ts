@@ -24,7 +24,7 @@ import {
   canAccessSearchStrategy,
   type ResolvedEntitlements
 } from "../auth/entitlements";
-import { decodeSearchPlan } from "../../domain/search";
+import { decodeSearchPlan, type SearchPlan } from "../../domain/search";
 
 export type CatalogSettingsRecord = {
   defaultControlValues: unknown;
@@ -45,8 +45,15 @@ export type CatalogData = {
   models: ProviderModelCatalogEntry[];
   promptPresets: PromptPreset[];
   runProfiles: CatalogRunProfileRecord[];
+  searchPolicy?: { defaultPlan: unknown } | null;
   searchStrategies: SearchStrategyCatalogEntry[];
   settings: CatalogSettingsRecord;
+};
+
+export type ResolvedSearchPreference = {
+  organizationPlan: SearchPlan;
+  preferredPlan: SearchPlan;
+  source: "organization" | "personal";
 };
 
 export type CatalogRunProfileRecord = {
@@ -94,6 +101,37 @@ export function resolveCurrentUserCatalogSelection(
     defaultModel,
     entitledStrategies,
     models
+  };
+}
+
+export function resolveSearchPreference(input: Readonly<{
+  organizationPlan: unknown;
+  settings: Pick<CatalogSettingsRecord, "defaultSearchPlan" | "defaultSearchStrategyId">;
+  strategies: SearchStrategyCatalogEntry[];
+}>): ResolvedSearchPreference {
+  const decodedOrganization = decodeSearchPlan(input.organizationPlan);
+  const organizationPlan = reconcileSearchPlanSelection(
+    decodedOrganization.ok ? decodedOrganization.plan.optionIds : [],
+    decodedOrganization.ok ? decodedOrganization.plan.mode : "all_selected",
+    input.strategies
+  );
+  // Undefined is retained as the legacy pre-column shape. Only SQL NULL has
+  // the durable ADR 0046 meaning "inherit the installation recommendation".
+  const personal = input.settings.defaultSearchPlan !== null;
+  const decodedPreferred = personal
+    ? decodeSearchPlan(
+        input.settings.defaultSearchPlan,
+        input.settings.defaultSearchStrategyId
+      )
+    : { ok: true as const, plan: organizationPlan };
+  return {
+    organizationPlan,
+    preferredPlan: reconcileSearchPlanSelection(
+      decodedPreferred.ok ? decodedPreferred.plan.optionIds : [],
+      decodedPreferred.ok ? decodedPreferred.plan.mode : "all_selected",
+      input.strategies
+    ),
+    source: personal ? "personal" : "organization"
   };
 }
 
@@ -146,20 +184,11 @@ export function buildCurrentUserCatalog(input: CatalogData): CurrentUserCatalogW
       reasoningMode: profile.reasoningMode
     }];
   });
-  const decodedDefaultPlan = decodeSearchPlan(
-    input.settings.defaultSearchPlan,
-    input.settings.defaultSearchStrategyId
-  );
-  const compatibleDefaultOptionIds = decodedDefaultPlan.ok
-    ? decodedDefaultPlan.plan.optionIds.filter((optionId) =>
-        defaultModel?.searchStrategyIds.includes(optionId)
-      )
-    : [];
-  const compatibleDefaultPlan = reconcileSearchPlanSelection(
-    compatibleDefaultOptionIds,
-    decodedDefaultPlan.ok ? decodedDefaultPlan.plan.mode : "all_selected",
-    entitledStrategies
-  );
+  const searchPreference = resolveSearchPreference({
+    organizationPlan: input.searchPolicy?.defaultPlan,
+    settings: input.settings,
+    strategies: entitledStrategies
+  });
 
   return {
     defaults: {
@@ -173,10 +202,9 @@ export function buildCurrentUserCatalog(input: CatalogData): CurrentUserCatalogW
         defaultModel,
         input.settings.defaultSearchStrategyId
       ),
-      searchPlan: {
-        mode: compatibleDefaultPlan.mode,
-        optionIds: compatibleDefaultPlan.optionIds
-      },
+      organizationSearchPlan: searchPreference.organizationPlan,
+      searchPlan: searchPreference.preferredPlan,
+      searchPreferenceSource: searchPreference.source,
       showCitations: input.settings.showCitations,
       showReasoningBlocks: input.settings.showReasoningBlocks,
       showToolActivity: input.settings.showToolActivity

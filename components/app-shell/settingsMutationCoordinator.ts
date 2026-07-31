@@ -1,12 +1,15 @@
 import { responseErrorMessage } from "@/components/app-shell/shellFormatting";
 import { shellFetch } from "@/components/app-shell/shellApi";
 import type { CatalogDefaults } from "@/lib/contracts/catalog";
+import type { SearchPlan } from "@/lib/domain/search";
 import {
   decodeUpdateSettingsResponse,
   type UserSettingsWire
 } from "@/lib/contracts/settings";
 
-export type SettingsDefaultsPatch = Partial<CatalogDefaults>;
+export type SettingsDefaultsPatch = Omit<Partial<CatalogDefaults>, "searchPlan"> & {
+  searchPlan?: SearchPlan | null;
+};
 
 type PendingSettingsPatch = {
   noticeScope: SettingsNoticeScope;
@@ -80,7 +83,10 @@ export function applySettingsDefaultsReconciliation(
   update: SettingsDefaultsPatch,
   replaceControlValueKeys: ReadonlySet<string> = new Set()
 ): CatalogDefaults {
-  const merged = mergeSettingsDefaultsPatches(current, update) as CatalogDefaults;
+  const safeUpdate = update.searchPlan === null
+    ? Object.fromEntries(Object.entries(update).filter(([key]) => key !== "searchPlan")) as SettingsDefaultsPatch
+    : update;
+  const merged = mergeSettingsDefaultsPatches(current, safeUpdate) as CatalogDefaults;
   if (!update.controlValues || replaceControlValueKeys.size === 0) {
     return merged;
   }
@@ -176,6 +182,12 @@ function reconciledPatch(
         ? []
         : [settings.defaultSearchStrategyId]
     };
+    if (settings.organizationSearchPlan) {
+      patch.organizationSearchPlan = settings.organizationSearchPlan;
+    }
+    if (settings.searchPreferenceSource) {
+      patch.searchPreferenceSource = settings.searchPreferenceSource;
+    }
   }
   if (Object.prototype.hasOwnProperty.call(sent, "showCitations")) {
     patch.showCitations = settings.showCitations;

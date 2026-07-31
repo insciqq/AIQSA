@@ -10,9 +10,6 @@ export type ComposerModelSelection = {
   controlDefaults: ControlDefaults;
   modelId: string;
   provider: string;
-  searchStrategyId: string;
-  searchOptionIds?: readonly string[];
-  searchPlanMode?: SearchPlanMode;
 };
 
 export type ComposerControlSnapshot = {
@@ -96,16 +93,8 @@ export const useComposerControlStore = create<ComposerControlStore>((set) => ({
   applyModelSelection({
     controlDefaults,
     modelId,
-    provider,
-    searchOptionIds,
-    searchPlanMode,
-    searchStrategyId
+    provider
   }) {
-    const optionIds = searchOptionIds
-      ? [...searchOptionIds]
-      : searchStrategyId === "search-disabled"
-        ? []
-        : [searchStrategyId];
     set({
       backgroundMode: controlDefaults.backgroundMode,
       maxOutputTokens: controlDefaults.maxOutputTokens,
@@ -113,9 +102,6 @@ export const useComposerControlStore = create<ComposerControlStore>((set) => ({
       reasoningMode: controlDefaults.reasoningMode,
       selectedModelId: modelId,
       selectedProvider: provider,
-      selectedSearchOptionIds: optionIds,
-      searchPlanMode: searchPlanMode ?? "all_selected",
-      selectedSearchStrategy: searchStrategyId,
       streamMode: controlDefaults.streamMode,
       temperature: controlDefaults.temperature
     });

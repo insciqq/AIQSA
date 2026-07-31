@@ -128,6 +128,16 @@ function resolveModelSearchPlan(
     : { mode: decoded.plan.mode, optionIds };
 }
 
+function resolvePreferredSearchPlan(
+  preferredPlan: unknown,
+  fallbackSearchStrategyId?: string | null,
+  strategies: readonly CatalogSearchStrategy[] = []
+): SearchPlan {
+  const decoded = decodeSearchPlan(preferredPlan, fallbackSearchStrategyId);
+  if (!decoded.ok) return { mode: "all_selected", optionIds: [] };
+  return reconcileSearchPlanSelection(decoded.plan.optionIds, decoded.plan.mode, strategies);
+}
+
 function resolveModelControlDefaults(
   model: CatalogModel,
   controlValues?: Record<string, unknown>
@@ -190,6 +200,7 @@ export {
   modelControlKey,
   resolveModelControlDefaults,
   resolveModelSearchPlan,
+  resolvePreferredSearchPlan,
   resolveModelSearchStrategy,
   savedControlDraft
 };

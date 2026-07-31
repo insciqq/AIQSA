@@ -9,7 +9,15 @@ import { AdminSearchServiceError } from "./service";
 
 type SearchService = Parameters<typeof createAdminSearchCatalogHandler>[0]["service"];
 
-const emptyCatalog = { integrations: [], providerModels: [] };
+const emptyCatalog = {
+  integrations: [],
+  policy: {
+    defaultPlan: { mode: "all_selected" as const, optionIds: [] },
+    updatedAt: "2026-07-29T12:00:00.000Z",
+    version: 1
+  },
+  providerModels: []
+};
 
 function auth(role = "admin", status = "active"): AuthenticatedSession {
   return {
@@ -39,6 +47,7 @@ function service(overrides: Partial<SearchService> = {}): SearchService {
     setEnabled: vi.fn(async () => undefined),
     testDraft: vi.fn(async () => undefined),
     updateDraft: vi.fn(async () => undefined),
+    updatePolicy: vi.fn(async () => undefined),
     ...overrides
   };
 }
@@ -115,6 +124,31 @@ describe("admin Search HTTP handlers", () => {
     });
     expect(tested.status).toBe(200);
     expect(testDraft).toHaveBeenCalledWith({ id: "integration-1", userId: "admin-1" });
+  });
+
+  it("passes a version-fenced installation recommendation with admin attribution", async () => {
+    const updatePolicy = vi.fn(async () => undefined);
+    const handlers = createAdminSearchCatalogHandler({
+      resolveAuth: resolver(auth()),
+      service: service({ updatePolicy })
+    });
+    const response = await handlers.PATCH(jsonRequest("/api/admin/search", {
+      defaultPlan: {
+        mode: "model_choice",
+        optionIds: ["company-search"]
+      },
+      expectedVersion: 4
+    }, "PATCH"));
+
+    expect(response.status).toBe(200);
+    expect(updatePolicy).toHaveBeenCalledWith({
+      defaultPlan: {
+        mode: "model_choice",
+        optionIds: ["company-search"]
+      },
+      expectedVersion: 4,
+      userId: "admin-1"
+    });
   });
 
   it("requires explicit archive confirmation and maps lifecycle conflicts", async () => {

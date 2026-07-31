@@ -41,11 +41,6 @@ function serializeSettings(settings: {
 }): UserSettingsRecord {
   const defaultProviderConnectionId = settings.defaultProviderModel?.connectionId ?? null;
   const defaultProviderModelId = settings.defaultProviderModel?.id ?? null;
-  const decodedSearchPlan = decodeSearchPlan(
-    settings.defaultSearchPlan,
-    settings.defaultSearchStrategyId
-  );
-
   return {
     defaultControlValues: settings.defaultControlValues,
     defaultModelId: defaultProviderModelId ?? "",
@@ -54,9 +49,7 @@ function serializeSettings(settings: {
     defaultPromptPresetId: settings.defaultPromptPresetId,
     defaultProvider: defaultProviderConnectionId ?? "",
     defaultSearchStrategyId: settings.defaultSearchStrategyId,
-    defaultSearchPlan: decodedSearchPlan.ok
-      ? decodedSearchPlan.plan
-      : { mode: "all_selected", optionIds: [] },
+    defaultSearchPlan: settings.defaultSearchPlan,
     showCitations: settings.showCitations,
     showReasoningBlocks: settings.showReasoningBlocks,
     showToolActivity: settings.showToolActivity
@@ -68,19 +61,22 @@ function settingsUpdateData(
   currentControlValues: unknown
 ): Prisma.UserSettingsUpdateInput {
   const { defaultControlValues, defaultProviderModelId, defaultSearchPlan, ...rest } = update;
-  const normalizedSearchPlan = defaultSearchPlan ?? (
-    update.defaultSearchStrategyId !== undefined
+  const updatesSearchPlan = Object.prototype.hasOwnProperty.call(update, "defaultSearchPlan");
+  const normalizedSearchPlan = updatesSearchPlan
+    ? defaultSearchPlan
+    : update.defaultSearchStrategyId !== undefined
       ? {
           mode: "all_selected" as const,
           optionIds: update.defaultSearchStrategyId === "search-disabled"
             ? []
             : [update.defaultSearchStrategyId]
         }
-      : undefined
-  );
+      : undefined;
   const data: Prisma.UserSettingsUpdateInput = {
     ...rest,
-    ...(normalizedSearchPlan !== undefined
+    ...(updatesSearchPlan && normalizedSearchPlan === null
+      ? { defaultSearchPlan: Prisma.DbNull }
+      : normalizedSearchPlan !== undefined
       ? { defaultSearchPlan: normalizedSearchPlan as Prisma.InputJsonObject }
       : {}),
     ...(typeof defaultProviderModelId !== "undefined"
@@ -126,30 +122,28 @@ function validDefaultSelection(
   validationModels: SettingsValidationModel[]
 ): boolean {
   const updatesModel = Object.prototype.hasOwnProperty.call(update, "defaultProviderModelId");
-  const modelId = updatesModel
-    ? update.defaultProviderModelId ?? null
-    : current.defaultProviderModelId;
-  if (!modelId) {
-    return updatesModel && !Object.prototype.hasOwnProperty.call(update, "defaultSearchStrategyId");
+  if (updatesModel && update.defaultProviderModelId !== null) {
+    const model = validationModels.find((candidate) =>
+      candidate.modelId === update.defaultProviderModelId);
+    if (!model) return false;
   }
 
   const updatesLegacySearch = Object.prototype.hasOwnProperty.call(
     update,
     "defaultSearchStrategyId"
   );
+  const updatesSearchPlan = Object.prototype.hasOwnProperty.call(update, "defaultSearchPlan");
+  if (!updatesLegacySearch && !updatesSearchPlan) return true;
+  if (updatesSearchPlan && update.defaultSearchPlan === null) return true;
   const decodedPlan = decodeSearchPlan(
-    update.defaultSearchPlan ?? (updatesLegacySearch ? undefined : current.defaultSearchPlan),
+    updatesSearchPlan ? update.defaultSearchPlan : undefined,
     update.defaultSearchStrategyId ?? current.defaultSearchStrategyId
   );
   if (!decodedPlan.ok) return false;
-  const model = validationModels.find(
-    (candidate) =>
-      candidate.modelId === modelId &&
-      (updatesModel || candidate.provider === current.defaultProviderConnectionId)
-  );
-
-  return Boolean(model && decodedPlan.plan.optionIds.every((searchStrategyId) =>
-    model.searchStrategyIds.includes(searchStrategyId)));
+  const availableSearchStrategyIds = new Set(validationModels.flatMap((model) =>
+    model.searchStrategyIds));
+  return decodedPlan.plan.optionIds.every((searchStrategyId) =>
+    availableSearchStrategyIds.has(searchStrategyId));
 }
 
 export async function applySettingsUpdateInTransaction(

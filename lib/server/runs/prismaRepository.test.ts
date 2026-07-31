@@ -258,6 +258,7 @@ function storedDefaults(userId: string) {
       defaultControlValues: true,
       defaultPromptPresetId: true,
       defaultProviderModelId: true,
+      defaultSearchPlan: true,
       defaultSearchStrategyId: true
     },
     where: {
@@ -1411,7 +1412,7 @@ describe("Prisma run repository", () => {
     });
   });
 
-  it("commits run graphs and non-prompt defaults without changing the user prompt default", async () => {
+  it("commits run graphs and preferred Search without changing the user prompt default", async () => {
     await withRunUser(async ({ userId }) => {
       const first = await prisma.promptPreset.create({
         data: {
@@ -1459,7 +1460,11 @@ describe("Prisma run repository", () => {
           controlDefaults: {
             temperature: "0.2"
           },
-          promptPresetId: second.id
+          promptPresetId: second.id,
+          searchPreferencePlan: {
+            mode: "model_choice",
+            optionIds: ["company-search", "secondary-search"]
+          }
         },
         question: "Atomic defaults",
         userId
@@ -1482,7 +1487,12 @@ describe("Prisma run repository", () => {
             temperature: "0.4"
           }
         },
-        defaultPromptPresetId: first.id
+        defaultPromptPresetId: first.id,
+        defaultSearchPlan: {
+          mode: "model_choice",
+          optionIds: ["company-search", "secondary-search"]
+        },
+        defaultSearchStrategyId: "company-search"
       });
       expect(afterSendChat).toEqual({
         _count: {
@@ -1552,7 +1562,12 @@ describe("Prisma run repository", () => {
             temperature: "0.4"
           }
         },
-        defaultPromptPresetId: first.id
+        defaultPromptPresetId: first.id,
+        defaultSearchPlan: {
+          mode: "model_choice",
+          optionIds: ["company-search", "secondary-search"]
+        },
+        defaultSearchStrategyId: "company-search"
       });
       expect(afterRegenerationChat).toEqual({
         _count: {

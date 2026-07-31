@@ -161,6 +161,7 @@ export type ShellComposerActions = {
 export type ShellComposerView = {
   attachments: ComposerAttachment[];
   backgroundMode: boolean;
+  compatibleSearchOptionIds: string[];
   catalog: Catalog | null;
   catalogError: string | null;
   changeBackgroundMode(value: boolean): void;
@@ -185,6 +186,7 @@ export type ShellComposerView = {
   reasoningMode: string;
   retryCatalog(): void;
   searchOptions: CatalogSearchStrategy[];
+  searchPreferenceSource: "organization" | "personal";
   searchPlanMode: SearchPlanMode;
   selectModel(model: CatalogModel): void;
   selectPrompt(promptId: string): void;
@@ -208,6 +210,7 @@ export type ShellComposerView = {
   toggleNotificationSound(): void;
   toggleReasoningBlockVisibility(): void;
   toggleToolActivityVisibility(): void;
+  useOrganizationSearchDefault(): void;
   uploadFiles(files: FileList | readonly File[]): Promise<void> | void;
   uploading: boolean;
 };

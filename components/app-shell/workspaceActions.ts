@@ -23,7 +23,7 @@ import { visibleMessagePath } from "@/components/app-shell/threadPath";
 import {
   chatDetailBodyFromUnknown,
   chatUpdateFromEvent,
-  resolveModelSearchPlan
+  resolvePreferredSearchPlan
 } from "@/components/app-shell/powerAppShellData";
 import type { SearchPlanMode } from "@/lib/domain/search";
 import {
@@ -253,8 +253,7 @@ export function useWorkspaceActions({
 
     setSelectedProvider(model?.provider ?? chat.defaultProvider);
     setSelectedModelId(model?.modelId ?? chat.defaultModelId);
-    const searchPlan = resolveModelSearchPlan(
-      model,
+    const searchPlan = resolvePreferredSearchPlan(
       catalogOverride?.defaults.searchPlan,
       catalogOverride?.defaults.searchStrategyId,
       catalogOverride?.searchStrategies

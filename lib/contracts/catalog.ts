@@ -116,10 +116,12 @@ export type PromptPreset = {
 export type CatalogDefaults = {
   controlValues: Record<string, unknown>;
   modelId: string;
+  organizationSearchPlan?: SearchPlan;
   promptPresetId: string | null;
   provider: string;
   searchStrategyId: string;
   searchPlan?: SearchPlan;
+  searchPreferenceSource?: "organization" | "personal";
   showCitations: boolean;
   showReasoningBlocks: boolean;
   showToolActivity: boolean;
@@ -437,6 +439,7 @@ export function decodeCatalogResponse(value: unknown): Catalog | null {
   const decodedSearchPlan = defaults.searchPlan === undefined
     ? null
     : decodeSearchPlan(defaults.searchPlan, defaults.searchStrategyId);
+  const decodedOrganizationSearchPlan = decodeSearchPlan(defaults.organizationSearchPlan);
   const runProfileIds = new Set(
     runProfiles.flatMap((profile) => profile ? [profile.id] : [])
   );
@@ -447,7 +450,9 @@ export function decodeCatalogResponse(value: unknown): Catalog | null {
     runProfiles.some((profile) => profile === null) ||
     runProfileIds.size !== runProfiles.length ||
     searchStrategies.some((strategy) => strategy === null) ||
-    (defaults.searchPlan !== undefined && !decodedSearchPlan?.ok)
+    (defaults.searchPlan !== undefined && !decodedSearchPlan?.ok) ||
+    !decodedOrganizationSearchPlan.ok ||
+    (defaults.searchPreferenceSource !== "organization" && defaults.searchPreferenceSource !== "personal")
   ) {
     return null;
   }
@@ -456,10 +461,12 @@ export function decodeCatalogResponse(value: unknown): Catalog | null {
     defaults: {
       controlValues: defaults.controlValues,
       modelId: defaults.modelId,
+      organizationSearchPlan: decodedOrganizationSearchPlan.plan,
       promptPresetId: defaults.promptPresetId,
       provider: defaults.provider,
       searchStrategyId: defaults.searchStrategyId,
       ...(decodedSearchPlan?.ok ? { searchPlan: decodedSearchPlan.plan } : {}),
+      searchPreferenceSource: defaults.searchPreferenceSource,
       showCitations: defaults.showCitations,
       showReasoningBlocks: defaults.showReasoningBlocks,
       showToolActivity: defaults.showToolActivity

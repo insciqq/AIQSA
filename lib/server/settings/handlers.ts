@@ -5,6 +5,7 @@ import { decodeSearchPlan, legacySearchStrategyFromPlan, type SearchPlan } from 
 import { isSearchCombinationCompatible } from "../../domain/catalogMatrix";
 import {
   resolveCurrentUserCatalogSelection,
+  resolveSearchPreference,
   type CatalogSelectionData,
   type CatalogSettingsRecord
 } from "../catalog/currentUserCatalog";
@@ -17,6 +18,7 @@ export type PromptPresetSettingsRecord = {
 
 export type SettingsHandlerData = CatalogSelectionData & {
   promptPresets: PromptPresetSettingsRecord[];
+  searchPolicy?: { defaultPlan: unknown } | null;
 };
 
 export type UserSettingsUpdate = Partial<{
@@ -24,7 +26,7 @@ export type UserSettingsUpdate = Partial<{
   defaultProviderModelId: string | null;
   defaultPromptPresetId: string | null;
   defaultSearchStrategyId: string;
-  defaultSearchPlan: SearchPlan;
+  defaultSearchPlan: SearchPlan | null;
   showCitations: boolean;
   showReasoningBlocks: boolean;
   showToolActivity: boolean;
@@ -132,13 +134,6 @@ function sanitizeControlDraft(
     next.reasoningMode = input.reasoningMode;
   }
 
-  if (typeof input.searchStrategyId === "string") {
-    const searchStrategyId = input.searchStrategyId.trim();
-    if (model.searchStrategyIds.includes(searchStrategyId)) {
-      next.searchStrategyId = searchStrategyId;
-    }
-  }
-
   if (typeof input.streamMode === "boolean" && controls.stream.supported) {
     next.streamMode = input.streamMode;
   }
@@ -216,12 +211,13 @@ function buildSettingsUpdate(
   }
 
   if ("defaultSearchStrategyId" in body) {
-    if (typeof body.defaultSearchStrategyId !== "string" || !defaultModel) {
+    if (typeof body.defaultSearchStrategyId !== "string") {
       return { error: "default_search_unavailable" };
     }
 
     const strategyId = body.defaultSearchStrategyId.trim();
-    if (!defaultModel.searchStrategyIds.includes(strategyId)) {
+    if (strategyId !== "search-disabled" &&
+      !data.searchStrategies.some((strategy) => strategy.strategyId === strategyId)) {
       return { error: "default_search_unavailable" };
     }
 
@@ -235,19 +231,22 @@ function buildSettingsUpdate(
   }
 
   if ("defaultSearchPlan" in body) {
-    if (!defaultModel) return { error: "default_search_unavailable" };
-    const decoded = decodeSearchPlan(body.defaultSearchPlan);
-    if (!decoded.ok || decoded.plan.optionIds.some((strategyId) =>
-      !defaultModel?.searchStrategyIds.includes(strategyId)) ||
-      (decoded.ok && !isSearchCombinationCompatible(
-        decoded.plan.optionIds,
-        data.searchStrategies,
-        decoded.plan.mode
-      ))) {
-      return { error: "default_search_unavailable" };
+    if (body.defaultSearchPlan === null) {
+      update.defaultSearchPlan = null;
+    } else {
+      const decoded = decodeSearchPlan(body.defaultSearchPlan);
+      if (!decoded.ok || decoded.plan.optionIds.some((strategyId) =>
+        !data.searchStrategies.some((strategy) => strategy.strategyId === strategyId)) ||
+        !isSearchCombinationCompatible(
+          decoded.plan.optionIds,
+          data.searchStrategies,
+          decoded.plan.mode
+        )) {
+        return { error: "default_search_unavailable" };
+      }
+      update.defaultSearchPlan = decoded.plan;
+      update.defaultSearchStrategyId = legacySearchStrategyFromPlan(decoded.plan);
     }
-    update.defaultSearchPlan = decoded.plan;
-    update.defaultSearchStrategyId = legacySearchStrategyFromPlan(decoded.plan);
   }
 
   if ("defaultPromptPresetId" in body) {
@@ -292,18 +291,25 @@ function buildSettingsUpdate(
     : { error: "settings_update_required" };
 }
 
-function serializeSettings(settings: UserSettingsRecord): UserSettingsWire {
-  const decodedSearchPlan = decodeSearchPlan(
-    settings.defaultSearchPlan,
-    settings.defaultSearchStrategyId
-  );
+function serializeSettings(
+  settings: UserSettingsRecord,
+  data: SettingsHandlerData
+): UserSettingsWire {
+  const selection = resolveCurrentUserCatalogSelection(data);
+  const searchPreference = resolveSearchPreference({
+    organizationPlan: data.searchPolicy?.defaultPlan,
+    settings,
+    strategies: selection.entitledStrategies
+  });
   return {
     defaultControlValues: isRecord(settings.defaultControlValues) ? settings.defaultControlValues : {},
     defaultModelId: settings.defaultModelId,
     defaultPromptPresetId: settings.defaultPromptPresetId,
     defaultProvider: settings.defaultProvider,
     defaultSearchStrategyId: settings.defaultSearchStrategyId,
-    ...(decodedSearchPlan.ok ? { defaultSearchPlan: decodedSearchPlan.plan } : {}),
+    defaultSearchPlan: searchPreference.preferredPlan,
+    organizationSearchPlan: searchPreference.organizationPlan,
+    searchPreferenceSource: searchPreference.source,
     showCitations: settings.showCitations,
     showReasoningBlocks: settings.showReasoningBlocks,
     showToolActivity: settings.showToolActivity
@@ -341,7 +347,7 @@ export function createUpdateSettingsHandler(deps: SettingsHandlerDeps) {
     }
 
     return Response.json({
-      settings: serializeSettings(persistence.settings)
+      settings: serializeSettings(persistence.settings, data)
     });
   };
 }

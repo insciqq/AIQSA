@@ -5,6 +5,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const TARGET_MIGRATION = "20260729113000_search_control_plane";
+const PREFERENCE_MIGRATION = "20260731183000_inherited_search_preferences";
 const POSTGRES_SERVICE = "postgres";
 const POSTGRES_USER = "aiqsa";
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -64,6 +65,19 @@ function applyPreTargetMigrations(): void {
   assert(migrations.length > 0, "expected migrations before Search control-plane migration");
   for (const migration of migrations) {
     requireSuccess(psql(migrationSql(migration)), `apply pre-target migration ${migration}`);
+  }
+}
+
+function applyThroughPreferenceMigration(): void {
+  const migrations = readdirSync(migrationsRoot, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory() && entry.name > TARGET_MIGRATION &&
+      entry.name <= PREFERENCE_MIGRATION)
+    .map((entry) => entry.name)
+    .sort();
+  assert(migrations.some((migration) => migration === PREFERENCE_MIGRATION),
+    "expected inherited Search preference migration");
+  for (const migration of migrations) {
+    requireSuccess(psql(migrationSql(migration)), `apply post-Search migration ${migration}`);
   }
 }
 
@@ -180,6 +194,45 @@ try {
     FROM pg_constraint
     WHERE conname = 'SearchStrategy_provider_model_check';
   `), /provider_model_web_search/);
+
+  applyThroughPreferenceMigration();
+  assert.equal(scalar(`
+    SELECT "defaultSearchPlan"::text
+    FROM "UserSettings" WHERE "id" = 'search-contract-settings';
+  `), '{"mode": "all_selected", "optionIds": ["openai-native-web-search"]}');
+  assert.equal(scalar(`
+    SELECT concat_ws('|', "id", "defaultPlan"::text, "version")
+    FROM "SearchPolicy" WHERE "id" = 'installation';
+  `), 'installation|{"mode": "all_selected", "optionIds": []}|1');
+  assert.match(scalar(`
+    SELECT pg_get_constraintdef(oid)
+    FROM pg_constraint
+    WHERE conname = 'SearchPolicy_singleton_check';
+  `), /id.*installation/);
+  assert.equal(scalar(`
+    SELECT concat_ws('|', is_nullable, COALESCE(column_default, 'NULL'))
+    FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'UserSettings'
+      AND column_name = 'defaultSearchPlan';
+  `), "YES|NULL");
+  requireSuccess(psql(`
+    INSERT INTO "User" (
+      "id", "email", "displayName", "role", "status", "createdAt", "updatedAt"
+    ) VALUES (
+      'search-contract-inheriting-user', 'search-inherit@example.test',
+      'Search inheriting user', 'user', 'active', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+    );
+    INSERT INTO "UserSettings" (
+      "id", "userId", "defaultSearchStrategyId", "defaultControlValues", "updatedAt"
+    ) VALUES (
+      'search-contract-inheriting-settings', 'search-contract-inheriting-user',
+      'search-disabled', '{}'::jsonb, CURRENT_TIMESTAMP
+    );
+  `), "insert inheriting Search preference fixture");
+  assert.equal(scalar(`
+    SELECT ("defaultSearchPlan" IS NULL)::text
+    FROM "UserSettings" WHERE "id" = 'search-contract-inheriting-settings';
+  `), "true");
 
   requireSuccess(psql(`
     INSERT INTO "ProviderRunBinding" (

@@ -10,6 +10,7 @@ import type {
   AdminProviderDraftCheck,
   AdminProviderModelConfiguration
 } from "../../lib/contracts/adminProviders";
+import type { AdminSearchCatalog } from "../../lib/contracts/adminSearch";
 import type { AdminRunProfileCatalog } from "../../lib/contracts/runProfiles";
 import { adminProviderQuickSetupPolicy } from "../../lib/server/admin/providers/quickSetupPolicy";
 import { DEFAULT_BOOTSTRAP_USER_ID } from "../../lib/server/auth/config";
@@ -1950,6 +1951,96 @@ test("administrator remaps the three composer run profiles in one save", async (
   await expect.poll(() => providerCatalogRequests).toBe(1);
   await section.getByRole("tab", { name: "Run profiles" }).click();
   await expect(section.getByLabel("Fast description")).toHaveValue("Quick factual questions");
+});
+
+test("administrator saves a versioned Search recommendation that grants no access", async ({ page }) => {
+  let search: AdminSearchCatalog = {
+    integrations: [{
+      activeRevision: {
+        activatedAt: now,
+        id: "search-revision-1",
+        revisionNumber: 1
+      },
+      adapterKind: "provider_model_client",
+      archivedAt: null,
+      credentialMode: "provider_model",
+      description: "Query-only web evidence",
+      displayName: "Company Search",
+      draft: {
+        adapterKind: "provider_model_client",
+        credentialMode: "provider_model",
+        maxResults: 8,
+        protocol: "openai_responses_web_search",
+        providerModelId: "technical-search-1",
+        queryMaxCharacters: 500,
+        timeoutMs: 300_000
+      },
+      draftDirty: false,
+      draftTestEvidence: {
+        checkedAt: now,
+        method: "provider_search",
+        normalizedSourceCount: 2,
+        protocol: "openai_responses_web_search",
+        status: "available"
+      },
+      draftVersion: 1,
+      enabled: true,
+      executionModes: ["all_selected", "model_choice"],
+      id: "search-integration-1",
+      providerModel: {
+        connectionDisplayName: "Compatible gateway",
+        displayName: "Search model",
+        id: "technical-search-1",
+        upstreamModelId: "opaque-search-model"
+      },
+      ready: true,
+      readiness: "ready",
+      strategyId: "company-search-12345678",
+      system: false
+    }],
+    policy: {
+      defaultPlan: { mode: "all_selected", optionIds: [] },
+      updatedAt: now,
+      version: 4
+    },
+    providerModels: []
+  };
+  let submitted: Record<string, unknown> | null = null;
+
+  await page.route("**/api/admin/search", async (route) => {
+    if (route.request().method() === "PATCH") {
+      submitted = JSON.parse(route.request().postData() ?? "{}") as Record<string, unknown>;
+      search = {
+        ...search,
+        policy: {
+          defaultPlan: submitted.defaultPlan as AdminSearchCatalog["policy"]["defaultPlan"],
+          updatedAt: now,
+          version: 5
+        }
+      };
+    }
+    await route.fulfill({ contentType: "application/json", json: { search } });
+  });
+
+  await page.setViewportSize({ height: 800, width: 1280 });
+  await signInWithLocalToken(page);
+  await page.goto("/admin");
+  await page.getByTestId("admin-tab-search").click();
+  const section = page.getByTestId("admin-search-section");
+  const policy = section.getByRole("region", { name: "Recommended Search plan" });
+  await expect(policy).toContainText("Recommendation only; it never grants Search access.");
+  await policy.getByRole("button", { name: "Company Search" }).click();
+  await policy.getByRole("button", { name: "Save default" }).click();
+
+  await expect(section.getByText("Organization Search default saved.")).toBeVisible();
+  expect(submitted).toEqual({
+    defaultPlan: {
+      mode: "all_selected",
+      optionIds: ["company-search-12345678"]
+    },
+    expectedVersion: 4
+  });
+  await expect(policy.getByRole("button", { name: "Save default" })).toBeDisabled();
 });
 
 test("ordinary user receives real provider-admin denial without provider metadata", async ({ page }) => {

@@ -28,6 +28,8 @@ import type { SavedControlDraft } from "@/components/app-shell/powerAppShellData
 import type { RunStreamTokenBuffer } from "@/components/app-shell/useRunStream";
 import { useWorkspaceStore } from "@/components/app-shell/workspaceStore";
 import { renderLocalPromptTemplate } from "@/lib/domain/promptTemplates";
+import { reconcileSearchPlanSelection } from "@/lib/domain/catalogMatrix";
+import type { SearchPlanMode } from "@/lib/domain/search";
 
 type MutableRef<T> = { current: T };
 
@@ -64,6 +66,21 @@ type MessageRunActionsInput = {
 
 function toolsOverride(model: CatalogModel | undefined): { tools: "none" } | Record<string, never> {
   return model && !model.capabilities.toolCalling ? { tools: "none" } : {};
+}
+
+function effectiveSearchSelection(
+  model: CatalogModel | undefined,
+  optionIds: readonly string[],
+  mode: SearchPlanMode
+) {
+  const catalog = useWorkspaceStore.getState().catalog;
+  if (!model || !catalog) return { mode: "all_selected" as const, optionIds: [] };
+  const compatibleIds = new Set(model.searchStrategyIds);
+  return reconcileSearchPlanSelection(
+    optionIds.filter((optionId) => compatibleIds.has(optionId)),
+    mode,
+    catalog.searchStrategies
+  );
 }
 
 export function useMessageRunActions({
@@ -121,9 +138,14 @@ export function useMessageRunActions({
       selectedProvider,
       selectedSearchOptionIds,
       searchPlanMode,
-      selectedSearchStrategy,
       systemPrompt
     } = useComposerControlStore.getState();
+    const effectiveSearchPlan = effectiveSearchSelection(
+      currentModel,
+      selectedSearchOptionIds,
+      searchPlanMode
+    );
+    const searchPreferenceSource = useWorkspaceStore.getState().catalog?.defaults.searchPreferenceSource;
     const assistantId = `assistant-${Date.now()}`;
     const assistantMessage: ThreadMessage = {
       content: "",
@@ -185,10 +207,16 @@ export function useMessageRunActions({
             },
             provider: selectedProvider,
             searchPlan: {
-              mode: searchPlanMode,
-              optionIds: selectedSearchOptionIds
+              mode: effectiveSearchPlan.mode,
+              optionIds: effectiveSearchPlan.optionIds
             },
-            searchStrategy: selectedSearchStrategy,
+            ...(searchPreferenceSource
+              ? {
+                  searchPreferencePlan: { mode: searchPlanMode, optionIds: selectedSearchOptionIds },
+                  searchPreferenceSource
+                }
+              : {}),
+            searchStrategy: effectiveSearchPlan.optionIds[0] ?? "search-disabled",
             ...toolsOverride(currentModel)
           }),
           headers: {
@@ -339,7 +367,6 @@ export function useMessageRunActions({
       selectedProvider,
       selectedSearchOptionIds,
       searchPlanMode,
-      selectedSearchStrategy,
       systemPrompt
     } = useComposerControlStore.getState();
     if (
@@ -351,6 +378,12 @@ export function useMessageRunActions({
     }
     const controlDefaultsForSend = buildControlDraft();
     const paramsForSend = buildParams();
+    const effectiveSearchPlan = effectiveSearchSelection(
+      currentModel,
+      selectedSearchOptionIds,
+      searchPlanMode
+    );
+    const searchPreferenceSource = useWorkspaceStore.getState().catalog?.defaults.searchPreferenceSource;
     const sourceComposerChatId = chatIdFromComposerSessionKey(sourceSessionKey);
     const startedFromBlankWorkspace = sourceComposerChatId === null;
     if (sourceComposerChatId !== activeChatId) {
@@ -521,10 +554,16 @@ export function useMessageRunActions({
               },
               provider: selectedProvider,
               searchPlan: {
-                mode: searchPlanMode,
-                optionIds: selectedSearchOptionIds
+                mode: effectiveSearchPlan.mode,
+                optionIds: effectiveSearchPlan.optionIds
               },
-              searchStrategy: selectedSearchStrategy,
+              ...(searchPreferenceSource
+                ? {
+                    searchPreferencePlan: { mode: searchPlanMode, optionIds: selectedSearchOptionIds },
+                    searchPreferenceSource
+                  }
+                : {}),
+              searchStrategy: effectiveSearchPlan.optionIds[0] ?? "search-disabled",
               ...toolsOverride(currentModel)
             }),
             headers: {
@@ -575,9 +614,14 @@ export function useMessageRunActions({
       selectedProvider,
       selectedSearchOptionIds,
       searchPlanMode,
-      selectedSearchStrategy,
       systemPrompt
     } = useComposerControlStore.getState();
+    const effectiveSearchPlan = effectiveSearchSelection(
+      currentModel,
+      selectedSearchOptionIds,
+      searchPlanMode
+    );
+    const searchPreferenceSource = useWorkspaceStore.getState().catalog?.defaults.searchPreferenceSource;
     const chatIdForRegenerate = activeChatId;
     if (!chatIdForRegenerate) {
       return;
@@ -665,10 +709,16 @@ export function useMessageRunActions({
             },
             provider: selectedProvider,
             searchPlan: {
-              mode: searchPlanMode,
-              optionIds: selectedSearchOptionIds
+              mode: effectiveSearchPlan.mode,
+              optionIds: effectiveSearchPlan.optionIds
             },
-            searchStrategy: selectedSearchStrategy,
+            ...(searchPreferenceSource
+              ? {
+                  searchPreferencePlan: { mode: searchPlanMode, optionIds: selectedSearchOptionIds },
+                  searchPreferenceSource
+                }
+              : {}),
+            searchStrategy: effectiveSearchPlan.optionIds[0] ?? "search-disabled",
             ...toolsOverride(currentModel)
           }),
           headers: {

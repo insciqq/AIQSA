@@ -54,6 +54,7 @@ Every ADR also declares `Amends: none` or a comma-separated list of earlier ADR 
 - `0043-admin-managed-multi-engine-search-plans.md` - creates a separate administrator Search control plane, typed replaceable engine adapters, entitlement-safe user options, and bounded multi-engine plans with fan-out or model-choice orchestration.
 - `0044-explicit-answer-selectable-provider-models.md` - gives provider deployments an explicit backward-compatible answer-selection property so dedicated Search runtimes stay available to Search while remaining absent from answer catalogs, grants, profiles, and admission.
 - `0045-bounded-compatible-reasoning-request-mapping.md` - adds strict effort and optional mode field mappings to compatible Chat/Responses models, preserves OpenAI defaults, and exposes modes only when the adapter can serialize them.
+- `0046-inherited-search-preferences-and-model-scoped-reasoning.md` - adds a versioned non-granting installation Search recommendation, preserves explicit personal plans and Off separately from inherited state, derives model-compatible execution without destructive saves, and exposes the same per-model Reasoning tuple directly only when the composer has room.
 
 ## Superseded ADRs
 

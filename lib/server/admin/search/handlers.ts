@@ -43,6 +43,7 @@ function serviceError(error: AdminSearchServiceError): Response {
   const status = error.code === "search_integration_not_found"
     ? 404
     : error.code === "search_draft_stale" ||
+        error.code === "search_policy_stale" ||
         error.code === "search_activation_evidence_missing" ||
         error.code === "search_integration_material_identity_changed"
       ? 409
@@ -99,6 +100,26 @@ export function createAdminSearchCatalogHandler(input: Readonly<{
           draft: value.draft
         });
         return catalog(input.service, 201);
+      });
+    },
+    async PATCH(request: Request) {
+      if (!hasJsonContentType(request)) {
+        return Response.json({ error: "json_required" }, { status: 415 });
+      }
+      const auth = await requireAdmin(request, input.resolveAuth);
+      if (auth.error || !auth.session) return auth.error!;
+      const value = await body(request);
+      if (!value || !Number.isSafeInteger(value.expectedVersion) ||
+        !isRecord(value.defaultPlan)) {
+        return Response.json({ error: "search_configuration_invalid" }, { status: 400 });
+      }
+      return safely(async () => {
+        await input.service.updatePolicy({
+          defaultPlan: value.defaultPlan,
+          expectedVersion: Number(value.expectedVersion),
+          userId: auth.session!.userId
+        });
+        return catalog(input.service);
       });
     }
   };

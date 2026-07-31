@@ -11,9 +11,11 @@ function validResponse(): CatalogResponse {
       defaults: {
         controlValues: {},
         modelId: "deployment-test",
+        organizationSearchPlan: { mode: "all_selected", optionIds: [] },
         promptPresetId: "prompt-1",
         provider: "connection-test",
         searchStrategyId: "search-disabled",
+        searchPreferenceSource: "personal",
         showCitations: true,
         showReasoningBlocks: false,
         showToolActivity: true,

@@ -129,8 +129,11 @@ export const matrixCatalog = {
   defaults: {
     controlValues: {},
     modelId: "gpt-5.5",
+    organizationSearchPlan: { mode: "all_selected", optionIds: [] },
     promptPresetId: "prompt-helpful",
     provider: "openai",
+    searchPlan: { mode: "all_selected", optionIds: [] },
+    searchPreferenceSource: "personal",
     searchStrategyId: "search-disabled",
     showCitations: true,
     showReasoningBlocks: false,

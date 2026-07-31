@@ -7,7 +7,12 @@ import type { SettingsMutationCoordinator } from "./settingsMutationCoordinator"
 import { useEventCallback } from "./useEventCallback";
 import { resetComposerControlStoreForTest, useComposerControlStore } from "./composerControlStore";
 import type { Catalog, CatalogModel, ChatSummary } from "./types";
-import { resolveModelSearchStrategy, type SavedControlDraft } from "./powerAppShellData";
+import {
+  resolveModelSearchPlan,
+  resolveModelSearchStrategy,
+  type SavedControlDraft
+} from "./powerAppShellData";
+import { useWorkspaceStore } from "./workspaceStore";
 
 const model: CatalogModel = {
   capabilities: {
@@ -154,9 +159,11 @@ function catalog(
     defaults: {
       controlValues,
       modelId: model.modelId,
+      organizationSearchPlan: { mode: "all_selected", optionIds: [] },
       promptPresetId: null,
       provider: model.provider,
       searchStrategyId: "openai-native-web-search",
+      searchPreferenceSource: "personal",
       showCitations: true,
       showReasoningBlocks: false,
       showToolActivity: true,
@@ -227,9 +234,12 @@ function settingsFetchMock() {
   const saved = {
     defaultControlValues: {} as Record<string, unknown>,
     defaultModelId: model.modelId,
+    defaultSearchPlan: { mode: "all_selected", optionIds: ["openai-native-web-search"] },
+    organizationSearchPlan: { mode: "all_selected", optionIds: [] },
     defaultPromptPresetId: null as string | null,
     defaultProvider: model.provider,
     defaultSearchStrategyId: "openai-native-web-search",
+    searchPreferenceSource: "personal" as const,
     showCitations: true,
     showReasoningBlocks: false,
     showToolActivity: true,
@@ -248,6 +258,13 @@ function settingsFetchMock() {
     }
     if (typeof body.defaultSearchStrategyId === "string") {
       saved.defaultSearchStrategyId = body.defaultSearchStrategyId;
+    }
+    if (body.defaultSearchPlan === null) {
+      saved.defaultSearchPlan = saved.organizationSearchPlan;
+      saved.searchPreferenceSource = "organization";
+    } else if (body.defaultSearchPlan && typeof body.defaultSearchPlan === "object") {
+      saved.defaultSearchPlan = body.defaultSearchPlan as typeof saved.defaultSearchPlan;
+      saved.searchPreferenceSource = "personal";
     }
     if (typeof body.showCitations === "boolean") {
       saved.showCitations = body.showCitations;
@@ -272,6 +289,7 @@ function createRunControlsHarness(
 ) {
   resetComposerControlStoreForTest();
   let currentCatalog = initialCatalog;
+  useWorkspaceStore.getState().setCatalog(initialCatalog);
   const pendingControlDefaultsRef = { current: null as { draft: SavedControlDraft; model: CatalogModel } | null };
   const pendingControlDefaultsTimerRef = { current: null as number | null };
   const settingsMutationCoordinatorRef = { current: null as SettingsMutationCoordinator | null };
@@ -285,6 +303,7 @@ function createRunControlsHarness(
       settingsMutationCoordinatorRef,
       setCatalog(update) {
         currentCatalog = update(currentCatalog) ?? currentCatalog;
+        useWorkspaceStore.getState().setCatalog(currentCatalog);
       },
       setNotice: vi.fn(),
       setSettingsNotice: vi.fn()
@@ -461,7 +480,6 @@ describe("control default freshness", () => {
       backgroundMode: false,
       maxOutputTokens: "96",
       reasoningEffort: "high",
-      searchStrategyId: "openai-native-web-search",
       streamMode: false,
       temperature: "0.2"
     });
@@ -471,7 +489,6 @@ describe("control default freshness", () => {
         backgroundMode: false,
         maxOutputTokens: "96",
         reasoningEffort: "high",
-        searchStrategyId: "openai-native-web-search",
         streamMode: false,
         temperature: "0.2"
       }
@@ -494,7 +511,6 @@ describe("control default freshness", () => {
         backgroundMode: true,
         maxOutputTokens: "128000",
         reasoningEffort: "medium",
-        searchStrategyId: "openai-native-web-search",
         streamMode: true,
         temperature: "1"
       }
@@ -726,21 +742,92 @@ describe("control default freshness", () => {
           maxOutputTokens: "64000",
           reasoningEffort: "max",
           reasoningMode: "pro",
-          searchStrategyId: "openai-native-web-search",
           streamMode: true,
           temperature: "0.4"
         }
       },
       defaultModelId: "gpt-5.6-sol",
-      defaultProvider: "openai",
-      defaultSearchPlan: {
-        mode: "all_selected",
-        optionIds: ["openai-native-web-search"]
-      }
+      defaultProvider: "openai"
     });
     expect(Object.keys(jsonBodies(fetchMock)[0]?.defaultControlValues as Record<string, unknown>)).toEqual([
       "openai:gpt-5.6-sol"
     ]);
+  });
+
+  it("restores each model's exact Reasoning tuple after A to B to A switching", () => {
+    vi.stubGlobal("fetch", settingsFetchMock());
+    const initialCatalog = catalog({
+      "openai:gpt-5.6-sol": { reasoningEffort: "max", reasoningMode: "pro" },
+      "openai:gpt-5.6-terra": { reasoningEffort: "low", reasoningMode: "standard" }
+    }, [gpt56Model, gpt56TerraModel]);
+    const harness = createRunControlsHarness(gpt56Model, initialCatalog);
+
+    harness.actions().selectModel(gpt56Model);
+    expect(useComposerControlStore.getState()).toMatchObject({
+      reasoningEffort: "max",
+      reasoningMode: "pro"
+    });
+    harness.actions().selectModel(gpt56TerraModel);
+    expect(useComposerControlStore.getState()).toMatchObject({
+      reasoningEffort: "low",
+      reasoningMode: "standard"
+    });
+    harness.actions().changeReasoningEffort("high");
+    harness.actions().selectModel(gpt56Model);
+    expect(useComposerControlStore.getState()).toMatchObject({
+      reasoningEffort: "max",
+      reasoningMode: "pro"
+    });
+  });
+
+  it("retains a global multi-engine Search preference across incompatible model switches", () => {
+    const fetchMock = settingsFetchMock();
+    vi.stubGlobal("fetch", fetchMock);
+    const multiSearchModel = {
+      ...model,
+      searchStrategyIds: ["search-disabled", "openai-native-web-search", "perplexity-tool-search"]
+    };
+    const initialCatalog = {
+      ...catalog({}, [multiSearchModel, fakeModel]),
+      searchStrategies: [
+        ...catalog().searchStrategies,
+        {
+          adapterKind: "provider_model_client" as const,
+          displayName: "Perplexity tool",
+          executionModes: ["all_selected" as const, "model_choice" as const],
+          kind: "perplexity_tool_search" as const,
+          protocol: "openrouter_perplexity_chat" as const,
+          strategyId: "perplexity-tool-search"
+        }
+      ]
+    };
+    const harness = createRunControlsHarness(multiSearchModel, initialCatalog);
+    harness.actions().selectSearchPlan(
+      ["openai-native-web-search", "perplexity-tool-search"],
+      "model_choice"
+    );
+    harness.actions().selectModel(fakeModel);
+    expect(useComposerControlStore.getState().selectedSearchOptionIds).toEqual([
+      "openai-native-web-search",
+      "perplexity-tool-search"
+    ]);
+    expect(resolveModelSearchPlan(
+      fakeModel,
+      {
+        mode: useComposerControlStore.getState().searchPlanMode,
+        optionIds: useComposerControlStore.getState().selectedSearchOptionIds
+      },
+      undefined,
+      initialCatalog.searchStrategies
+    )).toEqual({ mode: "all_selected", optionIds: [] });
+
+    harness.actions().selectModel(multiSearchModel);
+    expect(useComposerControlStore.getState().selectedSearchOptionIds).toEqual([
+      "openai-native-web-search",
+      "perplexity-tool-search"
+    ]);
+    expect(jsonBodies(fetchMock).filter((body) => "defaultModelId" in body).every((body) =>
+      !("defaultSearchPlan" in body))).toBe(true);
   });
 
   it("maps Fast to Luna Standard/Medium and ignores unavailable profiles", async () => {
@@ -806,14 +893,13 @@ describe("control default freshness", () => {
         backgroundMode: true,
         maxOutputTokens: "128000",
         reasoningEffort: "medium",
-        searchStrategyId: "openai-native-web-search",
         streamMode: false,
         temperature: "0.4"
       }
     });
   });
 
-  it("persists search strategy as a per-model draft and keeps pending numeric edits", () => {
+  it("persists Search globally without writing it into the per-model draft", async () => {
     vi.useFakeTimers();
     const fetchMock = settingsFetchMock();
     vi.stubGlobal("fetch", fetchMock);
@@ -823,23 +909,20 @@ describe("control default freshness", () => {
     actions.changeTemperature("0.25");
     actions = harness.actions();
     actions.selectSearchStrategy("openai-native-web-search");
-    vi.advanceTimersByTime(600);
-
     expect(harness.searchStrategy()).toBe("openai-native-web-search");
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(jsonBodies(fetchMock)[0]).toMatchObject({
-      defaultControlValues: {
-        "openai:gpt-5.5": {
-          backgroundMode: true,
-          maxOutputTokens: "128000",
-          reasoningEffort: "medium",
-          searchStrategyId: "openai-native-web-search",
-          streamMode: false,
-          temperature: "0.25"
-        }
+      defaultSearchPlan: {
+        mode: "all_selected",
+        optionIds: ["openai-native-web-search"]
       }
     });
-    expect(jsonBodies(fetchMock)[0]?.defaultSearchStrategyId).toBeUndefined();
+    expect(jsonBodies(fetchMock)[0]?.defaultControlValues).toBeUndefined();
+    vi.advanceTimersByTime(600);
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    expect(jsonBodies(fetchMock)[1]?.defaultControlValues).toMatchObject({
+      "openai:gpt-5.5": { temperature: "0.25" }
+    });
   });
 
   it("restores saved model search drafts and clamps invalid drafts", () => {

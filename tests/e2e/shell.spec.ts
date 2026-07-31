@@ -1315,13 +1315,24 @@ test("keeps direct run choices and one complete More setup inside the thread wor
   await page.keyboard.press("Escape");
 });
 
-test("restores per-model search and reasoning drafts across model switches and reloads", async ({ page }) => {
+test("keeps a global Search preference and per-model reasoning across model switches and reloads", async ({ page }) => {
   const defaults = {
     ...matrixCatalog.defaults,
     controlValues: {
       ...matrixCatalog.defaults.controlValues
-    }
+    },
+    organizationSearchPlan: {
+      mode: "all_selected" as const,
+      optionIds: ["perplexity-tool-search"]
+    },
+    searchPlan: {
+      mode: "all_selected" as const,
+      optionIds: ["perplexity-tool-search"]
+    },
+    searchPreferenceSource: "organization" as "organization" | "personal",
+    searchStrategyId: "perplexity-tool-search"
   };
+  const settingsBodies: Record<string, unknown>[] = [];
 
   await page.route("**/api/me/catalog", async (route) => {
     await route.fulfill({
@@ -1329,7 +1340,10 @@ test("restores per-model search and reasoning drafts across model switches and r
       json: {
         catalog: {
           ...matrixCatalog,
-          defaults
+          defaults,
+          models: matrixCatalog.models.map((model) => model.modelId === "google/gemini-3.5-flash"
+            ? { ...model, searchStrategyIds: ["search-disabled"] }
+            : model)
         }
       }
     });
@@ -1371,14 +1385,21 @@ test("restores per-model search and reasoning drafts across model switches and r
     }
 
     const body = JSON.parse(route.request().postData() ?? "{}") as Record<string, unknown>;
+    settingsBodies.push(body);
     if (typeof body.defaultProvider === "string") {
       defaults.provider = body.defaultProvider;
     }
     if (typeof body.defaultModelId === "string") {
       defaults.modelId = body.defaultModelId;
     }
-    if (typeof body.defaultSearchStrategyId === "string") {
-      defaults.searchStrategyId = body.defaultSearchStrategyId;
+    if (body.defaultSearchPlan === null) {
+      defaults.searchPlan = defaults.organizationSearchPlan;
+      defaults.searchPreferenceSource = "organization";
+      defaults.searchStrategyId = defaults.searchPlan.optionIds[0] ?? "search-disabled";
+    } else if (body.defaultSearchPlan && typeof body.defaultSearchPlan === "object") {
+      defaults.searchPlan = body.defaultSearchPlan as typeof defaults.searchPlan;
+      defaults.searchPreferenceSource = "personal";
+      defaults.searchStrategyId = defaults.searchPlan.optionIds[0] ?? "search-disabled";
     }
     if (body.defaultControlValues && typeof body.defaultControlValues === "object") {
       defaults.controlValues = {
@@ -1395,7 +1416,10 @@ test("restores per-model search and reasoning drafts across model switches and r
           defaultModelId: defaults.modelId,
           defaultPromptPresetId: defaults.promptPresetId,
           defaultProvider: defaults.provider,
+          defaultSearchPlan: defaults.searchPlan,
           defaultSearchStrategyId: defaults.searchStrategyId,
+          organizationSearchPlan: defaults.organizationSearchPlan,
+          searchPreferenceSource: defaults.searchPreferenceSource,
           showCitations: defaults.showCitations,
           showReasoningBlocks: defaults.showReasoningBlocks,
           showToolActivity: defaults.showToolActivity
@@ -1406,14 +1430,29 @@ test("restores per-model search and reasoning drafts across model switches and r
 
   await signIn(page);
 
-  await chooseSearchStrategy(page, "Perplexity tool");
+  await expectRunSummary(page, { search: "Perplexity tool" });
+  await chooseSearchStrategy(page, "^Off");
+  await expect.poll(() => settingsBodies.some((body) =>
+    JSON.stringify(body.defaultSearchPlan) === JSON.stringify({ mode: "all_selected", optionIds: [] })
+  )).toBe(true);
+  await expectRunSummary(page, { search: "Off" });
+  let runSetup = await openRunSetup(page);
+  await runSetup.getByRole("button", { name: "Search strategy" }).click();
+  await runSetup.getByRole("button", { name: "Use organization default" }).click();
+  await closeRunSetup(page);
+  await expect.poll(() => settingsBodies.some((body) => body.defaultSearchPlan === null)).toBe(true);
   await chooseReasoningEffort(page, "high");
   await expectRunSummary(page, { reasoning: "Standard · High", search: "Perplexity tool" });
 
   await selectModel(page, "openrouter", "google/gemini-3.5-flash");
-  await chooseSearchStrategy(page, "No Search");
   await chooseReasoningEffort(page, "minimal");
-  await expectRunSummary(page, { reasoning: "Standard · Minimal", search: "Off" });
+  await expectRunSummary(page, { reasoning: "Standard · Minimal", search: "Perplexity tool" });
+  runSetup = await openRunSetup(page);
+  await expect(runSetup.getByRole("button", { name: "Search strategy" })).toHaveAttribute(
+    "title",
+    "0 active · 1 unavailable"
+  );
+  await closeRunSetup(page);
 
   await selectModel(page, "openai", "gpt-5.5");
   await expectRunSummary(page, { reasoning: "Standard · High", search: "Perplexity tool" });
@@ -1425,7 +1464,7 @@ test("restores per-model search and reasoning drafts across model switches and r
     reasoning: "Standard · High",
     search: "Perplexity tool"
   });
-  const runSetup = await openRunSetup(page);
+  runSetup = await openRunSetup(page);
   await expect(runSetup.getByRole("button", { name: "Select model" })).toHaveAttribute(
     "title",
     "OpenAI / GPT-5.5"
@@ -1433,7 +1472,7 @@ test("restores per-model search and reasoning drafts across model switches and r
   await closeRunSetup(page);
 });
 
-test("saves selected search as a user per-model draft without requiring a global search default", async ({ page }) => {
+test("saves selected Search as a global personal preference", async ({ page }) => {
   const defaults = {
     ...matrixCatalog.defaults,
     controlValues: {
@@ -1504,15 +1543,10 @@ test("saves selected search as a user per-model draft without requiring a global
 
     const body = JSON.parse(route.request().postData() ?? "{}") as Record<string, unknown>;
     settingsBodies.push(body);
-    if (body.defaultSearchStrategyId === "perplexity-tool-search") {
-      await route.fulfill({
-        contentType: "application/json",
-        json: {
-          error: "default_search_unavailable"
-        },
-        status: 400
-      });
-      return;
+    if (body.defaultSearchPlan && typeof body.defaultSearchPlan === "object") {
+      defaults.searchPlan = body.defaultSearchPlan as typeof defaults.searchPlan;
+      defaults.searchPreferenceSource = "personal";
+      defaults.searchStrategyId = defaults.searchPlan.optionIds[0] ?? "search-disabled";
     }
 
     if (body.defaultControlValues && typeof body.defaultControlValues === "object") {
@@ -1530,7 +1564,10 @@ test("saves selected search as a user per-model draft without requiring a global
           defaultModelId: defaults.modelId,
           defaultPromptPresetId: defaults.promptPresetId,
           defaultProvider: defaults.provider,
+          defaultSearchPlan: defaults.searchPlan,
           defaultSearchStrategyId: defaults.searchStrategyId,
+          organizationSearchPlan: defaults.organizationSearchPlan,
+          searchPreferenceSource: defaults.searchPreferenceSource,
           showCitations: defaults.showCitations,
           showReasoningBlocks: defaults.showReasoningBlocks,
           showToolActivity: defaults.showToolActivity
@@ -1544,13 +1581,11 @@ test("saves selected search as a user per-model draft without requiring a global
   await chooseSearchStrategy(page, "Perplexity tool");
   await expect.poll(() => settingsBodies.length).toBe(1);
   expect(settingsBodies[0]?.defaultSearchStrategyId).toBeUndefined();
-  expect(
-    (settingsBodies[0]?.defaultControlValues as Record<string, Record<string, unknown>> | undefined)?.[
-      "openrouter:anthropic/claude-opus-4.8"
-    ]
-  ).toMatchObject({
-    searchStrategyId: "perplexity-tool-search"
+  expect(settingsBodies[0]?.defaultSearchPlan).toEqual({
+    mode: "model_choice",
+    optionIds: ["perplexity-tool-search"]
   });
+  expect(settingsBodies[0]?.defaultControlValues).toBeUndefined();
 
   await page.reload();
   await expect(page.getByTestId("app-shell")).toBeVisible({ timeout: 15_000 });
@@ -1625,7 +1660,6 @@ test("sends GPT-5.6 Pro/max controls and keeps selected search after an immediat
   await page.route("**/api/chats", fulfillChats);
   await page.route("**/api/chats/*/messages", async (route) => {
     sendBody = JSON.parse(route.request().postData() ?? "{}") as Record<string, unknown>;
-    const strategy = typeof sendBody.searchStrategy === "string" ? sendBody.searchStrategy : "search-disabled";
     const provider = typeof sendBody.provider === "string" ? sendBody.provider : defaults.provider;
     const modelId = typeof sendBody.modelId === "string" ? sendBody.modelId : defaults.modelId;
     const controlDefaults =
@@ -1636,13 +1670,16 @@ test("sends GPT-5.6 Pro/max controls and keeps selected search after an immediat
 
     defaults.provider = provider;
     defaults.modelId = modelId;
-    defaults.searchStrategyId = strategy;
+    if (sendBody.searchPreferencePlan && typeof sendBody.searchPreferencePlan === "object") {
+      defaults.searchPlan = sendBody.searchPreferencePlan as typeof defaults.searchPlan;
+      defaults.searchPreferenceSource = sendBody.searchPreferenceSource === "organization"
+        ? "organization"
+        : "personal";
+      defaults.searchStrategyId = defaults.searchPlan.optionIds[0] ?? "search-disabled";
+    }
     defaults.controlValues = {
       ...defaults.controlValues,
-      [key]: {
-        ...controlDefaults,
-        searchStrategyId: strategy
-      }
+      [key]: { ...controlDefaults }
     };
 
     await route.fulfill({
@@ -1697,12 +1734,20 @@ test("sends GPT-5.6 Pro/max controls and keeps selected search after an immediat
     reasoning: "Pro · Maximum",
     search: "Off"
   });
+  const directReasoning = page.getByTestId("composer-control-bar").getByRole("button", {
+    name: "Reasoning Pro · Maximum"
+  });
+  await expect(directReasoning).toBeVisible();
+  await directReasoning.click();
+  await expect(page.getByRole("dialog", { name: "Reasoning settings" })).toBeVisible();
+  await page.getByRole("button", { name: "Close Reasoning settings" }).click();
   const modelValue = page.getByTestId("run-model-summary");
   const reasoningValue = page.getByTestId("run-reasoning-summary");
   for (const value of [modelValue, reasoningValue]) {
     await expect.poll(() => value.evaluate((element) => element.scrollWidth <= element.clientWidth + 1)).toBe(true);
   }
-  await page.setViewportSize({ height: 390, width: 844 });
+  await page.setViewportSize({ height: 390, width: 1176 });
+  await expect(directReasoning).toBeHidden();
   const shortRunSetup = await openRunSetup(page);
   await expectWithinViewport(page, shortRunSetup);
   await expectWithinViewport(page, shortRunSetup.getByRole("button", { name: "Close run setup" }));
@@ -1735,8 +1780,15 @@ test("sends GPT-5.6 Pro/max controls and keeps selected search after an immediat
   });
   expect(sentBody.controlDefaults).toMatchObject({
     reasoningEffort: "max",
-    reasoningMode: "pro",
-    searchStrategyId: "perplexity-tool-search"
+    reasoningMode: "pro"
+  });
+  expect(sentBody.controlDefaults).not.toHaveProperty("searchStrategyId");
+  expect(sentBody).toMatchObject({
+    searchPreferencePlan: {
+      mode: "model_choice",
+      optionIds: ["perplexity-tool-search"]
+    },
+    searchPreferenceSource: "personal"
   });
 
   await page.reload();
@@ -1828,7 +1880,10 @@ test("loads catalog before activating a stored chat and avoids hydration warning
           defaultModelId: matrixCatalog.defaults.modelId,
           defaultPromptPresetId: matrixCatalog.defaults.promptPresetId,
           defaultProvider: matrixCatalog.defaults.provider,
+          defaultSearchPlan: matrixCatalog.defaults.searchPlan,
           defaultSearchStrategyId: matrixCatalog.defaults.searchStrategyId,
+          organizationSearchPlan: matrixCatalog.defaults.organizationSearchPlan,
+          searchPreferenceSource: matrixCatalog.defaults.searchPreferenceSource,
           showCitations: matrixCatalog.defaults.showCitations,
           showReasoningBlocks: matrixCatalog.defaults.showReasoningBlocks,
           showToolActivity: matrixCatalog.defaults.showToolActivity
@@ -1975,7 +2030,10 @@ test("finds never-opened chats through server-side content search", async ({ pag
           defaultModelId: matrixCatalog.defaults.modelId,
           defaultPromptPresetId: matrixCatalog.defaults.promptPresetId,
           defaultProvider: matrixCatalog.defaults.provider,
+          defaultSearchPlan: matrixCatalog.defaults.searchPlan,
           defaultSearchStrategyId: matrixCatalog.defaults.searchStrategyId,
+          organizationSearchPlan: matrixCatalog.defaults.organizationSearchPlan,
+          searchPreferenceSource: matrixCatalog.defaults.searchPreferenceSource,
           showCitations: matrixCatalog.defaults.showCitations,
           showReasoningBlocks: matrixCatalog.defaults.showReasoningBlocks,
           showToolActivity: matrixCatalog.defaults.showToolActivity

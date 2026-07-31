@@ -4,7 +4,8 @@ import {
   createAdminSearchIntegration,
   requestAdminSearchCatalog,
   runAdminSearchAction,
-  updateAdminSearchIntegration
+  updateAdminSearchIntegration,
+  updateAdminSearchPolicy
 } from "./adminSearchApi";
 
 const draft = {
@@ -33,11 +34,16 @@ const search: AdminSearchCatalog = {
     executionModes: ["all_selected", "model_choice"],
     id: "integration-1",
     providerModel: null,
-  ready: false,
+    ready: false,
     readiness: "activation_required",
     strategyId: "company-search-12345678",
     system: false
   }],
+  policy: {
+    defaultPlan: { mode: "all_selected", optionIds: [] },
+    updatedAt: "2026-07-29T12:00:00.000Z",
+    version: 1
+  },
   providerModels: []
 };
 
@@ -55,6 +61,10 @@ describe("adminSearchApi", () => {
       displayName: "Company Search",
       draft
     }, fetcher);
+    await updateAdminSearchPolicy({
+      defaultPlan: { mode: "all_selected", optionIds: [] },
+      expectedVersion: 1
+    }, fetcher);
     await updateAdminSearchIntegration({
       description: "Updated evidence",
       displayName: "Company Search",
@@ -68,11 +78,18 @@ describe("adminSearchApi", () => {
     expect(fetcher).toHaveBeenNthCalledWith(2, "/api/admin/search", expect.objectContaining({
       method: "POST"
     }));
-    expect(fetcher).toHaveBeenNthCalledWith(3, "/api/admin/search/integration%2F1", expect.objectContaining({
+    expect(fetcher).toHaveBeenNthCalledWith(3, "/api/admin/search", expect.objectContaining({
+      body: JSON.stringify({
+        defaultPlan: { mode: "all_selected", optionIds: [] },
+        expectedVersion: 1
+      }),
+      method: "PATCH"
+    }));
+    expect(fetcher).toHaveBeenNthCalledWith(4, "/api/admin/search/integration%2F1", expect.objectContaining({
       method: "PATCH"
     }));
     expect(fetcher).toHaveBeenNthCalledWith(
-      4,
+      5,
       "/api/admin/search/integration%2F1/actions",
       expect.objectContaining({ body: JSON.stringify({ action: "test" }), method: "POST" })
     );

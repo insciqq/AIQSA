@@ -206,7 +206,11 @@ async function persistAcceptedRunDefaults(
     }
   }
 
-  const searchStrategyId = defaults.searchStrategy ?? "search-disabled";
+  const updatesSearchPreference = Object.prototype.hasOwnProperty.call(
+    defaults,
+    "searchPreferencePlan"
+  );
+  const preferredSearchStrategyId = defaults.searchPreferencePlan?.optionIds[0] ?? "search-disabled";
   const result = await applySettingsUpdateInTransaction(
     tx,
     userId,
@@ -215,19 +219,22 @@ async function persistAcceptedRunDefaults(
         [modelControlKey(defaults)]: { ...defaults.controlDefaults }
       },
       defaultProviderModelId: defaults.modelId,
-      defaultSearchPlan: defaults.searchPlan ?? {
-        mode: "all_selected",
-        optionIds: searchStrategyId === "search-disabled" ? [] : [searchStrategyId]
-      },
-      defaultSearchStrategyId: searchStrategyId
+      ...(updatesSearchPreference
+        ? {
+            defaultSearchPlan: defaults.searchPreferencePlan ?? null,
+            ...(defaults.searchPreferencePlan
+              ? { defaultSearchStrategyId: preferredSearchStrategyId }
+              : {})
+          }
+        : {})
     },
     [
       {
         modelId: defaults.modelId,
         provider: defaults.provider,
-        searchStrategyIds: defaults.searchPlan?.optionIds.length
-          ? [...defaults.searchPlan.optionIds]
-          : [searchStrategyId]
+        searchStrategyIds: defaults.searchPreferencePlan?.optionIds.length
+          ? [...defaults.searchPreferencePlan.optionIds]
+          : []
       }
     ]
   );
@@ -346,6 +353,12 @@ async function insertAcceptedProviderRunBindings(
       providerModelId: input.plan.selection.providerModelId,
       ...(input.plan.requestedSearchPlan
         ? { searchPlan: input.plan.requestedSearchPlan }
+        : {}),
+      ...(input.plan.requestedSearchPreferenceSource
+        ? {
+            searchPreferencePlan: input.plan.requestedSearchPreferencePlan,
+            searchPreferenceSource: input.plan.requestedSearchPreferenceSource
+          }
         : {}),
       searchStrategyId: input.plan.requestedSearchStrategyId,
       userId: input.userId

@@ -5,7 +5,8 @@ import {
   createAdminSearchIntegration,
   requestAdminSearchCatalog,
   runAdminSearchAction,
-  updateAdminSearchIntegration
+  updateAdminSearchIntegration,
+  updateAdminSearchPolicy
 } from "@/components/admin/adminSearchApi";
 import {
   AdminAvailabilityStatus,
@@ -26,6 +27,8 @@ import type {
   AdminSearchIntegration,
   AdminSearchProviderModelOption
 } from "@/lib/contracts/adminSearch";
+import { isSearchCombinationCompatible } from "@/lib/domain/catalogMatrix";
+import type { SearchPlan, SearchPlanMode } from "@/lib/domain/search";
 import {
   Activity,
   ArrowRight,
@@ -42,7 +45,8 @@ import {
   Search,
   ShieldCheck,
   TestTube2,
-  Trash2
+  Trash2,
+  X
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 
@@ -69,6 +73,132 @@ const tasks: ReadonlyArray<Readonly<{
 
 const fieldLabel = "text-xs font-medium text-ink-secondary";
 const helpText = "mt-1 block text-[11px] leading-4 text-ink-muted";
+
+function SearchDefaultPolicyEditor({
+  busy,
+  catalog,
+  onSave
+}: Readonly<{
+  busy: boolean;
+  catalog: AdminSearchCatalog;
+  onSave(plan: SearchPlan): void;
+}>) {
+  const [optionIds, setOptionIds] = useState<string[]>([...catalog.policy.defaultPlan.optionIds]);
+  const [planMode, setPlanMode] = useState<SearchPlanMode>(catalog.policy.defaultPlan.mode);
+  const selectable = catalog.integrations.filter((integration) =>
+    integration.enabled && integration.ready && !integration.archivedAt);
+  const options = selectable.map((integration) => ({
+    adapterKind: integration.adapterKind,
+    executionModes: integration.executionModes,
+    kind: integration.adapterKind === "none" as const
+      ? "none" as const
+      : "provider_model_web_search" as const,
+    protocol: integration.draft.protocol,
+    strategyId: integration.strategyId
+  }));
+  const missing = optionIds.filter((optionId) =>
+    !selectable.some((integration) => integration.strategyId === optionId));
+
+  function toggle(optionId: string) {
+    const active = optionIds.includes(optionId);
+    const next = active
+      ? optionIds.filter((candidate) => candidate !== optionId)
+      : [...optionIds, optionId];
+    if (!active && (next.length > 3 || !isSearchCombinationCompatible(next, options, "model_choice"))) {
+      return;
+    }
+    const nextMode = next.length === 0
+      ? "all_selected"
+      : isSearchCombinationCompatible(next, options, planMode)
+        ? planMode
+        : "model_choice";
+    setOptionIds(next);
+    setPlanMode(nextMode);
+  }
+
+  const dirty = planMode !== catalog.policy.defaultPlan.mode ||
+    optionIds.join("\u0000") !== catalog.policy.defaultPlan.optionIds.join("\u0000");
+  const allSelectedAvailable = optionIds.length > 0 &&
+    isSearchCombinationCompatible(optionIds, options, "all_selected");
+
+  return (
+    <section className="border-y border-trace-subtle bg-control-surface/55 px-4 py-4 sm:px-6" aria-labelledby="search-default-heading">
+      <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
+        <div className="max-w-xl">
+          <p className="text-[10px] font-semibold uppercase tracking-[0.1em] text-proof">Default for users</p>
+          <h3 className="mt-1 text-sm font-semibold text-ink" id="search-default-heading">Recommended Search plan</h3>
+          <p className="mt-1 text-xs leading-5 text-ink-muted">Used only until a user makes a personal choice. Recommendation only; it never grants Search access.</p>
+        </div>
+        <button
+          className={primaryButton}
+          disabled={busy || !dirty || missing.length > 0}
+          onClick={() => onSave({ mode: planMode, optionIds })}
+          type="button"
+        >
+          <Save aria-hidden="true" className="size-3.5" />Save default
+        </button>
+      </div>
+
+      <div className="mt-3 flex flex-wrap gap-2">
+        {selectable.map((integration) => {
+          const active = optionIds.includes(integration.strategyId);
+          const disabled = !active && (optionIds.length >= 3 || !isSearchCombinationCompatible(
+            [...optionIds, integration.strategyId],
+            options,
+            "model_choice"
+          ));
+          return (
+            <button
+              aria-pressed={active}
+              className={`inline-flex min-h-control items-center gap-2 rounded-control border px-3 py-2 text-xs outline-none focus-visible:ring-2 focus-visible:ring-proof/55 disabled:cursor-not-allowed disabled:opacity-45 ${active ? "border-proof bg-control-selected text-ink" : "border-trace-subtle bg-answer-paper text-ink-secondary hover:bg-control-hover"}`}
+              disabled={disabled}
+              key={integration.strategyId}
+              onClick={() => toggle(integration.strategyId)}
+              type="button"
+            >
+              {active ? <CheckCircle2 aria-hidden="true" className="size-3.5 text-proof" /> : null}
+              {integration.displayName}
+            </button>
+          );
+        })}
+        {missing.map((optionId) => {
+          const integration = catalog.integrations.find((candidate) =>
+            candidate.strategyId === optionId);
+          const displayName = integration?.displayName ?? optionId;
+          return (
+            <button
+              aria-label={`Remove unavailable ${displayName}`}
+              aria-pressed="true"
+              className="inline-flex min-h-control items-center gap-2 rounded-control border border-caution/55 bg-caution/10 px-3 py-2 text-xs text-caution outline-none hover:bg-caution/15 focus-visible:ring-2 focus-visible:ring-caution/55"
+              key={optionId}
+              onClick={() => toggle(optionId)}
+              type="button"
+            >
+              <CircleAlert aria-hidden="true" className="size-3.5" />
+              <span>{displayName} · unavailable</span>
+              <X aria-hidden="true" className="size-3.5" />
+            </button>
+          );
+        })}
+        {selectable.length === 0 ? <span className="text-xs text-ink-muted">No active, ready Search integrations.</span> : null}
+      </div>
+
+      {optionIds.length > 1 ? (
+        <div className="mt-3 flex flex-wrap gap-4 border-t border-trace-subtle pt-3 text-xs text-ink-secondary">
+          <label className={allSelectedAvailable ? "flex items-center gap-2" : "flex items-center gap-2 opacity-45"}>
+            <input checked={planMode === "all_selected"} className="accent-proof" disabled={!allSelectedAvailable} onChange={() => setPlanMode("all_selected")} type="radio" />
+            All selected
+          </label>
+          <label className="flex items-center gap-2">
+            <input checked={planMode === "model_choice" || !allSelectedAvailable} className="accent-proof" onChange={() => setPlanMode("model_choice")} type="radio" />
+            Model chooses
+          </label>
+        </div>
+      ) : null}
+      {missing.length > 0 ? <p className="mt-3 text-xs text-caution">The saved recommendation references an unavailable integration. Remove it above or reactivate it before saving.</p> : null}
+    </section>
+  );
+}
 
 function emptyForm(providerModels: readonly AdminSearchProviderModelOption[]): SearchForm {
   const providerModel = providerModels.find((model) => model.enabled && model.nativeSearch) ?? null;
@@ -603,10 +733,30 @@ export function AdminSearchSection({
     return <div className="flex min-h-[28rem] items-center justify-center gap-2 text-sm text-ink-muted"><LoaderCircle aria-hidden="true" className="size-4 animate-spin" />Loading Search integrations</div>;
   }
 
-  const search = catalog ?? { integrations: [], providerModels: [] };
+  const search = catalog ?? {
+    integrations: [],
+    policy: {
+      defaultPlan: { mode: "all_selected", optionIds: [] },
+      updatedAt: new Date(0).toISOString(),
+      version: 1
+    },
+    providerModels: []
+  };
   return (
     <div className="min-w-0" data-testid="admin-search-section">
       <Feedback error={error} notice={notice} onDismiss={() => { setError(null); setNotice(null); }} />
+      <SearchDefaultPolicyEditor
+        busy={busy}
+        catalog={search}
+        key={search.policy.version}
+        onSave={(defaultPlan) => void commit(
+          updateAdminSearchPolicy({
+            defaultPlan,
+            expectedVersion: search.policy.version
+          }),
+          "Organization Search default saved."
+        )}
+      />
       <AdminTaskWorkspace className="mt-2" indexWidth="20rem">
         <AdminTaskIndexPane compactDetailOpen={mode !== "index"} testId="admin-search-index-pane">
           <SearchCatalogIndex busy={busy} integrations={search.integrations} onCreate={openCreate} onRefresh={() => void load()} onSelect={openIntegration} selectedId={selectedId} />

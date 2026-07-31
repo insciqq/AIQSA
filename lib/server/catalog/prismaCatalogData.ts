@@ -41,7 +41,7 @@ import type {
   SearchStrategy
 } from "@prisma/client";
 
-type CatalogPrismaClient = Pick<PrismaClient, "providerModel" | "runProfile" | "searchStrategy" | "user">;
+type CatalogPrismaClient = Pick<PrismaClient, "providerModel" | "runProfile" | "searchPolicy" | "searchStrategy" | "user">;
 
 type PromptPresetRow = {
   developerPrompt: string | null;
@@ -508,7 +508,7 @@ export function createPrismaCatalogDataLoader({
       return null;
     }
 
-    const [models, runProfiles, searchStrategies, entitlements] = await Promise.all([
+    const [models, runProfiles, searchStrategies, entitlements, searchPolicy] = await Promise.all([
       prisma.providerModel.findMany({
         include: {
           activeCredentialChecks: {
@@ -592,7 +592,11 @@ export function createPrismaCatalogDataLoader({
           enabled: true
         }
       }),
-      loadEntitlements(userId)
+      loadEntitlements(userId),
+      prisma.searchPolicy?.findUnique({
+        select: { defaultPlan: true },
+        where: { id: "installation" }
+      }) ?? Promise.resolve(null)
     ]);
     const availableModels = filterAvailableProviderModels({
       exposeFake: exposeFakeProvider(env),
@@ -626,6 +630,7 @@ export function createPrismaCatalogDataLoader({
       runProfiles: runProfiles.flatMap((profile) => isRunProfileId(profile.id)
         ? [{ ...profile, id: profile.id }]
         : []),
+      searchPolicy,
       searchStrategies: exposedSearchStrategies
         .map(searchStrategyToCatalogEntry)
         .filter((strategy): strategy is SearchStrategyCatalogEntry => strategy !== null),

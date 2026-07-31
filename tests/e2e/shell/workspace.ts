@@ -91,7 +91,7 @@ export async function cleanupE2eWorkspace(page: Page): Promise<string> {
     data: {
       defaultModelId: fakeModel.modelId,
       defaultProvider: fakeModel.provider,
-      defaultSearchStrategyId: "search-disabled",
+      defaultSearchPlan: { mode: "all_selected", optionIds: [] },
       showCitations: true,
       showReasoningBlocks: false,
       showToolActivity: true,

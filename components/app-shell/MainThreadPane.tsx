@@ -51,6 +51,7 @@ export type MainThreadPaneProps = {
   activeChatStreaming: boolean;
   attachments: ComposerAttachment[];
   backgroundMode: boolean;
+  compatibleSearchOptionIds?: string[];
   catalog: Catalog | null;
   catalogError: string | null;
   changeBackgroundMode(value: boolean): void;
@@ -95,6 +96,7 @@ export type MainThreadPaneProps = {
   retryWorkspace(): void;
   runWarnings?: RunWarning[];
   searchOptions: CatalogSearchStrategy[];
+  searchPreferenceSource?: "organization" | "personal";
   searchPlanMode: SearchPlanMode;
   selectModel(model: CatalogModel): void;
   selectPrompt(promptId: string): void;
@@ -121,6 +123,7 @@ export type MainThreadPaneProps = {
   toggleNotificationSound(): void;
   toggleReasoningBlockVisibility(): void;
   toggleToolActivityVisibility(): void;
+  useOrganizationSearchDefault?(): void;
   uploadFiles(files: FileList | readonly File[]): Promise<void> | void;
   uploading: boolean;
   visibleMessages: ThreadMessage[];
@@ -136,6 +139,7 @@ export function MainThreadPane({
   activeChatStreaming,
   attachments,
   backgroundMode,
+  compatibleSearchOptionIds = [],
   catalog,
   catalogError,
   changeBackgroundMode,
@@ -180,6 +184,7 @@ export function MainThreadPane({
   retryWorkspace,
   runWarnings = [],
   searchOptions,
+  searchPreferenceSource = "personal",
   searchPlanMode,
   selectModel,
   selectPrompt,
@@ -206,6 +211,7 @@ export function MainThreadPane({
   toggleNotificationSound,
   toggleReasoningBlockVisibility,
   toggleToolActivityVisibility,
+  useOrganizationSearchDefault,
   uploadFiles,
   uploading,
   visibleMessages,
@@ -631,6 +637,7 @@ export function MainThreadPane({
           controls={
             <ComposerControls
               backgroundMode={backgroundMode}
+              compatibleSearchOptionIds={compatibleSearchOptionIds}
               catalog={catalog}
               catalogUnavailable={Boolean(catalogError)}
               compact={centeredEmptyConversation}
@@ -643,6 +650,7 @@ export function MainThreadPane({
               reasoningEffort={reasoningEffort}
               reasoningMode={reasoningMode}
               searchOptions={searchOptions}
+              searchPreferenceSource={searchPreferenceSource}
               searchPlanMode={searchPlanMode}
               selectedModelId={selectedModelId}
               selectedPromptId={selectedPromptId}
@@ -665,6 +673,7 @@ export function MainThreadPane({
               onRunProfileChange={selectRunProfile}
               onSearchPlanChange={selectSearchPlan}
               onSearchStrategyChange={selectSearchStrategy}
+              onUseOrganizationSearchDefault={useOrganizationSearchDefault}
               onSelectModel={selectModel}
               onStreamModeChange={changeStreamMode}
               onTemperatureChange={changeTemperature}

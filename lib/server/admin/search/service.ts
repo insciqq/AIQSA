@@ -20,6 +20,8 @@ import {
   searchDraftHash,
   searchExecutionModes
 } from "../../search/configuration";
+import { isSearchCombinationCompatible } from "../../../domain/catalogMatrix";
+import { decodeSearchPlan, type SearchPlan } from "../../../domain/search";
 
 const SYSTEM_SEARCH_IDS = new Set([
   "gemini-google-search",
@@ -43,6 +45,8 @@ export type AdminSearchServiceErrorCode =
   | "search_integration_not_found"
   | "search_name_invalid"
   | "search_provider_model_not_available"
+  | "search_default_unavailable"
+  | "search_policy_stale"
   | "search_system_integration_forbidden"
   | "search_test_failed";
 
@@ -223,6 +227,19 @@ export function createAdminSearchService(input: Readonly<{
   const idFactory = input.idFactory ?? randomUUID;
   const now = input.now ?? (() => new Date());
 
+  async function policy() {
+    const row = await input.prisma.searchPolicy.findUnique({
+      where: { id: "installation" }
+    });
+    if (!row) throw new Error("installation_search_policy_missing");
+    const decoded = decodeSearchPlan(row.defaultPlan);
+    return {
+      defaultPlan: decoded.ok ? decoded.plan : { mode: "all_selected" as const, optionIds: [] },
+      updatedAt: row.updatedAt.toISOString(),
+      version: row.version
+    };
+  }
+
   async function providerModelForDraft(
     draft: AdminSearchDraft,
     store: PrismaClient | Prisma.TransactionClient = input.prisma
@@ -252,7 +269,7 @@ export function createAdminSearchService(input: Readonly<{
   }
 
   async function list(): Promise<AdminSearchCatalog> {
-    const [integrations, providerModels] = await Promise.all([
+    const [integrations, providerModels, searchPolicy] = await Promise.all([
       input.prisma.searchStrategy.findMany({
         include: {
           activeRevision: { select: { configuration: true, id: true, revisionNumber: true } },
@@ -276,7 +293,8 @@ export function createAdminSearchService(input: Readonly<{
         },
         orderBy: [{ connectionId: "asc" }, { displayName: "asc" }, { id: "asc" }],
         where: { activeConfig: { not: Prisma.DbNull }, activeVersion: { gt: 0 } }
-      })
+      }),
+      policy()
     ]);
     const providerModelOptions: AdminSearchProviderModelOption[] = providerModels.flatMap((model) => {
       const configuration = providerModelConfiguration(model.activeConfig);
@@ -297,8 +315,45 @@ export function createAdminSearchService(input: Readonly<{
       integrations: (integrations as SearchRow[])
         .filter((row) => row.strategyId !== "search-disabled")
         .map((row) => serializeIntegration(row, providerModelOptions)),
+      policy: searchPolicy,
       providerModels: providerModelOptions
     };
+  }
+
+  async function updatePolicy(args: Readonly<{
+    defaultPlan: unknown;
+    expectedVersion: number;
+    userId: string;
+  }>): Promise<void> {
+    const decoded = decodeSearchPlan(args.defaultPlan);
+    if (!decoded.ok) throw new AdminSearchServiceError("search_default_unavailable");
+    const catalog = await list();
+    const selectable = catalog.integrations
+      .filter((integration) => integration.enabled && !integration.archivedAt && integration.ready)
+      .map((integration) => ({
+        adapterKind: integration.adapterKind,
+        executionModes: integration.executionModes,
+        kind: integration.adapterKind === "none" as const
+          ? "none" as const
+          : "provider_model_web_search" as const,
+        protocol: integration.draft.protocol,
+        strategyId: integration.strategyId
+      }));
+    const plan: SearchPlan = decoded.plan;
+    if (plan.optionIds.some((optionId) =>
+      !selectable.some((integration) => integration.strategyId === optionId)) ||
+      !isSearchCombinationCompatible(plan.optionIds, selectable, plan.mode)) {
+      throw new AdminSearchServiceError("search_default_unavailable");
+    }
+    const updated = await input.prisma.searchPolicy.updateMany({
+      data: {
+        defaultPlan: json(plan),
+        updatedByUserId: args.userId,
+        version: { increment: 1 }
+      },
+      where: { id: "installation", version: args.expectedVersion }
+    });
+    if (updated.count !== 1) throw new AdminSearchServiceError("search_policy_stale");
   }
 
   async function createDraft(args: Readonly<{
@@ -471,5 +526,5 @@ export function createAdminSearchService(input: Readonly<{
     });
   }
 
-  return Object.freeze({ activate, archive, createDraft, list, setEnabled, testDraft, updateDraft });
+  return Object.freeze({ activate, archive, createDraft, list, setEnabled, testDraft, updateDraft, updatePolicy });
 }

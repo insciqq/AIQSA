@@ -85,7 +85,9 @@ describe("catalog handler", () => {
       "promptPresetId",
       "provider",
       "searchStrategyId",
+      "organizationSearchPlan",
       "searchPlan",
+      "searchPreferenceSource",
       "showCitations",
       "showReasoningBlocks",
       "showToolActivity"
@@ -296,6 +298,84 @@ describe("catalog handler", () => {
     }]);
     expect(JSON.stringify(catalog.runProfiles)).not.toContain("gpt-5.5");
     expect(JSON.stringify(catalog.runProfiles)).not.toContain("openai");
+  });
+
+  it("resolves inherited, personal Off, and entitlement-filtered Search preferences without model clamping", () => {
+    const base = {
+      entitlements: {
+        fullAccess: true as const,
+        modelKeys: new Set<string>(),
+        providerKeys: new Set<string>(),
+        searchStrategies: new Set<string>()
+      },
+      models: defaultProviderModels,
+      promptPresets: [],
+      runProfiles: [],
+      searchPolicy: {
+        defaultPlan: {
+          mode: "model_choice",
+          optionIds: ["openai-native-web-search", "perplexity-tool-search"]
+        }
+      },
+      searchStrategies: defaultSearchStrategies,
+      settings: {
+        defaultControlValues: {},
+        defaultModelId: "fake-qsa",
+        defaultProviderConnectionId: "fake",
+        defaultProviderModelId: "fake-qsa",
+        defaultPromptPresetId: null,
+        defaultProvider: "fake",
+        defaultSearchPlan: null,
+        defaultSearchStrategyId: "search-disabled",
+        showCitations: true,
+        showReasoningBlocks: false,
+        showToolActivity: true
+      }
+    };
+    const inherited = buildCurrentUserCatalog(base);
+    expect(inherited.defaults).toMatchObject({
+      searchPlan: {
+        mode: "model_choice",
+        optionIds: ["openai-native-web-search", "perplexity-tool-search"]
+      },
+      searchPreferenceSource: "organization"
+    });
+    expect(inherited.models.find((model) => model.modelId === "fake-qsa")?.searchStrategyIds)
+      .toEqual(["search-disabled"]);
+
+    const personalOff = buildCurrentUserCatalog({
+      ...base,
+      settings: {
+        ...base.settings,
+        defaultSearchPlan: { mode: "all_selected", optionIds: [] }
+      }
+    });
+    expect(personalOff.defaults).toMatchObject({
+      searchPlan: { mode: "all_selected", optionIds: [] },
+      searchPreferenceSource: "personal"
+    });
+
+    const restricted = buildCurrentUserCatalog({
+      ...base,
+      entitlements: {
+        modelKeys: new Set(["openai:gpt-5.5"]),
+        providerKeys: new Set<string>(),
+        searchStrategies: new Set(["openai-native-web-search"])
+      },
+      settings: {
+        ...base.settings,
+        defaultModelId: "gpt-5.5",
+        defaultProviderConnectionId: "openai",
+        defaultProviderModelId: "gpt-5.5",
+        defaultProvider: "openai"
+      }
+    });
+    expect(restricted.defaults.searchPlan).toEqual({
+      mode: "model_choice",
+      optionIds: ["openai-native-web-search"]
+    });
+    expect(restricted.searchStrategies.map((strategy) => strategy.strategyId))
+      .not.toContain("perplexity-tool-search");
   });
 
   it("rejects anonymous catalog requests", async () => {

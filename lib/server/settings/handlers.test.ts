@@ -7,6 +7,7 @@ import {
   type SettingsHandlerData,
   type SettingsValidationModel,
   type UserSettingsRecord,
+  type UserSettingsUpdate,
   type UserSettingsUpdateResult
 } from "./handlers";
 
@@ -113,7 +114,6 @@ describe("settings handler", () => {
           backgroundMode: false,
           maxOutputTokens: "128000",
           reasoningEffort: "xhigh",
-          searchStrategyId: "openai-native-web-search",
           streamMode: true,
           temperature: "0.3"
         }
@@ -151,6 +151,8 @@ describe("settings handler", () => {
       "defaultProvider",
       "defaultSearchStrategyId",
       "defaultSearchPlan",
+      "organizationSearchPlan",
+      "searchPreferenceSource",
       "showCitations",
       "showReasoningBlocks",
       "showToolActivity"
@@ -179,7 +181,7 @@ describe("settings handler", () => {
     });
   });
 
-  it("drops invalid per-model search drafts without dropping valid draft fields", async () => {
+  it("drops legacy per-model Search hints without dropping valid draft fields", async () => {
     let capturedUpdate: unknown = null;
     const data = baseSettingsData();
     const PATCH = createUpdateSettingsHandler({
@@ -200,7 +202,7 @@ describe("settings handler", () => {
           defaultControlValues: {
             "openai:gpt-5.5": {
               reasoningEffort: "high",
-              searchStrategyId: "unsupported-search"
+              searchStrategyId: "openai-native-web-search"
             }
           }
         }),
@@ -265,7 +267,7 @@ describe("settings handler", () => {
     ).not.toHaveProperty("reasoningMode");
   });
 
-  it("rejects a default search strategy that the selected model cannot use", async () => {
+  it("keeps a global Search preference even when the selected model cannot use it", async () => {
     const data = baseSettingsData();
     const PATCH = createUpdateSettingsHandler({
       resolveAuth: auth.resolveAuth,
@@ -287,10 +289,7 @@ describe("settings handler", () => {
       })
     );
 
-    expect(response.status).toBe(400);
-    await expect(response.json()).resolves.toEqual({
-      error: "default_search_unavailable"
-    });
+    expect(response.status).toBe(200);
   });
 
   it("reports a search selection invalidated while waiting to persist", async () => {
@@ -319,6 +318,45 @@ describe("settings handler", () => {
     expect(response.status).toBe(400);
     await expect(response.json()).resolves.toEqual({
       error: "default_search_unavailable"
+    });
+  });
+
+  it("persists null as organization inheritance while keeping explicit Off distinct", async () => {
+    const data = {
+      ...baseSettingsData(),
+      searchPolicy: {
+        defaultPlan: {
+          mode: "all_selected" as const,
+          optionIds: ["openai-native-web-search"]
+        }
+      }
+    };
+    let captured: UserSettingsUpdate | null = null;
+    const PATCH = createUpdateSettingsHandler({
+      resolveAuth: auth.resolveAuth,
+      loadSettingsData: async () => data,
+      updateSettings: async (_userId, update) => {
+        captured = update;
+        return updated({ ...data.settings, defaultSearchPlan: null });
+      }
+    });
+
+    const inherited = await PATCH(new Request("http://app.local/api/me/settings", {
+      body: JSON.stringify({ defaultSearchPlan: null }),
+      headers: { cookie: authCookie() },
+      method: "PATCH"
+    }));
+
+    expect(inherited.status).toBe(200);
+    expect(captured).toMatchObject({ defaultSearchPlan: null });
+    await expect(inherited.json()).resolves.toMatchObject({
+      settings: {
+        defaultSearchPlan: {
+          mode: "all_selected",
+          optionIds: ["openai-native-web-search"]
+        },
+        searchPreferenceSource: "organization"
+      }
     });
   });
 

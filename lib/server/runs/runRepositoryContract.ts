@@ -157,6 +157,7 @@ export type AcceptedRunDefaults = {
   provider: string;
   searchStrategy: string | null;
   searchPlan?: SearchPlan;
+  searchPreferencePlan?: SearchPlan | null;
   userId: string;
 };
 

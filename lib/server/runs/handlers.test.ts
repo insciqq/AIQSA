@@ -1679,7 +1679,6 @@ describe("model run route handlers", () => {
       controlDefaults: {
         maxOutputTokens: "8192",
         reasoningEffort: "high",
-        searchStrategyId: "search-disabled",
         temperature: "0.4"
       },
       modelId: "fake-qsa",
@@ -3404,7 +3403,6 @@ describe("model run route handlers", () => {
       controlDefaults: {
         maxOutputTokens: "4096",
         reasoningEffort: "medium",
-        searchStrategyId: "search-disabled",
         temperature: "0.6"
       },
       modelId: "fake-qsa",

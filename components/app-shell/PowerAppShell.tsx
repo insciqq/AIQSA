@@ -87,7 +87,7 @@ import { decodeCatalogResponse } from "@/lib/contracts/catalog";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   resolveModelControlDefaults,
-  resolveModelSearchPlan,
+  resolvePreferredSearchPlan,
   type SavedControlDraft
 } from "@/components/app-shell/powerAppShellData";
 
@@ -322,6 +322,7 @@ export function PowerAppShell({
     composerDisabledHint,
     composerContextStats,
     composerUsageStats,
+    compatibleSearchOptionIds,
     currentErrorText,
     currentModel,
     currentParameterControls,
@@ -378,8 +379,7 @@ export function PowerAppShell({
     const timer = window.setTimeout(() => {
       setSelectedProvider(fallback.provider);
       setSelectedModelId(fallback.modelId);
-      const plan = resolveModelSearchPlan(
-        fallback,
+      const plan = resolvePreferredSearchPlan(
         catalog.defaults.searchPlan,
         catalog.defaults.searchStrategyId,
         catalog.searchStrategies
@@ -424,7 +424,8 @@ export function PowerAppShell({
     selectSearchStrategy,
     toggleCitationsVisibility,
     toggleReasoningBlockVisibility,
-    toggleToolActivityVisibility
+    toggleToolActivityVisibility,
+    useOrganizationSearchDefault
   } = useRunControlsActions({
     catalog,
     currentModel,
@@ -566,8 +567,7 @@ export function PowerAppShell({
           setCatalogError(null);
           setSelectedProvider(defaultModel?.provider ?? "");
           setSelectedModelId(defaultModel?.modelId ?? "");
-          const defaultSearchPlan = resolveModelSearchPlan(
-            defaultModel,
+          const defaultSearchPlan = resolvePreferredSearchPlan(
             nextCatalog.defaults.searchPlan,
             nextCatalog.defaults.searchStrategyId,
             nextCatalog.searchStrategies
@@ -891,6 +891,7 @@ export function PowerAppShell({
   const composerView = {
     attachments,
     backgroundMode,
+    compatibleSearchOptionIds,
     catalog,
     catalogError,
     changeBackgroundMode,
@@ -915,6 +916,7 @@ export function PowerAppShell({
     reasoningMode,
     retryCatalog,
     searchOptions,
+    searchPreferenceSource: catalog?.defaults.searchPreferenceSource ?? "personal",
     searchPlanMode,
     selectModel,
     selectPrompt,
@@ -938,6 +940,7 @@ export function PowerAppShell({
     toggleNotificationSound,
     toggleReasoningBlockVisibility,
     toggleToolActivityVisibility,
+    useOrganizationSearchDefault,
     uploadFiles,
     uploading
   } satisfies ShellComposerView;

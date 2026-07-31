@@ -50,9 +50,12 @@ export async function installMatrixCatalogFixture(
   const settings = {
     defaultControlValues: structuredClone(fixtureCatalog.defaults.controlValues),
     defaultModelId: fixtureCatalog.defaults.modelId,
+    defaultSearchPlan: structuredClone(fixtureCatalog.defaults.searchPlan),
     defaultPromptPresetId: fixtureCatalog.defaults.promptPresetId as string | null,
     defaultProvider: fixtureCatalog.defaults.provider,
     defaultSearchStrategyId: fixtureCatalog.defaults.searchStrategyId,
+    organizationSearchPlan: structuredClone(fixtureCatalog.defaults.organizationSearchPlan),
+    searchPreferenceSource: fixtureCatalog.defaults.searchPreferenceSource,
     showCitations: fixtureCatalog.defaults.showCitations,
     showReasoningBlocks: fixtureCatalog.defaults.showReasoningBlocks,
     showToolActivity: fixtureCatalog.defaults.showToolActivity
@@ -67,8 +70,11 @@ export async function installMatrixCatalogFixture(
             ...fixtureCatalog.defaults,
             controlValues: settings.defaultControlValues,
             modelId: settings.defaultModelId,
+            organizationSearchPlan: settings.organizationSearchPlan,
             promptPresetId: settings.defaultPromptPresetId,
             provider: settings.defaultProvider,
+            searchPlan: settings.defaultSearchPlan,
+            searchPreferenceSource: settings.searchPreferenceSource,
             searchStrategyId: settings.defaultSearchStrategyId,
             showCitations: settings.showCitations,
             showReasoningBlocks: settings.showReasoningBlocks,
@@ -122,7 +128,16 @@ export async function installMatrixCatalogFixture(
     if (typeof body.defaultProvider === "string") {
       settings.defaultProvider = body.defaultProvider;
     }
-    if (typeof body.defaultSearchStrategyId === "string") {
+    if (Object.prototype.hasOwnProperty.call(body, "defaultSearchPlan")) {
+      if (body.defaultSearchPlan === null) {
+        settings.defaultSearchPlan = structuredClone(settings.organizationSearchPlan);
+        settings.searchPreferenceSource = "organization";
+      } else if (body.defaultSearchPlan && typeof body.defaultSearchPlan === "object") {
+        settings.defaultSearchPlan = body.defaultSearchPlan as typeof settings.defaultSearchPlan;
+        settings.searchPreferenceSource = "personal";
+      }
+      settings.defaultSearchStrategyId = settings.defaultSearchPlan?.optionIds[0] ?? "search-disabled";
+    } else if (typeof body.defaultSearchStrategyId === "string") {
       settings.defaultSearchStrategyId = body.defaultSearchStrategyId;
     }
     if (typeof body.showCitations === "boolean") {
@@ -144,7 +159,10 @@ export async function installMatrixCatalogFixture(
     await route.fulfill({
       contentType: "application/json",
       json: {
-        settings
+        settings: {
+          ...settings,
+          defaultSearchPlan: settings.defaultSearchPlan ?? { mode: "all_selected", optionIds: [] }
+        }
       }
     });
   });

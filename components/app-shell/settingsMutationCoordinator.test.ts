@@ -11,9 +11,11 @@ function settings(overrides: Partial<UserSettingsWire> = {}): UserSettingsWire {
   return {
     defaultControlValues: {},
     defaultModelId: "gpt-5.5",
+    organizationSearchPlan: { mode: "all_selected", optionIds: [] },
     defaultPromptPresetId: null,
     defaultProvider: "openai",
     defaultSearchStrategyId: "search-disabled",
+    searchPreferenceSource: "personal",
     showCitations: true,
     showReasoningBlocks: false,
     showToolActivity: true,

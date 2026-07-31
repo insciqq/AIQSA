@@ -366,6 +366,11 @@ describe("provider admission", () => {
           mode: "all_selected",
           optionIds: ["search-alpha", "search-beta"]
         },
+        searchPreferencePlan: {
+          mode: "model_choice",
+          optionIds: ["search-beta", "search-alpha"]
+        },
+        searchPreferenceSource: "personal",
         searchStrategyId: "search-alpha",
         userId: "user-1"
       }
@@ -391,5 +396,10 @@ describe("provider admission", () => {
       mode: "all_selected",
       optionIds: ["search-alpha", "search-beta"]
     });
+    expect(plan.requestedSearchPreferencePlan).toEqual({
+      mode: "model_choice",
+      optionIds: ["search-beta", "search-alpha"]
+    });
+    expect(plan.requestedSearchPreferenceSource).toBe("personal");
   });
 });

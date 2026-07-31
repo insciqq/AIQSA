@@ -150,6 +150,7 @@ model User {
   promptPresets                 PromptPreset[]
   providerCredentialAssignments ProviderUserCredentialAssignment[]
   runProfileUpdates             RunProfile[]                       @relation("RunProfileUpdater")
+  searchPolicyUpdates           SearchPolicy[]                     @relation("SearchPolicyUpdater")
   settings                      UserSettings?
   sharedSnapshots               SharedChatSnapshot[]
   smtpActivations               SmtpControl[]                      @relation("SmtpControlActivator")
@@ -352,7 +353,7 @@ model UserSettings {
   defaultPromptPresetId   String?
   defaultFolderId         String?
   defaultSearchStrategyId String         @default("openai-native-web-search")
-  defaultSearchPlan       Json           @default("{\"mode\":\"all_selected\",\"optionIds\":[]}")
+  defaultSearchPlan       Json?
   defaultControlValues    Json           @default("{}")
   showCitations           Boolean        @default(true)
   showReasoningBlocks     Boolean        @default(false)
@@ -363,6 +364,18 @@ model UserSettings {
   defaultProviderModel    ProviderModel? @relation("UserDefaultProviderModel", fields: [defaultProviderModelId], references: [id], onDelete: Restrict)
 
   @@index([defaultProviderModelId])
+}
+
+model SearchPolicy {
+  id              String   @id
+  defaultPlan     Json     @default("{\"mode\":\"all_selected\",\"optionIds\":[]}")
+  version         Int      @default(1)
+  updatedByUserId String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  updatedBy       User?    @relation("SearchPolicyUpdater", fields: [updatedByUserId], references: [id], onDelete: SetNull)
+
+  @@index([updatedByUserId])
 }
 
 model AccessGrant {

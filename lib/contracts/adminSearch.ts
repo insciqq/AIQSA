@@ -2,7 +2,8 @@ import type {
   SearchAdapterKind,
   SearchCredentialMode,
   SearchPlanMode,
-  SearchProtocol
+  SearchProtocol,
+  SearchPlan
 } from "./search";
 
 export type AdminSearchDraft = {
@@ -71,7 +72,14 @@ export type AdminSearchProviderModelOption = {
 
 export type AdminSearchCatalog = {
   integrations: AdminSearchIntegration[];
+  policy: AdminSearchPolicy;
   providerModels: AdminSearchProviderModelOption[];
+};
+
+export type AdminSearchPolicy = {
+  defaultPlan: SearchPlan;
+  updatedAt: string;
+  version: number;
 };
 
 export type AdminSearchCatalogResponse = {
@@ -154,15 +162,29 @@ function providerModel(value: unknown): value is AdminSearchProviderModelOption 
     typeof value.nativeSearch === "boolean" && string(value.upstreamModelId);
 }
 
+function policy(value: unknown): value is AdminSearchPolicy {
+  if (!isRecord(value) || !string(value.updatedAt) ||
+    !Number.isSafeInteger(value.version) || Number(value.version) < 1 ||
+    !isRecord(value.defaultPlan)) {
+    return false;
+  }
+  const plan = value.defaultPlan;
+  return (plan.mode === "all_selected" || plan.mode === "model_choice") &&
+    Array.isArray(plan.optionIds) && plan.optionIds.length <= 3 &&
+    plan.optionIds.every(string) && new Set(plan.optionIds).size === plan.optionIds.length;
+}
+
 export function decodeAdminSearchCatalog(value: unknown): AdminSearchCatalog | null {
   if (!isRecord(value) || !isRecord(value.search)) return null;
   const search = value.search;
   if (!Array.isArray(search.integrations) || !search.integrations.every(integration) ||
+    !policy(search.policy) ||
     !Array.isArray(search.providerModels) || !search.providerModels.every(providerModel)) {
     return null;
   }
   return {
     integrations: search.integrations,
+    policy: search.policy,
     providerModels: search.providerModels
   };
 }
