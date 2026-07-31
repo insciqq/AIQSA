@@ -100,3 +100,20 @@ Persist provider search operations for nested tool-call inspection and notify ad
   persistence repository coverage at 32/32; focused Chromium coverage for the
   nested Search trace and update indicator at desktop and 390 px at 2/2; docs
   check and diff check.
+- Published stable Release `v0.1.13` from commit `8eeff47` through successful
+  GitHub Action `30660309355`. All stable GHCR aliases resolve to one
+  `linux/amd64` plus `linux/arm64` manifest digest; the pulled image is non-root,
+  reports package version `0.1.13`, and carries the exact release revision.
+- The guarded selected-installation rollout found zero active runs, verified a
+  coordinated pre-migration backup, completed adopted bootstrap, and remained
+  ready with zero restarts and no pending deployment. The prior release remains
+  the recorded rollback point.
+- Authenticated production Chromium proved installed/latest version `0.1.13`,
+  a quiet `current` release state, no false update notice, and no desktop or
+  compact horizontal overflow, console errors, or page errors. The anonymous
+  release endpoint was denied.
+- One bounded real Search smoke produced exactly one Search tool call, one
+  engine execution, one provider-native operation, and one provider-reported
+  query. Its disposable chat was archived, the account defaults compared equal
+  before and after, the active-run count returned to zero, and the independent
+  companion MCP deployment was unchanged and healthy.
