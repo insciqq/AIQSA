@@ -2,9 +2,9 @@
 
 Move significant completed task notes here through `task:complete`, after task-specific verification.
 
-The public snapshot intentionally contains no private completion records. New
-entries remain part of the local operator ledger unless they are deliberately
-published.
+The public snapshot intentionally contains no completion records. Entries are
+local operator/agent ledger state and must not be published with `git add -f`,
+`git update-index`, or another ignore override. Only this README is tracked.
 
 Each completed task note should include:
 
@@ -15,6 +15,6 @@ Each completed task note should include:
 - skipped checks or known follow-ups;
 - docs updated.
 
-Completion notes are a permanent significant-work journal. Do not rewrite or delete them merely because living contracts have changed; correct current behavior in the living docs instead.
+Completion notes are a retained local significant-work journal. Do not rewrite or delete them merely because living contracts have changed; correct current behavior in the living docs instead.
 
-`docs:check` validates the ledger contract and this README without treating historical code references inside completed entries as current documentation. Git history and this journal preserve the per-task record.
+`docs:check` validates the local ledger contract and this README without treating historical code references inside completed entries as current documentation. Ordinary commits, living docs, ADRs, and release notes preserve shared history; this ignored journal preserves task-specific local evidence.

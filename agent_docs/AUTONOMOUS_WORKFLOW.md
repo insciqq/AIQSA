@@ -19,7 +19,7 @@ Use the operator's latest request as the primary scope. For broad implementation
 4. Run focused tests while iterating. Do not run the full suite after every edit.
 5. Near completion, run the one routine check from `TESTING.md`. Run E2E, runtime image builds, migrations, security audit, or provider smokes only when the task affects those boundaries.
 6. Update the owning living docs when architecture, environment, workflow, tests, or product behavior changed.
-7. Fill `Done Notes`, then run `npm run task:complete -- <task>` to move verified significant work to `done_tasks/`.
+7. Fill `Done Notes`, then run `npm run task:complete -- <task>` to move verified significant work to the local ignored `done_tasks/` journal.
 8. Add or update an ADR only for a durable decision.
 
 ## Task Ledger
@@ -28,8 +28,10 @@ Markdown remains the source of truth:
 
 - `task:new` creates the next backlog scaffold.
 - `task:promote` moves a reviewed task into the active queue and refuses unresolved dependencies.
-- `task:complete` requires completed `Done Notes` and moves the task into the permanent done journal.
+- `task:complete` requires completed `Done Notes` and moves the task into the local ignored done journal.
 - `docs:check` performs compact task/link/environment sanity checks.
+
+Task entries under `done_tasks/` are local operator/agent state. Keep its tracked README contract, but never publish an entry with `git add -f` or another index override; ordinary commits, living docs, ADRs, and release notes are the shared completion record.
 
 There are deliberately no claim leases, recovery journals, verification receipts, exact commit coupling, generated FILEMAP, or parallel-worktree orchestration. The workflow assumes one integrating writer. Preserve unrelated user changes and resolve any concurrent edit explicitly.
 
@@ -51,7 +53,7 @@ The agent may choose implementation names, conservative UI details, focused test
 
 ## Done Standard
 
-A task is done only when its requested outcome is implemented, relevant checks pass (or an unavailable check is named with a reason), living docs are current, no secrets are added, and the app remains runnable or clearly verifiable. Significant completed work moves to `done_tasks/`; it is not left active with a hand-edited done status.
+A task is done only when its requested outcome is implemented, relevant checks pass (or an unavailable check is named with a reason), living docs are current, no secrets are added, and the app remains runnable or clearly verifiable. Significant completed work moves to the local ignored `done_tasks/`; it is not left active with a hand-edited done status.
 
 Prefer one commit per completed task with subject `<task-id>: outcome in one line`. This is a useful history convention, not a local governance gate.
 

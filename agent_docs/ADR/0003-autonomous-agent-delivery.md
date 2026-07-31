@@ -15,7 +15,7 @@ Use a compact autonomous task queue:
 - `AUTONOMOUS_WORKFLOW.md` defines the loop.
 - `active_tasks/` contains ordered current slices.
 - `backlog/` contains reviewed-later work.
-- `done_tasks/` is the permanent significant-completion journal.
+- `done_tasks/` is the significant-completion journal; ADR 0049 makes its task entries local and ignored rather than repository artifacts.
 - ADRs record durable decisions.
 - Small repository-owned `task:new`, `task:promote`, and `task:complete` commands move Markdown between those states and validate dependencies.
 
@@ -27,6 +27,6 @@ Agents make conservative implementation choices, keep living docs current, use f
 
 - The operator can say `начинай реализацию` and expect the first ready task to begin.
 - Tasks remain small enough to finish and verify without a heavyweight local CI system.
-- Significant work has a durable journal, while resolved narrative is removed from living docs.
+- Significant work has local task-specific evidence plus shared commit/ADR/release history, while resolved narrative is removed from living docs; ADR 0049 defines that split.
 - Coordination beyond one integrating writer is conversational and explicit.
 - ADR 0015 narrows the local verification/task machinery while retaining this autonomous delivery model.

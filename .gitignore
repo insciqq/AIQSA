@@ -11,6 +11,7 @@ test-results/
 /docs/assets/ui/_local/
 /docs/assets/ui/concepts/
 
+# Operator task entries are ignored by default; directory README contracts stay tracked.
 /agent_docs/active_tasks/*
 !/agent_docs/active_tasks/README.md
 /agent_docs/backlog/*

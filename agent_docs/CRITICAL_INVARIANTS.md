@@ -24,8 +24,8 @@
 
 1. Keep changes small and terminal-verifiable.
 2. Update docs when changing architecture, env, tests, workflows, or product behavior.
-3. Keep `active_tasks/` and `done_tasks/` intact as harness state.
-4. Keep `done_tasks/` as a permanent significant-completion journal; remove stale narrative from living docs instead.
+3. Keep the task-ledger directories and their tracked README contracts intact as harness state.
+4. Completed task entries stay local and ignored under `done_tasks/`; never force-add them. Shared completion history belongs in ordinary commits, living docs, ADRs, and release notes, while the local journal retains task-specific evidence.
 5. Keep routine UI verification in repository-owned Playwright CLI tests.
 6. Prefer deterministic mocks before real paid API calls.
 7. Do not commit secrets, API keys, database URLs with passwords, or private operator notes.

@@ -46,7 +46,7 @@ The shipped product is a conversation-first workspace for explicit provider/mode
 | `PROVIDER_API_NOTES.md` | Official provider references, externally mutable constraints, one last-verified marker per boundary, and provider-specific caveats. |
 | `TESTING.md` | Focused iteration, the one routine Compose check, destructive local E2E, task-specific checks, and test-authoring rules. |
 
-Workflow/default/task ownership remains with `AUTONOMOUS_WORKFLOW.md`, `DECISION_DEFAULTS.md`, `active_tasks/`, `backlog/`, and the permanent `done_tasks/` journal. `ARCHITECTURE.md` includes the small semantic ownership map; repository structure is discovered from the tree rather than duplicated in a generated FILEMAP.
+Workflow/default/task ownership remains with `AUTONOMOUS_WORKFLOW.md`, `DECISION_DEFAULTS.md`, `active_tasks/`, `backlog/`, and the local ignored `done_tasks/` journal. `ARCHITECTURE.md` includes the small semantic ownership map; repository structure is discovered from the tree rather than duplicated in a generated FILEMAP.
 
 ## Data Cautions
 

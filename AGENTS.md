@@ -2,7 +2,7 @@
 
 Entry point for agent-driven development in this repository.
 
-AIQSA is a self-hosted QSA web app: Question -> Search -> Answer with transparent provider/API control. The core multi-user transition is shipped; remaining work for the small 50+ user target lives in `agent_docs/backlog/`. The harness is a living operating manual for the code that exists now. Keep it sharp: document current contracts, workflows, rules, and verification commands; remove stale narrative from living docs and resolved placeholders from active queues. `agent_docs/done_tasks/` is a permanent significant-completion journal, not stale material.
+AIQSA is a self-hosted QSA web app: Question -> Search -> Answer with transparent provider/API control. The core multi-user transition is shipped; remaining work for the small 50+ user target lives in `agent_docs/backlog/`. The harness is a living operating manual for the code that exists now. Keep it sharp: document current contracts, workflows, rules, and verification commands; remove stale narrative from living docs and resolved placeholders from active queues. `agent_docs/done_tasks/` is a local ignored significant-completion journal; its task entries are not repository artifacts and must never be force-added.
 
 ## Autonomy Trigger
 
@@ -14,7 +14,7 @@ If the operator says "start implementation", "begin", "go ahead", "начина�
 4. Implement it completely; keep task-ledger mutations with the root/integrating agent.
 5. Run the required checks.
 6. Update docs that describe changed architecture, environment, workflows, tests, task status, or product behavior.
-7. Fill the completion evidence and use the task CLI to move the verified task to `agent_docs/done_tasks/`.
+7. Fill the completion evidence and use the task CLI to move the verified task to the local ignored `agent_docs/done_tasks/` journal.
 8. Continue to the next task only when the current task is genuinely done and the next step is obvious within the current instruction.
 
 Stop only for missing secrets, destructive operations not already requested, missing external services that cannot be mocked, or a real product decision not covered by the current docs. Provider-smoke permission is defined in `agent_docs/CRITICAL_INVARIANTS.md`. External dependency-security check permission is defined in `agent_docs/SECURITY.md`.
@@ -69,7 +69,7 @@ The maintainer checkout keeps `origin` as the private GitLab development remote 
 - Make conservative decisions without blocking on taste questions.
 - Use `docker-compose.dev.yml` for application checks; never run destructive development or test workflows against the default persistent installation.
 - Update `agent_docs` whenever architecture, env, testing, workflow, or product behavior changes.
-- Keep task state in the Markdown ledgers through the repository `task:*` commands; move only verified significant completion notes to `agent_docs/done_tasks/`.
+- Keep task state in the Markdown ledgers through the repository `task:*` commands; move only verified significant completion notes to the local ignored `agent_docs/done_tasks/`, and never stage those entries with `git add -f` or an equivalent index override.
 - Delete stale harness material only when it is not part of the active development workflow.
 - Do not alter unrelated user changes in the worktree.
 

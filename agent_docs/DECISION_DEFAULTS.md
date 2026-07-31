@@ -30,7 +30,7 @@ Use these defaults only when the operator has not decided the point. They route 
 
 ## Documentation Defaults
 
-- Living docs describe current contracts; task specs describe planned work; done journals preserve significant completion history.
+- Living docs describe current contracts; task specs describe planned work; the local ignored done journal preserves task-specific completion evidence while ordinary commits, ADRs, and release notes preserve shared history.
 - Update the single subject owner instead of copying a changed fact into several living docs.
 - Update `ENV_VARIABLES.md` for configuration changes and ADRs for durable decisions. Keep the compact semantic ownership map in `ARCHITECTURE.md` current when module boundaries change.
 - Keep the active/backlog queues executable and remove resolved placeholders from them without rewriting the permanent done journal.

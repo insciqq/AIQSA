@@ -17,7 +17,7 @@ When the operator says `начинай реализацию`, the agent should:
 
 ## Ledger Contract
 
-The task files are the queue; this README does not duplicate them. Natural numeric filename order is the intended execution order. Each task keeps an active `Status`, resolvable `Depends on`, required sections, and unfinished `Done Notes`. Completed work moves to `agent_docs/done_tasks/`; it is never marked done while left here. `npm run docs:check` performs compact ledger sanity checks.
+The task files are the queue; this README does not duplicate them. Natural numeric filename order is the intended execution order. Each task keeps an active `Status`, resolvable `Depends on`, required sections, and unfinished `Done Notes`. Completed work moves to the local ignored `agent_docs/done_tasks/`; it is never marked done while left here. `npm run docs:check` performs compact ledger sanity checks.
 
 The public snapshot intentionally contains no operator task records. New task
 files are local by default through `.gitignore`; publish one explicitly only
@@ -25,7 +25,7 @@ when it is meant to become part of the shared roadmap.
 
 ## Completed Work
 
-Significant completion notes live in `agent_docs/done_tasks/`. Do not duplicate the whole ledger here.
+Significant completion notes live in the local ignored `agent_docs/done_tasks/`. Do not duplicate or force-add that ledger here.
 
 ## Deferred Work
 
