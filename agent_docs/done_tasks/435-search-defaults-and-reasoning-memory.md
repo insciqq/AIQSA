@@ -90,3 +90,14 @@ Add inherited admin Search defaults, durable user Search preferences, and per-mo
   dry-run, the nullable inherited preference, and exact PostgreSQL/MinIO
   preservation passed before all explicitly named disposable resources were
   removed.
+- Published stable Release `v0.1.12` from commit `d314986` through successful
+  GitHub Action `30649043039`; all stable GHCR aliases resolve to one
+  `linux/amd64` plus `linux/arm64` manifest digest. The guarded selected-target
+  rollout found zero active runs, verified its pre-migration backup, applied
+  the inherited-preference migration, completed adopted bootstrap, and stayed
+  healthy with zero restarts. Authenticated production Chromium proved the
+  Search preference remains retained/unavailable across an incompatible model,
+  returns on the compatible model, and survives reload without Search fields
+  in model-switch writes; it restored the complete original user settings and
+  emitted no console or page errors. No provider generation ran and the
+  independent companion MCP deployment was unchanged.
