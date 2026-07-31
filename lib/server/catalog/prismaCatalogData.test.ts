@@ -160,6 +160,7 @@ function providerBackedSearchModel(id = "technical-search-deployment") {
   return providerModel({
     activeConfig: {
       adapterKind: "openrouter_chat_completions",
+      answerSelectable: false,
       capabilities,
       defaultParams: { maxTokens: 1024 },
       openRouterRouting: {
@@ -474,8 +475,19 @@ describe("prisma catalog data loader", () => {
   });
 
   it("makes provider-backed search availability independent from answer-model grants", () => {
+    const technicalModel = providerBackedSearchModel();
+    expect(filterAvailableProviderModels({
+      exposeFake: false,
+      memberships: [],
+      models: [technicalModel]
+    })).toEqual([technicalModel]);
+    expect(filterExposedProviderModels({
+      entitlements: entitlements({ fullAccess: true }),
+      models: [technicalModel]
+    })).toEqual([]);
+
     const strategies = filterExposedSearchStrategies({
-      availableProviderModels: [providerBackedSearchModel()],
+      availableProviderModels: [technicalModel],
       entitlements: entitlements({ searches: ["perplexity-tool-search"] }),
       exposedProviderModels: [],
       searchStrategies: [
@@ -669,7 +681,7 @@ describe("prisma catalog data loader", () => {
     })]);
   });
 
-  it("does not silently replace an unavailable saved deployment with the first model", () => {
+  it("does not expose or silently replace an unavailable saved deployment", () => {
     const available = providerModelToCatalogEntry(providerModel({
       model: { connectionId: "connection-available", id: "deployment-available" }
     }));
@@ -698,8 +710,8 @@ describe("prisma catalog data loader", () => {
     });
 
     expect(catalog.defaults).toMatchObject({
-      modelId: "deployment-unavailable",
-      provider: "connection-unavailable"
+      modelId: "",
+      provider: ""
     });
   });
 });

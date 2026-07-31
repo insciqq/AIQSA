@@ -30,6 +30,7 @@ function plan(
     models: [{
       configuration: {
         adapterKind: "openai_chat_completions_compatible",
+        answerSelectable: true,
         capabilities: {
           contextWindow: 8_192,
           defaultMaxOutputTokens: 1_024,

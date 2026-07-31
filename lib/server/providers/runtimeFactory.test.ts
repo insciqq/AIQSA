@@ -32,6 +32,7 @@ function snapshot(
     credentialVersionId: "credential-version-1",
     model: {
       adapterKind,
+      answerSelectable: true,
       capabilities: {
         nativePdfInput: false,
         nativeSearch: false,

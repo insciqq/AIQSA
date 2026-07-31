@@ -59,6 +59,7 @@ function providerModel(
 ): AdminProviderModel {
   const configuration = {
     adapterKind: "openrouter_chat_completions" as const,
+    answerSelectable: true,
     capabilities: {
       nativePdfInput: false,
       nativeSearch: false,
@@ -767,6 +768,11 @@ describe("AdminProvidersSection", () => {
     fireEvent.click(screen.getByRole("option", { name: /Fetched Model/ }));
 
     expect(screen.getByRole("textbox", { name: /Deployment name/ })).toHaveValue("Fetched Model");
+    const answerModelToggle = screen.getByRole("checkbox", {
+      name: /Available as answer model/
+    });
+    expect(answerModelToggle).toBeChecked();
+    fireEvent.click(answerModelToggle);
     const advanced = screen.getByText("Advanced model settings").closest("details");
     expect(advanced).not.toHaveAttribute("open");
     fireEvent.click(screen.getByRole("radio", { name: /Only selected providers/ }));
@@ -802,6 +808,7 @@ describe("AdminProvidersSection", () => {
       expect.objectContaining({
         configuration: expect.objectContaining({
           adapterKind: "openrouter_chat_completions",
+          answerSelectable: false,
           openRouterRouting: {
             mode: "only_selected",
             providers: ["provider-a", "provider-b"]
@@ -895,6 +902,35 @@ describe("AdminProvidersSection", () => {
     fireEvent.click(within(models).getByLabelText("More actions for Configured model model"));
     expect(within(models).getByRole("button", { name: "Delete Configured model model" })).toBeVisible();
     expect(within(models).queryByText("vendor/model", { exact: true })).not.toBeInTheDocument();
+    expect(within(models).getByText(/Answer model/)).toBeVisible();
+  });
+
+  it("labels technical-only model drafts without presenting them as answer models", () => {
+    const view = controller();
+    const ordinary = providerModel();
+    const technical = providerModel({
+      displayName: "Web Search runtime",
+      draftConfig: {
+        ...ordinary.draftConfig,
+        answerSelectable: false
+      },
+      id: "model-search-runtime"
+    });
+    const configuredConnection: AdminProviderConnection = {
+      ...connection,
+      models: [technical]
+    };
+    view.state.connections = [configuredConnection];
+    view.state.selectedConnection = configuredConnection;
+    mocks.useController.mockReturnValue(view);
+
+    render(<AdminProvidersSection active groups={[]} />);
+    openTask("Models");
+
+    const models = screen.getByRole("list", { name: "Configured models" });
+    const row = within(models).getByText("Web Search runtime")
+      .closest<HTMLElement>('[role="listitem"]')!;
+    expect(within(row).getByText(/Technical runtime only/)).toBeVisible();
   });
 
   it("makes model availability and restoration actions visually explicit", async () => {
@@ -1155,6 +1191,7 @@ describe("AdminProvidersSection", () => {
       activatedAt: "2026-07-23T00:00:00.000Z",
       activeConfig: {
         adapterKind: "openrouter_chat_completions" as const,
+        answerSelectable: true,
         capabilities: {
           nativePdfInput: false,
           nativeSearch: false,
@@ -1172,6 +1209,7 @@ describe("AdminProvidersSection", () => {
       displayName: "Active Model",
       draftConfig: {
         adapterKind: "openrouter_chat_completions" as const,
+        answerSelectable: true,
         capabilities: {
           nativePdfInput: false,
           nativeSearch: false,

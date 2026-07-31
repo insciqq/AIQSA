@@ -53,6 +53,7 @@ const connection: AdminProviderConnection = {
     displayName: "Model",
     draftConfig: {
       adapterKind: "openrouter_chat_completions",
+      answerSelectable: true,
       capabilities: {
         nativePdfInput: false,
         nativeSearch: false,

@@ -20,6 +20,7 @@ function input(
     mode: "account_catalog",
     model: {
       adapterKind: "openrouter_chat_completions",
+      answerSelectable: true,
       capabilities: {
         nativePdfInput: false,
         nativeSearch: false,

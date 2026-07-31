@@ -7,6 +7,7 @@ import type {
 import { RUN_PROFILE_IDS } from "../../../contracts/runProfiles";
 import { runProfileMetadata } from "../../../domain/runProfiles";
 import { resolveRunProfileModel } from "../../runProfiles/configuration";
+import { normalizeProviderModelConfiguration } from "../../providers/providerConfiguration";
 import type {
   AdminRunProfileRepository,
   AdminRunProfileState,
@@ -46,9 +47,15 @@ function catalog(state: AdminRunProfileState): AdminRunProfileCatalog {
       version: profile.version
     };
   });
-  const models = state.models.map((model): AdminRunProfileModel => {
+  const models = state.models.flatMap((model): AdminRunProfileModel[] => {
+    try {
+      if (!normalizeProviderModelConfiguration(model.activeConfig).answerSelectable) return [];
+    } catch {
+      // Preserve existing inactive/malformed rows so an administrator can
+      // reconcile a saved profile without losing its deployment identity.
+    }
     const resolved = resolveRunProfileModel(model);
-    return {
+    return [{
       connectionEnabled: model.connection.enabled,
       defaultReasoningEffort: resolved?.controls.reasoningEffort.defaultValue ?? "none",
       defaultReasoningMode: resolved?.controls.reasoningMode?.defaultValue ?? "standard",
@@ -59,7 +66,7 @@ function catalog(state: AdminRunProfileState): AdminRunProfileCatalog {
       reasoningEfforts: resolved?.controls.reasoningEffort.options ?? [],
       reasoningModes: resolved?.controls.reasoningMode?.options ?? ["standard"],
       selectable: Boolean(resolved)
-    };
+    }];
   });
   return { models, profiles };
 }

@@ -34,6 +34,7 @@ const connectionConfiguration = {
 
 const modelConfiguration = {
   adapterKind: "openai_responses_compatible" as const,
+  answerSelectable: true,
   capabilities: {
     nativePdfInput: false,
     nativeSearch: false,
@@ -248,6 +249,7 @@ describe("admin provider service", () => {
     );
     const geminiConfiguration = {
       adapterKind: "gemini_interactions_native" as const,
+      answerSelectable: true,
       capabilities: {
         nativePdfInput: false,
         nativeSearch: true,

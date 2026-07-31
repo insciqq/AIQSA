@@ -56,6 +56,7 @@ function isModel(value: unknown): boolean {
   return record(value) && typeof value.id === "string" && typeof value.displayName === "string" &&
     typeof value.enabled === "boolean" && typeof value.draftVersion === "number" &&
     record(value.draftConfig) && typeof value.draftConfig.adapterKind === "string" &&
+    typeof value.draftConfig.answerSelectable === "boolean" &&
     typeof value.draftConfig.upstreamModelId === "string";
 }
 

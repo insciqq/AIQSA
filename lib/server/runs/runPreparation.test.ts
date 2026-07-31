@@ -149,6 +149,7 @@ function compatibleAdmissionPlan(
         credentialVersionId: "credential-version-compatible",
         model: {
           adapterKind,
+          answerSelectable: true,
           capabilities,
           defaultParams,
           upstreamModelId: "vendor/model"

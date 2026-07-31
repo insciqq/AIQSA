@@ -51,6 +51,7 @@ export type AdminOpenRouterRouting =
 
 export type AdminProviderModelConfiguration = {
   adapterKind: AdminProviderAdapterKind;
+  answerSelectable: boolean;
   capabilities: AdminProviderModelCapabilities;
   defaultParams: Record<string, unknown>;
   openRouterRouting?: AdminOpenRouterRouting;

@@ -119,7 +119,18 @@ function writes() {
 
 describe("admin run profile service", () => {
   it("returns the fixed semantic order and only selectable model metadata", async () => {
-    const catalog = await createAdminRunProfileService(repository()).getCatalog();
+    const ordinary = activeModel();
+    const technical = activeModel({
+      activeConfig: {
+        ...(ordinary.activeConfig as Record<string, unknown>),
+        answerSelectable: false
+      },
+      displayName: "Search runtime",
+      id: "deployment-search-runtime"
+    });
+    const catalog = await createAdminRunProfileService(repository({
+      async loadState() { return state({ models: [ordinary, technical] }); }
+    })).getCatalog();
 
     expect(catalog.profiles.map((profile) => profile.id)).toEqual(["fast", "balanced", "deep"]);
     expect(catalog.models).toEqual([{

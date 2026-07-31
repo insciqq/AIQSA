@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { loadProviderAdmissionPlan } from "./admission";
 
 function fullAccessAdmissionDb(input: Readonly<{
+  answerSelectable?: boolean;
   compatibleResponses?: boolean;
   directCredential?: boolean;
 }> = {}) {
@@ -29,6 +30,7 @@ function fullAccessAdmissionDb(input: Readonly<{
           adapterKind: input.compatibleResponses
             ? "openai_responses_compatible"
             : "openai_responses_native",
+          answerSelectable: input.answerSelectable ?? true,
           capabilities: {
             nativePdfInput: true,
             nativeSearch: true,
@@ -219,6 +221,21 @@ describe("provider admission", () => {
     expect(accessGrantCount).not.toHaveBeenCalled();
   });
 
+  it("rejects a technical-only deployment as the answer model", async () => {
+    const { db } = fullAccessAdmissionDb({ answerSelectable: false });
+
+    await expect(loadProviderAdmissionPlan(
+      db as unknown as Prisma.TransactionClient,
+      {
+        providerConnectionId: "connection-future",
+        providerModelId: "deployment-future",
+        searchStrategyId: "future-native-search",
+        userId: "user-1"
+      }
+    )).rejects.toMatchObject({ code: "model_not_available" });
+    expect(db.providerCredential.findMany).not.toHaveBeenCalled();
+  });
+
   it("does not authorize a provider-backed search deployment as its own answer model", async () => {
     const providerModelId = "opaque-search-deployment";
     const findUnique = vi.fn();
@@ -296,6 +313,7 @@ describe("provider admission", () => {
       activeConfig: {
         ...answerModel.activeConfig,
         adapterKind: "openai_responses_compatible",
+        answerSelectable: !id.startsWith("technical-"),
         capabilities: { ...answerModel.activeConfig.capabilities, nativeSearch: true },
         upstreamModelId: `upstream-${id}`
       },

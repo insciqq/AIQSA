@@ -286,9 +286,14 @@ export function filterExposedProviderModels(input: {
   entitlements: ResolvedEntitlements;
   models: CatalogProviderModelRow[];
 }): CatalogProviderModelRow[] {
-  return input.models.filter((model) =>
-    canAccessModel(input.entitlements, model.connectionId, model.id)
-  );
+  return input.models.filter((model) => {
+    const configuration = activeModelConfiguration(model);
+    return Boolean(
+      configuration &&
+      (configuration.adapterKind === "fake" || configuration.answerSelectable) &&
+      canAccessModel(input.entitlements, model.connectionId, model.id)
+    );
+  });
 }
 
 export function providerModelToCatalogEntry(

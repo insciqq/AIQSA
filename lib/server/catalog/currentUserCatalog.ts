@@ -166,10 +166,9 @@ export function buildCurrentUserCatalog(input: CatalogData): CurrentUserCatalogW
       controlValues: isRecord(input.settings.defaultControlValues)
         ? input.settings.defaultControlValues
         : {},
-      modelId: defaultModel?.modelId ?? input.settings.defaultProviderModelId ?? "",
+      modelId: defaultModel?.modelId ?? "",
       promptPresetId: input.settings.defaultPromptPresetId,
-      provider:
-        defaultModel?.provider ?? input.settings.defaultProviderConnectionId ?? "",
+      provider: defaultModel?.provider ?? "",
       searchStrategyId: resolveSearchStrategyId(
         defaultModel,
         input.settings.defaultSearchStrategyId

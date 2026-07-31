@@ -103,7 +103,7 @@ export function AdminProviderModelsTask({
                   <div className="min-w-0">
                     <p className="break-words text-sm font-medium text-ink">{model.displayName}</p>
                     <p className="mt-1 text-xs leading-5 text-ink-muted">
-                      {adminProviderAdapterLabel(model.draftConfig.adapterKind)} · {routingText}
+                      {adminProviderAdapterLabel(model.draftConfig.adapterKind)} · {routingText} · {model.draftConfig.answerSelectable ? "Answer model" : "Technical runtime only"}
                     </p>
                     <p className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
                       <AdminAvailabilityStatus enabled={model.enabled} />

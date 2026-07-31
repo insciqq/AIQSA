@@ -348,6 +348,7 @@ describe("Prisma admin provider repository", () => {
       models: [{
         configuration: {
           adapterKind: "openai_responses_compatible",
+          answerSelectable: true,
           capabilities: {
             nativePdfInput: false,
             nativeSearch: false,

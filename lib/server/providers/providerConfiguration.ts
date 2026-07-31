@@ -43,6 +43,7 @@ export type OpenRouterRoutingConfiguration =
 
 export type ProviderModelConfiguration = {
   adapterKind: ProviderAdapterKind;
+  answerSelectable: boolean;
   capabilities: ProviderModelCapabilities;
   defaultParams: Record<string, unknown>;
   openRouterRouting?: OpenRouterRoutingConfiguration;
@@ -51,6 +52,7 @@ export type ProviderModelConfiguration = {
 
 export type ProviderConfigurationErrorCode =
   | "provider_adapter_kind_invalid"
+  | "provider_answer_selection_invalid"
   | "provider_api_root_invalid"
   | "provider_authentication_mode_invalid"
   | "provider_default_params_invalid"
@@ -325,6 +327,9 @@ export function normalizeProviderModelConfiguration(value: unknown): ProviderMod
   if (!isRecord(value) || !providerAdapterKinds.includes(value.adapterKind as ProviderAdapterKind)) {
     throw new ProviderConfigurationError("provider_adapter_kind_invalid");
   }
+  if (value.answerSelectable !== undefined && typeof value.answerSelectable !== "boolean") {
+    throw new ProviderConfigurationError("provider_answer_selection_invalid");
+  }
   if (!boundedText(value.upstreamModelId, 256)) {
     throw new ProviderConfigurationError("provider_upstream_model_invalid");
   }
@@ -343,6 +348,7 @@ export function normalizeProviderModelConfiguration(value: unknown): ProviderMod
 
   return {
     adapterKind,
+    answerSelectable: value.answerSelectable ?? true,
     capabilities: normalizeProviderModelCapabilities(value.capabilities),
     defaultParams,
     ...(openRouterRouting ? { openRouterRouting } : {}),

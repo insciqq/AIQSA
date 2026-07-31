@@ -148,6 +148,7 @@ export function providerModelConfigurationFromCatalogEntry(
 
   return {
     adapterKind: model.adapterKind,
+    answerSelectable: true,
     capabilities: {
       ...model.capabilities,
       contextWindow: model.contextWindow

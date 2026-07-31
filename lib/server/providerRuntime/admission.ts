@@ -207,6 +207,7 @@ async function loadRole(
     fullAccess: boolean;
     groupIds: string[];
     modelId: string;
+    requireAnswerSelectable: boolean;
     requireEntitlement: boolean;
     userId: string;
   }
@@ -265,6 +266,11 @@ async function loadRole(
       },
       snapshot
     };
+  }
+
+  const modelConfig = normalizeProviderModelConfiguration(model.activeConfig);
+  if (input.requireAnswerSelectable && !modelConfig.answerSelectable) {
+    throw new ProviderAdmissionError("model_not_available");
   }
 
   const [credentials, assignments, directAssignment] = await Promise.all([
@@ -326,7 +332,6 @@ async function loadRole(
   });
   if (!check) throw new ProviderAdmissionError("model_not_available");
 
-  const modelConfig = normalizeProviderModelConfiguration(model.activeConfig);
   const snapshot = withResolvedModelCapabilities(
     normalizeProviderExecutionSnapshot({
       connection: connectionConfig,
@@ -377,6 +382,7 @@ export async function loadTechnicalProviderRole(
     fullAccess: authority.fullAccess,
     groupIds: authority.groupIds,
     modelId: input.providerModelId,
+    requireAnswerSelectable: false,
     requireEntitlement: false,
     userId: input.userId
   });
@@ -438,6 +444,7 @@ export async function loadProviderAdmissionPlan(
     fullAccess,
     groupIds,
     modelId: input.providerModelId,
+    requireAnswerSelectable: true,
     requireEntitlement: true,
     userId: input.userId
   });

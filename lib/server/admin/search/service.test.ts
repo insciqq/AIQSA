@@ -21,6 +21,7 @@ function technicalModel() {
   return {
     activeConfig: {
       adapterKind: "openai_responses_compatible",
+      answerSelectable: false,
       capabilities: {
         nativePdfInput: false,
         nativeSearch: true,

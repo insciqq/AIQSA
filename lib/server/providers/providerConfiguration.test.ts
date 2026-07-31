@@ -112,6 +112,35 @@ describe("provider connection configuration", () => {
 });
 
 describe("provider model configuration", () => {
+  it("keeps legacy models answer-selectable and preserves an explicit technical-only role", () => {
+    const legacy = normalizeProviderModelConfiguration({
+      adapterKind: "openai_responses_compatible",
+      capabilities,
+      defaultParams: {},
+      upstreamModelId: "legacy-answer-model"
+    });
+    const technical = normalizeProviderModelConfiguration({
+      adapterKind: "openai_responses_compatible",
+      answerSelectable: false,
+      capabilities,
+      defaultParams: {},
+      upstreamModelId: "search-runtime"
+    });
+
+    expect(legacy.answerSelectable).toBe(true);
+    expect(technical.answerSelectable).toBe(false);
+    expectCode(
+      () => normalizeProviderModelConfiguration({
+        adapterKind: "openai_responses_compatible",
+        answerSelectable: "false",
+        capabilities,
+        defaultParams: {},
+        upstreamModelId: "invalid-runtime"
+      }),
+      "provider_answer_selection_invalid"
+    );
+  });
+
   it("normalizes bounded declared reasoning controls", () => {
     expect(normalizeProviderModelConfiguration({
       adapterKind: "openai_responses_compatible",
@@ -195,6 +224,7 @@ describe("provider model configuration", () => {
       })
     ).toEqual({
       adapterKind: "openai_chat_completions_compatible",
+      answerSelectable: true,
       capabilities,
       defaultParams: { maxTokens: 2048 },
       upstreamModelId: "local-model"

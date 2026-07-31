@@ -132,6 +132,7 @@ async function main(): Promise<void> {
       credentialVersionId: "gemini-smoke-credential-version",
       model: {
         adapterKind: "gemini_interactions_native",
+        answerSelectable: true,
         capabilities: modelCapabilities,
         defaultParams,
         upstreamModelId: modelId

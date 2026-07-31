@@ -1201,6 +1201,7 @@ test("administrator activates a Custom replacement and deletes its complete conf
   };
   const modelConfiguration: AdminProviderModelConfiguration = {
     adapterKind: "openai_responses_compatible",
+    answerSelectable: true,
     capabilities: {
       nativeImageGeneration: true,
       nativePdfInput: false,
@@ -1708,6 +1709,8 @@ test("administrator completes the OpenRouter key, model, route, check, and activ
   await modelListbox.getByRole("option", { name: /E2E Model/ }).click();
   await expect(modelPicker).toContainText("E2E Model");
   await expect(section.getByText("128,000 context tokens · tools, reasoning")).toBeVisible();
+  await expect(section.getByRole("checkbox", { name: /Available as answer model/ }))
+    .toBeChecked();
 
   const endpointCatalogResponse = page.waitForResponse((response) => {
     const request = response.request();
@@ -1738,6 +1741,7 @@ test("administrator completes the OpenRouter key, model, route, check, and activ
   expect(submittedModelBody).toMatchObject({
     configuration: {
       adapterKind: "openrouter_chat_completions",
+      answerSelectable: true,
       openRouterRouting: {
         mode: "only_selected",
         providers: ["acme-primary", "acme-backup"]
@@ -1749,6 +1753,7 @@ test("administrator completes the OpenRouter key, model, route, check, and activ
 
   const configuredModels = section.getByRole("list", { name: "Configured models" });
   const modelRow = configuredModels.getByRole("listitem").filter({ hasText: "E2E Model" });
+  await expect(modelRow).toContainText("Answer model");
   await expect(modelRow.getByText("Enabled", { exact: true })).toBeVisible();
   await modelRow.getByRole("button", { name: "Disable E2E Model model" }).click();
   await expect(modelRow.getByText("Disabled", { exact: true })).toBeVisible();

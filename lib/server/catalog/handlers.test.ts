@@ -220,7 +220,7 @@ describe("catalog handler", () => {
     });
   });
 
-  it("does not replace a filtered stable default with the first entitled model", () => {
+  it("does not expose or replace a filtered stable default", () => {
     const catalog = buildCurrentUserCatalog({
       entitlements: {
         modelKeys: new Set(["openrouter:google/gemini-3.5-flash"]),
@@ -246,8 +246,8 @@ describe("catalog handler", () => {
     });
 
     expect(catalog.defaults).toMatchObject({
-      modelId: "claude-opus-4-8",
-      provider: "anthropic",
+      modelId: "",
+      provider: "",
       searchStrategyId: "search-disabled"
     });
   });

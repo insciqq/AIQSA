@@ -40,6 +40,7 @@ function credential(
 function model(overrides: Partial<AdminProviderModel> = {}): AdminProviderModel {
   const configuration = {
     adapterKind: "openrouter_chat_completions" as const,
+    answerSelectable: true,
     capabilities: {
       nativePdfInput: false,
       nativeSearch: false,

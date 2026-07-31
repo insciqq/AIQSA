@@ -48,6 +48,7 @@ export function resolveRunProfileModel(
   try {
     normalizeProviderConnectionConfiguration(model.connection.activeConfig);
     const configuration = normalizeProviderModelConfiguration(model.activeConfig);
+    if (!configuration.answerSelectable) return null;
     const controls = resolveProviderModelParameterControls({
       adapterKind: configuration.adapterKind as CatalogAdapterKind,
       defaultParams: configuration.defaultParams,

@@ -12,6 +12,13 @@ function configuredUpstreamModelId(value: unknown): string | null {
     : null;
 }
 
+function isAnswerSelectableModel(value: unknown): boolean {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return true;
+  const configuration = value as Record<string, unknown>;
+  return !Object.prototype.hasOwnProperty.call(configuration, "answerSelectable") ||
+    configuration.answerSelectable === true;
+}
+
 export async function loadAdminGrantableCatalog(prisma: PrismaClient): Promise<AdminCatalog> {
   const [providerModels, searchStrategies] = await Promise.all([
     prisma.providerModel.findMany({
@@ -62,12 +69,15 @@ export async function loadAdminGrantableCatalog(prisma: PrismaClient): Promise<A
       }
     })
   ]);
+  const answerModels = providerModels.filter((model) =>
+    isAnswerSelectableModel(model.activeConfig)
+  );
   const providers = new Map(
-    providerModels.map((model) => [model.connection.id, model.connection.displayName])
+    answerModels.map((model) => [model.connection.id, model.connection.displayName])
   );
 
   return {
-    models: providerModels.map((model) => {
+    models: answerModels.map((model) => {
       const upstreamModelId = configuredUpstreamModelId(model.activeConfig);
 
       return {
