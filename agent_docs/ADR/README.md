@@ -55,6 +55,8 @@ Every ADR also declares `Amends: none` or a comma-separated list of earlier ADR 
 - `0044-explicit-answer-selectable-provider-models.md` - gives provider deployments an explicit backward-compatible answer-selection property so dedicated Search runtimes stay available to Search while remaining absent from answer catalogs, grants, profiles, and admission.
 - `0045-bounded-compatible-reasoning-request-mapping.md` - adds strict effort and optional mode field mappings to compatible Chat/Responses models, preserves OpenAI defaults, and exposes modes only when the adapter can serialize them.
 - `0046-inherited-search-preferences-and-model-scoped-reasoning.md` - adds a versioned non-granting installation Search recommendation, preserves explicit personal plans and Off separately from inherited state, derives model-compatible execution without destructive saves, and exposes the same per-model Reasoning tuple directly only when the composer has room.
+- `0047-bounded-nested-search-operation-evidence.md` - retains a bounded allowlisted provider-operation trace under the exact client Search tool/engine execution, exposes exact provider-reported queries without raw payloads, and makes the completed Run receipt a non-duplicated three-level disclosure.
+- `0048-passive-administrator-release-awareness.md` - compares the packaged version with the fixed repository's latest stable published GitHub Release through a cached admin-only server check and adds a passive Control Center notice without update authority.
 
 ## Superseded ADRs
 

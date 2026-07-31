@@ -3716,6 +3716,136 @@ test("shows tool activity by default and persists hide/show across reload", asyn
   await expect(page.getByTestId("thread-tool-activity")).toContainText("Mem0");
 });
 
+test("expands a Search tool into engine and provider-operation detail", async ({ page }) => {
+  const chatId = "chat-search-tool-trace";
+  const chat = {
+    activeLeafMessageId: "assistant-search-trace",
+    createdAt: "2026-07-31T12:00:00.000Z",
+    defaultModelId: "gpt-5.5",
+    defaultPromptPresetId: "prompt-helpful",
+    defaultProvider: "openai",
+    folderId: null,
+    id: chatId,
+    messageCount: 2,
+    messages: [
+      {
+        artifactSummary: null,
+        content: { blocks: [{ text: "latest news in Moscow", type: "text" }] },
+        createdAt: "2026-07-31T12:00:00.000Z",
+        errorMessage: null,
+        id: "user-search-trace",
+        modelId: "gpt-5.5",
+        modelRunId: null,
+        parentMessageId: null,
+        provider: "openai",
+        role: "user",
+        status: "complete"
+      },
+      {
+        artifactSummary: {
+          citationCount: 0,
+          citations: [],
+          reasoningCount: 0,
+          reasoningText: [],
+          searchCount: 1,
+          searchStrategy: "client-search-plan",
+          toolCallCount: 1,
+          toolCalls: [{
+            argumentsPreview: { query: "latest news in Moscow" },
+            callId: "search-call-1",
+            capability: "web_search",
+            credentialSources: [],
+            durationMs: 145_900,
+            errorMessage: null,
+            externalAccountLabel: null,
+            ordinal: 0,
+            resultPreview: { content: [{ text: "Search completed", type: "text" }] },
+            round: 1,
+            searchExecutions: [{
+              displayName: "Web Search · Sol",
+              durationMs: 145_800,
+              modelId: "gpt-5.6-sol",
+              optionId: "web-search-sol",
+              provider: "openai-compatible",
+              providerOperations: [
+                {
+                  id: "ws-1",
+                  kind: "search",
+                  ordinal: 0,
+                  pattern: null,
+                  queries: ["Moscow latest news", "Moscow news today"],
+                  status: "complete",
+                  url: null
+                },
+                {
+                  id: "ws-2",
+                  kind: "open_page",
+                  ordinal: 1,
+                  pattern: null,
+                  queries: [],
+                  status: "complete",
+                  url: "https://example.com/moscow"
+                }
+              ],
+              providerOperationsTruncated: false,
+              query: "latest news in Moscow",
+              sourceCount: 4,
+              status: "complete",
+              warning: null
+            }],
+            serverName: null,
+            status: "complete",
+            toolName: "search_selected_engines"
+          }]
+        },
+        content: { blocks: [{ text: "Here is the latest news.", type: "text" }] },
+        createdAt: "2026-07-31T12:02:26.000Z",
+        errorMessage: null,
+        id: "assistant-search-trace",
+        modelId: "gpt-5.5",
+        modelRunId: "run-search-trace",
+        parentMessageId: "user-search-trace",
+        provider: "openai",
+        role: "assistant",
+        status: "complete"
+      }
+    ],
+    pinned: false,
+    title: "Search tool trace",
+    updatedAt: "2026-07-31T12:02:26.000Z",
+    usageStats: null
+  };
+
+  await page.addInitScript((activeChatId) => {
+    window.localStorage.setItem("aiqsa.activeChatId", activeChatId);
+  }, chatId);
+  await installMatrixCatalogFixture(page, { chats: [chat], contentMatches: [], folders: [] });
+  await signIn(page);
+
+  const activity = page.getByTestId("thread-tool-activity");
+  await activity.getByRole("button", { name: /Used 1 tool/ }).click();
+  await page.getByText("search_selected_engines", { exact: true }).click();
+  const executions = page.getByTestId("thread-tool-search-executions");
+  await expect(executions).toContainText("Search executions · 1");
+  await expect(executions).toContainText("Web Search · Sol");
+  await expect(executions).toContainText("4 sources");
+  await expect(page.getByTestId("thread-search-summary")).toHaveCount(0);
+
+  await executions.getByText("Web Search · Sol", { exact: true }).click();
+  const detail = page.getByTestId("thread-search-execution-details");
+  await expect(detail).toContainText("latest news in Moscow");
+  await expect(detail).toContainText("Provider operations · 2");
+  await expect(detail).toContainText("Moscow latest news");
+  await expect(detail).toContainText("Moscow news today");
+  await expect(detail).toContainText("https://example.com/moscow");
+  await expectNoHorizontalOverflow(page);
+
+  await page.setViewportSize({ height: 844, width: 390 });
+  await detail.scrollIntoViewIfNeeded();
+  await expect(detail).toBeVisible();
+  await expectNoHorizontalOverflow(page);
+});
+
 test("supports the default QSA chat and folder workflow", async ({ browser, page }) => {
   test.setTimeout(60_000);
   const suffix = Date.now();

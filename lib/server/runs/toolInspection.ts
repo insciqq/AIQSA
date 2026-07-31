@@ -2,6 +2,7 @@ import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
 import { projectThreadToolActivity, type ThreadToolActivity } from "../../domain/toolActivity";
 import { resolveMcpRunTool } from "../mcp/toolExecutor";
 import type { McpRunPlanSnapshot } from "../mcp/runPlan";
+import { threadSearchExecutionsFromToolPreview } from "../search/providerOperations";
 import type { ModelToolCall, ToolExecutionResult } from "../tools/types";
 import { parsePersistedToolExecutionResult } from "./toolExecutionPersistence";
 import { isToolLoopJsonValue } from "./toolLoopPersistence";
@@ -230,6 +231,7 @@ export function toolResultInspectionArtifact(input: Readonly<{
   result: ToolExecutionResult;
   round: number;
 }>): ModelRunSseEvent {
+  const searchExecutions = threadSearchExecutionsFromToolPreview(input.result.rawPreview);
   const rawError = input.result.status === "error" &&
     typeof input.result.rawPreview?.finalProviderResponsePreview === "object" &&
     input.result.rawPreview.finalProviderResponsePreview !== null &&
@@ -249,6 +251,7 @@ export function toolResultInspectionArtifact(input: Readonly<{
         ordinal: input.ordinal,
         resultPreview: resultPreview(input.result),
         round: input.round,
+        ...(searchExecutions !== null ? { searchExecutions } : {}),
         snapshot: toolSnapshot(input.mcp, input.call.name),
         status: input.result.status
       }

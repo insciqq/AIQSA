@@ -527,7 +527,12 @@ function ThreadMessageRowComponent({
   const [expandedDisclosures, setExpandedDisclosures] = useState<ReadonlySet<InlineReceiptDisclosure>>(
     () => new Set()
   );
-  const hasInlineSearch = Boolean(artifactSummary?.searchCount) && runActivity?.search !== "active";
+  const hasNestedToolSearch = Boolean(
+    artifactSummary?.toolCalls.some((call) => (call.searchExecutions?.length ?? 0) > 0)
+  );
+  const hasInlineSearch = Boolean(artifactSummary?.searchCount) &&
+    !hasNestedToolSearch &&
+    runActivity?.search !== "active";
   const hasInlineTools = showToolActivity && Boolean(artifactSummary?.toolCalls.length);
   const hasInlineCitations = showCitations && Boolean(artifactSummary?.citationCount);
   const hasInlineReasoning = showReasoningBlocks && Boolean(artifactSummary?.reasoningCount);
@@ -807,7 +812,8 @@ function ThreadMessageRowComponent({
             </>
           )}
 
-          {message.status === "streaming" && artifactSummary?.searchCount && runActivity?.search !== "active" ? (
+          {message.status === "streaming" && artifactSummary?.searchCount &&
+          !hasNestedToolSearch && runActivity?.search !== "active" ? (
             <div className={contentText || message.status !== "streaming" ? "mt-5" : undefined}>
               <SearchSummaryBlock
                 expanded={expandedDisclosures.has("search")}

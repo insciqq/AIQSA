@@ -1,4 +1,5 @@
 import { textMessageContent } from "../../domain/content";
+import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
 import type {
   NormalizedSearchPlanOption,
   ProviderRunOptions,
@@ -88,6 +89,7 @@ function answerRequest(): ProviderRunRequest {
 }
 
 function runtime(input: Readonly<{
+  artifacts?: ModelRunSseEvent[];
   fail?: string;
   onOptions?(options: ProviderRunOptions | undefined): void;
   onRequest?(request: ProviderRunRequest): void;
@@ -100,6 +102,7 @@ function runtime(input: Readonly<{
         input.onRequest?.(request);
         input.onOptions?.(options);
         if (input.fail) throw new Error(input.fail);
+        for (const artifact of input.artifacts ?? []) yield artifact;
         return {
           finalProviderResponsePreview: {
             sources: [{ title: `Source ${request.modelId}`, url: input.sourceUrl ?? `https://example.com/${request.modelId}` }]
@@ -205,6 +208,51 @@ describe("Search plan tool router", () => {
       expect.objectContaining({ optionId: "first", status: "complete" }),
       expect.objectContaining({ optionId: "second", status: "error", warning: "engine_unavailable" })
     ]);
+  });
+
+  it("retains the provider-reported Responses search operations without the raw payload", async () => {
+    const selected = option("sol", { displayName: "Web Search · Sol" });
+    const router = createSearchPlanToolRouter({
+      plan: { mode: "all_selected", options: [selected] },
+      runtimes: {
+        sol: runtime({
+          artifacts: [{
+            data: {
+              artifactType: "search",
+              payload: {
+                action: {
+                  queries: ["Moscow latest news", "Moscow news today"],
+                  type: "search"
+                },
+                id: "ws-1",
+                status: "completed",
+                type: "web_search_call"
+              }
+            },
+            type: "artifact"
+          }]
+        })
+      }
+    })!;
+
+    const result = await router.execute(call(router.tools[0]!.name, "latest news in Moscow"), answerRequest());
+
+    expect(searchExecutionsFromToolResult(result)).toEqual([
+      expect.objectContaining({
+        displayName: "Web Search · Sol",
+        providerOperations: [{
+          id: "ws-1",
+          kind: "search",
+          ordinal: 0,
+          pattern: null,
+          queries: ["Moscow latest news", "Moscow news today"],
+          status: "complete",
+          url: null
+        }],
+        query: "latest news in Moscow"
+      })
+    ]);
+    expect(JSON.stringify(result.rawPreview)).not.toContain("artifactType");
   });
 
   it("returns an explicit tool error when every selected engine fails", async () => {

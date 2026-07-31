@@ -65,4 +65,59 @@ describe("AdminConsoleHeader", () => {
     expect(onRefresh).toHaveBeenCalledOnce();
     expect(onRefresh).toHaveBeenCalledWith();
   });
+
+  it("shows a quiet expandable release indicator only when a newer release exists", () => {
+    const { rerender } = render(
+      <AdminConsoleHeader
+        adminEmail="admin@example.com"
+        lastLoadedAt={new Date("2026-07-31T13:00:00.000Z")}
+        loading={false}
+        onRefresh={() => undefined}
+        releaseStatus={{
+          checkedAt: "2026-07-31T13:00:00.000Z",
+          currentVersion: "0.1.12",
+          latestVersion: "0.1.12",
+          publishedAt: "2026-07-30T12:00:00.000Z",
+          releaseUrl: "https://github.com/insciqq/AIQSA/releases/tag/v0.1.12",
+          state: "current"
+        }}
+        submitting={false}
+      />
+    );
+
+    expect(screen.getByText("v0.1.12")).toBeVisible();
+    expect(screen.queryByText(/Update available/)).not.toBeInTheDocument();
+
+    rerender(
+      <AdminConsoleHeader
+        adminEmail="admin@example.com"
+        lastLoadedAt={new Date("2026-07-31T13:00:00.000Z")}
+        loading={false}
+        onRefresh={() => undefined}
+        releaseStatus={{
+          checkedAt: "2026-07-31T13:00:00.000Z",
+          currentVersion: "0.1.12",
+          latestVersion: "0.2.0",
+          publishedAt: "2026-07-31T12:00:00.000Z",
+          releaseUrl: "https://github.com/insciqq/AIQSA/releases/tag/v0.2.0",
+          state: "update_available"
+        }}
+        submitting={false}
+      />
+    );
+
+    const trigger = screen.getByText("Update available · v0.2.0").closest("summary");
+    expect(trigger).not.toBeNull();
+    fireEvent.click(trigger!);
+
+    const details = screen.getByTestId("admin-release-update-details");
+    expect(details).toBeVisible();
+    expect(details).toHaveTextContent("Installedv0.1.12");
+    expect(details).toHaveTextContent("Latestv0.2.0");
+    expect(details).toHaveTextContent("PublishedJul 31, 2026");
+    expect(screen.getByRole("link", { name: /View release notes/i })).toHaveAttribute(
+      "href",
+      "https://github.com/insciqq/AIQSA/releases/tag/v0.2.0"
+    );
+  });
 });

@@ -576,7 +576,12 @@ async function persistPlanSearchExecution(input: Readonly<{
 }>): Promise<void> {
   await input.repository.createSearchRun({
     artifacts: {
+      displayName: input.execution.displayName,
       invocationId: input.execution.invocationId,
+      ...(input.execution.providerOperations
+        ? { providerOperations: input.execution.providerOperations }
+        : {}),
+      providerOperationsTruncated: input.execution.providerOperationsTruncated,
       sources: input.execution.sources,
       usage: input.execution.usage,
       ...(input.execution.warning ? { warning: input.execution.warning } : {})

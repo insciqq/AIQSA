@@ -14,6 +14,7 @@ export type NormalizedSearchPlanOption = Readonly<{
   adapterKind: SearchAdapterKind;
   config: Readonly<Record<string, unknown>>;
   credentialMode: SearchCredentialMode;
+  displayName?: string;
   executionModes: readonly SearchPlanMode[];
   modelId: string | null;
   optionId: string;

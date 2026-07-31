@@ -35,6 +35,7 @@ import {
   type AdminConfirmationController
 } from "@/components/admin/useAdminConfirmationController";
 import { useAdminDashboardResource } from "@/components/admin/useAdminDashboardResource";
+import { useAdminReleaseStatus } from "@/components/admin/useAdminReleaseStatus";
 import { useAdminFeedback } from "@/components/admin/useAdminFeedback";
 import { useAdminFieldErrors } from "@/components/admin/useAdminFieldErrors";
 import { useAdminGroupsController, type AdminGroupsController } from "@/components/admin/useAdminGroupsController";
@@ -233,6 +234,7 @@ export function AdminPanel({ adminEmail, adminUserId }: AdminPanelProps) {
     onNavigationBlocked
   });
   const resource = useAdminDashboardResource({ feedback });
+  const releaseStatus = useAdminReleaseStatus(resource.lastLoadedAt?.getTime() ?? null);
   const actionRunner = useAdminActionRunner({
     feedback,
     onMutationReconciled: navigation.restoreFocusAfterMutation,
@@ -422,6 +424,7 @@ export function AdminPanel({ adminEmail, adminUserId }: AdminPanelProps) {
             loading={resource.loading}
             onReturnToChatClick={requestReturnToChat}
             onRefresh={() => void resource.refresh()}
+            releaseStatus={releaseStatus}
             submitting={actionsDisabled}
           />
         </div>

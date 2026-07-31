@@ -112,7 +112,10 @@ export function deriveRunReceipt({
 
   if (artifactSummary) {
     const searchCount = factualCount(artifactSummary.searchCount);
-    if (searchCount > 0) {
+    const searchNestedUnderTool = artifactSummary.toolCalls.some(
+      (call) => (call.searchExecutions?.length ?? 0) > 0
+    );
+    if (searchCount > 0 && !searchNestedUnderTool) {
       facts.push({
         ...(artifactSummary.searchStrategy
           ? { detail: searchStrategyDescription(artifactSummary.searchStrategy) }

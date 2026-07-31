@@ -208,6 +208,79 @@ describe("decodeGetModelRunResponse", () => {
     ).toBeNull();
   });
 
+  it("decodes nested Search execution evidence and rejects malformed or oversized traces", () => {
+    const searchExecution = {
+      displayName: "Web Search · Sol",
+      durationMs: 145_800,
+      modelId: "gpt-5.6-sol",
+      optionId: "web-search-sol",
+      provider: "openai-compatible",
+      providerOperations: [{
+        id: "ws-1",
+        kind: "search",
+        ordinal: 0,
+        pattern: null,
+        queries: ["Moscow latest news"],
+        status: "complete",
+        url: null
+      }],
+      providerOperationsTruncated: false,
+      query: "latest news in Moscow",
+      sourceCount: 4,
+      status: "complete",
+      warning: null
+    };
+    const searchToolActivity = {
+      ...toolActivity,
+      capability: "web_search",
+      searchExecutions: [searchExecution],
+      serverName: null,
+      toolName: "search_selected_engines"
+    };
+
+    expect(
+      decodeGetModelRunResponse({
+        run: { ...requiredRunFields(), toolCalls: [searchToolActivity] }
+      })?.toolCalls
+    ).toEqual([searchToolActivity]);
+
+    expect(
+      decodeGetModelRunResponse({
+        run: {
+          ...requiredRunFields(),
+          toolCalls: [{
+            ...searchToolActivity,
+            searchExecutions: [{
+              ...searchExecution,
+              providerOperations: Array.from({ length: 33 }, (_, ordinal) => ({
+                ...searchExecution.providerOperations[0],
+                id: `ws-${ordinal}`,
+                ordinal
+              }))
+            }]
+          }]
+        }
+      })
+    ).toBeNull();
+    expect(
+      decodeGetModelRunResponse({
+        run: {
+          ...requiredRunFields(),
+          toolCalls: [{
+            ...searchToolActivity,
+            searchExecutions: [{
+              ...searchExecution,
+              providerOperations: [{
+                ...searchExecution.providerOperations[0],
+                queries: ["x".repeat(2_001)]
+              }]
+            }]
+          }]
+        }
+      })
+    ).toBeNull();
+  });
+
   it("ignores additive envelope and run fields while preserving opaque entries", () => {
     const opaquePayload = Symbol("payload");
     const opaqueError = new Date("2026-07-13T00:00:00.000Z");

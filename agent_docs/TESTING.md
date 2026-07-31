@@ -59,7 +59,7 @@ docker compose -f docker-compose.dev.yml exec -T \
   npx playwright test tests/e2e/non-admin-access.spec.ts --project=chromium
 ```
 
-The shell browser fixture also proves that persisted tool activity is visible by default and that hide/show survives reload without changing the run. Reuse the existing server so local MCP state is preserved:
+The shell browser fixture also proves that persisted tool activity is visible by default, hide/show survives reload without changing the run, and a client Search tool expands through engine execution to bounded provider-reported operations/queries without duplicate Search chrome or compact overflow. Reuse the existing server so local MCP state is preserved:
 
 ```bash
 docker compose -f docker-compose.dev.yml exec -T \
@@ -67,6 +67,16 @@ docker compose -f docker-compose.dev.yml exec -T \
   npx playwright test tests/e2e/shell.spec.ts --project=chromium \
   --grep "shows tool activity by default and persists hide/show across reload"
 ```
+
+Use the adjacent focused title `expands a Search tool into engine and provider-operation detail` for the nested Search receipt slice. The passive update notice has its own mocked-GitHub browser boundary:
+
+```bash
+docker compose -f docker-compose.dev.yml exec -T \
+  -e PLAYWRIGHT_REUSE_SERVER=1 app \
+  npx playwright test tests/e2e/admin-release-update.spec.ts --project=chromium
+```
+
+Routine Playwright never contacts GitHub. Release-reader cache/ETag/failure behavior is deterministic Vitest coverage; the browser spec intercepts only the bounded AIQSA admin response.
 
 ## Task-Specific Checks
 
@@ -180,7 +190,7 @@ npm run db:retention:migration:contract
 npm run db:search:migration:contract
 ```
 
-The Search control-plane migration contract starts from a pre-ADR-0043 schema and proves singleton defaults, grants, accepted provider bindings, and historical Search runs survive while every concrete option gains an active revision and new multi-binding constraints admit several technical engines. It then applies the inherited-preference migration and proves existing non-null plans remain personal, the installation policy starts versioned at Off, `defaultSearchPlan` becomes nullable with no SQL default, and a newly inserted settings row inherits through null. Search changes additionally require deterministic preferred/effective plan and combination coverage, version-fenced admin policy/lifecycle tests, catalog/settings/admission, query-only adapter, fan-out/recovery, accepted-run preference persistence, composer, and Control Center tests. Provider-model role changes must prove legacy answer defaults, technical-only exclusion from every answer/grant/profile projection and direct admission, plus continued technical Search listing and admission without an answer-model grant. Browser coverage proves organization/personal/Off behavior, retained unavailable engines across model switches/reload, direct wide/tall versus More-only short Reasoning, the real Search destination, and viewport-bounded Run setup. Real gateway proof remains one explicit sanitized operator-authorized smoke, never routine Vitest or Playwright input.
+The Search control-plane migration contract starts from a pre-ADR-0043 schema and proves singleton defaults, grants, accepted provider bindings, and historical Search runs survive while every concrete option gains an active revision and new multi-binding constraints admit several technical engines. It then applies the inherited-preference migration and proves existing non-null plans remain personal, the installation policy starts versioned at Off, `defaultSearchPlan` becomes nullable with no SQL default, and a newly inserted settings row inherits through null. Search changes additionally require deterministic preferred/effective plan and combination coverage, version-fenced admin policy/lifecycle tests, catalog/settings/admission, query-only adapter, fan-out/recovery, accepted-run preference persistence, composer, and Control Center tests. Provider-operation changes additionally prove lifecycle merge/bounds, safe tool-result plus durable-call projection, malformed contract rejection, historical-unavailable behavior, and non-duplicated nested browser disclosure. Provider-model role changes must prove legacy answer defaults, technical-only exclusion from every answer/grant/profile projection and direct admission, plus continued technical Search listing and admission without an answer-model grant. Browser coverage proves organization/personal/Off behavior, retained unavailable engines across model switches/reload, direct wide/tall versus More-only short Reasoning, the real Search destination, nested Search trace, and viewport-bounded Run setup. Real gateway proof remains one explicit sanitized operator-authorized smoke, never routine Vitest or Playwright input.
 
 Browser slices may reuse the running disposable app without resetting local fixtures:
 

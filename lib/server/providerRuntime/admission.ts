@@ -623,6 +623,7 @@ export async function loadProviderAdmissionPlan(
           : {})
       },
       credentialMode: draft.credentialMode,
+      displayName: strategy.displayName,
       executionModes: searchExecutionModes(draft.adapterKind),
       kind: strategy.kind,
       modelId: role?.snapshot.model.upstreamModelId ?? null,

@@ -89,6 +89,26 @@ describe("tool activity projection", () => {
       ...projected[0],
       argumentsPreview: "x".repeat(9_000)
     })).toBeNull();
+
+    const malformedSearch = projectThreadToolActivity([
+      call("call-search", 0),
+      {
+        artifactType: "tool_result",
+        payload: {
+          callId: "call-search",
+          ordinal: 0,
+          resultPreview: null,
+          round: 1,
+          searchExecutions: [{ providerOperations: "raw provider payload" }],
+          status: "complete"
+        }
+      }
+    ]);
+    expect(malformedSearch[0]).toMatchObject({
+      resultPreview: null,
+      status: "running"
+    });
+    expect(malformedSearch[0]).not.toHaveProperty("searchExecutions");
   });
 
   it("keeps terminal live evidence when a durable snapshot is still running", () => {

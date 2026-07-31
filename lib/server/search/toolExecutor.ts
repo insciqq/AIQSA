@@ -1,6 +1,10 @@
 import { textMessageContent } from "../../domain/content";
 import { mergeSearchEvidence } from "../../domain/search";
 import type { ModelRunSseEvent, ModelRunUsage } from "../../domain/modelRunEvents";
+import {
+  decodeThreadSearchProviderOperation,
+  type ThreadSearchProviderOperation
+} from "../../contracts/toolActivity";
 import type { ProviderRuntimeBinding } from "../providers/runtimeFactory";
 import type {
   NormalizedSearchPlan,
@@ -12,15 +16,19 @@ import type {
 } from "../providers/types";
 import type { ModelToolCall, RunTool, ToolExecutionResult } from "../tools/types";
 import { normalizeSearchSources, type SearchSource } from "./evidence";
+import { providerSearchOperationsFromArtifacts } from "./providerOperations";
 
 const allSelectedToolName = "search_selected_engines";
 
 export type SearchExecutionEvidence = Readonly<{
+  displayName: string;
   durationMs: number;
   invocationId: string;
   modelId: string | null;
   optionId: string;
   provider: string;
+  providerOperations?: readonly ThreadSearchProviderOperation[];
+  providerOperationsTruncated: boolean;
   query: string;
   requestPreview: Readonly<Record<string, unknown>>;
   revisionId: string;
@@ -235,11 +243,13 @@ async function executeOne(input: Readonly<{
   const boundedQuery = input.query.slice(0, configuration(input.option).queryMaxCharacters);
   if (!boundedQuery || !input.runtime || !input.option.modelId) {
     return {
+      displayName: input.option.displayName ?? input.option.optionId,
       durationMs: Date.now() - started,
       invocationId,
       modelId: input.option.modelId,
       optionId: input.option.optionId,
       provider: input.option.provider,
+      providerOperationsTruncated: false,
       query: boundedQuery,
       requestPreview: { queryCharacters: boundedQuery.length },
       revisionId: input.option.revisionId,
@@ -265,13 +275,21 @@ async function executeOne(input: Readonly<{
       timeoutController.signal,
       configuration(input.option).timeoutMs
     );
+    const providerTrace = input.option.protocol === "openai_responses_web_search"
+      ? providerSearchOperationsFromArtifacts(result.artifacts)
+      : null;
     return {
+      displayName: input.option.displayName ?? input.option.optionId,
       durationMs: Date.now() - started,
       finalText: result.finalText,
       invocationId,
       modelId: input.option.modelId,
       optionId: input.option.optionId,
       provider: input.option.provider,
+      ...(providerTrace
+        ? { providerOperations: providerTrace.operations }
+        : {}),
+      providerOperationsTruncated: providerTrace?.truncated ?? false,
       query: boundedQuery,
       requestPreview: {
         queryCharacters: boundedQuery.length,
@@ -286,11 +304,13 @@ async function executeOne(input: Readonly<{
   } catch (error) {
     if (input.signal?.aborted) throw error;
     return {
+      displayName: input.option.displayName ?? input.option.optionId,
       durationMs: Date.now() - started,
       invocationId,
       modelId: input.option.modelId,
       optionId: input.option.optionId,
       provider: input.option.provider,
+      providerOperationsTruncated: false,
       query: boundedQuery,
       requestPreview: { queryCharacters: boundedQuery.length },
       revisionId: input.option.revisionId,
@@ -314,20 +334,40 @@ export function searchExecutionsFromToolResult(
 ): SearchExecutionEvidence[] {
   const preview = result.rawPreview?.finalProviderResponsePreview;
   if (!isRecord(preview) || !Array.isArray(preview.searchExecutions)) return [];
-  return preview.searchExecutions.filter((value): value is SearchExecutionEvidence => {
-    if (!isRecord(value)) return false;
-    return (
+  return preview.searchExecutions.flatMap((value): SearchExecutionEvidence[] => {
+    if (!isRecord(value)) return [];
+    const valid = (
       typeof value.durationMs === "number" &&
       typeof value.invocationId === "string" &&
       (value.modelId === null || typeof value.modelId === "string") &&
       typeof value.optionId === "string" &&
       typeof value.provider === "string" &&
+      (value.providerOperationsTruncated === undefined ||
+        typeof value.providerOperationsTruncated === "boolean") &&
       typeof value.query === "string" &&
       typeof value.revisionId === "string" &&
       Array.isArray(value.sources) &&
       (value.status === "complete" || value.status === "error") &&
       isRecord(value.usage)
     );
+    if (!valid) return [];
+    let providerOperations: ThreadSearchProviderOperation[] | undefined;
+    if (value.providerOperations !== undefined) {
+      if (!Array.isArray(value.providerOperations) || value.providerOperations.length > 32) return [];
+      providerOperations = value.providerOperations.flatMap((operation) => {
+        const decoded = decodeThreadSearchProviderOperation(operation);
+        return decoded ? [decoded] : [];
+      });
+      if (providerOperations.length !== value.providerOperations.length) return [];
+    }
+    return [{
+      ...(value as unknown as SearchExecutionEvidence),
+      displayName: typeof value.displayName === "string" && value.displayName.trim()
+        ? value.displayName.trim().slice(0, 256)
+        : value.optionId as string,
+      providerOperationsTruncated: value.providerOperationsTruncated === true,
+      ...(providerOperations ? { providerOperations } : {})
+    }];
   });
 }
 

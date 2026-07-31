@@ -50,6 +50,7 @@ export type RunSearchStrategyConfiguration = {
   adapterKind?: SearchAdapterKind;
   config: Record<string, unknown>;
   credentialMode?: SearchCredentialMode;
+  displayName?: string;
   executionModes?: SearchPlanMode[];
   kind: string;
   modelId: string | null;

@@ -182,4 +182,82 @@ describe("summarizeMessageRunArtifacts", () => {
     });
     expect(JSON.stringify(summary)).not.toContain("private-secret");
   });
+
+  it("projects durable nested Search evidence when the terminal artifact append was interrupted", () => {
+    const summary = summarizeMessageRunArtifacts({
+      events: [],
+      normalizedRequest: {},
+      searchRuns: [{
+        artifacts: {},
+        modelId: "gpt-5.6-sol",
+        provider: "openai-compatible",
+        requestPreview: { queryCharacters: 21 },
+        status: "complete",
+        strategyId: "web-search-sol"
+      }],
+      status: "complete",
+      toolCalls: [{
+        arguments: { query: "latest news in Moscow" },
+        completedAt: "2026-07-31T12:02:25.900Z",
+        ordinal: 0,
+        providerCallId: "search-call-1",
+        result: {
+          callId: "search-call-1",
+          content: [{ text: "Search completed", type: "text" }],
+          name: "search_selected_engines",
+          rawPreview: {
+            finalProviderResponsePreview: {
+              searchExecutions: [{
+                displayName: "Web Search · Sol",
+                durationMs: 145_800,
+                invocationId: "opaque-chat-invocation",
+                modelId: "gpt-5.6-sol",
+                optionId: "web-search-sol",
+                provider: "openai-compatible",
+                providerOperations: [{
+                  id: "ws-1",
+                  kind: "search",
+                  ordinal: 0,
+                  pattern: null,
+                  queries: ["Moscow latest news"],
+                  status: "complete",
+                  url: null
+                }],
+                providerOperationsTruncated: false,
+                query: "latest news in Moscow",
+                revisionId: "revision-1",
+                sources: [{ title: "Moscow news", url: "https://example.com/moscow" }],
+                status: "complete",
+                usage: { inputTokens: 2, outputTokens: 3, reasoningTokens: 0 }
+              }]
+            }
+          },
+          status: "complete"
+        },
+        roundIndex: 1,
+        startedAt: "2026-07-31T12:00:00.000Z",
+        state: "complete",
+        toolName: "search_selected_engines"
+      }]
+    });
+
+    expect(summary).toMatchObject({
+      searchCount: 1,
+      toolCallCount: 1,
+      toolCalls: [{
+        callId: "search-call-1",
+        searchExecutions: [{
+          displayName: "Web Search · Sol",
+          providerOperations: [{
+            kind: "search",
+            queries: ["Moscow latest news"]
+          }],
+          query: "latest news in Moscow",
+          sourceCount: 1
+        }],
+        toolName: "search_selected_engines"
+      }]
+    });
+    expect(JSON.stringify(summary)).not.toContain("opaque-chat-invocation");
+  });
 });

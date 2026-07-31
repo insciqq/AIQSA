@@ -5,11 +5,18 @@ import type {
 } from "./http";
 import {
   decodeThreadToolActivity,
+  type ThreadSearchExecution,
+  type ThreadSearchProviderOperation,
   type ThreadToolActivity,
   type ThreadToolActivityStatus
 } from "./toolActivity";
 
-export type { ThreadToolActivity, ThreadToolActivityStatus };
+export type {
+  ThreadSearchExecution,
+  ThreadSearchProviderOperation,
+  ThreadToolActivity,
+  ThreadToolActivityStatus
+};
 
 export type ThreadMessage = {
   artifactSummary?: ThreadArtifactSummary | null;

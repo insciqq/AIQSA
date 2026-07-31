@@ -441,4 +441,127 @@ describe("ThreadArtifacts", () => {
       "sk-private"
     );
   });
+
+  it("expands Search tools into engine executions and provider-reported operations", () => {
+    render(
+      <ToolActivityBlock
+        summary={summary({
+          searchCount: 1,
+          toolCallCount: 1,
+          toolCalls: [{
+            argumentsPreview: { query: "latest news in Moscow" },
+            callId: "search-call-1",
+            capability: "web_search",
+            credentialSources: [],
+            durationMs: 145_900,
+            errorMessage: null,
+            externalAccountLabel: null,
+            ordinal: 0,
+            resultPreview: { content: [{ text: "Search completed", type: "text" }] },
+            round: 1,
+            searchExecutions: [{
+              displayName: "Web Search · Sol",
+              durationMs: 145_800,
+              modelId: "gpt-5.6-sol",
+              optionId: "web-search-sol",
+              provider: "openai-compatible",
+              providerOperations: [
+                {
+                  id: "ws-1",
+                  kind: "search",
+                  ordinal: 0,
+                  pattern: null,
+                  queries: ["Moscow latest news", "Moscow news today"],
+                  status: "complete",
+                  url: null
+                },
+                {
+                  id: "ws-2",
+                  kind: "open_page",
+                  ordinal: 1,
+                  pattern: null,
+                  queries: [],
+                  status: "complete",
+                  url: "https://example.com/moscow"
+                }
+              ],
+              providerOperationsTruncated: false,
+              query: "latest news in Moscow",
+              sourceCount: 4,
+              status: "complete",
+              warning: null
+            }],
+            serverName: null,
+            status: "complete",
+            toolName: "search_selected_engines"
+          }]
+        })}
+      />
+    );
+
+    const tools = screen.getByRole("button", { name: /Used 1 tool/i });
+    fireEvent.click(tools);
+    const searchTool = screen.getByText("search_selected_engines").closest("summary");
+    expect(searchTool).not.toBeNull();
+    fireEvent.click(searchTool!);
+
+    const executions = screen.getByTestId("thread-tool-search-executions");
+    expect(within(executions).getByText("Search executions · 1")).toBeVisible();
+    expect(within(executions).getByText("Web Search · Sol")).toBeVisible();
+    expect(within(executions).getByText("4 sources")).toBeVisible();
+    expect(within(executions).getByText("145.8 s")).toBeVisible();
+    expect(within(executions).getByText("Moscow latest news")).not.toBeVisible();
+
+    fireEvent.click(within(executions).getByText("Web Search · Sol").closest("summary")!);
+    const executionDetails = screen.getByTestId("thread-search-execution-details");
+    expect(within(executionDetails).getByText("latest news in Moscow")).toBeVisible();
+    expect(within(executionDetails).getByText("Provider operations · 2")).toBeVisible();
+    expect(within(executionDetails).getByText("Moscow latest news")).toBeVisible();
+    expect(within(executionDetails).getByText("Moscow news today")).toBeVisible();
+    expect(within(executionDetails).getByText("https://example.com/moscow")).toBeVisible();
+  });
+
+  it("keeps historical engine evidence honest when provider operation detail was not saved", () => {
+    render(
+      <ToolActivityBlock
+        summary={summary({
+          toolCallCount: 1,
+          toolCalls: [{
+            argumentsPreview: { query: "latest news in Moscow" },
+            callId: "historical-search-call",
+            capability: "web_search",
+            credentialSources: [],
+            durationMs: 145_900,
+            errorMessage: null,
+            externalAccountLabel: null,
+            ordinal: 0,
+            resultPreview: null,
+            round: 1,
+            searchExecutions: [{
+              displayName: "Web Search · Sol",
+              durationMs: 145_800,
+              modelId: "gpt-5.6-sol",
+              optionId: "web-search-sol",
+              provider: "openai-compatible",
+              providerOperations: null,
+              providerOperationsTruncated: false,
+              query: "latest news in Moscow",
+              sourceCount: 4,
+              status: "complete",
+              warning: null
+            }],
+            serverName: null,
+            status: "complete",
+            toolName: "search_selected_engines"
+          }]
+        })}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /Used 1 tool/i }));
+    fireEvent.click(screen.getByText("search_selected_engines").closest("summary")!);
+    fireEvent.click(screen.getByText("Web Search · Sol").closest("summary")!);
+    expect(screen.getByText("Provider operation details are unavailable for this run.")).toBeVisible();
+    expect(screen.getByText("latest news in Moscow")).toBeVisible();
+  });
 });

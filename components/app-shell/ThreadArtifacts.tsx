@@ -1,6 +1,8 @@
 import { searchStrategyDescription } from "@/components/app-shell/shellFormatting";
 import type {
   ThreadArtifactSummary,
+  ThreadSearchExecution,
+  ThreadSearchProviderOperation,
   ThreadSearchDetail,
   ThreadToolActivity
 } from "@/components/app-shell/types";
@@ -289,6 +291,145 @@ function toolIdentity(call: ThreadToolActivity): string {
   return call.serverName ? `${call.serverName} / ${call.toolName}` : call.toolName;
 }
 
+function searchExecutionStatusLabel(status: ThreadSearchExecution["status"]): string {
+  return status === "complete" ? "Completed" : "Failed";
+}
+
+function providerOperationLabel(kind: ThreadSearchProviderOperation["kind"]): string {
+  if (kind === "search") return "Web search";
+  if (kind === "open_page") return "Open page";
+  if (kind === "find_in_page") return "Find in page";
+  return "Provider operation";
+}
+
+function providerOperationStatusLabel(status: ThreadSearchProviderOperation["status"]): string {
+  if (status === "complete") return "Completed";
+  if (status === "error") return "Failed";
+  if (status === "running") return "Running";
+  return "Status unavailable";
+}
+
+function SearchProviderOperationRow({
+  operation
+}: Readonly<{ operation: ThreadSearchProviderOperation }>) {
+  return (
+    <li className="min-w-0 py-2" data-provider-operation-kind={operation.kind}>
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+        <span className="font-medium text-ink-secondary">
+          {operation.ordinal + 1}. {providerOperationLabel(operation.kind)}
+        </span>
+        <span className="text-ink-muted">{providerOperationStatusLabel(operation.status)}</span>
+      </div>
+      {operation.queries.length > 0 ? (
+        <ul className="mt-1 grid gap-1" aria-label="Provider search queries">
+          {operation.queries.map((query, index) => (
+            <li
+              className="break-words border-l border-trace-subtle pl-2 font-mono text-[11px] leading-5 text-ink [overflow-wrap:anywhere]"
+              key={`${operation.ordinal}:${index}:${query}`}
+            >
+              {query}
+            </li>
+          ))}
+        </ul>
+      ) : operation.kind === "search" ? (
+        <p className="mt-1 text-ink-muted">Provider did not report the internal query.</p>
+      ) : null}
+      {operation.url ? (
+        <p className="mt-1 break-all font-mono text-[11px] leading-5 text-ink-muted">
+          {operation.url}
+        </p>
+      ) : null}
+      {operation.pattern ? (
+        <p className="mt-1 break-words font-mono text-[11px] leading-5 text-ink-secondary [overflow-wrap:anywhere]">
+          Pattern: {operation.pattern}
+        </p>
+      ) : null}
+    </li>
+  );
+}
+
+function SearchExecutionDisclosure({
+  execution,
+  index
+}: Readonly<{ execution: ThreadSearchExecution; index: number }>) {
+  const operations = execution.providerOperations;
+  return (
+    <details className="group/search py-2" data-search-execution-status={execution.status}>
+      <summary className="-mx-2 flex min-h-control cursor-pointer list-none flex-wrap items-center gap-2 rounded-control px-2 outline-none marker:hidden hover:bg-control-hover focus-visible:ring-2 focus-visible:ring-proof/45">
+        <Search className="size-3.5 shrink-0 text-proof" aria-hidden="true" />
+        <span className="min-w-0 flex-1 break-words font-medium text-ink [overflow-wrap:anywhere]">
+          {execution.displayName}
+        </span>
+        <span className={execution.status === "error" ? "text-critical" : "text-ink-muted"}>
+          {searchExecutionStatusLabel(execution.status)}
+        </span>
+        {execution.sourceCount > 0 ? (
+          <span className="text-ink-muted">
+            {execution.sourceCount} {execution.sourceCount === 1 ? "source" : "sources"}
+          </span>
+        ) : null}
+        {toolDuration(execution.durationMs) ? (
+          <span className="font-mono text-ink-muted">{toolDuration(execution.durationMs)}</span>
+        ) : null}
+        <ChevronRight className="size-3.5 shrink-0 text-ink-muted transition-transform group-open/search:rotate-90" aria-hidden="true" />
+      </summary>
+      <div className="mt-2 grid gap-3 border-l border-trace-subtle pl-3" data-testid="thread-search-execution-details">
+        <div className="flex flex-wrap gap-x-2 gap-y-1 text-ink-muted">
+          <span>Search {index + 1}</span>
+          <span>{[execution.provider, execution.modelId].filter(Boolean).join(" / ")}</span>
+        </div>
+        <div>
+          <div className="mb-1 font-medium text-ink-secondary">Engine query</div>
+          {execution.query ? (
+            <div className="break-words rounded-control bg-control-surface px-2 py-1.5 font-mono text-[11px] leading-5 text-ink [overflow-wrap:anywhere]">
+              {execution.query}
+            </div>
+          ) : (
+            <p className="text-ink-muted">No engine query was captured.</p>
+          )}
+        </div>
+        <div>
+          <div className="font-medium text-ink-secondary">
+            Provider operations{operations && operations.length > 0
+              ? ` · ${operations.length}${execution.providerOperationsTruncated ? "+" : ""}`
+              : execution.providerOperationsTruncated
+                ? " · additional activity omitted"
+                : ""}
+          </div>
+          {operations === null ? (
+            <p className="mt-1 text-ink-muted">Provider operation details are unavailable for this run.</p>
+          ) : operations.length === 0 ? (
+            <p className="mt-1 text-ink-muted">
+              {execution.providerOperationsTruncated
+                ? "Provider activity exceeded the inspection limit; detailed operations were omitted."
+                : "Provider reported no internal web-search operations."}
+            </p>
+          ) : (
+            <>
+              <ol className="mt-1 divide-y divide-trace-subtle">
+                {operations.map((operation) => (
+                  <SearchProviderOperationRow
+                    key={operation.id ?? `${operation.ordinal}:${operation.kind}`}
+                    operation={operation}
+                  />
+                ))}
+              </ol>
+              {execution.providerOperationsTruncated ? (
+                <p className="mt-1 text-ink-muted">
+                  Additional provider operations were omitted by the inspection limit.
+                </p>
+              ) : null}
+            </>
+          )}
+        </div>
+        {execution.warning ? (
+          <p className="break-words text-critical [overflow-wrap:anywhere]">{execution.warning}</p>
+        ) : null}
+      </div>
+    </details>
+  );
+}
+
 function ToolActivityBlockComponent({
   expanded,
   onExpandedChange,
@@ -379,6 +520,22 @@ function ToolActivityBlockComponent({
                             <span>Credentials: {call.credentialSources.join(", ")}</span>
                           ) : null}
                         </div>
+                      ) : null}
+                      {call.searchExecutions && call.searchExecutions.length > 0 ? (
+                        <section data-testid="thread-tool-search-executions" aria-label="Search executions">
+                          <div className="mb-1 font-medium text-ink-secondary">
+                            Search executions · {call.searchExecutions.length}
+                          </div>
+                          <div className="divide-y divide-trace-subtle border-y border-trace-subtle">
+                            {call.searchExecutions.map((execution, index) => (
+                              <SearchExecutionDisclosure
+                                execution={execution}
+                                index={index}
+                                key={`${execution.optionId}:${index}`}
+                              />
+                            ))}
+                          </div>
+                        </section>
                       ) : null}
                       <div>
                         <div className="mb-1 text-xs font-medium text-ink-secondary">Arguments · sensitive values redacted</div>

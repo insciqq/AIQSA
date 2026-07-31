@@ -165,4 +165,101 @@ describe("tool inspection evidence", () => {
     });
     expect(JSON.stringify(activity)).not.toContain("private-secret");
   });
+
+  it("publishes and reconstructs bounded Search executions under their originating tool call", () => {
+    const call = {
+      arguments: { query: "latest news in Moscow" },
+      id: "search-call-1",
+      name: "search_selected_engines"
+    };
+    const result = {
+      callId: call.id,
+      content: [{ text: "Search completed", type: "text" as const }],
+      name: call.name,
+      rawPreview: {
+        finalProviderResponsePreview: {
+          searchExecutions: [{
+            displayName: "Web Search · Sol",
+            durationMs: 145_800,
+            invocationId: "opaque-provider-invocation",
+            modelId: "gpt-5.6-sol",
+            optionId: "web-search-sol",
+            provider: "openai-compatible",
+            providerOperations: [{
+              id: "ws-1",
+              kind: "search",
+              ordinal: 0,
+              pattern: null,
+              queries: ["Moscow latest news", "Moscow news today"],
+              status: "complete",
+              url: null
+            }],
+            query: "latest news in Moscow",
+            requestPreview: { queryCharacters: 21 },
+            revisionId: "revision-1",
+            sources: [{ title: "Moscow news", url: "https://example.com/moscow" }],
+            status: "complete",
+            usage: { inputTokens: 2, outputTokens: 3, reasoningTokens: 0 }
+          }]
+        }
+      },
+      status: "complete" as const
+    };
+
+    const resultEvent = toolResultInspectionArtifact({
+      call,
+      durationMs: 145_900,
+      ordinal: 0,
+      result,
+      round: 1
+    });
+    expect(resultEvent.data).toMatchObject({
+      artifactType: "tool_result",
+      payload: {
+        callId: call.id,
+        searchExecutions: [{
+          displayName: "Web Search · Sol",
+          durationMs: 145_800,
+          providerOperations: [{
+            kind: "search",
+            queries: ["Moscow latest news", "Moscow news today"]
+          }],
+          query: "latest news in Moscow",
+          sourceCount: 1
+        }]
+      }
+    });
+
+    const activity = persistedToolCallActivity({
+      call: {
+        arguments: call.arguments,
+        completedAt: "2026-07-31T12:02:25.900Z",
+        ordinal: 0,
+        providerCallId: call.id,
+        result,
+        roundIndex: 1,
+        startedAt: "2026-07-31T12:00:00.000Z",
+        state: "complete",
+        toolName: call.name
+      },
+      normalizedRequest: {},
+      runStatus: "complete"
+    });
+
+    expect(activity).toMatchObject({
+      callId: call.id,
+      capability: "web_search",
+      searchExecutions: [{
+        displayName: "Web Search · Sol",
+        providerOperations: [{
+          kind: "search",
+          queries: ["Moscow latest news", "Moscow news today"]
+        }],
+        query: "latest news in Moscow"
+      }],
+      toolName: "search_selected_engines"
+    });
+    expect(JSON.stringify(activity)).not.toContain("opaque-provider-invocation");
+    expect(JSON.stringify(activity)).not.toContain("requestPreview");
+  });
 });

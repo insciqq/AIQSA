@@ -1064,6 +1064,7 @@ export async function prepareRun(
               adapterKind: candidate.configuration.adapterKind!,
               config: candidate.configuration.config,
               credentialMode: candidate.configuration.credentialMode!,
+              displayName: candidate.configuration.displayName ?? candidate.optionId,
               executionModes: candidate.configuration.executionModes ?? [],
               modelId: candidate.configuration.modelId,
               optionId: candidate.optionId,

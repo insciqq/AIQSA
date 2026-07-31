@@ -89,6 +89,49 @@ describe("deriveRunReceipt", () => {
     expect(JSON.stringify(receipt)).not.toMatch(/profile|cost|search off|usage|elapsed/i);
   });
 
+  it("does not duplicate a Search fact when engine executions are nested under the tool call", () => {
+    const receipt = deriveRunReceipt({
+      artifactSummary: summary({
+        searchCount: 1,
+        searchStrategy: "client-search-plan",
+        toolCallCount: 1,
+        toolCalls: [{
+          argumentsPreview: { query: "latest news in Moscow" },
+          callId: "search-call-1",
+          capability: "web_search",
+          credentialSources: [],
+          durationMs: 145_900,
+          errorMessage: null,
+          externalAccountLabel: null,
+          ordinal: 0,
+          resultPreview: null,
+          round: 1,
+          searchExecutions: [{
+            displayName: "Web Search · Sol",
+            durationMs: 145_800,
+            modelId: "gpt-5.6-sol",
+            optionId: "web-search-sol",
+            provider: "openai-compatible",
+            providerOperations: [],
+            providerOperationsTruncated: false,
+            query: "latest news in Moscow",
+            sourceCount: 4,
+            status: "complete",
+            warning: null
+          }],
+          serverName: null,
+          status: "complete",
+          toolName: "search_selected_engines"
+        }]
+      }),
+      messageStatus: "complete",
+      modelLabel: null
+    });
+
+    expect(receipt.facts).toEqual([{ kind: "tools", label: "1 tool call" }]);
+    expect(receipt.facts).not.toContainEqual(expect.objectContaining({ kind: "search" }));
+  });
+
   it("includes only terminal message-bound provider usage", () => {
     expect(
       deriveRunReceipt({

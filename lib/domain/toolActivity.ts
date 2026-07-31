@@ -1,10 +1,15 @@
-import type {
-  ThreadToolActivity,
-  ThreadToolActivityStatus
+import {
+  decodeThreadSearchExecution,
+  type ThreadSearchExecution,
+  type ThreadToolActivity,
+  type ThreadToolActivityStatus
 } from "../contracts/toolActivity";
 
 export {
+  decodeThreadSearchExecution,
   decodeThreadToolActivity,
+  type ThreadSearchExecution,
+  type ThreadSearchProviderOperation,
   type ThreadToolActivity,
   type ThreadToolActivityStatus
 } from "../contracts/toolActivity";
@@ -128,6 +133,13 @@ function terminalFallback(
   return status;
 }
 
+function searchExecutions(value: unknown): ThreadSearchExecution[] | undefined {
+  if (!Array.isArray(value) || value.length > 3) return undefined;
+  const executions = value.map(decodeThreadSearchExecution)
+    .filter((execution): execution is ThreadSearchExecution => execution !== null);
+  return executions.length === value.length ? executions : undefined;
+}
+
 export function projectThreadToolActivity(
   artifacts: readonly unknown[],
   runStatus?: string
@@ -159,6 +171,9 @@ export function projectThreadToolActivity(
     const resultPreview = payload.resultPreview === undefined
       ? null
       : boundedPreview(payload.resultPreview);
+    const executions = payload.searchExecutions === undefined
+      ? undefined
+      : searchExecutions(payload.searchExecutions);
     const errorMessage = payload.message === undefined
       ? null
       : boundedString(payload.message, 512);
@@ -172,6 +187,7 @@ export function projectThreadToolActivity(
     if (
       (payload.durationMs !== undefined && durationMs === null) ||
       resultPreview === undefined ||
+      (payload.searchExecutions !== undefined && executions === undefined) ||
       (payload.message !== undefined && !errorMessage) ||
       !status
     ) {
@@ -183,6 +199,7 @@ export function projectThreadToolActivity(
       durationMs,
       errorMessage,
       resultPreview,
+      ...(executions !== undefined ? { searchExecutions: executions } : {}),
       status
     });
   }
@@ -214,6 +231,7 @@ export function mergeThreadToolActivity(
     ...preferred,
     durationMs: preferred.durationMs ?? fallback.durationMs,
     errorMessage: preferred.errorMessage ?? fallback.errorMessage,
-    resultPreview: preferred.resultPreview ?? fallback.resultPreview
+    resultPreview: preferred.resultPreview ?? fallback.resultPreview,
+    searchExecutions: preferred.searchExecutions ?? fallback.searchExecutions
   };
 }

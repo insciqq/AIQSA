@@ -651,6 +651,50 @@ describe("ThreadMessageRow", () => {
     expect(onOpenRunDetails).toHaveBeenCalledTimes(6);
   });
 
+  it("does not duplicate completed client Search beside its nested tool evidence while streaming", () => {
+    renderRow({
+      artifactSummary: artifactSummary({
+        searchCount: 1,
+        searchStrategy: "client-search-plan",
+        toolCallCount: 1,
+        toolCalls: [{
+          argumentsPreview: { query: "latest news in Moscow" },
+          callId: "search-call-1",
+          capability: "web_search",
+          credentialSources: [],
+          durationMs: 145_900,
+          errorMessage: null,
+          externalAccountLabel: null,
+          ordinal: 0,
+          resultPreview: null,
+          round: 1,
+          searchExecutions: [{
+            displayName: "Web Search · Sol",
+            durationMs: 145_800,
+            modelId: "gpt-5.6-sol",
+            optionId: "web-search-sol",
+            provider: "openai-compatible",
+            providerOperations: [],
+            providerOperationsTruncated: false,
+            query: "latest news in Moscow",
+            sourceCount: 4,
+            status: "complete",
+            warning: null
+          }],
+          serverName: null,
+          status: "complete",
+          toolName: "search_selected_engines"
+        }]
+      }),
+      message: assistantMessage({ content: "Answer in progress", status: "streaming" }),
+      runActivity: { answer: "active", phase: "running", question: "done", search: "done" },
+      streaming: true
+    });
+
+    expect(screen.getByTestId("thread-tool-activity")).toBeVisible();
+    expect(screen.queryByTestId("thread-search-summary")).not.toBeInTheDocument();
+  });
+
   it("does not route a historical receipt into another answer's Details events", async () => {
     const onOpenRunDetails = vi.fn();
     renderRow({

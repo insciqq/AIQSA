@@ -19,7 +19,9 @@ export type {
   ThreadGroundingDisplay,
   ThreadMessage,
   ThreadRunUsage,
+  ThreadSearchExecution,
   ThreadSearchDetail,
+  ThreadSearchProviderOperation,
   ThreadToolActivity,
   ThreadToolActivityStatus,
   WorkspaceChatSummary

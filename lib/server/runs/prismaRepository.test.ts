@@ -1868,6 +1868,33 @@ describe("Prisma run repository", () => {
             callId: "call-repository",
             content: [{ text: "found", type: "text" }],
             name: "local_search",
+            rawPreview: {
+              finalProviderResponsePreview: {
+                searchExecutions: [{
+                  displayName: "Web Search · Sol",
+                  durationMs: 145_800,
+                  invocationId: "opaque-repository-invocation",
+                  modelId: "gpt-5.6-sol",
+                  optionId: "web-search-sol",
+                  provider: "openai-compatible",
+                  providerOperations: [{
+                    id: "ws-1",
+                    kind: "search",
+                    ordinal: 0,
+                    pattern: null,
+                    queries: ["Moscow latest news"],
+                    status: "complete",
+                    url: null
+                  }],
+                  providerOperationsTruncated: false,
+                  query: "latest news in Moscow",
+                  revisionId: "revision-1",
+                  sources: [{ title: "Moscow news", url: "https://example.com/moscow" }],
+                  status: "complete",
+                  usage: { inputTokens: 2, outputTokens: 3, reasoningTokens: 0 }
+                }]
+              }
+            },
             status: "complete"
           },
           roundIndex: 1,
@@ -1906,6 +1933,15 @@ describe("Prisma run repository", () => {
           capability: "web_search",
           durationMs: 25,
           resultPreview: { content: [{ text: "found", type: "text" }] },
+          searchExecutions: [{
+            displayName: "Web Search · Sol",
+            providerOperations: [{
+              kind: "search",
+              queries: ["Moscow latest news"]
+            }],
+            query: "latest news in Moscow",
+            sourceCount: 1
+          }],
           serverName: null,
           status: "complete",
           toolName: "local_search"
@@ -1913,6 +1949,7 @@ describe("Prisma run repository", () => {
         totalTokens: 0
       });
       expect(JSON.stringify(run?.toolCalls)).not.toContain("private-secret");
+      expect(JSON.stringify(run?.toolCalls)).not.toContain("opaque-repository-invocation");
       await expect(repository.getRunForUser(created.runId, "other-user")).resolves.toBeNull();
     });
   });
