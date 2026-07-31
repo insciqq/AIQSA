@@ -50,7 +50,7 @@ Current AIQSA request construction, polling, tool bridging, attachment mapping, 
 
 ## Compatible OpenAI Gateways And codex-lb
 
-Last verified: 2026-07-29.
+Last verified: 2026-07-31.
 
 Primary references:
 
@@ -64,6 +64,8 @@ Externally constrained facts:
 - A successful `/models` catalog request proves only safe catalog reachability for the supplied authentication candidate. OpenAPI path presence, catalog membership, and administrator capability declarations are not substitutes for an authenticated tool-specific smoke.
 - The permitted live deployment smoke returned seven model rows and bounded per-model reasoning metadata, but the shapes are gateway-owned and untrusted. AIQSA retains only allowlisted integer/boolean/short-option hints and never returns arbitrary row metadata to the browser.
 - The same deployment accepted `reasoning_effort` through both Chat Completions and Responses. A separate Responses request with the hosted `web_search` tool completed with a `web_search_call`; this proves that exact tested deployment/account path, not codex-lb installations generally. Smoke evidence retained only status and output-type facts, never answer text or credentials.
+
+OpenAI-compatible request fields remain gateway-owned even when a deployment advertises OpenAI model names. AIQSA therefore defaults Chat effort to `reasoning_effort`, Responses effort/mode to `reasoning.effort`/`reasoning.mode`, and permits only an administrator-reviewed bounded dot-path override. A configured mode path makes `standard | pro` serializable; no path means no mode control. The live-smoke evidence for the exact rollout mapping belongs in the completion journal rather than becoming a codex-lb-wide claim.
 
 AIQSA represents that verified Search path as an ordinary `provider_model_client` integration using the typed `openai_responses_web_search` protocol and the existing provider-model credential binding. The product contains no codex-lb hostname, deployment, or upstream model-id branch; another compatible Responses deployment can use the same lifecycle and adapter after its own exact draft test. Search execution/privacy and the future-only image-generation declaration live in `BACKEND.md`; this note does not promote image generation into a runnable chat capability.
 

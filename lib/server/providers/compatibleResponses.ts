@@ -14,10 +14,19 @@ import {
 import type { OpenAIResponsesClient } from "./openaiResponsesTransport";
 import { providerStreamIdleTimeoutMs } from "./network";
 import type { ProviderAdapter, ProviderRunRequest, ProviderRunResult } from "./types";
+import {
+  OPENAI_RESPONSES_REASONING_REQUEST_MAPPING,
+  type ProviderReasoningRequestMapping
+} from "../../contracts/providerReasoningRequestMapping";
+import {
+  applyProviderReasoningRequestMapping,
+  isCanonicalResponsesReasoningRequestMapping
+} from "./reasoningRequestMapping";
 
 export type CompatibleResponsesAdapterOptions = {
   client: OpenAIResponsesClient;
   maxAttachmentTextChars?: number;
+  reasoningRequestMapping?: ProviderReasoningRequestMapping;
 };
 
 function compatibleRequest(request: ProviderRunRequest): ProviderRunRequest {
@@ -35,7 +44,8 @@ function compatibleRequest(request: ProviderRunRequest): ProviderRunRequest {
 
 function stripNativeExtensions(
   body: OpenAIResponsesRequestBody,
-  preserveWebSearchSources: boolean
+  preserveWebSearchSources: boolean,
+  reasoningRequestMapping: ProviderReasoningRequestMapping
 ): Record<string, unknown> {
   const {
     include,
@@ -46,23 +56,36 @@ function stripNativeExtensions(
     prompt_cache_retention: _promptCacheRetention,
     ...portable
   } = body;
-
-  return {
+  const output: Record<string, unknown> = {
     ...portable,
     background: false,
     ...(preserveWebSearchSources && include ? { include } : {}),
     store: false
   };
+  if (!isCanonicalResponsesReasoningRequestMapping(reasoningRequestMapping)) {
+    delete output.reasoning;
+    applyProviderReasoningRequestMapping(output, reasoningRequestMapping, {
+      effort: body.reasoning?.effort,
+      mode: body.reasoning?.mode
+    });
+  }
+  return output;
 }
 
 export function buildCompatibleResponsesRequest(
   request: ProviderRunRequest,
-  options: Readonly<{ maxAttachmentTextChars?: number }> = {}
+  options: Readonly<{
+    maxAttachmentTextChars?: number;
+    reasoningRequestMapping?: ProviderReasoningRequestMapping;
+  }> = {}
 ): Record<string, unknown> {
   const portableRequest = compatibleRequest(request);
+  const reasoningRequestMapping = options.reasoningRequestMapping ??
+    OPENAI_RESPONSES_REASONING_REQUEST_MAPPING;
   return stripNativeExtensions(
     buildOpenAIResponsesRequest(portableRequest, options),
-    portableRequest.searchStrategy === "openai-native-web-search"
+    portableRequest.searchStrategy === "openai-native-web-search",
+    reasoningRequestMapping
   );
 }
 
@@ -79,14 +102,16 @@ export function createCompatibleResponsesAdapter(
         ...preview,
         body: stripNativeExtensions(
           preview.body,
-          portableRequest.searchStrategy === "openai-native-web-search"
+          portableRequest.searchStrategy === "openai-native-web-search",
+          options.reasoningRequestMapping ?? OPENAI_RESPONSES_REASONING_REQUEST_MAPPING
         ),
         provider: "openai-compatible"
       };
     },
     async *stream(request, runOptions = {}): AsyncGenerator<ModelRunSseEvent, ProviderRunResult> {
       const body = buildCompatibleResponsesRequest(request, {
-        maxAttachmentTextChars: options.maxAttachmentTextChars
+        maxAttachmentTextChars: options.maxAttachmentTextChars,
+        reasoningRequestMapping: options.reasoningRequestMapping
       });
       if (body.stream === true) {
         if (!options.client.stream) {

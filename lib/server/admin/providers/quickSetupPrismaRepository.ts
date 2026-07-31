@@ -1323,7 +1323,8 @@ export function createPrismaAdminProviderQuickSetupRepository(
         where: {
           activeConfig: { not: Prisma.DbNull },
           activeVersion: { gt: 0 },
-          activatedAt: { not: null }
+          activatedAt: { not: null },
+          family: { not: "fake" }
         }
       });
       return connections.map((connection) => ({

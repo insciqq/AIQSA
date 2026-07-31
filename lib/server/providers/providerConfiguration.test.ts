@@ -227,8 +227,82 @@ describe("provider model configuration", () => {
       answerSelectable: true,
       capabilities,
       defaultParams: { maxTokens: 2048 },
+      reasoningRequestMapping: { effortPath: "reasoning_effort" },
       upstreamModelId: "local-model"
     });
+  });
+
+  it("defaults compatible reasoning mappings by protocol and preserves bounded overrides", () => {
+    const responses = normalizeProviderModelConfiguration({
+      adapterKind: "openai_responses_compatible",
+      capabilities,
+      defaultParams: {},
+      upstreamModelId: "responses-model"
+    });
+    const overridden = normalizeProviderModelConfiguration({
+      adapterKind: "openai_chat_completions_compatible",
+      capabilities,
+      defaultParams: {},
+      reasoningRequestMapping: {
+        effortPath: "reason.effort",
+        modePath: "reason.mode"
+      },
+      upstreamModelId: "chat-model"
+    });
+
+    expect(responses.reasoningRequestMapping).toEqual({
+      effortPath: "reasoning.effort",
+      modePath: "reasoning.mode"
+    });
+    expect(overridden.reasoningRequestMapping).toEqual({
+      effortPath: "reason.effort",
+      modePath: "reason.mode"
+    });
+  });
+
+  it.each([
+    { effortPath: "model" },
+    { effortPath: "reasoning.__proto__.effort" },
+    { effortPath: "reasoning..effort" },
+    { effortPath: "one.two.three.four.five" },
+    { effortPath: "reasoning", modePath: "reasoning.mode" },
+    { effortPath: "reasoning.effort", modePath: "reasoning.effort" },
+    { effortPath: "reasoning.effort", unexpected: "value" }
+  ])("rejects unsafe or colliding compatible reasoning mapping %#", (reasoningRequestMapping) => {
+    expectCode(
+      () => normalizeProviderModelConfiguration({
+        adapterKind: "openai_responses_compatible",
+        capabilities,
+        defaultParams: {},
+        reasoningRequestMapping,
+        upstreamModelId: "reasoning-model"
+      }),
+      "provider_reasoning_mapping_invalid"
+    );
+  });
+
+  it("rejects mappings for disabled reasoning and native providers", () => {
+    for (const configuration of [
+      {
+        adapterKind: "openai_chat_completions_compatible",
+        capabilities: { ...capabilities, reasoning: false },
+        defaultParams: {},
+        reasoningRequestMapping: { effortPath: "effort" },
+        upstreamModelId: "no-reasoning"
+      },
+      {
+        adapterKind: "openai_responses_native",
+        capabilities,
+        defaultParams: {},
+        reasoningRequestMapping: { effortPath: "effort" },
+        upstreamModelId: "native"
+      }
+    ]) {
+      expectCode(
+        () => normalizeProviderModelConfiguration(configuration),
+        "provider_reasoning_mapping_invalid"
+      );
+    }
   });
 
   it("accepts only Automatic or non-empty Only-selected OpenRouter routing", () => {

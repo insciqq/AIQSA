@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import type { AdminProviderCustomSetupRequest } from "../../../contracts/adminProviderCustomSetup";
+import {
+  ADMIN_PROVIDER_CUSTOM_DEFAULT_CAPABILITIES,
+  type AdminProviderCustomSetupRequest
+} from "../../../contracts/adminProviderCustomSetup";
 import {
   AdminProviderCustomSetupServiceError,
   createAdminProviderCustomSetupService
@@ -179,6 +182,36 @@ describe("custom OpenAI-compatible provider setup service", () => {
     expect(commit.mock.calls[0]![0]).toMatchObject({
       searchGrantId: "search-grant-1"
     });
+  });
+
+  it("normalizes one compatible reasoning override before test and commit", async () => {
+    const { commit, service, test } = harness();
+    await service.setup({
+      actor: ACTOR,
+      request: request({
+        capabilities: {
+          ...ADMIN_PROVIDER_CUSTOM_DEFAULT_CAPABILITIES,
+          defaultReasoningEffort: "medium",
+          defaultReasoningMode: "standard",
+          reasoning: true,
+          reasoningEfforts: ["none", "low", "medium", "high", "xhigh", "max"],
+          reasoningModes: ["standard", "pro"]
+        },
+        protocol: "responses",
+        reasoningRequestMapping: {
+          effortPath: "reason",
+          modePath: "mode"
+        }
+      })
+    });
+
+    expect(test).toHaveBeenCalledWith(expect.objectContaining({
+      model: expect.objectContaining({
+        reasoningRequestMapping: { effortPath: "reason", modePath: "mode" }
+      })
+    }));
+    expect(commit.mock.calls[0]![0].models[0]!.configuration.reasoningRequestMapping)
+      .toEqual({ effortPath: "reason", modePath: "mode" });
   });
 
   it.each([

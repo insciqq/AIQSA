@@ -53,6 +53,7 @@ Every ADR also declares `Amends: none` or a comma-separated list of earlier ADR 
 - `0042-bounded-compatible-model-capability-discovery.md` - admits only bounded non-secret context/reasoning hints from compatible `/models`, keeps protocol and hosted tools explicit, and offers reported reasoning or the reviewed GPT-5.6 Sol fallback in both Custom setup and saved-model editing.
 - `0043-admin-managed-multi-engine-search-plans.md` - creates a separate administrator Search control plane, typed replaceable engine adapters, entitlement-safe user options, and bounded multi-engine plans with fan-out or model-choice orchestration.
 - `0044-explicit-answer-selectable-provider-models.md` - gives provider deployments an explicit backward-compatible answer-selection property so dedicated Search runtimes stay available to Search while remaining absent from answer catalogs, grants, profiles, and admission.
+- `0045-bounded-compatible-reasoning-request-mapping.md` - adds strict effort and optional mode field mappings to compatible Chat/Responses models, preserves OpenAI defaults, and exposes modes only when the adapter can serialize them.
 
 ## Superseded ADRs
 

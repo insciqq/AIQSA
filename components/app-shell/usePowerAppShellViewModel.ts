@@ -2,9 +2,9 @@ import { clampedNumber, defaultParameterControls } from "@/components/app-shell/
 import { providerDisplayName } from "@/components/app-shell/providerDisplay";
 import {
   eventLabel,
-  formatTokenCount,
   searchStrategyDescription
 } from "@/components/app-shell/shellFormatting";
+import type { ComposerContextStats } from "@/components/app-shell/composerContextStats";
 import { isRecord } from "@/components/app-shell/shellValues";
 import {
   summarizeThreadArtifacts,
@@ -252,7 +252,7 @@ export function usePowerAppShellViewModel({
         provider: currentModel?.providerFamily
       }).budgetTokens
     : 0;
-  const composerContextLine = useMemo(() => {
+  const composerContextStats = useMemo<ComposerContextStats>(() => {
     const promptSystem = [
       renderLocalPromptTemplate(systemPrompt),
       projectMemory ? `Project memory:\n${projectMemory}` : null
@@ -275,9 +275,11 @@ export function usePowerAppShellViewModel({
     const attachmentTokens = stagedAttachmentTokens(attachments, currentModel);
     const currentTokens = promptTokens + branchTokens + draftTokens + attachmentTokens;
 
-    return currentContextWindow
-      ? `Approx. input: ~${formatTokenCount(currentTokens)} / ${formatTokenCount(safeInputBudget)} safe input · ${formatTokenCount(currentContextWindow)} total context`
-      : `Approx. input: ~${formatTokenCount(currentTokens)}`;
+    return {
+      approximateInputTokens: currentTokens,
+      safeInputBudgetTokens: currentContextWindow ? safeInputBudget : null,
+      totalContextTokens: currentContextWindow || null
+    };
   }, [attachments, currentContextWindow, currentModel, developerPrompt, draft, projectMemory, safeInputBudget, systemPrompt, visibleMessages]);
   const composerUsageStats = activeThreadUsageStats ?? {
     activeBranchMessageCount: visibleMessages.length,
@@ -303,7 +305,7 @@ export function usePowerAppShellViewModel({
     chatGroups,
     commandChatGroups,
     composerDisabledHint,
-    composerContextLine,
+    composerContextStats,
     composerUsageStats,
     currentErrorText,
     currentModel,

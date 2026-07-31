@@ -177,6 +177,29 @@ describe("OpenAI-compatible Chat Completions request", () => {
     expect(body).not.toHaveProperty("temperature");
   });
 
+  it("maps effort and pro mode identically in actual requests and previews", () => {
+    const runRequest = request({
+      params: {
+        maxOutputTokens: 64,
+        reasoning: { effort: "max", mode: "pro" },
+        stream: false
+      },
+      provider: "openai_compatible"
+    });
+    const options = {
+      reasoningRequestMapping: {
+        effortPath: "reason.effort",
+        modePath: "reason.mode"
+      }
+    } as const;
+    const body = buildOpenAICompatibleChatRequest(runRequest, options);
+    const preview = buildOpenAICompatibleChatRequestPreview(runRequest, options);
+
+    expect(body).toMatchObject({ reason: { effort: "max", mode: "pro" } });
+    expect(body).not.toHaveProperty("reasoning_effort");
+    expect(preview.body).toMatchObject({ reason: { effort: "max", mode: "pro" } });
+  });
+
   it("redacts image data in previews while preserving safe replay evidence", () => {
     const runRequest = request({
       attachmentIds: ["image-1"],

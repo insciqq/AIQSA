@@ -225,7 +225,8 @@ export function createProviderRuntimeBinding(input: Readonly<{
           authenticationMode,
           bearerToken: null,
           fetchFn: requiredFetch(input.options)
-        })
+        }),
+        reasoningRequestMapping: snapshot.model.reasoningRequestMapping
       }),
       toolBridge: openAICompatibleChatToolBridge
     };
@@ -267,7 +268,8 @@ export function createProviderRuntimeBinding(input: Readonly<{
     case "openai_responses_compatible":
       return {
         adapter: createCompatibleResponsesAdapter({
-          client: createFetchOpenAIResponsesClient({ apiKey: clientSecret, baseUrl, fetchFn })
+          client: createFetchOpenAIResponsesClient({ apiKey: clientSecret, baseUrl, fetchFn }),
+          reasoningRequestMapping: snapshot.model.reasoningRequestMapping
         }),
         toolBridge: openAICompatibleResponsesToolBridge
       };
@@ -279,7 +281,8 @@ export function createProviderRuntimeBinding(input: Readonly<{
             authenticationMode,
             bearerToken: clientSecret,
             fetchFn
-          })
+          }),
+          reasoningRequestMapping: snapshot.model.reasoningRequestMapping
         }),
         toolBridge: openAICompatibleChatToolBridge
       };

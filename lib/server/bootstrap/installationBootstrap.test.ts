@@ -344,12 +344,16 @@ describe("installation bootstrap", () => {
     }))));
     expect(fixture.spies.providerModelUpsert.mock.calls[0]?.[0]).toMatchObject({
       create: {
-        activeConfig: {
-          capabilities: { contextWindow: 8192 }
-        },
         draftConfig: {
           capabilities: { contextWindow: 8192 }
-        }
+        },
+        enabled: false
+      },
+      update: {
+        activeConfig: Prisma.DbNull,
+        activeVersion: 0,
+        activatedAt: null,
+        enabled: false
       }
     });
     expect(fixture.spies.searchStrategyUpsert).toHaveBeenCalledTimes(
@@ -465,12 +469,27 @@ describe("installation bootstrap", () => {
     expect(fixture.spies.searchStrategyUpsert).toHaveBeenCalledTimes(
       bootstrapSearchStrategies.length
     );
-    for (const [args] of fixture.spies.providerConnectionUpsert.mock.calls) {
+    const connectionCalls = fixture.spies.providerConnectionUpsert.mock.calls.map(([args]) => args);
+    expect(connectionCalls).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        create: expect.objectContaining({ family: "fake", enabled: false }),
+        update: {
+          activeConfig: Prisma.DbNull,
+          activeVersion: 0,
+          activatedAt: null,
+          enabled: false
+        }
+      })
+    ]));
+    for (const args of connectionCalls.filter((entry) => (
+      (entry as { create: { family: string } }).create.family !== "fake"
+    ))) {
       expect(args).toEqual(expect.objectContaining({ update: {} }));
     }
     for (const [args] of fixture.spies.providerModelUpsert.mock.calls) {
-      expect(args).toEqual(expect.objectContaining({ update: expect.any(Object) }));
-      expect((args as { update: object }).update).not.toHaveProperty("enabled");
+      expect(args).toEqual(expect.objectContaining({
+        update: expect.objectContaining({ enabled: false })
+      }));
     }
     for (const [args] of fixture.spies.searchStrategyUpsert.mock.calls) {
       expect(args).toEqual(expect.objectContaining({ update: expect.any(Object) }));

@@ -38,7 +38,7 @@ export const providerConnectionTemplates = Object.freeze([
   Object.freeze({
     config: Object.freeze({ allowPrivateNetwork: true, apiRoot: "http://127.0.0.1" }),
     displayName: "Fake QSA",
-    enabled: true,
+    enabled: false,
     family: "fake",
     id: providerTemplateIds.fakeConnection,
     templateKey: "fake"

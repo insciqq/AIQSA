@@ -861,6 +861,14 @@ describe("AdminProvidersSection", () => {
       .toHaveValue("automatic");
     expect(screen.getByText(/Effort: none, low, medium, high, xhigh, max; default medium/))
       .toBeInTheDocument();
+    expect(screen.getByLabelText(/^Reasoning effort field/)).toHaveValue("reasoning.effort");
+    expect(screen.getByLabelText(/^Reasoning mode field \(optional\)/)).toHaveValue("reasoning.mode");
+    fireEvent.change(screen.getByLabelText(/^Reasoning effort field/), {
+      target: { value: "reason" }
+    });
+    fireEvent.change(screen.getByLabelText(/^Reasoning mode field \(optional\)/), {
+      target: { value: "mode" }
+    });
     fireEvent.click(screen.getByRole("checkbox", { name: /Hosted web search/ }));
     fireEvent.click(screen.getByRole("button", { name: "Save model" }));
 
@@ -877,6 +885,10 @@ describe("AdminProvidersSection", () => {
             reasoningEfforts: ["none", "low", "medium", "high", "xhigh", "max"],
             reasoningModes: ["standard", "pro"]
           }),
+          reasoningRequestMapping: {
+            effortPath: "reason",
+            modePath: "mode"
+          },
           upstreamModelId: "local/model-b"
         }),
         displayName: "local/model-b"

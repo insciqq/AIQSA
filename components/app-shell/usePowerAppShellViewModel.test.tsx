@@ -2,6 +2,7 @@ import { render, renderHook } from "@testing-library/react";
 import { memo } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { usePowerAppShellViewModel } from "./usePowerAppShellViewModel";
+import { formatComposerContextStats } from "./composerContextStats";
 import type { Catalog, ChatGroup, ChatSummary, FolderSummary, ThreadMessage } from "./types";
 
 function chat(id: string): ChatSummary {
@@ -261,9 +262,9 @@ describe("usePowerAppShellViewModel", () => {
       selectedProvider: "private-connection"
     });
 
-    expect(result.current.composerContextLine).toMatch(/^Approx\. input: ~/);
-    expect(result.current.composerContextLine).not.toContain("safe input");
-    expect(result.current.composerContextLine).not.toContain("total context");
+    expect(formatComposerContextStats(result.current.composerContextStats)).toMatch(/^Approx\. input: ~/);
+    expect(result.current.composerContextStats.safeInputBudgetTokens).toBeNull();
+    expect(result.current.composerContextStats.totalContextTokens).toBeNull();
   });
 
   it("derives current context and active-chat usage stats", () => {
@@ -346,8 +347,8 @@ describe("usePowerAppShellViewModel", () => {
       visibleMessages
     });
 
-    expect(result.current.composerContextLine).toMatch(/^Approx\. input: ~/);
-    expect(result.current.composerContextLine).toContain("/ 881k safe input · 1.05m total context");
+    expect(formatComposerContextStats(result.current.composerContextStats)).toMatch(/^Approx\. input: ~/);
+    expect(formatComposerContextStats(result.current.composerContextStats)).toContain("/ 881k safe input · 1.05m total context");
     expect(result.current.composerUsageStats).toEqual(usageStats);
   });
 
@@ -411,7 +412,7 @@ describe("usePowerAppShellViewModel", () => {
       selectedProvider: "fake-connection-id"
     });
 
-    expect(result.current.composerContextLine).toContain("/ 7.4k safe input · 8.2k total context");
+    expect(formatComposerContextStats(result.current.composerContextStats)).toContain("/ 7.4k safe input · 8.2k total context");
   });
 
   it("adds native PDF text and page-image estimates to current context", () => {
@@ -474,6 +475,6 @@ describe("usePowerAppShellViewModel", () => {
       selectedProvider: "openai"
     });
 
-    expect(result.current.composerContextLine).toContain("~2k / 817k safe input · 1.05m total context");
+    expect(formatComposerContextStats(result.current.composerContextStats)).toContain("~2k / 817k safe input · 1.05m total context");
   });
 });

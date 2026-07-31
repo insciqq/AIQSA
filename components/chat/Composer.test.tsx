@@ -79,11 +79,15 @@ describe("Composer", () => {
     );
   });
 
-  it("keeps controls, Usage, attachment, and Send in one coherent action row", () => {
+  it("keeps controls, the context gauge, attachment, and Send in one coherent action row", () => {
     render(
       <Composer
         attachments={[]}
-        contextLine="Approx. input: ~21k / 817k safe input · 1.05m total context"
+        contextStats={{
+          approximateInputTokens: 21_000,
+          safeInputBudgetTokens: 817_000,
+          totalContextTokens: 1_050_000
+        }}
         onChange={() => undefined}
         onRemoveAttachment={() => undefined}
         onSend={() => undefined}
@@ -97,7 +101,11 @@ describe("Composer", () => {
     const primaryActions = screen.getByTestId("composer-primary-actions");
     const attachControl = screen.getByLabelText("Attach file").closest("label");
     expect(footer).toHaveClass("flex", "flex-wrap", "border-trace-subtle");
-    expect(footer).toContainElement(screen.getByRole("button", { name: "Open context and usage statistics" }));
+    const contextGauge = screen.getByRole("button", { name: /Open context details$/ });
+    expect(footer).toContainElement(contextGauge);
+    expect(contextGauge).toHaveAttribute("data-context-tone", "proof");
+    expect(contextGauge).toHaveAccessibleName(/3% of the 817k safe input budget/);
+    expect(screen.queryByText("Usage")).not.toBeInTheDocument();
     expect(footer).toContainElement(attachControl);
     expect(attachControl).toHaveTextContent("Attach");
     expect(footer).toContainElement(screen.getByRole("button", { name: "Send message" }));
@@ -704,7 +712,11 @@ describe("Composer", () => {
     render(
       <Composer
         attachments={[]}
-        contextLine="Approx. input: ~121.9k / 232k safe input · 400k total context"
+        contextStats={{
+          approximateInputTokens: 121_900,
+          safeInputBudgetTokens: 232_000,
+          totalContextTokens: 400_000
+        }}
         onChange={() => undefined}
         onRemoveAttachment={() => undefined}
         onSend={() => undefined}
@@ -719,19 +731,34 @@ describe("Composer", () => {
     );
 
     expect(screen.queryByTestId("current-context-length")).not.toBeInTheDocument();
-    const trigger = screen.getByRole("button", { name: "Open context and usage statistics" });
+    const trigger = screen.getByRole("button", { name: /Open context details$/ });
     fireEvent.click(trigger);
     const dialog = screen.getByRole("dialog", { name: "Context and usage statistics" });
     expect(dialog).toBeVisible();
-    expect(dialog).toHaveClass("overflow-y-auto", "overscroll-contain", "bg-overlay-surface");
-    expect(screen.getByText("Current context")).toBeVisible();
-    expect(dialog).toHaveTextContent("Approx. input: ~121.9k / 232k safe input · 400k total context");
+    expect(dialog).toHaveClass(
+      "overflow-y-auto",
+      "overscroll-contain",
+      "bg-overlay-surface",
+      "max-sm:fixed",
+      "max-sm:inset-x-2",
+      "max-sm:w-auto"
+    );
+    expect(screen.getByText("Approximate input")).toBeVisible();
+    expect(dialog).toHaveTextContent("~122k");
+    expect(screen.getByText("Safe input budget")).toBeVisible();
+    expect(dialog).toHaveTextContent("232k");
+    expect(screen.getByText("Total context")).toBeVisible();
+    expect(dialog).toHaveTextContent("400k");
+    expect(screen.getByText("Safe budget used")).toBeVisible();
+    expect(dialog).toHaveTextContent("53%");
     expect(screen.getByText("Total messages")).toBeVisible();
     expect(screen.getByText("6")).toBeVisible();
     expect(screen.getByText("Provider-reported tokens")).toBeVisible();
     expect(screen.getByText("4.2k")).toBeVisible();
     expect(screen.getByText("Total tokens cached")).toBeVisible();
     expect(screen.getByText("1.2k")).toBeVisible();
+    expect(screen.getByText("Cache-write tokens")).toBeVisible();
+    expect(screen.getByText("20")).toBeVisible();
     expect(screen.queryByText(/cost/i)).not.toBeInTheDocument();
 
     const close = screen.getByRole("button", { name: "Close context and usage statistics" });
@@ -745,7 +772,11 @@ describe("Composer", () => {
     render(
       <Composer
         attachments={[]}
-        contextLine="Approx. input: ~2k / 115.2k safe input · 128k total context"
+        contextStats={{
+          approximateInputTokens: 2_000,
+          safeInputBudgetTokens: 115_200,
+          totalContextTokens: 128_000
+        }}
         onChange={() => undefined}
         onRemoveAttachment={() => undefined}
         onSend={() => undefined}
@@ -753,7 +784,7 @@ describe("Composer", () => {
       />
     );
 
-    const trigger = screen.getByRole("button", { name: "Open context and usage statistics" });
+    const trigger = screen.getByRole("button", { name: /Open context details$/ });
     fireEvent.click(trigger);
     const close = screen.getByRole("button", { name: "Close context and usage statistics" });
     close.focus();

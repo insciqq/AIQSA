@@ -1,7 +1,7 @@
 import { ComposerSearchPicker } from "@/components/app-shell/ComposerSearchPicker";
 import type { CatalogSearchStrategy } from "@/components/app-shell/types";
 import type { SearchPlanMode } from "@/lib/domain/search";
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { useState } from "react";
 import { describe, expect, it, vi } from "vitest";
 
@@ -80,6 +80,24 @@ function ControlledPicker({ onChange = vi.fn() }: Readonly<{
 }
 
 describe("ComposerSearchPicker", () => {
+  it("owns nested Escape and restores focus without closing an outer dialog", async () => {
+    render(
+      <div aria-label="Outer setup" role="dialog">
+        <ControlledPicker />
+      </div>
+    );
+    const trigger = screen.getByRole("button", { name: "Search strategy" });
+    fireEvent.click(trigger);
+    const dialog = screen.getByRole("dialog", { name: "Choose Search engines" });
+
+    await waitFor(() => expect(within(dialog).getByRole("button", { name: "Close Search picker" })).toHaveFocus());
+    fireEvent.keyDown(document.activeElement!, { key: "Escape" });
+
+    expect(screen.queryByRole("dialog", { name: "Choose Search engines" })).not.toBeInTheDocument();
+    expect(screen.getByRole("dialog", { name: "Outer setup" })).toBeVisible();
+    await waitFor(() => expect(trigger).toHaveFocus());
+  });
+
   it("owns an ordered zero-to-three selection and exposes both orchestration modes", () => {
     const onChange = vi.fn();
     render(<ControlledPicker onChange={onChange} />);

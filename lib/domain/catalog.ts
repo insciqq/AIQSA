@@ -685,6 +685,7 @@ export function resolveProviderModelParameterControls(input: {
   providerFamily: string;
   reasoningEfforts?: readonly string[];
   reasoningModes?: readonly string[];
+  supportsReasoningMode?: boolean;
   supportsReasoning: boolean;
   supportsStreaming: boolean;
   upstreamModelId: string;
@@ -705,6 +706,7 @@ export function resolveProviderModelParameterControls(input: {
     provider: input.providerFamily,
     reasoningEfforts: input.reasoningEfforts,
     reasoningModes: input.reasoningModes,
+    supportsReasoningMode: input.supportsReasoningMode,
     supportsReasoning: input.supportsReasoning,
     supportsStreaming: input.supportsStreaming
   });
@@ -719,6 +721,7 @@ export function fallbackParameterControls(input: {
   provider: string;
   reasoningEfforts?: readonly string[];
   reasoningModes?: readonly string[];
+  supportsReasoningMode?: boolean;
   supportsReasoning: boolean;
   supportsStreaming?: boolean;
 }): ModelParameterControls {
@@ -750,7 +753,9 @@ export function fallbackParameterControls(input: {
     : reasoningEfforts.includes(configuredReasoningEffort)
       ? configuredReasoningEffort
       : reasoningEfforts[0] ?? "none";
-  const reasoningModes = input.adapterKind === "openai_responses_compatible"
+  const reasoningModeSerializable = input.supportsReasoningMode ??
+    input.adapterKind === "openai_responses_compatible";
+  const reasoningModes = reasoningModeSerializable
     ? input.reasoningModes?.length
       ? [...input.reasoningModes]
       : compatibleOpenAI && !input.reasoningEfforts?.length
@@ -815,6 +820,7 @@ export function parameterControlsForModel(input: {
   modelId: string;
   provider: string;
   supportsReasoning?: boolean;
+  supportsReasoningMode?: boolean;
 }): ModelParameterControls {
   const defaultEntry = defaultProviderModels.find(
     (entry) => entry.providerFamily === input.provider && entry.upstreamModelId === input.modelId
@@ -837,6 +843,7 @@ export function parameterControlsForModel(input: {
     provider: input.provider,
     reasoningEfforts: input.modelCapabilities?.reasoningEfforts,
     reasoningModes: input.modelCapabilities?.reasoningModes,
+    supportsReasoningMode: input.supportsReasoningMode,
     supportsReasoning: input.supportsReasoning ?? Boolean(input.modelCapabilities?.reasoning),
     supportsStreaming: Boolean(input.modelCapabilities?.streaming)
   });

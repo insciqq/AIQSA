@@ -208,7 +208,7 @@ function renderPane(overrides: Partial<ComponentProps<typeof MainThreadPane>> = 
       rejectAttachments: vi.fn(),
       removeAttachment: vi.fn()
     },
-    composerContextLine: null,
+    composerContextStats: null,
     composerDisabledHint: null,
     composerUsageStats: null,
     creatingChat: false,
@@ -429,7 +429,11 @@ describe("MainThreadPane", () => {
     const selectRunProfile = vi.fn();
     renderPane({
       catalog: deepProfileCatalog,
-      composerContextLine: "Approx. input: ~2k / 3k safe input · 4.1k total context",
+      composerContextStats: {
+        approximateInputTokens: 2_000,
+        safeInputBudgetTokens: 3_000,
+        totalContextTokens: 4_100
+      },
       currentModel: deepProfileModel,
       currentParameterControls: deepProfileModel.parameterControls,
       reasoningEffort: "max",

@@ -310,12 +310,9 @@ async function inspectBootstrapState(
 
 async function synchronizeCodeOwnedCatalog(tx: Prisma.TransactionClient): Promise<void> {
   for (const template of providerConnectionTemplates) {
-    const active = template.family === "fake";
+    const isFake = template.family === "fake";
     await tx.providerConnection.upsert({
       create: {
-        activeConfig: active ? json(template.config) : undefined,
-        activeVersion: active ? 1 : 0,
-        activatedAt: active ? new Date() : undefined,
         displayName: template.displayName,
         draftConfig: json(template.config),
         enabled: template.enabled,
@@ -323,7 +320,14 @@ async function synchronizeCodeOwnedCatalog(tx: Prisma.TransactionClient): Promis
         id: template.id,
         templateKey: template.templateKey
       },
-      update: {},
+      update: isFake
+        ? {
+            activeConfig: Prisma.DbNull,
+            activeVersion: 0,
+            activatedAt: null,
+            enabled: false
+          }
+        : {},
       where: { id: template.id }
     });
   }
@@ -343,16 +347,13 @@ async function synchronizeCodeOwnedCatalog(tx: Prisma.TransactionClient): Promis
   };
   await tx.providerModel.upsert({
     create: {
-      activeConfig: json(fakeConfig),
-      activeVersion: 1,
-      activatedAt: new Date(),
       capabilities: json(fake.capabilities),
       connectionId: providerTemplateIds.fakeConnection,
       contextWindow: fake.contextWindow,
       defaultParams: json(fake.defaultParams),
       displayName: fake.displayName,
       draftConfig: json(fakeConfig),
-      enabled: true,
+      enabled: false,
       id: providerTemplateIds.fakeModel,
       inputTokenPriceMicros: fake.inputTokenPriceMicros,
       modelId: fake.modelId,
@@ -364,7 +365,12 @@ async function synchronizeCodeOwnedCatalog(tx: Prisma.TransactionClient): Promis
       supportsVision: fake.capabilities.vision,
       templateKey: "fake:fake-qsa"
     },
-    update: {},
+    update: {
+      activeConfig: Prisma.DbNull,
+      activeVersion: 0,
+      activatedAt: null,
+      enabled: false
+    },
     where: { templateKey: "fake:fake-qsa" }
   });
 

@@ -33,6 +33,7 @@ import type {
   ProviderConversationMessage,
   ProviderModelCapabilities
 } from "../providers/types";
+import type { ProviderReasoningRequestMapping } from "../../contracts/providerReasoningRequestMapping";
 
 export type RunAttachmentRecord = ProviderAttachment & {
   storageKey: string;
@@ -42,6 +43,7 @@ export type RunModelConfiguration = {
   adapterKind?: CatalogAdapterKind;
   capabilities: ProviderModelCapabilities;
   defaultParams: Record<string, unknown>;
+  reasoningRequestMapping?: ProviderReasoningRequestMapping;
 };
 
 export type RunSearchStrategyConfiguration = {

@@ -135,6 +135,17 @@ for reported metadata, the disclosed GPT-5.6 Sol fallback, explicit disable,
 and Responses hosted search. A real gateway remains an opt-in sanitized smoke,
 never routine Vitest input.
 
+Compatible reasoning-mapping changes additionally require exact Chat and
+Responses request-body tests for protocol defaults, safe overrides, and
+`standard | pro`; invalid/reserved/prototype/colliding-path tests; immutable
+snapshot/runtime and redacted-preview parity; catalog mode projection; and
+Custom-setup plus saved-model-editor coverage. Production Fake withdrawal must
+run the provider-control-plane migration contract and prove installation
+bootstrap disables existing code-owned Fake publication without deleting
+historical bindings while the disposable dev seed remains runnable. Context
+gauge changes require derivation/component tests plus viewport and horizontal-
+overflow assertions at 384x844, 844x390, and 768x1024.
+
 Overlay geometry cases normally inherit deterministic `data-motion=off`, but a
 case that protects positioning from entrance-animation properties must remove
 that attribute before opening the surface. The wide-screen Run setup case does
@@ -162,6 +173,7 @@ Migration contracts operate only on temporary databases or in-memory fixtures. S
 
 ```bash
 npm run db:gemini:migration:contract
+npm run db:provider:migration:contract
 npm run db:full-access:migration:contract
 npm run db:control-plane:migration:contract
 npm run db:retention:migration:contract

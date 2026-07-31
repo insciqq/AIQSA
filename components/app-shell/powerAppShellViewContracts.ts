@@ -1,4 +1,5 @@
 import type { ComposerAttachment } from "@/components/chat/Composer";
+import type { ComposerContextStats } from "@/components/app-shell/composerContextStats";
 import type { CommandItem } from "@/components/command-palette/commandItems";
 import type { ShareDialogTarget } from "@/components/app-shell/ShareDialog";
 import type { PromptSettingsActions } from "@/components/app-shell/promptSettingsActions";
@@ -169,7 +170,7 @@ export type ShellComposerView = {
   changeStreamMode(value: boolean): void;
   changeTemperature(value: string): void;
   composerActions: ShellComposerActions;
-  composerContextLine: string | null;
+  composerContextStats: ComposerContextStats | null;
   composerDisabledHint: string | null;
   composerUsageStats: ChatUsageStats | null;
   currentModel: CatalogModel | undefined;

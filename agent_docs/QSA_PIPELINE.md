@@ -54,6 +54,7 @@ For every model run, the app can show:
 - context-window truncation summary when oldest prior turns were omitted;
 - provider-specific request preview;
 - selected API parameters;
+- the accepted compatible-provider reasoning effort/mode request mapping, when applicable;
 - selected ordered Search plan and orchestration mode;
 - exact Search option/revision bindings plus separately attributable actual engine invocations;
 - attachment references and preprocessing summaries;

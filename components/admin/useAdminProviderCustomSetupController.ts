@@ -17,6 +17,7 @@ import {
   type AdminProviderReasoningChoice
 } from "@/components/admin/adminProviderReasoning";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { compatibleReasoningRequestMappingDefault } from "@/lib/contracts/providerReasoningRequestMapping";
 
 export type UseAdminProviderCustomSetupControllerOptions = Readonly<{
   onMutationCommitted?(): void | Promise<unknown>;
@@ -34,6 +35,8 @@ type AdminProviderCustomSetupForm = {
   selectedModelIds: string[];
   protocol: AdminProviderCustomProtocol;
   reasoningChoice: AdminProviderReasoningChoice;
+  reasoningEffortPath: string;
+  reasoningModePath: string;
   secret: string;
   streaming: boolean;
   toolCalling: boolean;
@@ -54,6 +57,8 @@ function initialForm(): AdminProviderCustomSetupForm {
     selectedModelIds: [],
     protocol: "chat_completions",
     reasoningChoice: "automatic",
+    reasoningEffortPath: compatibleReasoningRequestMappingDefault("chat_completions").effortPath,
+    reasoningModePath: "",
     secret: "",
     streaming: ADMIN_PROVIDER_CUSTOM_DEFAULT_CAPABILITIES.streaming,
     toolCalling: ADMIN_PROVIDER_CUSTOM_DEFAULT_CAPABILITIES.toolCalling,
@@ -274,6 +279,7 @@ export function useAdminProviderCustomSetupController(
       form.contextWindow < 1 ||
       !Number.isInteger(form.defaultMaxOutputTokens) ||
       form.defaultMaxOutputTokens < 1 ||
+      (reasoning.reasoning && !form.reasoningEffortPath.trim()) ||
       (authenticationMode === "none" &&
         (!form.allowPrivateNetwork || protocol !== "http:" ||
           form.protocol !== "chat_completions"))
@@ -315,6 +321,16 @@ export function useAdminProviderCustomSetupController(
         : {}),
       ...(usesDiscoveredModels ? { modelIds } : { modelId }),
       protocol: form.protocol,
+      ...(reasoning.reasoning
+        ? {
+            reasoningRequestMapping: {
+              effortPath: form.reasoningEffortPath.trim(),
+              ...(form.reasoningModePath.trim()
+                ? { modePath: form.reasoningModePath.trim() }
+                : {})
+            }
+          }
+        : {}),
       ...(secret ? { secret } : {})
     }, fetch, abort.signal);
     if (generation !== generationRef.current) return false;

@@ -671,7 +671,8 @@ describe("Prisma provider Quick setup connection summaries", () => {
     }]);
     expect(JSON.stringify(summaries)).not.toMatch(/apiRoot|credential|secret/i);
     expect(findMany).toHaveBeenCalledWith(expect.objectContaining({
-      orderBy: [{ displayName: "asc" }, { id: "asc" }]
+      orderBy: [{ displayName: "asc" }, { id: "asc" }],
+      where: expect.objectContaining({ family: { not: "fake" } })
     }));
   });
 });

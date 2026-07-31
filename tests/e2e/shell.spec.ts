@@ -3835,8 +3835,11 @@ test("supports the default QSA chat and folder workflow", async ({ browser, page
   await expect(page.getByTestId("token-stats-button")).toBeVisible();
   await expect(page.getByTestId("composer-usage-line")).not.toContainText("cost");
   await page.getByTestId("token-stats-button").click();
-  await expect(page.getByTestId("token-stats-popover")).toContainText("Current context");
-  await expect(page.getByTestId("token-stats-popover")).toContainText("/ 7.4k safe input · 8.2k total context");
+  await expect(page.getByTestId("token-stats-popover")).toContainText("Approximate input");
+  await expect(page.getByTestId("token-stats-popover")).toContainText("Safe input budget");
+  await expect(page.getByTestId("token-stats-popover")).toContainText("7.4k");
+  await expect(page.getByTestId("token-stats-popover")).toContainText("Total context");
+  await expect(page.getByTestId("token-stats-popover")).toContainText("8.2k");
   await expect(page.getByTestId("token-stats-popover")).toContainText("Total messages");
   await expect(page.getByTestId("token-stats-popover")).toContainText("Provider-reported tokens");
   const composerMessageLabel = page.locator('label[for="composer"]');
@@ -4596,11 +4599,16 @@ for (const viewport of responsiveTouchViewports) {
         );
       }
 
-      await page.getByTestId("token-stats-button").click();
+      const contextGauge = page.getByTestId("token-stats-button");
+      await expect(contextGauge).toHaveAccessibleName(/% of the .* safe input budget.*Open context details/);
+      await contextGauge.click();
       const contextStats = page.getByTestId("token-stats-popover");
-      await expect(contextStats).toContainText("Current context");
-      await expect(contextStats).toContainText("safe input");
-      await expect(contextStats).toContainText("total context");
+      await expect(contextStats).toContainText("Approximate input");
+      await expect(contextStats).toContainText("Safe input budget");
+      await expect(contextStats).toContainText("Total context");
+      await expect(contextStats).toContainText("Safe budget used");
+      await expectWithinViewport(page, contextStats);
+      await expectNoHorizontalOverflow(page);
       await contextStats.getByRole("button", { name: "Close context and usage statistics" }).click();
       const composerBox = await page.getByTestId("composer-drop-zone").boundingBox();
       expect(composerBox).toBeTruthy();
@@ -4614,9 +4622,7 @@ for (const viewport of responsiveTouchViewports) {
       await expectTouchSafe(page.getByRole("button", { name: "Send message" }));
       await expectWithinViewport(page, page.getByRole("button", { name: "Send message" }));
       await expectTouchSafe(page.getByLabel("Attach file").locator(".."));
-      const footer = page.getByTestId("composer-action-footer");
       const primaryActions = page.getByTestId("composer-primary-actions");
-      await expect(footer).toContainText(/\d/);
       const [primaryActionsBox, attachBox, sendBox] = await Promise.all([
         primaryActions.boundingBox(),
         page.getByLabel("Attach file").locator("..").boundingBox(),

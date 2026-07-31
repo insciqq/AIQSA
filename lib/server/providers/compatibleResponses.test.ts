@@ -87,6 +87,46 @@ describe("compatible Responses adapter", () => {
     });
   });
 
+  it("keeps canonical effort and pro mode with the Responses default mapping", () => {
+    expect(buildCompatibleResponsesRequest(request({
+      params: {
+        maxOutputTokens: 64,
+        reasoning: { effort: "max", mode: "pro", summary: "auto" },
+        stream: false
+      }
+    }))).toMatchObject({
+      reasoning: { effort: "max", mode: "pro", summary: "auto" }
+    });
+  });
+
+  it("uses one override for actual and preview requests without a canonical reasoning object", () => {
+    const runRequest = request({
+      params: {
+        maxOutputTokens: 64,
+        reasoning: { effort: "high", mode: "pro", summary: "auto" },
+        stream: false
+      }
+    });
+    const mapping = { effortPath: "reason", modePath: "mode" } as const;
+    const body = buildCompatibleResponsesRequest(runRequest, {
+      reasoningRequestMapping: mapping
+    });
+    const adapter = createCompatibleResponsesAdapter({
+      client: {
+        cancel: async () => ({}),
+        create: async () => ({}),
+        retrieve: async () => ({})
+      },
+      reasoningRequestMapping: mapping
+    });
+    const preview = adapter.buildRequestPreview?.(runRequest);
+
+    expect(body).toMatchObject({ mode: "pro", reason: "high" });
+    expect(body).not.toHaveProperty("reasoning");
+    expect(preview?.body).toMatchObject({ mode: "pro", reason: "high" });
+    expect(preview?.body).not.toHaveProperty("reasoning");
+  });
+
   it("normalizes a completed non-streaming response", async () => {
     const create = vi.fn(async () => ({
       id: "response-1",

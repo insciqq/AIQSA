@@ -43,6 +43,7 @@ import {
   X
 } from "lucide-react";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { compatibleReasoningRequestMappingDefault } from "@/lib/contracts/providerReasoningRequestMapping";
 
 const fieldLabel = "mb-1 block text-xs font-medium text-ink-secondary";
 const helpText = "mt-1 text-[11px] leading-4 text-ink-muted";
@@ -56,6 +57,8 @@ type ModelForm = {
   displayName: string;
   openRouterRoutingMode: "automatic" | "only_selected";
   providerTags: string[];
+  reasoningEffortPath: string;
+  reasoningModePath: string;
   upstreamModelId: string;
 };
 
@@ -115,11 +118,24 @@ function blankModel(connection: AdminProviderConnection): ModelForm {
     displayName: "",
     openRouterRoutingMode: "automatic",
     providerTags: [],
+    reasoningEffortPath: compatibleReasoningRequestMappingDefault(
+      adapterFor(connection.family) === "openai_responses_compatible"
+        ? "responses"
+        : "chat_completions"
+    ).effortPath,
+    reasoningModePath: adapterFor(connection.family) === "openai_responses_compatible"
+      ? "reasoning.mode"
+      : "",
     upstreamModelId: ""
   };
 }
 
 function existingModel(model: AdminProviderModel): ModelForm {
+  const protocol = model.draftConfig.adapterKind === "openai_responses_compatible"
+    ? "responses"
+    : "chat_completions";
+  const mapping = model.draftConfig.reasoningRequestMapping ??
+    compatibleReasoningRequestMappingDefault(protocol);
   return {
     adapterKind: model.draftConfig.adapterKind,
     answerSelectable: model.draftConfig.answerSelectable,
@@ -128,6 +144,8 @@ function existingModel(model: AdminProviderModel): ModelForm {
     displayName: model.displayName,
     openRouterRoutingMode: model.draftConfig.openRouterRouting?.mode ?? "automatic",
     providerTags: [...(model.draftConfig.openRouterRouting?.providers ?? [])],
+    reasoningEffortPath: mapping.effortPath,
+    reasoningModePath: mapping.modePath ?? "",
     upstreamModelId: model.draftConfig.upstreamModelId
   };
 }
@@ -442,7 +460,16 @@ export function AdminProviderModelEditor({
       capabilities.nativeSearch = false;
       capabilities.nativeImageGeneration = false;
     }
-    setForm({ ...form, adapterKind, capabilities });
+    const mapping = compatibleReasoningRequestMappingDefault(
+      adapterKind === "openai_responses_compatible" ? "responses" : "chat_completions"
+    );
+    setForm({
+      ...form,
+      adapterKind,
+      capabilities,
+      reasoningEffortPath: mapping.effortPath,
+      reasoningModePath: mapping.modePath ?? ""
+    });
   }
 
   function changeReasoning(choice: AdminProviderReasoningChoice) {
@@ -489,6 +516,14 @@ export function AdminProviderModelEditor({
           openRouterRouting: form.openRouterRoutingMode === "automatic"
             ? { mode: "automatic" as const, providers: [] as [] }
             : { mode: "only_selected" as const, providers: form.providerTags }
+        } : {}),
+        ...(compatibleAdapters && form.capabilities.reasoning ? {
+          reasoningRequestMapping: {
+            effortPath: form.reasoningEffortPath.trim(),
+            ...(form.reasoningModePath.trim()
+              ? { modePath: form.reasoningModePath.trim() }
+              : {})
+          }
         } : {}),
         upstreamModelId: form.upstreamModelId
       },
@@ -813,7 +848,13 @@ export function AdminProviderModelEditor({
                   capabilities: {
                     ...form.capabilities,
                     nativeSearch: event.currentTarget.checked
-                  }
+                  },
+                  ...(event.currentTarget.checked && form.adapterKind !== "openai_responses_compatible"
+                    ? {
+                        reasoningEffortPath: "reasoning.effort",
+                        reasoningModePath: "reasoning.mode"
+                      }
+                    : {})
                 })}
                 type="checkbox"
               />
@@ -822,6 +863,43 @@ export function AdminProviderModelEditor({
                 <span className="mt-0.5 block leading-4 text-ink-muted">Enabling this selects Responses, where AIQSA can serialize the hosted tool and citations.</span>
               </span>
             </label>
+            {form.capabilities.reasoning ? (
+              <div className="grid gap-3 rounded-control border border-trace-subtle bg-control-surface/45 p-3 md:col-span-2 md:grid-cols-2">
+                <label>
+                  <span className={fieldLabel}>Reasoning effort field</span>
+                  <input
+                    className={`${inputClass} font-mono text-xs`}
+                    disabled={controller.state.busy}
+                    maxLength={128}
+                    onChange={(event) => setForm({
+                      ...form,
+                      reasoningEffortPath: event.currentTarget.value
+                    })}
+                    required
+                    value={form.reasoningEffortPath}
+                  />
+                  <span className={helpText}>Outbound dot path, for example `effort`, `reason`, or `reasoning.effort`.</span>
+                </label>
+                <label>
+                  <span className={fieldLabel}>Reasoning mode field (optional)</span>
+                  <input
+                    className={`${inputClass} font-mono text-xs`}
+                    disabled={controller.state.busy}
+                    maxLength={128}
+                    onChange={(event) => setForm({
+                      ...form,
+                      reasoningModePath: event.currentTarget.value
+                    })}
+                    placeholder="Blank means no mode is sent"
+                    value={form.reasoningModePath}
+                  />
+                  <span className={helpText}>Configure this when the gateway accepts `standard` / `pro` or equivalent modes.</span>
+                </label>
+                <p className="break-words font-mono text-[11px] leading-4 text-ink-muted md:col-span-2">
+                  Effort → {form.reasoningEffortPath.trim() || "missing"} · Mode → {form.reasoningModePath.trim() || "not sent"}
+                </p>
+              </div>
+            ) : null}
           </div>
         </section>
       ) : null}

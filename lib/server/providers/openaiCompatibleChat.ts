@@ -12,6 +12,7 @@ import {
   type OpenAICompatibleChatClient
 } from "./openaiCompatibleChatTransport";
 import type { ProviderAdapter, ProviderRunResult } from "./types";
+import type { ProviderReasoningRequestMapping } from "../../contracts/providerReasoningRequestMapping";
 
 export {
   buildOpenAICompatibleChatRequest,
@@ -22,6 +23,7 @@ export type { OpenAICompatibleChatClient };
 export type OpenAICompatibleChatAdapterOptions = {
   client: OpenAICompatibleChatClient;
   maxAttachmentTextChars?: number;
+  reasoningRequestMapping?: ProviderReasoningRequestMapping;
 };
 
 export function createOpenAICompatibleChatAdapter(
@@ -30,11 +32,13 @@ export function createOpenAICompatibleChatAdapter(
   return {
     buildRequestPreview: (request) =>
       buildOpenAICompatibleChatRequestPreview(request, {
-        maxAttachmentTextChars: options.maxAttachmentTextChars
+        maxAttachmentTextChars: options.maxAttachmentTextChars,
+        reasoningRequestMapping: options.reasoningRequestMapping
       }),
     async *stream(request, runOptions = {}): AsyncGenerator<ModelRunSseEvent, ProviderRunResult> {
       const body = buildOpenAICompatibleChatRequest(request, {
-        maxAttachmentTextChars: options.maxAttachmentTextChars
+        maxAttachmentTextChars: options.maxAttachmentTextChars,
+        reasoningRequestMapping: options.reasoningRequestMapping
       });
 
       if (body.stream) {

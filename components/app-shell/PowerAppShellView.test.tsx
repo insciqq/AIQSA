@@ -170,7 +170,7 @@ function baseProps(): PowerAppShellViewProps {
         rejectAttachments: noop,
         removeAttachment: noop
       },
-      composerContextLine: null,
+      composerContextStats: null,
       composerDisabledHint: null,
       composerUsageStats: null,
       currentModel: undefined,

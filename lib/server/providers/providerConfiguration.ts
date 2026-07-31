@@ -1,10 +1,42 @@
 import type { ProviderModelCapabilities } from "./types";
+import {
+  compatibleReasoningRequestMappingDefault,
+  type ProviderReasoningRequestMapping
+} from "../../contracts/providerReasoningRequestMapping";
 
 const MAX_API_ROOT_LENGTH = 2_048;
 const MAX_DEFAULT_PARAMS_BYTES = 32 * 1_024;
 const MAX_PROVIDER_ROUTE_COUNT = 16;
 const MAX_REASONING_CONTROL_COUNT = 16;
 const MAX_REASONING_CONTROL_LENGTH = 32;
+const MAX_REASONING_PATH_LENGTH = 128;
+const MAX_REASONING_PATH_DEPTH = 4;
+const FORBIDDEN_REASONING_PATH_SEGMENTS = new Set([
+  "__proto__",
+  "constructor",
+  "prototype"
+]);
+const RESERVED_REASONING_REQUEST_ROOTS = new Set([
+  "background",
+  "include",
+  "input",
+  "instructions",
+  "max_completion_tokens",
+  "max_output_tokens",
+  "messages",
+  "metadata",
+  "model",
+  "parallel_tool_calls",
+  "previous_response_id",
+  "prompt_cache_key",
+  "prompt_cache_options",
+  "prompt_cache_retention",
+  "store",
+  "stream",
+  "temperature",
+  "tool_choice",
+  "tools"
+]);
 
 export const providerAdapterKinds = [
   "anthropic_messages",
@@ -47,6 +79,7 @@ export type ProviderModelConfiguration = {
   capabilities: ProviderModelCapabilities;
   defaultParams: Record<string, unknown>;
   openRouterRouting?: OpenRouterRoutingConfiguration;
+  reasoningRequestMapping?: ProviderReasoningRequestMapping;
   upstreamModelId: string;
 };
 
@@ -57,6 +90,7 @@ export type ProviderConfigurationErrorCode =
   | "provider_authentication_mode_invalid"
   | "provider_default_params_invalid"
   | "provider_model_capabilities_invalid"
+  | "provider_reasoning_mapping_invalid"
   | "provider_routing_invalid"
   | "provider_upstream_model_invalid";
 
@@ -105,6 +139,56 @@ function jsonByteLength(value: unknown): number {
   } catch {
     return Infinity;
   }
+}
+
+function normalizeReasoningPath(value: unknown): string {
+  if (typeof value !== "string") {
+    throw new ProviderConfigurationError("provider_reasoning_mapping_invalid");
+  }
+  const path = value.trim();
+  const segments = path.split(".");
+  if (
+    !path ||
+    path.length > MAX_REASONING_PATH_LENGTH ||
+    segments.length > MAX_REASONING_PATH_DEPTH ||
+    segments.some((segment) =>
+      !/^[A-Za-z_][A-Za-z0-9_-]{0,63}$/u.test(segment) ||
+      FORBIDDEN_REASONING_PATH_SEGMENTS.has(segment)
+    ) ||
+    RESERVED_REASONING_REQUEST_ROOTS.has(segments[0]!)
+  ) {
+    throw new ProviderConfigurationError("provider_reasoning_mapping_invalid");
+  }
+  return segments.join(".");
+}
+
+export function normalizeProviderReasoningRequestMapping(
+  value: unknown
+): ProviderReasoningRequestMapping {
+  if (!isRecord(value)) {
+    throw new ProviderConfigurationError("provider_reasoning_mapping_invalid");
+  }
+  const allowedKeys = new Set(["effortPath", "modePath"]);
+  if (Object.keys(value).some((key) => !allowedKeys.has(key))) {
+    throw new ProviderConfigurationError("provider_reasoning_mapping_invalid");
+  }
+  const effortPath = normalizeReasoningPath(value.effortPath);
+  const modePath = value.modePath === undefined
+    ? undefined
+    : normalizeReasoningPath(value.modePath);
+  if (
+    modePath && (
+      modePath === effortPath ||
+      modePath.startsWith(`${effortPath}.`) ||
+      effortPath.startsWith(`${modePath}.`)
+    )
+  ) {
+    throw new ProviderConfigurationError("provider_reasoning_mapping_invalid");
+  }
+  return {
+    effortPath,
+    ...(modePath ? { modePath } : {})
+  };
 }
 
 export function normalizeProviderApiRoot(
@@ -336,6 +420,23 @@ export function normalizeProviderModelConfiguration(value: unknown): ProviderMod
   const rawDefaultParams = normalizeProviderDefaultParams(value.defaultParams);
 
   const adapterKind = value.adapterKind as ProviderAdapterKind;
+  const capabilities = normalizeProviderModelCapabilities(value.capabilities);
+  const compatibleProtocol = adapterKind === "openai_responses_compatible"
+    ? "responses"
+    : adapterKind === "openai_chat_completions_compatible"
+      ? "chat_completions"
+      : null;
+  if (
+    value.reasoningRequestMapping !== undefined &&
+    (!compatibleProtocol || !capabilities.reasoning)
+  ) {
+    throw new ProviderConfigurationError("provider_reasoning_mapping_invalid");
+  }
+  const reasoningRequestMapping = compatibleProtocol && capabilities.reasoning
+    ? value.reasoningRequestMapping === undefined
+      ? compatibleReasoningRequestMappingDefault(compatibleProtocol)
+      : normalizeProviderReasoningRequestMapping(value.reasoningRequestMapping)
+    : undefined;
   const openRouterRouting = value.openRouterRouting === undefined
     ? undefined
     : normalizeOpenRouterRouting(value.openRouterRouting);
@@ -349,9 +450,10 @@ export function normalizeProviderModelConfiguration(value: unknown): ProviderMod
   return {
     adapterKind,
     answerSelectable: value.answerSelectable ?? true,
-    capabilities: normalizeProviderModelCapabilities(value.capabilities),
+    capabilities,
     defaultParams,
     ...(openRouterRouting ? { openRouterRouting } : {}),
+    ...(reasoningRequestMapping ? { reasoningRequestMapping } : {}),
     upstreamModelId: value.upstreamModelId.trim()
   };
 }

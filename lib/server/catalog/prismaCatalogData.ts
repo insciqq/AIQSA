@@ -342,6 +342,8 @@ export function providerModelToCatalogEntry(
       providerFamily: model.connection.family,
       reasoningEfforts: resolvedCapabilities.reasoningEfforts,
       reasoningModes: resolvedCapabilities.reasoningModes,
+      supportsReasoningMode: "reasoningRequestMapping" in configuration &&
+        Boolean(configuration.reasoningRequestMapping?.modePath),
       supportsReasoning: capabilities.reasoning,
       supportsStreaming: capabilities.streaming,
       upstreamModelId: configuration.upstreamModelId

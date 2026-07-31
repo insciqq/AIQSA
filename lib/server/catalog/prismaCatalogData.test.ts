@@ -434,6 +434,43 @@ describe("prisma catalog data loader", () => {
     });
   });
 
+  it("exposes compatible Chat modes only with an explicit mode request mapping", () => {
+    const activeConfig = {
+      adapterKind: "openai_chat_completions_compatible",
+      capabilities: {
+        ...capabilities,
+        defaultReasoningEffort: "medium",
+        defaultReasoningMode: "standard",
+        reasoning: true,
+        reasoningEfforts: ["none", "low", "medium", "high", "xhigh", "max"],
+        reasoningModes: ["standard", "pro"]
+      },
+      defaultParams: {},
+      upstreamModelId: "custom/reasoning"
+    };
+    const withoutMode = providerModelToCatalogEntry(providerModel({
+      activeConfig,
+      connection: { family: "openai_compatible" }
+    }));
+    const withMode = providerModelToCatalogEntry(providerModel({
+      activeConfig: {
+        ...activeConfig,
+        reasoningRequestMapping: {
+          effortPath: "reasoning_effort",
+          modePath: "reasoning_mode"
+        }
+      },
+      connection: { family: "openai_compatible" }
+    }));
+
+    expect(withoutMode?.parameterControls.reasoningMode).toBeUndefined();
+    expect(withMode?.parameterControls.reasoningMode).toMatchObject({
+      defaultValue: "standard",
+      options: ["standard", "pro"],
+      supported: true
+    });
+  });
+
   it("never exposes the provider compatibility sentinel as a context window", () => {
     const known = providerModelToCatalogEntry(providerModel({
       activeConfig: {

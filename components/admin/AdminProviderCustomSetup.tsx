@@ -12,6 +12,7 @@ import {
 } from "@/components/admin/adminProviderReasoning";
 import type { AdminProviderCustomSetupController } from "@/components/admin/useAdminProviderCustomSetupController";
 import { MAX_ADMIN_PROVIDER_CUSTOM_SETUP_MODELS } from "@/lib/contracts/adminProviderCustomSetup";
+import { compatibleReasoningRequestMappingDefault } from "@/lib/contracts/providerReasoningRequestMapping";
 import { ArrowLeft, ChevronDown, KeyRound, ServerCog, X } from "lucide-react";
 import Link from "next/link";
 import { useId } from "react";
@@ -356,6 +357,10 @@ export function AdminProviderCustomSetup({
                       : "chat_completions" as const;
                     controller.actions.update({
                       protocol,
+                      reasoningEffortPath:
+                        compatibleReasoningRequestMappingDefault(protocol).effortPath,
+                      reasoningModePath:
+                        compatibleReasoningRequestMappingDefault(protocol).modePath ?? "",
                       ...(protocol === "chat_completions"
                         ? { imageGeneration: false, webSearch: false }
                         : {})
@@ -388,6 +393,42 @@ export function AdminProviderCustomSetup({
                 </select>
                 <p className={helpText} id={reasoningHelpId}>{reasoningCapabilitiesSummary(selectedReasoning)}</p>
               </div>
+              {selectedReasoning.reasoning ? (
+                <div className="grid gap-3 rounded-control border border-trace-subtle bg-answer-paper p-3 md:col-span-2 md:grid-cols-2">
+                  <label>
+                    <span className={fieldLabel}>Reasoning effort field</span>
+                    <input
+                      className={`${inputClass} font-mono text-xs`}
+                      disabled={controller.state.formLocked}
+                      maxLength={128}
+                      onChange={(event) => controller.actions.update({
+                        reasoningEffortPath: event.currentTarget.value
+                      })}
+                      placeholder={form.protocol === "responses" ? "reasoning.effort" : "reasoning_effort"}
+                      required
+                      value={form.reasoningEffortPath}
+                    />
+                    <span className={helpText}>Dot path used in the outbound request, for example `effort`, `reason`, or `reasoning.effort`.</span>
+                  </label>
+                  <label>
+                    <span className={fieldLabel}>Reasoning mode field (optional)</span>
+                    <input
+                      className={`${inputClass} font-mono text-xs`}
+                      disabled={controller.state.formLocked}
+                      maxLength={128}
+                      onChange={(event) => controller.actions.update({
+                        reasoningModePath: event.currentTarget.value
+                      })}
+                      placeholder={form.protocol === "responses" ? "reasoning.mode" : "Not sent by default"}
+                      value={form.reasoningModePath}
+                    />
+                    <span className={helpText}>Set this only when the endpoint accepts modes such as `standard` and `pro`; blank means no mode is sent.</span>
+                  </label>
+                  <p className="break-words font-mono text-[11px] leading-4 text-ink-muted md:col-span-2">
+                    Effort → {form.reasoningEffortPath.trim() || "missing"} · Mode → {form.reasoningModePath.trim() || "not sent"}
+                  </p>
+                </div>
+              ) : null}
               <div className="rounded-control border border-trace-subtle bg-answer-paper p-3">
                 <p className={fieldLabel}>Hosted tools declared by the administrator</p>
                 <label className="flex min-h-control items-center gap-2 text-xs text-ink-secondary">
@@ -396,7 +437,13 @@ export function AdminProviderCustomSetup({
                     className="size-4 accent-proof"
                     disabled={controller.state.formLocked}
                     onChange={(event) => controller.actions.update({
-                      protocol: event.currentTarget.checked ? "responses" : form.protocol,
+                      ...(event.currentTarget.checked && form.protocol !== "responses"
+                        ? {
+                            protocol: "responses" as const,
+                            reasoningEffortPath: "reasoning.effort",
+                            reasoningModePath: "reasoning.mode"
+                          }
+                        : {}),
                       webSearch: event.currentTarget.checked
                     })}
                     type="checkbox"
@@ -410,7 +457,13 @@ export function AdminProviderCustomSetup({
                     disabled={controller.state.formLocked}
                     onChange={(event) => controller.actions.update({
                       imageGeneration: event.currentTarget.checked,
-                      protocol: event.currentTarget.checked ? "responses" : form.protocol
+                      ...(event.currentTarget.checked && form.protocol !== "responses"
+                        ? {
+                            protocol: "responses" as const,
+                            reasoningEffortPath: "reasoning.effort",
+                            reasoningModePath: "reasoning.mode"
+                          }
+                        : {})
                     })}
                     type="checkbox"
                   />

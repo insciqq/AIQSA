@@ -6,7 +6,10 @@ import {
   type AdminProviderCustomProtocol,
   type AdminProviderCustomSetupRequest
 } from "../../../contracts/adminProviderCustomSetup";
-import type { AdminProviderModelCapabilities } from "../../../contracts/adminProviders";
+import type {
+  AdminProviderModelCapabilities,
+  AdminProviderReasoningRequestMapping
+} from "../../../contracts/adminProviders";
 import type { RequestAuthResolver } from "../../auth/requestAuth";
 import { ProviderConfigurationError } from "../../providers/providerConfiguration";
 import {
@@ -137,6 +140,7 @@ export function createAdminProviderCustomSetupHandler(
       "modelId",
       "modelIds",
       "protocol",
+      "reasoningRequestMapping",
       "secret"
     ]);
     if (Object.keys(body).some((key) => !allowedKeys.has(key))) {
@@ -189,6 +193,7 @@ export function createAdminProviderCustomSetupHandler(
       secret === null ||
       (body.capabilities !== undefined && !isRecord(body.capabilities)) ||
       (body.defaultParams !== undefined && !isRecord(body.defaultParams)) ||
+      (body.reasoningRequestMapping !== undefined && !isRecord(body.reasoningRequestMapping)) ||
       (mode === "bearer" && secret === undefined) ||
       (mode === "none" && secret !== undefined)
     ) {
@@ -210,6 +215,12 @@ export function createAdminProviderCustomSetupHandler(
       ...(modelId === undefined ? {} : { modelId }),
       ...(normalizedModelIds === undefined ? {} : { modelIds: normalizedModelIds }),
       protocol: selectedProtocol,
+      ...(body.reasoningRequestMapping === undefined
+        ? {}
+        : {
+            reasoningRequestMapping:
+              body.reasoningRequestMapping as AdminProviderReasoningRequestMapping
+          }),
       ...(secret === undefined ? {} : { secret })
     };
     return safely(async () => Response.json(await deps.service.setup({

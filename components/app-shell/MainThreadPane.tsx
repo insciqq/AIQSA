@@ -3,6 +3,10 @@ import {
   type ComposerAttachment,
   type ComposerHintTone
 } from "@/components/chat/Composer";
+import {
+  formatComposerContextStats,
+  type ComposerContextStats
+} from "@/components/app-shell/composerContextStats";
 import { attachmentPolicyForModel } from "@/components/app-shell/attachmentCapabilities";
 import { ComposerControls } from "@/components/app-shell/ComposerControls";
 import { McpComposerSummary } from "@/components/app-shell/McpComposerSummary";
@@ -55,7 +59,7 @@ export type MainThreadPaneProps = {
   changeReasoningMode(value: string): void;
   changeStreamMode(value: boolean): void;
   changeTemperature(value: string): void;
-  composerContextLine: string | null;
+  composerContextStats: ComposerContextStats | null;
   composerDisabledHint: string | null;
   composerActions: MainThreadPaneComposerActions;
   composerUsageStats: ChatUsageStats | null;
@@ -140,7 +144,7 @@ export function MainThreadPane({
   changeReasoningMode,
   changeStreamMode,
   changeTemperature,
-  composerContextLine,
+  composerContextStats,
   composerDisabledHint,
   composerActions,
   composerUsageStats,
@@ -630,7 +634,7 @@ export function MainThreadPane({
               catalog={catalog}
               catalogUnavailable={Boolean(catalogError)}
               compact={centeredEmptyConversation}
-              contextLine={composerContextLine}
+              contextLine={composerContextStats ? formatComposerContextStats(composerContextStats) : null}
               currentModel={currentModel}
               currentParameterControls={currentParameterControls}
               currentPrompt={currentPrompt}
@@ -708,7 +712,7 @@ export function MainThreadPane({
             />
           )}
           uploading={uploading}
-          contextLine={composerContextLine}
+          contextStats={composerContextStats}
           usageStats={composerUsageStats}
           value={draft}
           onRequestExpanded={expandComposerReadingMode}

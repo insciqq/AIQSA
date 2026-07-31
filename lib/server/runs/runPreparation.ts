@@ -898,7 +898,10 @@ export async function prepareRun(
     defaultParams,
     modelCapabilities,
     modelId: executionModelId,
-    provider: parameterProvider
+    provider: parameterProvider,
+    supportsReasoningMode:
+      executionAdapterKind === "openai_responses_native" ||
+      Boolean(modelConfiguration.reasoningRequestMapping?.modePath)
   });
   if (
     requestedSearchStrategy === perplexityToolSearchStrategyId &&

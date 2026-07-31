@@ -126,6 +126,39 @@ describe("provider runtime factory", () => {
     expect(preview.adapter.buildRequestPreview).toBeTypeOf("function");
   });
 
+  it("keeps the versioned compatible reasoning mapping in preview serialization", () => {
+    const base = snapshot("openai_chat_completions_compatible");
+    const mapped = normalizeProviderExecutionSnapshot({
+      ...base,
+      model: {
+        ...base.model,
+        capabilities: { ...base.model.capabilities, reasoning: true },
+        reasoningRequestMapping: {
+          effortPath: "reason.effort",
+          modePath: "reason.mode"
+        }
+      }
+    });
+    const runtime = createProviderPreviewRuntimeBinding(mapped, false);
+    const preview = runtime.adapter.buildRequestPreview?.({
+      ...compatibleRequest(),
+      params: {
+        reasoning: { effort: "max", mode: "pro" },
+        stream: false
+      }
+    });
+
+    expect(mapped.model).toMatchObject({
+      reasoningRequestMapping: {
+        effortPath: "reason.effort",
+        modePath: "reason.mode"
+      }
+    });
+    expect(preview?.body).toMatchObject({
+      reason: { effort: "max", mode: "pro" }
+    });
+  });
+
   it("selects only the native Gemini adapter/bridge and rejects family mismatches", () => {
     const gemini = snapshot("gemini_interactions_native");
     const runtime = createProviderRuntimeBinding({

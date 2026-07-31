@@ -317,6 +317,14 @@ describe("AdminProvidersExperience", () => {
       .toHaveValue("automatic");
     fireEvent.click(screen.getByLabelText("Hosted web search"));
     fireEvent.click(screen.getByLabelText("Image generation (future workflows)"));
+    expect(screen.getByLabelText(/^Reasoning effort field/)).toHaveValue("reasoning.effort");
+    expect(screen.getByLabelText(/^Reasoning mode field \(optional\)/)).toHaveValue("reasoning.mode");
+    fireEvent.change(screen.getByLabelText(/^Reasoning effort field/), {
+      target: { value: "effort" }
+    });
+    fireEvent.change(screen.getByLabelText(/^Reasoning mode field \(optional\)/), {
+      target: { value: "mode" }
+    });
     expect(screen.getByText(/Image support is recorded now but is not yet runnable/))
       .toBeInTheDocument();
     expect(screen.getByText("https://llm.example.test/v1/responses"))
@@ -341,6 +349,10 @@ describe("AdminProvidersExperience", () => {
       }),
       modelIds: ["vendor/model-1", "vendor/model-2"],
       protocol: "responses",
+      reasoningRequestMapping: {
+        effortPath: "effort",
+        modePath: "mode"
+      },
       secret: "browser-only-key"
     }));
     await waitFor(() => expect(onMutationCommitted).toHaveBeenCalledOnce());

@@ -148,6 +148,26 @@ describe("catalog capability matrix", () => {
       options: ["balanced", "deep"],
       supported: true
     });
+
+    const chatWithoutModeMapping = fallbackParameterControls({
+      adapterKind: "openai_chat_completions_compatible",
+      provider: "opaque-compatible-connection",
+      reasoningModes: ["standard", "pro"],
+      supportsReasoning: true,
+      supportsReasoningMode: false
+    });
+    const chatWithModeMapping = fallbackParameterControls({
+      adapterKind: "openai_chat_completions_compatible",
+      provider: "opaque-compatible-connection",
+      reasoningModes: ["standard", "pro"],
+      supportsReasoning: true,
+      supportsReasoningMode: true
+    });
+    expect(chatWithoutModeMapping.reasoningMode).toBeUndefined();
+    expect(chatWithModeMapping.reasoningMode).toMatchObject({
+      options: ["standard", "pro"],
+      supported: true
+    });
   });
 
   it("publishes the GPT-5.6 family with its exact limits and model-specific reasoning controls", () => {

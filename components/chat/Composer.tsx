@@ -1,12 +1,16 @@
 "use client";
 
 import { formatTokenCount } from "@/components/app-shell/shellFormatting";
+import {
+  composerContextGauge,
+  type ComposerContextStats
+} from "@/components/app-shell/composerContextStats";
 import { isImeCompositionEvent } from "@/components/keyboard";
 import {
-  BarChart3,
   FileText,
   GitBranch,
   Image as ImageIcon,
+  Info,
   Loader2,
   Paperclip,
   Send,
@@ -55,7 +59,7 @@ export type ComposerProps = {
   attachmentPolicy?: ComposerAttachmentPolicy;
   attachments: ComposerAttachment[];
   controls?: ReactNode;
-  contextLine?: string | null;
+  contextStats?: ComposerContextStats | null;
   disabled?: boolean;
   disabledHint?: string | null;
   disabledHintLive?: boolean;
@@ -119,7 +123,7 @@ export function Composer({
   attachmentPolicy = defaultAttachmentPolicy,
   attachments,
   controls,
-  contextLine = null,
+  contextStats = null,
   disabled = false,
   disabledHint = null,
   disabledHintLive = true,
@@ -205,6 +209,18 @@ export function Composer({
     cacheWriteInputTokens: 0,
     totalTokens: 0
   };
+  const gauge = contextStats ? composerContextGauge(contextStats) : null;
+  const gaugeCircumference = 2 * Math.PI * 9;
+  const gaugeProgress = gauge?.fraction === null || gauge?.fraction === undefined
+    ? 0
+    : Math.min(1, gauge.fraction);
+  const gaugeToneClass = gauge?.tone === "critical"
+    ? "text-critical"
+    : gauge?.tone === "warning"
+      ? "text-caution"
+      : gauge?.tone === "neutral"
+        ? "text-ink-disabled"
+        : "text-proof";
   useEffect(() => {
     const textarea = textareaRef.current;
     if (!textarea) {
@@ -582,28 +598,57 @@ export function Composer({
             >
               {tools}
               <span className="min-w-0 flex-1" aria-hidden="true" />
-              {contextLine && !promptFirst ? (
+              {contextStats && gauge && !promptFirst ? (
                 <div
-                  className="relative flex min-w-0 items-center gap-1 text-xs text-ink-muted"
+                  className="relative flex min-w-0 items-center text-xs text-ink-muted"
                   data-testid="composer-usage-line"
                   ref={usagePopoverRef}
                 >
                   <button
                     ref={usageTriggerRef}
-                    className="inline-flex size-11 shrink-0 items-center justify-center gap-1.5 rounded-control text-xs text-ink-muted hover:bg-control-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-proof/55 sm:h-control-sm sm:w-auto sm:px-2 [@media(hover:none)]:!h-touch [@media(pointer:coarse)]:!h-touch"
+                    className="inline-flex size-11 shrink-0 items-center justify-center rounded-control text-ink-muted hover:bg-control-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-proof/55 sm:size-8 [@media(hover:none)]:!size-11 [@media(pointer:coarse)]:!size-11"
                     type="button"
                     aria-expanded={usageOpen}
                     aria-haspopup="dialog"
-                    aria-label="Open context and usage statistics"
+                    aria-label={`${gauge.accessibleLabel}. Open context details`}
+                    data-context-tone={gauge.tone}
                     data-testid="token-stats-button"
+                    title={gauge.accessibleLabel}
                     onClick={() => setUsageOpen((open) => !open)}
                   >
-                    <BarChart3 className="size-3.5" aria-hidden="true" />
-                    <span className="hidden sm:inline">Usage</span>
+                    <span className="relative grid size-6 place-items-center" aria-hidden="true">
+                      <svg className="absolute inset-0 size-6 -rotate-90" viewBox="0 0 24 24">
+                        <circle
+                          className="text-trace-strong/75"
+                          cx="12"
+                          cy="12"
+                          fill="none"
+                          r="9"
+                          stroke="currentColor"
+                          strokeWidth="3"
+                        />
+                        {gauge.fraction !== null ? (
+                          <circle
+                            className={gaugeToneClass}
+                            cx="12"
+                            cy="12"
+                            fill="none"
+                            r="9"
+                            stroke="currentColor"
+                            strokeDasharray={gaugeCircumference}
+                            strokeDashoffset={gaugeCircumference * (1 - gaugeProgress)}
+                            strokeLinecap="round"
+                            strokeWidth="3"
+                            data-testid="context-gauge-progress"
+                          />
+                        ) : null}
+                      </svg>
+                      <Info className="size-3" strokeWidth={2.5} />
+                    </span>
                   </button>
                   {usageOpen ? (
                     <div
-                      className="pop-enter absolute bottom-10 right-0 z-30 mb-2 max-h-[min(20rem,calc(100dvh-4rem))] w-[min(320px,calc(100vw-32px))] overflow-y-auto overscroll-contain rounded-panel border border-trace-subtle bg-overlay-surface p-3 shadow-overlay"
+                      className="pop-enter absolute bottom-10 right-0 z-30 mb-2 max-h-[min(24rem,calc(100dvh-4rem))] w-[min(320px,calc(100vw-32px))] overflow-y-auto overscroll-contain rounded-panel border border-trace-subtle bg-overlay-surface p-3 shadow-overlay max-sm:fixed max-sm:inset-x-2 max-sm:bottom-[max(.5rem,env(safe-area-inset-bottom))] max-sm:mb-0 max-sm:max-h-[calc(100dvh-1rem-env(safe-area-inset-top)-env(safe-area-inset-bottom))] max-sm:w-auto [@media(max-height:32rem)]:!fixed [@media(max-height:32rem)]:!bottom-[max(.5rem,env(safe-area-inset-bottom))] [@media(max-height:32rem)]:!left-[max(.5rem,env(safe-area-inset-left))] [@media(max-height:32rem)]:!right-[max(.5rem,env(safe-area-inset-right))] [@media(max-height:32rem)]:!mb-0 [@media(max-height:32rem)]:!max-h-[calc(100dvh-1rem-env(safe-area-inset-top)-env(safe-area-inset-bottom))] [@media(max-height:32rem)]:!w-auto"
                       data-testid="token-stats-popover"
                       role="dialog"
                       aria-label="Context and usage statistics"
@@ -623,10 +668,30 @@ export function Composer({
                         </button>
                       </div>
                       <dl className="space-y-2 text-xs">
-                        <div>
-                          <dt className="text-ink-secondary">Current context</dt>
-                          <dd className="mt-1 break-words font-mono leading-5 text-ink [overflow-wrap:anywhere]">
-                            {contextLine}
+                        <div className="flex items-center justify-between gap-3">
+                          <dt className="text-ink-secondary">Approximate input</dt>
+                          <dd className="font-mono text-ink">~{formatTokenCount(contextStats.approximateInputTokens)}</dd>
+                        </div>
+                        <div className="flex items-center justify-between gap-3">
+                          <dt className="text-ink-secondary">Safe input budget</dt>
+                          <dd className="font-mono text-ink">
+                            {contextStats.safeInputBudgetTokens === null
+                              ? "Unavailable"
+                              : formatTokenCount(contextStats.safeInputBudgetTokens)}
+                          </dd>
+                        </div>
+                        <div className="flex items-center justify-between gap-3">
+                          <dt className="text-ink-secondary">Total context</dt>
+                          <dd className="font-mono text-ink">
+                            {contextStats.totalContextTokens === null
+                              ? "Unavailable"
+                              : formatTokenCount(contextStats.totalContextTokens)}
+                          </dd>
+                        </div>
+                        <div className="flex items-center justify-between gap-3">
+                          <dt className="text-ink-secondary">Safe budget used</dt>
+                          <dd className={`font-mono ${gaugeToneClass}`}>
+                            {gauge.percent === null ? "Unavailable" : `${gauge.percent}%`}
                           </dd>
                         </div>
                         <div className="flex items-center justify-between gap-3">
@@ -640,6 +705,10 @@ export function Composer({
                         <div className="flex items-center justify-between gap-3">
                           <dt className="text-ink-secondary">Total tokens cached</dt>
                           <dd className="font-mono text-ink">{formatTokenCount(stats.cachedInputTokens)}</dd>
+                        </div>
+                        <div className="flex items-center justify-between gap-3">
+                          <dt className="text-ink-secondary">Cache-write tokens</dt>
+                          <dd className="font-mono text-ink">{formatTokenCount(stats.cacheWriteInputTokens)}</dd>
                         </div>
                       </dl>
                     </div>

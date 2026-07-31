@@ -1,4 +1,5 @@
 import type { CatalogSearchStrategy } from "@/components/app-shell/types";
+import { useDialogFocus } from "@/components/app-shell/useDialogFocus";
 import type { SearchPlanMode } from "@/lib/domain/search";
 import { isSearchCombinationCompatible } from "@/lib/domain/catalogMatrix";
 import { Check, ChevronDown, Search, X } from "lucide-react";
@@ -52,6 +53,12 @@ export function ComposerSearchPicker({
 }>) {
   const [open, setOpen] = useState(false);
   const boundaryRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const dialogRef = useDialogFocus<HTMLDivElement>({
+    active: open,
+    onClose: () => setOpen(false),
+    restoreFocus: () => triggerRef.current
+  });
   const available = useMemo(() => options.filter((option) => option.kind !== "none"), [options]);
   const selected = selectedOptionIds.filter((idValue) =>
     available.some((option) => option.strategyId === idValue));
@@ -68,14 +75,9 @@ export function ComposerSearchPicker({
     const closeOutside = (event: PointerEvent) => {
       if (!boundaryRef.current?.contains(event.target as Node)) setOpen(false);
     };
-    const closeEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setOpen(false);
-    };
     document.addEventListener("pointerdown", closeOutside);
-    document.addEventListener("keydown", closeEscape);
     return () => {
       document.removeEventListener("pointerdown", closeOutside);
-      document.removeEventListener("keydown", closeEscape);
     };
   }, [open]);
 
@@ -94,6 +96,7 @@ export function ComposerSearchPicker({
   return (
     <div className={`relative min-w-0 ${className}`} ref={boundaryRef}>
       <button
+        ref={triggerRef}
         aria-controls={`${id}-dialog`}
         aria-expanded={open}
         aria-haspopup="dialog"
@@ -121,6 +124,7 @@ export function ComposerSearchPicker({
       </button>
       {open ? (
         <div
+          ref={dialogRef}
           aria-label="Choose Search engines"
           className={`pop-enter absolute z-50 flex max-h-[min(30rem,calc(100dvh-6rem))] w-[min(25rem,calc(100vw-2rem))] flex-col overflow-hidden rounded-panel border border-trace-subtle bg-overlay-surface p-3 shadow-overlay max-sm:fixed max-sm:inset-x-2 max-sm:bottom-2 max-sm:top-auto max-sm:w-auto max-sm:max-h-[min(78dvh,34rem)] [@media(max-height:32rem)]:!fixed [@media(max-height:32rem)]:!inset-x-2 [@media(max-height:32rem)]:!bottom-2 [@media(max-height:32rem)]:!top-auto [@media(max-height:32rem)]:!w-auto [@media(max-height:32rem)]:!max-h-[calc(100dvh-1rem-env(safe-area-inset-top)-env(safe-area-inset-bottom))] ${align === "right" ? "right-0" : "left-0"} ${placement === "below" ? "top-12" : "bottom-12"}`}
           data-testid={`${id}-options`}

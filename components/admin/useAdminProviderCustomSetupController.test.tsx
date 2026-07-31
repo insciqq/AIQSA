@@ -78,6 +78,9 @@ describe("useAdminProviderCustomSetupController", () => {
       streaming: true,
       toolCalling: false
     });
+    expect(api.submit.mock.calls[0]?.[0].reasoningRequestMapping).toEqual({
+      effortPath: "reasoning_effort"
+    });
     expect(result.current.state.form.secret).toBe("");
     expect(result.current.state.ready).toEqual(ready);
     await waitFor(() => expect(onMutationCommitted).toHaveBeenCalledOnce());
@@ -160,6 +163,9 @@ describe("useAdminProviderCustomSetupController", () => {
       }),
       modelIds: ["vendor/b", "vendor/a"]
     }));
+    expect(api.submit.mock.calls[0]?.[0].reasoningRequestMapping).toEqual({
+      effortPath: "reasoning_effort"
+    });
     expect(api.submit.mock.calls[0]?.[0]).not.toHaveProperty("modelId");
   });
 

@@ -103,6 +103,9 @@ function modelConfiguration(
       : "openai_chat_completions_compatible",
     capabilities: request.capabilities ?? ADMIN_PROVIDER_CUSTOM_DEFAULT_CAPABILITIES,
     defaultParams: request.defaultParams ?? {},
+    ...(request.reasoningRequestMapping
+      ? { reasoningRequestMapping: request.reasoningRequestMapping }
+      : {}),
     upstreamModelId
   });
   if (

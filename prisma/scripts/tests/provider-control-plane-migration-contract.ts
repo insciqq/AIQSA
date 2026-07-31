@@ -8,6 +8,7 @@ const TARGET_MIGRATION = "20260723230000_provider_control_plane_foundation";
 const CONTEXT_REPAIR_MIGRATION = "20260724120000_repair_provider_model_context_windows";
 const RUN_PROFILE_MIGRATION = "20260724190000_admin_run_profiles";
 const USER_ASSIGNMENT_MIGRATION = "20260726140000_provider_user_credential_assignments";
+const DISABLE_FAKE_MIGRATION = "20260731120000_disable_production_fake_provider";
 const POSTGRES_USER = "aiqsa";
 const POSTGRES_SERVICE = "postgres";
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -542,6 +543,31 @@ function runValidMigrationAndLineageChecks(): void {
       ),
       "accept credential-free Fake provider binding"
     );
+
+    requireSuccess(
+      psql(database, migrationSql(DISABLE_FAKE_MIGRATION)),
+      "withdraw the production Fake provider publication"
+    );
+    assert.equal(
+      scalar(
+        database,
+        `SELECT concat_ws('|',
+          connection."enabled"::text,
+          connection."activeVersion"::text,
+          (connection."activeConfig" IS NULL)::text,
+          model."enabled"::text,
+          model."activeVersion"::text,
+          (model."activeConfig" IS NULL)::text,
+          EXISTS (
+            SELECT 1 FROM "ProviderRunBinding" WHERE "id" = 'binding-fake'
+          )::text
+        )
+        FROM "ProviderConnection" connection
+        JOIN "ProviderModel" model ON model."id" = 'provider-model-fake'
+        WHERE connection."id" = '00000000-0000-4000-8000-000000001101';`
+      ),
+      "false|0|true|false|0|true|true"
+    );
   } finally {
     dropDatabase(database);
   }
@@ -605,7 +631,7 @@ function main(): void {
   }
 
   process.stdout.write(
-    "AIQSA provider migration contract ok: fail-closed legacy conversion, context repair, run-profile mapping, and composite lineage verified.\n"
+    "AIQSA provider migration contract ok: fail-closed legacy conversion, context repair, run-profile mapping, composite lineage, and Fake withdrawal verified.\n"
   );
 }
 

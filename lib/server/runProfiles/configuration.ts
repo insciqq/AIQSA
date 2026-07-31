@@ -54,6 +54,9 @@ export function resolveRunProfileModel(
       defaultParams: configuration.defaultParams,
       providerFamily: model.connection.family,
       supportsReasoning: configuration.capabilities.reasoning,
+      supportsReasoningMode:
+        configuration.adapterKind === "openai_responses_native" ||
+        Boolean(configuration.reasoningRequestMapping?.modePath),
       supportsStreaming: configuration.capabilities.streaming ?? false,
       upstreamModelId: configuration.upstreamModelId
     });

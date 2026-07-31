@@ -1140,6 +1140,10 @@ test("administrator discovers and configures a Custom compatible provider on wid
       .toBeVisible();
     await section.getByLabel("Hosted web search").check();
     await section.getByLabel("Image generation (future workflows)").check();
+    await expect(section.getByLabel(/^Reasoning effort field/))
+      .toHaveValue("reasoning.effort");
+    await expect(section.getByLabel(/^Reasoning mode field \(optional\)/))
+      .toHaveValue("reasoning.mode");
     await expect(section.getByText(/Image support is recorded now but is not yet runnable/))
       .toBeVisible();
     await expect(section.getByText("https://llm.fixture.invalid/v1/responses"))
@@ -1188,6 +1192,10 @@ test("administrator discovers and configures a Custom compatible provider on wid
         "fixture/alternate"
       ],
       protocol: "responses",
+      reasoningRequestMapping: {
+        effortPath: "reasoning.effort",
+        modePath: "reasoning.mode"
+      },
       secret: `e2e-custom-write-only-key-${index === 0 ? 1440 : 390}`
     });
   }

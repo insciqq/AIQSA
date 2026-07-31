@@ -1,3 +1,5 @@
+import type { ProviderReasoningRequestMapping } from "./providerReasoningRequestMapping";
+
 export type AdminProviderFamily =
   | "anthropic"
   | "gemini"
@@ -55,8 +57,11 @@ export type AdminProviderModelConfiguration = {
   capabilities: AdminProviderModelCapabilities;
   defaultParams: Record<string, unknown>;
   openRouterRouting?: AdminOpenRouterRouting;
+  reasoningRequestMapping?: ProviderReasoningRequestMapping;
   upstreamModelId: string;
 };
+
+export type AdminProviderReasoningRequestMapping = ProviderReasoningRequestMapping;
 
 export type AdminProviderTestEvidence = {
   detail: "model_missing" | "ok" | "route_missing";

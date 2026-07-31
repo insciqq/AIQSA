@@ -4,6 +4,11 @@ import type { RunTool } from "../tools/types";
 import { providerAttachmentText } from "./attachmentPayload";
 import { conversationPreview, textConversationForRequest } from "./context";
 import type { ProviderRunRequest } from "./types";
+import {
+  OPENAI_CHAT_REASONING_REQUEST_MAPPING,
+  type ProviderReasoningRequestMapping
+} from "../../contracts/providerReasoningRequestMapping";
+import { applyProviderReasoningRequestMapping } from "./reasoningRequestMapping";
 
 export type OpenAICompatibleChatMessage = {
   content?: null | string | Record<string, unknown>[];
@@ -27,6 +32,7 @@ export type OpenAICompatibleChatRequestBody = Record<string, unknown> & {
 
 export type OpenAICompatibleChatRequestOptions = Readonly<{
   maxAttachmentTextChars?: number;
+  reasoningRequestMapping?: ProviderReasoningRequestMapping;
   /** @deprecated Use buildOpenAICompatibleChatRequestPreview for redaction. */
   redactImages?: boolean;
 }>;
@@ -179,7 +185,14 @@ function buildBody(
     body.temperature = request.params.temperature;
   }
   if (reasoning && typeof reasoning.effort === "string" && reasoning.effort.trim()) {
-    body.reasoning_effort = reasoning.effort.trim();
+    applyProviderReasoningRequestMapping(
+      body,
+      options.reasoningRequestMapping ?? OPENAI_CHAT_REASONING_REQUEST_MAPPING,
+      {
+        effort: reasoning.effort,
+        mode: typeof reasoning.mode === "string" ? reasoning.mode : undefined
+      }
+    );
   }
   if (tools.length > 0) {
     body.tools = tools;

@@ -2,6 +2,7 @@ import type {
   AdminCompatibleDiscoveredModel,
   AdminProviderModelCapabilities
 } from "./adminProviders";
+import type { ProviderReasoningRequestMapping } from "./providerReasoningRequestMapping";
 
 export const ADMIN_PROVIDER_CUSTOM_AUTHENTICATION_MODES = [
   "bearer",
@@ -48,6 +49,7 @@ export type AdminProviderCustomSetupRequest = Readonly<{
   modelIds?: string[];
   /** Defaults to Chat Completions for backward compatibility. */
   protocol?: AdminProviderCustomProtocol;
+  reasoningRequestMapping?: ProviderReasoningRequestMapping;
   secret?: string;
 }>;
 
