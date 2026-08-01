@@ -14,4 +14,4 @@ This file is a router, not a second copy of frontend behavior. Read only the own
 - [Visual interaction runtime](frontend/VISUAL_INTERACTION.md) — motion-state and reduced-motion behavior.
 - [Design system](DESIGN_SYSTEM.md) — palette, typography, geometry, density, motion recipes, and visual review.
 
-Functional behavior, state ownership, and responsive access belong to the bounded frontend contracts. Visual composition belongs to DESIGN_SYSTEM.md. Accepted ADRs own historical rationale; do not reintroduce redesign chronology into these living contracts.
+Functional behavior, state ownership, and responsive access belong to the bounded frontend contracts. Visual composition belongs to `DESIGN_SYSTEM.md`. Keep these documents current and do not reintroduce redesign chronology.

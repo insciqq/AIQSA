@@ -4,7 +4,7 @@ Owner: Frontend visual-system maintainers
 Scope: Current semantic color, typography, geometry, density, depth, motion recipes, component composition, and visual review gates.
 Verified against: 4f51fdd (2026-08-01)
 
-This is the binding visual contract for the current Research Chat and Control Center. Routed `FRONTEND.md` owners define behavior, state, responsive access, and control ownership; accepted ADRs retain presentation history. This file alone owns visual hierarchy, semantic tokens, component recipes, motion, content presentation, and visual quality gates.
+This is the binding visual contract for the current Research Chat and Control Center. Routed `FRONTEND.md` owners define behavior, state, responsive access, and control ownership. This file alone owns visual hierarchy, semantic tokens, component recipes, motion, content presentation, and visual quality gates.
 
 All runtime UI consumes this system's product-semantic tokens directly. Compatibility aliases such as `surface-*`, `content-*`, `separator-*`, and generic color-named accents are not part of the component API and must not return.
 

@@ -17,4 +17,4 @@ Verified against: 4f51fdd (2026-08-01)
 
 ## Decision Use
 
-When several safe implementations satisfy the current contract, prefer the smallest one that preserves explicit user control, truthful evidence, private-by-default data handling, and a runnable self-hosted installation. `CRITICAL_INVARIANTS.md` wins on safety; accepted ADRs win on durable decisions; the bounded backend/frontend owners define current behavior.
+When several safe implementations satisfy the current contract, prefer the smallest one that preserves explicit user control, truthful evidence, private-by-default data handling, and a runnable self-hosted installation. `CRITICAL_INVARIANTS.md` wins on safety, and the bounded backend/frontend owners define current behavior. An explicit task may change that behavior only when the owning contract changes with it.

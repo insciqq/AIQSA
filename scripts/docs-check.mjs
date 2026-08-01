@@ -43,28 +43,26 @@ const REQUIRED_DOCS = [
   "agent_docs/SECURITY.md",
   "agent_docs/TESTING.md",
   "agent_docs/TASK_TEMPLATE.md",
-  "agent_docs/ADR/README.md",
-  "agent_docs/active_tasks/README.md",
-  "agent_docs/archive/README.md",
-  "agent_docs/backlog/README.md",
-  "agent_docs/done_tasks/README.md",
+  "agent_docs/tasks/README.md",
   "agent_docs/generated/API_AND_SCHEMA.md"
 ];
 
 const LARGE_LIVING_DOC_BYTES = 12_000;
 const VERIFICATION_MAX_AGE_DAYS = 120;
-const METADATA_EXCLUDED_DIRECTORIES = new Set([
-  "ADR",
-  "active_tasks",
-  "archive",
-  "backlog",
-  "done_tasks",
-  "generated"
-]);
+const METADATA_EXCLUDED_DIRECTORIES = new Set(["generated", "tasks"]);
+const OBSOLETE_HARNESS_DIRECTORIES = [
+  "agent_docs/ADR",
+  "agent_docs/active_tasks",
+  "agent_docs/archive",
+  "agent_docs/backlog",
+  "agent_docs/done_tasks",
+  "agent_docs/exec_plans",
+  "agent_docs/exec-plans"
+];
 
 function markdownFiles(root) {
   const files = [];
-  for (const filename of ["AGENTS.md", "CLAUDE.md", "README.md"]) {
+  for (const filename of ["AGENTS.md", "CLAUDE.md", "README.md", ...NESTED_INSTRUCTIONS]) {
     const target = path.join(root, filename);
     if (existsSync(target)) files.push(target);
   }
@@ -74,11 +72,6 @@ function markdownFiles(root) {
     if (!existsSync(directory)) return;
     for (const entry of readdirSync(directory, { withFileTypes: true })) {
       const target = path.join(directory, entry.name);
-      if (entry.isDirectory() && entry.name === "done_tasks") {
-        const readme = path.join(target, "README.md");
-        if (existsSync(readme)) files.push(readme);
-        continue;
-      }
       if (entry.isDirectory()) walk(target);
       else if (entry.isFile() && entry.name.endsWith(".md")) files.push(target);
     }
@@ -115,6 +108,37 @@ function localLinkErrors(root) {
     }
   }
   return errors;
+}
+
+
+function obsoleteHarnessErrors(root) {
+  const errors = [];
+  for (const relative of OBSOLETE_HARNESS_DIRECTORIES) {
+    if (existsSync(path.join(root, relative))) {
+      errors.push(`${relative}: obsolete harness directory; keep unfinished work only in agent_docs/tasks`);
+    }
+  }
+
+  const forbidden = [
+    { pattern: /(?:agent_docs\/ADR(?:\/|\b)|\bADR\s+\d{3,}\b)/u, label: "obsolete ADR path or numbered ADR reference" },
+    { pattern: /\bactive_tasks\b/u, label: "active_tasks directory" },
+    { pattern: /\bdone_tasks\b/u, label: "done_tasks directory" },
+    { pattern: /\bexec[_-]plans?\b/u, label: "separate execution-plan directory" },
+    { pattern: /agent_docs\/(?:backlog|archive)(?:\/|\b)/u, label: "separate backlog/archive directory" }
+  ];
+
+  for (const filename of markdownFiles(root)) {
+    const relative = portablePath(path.relative(root, filename));
+    const body = readFileSync(filename, "utf8");
+    for (const { pattern, label } of forbidden) {
+      if (pattern.test(body)) errors.push(`${relative}: references obsolete ${label}`);
+    }
+  }
+  return errors;
+}
+
+function portablePath(value) {
+  return value.split(path.sep).join("/");
 }
 
 function envErrors(root) {
@@ -159,8 +183,8 @@ function instructionErrors(root) {
   }
 
   const claudePath = path.join(root, "CLAUDE.md");
-  if (existsSync(claudePath) && !/AGENTS\.md/u.test(readFileSync(claudePath, "utf8"))) {
-    errors.push("CLAUDE.md: must route to AGENTS.md instead of duplicating repository instructions");
+  if (existsSync(claudePath) && readFileSync(claudePath, "utf8").trim() !== "@AGENTS.md") {
+    errors.push("CLAUDE.md: must contain only the shared-instruction import @AGENTS.md");
   }
 
   const rootInstructions = path.join(root, "AGENTS.md");
@@ -253,6 +277,7 @@ export function checkDocs(root = process.cwd()) {
     if (!existsSync(target) || !statSync(target).isFile()) errors.push(`missing required document: ${filename}`);
   }
   errors.push(...instructionErrors(root));
+  errors.push(...obsoleteHarnessErrors(root));
   errors.push(...metadataErrors(root));
   errors.push(...localLinkErrors(root));
   errors.push(...validateTaskLedger(root).errors);

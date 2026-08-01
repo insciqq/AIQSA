@@ -14,4 +14,4 @@ This file is a router, not a second endpoint or schema manifest. Read only the o
 - [Security](SECURITY.md) — threat, privacy, auth, secret, network, and exposure boundaries.
 - [QSA pipeline](QSA_PIPELINE.md) — product-level Question → Search → Answer semantics.
 
-Executable routes, Prisma schema, and tests remain authoritative for exact code shape. Accepted ADRs own historical rationale; living backend contracts describe only the current implementation.
+Executable routes, Prisma schema, and tests remain authoritative for exact code shape. Living backend contracts describe only the current implementation; rationale that must survive belongs beside the current rule in its owner.

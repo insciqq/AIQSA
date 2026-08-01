@@ -1,18 +1,31 @@
 # TASK_TEMPLATE
 
-Create a task with `npm run task:new -- <slug> --summary "<summary>"`, replace every placeholder, then activate it with `npm run task:promote -- <task>`. Use a full task stem in `Depends on`; use `none` when there is no dependency.
+Create a task with:
 
-Keep task specs short. Put durable current behavior in the owning living document, not in the task.
+```bash
+node scripts/task-ledger.mjs new <slug> --summary "<one-line observable outcome>"
+```
+
+Replace every scaffold placeholder before promotion. Use exact task stems in `Depends on`; use `none` when there is no open dependency. A task with open dependencies cannot be `ready`, `in_progress`, or `review`.
+
+Keep the task focused on the intended delta. Link current owner documents and code paths instead of restating their contracts. For a complex or multi-session change, this same file is the execution plan and handoff log.
 
 ```md
-# <task-id>-short-task-title
+# <YYYYMMDDHHMMSSmmm>-short-task-title
 
-Status: backlog | ready | pending | blocked
-Depends on: <full-task-stem> or none
+Status: backlog
+Depends on: none
+Human review: optional | required
+Blocked by: none
 
 ## Goal
 
 The observable outcome.
+
+## Context
+
+- Current owner documents and relevant code paths.
+- Why this change is needed now.
 
 ## Scope
 
@@ -20,19 +33,30 @@ The observable outcome.
 
 ## Out Of Scope
 
-- Explicit exclusion.
+- Explicit exclusions.
 
 ## Acceptance Criteria
 
-- Observable result.
+- Observable behavior or invariant.
 
-## Tests
+## Plan
 
-- Focused command or scenario.
-- `npm run check:hermetic` near completion for deterministic static/unit work.
-- `npm run check:container` when the scope crosses PostgreSQL, container/process, or integration boundaries.
+- [ ] Concrete implementation milestone.
+- [ ] Documentation and verification milestone.
 
-## Done Notes
+## Progress
 
-Fill this in with the outcome and checks before `task:complete`.
+- Not started.
+
+## Decisions
+
+- None yet. Record only choices needed to continue this task and their rationale.
+
+## Verification
+
+- [ ] `exact focused command or scenario`
+- [ ] `npm run check:hermetic`
+- [ ] `npm run check:container` when the scope crosses PostgreSQL, container/process, or integration boundaries.
 ```
+
+Before completion, replace planned verification checkboxes with checked results. An unavailable relevant check may be recorded as `- Not run: <check> — <specific reason>`. A task marked `Human review: required` must move to `review` after verification and is deleted only after the operator accepts it.

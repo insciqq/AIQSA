@@ -4,59 +4,81 @@ This is the operating loop for an agent changing AIQSA without step-by-step stee
 
 ## Work Selection
 
-Use the operator's latest request as the primary scope. For broad implementation permission:
+The operator's latest request is primary. For broad implementation permission:
 
-1. Inspect Git state and the relevant code/docs.
-2. Enumerate task Markdown files in `agent_docs/active_tasks/` by natural numeric filename order and select the first ready task whose dependencies are done.
-3. If work needs a new task, create it with `npm run task:new -- <slug> --summary "<summary>"`, edit the scaffold, then activate it with `npm run task:promote -- <task>`.
-4. Keep one Markdown writer in the checkout. Parallel agents may inspect or implement bounded code slices, but the root agent owns task state and integration.
+1. Inspect Git state and the relevant code and living documents.
+2. Enumerate `agent_docs/tasks/*.md` in natural filename order.
+3. Resume the sole `in_progress` task. If none exists, select the first `ready` task with no open dependencies.
+4. Do not implement `backlog`, `blocked`, or `review` tasks without the transition or human input their status requires.
+5. Create a task only when work must survive the current session or belongs in the autonomous queue. A small one-shot operator request does not need ceremonial task bookkeeping.
+6. Keep one Markdown writer in the checkout. Parallel agents may inspect or implement bounded code slices, but the root agent owns task state and integration.
+
+## Task Lifecycle
+
+All unfinished work lives in one directory. `Status` is the only lifecycle source of truth:
+
+```text
+backlog -> ready -> in_progress -> review
+              \          |
+               -> blocked
+```
+
+- `backlog`: captured work that is not yet executable.
+- `ready`: self-contained scope, acceptance criteria, plan, and verification plan; no open task dependencies.
+- `in_progress`: the single task owned by the integrating agent.
+- `blocked`: progress requires a named dependency, external condition, secret, or human decision.
+- `review`: implementation and verification are complete, but required human review has not yet been accepted.
+
+There is no completed status. Completion deletes the task file and removes its stem from `Depends on` fields in the remaining queue. Git history, tests, living documents, and release notes are the durable record.
+
+Use the task CLI directly so the workflow does not depend on optional package aliases:
+
+```bash
+node scripts/task-ledger.mjs new <slug> --summary "<one-line outcome>"
+node scripts/task-ledger.mjs promote <task-id-or-stem>
+node scripts/task-ledger.mjs start <task-id-or-stem>
+node scripts/task-ledger.mjs block <task-id-or-stem> --reason "<specific blocker>"
+node scripts/task-ledger.mjs review <task-id-or-stem>
+node scripts/task-ledger.mjs complete <task-id-or-stem>
+node scripts/task-ledger.mjs list
+```
+
+`new` creates a `backlog` scaffold. `promote` requires an executable specification and no open dependencies. `start` enforces one integrating task. `review` requires recorded verification. `complete` requires recorded verification, and a task marked `Human review: required` must pass through `review` before deletion.
+
+For complex or multi-session work, expand the selected task's `Plan`, `Progress`, and `Decisions` sections. The task itself is the executable plan and handoff artifact; do not create a parallel plan file or a completed-plan archive.
 
 ## Execution Loop
 
-1. Read only the subject docs routed by `AGENTS.md` and the code being changed.
-2. Implement the smallest coherent slice.
-3. Add the cheapest test that would fail for the regression.
-4. Run focused tests while iterating. Do not run the full suite after every edit.
-5. Near completion, run the proportional hermetic or container-parity lane from `TESTING.md`. Run E2E, runtime image builds, migrations, security audit, or provider smokes only when the task affects those boundaries.
-6. Update the owning living docs when architecture, environment, workflow, tests, or product behavior changed.
-7. Fill `Done Notes`, then run `npm run task:complete -- <task>` to move verified significant work to the local ignored `done_tasks/` journal.
-8. Add or update an ADR only for a durable decision.
-
-## Task Ledger
-
-Markdown remains the source of truth:
-
-- `task:new` creates the next backlog scaffold.
-- `task:promote` moves a reviewed task into the active queue and refuses unresolved dependencies.
-- `task:complete` requires completed `Done Notes` and moves the task into the local ignored done journal.
-- `docs:check` performs compact task/link/environment sanity checks.
-
-Task entries under `done_tasks/` are local operator/agent state. Keep its tracked README contract, but never publish an entry with `git add -f` or another index override; ordinary commits, living docs, ADRs, and release notes are the shared completion record.
-
-There are deliberately no claim leases, recovery journals, verification receipts, exact commit coupling, generated FILEMAP, or parallel-worktree orchestration. The workflow assumes one integrating writer. Preserve unrelated user changes and resolve any concurrent edit explicitly.
+1. Read only the subject documents routed by `AGENTS.md` and the code being changed.
+2. Start the selected task and record a concrete first checkpoint in `Progress`.
+3. Implement the smallest coherent vertical slice.
+4. Add the cheapest deterministic test that would fail for the regression.
+5. Update `Progress` after meaningful checkpoints and record only task-local choices in `Decisions`.
+6. Run focused checks while iterating. Near completion, run the proportional hermetic or container-parity lane from `TESTING.md`; run E2E, runtime image builds, migrations, security audit, or provider smokes only when the task crosses those boundaries.
+7. Update the owning living documents when architecture, environment, workflow, tests, security, or product behavior changed. Put rationale beside a current rule only when it remains useful after the task is deleted.
+8. Record exact passed checks and unavailable checks with reasons in `Verification`.
+9. Move required-review work to `review`; otherwise run `complete` and delete the task.
 
 ## Verification Policy
 
 - Use `npm run check:hermetic` for deterministic host-local static/unit completion and `docker-compose.dev.yml` for container parity or integration; never point either lane at the default persistent installation.
 - Prefer focused Vitest files while implementing.
-- Run `npm run check:container` near completion when the change needs PostgreSQL, container/process topology, or another integration boundary; minor deterministic units do not require Compose.
-- Run the destructive local Playwright command only for browser/server workflows or an explicit task requirement.
+- Run `npm run check:container` near completion only when the change needs PostgreSQL, container/process topology, or another integration boundary.
+- Run destructive local Playwright only for browser/server workflows or an explicit task requirement.
 - Development-stack data is disposable. Checks and E2E may mutate or reset only the `aiqsa-dev` database and object bucket.
-- Parallel stateful/container checks are unsupported. Hermetic focused files may run independently only when they do not share generated-output writes. If an interrupted stateful run leaves state behind, restart or wipe only `docker-compose.dev.yml` manually.
+- Parallel stateful/container checks are unsupported. Hermetic focused files may run independently only when they do not share generated-output writes.
 - Provider smokes remain small, explicit, and conditional on operator-provided keys.
 
 Exact commands and test selection live in `agent_docs/TESTING.md`. Security-sensitive installation boundaries remain owned by `SECURITY.md`; the lean development workflow does not weaken auth, tenancy, migrations, backup, persistence, or deployment requirements.
 
 ## Autonomy Boundaries
 
-The agent may choose implementation names, conservative UI details, focused test granularity, and small sequencing decisions. Stop for missing secrets, paid/large provider calls outside the approved smoke policy, destructive operations not requested by the operator, an unavailable required external service, or a real product decision not covered by current docs.
+The agent may choose implementation names, conservative UI details, focused test granularity, and small sequencing decisions. Stop for missing secrets, paid or large provider calls outside the approved smoke policy, destructive operations not requested by the operator, an unavailable required external service, or a product decision not covered by current contracts.
 
 ## Done Standard
 
-A task is done only when its requested outcome is implemented, relevant checks pass (or an unavailable check is named with a reason), living docs are current, no secrets are added, and the app remains runnable or clearly verifiable. Significant completed work moves to the local ignored `done_tasks/`; it is not left active with a hand-edited done status.
-
-Prefer one commit per completed task with subject `<task-id>: outcome in one line`. This is a useful history convention, not a local governance gate.
+Work is complete only when the requested outcome is implemented, relevant checks pass or an unavailable check is named with a reason, living documents are current, no secrets are added, and the app remains runnable or clearly verifiable. Prefer one commit per completed queued task with subject `<task-id>: outcome in one line`.
 
 ## Operator Report
 
-Report the outcome, important autonomous decisions, exact checks that ran, and relevant checks that did not run. Continue to another task only when broad implementation was requested and the next step is concrete and unblocked.
+Report the outcome, material autonomous decisions, exact checks that ran, and relevant checks that did not run. Continue to another task only when broad implementation was requested and the next task is concrete and unblocked.

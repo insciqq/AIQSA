@@ -6,7 +6,7 @@ Verified against: 4f51fdd (2026-08-01)
 
 ## Current Product Contract
 
-The shipped UI is one Research Chat and task-first Control Center presentation with direct composer controls, compact completed-answer evidence, unobstructed conversation actions, unified provider/Search administration, and explicit lifecycle state. Presentation may change only while server contracts, entitlements, run semantics, one store/action owner, and the complete capability inventory below remain reachable. Accepted ADRs record how this composition replaced earlier designs; they are history, not an additional current UI spec.
+The shipped UI is one Research Chat and task-first Control Center presentation with direct composer controls, compact completed-answer evidence, unobstructed conversation actions, unified provider/Search administration, and explicit lifecycle state. Presentation may change only while server contracts, entitlements, run semantics, one store/action owner, and the complete capability inventory below remain reachable.
 
 ## Presentation Boundary
 
