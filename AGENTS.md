@@ -66,7 +66,7 @@ If this is not a Git repository, record that in the final response and continue 
 
 ## Repository Publication
 
-`origin` is the public GitHub repository used for development and releases. Open task instances are local ignored state and must never be staged, committed, included in Docker context/images, or made reachable from a public ref. Normal agents do not push commits, rewrite refs, or create release tags without an explicit operator request; release publication additionally requires fresh release-readiness and repository-privacy checks.
+`origin` is the public GitHub repository used for development and releases. Open task instances are local ignored state and must never be staged, committed, included in Docker context/images, or added to a new public ref. Historical commits and release tags that predate this policy are grandfathered archaeology, not current contracts; their existence alone is not a reason to rewrite public refs. Normal agents do not push commits, rewrite refs, or create release tags without an explicit operator request; release publication additionally requires fresh release-readiness and repository-privacy checks.
 
 ## Working Rules
 

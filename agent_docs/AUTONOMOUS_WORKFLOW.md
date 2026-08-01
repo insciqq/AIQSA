@@ -29,7 +29,7 @@ backlog -> ready -> in_progress -> review
 - `blocked`: progress requires a named dependency, external condition, secret, or human decision.
 - `review`: implementation and verification are complete, but required human review has not yet been accepted.
 
-There is no completed status. Task instances are ignored local checkout state because the only remote is public. Completion deletes the task file and removes its stem from `Depends on` fields in the remaining queue. Tests, living documents, code commits, and release notes are the durable record; Git history never carries task content.
+There is no completed status. Task instances are ignored local checkout state because the only remote is public. Completion deletes the task file and removes its stem from `Depends on` fields in the remaining queue. Tests, living documents, code commits, and release notes are the durable record; new task content under this workflow never enters Git history. Obsolete task artifacts in commits and release tags from before the local-only policy remain grandfathered archaeology.
 
 Use the task CLI directly so the workflow does not depend on optional package aliases:
 

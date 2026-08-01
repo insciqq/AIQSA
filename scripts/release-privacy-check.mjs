@@ -15,6 +15,10 @@ const LEGACY_PRIVATE_PATHS = [
 ];
 const TASK_PATH = "agent_docs/tasks";
 const ALLOWED_TASK_FILE = "agent_docs/tasks/README.md";
+// Older public commits and release tags are intentionally grandfathered. This
+// clean commit introduced the local-only task policy and is the immutable scan
+// boundary for every later public ref.
+const DEFAULT_HISTORY_BASE = "233b7494c00adde46c12e9d49f29676bf52c0f6a";
 const PUBLIC_REPOSITORY = /^(?:git@github\.com:|https:\/\/github\.com\/)insciqq\/AIQSA(?:\.git)?$/u;
 
 function git(root, arguments_) {
@@ -48,20 +52,49 @@ function dockerPrivacyErrors(root) {
   return errors;
 }
 
-function currentTreeErrors(root) {
+function currentIndexErrors(root) {
   const paths = git(root, ["ls-files", "--", ...LEGACY_PRIVATE_PATHS, TASK_PATH]);
   return paths.split(/\r?\n/u).filter(forbiddenTaskPath).map(
     (filename) => `${filename}: public Git tracks a private task artifact`
   );
 }
 
-function historyErrors(root, refs) {
+function refTreeErrors(root, refs) {
   const errors = [];
   for (const ref of refs) {
     git(root, ["rev-parse", "--verify", `${ref}^{commit}`]);
-    const paths = git(root, ["log", "--format=", "--name-only", ref, "--", ...LEGACY_PRIVATE_PATHS, TASK_PATH]);
+    const paths = git(root, ["ls-tree", "-r", "--name-only", ref, "--", ...LEGACY_PRIVATE_PATHS, TASK_PATH]);
     const forbidden = [...new Set(paths.split(/\r?\n/u).filter(forbiddenTaskPath))].sort();
-    for (const filename of forbidden) errors.push(`${ref}: history contains private task artifact ${filename}`);
+    for (const filename of forbidden) errors.push(`${ref}: release tree contains private task artifact ${filename}`);
+  }
+  return errors;
+}
+
+function isAncestor(root, ancestor, descendant) {
+  const result = spawnSync("git", ["merge-base", "--is-ancestor", ancestor, descendant], {
+    cwd: root,
+    encoding: "utf8"
+  });
+  if (result.status === 0) return true;
+  if (result.status === 1) return false;
+  throw new Error(`git merge-base --is-ancestor failed: ${result.stderr.trim() || "unknown error"}`);
+}
+
+function policyHistoryErrors(root, refs, historySince) {
+  const errors = [];
+  git(root, ["rev-parse", "--verify", `${historySince}^{commit}`]);
+  for (const ref of refs) {
+    git(root, ["rev-parse", "--verify", `${ref}^{commit}`]);
+    if (!isAncestor(root, historySince, ref)) {
+      errors.push(`${ref}: does not descend from the public task privacy baseline ${historySince}`);
+      continue;
+    }
+    const range = `${historySince}..${ref}`;
+    const paths = git(root, ["log", "--format=", "--name-only", range, "--", ...LEGACY_PRIVATE_PATHS, TASK_PATH]);
+    const forbidden = [...new Set(paths.split(/\r?\n/u).filter(forbiddenTaskPath))].sort();
+    for (const filename of forbidden) {
+      errors.push(`${ref}: post-baseline history contains private task artifact ${filename}`);
+    }
   }
   return errors;
 }
@@ -82,6 +115,7 @@ function remoteErrors(root) {
 function parseArguments(argv) {
   const refs = [];
   let requireOrigin = false;
+  let historySince = DEFAULT_HISTORY_BASE;
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
     if (argument === "--require-origin") {
@@ -93,21 +127,30 @@ function parseArguments(argv) {
       index += 1;
     } else if (argument.startsWith("--ref=")) {
       refs.push(argument.slice("--ref=".length));
+    } else if (argument === "--history-since") {
+      const ref = argv[index + 1];
+      if (!ref) throw new Error("--history-since requires a value");
+      historySince = ref;
+      index += 1;
+    } else if (argument.startsWith("--history-since=")) {
+      historySince = argument.slice("--history-since=".length);
     } else {
-      throw new Error("usage: release-privacy-check [--ref <git-ref>] [--require-origin]");
+      throw new Error("usage: release-privacy-check [--ref <git-ref>] [--history-since <git-ref>] [--require-origin]");
     }
   }
-  return { refs: refs.length ? refs : ["HEAD"], requireOrigin };
+  return { refs: refs.length ? refs : ["HEAD"], historySince, requireOrigin };
 }
 
 export function checkReleasePrivacy(root = process.cwd(), options = {}) {
   root = path.resolve(root);
   git(root, ["rev-parse", "--is-inside-work-tree"]);
   const refs = options.refs?.length ? options.refs : ["HEAD"];
+  const historySince = options.historySince ?? DEFAULT_HISTORY_BASE;
   const errors = [
     ...dockerPrivacyErrors(root),
-    ...currentTreeErrors(root),
-    ...historyErrors(root, refs)
+    ...currentIndexErrors(root),
+    ...refTreeErrors(root, refs),
+    ...policyHistoryErrors(root, refs, historySince)
   ];
   if (options.requireOrigin) errors.push(...remoteErrors(root));
   return errors;
@@ -117,7 +160,7 @@ export function runReleasePrivacyCheck(argv = process.argv.slice(2), root = proc
   const options = parseArguments(argv);
   const errors = checkReleasePrivacy(root, options);
   if (errors.length) throw new Error(`release privacy check failed:\n- ${errors.join("\n- ")}`);
-  return `release privacy check passed for ${options.refs.join(", ")}.`;
+  return `release privacy check passed for ${options.refs.join(", ")} since ${options.historySince}.`;
 }
 
 const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);

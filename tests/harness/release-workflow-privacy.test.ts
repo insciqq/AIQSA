@@ -4,7 +4,7 @@ import path from "node:path";
 const root = process.cwd();
 
 describe("public release privacy contract", () => {
-  it("checks complete tag ancestry before the Docker publication step", () => {
+  it("checks the release tree and post-policy ancestry before the Docker publication step", () => {
     const workflow = readFileSync(path.join(root, ".github/workflows/release.yml"), "utf8");
     const privacy = workflow.indexOf("node scripts/release-privacy-check.mjs --ref HEAD --require-origin");
     const build = workflow.indexOf("docker/build-push-action@");
