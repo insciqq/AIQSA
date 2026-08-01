@@ -1,3 +1,4 @@
+# Runtime-local agent mountpoints are ignored; repository instructions use AGENTS.md only.
 .codex
 .agents/
 

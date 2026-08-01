@@ -17,7 +17,7 @@ Use the operator's latest request as the primary scope. For broad implementation
 2. Implement the smallest coherent slice.
 3. Add the cheapest test that would fail for the regression.
 4. Run focused tests while iterating. Do not run the full suite after every edit.
-5. Near completion, run the one routine check from `TESTING.md`. Run E2E, runtime image builds, migrations, security audit, or provider smokes only when the task affects those boundaries.
+5. Near completion, run the proportional hermetic or container-parity lane from `TESTING.md`. Run E2E, runtime image builds, migrations, security audit, or provider smokes only when the task affects those boundaries.
 6. Update the owning living docs when architecture, environment, workflow, tests, or product behavior changed.
 7. Fill `Done Notes`, then run `npm run task:complete -- <task>` to move verified significant work to the local ignored `done_tasks/` journal.
 8. Add or update an ADR only for a durable decision.
@@ -37,12 +37,12 @@ There are deliberately no claim leases, recovery journals, verification receipts
 
 ## Verification Policy
 
-- Use `docker-compose.dev.yml` for application checks; never point routine checks at the default persistent installation.
+- Use `npm run check:hermetic` for deterministic host-local static/unit completion and `docker-compose.dev.yml` for container parity or integration; never point either lane at the default persistent installation.
 - Prefer focused Vitest files while implementing.
-- Run `docker compose -f docker-compose.dev.yml exec -T app npm run check` once near task completion when the development stack is running.
+- Run `npm run check:container` near completion when the change needs PostgreSQL, container/process topology, or another integration boundary; minor deterministic units do not require Compose.
 - Run the destructive local Playwright command only for browser/server workflows or an explicit task requirement.
 - Development-stack data is disposable. Checks and E2E may mutate or reset only the `aiqsa-dev` database and object bucket.
-- Parallel local checks are unsupported. If an interrupted run leaves state behind, restart or wipe only `docker-compose.dev.yml` manually.
+- Parallel stateful/container checks are unsupported. Hermetic focused files may run independently only when they do not share generated-output writes. If an interrupted stateful run leaves state behind, restart or wipe only `docker-compose.dev.yml` manually.
 - Provider smokes remain small, explicit, and conditional on operator-provided keys.
 
 Exact commands and test selection live in `agent_docs/TESTING.md`. Security-sensitive installation boundaries remain owned by `SECURITY.md`; the lean development workflow does not weaken auth, tenancy, migrations, backup, persistence, or deployment requirements.

@@ -29,7 +29,8 @@ The observable outcome.
 ## Tests
 
 - Focused command or scenario.
-- Routine `docker compose -f docker-compose.dev.yml exec -T app npm run check` near completion.
+- `npm run check:hermetic` near completion for deterministic static/unit work.
+- `npm run check:container` when the scope crosses PostgreSQL, container/process, or integration boundaries.
 
 ## Done Notes
 

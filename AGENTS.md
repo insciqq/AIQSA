@@ -25,6 +25,7 @@ Do not preload the whole harness. Start with:
 
 1. `agent_docs/AI_CONTEXT.md` for product orientation and contract ownership.
 2. `agent_docs/CRITICAL_INVARIANTS.md` for the rules that every change must preserve.
+3. `agent_docs/PRODUCT_PRINCIPLES.md` only when product direction or prioritization is part of the scope.
 
 Then read only what the scope requires:
 
@@ -36,15 +37,15 @@ Then read only what the scope requires:
 Subject routes:
 
 - `agent_docs/QSA_PIPELINE.md` before run-pipeline, search, provider-run, or inspection work.
-- `agent_docs/FRONTEND.md` before UI behavior, state, accessibility, or shell work.
+- `agent_docs/FRONTEND.md` before UI behavior, state, accessibility, or shell work; it routes to bounded frontend owners.
 - `agent_docs/DESIGN_SYSTEM.md` additionally before visual composition, theme, geometry, density, or motion work; `FRONTEND.md` remains the owner of functional layout/responsive behavior.
-- `agent_docs/BACKEND.md` before route, persistence, auth, upload, run, or server-side behavior work.
+- `agent_docs/BACKEND.md` before route, persistence, auth, upload, run, or server-side behavior work; it routes to bounded backend owners.
 - `agent_docs/PROVIDER_API_NOTES.md` before provider work.
 - `agent_docs/ENV_VARIABLES.md` before env/config work.
 - `agent_docs/SECURITY.md` before dependency or security work.
 - `agent_docs/TESTING.md` before changing behavior or tests.
 
-The operator's current request defines scope. Within repository guidance, use this precedence: `agent_docs/CRITICAL_INVARIANTS.md` > accepted ADRs > the owning subject contract (`ARCHITECTURE.md`, `BACKEND.md`, `FRONTEND.md`, `DESIGN_SYSTEM.md`, `QSA_PIPELINE.md`, `ENV_VARIABLES.md`, `SECURITY.md`, or `TESTING.md`) > `DECISION_DEFAULTS.md` > `README.md`. A task may narrow scope but does not silently override an accepted contract unless changing that contract is part of its goal.
+The operator's current request defines scope. Within repository guidance, use this precedence: `agent_docs/CRITICAL_INVARIANTS.md` > accepted ADRs > the owning subject contract (`ARCHITECTURE.md`, routed `BACKEND.md`, routed `FRONTEND.md`, `DESIGN_SYSTEM.md`, `QSA_PIPELINE.md`, `ENV_VARIABLES.md`, `SECURITY.md`, or `TESTING.md`) > `PRODUCT_PRINCIPLES.md` > `DECISION_DEFAULTS.md` > `README.md`. A task may narrow scope but does not silently override an accepted contract unless changing that contract is part of its goal.
 
 ## Repository State
 
@@ -62,12 +63,12 @@ The maintainer checkout keeps `origin` as the private GitLab development remote 
 
 ## Product And Implementation Contract
 
-`agent_docs/CRITICAL_INVARIANTS.md` is the single home for durable product, agent-development, backend, and frontend invariants. This entry point only routes the workflow:
+`agent_docs/CRITICAL_INVARIANTS.md` is the short home for safety, privacy, incompatible-state, destructive-workflow, and key product-semantic boundaries. Product direction and implementation detail live in their routed owners. This entry point only routes the workflow:
 
 - Choose the smallest change that leaves the app runnable or clearly verifiable.
 - Prefer existing code and local docs over inventing new scope.
 - Make conservative decisions without blocking on taste questions.
-- Use `docker-compose.dev.yml` for application checks; never run destructive development or test workflows against the default persistent installation.
+- Use the fast hermetic lane for local static/unit work and `docker-compose.dev.yml` for container parity or integration as routed by `TESTING.md`; never run destructive development or test workflows against the default persistent installation.
 - Update `agent_docs` whenever architecture, env, testing, workflow, or product behavior changes.
 - Keep task state in the Markdown ledgers through the repository `task:*` commands; move only verified significant completion notes to the local ignored `agent_docs/done_tasks/`, and never stage those entries with `git add -f` or an equivalent index override.
 - Delete stale harness material only when it is not part of the active development workflow.

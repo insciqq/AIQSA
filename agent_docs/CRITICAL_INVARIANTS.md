@@ -1,70 +1,44 @@
 # CRITICAL_INVARIANTS
 
-## Product Invariants
+Owner: Safety and durable product semantics
+Scope: Rules whose violation can cause data loss, security/privacy exposure, incompatible persisted state, destructive verification, or a key QSA semantic change.
+Verified against: 4f51fdd (2026-08-01)
 
-1. ADRs 0025, 0028, and 0037 define the shipped Research Chat and task-first Control Center presentation while retaining the capability-preservation and explicit-control-ownership requirements of ADRs 0009 and 0011. The existing routes have one presentation tree and one state owner; parallel classic/new renderers and legacy visual-token aliases must not return. WCAG conformance and dedicated accessibility work remain explicitly deferred.
-2. First use defaults to the light `neutral` theme. Existing `aiqsa`, `graphite`, `verdant`, `classic-dark`, and `neutral` theme IDs and stored preferences remain valid; the appended light `paper` id is equally stable. Every theme must render the same semantic hierarchy with declared light/dark scheme metadata and complete dark-mode parity.
-3. Provider, model, prompt, search, and parameter changes affect future messages only.
-4. Existing message content with descendants is not edited in place; edits create branches.
-5. Regeneration creates a sibling assistant branch through the model-run pipeline.
-6. The visible thread is derived from `activeLeafMessageId`.
-7. Streaming assistant messages have explicit status: `queued`, `streaming`, `complete`, `cancelled`, or `error`.
-8. Usage and cost are tracked from final provider usage events, not guessed from UI text length.
-9. Model-run APIs keep normalized request, provider request preview, events, final response, and usage inspectable; the common Details UI is an inspection surface focused on Branch and Events, never a second editor for next-run drafts.
-10. AIQSA is a QSA client, not an agent builder, plugin marketplace, visual workflow graph, or generic tool-constructor UI.
-11. Search is selected as an explicit backend-catalog strategy.
-12. Raw user request/response logs are not persisted locally by default.
-13. Native OpenAI integration uses Responses API with background-capable, stored, manual context replay. First-class Gemini uses only native stateless Interactions v1 with no compatible fallback. Administrator-managed compatible endpoints use an explicit protocol; the simple Custom path fixes it to Chat Completions. Deployment IDs and upstream model names are not durable invariants.
-14. Available providers, models, and search strategies are loaded from the backend catalog for the current user.
-15. `Share (anonymously)` creates a sanitized immutable snapshot, not public access to a private live chat. Public-share responses are dynamically repository-authorized and non-cacheable on both success and unavailable paths; crawler directives are defense in depth, while the bearer token plus expiry/revocation remains the authorization boundary.
-16. Uploaded attachments are private and are not exposed by public share snapshots.
-17. After an actual native Gemini Google Search call, the grounded answer, Search Suggestions, citation Links, and search result/signature data are live-only: durable state keeps only provenance, usage/status, and a neutral placeholder; later context and anonymous shares cannot recover or reuse the answer.
+This is the mandatory short safety read. Product direction belongs in `PRODUCT_PRINCIPLES.md`; current implementation contracts belong in the routed backend/frontend documents; visual geometry belongs in `DESIGN_SYSTEM.md`; historical rationale belongs in accepted ADRs.
 
-## Agent Development Invariants
+## Data And Product Semantics
 
-1. Keep changes small and terminal-verifiable.
-2. Update docs when changing architecture, env, tests, workflows, or product behavior.
-3. Keep the task-ledger directories and their tracked README contracts intact as harness state.
-4. Completed task entries stay local and ignored under `done_tasks/`; never force-add them. Shared completion history belongs in ordinary commits, living docs, ADRs, and release notes, while the local journal retains task-specific evidence.
-5. Keep routine UI verification in repository-owned Playwright CLI tests.
-6. Prefer deterministic mocks before real paid API calls.
-7. Do not commit secrets, API keys, database URLs with passwords, or private operator notes.
-8. Run app checks through Docker Compose.
-9. Real provider smoke tests are allowed autonomously with current operator-provided `.env` keys only when small-context, low-token, and scoped to the provider functionality under test.
-10. Add or update ADRs for durable architectural decisions.
-11. Run `npm run docs:check` before final responses for docs/harness changes.
-12. Local development data is disposable. Playwright and checks may reset or pollute the shared local Compose database and bucket; never apply that assumption to production or operator-designated persistent data.
+1. Provider, model, prompt, Search, and parameter changes affect future messages only; accepted historical turns and runs are immutable evidence.
+2. A chat is a message DAG. Existing content with descendants is not edited in place, edits create branches, regeneration creates a sibling assistant through the run pipeline, and the visible branch derives from `activeLeafMessageId`.
+3. Assistant runs have explicit `queued`, `streaming`, `complete`, `cancelled`, or `error` state. Completion, cancellation, and recovered failure settle through guarded persistence so only one terminal writer wins.
+4. Usage and cost derive from persisted provider usage evidence, never UI text length or placeholder prices. Model-run APIs retain the normalized request, redacted provider preview, events, final preview, and usage under the approved privacy contract.
+5. Search is an explicit backend-catalog strategy. Provider/model/Search choices come from the current user's backend-filtered catalog; the browser cannot grant entitlement or silently substitute a different unavailable target.
+6. Native OpenAI uses Responses API with explicit background/recovery/cancellation semantics. First-class Gemini uses native stateless Interactions v1 only and never falls back to a compatible transport. Administrator-managed compatible endpoints declare their protocol; the simple Custom path is Chat Completions.
+7. Stored theme ids remain decodable, and theme selection remains local presentation state; it cannot mutate account, chat, run, share, or cross-device server state.
+8. `Share (anonymously)` creates a sanitized immutable snapshot, never access to live private chat state. Success and unavailable responses are dynamically repository-authorized and non-cacheable; the high-entropy bearer token plus expiry/revocation is authorization, while crawler directives are only defense in depth.
+9. Uploads and attachments remain private. Public snapshots, logs, events, and previews cannot expose attachment URLs, ids, filenames, bytes, extracted text, or storage keys outside their explicitly approved boundary.
+10. After a native Gemini Google Search call, grounded answer text, Search Suggestions, citation Links, results, and signatures are live-only. Durable state keeps only provenance, usage/status, and a neutral placeholder; replay and anonymous sharing cannot recover them.
 
-## Backend Invariants
+## Security And Server Boundaries
 
-1. Provider SDK/API calls stay behind internal adapters.
-2. Route handlers validate input before touching storage or provider APIs.
-3. Auth/user ownership checks are required for private resources.
-4. Upload handling validates size and type server-side.
-5. Placeholder model prices must not become production billing truth without verification.
-6. OpenAI integration uses Responses API as the first-class path.
-7. OpenAI background mode has explicit run status, polling, recovery, and cancellation states.
-8. Model-run request/response inspection is product-critical, but raw user content logs are session-only unless explicitly saved.
-9. Backend entitlement checks are required before every model run, even when the frontend catalog already filtered unavailable models.
-10. Share snapshots must strip raw provider payloads, private attachment URLs, API keys, internal run ids, and private user/group metadata.
-11. Provider entitlement and credential selection are independent. Credential precedence is direct user, then one unambiguous active-group assignment, then an allowed default; once a tier selects a credential, an unusable selection fails closed without fallback.
-12. Every bootstrapped or adopted installation has exactly one lifecycle-immutable built-in `full_access` group. Its explicit active members inherit all current and future provider/model/search and MCP entitlements, but never inherit provider key selection or MCP personal-slot secrets from that wildcard. A legacy ordinary group with the reserved name is preserved under a collision-safe custom name, never promoted with its members or policy references. A just-migrated empty database may remain group-free only until first installation bootstrap.
-13. Gemini family/adapters fail closed unless paired as `gemini` + `gemini_interactions_native`; no execution, recovery, test, or smoke path may fall back to a compatible Gemini transport.
-14. A Gemini grounding marker atomically purges and fences durable provider token/artifact content before live grounded output. Validated non-empty Search Suggestions must precede the first released grounded answer token; unsafe or missing Suggestions fail without releasing it.
-15. Compatible no-auth is explicit private/local configuration backed by a tested immutable version with a null envelope and a per-request non-revoked-version guard. Missing legacy authentication mode remains bearer; empty/sentinel secrets and implicit keyless fallback are forbidden.
-16. A provider model is an answer choice only when its active immutable configuration is answer-selectable. Missing legacy values default to selectable; an explicit technical-only model is excluded from answer catalogs, grants, profiles, and admission even under Full access, while typed Search admission may still resolve it without answer-model entitlement.
-17. Client Search is a minimum-disclosure boundary: its provider request can contain only one validated bounded query plus server-owned policy/correlation fields, never answer context or attachment data. Until separate informed per-run disclosure consent exists, attachments and client Search are mutually exclusive; provider-hosted Search inside the selected answer provider is unaffected.
-18. Authentication rate limits are atomic durable PostgreSQL state keyed only by installation-secret HMAC identifiers. Account/token protection never depends on client IP, and a client-only bucket may exist only for an exact validated forwarding chain from the explicitly trusted overwriting proxy; missing identity must never collapse users into a shared sentinel.
+1. Provider SDK/API calls stay behind server adapters. Untrusted route, provider, tool, and file input is validated and bounded before storage mutation or external I/O.
+2. Private resources require server-side authentication, ownership, and entitlement checks at the operation boundary even when the browser already filtered the catalog.
+3. Raw user/provider request or response bodies are not ordinary logs and are not durably persisted unless a narrower reviewed contract explicitly allows a redacted projection.
+4. Upload handling validates size, extension/type, magic bytes or text shape, processing bounds, ownership, and storage settlement server-side.
+5. Share snapshots strip raw provider payloads, private attachment data, secrets, internal run ids, and private user/group metadata.
+6. Provider entitlement and credential selection are independent. Credential precedence is direct user, then one unambiguous active-group assignment, then an allowed default; an unusable selected tier fails closed without fallback.
+7. Every bootstrapped or adopted installation has exactly one lifecycle-immutable built-in `full_access` group. Its explicit members inherit current/future provider, model, Search, and MCP entitlement, but never provider credential choice or MCP personal secrets. Reserved-name legacy groups are preserved under collision-safe custom names, not promoted.
+8. Gemini execution fails closed unless the family/adapter pair is exactly `gemini` plus `gemini_interactions_native`. A grounding marker atomically purges and fences durable provider content before any live grounded output; validated non-empty Suggestions precede released grounded answer tokens.
+9. Compatible no-auth is an explicit tested private/local configuration with a null envelope and per-request non-revoked-version guard. Missing legacy mode remains bearer; empty/sentinel credentials and implicit keyless fallback are forbidden.
+10. A provider model is an answer choice only when its active immutable configuration is answer-selectable. A technical-only model is excluded from answer catalogs, grants, profiles, and answer admission even under Full access, while typed Search may resolve it through its separate authority.
+11. Client Search is query-only minimum disclosure: one validated bounded query plus server-owned policy/correlation fields, never answer context or attachment data. Until separately informed per-run consent exists, attachments and client Search are mutually exclusive; provider-hosted Search inside the chosen answer provider is unaffected.
+12. Authentication limits are atomic durable PostgreSQL state keyed only by installation-secret HMAC identifiers. Account/token protection does not depend on client IP; a client-only bucket requires an exact validated chain from the configured overwriting proxy, and missing identity never becomes a shared sentinel.
+13. Secrets, credential envelopes, password/database URLs, OAuth material, bearer tokens, and private operator notes never enter source control, ordinary logs, client contracts, previews, events, analytics, or public shares.
 
-## Frontend Invariants
+## Repository And Verification Safety
 
-1. The conversation and composer must remain primary at desktop widths. Workspace navigation stays usable, while Details remains available on demand and optionally pinnable instead of being a mandatory permanent column.
-2. Keyboard shortcuts must not break text entry.
-3. All critical controls need clear visible labels or stable test anchors.
-4. UI state and server data should not be mixed into one untestable object.
-5. Provider identity remains legible through the grouped entitled model catalog and selected model; choosing a concrete model applies its provider atomically, with no provider-only action.
-6. Model/search selectors must use the backend-filtered current-user catalog.
-7. Theme selection is a local UI preference only; it must not affect server data, shared chat state, or cross-device user defaults.
-8. Users select concrete models from the entitled catalog; provider labels may group and describe models but must not silently choose a remembered/default/first model.
-9. Composer composition adapts to available inline/block space and input capability instead of a device-name breakpoint. Its engaged surface keeps attachment/tools, Message, direct Model/configured Profile/Search controls, More, Send, and an addressable Stop during streaming; the complete Run setup including Reasoning stays one More action away. An empty idle compact/short thread-tail composer may collapse after deliberate scroll intent, but Message and any addressable Stop remain visible and one activation restores the same controls. Direct controls wrap instead of gaining a second compact owner. The composer control owner remains the single UI editor for next-run parameters, while Details contains Branch and Events inspection only.
-10. Conversation text is the resting message surface. Fine-pointer hover activates only over the bounded exact-message surface—never the surrounding full-width row gutter—and keyboard-visible focus softly highlights that surface with one symmetric 150ms transition. One shared bottom-right Regenerate/Edit/Copy/More dock for both roles appears as one stable unit without a separate transform or fade. Compact/coarse/no-hover tap reveals that dock without latching the message highlight; pointer press may provide only momentary surface feedback. A Run receipt never joins that automatic disclosure; only the assistant's explicit `More` → `Show run details` action reveals it. Disclosure never changes message/run truth or hides current streaming, failure, cancellation, or warning state. Desktop conversation actions consume only a protected right-side footprint and must never reserve a decorative full-width row or intersect the reading measure.
+1. Never run destructive development, test, migration, prune, or browser workflows against the default persistent installation or an operator-designated data set. Only the explicit disposable development topology may be reset or polluted.
+2. Completed task entries remain local and ignored in `agent_docs/done_tasks/`; never force-add them. Shared evidence belongs in ordinary commits, living docs, ADRs, and release notes.
+3. Real provider smokes are allowed only with current operator-provided keys, the smallest scoped context/output, sanitized evidence, and the provider-specific permission in `TESTING.md`; deterministic fakes remain the default.
+4. External dependency-security checks follow `SECURITY.md`; do not apply breaking or destructive remediation merely because an automated command proposes it.
+5. Large-document verification markers are manual review claims. Checks may report a missing or stale owner/scope/commit/date marker but must never refresh one automatically.

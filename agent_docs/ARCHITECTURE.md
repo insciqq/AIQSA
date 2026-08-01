@@ -1,5 +1,9 @@
 # ARCHITECTURE
 
+Owner: System architecture maintainers
+Scope: Current process topology, module dependency direction, durable data boundaries, and supported deployment shape; API/UI details remain routed elsewhere.
+Verified against: 4f51fdd (2026-08-01)
+
 ## Ownership
 
 This document owns system topology, module dependency direction, durable data boundaries, and deployment/process shape. It intentionally does not repeat API behavior, UI workflows, visual recipes, provider wire details, environment inventories, or test matrices; use the ownership map in `AI_CONTEXT.md`.

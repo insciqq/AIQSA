@@ -1,5 +1,9 @@
 # ENV_VARIABLES
 
+Owner: Runtime configuration maintainers
+Scope: Complete current environment-variable inventory, defaults, validation, switch semantics, and supported installation configuration boundaries.
+Verified against: 4f51fdd (2026-08-01)
+
 ## Ownership And Naming
 
 This document owns the complete runtime environment contract. User-facing setup and examples live in `docs/configuration.md`; `.env.example` contains only normal-install settings and non-secret placeholders.

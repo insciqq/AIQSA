@@ -1,0 +1,121 @@
+# BACKEND PROVIDER ADAPTERS
+
+Owner: Provider runtime maintainers
+Scope: Current AIQSA adapter behavior for OpenAI, compatible APIs, Anthropic, native Gemini, and OpenRouter; mutable upstream facts remain in PROVIDER_API_NOTES.md.
+Verified against: 4f51fdd (2026-08-01)
+
+## Provider Adapters
+
+Provider-specific code stays behind internal adapters. OpenAI and OpenRouter are decomposed by wire responsibility behind unchanged provider facades without changing the common adapter boundary.
+
+Postgres is the normal-runtime authority for provider connections, explicit adapter protocol/authentication mode, deployments, routing, credentials, direct-user/group assignments, availability checks, and enabled state. Administrator edits use mutable draft slots with optimistic versions; credential activation creates an immutable validated version. Unsaved-key `Test` performs one bounded read-only account/model-catalog request without persistence or secret echo. Activation independently tests each referenced default, direct-user, or group credential once, derives the complete model × credential check set from catalog membership, and atomically switches only a still-current draft. Explicitly confirmed generation diagnostics use the current bounded tiny-generation request and discard its output. Optional draft model/route diagnostics use candidate-version CAS but never gate activation or replace active evidence; the separate exact active-tuple refresh may update that tuple's current evidence. Bearer secrets are write-only purpose-bound envelopes; an explicit tested private/local no-auth version has a real null envelope and still participates in the immutable-version/revocation guard. The saved Custom Models task may call `discover_compatible_models` with one stored credential id. The server resolves its exact draft-or-active bearer source, or the explicit active no-auth null source, and reuses the same bounded SSRF-safe `/models` probe. It returns at most 1,000 ordered unique IDs plus only allowlisted bounded context/output-token and reasoning support/options/default hints. It returns no credential, endpoint, provider body, routing, pricing, arbitrary metadata, or tool declaration and persists nothing. Protocol and hosted tools remain explicit administrator choices; selecting a row may apply only those safe hints to the local draft.
+
+Entitlement and credential assignment remain independent. `ProviderUserCredentialAssignment` has one row per `(connection, user)` and its composite foreign key guarantees that the selected credential belongs to that connection. Effective credential resolution first selects the direct-user assignment when present; otherwise it collapses identical assignments across non-archived groups and fails `credential_assignment_ambiguous` for distinct overlaps; only then may it use the connection default when policy permits. A selected missing, disabled, versionless, or revoked credential fails closed without falling through to a lower-precedence tier. Catalog reads require enabled active configuration, the user's model/search grant, one usable effective credential, and a current exact `available` check; they perform no remote discovery and may legitimately return no default model.
+
+The secret-free administrator projection includes safe direct-user assignment identity and display facts alongside group assignments, so readiness and activation blockers cover the same referenced-credential set as the activation service. A tested replacement remains a credential draft until the administrator activates its connection; **Activate replacement** is the contextual UI action for that existing exact activation, not a key-only protocol. Confirmed deletion of a non-template `openai_compatible` connection runs as one retry-bounded serializable graph mutation: it clears user/chat model defaults, model grants, connection defaults, direct/group credential assignments, checks, versions, credentials, and models before the connection. Live/recoverable bindings, Run-profile targets, provider-model-backed Search integrations, and code-owned templates remain hard blockers. Other provider families retain conservative explicit child/reference removal.
+
+Run admission revalidates this state in the same repeatable-read transaction that creates the run and stores the exact answer binding, ordered Search revision bindings, and any separately keyed technical Search provider bindings. Each provider binding contains the immutable non-secret endpoint/model/protocol/routing/reasoning-mapping snapshot and exact credential version. Before every outbound provider or client-Search request, execution briefly locks/checks that version and decrypts it, then ends the transaction before network I/O; long-lived adapters retain only a non-secret placeholder. Ordinary RBAC/config changes affect only future admissions; emergency revocation serializes against that check and fails later outbound use closed. Saved bindings and Search revisions, not current configuration, drive continuation, provider-native cancel, and bounded recovery.
+
+Provider HTTP transports keep the ordinary `AIQSA_PROVIDER_TIMEOUT_MS` deadline active through bounded success-JSON and non-2xx error-body reads. A validated client-Search execution instead supplies its immutable revision's 5-second to 15-minute timeout to the same transport, so a long search is not silently truncated by the ordinary 30-second default. Those untrusted bodies still share the `AIQSA_PROVIDER_RESPONSE_MAX_BYTES` cap (16 MiB by default), are cancelled on timeout/overflow, and feed only sanitized error previews. A successful SSE response releases the ordinary request deadline after headers and remains governed by caller cancellation plus the per-read stream idle timeout, so a healthy long answer is not cut off by the short JSON deadline.
+
+`lib/server/providers/types.ts` is the code owner of the adapter boundary: `NormalizedRunRequest` is the normalized/persistable request shape and `ProviderRunRequest` adds resolved private attachments plus tool/streaming execution controls. Do not copy those interfaces into living prose; update the exported types and their tests together. Each adapter emits normalized events and returns a `ProviderRunResult` with safe provider-specific request/response previews, usage, and artifacts.
+
+OpenAI-style parameter metadata uses temperature `1` as the neutral default; `0` remains an explicit deterministic/focused choice. Accepted max-output aliases are canonicalized once before budgeting and provider serialization. Search preparation snapshots every selected active revision, its typed protocol/result/query/timeout bounds, technical model limits, and server-owned routing/privacy policy. The answer model receives one `search_selected_engines` tool in `all_selected` mode or a separately named tool per client option in `model_choice`; hosted Search remains provider-native. OpenAI and OpenRouter pass the selected answer model's parallel-tool capability through for provider-neutral Search and MCP tools. The common loop preserves supported background/streaming behavior, executes provider-returned batches with bounded concurrency, allows at most three tool rounds and 16 total calls, reapplies the context budget after each batch, and forces a no-tool synthesis round when the round budget is exhausted.
+
+`ProviderSearchRequest` is independent from `ProviderRunRequest` and every client Search adapter constructs a fresh request from one validated generated query plus an opaque invocation correlation id and server-owned policy. Exactly one `query` string is accepted; control characters are normalized and empty, wrong-type, extra-property, malformed, or over-limit arguments return a bounded tool error with zero provider calls and no `SearchRun`. The provider request has no accepted chat context, answer content/provider/model metadata, prompts, provider tool messages, attachment ids or resolved attachments, or original-content fallback; it keeps reviewed output/result bounds, `store=false`, `background=false`, and non-streaming execution. Provider request previews retain only safe provider/model/protocol/strategy facts and query length, never query plaintext or a provider body. Until a separate informed per-run consent contract exists, preparation rejects attachments combined with any client Search option and execution/recovery rechecks that boundary. Fan-out uses `Promise.all` under the revision-owned per-engine timeout/caller cancellation, passes that exact deadline through compatible Responses/OpenRouter client options to the HTTP transport, merges only normalized safe-source evidence in plan/rank order, and retains per-engine warnings and usage.
+
+The model run input is created only after backend validation of opaque connection/deployment IDs, the complete Search plan, provider parameters, and attachment content blocks against the current user's catalog. Preparation starts from the answer deployment's active server-owned defaults and recursively overlays only validated per-run controls; for OpenRouter the complete routing/fallback/privacy object is server-authoritative and cannot be weakened by a direct request. Atomic run admission closes the preparation race and persists every exact binding before dispatch. PDF validation accepts either extracted-PDF support or `nativePdfInput`; original PDF bytes are loaded from private storage only for selected answer models with `nativePdfInput` and never copied into client Search requests. Run-route parameter validation rejects out-of-range, unsupported, ambiguous alias, or unknown posted params with `400 { "error": "invalid_run_params" }`; settings drafts are the only path that clamps operator-entered control values before saving.
+
+## OpenAI Responses API
+
+OpenAI uses Responses API as the first-class OpenAI path.
+
+`openaiResponses.ts` is the stable adapter facade. `openaiResponsesRequest.ts` owns actual request and always-redacted preview construction; `openaiResponsesResponse.ts` owns status, completed-response, usage/tool/artifact, and SSE normalization; `openaiResponsesTransport.ts` owns authenticated fetch endpoints, timeout composition, JSON parsing, and value-free remote HTTP errors; `openaiResponsesLifecycle.ts` owns provider-specific create/retrieve/poll/retry/refresh/cancel sequencing. Runtime construction and the run engine do not depend on those internal modules.
+
+Current code-owned Claude 5 defaults:
+
+- upstream model and capabilities from the selected active administrator-managed deployment;
+- `background=true`;
+- `stream=false` unless the per-model Stream control is enabled for the run;
+- `store=true`;
+- `reasoning.effort=medium`; GPT-5.6 also defaults `reasoning.mode=standard` and advertises its additional `max` effort and `pro` mode only through those models' catalog controls;
+- manual context replay, not provider-side chat memory.
+
+Current adapter behavior:
+
+- fetch-based Responses API requests;
+- provider-side prompt caching hints always include a hashed per-chat `prompt_cache_key`; pre-5.6 models retain `prompt_cache_retention: "24h"`, while GPT-5.6 uses `prompt_cache_options: { ttl: "30m" }` and never sends both contracts;
+- selected `openai-native-web-search` adds the hosted `web_search` tool, `tool_choice=auto`, and `include: ["web_search_call.action.sources"]`; the model decides whether to search without an extra backend intent instruction;
+- selected client Search plans send the provider-neutral plan tool(s) through Responses, preserve foreground non-streaming custom-tool continuation where required, append `function_call_output` items plus any reasoning/function-call items needed for continuation, persist separately attributed `SearchRun` rows only for actual engine calls, and give the model a final no-tool synthesis call after the allowed tool executions;
+- `nativePdfInput` models receive current PDF attachments as Responses `input_file` blocks with request-local base64 `file_data`; other PDF-capable models receive extracted text blocks;
+- polling retrieve until terminal response when `stream=false`; one absolute `AIQSA_OPENAI_BACKGROUND_POLL_TIMEOUT_MS` deadline covers create, waits, retrieves, and retry work rather than approximating time with a poll count;
+- Responses SSE parsing when `stream=true`, including output-text deltas, web-search lifecycle artifacts, provider response id capture, final usage, and final artifact/citation extraction; only `response.completed` carrying `response.status = completed` proves success, while EOF without that proof is `openai_stream_truncated`; normalized citation artifacts omit URLs that fail the shared external-scheme sanitizer;
+- retryable retrieve failures such as `503` are transient artifacts;
+- `GET /api/model-runs/:runId` can recover a previously errored background run if stored provider response id later retrieves as completed;
+- cancellation uses `POST /v1/responses/:responseId/cancel`.
+
+When UI parameters select `reasoning.effort=none`, AIQSA sends that explicit OpenAI reasoning object. GPT-5.6 `reasoning.mode` is independent and remains serialized when present even with effort `none`. Run validation rejects `max` or `pro` for a model whose catalog controls do not advertise that value. Treat OpenAI `status: incomplete` as a provider failure.
+
+The current direct OpenAI default model does not expose or accept `reasoning.effort=minimal` in AIQSA because the 2026-06-06 low-token smoke rejected that value. Saved legacy direct-OpenAI control drafts containing `minimal` are migrated to `low`.
+
+## Compatible OpenAI APIs
+
+`openai_responses_compatible` uses the Responses wire shape with AIQSA-owned manual context replay, `store=false`, and `background=false`; it strips native OpenAI storage, recovery, prompt-cache, and lifecycle extensions. When an administrator explicitly declares hosted web search, the ordinary `openai-native-web-search` strategy is eligible for that deployment and serialization preserves the standard `web_search` tool, automatic tool choice, source include, artifacts, and citations. Catalog presence and the declaration are not tool-specific verification. The compatible path does not gain native OpenAI retrieve/cancel behavior.
+
+`openai_chat_compatible` uses the Chat Completions wire shape and cannot declare hosted Responses tools. Explicit no-auth remains limited to its tested private/local endpoint mode. The optional `nativeImageGeneration` capability is configuration evidence only: current adapters never call a compatible `/images` endpoint and no catalog/composer projection advertises generated-image support until AIQSA has a separate artifact, private-storage, content, and rendering contract.
+
+Both compatible adapters serialize reasoning through the normalized immutable mapping used by the always-redacted request preview. Chat writes the selected effort to its mapped path and writes `standard | pro` only when an administrator supplied a mode path. Responses retains its canonical reasoning-summary object only for `reasoning.effort` plus `reasoning.mode`; a non-canonical mapping removes that canonical object before setting the mapped values so gateway-specific and OpenAI shapes cannot collide. This bounded mapping does not grant arbitrary body, header, transform, or template authority.
+
+## Anthropic Messages API
+
+Anthropic uses Messages API with streaming.
+
+Current defaults:
+
+- upstream model and capabilities from the selected active administrator-managed deployment;
+- `maxTokens=128000`;
+- `outputConfig.effort=high`;
+- adaptive thinking enabled with the model's reviewed effort control; sampling controls remain unavailable for these deployments.
+
+Current adapter behavior:
+
+- fetch-based Messages API streaming requests;
+- system and developer prompt drafts are combined into top-level `system`;
+- `nativePdfInput` models receive current PDF attachments as Messages `document` blocks with base64 PDF sources; other PDF-capable models receive extracted text blocks;
+- thinking controls map to Anthropic thinking/output config fields where supported;
+- provider SSE events map text deltas to tokens, thinking deltas to reasoning artifacts, and cumulative usage to run usage; `message_stop` is required before the adapter returns success, and prior EOF is `anthropic_stream_truncated`.
+
+## Native Gemini Interactions
+
+Gemini is a first-class provider family over the stable native root `https://generativelanguage.googleapis.com/v1`; runtime calls only `POST /interactions` with `x-goog-api-key`. Quick and Advanced catalog tests use the native key header, call the bounded v1 Models catalog, reject unexpected pagination, and strip only the returned `models/` prefix before exact policy/configuration comparison. The code-owned current chat deployments are Gemini 3.6 Flash, 3.5 Flash, 3.5 Flash-Lite, and 3.1 Pro Preview; arbitrary catalog rows are never promoted to deployments.
+
+`gemini_interactions_native` is the only adapter accepted for the Gemini family. `geminiInteractionsRequest.ts` builds `store: false` AIQSA-owned history, native user/model content and attachments, `generation_config`, hosted/function tools, and always-redacted previews. `geminiInteractionsTransport.ts` owns the native endpoint/key header and bounded response reads. `geminiInteractionsResponse.ts` owns native JSON/SSE terminal proof, steps, usage, function calls, and grounding normalization; `geminiInteractionsGrounding.ts` owns the strict Search-Suggestions markup parser. None of these modules calls or retries through the generic compatible transport.
+
+Native SSE starts with one valid `interaction.created`, accepts bounded ordered step start/delta/stop and status events, and succeeds only after a completed/requires-action terminal interaction plus the final native `done` event. EOF, failed/cancelled/incomplete state, missing/duplicate/unordered/unfinished steps, malformed arguments/signatures/usage, mismatched terminal text, or trailing data fails safely. Normalized usage maps total input/cached/thought/output/total fields, adding thought tokens to AIQSA output so reasoning remains its subset.
+
+Custom functions use the existing provider-neutral bounded tool loop. Interactions function/thought steps are replayed exactly; thought signatures stay only in the private `toolLoopState` checkpoint and next wire request, while public events/previews/logs/UI redact them. Gemini Google Search and client/MCP functions cannot be combined in one request. The native adapter supports image, PDF, and extracted-document inputs only when the selected deployment advertises the corresponding capability.
+
+Selected `gemini-google-search` adds only `{ type: "google_search" }`. If the model never calls it, the ordinary answer contract applies. At the first actual search step, execution enters irreversible grounded live-only mode. Stream text is buffered until the provider supplies non-empty Suggestions that pass the server parser; the live `grounding_display` containing bounded call/query counts, safe transient citations, and exact validated markup is delivered before the first answer token. Missing/unsafe Suggestions fail without releasing answer text. A ShadowRoot browser component applies a second allowlist and permits only the observed bounded Google HTTPS markup/CSS shape.
+
+The grounding marker atomically disables token/artifact persistence and purges any pre-marker drafts. Completion/failure stores only explicit message provenance, a neutral content/preview placeholder, normalized usage/status, and a sanitized error when applicable. Grounded answer text, Suggestions, citation Links, search results/signatures, and provider markup never enter `Message`, `ModelRunEvent`, previews, logs, later provider context, or share snapshots. The final live `chat_update` retains the answer only for the current in-memory thread; reload shows the placeholder and public-share creation rejects that visible branch.
+
+## OpenRouter
+
+OpenRouter is implemented as an OpenAI-compatible Chat Completions answer provider plus the typed Perplexity Search protocol used by query-only client Search integrations.
+
+`openRouterChat.ts` is the stable facade used by runtime construction, tests, and the standalone smoke script. `openRouterChatRequest.ts` owns answer/search bodies and always-redacted previews; `openRouterChatResponse.ts` owns JSON/SSE errors, text, usage, reasoning, citations, tool calls, and normalized results; `openRouterChatTransport.ts` owns the authenticated fetch endpoint, timeout composition, object parsing, and sanitized HTTP errors; `openRouterPerplexitySearch.ts` owns real/fake search-adapter result assembly. Provider-neutral tool definition/execution remains in `lib/server/tools/`, outside these wire modules.
+
+Current behavior:
+
+- fetch-based `/api/v1/chat/completions` requests;
+- provider-side prompt-cache routing is always hinted with a hashed per-chat `session_id`; Anthropic-routed OpenRouter requests also include top-level `cache_control: { "type": "ephemeral" }`;
+- `Automatic` omits downstream allowlists and permits fallback under fixed privacy defaults; `Only selected providers` sends the administrator's ordered `order`/`only` list and denies fallback outside it;
+- Answer-stage runs default to `stream: true`, consume OpenRouter SSE chunks as live token events, collect final usage from the terminal usage chunk, and preserve reasoning/citation artifacts when chunks expose them; the `[DONE]` sentinel is required for success, and prior EOF is `openrouter_stream_truncated` even when text, finish reason, or usage was already received;
+- the same per-model Stream control can send `stream: false`; the adapter then uses the non-streaming Chat Completions response path while preserving final answer, usage, reasoning, and citation artifacts;
+- redacted provider request preview with route-provider controls;
+- `nativePdfInput` models receive current PDF attachments as Chat Completions `file` content plus the native OpenRouter `file-parser` PDF engine plugin; other PDF-capable models receive extracted text blocks;
+- an attachment-free selected Perplexity client integration is exposed through the plan's provider-neutral Search tool, sends only the strictly validated generated query through a non-streaming technical Chat Completions request, returns normalized results to the answer transcript, persists one exact `SearchRun` per actual engine call, and rejects both HTTP-200 error envelopes and malformed terminal JSON (`{}`, missing first message, unusable content) instead of completing blank evidence; invalid tool arguments create no provider call/SearchRun, and valid text/content arrays plus answer-round tool-call-only messages remain supported;
+- the Perplexity search executor stays non-streaming;
+- Search runs are stored in `SearchRun`;
+- Search artifacts are emitted as normal model-run artifact events;
+- Perplexity route defaults to `data_collection: "deny"`, `order: ["perplexity"]`, `sort: "throughput"`, and `require_parameters: false`.

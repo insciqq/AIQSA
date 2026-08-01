@@ -23,8 +23,8 @@ Use these defaults only when the operator has not decided the point. They route 
 
 ## Verification Defaults
 
-- Use the cheapest focused deterministic test while iterating, then run the one routine Compose check once near completion.
-- Use the explicit development Docker Compose file for application checks. Repository-owned Playwright CLI tests own browser integration.
+- Use the cheapest focused deterministic test while iterating, then run `npm run check:hermetic` near completion.
+- Add `npm run check:container` when the change crosses PostgreSQL, container/process, or another integration boundary. The explicit development Compose file is the only application parity target; repository-owned Playwright CLI tests own browser integration.
 - Run destructive local Playwright only when the changed behavior crosses a browser/server boundary. For visual changes, inspect the affected states directly instead of maintaining a generated gallery.
 - Run the dependency audit for dependency changes and request external-provider authority exactly as routed by `SECURITY.md` and the critical invariants.
 

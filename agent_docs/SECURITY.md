@@ -1,5 +1,9 @@
 # SECURITY
 
+Owner: Security and privacy maintainers
+Scope: Current auth, session, origin, proxy, secret, network, provider-input, exposure, retention, and dependency-security threat boundaries.
+Verified against: 4f51fdd (2026-08-01)
+
 ## HTTP And Auth Hardening
 
 AIQSA uses email/password plus optional Google/Yandex OAuth login with opaque HttpOnly session cookies backed by `AuthSession` rows. Normal registration is a verified access request gated by approved exact email/domain rules or admin approval. A one-off invite is a separate proof-bearing onboarding path: its emailed secret link establishes the invited email directly and never relies on browser-supplied email text. OAuth never consumes an invite merely because a provider reports the same email. `/api/auth/token` is an explicit bootstrap recovery route exposed only when `AIQSA_BOOTSTRAP_LOGIN_ENABLED=1` or deterministic local test auth is allowed. Route handlers are the auth boundary; the Next proxy uses cookie presence only for routing convenience.

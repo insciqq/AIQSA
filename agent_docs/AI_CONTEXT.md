@@ -34,19 +34,22 @@ The shipped product is a conversation-first workspace for explicit provider/mode
 
 | Owner | Current contract |
 | --- | --- |
-| `CRITICAL_INVARIANTS.md` | Durable product, privacy, backend, frontend, and agent-development invariants. |
+| `CRITICAL_INVARIANTS.md` | Short mandatory safety, privacy, incompatible-state, destructive-workflow, and key product-semantic boundaries. |
+| `PRODUCT_PRINCIPLES.md` | Stable product direction and prioritization guidance. |
 | `ADR/` | Why accepted architectural/product decisions were made and which earlier decisions they amend. |
 | `ARCHITECTURE.md` | Process topology, module dependency direction, data boundaries, and deployment shape. |
-| `BACKEND.md` | Observable API semantics, persistence constraints, run lifecycle, uploads, and internal adapter behavior. |
+| `BACKEND.md` | Router to bounded API/auth, persistence/retention, run/streaming, and provider-adapter contracts. |
 | `QSA_PIPELINE.md` | Product-level Question/Search/Answer stages, search behavior, transparency, and sharing semantics. |
-| `FRONTEND.md` | UI capability, behavior, state ownership, responsive composition, and admin workflows. WCAG and dedicated accessibility work are deferred by operator decision. |
+| `FRONTEND.md` | Router to bounded UI capability/layout, state, controls, account/admin/share, message/Markdown, and motion contracts. |
 | `DESIGN_SYSTEM.md` | Palette/tokens, typography, geometry, density, visual hierarchy, and visual recipes. |
 | `SECURITY.md` | Auth/threat boundaries, origin/session hardening, secret/exposure rules, and dependency-security policy. |
 | `ENV_VARIABLES.md` | Complete environment inventory, defaults, switch semantics, and installation configuration. |
 | `PROVIDER_API_NOTES.md` | Official provider references, externally mutable constraints, one last-verified marker per boundary, and provider-specific caveats. |
-| `TESTING.md` | Focused iteration, the one routine Compose check, destructive local E2E, task-specific checks, and test-authoring rules. |
+| `TESTING.md` | Hermetic host verification, disposable container parity, destructive local E2E, task-specific checks, and test-authoring rules. |
+| `generated/API_AND_SCHEMA.md` | Generated route-method and Prisma model/enum inventory; source-owned and drift-checked. |
+| `archive/` | Non-binding historical narrative; ADRs remain the primary durable decision history. |
 
-Workflow/default/task ownership remains with `AUTONOMOUS_WORKFLOW.md`, `DECISION_DEFAULTS.md`, `active_tasks/`, `backlog/`, and the local ignored `done_tasks/` journal. `ARCHITECTURE.md` includes the small semantic ownership map; repository structure is discovered from the tree rather than duplicated in a generated FILEMAP.
+Workflow/default/task ownership remains with `AUTONOMOUS_WORKFLOW.md`, `DECISION_DEFAULTS.md`, `active_tasks/`, `backlog/`, and the local ignored `done_tasks/` journal. Root `AGENTS.md` supplies global routing; concise nested instructions apply only at the `lib/server/`, `components/`, `prisma/`, and `ops/` domain boundaries. `ARCHITECTURE.md` includes the small semantic ownership map; the generated reference intentionally covers only executable API routes and Prisma type names rather than duplicating a full FILEMAP.
 
 ## Data Cautions
 

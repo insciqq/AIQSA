@@ -10,7 +10,7 @@ When the operator says `начинай реализацию`, the agent should:
 2. if this directory is empty, inspect `agent_docs/backlog/` for the first ready task;
 3. split it first if it is too large to finish cleanly;
 4. implement the task completely with one root agent owning task-ledger writes;
-5. run focused checks while iterating and the routine Compose check near completion;
+5. run focused checks while iterating, the hermetic lane near completion, and container parity when the changed boundary requires it;
 6. update the owning living docs;
 7. fill `Done Notes` and run `npm run task:complete -- <task>`;
 8. continue only if the next task is clearly unblocked and does not require secrets or paid calls.

@@ -1,0 +1,48 @@
+# FRONTEND MESSAGES AND MARKDOWN
+
+Owner: Conversation-content UI maintainers
+Scope: Functional message, branch, artifact, disclosure, safe Markdown, code, math, and overflow interaction contracts.
+Verified against: 4f51fdd (2026-08-01)
+
+## Messages
+
+- private user/assistant articles are named `Question`/`Answer`; repeated turn actions reference a short target description so their destination remains unambiguous;
+- user and assistant edits fork same-role branch replacements without mutating descendants;
+- the edit strip states that sending creates a new branch;
+- sending an edited user message streams a fresh answer on the committed branch; an edited question never remains a dangling branch without an answer, an active run, or a readable run error;
+- failed edit branch mutations keep source-keyed feedback and preserve that session's draft/editing state; one pending edit owner suppresses duplicate PATCHes without disabling another chat;
+- Regenerate is the first action for either role: on an answer it forks a sibling assistant run, while on a question it starts the same assistant-sibling branch directly from that user message;
+- regenerate is disabled while a response is streaming;
+- settled message chrome is contextual. Fine-pointer hover must land inside the bounded exact-message surface; blank row gutters remain inert. That hover or keyboard-visible focus highlights the whole surface with a symmetric 150ms standard easing while the same bottom-right Regenerate/Edit/Copy/More icon dock for questions and answers switches as one unit without its own fade, scale, or slide. Compact/coarse/no-hover tap reveals that dock with momentary pressed feedback but does not keep the message highlighted; pointer focus likewise cannot latch either surface or dock after the pointer leaves. Resting turns show only content; `Run complete` and its evidence block do not appear from hover/tap and require the assistant's `More` → `Show run details`. That menu exposes `Hide run details` while open, keeps Delete before `Branch from here`, is portalled above clipping owners, chooses above/below placement inside the viewport, supports Arrow up/down wrap, and returns focus to More on Escape. Links, buttons, form fields, summaries, explicitly revealed details, and the dock do not retrigger touch disclosure;
+- generic `New Chat` creates a no-folder blank workspace and does not persist a chat until the first send; only explicit folder actions create a first message inside a folder;
+- a valid explicit Send in the still-active chat moves that thread to its optimistic newest user turn exactly once; later answer growth preserves the user-turn reading anchor rather than following the tail, while source-mismatched/background work cannot scroll the selected chat;
+- send/regenerate optimistic rows, ids, tokens, and status patch only the source chat's keyed thread snapshot, including while another chat is visible; transient terminal `chat_update` patches that snapshot plus its lightweight left-pane summary through separate projections. A pre-accept HTTP rejection removes only its owned temporary rows and restores the previous leaf; for a first send whose chat row already committed, it also clears the rejected run surface while retaining that selected saved-empty chat and its restored composer feedback. Accepted or ambiguous network/SSE failure force-refreshes only the source, and retry refuses to post from a stranded temporary id until that refresh succeeds. An edge-action Pipeline chip is rendered only while the selected saved chat has visible run-owned conversation state. Lazy detail fetches are otherwise reserved for uncached/incomplete activation, recovery, export, and fallback paths;
+- Branch tab checkout changes the same chat's active leaf and future sends continue from that selected branch. Pending checkout writes serialize per chat; Send waits for the selected leaf to settle, carries that exact nullable leaf to the server, and restores its draft without issuing a second checkout or run request when settlement fails or is superseded;
+- deleting a message asks through a shell confirmation dialog, then removes that message and its descendants so the message DAG remains valid;
+- deleting a chat from the left-pane row archives that chat and moves the UI to another chat or blank workspace;
+- deleting a chat removes it with a functional chat-list update so concurrent stream/list patches are preserved;
+- `Branch from here` clones the selected message's visible ancestor path into a new chat;
+- `Copy message` copies only the selected visible message text;
+- `Copy thread` copies the visible active branch text;
+- assistant answers expose provider/model and run metadata only through their explicitly requested receipt; live streaming identity remains visible while it is current state;
+- user questions and assistant answers share the composer's `max-w-reading` alignment; questions stay narrower/right-aligned while answers use the full readable document measure;
+- completed assistant answers leave extra bottom scroll space so the final answer can sit comfortably above the composer; cancelled and failed tails keep a smaller terminal spacer;
+- provider labels in thread and workspace rows use display names where available instead of raw provider ids;
+- main thread and branch labels do not display raw message UUIDs;
+- branch controls change active leaf and the thread renders the active branch path;
+- provider/search/malformed-frame warnings carry their originating run id and render only beside the assistant message with that run id, so branch checkout cannot move them to an unrelated answer and returning to the source branch restores their placement;
+- `Share (anonymously)` opens the Share dialog for the visible branch instead of publishing directly. The dialog explains that creating a link publishes a read-only sanitized snapshot, lists the chat's live links with per-link `Revoke link`, and mints a link only through the explicit `Create public link` action. The fresh link shows its full URL with `Copy link` and clipboard success/failure feedback; older links render creation dates only because stored tokens are hashes. Empty chats refuse to open the dialog with a readable notice, list/create/revoke failures stay readable and retryable inside the dialog, and share busy state affects only share controls, never composer/send/streams. The public viewer is a dynamic no-store page with noindex/nofollow/nocache metadata; that crawler hint does not make a copied bearer link secret or replace revoke/expiry.
+
+## Markdown
+
+- inline `\\(...\\)` / conservative `$...$` and display `\\[...\\]` / `$$...$$` formulas render lazily through the restricted local KaTeX boundary; incomplete, malformed, unsupported, or refused TeX remains readable escaped source;
+- display formulas own a named, focus-visible local horizontal-scroll region and never widen the answer or public page; inline code and fenced code never become math delimiters;
+- fenced code blocks render with a header row, readable language label, and compact copy-code button;
+- completed code blocks for `ts`, `tsx`, `js`, `json`, `bash`/`shell`, `python`, `go`, `rust`, `sql`, `yaml`, `html`, `css`, `md`, and `diff` highlight through one lazy Shiki singleton that emits `github-dark` and `github-light` token values as CSS variables inside the local semantic code container;
+- unknown or absent fence languages render as plaintext with no raw info-string label;
+- streaming assistant messages keep code blocks plaintext and do not start Shiki work until the message completes; highlight results are cached by language and code text;
+- public share pages use the same `MarkdownMessage`, so highlighting and copy-code behavior have no auth-only assumptions;
+- answer heading levels are offset by one (`#` starts at `<h2>`) so embedded Markdown never competes with the shell/public-page `<h1>`;
+- paragraphs, headings, inline code, links, citation text, and artifact previews contain unbroken strings; tables, display math, and fenced code own named, focus-visible local horizontal-scroll regions that respond to native keyboard scrolling and never widen the shell;
+- blockquotes separated by a blank unquoted line render as distinct blockquotes;
+- unsafe links and raw HTML remain inert.

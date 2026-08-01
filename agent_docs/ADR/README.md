@@ -23,7 +23,7 @@ Every ADR also declares `Amends: none` or a comma-separated list of earlier ADR 
 - `0009-conversation-first-ui-revamp.md` - the UI becomes conversation-first while preserving every QSA, provider, search, inspection, organization, auth, and admin capability; ADR 0025 now owns the clean-slate presentation and first-use direction.
 - `0010-neutral-light-theme.md` - themes declare dark/light scheme metadata and retain five original stable IDs; ADR 0025 changes no-preference first use to `neutral`, and ADR 0027 appends `paper` without changing the original ids.
 - `0011-explicit-next-run-control-ownership.md` - chats move from row menus, users select concrete models rather than providers, one composer owner edits next-run state, and Details owns Branch/Events inspection; ADR 0030 makes Model/Profile/Search direct and moves Reasoning into More.
-- `0015-lean-local-development-harness.md` - routine work uses one Compose check and an explicit destructive local E2E path; local CI, isolation/recovery, pollution cleanup, receipts, galleries, and parallel orchestration are intentionally absent.
+- `0015-lean-local-development-harness.md` - keeps local delivery lean and explicit; ADR 0053 replaces its one-routine-Compose rule with hermetic and container-parity lanes while retaining explicit destructive E2E and no local CI/receipt/orchestration machinery.
 - `0016-responsive-composer-disclosure.md` - establishes exact responsive next-run disclosure; ADR 0025 replaces its fixed compact composition, ADR 0030 replaces the single summary with wrapping direct controls plus More, and ADR 0038 restores intent-gated reading collapse without restoring the old control owner.
 - `0017-conservative-multilingual-context-estimates.md` - context admission uses a dependency-free conservative Unicode estimate, exposes the safe input budget separately from total context, and keeps runtime attachment/tool re-budgeting.
 - `0018-intent-gated-mobile-reading-mode.md` - preserves blank-workspace, focus, Stop, and compact-access outcomes; ADR 0038 restores its direction-neutral 48px scroll-intent composer disclosure after ADR 0025 retired the earlier presentation.
@@ -61,6 +61,7 @@ Every ADR also declares `Amends: none` or a comma-separated list of earlier ADR 
 - `0050-client-search-minimum-disclosure.md` - makes client Search requests independently query-only, rejects untrusted malformed or oversized tool arguments before I/O, and disables client Search for attachment-bearing runs until explicit disclosure consent exists.
 - `0051-durable-auth-rate-limits-and-exact-proxy-identity.md` - makes auth admission atomic and durable in PostgreSQL, removes shared unknown-client buckets, and accepts client IP identity only from one exact validated overwriting-proxy chain.
 - `0052-public-share-non-cache-and-non-indexing-boundary.md` - makes public share API/page outcomes dynamically repository-authorized and non-cacheable, adds noindex/noarchive/no-referrer defense in depth, and keeps bearer token plus expiry/revocation as the security boundary.
+- `0053-bounded-agent-context-and-split-verification-lanes.md` - bounds root-plus-nearest instructions, routes monolithic living contracts into scoped owners, enforces manual review/generated-reference drift, and separates hermetic verification from disposable container parity.
 
 ## Superseded ADRs
 

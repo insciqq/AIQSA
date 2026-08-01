@@ -1,5 +1,9 @@
 # PROVIDER_API_NOTES
 
+Owner: Provider integration maintainers
+Scope: Externally mutable official provider constraints, source links, last-verified boundaries, and provider-specific transport caveats.
+Verified against: 4f51fdd (2026-08-01)
+
 ## Ownership
 
 This conditional document owns official provider references, externally mutable constraints, one last-verified marker per boundary, and provider-specific caveats. `BACKEND.md` owns AIQSA adapter behavior/defaults; `QSA_PIPELINE.md` owns product semantics; `ENV_VARIABLES.md` owns configuration names; executable adapter tests own exact request/response mapping.

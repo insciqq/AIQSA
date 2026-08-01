@@ -12,6 +12,6 @@ Before implementation, review/split the task, replace stale commands or assumpti
 npm run task:promote -- <task>
 ```
 
-The lean harness assumes one integrating writer, disposable local data, one routine Compose check, and task-specific E2E/production/security proof. Do not add local CI, verification tiers, receipts, namespace recovery, screenshot galleries, or claim/lease machinery back into a product task.
+The lean harness assumes one integrating writer, a fast hermetic lane, disposable Compose parity only when the boundary needs it, and task-specific E2E/production/security proof. Do not add local CI, receipts, namespace recovery, screenshot galleries, or claim/lease machinery back into a product task.
 
 Completed task notes remain in the local ignored `agent_docs/done_tasks/` journal and are never force-added to the repository.

@@ -1,11 +1,15 @@
 # TESTING
 
+Owner: Verification harness maintainers
+Scope: Current hermetic, container-parity, browser, migration, integration, provider-smoke, and test-authoring workflows and isolation rules.
+Verified against: 4f51fdd (2026-08-01)
+
 ## Verification Map
 
 | Layer | Tool | What it proves | When it runs |
 | --- | --- | --- | --- |
-| Documentation and static checks | docs-check, ESLint, TypeScript | Living-doc contracts, code quality, and type safety | Routine `npm run check` |
-| Server/API and UI behavior | Vitest and Testing Library | Business rules, handlers, permissions, adapters, stores, and components | Routine `npm run check` or a focused file set |
+| Hermetic host checks | generated-doc drift, docs-check, ESLint, TypeScript, Vitest/Testing Library | Living contracts, code quality, types, and deterministic behavior without a database, Docker, network, or secrets | Focused iteration and `npm run check:hermetic` before completion of bounded static/unit work |
+| Container parity | disposable Compose plus the complete `npm run check` | The same checks with PostgreSQL-backed repository/concurrency cases and release-like Node/container dependencies | When the change touches server/database/container boundaries or before broader integration/release evidence |
 | Browser integration | Playwright | The browser/server boundary, routing, sessions, responsive interaction, and seeded persistence | Only for changes that cross those boundaries |
 | Opt-in integration and smoke | Vitest and task-specific scripts | Prisma, MCP, ToolHive, migrations, installation, and real providers | Only when the changed boundary requires it |
 
@@ -13,26 +17,35 @@ The executable command definitions remain in `package.json`; `vitest.config.ts`,
 
 Accessibility scope is owned by `FRONTEND.md`. Responsive layout, touch use, safe areas, software-keyboard clearance, readable content, and overflow remain ordinary product verification.
 
-## Default Workflow
+## Verification Lanes
 
-AIQSA has one routine application check. Start the isolated development stack, then run:
+Bootstrap a clean checkout with the lockfile-owned install, then use the host-local hermetic lane:
+
+```bash
+npm ci
+npm run check:hermetic
+```
+
+`check:hermetic` generates the Prisma client without connecting to a database, verifies the generated API/schema reference and living docs, runs ESLint and TypeScript, then runs every deterministic Vitest/Testing Library case through `vitest.hermetic.config.ts`. Direct Prisma-singleton tests are an explicit reviewed list, and all `*.integration.test.*` files remain outside this lane; `tests/harness/hermetic-vitest-config.test.ts` fails when a new direct database test is not classified. The lane requires no Docker, `DATABASE_URL`, provider key, registry, or external service.
+
+During implementation, keep feedback narrower:
+
+```bash
+npx vitest run --config vitest.hermetic.config.ts <test-files>
+npx eslint <changed-paths>
+npx tsc --noEmit
+```
+
+Run the complete disposable container-parity lane when the changed behavior needs PostgreSQL, process/container topology, migrations, server/browser integration, or another service boundary:
 
 ```bash
 docker compose -f docker-compose.dev.yml up -d
-docker compose -f docker-compose.dev.yml exec -T app npm run check
+npm run check:container
 ```
 
-`check` generates the Prisma client, then runs compact documentation sanity, ESLint, TypeScript, and the application Vitest suite. Run it once near task completion, not after every edit.
+`check:container` is a host wrapper for `docker compose -f docker-compose.dev.yml exec -T app npm run check`. The inner `check` runs generated-doc/docs drift, lint, TypeScript, the complete Vitest suite, and PostgreSQL-backed repository/concurrency cases. A small documentation, pure-domain, component-unit, or deterministic adapter change may finish on the hermetic lane when its acceptance criteria do not cross a container boundary; Compose is not mandatory merely because application code changed.
 
-While implementing, run only the smallest relevant test set:
-
-```bash
-docker compose -f docker-compose.dev.yml exec -T app npx vitest run <test-files>
-docker compose -f docker-compose.dev.yml exec -T app npm run lint
-docker compose -f docker-compose.dev.yml exec -T app npm run typecheck
-```
-
-The default `docker-compose.yml` is an operator installation with persistent user data and is never the routine test target. A one-off `docker compose -f docker-compose.dev.yml run --rm app ...` is also valid, but it may start dependencies and is usually slower.
+The default `docker-compose.yml` is an operator installation with persistent user data and is never a development test target. A one-off `docker compose -f docker-compose.dev.yml run --rm app ...` is valid only against the disposable development topology and only when the selected check needs its dependencies.
 
 ## Browser Integration
 

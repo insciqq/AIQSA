@@ -1,23 +1,39 @@
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
 const cli = path.resolve(process.cwd(), "scripts/docs-check.mjs");
+const generator = path.resolve(process.cwd(), "scripts/generate-doc-reference.mjs");
 const roots: string[] = [];
 const required = [
   "AGENTS.md",
   "CLAUDE.md",
   "README.md",
+  "components/AGENTS.md",
+  "lib/server/AGENTS.md",
+  "ops/AGENTS.md",
+  "prisma/AGENTS.md",
   "agent_docs/AUTONOMOUS_WORKFLOW.md",
   "agent_docs/AI_CONTEXT.md",
   "agent_docs/ARCHITECTURE.md",
   "agent_docs/BACKEND.md",
+  "agent_docs/backend/API_AND_AUTH.md",
+  "agent_docs/backend/PERSISTENCE_AND_RETENTION.md",
+  "agent_docs/backend/PROVIDER_ADAPTERS.md",
+  "agent_docs/backend/RUNS_AND_STREAMING.md",
   "agent_docs/CRITICAL_INVARIANTS.md",
   "agent_docs/DECISION_DEFAULTS.md",
   "agent_docs/DESIGN_SYSTEM.md",
   "agent_docs/FRONTEND.md",
+  "agent_docs/frontend/ACCOUNT_ADMIN_AND_SHARING.md",
+  "agent_docs/frontend/COMPOSER_AND_CONTROLS.md",
+  "agent_docs/frontend/IMPLEMENTATION_STATE.md",
+  "agent_docs/frontend/MESSAGES_AND_MARKDOWN.md",
+  "agent_docs/frontend/PRODUCT_AND_LAYOUT.md",
+  "agent_docs/frontend/VISUAL_INTERACTION.md",
   "agent_docs/ENV_VARIABLES.md",
+  "agent_docs/PRODUCT_PRINCIPLES.md",
   "agent_docs/PROVIDER_API_NOTES.md",
   "agent_docs/QSA_PIPELINE.md",
   "agent_docs/RISKS.md",
@@ -26,8 +42,10 @@ const required = [
   "agent_docs/TASK_TEMPLATE.md",
   "agent_docs/ADR/README.md",
   "agent_docs/active_tasks/README.md",
+  "agent_docs/archive/README.md",
   "agent_docs/backlog/README.md",
-  "agent_docs/done_tasks/README.md"
+  "agent_docs/done_tasks/README.md",
+  "agent_docs/generated/API_AND_SCHEMA.md"
 ];
 
 function fixture() {
@@ -36,7 +54,9 @@ function fixture() {
   for (const filename of required) {
     const target = path.join(root, filename);
     mkdirSync(path.dirname(target), { recursive: true });
-    const body = filename === "agent_docs/ENV_VARIABLES.md"
+    const body = filename.endsWith("/AGENTS.md")
+      ? "# AGENTS\n\nScope: fixture domain instructions.\n"
+      : filename === "agent_docs/ENV_VARIABLES.md"
       ? "# Environment\n\nEXAMPLE_KEY=\n"
       : filename === "CLAUDE.md"
         ? "# CLAUDE\n\nFollow [AGENTS.md](AGENTS.md).\n"
@@ -48,6 +68,12 @@ function fixture() {
   }
   writeFileSync(path.join(root, ".env.example"), "EXAMPLE_KEY=value\n");
   writeFileSync(path.join(root, "README.md"), "# README\n\n[Architecture](agent_docs/ARCHITECTURE.md)\n");
+  mkdirSync(path.join(root, "app/api/health"), { recursive: true });
+  writeFileSync(path.join(root, "app/api/health/route.ts"), "export function GET() {}\n");
+  mkdirSync(path.join(root, "prisma"), { recursive: true });
+  writeFileSync(path.join(root, "prisma/schema.prisma"), "model User {\n  id String @id\n}\n\nenum UserStatus {\n  active\n}\n");
+  const generated = spawnSync(process.execPath, [generator, "--root", root], { encoding: "utf8" });
+  if (generated.status !== 0) throw new Error(generated.stderr);
   return root;
 }
 
@@ -120,6 +146,19 @@ describe("lean documentation sanity check", () => {
     expect(result.stderr).toContain("root-instruction budget");
   });
 
+  it("bounds the combined root and nearest nested instruction context", () => {
+    const root = fixture();
+    writeFileSync(
+      path.join(root, "components/AGENTS.md"),
+      `# AGENTS\n\nScope: component instructions.\n${"nested instruction\n".repeat(41)}`
+    );
+
+    const result = check(root);
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("components/AGENTS.md: exceeds the 40-line/4096-byte nested-instruction budget");
+  });
+
   it("keeps CLAUDE.md as a pointer to the canonical root instructions", () => {
     const root = fixture();
     writeFileSync(path.join(root, "CLAUDE.md"), "# CLAUDE\n\nDuplicated repository rules.\n");
@@ -138,6 +177,36 @@ describe("lean documentation sanity check", () => {
 
     expect(result.status).toBe(1);
     expect(result.stderr).toContain("missing .env.example key UNDOCUMENTED_KEY");
+  });
+
+  it("reports missing and stale large-document review markers without rewriting the file", () => {
+    const root = fixture();
+    const target = path.join(root, "agent_docs/SECURITY.md");
+    const body = `# SECURITY\n\n${"security contract text\n".repeat(900)}`;
+    writeFileSync(target, body);
+
+    const missing = check(root);
+    expect(missing.status).toBe(1);
+    expect(missing.stderr).toContain("large living document needs a bounded Owner marker");
+    expect(readFileSync(target, "utf8")).toBe(body);
+
+    writeFileSync(
+      target,
+      `# SECURITY\n\nOwner: Security maintainers\nScope: Current security behavior for the fixture only.\nVerified against: abcdef0 (2000-01-01)\n\n${"security contract text\n".repeat(900)}`
+    );
+    const stale = check(root);
+    expect(stale.status).toBe(1);
+    expect(stale.stderr).toContain("stale verification marker");
+  });
+
+  it("reports generated route or schema drift", () => {
+    const root = fixture();
+    writeFileSync(path.join(root, "app/api/health/route.ts"), "export function POST() {}\n");
+
+    const result = check(root);
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("stale generated reference");
   });
 
   it("reports task status and dependency errors", () => {
