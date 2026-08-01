@@ -7,9 +7,9 @@ node_modules
 coverage
 playwright-report
 test-results
-agent_docs/active_tasks
-agent_docs/backlog
-agent_docs/done_tasks
+agent_docs
+**/AGENTS.md
+**/CLAUDE.md
 .env
 .env.*
 !.env.example

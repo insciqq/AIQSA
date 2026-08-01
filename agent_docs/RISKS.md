@@ -27,10 +27,10 @@
    - Keep raw payload retention session-only by default and keep durable previews, errors, tool arguments/results, and account labels bounded and redacted.
 
 9. Uploads widen both storage and provider disclosure boundaries.
-   - Storage, validation, extraction, retention, capability gates, and resource limits must remain server-owned. Current Perplexity tool search also forwards bounded extracted PDF/document text to OpenRouter without separate attachment confirmation; avoid sensitive attachments on that strategy until query-only remediation lands.
+   - Storage, validation, extraction, retention, capability gates, and resource limits must remain server-owned. Client Search currently accepts only a bounded generated query and fails closed for attachment-bearing runs before provider dispatch; new Search adapters and recovery paths must preserve that incompatibility until a separately reviewed per-run disclosure-consent contract exists.
 
 10. Auth and entitlement transitions remain concurrency-sensitive.
-    - Password/reset/activation/admin decisions use explicit locks and transactions, but rate limiting is process-local and every new route still needs server-side ownership and effective-grant checks.
+    - Password/reset/activation/admin decisions use explicit locks and transactions, and authentication admission uses atomic durable PostgreSQL buckets keyed by installation-secret HMACs. New authentication routes remain risky if they bypass the shared limiter, weaken transactional ownership checks, or derive client identity from an unvalidated proxy chain.
 
 11. Administrator-selected MCP code is trusted infrastructure.
     - Server grants authorize every exposed tool without per-call approval; local workloads have outbound network access, and ToolHive's Docker authority plus the app's private controller access make an app/controller compromise a host compromise.

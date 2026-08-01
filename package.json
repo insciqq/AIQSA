@@ -22,6 +22,7 @@
     "docs:check": "node scripts/docs-check.mjs",
     "docs:generate": "node scripts/generate-doc-reference.mjs",
     "docs:generated:check": "node scripts/generate-doc-reference.mjs --check",
+    "release:privacy:check": "node scripts/release-privacy-check.mjs --require-origin",
     "db:generate": "prisma generate",
     "db:bootstrap": "tsx prisma/bootstrap.ts",
     "db:auth-rate-limit:migration:contract": "tsx prisma/scripts/tests/auth-rate-limit-migration-contract.ts",

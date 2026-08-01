@@ -46,7 +46,7 @@ The shipped product is a conversation-first workspace for explicit provider/mode
 | `PROVIDER_API_NOTES.md` | Official provider references, externally mutable constraints, one last-verified marker per boundary, and provider-specific caveats. |
 | `TESTING.md` | Hermetic host verification, disposable container parity, destructive local E2E, task-specific checks, and test-authoring rules. |
 | `generated/API_AND_SCHEMA.md` | Generated route-method and Prisma model/enum inventory; source-owned and drift-checked. |
-| `tasks/` | Unfinished specifications and progress only; completed tasks are deleted. |
+| `tasks/` | Local ignored unfinished specifications and progress only; completed tasks are deleted and task content never enters public Git. |
 
 Workflow and default ownership remains with `AUTONOMOUS_WORKFLOW.md`, `DECISION_DEFAULTS.md`, and `tasks/`. Root `AGENTS.md` supplies global routing; concise nested instructions apply only at the `lib/server/`, `components/`, `prisma/`, and `ops/` domain boundaries. `ARCHITECTURE.md` includes the small semantic ownership map; the generated reference intentionally covers only executable API routes and Prisma type names rather than duplicating a full file map.
 

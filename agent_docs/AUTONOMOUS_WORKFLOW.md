@@ -4,14 +4,14 @@ This is the operating loop for an agent changing AIQSA without step-by-step stee
 
 ## Work Selection
 
-The operator's latest request is primary. For broad implementation permission:
+The operator's latest request is primary. A concrete change that can be completed in the current session runs directly without a ceremonial task. For broad implementation permission, queued work, dependencies, or work that may survive the session:
 
 1. Inspect Git state and the relevant code and living documents.
 2. Enumerate `agent_docs/tasks/*.md` in natural filename order.
 3. Resume the sole `in_progress` task. If none exists, select the first `ready` task with no open dependencies.
 4. Do not implement `backlog`, `blocked`, or `review` tasks without the transition or human input their status requires.
-5. Create a task only when work must survive the current session or belongs in the autonomous queue. A small one-shot operator request does not need ceremonial task bookkeeping.
-6. Keep one Markdown writer in the checkout. Parallel agents may inspect or implement bounded code slices, but the root agent owns task state and integration.
+5. Create a task only when work must survive the current session or belongs in the autonomous queue.
+6. Keep one Markdown writer in the checkout. Parallel agents may inspect or implement bounded code slices, but the root agent owns local task state and integration.
 
 ## Task Lifecycle
 
@@ -29,7 +29,7 @@ backlog -> ready -> in_progress -> review
 - `blocked`: progress requires a named dependency, external condition, secret, or human decision.
 - `review`: implementation and verification are complete, but required human review has not yet been accepted.
 
-There is no completed status. Completion deletes the task file and removes its stem from `Depends on` fields in the remaining queue. Git history, tests, living documents, and release notes are the durable record.
+There is no completed status. Task instances are ignored local checkout state because the only remote is public. Completion deletes the task file and removes its stem from `Depends on` fields in the remaining queue. Tests, living documents, code commits, and release notes are the durable record; Git history never carries task content.
 
 Use the task CLI directly so the workflow does not depend on optional package aliases:
 
@@ -39,11 +39,11 @@ node scripts/task-ledger.mjs promote <task-id-or-stem>
 node scripts/task-ledger.mjs start <task-id-or-stem>
 node scripts/task-ledger.mjs block <task-id-or-stem> --reason "<specific blocker>"
 node scripts/task-ledger.mjs review <task-id-or-stem>
-node scripts/task-ledger.mjs complete <task-id-or-stem>
+node scripts/task-ledger.mjs complete <task-id-or-stem> [--approved]
 node scripts/task-ledger.mjs list
 ```
 
-`new` creates a `backlog` scaffold. `promote` requires an executable specification and no open dependencies. `start` enforces one integrating task. `review` requires recorded verification. `complete` requires recorded verification, and a task marked `Human review: required` must pass through `review` before deletion.
+`new` creates an ignored local `backlog` scaffold. `promote` requires an executable specification and no open dependencies. `start` enforces one integrating task. `review` requires settled durable rationale and completed verification. `complete` requires the same evidence; a task marked `Human review: required` must pass through `review` and uses `--approved` only after explicit operator acceptance. Verification containing only concrete `Not run` evidence always follows that reviewed path.
 
 For complex or multi-session work, expand the selected task's `Plan`, `Progress`, and `Decisions` sections. The task itself is the executable plan and handoff artifact; do not create a parallel plan file or a completed-plan archive.
 
@@ -56,7 +56,7 @@ For complex or multi-session work, expand the selected task's `Plan`, `Progress`
 5. Update `Progress` after meaningful checkpoints and record only task-local choices in `Decisions`.
 6. Run focused checks while iterating. Near completion, run the proportional hermetic or container-parity lane from `TESTING.md`; run E2E, runtime image builds, migrations, security audit, or provider smokes only when the task crosses those boundaries.
 7. Update the owning living documents when architecture, environment, workflow, tests, security, or product behavior changed. Put rationale beside a current rule only when it remains useful after the task is deleted.
-8. Record exact passed checks and unavailable checks with reasons in `Verification`.
+8. Record exact passed checks and unavailable checks with reasons in `Verification`, and settle `Durable rationale` as `none` or `moved to <agent_docs owner>`.
 9. Move required-review work to `review`; otherwise run `complete` and delete the task.
 
 ## Verification Policy

@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -9,19 +9,72 @@ const roots: string[] = [];
 function fixture() {
   const root = mkdtempSync(path.join(tmpdir(), "aiqsa-task-ledger-"));
   roots.push(root);
-  for (const directory of ["active_tasks", "backlog", "done_tasks"]) {
-    mkdirSync(path.join(root, "agent_docs", directory), { recursive: true });
-  }
+  mkdirSync(path.join(root, "agent_docs/tasks"), { recursive: true });
+  writeFileSync(path.join(root, "agent_docs/tasks/README.md"), "# TASKS\n");
+  writeFileSync(path.join(root, "agent_docs/SECURITY.md"), "# SECURITY\n");
+  writeFileSync(
+    path.join(root, ".gitignore"),
+    "/agent_docs/tasks/*.md\n!/agent_docs/tasks/README.md\n"
+  );
+  const initialized = spawnSync("git", ["init", "-q"], { cwd: root, encoding: "utf8" });
+  if (initialized.status !== 0) throw new Error(initialized.stderr);
   return root;
 }
 
-function task(root: string, directory: string, stem: string, status: string, dependencies = "none", notes?: string) {
-  const done = notes === undefined ? "" : `\n## Done Notes\n\n${notes}\n`;
-  writeFileSync(
-    path.join(root, "agent_docs", directory, `${stem}.md`),
-    `# ${stem}\n\nStatus: ${status}\nDepends on: ${dependencies}\n${done}`,
-    "utf8"
-  );
+type TaskOptions = {
+  blockedBy?: string;
+  dependencies?: string;
+  humanReview?: "optional" | "required";
+  rationale?: string;
+  verification?: string;
+};
+
+function task(root: string, stem: string, status: string, options: TaskOptions = {}) {
+  const body = `# ${stem}
+
+Status: ${status}
+Depends on: ${options.dependencies ?? "none"}
+Human review: ${options.humanReview ?? "optional"}
+Blocked by: ${options.blockedBy ?? (status === "blocked" ? "waiting for operator input" : "none")}
+Durable rationale: ${options.rationale ?? "none"}
+
+## Goal
+
+Deliver the fixture outcome.
+
+## Context
+
+- Current fixture owner.
+
+## Scope
+
+- Implement the fixture slice.
+
+## Out Of Scope
+
+- Product runtime behavior outside this fixture.
+
+## Acceptance Criteria
+
+- The fixture behavior is observable.
+
+## Plan
+
+- [x] Implement the fixture milestone.
+
+## Progress
+
+- Fixture implementation recorded.
+
+## Decisions
+
+- No lasting decision.
+
+## Verification
+
+${options.verification ?? "- [x] focused fixture check passed."}
+`;
+  writeFileSync(path.join(root, "agent_docs/tasks", `${stem}.md`), body, "utf8");
 }
 
 function run(root: string, ...arguments_: string[]) {
@@ -32,80 +85,146 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { force: true, recursive: true });
 });
 
-describe("lean task ledger", () => {
-  it("allocates natural-width identifiers without claims or queue files", () => {
+describe("local unified task ledger", () => {
+  it("creates a timestamp task as ignored local state", () => {
     const root = fixture();
-    task(root, "done_tasks", "999-last-task", "completed");
 
     const result = run(root, "new", "next-task", "--summary", "Next implementation slice");
 
     expect(result.status).toBe(0);
-    expect(result.stdout).toContain("Created 1000-next-task");
-    const body = readFileSync(path.join(root, "agent_docs/backlog/1000-next-task.md"), "utf8");
+    const filename = readdirSync(path.join(root, "agent_docs/tasks")).find((entry) => entry !== "README.md");
+    expect(filename).toMatch(/^\d{17}-next-task\.md$/);
+    const body = readFileSync(path.join(root, "agent_docs/tasks", filename!), "utf8");
     expect(body).toContain("Status: backlog");
-    expect(body).toContain("docker compose -f docker-compose.dev.yml exec -T app npm run check");
-    expect(body).not.toContain("Claimed by:");
-    expect(() => readFileSync(path.join(root, "agent_docs/backlog/README.md"))).toThrow();
+    expect(body).toContain("Durable rationale: pending");
+    expect(spawnSync("git", ["check-ignore", "-q", `agent_docs/tasks/${filename}`], { cwd: root }).status).toBe(0);
   });
 
-  it("promotes and completes a task through directory moves", () => {
+  it("refuses local task creation when the public-repository ignore guard is absent", () => {
     const root = fixture();
-    task(root, "done_tasks", "001-foundation", "done");
-    task(root, "backlog", "002-follow-up", "backlog", "001-foundation", "Implemented and verified.");
+    unlinkSync(path.join(root, ".gitignore"));
 
-    expect(run(root, "promote", "002").status).toBe(0);
-    const active = path.join(root, "agent_docs/active_tasks/002-follow-up.md");
-    expect(readFileSync(active, "utf8")).toContain("Status: ready");
-    expect(run(root, "complete", "002-follow-up").status).toBe(0);
-    const done = readFileSync(path.join(root, "agent_docs/done_tasks/002-follow-up.md"), "utf8");
-    expect(done).toMatch(/Status: done\nCompleted: \d{4}-\d{2}-\d{2}/);
-  });
-
-  it("refuses promotion while a dependency is unfinished", () => {
-    const root = fixture();
-    task(root, "backlog", "001-foundation", "backlog");
-    task(root, "backlog", "002-follow-up", "backlog", "001-foundation");
-
-    const result = run(root, "promote", "002");
+    const result = run(root, "new", "unsafe-task", "--summary", "Must stay local");
 
     expect(result.status).toBe(1);
-    expect(result.stderr).toContain("unfinished dependencies: 001-foundation");
+    expect(result.stderr).toContain("must be ignored before local task creation");
+    expect(readdirSync(path.join(root, "agent_docs/tasks"))).toEqual(["README.md"]);
   });
 
-  it("requires completion evidence", () => {
+  it("completes by deleting the task and clearing remaining dependencies", () => {
     const root = fixture();
-    task(root, "active_tasks", "001-work", "ready", "none", "Fill this in when moving to `done_tasks`.");
+    const foundation = "20260801120000001-foundation";
+    const followup = "20260801120000002-follow-up";
+    task(root, foundation, "in_progress");
+    task(root, followup, "backlog", { dependencies: foundation });
 
-    const result = run(root, "complete", "001");
+    const result = run(root, "complete", foundation);
 
-    expect(result.status).toBe(1);
-    expect(result.stderr).toContain("Done Notes must contain completion evidence");
+    expect(result.status).toBe(0);
+    expect(existsSync(path.join(root, "agent_docs/tasks", `${foundation}.md`))).toBe(false);
+    expect(readFileSync(path.join(root, "agent_docs/tasks", `${followup}.md`), "utf8")).toContain("Depends on: none");
+    expect(result.stdout).toContain("cleared 1 dependency reference");
   });
 
-  it("rejects unresolved dependencies and cycles before mutation", () => {
+  it("enforces one in_progress task and dependency-free executable states", () => {
     const root = fixture();
-    task(root, "backlog", "001-first", "backlog", "002-second");
-    task(root, "backlog", "002-second", "backlog", "001-first");
+    task(root, "20260801120000001-first", "in_progress");
+    task(root, "20260801120000002-second", "in_progress");
 
-    const cycle = run(root, "promote", "001");
+    const duplicate = run(root, "list");
+    expect(duplicate.status).toBe(1);
+    expect(duplicate.stderr).toContain("only one integrating task is allowed");
+
+    rmSync(path.join(root, "agent_docs/tasks/20260801120000002-second.md"));
+    task(root, "20260801120000002-second", "ready", { dependencies: "20260801120000001-first" });
+    const dependency = run(root, "list");
+    expect(dependency.status).toBe(1);
+    expect(dependency.stderr).toContain("ready task cannot have open dependencies");
+  });
+
+  it("rejects unresolved dependencies and cycles", () => {
+    const root = fixture();
+    task(root, "20260801120000001-first", "backlog", { dependencies: "20260801120000002-second" });
+    task(root, "20260801120000002-second", "backlog", { dependencies: "20260801120000001-first" });
+
+    const cycle = run(root, "list");
     expect(cycle.status).toBe(1);
     expect(cycle.stderr).toContain("task dependency cycle");
 
-    task(root, "backlog", "002-second", "backlog", "999-missing");
-    const missing = run(root, "promote", "001");
+    task(root, "20260801120000002-second", "backlog", { dependencies: "20260801120000003-missing" });
+    const missing = run(root, "list");
     expect(missing.status).toBe(1);
-    expect(missing.stderr).toContain("does not resolve to exactly one task");
+    expect(missing.stderr).toContain("does not resolve to exactly one open task");
   });
 
-  it("requires a full stem for ambiguous numeric references", () => {
+  it("requires review status and explicit approval for required human review", () => {
     const root = fixture();
-    task(root, "backlog", "101-01-first", "backlog");
-    task(root, "backlog", "101-02-second", "backlog");
+    const stem = "20260801120000001-reviewed-change";
+    task(root, stem, "in_progress", { humanReview: "required" });
 
-    const result = run(root, "promote", "101");
+    expect(run(root, "complete", stem).stderr).toContain("requires human review before completion");
+    expect(run(root, "review", stem).status).toBe(0);
+    expect(run(root, "complete", stem).stderr).toContain("requires explicit operator approval");
+    expect(run(root, "complete", stem, "--approved").status).toBe(0);
+  });
 
-    expect(result.status).toBe(1);
-    expect(result.stderr).toContain("task 101 is ambiguous");
-    expect(run(root, "promote", "101-01-first").status).toBe(0);
+  it("allows checked plus unavailable evidence but reviews unavailable-only evidence", () => {
+    const root = fixture();
+    const mixed = "20260801120000001-mixed-evidence";
+    task(root, mixed, "in_progress", {
+      verification: "- [x] deterministic check passed.\n- Not run: provider smoke — credentials are unavailable"
+    });
+    expect(run(root, "complete", mixed).status).toBe(0);
+
+    const optional = "20260801120000002-optional-unavailable";
+    task(root, optional, "in_progress", {
+      verification: "- Not run: provider smoke — credentials are unavailable"
+    });
+    const rejected = run(root, "complete", optional);
+    expect(rejected.status).toBe(1);
+    expect(rejected.stderr).toContain("Unavailable-only verification requires required human review");
+
+    rmSync(path.join(root, "agent_docs/tasks", `${optional}.md`));
+    const required = "20260801120000003-required-unavailable";
+    task(root, required, "in_progress", {
+      humanReview: "required",
+      verification: "- Not run: provider smoke — credentials are unavailable"
+    });
+    expect(run(root, "review", required).status).toBe(0);
+    expect(run(root, "complete", required, "--approved").status).toBe(0);
+  });
+
+  it("blocks unchecked or malformed verification evidence", () => {
+    const root = fixture();
+    const unchecked = "20260801120000001-unchecked";
+    task(root, unchecked, "in_progress", { verification: "- [ ] npm run check:hermetic" });
+    expect(run(root, "complete", unchecked).stderr).toContain("no unchecked checks");
+
+    rmSync(path.join(root, "agent_docs/tasks", `${unchecked}.md`));
+    const malformed = "20260801120000002-malformed";
+    task(root, malformed, "in_progress", { verification: "- Not run: provider smoke" });
+    expect(run(root, "list").stderr).toContain("Not run: <check> — <specific reason>");
+  });
+
+  it("requires settled durable rationale and validates moved-to owners", () => {
+    const root = fixture();
+    const pending = "20260801120000001-pending-rationale";
+    task(root, pending, "in_progress", { rationale: "pending" });
+    expect(run(root, "complete", pending).stderr).toContain("Durable rationale must be settled");
+
+    rmSync(path.join(root, "agent_docs/tasks", `${pending}.md`));
+    const moved = "20260801120000002-moved-rationale";
+    task(root, moved, "in_progress", { rationale: "moved to agent_docs/SECURITY.md" });
+    expect(run(root, "complete", moved).status).toBe(0);
+
+    const invalid = "20260801120000003-invalid-rationale";
+    task(root, invalid, "backlog", { rationale: "moved to README.md" });
+    expect(run(root, "list").stderr).toContain("owner must be an existing file outside agent_docs/tasks");
+  });
+
+  it("requires a concrete blocker only for blocked state", () => {
+    const root = fixture();
+    task(root, "20260801120000001-blocked", "blocked", { blockedBy: "none" });
+    expect(run(root, "list").stderr).toContain("blocked task needs a specific Blocked by value");
   });
 });

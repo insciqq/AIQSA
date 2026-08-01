@@ -17,6 +17,7 @@ Status: backlog
 Depends on: none
 Human review: optional | required
 Blocked by: none
+Durable rationale: pending
 
 ## Goal
 
@@ -59,4 +60,12 @@ The observable outcome.
 - [ ] `npm run check:container` when the scope crosses PostgreSQL, container/process, or integration boundaries.
 ```
 
-Before completion, replace planned verification checkboxes with checked results. An unavailable relevant check may be recorded as `- Not run: <check> — <specific reason>`. A task marked `Human review: required` must move to `review` after verification and is deleted only after the operator accepts it.
+Before review or completion, replace every planned verification checkbox with a checked result or `- Not run: <check> — <specific reason>`. Evidence containing only `Not run` entries requires `Human review: required`, the `review` status, and explicit operator acceptance.
+
+Set `Durable rationale` to `none` when no task-local decision must survive. Otherwise use `moved to agent_docs/<owner>.md` after incorporating the lasting reason beside the current rule. `pending` blocks review and completion; owner paths must exist and cannot point into `agent_docs/tasks/`.
+
+A task marked `Human review: required` must move to `review` after verification and is deleted only after the operator accepts it:
+
+```bash
+node scripts/task-ledger.mjs complete <task> --approved
+```

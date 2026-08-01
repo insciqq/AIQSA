@@ -1,22 +1,28 @@
 #!/usr/bin/env node
 
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { generatedReferenceErrors } from "./generate-doc-reference.mjs";
 import { validateTaskLedger } from "./task-ledger.mjs";
 
-const NESTED_INSTRUCTIONS = [
+const NESTED_AGENT_INSTRUCTIONS = [
   "components/AGENTS.md",
   "lib/server/AGENTS.md",
   "ops/AGENTS.md",
   "prisma/AGENTS.md"
 ];
+const NESTED_CLAUDE_INSTRUCTIONS = NESTED_AGENT_INSTRUCTIONS.map((filename) => (
+  filename.replace(/AGENTS\.md$/u, "CLAUDE.md")
+));
+const ROOT_MARKDOWN = ["AGENTS.md", "CLAUDE.md", "README.md", "CONTRIBUTING.md", "SECURITY.md"];
+const COLOCATED_MARKDOWN = ["ops/nginx/README.md", "ops/systemd/README.md"];
 const REQUIRED_DOCS = [
-  "AGENTS.md",
-  "CLAUDE.md",
-  "README.md",
-  ...NESTED_INSTRUCTIONS,
+  ...ROOT_MARKDOWN,
+  ...NESTED_AGENT_INSTRUCTIONS,
+  ...NESTED_CLAUDE_INSTRUCTIONS,
+  ...COLOCATED_MARKDOWN,
   "agent_docs/AUTONOMOUS_WORKFLOW.md",
   "agent_docs/AI_CONTEXT.md",
   "agent_docs/ARCHITECTURE.md",
@@ -59,10 +65,16 @@ const OBSOLETE_HARNESS_DIRECTORIES = [
   "agent_docs/exec_plans",
   "agent_docs/exec-plans"
 ];
+const OBSOLETE_PUBLIC_DOCS_DIRECTORY = "docs";
 
 function markdownFiles(root) {
   const files = [];
-  for (const filename of ["AGENTS.md", "CLAUDE.md", "README.md", ...NESTED_INSTRUCTIONS]) {
+  for (const filename of [
+    ...ROOT_MARKDOWN,
+    ...NESTED_AGENT_INSTRUCTIONS,
+    ...NESTED_CLAUDE_INSTRUCTIONS,
+    ...COLOCATED_MARKDOWN
+  ]) {
     const target = path.join(root, filename);
     if (existsSync(target)) files.push(target);
   }
@@ -118,22 +130,62 @@ function obsoleteHarnessErrors(root) {
       errors.push(`${relative}: obsolete harness directory; keep unfinished work only in agent_docs/tasks`);
     }
   }
+  if (existsSync(path.join(root, OBSOLETE_PUBLIC_DOCS_DIRECTORY))) {
+    errors.push(`${OBSOLETE_PUBLIC_DOCS_DIRECTORY}: obsolete top-level human-docs directory; keep the operator minimum in README and colocated ops docs`);
+  }
 
   const forbidden = [
     { pattern: /(?:agent_docs\/ADR(?:\/|\b)|\bADR\s+\d{3,}\b)/u, label: "obsolete ADR path or numbered ADR reference" },
     { pattern: /\bactive_tasks\b/u, label: "active_tasks directory" },
     { pattern: /\bdone_tasks\b/u, label: "done_tasks directory" },
     { pattern: /\bexec[_-]plans?\b/u, label: "separate execution-plan directory" },
-    { pattern: /agent_docs\/(?:backlog|archive)(?:\/|\b)/u, label: "separate backlog/archive directory" }
+    { pattern: /agent_docs\/(?:backlog|archive)(?:\/|\b)/u, label: "separate backlog/archive directory" },
+    { pattern: /(?:gitlab\.com|\bGitLab\b)/iu, label: "GitLab publication contract" }
   ];
 
   for (const filename of markdownFiles(root)) {
     const relative = portablePath(path.relative(root, filename));
+    if (relative.startsWith("agent_docs/tasks/") && relative !== "agent_docs/tasks/README.md") continue;
     const body = readFileSync(filename, "utf8");
     for (const { pattern, label } of forbidden) {
       if (pattern.test(body)) errors.push(`${relative}: references obsolete ${label}`);
     }
   }
+  return errors;
+}
+
+function currentSourceReferenceErrors(root) {
+  const errors = [];
+  const scanRoots = ["app", "components", "lib", "ops", "scripts", ".github", "prisma"];
+  const supported = new Set([".cjs", ".js", ".json", ".jsx", ".mjs", ".prisma", ".sh", ".ts", ".tsx", ".yaml", ".yml"]);
+  const excludedFiles = new Set(["scripts/docs-check.mjs", "scripts/release-privacy-check.mjs"]);
+  const patterns = [
+    /agent_docs\/ADR(?:\/|\b)/u,
+    /\bactive_tasks\b/u,
+    /\bdone_tasks\b/u,
+    /\bexec[_-]plans?\b/u,
+    /agent_docs\/(?:backlog|archive)(?:\/|\b)/u,
+    /(?:gitlab\.com|\bGitLab\b)/iu
+  ];
+
+  function walk(directory) {
+    if (!existsSync(directory)) return;
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      const target = path.join(directory, entry.name);
+      const relative = portablePath(path.relative(root, target));
+      if (entry.isDirectory()) {
+        if (relative === "prisma/migrations") continue;
+        walk(target);
+      } else if (entry.isFile() && supported.has(path.extname(entry.name)) && !excludedFiles.has(relative)) {
+        const body = readFileSync(target, "utf8");
+        if (patterns.some((pattern) => pattern.test(body))) {
+          errors.push(`${relative}: references obsolete harness, GitLab, or publication state`);
+        }
+      }
+    }
+  }
+
+  for (const relative of scanRoots) walk(path.join(root, relative));
   return errors;
 }
 
@@ -171,6 +223,35 @@ function envErrors(root) {
   return errors;
 }
 
+function taskPrivacyErrors(root) {
+  const errors = [];
+  const ignorePath = path.join(root, ".gitignore");
+  if (!existsSync(ignorePath)) return ["missing task privacy contract: .gitignore"];
+  const ignoreLines = new Set(readFileSync(ignorePath, "utf8").split(/\r?\n/u).map((line) => line.trim()));
+  if (!ignoreLines.has("/agent_docs/tasks/*.md")) {
+    errors.push(".gitignore: must ignore /agent_docs/tasks/*.md");
+  }
+  if (!ignoreLines.has("!/agent_docs/tasks/README.md")) {
+    errors.push(".gitignore: must keep agent_docs/tasks/README.md trackable");
+  }
+
+  if (existsSync(path.join(root, ".git"))) {
+    const tracked = spawnSync("git", ["ls-files", "--", "agent_docs/tasks/*.md"], {
+      cwd: root,
+      encoding: "utf8"
+    });
+    if (tracked.status !== 0) {
+      errors.push(`task privacy check could not inspect tracked files: ${tracked.stderr.trim() || "git ls-files failed"}`);
+    } else {
+      const instances = tracked.stdout.split(/\r?\n/u).filter(Boolean).filter(
+        (filename) => filename !== "agent_docs/tasks/README.md"
+      );
+      for (const filename of instances) errors.push(`${filename}: public Git must not track task instances`);
+    }
+  }
+  return errors;
+}
+
 function instructionErrors(root) {
   const errors = [];
   for (const [filename, maximum] of [["AGENTS.md", 200], ["CLAUDE.md", 80]]) {
@@ -189,7 +270,7 @@ function instructionErrors(root) {
 
   const rootInstructions = path.join(root, "AGENTS.md");
   const rootBody = existsSync(rootInstructions) ? readFileSync(rootInstructions, "utf8") : "";
-  for (const filename of NESTED_INSTRUCTIONS) {
+  for (const filename of NESTED_AGENT_INSTRUCTIONS) {
     const target = path.join(root, filename);
     if (!existsSync(target)) continue;
     const body = readFileSync(target, "utf8");
@@ -207,6 +288,12 @@ function instructionErrors(root) {
     const combinedBytes = Buffer.byteLength(rootBody) + Buffer.byteLength(body);
     if (combinedLines > 240 || combinedBytes > 10_240) {
       errors.push(`${filename}: root plus nearest instructions exceed the 240-line/10240-byte discovery budget`);
+    }
+  }
+  for (const filename of NESTED_CLAUDE_INSTRUCTIONS) {
+    const target = path.join(root, filename);
+    if (existsSync(target) && readFileSync(target, "utf8").trim() !== "@AGENTS.md") {
+      errors.push(`${filename}: must contain only the scoped-instruction import @AGENTS.md`);
     }
   }
   return errors;
@@ -278,9 +365,11 @@ export function checkDocs(root = process.cwd()) {
   }
   errors.push(...instructionErrors(root));
   errors.push(...obsoleteHarnessErrors(root));
+  errors.push(...currentSourceReferenceErrors(root));
   errors.push(...metadataErrors(root));
   errors.push(...localLinkErrors(root));
   errors.push(...validateTaskLedger(root).errors);
+  errors.push(...taskPrivacyErrors(root));
   errors.push(...envErrors(root));
   errors.push(...generatedReferenceErrors(root));
   return errors;

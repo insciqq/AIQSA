@@ -122,6 +122,8 @@ Storage remains private. MinIO has no anonymous access, filesystem fallback is s
 
 Repository-local `.aiqsa/` state is excluded from Git and Docker build context because it may contain user objects or other private runtime data. Do not copy it into images or caches.
 
+The repository uses one public GitHub `origin`. Open task instances are ignored local state: only `agent_docs/tasks/README.md` and the separate task template are tracked. Release refs must pass the full-ancestry privacy check so a task committed and later deleted still blocks publication. Docker build context excludes `agent_docs/` plus every scoped `AGENTS.md` and `CLAUDE.md`; these files have no build-time or runtime authority. Ref rewrites, force pushes, and release tags require explicit operator authorization and fresh target/ref inspection.
+
 ## Provider Catalog Trust
 
 Authenticated provider model catalogs are untrusted availability evidence, not executable configuration authority. Quick setup normalizes only the provider-specific identifier wrapper and intersects the bounded response with the current versioned code-owned candidate set. It never persists an arbitrary returned model id, guesses capabilities from its name, or treats image, audio, embedding, media, or unknown rows as chat deployments. Every candidate is canonical-preflighted before a multi-model transaction writes any connection, credential, model, check, or grant; a collision or changed fence fails without partial adoption. Provider credentials remain write-only and catalog failures expose only stable value-free errors.

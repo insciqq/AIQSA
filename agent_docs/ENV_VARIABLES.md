@@ -6,7 +6,7 @@ Verified against: 4f51fdd (2026-08-01)
 
 ## Ownership And Naming
 
-This document owns the complete runtime environment contract. User-facing setup and examples live in `docs/configuration.md`; `.env.example` contains only normal-install settings and non-secret placeholders.
+This document owns the complete runtime environment contract. `README.md` contains the minimal operator setup and safety flow; `.env.example` contains normal-install settings, comments, and non-secret placeholders.
 
 AIQSA has one operator configuration regardless of where it runs. There is no named local/production environment tier and no duplicated setting family. The same canonical variables configure a loopback laptop install, a private server, or an HTTPS installation behind a proxy. Framework/container variables such as `NODE_ENV`, `DATABASE_URL`, `S3_*`, `POSTGRES_*`, and `MINIO_*` are internal wiring unless a command runs outside Compose.
 
@@ -196,7 +196,7 @@ The dev Compose service hardcodes loopback publication and does not inject provi
 ## Rules
 
 - Do not commit `.env` or any real secret.
-- Keep `.env.example`, `docs/configuration.md`, Compose passthrough, and this inventory synchronized.
+- Keep `.env.example`, the minimal `README.md` operator flow, Compose passthrough, and this inventory synchronized.
 - Do not add environment-tier prefixes or compatibility aliases; migration is a clean canonical cutover.
 - Do not expose provider/OAuth/SMTP/storage keys through client bundles.
 - Do not point `docker-compose.dev.yml` at installation data.

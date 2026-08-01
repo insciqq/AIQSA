@@ -4,7 +4,7 @@ Thanks for helping improve AIQSA. For a substantial product or architecture chan
 
 ## Development setup
 
-AIQSA uses a separate disposable development stack. Follow [Development](docs/development.md) and always name `docker-compose.dev.yml` for development or test commands; the default Compose file is the persistent operator installation.
+AIQSA uses a separate disposable development stack. Follow the development section in [README.md](README.md#development) and always name `docker-compose.dev.yml` for container development or test commands; the default Compose file is the persistent operator installation. Deterministic host checks use `npm run check:hermetic`.
 
 Before opening a pull request:
 

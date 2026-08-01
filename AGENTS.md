@@ -10,12 +10,13 @@ If the operator says "start implementation", "begin", "go ahead", "начина�
 
 1. Follow the reading map for the requested scope.
 2. Inspect repository state.
-3. Resume the single `in_progress` task, or select the first unblocked `ready` task when no scope was named.
-4. Mark the selected task `in_progress` before implementation.
-5. Implement the smallest complete vertical slice; the root/integrating agent owns task state and integration.
-6. Run proportional checks and update the living documents that describe changed behavior.
-7. For a task with required human review, move it to `review` and report the decision needed. Otherwise complete it; completion deletes the task file and clears its references from remaining tasks.
-8. Continue only when broad implementation was requested and the next task is concrete and unblocked.
+3. Execute a concrete change that can finish in the current session directly, without ceremonial task state.
+4. For broad permission, queued work, dependency-bearing work, or work that may survive the session, resume the single `in_progress` task or select the first unblocked `ready` task when no scope was named.
+5. Mark a selected queued task `in_progress` before implementation.
+6. Implement the smallest complete vertical slice; the root/integrating agent owns task state and integration.
+7. Run proportional checks and update the living documents that describe changed behavior.
+8. For a task with required human review, move it to `review` and report the decision needed. Otherwise complete it; completion deletes the local task file and clears its references from remaining tasks.
+9. Continue only when broad implementation was requested and the next task is concrete and unblocked.
 
 Stop only for missing secrets, destructive operations not already requested, an unavailable external service that cannot be mocked, or a real product decision not covered by current contracts. Provider-smoke permission is defined in `agent_docs/CRITICAL_INVARIANTS.md`; dependency-security check permission is defined in `agent_docs/SECURITY.md`.
 
@@ -28,6 +29,8 @@ Do not preload the whole harness. Start with:
 3. `agent_docs/PRODUCT_PRINCIPLES.md` only when product direction or prioritization is part of the scope.
 
 Then read only what the scope requires:
+
+- Before changing a scoped directory, read the nearest `AGENTS.md`; Claude-compatible scopes import it through the adjacent `CLAUDE.md`.
 
 - For autonomous work selection, read `agent_docs/AUTONOMOUS_WORKFLOW.md`, `agent_docs/tasks/README.md`, and the selected task.
 - When the operator left a product or implementation choice open, read `agent_docs/DECISION_DEFAULTS.md`.
@@ -63,7 +66,7 @@ If this is not a Git repository, record that in the final response and continue 
 
 ## Repository Publication
 
-The maintainer checkout keeps `origin` as the private GitLab development remote and `github` as the GitHub release remote. Normal development pushes go only to `origin`. Do not change GitHub visibility, mirror the private repository, or push release refs to `github` without an explicit operator request and fresh release-readiness and privacy checks.
+`origin` is the public GitHub repository used for development and releases. Open task instances are local ignored state and must never be staged, committed, included in Docker context/images, or made reachable from a public ref. Normal agents do not push commits, rewrite refs, or create release tags without an explicit operator request; release publication additionally requires fresh release-readiness and repository-privacy checks.
 
 ## Working Rules
 
@@ -71,7 +74,7 @@ The maintainer checkout keeps `origin` as the private GitLab development remote 
 - Use existing code and current local contracts before inventing scope or another abstraction.
 - Use the fast hermetic lane for deterministic static/unit work and `docker-compose.dev.yml` only for required container parity or integration. Never run destructive development or test workflows against the default persistent installation.
 - Keep one task file as the specification, execution plan, progress log, and task-local decision log. Do not create a second plan document for the same work.
-- Keep only unfinished tasks in `agent_docs/tasks/`. Do not create completion journals or decision-history directories.
+- Keep only local unfinished tasks in `agent_docs/tasks/`. Do not force-add them or create completion journals or decision-history directories.
 - Update `agent_docs` whenever architecture, environment, testing, workflow, security, or product behavior changes.
 
 ## Before Final Response

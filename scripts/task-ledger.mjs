@@ -5,9 +5,11 @@ import {
   mkdirSync,
   readFileSync,
   readdirSync,
+  statSync,
   unlinkSync,
   writeFileSync
 } from "node:fs";
+import { spawnSync } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -17,6 +19,7 @@ const TASK_STEM = /^(\d{17})-([a-z0-9]+(?:-[a-z0-9]+)*)$/;
 const TASK_ID = /^\d{17}$/;
 const ALLOWED_STATUSES = new Set(["backlog", "ready", "in_progress", "blocked", "review"]);
 const ALLOWED_HUMAN_REVIEW = new Set(["optional", "required"]);
+const DURABLE_RATIONALE_PREFIX = "moved to ";
 const REQUIRED_SECTIONS = [
   "Goal",
   "Context",
@@ -102,6 +105,19 @@ function formatTimestampId(date) {
   ].join("");
 }
 
+function isGitRepository(root) {
+  return existsSync(path.join(root, ".git"));
+}
+
+function isIgnoredTask(root, relativePath) {
+  if (!isGitRepository(root)) return true;
+  const result = spawnSync("git", ["check-ignore", "-q", "--", portable(relativePath)], {
+    cwd: root,
+    encoding: "utf8"
+  });
+  return result.status === 0;
+}
+
 export function parseDependencies(value) {
   if (value === "none") return [];
   if (!value) throw new Error("missing Depends on field");
@@ -143,6 +159,7 @@ function discoverTasks(root) {
       blockedBy: field(body, "Blocked by"),
       body,
       dependencies: null,
+      durableRationale: field(body, "Durable rationale"),
       filename,
       humanReview: field(body, "Human review"),
       id: match[1],
@@ -228,19 +245,69 @@ function readinessErrors(record) {
   }
 
   const verification = section(record.body, "Verification") ?? "";
-  if (!/-\s*\[[ xX]\]\s+\S/mu.test(verification)) {
-    errors.push(`${record.relativePath}: ## Verification needs at least one concrete checkbox check`);
+  const evidence = verificationEvidence(record.body);
+  if (evidence.planned + evidence.passed + evidence.unavailable === 0) {
+    errors.push(`${record.relativePath}: ## Verification needs at least one concrete planned or unavailable check`);
   }
+  errors.push(...evidence.errors.map((error) => `${record.relativePath}: ${error}`));
   return errors;
 }
 
-function hasVerificationEvidence(body) {
+function verificationEvidence(body) {
   const verification = section(body, "Verification") ?? "";
-  if (!verification || READINESS_PLACEHOLDERS.some((placeholder) => verification.includes(placeholder))) return false;
-  if (/-\s*\[\s\]\s+/mu.test(verification)) return false;
-  const passed = /-\s*\[[xX]\]\s+\S/mu.test(verification);
-  const unavailable = /^-\s*(?:Not run|Unavailable):\s+\S.+$/mu.test(verification);
-  return passed || unavailable;
+  const planned = [...verification.matchAll(/^-\s*\[\s\]\s+\S.*$/gmu)].length;
+  const passed = [...verification.matchAll(/^-\s*\[[xX]\]\s+\S.*$/gmu)].length;
+  const unavailableLines = [...verification.matchAll(/^-\s*Not run:\s*(.*)$/gmu)];
+  const validUnavailable = unavailableLines.filter((match) => /^\S.*\s+—\s+\S.*$/u.test(match[1].trim()));
+  const errors = [];
+  if (unavailableLines.length !== validUnavailable.length) {
+    errors.push("every Not run entry must use `Not run: <check> — <specific reason>`");
+  }
+  return {
+    complete: planned === 0
+      && passed + validUnavailable.length > 0
+      && errors.length === 0
+      && !READINESS_PLACEHOLDERS.some((placeholder) => verification.includes(placeholder)),
+    errors,
+    passed,
+    planned,
+    unavailable: validUnavailable.length,
+    unavailableOnly: passed === 0 && validUnavailable.length > 0
+  };
+}
+
+function durableRationaleErrors(record, root, { requireSettled = false } = {}) {
+  const value = record.durableRationale;
+  if (!value) return [`${record.relativePath}: missing Durable rationale field`];
+  if (value === "pending") {
+    return requireSettled ? [`${record.relativePath}: Durable rationale must be settled before review or completion`] : [];
+  }
+  if (value === "none") return [];
+  if (!value.startsWith(DURABLE_RATIONALE_PREFIX)) {
+    return [`${record.relativePath}: Durable rationale must be pending, none, or moved to <agent_docs owner>`];
+  }
+
+  const owners = value.slice(DURABLE_RATIONALE_PREFIX.length).split(",").map((owner) => owner.trim()).filter(Boolean);
+  if (!owners.length) return [`${record.relativePath}: Durable rationale moved-to value needs an owner path`];
+  const errors = [];
+  for (const owner of owners) {
+    const normalized = portable(owner);
+    if (
+      path.isAbsolute(owner)
+      || normalized.includes("../")
+      || !normalized.startsWith("agent_docs/")
+      || normalized === "agent_docs/tasks"
+      || normalized.startsWith("agent_docs/tasks/")
+    ) {
+      errors.push(`${record.relativePath}: durable rationale owner must be an existing file outside agent_docs/tasks: ${owner}`);
+      continue;
+    }
+    const ownerPath = path.join(root, owner);
+    if (!existsSync(ownerPath) || !statSync(ownerPath).isFile()) {
+      errors.push(`${record.relativePath}: durable rationale owner does not exist: ${owner}`);
+    }
+  }
+  return errors;
 }
 
 export function validateTaskLedger(root = process.cwd()) {
@@ -258,6 +325,9 @@ export function validateTaskLedger(root = process.cwd()) {
 
   let inProgress = 0;
   for (const record of ledger.tasks.records) {
+    if (!isIgnoredTask(ledger.root, record.relativePath)) {
+      errors.push(`${record.relativePath}: task instances must be ignored and must not be tracked by public Git`);
+    }
     if (!validTimestampId(record.id)) {
       errors.push(`${record.relativePath}: task id is not a valid local timestamp`);
     }
@@ -296,11 +366,18 @@ export function validateTaskLedger(root = process.cwd()) {
     if (record.status === "in_progress") inProgress += 1;
 
     errors.push(...contentErrors(record));
+    errors.push(...durableRationaleErrors(record, ledger.root, { requireSettled: record.status === "review" }));
     if (["ready", "in_progress", "blocked", "review"].includes(record.status)) {
       errors.push(...readinessErrors(record));
     }
-    if (record.status === "review" && !hasVerificationEvidence(record.body)) {
-      errors.push(`${record.relativePath}: review task needs completed verification evidence`);
+    if (record.status === "review") {
+      const evidence = verificationEvidence(record.body);
+      if (record.humanReview !== "required") {
+        errors.push(`${record.relativePath}: review status requires Human review: required`);
+      }
+      if (!evidence.complete) {
+        errors.push(`${record.relativePath}: review task needs completed verification evidence`);
+      }
     }
   }
 
@@ -355,7 +432,12 @@ export function createTask({ root = process.cwd(), slug, summary, date = new Dat
   const stem = `${id}-${slug}`;
   const destination = path.join(ledger.tasks.directory, `${stem}.md`);
   mkdirSync(ledger.tasks.directory, { recursive: true });
-  writeFileSync(destination, `# ${stem}\n\nStatus: backlog\nDepends on: none\nHuman review: optional\nBlocked by: none\n\n## Goal\n\n${summary.trim()}\n\n## Context\n\n- Link the current owner documents and relevant code paths before promotion.\n\n## Scope\n\n- Define the implementation slice.\n\n## Out Of Scope\n\n- Unrelated product changes.\n\n## Acceptance Criteria\n\n- The goal is observable and verified.\n\n## Plan\n\n- [ ] Replace this scaffold with concrete implementation milestones.\n\n## Progress\n\n- Not started.\n\n## Decisions\n\n- None yet.\n\n## Verification\n\n- [ ] Replace this scaffold with exact focused checks.\n`, "utf8");
+  writeFileSync(destination, `# ${stem}\n\nStatus: backlog\nDepends on: none\nHuman review: optional\nBlocked by: none\nDurable rationale: pending\n\n## Goal\n\n${summary.trim()}\n\n## Context\n\n- Link the current owner documents and relevant code paths before promotion.\n\n## Scope\n\n- Define the implementation slice.\n\n## Out Of Scope\n\n- Unrelated product changes.\n\n## Acceptance Criteria\n\n- The goal is observable and verified.\n\n## Plan\n\n- [ ] Replace this scaffold with concrete implementation milestones.\n\n## Progress\n\n- Not started.\n\n## Decisions\n\n- None yet.\n\n## Verification\n\n- [ ] Replace this scaffold with exact focused checks.\n`, "utf8");
+  const relativePath = portable(path.relative(ledger.root, destination));
+  if (!isIgnoredTask(ledger.root, relativePath)) {
+    unlinkSync(destination);
+    throw new Error(`${relativePath} must be ignored before local task creation`);
+  }
   return stem;
 }
 
@@ -403,9 +485,17 @@ export function reviewTask({ root = process.cwd(), reference }) {
   const ledger = assertValid(root);
   const record = resolveTask(ledger, reference);
   if (record.status !== "in_progress") throw new Error(`${record.stem} is ${record.status}, not in_progress`);
+  if (record.humanReview !== "required") {
+    throw new Error(`${record.stem} uses Human review: optional and should complete directly`);
+  }
   noOpenDependencies(record);
-  if (!hasVerificationEvidence(record.body)) {
-    throw new Error("Verification must contain checked results and no unchecked checks before review");
+  const evidence = verificationEvidence(record.body);
+  if (!evidence.complete) {
+    throw new Error("Verification must contain checked results or concrete unavailable evidence and no unchecked checks before review");
+  }
+  const rationale = durableRationaleErrors(record, ledger.root, { requireSettled: true });
+  if (rationale.length) {
+    throw new Error(rationale.join("\n"));
   }
   writeFileSync(record.path, replaceField(record.body, "Status", "review"), "utf8");
   return record.stem;
@@ -418,7 +508,7 @@ function removeDependency(body, dependency) {
   return replaceField(body, "Depends on", remaining.length ? remaining.join(", ") : "none");
 }
 
-export function completeTask({ root = process.cwd(), reference }) {
+export function completeTask({ root = process.cwd(), reference, approved = false }) {
   const ledger = assertValid(root);
   const record = resolveTask(ledger, reference);
   if (!["in_progress", "review"].includes(record.status)) {
@@ -427,9 +517,20 @@ export function completeTask({ root = process.cwd(), reference }) {
   if (record.humanReview === "required" && record.status !== "review") {
     throw new Error(`${record.stem} requires human review before completion`);
   }
+  if (record.humanReview === "required" && !approved) {
+    throw new Error(`${record.stem} requires explicit operator approval; rerun complete with --approved after acceptance`);
+  }
   noOpenDependencies(record);
-  if (!hasVerificationEvidence(record.body)) {
-    throw new Error("Verification must contain checked results and no unchecked checks before completion");
+  const evidence = verificationEvidence(record.body);
+  if (!evidence.complete) {
+    throw new Error("Verification must contain checked results or concrete unavailable evidence and no unchecked checks before completion");
+  }
+  if (evidence.unavailableOnly && (record.humanReview !== "required" || record.status !== "review" || !approved)) {
+    throw new Error("Unavailable-only verification requires required human review, review status, and --approved");
+  }
+  const rationale = durableRationaleErrors(record, ledger.root, { requireSettled: true });
+  if (rationale.length) {
+    throw new Error(rationale.join("\n"));
   }
 
   let cleared = 0;
@@ -463,6 +564,13 @@ function takeOption(arguments_, name) {
   return value;
 }
 
+function takeFlag(arguments_, name) {
+  const index = arguments_.indexOf(name);
+  if (index < 0) return false;
+  arguments_.splice(index, 1);
+  return true;
+}
+
 function oneReference(arguments_, command) {
   const reference = arguments_.shift();
   if (!reference || arguments_.length) {
@@ -491,12 +599,16 @@ export function runTaskCli(argv = process.argv.slice(2)) {
     const reference = oneReference(arguments_, command);
     return `Blocked ${blockTask({ root, reference, reason })}.`;
   }
-  if (["promote", "start", "review", "complete"].includes(command)) {
+  if (["promote", "start", "review"].includes(command)) {
     const reference = oneReference(arguments_, command);
     if (command === "promote") return `Promoted ${promoteTask({ root, reference })} to ready.`;
     if (command === "start") return `Started ${startTask({ root, reference })}.`;
-    if (command === "review") return `Moved ${reviewTask({ root, reference })} to review.`;
-    const result = completeTask({ root, reference });
+    return `Moved ${reviewTask({ root, reference })} to review.`;
+  }
+  if (command === "complete") {
+    const approved = takeFlag(arguments_, "--approved");
+    const reference = oneReference(arguments_, command);
+    const result = completeTask({ root, reference, approved });
     return `Completed and deleted ${result.stem}; cleared ${result.cleared} dependency reference(s).`;
   }
   throw new Error("usage: task-ledger <new|promote|start|block|review|complete|list> ...");

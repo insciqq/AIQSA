@@ -22,6 +22,11 @@ jobs:
     steps:
       - name: Check out release tag
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Verify public repository privacy
+        run: node scripts/release-privacy-check.mjs --ref HEAD --require-origin
 
       - name: Validate release version
         id: release

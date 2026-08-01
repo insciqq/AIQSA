@@ -38,7 +38,7 @@ This is the mandatory short safety read. Product direction belongs in `PRODUCT_P
 ## Repository And Verification Safety
 
 1. Never run destructive development, test, migration, prune, or browser workflows against the default persistent installation or an operator-designated data set. Only the explicit disposable development topology may be reset or polluted.
-2. Completed task files are deleted rather than archived. Shared evidence belongs in ordinary commits, tests, living documents, and release notes; unfinished work belongs only in `agent_docs/tasks/`.
+2. Completed task files are deleted rather than archived. Open task instances are ignored local state and must never be forced into public Git, release source trees, or images. Shared evidence belongs in ordinary commits, tests, living documents, and release notes; unfinished work belongs only in `agent_docs/tasks/`.
 3. Real provider smokes are allowed only with current operator-provided keys, the smallest scoped context/output, sanitized evidence, and the provider-specific permission in `TESTING.md`; deterministic fakes remain the default.
 4. External dependency-security checks follow `SECURITY.md`; do not apply breaking or destructive remediation merely because an automated command proposes it.
 5. Large-document verification markers are manual review claims. Checks may report a missing or stale owner/scope/commit/date marker but must never refresh one automatically.
