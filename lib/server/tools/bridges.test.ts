@@ -218,8 +218,8 @@ describe("provider tool bridges", () => {
     });
   });
 
-  it("fails closed when a provider completes a tool call with malformed arguments", () => {
-    expect(() =>
+  it("marks malformed provider arguments for a bounded zero-call tool error", () => {
+    expect(
       openRouterChatToolBridge.parseToolCalls({
         choices: [
           {
@@ -234,7 +234,13 @@ describe("provider tool bridges", () => {
           }
         ]
       })
-    ).toThrow("provider_tool_arguments_invalid");
+    ).toEqual([
+      expect.objectContaining({
+        arguments: { __aiqsa_invalid_provider_tool_arguments__: true },
+        id: "call-bad",
+        name: "todoist__create_task"
+      })
+    ]);
   });
 
   it("maps Anthropic tool_use and tool_result blocks", () => {

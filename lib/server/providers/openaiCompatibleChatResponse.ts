@@ -1,6 +1,9 @@
 import type { ModelRunSseEvent, ModelRunUsage } from "../../domain/modelRunEvents";
 import { normalizeTokenUsage } from "../../domain/usage";
-import type { ModelToolCall } from "../tools/types";
+import {
+  invalidProviderToolArguments,
+  type ModelToolCall
+} from "../tools/types";
 import {
   providerStreamIdleTimeoutMs
 } from "./network";
@@ -104,7 +107,7 @@ function parseToolArguments(value: unknown): Record<string, unknown> {
     }
   }
 
-  throw new Error("provider_tool_arguments_invalid");
+  return invalidProviderToolArguments();
 }
 
 function parseToolCalls(message: Record<string, unknown> | null): ModelToolCall[] {

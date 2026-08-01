@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { validateSearchToolArguments } from "../search/query";
 import type { ProviderSearchRequest } from "./types";
 import type { OpenRouterChatClient } from "./openRouterChatTransport";
 import {
@@ -7,44 +8,11 @@ import {
 } from "./openRouterPerplexitySearch";
 
 function searchRequest(overrides: Partial<ProviderSearchRequest> = {}): ProviderSearchRequest {
+  const validated = validateSearchToolArguments({ query: "Find one concise fact." });
+  if (!validated.ok) throw new Error(validated.code);
   return {
-    answerModelId: "anthropic/claude-opus-4.8",
-    answerProvider: "openrouter",
-    attachmentIds: [],
-    attachments: [],
-    chatId: "chat-1",
-    content: {
-      blocks: [{ text: "Find one concise fact.", type: "text" }]
-    },
-    modelCapabilities: {
-      nativePdfInput: false,
-      nativeSearch: false,
-      pdf: true,
-      reasoning: true,
-      vision: true
-    },
-    modelId: "perplexity/sonar-pro-search",
-    params: {
-      max_output_tokens: 1024,
-      provider: {
-        allowFallbacks: true,
-        dataCollection: "deny",
-        order: ["perplexity"],
-        requireParameters: false,
-        sort: "throughput"
-      },
-      reasoning: {
-        exclude: true
-      },
-      temperature: 0
-    },
-    prompt: {
-      developer: "Prefer citations.",
-      presetId: "prompt-1",
-      system: "You are precise."
-    },
-    provider: "openrouter",
-    searchModelId: "perplexity/sonar-pro-search",
+    correlationId: "search-call-1",
+    query: validated.query,
     searchPolicy: {
       controls: {
         maxOutputTokens: {
@@ -78,7 +46,6 @@ function searchRequest(overrides: Partial<ProviderSearchRequest> = {}): Provider
       provider: "openrouter",
       strategyId: "perplexity-tool-search"
     },
-    searchStrategy: "perplexity-tool-search",
     strategyId: "perplexity-tool-search",
     ...overrides
   };
@@ -120,37 +87,10 @@ describe("OpenRouter Perplexity search adapter", () => {
         ]
       })
     );
-    const longText = `${"x".repeat(12000)}TAIL`;
     const adapter = createOpenRouterPerplexitySearchAdapter({
-      client: { createChatCompletion },
-      maxAttachmentTextChars: 3
+      client: { createChatCompletion }
     });
-    const request = searchRequest({
-      attachmentIds: ["doc-1", "image-1"],
-      attachments: [
-        {
-          byteSize: longText.length,
-          extractedText: longText,
-          fileName: "research.txt",
-          id: "doc-1",
-          kind: "document",
-          metadata: {},
-          mimeType: "text/plain",
-          status: "ready"
-        },
-        {
-          byteSize: 20,
-          dataUrl: "data:image/png;base64,PRIVATE_SEARCH_IMAGE",
-          extractedText: null,
-          fileName: "ignored.png",
-          id: "image-1",
-          kind: "image",
-          metadata: {},
-          mimeType: "image/png",
-          status: "ready"
-        }
-      ]
-    });
+    const request = searchRequest();
 
     const result = await adapter.search(request);
 
@@ -159,8 +99,6 @@ describe("OpenRouter Perplexity search adapter", () => {
     expect(body).toMatchObject({
       max_completion_tokens: 1024,
       metadata: {
-        answer_model: "anthropic/claude-opus-4.8",
-        answer_provider: "openrouter",
         app: "aiqsa",
         stage: "tool_search",
         strategy: "perplexity-tool-search"
@@ -174,9 +112,7 @@ describe("OpenRouter Perplexity search adapter", () => {
       stream: false
     });
     expect(body).not.toHaveProperty("cache_control");
-    expect(JSON.stringify(body)).toContain(`${"x".repeat(12000)}\\n[truncated 4 chars]`);
-    expect(JSON.stringify(body)).not.toContain("TAIL");
-    expect(JSON.stringify(body)).not.toContain("PRIVATE_SEARCH_IMAGE");
+    expect(JSON.stringify(body)).toContain("Find one concise fact.");
     expect(result).toMatchObject({
       finalProviderResponsePreview: {
         citations: [
@@ -196,10 +132,12 @@ describe("OpenRouter Perplexity search adapter", () => {
       requestPreview: {
         body: {
           model: "perplexity/sonar-pro-search",
+          query_characters: 22,
+          strategy: "perplexity-tool-search",
           stream: false
         },
         provider: "openrouter",
-        redactions: ["image_data_url"],
+        redactions: ["search_query"],
         stage: "tool_search"
       },
       usage: {
@@ -442,12 +380,15 @@ describe("OpenRouter Perplexity search adapter", () => {
     expect(result.requestPreview).toMatchObject({
       body: {
         model: "perplexity/sonar-pro-search",
+        query_characters: 22,
+        strategy: "perplexity-tool-search",
         stream: false
       },
       provider: "openrouter",
+      redactions: ["search_query"],
       stage: "tool_search"
     });
-    expect(result.requestPreview).not.toHaveProperty("redactions");
+    expect(JSON.stringify(result.requestPreview)).not.toContain("Find one concise fact.");
     expect(result.usage).toEqual({
       cachedInputTokens: 0,
       cacheWriteInputTokens: 0,

@@ -1189,6 +1189,138 @@ describe("run preparation", () => {
     ]);
   });
 
+  it("rejects attachment-bearing client Search before attachment loading", async () => {
+    const base = compatibleAdmissionPlan("openai_responses_compatible");
+    const optionId = "perplexity-tool-search";
+    const plan: ProviderAdmissionPlan = {
+      ...base,
+      requestedSearchPlan: { mode: "all_selected", optionIds: [optionId] },
+      requestedSearchStrategyId: optionId,
+      searches: [{
+        bindingKey: `search:${optionId}`,
+        configuration: {
+          adapterKind: "provider_model_client",
+          config: {
+            maxResults: 8,
+            modelCapabilities: { ...baseCapabilities, toolCalling: true },
+            modelDefaultParams: {},
+            queryMaxCharacters: 500,
+            timeoutMs: 15_000
+          },
+          credentialMode: "provider_model",
+          executionModes: ["all_selected", "model_choice"],
+          kind: "perplexity_tool_search",
+          modelId: "perplexity/sonar-pro-search",
+          protocol: "openrouter_perplexity_chat",
+          provider: "openrouter",
+          providerModelId: "technical-perplexity",
+          revisionId: "revision-perplexity",
+          searchStrategyRowId: "integration-perplexity",
+          strategyId: optionId
+        },
+        integrationId: "integration-perplexity",
+        optionId,
+        ordinal: 0,
+        revisionId: "revision-perplexity",
+        role: base.answer
+      }]
+    };
+    const harness = createHarness();
+    const result = await prepareRun(
+      {
+        ...harness.deps,
+        allowFakeProvider: false,
+        providerAdmission: { async load() { return plan; } }
+      },
+      sendInput(successBody({
+        content: {
+          blocks: [
+            { text: "Question with private evidence", type: "text" },
+            { attachmentId: "ATTACHMENT_ID_CANARY", type: "attachment" }
+          ]
+        },
+        modelId: plan.selection.providerModelId,
+        provider: plan.selection.providerConnectionId,
+        searchPlan: { mode: "all_selected", optionIds: [optionId] }
+      }))
+    );
+
+    expect(result).toEqual({
+      code: "client_search_with_attachments_not_supported",
+      message: "Client Search cannot be combined with attachments without separate disclosure consent.",
+      ok: false,
+      status: 400
+    });
+    expect(harness.attachmentLoads).toEqual([]);
+  });
+
+  it("keeps provider-hosted native Search available with attachments", async () => {
+    const optionId = "openai-native-web-search";
+    const base = compatibleAdmissionPlan("openai_responses_compatible", {
+      nativeSearch: true,
+      searchStrategyId: optionId
+    });
+    const plan: ProviderAdmissionPlan = {
+      ...base,
+      requestedSearchPlan: { mode: "model_choice", optionIds: [optionId] },
+      searches: [{
+        bindingKey: null,
+        configuration: {
+          adapterKind: "answer_provider_hosted",
+          config: { maxResults: 8, queryMaxCharacters: 500, timeoutMs: 15_000 },
+          credentialMode: "answer_provider",
+          executionModes: ["model_choice"],
+          kind: "openai_native_web_search",
+          modelId: null,
+          protocol: "openai_responses_web_search",
+          provider: "openai_compatible",
+          providerModelId: null,
+          revisionId: "revision-hosted",
+          searchStrategyRowId: "integration-hosted",
+          strategyId: optionId
+        },
+        integrationId: "integration-hosted",
+        optionId,
+        ordinal: 0,
+        revisionId: "revision-hosted"
+      }]
+    };
+    const harness = createHarness({
+      attachments: [runAttachment({
+        id: "pdf-1",
+        kind: "pdf",
+        mimeType: "application/pdf",
+        storageKey: "private/pdf-1"
+      })]
+    });
+    const result = await prepareRun(
+      {
+        ...harness.deps,
+        allowFakeProvider: false,
+        providerAdmission: { async load() { return plan; } }
+      },
+      sendInput(successBody({
+        content: {
+          blocks: [
+            { text: "Question with a PDF", type: "text" },
+            { attachmentId: "pdf-1", type: "attachment" }
+          ]
+        },
+        modelId: plan.selection.providerModelId,
+        provider: plan.selection.providerConnectionId,
+        searchPlan: { mode: "model_choice", optionIds: [optionId] }
+      }))
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.code);
+    const prepared = materializePreparedRunData(result.prepared);
+    expect(prepared.normalizedRequest.searchStrategy).toBe(optionId);
+    expect(prepared.providerRequest.attachments).toEqual([
+      expect.objectContaining({ id: "pdf-1" })
+    ]);
+  });
+
   it("keeps the first selected option as the legacy default mirror in a mixed hosted plan", async () => {
     const base = compatibleAdmissionPlan("openai_responses_compatible", {
       nativeSearch: true

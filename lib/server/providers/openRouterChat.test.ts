@@ -1,6 +1,7 @@
 import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
 import { describe, expect, it, vi } from "vitest";
 import { perplexityWebSearchTool } from "../tools/perplexitySearch";
+import { validateSearchToolArguments } from "../search/query";
 import * as openRouterFacade from "./openRouterChat";
 import {
   buildOpenRouterChatRequest,
@@ -64,13 +65,11 @@ function request(overrides: Partial<ProviderRunRequest> = {}): ProviderRunReques
 }
 
 function searchRequest(overrides: Partial<ProviderSearchRequest> = {}): ProviderSearchRequest {
+  const validated = validateSearchToolArguments({ query: "Find one concise fact." });
+  if (!validated.ok) throw new Error(validated.code);
   return {
-    ...request(),
-    answerModelId: "anthropic/claude-opus-4.8",
-    answerProvider: "openrouter",
-    modelId: "perplexity/sonar-pro-search",
-    provider: "openrouter",
-    searchModelId: "perplexity/sonar-pro-search",
+    correlationId: "search-call-1",
+    query: validated.query,
     searchPolicy: {
       controls: {
         maxOutputTokens: {

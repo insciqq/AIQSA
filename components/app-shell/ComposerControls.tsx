@@ -107,6 +107,7 @@ export function ComposerControls({
   currentParameterControls,
   currentPrompt,
   disabled = false,
+  hasAttachments = false,
   maxOutputTokens,
   onBackgroundModeChange,
   onMaxOutputTokensChange,
@@ -157,6 +158,7 @@ export function ComposerControls({
   currentParameterControls: ModelParameterControls;
   currentPrompt: PromptPreset | null;
   disabled?: boolean;
+  hasAttachments?: boolean;
   maxOutputTokens: string;
   onBackgroundModeChange(value: boolean): void;
   onMaxOutputTokensChange(value: string): void;
@@ -197,9 +199,28 @@ export function ComposerControls({
   temperature: string;
   usageStats?: ComposerUsageStats | null;
 }) {
-  const resolvedCompatibleSearchOptionIds = compatibleSearchOptionIds ??
+  const modelCompatibleSearchOptionIds = compatibleSearchOptionIds ??
     currentModel?.searchStrategyIds.filter((strategyId) => strategyId !== "search-disabled") ??
     searchOptions.filter((strategy) => strategy.kind !== "none").map((strategy) => strategy.strategyId);
+  const attachmentBlockedSearchOptionIds = hasAttachments
+    ? searchOptions
+        .filter((strategy) =>
+          strategy.adapterKind === "provider_model_client" ||
+          strategy.kind === "perplexity_tool_search" ||
+          strategy.kind === "provider_model_web_search"
+        )
+        .map((strategy) => strategy.strategyId)
+    : [];
+  const attachmentBlockedSearchOptionIdSet = new Set(attachmentBlockedSearchOptionIds);
+  const resolvedCompatibleSearchOptionIds = modelCompatibleSearchOptionIds.filter(
+    (optionId) => !attachmentBlockedSearchOptionIdSet.has(optionId)
+  );
+  const attachmentUnavailableReasons = Object.fromEntries(
+    attachmentBlockedSearchOptionIds.map((optionId) => [
+      optionId,
+      "Client Search is unavailable while this message has attachments"
+    ])
+  );
   const runSetupTriggerRef = useRef<HTMLButtonElement>(null);
   const [inlineModelPickerOpen, setInlineModelPickerOpen] = useState(false);
   const [setupModelPickerOpen, setSetupModelPickerOpen] = useState(false);
@@ -382,6 +403,7 @@ export function ComposerControls({
           options={searchOptions}
           selectedOptionIds={selectedSearchOptionIds}
           preferenceSource={searchPreferenceSource}
+          unavailableReasons={attachmentUnavailableReasons}
         />
 
         <button
@@ -538,6 +560,7 @@ export function ComposerControls({
                     selectedOptionIds={selectedSearchOptionIds}
                     preferenceSource={searchPreferenceSource}
                     setup
+                    unavailableReasons={attachmentUnavailableReasons}
                   />
                 </div>
                 <div
@@ -565,7 +588,9 @@ export function ComposerControls({
                             <span className="block break-words font-medium">{strategy.displayName}</span>
                             <span className="mt-0.5 block text-[11px] leading-4 text-ink-muted">
                               {strategy.privacy === "query_only"
-                                ? "Generated query only"
+                                ? attachmentBlockedSearchOptionIdSet.has(strategy.strategyId)
+                                  ? "Generated query only · unavailable with attachments"
+                                  : "Generated query only"
                                 : "Inside answer-provider context"}
                               {strategy.revisionId ? ` · active revision ${strategy.revisionId.slice(0, 8)}` : ""}
                             </span>

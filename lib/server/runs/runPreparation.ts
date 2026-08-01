@@ -913,6 +913,20 @@ export async function prepareRun(
           input.source.source.userMessage.id
         );
   const attachmentIds = extractAttachmentIds(content);
+  const clientSearchSelected = (
+    !admissionPlan && requestedSearchStrategy === perplexityToolSearchStrategyId
+  ) || Boolean(
+    admissionPlan?.searches?.some((candidate) =>
+      candidate.configuration.adapterKind === "provider_model_client"
+    )
+  );
+  if (attachmentIds.length > 0 && clientSearchSelected) {
+    return failure(
+      "client_search_with_attachments_not_supported",
+      400,
+      "Client Search cannot be combined with attachments without separate disclosure consent."
+    );
+  }
   const parameterControls = parameterControlsForModel({
     adapterKind: executionAdapterKind,
     defaultParams,

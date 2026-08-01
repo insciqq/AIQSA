@@ -63,7 +63,7 @@ export function createOpenRouterChatAdapter(options: OpenRouterAdapterOptions): 
 export function createOpenRouterPerplexitySearchAdapter(
   options: OpenRouterAdapterOptions
 ): ProviderSearchAdapter {
-  return createOpenRouterPerplexitySearchAdapterBoundary(options);
+  return createOpenRouterPerplexitySearchAdapterBoundary({ client: options.client });
 }
 
 export function createFakeOpenRouterPerplexitySearchAdapter(): ProviderSearchAdapter {

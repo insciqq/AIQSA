@@ -1228,7 +1228,7 @@ describe("run execution", () => {
           finalText: "",
           toolCalls: [
             {
-              arguments: { keyword: "latest AIQSA news" },
+              arguments: { query: "latest AIQSA news" },
               id: "tool-call-1",
               name: "search_via_perplexity"
             }
@@ -1296,7 +1296,7 @@ describe("run execution", () => {
     expect(previewRequests).toHaveLength(2);
     expect(repository.providerRequestPreviews).toHaveLength(2);
     expect(searchRequests).toHaveLength(1);
-    expect(textFromContentBlocks(searchRequests[0]?.content ?? {})).toBe("latest AIQSA news");
+    expect(searchRequests[0]?.query).toBe("latest AIQSA news");
     expect(searchRequests[0]?.searchPolicy).toEqual(
       prepared.normalizedRequest.searchPolicy
     );
@@ -1505,7 +1505,7 @@ describe("run execution", () => {
     expect(repository.completeRuns[0]?.finalText).toBe("Combined answer");
   });
 
-  it("re-budgets attachments with tool transcripts and emits cumulative late truncation evidence", async () => {
+  it("fails a legacy attachment-bearing Perplexity tool call closed without a SearchRun", async () => {
     const providerRequests: ProviderRunRequest[] = [];
     const repository = createRepository();
     const adapter = createAdapter(async function* (request) {
@@ -1515,7 +1515,7 @@ describe("run execution", () => {
           finalText: "",
           toolCalls: [
             {
-              arguments: { keyword: "current sources" },
+              arguments: { query: "current sources" },
               id: "tool-call-1",
               name: "search_via_perplexity"
             }
@@ -1527,17 +1527,10 @@ describe("run execution", () => {
       yield { data: { delta: "Final" }, type: "token" };
       return providerResult({ finalText: "Final", usage: usage(4, 2, 0) });
     });
+    const search = vi.fn<ProviderSearchAdapter["search"]>();
     const searchAdapter: ProviderSearchAdapter = {
       buildRequestPreview: () => ({}),
-      async search() {
-        return {
-          artifacts: [],
-          finalProviderResponsePreview: {},
-          finalText: "s".repeat(1_200),
-          requestPreview: {},
-          usage: usage(3, 2, 0)
-        };
-      }
+      search
     };
     const initialTruncation: ContextTruncationSummary = {
       approxDroppedTokens: 100,
@@ -1598,7 +1591,7 @@ describe("run execution", () => {
           {
             byteSize: 50_000,
             extractedText: null,
-            fileName: "reference.png",
+            fileName: "ATTACHMENT_FILENAME_CANARY.png",
             id: "attachment-1",
             kind: "image",
             metadata: {},
@@ -1621,17 +1614,24 @@ describe("run execution", () => {
     );
 
     expect(providerRequests).toHaveLength(2);
-    expect(providerRequests[1]?.context?.messages.map((message) => message.id)).toEqual([
-      "current-user-message"
-    ]);
-    expect(truncations).toHaveLength(2);
-    expect(truncations[1]).toMatchObject({
-      droppedMessages: 4,
-      keptMessages: 1
-    });
-    expect(providerRequests[1]?.context?.summary?.truncation).toEqual(truncations[1]);
-    expect(repository.providerRequestPreviews.at(-1)).toMatchObject({
-      contextTruncation: truncations[1]
+    expect(search).not.toHaveBeenCalled();
+    expect(repository.searchRuns).toEqual([]);
+    expect(truncations).toHaveLength(1);
+    const toolResult = events.find((event) =>
+      event.type === "artifact" && event.data.artifactType === "tool_result"
+    );
+    expect(toolResult).toMatchObject({
+      data: {
+        payload: {
+          resultPreview: expect.objectContaining({
+            content: expect.arrayContaining([
+              expect.objectContaining({
+                text: "Search failed: client_search_with_attachments_not_supported"
+              })
+            ])
+          })
+        }
+      }
     });
   });
 
@@ -1645,7 +1645,7 @@ describe("run execution", () => {
           finalText: "",
           toolCalls: [
             {
-              arguments: { keyword: "current sources" },
+              arguments: { query: "current sources" },
               id: "tool-call-1",
               name: "search_via_perplexity"
             }

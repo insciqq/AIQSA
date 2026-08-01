@@ -27,6 +27,11 @@ export type SearchPlan = Readonly<{
   optionIds: readonly string[];
 }>;
 
+declare const validatedSearchQueryBrand: unique symbol;
+export type ValidatedSearchQuery = string & {
+  readonly [validatedSearchQueryBrand]: true;
+};
+
 export type SearchPlanDecodeResult =
   | Readonly<{ ok: true; plan: SearchPlan }>
   | Readonly<{

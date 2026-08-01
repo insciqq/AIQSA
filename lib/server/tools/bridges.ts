@@ -1,10 +1,11 @@
-import type {
-  ModelToolCall,
-  ProviderToolBridge,
-  RunTool,
-  SerializedProviderTool,
-  ToolExecutionContent,
-  ToolExecutionResult
+import {
+  invalidProviderToolArguments,
+  type ModelToolCall,
+  type ProviderToolBridge,
+  type RunTool,
+  type SerializedProviderTool,
+  type ToolExecutionContent,
+  type ToolExecutionResult
 } from "./types";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -31,7 +32,7 @@ function parseArguments(value: unknown): Record<string, unknown> {
     }
   }
 
-  throw new Error("provider_tool_arguments_invalid");
+  return invalidProviderToolArguments();
 }
 
 function textFromContent(content: ToolExecutionContent): string {

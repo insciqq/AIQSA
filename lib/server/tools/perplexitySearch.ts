@@ -1,9 +1,12 @@
-import { textMessageContent } from "@/lib/domain/content";
 import type {
   ProviderSearchAdapter,
   ProviderSearchPolicy,
   ProviderSearchRequest
 } from "@/lib/server/providers/types";
+import {
+  DEFAULT_SEARCH_QUERY_MAX_CHARACTERS,
+  validateSearchToolArguments
+} from "@/lib/server/search/query";
 import type { ModelToolCall, RunTool, ToolExecutor } from "./types";
 
 export const perplexityWebSearchTool: RunTool = {
@@ -12,54 +15,63 @@ export const perplexityWebSearchTool: RunTool = {
   inputSchema: {
     additionalProperties: false,
     properties: {
-      keyword: {
+      query: {
         description: "The concise web search query.",
+        maxLength: DEFAULT_SEARCH_QUERY_MAX_CHARACTERS,
+        minLength: 1,
         type: "string"
       }
     },
-    required: ["keyword"],
+    required: ["query"],
     type: "object"
   },
   name: "search_via_perplexity",
   strict: true
 };
 
-function stringArgument(call: ModelToolCall, keys: string[]): string {
-  for (const key of keys) {
-    const value = call.arguments[key];
-    if (typeof value === "string" && value.trim()) {
-      return value.trim();
-    }
-  }
-
-  return "";
-}
-
-export function queryFromPerplexityToolCall(call: ModelToolCall): string {
-  return stringArgument(call, ["keyword", "query", "q"]);
-}
-
 export function createPerplexitySearchToolExecutor(input: {
   searchAdapter: ProviderSearchAdapter;
   searchPolicy: ProviderSearchPolicy;
 }): ToolExecutor {
-  const searchModelId = input.searchPolicy.modelId;
   const strategyId = input.searchPolicy.strategyId;
 
   return {
     capability: "web_search",
     async execute(call, context, options) {
-      const query = queryFromPerplexityToolCall(call);
+      const validation = validateSearchToolArguments(call.arguments);
+      const attachmentDisclosureBlocked =
+        context.request.attachmentIds.length > 0 || context.request.attachments.length > 0;
+      const code = attachmentDisclosureBlocked
+        ? "client_search_with_attachments_not_supported"
+        : validation.ok
+          ? null
+          : validation.code;
+      if (code) {
+        return {
+          callId: call.id,
+          content: [{ text: `Search failed: ${code}`, type: "text" }],
+          name: call.name,
+          rawPreview: {
+            finalProviderResponsePreview: { error: code },
+            providerCall: false,
+            requestPreview: {
+              queryCharacters:
+                typeof call.arguments.query === "string"
+                  ? Math.min(call.arguments.query.length, DEFAULT_SEARCH_QUERY_MAX_CHARACTERS + 1)
+                  : 0
+            }
+          },
+          status: "error"
+        };
+      }
+      if (!validation.ok) throw new Error("search_query_validation_invariant");
       const request: ProviderSearchRequest = {
-        ...context.request,
-        answerModelId: context.request.modelId,
-        answerProvider: context.request.provider,
-        content: query ? textMessageContent(query) : context.request.content,
-        modelId: searchModelId,
-        provider: "openrouter",
-        searchModelId,
+        correlationId: context.runId ?? call.id,
+        query: validation.query,
+        ...(context.request.params.search && typeof context.request.params.search === "object"
+          ? { searchControls: context.request.params.search as Readonly<Record<string, unknown>> }
+          : {}),
         searchPolicy: input.searchPolicy,
-        searchStrategy: strategyId,
         strategyId
       };
       const result = await input.searchAdapter.search(request, options);
@@ -77,7 +89,12 @@ export function createPerplexitySearchToolExecutor(input: {
         rawPreview: {
           finalProviderResponsePreview: result.finalProviderResponsePreview,
           providerResponseId: result.providerResponseId,
-          requestPreview: result.requestPreview
+          requestPreview: {
+            modelId: input.searchPolicy.modelId,
+            provider: input.searchPolicy.provider,
+            queryCharacters: validation.query.length,
+            strategyId
+          }
         },
         status: "complete",
         usage: result.usage

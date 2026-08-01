@@ -23,7 +23,12 @@ import {
   searchExecutionsFromToolResult,
   type SearchExecutionEvidence
 } from "../search/toolExecutor";
-import type { ModelToolCall, RunTool, ToolExecutionResult } from "../tools/types";
+import {
+  hasInvalidProviderToolArguments,
+  type ModelToolCall,
+  type RunTool,
+  type ToolExecutionResult
+} from "../tools/types";
 import type { StorageAdapter } from "../uploads/storage";
 import {
   appendRunEventWithRetry,
@@ -282,6 +287,7 @@ async function persistRecoveredSearchRun(input: Readonly<{
   strategyId: string;
 }>): Promise<void> {
   const preview = input.result.rawPreview ?? {};
+  if (preview.providerCall === false) return;
   await input.repository.createSearchRun({
     artifacts: {
       events: input.result.artifacts?.map((artifact) => artifact.data) ?? [],
@@ -536,6 +542,9 @@ async function executePersistedToolCall(
 
   let result: ToolExecutionResult;
   try {
+    if (hasInvalidProviderToolArguments(call.arguments)) {
+      throw new Error("provider_tool_arguments_invalid");
+    }
     if (context.searchExecutor && isRecoveredSearchCall(context, call.name)) {
       result = await context.searchExecutor.execute(
         call,

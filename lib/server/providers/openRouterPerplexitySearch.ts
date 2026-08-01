@@ -1,4 +1,4 @@
-import { textFromContentBlocks, type ModelRunSseEvent } from "../../domain/modelRunEvents";
+import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
 import {
   buildOpenRouterPerplexitySearchRequest,
   buildOpenRouterPerplexitySearchRequestPreview
@@ -21,7 +21,6 @@ import type {
 
 export type OpenRouterPerplexitySearchAdapterOptions = Readonly<{
   client: OpenRouterChatClient;
-  maxAttachmentTextChars?: number;
 }>;
 
 function searchArtifact(
@@ -48,14 +47,10 @@ export function createOpenRouterPerplexitySearchAdapter(
 ): ProviderSearchAdapter {
   const adapter: ProviderSearchAdapter = {
     buildRequestPreview(request) {
-      return buildOpenRouterPerplexitySearchRequestPreview(request, {
-        maxAttachmentTextChars: options.maxAttachmentTextChars
-      });
+      return buildOpenRouterPerplexitySearchRequestPreview(request);
     },
     async search(request, searchOptions = {}): Promise<ProviderSearchResult> {
-      const body = buildOpenRouterPerplexitySearchRequest(request, {
-        maxAttachmentTextChars: options.maxAttachmentTextChars
-      });
+      const body = buildOpenRouterPerplexitySearchRequest(request);
       const response = await options.client.createChatCompletion(body, {
         signal: searchOptions.signal,
         ...(typeof searchOptions.timeoutMs === "number"
@@ -87,14 +82,10 @@ export function createOpenRouterPerplexitySearchAdapter(
 export function createFakeOpenRouterPerplexitySearchAdapter(): ProviderSearchAdapter {
   const adapter: ProviderSearchAdapter = {
     buildRequestPreview(request) {
-      return {
-        body: buildOpenRouterPerplexitySearchRequest(request),
-        provider: "openrouter",
-        stage: "tool_search"
-      };
+      return buildOpenRouterPerplexitySearchRequestPreview(request);
     },
     async search(request): Promise<ProviderSearchResult> {
-      const question = textFromContentBlocks(request.content) || "empty question";
+      const question = request.query;
       const finalText = `Fake Perplexity search findings for: ${question}\n[1] https://example.com/aiqsa-search`;
       const usage = {
         inputTokens: Math.max(1, Math.ceil(question.length / 4)),

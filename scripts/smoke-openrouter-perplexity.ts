@@ -4,6 +4,7 @@ import {
   createOpenRouterPerplexitySearchAdapter
 } from "../lib/server/providers/openRouterChat";
 import type { ProviderSearchRequest } from "../lib/server/providers/types";
+import { validateSearchToolArguments } from "../lib/server/search/query";
 
 function unquoteEnvValue(value: string): string {
   const trimmed = value.trim();
@@ -55,41 +56,18 @@ if (!openRouterKey) {
   process.exit(0);
 }
 
+const validatedQuery = validateSearchToolArguments({
+  query: "What is the official OpenRouter model id for Sonar Pro Search? Reply very briefly."
+});
+if (!validatedQuery.ok) throw new Error(validatedQuery.code);
+
 const request: ProviderSearchRequest = {
-  answerModelId: process.env.AIQSA_DEFAULT_MODEL || "gpt-5.5",
-  answerProvider: "openai",
-  attachmentIds: [],
-  attachments: [],
-  chatId: "smoke-chat",
-  content: {
-    blocks: [
-      {
-        text: "What is the official OpenRouter model id for Sonar Pro Search? Reply very briefly.",
-        type: "text"
-      }
-    ]
+  correlationId: "smoke-openrouter-perplexity",
+  query: validatedQuery.query,
+  searchControls: {
+    maxOutputTokens: 64,
+    temperature: 0
   },
-  modelCapabilities: {
-    nativePdfInput: false,
-    nativeSearch: true,
-    pdf: false,
-    reasoning: false,
-    vision: false
-  },
-  modelId: searchModelId,
-  params: {
-    search: {
-      maxOutputTokens: 64,
-      temperature: 0
-    }
-  },
-  prompt: {
-    developer: null,
-    presetId: null,
-    system: "You are running a tiny AIQSA OpenRouter Perplexity smoke test."
-  },
-  provider: "openrouter",
-  searchModelId,
   searchPolicy: {
     controls: {
       maxOutputTokens: {
@@ -123,7 +101,6 @@ const request: ProviderSearchRequest = {
     provider: "openrouter",
     strategyId: "perplexity-tool-search"
   },
-  searchStrategy: "perplexity-tool-search",
   strategyId: "perplexity-tool-search"
 };
 

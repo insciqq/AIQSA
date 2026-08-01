@@ -315,6 +315,56 @@ describe("ComposerControls", () => {
     expect(search).toHaveAttribute("title", "0 active · 1 unavailable");
   });
 
+  it("marks client Search unavailable with attachments while retaining the selection", () => {
+    const perplexity = {
+      adapterKind: "provider_model_client" as const,
+      displayName: "Perplexity tool",
+      kind: "perplexity_tool_search" as const,
+      privacy: "query_only" as const,
+      strategyId: "perplexity-tool-search"
+    };
+    renderControls({
+      compatibleSearchOptionIds: [perplexity.strategyId],
+      hasAttachments: true,
+      searchOptions: [perplexity],
+      selectedSearchOptionIds: [perplexity.strategyId],
+      selectedSearchStrategy: perplexity.strategyId
+    });
+
+    const trigger = screen.getByRole("button", { name: "Search strategy" });
+    expect(trigger).toHaveAttribute("title", "0 active · 1 unavailable");
+    fireEvent.click(trigger);
+    expect(screen.getByText(
+      "Client Search is unavailable while this message has attachments · preference retained"
+    )).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Close Search picker" }));
+    expect(openRunSetup()).toHaveTextContent(
+      "Generated query only · unavailable with attachments"
+    );
+  });
+
+  it("keeps provider-hosted Search compatible with attachments", () => {
+    const hosted = {
+      adapterKind: "answer_provider_hosted" as const,
+      displayName: "OpenAI Web Search",
+      kind: "openai_native_web_search" as const,
+      privacy: "answer_provider" as const,
+      strategyId: "web-search"
+    };
+    renderControls({
+      compatibleSearchOptionIds: [hosted.strategyId],
+      hasAttachments: true,
+      searchOptions: [hosted],
+      selectedSearchOptionIds: [hosted.strategyId],
+      selectedSearchStrategy: hosted.strategyId
+    });
+
+    expect(screen.getByRole("button", { name: "Search strategy" })).toHaveAttribute(
+      "title",
+      "OpenAI Web Search"
+    );
+  });
+
   it("keeps the full model identity available while containing a long direct-control label", () => {
     const longName = "OpenRouter research model with a deliberately long exact display name";
     renderControls({ currentModel: { ...balancedModel, displayName: longName } });

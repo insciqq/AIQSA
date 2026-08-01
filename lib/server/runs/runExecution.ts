@@ -36,11 +36,12 @@ import {
   searchExecutionsFromToolResult,
   type SearchExecutionEvidence
 } from "../search/toolExecutor";
-import type {
-  ModelToolCall,
-  ProviderToolBridge,
-  RunTool,
-  ToolExecutionResult
+import {
+  hasInvalidProviderToolArguments,
+  type ModelToolCall,
+  type ProviderToolBridge,
+  type RunTool,
+  type ToolExecutionResult
 } from "../tools/types";
 import { applyProviderRequestContextBudget } from "./runContextBudget";
 import {
@@ -548,6 +549,7 @@ async function persistToolSearchRun(input: Readonly<{
   strategyId: string;
 }>): Promise<void> {
   const preview = input.result.rawPreview ?? {};
+  if (preview.providerCall === false) return;
   await input.repository.createSearchRun({
     artifacts: {
       events: input.result.artifacts?.map((artifact) => artifact.data) ?? [],
@@ -955,6 +957,9 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
 
               let result: ToolExecutionResult;
               try {
+                if (hasInvalidProviderToolArguments(call.arguments)) {
+                  throw new Error("provider_tool_arguments_invalid");
+                }
                 if (searchPlanRouter && searchToolNames.has(call.name)) {
                   result = await searchPlanRouter.execute(call, request, { signal: context.signal });
                 } else if (searchExecutor && call.name === searchExecutor.tool.name) {

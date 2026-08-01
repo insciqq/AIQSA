@@ -7,7 +7,8 @@ import type {
   SearchAdapterKind,
   SearchCredentialMode,
   SearchPlanMode,
-  SearchProtocol
+  SearchProtocol,
+  ValidatedSearchQuery
 } from "../../domain/search";
 
 export type NormalizedSearchPlanOption = Readonly<{
@@ -143,13 +144,13 @@ export type ProviderRunRefreshResult = {
   terminal: boolean;
 };
 
-export type ProviderSearchRequest = ProviderRunRequest & {
-  answerModelId: string;
-  answerProvider: string;
-  searchModelId: string;
+export type ProviderSearchRequest = Readonly<{
+  correlationId: string;
+  query: ValidatedSearchQuery;
+  searchControls?: Readonly<Record<string, unknown>>;
   searchPolicy: ProviderSearchPolicy;
   strategyId: string;
-};
+}>;
 
 export type ProviderSearchResult = {
   artifacts: ModelRunSseEvent[];

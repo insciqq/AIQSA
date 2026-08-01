@@ -12,6 +12,7 @@ import type {
 } from "../../providers/types";
 import { getSecretEncryptionKey } from "../../secrets/envelope";
 import { loadTechnicalProviderRole } from "../../providerRuntime/admission";
+import { validateSearchToolArguments } from "../../search/query";
 import type { AdminSearchTester } from "./service";
 
 const connectivityQuery = "Find the official OpenAI home page and return one source.";
@@ -150,13 +151,15 @@ export function createAdminSearchTester(prisma: PrismaClient): AdminSearchTester
           provider: "openrouter",
           strategyId: "perplexity-tool-search"
         };
+        const validatedQuery = validateSearchToolArguments(
+          { query: connectivityQuery },
+          draft.queryMaxCharacters
+        );
+        if (!validatedQuery.ok) throw new Error(validatedQuery.code);
         const searchRequest: ProviderSearchRequest = {
-          ...request,
-          answerModelId: "search-admin-test",
-          answerProvider: "search-admin-test",
-          searchModelId: request.modelId,
+          correlationId: "search-admin-test",
+          query: validatedQuery.query,
           searchPolicy,
-          searchStrategy: "perplexity-tool-search",
           strategyId: "perplexity-tool-search"
         };
         const result = await runtime.searchAdapter.search(searchRequest, {

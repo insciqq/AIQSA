@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { perplexityWebSearchTool } from "../tools/perplexitySearch";
+import { validateSearchToolArguments } from "../search/query";
 import type {
   ProviderRunRequest,
   ProviderSearchPolicy,
@@ -96,13 +97,11 @@ function searchPolicy(): ProviderSearchPolicy {
 }
 
 function searchRequest(overrides: Partial<ProviderSearchRequest> = {}): ProviderSearchRequest {
+  const validated = validateSearchToolArguments({ query: "Find one concise fact." });
+  if (!validated.ok) throw new Error(validated.code);
   return {
-    ...request(),
-    answerModelId: "anthropic/claude-opus-4.8",
-    answerProvider: "openrouter",
-    modelId: "perplexity/sonar-pro-search",
-    provider: "openrouter",
-    searchModelId: "perplexity/sonar-pro-search",
+    correlationId: "search-call-1",
+    query: validated.query,
     searchPolicy: searchPolicy(),
     strategyId: "perplexity-tool-search",
     ...overrides
@@ -428,46 +427,26 @@ describe("OpenRouter request builders", () => {
     );
   });
 
-  it("builds Perplexity defaults, metadata, and the fixed 12k attachment cap", () => {
-    const longText = `${"x".repeat(12000)}TAIL`;
-    const search = searchRequest({
-      attachmentIds: ["doc-1", "image-1"],
-      attachments: [
-        {
-          byteSize: longText.length,
-          extractedText: longText,
-          fileName: "research.txt",
-          id: "doc-1",
-          kind: "document",
-          metadata: {},
-          mimeType: "text/plain",
-          status: "ready"
-        },
-        {
-          byteSize: 20,
-          dataUrl: "data:image/png;base64,PRIVATE_SEARCH_IMAGE",
-          extractedText: null,
-          fileName: "ignored.png",
-          id: "image-1",
-          kind: "image",
-          metadata: {},
-          mimeType: "image/png",
-          status: "ready"
-        }
-      ]
-    });
-    const body = buildOpenRouterPerplexitySearchRequest(search, {
-      maxAttachmentTextChars: 3,
-      redactFiles: false,
-      redactImages: false
-    });
+  it("builds a query-only Perplexity request even when a caller defeats the type boundary", () => {
+    const search = {
+      ...searchRequest(),
+      attachmentIds: ["ATTACHMENT_ID_CANARY"],
+      attachments: [{
+        dataUrl: "data:image/png;base64,ATTACHMENT_BYTES_CANARY",
+        extractedText: "ATTACHMENT_TEXT_CANARY",
+        fileName: "ATTACHMENT_FILENAME_CANARY"
+      }],
+      content: { blocks: [{ text: "ORIGINAL_USER_CONTENT_CANARY", type: "text" }] },
+      context: { messages: [{ content: "BRANCH_CONTEXT_CANARY" }] },
+      prompt: { developer: "DEVELOPER_PROMPT_CANARY", system: "SYSTEM_PROMPT_CANARY" },
+      providerToolMessages: [{ content: "TOOL_TRANSCRIPT_CANARY" }]
+    } as unknown as ProviderSearchRequest;
+    const body = buildOpenRouterPerplexitySearchRequest(search);
     const userMessage = body.messages.at(-1)?.content;
 
     expect(body).toMatchObject({
       max_completion_tokens: 1024,
       metadata: {
-        answer_model: "anthropic/claude-opus-4.8",
-        answer_provider: "openrouter",
         app: "aiqsa",
         stage: "tool_search",
         strategy: "perplexity-tool-search"
@@ -486,28 +465,38 @@ describe("OpenRouter request builders", () => {
       stream: false
     });
     expect(body).not.toHaveProperty("cache_control");
-    expect(userMessage).toContain("Attached document text from research.txt (text/plain)");
-    expect(userMessage).toContain(`${"x".repeat(12000)}\n[truncated 4 chars]`);
-    expect(userMessage).not.toContain("TAIL");
-    expect(JSON.stringify(body)).not.toContain("PRIVATE_SEARCH_IMAGE");
+    expect(userMessage).toContain("Find one concise fact.");
+    const serialized = JSON.stringify(body);
+    for (const canary of [
+      "ATTACHMENT_ID_CANARY",
+      "ATTACHMENT_BYTES_CANARY",
+      "ATTACHMENT_TEXT_CANARY",
+      "ATTACHMENT_FILENAME_CANARY",
+      "ORIGINAL_USER_CONTENT_CANARY",
+      "BRANCH_CONTEXT_CANARY",
+      "DEVELOPER_PROMPT_CANARY",
+      "SYSTEM_PROMPT_CANARY",
+      "TOOL_TRANSCRIPT_CANARY"
+    ]) {
+      expect(serialized).not.toContain(canary);
+    }
   });
 
   it("returns the stable always-safe Perplexity preview envelope", () => {
-    const preview = buildOpenRouterPerplexitySearchRequestPreview(searchRequest(), {
-      redactFiles: false,
-      redactImages: false
-    });
+    const preview = buildOpenRouterPerplexitySearchRequestPreview(searchRequest());
 
     expect(preview).toMatchObject({
       body: {
-        max_completion_tokens: 1024,
         model: "perplexity/sonar-pro-search",
+        query_characters: 22,
+        strategy: "perplexity-tool-search",
         stream: false
       },
       provider: "openrouter",
-      redactions: ["image_data_url"],
+      redactions: ["search_query"],
       stage: "tool_search"
     });
+    expect(JSON.stringify(preview)).not.toContain("Find one concise fact.");
   });
 
   it.each([
@@ -515,10 +504,8 @@ describe("OpenRouter request builders", () => {
     [
       "canonical bounded override",
       searchRequest({
-        params: {
-          search: {
-            maxOutputTokens: 77
-          }
+        searchControls: {
+          maxOutputTokens: 77
         }
       }),
       77
@@ -527,19 +514,12 @@ describe("OpenRouter request builders", () => {
     expect(buildOpenRouterPerplexitySearchRequest(search).max_completion_tokens).toBe(expectedMaxTokens);
   });
 
-  it("ignores answer-route params and rejects nested routing, aliases, excess output, and model drift", () => {
+  it("accepts only bounded search controls and rejects routing or policy injection", () => {
     const safeBody = buildOpenRouterPerplexitySearchRequest(
       searchRequest({
-        params: {
-          maxOutputTokens: 999_999_999,
-          provider: {
-            dataCollection: "allow",
-            order: ["untrusted"]
-          },
-          search: {
-            maxOutputTokens: 2048,
-            temperature: 0.5
-          }
+        searchControls: {
+          maxOutputTokens: 2048,
+          temperature: 0.5
         }
       })
     );
@@ -562,14 +542,19 @@ describe("OpenRouter request builders", () => {
     ]) {
       expect(() =>
         buildOpenRouterPerplexitySearchRequest(
-          searchRequest({ params: { search } })
+          searchRequest({ searchControls: search })
         )
       ).toThrow("invalid_run_params");
     }
 
     expect(() =>
       buildOpenRouterPerplexitySearchRequest(
-        searchRequest({ searchModelId: "untrusted/model" })
+        searchRequest({
+          searchPolicy: {
+            ...searchPolicy(),
+            strategyId: "untrusted-strategy" as "perplexity-tool-search"
+          }
+        })
       )
     ).toThrow("openrouter_search_policy_invalid");
   });

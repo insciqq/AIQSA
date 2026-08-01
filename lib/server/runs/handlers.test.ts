@@ -2619,7 +2619,7 @@ describe("model run route handlers", () => {
               tool_calls: [
                 {
                   function: {
-                    arguments: "{\"keyword\":\"latest Anthropic model\"}",
+                    arguments: "{\"query\":\"latest Anthropic model\"}",
                     name: "search_via_perplexity"
                   },
                   id: "call-search-1",
@@ -2708,7 +2708,7 @@ describe("model run route handlers", () => {
   });
 
   it("allows the maximum tool searches plus a final synthesis and sums usage", async () => {
-    const toolCallResponse = (id: string, keyword: string, promptTokens: number) => ({
+    const toolCallResponse = (id: string, query: string, promptTokens: number) => ({
       choices: [
         {
           finish_reason: "tool_calls",
@@ -2718,7 +2718,7 @@ describe("model run route handlers", () => {
             tool_calls: [
               {
                 function: {
-                  arguments: JSON.stringify({ keyword }),
+                  arguments: JSON.stringify({ query }),
                   name: "search_via_perplexity"
                 },
                 id,
@@ -2799,7 +2799,7 @@ describe("model run route handlers", () => {
                 tool_calls: [
                   {
                     function: {
-                      arguments: "{\"keyword\":\"latest Anthropic model\"}",
+                      arguments: "{\"query\":\"latest Anthropic model\"}",
                       name: "search_via_perplexity"
                     },
                     id: "call-search-1",
@@ -2903,7 +2903,7 @@ describe("model run route handlers", () => {
                 tool_calls: [
                   {
                     function: {
-                      arguments: "{\"keyword\":\"latest Anthropic model\"}",
+                      arguments: "{\"query\":\"latest Anthropic model\"}",
                       name: "search_via_perplexity"
                     },
                     id: "call-search-1",
@@ -2968,7 +2968,7 @@ describe("model run route handlers", () => {
             type: "reasoning"
           },
           {
-            arguments: "{\"keyword\":\"latest Anthropic model\"}",
+            arguments: "{\"query\":\"latest Anthropic model\"}",
             call_id: "call-search-1",
             id: "fc-1",
             name: "search_via_perplexity",

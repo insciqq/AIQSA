@@ -48,7 +48,8 @@ export function ComposerSearchPicker({
   placement = "above",
   preferenceSource = "personal",
   selectedOptionIds,
-  setup = false
+  setup = false,
+  unavailableReasons = {}
 }: Readonly<{
   align?: "left" | "right";
   className?: string;
@@ -63,6 +64,7 @@ export function ComposerSearchPicker({
   preferenceSource?: "organization" | "personal";
   selectedOptionIds: readonly string[];
   setup?: boolean;
+  unavailableReasons?: Readonly<Record<string, string>>;
 }>) {
   const [open, setOpen] = useState(false);
   const boundaryRef = useRef<HTMLDivElement>(null);
@@ -168,6 +170,7 @@ export function ComposerSearchPicker({
             {available.map((option) => {
               const active = selected.includes(option.strategyId);
               const modelCompatible = compatible.has(option.strategyId);
+              const unavailableReason = unavailableReasons[option.strategyId];
               const capped = !active && selected.length >= 3;
               const incompatible = !active && !isSearchCombinationCompatible(
                 [...selected, option.strategyId],
@@ -184,12 +187,12 @@ export function ComposerSearchPicker({
                   onClick={() => toggle(option)}
                   type="button"
                   title={!modelCompatible
-                    ? "Unavailable for this model; your saved preference is retained"
+                    ? `${unavailableReason ?? "Unavailable for this model"}; your saved preference is retained`
                     : incompatible
                       ? "This engine cannot be combined with the current selection"
                       : undefined}
                 >
-                  <span className="min-w-0 flex-1"><span className="block break-words text-sm font-semibold text-ink">{option.displayName}</span><span className="mt-0.5 block text-xs leading-5 text-ink-muted">{modelCompatible ? optionDescription(option) : "Unavailable for this model · preference retained"}</span></span>
+                  <span className="min-w-0 flex-1"><span className="block break-words text-sm font-semibold text-ink">{option.displayName}</span><span className="mt-0.5 block text-xs leading-5 text-ink-muted">{modelCompatible ? optionDescription(option) : `${unavailableReason ?? "Unavailable for this model"} · preference retained`}</span></span>
                   <span className={`mt-0.5 grid size-5 shrink-0 place-items-center rounded-control border ${active ? "border-proof bg-proof text-proof-contrast" : "border-trace-strong"}`}>{active ? <Check aria-hidden="true" className="size-3.5" /> : null}</span>
                 </button>
               );

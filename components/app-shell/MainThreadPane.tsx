@@ -646,6 +646,7 @@ export function MainThreadPane({
               currentParameterControls={currentParameterControls}
               currentPrompt={currentPrompt}
               disabled={composerUnavailable}
+              hasAttachments={attachments.length > 0}
               maxOutputTokens={maxOutputTokens}
               reasoningEffort={reasoningEffort}
               reasoningMode={reasoningMode}

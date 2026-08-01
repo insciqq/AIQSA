@@ -58,6 +58,7 @@ Every ADR also declares `Amends: none` or a comma-separated list of earlier ADR 
 - `0047-bounded-nested-search-operation-evidence.md` - retains a bounded allowlisted provider-operation trace under the exact client Search tool/engine execution, exposes exact provider-reported queries without raw payloads, and makes the completed Run receipt a non-duplicated three-level disclosure.
 - `0048-passive-administrator-release-awareness.md` - compares the packaged version with the fixed repository's latest stable published GitHub Release through a cached admin-only server check and adds a passive Control Center notice without update authority.
 - `0049-local-ignored-completion-journal.md` - keeps completed task evidence in the local ignored ledger, forbids force-publishing its entries, and assigns shared completion history to normal commits, living docs, ADRs, and release notes.
+- `0050-client-search-minimum-disclosure.md` - makes client Search requests independently query-only, rejects untrusted malformed or oversized tool arguments before I/O, and disables client Search for attachment-bearing runs until explicit disclosure consent exists.
 
 ## Superseded ADRs
 

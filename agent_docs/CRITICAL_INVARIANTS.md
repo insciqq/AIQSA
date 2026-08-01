@@ -53,6 +53,7 @@
 14. A Gemini grounding marker atomically purges and fences durable provider token/artifact content before live grounded output. Validated non-empty Search Suggestions must precede the first released grounded answer token; unsafe or missing Suggestions fail without releasing it.
 15. Compatible no-auth is explicit private/local configuration backed by a tested immutable version with a null envelope and a per-request non-revoked-version guard. Missing legacy authentication mode remains bearer; empty/sentinel secrets and implicit keyless fallback are forbidden.
 16. A provider model is an answer choice only when its active immutable configuration is answer-selectable. Missing legacy values default to selectable; an explicit technical-only model is excluded from answer catalogs, grants, profiles, and admission even under Full access, while typed Search admission may still resolve it without answer-model entitlement.
+17. Client Search is a minimum-disclosure boundary: its provider request can contain only one validated bounded query plus server-owned policy/correlation fields, never answer context or attachment data. Until separate informed per-run disclosure consent exists, attachments and client Search are mutually exclusive; provider-hosted Search inside the selected answer provider is unaffected.
 
 ## Frontend Invariants
 

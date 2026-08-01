@@ -9,7 +9,7 @@ import {
 } from "../../domain/runParams";
 import { textFromContentBlocks } from "../../domain/modelRunEvents";
 import { openRouterChatToolBridge } from "../tools/bridges";
-import { providerAttachmentText, truncateProviderAttachmentText } from "./attachmentPayload";
+import { providerAttachmentText } from "./attachmentPayload";
 import { conversationPreview, providerPromptCacheKey, textConversationForRequest } from "./context";
 import type {
   ProviderAttachment,
@@ -65,9 +65,14 @@ export type OpenRouterChatRequestPreview = {
 };
 
 export type OpenRouterPerplexitySearchRequestPreview = {
-  body: OpenRouterChatRequestBody;
+  body: {
+    model: string;
+    query_characters: number;
+    strategy: string;
+    stream: false;
+  };
   provider: "openrouter";
-  redactions: ["image_data_url"];
+  redactions: ["search_query"];
   stage: "tool_search";
 };
 
@@ -420,14 +425,13 @@ function searchParamsFromRequest(request: ProviderSearchRequest): OpenRouterPara
   if (
     policy.provider !== "openrouter" ||
     policy.strategyId !== "perplexity-tool-search" ||
-    request.strategyId !== policy.strategyId ||
-    request.searchModelId !== policy.modelId
+    !request.strategyId.trim()
   ) {
     throw new Error("openrouter_search_policy_invalid");
   }
 
   const requestControls = validateSearchRunParams(
-    request.params.search,
+    request.searchControls,
     policy.controls
   );
   if (!requestControls.ok) {
@@ -467,33 +471,17 @@ function searchParamsFromRequest(request: ProviderSearchRequest): OpenRouterPara
 }
 
 function buildSearchText(request: ProviderSearchRequest): string {
-  const question = textFromContentBlocks(request.content) || "No question supplied.";
-  const attachmentTexts = request.attachments.flatMap((attachment) => {
-    if ((attachment.kind !== "pdf" && attachment.kind !== "document") || !attachment.extractedText?.trim()) {
-      return [];
-    }
-
-    const label =
-      attachment.kind === "pdf"
-        ? `Attached PDF text from ${attachment.fileName}`
-        : `Attached document text from ${attachment.fileName} (${attachment.mimeType || "unknown type"})`;
-
-    return [`${label}:\n${truncateProviderAttachmentText(attachment.extractedText, 12000)}`];
-  });
-
   return [
     "Search the web for the user's question and return concise findings with citations.",
-    `Question:\n${question}`,
-    ...attachmentTexts
+    `Question:\n${request.query}`
   ].join("\n\n");
 }
 
 export function buildOpenRouterPerplexitySearchRequest(
-  request: ProviderSearchRequest,
-  _options: OpenRouterChatRequestOptions = {}
+  request: ProviderSearchRequest
 ): OpenRouterChatRequestBody {
   return buildOpenRouterBody({
-    chatId: request.chatId,
+    chatId: request.correlationId,
     messages: [
       {
         content:
@@ -506,11 +494,9 @@ export function buildOpenRouterPerplexitySearchRequest(
       }
     ],
     metadata: {
-      answer_model: request.answerModelId,
-      answer_provider: request.answerProvider,
       app: "aiqsa",
       stage: "tool_search",
-      strategy: request.searchPolicy.strategyId
+      strategy: request.strategyId
     },
     modelId: request.searchPolicy.modelId,
     params: searchParamsFromRequest(request),
@@ -519,17 +505,17 @@ export function buildOpenRouterPerplexitySearchRequest(
 }
 
 export function buildOpenRouterPerplexitySearchRequestPreview(
-  request: ProviderSearchRequest,
-  options: OpenRouterChatRequestOptions = {}
+  request: ProviderSearchRequest
 ): OpenRouterPerplexitySearchRequestPreview {
   return {
-    body: buildOpenRouterPerplexitySearchRequest(request, {
-      ...options,
-      redactFiles: true,
-      redactImages: true
-    }),
+    body: {
+      model: request.searchPolicy.modelId,
+      query_characters: request.query.length,
+      strategy: request.strategyId,
+      stream: false
+    },
     provider: "openrouter",
-    redactions: ["image_data_url"],
+    redactions: ["search_query"],
     stage: "tool_search"
   };
 }

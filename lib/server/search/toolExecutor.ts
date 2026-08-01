@@ -1,4 +1,5 @@
 import { textMessageContent } from "../../domain/content";
+import type { ValidatedSearchQuery } from "../../domain/search";
 import { mergeSearchEvidence } from "../../domain/search";
 import type { ModelRunSseEvent, ModelRunUsage } from "../../domain/modelRunEvents";
 import {
@@ -17,6 +18,7 @@ import type {
 import type { ModelToolCall, RunTool, ToolExecutionResult } from "../tools/types";
 import { normalizeSearchSources, type SearchSource } from "./evidence";
 import { providerSearchOperationsFromArtifacts } from "./providerOperations";
+import { validateSearchToolArguments } from "./query";
 
 const allSelectedToolName = "search_selected_engines";
 
@@ -59,27 +61,24 @@ function zeroUsage(): ModelRunUsage {
   return { inputTokens: 0, outputTokens: 0, reasoningTokens: 0, totalTokens: 0 };
 }
 
-function queryFromCall(call: ModelToolCall): string {
-  for (const key of ["query", "keyword", "q"]) {
-    const value = call.arguments[key];
-    if (typeof value === "string" && value.trim()) return value.trim();
-  }
-  return "";
-}
-
 function toolName(option: NormalizedSearchPlanOption, ordinal: number): string {
   const slug = option.optionId.toLowerCase().replace(/[^a-z0-9]+/gu, "_").replace(/^_+|_+$/gu, "").slice(0, 36);
   return `search_${ordinal + 1}_${slug || "engine"}`;
 }
 
-function searchTool(name: string, description: string): RunTool {
+function searchTool(name: string, description: string, queryMaxCharacters: number): RunTool {
   return {
     capability: "web_search",
     description,
     inputSchema: {
       additionalProperties: false,
       properties: {
-        query: { description: "The concise web search query.", type: "string" }
+        query: {
+          description: "The concise web search query.",
+          maxLength: queryMaxCharacters,
+          minLength: 1,
+          type: "string"
+        }
       },
       required: ["query"],
       type: "object"
@@ -112,7 +111,8 @@ function configuration(option: NormalizedSearchPlanOption): {
     capabilities,
     defaultParams: isRecord(config.modelDefaultParams) ? config.modelDefaultParams : {},
     maxResults: Number.isSafeInteger(config.maxResults) ? Number(config.maxResults) : 8,
-    queryMaxCharacters: Number.isSafeInteger(config.queryMaxCharacters)
+    queryMaxCharacters: Number.isSafeInteger(config.queryMaxCharacters) &&
+      Number(config.queryMaxCharacters) >= 1 && Number(config.queryMaxCharacters) <= 1_000
       ? Number(config.queryMaxCharacters)
       : 500,
     timeoutMs: Number.isSafeInteger(config.timeoutMs) ? Number(config.timeoutMs) : 300_000
@@ -120,16 +120,16 @@ function configuration(option: NormalizedSearchPlanOption): {
 }
 
 function queryOnlyRequest(
-  answer: ProviderRunRequest,
+  correlationId: string,
   option: NormalizedSearchPlanOption,
-  query: string
+  query: ValidatedSearchQuery
 ): ProviderRunRequest {
   const configured = configuration(option);
-  const content = textMessageContent(query.slice(0, configured.queryMaxCharacters));
+  const content = textMessageContent(query);
   return {
     attachmentIds: [],
     attachments: [],
-    chatId: answer.chatId,
+    chatId: correlationId,
     content,
     context: {
       messages: [{ content, id: `search-query:${option.optionId}`, role: "user" }],
@@ -160,12 +160,13 @@ async function consumeProviderSearch(
   runtime: ProviderRuntimeBinding,
   request: ProviderRunRequest,
   option: NormalizedSearchPlanOption,
+  query: ValidatedSearchQuery,
+  correlationId: string,
   signal?: AbortSignal,
   timeoutMs?: number
 ): Promise<{
   artifacts: ModelRunSseEvent[];
   finalText: string;
-  preview: Record<string, unknown>;
   sources: SearchSource[];
   usage: ModelRunUsage;
 }> {
@@ -182,19 +183,15 @@ async function consumeProviderSearch(
       strategyId: "perplexity-tool-search"
     };
     const searchRequest: ProviderSearchRequest = {
-      ...request,
-      answerModelId: "search-tool",
-      answerProvider: "search-tool",
-      searchModelId: request.modelId,
+      correlationId,
+      query,
       searchPolicy,
-      searchStrategy: "perplexity-tool-search",
       strategyId: option.optionId
     };
     const result = await runtime.searchAdapter.search(searchRequest, { signal, timeoutMs });
     return {
       artifacts: result.artifacts,
       finalText: result.finalText,
-      preview: result.requestPreview,
       sources: normalizeSearchSources([
         result.artifacts,
         result.finalProviderResponsePreview
@@ -218,10 +215,6 @@ async function consumeProviderSearch(
   return {
     artifacts,
     finalText: next.value.finalText,
-    preview: runtime.adapter.buildRequestPreview({
-      ...request,
-      searchStrategy: "openai-native-web-search"
-    }),
     sources: normalizeSearchSources([
       artifacts,
       next.value.finalProviderResponsePreview
@@ -233,15 +226,13 @@ async function consumeProviderSearch(
 async function executeOne(input: Readonly<{
   call: ModelToolCall;
   option: NormalizedSearchPlanOption;
-  query: string;
-  request: ProviderRunRequest;
+  query: ValidatedSearchQuery;
   runtime: ProviderRuntimeBinding | undefined;
   signal?: AbortSignal;
 }>): Promise<SearchExecutionResult> {
   const started = Date.now();
   const invocationId = `${input.call.id}:${input.option.optionId}`.slice(0, 500);
-  const boundedQuery = input.query.slice(0, configuration(input.option).queryMaxCharacters);
-  if (!boundedQuery || !input.runtime || !input.option.modelId) {
+  if (!input.runtime || !input.option.modelId) {
     return {
       displayName: input.option.displayName ?? input.option.optionId,
       durationMs: Date.now() - started,
@@ -250,16 +241,16 @@ async function executeOne(input: Readonly<{
       optionId: input.option.optionId,
       provider: input.option.provider,
       providerOperationsTruncated: false,
-      query: boundedQuery,
-      requestPreview: { queryCharacters: boundedQuery.length },
+      query: input.query,
+      requestPreview: { queryCharacters: input.query.length },
       revisionId: input.option.revisionId,
       sources: [],
       status: "error",
       usage: zeroUsage(),
-      warning: !boundedQuery ? "search_query_required" : "search_runtime_not_available"
+      warning: "search_runtime_not_available"
     };
   }
-  const request = queryOnlyRequest(input.request, input.option, boundedQuery);
+  const request = queryOnlyRequest(invocationId, input.option, input.query);
   const timeoutController = new AbortController();
   const relayAbort = () => timeoutController.abort(input.signal?.reason);
   input.signal?.addEventListener("abort", relayAbort, { once: true });
@@ -272,6 +263,8 @@ async function executeOne(input: Readonly<{
       input.runtime,
       request,
       input.option,
+      input.query,
+      invocationId,
       timeoutController.signal,
       configuration(input.option).timeoutMs
     );
@@ -290,11 +283,13 @@ async function executeOne(input: Readonly<{
         ? { providerOperations: providerTrace.operations }
         : {}),
       providerOperationsTruncated: providerTrace?.truncated ?? false,
-      query: boundedQuery,
+      query: input.query,
       requestPreview: {
-        queryCharacters: boundedQuery.length,
-        sourceLimit: configuration(input.option).maxResults,
-        upstream: result.preview
+        modelId: input.option.modelId,
+        protocol: input.option.protocol,
+        provider: input.option.provider,
+        queryCharacters: input.query.length,
+        sourceLimit: configuration(input.option).maxResults
       },
       revisionId: input.option.revisionId,
       sources: result.sources,
@@ -311,8 +306,8 @@ async function executeOne(input: Readonly<{
       optionId: input.option.optionId,
       provider: input.option.provider,
       providerOperationsTruncated: false,
-      query: boundedQuery,
-      requestPreview: { queryCharacters: boundedQuery.length },
+      query: input.query,
+      requestPreview: { queryCharacters: input.query.length },
       revisionId: input.option.revisionId,
       sources: [],
       status: "error",
@@ -384,14 +379,16 @@ export function createSearchPlanToolRouter(input: Readonly<{
         options: clientOptions,
         tool: searchTool(
           allSelectedToolName,
-          "Search every user-selected web engine with the same concise query and combine attributed sources."
+          "Search every user-selected web engine with the same concise query and combine attributed sources.",
+          Math.min(...clientOptions.map((option) => configuration(option).queryMaxCharacters))
         )
       }]
     : clientOptions.map((option, ordinal) => ({
         options: [option],
         tool: searchTool(
           toolName(option, ordinal),
-          `Search the user-selected engine ${option.optionId} with a concise query.`
+          `Search the user-selected engine ${option.optionId} with a concise query.`,
+          configuration(option).queryMaxCharacters
         )
       }));
 
@@ -399,12 +396,43 @@ export function createSearchPlanToolRouter(input: Readonly<{
     async execute(call, request, options) {
       const route = routes.find((candidate) => candidate.tool.name === call.name);
       if (!route) throw new Error("search_tool_not_selected");
-      const query = queryFromCall(call);
+      const queryLimit = Math.min(
+        ...route.options.map((option) => configuration(option).queryMaxCharacters)
+      );
+      const validation = validateSearchToolArguments(call.arguments, queryLimit);
+      const attachmentDisclosureBlocked =
+        request.attachmentIds.length > 0 || request.attachments.length > 0;
+      const code = attachmentDisclosureBlocked
+        ? "client_search_with_attachments_not_supported"
+        : validation.ok
+          ? null
+          : validation.code;
+      if (code) {
+        return {
+          callId: call.id,
+          content: [{ text: `Search failed: ${code}`, type: "text" }],
+          name: call.name,
+          rawPreview: {
+            finalProviderResponsePreview: { error: code },
+            providerCall: false,
+            requestPreview: {
+              queryCharacters:
+                typeof call.arguments.query === "string"
+                  ? Math.min(call.arguments.query.length, queryLimit + 1)
+                  : 0,
+              selectedOptionIds: route.options.map((option) => option.optionId)
+            }
+          },
+          status: "error",
+          usage: zeroUsage()
+        };
+      }
+      if (!validation.ok) throw new Error("search_query_validation_invariant");
+      const query = validation.query;
       const executions = await Promise.all(route.options.map((option) => executeOne({
         call,
         option,
         query,
-        request,
         runtime: input.runtimes[option.optionId],
         ...(options?.signal ? { signal: options.signal } : {})
       })));

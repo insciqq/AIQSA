@@ -1,6 +1,17 @@
 import type { ModelRunSseEvent, ModelRunUsage } from "@/lib/domain/modelRunEvents";
 import type { ProviderRunRequest } from "@/lib/server/providers/types";
 
+const invalidProviderToolArgumentsKey = "__aiqsa_invalid_provider_tool_arguments__";
+
+export function invalidProviderToolArguments(): Record<string, unknown> {
+  return { [invalidProviderToolArgumentsKey]: true };
+}
+
+export function hasInvalidProviderToolArguments(value: unknown): boolean {
+  return typeof value === "object" && value !== null && !Array.isArray(value) &&
+    (value as Record<string, unknown>)[invalidProviderToolArgumentsKey] === true;
+}
+
 export type RunToolCapability = "mcp" | "web_search";
 
 export type RunTool = {
