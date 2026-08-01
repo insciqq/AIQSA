@@ -2,7 +2,6 @@
 
 Owner: Frontend interaction-motion maintainers
 Scope: Runtime motion-state behavior and reduced-motion ownership; visual timing and composition recipes remain in DESIGN_SYSTEM.md.
-Verified against: 4f51fdd (2026-08-01)
 
 ## Motion
 

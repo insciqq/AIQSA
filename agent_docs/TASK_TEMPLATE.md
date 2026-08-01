@@ -10,6 +10,8 @@ Replace every scaffold placeholder before promotion. Use exact task stems in `De
 
 Keep the task focused on the intended delta. Link current owner documents and code paths instead of restating their contracts. For a complex or multi-session change, this same file is the execution plan and handoff log.
 
+Use `Human review: required` for a queued task that changes `CRITICAL_INVARIANTS.md`; security, privacy, secrets, authentication, tenancy, retention, or public-sharing boundaries; persistent schema/migrations or destructive data behavior; public API or stored-data compatibility; release/publication safeguards; a user-visible product contract not already decided by current living documents; or completion supported only by unavailable verification. An unresolved product decision needed before implementation is a blocker, not end-of-task review: record it in `Blocked by` and obtain the decision first. Routine implementation and refactoring remain review-optional.
+
 ```md
 # <YYYYMMDDHHMMSSmmm>-short-task-title
 
@@ -60,7 +62,7 @@ The observable outcome.
 - [ ] `npm run check:container` when the scope crosses PostgreSQL, container/process, or integration boundaries.
 ```
 
-Before review or completion, replace every planned verification checkbox with a checked result or `- Not run: <check> — <specific reason>`. Evidence containing only `Not run` entries requires `Human review: required`, the `review` status, and explicit operator acceptance.
+Before review or completion, close every `Plan` checkbox, replace `Progress: - Not started.`, and replace `Decisions: - None yet.` with the actual task record (`- None.` is valid when no task-local decision was needed). Replace every planned verification checkbox with a checked result or `- Not run: <check> — <specific reason>`. Evidence containing only `Not run` entries requires `Human review: required`, the `review` status, and explicit operator acceptance.
 
 Set `Durable rationale` to `none` when no task-local decision must survive. Otherwise use `moved to agent_docs/<owner>.md` after incorporating the lasting reason beside the current rule. `pending` blocks review and completion; owner paths must exist and cannot point into `agent_docs/tasks/`.
 

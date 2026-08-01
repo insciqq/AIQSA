@@ -2,7 +2,6 @@
 
 Owner: Frontend visual-system maintainers
 Scope: Current semantic color, typography, geometry, density, depth, motion recipes, component composition, and visual review gates.
-Verified against: 4f51fdd (2026-08-01)
 
 This is the binding visual contract for the current Research Chat and Control Center. Routed `FRONTEND.md` owners define behavior, state, responsive access, and control ownership. This file alone owns visual hierarchy, semantic tokens, component recipes, motion, content presentation, and visual quality gates.
 

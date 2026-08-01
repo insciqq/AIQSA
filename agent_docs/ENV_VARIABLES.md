@@ -2,7 +2,6 @@
 
 Owner: Runtime configuration maintainers
 Scope: Complete current environment-variable inventory, defaults, validation, switch semantics, and supported installation configuration boundaries.
-Verified against: 4f51fdd (2026-08-01)
 
 ## Ownership And Naming
 

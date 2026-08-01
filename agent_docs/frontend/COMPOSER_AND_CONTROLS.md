@@ -2,7 +2,6 @@
 
 Owner: Research Chat interaction maintainers
 Scope: Functional interaction contracts for composer, navigation, next-run controls, receipts, and Details; appearance remains in DESIGN_SYSTEM.md.
-Verified against: 4f51fdd (2026-08-01)
 
 ## Composer
 

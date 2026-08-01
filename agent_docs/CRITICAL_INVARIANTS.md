@@ -2,7 +2,6 @@
 
 Owner: Safety and durable product semantics
 Scope: Rules whose violation can cause data loss, security/privacy exposure, incompatible persisted state, destructive verification, or a key QSA semantic change.
-Verified against: 4f51fdd (2026-08-01)
 
 This is the mandatory short safety read. Product direction belongs in `PRODUCT_PRINCIPLES.md`; current implementation contracts belong in the routed backend/frontend documents; visual geometry belongs in `DESIGN_SYSTEM.md`. Rationale that must survive a task belongs beside the current rule in its owning document.
 
@@ -41,4 +40,3 @@ This is the mandatory short safety read. Product direction belongs in `PRODUCT_P
 2. Completed task files are deleted rather than archived. Open task instances are ignored local state and must never be forced into public Git, release source trees, or images. Shared evidence belongs in ordinary commits, tests, living documents, and release notes; unfinished work belongs only in `agent_docs/tasks/`.
 3. Real provider smokes are allowed only with current operator-provided keys, the smallest scoped context/output, sanitized evidence, and the provider-specific permission in `TESTING.md`; deterministic fakes remain the default.
 4. External dependency-security checks follow `SECURITY.md`; do not apply breaking or destructive remediation merely because an automated command proposes it.
-5. Large-document verification markers are manual review claims. Checks may report a missing or stale owner/scope/commit/date marker but must never refresh one automatically.

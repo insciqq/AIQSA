@@ -23,8 +23,11 @@ function fixture() {
 
 type TaskOptions = {
   blockedBy?: string;
+  decisions?: string;
   dependencies?: string;
   humanReview?: "optional" | "required";
+  plan?: string;
+  progress?: string;
   rationale?: string;
   verification?: string;
 };
@@ -60,15 +63,15 @@ Deliver the fixture outcome.
 
 ## Plan
 
-- [x] Implement the fixture milestone.
+${options.plan ?? "- [x] Implement the fixture milestone."}
 
 ## Progress
 
-- Fixture implementation recorded.
+${options.progress ?? "- Fixture implementation recorded."}
 
 ## Decisions
 
-- No lasting decision.
+${options.decisions ?? "- No lasting decision."}
 
 ## Verification
 
@@ -204,6 +207,44 @@ describe("local unified task ledger", () => {
     const malformed = "20260801120000002-malformed";
     task(root, malformed, "in_progress", { verification: "- Not run: provider smoke" });
     expect(run(root, "list").stderr).toContain("Not run: <check> — <specific reason>");
+  });
+
+  it.each([
+    ["an unchecked Plan item", { plan: "- [ ] Finish the fixture milestone." }, "## Plan has 1 unchecked milestone"],
+    ["the untouched Progress scaffold", { progress: "- Not started." }, "## Progress must replace the scaffold value"],
+    ["the untouched Decisions scaffold", { decisions: "- None yet." }, "## Decisions must replace the scaffold value"]
+  ])("rejects %s before completion and review", (_label, override, expected) => {
+    const root = fixture();
+    const optional = "20260801120000001-optional-readiness";
+    task(root, optional, "in_progress", override);
+
+    const completion = run(root, "complete", optional);
+    expect(completion.status).toBe(1);
+    expect(completion.stderr).toContain(expected);
+
+    rmSync(path.join(root, "agent_docs/tasks", `${optional}.md`));
+    const required = "20260801120000002-required-readiness";
+    task(root, required, "in_progress", { ...override, humanReview: "required" });
+
+    const review = run(root, "review", required);
+    expect(review.status).toBe(1);
+    expect(review.stderr).toContain(expected);
+
+    const body = readFileSync(path.join(root, "agent_docs/tasks", `${required}.md`), "utf8");
+    writeFileSync(
+      path.join(root, "agent_docs/tasks", `${required}.md`),
+      body.replace("Status: in_progress", "Status: review"),
+      "utf8"
+    );
+    expect(run(root, "list").stderr).toContain(expected);
+  });
+
+  it("accepts an explicit no-decisions completion value", () => {
+    const root = fixture();
+    const stem = "20260801120000001-no-decisions";
+    task(root, stem, "in_progress", { decisions: "- None." });
+
+    expect(run(root, "complete", stem).status).toBe(0);
   });
 
   it("requires settled durable rationale and validates moved-to owners", () => {

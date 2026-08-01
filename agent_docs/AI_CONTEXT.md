@@ -52,6 +52,8 @@ Workflow and default ownership remains with `AUTONOMOUS_WORKFLOW.md`, `DECISION_
 
 Current behavior belongs in living contracts. Task-local plans and decisions belong in the open task. Durable rationale that remains useful after completion belongs beside the current rule in its owner. Git history is for archaeology, not runtime contract reconstruction.
 
+A non-generated living document has a hard 40 KiB limit. Prune source-discoverable narration or split only along stable ownership; externally sourced reference material is the sole exemption class and requires an explicit reason in the validator.
+
 ## Data Cautions
 
 Catalog model names, prices, and context windows are operational metadata, not billing authority. Privacy/storage rules come from `CRITICAL_INVARIANTS.md` and `SECURITY.md`; data shape and retention semantics come from `BACKEND.md`.

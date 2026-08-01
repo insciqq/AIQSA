@@ -29,7 +29,7 @@ backlog -> ready -> in_progress -> review
 - `blocked`: progress requires a named dependency, external condition, secret, or human decision.
 - `review`: implementation and verification are complete, but required human review has not yet been accepted.
 
-There is no completed status. Task instances are ignored local checkout state because the only remote is public. Completion deletes the task file and removes its stem from `Depends on` fields in the remaining queue. Tests, living documents, code commits, and release notes are the durable record; new task content under this workflow never enters Git history. Obsolete task artifacts in commits and release tags from before the local-only policy remain grandfathered archaeology.
+There is no completed status. Task instances are ignored local checkout state because the publication target is public. Completion deletes the task file and removes its stem from `Depends on` fields in the remaining queue. Tests, living documents, code commits, and release notes are the durable record; new task content under this workflow never enters Git history, and established public refs are not rewritten as routine task cleanup.
 
 Use the task CLI directly so the workflow does not depend on optional package aliases:
 
@@ -46,6 +46,20 @@ node scripts/task-ledger.mjs list
 `new` creates an ignored local `backlog` scaffold. `promote` requires an executable specification and no open dependencies. `start` enforces one integrating task. `review` requires settled durable rationale and completed verification. `complete` requires the same evidence; a task marked `Human review: required` must pass through `review` and uses `--approved` only after explicit operator acceptance. Verification containing only concrete `Not run` evidence always follows that reviewed path.
 
 For complex or multi-session work, expand the selected task's `Plan`, `Progress`, and `Decisions` sections. The task itself is the executable plan and handoff artifact; do not create a parallel plan file or a completed-plan archive.
+
+## Human Review Policy
+
+Use `Human review: required` for a queued task that changes:
+
+- `CRITICAL_INVARIANTS.md`;
+- security, privacy, secrets, authentication, tenancy, retention, or public-sharing boundaries;
+- persistent schema/migrations or destructive data behavior;
+- public API or stored-data compatibility;
+- release or publication safeguards;
+- a user-visible product contract not already decided by current living documents; or
+- completion supported only by unavailable verification.
+
+An unresolved product decision needed before implementation is a blocker, not an end-of-task review. Record it in `Blocked by` and obtain the decision first. Routine implementation and refactoring remain review-optional.
 
 ## Execution Loop
 

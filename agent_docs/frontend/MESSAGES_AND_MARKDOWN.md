@@ -2,7 +2,6 @@
 
 Owner: Conversation-content UI maintainers
 Scope: Functional message, branch, artifact, disclosure, safe Markdown, code, math, and overflow interaction contracts.
-Verified against: 4f51fdd (2026-08-01)
 
 ## Messages
 

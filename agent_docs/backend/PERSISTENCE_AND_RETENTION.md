@@ -2,7 +2,6 @@
 
 Owner: Persistence contract maintainers
 Scope: Current cross-table constraints, durable ownership, retention, deletion-job, migration, and schema-adjacent behavior; field inventory remains generated.
-Verified against: 4f51fdd (2026-08-01)
 
 ## Retention Maintenance
 

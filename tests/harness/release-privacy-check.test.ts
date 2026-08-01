@@ -26,7 +26,7 @@ function fixture() {
     path.join(root, ".gitignore"),
     "/agent_docs/tasks/*.md\n!/agent_docs/tasks/README.md\n"
   );
-  writeFileSync(path.join(root, ".dockerignore"), "agent_docs\n**/AGENTS.md\n**/CLAUDE.md\n");
+  writeFileSync(path.join(root, ".dockerignore"), "agent_docs\n**/AGENTS.md\n**/CLAUDE.md\n!.env.example\n");
   writeFileSync(path.join(root, "README.md"), "# Public source\n");
   git(root, "init", "-q");
   git(root, "remote", "add", "origin", "https://github.com/insciqq/AIQSA.git");
@@ -119,11 +119,80 @@ describe("release privacy check", () => {
     expect(result.stderr).toContain("missing agent-only exclusion **/AGENTS.md");
   });
 
-  it("requires exactly one public GitHub origin when requested", () => {
+  it("rejects a later Docker negation that may re-include task content", () => {
     const root = fixture();
     const historySince = head(root);
-    git(root, "remote", "add", "legacy", "https://example.invalid/private.git");
+    writeFileSync(
+      path.join(root, ".dockerignore"),
+      "agent_docs\n**/AGENTS.md\n**/CLAUDE.md\n!agent_docs/tasks/private-plan.md\n"
+    );
 
-    expect(runSince(root, historySince, "--require-origin").stderr).toContain("exactly one remote named origin");
+    const result = runSince(root, historySince);
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("later negation !agent_docs/tasks/private-plan.md");
+  });
+
+  it("rejects any later direct re-inclusion inside agent_docs", () => {
+    const root = fixture();
+    const historySince = head(root);
+    writeFileSync(
+      path.join(root, ".dockerignore"),
+      "agent_docs\n**/AGENTS.md\n**/CLAUDE.md\n!agent_docs/private-note.md\n"
+    );
+
+    const result = runSince(root, historySince);
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("later negation !agent_docs/private-note.md");
+  });
+
+  it("treats unsupported Docker character-class negations conservatively", () => {
+    const root = fixture();
+    const historySince = head(root);
+    writeFileSync(
+      path.join(root, ".dockerignore"),
+      "agent_docs\n**/AGENTS.md\n**/CLAUDE.md\n!components/[A]GENTS.md\n"
+    );
+
+    const result = runSince(root, historySince);
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("may re-include protected AGENTS.md");
+  });
+
+  it("rejects later Docker negations for scoped agent instructions", () => {
+    const root = fixture();
+    const historySince = head(root);
+    writeFileSync(
+      path.join(root, ".dockerignore"),
+      "agent_docs\n**/AGENTS.md\n**/CLAUDE.md\n!components/AGENTS.md\n!packages/**/CLAUDE.md\n"
+    );
+
+    const result = runSince(root, historySince);
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("may re-include protected AGENTS.md");
+    expect(result.stderr).toContain("may re-include protected CLAUDE.md");
+  });
+
+  it("allows additional local remotes when official origin is valid", () => {
+    const root = fixture();
+    const historySince = head(root);
+    git(root, "remote", "add", "upstream", "https://example.invalid/contributor-fork.git");
+
+    expect(runSince(root, historySince, "--require-origin").status).toBe(0);
+  });
+
+  it("rejects a missing or wrong official origin", () => {
+    const root = fixture();
+    const historySince = head(root);
+    git(root, "remote", "remove", "origin");
+
+    expect(runSince(root, historySince, "--require-origin").stderr).toContain("needs an origin remote");
+
+    git(root, "remote", "add", "origin", "https://example.invalid/wrong.git");
+
+    expect(runSince(root, historySince, "--require-origin").stderr).toContain("origin fetch URL is not the public AIQSA GitHub repository");
   });
 });

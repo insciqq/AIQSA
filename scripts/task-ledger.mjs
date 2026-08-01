@@ -310,6 +310,30 @@ function durableRationaleErrors(record, root, { requireSettled = false } = {}) {
   return errors;
 }
 
+function completionReadiness(record, root) {
+  const errors = [];
+  const plan = section(record.body, "Plan") ?? "";
+  const uncheckedPlanItems = [...plan.matchAll(/^-\s*\[\s\]\s+\S.*$/gmu)].length;
+  if (uncheckedPlanItems > 0) {
+    errors.push(`${record.relativePath}: ## Plan has ${uncheckedPlanItems} unchecked milestone(s); remove or resolve every item before review or completion`);
+  }
+
+  if ((section(record.body, "Progress") ?? "").trim() === "- Not started.") {
+    errors.push(`${record.relativePath}: ## Progress must replace the scaffold value \`- Not started.\` before review or completion`);
+  }
+  if ((section(record.body, "Decisions") ?? "").trim() === "- None yet.") {
+    errors.push(`${record.relativePath}: ## Decisions must replace the scaffold value \`- None yet.\`; use \`- None.\` when no task-local decision was needed`);
+  }
+
+  const evidence = verificationEvidence(record.body);
+  if (!evidence.complete) {
+    errors.push(`${record.relativePath}: Verification must contain checked results or concrete unavailable evidence and no unchecked checks before review or completion`);
+  }
+  errors.push(...evidence.errors.map((error) => `${record.relativePath}: ${error}`));
+  errors.push(...durableRationaleErrors(record, root, { requireSettled: true }));
+  return { errors, evidence };
+}
+
 export function validateTaskLedger(root = process.cwd()) {
   const ledger = readTaskLedger(root);
   const errors = ledger.tasks.invalidFiles.map(
@@ -366,18 +390,17 @@ export function validateTaskLedger(root = process.cwd()) {
     if (record.status === "in_progress") inProgress += 1;
 
     errors.push(...contentErrors(record));
-    errors.push(...durableRationaleErrors(record, ledger.root, { requireSettled: record.status === "review" }));
+    if (record.status !== "review") {
+      errors.push(...durableRationaleErrors(record, ledger.root));
+    }
     if (["ready", "in_progress", "blocked", "review"].includes(record.status)) {
       errors.push(...readinessErrors(record));
     }
     if (record.status === "review") {
-      const evidence = verificationEvidence(record.body);
       if (record.humanReview !== "required") {
         errors.push(`${record.relativePath}: review status requires Human review: required`);
       }
-      if (!evidence.complete) {
-        errors.push(`${record.relativePath}: review task needs completed verification evidence`);
-      }
+      errors.push(...completionReadiness(record, ledger.root).errors);
     }
   }
 
@@ -489,13 +512,9 @@ export function reviewTask({ root = process.cwd(), reference }) {
     throw new Error(`${record.stem} uses Human review: optional and should complete directly`);
   }
   noOpenDependencies(record);
-  const evidence = verificationEvidence(record.body);
-  if (!evidence.complete) {
-    throw new Error("Verification must contain checked results or concrete unavailable evidence and no unchecked checks before review");
-  }
-  const rationale = durableRationaleErrors(record, ledger.root, { requireSettled: true });
-  if (rationale.length) {
-    throw new Error(rationale.join("\n"));
+  const readiness = completionReadiness(record, ledger.root);
+  if (readiness.errors.length) {
+    throw new Error(readiness.errors.join("\n"));
   }
   writeFileSync(record.path, replaceField(record.body, "Status", "review"), "utf8");
   return record.stem;
@@ -521,16 +540,11 @@ export function completeTask({ root = process.cwd(), reference, approved = false
     throw new Error(`${record.stem} requires explicit operator approval; rerun complete with --approved after acceptance`);
   }
   noOpenDependencies(record);
-  const evidence = verificationEvidence(record.body);
-  if (!evidence.complete) {
-    throw new Error("Verification must contain checked results or concrete unavailable evidence and no unchecked checks before completion");
-  }
+  const readiness = completionReadiness(record, ledger.root);
+  if (readiness.errors.length) throw new Error(readiness.errors.join("\n"));
+  const { evidence } = readiness;
   if (evidence.unavailableOnly && (record.humanReview !== "required" || record.status !== "review" || !approved)) {
     throw new Error("Unavailable-only verification requires required human review, review status, and --approved");
-  }
-  const rationale = durableRationaleErrors(record, ledger.root, { requireSettled: true });
-  if (rationale.length) {
-    throw new Error(rationale.join("\n"));
   }
 
   let cleared = 0;

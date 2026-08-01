@@ -1,129 +1,146 @@
 # FRONTEND IMPLEMENTATION STATE
 
 Owner: Frontend state-ownership maintainers
-Scope: Current source ownership, browser/runtime state boundaries, store responsibilities, and deterministic frontend testability rules.
-Verified against: 4f51fdd (2026-08-01)
+Scope: Stable source ownership, browser/runtime state boundaries, store responsibilities, reconciliation, and deterministic frontend testability.
 
-## Source Ownership
+This document is a semantic ownership map, not a file inventory. Exact modules remain discoverable from source imports, focused tests, and generated inventories.
 
-- `app/page.tsx`: authenticated app entry.
-- `app/login/page.tsx`: server entry for the mode-driven auth workspace; it accepts invite, verification, reset, privacy-safe OAuth outcome, session-expiry reason, and safe internal post-login destination parameters, passes only configured Google/Yandex provider ids to the browser, and never exposes credentials or bootstrap recovery in normal UI.
-- `app/admin/page.tsx`: server-guarded admin entry that redirects anonymous/inactive sessions, shows non-admin denial without fetching admin data, and mounts the admin panel for active admins.
-- `app/s/[shareToken]/page.tsx` and `not-found.tsx`: anonymous server-rendered share lookup by hashed secret token, sanitized snapshot presentation, and the single generic unavailable path.
-- `components/app-shell/PowerAppShell.tsx`: shell composition root for stores, stream/session ports, and focused view/action hooks. Dedicated controllers own workspace menus/drafts, Details/theme, palette/drawer, and confirmation resolution.
-- `components/app-shell/PowerAppShellView.tsx`, `powerAppShellViewContracts.ts`, `TopRail.tsx`, `AccountMenu.tsx`, `MainThreadPane.tsx`, and `ShellLeftPane.tsx`: the Research Chat shell, its exact seven-feature contract, conversation-local edge-action rail, reusable Account session menu, thread/composer pane, and Workspace wiring adapters kept separate from controller logic. At desktop widths the Workspace rail is persistent; compact widths reuse it as a drawer; optional pinned Details becomes a third normal-flow column only at `>=1440px`. `PowerAppShellView` renders exactly one Account owner in the active Workspace composition and serializes compact destination replacement. `ShellLeftPane` routes chat activation through a stable event callback so the memoized left-pane view always calls the latest catalog-aware activation handler.
-- `lib/contracts/admin.ts`, `adminProviders.ts`, `adminSearch.ts`, `adminRelease.ts`, `search.ts`, `toolActivity.ts`, `runProfiles.ts`, `catalog.ts`, `chats.ts`, `email.ts`, `mcp.ts`, `runs.ts`, `settings.ts`, `http.ts`, and `components/app-shell/types.ts`: client-safe admin/provider/Search/release control-plane, Search-plan and nested tool evidence, run-profile, catalog, runtime email, MCP, summary/detail/thread, persisted-run/event, current-user settings, and shared HTTP error contracts plus runtime response decoders and frontend re-exports alongside shell-local notice and Details contracts.
-- `components/app-shell/theme.ts`: local palette registry in the stable order AIQSA (`aiqsa`, dark), Graphite (`graphite`, dark), Verdant (`verdant`, dark), Classic Dark (`classic-dark`, dark), Classic Light (`neutral`, light), and Paper (`paper`, light). `neutral` is the first-use and fully invalid-value fallback; malformed LocalStorage yields to a valid server-rendered cookie theme, while a valid local choice repairs a stale cookie. Runtime and first-paint application always set `data-theme` and `data-color-scheme` together.
-- `components/app-shell/shellApi.ts`, `threadContent.ts`, `workspaceGroups.ts`, `controlDefaults.ts`, `shellFormatting.ts`, `shellStorage.ts`, and `shellValues.ts`: narrow owners for API/SSE shaping, the deduplicated Research Chat `401` session-expiry signal, persisted content and artifact summaries, workspace grouping, catalog control defaults, readable errors/labels, browser preferences and the tab-scoped re-auth draft handoff, and shared value guards. Consumers import these owners directly; there is no broad shell utility barrel.
-- `components/app-shell/usePinnedScroll.ts`: rAF-throttled thread scroll ownership, stable user-turn anchoring with bounded prior-answer context for a new streamed turn, explicit jump-to-latest recovery, and bottom-scroll reset behavior.
-- `components/app-shell/useDialogFocus.ts`: session-scoped dialog focus entry/restoration with configurable autofocus, Tab containment, and Escape handling; keyboard events are owned by their innermost dialog, and a non-dialog inline editor may keep Escape local by preventing its default before the parent hook runs. Nested confirmations contain Tab and consume Escape without closing/trapping the parent, while drawer-to-pinned transitions release modal behavior without restoring focus until the whole Details session closes.
-- `components/app-shell/useRunStream.ts`, `useRunStreaming.ts`, `runState.ts`, `runLifecycleStore.ts`, `runSurfaceStore.ts`, `workspaceStore.ts`, `threadStore.ts`, `composerSessionStore.ts`, `composerControlStore.ts`, and `promptSettingsStore.ts`: shared foreground SSE consumption, tolerant parse warnings, 50ms text buffering, bounded adjacent-token event aggregation, run id/message id reconciliation, keyed per-chat run inspection, thread, and composer-session caches, summary-only workspace state, and focused Zustand state slices.
-- `components/app-shell/messageRunActions.ts`, `messageRunLifecycle.ts`, and `messageEditAction.ts`: composer submit/send/regenerate/edit branch actions. Send and regenerate keep their distinct optimistic/request preparation in the action owner and delegate stream start, HTTP/SSE execution, persisted-id adoption, source-chat reconciliation, terminal notification, failure/cancellation, and controller-safe cleanup to one lifecycle executor. Rejected requests roll back only their owned optimistic rows; ambiguous accepted/network failures force a source-keyed durable refresh, and a later retry first reconciles any still-stranded temporary leaf. Upload and edit awaits retain an explicit source session token; edit admits one PATCH per source session and uses detail refresh, with the decoded committed response as the network-failure fallback. A committed user-message edit then starts the branch answer run through the shared lifecycle executor against the regenerate endpoint.
-- `components/app-shell/workspaceActions.ts`, `folderActions.ts`, `promptSettingsActions.ts`, `runControlsActions.ts`, `settingsMutationCoordinator.ts`, `runLifecycleActions.ts`, and `threadActions.ts`: focused mutation/action modules for workspace, folders, prompts, serialized current-user defaults, run resume/cancel/upload, and branch/share/delete/copy behavior.
-- `components/app-shell/useShellAppearanceController.ts`, `useWorkspaceInteractionController.ts`, and `useShellOverlayController.ts`: focused local owners for Details/theme persistence, workspace menu/edit/project transitions, and palette/mobile-drawer/confirmation/focus/shortcut lifecycles. They expose semantic feature ports rather than one catch-all reducer, context, global store, or root setter bag.
-- `components/app-shell/usePowerAppShellViewModel.ts`, `useCommandPaletteActions.ts`, `useShellUiActions.ts`, `useAnswerNotification.ts`, `useChatContentSearch.ts`, `threadPath.ts`, and `powerAppShellData.ts`: derived shell view state, command dispatch, UI callbacks, local answer alerts, chat-content search, branch-path helpers, and shell-only control/default parsers. Catalog, workspace, chat-detail, and model-run response decoding is owned by `lib/contracts/`.
-- `components/app-shell/TopRail.tsx`, `ShellNotice.tsx`, `LeftChatPane.tsx`, `ThreadMessageRow.tsx`, `ThreadArtifacts.tsx`, `RunReceipt.tsx`, `ProjectSettingsDialog.tsx`, `SettingsDialog.tsx`, and `InspectorPanels.tsx`: focused shell view owners for pane, control, message, Settings, and Details presentation. `ThreadArtifacts` owns the shared collapsed/expanded search, tool-call, citation, reasoning, and context-truncation presentation; it consumes only bounded client-safe summaries. `runReceipt.ts` derives terminal answer facts without fetching or reading current composer defaults, while `RunReceipt.tsx` renders only segments with a truthful destination as controls.
-- `components/app-shell/ShareDialog.tsx`: the modal Share confirmation/management surface. It owns the chat's live-link list fetch, explicit link creation with clipboard feedback, and per-link revocation; `threadActions` only validates the target and opens it.
-- `components/app-shell/sessionActions.ts`: same-origin authenticated logout request, stable failure mapping, and post-revocation `/login` navigation.
-- `components/app-shell/ComposerControls.tsx`, `ComposerSearchPicker.tsx`, `ComposerRunProfiles.tsx`, `ComposerModelPicker.tsx`, `ComposerPromptPicker.tsx`, `ComposerOptionPicker.tsx`, `composerPicker.tsx`, and `runProfiles.ts`: direct model/current-Profile/Search pickers plus More over one complete Run setup and state owner at every viewport, server-projected opaque profile/Search resolution, distinct picker content owners, and one local picker session primitive. `ComposerSearchPicker` owns only presentation over the shared ordered plan: it enforces the visible three-option ceiling and disables incompatible additions while server admission remains authoritative. Applicable Fast/Balanced/Deep profiles remain available through the single direct current-value picker; complete Run setup presents every configured slot as one full-width divided row with purpose, explicit Available/Unavailable/Selected state, and concrete configuration when available. Configured-but-unavailable profiles stay diagnostic-only and disabled there. Inline and nested model picker sessions stay isolated and do not cross the root shell/view contracts.
-- `components/resource-lifecycle/AvailabilityStatus.tsx`: neutral shared owner of the product-wide binary resource-availability status and restoration-action tone; app-shell and Control Center consumers import it without crossing their feature boundaries.
-- `components/app-shell/McpSettingsSection.tsx`, `McpComposerSummary.tsx`, `mcpSettingsApi.ts`, and `mcpSettingsStore.ts`: entitled current-user MCP catalog/readiness, separately presented persistent availability and lifecycle actions, write-only personal fields, per-user OAuth actions/outcomes, runtime tool inventory, visible-tab refresh, and the compact read-only composer aggregate.
-- `components/app-shell/eventLog.ts`: readable Details event digest.
-- `components/auth/AuthLogin.tsx`: the responsive auth workspace for email/password and configured Google/Yandex sign-in, a readable session-expiry reason, privacy-safe OAuth callback outcomes, verified access requests, direct invite acceptance, verification, generic request/check-email outcomes, and password-reset request/completion states.
-- `components/share/PublicShareView.tsx`: focused read-only conversation presentation and the generic unavailable state, both independent of private shell/session assumptions.
-- `components/admin/AdminPanel.tsx`, `AdminConsoleHeader.tsx`, `adminReleaseApi.ts`, `useAdminReleaseStatus.ts`, `AdminSectionFrame.tsx`, and `AdminSectionTabs.tsx`: the Control Center composition boundary and grouped shell. `AdminPanel` mounts the shared dashboard and section controllers for their required lifetimes, wires their contracts to the active destination, and keeps the confirmation host outside the current workspace; it does not own section drafts, transport, or filtering. The release controller starts only after a successful dashboard snapshot, decodes the separate admin endpoint, and fails quietly. The header owns installed/latest presentation only, never update execution. There is no global KPI/attention overview; attention stays with its owning destination.
-- `components/admin/AdminSearchSection.tsx` and `adminSearchApi.ts`: the separate Search catalog/detail/setup/lifecycle workspace and its decoded HTTP client. The section owns only its active draft/task feedback; provider credentials, adapter execution, readiness, and catalog admission remain server-owned.
-- `components/admin/useAdminDashboardResource.ts`, `useAdminActionRunner.ts`, `useAdminFeedback.ts`, `useAdminFieldErrors.ts`, `useAdminConfirmationController.ts`, `useAdminOneTimeInviteLink.ts`, `useAdminSectionNavigation.ts`, and `useAdminOperationalFocus.ts`: focused admin resource/control lifetimes. Successful mutations reconcile through the canonical dashboard before clearing busy state; stale overlapping refreshes cannot replace newer data and still deliver the pending mutation destination, failed refresh preserves the last good dashboard and refresh clock, confirmations close before dispatch, and the ephemeral invite URL remains independent of dashboard refreshes and section switches.
-- `components/admin/useAdminUsersController.ts`, `useAdminGroupsController.ts`, `useAdminProvidersController.ts`, `useAdminEmailController.ts`, `useAdminInvitesController.ts`, and `useAdminAccessRulesController.ts`: focused domain controllers behind narrow section props. Users owns pagination, explicit selection, and keyed membership drafts; one Groups controller owns the canonical Access & groups index and its Overview, Members, Models & search, and Tools detail tasks. The full provider controller is lazy to the Connections task and unmounts with every credential/editor draft on return to Setup; Email owns its independent lazy resource; Invites and Access rules own their persistent forms/filters and exact confirmation requests. Group-assignment drafts are projected and submitted against currently active groups after refresh, so newly archived group ids cannot leak through pending approval, invite, rule, membership, or provider-key assignment actions.
-- `components/admin/AdminUsersSection.tsx`, `AdminAccessGroupsSection.tsx`, `AdminProvidersSection.tsx`, `AdminRunProfilesPanel.tsx`, `AdminMcpServersSection.tsx`, `AdminMcpDraftEditor.tsx`, `AdminMcpGrantPanels.tsx`, `AdminEmailSection.tsx`, `AdminInvitesSection.tsx`, `AdminAccessRulesSection.tsx`, `AdminUsageSection.tsx`, and `AdminSafetySection.tsx`: focused operational presentation modules behind section-specific data, draft/view, status, ref, and semantic-action contracts. Users and Access & groups use full-width indexes, whole-row selection, no automatic first selection, and dedicated full-width details. Provider, run-profile, and SMTP configuration have independent controllers; MCP server lifecycle has its own catalog/controller; ordinary group model/search/server grants stay in the selected Access & groups detail and direct-user/personal-slot MCP grants stay in Users. The `Full access` detail keeps Members editable but renders lifecycle and resource coverage as built-in read-only facts rather than impossible toggles. The modules do not own server authorization or expose stored secret values.
-- `components/admin/adminUserView.ts`, `adminGroupView.ts`, `adminInviteView.ts`, `adminAccessRuleView.ts`, `adminDraftGroups.ts`, `adminSections.ts`, `adminPrimitives.tsx`, and `adminViewUtils.ts`: pure section derivation, subject-owned URL/tab mapping, active-group pruning, shared admin primitives that consume the neutral lifecycle boundary, and display helpers. `AdminTaskWorkspace` remains available only for specialized sections whose existing workflow needs it; Users, Access & groups, and provider Connections own explicit full-width index/detail composition instead of a universal desktop split. `adminApi.ts`, `adminProvidersApi.ts`, `adminRunProfilesApi.ts`, and `adminEmailApi.ts` own same-origin requests, decoding, and stable error mapping; wire schemas remain in `lib/contracts/` rather than frontend copies.
-- `components/chat/Composer.tsx`, `components/app-shell/composerContextStats.ts`, and `components/app-shell/useCompactComposerReadingMode.ts`: the coherent `max-w-reading` composer frame containing edit/disabled state, attachment chips, one stable Message plane, direct model/current-Profile/Search pickers plus More, labeled Tools, the derived circular context gauge and its detail disclosure, Attach, and Send/addressable Stop while preserving Enter/Shift+Enter and IME behavior. On compact or short viewports, the presentation-only reading owner may collapse an empty idle thread-tail composer after a deliberate 48px wheel/touch movement while keeping Message and an addressable streaming Stop visible.
-- `components/chat/MarkdownMessage.tsx`: safe answer markdown for headings, tables, nested lists, blockquotes, emphasis, links, inline code, horizontal rules, and fenced code blocks.
-- `components/command-palette/CommandPalette.tsx` and `commandItems.ts`: Ctrl/Cmd+K command search, current markers, filtering, Arrow navigation, Escape close, and Enter execution.
-- `components/inspector/InspectorTabs.tsx`: Branch/Events tab navigation.
+## Semantic Ownership Map
 
-## Presentation And Runtime State
+| Boundary | Stable owner | Responsibility |
+| --- | --- | --- |
+| Server entries | `app/` pages | Authenticate/authorize entry, normalize safe URL state, and pass least-data initial props into browser workspaces. |
+| Shared wire contracts | `lib/contracts/` | Client-safe request/response types, runtime decoders, stable errors, and summary/detail boundaries. |
+| Research Chat composition | `components/app-shell/PowerAppShell*` | Compose focused stores/controllers into the seven root view contracts; no server repository or leaf implementation ownership. |
+| Workspace, thread, composer, run state | focused `components/app-shell/*Store` modules | Keyed durable projections, optimistic state, operation ownership, stream lifecycle, inspection, and next-run controls. |
+| Shell actions/controllers | focused app-shell action and controller modules | Async mutation coordination, navigation/focus lifetimes, reconciliation, and semantic feature ports. |
+| Conversation presentation | app-shell and `components/chat/` leaves | Thread rows, artifacts, receipts, Markdown, composer, Details, rails, menus, and dialogs. |
+| Account and public share | `components/auth/` and `components/share/` | Mode-driven authentication and sanitized anonymous read-only rendering. |
+| Control Center | `components/admin/` | Administrator shell, resource controllers, index/detail tasks, write-only configuration UI, and decoded admin API clients. |
+| Resource availability | `components/resource-lifecycle/` | Neutral shared Enabled/Disabled presentation and restoration-action tone across app and admin features. |
+| Theme | app-shell theme owner plus root layout | Browser-local palette registry, cookie-backed first paint, and synchronized theme/color-scheme attributes. |
 
-Palette values, typography, geometry, component appearance, responsive density, and visual hard rules live only in `agent_docs/DESIGN_SYSTEM.md`. The behavior/state contracts that styling must preserve are listed below:
+Dependency direction is enforced by `eslint.config.mjs` and harness tests. Browser components do not import server/Prisma/Node-only owners; shared contracts do not depend on consumers; the app shell does not depend on Control Center internals. Avoid broad utility barrels and catch-all controllers: add behavior to the narrow semantic owner that already coordinates it.
 
-- Run activity presents only already-consumed evidence. The edge-action rail and active assistant tail use one shared status: `Working…` while the exact provider stage is unknown, `Searching…` only after a search/citation event, `Answering…` only after answer tokens, and a readable run-error state on failure. They never render speculative waiting stages. Idle/settled decoration is absent; the edge-action control opens Details Events and never auto-opens Details. Selected-off versus backend-skipped Search remains inspectable through run data and completed artifacts rather than a fabricated live sequence.
-- The conversation edge-action rail keeps Workspace first, direct compact New chat beside it, one visually hidden current-chat/`New chat` semantic heading, truthful Pipeline activity, Share, state-aware Details, and `Conversation actions`; it contains no visible chat title and no Account trigger. It is an absolute, pointer-isolated action layer at every width: compact actions use quiet floating groups over a semantic top readability veil, initial thread padding clears them, and scrolled prose may remain faintly visible beneath the veil rather than meeting an opaque banner. Desktop keeps the same top-right overlay without reserving a vertical row. A narrow desktop conversation gives the thread only the rail's right-side footprint, while a wide centered reading measure clears it naturally. The fixed Workspace footer owns the sole visible Account trigger, shows the canonical account email as a contained truncated label, includes that visible identity in the trigger's accessible name, repeats it as noninteractive wrapping identity text inside the menu, and owns Command palette, Prompt library, Settings, Sign out, and entitled Admin. `Conversation actions` owns Copy thread and Branch tree at every width. Model stays in contextual answer metadata and the composer.
-- Active-chat detail loading renders a status skeleton rather than the blank-chat state; deterministic test mode freezes its shimmer.
-- Initial catalog/workspace bootstrap has explicit pending/error/ready ownership with one actionable Retry surface and disabled dependent mutations. The compact Workspace drawer exposes that retry locally while it blocks the conversation; the persistent desktop rail remains status-only because the conversation retry is simultaneously visible. Later refresh failure preserves usable hydrated data. Catalog/workspace retries deduplicate.
-- A persisted chat with no default provider model is a valid workspace row. The wire contract uses paired nullable model/provider values, while the shell normalizes absence into its existing empty local selection and may render an available catalog fallback for the composer without silently persisting that fallback. Legacy paired empty-string responses remain readable during the compatibility window; half-populated pairs fail closed.
-- Active-chat detail failure has one in-thread Retry owner and keeps the composer disabled; it never produces a duplicate shell notice or masquerades as a new chat.
-- The blank-chat and zero-model states appear only after bootstrap readiness and truthfully distinguish an available empty workspace from missing administrator-granted access. The available blank state asks `What are you investigating?` and briefly promises inspectable sources/run evidence without turning the thread into marketing copy.
-- Thread activation lands on the active leaf. A valid explicit Send in the still-active source chat reclaims scroll ownership after its optimistic user/assistant rows appear and brings that newest turn into view, even when the user had been reading older messages; empty/blocked sends and navigation-owned source mismatch do not move another chat. While the assistant is pending or streaming, the turn is anchored on the newest question with a viewport-bounded tail of the preceding answer left above it; the pending state remains below instead of becoming the scroll target. Temporary reading space below the live answer shrinks as it grows, and token growth preserves that turn-start anchor instead of pulling the viewport to the tail. A thread already unpinned by the user keeps its position for passive updates. One icon-only, touch-safe down-arrow action floats just above the composer only when more than 48px of the last real message content extends below the thread viewport; receipt/action-only space, temporary reading space, and terminal answer spacers never create it by themselves. Its exact accessible label is `Jump to latest message`. Activating it or deliberately returning to the bottom hides it and resumes tail following.
-- Queued, live, cancelled, failed, complete-without-text, and normally complete assistant tails remain visually distinct.
-- Token-only updates repaint the live tail, not memoized historical rows, Markdown/artifact blocks, or the sidebar projection.
-- The composer shows approximate current input against the safe input budget after output reserve and margin, names the full model context separately, and shows active-branch provider-reported usage statistics; it never renders estimated dollar costs.
-- Answer completion may use the local oscillator/favicon alert, with the hidden-tab favicon signal ending when the user returns.
-- General-shell and Settings notices have independent owners. Persistent workflow notices remain in flow; transient notices stay bounded; both allow manual dismissal and ordinary success auto-clears. Settings never transplants a general notice and closing it clears only its own channel. General transient notices may stay readable but noninteractive above non-Settings backdrops; Account is the higher active layer.
-- Any Research Chat API `401` raises one sticky shell-level session-expiry signal. Concurrent failures cannot create a redirect storm: the shell snapshots only the active keyed text draft, navigates once to `/login` with the sanitized current path in `next` and a readable `session_expired` reason, then consumes the handoff after the same account signs in. The handoff is tab-scoped, owner-bound, expires after 30 minutes, restores only into an otherwise untouched saved-chat/blank-root/blank-folder session, and never carries attachments.
-- Sign-out timeout/failure has a visible error cue on the closed Account trigger and full detail plus Retry when the menu reopens. If compact Workspace was closed while sign-out was pending, its edge-action entry carries the attention cue until the drawer exposes Account again.
-- Readable errors retain stable backend codes when present. Malformed stream frames are skipped without aborting later frames and create one visible/Details warning.
-- Foreground token deltas are coalesced for React updates while Details retains the aggregated provider chunk count.
+## Server And UI State Boundary
 
-## State Management
+### Server data
 
-Keep server data and UI state separate.
+Server-backed state includes:
 
-Server data:
+- current user/session and the entitlement-filtered provider/model/Search catalog;
+- saved provider/model/Search/prompt defaults, presentation toggles, and per-model run-control drafts;
+- lightweight chat summaries, nested folders/projects, and project instructions;
+- lazily loaded keyed thread snapshots with messages, branch state, usage, and safe artifacts;
+- prompt presets and current-user MCP catalog/readiness;
+- persisted model-run inspection and usage evidence.
 
-- current user/session;
-- user-specific provider/model/search catalog;
-- saved current-user defaults for provider/model/search/prompt, visibility toggles, and per-model run-control drafts;
-- lightweight chat summaries and nested folders/projects with project memory;
-- lazily loaded active chat messages and branch tree, with foreground stream completions patched from `chat_update` instead of a post-answer chat refetch;
-- prompt presets;
-- current-user entitled MCP catalog with preference, configuration/OAuth/runtime readiness, and bounded tool inventory;
-- model run request/response artifacts;
-- usage and active-chat token statistics.
+Exact response decoders run before store mutation. Workspace summaries contain no messages or usage graph, even if a future server response carries unknown fields. Thread data enters only the thread owner; run inspection enters only the run-surface owner.
 
-UI state:
+### Browser-only state
 
-- authentication form drafts;
-- one bounded tab-scoped active-composer text-draft handoff used only across explicit session-expiry re-authentication;
-- open menu/popover;
-- command palette query and selected index;
-- active Details tab and persisted manual Details mode;
-- mobile workspace drawer open/closed state;
-- keyed saved-chat, blank-root, and blank-folder composer sessions containing draft, edit intent, staged attachments, pending send/upload/edit ownership, and local operation feedback;
-- local streaming buffer;
-- Zustand run-lifecycle state for keyed active stream records containing each source chat's run id, optimistic assistant id, and resume ownership, plus cancelled run ids;
-- Zustand run-surface state keyed by chat id for the latest compacted Events timeline and decoded persisted run;
-- Zustand workspace state for catalog, chats, folders, active chat id, pending folder context, active-chat detail loading/error, workspace loading/error, and the explicit initial-hydration readiness bit;
-- Zustand thread state for the active thread messages, active leaf, derived render leaf, visible branch path, and branch fork detection;
-- Zustand composer-session state for keyed draft/edit/attachment and async-operation ownership, plus separate composer-control state for selected provider/model/search/prompt, prompt text, visibility toggles, and per-model control draft values;
-- Zustand MCP-settings resource state for its coalesced catalog refresh, visually stable background and visibility-aware transient-readiness polling, OAuth callback outcome, and server replacement after mutations; background reads retain the last ready/error presentation even when the catalog is empty, while personal input drafts remain local to their server fields;
-- independent local general-shell and Settings-scoped notice channels, including background-run `Check run` recovery in the general channel;
-- folder collapse state;
-- selected local theme id.
+Browser-local state includes:
 
-Startup loads the backend-filtered catalog before activating the remembered workspace chat so chat defaults win over user startup defaults. A valid same-account session-expiry handoff takes priority for its keyed chat/blank destination and is consumed after that session is activated; mismatched, stale, malformed, missing-destination, or already-edited handoffs fail closed without replacing current input. Catalog and workspace loaders retain one in-flight promise each; chat detail requests deduplicate per chat, populate a keyed cache, and merge stale responses over concurrent optimistic/token state without replacing newer summary metadata. Returning to a complete cached chat does not refetch detail. Catalog/workspace recovery remains independently retryable and reapplies active-chat defaults only when the active chat and complete next-run control fingerprint remain unchanged, so stale closures cannot overwrite an intervening user edit. The appearance controller reads the local theme preference and mirrors changes to `aiqsa.theme`; `app/layout.tsx` validates that cookie and server-renders both palette and scheme attributes to avoid a mismatched dark class or visible palette flash without making theme a server-side user setting. Dual-theme Shiki output follows later runtime switches without a second highlight pass.
+- auth drafts and the bounded tab-scoped text-only re-authentication handoff;
+- open menus, popovers, drawers, dialogs, confirmations, palette query/selection, and focus restoration;
+- keyed composer drafts, edit intent, staged attachments, async operation tokens, and local feedback;
+- foreground text buffering and controller ownership;
+- manual Details mode/tab, folder collapse, local notices, and theme choice.
 
-Use React state for local UI. Add a query/cache library only when data invalidation becomes non-trivial.
+Do not persist UI ephemera to the server or expand a global store merely because several leaves render it. Cross-component workflow sessions belong to a focused controller/store; hover, focus, and one-shot presentation state stays local.
 
-### PowerAppShell Ownership Boundary
+## Store Ownership
 
-`PowerAppShell` is a composition/controller boundary. It wires stores, hooks, refs, effects, and view modules together, but is not the owner of server data, branch state, or next-run control state. Its root view boundary has exactly seven keys—`session`, `workspace`, `thread`, `composer`, `details`, `settings`, and `overlays`—instead of inheriting the three-digit union of leaf props. Compile-time leaf coverage and component tests make that key set executable.
+### Workspace
 
-State ownership:
+`workspaceStore` owns the catalog, summary-only chats, folders, active chat ID, pending folder context, blank-workspace transitions, and workspace/detail loading/error/readiness. It patches list metadata without hydrating thread content. Initial catalog/workspace requests deduplicate and have explicit pending/error/ready ownership; later refresh failure preserves the last usable data.
 
-- Run lifecycle: `runLifecycleStore` owns keyed stream producers/controllers, run ids, cancelled run ids, optimistic assistant message ids, and resume ownership. The shell selects `activeStreams[activeChatId]` directly; late background metadata never becomes the selected chat merely because no other stream is active. Future slices should integrate with this store instead of duplicating producer ownership.
-- Run inspection: `runSurfaceStore` owns one in-memory surface per saved chat: the latest compacted Events timeline plus decoded persisted run. Every writer receives the non-null source chat id before asynchronous work; navigation is read-only selection, a new send/regeneration resets only its source, and chat deletion or authoritative non-stream removal evicts only that key. Blank/missing chats share one stable empty snapshot.
-- Workspace data: `workspaceStore` owns catalog, `WorkspaceChatSummary[]` without messages/usage, folders, active chat id, pending folder context, active-chat detail loading/error, workspace loading/error/readiness, blank workspace transitions, and folder/list patching. Exact runtime decoders reject malformed list/create/update/branch summaries before state mutation; workspace responses cannot hydrate `threadStore`, even if a future server adds unknown keys. Thread-only updates never replace the workspace array or any summary identity.
-- Thread/branch data: `threadStore` owns `ThreadSnapshot` entries keyed by chat id: messages, active leaf, and usage. It owns visible-branch derivation, checkout/delete/edit/regenerate repair, inactive foreground streams, terminal merges, and cache eviction after chat deletion. A blank workspace changes selection without clearing cached/background threads; `PowerAppShell` selects the active key for view wiring.
-- Composer sessions: `composerSessionStore` owns keyed saved-chat, blank-root, and blank-folder snapshots containing draft text, editing message id, staged attachments, send/upload generations, one optional pending-edit owner, and operation feedback. Async writers capture a source key/token before awaiting; send snapshots clear visible input immediately and settle by globally unique operation token even after blank-to-chat transfer, while edit ownership is strictly per session. Chat/folder deletion discards late results by removing their source, authoritative refresh evicts remote-missing non-stream chat and blank-folder sessions, and `PowerAppShell` renders only the selected session.
-- Composer controls: `composerControlStore` separately owns selected provider/model/search/prompt for the next run, prompt text, visibility toggles, and current per-model run-control draft values. A provider changes only as the provider half of a selected concrete model; model/profile selection writes its complete control tuple atomically, while profile identity remains derived rather than stored. `runControlsActions`, message/thread/workspace/run-lifecycle actions, and shell UI handlers use the focused owners instead of raw root setter bags; `PowerAppShellView` receives grouped composer-pane actions.
-- Prompt/settings workflows: `promptSettingsStore` owns the active Settings-or-Prompt-library destination, Prompt library editor draft, prompt saving state, delete-confirmation target, and dirty-editor detection. `promptSettingsActions` owns prompt list mutations, default prompt movement/protection, and prompt create/update/duplicate/delete; next-run selection remains solely with the composer/control owner. `PowerAppShellView` receives prompt/settings state and workflows as grouped props instead of raw prompt setters.
-- Local UI only: keep modal/drawer/popover/menu openness, confirmation targets/resolvers, command palette openness/query, model picker openness/query, manual Details mode/tab, folder collapse UI, hover/focus-only state, theme selection, the independent general-shell and Settings notice slots, and one-shot leaf presentation state local unless a later task proves a cross-workflow owner is needed. Coherent cross-component sessions belong to the focused appearance/workspace/overlay controllers; ephemeral leaf state remains in its leaf. No raw `set*` prop crosses the root `PowerAppShellView` or `ShellLeftPane` boundary: local mutation intents are named inside their owning feature contract, while `LeftChatPane` remains the final callback-shaped rendering surface.
+Startup loads the filtered catalog before activating a remembered chat so chat defaults can win over startup defaults. Recovery reapplies chat defaults only if the active chat and next-run control fingerprint are unchanged, preventing stale closures from overwriting user edits.
 
-`LeftChatPane` still uses `sameLeftPaneData` because it remains a memoized prop adapter that intentionally ignores callback identity churn from `ShellLeftPane`. Remove that comparator only if a future slice moves the left pane to direct selector subscriptions or otherwise stabilizes all callback props without reintroducing broad prop comparisons.
+### Threads and branches
+
+`threadStore` owns one `ThreadSnapshot` per saved chat: messages, active leaf, usage, visible branch derivation, and repair after checkout/edit/delete/regenerate. Cached inactive threads survive navigation and blank-workspace transitions. Chat deletion evicts only that chat; stale detail responses merge without replacing newer optimistic/token state or summary metadata.
+
+Active-chat detail loading is a skeleton, not a blank chat. Detail failure has one in-thread Retry owner and disables the composer without creating a duplicate global notice. Returning to a complete cached chat does not refetch it merely because navigation changed.
+
+### Composer sessions and controls
+
+`composerSessionStore` owns keyed sessions for each saved chat plus distinct blank-root and blank-folder destinations. A session contains draft text, edit target, staged attachments, operation generations/tokens, and local feedback.
+
+Async writers capture their source key and token before awaiting. Send snapshots and clears visible input atomically; upload and send exclude each other; a failed send restores captured text only if no newer composer work exists. A successful first send transfers the blank session to the created chat. Deletion/authoritative refresh removes stale sources so late results cannot resurrect them.
+
+`composerControlStore` separately owns next-run provider/model/Search/prompt, prompt text, visibility toggles, and per-model control drafts. Provider changes only as part of a selected concrete model. Model/profile selection writes one complete control tuple; profile identity is derived rather than persisted. Prompt browsing/default selection never mutates the next-run choice.
+
+### Run lifecycle and inspection
+
+`runLifecycleStore` owns active stream/controller records keyed by source chat, run IDs, optimistic assistant IDs, cancellation, and resume ownership. The active view selects only its active chat key; a late background event cannot steal selection.
+
+`runSurfaceStore` owns the latest compacted event timeline and decoded persisted run per saved chat. Every writer captures a non-null source chat before asynchronous work. New send/regenerate resets only that source; navigation is read-only selection; deletion evicts only the deleted key.
+
+Send and regenerate keep their distinct optimistic preparation but share one lifecycle executor for HTTP/SSE work, persisted-ID adoption, source reconciliation, terminal notification, failure/cancellation, and controller-safe cleanup. A rejected request rolls back only its optimistic rows. An ambiguous accepted/network failure performs a source-keyed durable refresh before retry.
+
+Foreground token deltas are buffered for React updates and adjacent event aggregation. Historical rows, Markdown/artifacts, and workspace summaries do not repaint for token-only changes. Malformed SSE frames are skipped, later frames continue, and one readable warning appears in the UI/Details.
+
+### Prompt, Settings, and MCP workflows
+
+The prompt/settings owner tracks the active Settings-or-Prompt-library destination, editor draft, saving/deletion state, and dirty protection. Prompt mutations own catalog changes and default movement; current-composer selection remains with composer controls.
+
+MCP settings owns its coalesced catalog refresh, mutation replacement, OAuth outcome, readiness polling, and last ready/error presentation. Personal input values remain leaf-local and write-only. Background reads do not flash an empty catalog over last-known useful state.
+
+General-shell and Settings notices are separate channels. Closing Settings clears only Settings feedback. Persistent workflow notices remain in flow; transient notices stay bounded and dismissible.
+
+## PowerAppShell Boundary
+
+`PowerAppShell` composes stores, hooks, refs, effects, controllers, and view adapters. It does not own server data, branch logic, next-run state, or leaf drafts.
+
+Its root view contract has exactly seven keys:
+
+- `session`;
+- `workspace`;
+- `thread`;
+- `composer`;
+- `details`;
+- `settings`;
+- `overlays`.
+
+Compile-time coverage and component tests enforce this boundary. Root and left-pane adapters receive grouped semantic actions rather than raw `set*` bags. Leaf adapters receive only their selected feature projection. If a future slice needs shared state, integrate with the focused owner rather than adding a second producer or broad root reducer.
+
+The memoized left-pane adapter intentionally ignores callback identity churn and calls a stable event callback that always reaches the latest catalog-aware activation handler. Remove its custom comparator only after replacing that contract with direct selectors or fully stable callbacks.
+
+## Presentation And Runtime Contracts
+
+### Run truth and thread behavior
+
+- Run activity renders consumed evidence only: `Working…` before a known stage, `Searching…` after search/citation evidence, `Answering…` after answer tokens, and a readable error after failure. It never invents provider stages or auto-opens Details.
+- Queued, live, cancelled, failed, complete-without-text, and ordinary complete assistant tails remain distinguishable. Search selected-off versus backend-skipped stays inspectable in durable run evidence rather than a fabricated live step.
+- Explicit Send in the still-active source chat reclaims scroll ownership after optimistic rows appear. Passive updates never move an unpinned reader. A streaming turn anchors at the newest question with bounded preceding context and does not chase every token to the tail.
+- `Jump to latest message` appears only when real message content extends beyond the viewport threshold; receipt/action spacers do not trigger it. Activation or deliberate return to bottom resumes tail following.
+- Composer context shows approximate current input against the safe input budget, names full model context separately, and shows provider-reported branch usage. It does not estimate currency cost.
+
+### Shell and session ownership
+
+- The conversation edge rail owns Workspace, compact New chat, truthful Pipeline activity, Share, state-aware Details, and Conversation actions. The fixed Workspace footer owns the only visible Account trigger plus Command palette, Prompt library, Settings, Sign out, and entitled Admin.
+- Initial bootstrap has one actionable Retry surface and disables dependent mutations. Blank-chat and zero-model states render only after readiness and distinguish an empty workspace from missing granted access.
+- A persisted chat with no provider/model default is valid. The shell may show a visible catalog fallback without persisting it. Legacy paired empty-string defaults remain readable during compatibility; half-populated pairs fail closed.
+- Any Research Chat `401` creates one sticky session-expiry transition. Concurrent failures navigate once, store only the active text draft in tab-scoped owner-bound state, and restore it after the same account reauthenticates only into an untouched matching destination. The handoff expires after 30 minutes and never includes attachments.
+- Sign-out failure remains visibly attributable to Account and retryable. Answer completion may use the local audio/favicon alert; hidden-tab signaling stops when the user returns.
+
+### Theme and focus
+
+Theme preference is local. A valid LocalStorage value wins after hydration and repairs the same-site cookie; invalid local state yields to the validated server-rendered theme. First paint and runtime changes set `data-theme` and `data-color-scheme` together. Theme never becomes user/account/conversation data.
+
+Dialog focus is session-scoped: entry, Tab containment, Escape ownership, nested confirmation priority, and opener restoration belong to the focused overlay owner. A drawer becoming a pinned panel releases modal behavior without prematurely restoring focus.
 
 ## Testability Rules
 
-- Prefer clear visible labels and stable `data-testid` anchors for critical behavior.
-- Every state must remain understandable with nonessential motion disabled and deterministic fake data/providers.
-- Keep layout ownership stable enough for targeted visual comparison. Use focused browser behavior tests and inspect the affected desktop/mobile states directly for material visual changes.
-- Select proportional checks through `TESTING.md`; do not create exhaustive screenshot inventories for routine slices.
+- Prefer clear visible labels and stable `data-testid` anchors only for critical behavior.
+- Keep every state understandable with nonessential motion disabled and deterministic fake data/providers.
+- Test store/action owners directly for source-key capture, race settlement, malformed payload rejection, and cache isolation.
+- Use focused browser behavior and affected desktop/mobile states for material interaction or visual changes; do not maintain exhaustive screenshot inventories.
+- Select proportional checks through `TESTING.md`.
+
+## Change Rules
+
+- Update this document only when semantic ownership, store boundaries, async reconciliation, or frontend testability changes.
+- Do not add file-by-file inventories, refactor chronology, or exhaustive leaf prop descriptions; source and focused tests own those facts.
+- Visual styling belongs to `DESIGN_SYSTEM.md`; durable user interaction belongs to the appropriate functional frontend owner.

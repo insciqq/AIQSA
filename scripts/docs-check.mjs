@@ -45,7 +45,6 @@ const REQUIRED_DOCS = [
   "agent_docs/PRODUCT_PRINCIPLES.md",
   "agent_docs/PROVIDER_API_NOTES.md",
   "agent_docs/QSA_PIPELINE.md",
-  "agent_docs/RISKS.md",
   "agent_docs/SECURITY.md",
   "agent_docs/TESTING.md",
   "agent_docs/TASK_TEMPLATE.md",
@@ -54,8 +53,26 @@ const REQUIRED_DOCS = [
 ];
 
 const LARGE_LIVING_DOC_BYTES = 12_000;
-const VERIFICATION_MAX_AGE_DAYS = 120;
-const METADATA_EXCLUDED_DIRECTORIES = new Set(["generated", "tasks"]);
+const MAX_LIVING_DOC_BYTES = 40 * 1_024;
+const LIVING_DOC_SIZE_EXEMPTIONS = new Map();
+const DISCOVERY_EXCLUDED_PREFIXES = [
+  ".agents/",
+  ".codex/",
+  ".git/",
+  ".next/",
+  ".turbo/",
+  ".aiqsa/",
+  "agent_docs/generated/",
+  "build/",
+  "coverage/",
+  "dist/",
+  "node_modules/",
+  "out/",
+  "playwright-report/",
+  "prisma/migrations/",
+  "test-results/",
+  "vendor/"
+];
 const OBSOLETE_HARNESS_DIRECTORIES = [
   "agent_docs/ADR",
   "agent_docs/active_tasks",
@@ -65,37 +82,64 @@ const OBSOLETE_HARNESS_DIRECTORIES = [
   "agent_docs/exec_plans",
   "agent_docs/exec-plans"
 ];
-const OBSOLETE_PUBLIC_DOCS_DIRECTORY = "docs";
+const CURRENT_SOURCE_EXTENSIONS = new Set([
+  ".cjs", ".js", ".json", ".jsx", ".mjs", ".prisma", ".sh", ".ts", ".tsx", ".yaml", ".yml"
+]);
+const CURRENT_SOURCE_BASENAMES = new Set([".dockerignore", ".gitignore", "Dockerfile", "Makefile"]);
+const CURRENT_SOURCE_EXCLUDED_FILES = new Set([
+  "scripts/docs-check.mjs",
+  "scripts/release-privacy-check.mjs",
+  "tests/harness/docs-check.test.ts",
+  "tests/harness/release-privacy-check.test.ts"
+]);
 
-function markdownFiles(root) {
+function discoveryExcluded(relative) {
+  if (relative.startsWith("agent_docs/tasks/") && relative !== "agent_docs/tasks/README.md") return true;
+  return DISCOVERY_EXCLUDED_PREFIXES.some((prefix) => relative.startsWith(prefix));
+}
+
+function filesystemFiles(root) {
   const files = [];
-  for (const filename of [
-    ...ROOT_MARKDOWN,
-    ...NESTED_AGENT_INSTRUCTIONS,
-    ...NESTED_CLAUDE_INSTRUCTIONS,
-    ...COLOCATED_MARKDOWN
-  ]) {
-    const target = path.join(root, filename);
-    if (existsSync(target)) files.push(target);
-  }
-
-  const docsRoot = path.join(root, "agent_docs");
   function walk(directory) {
     if (!existsSync(directory)) return;
     for (const entry of readdirSync(directory, { withFileTypes: true })) {
       const target = path.join(directory, entry.name);
+      const relative = portablePath(path.relative(root, target));
+      if (discoveryExcluded(entry.isDirectory() ? `${relative}/` : relative)) continue;
       if (entry.isDirectory()) walk(target);
-      else if (entry.isFile() && entry.name.endsWith(".md")) files.push(target);
+      else if (entry.isFile()) files.push(relative);
     }
   }
-  walk(docsRoot);
+  walk(root);
   return files;
 }
 
-function localLinkErrors(root) {
+function repositoryFiles(root) {
+  const inside = spawnSync("git", ["rev-parse", "--is-inside-work-tree"], { cwd: root, encoding: "utf8" });
+  if (inside.status !== 0) return filesystemFiles(root);
+
+  const listed = spawnSync("git", ["ls-files", "--cached", "--others", "--exclude-standard", "-z"], {
+    cwd: root,
+    encoding: "utf8",
+    maxBuffer: 16 * 1_024 * 1_024
+  });
+  if (listed.status !== 0) {
+    throw new Error(`git ls-files failed during documentation discovery: ${listed.stderr.trim() || "unknown error"}`);
+  }
+  return [...new Set(listed.stdout.split("\0").filter(Boolean).map(portablePath))]
+    .filter((relative) => !discoveryExcluded(relative))
+    .filter((relative) => existsSync(path.join(root, relative)))
+    .sort();
+}
+
+function markdownFiles(root, files) {
+  return files.filter((relative) => relative.endsWith(".md")).map((relative) => path.join(root, relative));
+}
+
+function localLinkErrors(root, markdown) {
   const errors = [];
   const link = /!?\[[^\]]*\]\((<[^>]+>|[^\s)]+)(?:\s+[^)]*)?\)/g;
-  for (const filename of markdownFiles(root)) {
+  for (const filename of markdown) {
     const relative = path.relative(root, filename);
     const body = readFileSync(filename, "utf8");
     for (const match of body.matchAll(link)) {
@@ -123,27 +167,22 @@ function localLinkErrors(root) {
 }
 
 
-function obsoleteHarnessErrors(root) {
+function obsoleteHarnessErrors(root, markdown) {
   const errors = [];
   for (const relative of OBSOLETE_HARNESS_DIRECTORIES) {
     if (existsSync(path.join(root, relative))) {
       errors.push(`${relative}: obsolete harness directory; keep unfinished work only in agent_docs/tasks`);
     }
   }
-  if (existsSync(path.join(root, OBSOLETE_PUBLIC_DOCS_DIRECTORY))) {
-    errors.push(`${OBSOLETE_PUBLIC_DOCS_DIRECTORY}: obsolete top-level human-docs directory; keep the operator minimum in README and colocated ops docs`);
-  }
-
   const forbidden = [
-    { pattern: /(?:agent_docs\/ADR(?:\/|\b)|\bADR\s+\d{3,}\b)/u, label: "obsolete ADR path or numbered ADR reference" },
+    { pattern: /(?:agent_docs\/ADR(?:\/|\b)|\bADR\s+\d{3,}\b)/u, label: "ADR path or numbered ADR reference" },
     { pattern: /\bactive_tasks\b/u, label: "active_tasks directory" },
     { pattern: /\bdone_tasks\b/u, label: "done_tasks directory" },
     { pattern: /\bexec[_-]plans?\b/u, label: "separate execution-plan directory" },
-    { pattern: /agent_docs\/(?:backlog|archive)(?:\/|\b)/u, label: "separate backlog/archive directory" },
-    { pattern: /(?:gitlab\.com|\bGitLab\b)/iu, label: "GitLab publication contract" }
+    { pattern: /agent_docs\/(?:backlog|archive)(?:\/|\b)/u, label: "separate backlog/archive directory" }
   ];
 
-  for (const filename of markdownFiles(root)) {
+  for (const filename of markdown) {
     const relative = portablePath(path.relative(root, filename));
     if (relative.startsWith("agent_docs/tasks/") && relative !== "agent_docs/tasks/README.md") continue;
     const body = readFileSync(filename, "utf8");
@@ -154,38 +193,26 @@ function obsoleteHarnessErrors(root) {
   return errors;
 }
 
-function currentSourceReferenceErrors(root) {
+function currentSourceReferenceErrors(root, files) {
   const errors = [];
-  const scanRoots = ["app", "components", "lib", "ops", "scripts", ".github", "prisma"];
-  const supported = new Set([".cjs", ".js", ".json", ".jsx", ".mjs", ".prisma", ".sh", ".ts", ".tsx", ".yaml", ".yml"]);
-  const excludedFiles = new Set(["scripts/docs-check.mjs", "scripts/release-privacy-check.mjs"]);
   const patterns = [
     /agent_docs\/ADR(?:\/|\b)/u,
     /\bactive_tasks\b/u,
     /\bdone_tasks\b/u,
     /\bexec[_-]plans?\b/u,
-    /agent_docs\/(?:backlog|archive)(?:\/|\b)/u,
-    /(?:gitlab\.com|\bGitLab\b)/iu
+    /agent_docs\/(?:backlog|archive)(?:\/|\b)/u
   ];
 
-  function walk(directory) {
-    if (!existsSync(directory)) return;
-    for (const entry of readdirSync(directory, { withFileTypes: true })) {
-      const target = path.join(directory, entry.name);
-      const relative = portablePath(path.relative(root, target));
-      if (entry.isDirectory()) {
-        if (relative === "prisma/migrations") continue;
-        walk(target);
-      } else if (entry.isFile() && supported.has(path.extname(entry.name)) && !excludedFiles.has(relative)) {
-        const body = readFileSync(target, "utf8");
-        if (patterns.some((pattern) => pattern.test(body))) {
-          errors.push(`${relative}: references obsolete harness, GitLab, or publication state`);
-        }
-      }
+  for (const relative of files) {
+    if (relative.endsWith(".md") || CURRENT_SOURCE_EXCLUDED_FILES.has(relative)) continue;
+    if (!CURRENT_SOURCE_EXTENSIONS.has(path.extname(relative)) && !CURRENT_SOURCE_BASENAMES.has(path.basename(relative))) {
+      continue;
+    }
+    const body = readFileSync(path.join(root, relative), "utf8");
+    if (patterns.some((pattern) => pattern.test(body))) {
+      errors.push(`${relative}: references obsolete harness state`);
     }
   }
-
-  for (const relative of scanRoots) walk(path.join(root, relative));
   return errors;
 }
 
@@ -299,75 +326,54 @@ function instructionErrors(root) {
   return errors;
 }
 
-function metadataErrors(root, now = new Date()) {
+function livingDocumentErrors(root, markdown) {
   const errors = [];
-  const docsRoot = path.join(root, "agent_docs");
+  for (const target of markdown) {
+    const filename = portablePath(path.relative(root, target));
+    if (!filename.startsWith("agent_docs/")) continue;
+    const relative = filename.slice("agent_docs/".length);
+    const topDirectory = relative.split("/", 1)[0];
+    if (topDirectory === "generated" || topDirectory === "tasks") continue;
 
-  function walk(directory) {
-    if (!existsSync(directory)) return;
-    for (const entry of readdirSync(directory, { withFileTypes: true })) {
-      const target = path.join(directory, entry.name);
-      const relative = path.relative(docsRoot, target);
-      const topDirectory = relative.split(path.sep)[0];
-      if (entry.isDirectory()) {
-        if (!METADATA_EXCLUDED_DIRECTORIES.has(topDirectory)) walk(target);
-        continue;
-      }
-      if (
-        !entry.isFile() ||
-        !entry.name.endsWith(".md") ||
-        METADATA_EXCLUDED_DIRECTORIES.has(topDirectory) ||
-        statSync(target).size < LARGE_LIVING_DOC_BYTES
-      ) {
-        continue;
-      }
+    const body = readFileSync(target, "utf8");
+    const size = Buffer.byteLength(body);
+    if (/^Verified against:/mu.test(body)) {
+      errors.push(`${filename}: ordinary living documents must not carry a global Verified against stamp`);
+    }
 
-      const filename = path.relative(root, target);
-      const header = readFileSync(target, "utf8").split(/\r?\n/).slice(0, 12).join("\n");
-      const owner = /^Owner:\s+(.+)$/mu.exec(header)?.[1]?.trim();
-      const scope = /^Scope:\s+(.+)$/mu.exec(header)?.[1]?.trim();
-      const verified = /^Verified against:\s+([0-9a-f]{7,40})\s+\((\d{4}-\d{2}-\d{2})\)$/mu.exec(header);
+    const exemption = LIVING_DOC_SIZE_EXEMPTIONS.get(filename);
+    if (size > MAX_LIVING_DOC_BYTES && !exemption) {
+      errors.push(`${filename}: ${size} bytes exceed the ${MAX_LIVING_DOC_BYTES}-byte non-generated living-document cap`);
+    }
 
-      if (!owner || owner.length > 120) {
-        errors.push(`${filename}: large living document needs a bounded Owner marker in its first 12 lines`);
-      }
-      if (!scope || scope.length < 12 || scope.length > 240) {
-        errors.push(`${filename}: large living document needs a 12-240 character Scope marker in its first 12 lines`);
-      }
-      if (!verified) {
-        errors.push(`${filename}: large living document needs Verified against: <commit> (YYYY-MM-DD) in its first 12 lines`);
-        continue;
-      }
-
-      const verifiedAt = new Date(`${verified[2]}T00:00:00Z`);
-      const nowDay = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
-      const ageDays = Math.floor((nowDay - verifiedAt.getTime()) / 86_400_000);
-      if (Number.isNaN(verifiedAt.getTime()) || verifiedAt.toISOString().slice(0, 10) !== verified[2]) {
-        errors.push(`${filename}: verification marker has an invalid calendar date`);
-      } else if (ageDays < 0) {
-        errors.push(`${filename}: verification marker date is in the future`);
-      } else if (ageDays > VERIFICATION_MAX_AGE_DAYS) {
-        errors.push(`${filename}: stale verification marker (${ageDays} days; maximum ${VERIFICATION_MAX_AGE_DAYS})`);
-      }
+    if (size < LARGE_LIVING_DOC_BYTES) continue;
+    const header = body.split(/\r?\n/).slice(0, 12).join("\n");
+    const owner = /^Owner:\s+(.+)$/mu.exec(header)?.[1]?.trim();
+    const scope = /^Scope:\s+(.+)$/mu.exec(header)?.[1]?.trim();
+    if (!owner || owner.length > 120) {
+      errors.push(`${filename}: large living document needs a bounded Owner marker in its first 12 lines`);
+    }
+    if (!scope || scope.length < 12 || scope.length > 240) {
+      errors.push(`${filename}: large living document needs a 12-240 character Scope marker in its first 12 lines`);
     }
   }
-
-  walk(docsRoot);
   return errors;
 }
 
 export function checkDocs(root = process.cwd()) {
   root = path.resolve(root);
   const errors = [];
+  const files = repositoryFiles(root);
+  const markdown = markdownFiles(root, files);
   for (const filename of REQUIRED_DOCS) {
     const target = path.join(root, filename);
     if (!existsSync(target) || !statSync(target).isFile()) errors.push(`missing required document: ${filename}`);
   }
   errors.push(...instructionErrors(root));
-  errors.push(...obsoleteHarnessErrors(root));
-  errors.push(...currentSourceReferenceErrors(root));
-  errors.push(...metadataErrors(root));
-  errors.push(...localLinkErrors(root));
+  errors.push(...obsoleteHarnessErrors(root, markdown));
+  errors.push(...currentSourceReferenceErrors(root, files));
+  errors.push(...livingDocumentErrors(root, markdown));
+  errors.push(...localLinkErrors(root, markdown));
   errors.push(...validateTaskLedger(root).errors);
   errors.push(...taskPrivacyErrors(root));
   errors.push(...envErrors(root));

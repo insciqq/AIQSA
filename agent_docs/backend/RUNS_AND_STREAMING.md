@@ -2,7 +2,6 @@
 
 Owner: Run lifecycle maintainers
 Scope: Current context replay, visible-answer, title, SSE, usage, cost, and server-side run-security behavior.
-Verified against: 4f51fdd (2026-08-01)
 
 ## Conversation Context Replay
 
@@ -69,7 +68,7 @@ Search-tool `ModelRun` fields and completed lifetime `Chat.total*` counters keep
 
 `Chat.totalInputTokens`, `Chat.totalOutputTokens`, and `Chat.totalReasoningTokens` are lifetime completed-run counters for operational accounting. They intentionally count completed sibling/regenerated runs and are not the user-facing active-branch usage number. The shell's circular context indicator derives its arc from approximate current input divided by the conservative safe input budget; its branch-aware detail disclosure uses `summarizeChatUsageStats` over the active visible branch for provider-reported usage.
 
-Estimated cost is still computed and stored from operator-maintained `ProviderModel.inputTokenPriceMicros` and `outputTokenPriceMicros` only when the historical provider/model identity has one unambiguous deployment; otherwise cost is `null` rather than guessed. Reasoning tokens use the output-token price fallback until the schema grows separate reasoning pricing, and are not added on top of the output-token total. The user-facing shell does not render dollar costs or `est. cost n/a`; a separate backlog slice owns source-labeled provider cost accounting. Do not trust placeholder prices for billing.
+Estimated cost is computed and stored from operator-maintained `ProviderModel.inputTokenPriceMicros` and `outputTokenPriceMicros` only when the historical provider/model identity has one unambiguous deployment; otherwise cost is `null` rather than guessed. Reasoning tokens use the output-token price fallback because separate reasoning pricing is not implemented, and they are not added on top of the output-token total. Source-labeled provider cost accounting is not implemented, so the user-facing shell omits dollar costs and `est. cost n/a`; stored estimates are never billing truth.
 
 ## Security
 

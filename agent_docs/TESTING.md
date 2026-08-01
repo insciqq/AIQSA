@@ -2,7 +2,6 @@
 
 Owner: Verification harness maintainers
 Scope: Current hermetic, container-parity, browser, migration, integration, provider-smoke, and test-authoring workflows and isolation rules.
-Verified against: 4f51fdd (2026-08-01)
 
 ## Verification Map
 
@@ -100,7 +99,7 @@ Add only checks justified by the changed boundary:
 - First-install env-helper changes: run `bash -n prepare-secrets.sh` and `npx vitest run tests/harness/prepare-secrets.test.ts` inside the development app container. Tests must use temporary targets and never invoke the helper against the repository's real `.env`.
 - Backup/restore changes: run one real write-quiesced PostgreSQL/private-object backup and restore it only into explicitly disposable empty targets, then verify database and object bytes.
 - Exposed proxy/deployment changes: validate Nginx before reload and directly smoke HTTPS redirect/TLS, liveness/readiness, login/session, upload storage, SMTP, CSP/browser console, and restart/rollback behavior appropriate to the change.
-- Repository publication or Docker-context changes: run `npm run release:privacy:check`, build the single `release` target, and inspect the image filesystem for agent/task artifacts. The privacy check scans the selected ref tree and every commit after the explicit public task-policy baseline, while intentionally grandfathering older public history, and requires the sole public GitHub `origin`.
+- Repository publication or Docker-context changes: run `npm run release:privacy:check`, build the single `release` target, and inspect the image filesystem for agent/task artifacts. The privacy check scans the selected ref tree and post-policy history, requires the official public GitHub fetch/push target at `origin`, and allows unrelated contributor remotes.
 - Dependency changes: run `npm run security:deps` and review the lockfile/package lifecycle impact.
 - Provider adapter changes: run deterministic adapter tests first; then the small explicit provider smoke only when permitted by `CRITICAL_INVARIANTS.md` and a key is present.
 - Retention/schema changes: run `npm run db:retention:migration:contract`, use `npm run prune -- --dry-run`, and execute deletion only when intentional.

@@ -2,7 +2,6 @@
 
 Owner: Security and privacy maintainers
 Scope: Current auth, session, origin, proxy, secret, network, provider-input, exposure, retention, and dependency-security threat boundaries.
-Verified against: 4f51fdd (2026-08-01)
 
 ## HTTP And Auth Hardening
 
@@ -122,7 +121,7 @@ Storage remains private. MinIO has no anonymous access, filesystem fallback is s
 
 Repository-local `.aiqsa/` state is excluded from Git and Docker build context because it may contain user objects or other private runtime data. Do not copy it into images or caches.
 
-The repository uses one public GitHub `origin`. Open task instances are ignored local state: only `agent_docs/tasks/README.md` and the separate task template are tracked. Public task-history enforcement starts at commit `233b7494c00adde46c12e9d49f29676bf52c0f6a`; older commits and release tags may retain obsolete task artifacts and are intentionally grandfathered because they contain no current task state or known secret incident. The release gate checks the selected release tree plus every commit after that baseline, so a new task committed and later deleted still blocks publication without forcing a disruptive rewrite of established public history. Docker build context excludes `agent_docs/` plus every scoped `AGENTS.md` and `CLAUDE.md`; these files have no build-time or runtime authority. Ref rewrites, force pushes, and release tags require explicit operator authorization and fresh target/ref inspection.
+Task instances are local ignored state and are excluded from Git and Docker; only `agent_docs/tasks/README.md` and the separate task template are tracked. Release privacy checks the selected tree and post-policy history so a task committed and later deleted still blocks publication. Rewriting established public refs is not routine task-cleanup remediation. Docker build context also excludes `agent_docs/` plus every scoped `AGENTS.md` and `CLAUDE.md`; these files have no build-time or runtime authority. Release publication requires the official public GitHub `origin`, while ref rewrites, force pushes, and release tags require explicit operator authorization and fresh target/ref inspection.
 
 ## Provider Catalog Trust
 

@@ -2,7 +2,6 @@
 
 Owner: Provider runtime maintainers
 Scope: Current AIQSA adapter behavior for OpenAI, compatible APIs, Anthropic, native Gemini, and OpenRouter; mutable upstream facts remain in PROVIDER_API_NOTES.md.
-Verified against: 4f51fdd (2026-08-01)
 
 ## Provider Adapters
 

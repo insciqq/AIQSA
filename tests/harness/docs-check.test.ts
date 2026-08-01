@@ -44,7 +44,6 @@ const required = [
   "agent_docs/PRODUCT_PRINCIPLES.md",
   "agent_docs/PROVIDER_API_NOTES.md",
   "agent_docs/QSA_PIPELINE.md",
-  "agent_docs/RISKS.md",
   "agent_docs/SECURITY.md",
   "agent_docs/TESTING.md",
   "agent_docs/TASK_TEMPLATE.md",
@@ -173,15 +172,39 @@ describe("current documentation and harness sanity check", () => {
     expect(check(root).stderr).toContain("broken local Markdown link");
   });
 
-  it("rejects the removed top-level docs and obsolete harness directories", () => {
+  it("allows a current top-level docs directory but rejects obsolete harness directories", () => {
     const root = fixture();
     mkdirSync(path.join(root, "docs"));
+    writeFileSync(path.join(root, "docs/README.md"), "# Public documentation\n");
     mkdirSync(path.join(root, "agent_docs/done_tasks"));
 
     const result = check(root);
 
-    expect(result.stderr).toContain("docs: obsolete top-level human-docs directory");
+    expect(result.stderr).not.toContain("docs: obsolete top-level human-docs directory");
     expect(result.stderr).toContain("agent_docs/done_tasks: obsolete harness directory");
+  });
+
+  it("scans tracked and unignored Markdown anywhere in the repository", () => {
+    const root = fixture();
+    mkdirSync(path.join(root, "packages/example"), { recursive: true });
+    writeFileSync(
+      path.join(root, "packages/example/README.md"),
+      "# Example\n\nSee agent_docs/ADR/0001-old.md.\n"
+    );
+
+    const result = check(root);
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("packages/example/README.md: references obsolete ADR path");
+  });
+
+  it("falls back to repository-wide filesystem discovery outside Git", () => {
+    const root = fixture();
+    rmSync(path.join(root, ".git"), { force: true, recursive: true });
+    mkdirSync(path.join(root, "notes"), { recursive: true });
+    writeFileSync(path.join(root, "notes/README.md"), "See agent_docs/ADR/0001-old.md.\n");
+
+    expect(check(root).stderr).toContain("notes/README.md: references obsolete ADR path");
   });
 
   it("keeps root and nearest instructions within context budgets", () => {
@@ -214,7 +237,7 @@ describe("current documentation and harness sanity check", () => {
     expect(check(root).stderr).toContain("missing .env.example key UNDOCUMENTED_KEY");
   });
 
-  it("reports missing and stale large-document review markers without rewriting", () => {
+  it("requires bounded metadata, rejects global freshness stamps, and caps living-document size", () => {
     const root = fixture();
     const target = path.join(root, "agent_docs/SECURITY.md");
     const body = `# SECURITY\n\n${"security contract text\n".repeat(900)}`;
@@ -228,7 +251,13 @@ describe("current documentation and harness sanity check", () => {
       target,
       `# SECURITY\n\nOwner: Security maintainers\nScope: Current security behavior for the fixture only.\nVerified against: abcdef0 (2000-01-01)\n\n${"security contract text\n".repeat(900)}`
     );
-    expect(check(root).stderr).toContain("stale verification marker");
+    expect(check(root).stderr).toContain("ordinary living documents must not carry a global Verified against stamp");
+
+    writeFileSync(
+      target,
+      `# SECURITY\n\nOwner: Security maintainers\nScope: Current security behavior for the fixture only.\n\n${"security contract text long enough to exceed the cap\n".repeat(1_100)}`
+    );
+    expect(check(root).stderr).toContain("exceed the 40960-byte non-generated living-document cap");
   });
 
   it("reports generated route or schema drift", () => {
@@ -269,18 +298,26 @@ describe("current documentation and harness sanity check", () => {
     expect(check(root).stderr).toContain("lib/current.ts: references obsolete harness");
 
     rmSync(path.join(root, "lib/current.ts"));
+    writeFileSync(path.join(root, "custom.config.ts"), "// See agent_docs/ADR/0001-old.md\n");
+    expect(check(root).stderr).toContain("custom.config.ts: references obsolete harness");
+
+    rmSync(path.join(root, "custom.config.ts"));
     mkdirSync(path.join(root, "prisma/migrations/20260101000000_history"), { recursive: true });
     writeFileSync(
       path.join(root, "prisma/migrations/20260101000000_history/migration.sql"),
       "-- Historical agent_docs/ADR/0001-old.md reference must remain immutable.\n"
     );
+    writeFileSync(
+      path.join(root, "prisma/migrations/20260101000000_history/README.md"),
+      "Historical agent_docs/ADR/0001-old.md reference must remain immutable.\n"
+    );
     expect(check(root).status).toBe(0);
   });
 
-  it("rejects current GitLab publication wording", () => {
+  it("does not treat a product name as an obsolete publication contract", () => {
     const root = fixture();
-    writeFileSync(path.join(root, "README.md"), "Development is published from GitLab.\n");
+    writeFileSync(path.join(root, "README.md"), "A contributor may import work from GitLab.\n");
 
-    expect(check(root).stderr).toContain("obsolete GitLab publication contract");
+    expect(check(root).status).toBe(0);
   });
 });

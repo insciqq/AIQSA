@@ -2,7 +2,6 @@
 
 Owner: Backend contract router
 Scope: Reading map for current API, persistence, run, and provider behavior; executable route and schema inventories are generated from source.
-Verified against: 4f51fdd (2026-08-01)
 
 This file is a router, not a second endpoint or schema manifest. Read only the owner needed for the change:
 

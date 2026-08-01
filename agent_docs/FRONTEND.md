@@ -2,7 +2,6 @@
 
 Owner: Frontend contract router
 Scope: Reading map for current UI behavior, state, responsive access, and visual ownership; detailed contracts live only in the linked bounded documents.
-Verified against: 4f51fdd (2026-08-01)
 
 This file is a router, not a second copy of frontend behavior. Read only the owner needed for the change:
 

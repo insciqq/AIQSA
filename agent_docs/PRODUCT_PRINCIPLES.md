@@ -2,7 +2,6 @@
 
 Owner: Product direction
 Scope: Stable product intent and prioritization guidance that informs implementation choices without replacing safety invariants or executable contracts.
-Verified against: 4f51fdd (2026-08-01)
 
 ## Direction
 

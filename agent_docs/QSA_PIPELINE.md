@@ -2,7 +2,6 @@
 
 Owner: QSA pipeline maintainers
 Scope: Current product-level Question, Search, Answer, tool, evidence, transparency, and sharing semantics across provider-neutral runs.
-Verified against: 4f51fdd (2026-08-01)
 
 ## Product Thesis
 

@@ -35,19 +35,92 @@ function forbiddenTaskPath(filename) {
   return (filename === TASK_PATH || filename.startsWith(`${TASK_PATH}/`)) && filename !== ALLOWED_TASK_FILE;
 }
 
+function dockerPatternExpression(pattern) {
+  const normalized = pattern.replace(/^\/+|\/+$/gu, "");
+  let source = "";
+  for (let index = 0; index < normalized.length; index += 1) {
+    const character = normalized[index];
+    if (character === "*") {
+      if (normalized[index + 1] === "*") {
+        index += 1;
+        if (normalized[index + 1] === "/") {
+          index += 1;
+          source += "(?:.*/)?";
+        } else {
+          source += ".*";
+        }
+      } else {
+        source += "[^/]*";
+      }
+    } else if (character === "?") {
+      source += "[^/]";
+    } else {
+      source += character.replace(/[\\^$+?.()|{}[\]]/gu, "\\$&");
+    }
+  }
+  const prefix = normalized.includes("/") ? "^" : "(?:^|/)";
+  return new RegExp(`${prefix}${source}(?:$|/)`, "u");
+}
+
+function protectedCandidates(pattern, basename) {
+  const normalized = pattern.replace(/^\/+|\/+$/gu, "");
+  const wildcard = normalized.search(/[*?[]/u);
+  if (wildcard < 0 && path.posix.basename(normalized).includes(".") && path.posix.basename(normalized) !== basename) {
+    return [basename, `nested/${basename}`];
+  }
+  const literalPrefix = normalized.slice(0, wildcard < 0 ? normalized.length : wildcard).replace(/\/+$/u, "");
+  const slash = literalPrefix.lastIndexOf("/");
+  const directory = slash >= 0 ? literalPrefix.slice(0, slash + 1) : (wildcard < 0 ? `${literalPrefix}/` : "");
+  return [...new Set([
+    basename,
+    `nested/${basename}`,
+    directory ? `${directory}${basename}` : "",
+    literalPrefix ? `${literalPrefix}/${basename}` : ""
+  ].filter(Boolean))];
+}
+
+function negationMayInclude(pattern, protectedPath) {
+  const normalized = pattern.replace(/^\/+|\/+$/gu, "");
+  // Keep the privacy policy deliberately conservative for Docker patterns that
+  // this small checker does not fully interpret.
+  if (/[\\[]/u.test(normalized)) return true;
+  const expression = dockerPatternExpression(pattern);
+  if (protectedPath === "agent_docs") {
+    if (normalized === "agent_docs" || normalized.startsWith("agent_docs/")) return true;
+    return ["agent_docs", "agent_docs/SECURITY.md", "agent_docs/tasks/private-plan.md"]
+      .some((candidate) => expression.test(candidate));
+  }
+  return protectedCandidates(pattern, protectedPath).some((candidate) => expression.test(candidate));
+}
+
 function dockerPrivacyErrors(root) {
   const filename = path.join(root, ".dockerignore");
   if (!existsSync(filename)) return ["missing Docker privacy contract: .dockerignore"];
-  const entries = new Set(
-    readFileSync(filename, "utf8")
-      .split(/\r?\n/u)
-      .map((line) => line.trim())
-      .filter((line) => line && !line.startsWith("#"))
-      .map((line) => line.replace(/\/$/u, ""))
-  );
+  const rules = readFileSync(filename, "utf8")
+    .split(/\r?\n/u)
+    .map((line, index) => ({ index, value: line.trim() }))
+    .filter(({ value }) => value && !value.startsWith("#"))
+    .map(({ index, value }) => ({
+      index,
+      negated: value.startsWith("!"),
+      pattern: value.replace(/^!/u, "").replace(/\/$/u, "")
+    }));
   const errors = [];
-  for (const required of ["agent_docs", "**/AGENTS.md", "**/CLAUDE.md"]) {
-    if (!entries.has(required)) errors.push(`.dockerignore: missing agent-only exclusion ${required}`);
+  for (const [required, protectedPath] of [
+    ["agent_docs", "agent_docs"],
+    ["**/AGENTS.md", "AGENTS.md"],
+    ["**/CLAUDE.md", "CLAUDE.md"]
+  ]) {
+    const exclusion = rules.filter((rule) => !rule.negated && rule.pattern === required).at(-1);
+    if (!exclusion) {
+      errors.push(`.dockerignore: missing agent-only exclusion ${required}`);
+      continue;
+    }
+    for (const rule of rules) {
+      if (rule.index > exclusion.index && rule.negated && negationMayInclude(rule.pattern, protectedPath)) {
+        errors.push(`.dockerignore: later negation !${rule.pattern} may re-include protected ${protectedPath}`);
+      }
+    }
   }
   return errors;
 }
@@ -101,8 +174,8 @@ function policyHistoryErrors(root, refs, historySince) {
 
 function remoteErrors(root) {
   const names = git(root, ["remote"]).split(/\r?\n/u).filter(Boolean).sort();
-  if (names.length !== 1 || names[0] !== "origin") {
-    return [`public repository must have exactly one remote named origin; found ${names.join(", ") || "none"}`];
+  if (!names.includes("origin")) {
+    return [`public repository needs an origin remote for release publication; found ${names.join(", ") || "none"}`];
   }
   const fetchUrl = git(root, ["remote", "get-url", "origin"]);
   const pushUrl = git(root, ["remote", "get-url", "--push", "origin"]);
