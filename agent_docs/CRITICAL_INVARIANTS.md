@@ -16,7 +16,7 @@
 12. Raw user request/response logs are not persisted locally by default.
 13. Native OpenAI integration uses Responses API with background-capable, stored, manual context replay. First-class Gemini uses only native stateless Interactions v1 with no compatible fallback. Administrator-managed compatible endpoints use an explicit protocol; the simple Custom path fixes it to Chat Completions. Deployment IDs and upstream model names are not durable invariants.
 14. Available providers, models, and search strategies are loaded from the backend catalog for the current user.
-15. `Share (anonymously)` creates a sanitized immutable snapshot, not public access to a private live chat.
+15. `Share (anonymously)` creates a sanitized immutable snapshot, not public access to a private live chat. Public-share responses are dynamically repository-authorized and non-cacheable on both success and unavailable paths; crawler directives are defense in depth, while the bearer token plus expiry/revocation remains the authorization boundary.
 16. Uploaded attachments are private and are not exposed by public share snapshots.
 17. After an actual native Gemini Google Search call, the grounded answer, Search Suggestions, citation Links, and search result/signature data are live-only: durable state keeps only provenance, usage/status, and a neutral placeholder; later context and anonymous shares cannot recover or reuse the answer.
 

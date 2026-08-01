@@ -1,6 +1,7 @@
 import type { RequestAuthResolver } from "../auth/requestAuth";
 import { createShareToken, hashShareToken } from "./tokens";
 import type { PublicShareSnapshot } from "../../domain/shareSnapshot";
+import { applyPublicSharePrivacyHeaders } from "./privacy";
 
 export type ShareRecord = {
   createdAt?: Date | string;
@@ -158,12 +159,16 @@ export function createGetPublicShareHandler(deps: Pick<ShareHandlerDeps, "reposi
     const share = await deps.repository.findPublicShare(hashShareToken(params.shareToken), new Date());
 
     if (!share) {
-      return Response.json({ error: "share_not_found" }, { status: 404 });
+      const response = Response.json({ error: "share_not_found" }, { status: 404 });
+      applyPublicSharePrivacyHeaders(response.headers);
+      return response;
     }
 
-    return Response.json({
+    const response = Response.json({
       share: serializePublicShare(share)
     });
+    applyPublicSharePrivacyHeaders(response.headers);
+    return response;
   };
 }
 

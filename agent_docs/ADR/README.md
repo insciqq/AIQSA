@@ -60,6 +60,7 @@ Every ADR also declares `Amends: none` or a comma-separated list of earlier ADR 
 - `0049-local-ignored-completion-journal.md` - keeps completed task evidence in the local ignored ledger, forbids force-publishing its entries, and assigns shared completion history to normal commits, living docs, ADRs, and release notes.
 - `0050-client-search-minimum-disclosure.md` - makes client Search requests independently query-only, rejects untrusted malformed or oversized tool arguments before I/O, and disables client Search for attachment-bearing runs until explicit disclosure consent exists.
 - `0051-durable-auth-rate-limits-and-exact-proxy-identity.md` - makes auth admission atomic and durable in PostgreSQL, removes shared unknown-client buckets, and accepts client IP identity only from one exact validated overwriting-proxy chain.
+- `0052-public-share-non-cache-and-non-indexing-boundary.md` - makes public share API/page outcomes dynamically repository-authorized and non-cacheable, adds noindex/noarchive/no-referrer defense in depth, and keeps bearer token plus expiry/revocation as the security boundary.
 
 ## Superseded ADRs
 

@@ -11,6 +11,7 @@ import {
   isProtectedMutationPath
 } from "./lib/server/auth/csrf";
 import { applyRuntimeSecurityHeaders } from "./lib/server/security/headers";
+import { applyPublicSharePrivacyHeaders } from "./lib/server/shares/privacy";
 
 const publicPrefixes = [
   "/_next",
@@ -42,8 +43,20 @@ function isPublicPath(pathname: string): boolean {
   return publicPrefixes.some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`));
 }
 
+function isPublicSharePath(pathname: string): boolean {
+  return ["/s", "/api/public-shares"].some(
+    (prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`)
+  );
+}
+
 function secured(response: NextResponse): NextResponse {
   applyRuntimeSecurityHeaders(response.headers);
+  return response;
+}
+
+function securedPublicShare(response: NextResponse): NextResponse {
+  secured(response);
+  applyPublicSharePrivacyHeaders(response.headers);
   return response;
 }
 
@@ -68,7 +81,8 @@ export function proxy(request: NextRequest) {
   }
 
   if (isPublicPath(pathname)) {
-    return secured(NextResponse.next());
+    const response = NextResponse.next();
+    return isPublicSharePath(pathname) ? securedPublicShare(response) : secured(response);
   }
 
   if (request.cookies.has(SESSION_COOKIE_NAME)) {

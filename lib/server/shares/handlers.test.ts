@@ -11,6 +11,7 @@ import {
 } from "./handlers";
 import { hashShareToken } from "./tokens";
 import { buildPublicShareSnapshot } from "../../domain/shareSnapshot";
+import { PUBLIC_SHARE_CACHE_CONTROL, PUBLIC_SHARE_ROBOTS_POLICY } from "./privacy";
 
 const config = getAuthConfig({
   AIQSA_BOOTSTRAP_AUTH_TOKEN: "token",
@@ -24,6 +25,12 @@ const auth = createTestAuth({
 
 function authCookie() {
   return auth.cookie;
+}
+
+function expectPublicSharePrivacyHeaders(response: Response) {
+  expect(response.headers.get("Cache-Control")).toBe(PUBLIC_SHARE_CACHE_CONTROL);
+  expect(response.headers.get("Referrer-Policy")).toBe("no-referrer");
+  expect(response.headers.get("X-Robots-Tag")).toBe(PUBLIC_SHARE_ROBOTS_POLICY);
 }
 
 function createMemoryRepository() {
@@ -240,6 +247,7 @@ describe("share route handlers", () => {
     });
 
     expect(openResponse.status).toBe(200);
+    expectPublicSharePrivacyHeaders(openResponse);
     await expect(openResponse.json()).resolves.toMatchObject({
       share: {
         snapshot: {
@@ -281,7 +289,28 @@ describe("share route handlers", () => {
       }
     });
     expect(revokedResponse.status).toBe(404);
+    expectPublicSharePrivacyHeaders(revokedResponse);
   });
+
+  it.each(["expired", "unknown"])(
+    "keeps an unavailable %s share response private and uncached",
+    async () => {
+      const repository: ShareRepository = {
+        createChatShare: vi.fn(),
+        findPublicShare: vi.fn(async () => null),
+        listChatShares: vi.fn(async () => []),
+        revokeShare: vi.fn()
+      };
+      const GET = createGetPublicShareHandler({ repository });
+
+      const response = await GET(new Request("http://app.local/api/public-shares/unavailable"), {
+        params: { shareToken: "unavailable" }
+      });
+
+      expect(response.status).toBe(404);
+      expectPublicSharePrivacyHeaders(response);
+    }
+  );
 
   it("lists only the chat's live links and drops revoked ones", async () => {
     const { repository } = createMemoryRepository();

@@ -96,7 +96,7 @@ Core ownership rules:
 - composite database relations require every message parent and active-leaf pointer to remain inside its owning chat, while grant-shape checks require one principal and one provider/model/search target;
 - one active run is allowed per chat while different chats may run concurrently;
 - uploads remain private storage objects and are resolved into provider payloads only after ownership/capability checks;
-- a public share is a sanitized immutable snapshot, never a pointer that exposes live private chat state;
+- a public share is a sanitized immutable snapshot, never a pointer that exposes live private chat state; its bearer-token API/page path is dynamically repository-authorized on every request and is never a framework or intermediary cache source;
 - normalized operational previews/events are persisted, while raw provider payloads are not stored locally by default.
 
 Exact table constraints, migration rules, retention, branch repair, usage accounting, attachment processing, and share sanitization live in `BACKEND.md`; security limits and privacy boundaries live in `SECURITY.md`.
