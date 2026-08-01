@@ -54,6 +54,7 @@
 15. Compatible no-auth is explicit private/local configuration backed by a tested immutable version with a null envelope and a per-request non-revoked-version guard. Missing legacy authentication mode remains bearer; empty/sentinel secrets and implicit keyless fallback are forbidden.
 16. A provider model is an answer choice only when its active immutable configuration is answer-selectable. Missing legacy values default to selectable; an explicit technical-only model is excluded from answer catalogs, grants, profiles, and admission even under Full access, while typed Search admission may still resolve it without answer-model entitlement.
 17. Client Search is a minimum-disclosure boundary: its provider request can contain only one validated bounded query plus server-owned policy/correlation fields, never answer context or attachment data. Until separate informed per-run disclosure consent exists, attachments and client Search are mutually exclusive; provider-hosted Search inside the selected answer provider is unaffected.
+18. Authentication rate limits are atomic durable PostgreSQL state keyed only by installation-secret HMAC identifiers. Account/token protection never depends on client IP, and a client-only bucket may exist only for an exact validated forwarding chain from the explicitly trusted overwriting proxy; missing identity must never collapse users into a shared sentinel.
 
 ## Frontend Invariants
 

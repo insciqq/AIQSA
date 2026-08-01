@@ -51,8 +51,11 @@ describe("auth config", () => {
   });
 
   it("keeps forwarded IP trust disabled unless explicitly enabled", () => {
-    expect(getAuthConfig({ NODE_ENV: "test" }).trustForwardedFor).toBe(false);
-    expect(getAuthConfig({ NODE_ENV: "test" }).trustedProxyCount).toBe(0);
+    expect(getAuthConfig({ NODE_ENV: "test" })).toMatchObject({
+      trustForwardedFor: false,
+      trustedProxyConfigurationValid: true,
+      trustedProxyCount: 0
+    });
     expect(
       getAuthConfig({
         AIQSA_TRUST_PROXY_HEADERS: "true",
@@ -72,6 +75,23 @@ describe("auth config", () => {
         NODE_ENV: "test"
       }).trustedProxyCount
     ).toBe(2);
+    expect(
+      getAuthConfig({
+        AIQSA_TRUSTED_PROXY_COUNT: "9",
+        AIQSA_TRUST_PROXY_HEADERS: "true",
+        NODE_ENV: "test"
+      })
+    ).toMatchObject({
+      trustForwardedFor: true,
+      trustedProxyConfigurationValid: false,
+      trustedProxyCount: 0
+    });
+    expect(
+      getAuthConfig({
+        AIQSA_TRUSTED_PROXY_COUNT: "1",
+        NODE_ENV: "test"
+      }).trustedProxyConfigurationValid
+    ).toBe(false);
   });
 
   it("separates session auth readiness from bootstrap token availability", () => {

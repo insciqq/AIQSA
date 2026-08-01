@@ -182,12 +182,21 @@ docker compose -f docker-compose.dev.yml exec -T \
 Migration contracts operate only on temporary databases or in-memory fixtures. Select the script owned by the changed migration; current entry points include:
 
 ```bash
+npm run db:auth-rate-limit:migration:contract
 npm run db:gemini:migration:contract
 npm run db:provider:migration:contract
 npm run db:full-access:migration:contract
 npm run db:control-plane:migration:contract
 npm run db:retention:migration:contract
 npm run db:search:migration:contract
+```
+
+Durable authentication admission additionally has an opt-in two-client PostgreSQL concurrency/restart case:
+
+```bash
+docker compose -f docker-compose.dev.yml exec -T \
+  -e AIQSA_AUTH_RATE_LIMIT_INTEGRATION_TEST=1 app \
+  npx vitest run lib/server/auth/prismaRateLimit.integration.test.ts
 ```
 
 The Search control-plane migration contract starts from a pre-ADR-0043 schema and proves singleton defaults, grants, accepted provider bindings, and historical Search runs survive while every concrete option gains an active revision and new multi-binding constraints admit several technical engines. It then applies the inherited-preference migration and proves existing non-null plans remain personal, the installation policy starts versioned at Off, `defaultSearchPlan` becomes nullable with no SQL default, and a newly inserted settings row inherits through null. Search changes additionally require deterministic preferred/effective plan and combination coverage, version-fenced admin policy/lifecycle tests, catalog/settings/admission, strict query-only adapter and redacted-preview tests, zero-call malformed/empty/extra/oversized argument cases, attachment/client-Search incompatibility across preparation/live/recovery, provider-hosted attachment parity, fan-out/recovery, accepted-run preference persistence, composer, and Control Center tests. Provider-operation changes additionally prove lifecycle merge/bounds, safe tool-result plus durable-call projection, malformed contract rejection, historical-unavailable behavior, and non-duplicated nested browser disclosure. Provider-model role changes must prove legacy answer defaults, technical-only exclusion from every answer/grant/profile projection and direct admission, plus continued technical Search listing and admission without an answer-model grant. Browser coverage proves organization/personal/Off behavior, retained unavailable engines across model switches/reload, direct wide/tall versus More-only short Reasoning, the real Search destination, nested Search trace, and viewport-bounded Run setup. Real gateway proof remains one explicit sanitized operator-authorized smoke, never routine Vitest or Playwright input.

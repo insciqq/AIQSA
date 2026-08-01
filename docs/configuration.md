@@ -147,7 +147,7 @@ AIQSA_COOKIE_SECURE=
 
 `AIQSA_APP_BASE_URL` is the browser-visible origin used for authentication links and OAuth callbacks. `AIQSA_BIND_ADDRESS` and `AIQSA_PORT` control only the host address published by Docker.
 
-When `AIQSA_COOKIE_SECURE` is blank, AIQSA derives it from the base URL: HTTPS enables secure cookies and HTTP disables them. An explicit value must agree with the URL or readiness fails. Keep the default loopback bind unless a reverse proxy or trusted private network is providing access.
+When `AIQSA_COOKIE_SECURE` is blank, AIQSA derives it from the base URL: HTTPS enables secure cookies and HTTP disables them. An explicit value must agree with the URL or readiness fails. Keep the default loopback bind; any non-loopback browser-visible origin requires the supported trusted reverse-proxy boundary below.
 
 ## Email (optional)
 
@@ -194,11 +194,11 @@ Register `${AIQSA_APP_BASE_URL}/api/auth/oauth/yandex/callback` and grant `login
 
 These Google/Yandex credentials are used only for sign-in, and AIQSA does not retain those providers' access or refresh tokens. MCP OAuth is configured independently on each remote MCP server by an administrator; its per-user tokens are encrypted with `AIQSA_ENCRYPTION_KEY`. A public OAuth setup normally needs a domain and HTTPS, but neither is required when OAuth is disabled.
 
-## Reverse proxy (optional)
+## Reverse proxy
 
-Set `AIQSA_TRUST_PROXY_HEADERS=1` only when AIQSA is behind a trusted proxy that overwrites client-supplied forwarding headers. `AIQSA_TRUSTED_PROXY_COUNT` defaults to one trusted hop. A direct local installation should leave both blank.
+Direct loopback installation leaves both proxy variables blank. For every non-loopback `AIQSA_APP_BASE_URL`, readiness requires `AIQSA_TRUST_PROXY_HEADERS=1` behind a trusted proxy chain whose Internet-facing edge removes client-supplied forwarding headers. `AIQSA_TRUSTED_PROXY_COUNT` defaults to one and must equal the exact number of IP entries delivered in `X-Forwarded-For` (maximum eight). Missing, extra, or malformed entries are not accepted as client identity.
 
-For an HTTPS reverse proxy, use an `https://` base URL, set `AIQSA_COOKIE_SECURE=1`, keep `AIQSA_BIND_ADDRESS=127.0.0.1`, and configure the proxy to forward to `AIQSA_PORT`.
+For the bundled one-hop Nginx template, use an `https://` base URL, set `AIQSA_COOKIE_SECURE=1`, keep `AIQSA_BIND_ADDRESS=127.0.0.1`, set the count to `1`, and configure the proxy to forward to `AIQSA_PORT`. Do not replace its overwriting `X-Forwarded-For $remote_addr` rule with an appending rule.
 
 ## Upload and container limits
 

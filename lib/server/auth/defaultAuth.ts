@@ -3,6 +3,7 @@ import { createPrismaAdminRepository } from "./adminRepository";
 import { createDispatcherAuthMailer } from "./mailer";
 import { createPrismaOAuthIdentityRepository } from "./oauthRepository";
 import { createPrismaPasswordAuthRepository } from "./passwordRepository";
+import { createPrismaLoginRateLimiter } from "./prismaRateLimit";
 import { createPrismaAuthRegistrationRepository } from "./registrationRepository";
 import { createPrismaAuthSessionStore } from "./prismaSessions";
 import { createRequestAuthResolver } from "./requestAuth";
@@ -16,6 +17,10 @@ export const oauthIdentityRepository = createPrismaOAuthIdentityRepository(prism
 export const passwordAuthRepository = createPrismaPasswordAuthRepository(prisma);
 export const authRegistrationRepository = createPrismaAuthRegistrationRepository(prisma);
 export const authSessionStore = createPrismaAuthSessionStore(prisma);
+export const authRateLimiter = createPrismaLoginRateLimiter({
+  keySecret: () => getAuthConfig().sessionSecret,
+  prisma
+});
 
 export const resolveRequestAuth = createRequestAuthResolver({
   getConfig: () => getAuthConfig(),

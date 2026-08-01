@@ -1,9 +1,13 @@
 import type { AuthConfig } from "./config";
-import { getLoginRateLimitKey } from "./handlers";
+import { getLoginRateLimitKey } from "./clientIdentity";
 import { deliverAuthEmail, type AuthMailer } from "./mailer";
 import { hashPassword as hashPasswordDefault, isPlausibleEmail, normalizeAuthEmail, validatePassword } from "./password";
 import type { AuthRegistrationRepository } from "./registrationRepository";
-import { createFixedWindowLoginRateLimiter, type LoginRateLimiter } from "./rateLimit";
+import {
+  createFixedWindowLoginRateLimiter,
+  resolveLoginRateLimiter,
+  type LoginRateLimiter
+} from "./rateLimit";
 import {
   createSessionSetCookie,
   createSessionToken,
@@ -113,42 +117,28 @@ function inviteAcceptanceBody(body: unknown): { displayName: string; password: s
 }
 
 function credentialRateLimitKey(input: {
-  config: AuthConfig;
   email: string;
   prefix: string;
-  request: Request;
 }): string {
-  const client = getLoginRateLimitKey(
-    input.request,
-    input.config.trustForwardedFor,
-    input.config.trustedProxyCount
-  );
-
-  return `${input.prefix}:${client}:email:${hashToken(input.email).slice(0, 32)}`;
+  return `${input.prefix}:account:${hashToken(input.email).slice(0, 32)}`;
 }
 
 function credentialClientRateLimitKey(input: {
   config: AuthConfig;
   prefix: string;
   request: Request;
-}): string {
+}): string | null {
   const client = getLoginRateLimitKey(
     input.request,
     input.config.trustForwardedFor,
     input.config.trustedProxyCount
   );
 
-  return `${input.prefix}:${client}:client`;
+  return client ? `${input.prefix}:client:${client}` : null;
 }
 
-function inviteTokenRateLimitKey(input: { config: AuthConfig; request: Request; token: string }): string {
-  const client = getLoginRateLimitKey(
-    input.request,
-    input.config.trustForwardedFor,
-    input.config.trustedProxyCount
-  );
-
-  return `invite-acceptance:${client}:token:${hashToken(input.token).slice(0, 32)}`;
+function inviteTokenRateLimitKey(token: string): string {
+  return `invite-acceptance:token:${hashToken(token).slice(0, 32)}`;
 }
 
 function verificationTokenRateLimitKey(token: string): string {
@@ -226,24 +216,26 @@ export function createInviteAcceptanceHandler(deps: InviteAcceptanceHandlerDeps)
       return json({ error: passwordError }, { status: 400 });
     }
 
-    const rateLimiter = deps.inviteAcceptanceRateLimiter ?? defaultInviteAcceptanceRateLimiter;
+    const rateLimiter = resolveLoginRateLimiter(
+      deps.inviteAcceptanceRateLimiter,
+      defaultInviteAcceptanceRateLimiter
+    );
     const clientRateLimitKey = credentialClientRateLimitKey({
       config,
       prefix: "invite-acceptance",
       request
     });
-    const tokenRateLimitKey = inviteTokenRateLimitKey({
-      config,
-      request,
-      token: body.token
-    });
-    const clientRateLimit = rateLimiter.check(clientRateLimitKey);
+    const tokenRateLimitKey = inviteTokenRateLimitKey(body.token);
 
-    if (!clientRateLimit.allowed) {
-      return rateLimitedResponse(clientRateLimit);
+    if (clientRateLimitKey) {
+      const clientRateLimit = await rateLimiter.check(clientRateLimitKey);
+
+      if (!clientRateLimit.allowed) {
+        return rateLimitedResponse(clientRateLimit);
+      }
     }
 
-    const tokenRateLimit = rateLimiter.check(tokenRateLimitKey);
+    const tokenRateLimit = await rateLimiter.check(tokenRateLimitKey);
 
     if (!tokenRateLimit.allowed) {
       return rateLimitedResponse(tokenRateLimit);
@@ -268,8 +260,10 @@ export function createInviteAcceptanceHandler(deps: InviteAcceptanceHandlerDeps)
       return json({ error: "invalid_invite_token" }, { status: 400 });
     }
 
-    rateLimiter.reset(clientRateLimitKey);
-    rateLimiter.reset(tokenRateLimitKey);
+    await Promise.all([
+      ...(clientRateLimitKey ? [rateLimiter.reset(clientRateLimitKey)] : []),
+      rateLimiter.reset(tokenRateLimitKey)
+    ]);
 
     return json(
       {
@@ -313,24 +307,28 @@ export function createRegisterHandler(deps: RegisterHandlerDeps) {
     }
 
     const rateLimitKey = credentialRateLimitKey({
-      config,
       email: normalizedEmail,
-      prefix: "registration",
-      request
+      prefix: "registration"
     });
     const clientRateLimitKey = credentialClientRateLimitKey({
       config,
       prefix: "registration",
       request
     });
-    const rateLimiter = deps.registrationRateLimiter ?? defaultRegistrationRateLimiter;
-    const clientRateLimit = rateLimiter.check(clientRateLimitKey);
+    const rateLimiter = resolveLoginRateLimiter(
+      deps.registrationRateLimiter,
+      defaultRegistrationRateLimiter
+    );
 
-    if (!clientRateLimit.allowed) {
-      return rateLimitedResponse(clientRateLimit);
+    if (clientRateLimitKey) {
+      const clientRateLimit = await rateLimiter.check(clientRateLimitKey);
+
+      if (!clientRateLimit.allowed) {
+        return rateLimitedResponse(clientRateLimit);
+      }
     }
 
-    const rateLimit = rateLimiter.check(rateLimitKey);
+    const rateLimit = await rateLimiter.check(rateLimitKey);
 
     if (!rateLimit.allowed) {
       return rateLimitedResponse(rateLimit);
@@ -400,20 +398,30 @@ export function createEmailVerificationHandler(deps: EmailVerificationHandlerDep
     }
 
     const config = deps.getConfig();
-    const rateLimiter = deps.verificationRateLimiter ?? defaultVerificationRateLimiter;
+
+    if (!config.configured) {
+      return json({ error: "auth_not_configured" }, { status: 503 });
+    }
+
+    const rateLimiter = resolveLoginRateLimiter(
+      deps.verificationRateLimiter,
+      defaultVerificationRateLimiter
+    );
     const clientRateLimitKey = credentialClientRateLimitKey({
       config,
       prefix: "email-verification",
       request
     });
     const tokenRateLimitKey = verificationTokenRateLimitKey(body.token);
-    const clientRateLimit = rateLimiter.check(clientRateLimitKey);
+    if (clientRateLimitKey) {
+      const clientRateLimit = await rateLimiter.check(clientRateLimitKey);
 
-    if (!clientRateLimit.allowed) {
-      return rateLimitedResponse(clientRateLimit);
+      if (!clientRateLimit.allowed) {
+        return rateLimitedResponse(clientRateLimit);
+      }
     }
 
-    const tokenRateLimit = rateLimiter.check(tokenRateLimitKey);
+    const tokenRateLimit = await rateLimiter.check(tokenRateLimitKey);
 
     if (!tokenRateLimit.allowed) {
       return rateLimitedResponse(tokenRateLimit);

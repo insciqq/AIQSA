@@ -4,8 +4,11 @@ import { runtimeConfigurationIssues } from "./readiness";
 function productionEnv(): Record<string, string> {
   return {
     AIQSA_APP_BASE_URL: "https://aiqsa.example.com",
+    AIQSA_BIND_ADDRESS: "127.0.0.1",
     AIQSA_COOKIE_SECURE: "1",
     AIQSA_AUTH_SESSION_SECRET: "an-installation-session-secret",
+    AIQSA_TRUST_PROXY_HEADERS: "1",
+    AIQSA_TRUSTED_PROXY_COUNT: "1",
     DATABASE_URL: "postgresql://user:password@postgres:5432/aiqsa",
     S3_ACCESS_KEY_ID: "access-key",
     S3_BUCKET: "private-uploads",
@@ -28,6 +31,8 @@ describe("runtimeConfigurationIssues", () => {
         AIQSA_BOOTSTRAP_LOGIN_ENABLED: "1",
         AIQSA_COOKIE_SECURE: "0",
         AIQSA_TEST_MODE: "1",
+        AIQSA_TRUST_PROXY_HEADERS: "",
+        AIQSA_TRUSTED_PROXY_COUNT: "",
         AIQSA_AUTH_SESSION_SECRET: "",
         DATABASE_URL: "",
         S3_BUCKET: ""
@@ -36,6 +41,7 @@ describe("runtimeConfigurationIssues", () => {
       "session_secret",
       "database_url",
       "app_base_url",
+      "trusted_proxy",
       "bootstrap_login",
       "test_runtime",
       "s3_bucket"
@@ -48,6 +54,8 @@ describe("runtimeConfigurationIssues", () => {
         ...productionEnv(),
         AIQSA_APP_BASE_URL: "http://localhost:3000",
         AIQSA_COOKIE_SECURE: "",
+        AIQSA_TRUST_PROXY_HEADERS: "",
+        AIQSA_TRUSTED_PROXY_COUNT: "",
         NODE_ENV: "production"
       })
     ).toEqual([]);
@@ -57,5 +65,27 @@ describe("runtimeConfigurationIssues", () => {
     expect(runtimeConfigurationIssues({ ...productionEnv(), AIQSA_COOKIE_SECURE: "0" })).toContain(
       "secure_cookie"
     );
+  });
+
+  it("rejects a public origin without an exact trusted-proxy configuration", () => {
+    expect(
+      runtimeConfigurationIssues({
+        ...productionEnv(),
+        AIQSA_TRUST_PROXY_HEADERS: "",
+        AIQSA_TRUSTED_PROXY_COUNT: ""
+      })
+    ).toContain("trusted_proxy");
+    expect(
+      runtimeConfigurationIssues({
+        ...productionEnv(),
+        AIQSA_TRUSTED_PROXY_COUNT: "99"
+      })
+    ).toContain("trusted_proxy");
+    expect(
+      runtimeConfigurationIssues({
+        ...productionEnv(),
+        AIQSA_BIND_ADDRESS: "0.0.0.0"
+      })
+    ).toContain("trusted_proxy");
   });
 });

@@ -84,7 +84,7 @@ The current run-cancellation controller registry is process-local. Durable datab
 
 ## Persistence And Ownership
 
-Postgres with Prisma is authoritative for users, auth/session state, entitlements, workspace/conversation data, runs/events/usage, provider/model/credential configuration and exact run bindings, the singleton installation Search recommendation and nullable user Search preferences, the three system run-profile mappings, SMTP configuration/health, prompt/catalog and MCP configuration, the current MCP installation-activation job, MCP runtime evidence, and public snapshot records. Schema changes land as committed migrations and runtime deployment uses `prisma migrate deploy`.
+Postgres with Prisma is authoritative for users, auth/session state, atomic expiring auth-admission buckets, entitlements, workspace/conversation data, runs/events/usage, provider/model/credential configuration and exact run bindings, the singleton installation Search recommendation and nullable user Search preferences, the three system run-profile mappings, SMTP configuration/health, prompt/catalog and MCP configuration, the current MCP installation-activation job, MCP runtime evidence, and public snapshot records. Schema changes land as committed migrations and runtime deployment uses `prisma migrate deploy`.
 
 Core ownership rules:
 

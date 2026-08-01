@@ -228,6 +228,15 @@ model AuthSession {
   @@index([userId, expiresAt])
 }
 
+model AuthRateLimitBucket {
+  keyHash      String   @id @db.Char(64)
+  attemptCount Int
+  resetAt      DateTime @db.Timestamptz(6)
+  updatedAt    DateTime @updatedAt @db.Timestamptz(6)
+
+  @@index([resetAt])
+}
+
 model AuthAccessRule {
   id              String                @id @default(uuid())
   kind            AuthAccessRuleKind

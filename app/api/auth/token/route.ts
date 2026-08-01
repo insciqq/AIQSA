@@ -1,6 +1,6 @@
 import { createTokenLoginHandler } from "@/lib/server/auth/handlers";
 import { getAuthConfig } from "@/lib/server/auth/config";
-import { authSessionStore } from "@/lib/server/auth/defaultAuth";
+import { authRateLimiter, authSessionStore } from "@/lib/server/auth/defaultAuth";
 import { prisma } from "@/lib/server/prisma";
 
 export const runtime = "nodejs";
@@ -20,5 +20,6 @@ export const POST = createTokenLoginHandler({
       }
     }),
   getConfig: () => getAuthConfig(),
+  loginRateLimiter: authRateLimiter,
   sessions: authSessionStore
 });

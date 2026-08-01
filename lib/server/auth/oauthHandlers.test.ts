@@ -180,7 +180,11 @@ describe("OAuth route handlers", () => {
     });
     const handler = createOAuthCallbackHandler({
       exchangeCode,
-      getConfig: () => config,
+      getConfig: () => ({
+        ...config,
+        trustForwardedFor: true,
+        trustedProxyCount: 1
+      }),
       loginRateLimiter: createFixedWindowLoginRateLimiter({
         clock: () => now.getTime(),
         maxAttempts: 1
@@ -189,13 +193,16 @@ describe("OAuth route handlers", () => {
       repository: repo.repository,
       sessions: createMemoryAuthSessionStore()
     });
-    const request = () =>
-      callbackRequest({
+    const request = () => {
+      const callback = callbackRequest({
         code: "authorization-code",
         flowToken: flow.flowToken,
         provider: "google",
         state: flow.location.searchParams.get("state")!
       });
+      callback.headers.set("x-forwarded-for", "203.0.113.20");
+      return callback;
+    };
 
     const first = await handler(request(), {
       params: {

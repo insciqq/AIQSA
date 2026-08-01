@@ -7,8 +7,8 @@ export type LoginRateLimitDecision = {
 };
 
 export type LoginRateLimiter = {
-  check(key: string): LoginRateLimitDecision;
-  reset(key: string): void;
+  check(key: string): Promise<LoginRateLimitDecision>;
+  reset(key: string): Promise<void>;
 };
 
 export type LoginRateLimiterOptions = {
@@ -24,6 +24,21 @@ export type LoginRateLimitBucket = {
   count: number;
   resetAtMs: number;
 };
+
+export function resolveLoginRateLimiter(
+  configured: LoginRateLimiter | undefined,
+  testFallback: LoginRateLimiter
+): LoginRateLimiter {
+  if (configured) {
+    return configured;
+  }
+
+  if (process.env.NODE_ENV === "test") {
+    return testFallback;
+  }
+
+  throw new Error("auth_rate_limiter_not_configured");
+}
 
 export function createFixedWindowLoginRateLimiter(
   options: LoginRateLimiterOptions = {}
@@ -79,7 +94,7 @@ export function createFixedWindowLoginRateLimiter(
   }
 
   return {
-    check(key: string) {
+    async check(key: string) {
       const now = clock();
       sweepExpired(now);
       const existing = store.get(key);
@@ -110,7 +125,7 @@ export function createFixedWindowLoginRateLimiter(
         retryAfterSeconds: Math.max(0, Math.ceil((bucket.resetAtMs - now) / 1000))
       };
     },
-    reset(key: string) {
+    async reset(key: string) {
       store.delete(key);
     }
   };

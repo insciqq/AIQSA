@@ -7,7 +7,7 @@ import {
   type OAuthProviderId
 } from "../../auth/oauth";
 import type { AuthConfig } from "./config";
-import { getLoginRateLimitKey } from "./handlers";
+import { getLoginRateLimitKey } from "./clientIdentity";
 import type { OAuthIdentityRepository } from "./oauthRepository";
 import {
   buildOAuthAuthorizationUrl,
@@ -17,6 +17,7 @@ import {
 import { isPlausibleEmail, normalizeAuthEmail } from "./password";
 import {
   createFixedWindowLoginRateLimiter,
+  resolveLoginRateLimiter,
   type LoginRateLimiter
 } from "./rateLimit";
 import { createAuthSession, type AuthSessionStore } from "./requestAuth";
@@ -316,26 +317,33 @@ export function createOAuthCallbackHandler(deps: OAuthCallbackHandlerDeps) {
       );
     }
 
-    const loginRateLimiter = deps.loginRateLimiter ?? defaultOAuthLoginRateLimiter;
-    const rateLimitKey = `oauth-callback:${rawProvider}:${getLoginRateLimitKey(
+    const loginRateLimiter = resolveLoginRateLimiter(
+      deps.loginRateLimiter,
+      defaultOAuthLoginRateLimiter
+    );
+    const clientKey = getLoginRateLimitKey(
       request,
       config.trustForwardedFor,
       config.trustedProxyCount
-    )}`;
-    const rateLimit = loginRateLimiter.check(rateLimitKey);
+    );
+    const rateLimitKey = clientKey ? `oauth-callback:${rawProvider}:client:${clientKey}` : null;
 
-    if (!rateLimit.allowed) {
-      const response = redirect(
-        outcomeUrl({
-          appBaseUrl: config.appBaseUrl,
-          nextPath: flow.nextPath,
-          outcome: "failed",
-          provider: rawProvider
-        }),
-        [clearCookie]
-      );
-      response.headers.set("retry-after", String(rateLimit.retryAfterSeconds));
-      return response;
+    if (rateLimitKey) {
+      const rateLimit = await loginRateLimiter.check(rateLimitKey);
+
+      if (!rateLimit.allowed) {
+        const response = redirect(
+          outcomeUrl({
+            appBaseUrl: config.appBaseUrl,
+            nextPath: flow.nextPath,
+            outcome: "failed",
+            provider: rawProvider
+          }),
+          [clearCookie]
+        );
+        response.headers.set("retry-after", String(rateLimit.retryAfterSeconds));
+        return response;
+      }
     }
 
     try {
@@ -382,7 +390,9 @@ export function createOAuthCallbackHandler(deps: OAuthCallbackHandlerDeps) {
         sessions: deps.sessions,
         userId: settlement.userId
       });
-      loginRateLimiter.reset(rateLimitKey);
+      if (rateLimitKey) {
+        await loginRateLimiter.reset(rateLimitKey);
+      }
 
       return redirect(new URL(flow.nextPath, config.appBaseUrl).toString(), [clearCookie, session.cookie]);
     } catch {

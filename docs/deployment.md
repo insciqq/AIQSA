@@ -16,7 +16,7 @@ curl -fsS http://127.0.0.1:3000/api/health/ready
 
 ## Running on a server
 
-The minimum requirement is a Linux server with Docker Engine and the Docker Compose plugin. A domain, HTTPS reverse proxy, SMTP account, Google OAuth, and Yandex OAuth are optional additions. A publicly reachable installation should use a domain and HTTPS.
+The minimum requirement is a Linux server with Docker Engine and the Docker Compose plugin. SMTP, Google OAuth, and Yandex OAuth are optional. A non-loopback or publicly reachable installation requires a trusted reverse proxy; public access should use a domain and HTTPS.
 
 1. Clone the repository and create `.env` as described in [configuration](configuration.md).
 2. For HTTPS, set `AIQSA_APP_BASE_URL=https://aiqsa.example.com`, `AIQSA_COOKIE_SECURE=1`, and keep `AIQSA_BIND_ADDRESS=127.0.0.1`.
@@ -30,14 +30,14 @@ The minimum requirement is a Linux server with Docker Engine and the Docker Comp
 4. Point a reverse proxy at `http://127.0.0.1:3000` and issue a TLS certificate. The repository includes an [Nginx starting point](../ops/nginx/README.md); replace its example domain and port with `AIQSA_PORT` before enabling it.
 5. Check `/api/health/ready`, sign in as the initial administrator, and send one small question through each provider/search path you intend to use.
 
-If the proxy overwrites forwarding headers and is the only trusted hop, enable:
+The bundled proxy overwrites forwarding headers and delivers one exact client entry, so enable:
 
 ```dotenv
 AIQSA_TRUST_PROXY_HEADERS=1
 AIQSA_TRUSTED_PROXY_COUNT=1
 ```
 
-Do not publish the database, object-storage, ToolHive control, or MCP proxy ports. If you intentionally bind AIQSA directly to a LAN address without HTTPS, update `AIQSA_APP_BASE_URL`, `AIQSA_BIND_ADDRESS`, and `AIQSA_COOKIE_SECURE` together and protect access with the host firewall.
+Do not publish the database, object-storage, ToolHive control, or MCP proxy ports. Direct non-loopback publication is not a supported authentication transport boundary: readiness rejects a non-loopback base URL without declared trusted forwarding identity. Keep AIQSA loopback-bound and expose only the proxy.
 
 ToolHive uses the host Docker socket to create separate sibling containers for npm, PyPI, and OCI stdio MCP servers. Only the ToolHive service receives the socket; the application and MCP workloads do not. Socket access is nevertheless root-equivalent host authority, and AIQSA can reach ToolHive's full unauthenticated API on their private internal network. Restrict host and Docker access, keep the pinned image, and treat administrator-installed MCP code plus its ordinary outbound network access as trusted. Remote Streamable HTTP MCPs run through AIQSA and do not create a ToolHive workload.
 

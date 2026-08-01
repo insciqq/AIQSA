@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { createFixedWindowLoginRateLimiter, type LoginRateLimitBucket } from "./rateLimit";
 
 describe("login rate limiter", () => {
-  it("sweeps expired windows while checking new keys", () => {
+  it("sweeps expired windows while checking new keys", async () => {
     let now = 0;
     const store = new Map<string, LoginRateLimitBucket>();
     const limiter = createFixedWindowLoginRateLimiter({
@@ -12,17 +12,17 @@ describe("login rate limiter", () => {
       windowMs: 100
     });
 
-    expect(limiter.check("ip:203.0.113.1").allowed).toBe(true);
+    expect((await limiter.check("ip:203.0.113.1")).allowed).toBe(true);
     expect(store.has("ip:203.0.113.1")).toBe(true);
 
     now = 101;
-    expect(limiter.check("ip:203.0.113.2").allowed).toBe(true);
+    expect((await limiter.check("ip:203.0.113.2")).allowed).toBe(true);
 
     expect(store.has("ip:203.0.113.1")).toBe(false);
     expect(store.has("ip:203.0.113.2")).toBe(true);
   });
 
-  it("evicts a bucket when unique-key load reaches the max bucket count", () => {
+  it("evicts a bucket when unique-key load reaches the max bucket count", async () => {
     const store = new Map<string, LoginRateLimitBucket>();
     const limiter = createFixedWindowLoginRateLimiter({
       clock: () => 0,
@@ -30,9 +30,9 @@ describe("login rate limiter", () => {
       store
     });
 
-    expect(limiter.check("ip:203.0.113.1").allowed).toBe(true);
-    expect(limiter.check("ip:203.0.113.2").allowed).toBe(true);
-    expect(limiter.check("ip:203.0.113.3").allowed).toBe(true);
+    expect((await limiter.check("ip:203.0.113.1")).allowed).toBe(true);
+    expect((await limiter.check("ip:203.0.113.2")).allowed).toBe(true);
+    expect((await limiter.check("ip:203.0.113.3")).allowed).toBe(true);
 
     expect(store.size).toBe(2);
     expect(store.has("ip:203.0.113.1")).toBe(false);

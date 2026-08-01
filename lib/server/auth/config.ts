@@ -8,6 +8,7 @@ const TEST_SESSION_SECRET = "aiqsa-test-session-secret";
 const TEST_AUTH_TOKEN_HASH = hashToken(TEST_AUTH_TOKEN);
 const TRUE_ENV_VALUES = new Set(["1", "true", "yes", "on"]);
 const FALSE_ENV_VALUES = new Set(["0", "false", "no", "off"]);
+export const MAX_TRUSTED_PROXY_COUNT = 8;
 
 export type AuthConfig = {
   appBaseUrl: string;
@@ -21,6 +22,7 @@ export type AuthConfig = {
   sessionSecret: string;
   testAuthEnabled: boolean;
   trustForwardedFor: boolean;
+  trustedProxyConfigurationValid: boolean;
   trustedProxyCount: number;
 };
 
@@ -68,7 +70,7 @@ function optionalPositiveInteger(value: string | undefined): number | null {
   }
 
   const parsed = Number(value);
-  if (!Number.isInteger(parsed) || parsed < 1) {
+  if (!Number.isInteger(parsed) || parsed < 1 || parsed > MAX_TRUSTED_PROXY_COUNT) {
     return null;
   }
 
@@ -105,7 +107,17 @@ export function getAuthConfig(env: Record<string, string | undefined> = process.
   const bootstrapLoginEnabled = (optionalBoolean(env.AIQSA_BOOTSTRAP_LOGIN_ENABLED) ?? false) || testAuthEnabled;
   const appBaseUrl = env.AIQSA_APP_BASE_URL?.trim() || "http://localhost:3000";
   const cookieSecure = optionalBoolean(env.AIQSA_COOKIE_SECURE) ?? secureCookieDefault(appBaseUrl);
-  const trustForwardedFor = optionalBoolean(env.AIQSA_TRUST_PROXY_HEADERS) ?? false;
+  const trustProxyValue = env.AIQSA_TRUST_PROXY_HEADERS?.trim() ?? "";
+  const trustProxySetting = optionalBoolean(trustProxyValue);
+  const trustForwardedFor = trustProxySetting ?? false;
+  const proxyCountSetting = env.AIQSA_TRUSTED_PROXY_COUNT?.trim() ?? "";
+  const parsedProxyCount = optionalPositiveInteger(proxyCountSetting);
+  const trustedProxyConfigurationValid =
+    (!trustProxyValue && !proxyCountSetting) ||
+    (trustProxySetting !== null &&
+      (trustForwardedFor
+        ? !proxyCountSetting || parsedProxyCount !== null
+        : !proxyCountSetting));
   const sessionSecret = usableSecret(env.AIQSA_AUTH_SESSION_SECRET)
     ? env.AIQSA_AUTH_SESSION_SECRET
     : testAuthEnabled
@@ -153,6 +165,11 @@ export function getAuthConfig(env: Record<string, string | undefined> = process.
     sessionSecret,
     testAuthEnabled,
     trustForwardedFor,
-    trustedProxyCount: trustForwardedFor ? optionalPositiveInteger(env.AIQSA_TRUSTED_PROXY_COUNT) ?? 1 : 0
+    trustedProxyConfigurationValid,
+    trustedProxyCount: trustForwardedFor
+      ? proxyCountSetting
+        ? parsedProxyCount ?? 0
+        : 1
+      : 0
   };
 }

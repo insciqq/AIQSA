@@ -418,7 +418,7 @@ describe("registration auth handlers", () => {
     ).resolves.toBe(true);
   });
 
-  it("keeps successful registration attempts in the client and email buckets", async () => {
+  it("keeps successful registration attempts in the account bucket", async () => {
     const repository = createMemoryRegistrationRepository();
     const mailer = createMemoryAuthMailer();
     const POST = createRegisterHandler({
@@ -454,7 +454,7 @@ describe("registration auth handlers", () => {
     expect(mailer.sent).toHaveLength(2);
   });
 
-  it("rate-limits verification before additional password hashing", async () => {
+  it("rate-limits the same verification token before additional password hashing", async () => {
     const passwordHasher = vi.fn(async () => "password-hash");
     const POST = createEmailVerificationHandler({
       getConfig: () => handlerConfig,
@@ -481,7 +481,7 @@ describe("registration auth handlers", () => {
         await POST(
           jsonRequest("/api/auth/verify-email", {
             password: "chosen-password",
-            token: "different-invalid-token"
+            token: "first-invalid-token"
           })
         )
       ).status
@@ -512,8 +512,8 @@ describe("registration auth handlers", () => {
       password: "chosen-password",
       token: "shared-invalid-token"
     });
-    firstRequest.headers.set("x-forwarded-for", "198.51.100.10, 10.0.0.1");
-    secondRequest.headers.set("x-forwarded-for", "198.51.100.11, 10.0.0.1");
+    firstRequest.headers.set("x-forwarded-for", "198.51.100.10");
+    secondRequest.headers.set("x-forwarded-for", "198.51.100.11");
 
     expect((await POST(firstRequest)).status).toBe(400);
     expect((await POST(secondRequest)).status).toBe(429);

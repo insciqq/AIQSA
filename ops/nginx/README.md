@@ -26,6 +26,9 @@ Use a DNS hostname and a numeric loopback port only. Keep the AIQSA container or
 published application port bound to `127.0.0.1`. The forwarding-header lines
 must continue to overwrite, rather than append, browser-supplied values when
 `AIQSA_TRUST_PROXY_HEADERS=1` and `AIQSA_TRUSTED_PROXY_COUNT=1` are enabled.
+AIQSA requires exactly one valid `X-Forwarded-For` entry for this template and
+does not fall back to `X-Real-IP`; an extra or malformed chain is treated as
+unavailable identity.
 The dedicated JSON access log contains only timestamp, generated request id,
 method, status, and timings: no IP address, query string, share/reset token,
 message content, or header value. `X-Request-ID` lets an operator correlate a

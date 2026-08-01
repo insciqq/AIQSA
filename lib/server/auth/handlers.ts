@@ -11,6 +11,7 @@ import {
 import type { PasswordAuthRepository, PasswordIdentityRecord } from "./passwordRepository";
 import {
   createFixedWindowLoginRateLimiter,
+  resolveLoginRateLimiter,
   type LoginRateLimiter
 } from "./rateLimit";
 import {
@@ -22,6 +23,9 @@ import {
 } from "./requestAuth";
 import { hashToken, verifyTokenHash as verifyTokenHashDefault } from "./token";
 import type { AuthConfig } from "./config";
+import { getLoginRateLimitKey } from "./clientIdentity";
+
+export { getLoginRateLimitKey } from "./clientIdentity";
 
 export type SafeUser = {
   displayName: string;
@@ -92,7 +96,6 @@ export type PasswordResetCompleteHandlerDeps = {
 const defaultLoginRateLimiter = createFixedWindowLoginRateLimiter();
 const defaultResetRateLimiter = createFixedWindowLoginRateLimiter();
 const defaultResetCompleteRateLimiter = createFixedWindowLoginRateLimiter();
-export const UNKNOWN_LOGIN_RATE_LIMIT_KEY = "unknown-client";
 export const PASSWORD_RESET_MAX_AGE_SECONDS = 60 * 60;
 export const PASSWORD_RESET_RESPONSE_FLOOR_MS = 100;
 const DUMMY_PASSWORD_HASH =
@@ -132,49 +135,6 @@ function requireJsonContentType(request: Request): Response | null {
   return json({ error: "json_required" }, { status: 415 });
 }
 
-function cleanIpValue(value: string | null | undefined): string | null {
-  const trimmed = value?.trim();
-
-  return trimmed && !trimmed.includes(",") ? trimmed : null;
-}
-
-function forwardedForIp(value: string | null, trustedProxyCount: number): string | null {
-  const entries = value
-    ?.split(",")
-    .map((entry) => entry.trim())
-    .filter(Boolean);
-
-  if (!entries?.length) {
-    return null;
-  }
-
-  const clientIndex = entries.length - trustedProxyCount - 1;
-
-  return clientIndex >= 0 ? entries[clientIndex] : null;
-}
-
-export function getLoginRateLimitKey(
-  request: Request,
-  trustForwardedFor: boolean,
-  trustedProxyCount = trustForwardedFor ? 1 : 0
-): string {
-  if (trustForwardedFor) {
-    const forwardedFor = forwardedForIp(request.headers.get("x-forwarded-for"), Math.max(1, trustedProxyCount));
-
-    if (forwardedFor) {
-      return `ip:${forwardedFor}`;
-    }
-
-    const realIp = cleanIpValue(request.headers.get("x-real-ip"));
-
-    if (realIp) {
-      return `ip:${realIp}`;
-    }
-  }
-
-  return UNKNOWN_LOGIN_RATE_LIMIT_KEY;
-}
-
 function tokenFromBody(body: unknown): unknown {
   return typeof body === "object" && body && "token" in body ? body.token : undefined;
 }
@@ -182,28 +142,24 @@ function tokenFromBody(body: unknown): unknown {
 function bootstrapRateLimitKey(input: { config: AuthConfig; request: Request }): string {
   const identityKey = getLoginRateLimitKey(input.request, input.config.trustForwardedFor, input.config.trustedProxyCount);
 
-  return `bootstrap-login:${identityKey}`;
+  return identityKey ? `bootstrap-login:client:${identityKey}` : "bootstrap-login:installation";
 }
 
 function credentialRateLimitKey(input: {
-  config: AuthConfig;
   email: string;
   prefix: string;
-  request: Request;
 }): string {
-  const identityKey = getLoginRateLimitKey(input.request, input.config.trustForwardedFor, input.config.trustedProxyCount);
-
-  return `${input.prefix}:${identityKey}:email:${hashToken(input.email).slice(0, 32)}`;
+  return `${input.prefix}:account:${hashToken(input.email).slice(0, 32)}`;
 }
 
 function credentialClientRateLimitKey(input: {
   config: AuthConfig;
   prefix: string;
   request: Request;
-}): string {
+}): string | null {
   const identityKey = getLoginRateLimitKey(input.request, input.config.trustForwardedFor, input.config.trustedProxyCount);
 
-  return `${input.prefix}:${identityKey}:client`;
+  return identityKey ? `${input.prefix}:client:${identityKey}` : null;
 }
 
 function credentialTokenRateLimitKey(input: { prefix: string; token: string }): string {
@@ -326,9 +282,12 @@ export function createTokenLoginHandler(deps: AuthHandlerDeps) {
       return contentTypeError;
     }
 
-    const loginRateLimiter = deps.loginRateLimiter ?? defaultLoginRateLimiter;
+    const loginRateLimiter = resolveLoginRateLimiter(
+      deps.loginRateLimiter,
+      defaultLoginRateLimiter
+    );
     const rateLimitKey = bootstrapRateLimitKey({ config, request });
-    const rateLimit = loginRateLimiter.check(rateLimitKey);
+    const rateLimit = await loginRateLimiter.check(rateLimitKey);
 
     if (!rateLimit.allowed) {
       return rateLimitedResponse(rateLimit);
@@ -363,7 +322,7 @@ export function createTokenLoginHandler(deps: AuthHandlerDeps) {
       sessions: deps.sessions,
       userId: user.id
     });
-    loginRateLimiter.reset(rateLimitKey);
+    await loginRateLimiter.reset(rateLimitKey);
 
     return json(
       {
@@ -405,24 +364,28 @@ export function createPasswordLoginHandler(deps: PasswordLoginHandlerDeps) {
     }
 
     const rateLimitKey = credentialRateLimitKey({
-      config,
       email: normalizedEmail,
-      prefix: "password-login",
-      request
+      prefix: "password-login"
     });
     const clientRateLimitKey = credentialClientRateLimitKey({
       config,
       prefix: "password-login",
       request
     });
-    const loginRateLimiter = deps.loginRateLimiter ?? defaultLoginRateLimiter;
-    const clientRateLimit = loginRateLimiter.check(clientRateLimitKey);
+    const loginRateLimiter = resolveLoginRateLimiter(
+      deps.loginRateLimiter,
+      defaultLoginRateLimiter
+    );
 
-    if (!clientRateLimit.allowed) {
-      return rateLimitedResponse(clientRateLimit);
+    if (clientRateLimitKey) {
+      const clientRateLimit = await loginRateLimiter.check(clientRateLimitKey);
+
+      if (!clientRateLimit.allowed) {
+        return rateLimitedResponse(clientRateLimit);
+      }
     }
 
-    const rateLimit = loginRateLimiter.check(rateLimitKey);
+    const rateLimit = await loginRateLimiter.check(rateLimitKey);
 
     if (!rateLimit.allowed) {
       return rateLimitedResponse(rateLimit);
@@ -452,8 +415,10 @@ export function createPasswordLoginHandler(deps: PasswordLoginHandlerDeps) {
       return unauthorized();
     }
 
-    loginRateLimiter.reset(clientRateLimitKey);
-    loginRateLimiter.reset(rateLimitKey);
+    await Promise.all([
+      ...(clientRateLimitKey ? [loginRateLimiter.reset(clientRateLimitKey)] : []),
+      loginRateLimiter.reset(rateLimitKey)
+    ]);
 
     return json(
       {
@@ -495,24 +460,28 @@ export function createPasswordResetRequestHandler(deps: PasswordResetRequestHand
     }
 
     const rateLimitKey = credentialRateLimitKey({
-      config,
       email: normalizedEmail,
-      prefix: "password-reset",
-      request
+      prefix: "password-reset"
     });
     const clientRateLimitKey = credentialClientRateLimitKey({
       config,
       prefix: "password-reset",
       request
     });
-    const resetRateLimiter = deps.resetRateLimiter ?? defaultResetRateLimiter;
-    const clientRateLimit = resetRateLimiter.check(clientRateLimitKey);
+    const resetRateLimiter = resolveLoginRateLimiter(
+      deps.resetRateLimiter,
+      defaultResetRateLimiter
+    );
 
-    if (!clientRateLimit.allowed) {
-      return rateLimitedResponse(clientRateLimit);
+    if (clientRateLimitKey) {
+      const clientRateLimit = await resetRateLimiter.check(clientRateLimitKey);
+
+      if (!clientRateLimit.allowed) {
+        return rateLimitedResponse(clientRateLimit);
+      }
     }
 
-    const rateLimit = resetRateLimiter.check(rateLimitKey);
+    const rateLimit = await resetRateLimiter.check(rateLimitKey);
 
     if (!rateLimit.allowed) {
       return rateLimitedResponse(rateLimit);
@@ -578,7 +547,15 @@ export function createPasswordResetCompleteHandler(deps: PasswordResetCompleteHa
     }
 
     const config = deps.getConfig();
-    const rateLimiter = deps.resetCompleteRateLimiter ?? defaultResetCompleteRateLimiter;
+
+    if (!config.configured) {
+      return json({ error: "auth_not_configured" }, { status: 503 });
+    }
+
+    const rateLimiter = resolveLoginRateLimiter(
+      deps.resetCompleteRateLimiter,
+      defaultResetCompleteRateLimiter
+    );
     const clientRateLimitKey = credentialClientRateLimitKey({
       config,
       prefix: "password-reset-complete",
@@ -588,13 +565,15 @@ export function createPasswordResetCompleteHandler(deps: PasswordResetCompleteHa
       prefix: "password-reset-complete",
       token: body.token
     });
-    const clientRateLimit = rateLimiter.check(clientRateLimitKey);
+    if (clientRateLimitKey) {
+      const clientRateLimit = await rateLimiter.check(clientRateLimitKey);
 
-    if (!clientRateLimit.allowed) {
-      return rateLimitedResponse(clientRateLimit);
+      if (!clientRateLimit.allowed) {
+        return rateLimitedResponse(clientRateLimit);
+      }
     }
 
-    const tokenRateLimit = rateLimiter.check(tokenRateLimitKey);
+    const tokenRateLimit = await rateLimiter.check(tokenRateLimitKey);
 
     if (!tokenRateLimit.allowed) {
       return rateLimitedResponse(tokenRateLimit);

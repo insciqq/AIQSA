@@ -54,9 +54,9 @@ AIQSA_TRUST_PROXY_HEADERS=
 AIQSA_TRUSTED_PROXY_COUNT=
 ```
 
-`AIQSA_APP_BASE_URL` is the browser-visible origin used for auth links, callback construction, origin checks, and runtime security headers. `AIQSA_BIND_ADDRESS` and `AIQSA_PORT` control the host publication only. A blank `AIQSA_COOKIE_SECURE` derives secure cookies and HSTS from the base-URL protocol; an explicit value must agree with that protocol or readiness fails. Localhost HTTP is supported. An exposed installation uses an HTTPS base URL, secure cookies, and normally retains the loopback bind behind a TLS proxy.
+`AIQSA_APP_BASE_URL` is the browser-visible origin used for auth links, callback construction, origin checks, and runtime security headers. `AIQSA_BIND_ADDRESS` and `AIQSA_PORT` control the host publication only. A blank `AIQSA_COOKIE_SECURE` derives secure cookies and HSTS from the base-URL protocol; an explicit value must agree with that protocol or readiness fails. Localhost HTTP is supported. An exposed installation uses an HTTPS base URL, secure cookies, and retains the loopback bind behind a TLS proxy.
 
-`AIQSA_TRUST_PROXY_HEADERS=1` authorizes client rate-limit identity from forwarding headers only when a trusted proxy overwrites them. `AIQSA_TRUSTED_PROXY_COUNT` defaults to `1`, removes that many rightmost trusted `X-Forwarded-For` hops, and selects the next hop; leave both blank for direct access.
+`AIQSA_TRUST_PROXY_HEADERS=1` authorizes client rate-limit identity only from an `X-Forwarded-For` chain written by trusted proxies that remove the browser-supplied value. `AIQSA_TRUSTED_PROXY_COUNT` defaults to `1` and declares the exact expected number of comma-separated IP entries (maximum eight); the first canonical address is the client. Missing, extra, empty, malformed, or overlong chains are unavailable identity, and `X-Real-IP` is not a fallback. Leave both variables blank only for direct loopback access. A non-loopback `AIQSA_APP_BASE_URL` without a valid enabled proxy declaration fails readiness, as does any non-loopback `AIQSA_BIND_ADDRESS`; the supported proxy exposes only itself and reaches AIQSA through loopback.
 
 ## Provider Safety Bounds
 
