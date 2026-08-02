@@ -28,7 +28,7 @@ Task-local decisions disappear when the task completes and are not recoverable f
 
 ## Human Review
 
-Use `Human review: required` for a queued task that changes `CRITICAL_INVARIANTS.md`; security, privacy, secrets, authentication, tenancy, retention, or public-sharing boundaries; persistent schema/migrations or destructive data behavior; public API or stored-data compatibility; release/publication safeguards; a user-visible product contract not already decided by current living documents; or completion supported only by unavailable verification. An unresolved product decision needed before implementation is a blocker, not end-of-task review: record it in `Blocked by` and obtain the decision first. Routine implementation and refactoring remain review-optional.
+The authoritative classification and boundary list live in the [Human Review Policy](../AUTONOMOUS_WORKFLOW.md#human-review-policy). Any review-required change uses a task before implementation and completes only through `review` plus explicit operator acceptance; this queue does not maintain a second copy of the policy.
 
 ## Commands
 

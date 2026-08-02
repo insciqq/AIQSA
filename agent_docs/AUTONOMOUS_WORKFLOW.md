@@ -4,13 +4,13 @@ This is the operating loop for an agent changing AIQSA without step-by-step stee
 
 ## Work Selection
 
-The operator's latest request is primary. A concrete change that can be completed in the current session runs directly without a ceremonial task. For broad implementation permission, queued work, dependencies, or work that may survive the session:
+The operator's latest request is primary. Before implementation, classify every change under the Human Review Policy below. A concrete review-optional change that can be completed in the current session runs directly without a ceremonial task. A review-required change creates or uses a task before implementation even when it is expected to finish in the current session. For broad implementation permission, queued work, dependencies, or work that may survive the session:
 
 1. Inspect Git state and the relevant code and living documents.
 2. Enumerate `agent_docs/tasks/*.md` in natural filename order.
 3. Resume the sole `in_progress` task. If none exists, select the first `ready` task with no open dependencies.
 4. Do not implement `backlog`, `blocked`, or `review` tasks without the transition or human input their status requires.
-5. Create a task only when work must survive the current session or belongs in the autonomous queue.
+5. Create a task when human review is required, work must survive the current session, or work belongs in the autonomous queue.
 6. Keep one Markdown writer in the checkout. Parallel agents may inspect or implement bounded code slices, but the root agent owns local task state and integration.
 
 ## Task Lifecycle
@@ -49,7 +49,7 @@ For complex or multi-session work, expand the selected task's `Plan`, `Progress`
 
 ## Human Review Policy
 
-Use `Human review: required` for a queued task that changes:
+This is the authoritative review-boundary list for every change. Use `Human review: required` for a change that affects:
 
 - `CRITICAL_INVARIANTS.md`;
 - security, privacy, secrets, authentication, tenancy, retention, or public-sharing boundaries;
@@ -59,7 +59,7 @@ Use `Human review: required` for a queued task that changes:
 - a user-visible product contract not already decided by current living documents; or
 - completion supported only by unavailable verification.
 
-An unresolved product decision needed before implementation is a blocker, not an end-of-task review. Record it in `Blocked by` and obtain the decision first. Routine implementation and refactoring remain review-optional.
+Every matching change must create or use a task and reach `in_progress` before implementation, including work expected to finish in one session. After implementation and verification, move it to `review`; delete it with `complete --approved` only after explicit operator acceptance. An unresolved product decision needed before implementation is a blocker, not an end-of-task review: record it in `Blocked by` and obtain the decision first. Routine implementation and refactoring with available verification remain review-optional and may use the direct same-session path.
 
 ## Execution Loop
 

@@ -127,7 +127,7 @@ The memoized left-pane adapter intentionally ignores callback identity churn and
 
 ### Theme and focus
 
-Theme preference is local. A valid LocalStorage value wins after hydration and repairs the same-site cookie; invalid local state yields to the validated server-rendered theme. First paint and runtime changes set `data-theme` and `data-color-scheme` together. Theme never becomes user/account/conversation data.
+Theme preference is local, and the palette registry preserves every supported stored theme id. A valid LocalStorage value wins after hydration and repairs the same-site cookie; invalid local state yields to the validated server-rendered theme. First paint and runtime changes set `data-theme` and `data-color-scheme` together. Theme never becomes user/account/conversation data.
 
 Dialog focus is session-scoped: entry, Tab containment, Escape ownership, nested confirmation priority, and opener restoration belong to the focused overlay owner. A drawer becoming a pinned panel releases modal behavior without prematurely restoring focus.
 

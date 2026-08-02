@@ -10,7 +10,7 @@ Replace every scaffold placeholder before promotion. Use exact task stems in `De
 
 Keep the task focused on the intended delta. Link current owner documents and code paths instead of restating their contracts. For a complex or multi-session change, this same file is the execution plan and handoff log.
 
-Use `Human review: required` for a queued task that changes `CRITICAL_INVARIANTS.md`; security, privacy, secrets, authentication, tenancy, retention, or public-sharing boundaries; persistent schema/migrations or destructive data behavior; public API or stored-data compatibility; release/publication safeguards; a user-visible product contract not already decided by current living documents; or completion supported only by unavailable verification. An unresolved product decision needed before implementation is a blocker, not end-of-task review: record it in `Blocked by` and obtain the decision first. Routine implementation and refactoring remain review-optional.
+The authoritative classification and review-boundary list live in the [Human Review Policy](AUTONOMOUS_WORKFLOW.md#human-review-policy). Set `Human review` from that policy before promotion. A review-required change must create or use its task before implementation and finish through `review` plus explicit `complete --approved` acceptance; do not duplicate the boundary list here.
 
 ```md
 # <YYYYMMDDHHMMSSmmm>-short-task-title

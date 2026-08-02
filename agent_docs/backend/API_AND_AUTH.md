@@ -40,6 +40,10 @@ All private routes resolve an active current user through the shared request-aut
 - Reset request is enumeration-resistant. Eligible and ineligible plausible emails share the generic response and a small SMTP-independent response floor. An eligible token is persisted before bounded asynchronous mail delivery begins.
 - The bootstrap-token route is hidden behind an explicit environment gate. Disabled recovery behaves as not found; enabled recovery maps only to the active seeded operator and creates the ordinary database-backed session type.
 
+### Authentication admission
+
+- Password, OAuth, onboarding, invite, verification, bootstrap, and reset entry/completion routes use the shared atomic durable PostgreSQL fixed-window admission boundary. Account/token protection is independent of client identity; an additional client bucket exists only when the configured overwriting proxy chain yields an exact validated identity, and missing identity creates no shared sentinel. `SECURITY.md` owns HMAC keying, proxy-chain validation, and enumeration-resistance threat controls.
+
 ### OAuth
 
 - Google and Yandex entry routes exist only when both credentials for that provider are configured. A signed, short-lived transaction binds provider, state, nonce, PKCE, callback, and sanitized internal destination before code exchange.
@@ -95,7 +99,7 @@ All administrator routes recheck an active administrator. Non-admin users receiv
 
 ## Current-User Catalog And Settings
 
-- The catalog returns only entitled active answer models, ready entitled Search options, prompt presets, enabled system run profiles, saved defaults, resolved Search preference, presentation toggles, and client-safe capabilities. Technical-only models stay available to Search dependency resolution but do not appear as answer choices, defaults, or profile targets.
+- The catalog returns only entitled active answer models, ready entitled Search options, prompt presets, enabled system run profiles, saved defaults, resolved Search preference, presentation toggles, and client-safe capabilities. Technical-only models stay available to Search dependency resolution but are invalid answer-grant and admission targets and do not appear as answer choices, defaults, or profiles even for `full_access` members.
 - An unavailable saved model remains persisted but projects as no default; the server never leaks its hidden identity or silently selects the first visible model. Unavailable configured profiles expose only a generic reason, not an undisclosed deployment.
 - The organization Search recommendation is intersected with entitlement and never grants access. User Search state distinguishes inherited (`null`), explicit Off (empty plan), and an ordered personal preference. Model compatibility derives an ephemeral effective plan without mutating the durable preference.
 - Settings updates validate providers, models, prompts, Search, and per-model control drafts against the same filtered catalog. The transaction locks the latest settings row and merges independent model keys, so concurrent accepted patches cannot overwrite unrelated drafts. Presentation toggles never enter normalized provider requests.

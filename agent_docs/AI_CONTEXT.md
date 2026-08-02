@@ -44,7 +44,7 @@ The shipped product is a conversation-first workspace for explicit provider/mode
 | `SECURITY.md` | Auth/threat boundaries, origin/session hardening, secret/exposure rules, and dependency-security policy. |
 | `ENV_VARIABLES.md` | Complete environment inventory, defaults, switch semantics, and installation configuration. |
 | `PROVIDER_API_NOTES.md` | Official provider references, externally mutable constraints, one last-verified marker per boundary, and provider-specific caveats. |
-| `TESTING.md` | Hermetic host verification, disposable container parity, destructive local E2E, task-specific checks, and test-authoring rules. |
+| `TESTING.md` | Proportional verification lanes, disposable-environment isolation, boundary-specific opt-ins, and test-authoring rules. |
 | `generated/API_AND_SCHEMA.md` | Generated route-method and Prisma model/enum inventory; source-owned and drift-checked. |
 | `tasks/` | Local ignored unfinished specifications and progress only; completed tasks are deleted and new task content never enters public Git. |
 

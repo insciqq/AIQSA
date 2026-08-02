@@ -10,13 +10,14 @@ If the operator says "start implementation", "begin", "go ahead", "начина�
 
 1. Follow the reading map for the requested scope.
 2. Inspect repository state.
-3. Execute a concrete change that can finish in the current session directly, without ceremonial task state.
-4. For broad permission, queued work, dependency-bearing work, or work that may survive the session, resume the single `in_progress` task or select the first unblocked `ready` task when no scope was named.
-5. Mark a selected queued task `in_progress` before implementation.
-6. Implement the smallest complete vertical slice; the root/integrating agent owns task state and integration.
-7. Run proportional checks and update the living documents that describe changed behavior.
-8. For a task with required human review, move it to `review` and report the decision needed. Otherwise complete it; completion deletes the local task file and clears its references from remaining tasks.
-9. Continue only when broad implementation was requested and the next task is concrete and unblocked.
+3. Classify the change against the Human Review Policy in `agent_docs/AUTONOMOUS_WORKFLOW.md`. Only a concrete review-optional change that can finish in the current session may run directly without ceremonial task state.
+4. For any review-required change, create or use a task and mark it `in_progress` before implementation, even when the change is expected to finish in one session.
+5. For broad permission, queued work, dependency-bearing work, or work that may survive the session, resume the single `in_progress` task or select the first unblocked `ready` task when no scope was named.
+6. Mark a selected queued task `in_progress` before implementation.
+7. Implement the smallest complete vertical slice; the root/integrating agent owns task state and integration.
+8. Run proportional checks and update the living documents that describe changed behavior.
+9. Move review-required work to `review` and report the decision needed. Otherwise complete its task when one exists; completion deletes the local task file and clears its references from remaining tasks.
+10. Continue only when broad implementation was requested and the next task is concrete and unblocked.
 
 Stop only for missing secrets, destructive operations not already requested, an unavailable external service that cannot be mocked, or a real product decision not covered by current contracts. Provider-smoke permission is defined in `agent_docs/CRITICAL_INVARIANTS.md`; dependency-security check permission is defined in `agent_docs/SECURITY.md`.
 
@@ -32,7 +33,7 @@ Then read only what the scope requires:
 
 - Before changing a scoped directory, read the nearest `AGENTS.md`; Claude-compatible scopes import it through the adjacent `CLAUDE.md`.
 
-- For autonomous work selection, read `agent_docs/AUTONOMOUS_WORKFLOW.md`, `agent_docs/tasks/README.md`, and the selected task.
+- Use the Human Review Policy in `agent_docs/AUTONOMOUS_WORKFLOW.md` before implementation; for autonomous work selection, additionally read `agent_docs/tasks/README.md` and the selected task.
 - When the operator left a product or implementation choice open, read `agent_docs/DECISION_DEFAULTS.md`.
 - Before topology, module-boundary, data-boundary, or deployment-shape work, read `agent_docs/ARCHITECTURE.md`.
 - `agent_docs/QSA_PIPELINE.md` before run-pipeline, Search, provider-run, or inspection work.
@@ -42,13 +43,14 @@ Then read only what the scope requires:
 - `agent_docs/PROVIDER_API_NOTES.md` before provider work.
 - `agent_docs/ENV_VARIABLES.md` before environment or configuration work.
 - `agent_docs/SECURITY.md` before dependency or security work.
-- `agent_docs/TESTING.md` before changing behavior or tests.
+- Before changing behavior or tests, read the verification map, applicable lane, and test-authoring rules in `agent_docs/TESTING.md`; consult its boundary-specific evidence and opt-in commands only when the scope crosses that boundary.
 
 ## Contract Authority
 
 - The operator's current request defines intended scope.
 - `agent_docs/CRITICAL_INVARIANTS.md` defines non-negotiable safety and product-semantic boundaries unless the operator explicitly requests a reviewed contract change.
 - Executable code, schemas, migrations, and tests plus the owning living document define current behavior.
+- When executable behavior or tests and a living contract disagree, treat it as contract drift rather than silently choosing one source. Resolve a clear mismatch from the operator request, observable behavior, tests, and nearby owners, updating both sides in the same change; escalate only when two plausible interpretations would change product semantics.
 - A task describes planned work and may change a living contract only when that change is explicit in its goal and the owner document is updated in the same implementation.
 - `PRODUCT_PRINCIPLES.md` and `DECISION_DEFAULTS.md` guide choices that current contracts leave open.
 
