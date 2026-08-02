@@ -24,7 +24,6 @@ const REQUIRED_DOCS = [
   ...NESTED_CLAUDE_INSTRUCTIONS,
   ...COLOCATED_MARKDOWN,
   "agent_docs/AUTONOMOUS_WORKFLOW.md",
-  "agent_docs/AI_CONTEXT.md",
   "agent_docs/ARCHITECTURE.md",
   "agent_docs/BACKEND.md",
   "agent_docs/backend/API_AND_AUTH.md",
@@ -47,7 +46,6 @@ const REQUIRED_DOCS = [
   "agent_docs/QSA_PIPELINE.md",
   "agent_docs/SECURITY.md",
   "agent_docs/TESTING.md",
-  "agent_docs/TASK_TEMPLATE.md",
   "agent_docs/tasks/README.md",
   "agent_docs/generated/API_AND_SCHEMA.md"
 ];

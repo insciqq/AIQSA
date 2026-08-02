@@ -1,10 +1,10 @@
 # AUTONOMOUS_WORKFLOW
 
-This is the operating loop for an agent changing AIQSA without step-by-step steering.
+This is the operating loop for broad autonomous selection, queued/task-state work, dependencies, multi-session work, and review-required changes. Named same-session review-optional work follows `AGENTS.md` without loading this document.
 
 ## Work Selection
 
-The operator's latest request is primary. Before implementation, classify every change under the Human Review Policy below. A concrete review-optional change that can be completed in the current session runs directly without a ceremonial task. A review-required change creates or uses a task before implementation even when it is expected to finish in the current session. For broad implementation permission, queued work, dependencies, or work that may survive the session:
+The operator's latest request is primary. Before implementation, classify every change under the authoritative [Human Review Policy](../AGENTS.md#human-review-policy). A concrete same-session review-optional change runs directly without a task. Review-required work creates or uses a task even when it can finish in the current session. For broad implementation permission, queued work, dependencies, or work that may survive the session:
 
 1. Inspect Git state and the relevant code and living documents.
 2. Enumerate `agent_docs/tasks/*.md` in natural filename order.
@@ -13,53 +13,13 @@ The operator's latest request is primary. Before implementation, classify every 
 5. Create a task when human review is required, work must survive the current session, or work belongs in the autonomous queue.
 6. Keep one Markdown writer in the checkout. Parallel agents may inspect or implement bounded code slices, but the root agent owns local task state and integration.
 
-## Task Lifecycle
+## Task Operation
 
-All unfinished work lives in one directory. `Status` is the only lifecycle source of truth:
+The [task queue manual](tasks/README.md) owns statuses, dependencies, commands, task shape, evidence gates, and completion deletion; `scripts/task-ledger.mjs` enforces them. For complex or multi-session work, expand the selected task's `Plan`, `Progress`, and `Decisions`. The task is the executable plan and handoff artifact; do not create a parallel plan file or completed-plan archive.
 
-```text
-backlog -> ready -> in_progress -> review
-              \          |
-               -> blocked
-```
+## Human Review Handoff
 
-- `backlog`: captured work that is not yet executable.
-- `ready`: self-contained scope, acceptance criteria, plan, and verification plan; no open task dependencies.
-- `in_progress`: the single task owned by the integrating agent.
-- `blocked`: progress requires a named dependency, external condition, secret, or human decision.
-- `review`: implementation and verification are complete, but required human review has not yet been accepted.
-
-There is no completed status. Task instances are ignored local checkout state because the publication target is public. Completion deletes the task file and removes its stem from `Depends on` fields in the remaining queue. Tests, living documents, code commits, and release notes are the durable record; new task content under this workflow never enters Git history, and established public refs are not rewritten as routine task cleanup.
-
-Use the task CLI directly so the workflow does not depend on optional package aliases:
-
-```bash
-node scripts/task-ledger.mjs new <slug> --summary "<one-line outcome>"
-node scripts/task-ledger.mjs promote <task-id-or-stem>
-node scripts/task-ledger.mjs start <task-id-or-stem>
-node scripts/task-ledger.mjs block <task-id-or-stem> --reason "<specific blocker>"
-node scripts/task-ledger.mjs review <task-id-or-stem>
-node scripts/task-ledger.mjs complete <task-id-or-stem> [--approved]
-node scripts/task-ledger.mjs list
-```
-
-`new` creates an ignored local `backlog` scaffold. `promote` requires an executable specification and no open dependencies. `start` enforces one integrating task. `review` requires settled durable rationale and completed verification. `complete` requires the same evidence; a task marked `Human review: required` must pass through `review` and uses `--approved` only after explicit operator acceptance. Verification containing only concrete `Not run` evidence always follows that reviewed path.
-
-For complex or multi-session work, expand the selected task's `Plan`, `Progress`, and `Decisions` sections. The task itself is the executable plan and handoff artifact; do not create a parallel plan file or a completed-plan archive.
-
-## Human Review Policy
-
-This is the authoritative review-boundary list for every change. Use `Human review: required` for a change that affects:
-
-- `CRITICAL_INVARIANTS.md`;
-- security, privacy, secrets, authentication, tenancy, retention, or public-sharing boundaries;
-- persistent schema/migrations or destructive data behavior;
-- public API or stored-data compatibility;
-- release or publication safeguards;
-- a user-visible product contract not already decided by current living documents; or
-- completion supported only by unavailable verification.
-
-Every matching change must create or use a task and reach `in_progress` before implementation, including work expected to finish in one session. After implementation and verification, move it to `review`; delete it with `complete --approved` only after explicit operator acceptance. An unresolved product decision needed before implementation is a blocker, not an end-of-task review: record it in `Blocked by` and obtain the decision first. Routine implementation and refactoring with available verification remain review-optional and may use the direct same-session path.
+The root [Human Review Policy](../AGENTS.md#human-review-policy) is the sole classification list. Every matching change must reach `in_progress` before implementation and `review` after implementation and verification; delete it with `complete --approved` only after explicit operator acceptance. A product decision needed before implementation is a blocker, not an end-of-task review: record it in `Blocked by` and obtain the decision first. Routine verified implementation remains review-optional and may use the direct same-session path.
 
 ## Execution Loop
 
@@ -69,7 +29,7 @@ Every matching change must create or use a task and reach `in_progress` before i
 4. Add the cheapest deterministic test that would fail for the regression.
 5. Update `Progress` after meaningful checkpoints and record only task-local choices in `Decisions`.
 6. Run focused checks while iterating. Near completion, run the proportional hermetic or container-parity lane from `TESTING.md`; run E2E, runtime image builds, migrations, security audit, or provider smokes only when the task crosses those boundaries.
-7. Update the owning living documents when architecture, environment, workflow, tests, security, or product behavior changed. Put rationale beside a current rule only when it remains useful after the task is deleted.
+7. Update the owning living document only when the change modifies a durable product contract, invariant, architecture/data boundary, configuration/environment contract, operator workflow, security boundary, or verification policy. A bug fix or implementation change that restores or preserves an already documented contract does not require a documentation edit. Put durable rationale beside the current rule.
 8. Record exact passed checks and unavailable checks with reasons in `Verification`, and settle `Durable rationale` as `none` or `moved to <agent_docs owner>`.
 9. Move required-review work to `review`; otherwise run `complete` and delete the task.
 
@@ -89,10 +49,14 @@ Exact commands and test selection live in `agent_docs/TESTING.md`. Security-sens
 
 The agent may choose implementation names, conservative UI details, focused test granularity, and small sequencing decisions. Stop for missing secrets, paid or large provider calls outside the approved smoke policy, destructive operations not requested by the operator, an unavailable required external service, or a product decision not covered by current contracts.
 
+## Final Task-Owned Review
+
+Before review or completion, perform the root [Before Final Response](../AGENTS.md#before-final-response) checklist. Compare final status with the initial state; run unstaged and staged whitespace checks; inspect the complete task-owned `HEAD` diff and every new untracked task-owned file. Reject unrelated edits, secrets/private values, artifacts, generated drift, or unjustified contract/documentation changes, and distinguish preserved user changes in the task evidence and operator report.
+
 ## Done Standard
 
-Work is complete only when the requested outcome is implemented, relevant checks pass or an unavailable check is named with a reason, living documents are current, no secrets are added, and the app remains runnable or clearly verifiable. Prefer one commit per completed queued task with subject `<task-id>: outcome in one line`.
+Work is complete only when the requested outcome is implemented, relevant checks pass or an unavailable check is named with a reason, required living documents are current, final task-owned review is clean, and the app remains runnable or clearly verifiable. Prefer one commit per completed queued task with subject `<task-id>: outcome in one line`.
 
 ## Operator Report
 
-Report the outcome, material autonomous decisions, exact checks that ran, and relevant checks that did not run. Continue to another task only when broad implementation was requested and the next task is concrete and unblocked.
+Report the outcome, material decisions, exact checks run, relevant checks not run, and the distinction between task-owned and pre-existing user changes. Continue only when broad implementation was requested and the next task is concrete and unblocked.

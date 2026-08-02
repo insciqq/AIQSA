@@ -121,7 +121,7 @@ Storage remains private. MinIO has no anonymous access, filesystem fallback is s
 
 Repository-local `.aiqsa/` state is excluded from Git and Docker build context because it may contain user objects or other private runtime data. Do not copy it into images or caches.
 
-Task instances are local ignored state and are excluded from Git and Docker; only `agent_docs/tasks/README.md` and the separate task template are tracked. Release privacy checks the selected tree and post-policy history so a task committed and later deleted still blocks publication. Rewriting established public refs is not routine task-cleanup remediation. Docker build context also excludes `agent_docs/` plus every scoped `AGENTS.md` and `CLAUDE.md`; these files have no build-time or runtime authority. Release publication requires the official public GitHub `origin`, while ref rewrites, force pushes, and release tags require explicit operator authorization and fresh target/ref inspection.
+Task instances are local ignored state and are excluded from Git and Docker; `agent_docs/tasks/README.md` owns task guidance and `scripts/task-ledger.mjs new` is the sole executable scaffold source. Release privacy checks the selected tree and post-policy history so a task committed and later deleted still blocks publication. Rewriting established public refs is not routine task-cleanup remediation. Docker build context also excludes `agent_docs/` plus every scoped `AGENTS.md` and `CLAUDE.md`; these files have no build-time or runtime authority. Release publication requires the official public GitHub `origin`, while ref rewrites, force pushes, and release tags require explicit operator authorization and fresh target/ref inspection.
 
 ## Provider Catalog Trust
 

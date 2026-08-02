@@ -12,6 +12,6 @@ Before opening a pull request:
 docker compose -f docker-compose.dev.yml exec -T app npm run check
 ```
 
-Keep changes focused, add tests when behavior changes, and update the owning documentation when configuration, architecture, deployment, or user-visible behavior changes. Real provider credentials are not required for routine checks and must never be committed.
+Keep changes focused and add tests when behavior changes. Update the owning living document only when a change modifies a durable product contract, invariant, architecture/data boundary, configuration/environment contract, operator workflow, security boundary, or verification policy. A bug fix or implementation change that restores or preserves an already documented contract does not require a documentation edit. Real provider credentials are not required for routine checks and must never be committed.
 
 By contributing, you agree that your contribution is licensed under the repository's [AGPL-3.0-only license](LICENSE).

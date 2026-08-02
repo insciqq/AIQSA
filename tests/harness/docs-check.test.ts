@@ -23,7 +23,6 @@ const required = [
   "prisma/AGENTS.md",
   "prisma/CLAUDE.md",
   "agent_docs/AUTONOMOUS_WORKFLOW.md",
-  "agent_docs/AI_CONTEXT.md",
   "agent_docs/ARCHITECTURE.md",
   "agent_docs/BACKEND.md",
   "agent_docs/backend/API_AND_AUTH.md",
@@ -46,7 +45,6 @@ const required = [
   "agent_docs/QSA_PIPELINE.md",
   "agent_docs/SECURITY.md",
   "agent_docs/TESTING.md",
-  "agent_docs/TASK_TEMPLATE.md",
   "agent_docs/tasks/README.md",
   "agent_docs/generated/API_AND_SCHEMA.md"
 ];
