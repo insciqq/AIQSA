@@ -211,14 +211,16 @@ export function createAdminGroupGrantCommands(prisma: PrismaClient): AdminGroupG
           return false;
         }
 
-        const strategy = await prisma.searchStrategy.findFirst({
+        const option = await prisma.searchOption.findFirst({
+          select: { id: true },
           where: {
+            archivedAt: null,
             enabled: true,
-            strategyId: searchStrategy
+            optionId: searchStrategy
           }
         });
 
-        if (!strategy || provider || modelId) {
+        if (!option || provider || modelId) {
           return false;
         }
       } else if (provider && modelId) {

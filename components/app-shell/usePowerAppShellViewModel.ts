@@ -217,7 +217,7 @@ export function usePowerAppShellViewModel({
     catalog?.providers.find((provider) => provider.id === selectedProvider)?.name ?? providerDisplayName(selectedProvider);
   const selectedSearchLabel =
     catalog?.searchStrategies.find((strategy) => strategy.strategyId === selectedSearchStrategy)?.displayName ??
-    selectedSearchStrategy;
+    (selectedSearchStrategy === "search-disabled" ? "Off" : "Search source unavailable");
   const projectSettingsFolder = folders.find((folder) => folder.id === projectSettingsFolderId) ?? null;
   const activeChatTitle = activeChat?.title ?? "New Chat";
   const activeChatFolderId = activeChat?.folderId ?? pendingChatFolderId ?? "";

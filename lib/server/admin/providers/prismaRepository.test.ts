@@ -271,18 +271,42 @@ describe("Prisma admin provider repository", () => {
 
   it("atomically materializes a tested draft credential and its complete active check", async () => {
     const candidateCheck = storedCheck();
+    const secondCandidateCheck: StoredProviderDraftCheck = {
+      ...candidateCheck,
+      evidence: {
+        ...candidateCheck.evidence,
+        upstreamModelId: "vendor/model-2"
+      },
+      fingerprint: "fingerprint-2",
+      modelDraftVersion: 5,
+      providerModelId: "model-2"
+    };
     const createVersion = vi.fn(async () => ({}));
     const updateCredential = vi.fn(async () => ({ count: 1 }));
     const updateConnection = vi.fn(async () => ({ count: 1 }));
     const updateModel = vi.fn(async (_input: unknown) => ({ count: 1 }));
     const createChecks = vi.fn(async () => ({ count: 1 }));
+    const createSearchOption = vi.fn(async ({ data }: { data: Record<string, unknown> }) => ({
+      ...data,
+      archivedAt: null
+    }));
+    const createSearchStrategy = vi.fn(async ({ data }: { data: Record<string, unknown> }) => ({
+      ...data,
+      activeRevision: null
+    }));
+    const createSearchRevision = vi.fn(async () => ({ id: "hosted-revision-1" }));
+    const updateSearchStrategy = vi.fn(async () => ({}));
+    const invalidateSearchStrategies = vi.fn(async () => ({ count: 1 }));
     const db = transactional({
       providerConnection: {
         findUnique: vi.fn(async () => ({
           defaultCredentialId: "credential-1",
+          displayName: "Custom gateway",
           draftConfig: {},
           draftVersion: 2,
-          id: "connection-1"
+          family: "openai_compatible",
+          id: "connection-1",
+          templateKey: null
         })),
         updateMany: updateConnection
       },
@@ -314,19 +338,37 @@ describe("Prisma admin provider repository", () => {
         findMany: vi.fn(async () => [])
       },
       providerModel: {
-        findMany: vi.fn(async () => [{ draftVersion: 4, id: "model-1" }]),
+        findMany: vi.fn(async () => [
+          { draftVersion: 4, id: "model-1" },
+          { draftVersion: 5, id: "model-2" }
+        ]),
         updateMany: updateModel
       },
       providerModelCredentialCheck: {
         createMany: createChecks,
         deleteMany: vi.fn(async () => ({ count: 0 }))
       },
-      providerRunBinding: { updateMany: vi.fn(async () => ({ count: 0 })) }
+      providerRunBinding: { updateMany: vi.fn(async () => ({ count: 0 })) },
+      searchIntegrationRevision: {
+        create: createSearchRevision,
+        findFirst: vi.fn(async () => null),
+        findUnique: vi.fn(async () => null)
+      },
+      searchOption: {
+        create: createSearchOption,
+        findUnique: vi.fn(async () => null)
+      },
+      searchStrategy: {
+        create: createSearchStrategy,
+        findFirst: vi.fn(async () => null),
+        update: updateSearchStrategy,
+        updateMany: invalidateSearchStrategies
+      }
     });
     const repository = createPrismaAdminProviderRepository(db as unknown as PrismaClient);
 
     await expect(repository.activateConnectionCas({
-      checks: [candidateCheck],
+      checks: [candidateCheck, secondCandidateCheck],
       connection: {
         configuration: {
           allowPrivateNetwork: false,
@@ -351,7 +393,7 @@ describe("Prisma admin provider repository", () => {
           answerSelectable: true,
           capabilities: {
             nativePdfInput: false,
-            nativeSearch: false,
+            nativeSearch: true,
             pdf: false,
             reasoning: false,
             vision: false
@@ -361,6 +403,22 @@ describe("Prisma admin provider repository", () => {
         },
         draftVersion: 4,
         id: "model-1"
+      }, {
+        configuration: {
+          adapterKind: "openai_responses_compatible",
+          answerSelectable: true,
+          capabilities: {
+            nativePdfInput: false,
+            nativeSearch: true,
+            pdf: false,
+            reasoning: false,
+            vision: false
+          },
+          defaultParams: {},
+          upstreamModelId: "vendor/model-2"
+        },
+        draftVersion: 5,
+        id: "model-2"
       }],
       now: NOW
     })).resolves.toBe("updated");
@@ -382,13 +440,75 @@ describe("Prisma admin provider repository", () => {
       where: { draftVersion: 3, id: "credential-1" }
     });
     expect(createChecks).toHaveBeenCalledWith({
-      data: [expect.objectContaining({
-        connectionVersion: 2,
-        credentialVersionId: "version-1",
-        modelVersion: 4,
-        status: "available"
-      })]
+      data: expect.arrayContaining([
+        expect.objectContaining({
+          connectionVersion: 2,
+          credentialVersionId: "version-1",
+          modelVersion: 4,
+          providerModelId: "model-1",
+          status: "available"
+        }),
+        expect.objectContaining({
+          connectionVersion: 2,
+          credentialVersionId: "version-1",
+          modelVersion: 5,
+          providerModelId: "model-2",
+          status: "available"
+        })
+      ])
     });
+    expect(createSearchOption).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        id: "custom-web-search-option:connection-1",
+        optionId: "custom-web-search:connection-1",
+        sourceConnectionId: "connection-1"
+      })
+    });
+    expect(createSearchStrategy).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        adapterKind: "answer_provider_hosted",
+        id: "custom-web-search-hosted:connection-1"
+      })
+    }));
+    expect(createSearchStrategy).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        adapterKind: "provider_model_client",
+        enabled: false,
+        id: "custom-web-search-client:connection-1",
+        providerModelId: "model-1"
+      })
+    }));
+    expect(createSearchRevision).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        searchStrategyId: "custom-web-search-hosted:connection-1",
+        validationEvidence: expect.objectContaining({ sourceProbe: false })
+      })
+    });
+    expect(updateSearchStrategy).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        activeRevisionId: "hosted-revision-1",
+        enabled: true
+      }),
+      where: { id: "custom-web-search-hosted:connection-1" }
+    });
+    expect(invalidateSearchStrategies).toHaveBeenCalledWith({
+      data: {
+        draftTestEvidence: expect.anything(),
+        enabled: false,
+        testedDraftHash: null
+      },
+      where: {
+        adapterKind: "provider_model_client",
+        providerModel: { connectionId: "connection-1" }
+      }
+    });
+    const invalidation = (invalidateSearchStrategies.mock.calls as unknown as Array<[
+      { data: Record<string, unknown> }
+    ]>)[0]![0];
+    expect(invalidation.data).not.toHaveProperty("activeRevisionId");
+    expect(invalidation.data).not.toHaveProperty("activatedAt");
+    expect(invalidation.data).not.toHaveProperty("config");
+    expect(invalidation.data).not.toHaveProperty("draft");
     expect(
       (updateModel.mock.calls[0]?.[0] as { data?: object } | undefined)?.data
     ).not.toHaveProperty("contextWindow");
@@ -660,6 +780,7 @@ describe("Prisma admin provider repository", () => {
         deleteMany: vi.fn(async () => ({ count: 1 }))
       },
       runProfile: { count: vi.fn(async () => 0) },
+      searchOption: { count: vi.fn(async () => 0) },
       searchStrategy: { count: vi.fn(async () => 0) },
       userSettings: { updateMany: vi.fn(async () => ({ count: 1 })) }
     });
@@ -702,17 +823,52 @@ describe("Prisma admin provider repository", () => {
         updateMany: vi.fn(async () => ({ count: 0 }))
       },
       runProfile: { count: vi.fn(async () => 2) },
+      searchOption: { count: vi.fn(async () => 1) },
       searchStrategy: { count: vi.fn(async () => 3) }
     });
     const repository = createPrismaAdminProviderRepository(db as unknown as PrismaClient);
 
     await expect(repository.deleteConnection("connection-1")).resolves.toEqual({
       blockers: [
-        { count: 3, kind: "search_references" },
+        { count: 4, kind: "search_references" },
         { count: 2, kind: "run_profiles" },
         { count: 1, kind: "run_bindings" }
       ],
       status: "conflict"
+    });
+    expect(deleteConnection).not.toHaveBeenCalled();
+  });
+
+  it("keeps a Custom connection referenced only by an archived logical Search source", async () => {
+    const deleteConnection = vi.fn();
+    const db = transactional({
+      providerConnection: {
+        delete: deleteConnection,
+        findUnique: vi.fn(async () => ({
+          enabled: false,
+          family: "openai_compatible",
+          templateKey: null
+        }))
+      },
+      providerCredential: { findMany: vi.fn(async () => []) },
+      providerCredentialVersion: { deleteMany: vi.fn(async () => ({ count: 0 })) },
+      providerModel: { findMany: vi.fn(async () => []) },
+      providerRunBinding: {
+        count: vi.fn(async () => 0),
+        updateMany: vi.fn(async () => ({ count: 0 }))
+      },
+      runProfile: { count: vi.fn(async () => 0) },
+      searchOption: { count: vi.fn(async () => 1) },
+      searchStrategy: { count: vi.fn(async () => 0) }
+    });
+    const repository = createPrismaAdminProviderRepository(db as unknown as PrismaClient);
+
+    await expect(repository.deleteConnection("connection-1")).resolves.toEqual({
+      blockers: [{ count: 1, kind: "search_references" }],
+      status: "conflict"
+    });
+    expect(db.searchOption.count).toHaveBeenCalledWith({
+      where: { sourceConnectionId: "connection-1" }
     });
     expect(deleteConnection).not.toHaveBeenCalled();
   });

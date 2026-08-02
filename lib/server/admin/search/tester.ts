@@ -107,20 +107,21 @@ async function credentialSource(
 
 export function createAdminSearchTester(prisma: PrismaClient): AdminSearchTester {
   return {
+    async currentBinding({ providerModelId, store, userId }) {
+      const role = await loadTechnicalProviderRole(store, { providerModelId, userId });
+      if (!role.authority) throw new Error("search_provider_model_not_available");
+      return role.authority;
+    },
     async test({ draft, userId }) {
       if (draft.adapterKind === "answer_provider_hosted") {
-        return {
-          method: "configuration",
-          normalizedSourceCount: 0,
-          protocol: draft.protocol,
-          status: "available"
-        };
+        throw new Error("search_configuration_invalid");
       }
       if (!draft.providerModelId) throw new Error("search_provider_model_not_available");
       const role = await loadTechnicalProviderRole(prisma, {
         providerModelId: draft.providerModelId,
         userId
       });
+      if (!role.authority) throw new Error("search_provider_model_not_available");
       const secret = await credentialSource(prisma, role.snapshot);
       const runtime = createProviderRuntimeBinding({
         options: {
@@ -188,6 +189,7 @@ export function createAdminSearchTester(prisma: PrismaClient): AdminSearchTester
       return {
         method: "provider_search",
         normalizedSourceCount,
+        probeBinding: role.authority,
         protocol: draft.protocol,
         status: normalizedSourceCount > 0 ? "available" : "unavailable"
       };

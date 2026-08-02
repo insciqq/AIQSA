@@ -20,7 +20,7 @@ function isAnswerSelectableModel(value: unknown): boolean {
 }
 
 export async function loadAdminGrantableCatalog(prisma: PrismaClient): Promise<AdminCatalog> {
-  const [providerModels, searchStrategies] = await Promise.all([
+  const [providerModels, searchOptions] = await Promise.all([
     prisma.providerModel.findMany({
       orderBy: [
         {
@@ -53,17 +53,18 @@ export async function loadAdminGrantableCatalog(prisma: PrismaClient): Promise<A
         }
       }
     }),
-    prisma.searchStrategy.findMany({
+    prisma.searchOption.findMany({
       orderBy: {
-        strategyId: "asc"
+        optionId: "asc"
       },
       select: {
         displayName: true,
-        strategyId: true
+        optionId: true
       },
       where: {
+        archivedAt: null,
         enabled: true,
-        strategyId: {
+        optionId: {
           not: "search-disabled"
         }
       }
@@ -93,6 +94,9 @@ export async function loadAdminGrantableCatalog(prisma: PrismaClient): Promise<A
       };
     }),
     providers: [...providers].map(([id, name]) => ({ id, name })),
-    searchStrategies
+    searchStrategies: searchOptions.map((option) => ({
+      displayName: option.displayName,
+      strategyId: option.optionId
+    }))
   };
 }

@@ -153,8 +153,9 @@ describe("useCommandPaletteActions", () => {
       providers: [{ id: "openai", models: ["gpt-5.5"], name: "OpenAI" }],
       searchStrategies: [
         {
+          description: "Search the web with OpenAI.",
           displayName: "OpenAI Web Search",
-          kind: "openai_native_web_search",
+          kind: "web_search",
           strategyId: "openai-native-web-search"
         }
       ]
@@ -201,7 +202,7 @@ describe("useCommandPaletteActions", () => {
     );
     expect(modelCommand?.subtitle).not.toContain("/");
     expect(result.current.commandItems.find((item) => item.kind === "search")?.subtitle).toBe(
-      "Provider-native web search"
+      "Search the web with OpenAI."
     );
     expect(result.current.commandItems.filter((item) => item.current).map((item) => item.kind)).toEqual(
       expect.arrayContaining(["chat", "model", "prompt", "search"])

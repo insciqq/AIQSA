@@ -754,6 +754,80 @@ describe("run execution", () => {
     expect(activeRunControllerRegistry.has("run-1")).toBe(false);
   });
 
+  it("pins the friendly custom source identity onto live hosted Search artifacts", async () => {
+    const optionId = "custom-web-search:connection-custom";
+    const base = preparedData({
+      provider: "connection-custom",
+      searchStrategy: optionId
+    });
+    const searchPlan = {
+      mode: "model_choice" as const,
+      options: [{
+        adapterKind: "answer_provider_hosted" as const,
+        config: {},
+        credentialMode: "answer_provider" as const,
+        displayName: "Company Gateway Search",
+        executionModes: ["model_choice" as const],
+        modelId: null,
+        optionId,
+        protocol: "openai_responses_web_search" as const,
+        provider: "connection-custom",
+        providerModelId: null,
+        revisionId: "revision-hosted",
+        searchStrategyRowId: "route-hosted"
+      }]
+    };
+    const prepared: MaterializedPreparedRunData = {
+      ...base,
+      normalizedRequest: { ...base.normalizedRequest, searchPlan },
+      providerRequest: { ...base.providerRequest, searchPlan }
+    };
+    const repository = createRepository({
+      entitlements: {
+        modelKeys: new Set<string>(),
+        providerKeys: new Set(["connection-custom"]),
+        searchStrategies: new Set([optionId])
+      }
+    });
+    const adapter = createAdapter(async function* () {
+      yield {
+        data: {
+          artifactType: "search",
+          payload: {
+            id: "ws_custom",
+            status: "completed",
+            type: "web_search_call"
+          }
+        },
+        type: "artifact"
+      };
+      return providerResult();
+    });
+
+    const events = parseSse(await createRunExecutionResponse(executionInput({
+      adapter,
+      prepared,
+      repository: repository.repository
+    })).text());
+    const searchEvent = events.find((event) =>
+      event.type === "artifact" && event.data.artifactType === "search");
+
+    expect(searchEvent).toEqual({
+      data: {
+        artifactType: "search",
+        payload: {
+          id: "ws_custom",
+          status: "completed",
+          type: "web_search_call"
+        },
+        searchDisplayName: "Company Gateway Search",
+        searchStrategy: optionId
+      },
+      type: "artifact"
+    });
+    expect(repository.persistedEvents.map(({ event }) => event)).toContainEqual(searchEvent);
+  });
+
   it("keeps grounded output live while persisting only provenance, usage, and a neutral placeholder", async () => {
     const persistedChatUpdate = chatUpdate();
     persistedChatUpdate.messages[1]!.content = textMessageContent(GROUNDED_LIVE_ONLY_PLACEHOLDER);

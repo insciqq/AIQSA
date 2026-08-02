@@ -636,7 +636,7 @@ describe("ThreadMessageRow", () => {
     const toolDisclosure = screen.getByRole("button", { name: /Used 1 tool Memory/i });
     const reasoningDisclosure = screen.getByRole("button", { name: "Reasoning 1" });
     expect(within(metadata).getByTestId("run-receipt")).toHaveTextContent(
-      "Run Complete · Fake / Fake QSA · 1 search call · OpenAI web_search · 1 tool call · 1 citation · 1 reasoning trace"
+      "Run Complete · Fake / Fake QSA · 1 search call · OpenAI Search · 1 tool call · 1 citation · 1 reasoning trace"
     );
     expect(screen.queryByTestId("thread-search-summary")).not.toBeInTheDocument();
     expect(screen.queryByTestId("thread-citations-block")).not.toBeInTheDocument();

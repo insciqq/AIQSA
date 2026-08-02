@@ -228,13 +228,22 @@ function usesGpt56PromptCacheOptions(modelId: string): boolean {
   return modelId === "gpt-5.6" || modelId.startsWith("gpt-5.6-");
 }
 
+export function usesHostedOpenAIWebSearch(request: ProviderRunRequest): boolean {
+  return request.searchPlan
+    ? request.searchPlan.options.some((option) =>
+        option.adapterKind === "answer_provider_hosted" &&
+        option.protocol === "openai_responses_web_search")
+    : request.searchStrategy === "openai-native-web-search";
+}
+
 function buildOpenAIResponsesBody(
   request: ProviderRunRequest,
   options: PrivateBuildOptions
 ): OpenAIResponsesRequestBody {
   const params = normalizeOpenAIResponsesParams(request.params as Partial<OpenAIResponsesParams>);
   const serializedTools = (request.tools ?? []).map((tool) => openAIResponsesToolBridge.serializeTool(tool).tool);
-  const hostedTools = request.searchStrategy === "openai-native-web-search" ? [{ type: "web_search" }] : [];
+  const hostedSearch = usesHostedOpenAIWebSearch(request);
+  const hostedTools = hostedSearch ? [{ type: "web_search" }] : [];
   const tools: Record<string, unknown>[] = [...hostedTools, ...serializedTools];
   const forceForeground = request.forceNonStreaming === true;
   const background = forceForeground ? false : Boolean(params.background);
@@ -289,7 +298,7 @@ function buildOpenAIResponsesBody(
     body.reasoning = reasoning;
   }
 
-  if (request.searchStrategy === "openai-native-web-search") {
+  if (hostedSearch) {
     body.include = ["web_search_call.action.sources"];
   }
 

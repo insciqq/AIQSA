@@ -160,7 +160,17 @@ function searchStrategyFromPayloadValue(payload: unknown): string | null {
 }
 
 function searchStrategyFromEvent(event: RunEventView): string | null {
+  if (isRecord(event.data) && typeof event.data.searchStrategy === "string") {
+    return event.data.searchStrategy;
+  }
   return searchStrategyFromPayloadValue(artifactPayload(event));
+}
+
+function searchDisplayNameFromEvent(event: RunEventView): string | null {
+  return isRecord(event.data) && typeof event.data.searchDisplayName === "string" &&
+    event.data.searchDisplayName.trim()
+    ? event.data.searchDisplayName.trim()
+    : null;
 }
 
 function searchRunsCount(searchRuns: unknown[] | undefined): number {
@@ -212,7 +222,7 @@ function searchDetailsFromArtifacts(
       {
         callPreview: payload,
         status: typeof payload.status === "string" ? payload.status : null,
-        strategyId: searchStrategyFromPayloadValue(payload)
+        strategyId: searchStrategyFromEvent(event)
       }
     ];
   });
@@ -320,6 +330,11 @@ export function summarizeThreadArtifacts(
     reasoningText,
     searchCount,
     searchDetails,
+    searchDisplayName:
+      (grounding ? ["Google Search"] : searchArtifacts
+        .map(searchDisplayNameFromEvent)
+        .filter((displayName): displayName is string => Boolean(displayName)))
+        .at(0) ?? null,
     searchStrategy:
       (grounding ? ["gemini-google-search"] : searchArtifacts
         .map(searchStrategyFromEvent)

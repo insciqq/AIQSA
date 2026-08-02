@@ -17,6 +17,7 @@ import {
   normalizeSearchDraft,
   searchDraftHash
 } from "../lib/server/search/configuration";
+import { searchValidationFingerprint } from "../lib/server/search/probeBinding";
 import {
   assertLocalSeedRuntime,
   ensureLocalFixturePasswordHash,
@@ -41,6 +42,45 @@ const ids = {
   promptPreset: "00000000-0000-4000-8000-000000000300",
   user: "00000000-0000-4000-8000-000000000001"
 };
+
+const builtInSearchOptions = Object.freeze({
+  "gemini-google-search": Object.freeze({
+    description: "Google Search grounding for eligible Gemini models.",
+    displayName: "Google Search",
+    id: "00000000-0000-4000-8000-000000001403",
+    kind: "gemini_google_search",
+    sourceConnectionId: providerTemplateIds.geminiConnection,
+    templateKey: "search:gemini-google"
+  }),
+  "openai-native-web-search": Object.freeze({
+    description: "Web search provided by OpenAI.",
+    displayName: "OpenAI Search",
+    id: "00000000-0000-4000-8000-000000001402",
+    kind: "web_search",
+    sourceConnectionId: providerTemplateIds.openAiConnection,
+    templateKey: "search:openai"
+  }),
+  "perplexity-tool-search": Object.freeze({
+    description: "Web search provided by Perplexity through OpenRouter.",
+    displayName: "Perplexity Search",
+    id: "00000000-0000-4000-8000-000000001404",
+    kind: "perplexity_search",
+    sourceConnectionId: providerTemplateIds.openRouterConnection,
+    templateKey: "search:perplexity"
+  }),
+  "search-disabled": Object.freeze({
+    description: "Answer without web search.",
+    displayName: "Off",
+    id: "00000000-0000-4000-8000-000000001401",
+    kind: "none",
+    sourceConnectionId: null,
+    templateKey: "search:none"
+  })
+});
+
+function builtInSearchOption(strategyId: string) {
+  return builtInSearchOptions[strategyId as keyof typeof builtInSearchOptions];
+}
 
 const asJson = (value: unknown) => value as Prisma.InputJsonValue;
 
@@ -639,75 +679,119 @@ async function main() {
     }
   });
 
-  for (const strategy of defaultSearchStrategies) {
-    const providerModelId = strategy.kind === "perplexity_tool_search"
-      ? providerModelIds.get(`${strategy.provider}:${strategy.modelId}`) ?? null
-      : null;
-    if (strategy.kind === "perplexity_tool_search" && !providerModelId) {
-      throw new Error(`Missing seeded search deployment: ${strategy.strategyId}`);
-    }
-    const draft = builtInSearchDraft({
-      config: strategy.config,
-      kind: strategy.kind,
-      providerModelId
-    });
-    const draftHash = strategy.kind === "none"
-      ? `seed:${strategy.strategyId}`
-      : searchDraftHash(normalizeSearchDraft(draft));
-    const stored = await prisma.searchStrategy.upsert({
+  for (const [optionId, option] of Object.entries(builtInSearchOptions)) {
+    await prisma.searchOption.upsert({
       create: {
-        adapterKind: String(draft.adapterKind),
-        config: asJson(strategy.config),
-        credentialMode: String(draft.credentialMode),
-        description: strategy.description,
-        displayName: strategy.displayName,
-        draft: asJson(draft),
-        draftTestEvidence: asJson({
-          checkedAt: new Date().toISOString(),
-          method: "configuration",
-          normalizedSourceCount: 0,
-          protocol: draft.protocol,
-          status: "available"
-        }),
-        id: randomUUID(),
-        kind: strategy.kind,
-        modelId: strategy.modelId ?? null,
-        provider: strategy.provider,
-        providerModelId,
-        strategyId: strategy.strategyId,
-        testedDraftHash: draftHash
+        description: option.description,
+        displayName: option.displayName,
+        enabled: true,
+        id: option.id,
+        kind: option.kind,
+        optionId,
+        sourceConnectionId: option.sourceConnectionId,
+        templateKey: option.templateKey
       },
       update: {
-        config: asJson(strategy.config),
-        description: strategy.description,
-        displayName: strategy.displayName,
-        kind: strategy.kind,
-        modelId: strategy.modelId ?? null,
-        provider: strategy.provider,
-        providerModelId
+        description: option.description,
+        displayName: option.displayName,
+        kind: option.kind,
+        sourceConnectionId: option.sourceConnectionId,
+        templateKey: option.templateKey
       },
-      where: {
-        strategyId: strategy.strategyId
-      }
+      where: { id: option.id }
     });
-    if (!stored.activeRevisionId) {
-      const revision = await prisma.searchIntegrationRevision.create({
-        data: {
+  }
+
+  for (const logicalOption of defaultSearchStrategies) {
+    const searchOption = builtInSearchOption(logicalOption.strategyId);
+    if (!searchOption) {
+      throw new Error(`Missing seeded logical Search option: ${logicalOption.strategyId}`);
+    }
+    const physicalRoutes = logicalOption.kind === "none"
+      ? [{
+          config: {},
+          credentialMode: "answer_provider",
+          kind: "none",
+          physicalStrategyId: logicalOption.strategyId,
+          providerModelId: null
+        }]
+      : logicalOption.routes;
+    for (const route of physicalRoutes) {
+      const providerModelId = route.credentialMode === "provider_model"
+        ? providerModelIds.get(`openrouter:${route.providerModelId ?? ""}`) ?? null
+        : null;
+      if (route.credentialMode === "provider_model" && !providerModelId) {
+        throw new Error(`Missing seeded search deployment: ${route.physicalStrategyId}`);
+      }
+      const draft = builtInSearchDraft({
+        config: route.config,
+        kind: route.kind,
+        providerModelId
+      });
+      const draftHash = route.kind === "none"
+        ? `seed:${route.physicalStrategyId}`
+        : searchDraftHash(normalizeSearchDraft(draft));
+      const stored = await prisma.searchStrategy.upsert({
+        create: {
           adapterKind: String(draft.adapterKind),
-          configuration: asJson(draft),
+          config: asJson(route.config),
           credentialMode: String(draft.credentialMode),
-          draftHash,
+          description: logicalOption.description,
+          displayName: logicalOption.displayName,
+          draft: asJson(draft),
+          draftTestEvidence: asJson({
+            checkedAt: new Date().toISOString(),
+            method: "configuration",
+            normalizedSourceCount: 0,
+            protocol: draft.protocol,
+            status: "available"
+          }),
           id: randomUUID(),
+          kind: route.kind,
+          modelId: route.providerModelId ?? null,
+          provider: logicalOption.sourceConnectionId ?? "fake",
           providerModelId,
-          revisionNumber: 1,
-          searchStrategyId: stored.id,
-          validationEvidence: asJson({ method: "seed", status: "available" })
+          searchOptionId: searchOption.id,
+          strategyId: route.physicalStrategyId,
+          testedDraftHash: draftHash
+        },
+        update: {
+          config: asJson(route.config),
+          description: logicalOption.description,
+          displayName: logicalOption.displayName,
+          kind: route.kind,
+          modelId: route.providerModelId ?? null,
+          provider: logicalOption.sourceConnectionId ?? "fake",
+          providerModelId,
+          searchOptionId: searchOption.id
+        },
+        where: {
+          strategyId: route.physicalStrategyId
         }
       });
-      await prisma.searchStrategy.update({
-        data: { activeRevisionId: revision.id, activatedAt: new Date() },
-        where: { id: stored.id }
-      });
+      if (!stored.activeRevisionId) {
+        const revision = await prisma.searchIntegrationRevision.create({
+          data: {
+            adapterKind: String(draft.adapterKind),
+            configuration: asJson(draft),
+            credentialMode: String(draft.credentialMode),
+            draftHash,
+            id: randomUUID(),
+            providerModelId,
+            revisionNumber: 1,
+            searchStrategyId: stored.id,
+            validationEvidence: asJson({ method: "seed", status: "available" }),
+            validationFingerprint: searchValidationFingerprint({
+              method: "seed",
+              status: "available"
+            })
+          }
+        });
+        await prisma.searchStrategy.update({
+          data: { activeRevisionId: revision.id, activatedAt: new Date() },
+          where: { id: stored.id }
+        });
+      }
     }
   }
 

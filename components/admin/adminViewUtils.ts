@@ -68,7 +68,8 @@ export function providerModelDisplayName(
 }
 
 export function searchStrategyDisplayName(catalog: Pick<AdminCatalog, "searchStrategies">, strategyId: string): string {
-  return catalog.searchStrategies.find((strategy) => strategy.strategyId === strategyId)?.displayName ?? strategyId;
+  return catalog.searchStrategies.find((strategy) => strategy.strategyId === strategyId)?.displayName ??
+    "Unavailable Search source";
 }
 
 export function groupLabel(groups: AdminMembership[]): string {

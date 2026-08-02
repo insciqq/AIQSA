@@ -28,6 +28,7 @@ export type OpenAIResponseSummaryInput = Readonly<{
   background?: unknown;
   error?: Record<string, unknown>;
   providerResponseId?: string;
+  provider?: string;
   status: string;
   stream?: unknown;
 }>;
@@ -35,6 +36,7 @@ export type OpenAIResponseSummaryInput = Readonly<{
 export type ParseOpenAIResponsesSseInput = Readonly<{
   background: unknown;
   idleTimeoutMs: number;
+  provider?: string;
   responseBody: ReadableStream<Uint8Array>;
   signal?: AbortSignal;
   stream: unknown;
@@ -221,13 +223,14 @@ function extractArtifacts(response: OpenAIResponseRecord): ModelRunSseEvent[] {
 function buildResponsePreview(
   response: OpenAIResponseRecord,
   finalText: string,
-  rawText = finalText
+  rawText = finalText,
+  provider = "openai"
 ): Record<string, unknown> {
   return {
     id: response.id,
     model: response.model,
     output: summarizeOutput(response),
-    provider: "openai",
+    provider,
     rawText: rawText === finalText ? undefined : rawText,
     status: response.status,
     text: finalText,
@@ -242,7 +245,7 @@ export function openAIResponseSummaryEvent(input: OpenAIResponseSummaryInput): M
       payload: {
         ...(typeof input.attempt === "number" ? { attempt: input.attempt } : {}),
         ...(typeof input.background !== "undefined" ? { background: input.background } : {}),
-        provider: "openai",
+        provider: input.provider ?? "openai",
         responseId: input.providerResponseId,
         status: input.status,
         ...(input.error ? { error: input.error } : {}),
@@ -256,7 +259,8 @@ export function openAIResponseSummaryEvent(input: OpenAIResponseSummaryInput): M
 function normalizeOpenAIResponseResult(
   response: OpenAIResponseRecord,
   providerResponseId: string | undefined,
-  fallbackRawText = ""
+  fallbackRawText = "",
+  provider = "openai"
 ): Readonly<{ artifacts: ModelRunSseEvent[]; result: ProviderRunResult }> {
   const rawFinalText = extractOpenAIText(response) || fallbackRawText;
   const finalText = visibleAnswerText(rawFinalText);
@@ -265,7 +269,7 @@ function normalizeOpenAIResponseResult(
   return {
     artifacts: extractArtifacts(response),
     result: {
-      finalProviderResponsePreview: buildResponsePreview(response, finalText, rawFinalText),
+      finalProviderResponsePreview: buildResponsePreview(response, finalText, rawFinalText, provider),
       finalText,
       providerToolCallMessage: toolCalls.length > 0 ? toolContinuationItems(response) : undefined,
       providerResponseId,
@@ -277,13 +281,14 @@ function normalizeOpenAIResponseResult(
 
 export function normalizeCompletedOpenAIResponse(
   response: OpenAIResponseRecord,
-  providerResponseId?: string
+  providerResponseId?: string,
+  provider = "openai"
 ): NormalizedCompletedOpenAIResponse {
   if (openAIResponseStatus(response) !== "completed") {
     throw new Error("openai_response_not_completed");
   }
 
-  const normalized = normalizeOpenAIResponseResult(response, providerResponseId);
+  const normalized = normalizeOpenAIResponseResult(response, providerResponseId, "", provider);
   const events = [...normalized.artifacts];
 
   if (normalized.result.finalText) {
@@ -359,7 +364,6 @@ function webSearchLifecycleArtifact(input: Readonly<{
         eventType: input.eventType,
         id: stringValue(item?.id) ?? stringValue(input.payload.item_id) ?? stringValue(input.payload.id),
         outputIndex: input.payload.output_index,
-        provider: "openai",
         responseId: input.providerResponseId,
         status,
         type: "web_search_call"
@@ -426,6 +430,7 @@ export async function* parseOpenAIResponsesSse(
       summaryEmitted = true;
       yield openAIResponseSummaryEvent({
         background: input.background,
+        provider: input.provider,
         providerResponseId,
         status: failureStatus ?? (response ? openAIResponseStatus(response) : "streaming"),
         stream: input.stream
@@ -470,13 +475,19 @@ export async function* parseOpenAIResponsesSse(
   if (!summaryEmitted) {
     yield openAIResponseSummaryEvent({
       background: input.background,
+      provider: input.provider,
       providerResponseId,
       status: openAIResponseStatus(finalResponse),
       stream: input.stream
     });
   }
 
-  const normalized = normalizeOpenAIResponseResult(finalResponse, providerResponseId, rawFinalText);
+  const normalized = normalizeOpenAIResponseResult(
+    finalResponse,
+    providerResponseId,
+    rawFinalText,
+    input.provider
+  );
 
   for (const artifact of normalized.artifacts) {
     yield artifact;

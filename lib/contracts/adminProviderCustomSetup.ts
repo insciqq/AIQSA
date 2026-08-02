@@ -83,6 +83,10 @@ export type AdminProviderCustomSetupReadyResult = Readonly<{
   }>>;
   outcome: "ready";
   providerModelId: string;
+  search: null | Readonly<{
+    displayName: string;
+    status: "needs_attention" | "ready";
+  }>;
 }>;
 
 export type AdminProviderCustomSetupErrorCode =

@@ -38,4 +38,81 @@ describe("grounded conversation persistence", () => {
     ]);
     expect(JSON.stringify(messages)).not.toContain("grounded-result-secret");
   });
+
+  it("omits a failed zero-answer turn from later provider context without deleting its audit rows", () => {
+    const messages = conversationMessagesFromPathRows([
+      {
+        chatId: "chat-1",
+        messageContent: textMessageContent("Earlier question"),
+        messageGroundedAt: null,
+        messageId: "user-1",
+        messageParentId: null,
+        messageRole: "user",
+        messageStatus: "complete"
+      },
+      {
+        chatId: "chat-1",
+        messageContent: textMessageContent("Earlier answer"),
+        messageGroundedAt: null,
+        messageId: "assistant-1",
+        messageParentId: "user-1",
+        messageRole: "assistant",
+        messageStatus: "complete"
+      },
+      {
+        chatId: "chat-1",
+        messageContent: textMessageContent("Question that failed"),
+        messageGroundedAt: null,
+        messageId: "user-failed",
+        messageParentId: "assistant-1",
+        messageRole: "user",
+        messageStatus: "complete"
+      },
+      {
+        chatId: "chat-1",
+        messageContent: textMessageContent(""),
+        messageGroundedAt: null,
+        messageId: "assistant-failed",
+        messageParentId: "user-failed",
+        messageRole: "assistant",
+        messageStatus: "error"
+      }
+    ]);
+
+    expect(messages).toEqual([
+      { content: textMessageContent("Earlier question"), id: "user-1", role: "user" },
+      { content: textMessageContent("Earlier answer"), id: "assistant-1", role: "assistant" }
+    ]);
+  });
+
+  it("keeps the question when a failed assistant had already produced partial text", () => {
+    const messages = conversationMessagesFromPathRows([
+      {
+        chatId: "chat-1",
+        messageContent: textMessageContent("Question with a partial answer"),
+        messageGroundedAt: null,
+        messageId: "user-1",
+        messageParentId: null,
+        messageRole: "user",
+        messageStatus: "complete"
+      },
+      {
+        chatId: "chat-1",
+        messageContent: textMessageContent("Partial answer"),
+        messageGroundedAt: null,
+        messageId: "assistant-1",
+        messageParentId: "user-1",
+        messageRole: "assistant",
+        messageStatus: "error"
+      }
+    ]);
+
+    expect(messages).toEqual([
+      {
+        content: textMessageContent("Question with a partial answer"),
+        id: "user-1",
+        role: "user"
+      }
+    ]);
+  });
 });

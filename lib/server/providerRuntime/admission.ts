@@ -15,14 +15,21 @@ import type {
 import { FULL_ACCESS_GROUP_SYSTEM_ROLE } from "../auth/fullAccessGroup";
 import {
   decodeSearchPlan,
+  OPENAI_PROVIDER_SEARCH_STRATEGY_ID,
   SEARCH_DISABLED_STRATEGY_ID,
   type SearchPlan
 } from "../../domain/search";
 import {
-  builtInSearchDraft,
+  compatibleTechnicalAdapter,
+  legacySearchKind,
   normalizeSearchDraft,
   searchExecutionModes
 } from "../search/configuration";
+import {
+  sameSearchProbeBinding,
+  searchProbeBinding,
+  type SearchProbeBinding
+} from "../search/probeBinding";
 
 export type ProviderAdmissionErrorCode =
   | "credential_active_version_missing"
@@ -47,6 +54,7 @@ export class ProviderAdmissionError extends Error {
 }
 
 export type ProviderAdmissionRole = Readonly<{
+  authority?: SearchProbeBinding | null;
   credentialSource: "default" | "group" | "user";
   modelConfiguration: RunModelConfiguration;
   snapshot: ProviderExecutionSnapshot;
@@ -85,6 +93,7 @@ type AdmissionPrisma = Pick<
   | "providerModel"
   | "providerModelCredentialCheck"
   | "providerUserCredentialAssignment"
+  | "searchOption"
   | "searchStrategy"
   | "user"
   | "userGroup"
@@ -260,6 +269,7 @@ async function loadRole(
     const fakeModel = snapshot.model;
     if (fakeModel.adapterKind !== "fake") throw new ProviderAdmissionError("model_not_available");
     return {
+      authority: null,
       credentialSource: "default",
       modelConfiguration: {
         adapterKind: "fake",
@@ -355,6 +365,14 @@ async function loadRole(
   }
 
   return {
+    authority: {
+      connectionId: model.connectionId,
+      connectionVersion: model.connection.activeVersion,
+      credentialId: credential.credentialId,
+      credentialVersionId: credential.credentialVersionId,
+      modelVersion: model.activeVersion,
+      providerModelId: model.id
+    },
     credentialSource: credential.source,
     modelConfiguration: {
       adapterKind: resolvedModel.adapterKind,
@@ -390,22 +408,274 @@ export async function loadTechnicalProviderRole(
   });
 }
 
-function searchConfiguration(
-  strategy: {
-    config: unknown;
-    kind: string;
-    strategyId: string;
-  },
-  role: ProviderAdmissionRole
-): RunSearchStrategyConfiguration {
-  const model = role.snapshot.model;
-  if (model.adapterKind === "fake") throw new ProviderAdmissionError("search_strategy_not_available");
+async function canonicalSearchOptionId(
+  db: AdmissionPrisma,
+  optionId: string
+): Promise<string | null> {
+  if (optionId !== OPENAI_PROVIDER_SEARCH_STRATEGY_ID) {
+    return optionId;
+  }
+
+  const legacyRoute = await db.searchStrategy.findUnique({
+    select: {
+      searchOption: {
+        select: {
+          archivedAt: true,
+          enabled: true,
+          optionId: true
+        }
+      }
+    },
+    where: { strategyId: OPENAI_PROVIDER_SEARCH_STRATEGY_ID }
+  });
+  const option = legacyRoute?.searchOption;
+  return option?.enabled && option.archivedAt === null ? option.optionId : null;
+}
+
+async function canonicalSearchPlan(
+  db: AdmissionPrisma,
+  plan: SearchPlan
+): Promise<SearchPlan | null> {
+  const optionIds = await Promise.all(
+    plan.optionIds.map((optionId) => canonicalSearchOptionId(db, optionId))
+  );
+  if (optionIds.some((optionId) => optionId === null)) return null;
+  const resolvedOptionIds = optionIds.filter((optionId): optionId is string => optionId !== null);
+  if (new Set(resolvedOptionIds).size !== resolvedOptionIds.length) return null;
   return {
-    config: isRecord(strategy.config) ? { ...strategy.config } : {},
-    kind: strategy.kind,
-    modelId: model.upstreamModelId,
-    provider: role.snapshot.providerFamily,
-    strategyId: strategy.strategyId
+    mode: plan.mode,
+    optionIds: resolvedOptionIds
+  };
+}
+
+type LoadedSearchOption = Readonly<{
+  archivedAt: Date | null;
+  displayName: string;
+  enabled: boolean;
+  id: string;
+  kind: string;
+  optionId: string;
+  sourceConnectionId: string | null;
+  strategies: ReadonlyArray<Readonly<{
+    activeRevision: null | Readonly<{
+      adapterKind: string;
+      configuration: unknown;
+      credentialMode: string;
+      id: string;
+      providerModelId: string | null;
+      validationEvidence: unknown;
+    }>;
+    activeRevisionId: string | null;
+    adapterKind: string;
+    archivedAt: Date | null;
+    credentialMode: string;
+    enabled: boolean;
+    id: string;
+    kind: string;
+    providerModelId: string | null;
+    strategyId: string;
+  }>>;
+}>;
+
+type ResolvedSearchRoute = Readonly<{
+  draft: ReturnType<typeof normalizeSearchDraft>;
+  probeBinding: SearchProbeBinding | null;
+  revisionId: string;
+  strategy: LoadedSearchOption["strategies"][number];
+}>;
+
+function supportedSearchOption(option: LoadedSearchOption): boolean {
+  if (!option.enabled || option.archivedAt !== null) return false;
+  if (option.kind === "none") {
+    return option.optionId === SEARCH_DISABLED_STRATEGY_ID && option.sourceConnectionId === null;
+  }
+  return (
+    option.kind === "web_search" ||
+    option.kind === "gemini_google_search" ||
+    option.kind === "perplexity_search"
+  ) && typeof option.sourceConnectionId === "string" && option.sourceConnectionId.length > 0;
+}
+
+function normalizeActiveSearchRoute(
+  strategy: LoadedSearchOption["strategies"][number]
+): ResolvedSearchRoute | null {
+  const revision = strategy.activeRevision;
+  if (
+    !strategy.enabled ||
+    strategy.archivedAt !== null ||
+    !strategy.activeRevisionId ||
+    !revision ||
+    revision.id !== strategy.activeRevisionId
+  ) {
+    return null;
+  }
+  let draft: ReturnType<typeof normalizeSearchDraft>;
+  try {
+    draft = normalizeSearchDraft(revision.configuration);
+  } catch {
+    return null;
+  }
+  if (
+    revision.adapterKind !== draft.adapterKind ||
+    revision.credentialMode !== draft.credentialMode ||
+    revision.providerModelId !== draft.providerModelId ||
+    strategy.adapterKind !== draft.adapterKind ||
+    strategy.credentialMode !== draft.credentialMode ||
+    strategy.providerModelId !== draft.providerModelId ||
+    strategy.kind !== legacySearchKind(draft.protocol, draft.adapterKind)
+  ) {
+    return null;
+  }
+  return {
+    draft,
+    probeBinding: searchProbeBinding(revision.validationEvidence),
+    revisionId: revision.id,
+    strategy
+  };
+}
+
+function hasAmbiguousRouteKinds(routes: readonly ResolvedSearchRoute[]): boolean {
+  const seen = new Set<string>();
+  for (const route of routes) {
+    if (seen.has(route.draft.adapterKind)) return true;
+    seen.add(route.draft.adapterKind);
+  }
+  return false;
+}
+
+function hostedRouteCompatible(
+  option: LoadedSearchOption,
+  route: ResolvedSearchRoute,
+  answer: ProviderAdmissionRole
+): boolean {
+  if (
+    route.draft.adapterKind !== "answer_provider_hosted" ||
+    option.sourceConnectionId !== answer.snapshot.connectionId ||
+    !answer.modelConfiguration.capabilities.nativeSearch
+  ) {
+    return false;
+  }
+  if (option.kind === "gemini_google_search") {
+    return route.draft.protocol === "gemini_google_search" &&
+      answer.snapshot.providerFamily === "gemini" &&
+      answer.snapshot.model.adapterKind === "gemini_interactions_native";
+  }
+  return option.kind === "web_search" &&
+    route.draft.protocol === "openai_responses_web_search" &&
+    (answer.snapshot.model.adapterKind === "openai_responses_native" ||
+      answer.snapshot.model.adapterKind === "openai_responses_compatible");
+}
+
+function clientRouteCompatible(
+  option: LoadedSearchOption,
+  route: ResolvedSearchRoute,
+  answer: ProviderAdmissionRole,
+  answerModelId: string
+): boolean {
+  if (
+    route.draft.adapterKind !== "provider_model_client" ||
+    !route.draft.providerModelId ||
+    !option.sourceConnectionId ||
+    !answer.modelConfiguration.capabilities.toolCalling
+  ) {
+    return false;
+  }
+  if (option.kind === "web_search") {
+    return route.draft.protocol === "openai_responses_web_search";
+  }
+  return option.kind === "perplexity_search" &&
+    route.draft.protocol === "openrouter_perplexity_chat" &&
+    route.draft.providerModelId !== answerModelId;
+}
+
+function routeBelongsToOption(
+  option: LoadedSearchOption,
+  route: ResolvedSearchRoute
+): boolean {
+  if (option.kind === "web_search") {
+    return route.draft.protocol === "openai_responses_web_search";
+  }
+  if (option.kind === "gemini_google_search") {
+    return route.draft.adapterKind === "answer_provider_hosted" &&
+      route.draft.protocol === "gemini_google_search";
+  }
+  return option.kind === "perplexity_search" &&
+    route.draft.adapterKind === "provider_model_client" &&
+    route.draft.protocol === "openrouter_perplexity_chat";
+}
+
+async function loadClientRouteRole(
+  db: AdmissionPrisma,
+  input: {
+    fullAccess: boolean;
+    groupIds: string[];
+    option: LoadedSearchOption;
+    route: ResolvedSearchRoute;
+    userId: string;
+  }
+): Promise<ProviderAdmissionRole | null> {
+  const providerModelId = input.route.draft.providerModelId;
+  if (
+    input.route.draft.adapterKind !== "provider_model_client" ||
+    !providerModelId ||
+    !input.option.sourceConnectionId ||
+    !routeBelongsToOption(input.option, input.route)
+  ) {
+    return null;
+  }
+  const technicalModel = await db.providerModel.findUnique({
+    select: { connectionId: true },
+    where: { id: providerModelId }
+  });
+  if (!technicalModel || technicalModel.connectionId !== input.option.sourceConnectionId) {
+    return null;
+  }
+  const role = await loadRole(db, {
+    connectionId: technicalModel.connectionId,
+    fullAccess: input.fullAccess,
+    groupIds: input.groupIds,
+    modelId: providerModelId,
+    requireAnswerSelectable: false,
+    requireEntitlement: false,
+    userId: input.userId
+  });
+  return role.authority && input.route.probeBinding &&
+    sameSearchProbeBinding(role.authority, input.route.probeBinding) &&
+    role.snapshot.connectionId === input.option.sourceConnectionId &&
+    role.modelConfiguration.capabilities.nativeSearch === true &&
+    compatibleTechnicalAdapter(input.route.draft.protocol, role.snapshot.model.adapterKind)
+    ? role
+    : null;
+}
+
+function searchConfiguration(
+  option: LoadedSearchOption,
+  route: ResolvedSearchRoute,
+  answer: ProviderAdmissionRole,
+  role: ProviderAdmissionRole | undefined
+): RunSearchStrategyConfiguration {
+  return {
+    adapterKind: route.draft.adapterKind,
+    config: {
+      ...route.draft,
+      ...(role
+        ? {
+            modelCapabilities: role.modelConfiguration.capabilities,
+            modelDefaultParams: role.modelConfiguration.defaultParams
+          }
+        : {})
+    },
+    credentialMode: route.draft.credentialMode,
+    displayName: option.displayName,
+    executionModes: searchExecutionModes(route.draft.adapterKind),
+    kind: route.strategy.kind,
+    modelId: role?.snapshot.model.upstreamModelId ?? null,
+    protocol: route.draft.protocol,
+    provider: role?.snapshot.providerFamily ?? answer.snapshot.providerFamily,
+    providerModelId: route.draft.providerModelId,
+    revisionId: route.revisionId,
+    searchStrategyRowId: route.strategy.id,
+    strategyId: option.optionId
   };
 }
 
@@ -443,52 +713,101 @@ export async function loadProviderAdmissionPlan(
   const fullAccess = memberships.some(
     (membership) => membership.group.systemRole === FULL_ACCESS_GROUP_SYSTEM_ROLE
   );
+
+  const optionCache = new Map<string, Promise<LoadedSearchOption | null>>();
+  const loadOption = (optionId: string): Promise<LoadedSearchOption | null> => {
+    const cached = optionCache.get(optionId);
+    if (cached) return cached;
+    const pending = db.searchOption.findFirst({
+      include: {
+        strategies: {
+          include: {
+            activeRevision: {
+              select: {
+                adapterKind: true,
+                configuration: true,
+                credentialMode: true,
+                  id: true,
+                  providerModelId: true,
+                  validationEvidence: true
+              }
+            }
+          },
+          orderBy: [{ createdAt: "asc" }, { strategyId: "asc" }],
+          where: {
+            activeRevisionId: { not: null },
+            archivedAt: null,
+            enabled: true
+          }
+        }
+      },
+      where: {
+        archivedAt: null,
+        enabled: true,
+        optionId
+      }
+    }) as Promise<LoadedSearchOption | null>;
+    optionCache.set(optionId, pending);
+    return pending;
+  };
+
+  let requestedSearchPreferencePlan = input.searchPreferencePlan;
   if (input.searchPreferenceSource === "personal") {
     if (!input.searchPreferencePlan) {
       throw new ProviderAdmissionError("search_strategy_not_available");
     }
-    const preferenceStrategies: Array<{
-      adapterKind: string;
-      executionModes: readonly string[];
-      protocol: string;
-    }> = [];
-    for (const optionId of input.searchPreferencePlan.optionIds) {
-      const strategy = await db.searchStrategy.findFirst({
-        include: { activeRevision: true },
-        where: {
-          activeRevisionId: { not: null },
-          archivedAt: null,
-          enabled: true,
-          strategyId: optionId
-        }
-      });
-      if (!strategy || !(await hasSearchEntitlement(db, {
-        fullAccess,
-        groupIds,
-        strategyId: optionId,
-        userId: input.userId
-      })) || !strategy.activeRevision) {
-        throw new ProviderAdmissionError("search_strategy_not_available");
-      }
-      let draft;
-      try {
-        draft = normalizeSearchDraft(strategy.activeRevision.configuration);
-      } catch {
-        throw new ProviderAdmissionError("search_strategy_not_available");
-      }
-      preferenceStrategies.push({
-        adapterKind: draft.adapterKind,
-        executionModes: searchExecutionModes(draft.adapterKind),
-        protocol: draft.protocol
-      });
+    requestedSearchPreferencePlan = await canonicalSearchPlan(db, input.searchPreferencePlan);
+    if (!requestedSearchPreferencePlan) {
+      throw new ProviderAdmissionError("search_strategy_not_available");
     }
-    if (preferenceStrategies.length > 1 && (
-      preferenceStrategies.some((strategy) => strategy.protocol === "gemini_google_search") ||
-      preferenceStrategies.filter((strategy) =>
-        strategy.adapterKind === "answer_provider_hosted").length > 1 ||
-      (input.searchPreferencePlan.mode === "all_selected" &&
-        preferenceStrategies.some((strategy) => !strategy.executionModes.includes("all_selected")))
-    )) {
+    const preferenceOptions: LoadedSearchOption[] = [];
+    for (const optionId of requestedSearchPreferencePlan.optionIds) {
+      const option = await loadOption(optionId);
+      if (!option || !supportedSearchOption(option) || option.kind === "none" ||
+        !(await hasSearchEntitlement(db, {
+          fullAccess,
+          groupIds,
+          strategyId: optionId,
+          userId: input.userId
+      }))) {
+        throw new ProviderAdmissionError("search_strategy_not_available");
+      }
+      const routes = option.strategies.flatMap((strategy) => {
+        const route = normalizeActiveSearchRoute(strategy);
+        return route && routeBelongsToOption(option, route) ? [route] : [];
+      });
+      if (hasAmbiguousRouteKinds(routes)) {
+        throw new ProviderAdmissionError("search_strategy_not_available");
+      }
+      let ready = routes.some((route) => route.draft.adapterKind === "answer_provider_hosted");
+      let readinessError: ProviderAdmissionError | undefined;
+      if (!ready) {
+        for (const route of routes) {
+          try {
+            if (await loadClientRouteRole(db, {
+              fullAccess,
+              groupIds,
+              option,
+              route,
+              userId: input.userId
+            })) {
+              ready = true;
+              break;
+            }
+          } catch (error) {
+            if (!(error instanceof ProviderAdmissionError)) throw error;
+            readinessError ??= error;
+          }
+        }
+      }
+      if (!ready) {
+        if (readinessError) throw readinessError;
+        throw new ProviderAdmissionError("search_strategy_not_available");
+      }
+      preferenceOptions.push(option);
+    }
+    if (preferenceOptions.length > 1 &&
+      preferenceOptions.some((option) => option.kind === "gemini_google_search")) {
       throw new ProviderAdmissionError("search_strategy_not_available");
     }
   } else if (input.searchPreferenceSource !== undefined &&
@@ -507,7 +826,10 @@ export async function loadProviderAdmissionPlan(
 
   const decodedPlan = decodeSearchPlan(input.searchPlan, input.searchStrategyId);
   if (!decodedPlan.ok) throw new ProviderAdmissionError("search_strategy_not_available");
-  const requestedSearchPlan = decodedPlan.plan;
+  const requestedSearchPlan = await canonicalSearchPlan(db, decodedPlan.plan);
+  if (!requestedSearchPlan) {
+    throw new ProviderAdmissionError("search_strategy_not_available");
+  }
   const optionIds = requestedSearchPlan.optionIds;
   const searches: NonNullable<ProviderAdmissionPlan["searches"]>[number][] = [];
 
@@ -518,25 +840,8 @@ export async function loadProviderAdmissionPlan(
     : [...optionIds];
 
   for (const [ordinal, optionId] of strategyIds.entries()) {
-    const strategy = await db.searchStrategy.findFirst({
-      include: {
-        activeRevision: {
-          select: {
-            adapterKind: true,
-            configuration: true,
-            credentialMode: true,
-            id: true,
-            providerModelId: true
-          }
-        }
-      },
-      where: {
-        ...(input.searchPlan === undefined ? {} : { activeRevisionId: { not: null }, archivedAt: null }),
-        enabled: true,
-        strategyId: optionId
-      }
-    });
-    if (!strategy || !(await hasSearchEntitlement(db, {
+    const option = await loadOption(optionId);
+    if (!option || !supportedSearchOption(option) || !(await hasSearchEntitlement(db, {
       fullAccess,
       groupIds,
       strategyId: optionId,
@@ -544,104 +849,55 @@ export async function loadProviderAdmissionPlan(
     }))) {
       throw new ProviderAdmissionError("search_strategy_not_available");
     }
-    if (strategy.kind === "none") continue;
-
-    const revision = strategy.activeRevision ?? {
-      adapterKind: strategy.kind === "perplexity_tool_search"
-        ? "provider_model_client"
-        : "answer_provider_hosted",
-      configuration: builtInSearchDraft({
-        config: strategy.config,
-        kind: strategy.kind,
-        providerModelId: strategy.providerModelId
-      }),
-      credentialMode: strategy.kind === "perplexity_tool_search"
-        ? "provider_model"
-        : "answer_provider",
-      id: `legacy:${strategy.id}`,
-      providerModelId: strategy.providerModelId
-    };
-    let draft;
-    try {
-      draft = normalizeSearchDraft(revision.configuration);
-    } catch {
-      throw new ProviderAdmissionError("search_strategy_not_available");
-    }
-    if (
-      revision.adapterKind !== draft.adapterKind ||
-      revision.credentialMode !== draft.credentialMode ||
-      revision.providerModelId !== draft.providerModelId
-    ) {
+    if (option.kind === "none") continue;
+    if (option.kind === "gemini_google_search" && optionIds.length > 1) {
       throw new ProviderAdmissionError("search_strategy_not_available");
     }
 
+    const routes = option.strategies.flatMap((strategy) => {
+      const route = normalizeActiveSearchRoute(strategy);
+      return route ? [route] : [];
+    });
+    if (hasAmbiguousRouteKinds(routes)) {
+      throw new ProviderAdmissionError("search_strategy_not_available");
+    }
+    let route = routes.find((candidate) => hostedRouteCompatible(option, candidate, answer));
     let role: ProviderAdmissionRole | undefined;
-    if (draft.adapterKind === "answer_provider_hosted") {
-      if (draft.protocol === "openai_responses_web_search") {
-        if (
-          (answer.snapshot.model.adapterKind !== "openai_responses_native" &&
-            answer.snapshot.model.adapterKind !== "openai_responses_compatible") ||
-          !answer.modelConfiguration.capabilities.nativeSearch
-        ) {
-          throw new ProviderAdmissionError("search_strategy_not_available");
+    let routeLoadError: ProviderAdmissionError | undefined;
+    if (!route) {
+      for (const candidate of routes) {
+        if (!clientRouteCompatible(option, candidate, answer, input.providerModelId)) continue;
+        try {
+          const candidateRole = await loadClientRouteRole(db, {
+            fullAccess,
+            groupIds,
+            option,
+            route: candidate,
+            userId: input.userId
+          });
+          if (!candidateRole) continue;
+          route = candidate;
+          role = candidateRole;
+          break;
+        } catch (error) {
+          if (!(error instanceof ProviderAdmissionError)) throw error;
+          routeLoadError ??= error;
         }
-      } else if (draft.protocol === "gemini_google_search") {
-        if (
-          answer.snapshot.providerFamily !== "gemini" ||
-          answer.snapshot.model.adapterKind !== "gemini_interactions_native" ||
-          !answer.modelConfiguration.capabilities.nativeSearch ||
-          optionIds.length > 1
-        ) {
-          throw new ProviderAdmissionError("search_strategy_not_available");
-        }
-      } else {
-        throw new ProviderAdmissionError("search_strategy_not_available");
       }
-    } else {
-      if (
-        !draft.providerModelId ||
-        (draft.protocol === "openrouter_perplexity_chat" &&
-          draft.providerModelId === input.providerModelId) ||
-        !answer.modelConfiguration.capabilities.toolCalling
-      ) {
-        throw new ProviderAdmissionError("search_strategy_not_available");
-      }
-      role = await loadTechnicalProviderRole(db, {
-        providerModelId: draft.providerModelId,
-        userId: input.userId
-      });
+    }
+    if (!route) {
+      if (routeLoadError) throw routeLoadError;
+      throw new ProviderAdmissionError("search_strategy_not_available");
     }
 
-    const configuration: RunSearchStrategyConfiguration = {
-      adapterKind: draft.adapterKind,
-      config: {
-        ...draft,
-        ...(role
-          ? {
-              modelCapabilities: role.modelConfiguration.capabilities,
-              modelDefaultParams: role.modelConfiguration.defaultParams
-            }
-          : {})
-      },
-      credentialMode: draft.credentialMode,
-      displayName: strategy.displayName,
-      executionModes: searchExecutionModes(draft.adapterKind),
-      kind: strategy.kind,
-      modelId: role?.snapshot.model.upstreamModelId ?? null,
-      protocol: draft.protocol,
-      provider: role?.snapshot.providerFamily ?? answer.snapshot.providerFamily,
-      providerModelId: draft.providerModelId,
-      revisionId: revision.id,
-      searchStrategyRowId: strategy.id,
-      strategyId: optionId
-    };
+    const configuration = searchConfiguration(option, route, answer, role);
     searches.push({
       bindingKey: role ? `search:${optionId}` : null,
       configuration,
-      integrationId: strategy.id,
+      integrationId: route.strategy.id,
       optionId,
       ordinal,
-      revisionId: revision.id,
+      revisionId: route.revisionId,
       ...(role ? { role } : {})
     });
   }
@@ -662,13 +918,17 @@ export async function loadProviderAdmissionPlan(
   const search = legacySearch?.role;
   const technicalSearchConfiguration = legacySearch?.configuration;
 
+  const requestedSearchStrategyId = await canonicalSearchOptionId(db, input.searchStrategyId);
+  if (!requestedSearchStrategyId) {
+    throw new ProviderAdmissionError("search_strategy_not_available");
+  }
   const withoutFingerprint = {
     answer,
-    requestedSearchStrategyId: input.searchStrategyId,
+    requestedSearchStrategyId,
     requestedSearchPlan,
     ...(input.searchPreferenceSource
       ? {
-          requestedSearchPreferencePlan: input.searchPreferencePlan ?? null,
+          requestedSearchPreferencePlan: requestedSearchPreferencePlan ?? null,
           requestedSearchPreferenceSource: input.searchPreferenceSource
         }
       : {}),

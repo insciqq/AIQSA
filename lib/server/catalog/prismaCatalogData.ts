@@ -2,7 +2,8 @@ import {
   resolveProviderModelParameterControls,
   type CatalogAdapterKind,
   type ProviderModelCatalogEntry,
-  type SearchStrategyCatalogEntry
+  type SearchStrategyCatalogEntry,
+  type SearchStrategyRouteCatalogEntry
 } from "@/lib/domain/catalog";
 import { resolveProviderCredential } from "@/lib/domain/providerCredentialResolution";
 import {
@@ -25,10 +26,15 @@ import {
 import { resolveProviderModelCapabilities } from "@/lib/server/providers/providerModelCapabilities";
 import {
   compatibleTechnicalAdapter,
-  builtInSearchDraft,
+  legacySearchKind,
   normalizeSearchDraft,
   searchExecutionModes
 } from "@/lib/server/search/configuration";
+import {
+  sameSearchProbeBinding,
+  searchProbeBinding,
+  type SearchProbeBinding
+} from "@/lib/server/search/probeBinding";
 import type {
   PrismaClient,
   ProviderConnection,
@@ -41,7 +47,7 @@ import type {
   SearchStrategy
 } from "@prisma/client";
 
-type CatalogPrismaClient = Pick<PrismaClient, "providerModel" | "runProfile" | "searchPolicy" | "searchStrategy" | "user">;
+type CatalogPrismaClient = Pick<PrismaClient, "providerModel" | "runProfile" | "searchOption" | "searchPolicy" | "user">;
 
 type PromptPresetRow = {
   developerPrompt: string | null;
@@ -125,21 +131,33 @@ export type CatalogDataLoaderDeps = {
   prisma: CatalogPrismaClient;
 };
 
-const supportedSearchStrategies = new Map<string, SearchStrategyCatalogEntry["kind"]>([
-  ["gemini-google-search", "gemini_google_search"],
-  ["openai-native-web-search", "openai_native_web_search"],
-  ["perplexity-tool-search", "perplexity_tool_search"],
-  ["search-disabled", "none"]
+const supportedSearchOptionKinds = new Map<string, SearchStrategyCatalogEntry["kind"]>([
+  ["gemini_google_search", "gemini_google_search"],
+  ["none", "none"],
+  ["perplexity_search", "perplexity_tool_search"],
+  ["web_search", "web_search"]
 ]);
 
 type CatalogSearchStrategyRow = SearchStrategy & {
-  activeRevision?: null | {
+  activeRevision: null | {
     adapterKind: string;
     configuration: unknown;
     credentialMode: string;
     id: string;
     providerModelId: string | null;
+    validationEvidence: unknown;
   };
+};
+
+export type CatalogSearchOptionRow = {
+  description: string;
+  displayName: string;
+  id: string;
+  kind: string;
+  optionId: string;
+  sourceConnection: { id: string } | null;
+  sourceConnectionId: string | null;
+  strategies: CatalogSearchStrategyRow[];
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -215,21 +233,11 @@ function hasCurrentAvailableCheck(
   );
 }
 
-function isProviderModelAvailable(input: {
-  exposeFake: boolean;
-  memberships: CatalogMembershipRow[];
+function activeProviderAuthority(input: {
+  memberships?: CatalogMembershipRow[];
   model: CatalogProviderModelRow;
   userId?: string;
-}): boolean {
-  const configuration = activeModelConfiguration(input.model);
-  if (!configuration) {
-    return false;
-  }
-
-  if (configuration.adapterKind === "fake") {
-    return input.exposeFake;
-  }
-
+}): SearchProbeBinding | null {
   const credentials = input.model.connection.credentials;
   const directAssignmentCredentialId = input.userId
     ? credentials.flatMap((credential) => credential.userAssignments ?? [])
@@ -249,21 +257,45 @@ function isProviderModelAvailable(input: {
     })),
     defaultCredentialId: input.model.connection.defaultCredentialId,
     directAssignmentCredentialId,
-    memberships: input.memberships.map((membership) => ({
+    memberships: (input.memberships ?? []).map((membership) => ({
       archived: Boolean(membership.group.archivedAt),
       groupId: membership.groupId
     })),
     policy: input.model.connection.unassignedPolicy
   });
+  if (!resolution.ok || !hasCurrentAvailableCheck(
+    input.model,
+    resolution.credentialId,
+    resolution.credentialVersionId
+  )) {
+    return null;
+  }
+  return {
+    connectionId: input.model.connectionId,
+    connectionVersion: input.model.connection.activeVersion,
+    credentialId: resolution.credentialId,
+    credentialVersionId: resolution.credentialVersionId,
+    modelVersion: input.model.activeVersion,
+    providerModelId: input.model.id
+  };
+}
 
-  return (
-    resolution.ok &&
-    hasCurrentAvailableCheck(
-      input.model,
-      resolution.credentialId,
-      resolution.credentialVersionId
-    )
-  );
+function isProviderModelAvailable(input: {
+  exposeFake: boolean;
+  memberships: CatalogMembershipRow[];
+  model: CatalogProviderModelRow;
+  userId?: string;
+}): boolean {
+  const configuration = activeModelConfiguration(input.model);
+  if (!configuration) {
+    return false;
+  }
+
+  if (configuration.adapterKind === "fake") {
+    return input.exposeFake;
+  }
+
+  return activeProviderAuthority(input) !== null;
 }
 
 export function filterAvailableProviderModels(input: {
@@ -355,48 +387,30 @@ export function providerModelToCatalogEntry(
   };
 }
 
-export function searchStrategyToCatalogEntry(
-  strategy: CatalogSearchStrategyRow
-): SearchStrategyCatalogEntry | null {
-  const fixedKind = supportedSearchStrategies.get(strategy.strategyId);
-  const kind = fixedKind ?? (strategy.kind === "provider_model_web_search"
-    ? "provider_model_web_search"
-    : null);
-  if (!kind || (fixedKind && strategy.kind !== fixedKind)) {
-    return null;
+function routeBelongsToOption(
+  optionKind: SearchStrategyCatalogEntry["kind"],
+  route: SearchStrategyRouteCatalogEntry
+): boolean {
+  if (optionKind === "web_search") {
+    return route.protocol === "openai_responses_web_search";
   }
-  const revision = strategy.activeRevision === undefined
-    ? (() => {
-        const configuration = builtInSearchDraft({
-          config: strategy.config,
-          kind: strategy.kind,
-          providerModelId: strategy.providerModelId
-        });
-        return {
-          adapterKind: String(configuration.adapterKind),
-          configuration,
-          credentialMode: String(configuration.credentialMode),
-          id: strategy.activeRevisionId ?? `legacy:${strategy.id}`,
-          providerModelId: strategy.providerModelId
-        };
-      })()
-    : strategy.activeRevision;
+  if (optionKind === "gemini_google_search") {
+    return route.adapterKind === "answer_provider_hosted" &&
+      route.protocol === "gemini_google_search";
+  }
+  if (optionKind === "perplexity_tool_search") {
+    return route.adapterKind === "provider_model_client" &&
+      route.protocol === "openrouter_perplexity_chat";
+  }
+  return false;
+}
+
+export function searchStrategyToCatalogRoute(
+  strategy: CatalogSearchStrategyRow
+): SearchStrategyRouteCatalogEntry | null {
+  const revision = strategy.activeRevision;
   if (!revision) return null;
 
-  if (kind === "none") {
-    return {
-      adapterKind: "none",
-      config: {},
-      description: strategy.description,
-      displayName: strategy.displayName,
-      executionModes: [],
-      kind,
-      privacy: "answer_provider",
-      provider: strategy.provider,
-      revisionId: revision.id,
-      strategyId: strategy.strategyId
-    };
-  }
   let draft;
   try {
     draft = normalizeSearchDraft(revision.configuration);
@@ -406,7 +420,9 @@ export function searchStrategyToCatalogEntry(
   if (
     revision.adapterKind !== draft.adapterKind ||
     revision.credentialMode !== draft.credentialMode ||
-    revision.providerModelId !== draft.providerModelId
+    revision.providerModelId !== draft.providerModelId ||
+    strategy.providerModelId !== draft.providerModelId ||
+    strategy.kind !== legacySearchKind(draft.protocol, draft.adapterKind)
   ) {
     return null;
   }
@@ -414,64 +430,124 @@ export function searchStrategyToCatalogEntry(
   return {
     adapterKind: draft.adapterKind,
     config: { ...draft },
-    description: strategy.strategyId === "openai-native-web-search"
-      ? "Hosted OpenAI Responses web_search for compatible OpenAI answer models only."
-      : strategy.description,
-    displayName: strategy.strategyId === "openai-native-web-search"
-      ? "OpenAI native web_search"
-      : strategy.displayName,
+    credentialMode: draft.credentialMode,
     executionModes: searchExecutionModes(draft.adapterKind),
-    kind,
-    ...(strategy.modelId ? { modelId: strategy.modelId } : {}),
-    privacy: draft.adapterKind === "provider_model_client" ? "query_only" : "answer_provider",
+    kind: strategy.kind as SearchStrategyRouteCatalogEntry["kind"],
+    physicalStrategyId: strategy.strategyId,
     protocol: draft.protocol,
-    provider: strategy.provider,
-    ...(strategy.providerModelId ? { providerModelId: strategy.providerModelId } : {}),
+    ...(draft.providerModelId ? { providerModelId: draft.providerModelId } : {}),
     revisionId: revision.id,
-    strategyId: strategy.strategyId
+    searchStrategyRowId: strategy.id
   };
 }
 
-export function filterExposedSearchStrategies(input: {
+export function searchOptionToCatalogEntry(
+  option: CatalogSearchOptionRow,
+  routes = option.strategies.flatMap((strategy) => {
+    const route = searchStrategyToCatalogRoute(strategy);
+    return route ? [route] : [];
+  })
+): SearchStrategyCatalogEntry | null {
+  const kind = supportedSearchOptionKinds.get(option.kind);
+  if (
+    !kind ||
+    !nonEmptyString(option.optionId) ||
+    !nonEmptyString(option.displayName) ||
+    !nonEmptyString(option.description)
+  ) {
+    return null;
+  }
+  if (kind === "none") {
+    if (option.optionId !== "search-disabled" || option.sourceConnectionId !== null ||
+      option.sourceConnection !== null) return null;
+    return {
+      description: option.description,
+      displayName: option.displayName,
+      kind,
+      routes: [],
+      strategyId: option.optionId
+    };
+  }
+  if (
+    !option.sourceConnectionId ||
+    option.sourceConnection?.id !== option.sourceConnectionId
+  ) {
+    return null;
+  }
+  const adapterKinds = new Set<string>();
+  for (const route of routes) {
+    if (adapterKinds.has(route.adapterKind)) return null;
+    adapterKinds.add(route.adapterKind);
+  }
+
+  return {
+    description: option.description,
+    displayName: option.displayName,
+    kind,
+    routes: routes.filter((route) => routeBelongsToOption(kind, route)),
+    sourceConnectionId: option.sourceConnectionId,
+    strategyId: option.optionId
+  };
+}
+
+export function filterExposedSearchOptions(input: {
   availableProviderModels: CatalogProviderModelRow[];
   entitlements: ResolvedEntitlements;
   exposedProviderModels: CatalogProviderModelRow[];
-  searchStrategies: CatalogSearchStrategyRow[];
-}): CatalogSearchStrategyRow[] {
+  memberships?: CatalogMembershipRow[];
+  searchOptions: CatalogSearchOptionRow[];
+  userId?: string;
+}): SearchStrategyCatalogEntry[] {
   const availableProviderModels = new Map(
     input.availableProviderModels.map((model) => [model.id, model])
   );
+  const exposedProviderModels = input.exposedProviderModels.flatMap((model) => {
+    const entry = providerModelToCatalogEntry(model);
+    return entry ? [entry] : [];
+  });
 
-  return input.searchStrategies.filter((strategy) => {
-    const entry = searchStrategyToCatalogEntry(strategy);
-    if (!entry) {
-      return false;
-    }
-    if (!canAccessSearchStrategy(input.entitlements, strategy.strategyId)) {
-      return false;
-    }
-    if (entry.adapterKind !== "provider_model_client") {
-      if (entry.kind === "none") return true;
-      return input.exposedProviderModels.some((model) => {
-        const catalogModel = providerModelToCatalogEntry(model);
-        return Boolean(catalogModel &&
-          availableSearchStrategiesForModel(catalogModel, [entry]).includes(entry.strategyId));
-      });
-    }
+  return input.searchOptions.flatMap((option) => {
+    if (!canAccessSearchStrategy(input.entitlements, option.optionId)) return [];
 
-    if (!strategy.providerModelId) {
-      return false;
+    const normalizedRoutes = option.strategies.flatMap((strategy) => {
+      const route = searchStrategyToCatalogRoute(strategy);
+      return route ? [{ route, strategy }] : [];
+    });
+    const adapterKinds = new Set<string>();
+    for (const { route } of normalizedRoutes) {
+      if (adapterKinds.has(route.adapterKind)) return [];
+      adapterKinds.add(route.adapterKind);
     }
-    const technicalModel = availableProviderModels.get(strategy.providerModelId);
-    if (!technicalModel) {
-      return false;
-    }
-    const configuration = activeModelConfiguration(technicalModel);
-    return Boolean(
-      entry.protocol && configuration &&
-      compatibleTechnicalAdapter(entry.protocol, configuration.adapterKind) &&
-      configuration.capabilities.nativeSearch
-    );
+    const routes = normalizedRoutes.flatMap(({ route, strategy }) => {
+      if (route.adapterKind !== "provider_model_client") return [route];
+      if (!route.providerModelId) return [];
+      const technicalModel = availableProviderModels.get(route.providerModelId);
+      const configuration = technicalModel
+        ? activeModelConfiguration(technicalModel)
+        : null;
+      const currentAuthority = technicalModel
+        ? activeProviderAuthority({
+            memberships: input.memberships ?? [],
+            model: technicalModel,
+            userId: input.userId
+          })
+        : null;
+      const testedAuthority = searchProbeBinding(strategy.activeRevision?.validationEvidence);
+      return configuration &&
+        currentAuthority && testedAuthority &&
+        sameSearchProbeBinding(currentAuthority, testedAuthority) &&
+        (!option.sourceConnectionId || technicalModel?.connectionId === option.sourceConnectionId) &&
+        compatibleTechnicalAdapter(route.protocol, configuration.adapterKind) &&
+        configuration.capabilities.nativeSearch
+        ? [route]
+        : [];
+    });
+    const entry = searchOptionToCatalogEntry(option, routes);
+    if (!entry) return [];
+    if (entry.kind === "none") return [entry];
+    return exposedProviderModels.some((model) =>
+      availableSearchStrategiesForModel(model, [entry]).includes(entry.strategyId)
+    ) ? [entry] : [];
   });
 }
 
@@ -512,7 +588,7 @@ export function createPrismaCatalogDataLoader({
       return null;
     }
 
-    const [models, runProfiles, searchStrategies, entitlements, searchPolicy] = await Promise.all([
+    const [models, runProfiles, searchOptions, entitlements, searchPolicy] = await Promise.all([
       prisma.providerModel.findMany({
         include: {
           activeCredentialChecks: {
@@ -575,23 +651,40 @@ export function createPrismaCatalogDataLoader({
           reasoningMode: true
         }
       }),
-      prisma.searchStrategy.findMany({
+      prisma.searchOption.findMany({
         include: {
-          activeRevision: {
+          sourceConnection: {
             select: {
-              adapterKind: true,
-              configuration: true,
-              credentialMode: true,
-              id: true,
-              providerModelId: true
+              id: true
+            }
+          },
+          strategies: {
+            include: {
+              activeRevision: {
+                select: {
+                  adapterKind: true,
+                  configuration: true,
+                  credentialMode: true,
+                  id: true,
+                  providerModelId: true,
+                  validationEvidence: true
+                }
+              }
+            },
+            orderBy: {
+              strategyId: "asc"
+            },
+            where: {
+              activeRevisionId: { not: null },
+              archivedAt: null,
+              enabled: true
             }
           }
         },
         orderBy: {
-          strategyId: "asc"
+          optionId: "asc"
         },
         where: {
-          activeRevisionId: { not: null },
           archivedAt: null,
           enabled: true
         }
@@ -612,11 +705,13 @@ export function createPrismaCatalogDataLoader({
       entitlements,
       models: availableModels
     });
-    const exposedSearchStrategies = filterExposedSearchStrategies({
+    const exposedSearchOptions = filterExposedSearchOptions({
       availableProviderModels: availableModels,
       entitlements,
       exposedProviderModels: exposedModels,
-      searchStrategies: searchStrategies as CatalogSearchStrategyRow[]
+      memberships: user.groups,
+      searchOptions: searchOptions as CatalogSearchOptionRow[],
+      userId
     });
 
     return {
@@ -635,9 +730,7 @@ export function createPrismaCatalogDataLoader({
         ? [{ ...profile, id: profile.id }]
         : []),
       searchPolicy,
-      searchStrategies: exposedSearchStrategies
-        .map(searchStrategyToCatalogEntry)
-        .filter((strategy): strategy is SearchStrategyCatalogEntry => strategy !== null),
+      searchStrategies: exposedSearchOptions,
       settings: {
         defaultControlValues: user.settings.defaultControlValues,
         defaultModelId: user.settings.defaultProviderModelId ?? "",

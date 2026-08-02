@@ -5,7 +5,11 @@ import {
   buildOpenAIResponsesRequestPreview,
   type OpenAIResponsesInputMessage
 } from "./openaiResponsesRequest";
-import type { ProviderAttachment, ProviderRunRequest } from "./types";
+import type {
+  NormalizedSearchPlanOption,
+  ProviderAttachment,
+  ProviderRunRequest
+} from "./types";
 
 function request(overrides: Partial<ProviderRunRequest> = {}): ProviderRunRequest {
   return {
@@ -51,6 +55,25 @@ function attachment(overrides: Partial<ProviderAttachment> = {}): ProviderAttach
     metadata: {},
     mimeType: "application/octet-stream",
     status: "ready",
+    ...overrides
+  };
+}
+
+function searchOption(
+  overrides: Partial<NormalizedSearchPlanOption> = {}
+): NormalizedSearchPlanOption {
+  return {
+    adapterKind: "answer_provider_hosted",
+    config: {},
+    credentialMode: "answer_provider",
+    executionModes: ["model_choice"],
+    modelId: null,
+    optionId: "custom-web-search:connection-custom",
+    protocol: "openai_responses_web_search",
+    provider: "openai_compatible",
+    providerModelId: null,
+    revisionId: "revision-hosted",
+    searchStrategyRowId: "route-hosted",
     ...overrides
   };
 }
@@ -147,6 +170,67 @@ describe("OpenAI Responses request builder", () => {
     expect(body).not.toHaveProperty("include");
     expect(body).not.toHaveProperty("tool_choice");
     expect(body).not.toHaveProperty("tools");
+  });
+
+  it("uses typed hosted routes instead of logical ids as the Search execution source", () => {
+    const customHosted = buildOpenAIResponsesRequest(request({
+      searchPlan: {
+        mode: "model_choice",
+        options: [searchOption()]
+      },
+      searchStrategy: "custom-web-search:connection-custom"
+    }));
+    expect(customHosted).toMatchObject({
+      include: ["web_search_call.action.sources"],
+      tools: [{ type: "web_search" }]
+    });
+
+    const typedClientOnly = buildOpenAIResponsesRequest(request({
+      searchPlan: {
+        mode: "model_choice",
+        options: [searchOption({
+          adapterKind: "provider_model_client",
+          credentialMode: "provider_model",
+          executionModes: ["all_selected", "model_choice"],
+          modelId: "search-model",
+          optionId: "company-search",
+          providerModelId: "technical-search-model",
+          searchStrategyRowId: "route-client"
+        })]
+      },
+      searchStrategy: "openai-native-web-search"
+    }));
+    expect(typedClientOnly).not.toHaveProperty("include");
+    expect(typedClientOnly).not.toHaveProperty("tools");
+  });
+
+  it("combines one typed hosted Search route with serialized client tools", () => {
+    const body = buildOpenAIResponsesRequest(request({
+      searchPlan: {
+        mode: "model_choice",
+        options: [
+          searchOption({ optionId: "openai-native-web-search" }),
+          searchOption({
+            adapterKind: "provider_model_client",
+            credentialMode: "provider_model",
+            executionModes: ["all_selected", "model_choice"],
+            modelId: "perplexity/sonar",
+            optionId: "perplexity-tool-search",
+            protocol: "openrouter_perplexity_chat",
+            provider: "openrouter",
+            providerModelId: "technical-perplexity",
+            searchStrategyRowId: "route-perplexity"
+          })
+        ]
+      },
+      tools: [perplexityWebSearchTool]
+    }));
+
+    expect(body.tools?.[0]).toEqual({ type: "web_search" });
+    expect(body.tools?.[1]).toMatchObject({
+      name: "search_via_perplexity",
+      type: "function"
+    });
   });
 
   it("serializes GPT-5.6 Pro mode, max effort, and the current prompt-cache contract", () => {

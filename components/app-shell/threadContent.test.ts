@@ -90,6 +90,37 @@ describe("thread artifact summaries", () => {
     });
   });
 
+  it("uses the pinned custom hosted Search identity during the live run", () => {
+    const summary = summarizeThreadArtifacts([{
+      data: {
+        artifactType: "search",
+        payload: {
+          id: "ws_custom",
+          status: "completed",
+          type: "web_search_call"
+        },
+        searchDisplayName: "Company Gateway Search",
+        searchStrategy: "custom-web-search:connection-1"
+      },
+      type: "artifact"
+    }]);
+
+    expect(summary).toMatchObject({
+      searchCount: 1,
+      searchDetails: [{
+        callPreview: {
+          id: "ws_custom",
+          status: "completed",
+          type: "web_search_call"
+        },
+        strategyId: "custom-web-search:connection-1"
+      }],
+      searchDisplayName: "Company Gateway Search",
+      searchStrategy: "custom-web-search:connection-1"
+    });
+    expect(JSON.stringify(summary?.searchDetails)).not.toContain("searchDisplayName");
+  });
+
   it("prefers persisted search-run previews over live call previews", () => {
     const summary = summarizeThreadArtifacts(
       [

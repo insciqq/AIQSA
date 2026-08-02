@@ -174,7 +174,7 @@ function snapshot(options: {
 
 function ready(
   defaultChanged = true,
-  providerNeutralSearch?: "needs_attention" | "ready"
+  searchStatus?: "needs_attention" | "ready"
 ) {
   return {
     checkedAt: "2026-07-26T03:00:00.000Z",
@@ -189,11 +189,11 @@ function ready(
     profilesFilled: ["balanced"],
     provider: "openai" as const,
     providerDisplayName: "OpenAI",
-    ...(providerNeutralSearch
+    ...(searchStatus
       ? {
-          providerNeutralSearch: {
-            displayName: "OpenAI Search (provider-neutral)",
-            status: providerNeutralSearch
+          search: {
+            displayName: "OpenAI Search",
+            status: searchStatus
           }
         }
       : {})
@@ -278,7 +278,11 @@ describe("AdminProvidersExperience", () => {
           { modelDisplayName: "vendor/model-2", providerModelId: "custom-model-2" }
         ],
         outcome: "ready",
-        providerModelId: "custom-model-1"
+        providerModelId: "custom-model-1",
+        search: {
+          displayName: "Custom · llm.example.test Search",
+          status: "ready"
+        }
       },
       ok: true
     });
@@ -345,6 +349,11 @@ describe("AdminProvidersExperience", () => {
     const receipt = await screen.findByTestId("provider-custom-ready-receipt");
     expect(receipt).toHaveTextContent("API key saved and verified");
     expect(receipt).toHaveTextContent("assigned directly to this administrator");
+    expect(receipt).toHaveTextContent(
+      "Custom · llm.example.test Search: ready for supported models."
+    );
+    expect(screen.getByRole("link", { name: "Manage Search" }))
+      .toHaveAttribute("href", "/admin?section=search");
     expect(customApi.submit).toHaveBeenCalledOnce();
     expect(customApi.submit.mock.calls[0]?.[0]).toEqual(expect.objectContaining({
       apiRoot: "https://llm.example.test/v1",
@@ -430,16 +439,16 @@ describe("AdminProvidersExperience", () => {
 
   it.each([
     {
-      detail: "activated for any tool-capable answer model",
-      message: "Provider-neutral OpenAI Search is ready for Anthropic, Gemini, and other tool-capable answer models.",
+      detail: "ready for supported models",
+      message: "OpenAI Search is ready for supported OpenAI, Anthropic, Gemini, and other answer models.",
       status: "ready" as const
     },
     {
-      detail: "not activated; finish setup in Search",
-      message: "The provider is ready, but provider-neutral OpenAI Search did not pass its separate source probe and remains disabled.",
+      detail: "requires attention; finish setup in Search",
+      message: "The provider is ready, but OpenAI Search still needs a successful source check before it can serve broader models.",
       status: "needs_attention" as const
     }
-  ])("reports provider-neutral Search as $status without obscuring provider readiness", async ({
+  ])("reports OpenAI Search as $status without obscuring provider readiness", async ({
     detail,
     message,
     status
@@ -460,7 +469,7 @@ describe("AdminProvidersExperience", () => {
 
     expect(await screen.findByText("Ready to chat")).toBeInTheDocument();
     expect(screen.getByTestId("provider-quick-ready-receipt")).toHaveTextContent(
-      `OpenAI Search (provider-neutral): ${detail}.`
+      `OpenAI Search: ${detail}.`
     );
     expect(screen.getByText(message)).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Manage OpenAI Search" }))

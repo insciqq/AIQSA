@@ -17,6 +17,8 @@ const NOW = new Date("2026-07-14T16:00:00.000Z");
 const bootstrapSearchStrategies = defaultSearchStrategies.filter(
   (strategy) => strategy.kind !== "perplexity_tool_search"
 );
+const bootstrapSearchRoutes = bootstrapSearchStrategies.flatMap((strategy) => strategy.routes);
+const bootstrapPhysicalSearchStrategyCount = bootstrapSearchRoutes.length + 1;
 
 const baseInput: InstallationBootstrapInput = {
   displayName: "Initial Admin",
@@ -77,6 +79,7 @@ function createBootstrapTransaction(input: {
     providerModelUpsert: record("providerModel.upsert", { id: "model-id" }),
     runProfileUpsert: record("runProfile.upsert", { id: "profile-id" }),
     searchIntegrationRevisionCreate: record("searchIntegrationRevision.create", { id: "search-revision-id" }),
+    searchOptionUpsert: record("searchOption.upsert", { id: "search-option-id" }),
     searchStrategyUpdate: record("searchStrategy.update", { id: "strategy-id" }),
     searchStrategyUpsert: record("searchStrategy.upsert", { activeRevisionId: null, id: "strategy-id" }),
     userCreate: record("user.create", { id: USER_ID }),
@@ -121,6 +124,9 @@ function createBootstrapTransaction(input: {
     },
     searchIntegrationRevision: {
       create: spies.searchIntegrationRevisionCreate
+    },
+    searchOption: {
+      upsert: spies.searchOptionUpsert
     },
     searchStrategy: {
       update: spies.searchStrategyUpdate,
@@ -336,6 +342,9 @@ describe("installation bootstrap", () => {
     );
     expect(fixture.spies.providerModelUpsert).toHaveBeenCalledOnce();
     expect(fixture.spies.runProfileUpsert).toHaveBeenCalledTimes(RUN_PROFILE_IDS.length);
+    expect(fixture.spies.searchOptionUpsert).toHaveBeenCalledTimes(
+      defaultSearchStrategies.length
+    );
     expect(fixture.spies.runProfileUpsert.mock.calls.map(([args]) => (
       args as { create: { enabled: boolean; id: string; providerModelId: string | null }; update: object }
     ))).toEqual(expect.arrayContaining(RUN_PROFILE_IDS.map((id) => expect.objectContaining({
@@ -357,8 +366,15 @@ describe("installation bootstrap", () => {
       }
     });
     expect(fixture.spies.searchStrategyUpsert).toHaveBeenCalledTimes(
-      bootstrapSearchStrategies.length
+      bootstrapPhysicalSearchStrategyCount
     );
+    expect(fixture.spies.searchStrategyUpsert).toHaveBeenCalledWith(expect.objectContaining({
+      create: expect.objectContaining({
+        adapterKind: "none",
+        searchOptionId: "00000000-0000-4000-8000-000000001401",
+        strategyId: "search-disabled"
+      })
+    }));
     for (const [args] of fixture.spies.searchStrategyUpsert.mock.calls) {
       expect((args as { create: { id: string } }).create.id).toMatch(
         /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
@@ -430,7 +446,7 @@ describe("installation bootstrap", () => {
     }
   });
 
-  it("refreshes code-owned metadata and repairs Full access for the exact adopted identity", async () => {
+  it("refreshes code-owned metadata without backfilling answer models for an adopted installation", async () => {
     const fixture = createBootstrapTransaction({
       adopted: {
         identity: {
@@ -465,9 +481,15 @@ describe("installation bootstrap", () => {
       providerConnectionTemplates.length
     );
     expect(fixture.spies.providerModelUpsert).toHaveBeenCalledOnce();
+    expect(fixture.spies.providerModelUpsert).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { templateKey: "fake:fake-qsa" } })
+    );
     expect(fixture.spies.runProfileUpsert).toHaveBeenCalledTimes(RUN_PROFILE_IDS.length);
+    expect(fixture.spies.searchOptionUpsert).toHaveBeenCalledTimes(
+      defaultSearchStrategies.length
+    );
     expect(fixture.spies.searchStrategyUpsert).toHaveBeenCalledTimes(
-      bootstrapSearchStrategies.length
+      bootstrapPhysicalSearchStrategyCount
     );
     const connectionCalls = fixture.spies.providerConnectionUpsert.mock.calls.map(([args]) => args);
     expect(connectionCalls).toEqual(expect.arrayContaining([

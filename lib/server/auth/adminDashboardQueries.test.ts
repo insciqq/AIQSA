@@ -59,6 +59,16 @@ async function withAdminQueryData<T>(
         }
       }
     });
+    await prisma.searchStrategy.deleteMany({
+      where: {
+        strategyId: {
+          startsWith: marker
+        }
+      }
+    });
+    await prisma.searchOption.deleteMany({
+      where: { optionId: { startsWith: marker } }
+    });
     await prisma.providerModel.deleteMany({
       where: {
         provider: {
@@ -69,13 +79,6 @@ async function withAdminQueryData<T>(
     await prisma.providerConnection.deleteMany({
       where: {
         family: {
-          startsWith: marker
-        }
-      }
-    });
-    await prisma.searchStrategy.deleteMany({
-      where: {
-        strategyId: {
           startsWith: marker
         }
       }
@@ -298,6 +301,36 @@ describe("admin dashboard queries", () => {
           }
         ]
       });
+      const searchOptions = await Promise.all([
+        prisma.searchOption.create({
+          data: {
+            description: "Fixture enabled strategy Z",
+            displayName: "Zulu strategy",
+            kind: "web_search",
+            optionId: strategyZulu,
+            sourceConnectionId: providerBeta
+          }
+        }),
+        prisma.searchOption.create({
+          data: {
+            description: "Fixture enabled strategy A",
+            displayName: "Alpha strategy",
+            kind: "web_search",
+            optionId: strategyAlpha,
+            sourceConnectionId: providerAlpha
+          }
+        }),
+        prisma.searchOption.create({
+          data: {
+            description: "Fixture disabled strategy",
+            displayName: "Disabled strategy",
+            enabled: false,
+            kind: "web_search",
+            optionId: `${marker}-strategy-disabled`,
+            sourceConnectionId: providerDisabled
+          }
+        })
+      ]);
       await prisma.searchStrategy.createMany({
         data: [
           {
@@ -305,7 +338,8 @@ describe("admin dashboard queries", () => {
             description: "Fixture enabled strategy Z",
             displayName: "Zulu strategy",
             kind: "openai_native_web_search",
-            provider: providerAlpha,
+            provider: providerBeta,
+            searchOptionId: searchOptions[0].id,
             strategyId: strategyZulu
           },
           {
@@ -314,6 +348,7 @@ describe("admin dashboard queries", () => {
             displayName: "Alpha strategy",
             kind: "openai_native_web_search",
             provider: providerAlpha,
+            searchOptionId: searchOptions[1].id,
             strategyId: strategyAlpha
           },
           {
@@ -322,7 +357,8 @@ describe("admin dashboard queries", () => {
             displayName: "Disabled strategy",
             enabled: false,
             kind: "openai_native_web_search",
-            provider: providerAlpha,
+            provider: providerDisabled,
+            searchOptionId: searchOptions[2].id,
             strategyId: `${marker}-strategy-disabled`
           }
         ]

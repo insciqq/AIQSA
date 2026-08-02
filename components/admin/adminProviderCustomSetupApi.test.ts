@@ -22,7 +22,8 @@ const ready = {
   modelDisplayName: "Model 1",
   models: [{ modelDisplayName: "Model 1", providerModelId: "model-1" }],
   outcome: "ready",
-  providerModelId: "model-1"
+  providerModelId: "model-1",
+  search: null
 };
 
 describe("custom provider setup API", () => {
@@ -113,6 +114,17 @@ describe("custom provider setup API", () => {
       method: "POST",
       signal: undefined
     });
+  });
+
+  it("decodes one friendly Search receipt without transport vocabulary", async () => {
+    const body = {
+      ...ready,
+      search: { displayName: "Custom provider Search", status: "needs_attention" }
+    };
+    await expect(submitAdminProviderCustomSetup(
+      request,
+      vi.fn(async () => Response.json(body))
+    )).resolves.toEqual({ data: body, ok: true });
   });
 
   it.each([

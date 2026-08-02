@@ -66,8 +66,8 @@ async function safely(operation: () => Promise<Response>): Promise<Response> {
   }
 }
 
-async function catalog(service: AdminSearchService, status = 200): Promise<Response> {
-  return Response.json({ search: await service.list() }, { status });
+async function catalog(service: AdminSearchService, userId: string, status = 200): Promise<Response> {
+  return Response.json({ search: await service.list({ userId }) }, { status });
 }
 
 export function createAdminSearchCatalogHandler(input: Readonly<{
@@ -78,7 +78,7 @@ export function createAdminSearchCatalogHandler(input: Readonly<{
     async GET(request: Request) {
       const auth = await requireAdmin(request, input.resolveAuth);
       if (auth.error) return auth.error;
-      return safely(() => catalog(input.service));
+      return safely(() => catalog(input.service, auth.session!.userId));
     },
     async POST(request: Request) {
       if (!hasJsonContentType(request)) {
@@ -94,12 +94,15 @@ export function createAdminSearchCatalogHandler(input: Readonly<{
       const displayName = value.displayName;
       const description = value.description;
       return safely(async () => {
-        await input.service.createDraft({
+        const selected = await input.service.createDraft({
           description,
           displayName,
           draft: value.draft
         });
-        return catalog(input.service, 201);
+        return Response.json({
+          search: await input.service.list({ userId: auth.session!.userId }),
+          selectedIntegrationId: selected.id
+        }, { status: selected.created ? 201 : 200 });
       });
     },
     async PATCH(request: Request) {
@@ -119,7 +122,7 @@ export function createAdminSearchCatalogHandler(input: Readonly<{
           expectedVersion: Number(value.expectedVersion),
           userId: auth.session!.userId
         });
-        return catalog(input.service);
+        return catalog(input.service, auth.session!.userId);
       });
     }
   };
@@ -134,7 +137,7 @@ export function createAdminSearchIntegrationHandler(input: Readonly<{
       return Response.json({ error: "json_required" }, { status: 415 });
     }
     const auth = await requireAdmin(request, input.resolveAuth);
-    if (auth.error) return auth.error;
+    if (auth.error || !auth.session) return auth.error!;
     const value = await body(request);
     if (!value || typeof value.displayName !== "string" ||
       typeof value.description !== "string" || !isRecord(value.draft) ||
@@ -152,7 +155,7 @@ export function createAdminSearchIntegrationHandler(input: Readonly<{
         expectedDraftVersion: Number(value.expectedDraftVersion),
         id: integrationId
       });
-      return catalog(input.service);
+      return catalog(input.service, auth.session.userId);
     });
   };
 }
@@ -174,11 +177,19 @@ export function createAdminSearchActionHandler(input: Readonly<{
       if (action === "test") {
         await input.service.testDraft({ id: integrationId, userId: auth.session!.userId });
       } else if (action === "activate") {
-        await input.service.activate({ id: integrationId });
+        await input.service.activate({ id: integrationId, userId: auth.session!.userId });
       } else if (action === "enable") {
-        await input.service.setEnabled({ enabled: true, id: integrationId });
+        await input.service.setEnabled({
+          enabled: true,
+          id: integrationId,
+          userId: auth.session!.userId
+        });
       } else if (action === "disable") {
-        await input.service.setEnabled({ enabled: false, id: integrationId });
+        await input.service.setEnabled({
+          enabled: false,
+          id: integrationId,
+          userId: auth.session!.userId
+        });
       } else if (action === "archive") {
         if (value?.confirmed !== true) {
           return Response.json({ error: "search_archive_confirmation_required" }, { status: 409 });
@@ -187,7 +198,7 @@ export function createAdminSearchActionHandler(input: Readonly<{
       } else {
         return Response.json({ error: "search_action_invalid" }, { status: 400 });
       }
-      return catalog(input.service);
+      return catalog(input.service, auth.session!.userId);
     });
   };
 }

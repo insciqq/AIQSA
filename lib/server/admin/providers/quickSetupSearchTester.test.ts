@@ -7,7 +7,7 @@ const publicLookup = async () => [
   { address: "93.184.216.34", family: 4 as const }
 ];
 
-describe("OpenAI Quick setup provider-neutral Search probe", () => {
+describe("OpenAI Search source probe", () => {
   it("sends only a bounded store-free query and retains only normalized source evidence", async () => {
     const requests: McpPinnedHttpRequest[] = [];
     const policy = adminProviderQuickSetupPolicy("openai");
@@ -105,6 +105,45 @@ describe("OpenAI Quick setup provider-neutral Search probe", () => {
       model: candidate.configuration,
       secret: "write-only-openai-key"
     })).resolves.toEqual({ normalizedSourceCount: 0, status: "unavailable" });
+  });
+
+  it("uses the same bounded probe for a compatible Responses model", async () => {
+    const policy = adminProviderQuickSetupPolicy("openai");
+    const candidate = policy.candidates[0]!;
+    const tester = createAdminProviderQuickSetupSearchTester({
+      network: {
+        dispatch: async () => Response.json({
+          id: "compatible-search-probe",
+          model: "vendor/search-model",
+          output: [{
+            action: {
+              sources: [{ title: "Source", url: "https://example.com/source" }],
+              type: "search"
+            },
+            id: "compatible-web-search",
+            status: "completed",
+            type: "web_search_call"
+          }],
+          status: "completed",
+          usage: { input_tokens: 8, output_tokens: 1, total_tokens: 9 }
+        }),
+        lookupHostname: publicLookup
+      }
+    });
+
+    await expect(tester.test({
+      connection: {
+        allowPrivateNetwork: false,
+        apiRoot: "https://compatible.example.test/v1",
+        authenticationMode: "bearer"
+      },
+      model: {
+        ...candidate.configuration,
+        adapterKind: "openai_responses_compatible",
+        upstreamModelId: "vendor/search-model"
+      },
+      secret: "write-only-compatible-key"
+    })).resolves.toEqual({ normalizedSourceCount: 1, status: "available" });
   });
 
   it("bounds the optional connectivity probe to one minute", async () => {

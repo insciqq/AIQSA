@@ -14,20 +14,24 @@ import type {
 import type { Dispatch, SetStateAction } from "react";
 import { useMemo } from "react";
 
-function searchCommandSubtitle(kind: string): string {
-  if (kind === "none") {
+function searchCommandSubtitle(strategy: CatalogSearchStrategy): string {
+  if (strategy.description) {
+    return strategy.description;
+  }
+
+  if (strategy.kind === "none") {
     return "Search off";
   }
 
-  if (kind === "openai_native_web_search") {
-    return "Provider-native web search";
+  if (strategy.kind === "gemini_google_search") {
+    return "Google Search";
   }
 
-  if (kind === "perplexity_tool_search") {
-    return "Answer-model tool search";
+  if (strategy.kind === "perplexity_tool_search") {
+    return "Perplexity Search";
   }
 
-  return "Search strategy";
+  return "Web search";
 }
 
 type CommandPaletteActionsInput = {
@@ -173,7 +177,7 @@ export function useCommandPaletteActions({
         kind: "search",
         keywords: [strategy.kind, strategy.strategyId],
         label: strategy.displayName,
-        subtitle: searchCommandSubtitle(strategy.kind)
+        subtitle: searchCommandSubtitle(strategy)
       });
     }
 

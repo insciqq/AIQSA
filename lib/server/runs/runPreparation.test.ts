@@ -1,4 +1,4 @@
-import { describe, expect, expectTypeOf, it } from "vitest";
+import { describe, expect, expectTypeOf, it, vi } from "vitest";
 import { textMessageContent } from "../../domain/content";
 import { invalidRunParamsError } from "../../domain/runParams";
 import type { ResolvedEntitlements } from "../auth/entitlements";
@@ -171,7 +171,11 @@ function compatibleAdmissionPlan(
 }
 
 function providerNeutralOpenAISearchPlan(
-  adapterKind: "anthropic_messages" | "gemini_interactions_native"
+  adapterKind: "anthropic_messages" | "gemini_interactions_native",
+  options: Readonly<{
+    optionId?: string;
+    source?: "custom" | "official";
+  }> = {}
 ): ProviderAdmissionPlan {
   const providerFamily = adapterKind === "anthropic_messages" ? "anthropic" : "gemini";
   const providerConnectionId = `connection-${providerFamily}`;
@@ -189,36 +193,48 @@ function providerNeutralOpenAISearchPlan(
     nativeSearch: true,
     toolCalling: true
   };
+  const customSource = options.source === "custom";
+  const sourceConnectionId = customSource
+    ? "connection-custom-search"
+    : "connection-openai-search";
+  const sourceProviderModelId = customSource
+    ? "technical-custom-search"
+    : "technical-openai-search";
+  const sourceUpstreamModelId = customSource ? "vendor/search" : "gpt-5.6-search";
   const technicalRole: ProviderAdmissionPlan["answer"] = {
     credentialSource: "default",
     modelConfiguration: {
-      adapterKind: "openai_responses_native",
+      adapterKind: customSource ? "openai_responses_compatible" : "openai_responses_native",
       capabilities: technicalCapabilities,
       defaultParams: {}
     },
     snapshot: {
       connection: {
         allowPrivateNetwork: false,
-        apiRoot: "https://api.openai.com/v1"
+        apiRoot: customSource
+          ? "https://custom-search.example.test/v1"
+          : "https://api.openai.com/v1"
       },
-      connectionDisplayName: "OpenAI",
-      connectionId: "connection-openai-search",
-      credentialId: "credential-openai-search",
-      credentialVersionId: "credential-version-openai-search",
+      connectionDisplayName: customSource ? "Custom Search" : "OpenAI",
+      connectionId: sourceConnectionId,
+      credentialId: customSource ? "credential-custom-search" : "credential-openai-search",
+      credentialVersionId: customSource
+        ? "credential-version-custom-search"
+        : "credential-version-openai-search",
       model: {
-        adapterKind: "openai_responses_native",
+        adapterKind: customSource ? "openai_responses_compatible" : "openai_responses_native",
         answerSelectable: false,
         capabilities: technicalCapabilities,
         defaultParams: {},
-        upstreamModelId: "gpt-5.6-search"
+        upstreamModelId: sourceUpstreamModelId
       },
-      modelDisplayName: "OpenAI Search model",
-      providerFamily: "openai",
-      providerModelId: "technical-openai-search",
+      modelDisplayName: customSource ? "Custom Search model" : "OpenAI Search model",
+      providerFamily: customSource ? "openai_compatible" : "openai",
+      providerModelId: sourceProviderModelId,
       version: 1
     }
   };
-  const optionId = "openai-provider-web-search";
+  const optionId = options.optionId ?? "openai-native-web-search";
   return {
     answer: {
       credentialSource: "default",
@@ -262,21 +278,23 @@ function providerNeutralOpenAISearchPlan(
           timeoutMs: 300_000
         },
         credentialMode: "provider_model",
-        displayName: "OpenAI Search (provider-neutral)",
+        displayName: customSource ? "Custom Search" : "OpenAI Search",
         executionModes: ["all_selected", "model_choice"],
         kind: "provider_model_web_search",
-        modelId: "gpt-5.6-search",
+        modelId: sourceUpstreamModelId,
         protocol: "openai_responses_web_search",
-        provider: "openai",
-        providerModelId: "technical-openai-search",
-        revisionId: "revision-openai-search",
-        searchStrategyRowId: "integration-openai-search",
+        provider: customSource ? "openai_compatible" : "openai",
+        providerModelId: sourceProviderModelId,
+        revisionId: customSource ? "revision-custom-search" : "revision-openai-search",
+        searchStrategyRowId: customSource
+          ? "integration-custom-search"
+          : "integration-openai-search",
         strategyId: optionId
       },
-      integrationId: "integration-openai-search",
+      integrationId: customSource ? "integration-custom-search" : "integration-openai-search",
       optionId,
       ordinal: 0,
-      revisionId: "revision-openai-search",
+      revisionId: customSource ? "revision-custom-search" : "revision-openai-search",
       role: technicalRole
     }],
     selection: { providerConnectionId, providerModelId },
@@ -1307,20 +1325,25 @@ describe("run preparation", () => {
     { adapterKind: "anthropic_messages" as const, provider: "anthropic" },
     { adapterKind: "gemini_interactions_native" as const, provider: "gemini" }
   ])(
-    "serializes provider-neutral OpenAI Search as a client tool for $provider answers",
+    "serializes logical OpenAI Search as a client tool for $provider answers",
     async ({ adapterKind, provider }) => {
       const plan = providerNeutralOpenAISearchPlan(adapterKind);
+      const admissionLoad = vi.fn(async () => plan);
+      const legacyPlan = {
+        mode: "model_choice" as const,
+        optionIds: ["openai-provider-web-search"]
+      };
       const result = await prepareRun(
         {
           ...createHarness({ searchProviderAvailable: false }).deps,
           allowFakeProvider: false,
-          providerAdmission: { async load() { return plan; } }
+          providerAdmission: { load: admissionLoad }
         },
         sendInput(successBody({
           modelId: plan.selection.providerModelId,
           params: {},
           provider: plan.selection.providerConnectionId,
-          searchPlan: plan.requestedSearchPlan
+          searchPlan: legacyPlan
         }))
       );
 
@@ -1332,19 +1355,65 @@ describe("run preparation", () => {
         mode: "model_choice",
         options: [expect.objectContaining({
           adapterKind: "provider_model_client",
-          optionId: "openai-provider-web-search",
+          optionId: "openai-native-web-search",
           protocol: "openai_responses_web_search",
           provider: "openai",
           providerModelId: "technical-openai-search"
         })]
       });
+      expect(prepared.normalizedRequest.searchStrategy).toBe("openai-native-web-search");
+      expect(prepared.defaults.searchPlan).toEqual(plan.requestedSearchPlan);
+      expect(prepared.defaults.searchStrategy).toBe("openai-native-web-search");
+      expect(admissionLoad).toHaveBeenCalledWith(expect.objectContaining({
+        searchPlan: legacyPlan,
+        searchStrategyId: "openai-provider-web-search"
+      }));
       expect(prepared.providerRequest.tools?.map((tool) => tool.name)).toEqual([
-        "search_1_openai_provider_web_search"
+        "search_engine_1"
       ]);
       expect(JSON.stringify(prepared.providerRequestPreview))
-        .toContain("search_1_openai_provider_web_search");
+        .toContain("search_engine_1");
     }
   );
+
+  it("preserves the admitted custom Search destination in the prepared snapshot", async () => {
+    const optionId = "custom-web-search:connection-custom-search";
+    const plan = providerNeutralOpenAISearchPlan("anthropic_messages", {
+      optionId,
+      source: "custom"
+    });
+    const result = await prepareRun(
+      {
+        ...createHarness({ searchProviderAvailable: false }).deps,
+        allowFakeProvider: false,
+        providerAdmission: { async load() { return plan; } }
+      },
+      sendInput(successBody({
+        modelId: plan.selection.providerModelId,
+        params: {},
+        provider: plan.selection.providerConnectionId,
+        searchPlan: plan.requestedSearchPlan
+      }))
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.code);
+    const prepared = materializePreparedRunData(result.prepared);
+    expect(prepared.normalizedRequest.searchStrategy).toBe(optionId);
+    expect(prepared.normalizedRequest.searchPlan).toEqual({
+      mode: "model_choice",
+      options: [expect.objectContaining({
+        optionId,
+        provider: "openai_compatible",
+        providerModelId: "technical-custom-search",
+        revisionId: "revision-custom-search",
+        searchStrategyRowId: "integration-custom-search"
+      })]
+    });
+    expect(prepared.providerAdmissionPlan?.searches?.[0]?.role?.snapshot.connectionId)
+      .toBe("connection-custom-search");
+    expect(prepared.defaults.searchPlan).toEqual({ mode: "model_choice", optionIds: [optionId] });
+  });
 
   it("rejects attachment-bearing client Search before attachment loading", async () => {
     const base = compatibleAdmissionPlan("openai_responses_compatible");
@@ -1559,10 +1628,18 @@ describe("run preparation", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error(result.code);
     const prepared = materializePreparedRunData(result.prepared);
-    expect(prepared.normalizedRequest.searchStrategy).toBe("openai-native-web-search");
+    expect(prepared.normalizedRequest.searchStrategy).toBe("company-search");
     expect(prepared.defaults.searchPlan).toEqual({ mode: "model_choice", optionIds });
     expect(prepared.defaults.searchStrategy).toBe("company-search");
     expect(prepared.defaults.controlDefaults).not.toHaveProperty("searchStrategyId");
+    expect(prepared.providerRequestPreview).toMatchObject({
+      body: {
+        tools: expect.arrayContaining([
+          { type: "web_search" },
+          expect.objectContaining({ type: "function" })
+        ])
+      }
+    });
   });
 
   it("keeps a full personal Search preference separate from the effective run plan", async () => {

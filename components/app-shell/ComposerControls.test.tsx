@@ -236,9 +236,18 @@ describe("ComposerControls", () => {
       "min-w-[min(14rem,100%)]",
       "flex-[1_1_16rem]"
     );
-    expect(screen.getByTestId("composer-secondary-controls")).toHaveClass("flex-[1_1_20rem]");
+    expect(screen.getByTestId("composer-secondary-controls")).toHaveClass(
+      "max-w-full",
+      "flex-[1_1_20rem]",
+      "flex-wrap"
+    );
+    expect(profile.closest("div.relative")).toHaveClass("flex-[0_1_9rem]");
+    expect(profile.closest("div.relative")).not.toHaveClass("shrink-0");
     expect(controls.querySelector('[data-composer-direct-reasoning="true"]')).toHaveClass(
       "hidden",
+      "min-w-0",
+      "max-w-[11rem]",
+      "flex-[1_1_8rem]",
       "[@media(max-height:42rem)]:!hidden"
     );
   });
@@ -299,8 +308,10 @@ describe("ComposerControls", () => {
     expect(screen.getByTestId("run-search-summary")).toHaveTextContent("Search: Web Search");
     expect(screen.getByRole("button", { name: "Run profile" })).toHaveTextContent("Deep");
     const search = screen.getByRole("button", { name: "Search strategy" });
-    expect(within(search).getByText("OAI")).toHaveClass("min-[430px]:hidden");
-    expect(within(search).getByText("Web Search")).toHaveClass("hidden", "min-[430px]:inline");
+    const searchLabels = within(search).getAllByText("Web Search");
+    expect(searchLabels).toHaveLength(2);
+    expect(searchLabels[0]).toHaveClass("min-[430px]:hidden");
+    expect(searchLabels[1]).toHaveClass("hidden", "min-[430px]:inline");
     expect(search).toHaveAttribute("title", "Web Search");
   });
 
@@ -340,11 +351,11 @@ describe("ComposerControls", () => {
     expect(trigger).toHaveAttribute("title", "0 active · 1 unavailable");
     fireEvent.click(trigger);
     expect(screen.getByText(
-      "Client Search is unavailable while this message has attachments · preference retained"
+      "This Search source is unavailable while this message has attachments · preference retained"
     )).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "Close Search picker" }));
     expect(openRunSetup()).toHaveTextContent(
-      "Generated query only · unavailable with attachments"
+      "Unavailable with attachments for this model"
     );
   });
 

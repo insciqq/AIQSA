@@ -342,6 +342,45 @@ function normalizedToolRequest(): NormalizedRunRequest {
   };
 }
 
+function normalizedLegacySearchRequest(): NormalizedRunRequest {
+  const { mcp: _mcp, ...request } = normalizedToolRequest();
+  return {
+    ...request,
+    searchPlan: {
+      mode: "model_choice",
+      options: [{
+        adapterKind: "provider_model_client",
+        config: {
+          maxResults: 8,
+          modelCapabilities: {
+            nativePdfInput: false,
+            nativeSearch: true,
+            pdf: false,
+            reasoning: false,
+            streaming: true,
+            toolCalling: false,
+            vision: false
+          },
+          modelDefaultParams: {},
+          queryMaxCharacters: 500,
+          timeoutMs: 5_000
+        },
+        credentialMode: "provider_model",
+        displayName: "OpenAI Search",
+        executionModes: ["all_selected", "model_choice"],
+        modelId: "search-model",
+        optionId: "openai-native-web-search",
+        protocol: "openai_responses_web_search",
+        provider: "search-provider",
+        providerModelId: "search-model-row",
+        revisionId: "search-revision-1",
+        searchStrategyRowId: "search-strategy-row-1"
+      }]
+    },
+    searchStrategy: "openai-native-web-search"
+  };
+}
+
 function checkpoint(
   phase: "provider_running" | "tools_pending" | "tools_running",
   roundIndex: number,
@@ -1165,6 +1204,84 @@ describe("run recovery", () => {
       finalText: "Recovered final answer",
       usage: { inputTokens: 8, outputTokens: 5, totalTokens: 13 }
     });
+  });
+
+  it("recovers a persisted pre-release Search tool name through its pinned logical source", async () => {
+    const legacyToolName = "search_1_openai_native_web_search";
+    const answerRequests: ProviderRunRequest[] = [];
+    const searchRequests: ProviderRunRequest[] = [];
+    const answerAdapter: ProviderAdapter = {
+      buildRequestPreview: () => ({}),
+      async *stream(request) {
+        answerRequests.push(request);
+        return {
+          finalProviderResponsePreview: {},
+          finalText: "Recovered sourced answer",
+          usage: { inputTokens: 2, outputTokens: 3, reasoningTokens: 0 }
+        };
+      }
+    };
+    const searchAdapter: ProviderAdapter = {
+      buildRequestPreview: () => ({}),
+      async *stream(request) {
+        searchRequests.push(request);
+        return {
+          finalProviderResponsePreview: {
+            sources: [{ title: "Source", url: "https://example.test/source" }]
+          },
+          finalText: "Recovered findings",
+          usage: { inputTokens: 1, outputTokens: 1, reasoningTokens: 0 }
+        };
+      }
+    };
+    const harness = createHarness({
+      providers: {
+        openai: answerAdapter,
+        "search-provider": searchAdapter
+      }
+    });
+    const createSearchRun = vi.fn<RunRecoveryRepository["createSearchRun"]>();
+    harness.repository.createSearchRun = createSearchRun;
+    const storedCall: PersistedToolLoopCall = {
+      ...persistedRecoveryCall(),
+      arguments: { query: "latest verified news" },
+      mcpBinding: null,
+      toolName: legacyToolName
+    };
+    const base = checkpointedRun({
+      calls: [storedCall],
+      phase: "tools_pending",
+      providerToolMessages: [{
+        arguments: "{\"query\":\"latest verified news\"}",
+        call_id: "provider-call-1",
+        name: legacyToolName,
+        type: "function_call"
+      }]
+    });
+    installCheckpointState(harness, {
+      ...base,
+      normalizedRequest: normalizedLegacySearchRequest()
+    });
+
+    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+
+    expect(searchRequests).toHaveLength(1);
+    expect(searchRequests[0]).toMatchObject({
+      content: { blocks: [{ text: "latest verified news", type: "text" }] },
+      modelId: "search-model",
+      searchStrategy: "openai-native-web-search"
+    });
+    expect(createSearchRun).toHaveBeenCalledWith(expect.objectContaining({
+      searchRevisionId: "search-revision-1",
+      strategyId: "openai-native-web-search"
+    }));
+    expect(answerRequests).toHaveLength(1);
+    expect(answerRequests[0]?.providerToolMessages).toEqual([
+      expect.objectContaining({ name: legacyToolName, type: "function_call" }),
+      expect.objectContaining({ output: expect.stringContaining("Recovered findings") })
+    ]);
+    expect(harness.state.completed).toMatchObject({ finalText: "Recovered sourced answer" });
+    expect(harness.state.recoveredErrors).toEqual([]);
   });
 
   it("aborts an in-flight MCP call owned by checkpoint recovery", async () => {

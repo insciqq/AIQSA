@@ -98,6 +98,48 @@ describe("ComposerSearchPicker", () => {
     await waitFor(() => expect(trigger).toHaveFocus());
   });
 
+  it("keeps an exact custom source name in the narrow trigger", () => {
+    render(
+      <ComposerSearchPicker
+        disabled={false}
+        id="search-custom-label"
+        mode="model_choice"
+        onChange={vi.fn()}
+        options={options}
+        selectedOptionIds={["alpha"]}
+      />
+    );
+
+    const trigger = screen.getByRole("button", { name: "Search strategy" });
+    const labels = within(trigger).getAllByText("Alpha Search");
+    expect(labels).toHaveLength(2);
+    expect(labels[0]).toHaveClass("min-[430px]:hidden");
+    expect(labels[1]).toHaveClass("hidden", "min-[430px]:inline");
+  });
+
+  it("moves keyboard focus across enabled Search options", async () => {
+    render(<ControlledPicker />);
+    fireEvent.click(screen.getByRole("button", { name: "Search strategy" }));
+    const dialog = screen.getByRole("dialog", { name: "Choose Search engines" });
+
+    await waitFor(() => expect(within(dialog).getByRole("button", { name: "Close Search picker" })).toHaveFocus());
+    fireEvent.keyDown(document.activeElement!, { key: "End" });
+    expect(dialog.querySelector('[data-option-value="gemini"]')).toHaveFocus();
+    fireEvent.keyDown(document.activeElement!, { key: "Home" });
+    expect(dialog.querySelector('[data-option-value="search-disabled"]')).toHaveFocus();
+    fireEvent.keyDown(document.activeElement!, { key: "ArrowUp" });
+    expect(dialog.querySelector('[data-option-value="gemini"]')).toHaveFocus();
+    fireEvent.keyDown(document.activeElement!, { key: "ArrowDown" });
+    expect(dialog.querySelector('[data-option-value="search-disabled"]')).toHaveFocus();
+
+    fireEvent.click(within(dialog).getByRole("button", { name: /Alpha Search/i }));
+    fireEvent.click(within(dialog).getByRole("button", { name: /Beta Search/i }));
+    const mode = within(dialog).getByRole("radio", { name: /Model chooses/i });
+    mode.focus();
+    fireEvent.keyDown(mode, { key: "ArrowDown" });
+    expect(mode).toHaveFocus();
+  });
+
   it("owns an ordered zero-to-three selection and exposes both orchestration modes", () => {
     const onChange = vi.fn();
     render(<ControlledPicker onChange={onChange} />);

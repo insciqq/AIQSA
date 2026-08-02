@@ -28,7 +28,16 @@ export type AdminProviderQuickSetupSearchTester = Readonly<{
   }>): Promise<AdminProviderQuickSetupSearchTestOutcome>;
 }>;
 
-function request(model: ProviderModelConfiguration): ProviderRunRequest {
+function providerFamily(model: ProviderModelConfiguration): "openai" | "openai_compatible" {
+  if (model.adapterKind === "openai_responses_native") return "openai";
+  if (model.adapterKind === "openai_responses_compatible") return "openai_compatible";
+  throw new Error("provider_search_probe_model_invalid");
+}
+
+function request(
+  model: ProviderModelConfiguration,
+  provider: "openai" | "openai_compatible"
+): ProviderRunRequest {
   const content = textMessageContent(connectivityQuery);
   return {
     attachmentIds: [],
@@ -59,7 +68,7 @@ function request(model: ProviderModelConfiguration): ProviderRunRequest {
       presetId: null,
       system: null
     },
-    provider: "openai",
+    provider,
     searchStrategy: "openai-native-web-search"
   };
 }
@@ -69,6 +78,7 @@ export function createAdminProviderQuickSetupSearchTester(
 ): AdminProviderQuickSetupSearchTester {
   return {
     async test(input) {
+      const family = providerFamily(input.model);
       const runtime = createProviderRuntimeBinding({
         options: {
           allowFake: false,
@@ -86,13 +96,13 @@ export function createAdminProviderQuickSetupSearchTester(
           credentialVersionId: "provider-quick-setup-search-probe",
           model: input.model,
           modelDisplayName: input.model.upstreamModelId,
-          providerFamily: "openai",
+          providerFamily: family,
           providerModelId: "provider-quick-setup-search-probe",
           version: 1
         }
       });
       const artifacts: unknown[] = [];
-      const stream = runtime.adapter.stream(request(input.model), {
+      const stream = runtime.adapter.stream(request(input.model, family), {
         ...(input.signal ? { signal: input.signal } : {}),
         timeoutMs: SEARCH_PROBE_TIMEOUT_MS
       });

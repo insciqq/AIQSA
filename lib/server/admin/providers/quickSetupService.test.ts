@@ -62,8 +62,8 @@ function fixture(input: {
     return {
       defaultChanged: true,
       profilesFilled: [],
-      providerNeutralSearch: plan.providerNeutralSearch
-        ? plan.providerNeutralSearch.evidence.status === "available"
+      search: plan.search
+        ? plan.search.evidence.status === "available"
           ? "ready" as const
           : "needs_attention" as const
         : null,
@@ -226,7 +226,52 @@ describe("provider Quick setup service", () => {
     });
   });
 
-  it("probes and plans provider-neutral OpenAI Search with no secret in persistence", async () => {
+  it("includes Gemini 3.1 Pro Preview in a fresh Gemini setup when the catalog exposes it", async () => {
+    const value = fixture({
+      modelIds: [
+        "gemini-3.1-pro-preview",
+        "remote-unknown",
+        "gemini-3.5-flash-lite",
+        "gemini-3.6-flash",
+        "gemini-3.5-flash"
+      ]
+    });
+    const result = await value.service.setup({
+      actor,
+      request: {
+        expectedState: await expectedState(value.service, "gemini"),
+        provider: "gemini",
+        secret: "gemini-one-use"
+      }
+    });
+
+    const plan = value.commit.mock.calls[0][0];
+    expect(plan.candidates.map(({ candidateId, configuration }) => ({
+      candidateId,
+      upstreamModelId: configuration.upstreamModelId
+    }))).toEqual([
+      { candidateId: "p2-g1", upstreamModelId: "gemini-3.6-flash" },
+      { candidateId: "p2-g2", upstreamModelId: "gemini-3.5-flash" },
+      { candidateId: "p2-g3", upstreamModelId: "gemini-3.5-flash-lite" },
+      { candidateId: "p2-g4", upstreamModelId: "gemini-3.1-pro-preview" }
+    ]);
+    expect(plan.grants.map(({ modelId }) => modelId)).toEqual(
+      plan.candidates.map(({ modelId }) => modelId)
+    );
+    expect(result).toMatchObject({
+      model: { displayName: "Gemini 3.6 Flash" },
+      models: [
+        { displayName: "Gemini 3.6 Flash" },
+        { displayName: "Gemini 3.5 Flash" },
+        { displayName: "Gemini 3.5 Flash-Lite" },
+        { displayName: "Gemini 3.1 Pro Preview" }
+      ],
+      outcome: "ready",
+      provider: "gemini"
+    });
+  });
+
+  it("probes and plans OpenAI Search with no secret in persistence", async () => {
     const value = fixture({
       modelIds: ["gpt-5.6-terra"],
       searchOutcome: { normalizedSourceCount: 3, status: "available" }
@@ -245,7 +290,7 @@ describe("provider Quick setup service", () => {
       secret: "sk-provider-neutral-search"
     }));
     expect(value.order).toEqual(["network", "search", "commit"]);
-    expect(value.commit.mock.calls[0][0].providerNeutralSearch).toMatchObject({
+    expect(value.commit.mock.calls[0][0].search).toMatchObject({
       draft: {
         adapterKind: "provider_model_client",
         credentialMode: "provider_model",
@@ -261,8 +306,8 @@ describe("provider Quick setup service", () => {
     });
     expect(result).toMatchObject({
       outcome: "ready",
-      providerNeutralSearch: {
-        displayName: "OpenAI Search (provider-neutral)",
+      search: {
+        displayName: "OpenAI Search",
         status: "ready"
       }
     });
@@ -286,14 +331,14 @@ describe("provider Quick setup service", () => {
     });
 
     expect(value.commit).toHaveBeenCalledOnce();
-    expect(value.commit.mock.calls[0][0].providerNeutralSearch?.evidence).toMatchObject({
+    expect(value.commit.mock.calls[0][0].search?.evidence).toMatchObject({
       normalizedSourceCount: 0,
       status: "unavailable"
     });
     expect(result).toMatchObject({
       outcome: "ready",
       provider: "openai",
-      providerNeutralSearch: { status: "needs_attention" }
+      search: { status: "needs_attention" }
     });
   });
 

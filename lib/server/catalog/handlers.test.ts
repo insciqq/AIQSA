@@ -101,11 +101,13 @@ describe("catalog handler", () => {
       "parameterControls",
       "provider",
       "providerFamily",
+      "searchOptionCompatibility",
       "searchStrategyIds",
       "upstreamModelId"
     ]);
     expect(body.catalog.models[0].capabilities.text).toBe(true);
     expect(body.catalog.searchStrategies[0]).toEqual({
+      description: "Question directly to Answer with no search tool.",
       displayName: "No Search",
       kind: "none",
       strategyId: "search-disabled"

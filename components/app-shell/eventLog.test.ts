@@ -194,7 +194,7 @@ describe("summarizeInspectorEvents", () => {
     expect(summaries.find((summary) => summary.label === "Citations recorded")?.stage).toBe("S");
     expect(summaries.find((summary) => summary.label === "Search evidence")).toEqual(
       expect.objectContaining({
-        detail: "Provider: OpenRouter · Strategy: Perplexity tool search · Status: Completed",
+        detail: "Provider: OpenRouter · Strategy: Perplexity Search · Status: Completed",
         tone: "success"
       })
     );
@@ -286,13 +286,26 @@ describe("summarizeInspectorEvents", () => {
   it("does not expose unresolved opaque identifiers from historical runs", () => {
     const providerId = "00000000-0000-4000-8000-000000009901";
     const modelId = "00000000-0000-4000-8000-000000009902";
-    const summaries = summarizeInspectorEvents([{
-      data: { modelId, provider: providerId, status: "streaming" },
-      type: "run_start"
-    }], { models: [], providers: [] } as unknown as Catalog);
+    const searchOptionId = "00000000-0000-4000-8000-000000009903";
+    const summaries = summarizeInspectorEvents([
+      {
+        data: { modelId, provider: providerId, status: "streaming" },
+        type: "run_start"
+      },
+      {
+        data: {
+          artifactType: "summary",
+          payload: { searchStrategy: searchOptionId, status: "completed" }
+        },
+        type: "artifact"
+      }
+    ], { models: [], providers: [], searchStrategies: [] } as unknown as Catalog);
 
     expect(summaries[0]?.detail).toBe("Provider: Unavailable · Model: Unavailable");
-    expect(JSON.stringify(summaries)).not.toMatch(new RegExp(`${providerId}|${modelId}`));
+    expect(summaries[1]?.detail).toContain("Search: Search source");
+    expect(JSON.stringify(summaries)).not.toMatch(
+      new RegExp(`${providerId}|${modelId}|${searchOptionId}`)
+    );
   });
 
   it("prefers an exact connection when same-family deployments share an upstream identifier", () => {

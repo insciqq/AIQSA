@@ -216,3 +216,57 @@ describe("Full access admin group guards", () => {
     ]));
   });
 });
+
+describe("Logical Search grants", () => {
+  it("grants an enabled connection-scoped logical Search option", async () => {
+    const optionId = "custom-web-search:connection-custom";
+    const findSearchOption = vi.fn().mockResolvedValue({ id: "option-row" });
+    const deleteMany = vi.fn().mockResolvedValue({ count: 0 });
+    const create = vi.fn().mockResolvedValue({ id: "grant-row" });
+    const prisma = {
+      accessGrant: { create, deleteMany },
+      group: {
+        findUnique: vi.fn().mockResolvedValue({
+          archivedAt: null,
+          id: "group-1",
+          systemRole: null
+        })
+      },
+      searchOption: { findFirst: findSearchOption }
+    } as unknown as PrismaClient;
+
+    await expect(createAdminGroupGrantCommands(prisma).setGroupGrant({
+      enabled: true,
+      groupId: "group-1",
+      searchStrategy: optionId
+    })).resolves.toBe(true);
+
+    expect(findSearchOption).toHaveBeenCalledWith({
+      select: { id: true },
+      where: {
+        archivedAt: null,
+        enabled: true,
+        optionId
+      }
+    });
+    expect(deleteMany).toHaveBeenCalledWith({
+      where: {
+        groupId: "group-1",
+        providerConnectionId: null,
+        providerModelId: null,
+        searchStrategy: optionId,
+        userId: null
+      }
+    });
+    expect(create).toHaveBeenCalledWith({
+      data: {
+        enabled: true,
+        groupId: "group-1",
+        providerConnectionId: null,
+        providerModelId: null,
+        searchStrategy: optionId,
+        userId: null
+      }
+    });
+  });
+});

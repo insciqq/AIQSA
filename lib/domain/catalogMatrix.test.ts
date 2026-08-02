@@ -18,24 +18,18 @@ describe("catalog capability matrix", () => {
   it("enforces bounded Search combination policy without provider-id branches", () => {
     const options = [
       {
-        adapterKind: "provider_model_client" as const,
         executionModes: ["all_selected", "model_choice"] as const,
-        kind: "provider_model_web_search" as const,
-        protocol: "openai_responses_web_search" as const,
+        kind: "web_search" as const,
         strategyId: "client-a"
       },
       {
-        adapterKind: "provider_model_client" as const,
         executionModes: ["all_selected", "model_choice"] as const,
-        kind: "provider_model_web_search" as const,
-        protocol: "openai_responses_web_search" as const,
+        kind: "web_search" as const,
         strategyId: "client-b"
       },
       {
-        adapterKind: "answer_provider_hosted" as const,
         executionModes: ["model_choice"] as const,
         kind: "gemini_google_search" as const,
-        protocol: "gemini_google_search" as const,
         strategyId: "native-exclusive"
       }
     ];
@@ -60,7 +54,7 @@ describe("catalog capability matrix", () => {
     });
   });
 
-  it("exposes native OpenAI web search and Perplexity as separate OpenAI strategies", () => {
+  it("exposes one OpenAI Search source and Perplexity to an OpenAI model", () => {
     const model = defaultProviderModels.find((entry) => entry.provider === "openai" && entry.modelId === "gpt-5.5");
 
     expect(model).toBeDefined();
@@ -71,28 +65,27 @@ describe("catalog capability matrix", () => {
     ]);
   });
 
-  it("derives search compatibility from adapter kind and capabilities, not opaque ids or family labels", () => {
+  it("requires an exact source connection for hosted Search", () => {
     const template = defaultProviderModels.find(
       (entry) => entry.providerFamily === "openai" && entry.upstreamModelId === "gpt-5.5"
     );
     expect(template).toBeDefined();
 
-    const opaqueNative = {
+    const sameConnection = {
       ...template!,
-      modelId: "deployment-opaque",
-      provider: "connection-opaque"
+      modelId: "deployment-opaque"
     };
-    expect(availableSearchStrategiesForModel(opaqueNative, defaultSearchStrategies)).toContain(
+    expect(availableSearchStrategiesForModel(sameConnection, defaultSearchStrategies)).toContain(
       "openai-native-web-search"
     );
 
     const compatible = {
-      ...opaqueNative,
+      ...sameConnection,
+      provider: "connection-opaque",
       adapterKind: "openai_responses_compatible" as const
     };
-    expect(availableSearchStrategiesForModel(compatible, defaultSearchStrategies)).toContain(
-      "openai-native-web-search"
-    );
+    expect(availableSearchStrategiesForModel(compatible, defaultSearchStrategies)).not.toContain(
+      "openai-native-web-search");
   });
 
   it("keeps gpt-5.5 reasoning options aligned with accepted OpenAI effort values", () => {
@@ -291,24 +284,46 @@ describe("catalog capability matrix", () => {
     ]);
   });
 
-  it("offers provider-neutral OpenAI Search to any tool-capable answer model", () => {
-    const providerNeutralOpenAI = {
-      adapterKind: "provider_model_client" as const,
-      config: {
-        maxResults: 8,
-        queryMaxCharacters: 500,
-        timeoutMs: 300_000
-      },
+  it("excludes only the exact Perplexity technical deployment from answering with itself", () => {
+    const technical = defaultProviderModels.find(
+      (entry) => entry.provider === "openrouter" && entry.modelId === "perplexity/sonar-pro-search"
+    );
+    expect(technical).toBeDefined();
+    expect(availableSearchStrategiesForModel(technical!, defaultSearchStrategies)).not.toContain(
+      "perplexity-tool-search"
+    );
+
+    const sameModelIdOnAnotherConnection = {
+      ...technical!,
+      adapterKind: "openai_responses_compatible" as const,
+      provider: "custom-connection",
+      providerFamily: "openai_compatible"
+    };
+    expect(availableSearchStrategiesForModel(
+      sameModelIdOnAnotherConnection,
+      defaultSearchStrategies
+    )).toContain("perplexity-tool-search");
+  });
+
+  it("offers one logical OpenAI Search through its query-only route to tool-capable models", () => {
+    const openAISearch = {
       description: "Query-only OpenAI web search.",
-      displayName: "OpenAI Search (provider-neutral)",
-      kind: "provider_model_web_search" as const,
-      modelId: "gpt-5.6-terra",
-      privacy: "query_only" as const,
-      protocol: "openai_responses_web_search" as const,
-      provider: "openai",
-      providerModelId: "technical-openai-search-model",
-      revisionId: "openai-search-revision",
-      strategyId: "openai-provider-web-search"
+      displayName: "OpenAI Search",
+      kind: "web_search" as const,
+      routes: [{
+        adapterKind: "provider_model_client" as const,
+        config: { maxResults: 8, queryMaxCharacters: 500, timeoutMs: 300_000 },
+        credentialMode: "provider_model" as const,
+        executionModes: ["all_selected", "model_choice"] as const,
+        kind: "provider_model_web_search" as const,
+        physicalStrategyId: "openai-provider-web-search",
+        protocol: "openai_responses_web_search" as const,
+        providerModelId: "technical-openai-search-model",
+        revisionId: "openai-search-revision",
+        searchStrategyRowId: "integration-openai-search"
+      }],
+      sourceConnectionId: "openai",
+      strategyId: "openai-native-web-search"
     };
     const anthropic = defaultProviderModels.find(
       (entry) => entry.provider === "anthropic" && entry.modelId === "claude-opus-5"
@@ -319,24 +334,24 @@ describe("catalog capability matrix", () => {
     expect(anthropic).toBeDefined();
     expect(gemini).toBeDefined();
 
-    expect(availableSearchStrategiesForModel(anthropic!, [providerNeutralOpenAI])).toEqual([
-      "openai-provider-web-search"
+    expect(availableSearchStrategiesForModel(anthropic!, [openAISearch])).toEqual([
+      "openai-native-web-search"
     ]);
-    expect(availableSearchStrategiesForModel(gemini!, [providerNeutralOpenAI])).toEqual([
-      "openai-provider-web-search"
+    expect(availableSearchStrategiesForModel(gemini!, [openAISearch])).toEqual([
+      "openai-native-web-search"
     ]);
     expect(availableSearchStrategiesForModel({
       ...defaultProviderModels.find(
         (entry) => entry.provider === "openai" && entry.modelId === "gpt-5.5"
       )!,
-      modelId: providerNeutralOpenAI.providerModelId
-    }, [providerNeutralOpenAI])).toEqual([
-      "openai-provider-web-search"
+      modelId: openAISearch.routes[0]!.providerModelId!
+    }, [openAISearch])).toEqual([
+      "openai-native-web-search"
     ]);
     expect(availableSearchStrategiesForModel({
       ...anthropic!,
       capabilities: { ...anthropic!.capabilities, toolCalling: false }
-    }, [providerNeutralOpenAI])).toEqual([]);
+    }, [openAISearch])).toEqual([]);
     expect(availableSearchStrategiesForModel(anthropic!, [
       defaultSearchStrategies.find(({ strategyId }) =>
         strategyId === "openai-native-web-search")!
@@ -388,7 +403,8 @@ describe("catalog capability matrix", () => {
     expect(strategyTemplate).toBeDefined();
     const strategy = toCatalogSearchStrategy(strategyTemplate!);
     expect(strategy).toEqual({
-      displayName: "Perplexity tool",
+      description: "Web evidence from Perplexity through OpenRouter.",
+      displayName: "Perplexity",
       kind: "perplexity_tool_search",
       strategyId: "perplexity-tool-search"
     });

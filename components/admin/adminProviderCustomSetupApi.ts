@@ -67,6 +67,16 @@ function timestamp(value: unknown): value is string {
   return !Number.isNaN(parsed.valueOf()) && parsed.toISOString() === value;
 }
 
+function searchReceipt(
+  value: unknown
+): value is AdminProviderCustomSetupReadyResult["search"] {
+  return value === null || (
+    record(value) && exactKeys(value, ["displayName", "status"]) &&
+    safeText(value.displayName, 160) &&
+    (value.status === "needs_attention" || value.status === "ready")
+  );
+}
+
 function ready(value: unknown): AdminProviderCustomSetupReadyResult | null {
   if (
     !record(value) ||
@@ -80,7 +90,8 @@ function ready(value: unknown): AdminProviderCustomSetupReadyResult | null {
       "modelDisplayName",
       "models",
       "outcome",
-      "providerModelId"
+      "providerModelId",
+      "search"
     ]) ||
     (value.authenticationMode !== "bearer" && value.authenticationMode !== "none") ||
     !timestamp(value.checkedAt) ||
@@ -101,7 +112,8 @@ function ready(value: unknown): AdminProviderCustomSetupReadyResult | null {
     value.models[0].modelDisplayName !== value.modelDisplayName ||
     value.models[0].providerModelId !== value.providerModelId ||
     value.outcome !== "ready" ||
-    !safeText(value.providerModelId, 128)
+    !safeText(value.providerModelId, 128) ||
+    !searchReceipt(value.search)
   ) {
     return null;
   }

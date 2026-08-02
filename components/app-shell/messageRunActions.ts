@@ -76,10 +76,19 @@ function effectiveSearchSelection(
   const catalog = useWorkspaceStore.getState().catalog;
   if (!model || !catalog) return { mode: "all_selected" as const, optionIds: [] };
   const compatibleIds = new Set(model.searchStrategyIds);
+  // Catalog options are logical sources; the selected model owns the exact
+  // hosted/client execution modes used to derive this run without rewriting
+  // the retained personal or organization preference.
+  const modelSearchOptions = catalog.searchStrategies.map((option) => ({
+    ...option,
+    executionModes:
+      model.searchOptionCompatibility?.[option.strategyId]?.executionModes ??
+      option.executionModes
+  }));
   return reconcileSearchPlanSelection(
     optionIds.filter((optionId) => compatibleIds.has(optionId)),
     mode,
-    catalog.searchStrategies
+    modelSearchOptions
   );
 }
 

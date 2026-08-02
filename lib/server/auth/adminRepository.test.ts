@@ -102,6 +102,12 @@ async function withAdminData<T>(
         }
       }
     });
+    await prisma.searchOption.deleteMany({
+      where: { optionId: { contains: id } }
+    });
+    await prisma.providerConnection.deleteMany({
+      where: { id: { contains: id } }
+    });
     await prisma.group.deleteMany({
       where: {
         OR: [
@@ -1006,6 +1012,28 @@ describe("Prisma admin repository", () => {
         select: { connectionId: true, id: true },
         where: { enabled: true, connection: { enabled: true, family: "fake" } }
       });
+      const searchConnectionId = `admin-test-search-source-${domain}`;
+      const searchOptionId = `admin-test-search-option-${domain}`;
+      await prisma.providerConnection.create({
+        data: {
+          activeConfig: {},
+          activeVersion: 1,
+          activatedAt: new Date(),
+          displayName: "Entitlement Search fixture source",
+          enabled: true,
+          family: "admin_test_search_fixture",
+          id: searchConnectionId
+        }
+      });
+      await prisma.searchOption.create({
+        data: {
+          description: "Entitlement Search fixture.",
+          displayName: "Entitlement Search fixture",
+          kind: "web_search",
+          optionId: searchOptionId,
+          sourceConnectionId: searchConnectionId
+        }
+      });
 
       expect(group).toMatchObject({
         archivedAt: null,
@@ -1036,13 +1064,13 @@ describe("Prisma admin repository", () => {
         repository.setGroupGrant({
           enabled: true,
           groupId: group!.id,
-          searchStrategy: "openai-native-web-search"
+          searchStrategy: searchOptionId
         })
       ).resolves.toBe(true);
 
       const entitled = await loadEntitlementsForUser(user.id);
       expect(entitled.modelKeys.has(`${fakeModel.connectionId}:${fakeModel.id}`)).toBe(true);
-      expect(entitled.searchStrategies.has("openai-native-web-search")).toBe(true);
+      expect(entitled.searchStrategies.has(searchOptionId)).toBe(true);
 
       const dashboard = await repository.listDashboard(adminId);
       const dashboardUser = dashboard.users.find((candidate) => candidate.id === user.id);
@@ -1055,7 +1083,7 @@ describe("Prisma admin repository", () => {
       await expect(repository.archiveGroup(group!.id)).resolves.toBe(true);
       const afterArchive = await loadEntitlementsForUser(user.id);
       expect(afterArchive.modelKeys.has("openai:gpt-5.5")).toBe(false);
-      expect(afterArchive.searchStrategies.has("openai-native-web-search")).toBe(false);
+      expect(afterArchive.searchStrategies.has(searchOptionId)).toBe(false);
       await expect(
         repository.setGroupGrant({
           enabled: true,

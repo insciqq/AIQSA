@@ -208,13 +208,21 @@ export function modelDifferentiatingCapabilityLabels(
 }
 
 export function searchStrategyDescription(strategyId: string): string {
-  if (strategyId === "openai-native-web-search") {
-    return "OpenAI web_search";
+  if (strategyId === "search-disabled") {
+    return "No Search";
+  }
+
+  if (strategyId === "openai-native-web-search" || strategyId === "openai-provider-web-search") {
+    return "OpenAI Search";
   }
 
   if (strategyId === "perplexity-tool-search") {
-    return "Perplexity tool";
+    return "Perplexity Search";
   }
 
-  return "No Search";
+  if (strategyId === "gemini-google-search") {
+    return "Google Search";
+  }
+
+  return "Search";
 }

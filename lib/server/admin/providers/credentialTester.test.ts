@@ -169,7 +169,8 @@ describe("admin provider credential tester", () => {
             "models/gemini-3.6-flash",
             "gemini-3.5-flash",
             "models/gemini-3.6-flash",
-            "models/gemini-3.5-flash-lite"
+            "models/gemini-3.5-flash-lite",
+            "models/gemini-3.1-pro-preview"
           ].map((name) => ({ name }))
         })),
         lookupHostname: publicLookup
@@ -181,7 +182,8 @@ describe("admin provider credential tester", () => {
       modelIds: [
         "gemini-3.6-flash",
         "gemini-3.5-flash",
-        "gemini-3.5-flash-lite"
+        "gemini-3.5-flash-lite",
+        "gemini-3.1-pro-preview"
       ]
     });
   });

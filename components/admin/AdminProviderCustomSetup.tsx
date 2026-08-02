@@ -73,6 +73,13 @@ export function AdminProviderCustomSetup({
               Models: {ready.models.map(({ modelDisplayName }) => modelDisplayName).join(", ")}.
             </p>
             <p>Default selection: {ready.defaultChanged ? "updated" : "unchanged"}.</p>
+            {ready.search ? (
+              <p>
+                {ready.search.displayName}: {ready.search.status === "ready"
+                  ? "ready for supported models"
+                  : "requires attention; finish setup in Search"}.
+              </p>
+            ) : null}
           </div>
           <div className="mt-5 flex flex-wrap items-center gap-2">
             <Link className={primaryButton} href="/">Start chatting</Link>
@@ -86,6 +93,11 @@ export function AdminProviderCustomSetup({
             <button className={quietButton} onClick={onBack} type="button">
               Add another provider
             </button>
+            {ready.search ? (
+              <Link className={quietButton} href="/admin?section=search">
+                Manage Search
+              </Link>
+            ) : null}
           </div>
         </section>
       </div>

@@ -54,29 +54,6 @@ function compactReasoningLabel(effort: string, mode: string): string {
   return `${modeLabel} · ${effortLabel}`;
 }
 
-function compactSearchStrategyLabel(strategy: CatalogSearchStrategy | undefined): string | undefined {
-  if (!strategy) {
-    return undefined;
-  }
-
-  return strategy.kind === "none" ? "Off" : strategy.displayName;
-}
-
-function narrowSearchStrategyLabel(strategy: CatalogSearchStrategy | undefined): string | undefined {
-  if (!strategy) {
-    return undefined;
-  }
-
-  const labels: Record<CatalogSearchStrategy["kind"], string> = {
-    gemini_google_search: "Google",
-    none: "Off",
-    openai_native_web_search: "OAI",
-    perplexity_tool_search: "PPLXTY",
-    provider_model_web_search: "Web"
-  };
-  return labels[strategy.kind];
-}
-
 function reasoningAccessibleDescription(effort: string, mode: string): string {
   const modeLabel = mode === "pro" ? "Pro" : mode === "standard" ? "Standard" : reasoningEffortLabel(mode);
   return `${modeLabel} mode, ${reasoningEffortLabel(effort)} effort`;
@@ -86,14 +63,12 @@ function searchStrategyDescription(strategy: CatalogSearchStrategy): string {
   if (strategy.kind === "none") {
     return "Answer without web lookup";
   }
-  if (strategy.kind.includes("native")) {
-    return "Provider-native web search";
-  }
+  if (strategy.description) return strategy.description;
   if (strategy.kind.includes("perplexity") || strategy.kind.includes("openrouter")) {
     return "Web search through the provider";
   }
 
-  return strategy.kind.replaceAll("_", " ");
+  return "Web search for the next answer";
 }
 
 export function ComposerControls({
@@ -202,13 +177,22 @@ export function ComposerControls({
   const modelCompatibleSearchOptionIds = compatibleSearchOptionIds ??
     currentModel?.searchStrategyIds.filter((strategyId) => strategyId !== "search-disabled") ??
     searchOptions.filter((strategy) => strategy.kind !== "none").map((strategy) => strategy.strategyId);
+  const searchExecutionModesByOptionId = Object.fromEntries(searchOptions.map((strategy) => [
+    strategy.strategyId,
+    currentModel?.searchOptionCompatibility?.[strategy.strategyId]?.executionModes ??
+      strategy.executionModes ??
+      []
+  ]));
   const attachmentBlockedSearchOptionIds = hasAttachments
     ? searchOptions
-        .filter((strategy) =>
-          strategy.adapterKind === "provider_model_client" ||
-          strategy.kind === "perplexity_tool_search" ||
-          strategy.kind === "provider_model_web_search"
-        )
+        .filter((strategy) => {
+          const compatibility = currentModel?.searchOptionCompatibility?.[strategy.strategyId];
+          return compatibility
+            ? !compatibility.attachments
+            : strategy.adapterKind === "provider_model_client" ||
+                strategy.kind === "perplexity_tool_search" ||
+                strategy.kind === "provider_model_web_search";
+        })
         .map((strategy) => strategy.strategyId)
     : [];
   const attachmentBlockedSearchOptionIdSet = new Set(attachmentBlockedSearchOptionIds);
@@ -218,7 +202,7 @@ export function ComposerControls({
   const attachmentUnavailableReasons = Object.fromEntries(
     attachmentBlockedSearchOptionIds.map((optionId) => [
       optionId,
-      "Client Search is unavailable while this message has attachments"
+      "This Search source is unavailable while this message has attachments"
     ])
   );
   const runSetupTriggerRef = useRef<HTMLButtonElement>(null);
@@ -351,13 +335,13 @@ export function ComposerControls({
       />
 
       <div
-        className="flex min-w-0 flex-[1_1_20rem] items-center gap-0.5 min-[430px]:gap-1"
+        className="flex min-w-0 max-w-full flex-[1_1_20rem] flex-wrap items-center gap-0.5 min-[430px]:gap-1"
         data-testid="composer-secondary-controls"
       >
         {hasAvailableProfiles ? (
           <ComposerOptionPicker
             accessibleDescription={`Current run profile: ${profileLabel ?? "Custom"}`}
-            className="min-w-20 max-w-[9rem] shrink-0 flex-[0_1_9rem]"
+            className="min-w-20 max-w-[9rem] flex-[0_1_9rem]"
             disabled={disabled || streaming}
             compactResting
             id="composer-inline-profile"
@@ -398,6 +382,7 @@ export function ComposerControls({
           id="composer-inline-search"
           mode={searchPlanMode}
           compatibleOptionIds={resolvedCompatibleSearchOptionIds}
+          executionModesByOptionId={searchExecutionModesByOptionId}
           onChange={changeSearchPlan}
           onUseOrganizationDefault={onUseOrganizationSearchDefault}
           options={searchOptions}
@@ -553,6 +538,7 @@ export function ComposerControls({
                     id="search-select"
                     mode={searchPlanMode}
                     compatibleOptionIds={resolvedCompatibleSearchOptionIds}
+                    executionModesByOptionId={searchExecutionModesByOptionId}
                     onChange={changeSearchPlan}
                     onUseOrganizationDefault={onUseOrganizationSearchDefault}
                     options={searchOptions}
@@ -587,12 +573,9 @@ export function ComposerControls({
                           <span className="min-w-0 flex-1">
                             <span className="block break-words font-medium">{strategy.displayName}</span>
                             <span className="mt-0.5 block text-[11px] leading-4 text-ink-muted">
-                              {strategy.privacy === "query_only"
-                                ? attachmentBlockedSearchOptionIdSet.has(strategy.strategyId)
-                                  ? "Generated query only · unavailable with attachments"
-                                  : "Generated query only"
-                                : "Inside answer-provider context"}
-                              {strategy.revisionId ? ` · active revision ${strategy.revisionId.slice(0, 8)}` : ""}
+                              {attachmentBlockedSearchOptionIdSet.has(strategy.strategyId)
+                                ? "Unavailable with attachments for this model"
+                                : strategy.description ?? "Available for this model"}
                             </span>
                           </span>
                         </li>

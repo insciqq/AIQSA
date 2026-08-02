@@ -34,7 +34,8 @@ function service(
         providerModelId: "model-1"
       }],
       outcome: "ready" as const,
-      providerModelId: "model-1"
+      providerModelId: "model-1",
+      search: null
     })),
     ...overrides
   };
@@ -76,7 +77,8 @@ describe("custom provider setup handler", () => {
       modelDisplayName: "Lab model",
       models: [{ modelDisplayName: "Lab model", providerModelId: "model-1" }],
       outcome: "ready" as const,
-      providerModelId: "model-1"
+      providerModelId: "model-1",
+      search: null
     }));
     const response = await createAdminProviderCustomSetupHandler({
       resolveAuth: vi.fn(async () => session),
@@ -122,7 +124,8 @@ describe("custom provider setup handler", () => {
       modelDisplayName: "Lab model",
       models: [{ modelDisplayName: "Lab model", providerModelId: "model-1" }],
       outcome: "ready",
-      providerModelId: "model-1"
+      providerModelId: "model-1",
+      search: null
     });
   });
 

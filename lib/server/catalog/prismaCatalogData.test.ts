@@ -1,13 +1,16 @@
 import { describe, expect, it, vi } from "vitest";
-import type { ProviderModel, SearchStrategy } from "@prisma/client";
+import type { ProviderModel } from "@prisma/client";
 import { buildCurrentUserCatalog } from "./handlers";
 import {
   createPrismaCatalogDataLoader,
   exposeFakeProvider,
   filterAvailableProviderModels,
   filterExposedProviderModels,
-  filterExposedSearchStrategies,
+  filterExposedSearchOptions,
   providerModelToCatalogEntry,
+  searchOptionToCatalogEntry,
+  searchStrategyToCatalogRoute,
+  type CatalogSearchOptionRow,
   type CatalogProviderModelRow
 } from "./prismaCatalogData";
 
@@ -192,14 +195,65 @@ function entitlements(input: {
   };
 }
 
-function searchStrategy(overrides: Partial<SearchStrategy>): SearchStrategy {
+type CatalogSearchStrategyRow = CatalogSearchOptionRow["strategies"][number];
+
+function searchStrategy(
+  overrides: Partial<CatalogSearchStrategyRow> = {}
+): CatalogSearchStrategyRow {
+  const kind = overrides.kind ?? "none";
+  const adapterKind = overrides.adapterKind ?? (
+    kind === "perplexity_tool_search" || kind === "provider_model_web_search"
+      ? "provider_model_client"
+      : "answer_provider_hosted"
+  );
+  const credentialMode = adapterKind === "provider_model_client"
+    ? "provider_model"
+    : "answer_provider";
+  const protocol = kind === "gemini_google_search"
+    ? "gemini_google_search"
+    : kind === "perplexity_tool_search"
+      ? "openrouter_perplexity_chat"
+      : "openai_responses_web_search";
+  const providerModelId = overrides.providerModelId ?? (
+    adapterKind === "provider_model_client" ? "technical-search-deployment" : null
+  );
+  const activeRevision = kind === "none"
+    ? null
+    : {
+        adapterKind,
+        configuration: {
+          adapterKind,
+          credentialMode,
+          maxResults: 8,
+          protocol,
+          providerModelId,
+          queryMaxCharacters: 500,
+          timeoutMs: 300_000
+        },
+        credentialMode,
+        id: "search-revision",
+        providerModelId,
+        validationEvidence: adapterKind === "provider_model_client"
+          ? {
+              probeBinding: {
+                connectionId: "connection-openai",
+                connectionVersion: 5,
+                credentialId: "credential-default",
+                credentialVersionId: "credential-default-v1",
+                modelVersion: 7,
+                providerModelId
+              }
+            }
+          : { method: "configuration" }
+      };
   return {
     activatedAt: now,
-    activeRevisionId: "search-revision",
-    adapterKind: "none",
+    activeRevision,
+    activeRevisionId: activeRevision?.id ?? null,
+    adapterKind,
     archivedAt: null,
     config: {},
-    credentialMode: "answer_provider",
+    credentialMode,
     createdAt: now,
     description: "Search",
     displayName: "Search",
@@ -208,13 +262,47 @@ function searchStrategy(overrides: Partial<SearchStrategy>): SearchStrategy {
     draftVersion: 1,
     enabled: true,
     id: "search-row",
-    kind: "none",
+    kind,
     modelId: null,
     provider: "system",
-    providerModelId: null,
+    providerModelId,
+    searchOptionId: "search-option-row",
     strategyId: "search-disabled",
     testedDraftHash: null,
     updatedAt: now,
+    ...overrides
+  };
+}
+
+function searchStrategyWithBinding(
+  overrides: Partial<CatalogSearchStrategyRow>,
+  binding: Record<string, unknown>
+): CatalogSearchStrategyRow {
+  const route = searchStrategy(overrides);
+  return {
+    ...route,
+    activeRevision: route.activeRevision
+      ? { ...route.activeRevision, validationEvidence: { probeBinding: binding } }
+      : null
+  };
+}
+
+function searchOption(
+  overrides: Partial<CatalogSearchOptionRow> = {}
+): CatalogSearchOptionRow {
+  const kind = overrides.kind ?? "none";
+  const sourceConnectionId = overrides.sourceConnectionId === undefined
+    ? kind === "none" ? null : "connection-openai"
+    : overrides.sourceConnectionId;
+  return {
+    description: "Search the web",
+    displayName: "Search",
+    id: "search-option-row",
+    kind,
+    optionId: kind === "none" ? "search-disabled" : "search-option",
+    sourceConnection: sourceConnectionId ? { id: sourceConnectionId } : null,
+    sourceConnectionId,
+    strategies: [],
     ...overrides
   };
 }
@@ -513,6 +601,10 @@ describe("prisma catalog data loader", () => {
 
   it("makes provider-backed search availability independent from answer-model grants", () => {
     const technicalModel = providerBackedSearchModel();
+    const answerModel = providerModel({
+      connection: { family: "anthropic", id: "connection-answer" },
+      model: { connectionId: "connection-answer", id: "deployment-answer" }
+    });
     expect(filterAvailableProviderModels({
       exposeFake: false,
       memberships: [],
@@ -523,34 +615,45 @@ describe("prisma catalog data loader", () => {
       models: [technicalModel]
     })).toEqual([]);
 
-    const strategies = filterExposedSearchStrategies({
+    const input = {
       availableProviderModels: [technicalModel],
       entitlements: entitlements({ searches: ["perplexity-tool-search"] }),
-      exposedProviderModels: [],
-      searchStrategies: [
-        searchStrategy({ strategyId: "search-disabled" }),
-        searchStrategy({
-          kind: "perplexity_tool_search",
-          provider: "openrouter",
-          providerModelId: "technical-search-deployment",
-          strategyId: "perplexity-tool-search"
-        }),
-        searchStrategy({
-          id: "missing-search",
-          kind: "perplexity_tool_search",
-          providerModelId: "missing-technical-deployment",
-          strategyId: "perplexity-tool-search"
-        }),
-        searchStrategy({
-          id: "unsupported-search",
-          kind: "unsupported_kind",
-          strategyId: "unsupported-search"
+      searchOptions: [
+        searchOption(),
+        searchOption({
+          kind: "perplexity_search",
+          optionId: "perplexity-tool-search",
+          sourceConnection: { id: "connection-openai" },
+          sourceConnectionId: "connection-openai",
+          strategies: [
+            searchStrategy({
+              kind: "perplexity_tool_search",
+              provider: "openrouter",
+              providerModelId: "technical-search-deployment",
+              strategyId: "perplexity-tool-search"
+            }),
+            searchStrategy({
+              activeRevision: null,
+              id: "untested-search",
+              kind: "perplexity_tool_search",
+              strategyId: "untested-perplexity-route"
+            })
+          ]
         })
       ]
-    });
+    };
 
-    expect(strategies.map((strategy) => strategy.strategyId)).toEqual([
+    expect(filterExposedSearchOptions({ ...input, exposedProviderModels: [] })
+      .map((option) => option.strategyId)).toEqual(["search-disabled"]);
+    const options = filterExposedSearchOptions({
+      ...input,
+      exposedProviderModels: [answerModel]
+    });
+    expect(options.map((option) => option.strategyId)).toEqual([
       "search-disabled",
+      "perplexity-tool-search"
+    ]);
+    expect(options[1]?.routes.map((route) => route.physicalStrategyId)).toEqual([
       "perplexity-tool-search"
     ]);
   });
@@ -564,20 +667,244 @@ describe("prisma catalog data loader", () => {
       strategyId: "openai-native-web-search"
     });
     const answer = providerModel();
+    const option = searchOption({
+      displayName: "OpenAI Search",
+      kind: "web_search",
+      optionId: "openai-native-web-search",
+      strategies: [hosted]
+    });
     const input = {
       availableProviderModels: [answer],
       entitlements: entitlements({ searches: ["openai-native-web-search"] }),
-      searchStrategies: [hosted]
+      searchOptions: [option]
     };
 
-    expect(filterExposedSearchStrategies({
+    expect(filterExposedSearchOptions({
       ...input,
       exposedProviderModels: []
     })).toEqual([]);
-    expect(filterExposedSearchStrategies({
+    expect(filterExposedSearchOptions({
       ...input,
       exposedProviderModels: [answer]
-    }).map((strategy) => strategy.strategyId)).toEqual(["openai-native-web-search"]);
+    }).map((entry) => entry.strategyId)).toEqual(["openai-native-web-search"]);
+    expect(filterExposedSearchOptions({
+      ...input,
+      entitlements: entitlements(),
+      exposedProviderModels: [answer]
+    })).toEqual([]);
+    expect(filterExposedSearchOptions({
+      ...input,
+      entitlements: entitlements({ fullAccess: true }),
+      exposedProviderModels: [answer]
+    }).map((entry) => entry.strategyId)).toEqual(["openai-native-web-search"]);
+  });
+
+  it("keeps one logical OpenAI source while filtering client routes to its exact connection", () => {
+    const hosted = searchStrategy({
+      kind: "openai_native_web_search",
+      strategyId: "openai-native-web-search"
+    });
+    const client = searchStrategy({
+      id: "client-route",
+      kind: "provider_model_web_search",
+      providerModelId: "technical-search-deployment",
+      strategyId: "openai-provider-web-search"
+    });
+    const option = searchOption({
+      displayName: "OpenAI Search",
+      kind: "web_search",
+      optionId: "openai-native-web-search",
+      strategies: [hosted, client]
+    });
+    const answer = providerModel({
+      connection: { id: "connection-anthropic" },
+      model: { connectionId: "connection-anthropic", id: "deployment-anthropic" }
+    });
+    const technical = providerModel({
+      model: { id: "technical-search-deployment" }
+    });
+
+    const exposed = filterExposedSearchOptions({
+      availableProviderModels: [answer, technical],
+      entitlements: entitlements({ searches: ["openai-native-web-search"] }),
+      exposedProviderModels: [answer],
+      searchOptions: [option]
+    });
+    expect(exposed).toHaveLength(1);
+    expect(exposed[0]).toMatchObject({
+      displayName: "OpenAI Search",
+      kind: "web_search",
+      strategyId: "openai-native-web-search"
+    });
+    expect(exposed[0]?.routes.map((route) => route.physicalStrategyId)).toEqual([
+      "openai-native-web-search",
+      "openai-provider-web-search"
+    ]);
+
+    const mismatchedTechnical = providerModel({
+      connection: { id: "another-openai-connection" },
+      model: {
+        connectionId: "another-openai-connection",
+        id: "technical-search-deployment"
+      }
+    });
+    expect(filterExposedSearchOptions({
+      availableProviderModels: [answer, mismatchedTechnical],
+      entitlements: entitlements({ searches: ["openai-native-web-search"] }),
+      exposedProviderModels: [answer],
+      searchOptions: [option]
+    })).toEqual([]);
+  });
+
+  it.each([
+    {
+      label: "hosted",
+      routes: [
+        searchStrategy({
+          adapterKind: "answer_provider_hosted",
+          id: "hosted-a",
+          kind: "openai_native_web_search",
+          strategyId: "openai-hosted-a"
+        }),
+        searchStrategy({
+          adapterKind: "answer_provider_hosted",
+          id: "hosted-b",
+          kind: "openai_native_web_search",
+          strategyId: "openai-hosted-b"
+        })
+      ]
+    },
+    {
+      label: "client",
+      routes: [
+        searchStrategy({
+          id: "client-a",
+          kind: "provider_model_web_search",
+          providerModelId: "technical-search-deployment",
+          strategyId: "openai-client-a"
+        }),
+        searchStrategy({
+          id: "client-b",
+          kind: "provider_model_web_search",
+          providerModelId: "technical-search-deployment",
+          strategyId: "openai-client-b"
+        })
+      ]
+    }
+  ])("rejects a logical source with two normalized $label routes", ({ routes }) => {
+    const answer = providerModel();
+    const technical = providerModel({ model: { id: "technical-search-deployment" } });
+    const option = searchOption({
+      displayName: "OpenAI Search",
+      kind: "web_search",
+      optionId: "openai-native-web-search",
+      strategies: routes
+    });
+
+    expect(filterExposedSearchOptions({
+      availableProviderModels: [answer, technical],
+      entitlements: entitlements({ searches: ["openai-native-web-search"] }),
+      exposedProviderModels: [answer],
+      memberships: [],
+      searchOptions: [option]
+    })).toEqual([]);
+  });
+
+  it("binds client Search exposure to the exact current credential identity and version", () => {
+    const answer = providerModel({
+      connection: { family: "anthropic", id: "connection-anthropic" },
+      model: { connectionId: "connection-anthropic", id: "deployment-anthropic" }
+    });
+    const binding = {
+      connectionId: "connection-openai",
+      connectionVersion: 5,
+      credentialId: "credential-default",
+      credentialVersionId: "credential-default-v1",
+      modelVersion: 7,
+      providerModelId: "technical-search-deployment"
+    };
+    const optionFor = (probe: Record<string, unknown>) => searchOption({
+      displayName: "OpenAI Search",
+      kind: "web_search",
+      optionId: "openai-native-web-search",
+      strategies: [searchStrategyWithBinding({
+        id: "client-route",
+        kind: "provider_model_web_search",
+        providerModelId: "technical-search-deployment",
+        strategyId: "openai-provider-web-search"
+      }, probe)]
+    });
+    const expose = (
+      technical: CatalogProviderModelRow,
+      probe: Record<string, unknown>,
+      userId?: string
+    ) => filterExposedSearchOptions({
+      availableProviderModels: [answer, technical],
+      entitlements: entitlements({ searches: ["openai-native-web-search"] }),
+      exposedProviderModels: [answer],
+      memberships: [],
+      searchOptions: [optionFor(probe)],
+      userId
+    });
+    const exact = providerModel({ model: { id: "technical-search-deployment" } });
+    expect(expose(exact, binding)).toHaveLength(1);
+
+    const rotated = providerModel({
+      credentials: [credential("credential-default", { versionId: "credential-default-v2" })],
+      model: { id: "technical-search-deployment" }
+    });
+    expect(expose(rotated, binding)).toEqual([]);
+    expect(expose(rotated, {
+      ...binding,
+      credentialVersionId: "credential-default-v2"
+    })).toHaveLength(1);
+
+    const direct = credential("credential-user", { userIds: ["user-1"] });
+    const reassigned = providerModel({
+      activeCredentialChecks: [{
+        ...binding,
+        credentialId: direct.id,
+        credentialVersionId: direct.activeVersion!.id,
+        status: "available"
+      }],
+      credentials: [credential("credential-default"), direct],
+      model: { id: "technical-search-deployment" }
+    });
+    expect(expose(reassigned, binding, "user-1")).toEqual([]);
+    expect(expose(reassigned, {
+      ...binding,
+      credentialId: direct.id,
+      credentialVersionId: direct.activeVersion!.id
+    }, "user-1")).toHaveLength(1);
+  });
+
+  it("rejects malformed logical options and drifted active physical revisions", () => {
+    const drifted = searchStrategy({
+      activeRevision: {
+        adapterKind: "answer_provider_hosted",
+        configuration: {
+          adapterKind: "provider_model_client",
+          credentialMode: "provider_model",
+          maxResults: 8,
+          protocol: "openai_responses_web_search",
+          providerModelId: "technical-search-deployment",
+          queryMaxCharacters: 500,
+          timeoutMs: 300_000
+        },
+        credentialMode: "answer_provider",
+        id: "drifted-revision",
+        providerModelId: "technical-search-deployment",
+        validationEvidence: { method: "configuration" }
+      },
+      kind: "provider_model_web_search",
+      providerModelId: "technical-search-deployment"
+    });
+    expect(searchStrategyToCatalogRoute(drifted)).toBeNull();
+    expect(searchOptionToCatalogEntry(searchOption({
+      kind: "web_search",
+      sourceConnection: null,
+      sourceConnectionId: null
+    }))).toBeNull();
   });
 
   it("stops before catalog queries when the user or settings are missing", async () => {
@@ -589,7 +916,7 @@ describe("prisma catalog data loader", () => {
       runProfile: {
         findMany: vi.fn()
       },
-      searchStrategy: {
+      searchOption: {
         findMany: vi.fn()
       },
       user: {
@@ -604,7 +931,7 @@ describe("prisma catalog data loader", () => {
     await expect(loader("missing-user")).resolves.toBeNull();
     expect(prisma.providerModel.findMany).not.toHaveBeenCalled();
     expect(prisma.runProfile.findMany).not.toHaveBeenCalled();
-    expect(prisma.searchStrategy.findMany).not.toHaveBeenCalled();
+    expect(prisma.searchOption.findMany).not.toHaveBeenCalled();
     expect(loadEntitlements).not.toHaveBeenCalled();
   });
 
@@ -633,14 +960,28 @@ describe("prisma catalog data loader", () => {
           reasoningMode: "standard"
         }])
       },
-      searchStrategy: {
-        findMany: vi.fn(async () => [
-          searchStrategy({ strategyId: "search-disabled" }),
-          searchStrategy({
-            kind: "perplexity_tool_search",
-            provider: "openrouter",
-            providerModelId: "deployment-search",
-            strategyId: "perplexity-tool-search"
+      searchOption: {
+        findMany: vi.fn(async (_query?: unknown) => [
+          searchOption(),
+          searchOption({
+            displayName: "Perplexity Search",
+            kind: "perplexity_search",
+            optionId: "perplexity-tool-search",
+            sourceConnection: { id: "connection-search" },
+            sourceConnectionId: "connection-search",
+            strategies: [searchStrategyWithBinding({
+              kind: "perplexity_tool_search",
+              provider: "openrouter",
+              providerModelId: "deployment-search",
+              strategyId: "perplexity-tool-search"
+            }, {
+              connectionId: "connection-search",
+              connectionVersion: 5,
+              credentialId: "credential-default",
+              credentialVersionId: "credential-default-v1",
+              modelVersion: 7,
+              providerModelId: "deployment-search"
+            })]
           })
         ])
       },
@@ -690,6 +1031,20 @@ describe("prisma catalog data loader", () => {
     } | undefined;
     expect(modelQuery?.include.connection.include.credentials).toHaveProperty("select");
     expect(JSON.stringify(modelQuery)).not.toMatch(/draftSecretEnvelope|secretEnvelope|testEvidence/u);
+    const searchOptionQuery = prisma.searchOption.findMany.mock.calls[0]?.[0];
+    expect(searchOptionQuery).toMatchObject({
+      include: {
+        sourceConnection: { select: { id: true } },
+        strategies: {
+          where: {
+            activeRevisionId: { not: null },
+            archivedAt: null,
+            enabled: true
+          }
+        }
+      },
+      where: { archivedAt: null, enabled: true }
+    });
     expect(data?.models.map((model) => [model.provider, model.modelId])).toEqual([
       ["connection-answer", "deployment-answer"]
     ]);
@@ -704,6 +1059,20 @@ describe("prisma catalog data loader", () => {
       provider: "connection-answer",
       searchStrategyId: "perplexity-tool-search"
     });
+    expect(catalog.searchStrategies).toEqual([
+      {
+        description: "Search the web",
+        displayName: "Search",
+        kind: "none",
+        strategyId: "search-disabled"
+      },
+      {
+        description: "Search the web",
+        displayName: "Perplexity Search",
+        kind: "perplexity_tool_search",
+        strategyId: "perplexity-tool-search"
+      }
+    ]);
     expect(catalog.providers).toEqual([{
       family: "openai",
       id: "connection-answer",

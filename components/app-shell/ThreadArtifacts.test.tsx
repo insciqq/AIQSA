@@ -36,7 +36,7 @@ describe("ThreadArtifacts", () => {
 
     const trigger = screen.getByRole("button", { name: /3 search calls/i });
     expect(trigger).toHaveAttribute("aria-expanded", "false");
-    expect(trigger).toHaveTextContent("Perplexity tool");
+    expect(trigger).toHaveTextContent("Perplexity Search");
     expect(screen.getByTestId("thread-search-summary")).toHaveClass(
       "border-trace-subtle",
       "text-ink-secondary"
@@ -57,9 +57,25 @@ describe("ThreadArtifacts", () => {
     );
 
     const trigger = screen.getByRole("button", { name: /Searching/i });
-    expect(trigger).toHaveTextContent("OpenAI web_search");
+    expect(trigger).toHaveTextContent("OpenAI Search");
     expect(trigger).toHaveTextContent("2 citations");
     expect(trigger).toHaveAttribute("aria-expanded", "false");
+  });
+
+  it("uses the immutable logical Search name instead of exposing its route id", () => {
+    render(
+      <SearchSummaryBlock
+        summary={summary({
+          searchCount: 1,
+          searchDisplayName: "Company Gateway Search",
+          searchStrategy: "custom-web-search:connection-1:client"
+        })}
+      />
+    );
+
+    const trigger = screen.getByRole("button", { name: /1 search call/i });
+    expect(trigger).toHaveTextContent("Company Gateway Search");
+    expect(trigger).not.toHaveTextContent("custom-web-search");
   });
 
   it("expands multiple search records and keeps focus on the disclosure", () => {
@@ -105,7 +121,8 @@ describe("ThreadArtifacts", () => {
     const details = screen.getByTestId("thread-search-details");
     expect(within(details).getByText("Search 1")).toBeVisible();
     expect(within(details).getByText("Search 2")).toBeVisible();
-    expect(within(details).getByText("search-provider / search-model")).toBeVisible();
+    expect(within(details).getByText("Search ran inside the answer provider.")).toBeVisible();
+    expect(details).not.toHaveTextContent("search-provider / search-model");
     expect(within(details).getAllByText("Request")).toHaveLength(2);
     expect(within(details).getAllByText("Response")).toHaveLength(2);
     expect(screen.getByText(/Question/)).toBeVisible();
@@ -157,13 +174,13 @@ describe("ThreadArtifacts", () => {
     );
 
     fireEvent.click(screen.getByRole("button", { name: /1 search call/i }));
-    expect(screen.getByText("OpenAI web search call")).toBeVisible();
+    expect(screen.getByText("Web search call")).toBeVisible();
     expect(screen.getByText(/metadata only/)).toBeVisible();
     expect(screen.getByText(/web_search_call/)).toBeVisible();
     expect(screen.queryByText("No search/tool request or response preview captured for this run.")).not.toBeInTheDocument();
   });
 
-  it("renders OpenAI web search call action details when provider includes sources", () => {
+  it("renders web search call action details when the source includes citations", () => {
     render(
       <SearchSummaryBlock
         summary={summary({
@@ -195,9 +212,40 @@ describe("ThreadArtifacts", () => {
     );
 
     fireEvent.click(screen.getByRole("button", { name: /1 search call/i }));
-    expect(screen.getByText("OpenAI web search call")).toBeVisible();
+    expect(screen.getByText("Web search call")).toBeVisible();
     expect(screen.getByText(/Example source/)).toBeVisible();
     expect(screen.queryByText(/metadata only/)).not.toBeInTheDocument();
+  });
+
+  it("does not mislabel a custom Responses source as OpenAI in hosted call history", () => {
+    render(
+      <SearchSummaryBlock
+        summary={summary({
+          searchCount: 1,
+          searchDetails: [{
+            callPreview: {
+              action: { type: "search" },
+              id: "ws_custom",
+              status: "completed",
+              type: "web_search_call"
+            },
+            status: "completed",
+            strategyId: "custom-web-search:connection-1"
+          }],
+          searchDisplayName: "Company Gateway Search",
+          searchStrategy: "custom-web-search:connection-1"
+        })}
+      />
+    );
+
+    const trigger = screen.getByRole("button", { name: /1 search call/i });
+    expect(trigger).toHaveTextContent("Company Gateway Search");
+    fireEvent.click(trigger);
+    expect(screen.getByText("Web search call")).toBeVisible();
+    expect(screen.getByText("Search ran inside Company Gateway Search.")).toBeVisible();
+    expect(screen.getByText(/The Search source returned call metadata only/)).toBeVisible();
+    expect(document.body).not.toHaveTextContent("OpenAI web search call");
+    expect(document.body).not.toHaveTextContent("OpenAI returned");
   });
 
   it("keeps citation and reasoning details collapsed until explicitly requested", () => {
@@ -514,6 +562,10 @@ describe("ThreadArtifacts", () => {
 
     fireEvent.click(within(executions).getByText("Web Search · Sol").closest("summary")!);
     const executionDetails = screen.getByTestId("thread-search-execution-details");
+    expect(within(executionDetails).getByText(
+      "Only the generated search query was sent to Web Search · Sol."
+    )).toBeVisible();
+    expect(executionDetails).not.toHaveTextContent("openai-compatible");
     expect(within(executionDetails).getByText("latest news in Moscow")).toBeVisible();
     expect(within(executionDetails).getByText("Provider operations · 2")).toBeVisible();
     expect(within(executionDetails).getByText("Moscow latest news")).toBeVisible();

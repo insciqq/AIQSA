@@ -1214,30 +1214,53 @@ describe("Prisma run repository", () => {
   it("loads only enabled concrete search strategies for run admission", async () => {
     const enabledStrategyId = `repo-test-enabled-${randomUUID()}`;
     const disabledStrategyId = `repo-test-disabled-${randomUUID()}`;
-    await prisma.searchStrategy.createMany({
-      data: [
-        {
-          config: { policy: "server-owned" },
-          description: "Enabled run admission fixture",
-          displayName: "Enabled run admission fixture",
-          kind: "openai_native_web_search",
-          modelId: "fixture-search-model",
-          provider: "system",
-          strategyId: enabledStrategyId
-        },
-        {
-          config: {},
-          description: "Disabled run admission fixture",
-          displayName: "Disabled run admission fixture",
-          enabled: false,
-          kind: "openai_native_web_search",
-          provider: "system",
-          strategyId: disabledStrategyId
-        }
-      ]
-    });
-
+    const searchOptionId = `repo-test-option-row-${randomUUID()}`;
+    const sourceConnectionId = `repo-test-option-source-${randomUUID()}`;
     try {
+      await prisma.providerConnection.create({
+        data: {
+          displayName: "Run repository Search fixture source",
+          family: "run_repository_search_fixture",
+          id: sourceConnectionId
+        }
+      });
+      await prisma.searchOption.create({
+        data: {
+          description: "Run repository Search fixture.",
+          displayName: "Run repository Search fixture",
+          id: searchOptionId,
+          kind: "web_search",
+          optionId: `repo-test-option-${randomUUID()}`,
+          sourceConnectionId
+        }
+      });
+      await prisma.searchStrategy.createMany({
+        data: [
+          {
+            config: { policy: "server-owned" },
+            description: "Enabled run admission fixture",
+            displayName: "Enabled run admission fixture",
+            kind: "openai_native_web_search",
+            modelId: "fixture-search-model",
+            provider: "system",
+            searchOptionId,
+            strategyId: enabledStrategyId
+          },
+          {
+            config: {},
+            description: "Disabled run admission fixture",
+            displayName: "Disabled run admission fixture",
+            adapterKind: "provider_model_client",
+            credentialMode: "provider_model",
+            enabled: false,
+            kind: "openai_native_web_search",
+            provider: "system",
+            searchOptionId,
+            strategyId: disabledStrategyId
+          }
+        ]
+      });
+
       const repository = createPrismaRunRepository(prisma);
 
       await expect(repository.isSearchStrategyEnabled(enabledStrategyId)).resolves.toBe(true);
@@ -1266,6 +1289,8 @@ describe("Prisma run repository", () => {
           }
         }
       });
+      await prisma.searchOption.deleteMany({ where: { id: searchOptionId } });
+      await prisma.providerConnection.deleteMany({ where: { id: sourceConnectionId } });
     }
   });
 

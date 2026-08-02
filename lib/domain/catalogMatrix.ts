@@ -1,4 +1,8 @@
-import type { ProviderModelCatalogEntry, SearchStrategyCatalogEntry } from "./catalog";
+import type {
+  ProviderModelCatalogEntry,
+  SearchStrategyCatalogEntry,
+  SearchStrategyRouteCatalogEntry
+} from "./catalog";
 import type { SearchPlan, SearchPlanMode } from "./search";
 import type {
   CatalogWireModel,
@@ -22,11 +26,12 @@ const defaultOpenRouterRoutePreferences: OpenRouterRoutePreferences = {
   zdr: false
 };
 
-type SearchCombinationOption = Omit<Pick<
-  SearchStrategyCatalogEntry,
-  "adapterKind" | "executionModes" | "kind" | "protocol" | "strategyId"
->, "executionModes"> & {
+type SearchCombinationOption = {
   executionModes?: readonly SearchPlanMode[];
+  kind: SearchStrategyCatalogEntry["kind"] |
+    "openai_native_web_search" |
+    "provider_model_web_search";
+  strategyId: string;
 };
 
 /**
@@ -43,12 +48,10 @@ export function isSearchCombinationCompatible(
   if (selected.some((option) => !option || option.kind === "none")) return false;
   const concrete = selected as SearchCombinationOption[];
   if (concrete.length > 1) {
-    if (concrete.some((option) => option.protocol === "gemini_google_search")) return false;
-    if (concrete.filter((option) => option.adapterKind === "answer_provider_hosted").length > 1) {
-      return false;
-    }
+    if (concrete.some((option) => option.kind === "gemini_google_search")) return false;
     if (mode === "all_selected" && concrete.some((option) =>
-      option.executionModes?.includes("all_selected") !== true)) {
+      option.executionModes !== undefined &&
+      !option.executionModes.includes("all_selected"))) {
       return false;
     }
   }
@@ -125,47 +128,59 @@ export function availableSearchStrategiesForModel(
       continue;
     }
 
-    if (
-      strategy.kind === "gemini_google_search" &&
-      model.adapterKind === "gemini_interactions_native" &&
-      model.capabilities.nativeSearch
-    ) {
-      strategyIds.add(strategy.strategyId);
-      continue;
-    }
-
-    if (
-      strategy.kind === "openai_native_web_search" &&
-      (model.adapterKind === "openai_responses_native" ||
-        model.adapterKind === "openai_responses_compatible") &&
-      model.capabilities.nativeSearch
-    ) {
-      strategyIds.add(strategy.strategyId);
-      continue;
-    }
-
-    if (strategy.kind === "perplexity_tool_search") {
-      const isAnswerModel = model.modelId !== strategy.providerModelId;
-
-      if (isAnswerModel && model.capabilities.toolCalling) {
-        strategyIds.add(strategy.strategyId);
-      }
-      continue;
-    }
-
-    if (
-      strategy.kind === "provider_model_web_search" &&
-      strategy.adapterKind === "provider_model_client"
-    ) {
-      if (model.capabilities.toolCalling) {
-        strategyIds.add(strategy.strategyId);
-      }
-      continue;
-    }
-
+    if (resolveSearchRouteForModel(model, strategy)) strategyIds.add(strategy.strategyId);
   }
 
   return Array.from(strategyIds);
+}
+
+function hostedRouteCompatible(
+  model: ProviderModelCatalogEntry,
+  option: SearchStrategyCatalogEntry,
+  route: SearchStrategyRouteCatalogEntry
+): boolean {
+  if (
+    route.adapterKind !== "answer_provider_hosted" ||
+    !option.sourceConnectionId ||
+    option.sourceConnectionId !== model.provider ||
+    !model.capabilities.nativeSearch
+  ) {
+    return false;
+  }
+  if (route.protocol === "gemini_google_search") {
+    return option.kind === "gemini_google_search" &&
+      model.adapterKind === "gemini_interactions_native";
+  }
+  return route.protocol === "openai_responses_web_search" &&
+    option.kind === "web_search" &&
+    (model.adapterKind === "openai_responses_native" ||
+      model.adapterKind === "openai_responses_compatible");
+}
+
+function clientRouteCompatible(
+  model: ProviderModelCatalogEntry,
+  option: SearchStrategyCatalogEntry,
+  route: SearchStrategyRouteCatalogEntry
+): boolean {
+  if (route.adapterKind !== "provider_model_client" || !model.capabilities.toolCalling) {
+    return false;
+  }
+  return route.protocol !== "openrouter_perplexity_chat" ||
+    route.providerModelId !== model.modelId ||
+    option.sourceConnectionId !== model.provider;
+}
+
+/** Chooses only within one logical destination. Same-connection hosted Search
+ * is preferred; otherwise a tested client route may carry the generated query.
+ * Callers persist this exact physical route before external I/O. */
+export function resolveSearchRouteForModel(
+  model: ProviderModelCatalogEntry,
+  option: SearchStrategyCatalogEntry
+): SearchStrategyRouteCatalogEntry | null {
+  if (option.kind === "none") return null;
+  return option.routes.find((route) => hostedRouteCompatible(model, option, route)) ??
+    option.routes.find((route) => clientRouteCompatible(model, option, route)) ??
+    null;
 }
 
 export function resolveSearchStrategyId(
@@ -190,7 +205,17 @@ export function buildCatalogModel(
   entitledStrategies: SearchStrategyCatalogEntry[]
 ): CatalogModel {
   const searchStrategyIds = availableSearchStrategiesForModel(model, entitledStrategies);
-  const openRouterPerplexitySearch = searchStrategyIds.includes("perplexity-tool-search");
+  const searchOptionCompatibility = Object.fromEntries(entitledStrategies.flatMap((option) => {
+    const route = resolveSearchRouteForModel(model, option);
+    return route
+      ? [[option.strategyId, {
+          attachments: route.adapterKind === "answer_provider_hosted",
+          executionModes: [...route.executionModes]
+        }]]
+      : [];
+  }));
+  const openRouterPerplexitySearch = entitledStrategies.some((option) =>
+    option.kind === "perplexity_tool_search" && searchStrategyIds.includes(option.strategyId));
   const controls = model.parameterControls;
   const reasoningDefaults = controls.reasoningEffort.supported
     ? {
@@ -254,6 +279,7 @@ export function buildCatalogModel(
     parameterControls: model.parameterControls,
     provider: model.provider,
     providerFamily: model.providerFamily,
+    searchOptionCompatibility,
     searchStrategyIds,
     upstreamModelId: model.upstreamModelId
   };
@@ -261,15 +287,9 @@ export function buildCatalogModel(
 
 export function toCatalogSearchStrategy(strategy: SearchStrategyCatalogEntry): CatalogSearchStrategy {
   return {
-    ...(strategy.adapterKind && strategy.adapterKind !== "none"
-      ? { adapterKind: strategy.adapterKind }
-      : {}),
+    description: strategy.description,
     displayName: strategy.displayName,
-    ...(strategy.executionModes ? { executionModes: strategy.executionModes } : {}),
     kind: strategy.kind,
-    ...(strategy.privacy ? { privacy: strategy.privacy } : {}),
-    ...(strategy.protocol ? { protocol: strategy.protocol } : {}),
-    ...(strategy.revisionId ? { revisionId: strategy.revisionId } : {}),
     strategyId: strategy.strategyId
   };
 }

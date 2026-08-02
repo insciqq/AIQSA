@@ -2,6 +2,7 @@ import { Prisma } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
 import type { AdminProviderCustomSetupCommitPlan } from "./customSetupRepositoryContract";
 import { createPrismaAdminProviderCustomSetupRepository } from "./customSetupPrismaRepository";
+import { searchDraftHash } from "../../search/configuration";
 
 const now = new Date("2026-07-26T10:00:01.000Z");
 const checkedAt = new Date("2026-07-26T10:00:00.000Z");
@@ -108,6 +109,59 @@ function readyModel(commitPlan: AdminProviderCustomSetupCommitPlan, index = 0) {
   };
 }
 
+function searchPlan(
+  commitPlan: AdminProviderCustomSetupCommitPlan,
+  status: "available" | "unavailable"
+): NonNullable<AdminProviderCustomSetupCommitPlan["search"]> {
+  const connectionId = commitPlan.connection.id;
+  const hostedDraft = {
+    adapterKind: "answer_provider_hosted" as const,
+    credentialMode: "answer_provider" as const,
+    maxResults: 8,
+    protocol: "openai_responses_web_search" as const,
+    providerModelId: null,
+    queryMaxCharacters: 500,
+    timeoutMs: 300_000
+  };
+  const clientDraft = {
+    adapterKind: "provider_model_client" as const,
+    credentialMode: "provider_model" as const,
+    maxResults: 8,
+    protocol: "openai_responses_web_search" as const,
+    providerModelId: commitPlan.models[0]!.id,
+    queryMaxCharacters: 500,
+    timeoutMs: 300_000
+  };
+  return {
+    client: {
+      draft: clientDraft,
+      draftHash: searchDraftHash(clientDraft),
+      id: `custom-web-search-client:${connectionId}`,
+      revisionId: `custom-web-search-client-revision:${connectionId}`,
+      strategyId: `custom-web-search-client:${connectionId}`
+    },
+    description: "Web search provided by Custom provider.",
+    displayName: "Custom provider Search",
+    evidence: {
+      checkedAt: checkedAt.toISOString(),
+      method: "provider_search",
+      normalizedSourceCount: status === "available" ? 2 : 0,
+      protocol: "openai_responses_web_search",
+      status
+    },
+    grantId: "search-grant-1",
+    hosted: {
+      draft: hostedDraft,
+      draftHash: searchDraftHash(hostedDraft),
+      id: `custom-web-search-hosted:${connectionId}`,
+      revisionId: `custom-web-search-hosted-revision:${connectionId}`,
+      strategyId: `custom-web-search-hosted:${connectionId}`
+    },
+    optionId: `custom-web-search:${connectionId}`,
+    optionRowId: `custom-web-search-option:${connectionId}`
+  };
+}
+
 function harness(options: Readonly<{
   grantModelIds?: string[];
   models?: unknown[];
@@ -149,6 +203,12 @@ function harness(options: Readonly<{
     },
     providerModelCredentialCheck: { create: vi.fn(async () => undefined) },
     providerUserCredentialAssignment: { create: vi.fn(async () => undefined) },
+    searchIntegrationRevision: { create: vi.fn(async () => undefined) },
+    searchOption: { create: vi.fn(async () => undefined) },
+    searchStrategy: {
+      create: vi.fn(async () => undefined),
+      update: vi.fn(async () => undefined)
+    },
     user: {
       findUnique: vi.fn(async () => ({ role: "admin", status: "active" }))
     },
@@ -288,13 +348,55 @@ describe("Prisma custom provider setup repository", () => {
     });
   });
 
-  it("adds a direct hosted-search entitlement when setup declares web search", async () => {
+  it("publishes tested hosted and client routes behind one connection-scoped Search option", async () => {
     const { commitPlan, repository, tx } = harness();
-    await expect(repository.commit(plan({
+    const searchCapable = plan({
       ...commitPlan,
-      searchGrantId: "search-grant-1"
-    }))).resolves.toMatchObject({ status: "ready" });
+      models: [{
+        ...commitPlan.models[0]!,
+        configuration: {
+          ...commitPlan.models[0]!.configuration,
+          adapterKind: "openai_responses_compatible",
+          capabilities: {
+            ...commitPlan.models[0]!.configuration.capabilities,
+            nativeSearch: true
+          }
+        }
+      }]
+    });
+    const withSearch = { ...searchCapable, search: searchPlan(searchCapable, "available") };
+    await expect(repository.commit(withSearch)).resolves.toMatchObject({
+      search: "ready",
+      status: "ready"
+    });
 
+    expect(tx.searchOption.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        displayName: "Custom provider Search",
+        enabled: true,
+        optionId: "custom-web-search:connection-1",
+        sourceConnectionId: "connection-1"
+      })
+    });
+    expect(tx.searchStrategy.create).toHaveBeenCalledTimes(2);
+    expect(tx.searchStrategy.create).toHaveBeenNthCalledWith(1, {
+      data: expect.objectContaining({
+        adapterKind: "answer_provider_hosted",
+        enabled: true,
+        providerModelId: null,
+        searchOptionId: "custom-web-search-option:connection-1"
+      })
+    });
+    expect(tx.searchStrategy.create).toHaveBeenNthCalledWith(2, {
+      data: expect.objectContaining({
+        adapterKind: "provider_model_client",
+        enabled: true,
+        providerModelId: "model-1",
+        searchOptionId: "custom-web-search-option:connection-1"
+      })
+    });
+    expect(tx.searchIntegrationRevision.create).toHaveBeenCalledTimes(2);
+    expect(tx.searchStrategy.update).toHaveBeenCalledTimes(2);
     expect(tx.accessGrant.create).toHaveBeenCalledTimes(2);
     expect(tx.accessGrant.create).toHaveBeenLastCalledWith({
       data: {
@@ -303,10 +405,58 @@ describe("Prisma custom provider setup repository", () => {
         id: "search-grant-1",
         providerConnectionId: null,
         providerModelId: null,
-        searchStrategy: "openai-native-web-search",
+        searchStrategy: "custom-web-search:connection-1",
         userId: "admin"
       }
     });
+  });
+
+  it("keeps hosted Search usable while the unproven client route remains repairable", async () => {
+    const { commitPlan, repository, tx } = harness();
+    const searchCapable = plan({
+      ...commitPlan,
+      models: [{
+        ...commitPlan.models[0]!,
+        configuration: {
+          ...commitPlan.models[0]!.configuration,
+          adapterKind: "openai_responses_compatible",
+          capabilities: {
+            ...commitPlan.models[0]!.configuration.capabilities,
+            nativeSearch: true
+          }
+        }
+      }]
+    });
+    await expect(repository.commit({
+      ...searchCapable,
+      search: searchPlan(searchCapable, "unavailable")
+    })).resolves.toMatchObject({ search: "needs_attention", status: "ready" });
+
+    expect(tx.searchOption.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({ enabled: true })
+    });
+    expect(tx.searchStrategy.create).toHaveBeenCalledTimes(2);
+    expect(tx.searchStrategy.create).toHaveBeenNthCalledWith(1, {
+      data: expect.objectContaining({
+        adapterKind: "answer_provider_hosted",
+        enabled: true
+      })
+    });
+    expect(tx.searchStrategy.create).toHaveBeenNthCalledWith(2, {
+      data: expect.objectContaining({
+        adapterKind: "provider_model_client",
+        enabled: false
+      })
+    });
+    expect(tx.searchIntegrationRevision.create).toHaveBeenCalledOnce();
+    expect(tx.searchIntegrationRevision.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        adapterKind: "answer_provider_hosted",
+        providerModelId: null,
+        searchStrategyId: "custom-web-search-hosted:connection-1"
+      })
+    });
+    expect(tx.searchStrategy.update).toHaveBeenCalledOnce();
   });
 
   it("refuses a stale actor before creating provider state", async () => {

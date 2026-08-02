@@ -44,6 +44,7 @@ import {
   type ToolExecutionResult
 } from "../tools/types";
 import { applyProviderRequestContextBudget } from "./runContextBudget";
+import { withPinnedHostedSearchIdentity } from "./searchArtifactIdentity";
 import {
   appendRunEventWithRetry,
   finalizeRunCompletion,
@@ -654,8 +655,9 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
         options: Readonly<{ includeTokenEvents?: boolean }> = {}
       ): Promise<void> {
         const includeTokenEvents = options.includeTokenEvents ?? true;
+        const effectiveEvent = withPinnedHostedSearchIdentity(event, normalizedRequest);
 
-        if (isGroundingDisplaySseEvent(event)) {
+        if (isGroundingDisplaySseEvent(effectiveEvent)) {
           if (!groundedLiveOnly) {
             groundedLiveOnly = true;
             await tokenBuffer.disablePersistence();
@@ -673,34 +675,34 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
               );
             }
           }
-          emitTransient(controller, encoder, event);
+          emitTransient(controller, encoder, effectiveEvent);
           return;
         }
 
-        if (event.type === "token") {
+        if (effectiveEvent.type === "token") {
           if (!includeTokenEvents) {
             return;
           }
 
           if (!groundedLiveOnly) {
-            await tokenBuffer.push(event.data.delta);
+            await tokenBuffer.push(effectiveEvent.data.delta);
           }
-          emitTransient(controller, encoder, event);
+          emitTransient(controller, encoder, effectiveEvent);
           return;
         }
 
         if (groundedLiveOnly) {
-          const eventProviderResponseId = providerResponseIdFromEvent(event);
+          const eventProviderResponseId = providerResponseIdFromEvent(effectiveEvent);
           if (eventProviderResponseId) await publishProviderResponseId(eventProviderResponseId);
-          emitTransient(controller, encoder, event);
+          emitTransient(controller, encoder, effectiveEvent);
           return;
         }
 
         await tokenBuffer.flush();
-        const eventProviderResponseId = providerResponseIdFromEvent(event);
+        const eventProviderResponseId = providerResponseIdFromEvent(effectiveEvent);
         if (eventProviderResponseId) await publishProviderResponseId(eventProviderResponseId);
 
-        await emit(controller, encoder, input.repository, runId, sequence, event);
+        await emit(controller, encoder, input.repository, runId, sequence, effectiveEvent);
       }
 
       async function publishProviderResponseId(providerResponseId: string): Promise<void> {
@@ -775,10 +777,9 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
               runtimes: input.searchRuntimes ?? {}
             })
           : null;
-        const searchToolNames = new Set([
-          ...(searchExecutor ? [searchExecutor.tool.name] : []),
-          ...(searchPlanRouter?.tools.map((tool) => tool.name) ?? [])
-        ]);
+        const isSearchCall = (name: string) =>
+          (searchExecutor !== null && name === searchExecutor.tool.name) ||
+          searchPlanRouter?.accepts(name) === true;
         const tools: RunTool[] = [
           ...(searchPlanRouter?.tools ?? (searchExecutor ? [perplexityWebSearchTool] : [])),
           ...mcpRunTools(normalizedRequest.mcp)
@@ -826,7 +827,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
                   searchModelId: searchPolicy!.modelId,
                   strategyId: searchPolicy!.strategyId
                 });
-              } else if (searchPlanRouter && searchToolNames.has(call.name)) {
+              } else if (searchPlanRouter?.accepts(call.name)) {
                 for (const execution of searchExecutionsFromToolResult(result)) {
                   if (hasReportedUsage(execution.usage)) {
                     rememberReportedUsage(execution.provider, execution.modelId ?? "search", execution.usage);
@@ -960,7 +961,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
                 if (hasInvalidProviderToolArguments(call.arguments)) {
                   throw new Error("provider_tool_arguments_invalid");
                 }
-                if (searchPlanRouter && searchToolNames.has(call.name)) {
+                if (searchPlanRouter?.accepts(call.name)) {
                   result = await searchPlanRouter.execute(call, request, { signal: context.signal });
                 } else if (searchExecutor && call.name === searchExecutor.tool.name) {
                   result = await searchExecutor.execute(call, { request, runId }, { signal: context.signal });
@@ -988,7 +989,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
                 result = toolExecutionErrorResult(
                   call,
                   error,
-                  searchToolNames.has(call.name) ? "Search" : "Tool"
+                  isSearchCall(call.name) ? "Search" : "Tool"
                 );
               }
               const storedResult = snapshotToolExecutionResult(
@@ -1059,7 +1060,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
             const persisted = await input.repository.persistToolLoopCallBatch({
               calls: calls.map((call, ordinal) => {
                 const route = resolveMcpRunTool(normalizedRequest.mcp, call.name);
-                if (!route && !searchToolNames.has(call.name)) {
+                if (!route && !isSearchCall(call.name)) {
                   throw new RunPipelineError("unsupported_tool_call", `Unsupported tool ${call.name}`);
                 }
                 return {

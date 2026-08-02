@@ -7,6 +7,11 @@ import {
   type CatalogProviderModelRow
 } from "../../catalog/prismaCatalogData";
 import type { ProviderModelConfiguration } from "../../providers/providerConfiguration";
+import { searchDraftHash } from "../../search/configuration";
+import {
+  searchValidationFingerprint,
+  withSearchProbeBinding
+} from "../../search/probeBinding";
 import type {
   AdminProviderCustomSetupCommitPlan,
   AdminProviderCustomSetupCommitResult,
@@ -134,12 +139,164 @@ async function eligibleProviderModelIds(
   );
 }
 
+function validateSearchPlan(plan: AdminProviderCustomSetupCommitPlan): void {
+  const search = plan.search;
+  if (!search) return;
+  const primaryModel = plan.models[0];
+  const connectionId = plan.connection.id;
+  if (
+    !primaryModel ||
+    primaryModel.configuration.adapterKind !== "openai_responses_compatible" ||
+    primaryModel.configuration.capabilities.nativeSearch !== true ||
+    search.optionId !== `custom-web-search:${connectionId}` ||
+    search.optionRowId !== `custom-web-search-option:${connectionId}` ||
+    search.hosted.id !== `custom-web-search-hosted:${connectionId}` ||
+    search.hosted.strategyId !== search.hosted.id ||
+    search.client.id !== `custom-web-search-client:${connectionId}` ||
+    search.client.strategyId !== search.client.id ||
+    search.displayName.length < 1 ||
+    search.displayName.length > 160 ||
+    search.description.length < 1 ||
+    search.description.length > 500 ||
+    search.evidence.method !== "provider_search" ||
+    search.evidence.protocol !== "openai_responses_web_search" ||
+    (search.evidence.status === "available" && search.evidence.normalizedSourceCount < 1) ||
+    search.hosted.draft.adapterKind !== "answer_provider_hosted" ||
+    search.hosted.draft.credentialMode !== "answer_provider" ||
+    search.hosted.draft.protocol !== "openai_responses_web_search" ||
+    search.hosted.draft.providerModelId !== null ||
+    search.client.draft.adapterKind !== "provider_model_client" ||
+    search.client.draft.credentialMode !== "provider_model" ||
+    search.client.draft.protocol !== "openai_responses_web_search" ||
+    search.client.draft.providerModelId !== primaryModel.id ||
+    searchDraftHash(search.hosted.draft) !== search.hosted.draftHash ||
+    searchDraftHash(search.client.draft) !== search.client.draftHash
+  ) {
+    throw new CustomSetupCatalogUnavailableError();
+  }
+}
+
+async function createSearchGraph(
+  tx: Prisma.TransactionClient,
+  plan: AdminProviderCustomSetupCommitPlan
+): Promise<"needs_attention" | "ready" | null> {
+  const search = plan.search;
+  if (!search) return null;
+  const primaryModel = plan.models[0]!;
+  const clientAvailable = search.evidence.status === "available";
+
+  await tx.searchOption.create({
+    data: {
+      description: search.description,
+      displayName: search.displayName,
+      enabled: true,
+      id: search.optionRowId,
+      kind: "web_search",
+      optionId: search.optionId,
+      sourceConnectionId: plan.connection.id
+    }
+  });
+
+  const routes = [
+    {
+      ...search.hosted,
+      kind: "openai_native_web_search",
+      modelId: null,
+      providerModelId: null
+    },
+    {
+      ...search.client,
+      kind: "provider_model_web_search",
+      modelId: primaryModel.configuration.upstreamModelId,
+      providerModelId: primaryModel.id
+    }
+  ] as const;
+  for (const route of routes) {
+    const client = route.draft.adapterKind === "provider_model_client";
+    const routeAvailable = !client || clientAvailable;
+    const routeEvidence = client
+      ? withSearchProbeBinding(search.evidence, {
+          connectionId: plan.connection.id,
+          connectionVersion: 1,
+          credentialId: plan.credential.id,
+          credentialVersionId: plan.credential.versionId,
+          modelVersion: 1,
+          providerModelId: primaryModel.id
+        })
+      : {
+          checkedAt: plan.checkedAt.toISOString(),
+          method: "configuration",
+          normalizedSourceCount: 0,
+          protocol: "openai_responses_web_search",
+          status: "available"
+        };
+    const validationFingerprint = searchValidationFingerprint(routeEvidence);
+    await tx.searchStrategy.create({
+      data: {
+        adapterKind: route.draft.adapterKind,
+        config: json(routeAvailable ? route.draft : {}),
+        credentialMode: route.draft.credentialMode,
+        description: search.description,
+        displayName: search.displayName,
+        draft: json(route.draft),
+        draftTestEvidence: json(routeEvidence),
+        enabled: routeAvailable,
+        id: route.id,
+        kind: route.kind,
+        modelId: route.modelId,
+        provider: "openai_compatible",
+        providerModelId: route.providerModelId,
+        searchOptionId: search.optionRowId,
+        strategyId: route.strategyId,
+        testedDraftHash: route.draftHash
+      }
+    });
+    if (routeAvailable) {
+      await tx.searchIntegrationRevision.create({
+        data: {
+          adapterKind: route.draft.adapterKind,
+          configuration: json(route.draft),
+          credentialMode: route.draft.credentialMode,
+          draftHash: route.draftHash,
+          id: route.revisionId,
+          providerModelId: route.providerModelId,
+          revisionNumber: 1,
+          searchStrategyId: route.id,
+          validationEvidence: json(routeEvidence),
+          validationFingerprint
+        }
+      });
+      await tx.searchStrategy.update({
+        data: {
+          activatedAt: plan.now,
+          activeRevisionId: route.revisionId
+        },
+        where: { id: route.id }
+      });
+    }
+  }
+
+  await tx.accessGrant.create({
+    data: {
+      enabled: true,
+      groupId: null,
+      id: search.grantId,
+      providerConnectionId: null,
+      providerModelId: null,
+      searchStrategy: search.optionId,
+      userId: plan.actor.userId
+    }
+  });
+  return clientAvailable ? "ready" : "needs_attention";
+}
+
 async function applyCustomSetupPlan(
   tx: Prisma.TransactionClient,
   plan: AdminProviderCustomSetupCommitPlan,
   exposeFake: boolean
 ): Promise<Exclude<AdminProviderCustomSetupCommitResult, "catalog_unavailable">> {
   await lockActorState(tx, plan);
+  validateSearchPlan(plan);
   const primaryModel = plan.models[0];
   if (!primaryModel) throw new CustomSetupCatalogUnavailableError();
   const [actor, session, settings] = await Promise.all([
@@ -263,29 +420,7 @@ async function applyCustomSetupPlan(
       }
     });
   }
-  if (plan.searchGrantId) {
-    const existingSearchGrant = await tx.accessGrant.findFirst({
-      select: { id: true },
-      where: {
-        enabled: true,
-        searchStrategy: "openai-native-web-search",
-        userId: plan.actor.userId
-      }
-    });
-    if (!existingSearchGrant) {
-      await tx.accessGrant.create({
-        data: {
-          enabled: true,
-          groupId: null,
-          id: plan.searchGrantId,
-          providerConnectionId: null,
-          providerModelId: null,
-          searchStrategy: "openai-native-web-search",
-          userId: plan.actor.userId
-        }
-      });
-    }
-  }
+  const search = await createSearchGraph(tx, plan);
 
   const eligibleModelIds = await eligibleProviderModelIds(
     tx,
@@ -306,7 +441,11 @@ async function applyCustomSetupPlan(
       where: { userId: plan.actor.userId }
     });
   }
-  return { defaultChanged, status: "ready" };
+  return {
+    defaultChanged,
+    ...(plan.search ? { search } : {}),
+    status: "ready"
+  };
 }
 
 export function createPrismaAdminProviderCustomSetupRepository(

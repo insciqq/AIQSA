@@ -92,7 +92,7 @@ describe("provider Search operation evidence", () => {
         }]
       }
     })).toEqual([{
-      displayName: "web-search-sol",
+      displayName: "Search source",
       durationMs: 145_800,
       modelId: "gpt-5.6-sol",
       optionId: "web-search-sol",

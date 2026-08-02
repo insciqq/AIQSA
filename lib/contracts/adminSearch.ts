@@ -1,11 +1,13 @@
 import type {
   SearchAdapterKind,
   SearchCredentialMode,
+  SearchPlan,
   SearchPlanMode,
-  SearchProtocol,
-  SearchPlan
+  SearchProtocol
 } from "./search";
 
+/** Server-owned physical configuration. The Control Center derives it from a
+ * friendly provider-model choice and never presents its transport fields. */
 export type AdminSearchDraft = {
   adapterKind: SearchAdapterKind;
   credentialMode: SearchCredentialMode;
@@ -24,50 +26,47 @@ export type AdminSearchTestEvidence = {
   status: "available" | "unavailable";
 };
 
-export type AdminSearchReadiness =
-  | "activation_required"
-  | "compatible_model_unavailable"
-  | "provider_model_unavailable"
-  | "ready";
+export type AdminSearchKind = "gemini_google_search" | "perplexity_search" | "web_search";
+export type AdminSearchReadiness = "ready" | "setup_required" | "source_unavailable";
+export type AdminSearchBroaderModelSetup = "not_applicable" | "ready" | "setup_required";
 
+/** One administrator-visible Search source. Physical hosted and generated-query
+ * implementations stay aggregated behind this parent identity. */
 export type AdminSearchIntegration = {
-  activeRevision: null | {
-    activatedAt: string;
-    id: string;
-    revisionNumber: number;
-  };
-  adapterKind: SearchAdapterKind | "none";
   archivedAt: string | null;
-  credentialMode: SearchCredentialMode;
+  broaderModelSetup: AdminSearchBroaderModelSetup;
+  configurable: boolean;
+  configuration: AdminSearchDraft | null;
+  configurationActive: boolean;
   description: string;
   displayName: string;
-  draft: AdminSearchDraft;
   draftDirty: boolean;
   draftTestEvidence: AdminSearchTestEvidence | null;
   draftVersion: number;
   enabled: boolean;
   executionModes: SearchPlanMode[];
   id: string;
+  kind: AdminSearchKind;
   providerModel: null | {
     connectionDisplayName: string;
+    connectionId: string;
     displayName: string;
     id: string;
-    upstreamModelId: string;
   };
   ready: boolean;
   readiness: AdminSearchReadiness;
+  sourceConnectionId: string;
   strategyId: string;
   system: boolean;
 };
 
 export type AdminSearchProviderModelOption = {
-  adapterKind: string;
   connectionDisplayName: string;
+  connectionId: string;
   displayName: string;
   enabled: boolean;
   id: string;
-  nativeSearch: boolean;
-  upstreamModelId: string;
+  searchKind: "perplexity_search" | "web_search";
 };
 
 export type AdminSearchCatalog = {
@@ -128,38 +127,38 @@ function evidence(value: unknown): value is AdminSearchTestEvidence | null {
 }
 
 function integration(value: unknown): value is AdminSearchIntegration {
-  if (!isRecord(value) || !draft(value.draft) || !evidence(value.draftTestEvidence)) return false;
-  const activeRevision = value.activeRevision;
+  if (!isRecord(value) || !evidence(value.draftTestEvidence)) return false;
   const providerModel = value.providerModel;
   return (
-    (activeRevision === null ||
-      (isRecord(activeRevision) && string(activeRevision.activatedAt) && string(activeRevision.id) &&
-        Number.isSafeInteger(activeRevision.revisionNumber))) &&
-    (value.adapterKind === "none" || value.adapterKind === "answer_provider_hosted" ||
-      value.adapterKind === "provider_model_client") &&
     nullableString(value.archivedAt) &&
-    (value.credentialMode === "answer_provider" || value.credentialMode === "provider_model") &&
+    (value.broaderModelSetup === "not_applicable" || value.broaderModelSetup === "ready" ||
+      value.broaderModelSetup === "setup_required") &&
+    typeof value.configurable === "boolean" &&
+    (value.configuration === null || draft(value.configuration)) &&
+    typeof value.configurationActive === "boolean" &&
     string(value.description) && string(value.displayName) && typeof value.draftDirty === "boolean" &&
     Number.isSafeInteger(value.draftVersion) && typeof value.enabled === "boolean" &&
     Array.isArray(value.executionModes) && value.executionModes.every((mode) =>
       mode === "all_selected" || mode === "model_choice") &&
     string(value.id) &&
+    (value.kind === "gemini_google_search" || value.kind === "perplexity_search" ||
+      value.kind === "web_search") &&
     (providerModel === null ||
       (isRecord(providerModel) && string(providerModel.connectionDisplayName) &&
-        string(providerModel.displayName) && string(providerModel.id) &&
-        string(providerModel.upstreamModelId))) &&
+        string(providerModel.connectionId) && string(providerModel.displayName) &&
+        string(providerModel.id))) &&
     typeof value.ready === "boolean" &&
-    (value.readiness === "activation_required" ||
-      value.readiness === "compatible_model_unavailable" ||
-      value.readiness === "provider_model_unavailable" || value.readiness === "ready") &&
-    string(value.strategyId) && typeof value.system === "boolean"
+    (value.readiness === "ready" || value.readiness === "setup_required" ||
+      value.readiness === "source_unavailable") &&
+    string(value.sourceConnectionId) && string(value.strategyId) &&
+    typeof value.system === "boolean"
   );
 }
 
 function providerModel(value: unknown): value is AdminSearchProviderModelOption {
-  return isRecord(value) && string(value.adapterKind) && string(value.connectionDisplayName) &&
+  return isRecord(value) && string(value.connectionDisplayName) && string(value.connectionId) &&
     string(value.displayName) && typeof value.enabled === "boolean" && string(value.id) &&
-    typeof value.nativeSearch === "boolean" && string(value.upstreamModelId);
+    (value.searchKind === "perplexity_search" || value.searchKind === "web_search");
 }
 
 function policy(value: unknown): value is AdminSearchPolicy {

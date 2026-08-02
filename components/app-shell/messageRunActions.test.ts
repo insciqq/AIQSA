@@ -18,7 +18,10 @@ import {
 import { resetThreadStoreForTest, selectThreadSnapshot, useThreadStore } from "./threadStore";
 import { resetWorkspaceStoreForTest, useWorkspaceStore } from "./workspaceStore";
 import type { ComposerAttachment } from "@/components/chat/Composer";
-import type { CatalogModel, ChatDetail, ChatSummary } from "./types";
+import type { Catalog, CatalogModel, ChatDetail, ChatSummary } from "./types";
+
+const hostedSearchOptionId = "hosted-openai-search";
+const clientSearchOptionId = "client-openai-search";
 
 const model: CatalogModel = {
   capabilities: {
@@ -63,6 +66,76 @@ const model: CatalogModel = {
   provider: "openai",
   searchStrategyIds: ["search-disabled"]
 };
+
+const mixedSearchModel: CatalogModel = {
+  ...model,
+  searchOptionCompatibility: {
+    [clientSearchOptionId]: {
+      attachments: true,
+      executionModes: ["all_selected", "model_choice"]
+    },
+    [hostedSearchOptionId]: {
+      attachments: true,
+      executionModes: ["model_choice"]
+    }
+  },
+  searchStrategyIds: [
+    "search-disabled",
+    hostedSearchOptionId,
+    clientSearchOptionId
+  ]
+};
+
+function mixedSearchCatalog(
+  searchPreferenceSource: "organization" | "personal"
+): Catalog {
+  const retainedPlan = {
+    mode: "all_selected" as const,
+    optionIds: [hostedSearchOptionId, clientSearchOptionId]
+  };
+
+  return {
+    defaults: {
+      controlValues: {},
+      modelId: mixedSearchModel.modelId,
+      organizationSearchPlan: retainedPlan,
+      promptPresetId: null,
+      provider: mixedSearchModel.provider,
+      searchPlan: retainedPlan,
+      searchPreferenceSource,
+      searchStrategyId: hostedSearchOptionId,
+      showCitations: true,
+      showReasoningBlocks: false,
+      showToolActivity: true
+    },
+    models: [mixedSearchModel],
+    promptPresets: [],
+    providers: [
+      {
+        id: mixedSearchModel.provider,
+        models: [mixedSearchModel.modelId],
+        name: "OpenAI"
+      }
+    ],
+    searchStrategies: [
+      {
+        displayName: "No Search",
+        kind: "none",
+        strategyId: "search-disabled"
+      },
+      {
+        displayName: "Hosted OpenAI Search",
+        kind: "web_search",
+        strategyId: hostedSearchOptionId
+      },
+      {
+        displayName: "Client OpenAI Search",
+        kind: "web_search",
+        strategyId: clientSearchOptionId
+      }
+    ]
+  };
+}
 
 function chat(): ChatSummary {
   return {
@@ -368,6 +441,46 @@ describe("message run actions", () => {
     ).messages.find((message) => message.role === "user");
     expect(optimisticUserMessage?.content).toEqual(expectedContent);
   });
+
+  it.each(["personal", "organization"] as const)(
+    "uses model-choice execution for a mixed hosted/client %s Search preference",
+    async (searchPreferenceSource) => {
+      const fetchMock = vi.fn(async (..._args: unknown[]) =>
+        new Response("", { status: 200 }));
+      vi.stubGlobal("fetch", fetchMock);
+      const actions = useMessageRunActionsForTest({
+        attachments: [],
+        model: mixedSearchModel
+      });
+      useWorkspaceStore.getState().setCatalog(
+        mixedSearchCatalog(searchPreferenceSource)
+      );
+      useComposerControlStore.setState({
+        selectedSearchOptionIds: [hostedSearchOptionId, clientSearchOptionId],
+        searchPlanMode: "all_selected",
+        selectedSearchStrategy: hostedSearchOptionId
+      });
+
+      await actions.submitComposer();
+
+      const [, requestInit] = fetchMock.mock.calls[0] as unknown as [
+        string,
+        RequestInit
+      ];
+      expect(JSON.parse(String(requestInit.body))).toMatchObject({
+        searchPlan: {
+          mode: "model_choice",
+          optionIds: [hostedSearchOptionId, clientSearchOptionId]
+        },
+        searchPreferencePlan: {
+          mode: "all_selected",
+          optionIds: [hostedSearchOptionId, clientSearchOptionId]
+        },
+        searchPreferenceSource,
+        searchStrategy: hostedSearchOptionId
+      });
+    }
+  );
 
   it("does not send when the composer has neither text nor attachments", async () => {
     const fetchMock = vi.fn(async (..._args: unknown[]) => new Response("", { status: 200 }));

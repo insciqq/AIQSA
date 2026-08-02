@@ -42,7 +42,7 @@ function service(overrides: Partial<SearchService> = {}): SearchService {
   return {
     activate: vi.fn(async () => undefined),
     archive: vi.fn(async () => undefined),
-    createDraft: vi.fn(async () => undefined),
+    createDraft: vi.fn(async () => ({ created: true, id: "integration-1" })),
     list: vi.fn(async () => emptyCatalog),
     setEnabled: vi.fn(async () => undefined),
     testDraft: vi.fn(async () => undefined),
@@ -85,9 +85,10 @@ describe("admin Search HTTP handlers", () => {
   });
 
   it("passes bounded draft data and the authenticated tester identity to the service", async () => {
-    const createDraft = vi.fn(async () => undefined);
+    const activate = vi.fn(async () => undefined);
+    const createDraft = vi.fn(async () => ({ created: true, id: "integration-1" }));
     const testDraft = vi.fn(async () => undefined);
-    const searchService = service({ createDraft, testDraft });
+    const searchService = service({ activate, createDraft, testDraft });
     const catalogHandlers = createAdminSearchCatalogHandler({
       resolveAuth: resolver(auth()),
       service: searchService
@@ -111,12 +112,29 @@ describe("admin Search HTTP handlers", () => {
       displayName: "Company Search",
       draft
     }));
+    createDraft.mockResolvedValueOnce({ created: false, id: "integration-1" });
+    const reused = await catalogHandlers.POST(jsonRequest("/api/admin/search", {
+      description: "Duplicate form",
+      displayName: "Duplicate Search",
+      draft
+    }));
     const tested = await action(
       jsonRequest("/api/admin/search/integration-1/actions", { action: "test" }),
       { params: { integrationId: "integration-1" } }
     );
+    const activated = await action(
+      jsonRequest("/api/admin/search/integration-1/actions", { action: "activate" }),
+      { params: { integrationId: "integration-1" } }
+    );
 
     expect(created.status).toBe(201);
+    await expect(created.clone().json()).resolves.toMatchObject({
+      selectedIntegrationId: "integration-1"
+    });
+    expect(reused.status).toBe(200);
+    await expect(reused.json()).resolves.toMatchObject({
+      selectedIntegrationId: "integration-1"
+    });
     expect(createDraft).toHaveBeenCalledWith({
       description: "Query-only evidence",
       displayName: "Company Search",
@@ -124,6 +142,8 @@ describe("admin Search HTTP handlers", () => {
     });
     expect(tested.status).toBe(200);
     expect(testDraft).toHaveBeenCalledWith({ id: "integration-1", userId: "admin-1" });
+    expect(activated.status).toBe(200);
+    expect(activate).toHaveBeenCalledWith({ id: "integration-1", userId: "admin-1" });
   });
 
   it("passes a version-fenced installation recommendation with admin attribution", async () => {

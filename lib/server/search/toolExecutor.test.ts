@@ -32,6 +32,7 @@ function option(id: string, overrides: Partial<NormalizedSearchPlanOption> = {})
       timeoutMs: 5_000
     },
     credentialMode: "provider_model",
+    displayName: id,
     executionModes: ["all_selected", "model_choice"],
     modelId: `model-${id}`,
     optionId: id,
@@ -152,6 +153,63 @@ function call(name: string, query = "bounded query"): ModelToolCall {
 }
 
 describe("Search plan tool router", () => {
+  it("uses a stable tool name and friendly source label without exposing its connection id", () => {
+    const connectionId = "3ebc98b4-a35d-4c4a-a819-3471f6dcd2ca";
+    const selected = option(`custom-web-search:${connectionId}`, {
+      displayName: "Company Gateway Search"
+    });
+    const router = createSearchPlanToolRouter({
+      plan: { mode: "model_choice", options: [selected] },
+      runtimes: {}
+    })!;
+
+    expect(router.tools).toEqual([
+      expect.objectContaining({
+        description: "Search the user-selected web source \"Company Gateway Search\" with a concise query.",
+        name: "search_engine_1"
+      })
+    ]);
+    expect(JSON.stringify(router.tools)).not.toContain(connectionId);
+  });
+
+  it("accepts a pre-release persisted per-source tool name during recovery", async () => {
+    const onRequest = vi.fn();
+    const selected = option("legacy-source");
+    const second = option("second-source");
+    const router = createSearchPlanToolRouter({
+      acceptLegacyToolNames: true,
+      plan: { mode: "model_choice", options: [selected, second] },
+      runtimes: {
+        "legacy-source": runtime({ onRequest }),
+        "second-source": runtime()
+      }
+    })!;
+
+    await expect(router.execute(
+      call("search_1_legacy_source"),
+      answerRequest()
+    )).resolves.toMatchObject({ status: "complete" });
+    expect(router.accepts("search_1_legacy_source")).toBe(true);
+    expect(router.accepts("search_2_wrong_source")).toBe(false);
+    expect(router.accepts("search_1_wrong_source")).toBe(false);
+    expect(router.accepts("search_1wrong_source")).toBe(false);
+    expect(onRequest).toHaveBeenCalledOnce();
+  });
+
+  it("rejects undeclared legacy-shaped tool names during a new live run", async () => {
+    const selected = option("current-source");
+    const router = createSearchPlanToolRouter({
+      plan: { mode: "model_choice", options: [selected] },
+      runtimes: { "current-source": runtime() }
+    })!;
+
+    expect(router.accepts("search_1_current_source")).toBe(false);
+    await expect(router.execute(
+      call("search_1_current_source"),
+      answerRequest()
+    )).rejects.toThrow("search_tool_not_selected");
+  });
+
   it("fans one query out concurrently, shares query-only context, and merges duplicate URLs deterministically", async () => {
     const requests: ProviderRunRequest[] = [];
     const runOptions: Array<ProviderRunOptions | undefined> = [];
@@ -255,23 +313,39 @@ describe("Search plan tool router", () => {
   });
 
   it("returns successful evidence with a per-engine warning on partial failure", async () => {
-    const first = option("first");
-    const second = option("second");
+    const first = option("private-source-id-1", {
+      displayName: "First Search",
+      modelId: "search-model-a"
+    });
+    const second = option("private-source-id-2", {
+      displayName: "Second Search",
+      modelId: "search-model-b"
+    });
     const router = createSearchPlanToolRouter({
       plan: { mode: "all_selected", options: [first, second] },
       runtimes: {
-        first: runtime(),
-        second: runtime({ fail: "engine_unavailable" })
+        "private-source-id-1": runtime(),
+        "private-source-id-2": runtime({ fail: "engine_unavailable" })
       }
     })!;
 
     const result = await router.execute(call(router.tools[0]!.name), answerRequest());
 
     expect(result.status).toBe("complete");
-    expect(result.content[0]).toMatchObject({ text: expect.stringContaining("second: engine_unavailable") });
+    expect(result.content[0]).toMatchObject({
+      text: expect.stringContaining('"Second Search": engine_unavailable')
+    });
+    expect(result.content[0]).toMatchObject({
+      text: expect.stringContaining('Search source "First Search"')
+    });
+    expect(JSON.stringify(result.content)).not.toContain("private-source-id-");
     expect(searchExecutionsFromToolResult(result)).toEqual([
-      expect.objectContaining({ optionId: "first", status: "complete" }),
-      expect.objectContaining({ optionId: "second", status: "error", warning: "engine_unavailable" })
+      expect.objectContaining({ optionId: "private-source-id-1", status: "complete" }),
+      expect.objectContaining({
+        optionId: "private-source-id-2",
+        status: "error",
+        warning: "engine_unavailable"
+      })
     ]);
   });
 
@@ -350,7 +424,7 @@ describe("Search plan tool router", () => {
       }
     })!;
 
-    expect(router.tools.map((tool) => tool.name)).toEqual(["search_1_first", "search_2_second"]);
+    expect(router.tools.map((tool) => tool.name)).toEqual(["search_engine_1", "search_engine_2"]);
     await router.execute(call(router.tools[1]!.name), answerRequest());
     expect(firstRequest).not.toHaveBeenCalled();
     expect(secondRequest).toHaveBeenCalledOnce();

@@ -67,7 +67,7 @@ describe("deriveRunReceipt", () => {
     expect(receipt).toEqual({
       facts: [
         { kind: "model", label: "OpenAI / GPT-5" },
-        { detail: "OpenAI web_search", kind: "search", label: "1 search call" },
+        { detail: "OpenAI Search", kind: "search", label: "1 search call" },
         { kind: "tools", label: "2 tool calls (1 failed)" },
         { kind: "citations", label: "3 citations" },
         { kind: "reasoning", label: "2 reasoning traces" },
@@ -76,6 +76,24 @@ describe("deriveRunReceipt", () => {
       ],
       status: "complete",
       statusLabel: "Complete"
+    });
+  });
+
+  it("uses a message-bound logical Search source name", () => {
+    const receipt = deriveRunReceipt({
+      artifactSummary: summary({
+        searchCount: 1,
+        searchDisplayName: "Company Gateway Search",
+        searchStrategy: "custom-web-search:connection-1:client"
+      }),
+      messageStatus: "complete",
+      modelLabel: null
+    });
+
+    expect(receipt.facts).toContainEqual({
+      detail: "Company Gateway Search",
+      kind: "search",
+      label: "1 search call"
     });
   });
 

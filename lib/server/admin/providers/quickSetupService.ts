@@ -307,7 +307,7 @@ export function createAdminProviderQuickSetupService(input: Readonly<{
         throw new AdminProviderQuickSetupServiceError("provider_draft_stale");
       }
       const versionId = idFactory();
-      let providerNeutralSearch: AdminProviderQuickSetupCommitPlan["providerNeutralSearch"];
+      let search: AdminProviderQuickSetupCommitPlan["search"];
       if (
         policy.provider === "openai" &&
         candidate.configuration.capabilities.nativeSearch &&
@@ -343,7 +343,7 @@ export function createAdminProviderQuickSetupService(input: Readonly<{
           protocol: draft.protocol,
           status: outcome.status
         };
-        providerNeutralSearch = {
+        search = {
           draft,
           draftHash: searchDraftHash(draft),
           evidence,
@@ -378,7 +378,7 @@ export function createAdminProviderQuickSetupService(input: Readonly<{
         now: now(),
         preservedModels: inspection.preservedModels,
         provider: policy.provider,
-        ...(providerNeutralSearch ? { providerNeutralSearch } : {})
+        ...(search ? { search } : {})
       });
       if (commit === "stale") {
         throw new AdminProviderQuickSetupServiceError("provider_draft_stale");
@@ -402,10 +402,10 @@ export function createAdminProviderQuickSetupService(input: Readonly<{
         profilesFilled: commit.profilesFilled,
         provider: policy.provider,
         providerDisplayName: policy.connection.displayName,
-        providerNeutralSearch: commit.providerNeutralSearch
+        search: commit.search
           ? {
-              displayName: "OpenAI Search (provider-neutral)",
-              status: commit.providerNeutralSearch
+              displayName: "OpenAI Search",
+              status: commit.search
             }
           : null
       };

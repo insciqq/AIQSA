@@ -228,7 +228,7 @@ function GroupOverview({ actions, data, draft, status }: Readonly<{
         <p className="mt-1 text-xs leading-5 text-ink-muted">{groupAccessSummary(data.catalog, group)}</p>
         {builtIn ? (
           <div className="mt-4 max-w-2xl border-l-2 border-positive bg-positive/5 px-3 py-2 text-xs leading-5 text-ink-secondary">
-            <p>Entitlement updates automatically when a provider, model, search strategy, or MCP server is added.</p>
+            <p>Entitlement updates automatically when a provider, model, Search source, or MCP server is added.</p>
             <p className="mt-1">Provider credentials and personal MCP setup remain separate.</p>
           </div>
         ) : (
@@ -326,7 +326,7 @@ function GroupMembers({ actions, data, status }: Readonly<{
         <h4 className="text-sm font-semibold text-ink">Members</h4>
         <p className="mt-1 text-xs leading-5 text-ink-muted">
           {data.selectedGroup.systemRole === "full_access"
-            ? "Members receive automatic entitlement to every current and future provider, model, search strategy, and MCP server. Provider credentials and personal MCP setup remain separate."
+            ? "Members receive automatic entitlement to every current and future provider, model, Search source, and MCP server. Provider credentials and personal MCP setup remain separate."
             : "Members inherit this group’s model, search, and tool access."}
         </p>
       </div>
@@ -410,7 +410,7 @@ function ModelsAndSearch({ actions, catalog, group, status }: Readonly<{
       <div className="py-5">
         <h4 className="text-sm font-semibold text-ink">Automatic full access</h4>
         <p className="mt-1 max-w-2xl text-xs leading-5 text-ink-secondary">
-          Members automatically receive entitlement to every current and future provider, model, and search strategy. A model is usable only when an independently selected provider credential and its current availability check are valid. There are no per-resource switches for this built-in group.
+          Members automatically receive entitlement to every current and future provider, model, and Search source. A model is usable only when an independently selected provider credential and its current availability check are valid. There are no per-resource switches for this built-in group.
         </p>
       </div>
     );
@@ -498,16 +498,13 @@ function ModelsAndSearch({ actions, catalog, group, status }: Readonly<{
         </div>
       </AccessSection>
 
-      <AccessSection title="Search strategy grants">
+      <AccessSection title="Search access">
         <div className="divide-y divide-trace-subtle border-y border-trace-subtle">
           {catalog.searchStrategies.map((strategy) => {
             const checked = grantEnabled(group, { searchStrategy: strategy.strategyId });
             return (
               <div className="flex min-w-0 flex-col gap-2 py-3 sm:flex-row sm:items-center sm:justify-between" key={`${group.id}:search:${strategy.strategyId}`}>
-                <div className="min-w-0">
-                  <p className="break-words text-sm font-medium text-ink [overflow-wrap:anywhere]">{strategy.displayName}</p>
-                  <p className="mt-1 break-all font-mono text-xs text-ink-muted">{strategy.strategyId}</p>
-                </div>
+                <p className="min-w-0 break-words text-sm font-medium text-ink [overflow-wrap:anywhere]">{strategy.displayName}</p>
                 <GrantToggle
                   checked={checked}
                   disabled={archived || status.actionsDisabled}
@@ -517,7 +514,7 @@ function ModelsAndSearch({ actions, catalog, group, status }: Readonly<{
               </div>
             );
           })}
-          {!catalog.searchStrategies.length ? <p className="py-5 text-sm text-ink-muted">No search strategies in the catalog</p> : null}
+          {!catalog.searchStrategies.length ? <p className="py-5 text-sm text-ink-muted">No Search sources in the catalog</p> : null}
         </div>
       </AccessSection>
     </div>

@@ -4,6 +4,10 @@ import type {
 } from "../../../contracts/adminProviderCustomSetup";
 import type { AdminProviderTestEvidence } from "../../../contracts/adminProviders";
 import type {
+  AdminSearchDraft,
+  AdminSearchTestEvidence
+} from "../../../contracts/adminSearch";
+import type {
   ProviderConnectionConfiguration,
   ProviderModelConfiguration
 } from "../../providers/providerConfiguration";
@@ -40,7 +44,28 @@ export type AdminProviderCustomSetupCommitPlan = Readonly<{
     id: string;
   }>>;
   now: Date;
-  searchGrantId?: string;
+  search?: Readonly<{
+    client: Readonly<{
+      draft: AdminSearchDraft;
+      draftHash: string;
+      id: string;
+      revisionId: string;
+      strategyId: string;
+    }>;
+    description: string;
+    displayName: string;
+    evidence: AdminSearchTestEvidence;
+    grantId: string;
+    hosted: Readonly<{
+      draft: AdminSearchDraft;
+      draftHash: string;
+      id: string;
+      revisionId: string;
+      strategyId: string;
+    }>;
+    optionId: string;
+    optionRowId: string;
+  }>;
 }>;
 
 export type AdminProviderCustomSetupCommitResult =
@@ -49,6 +74,7 @@ export type AdminProviderCustomSetupCommitResult =
   | "stale"
   | Readonly<{
       defaultChanged: boolean;
+      search?: "needs_attention" | "ready" | null;
       status: "ready";
     }>;
 
@@ -69,4 +95,5 @@ export type AdminProviderCustomSetupSafeResult = Pick<
   | "models"
   | "outcome"
   | "providerModelId"
+  | "search"
 >;

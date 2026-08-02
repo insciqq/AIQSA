@@ -22,6 +22,7 @@ const policy = adminProviderQuickSetupPolicy("openai");
 const terra = policy.candidates[0];
 const luna = policy.candidates[1];
 const sol = policy.candidates[2];
+const OPENAI_SEARCH_OPTION_ID = "openai-native-web-search";
 
 class RollbackFixture extends Error {}
 class InjectedBoundaryFailure extends Error {}
@@ -317,7 +318,7 @@ async function resetOpenAiToInitial(transaction: Prisma.TransactionClient): Prom
     where: { strategyId: OPENAI_PROVIDER_SEARCH_STRATEGY_ID }
   });
   await transaction.accessGrant.deleteMany({
-    where: { searchStrategy: OPENAI_PROVIDER_SEARCH_STRATEGY_ID }
+    where: { searchStrategy: OPENAI_SEARCH_OPTION_ID }
   });
   if (managedSearch) {
     await transaction.searchStrategy.update({
@@ -431,7 +432,7 @@ function plan(input: Readonly<{
   grantId: string;
   mode: "initial" | "recovery" | "replacement";
   preservedModels: AdminProviderQuickSetupCommitPlan["preservedModels"];
-  providerNeutralSearch?: Readonly<{
+  search?: Readonly<{
     idPrefix: string;
     status: "available" | "unavailable";
   }>;
@@ -468,20 +469,20 @@ function plan(input: Readonly<{
     now: new Date("2026-07-26T10:00:02.000Z"),
     preservedModels: input.preservedModels,
     provider: "openai",
-    ...(input.providerNeutralSearch ? {
-      providerNeutralSearch: {
+    ...(input.search ? {
+      search: {
         draft: searchDraft,
         draftHash: searchDraftHash(searchDraft),
         evidence: {
           checkedAt: "2026-07-26T10:00:01.500Z",
           method: "provider_search" as const,
-          normalizedSourceCount: input.providerNeutralSearch.status === "available" ? 2 : 0,
+          normalizedSourceCount: input.search.status === "available" ? 2 : 0,
           protocol: "openai_responses_web_search" as const,
-          status: input.providerNeutralSearch.status
+          status: input.search.status
         },
-        grantId: `${input.providerNeutralSearch.idPrefix}-grant`,
+        grantId: `${input.search.idPrefix}-grant`,
         integrationId: OPENAI_PROVIDER_SEARCH_INTEGRATION_ID,
-        revisionId: `${input.providerNeutralSearch.idPrefix}-revision`
+        revisionId: `${input.search.idPrefix}-revision`
       }
     } : {})
   };
@@ -503,6 +504,7 @@ const ISOLATED_TABLES = [
   "PromptPreset",
   "RunProfile",
   "SearchIntegrationRevision",
+  "SearchOption",
   "SearchPolicy",
   "SearchStrategy",
   "User",
@@ -554,6 +556,9 @@ async function createIsolatedQuickSetupDatabase(): Promise<Readonly<{
     );
     await administrationDatabase.$executeRawUnsafe(
       `INSERT INTO ${schema}."RunProfile" SELECT * FROM ${sourceSchema}."RunProfile"`
+    );
+    await administrationDatabase.$executeRawUnsafe(
+      `INSERT INTO ${schema}."SearchOption" SELECT * FROM ${sourceSchema}."SearchOption"`
     );
     await administrationDatabase.$executeRawUnsafe(
       `INSERT INTO ${schema}."SearchIntegrationRevision" ` +
@@ -659,7 +664,7 @@ integration("Prisma provider Quick setup atomic graph", () => {
     await administrationDatabase.$disconnect();
   });
 
-  it("atomically provisions, reuses, and fail-closes the managed provider-neutral OpenAI Search", async () => {
+  it("atomically provisions, reuses, and fail-closes the managed OpenAI Search route", async () => {
     const isolated = await createIsolatedQuickSetupDatabase();
     try {
       await expect(isolated.client.$transaction(async (transaction) => {
@@ -684,13 +689,13 @@ integration("Prisma provider Quick setup atomic graph", () => {
           grantId: `quick-search-model-grant-${suffix}`,
           mode: "initial",
           preservedModels: initial.preservedModels,
-          providerNeutralSearch: {
+          search: {
             idPrefix: `quick-search-first-${suffix}`,
             status: "available"
           },
           versionId: `quick-search-version-one-${suffix}`
         }))).resolves.toMatchObject({
-          providerNeutralSearch: "ready",
+          search: "ready",
           status: "ready"
         });
 
@@ -711,9 +716,11 @@ integration("Prisma provider Quick setup atomic graph", () => {
           providerModelId: terra.modelId
         });
         expect(integration.revisions).toHaveLength(1);
+        const firstRevision = integration.activeRevision!;
+        const firstRevisionBytes = Buffer.from(JSON.stringify(firstRevision), "utf8");
         expect(await transaction.accessGrant.findMany({
           where: {
-            searchStrategy: OPENAI_PROVIDER_SEARCH_STRATEGY_ID,
+            searchStrategy: OPENAI_SEARCH_OPTION_ID,
             userId: actor.userId
           }
         })).toEqual([expect.objectContaining({ enabled: true })]);
@@ -732,18 +739,45 @@ integration("Prisma provider Quick setup atomic graph", () => {
           grantId: `unused-search-model-grant-${suffix}`,
           mode: "replacement",
           preservedModels: ready.preservedModels,
-          providerNeutralSearch: {
+          search: {
             idPrefix: `unused-search-replacement-${suffix}`,
             status: "available"
           },
           versionId: `quick-search-version-two-${suffix}`
-        }))).resolves.toMatchObject({ providerNeutralSearch: "ready" });
-        expect(await transaction.searchIntegrationRevision.count({
-          where: { searchStrategyId: integration.id }
-        })).toBe(1);
+        }))).resolves.toMatchObject({ search: "ready" });
+        expect(await transaction.searchStrategy.findUniqueOrThrow({
+          where: { id: integration.id }
+        })).toMatchObject({
+          draftTestEvidence: expect.objectContaining({
+            method: "provider_search",
+            status: "available"
+          }),
+          enabled: true
+        });
+        const rotatedIntegration = await transaction.searchStrategy.findUniqueOrThrow({
+          include: {
+            activeRevision: true,
+            revisions: { orderBy: { revisionNumber: "asc" } }
+          },
+          where: { id: integration.id }
+        });
+        expect(rotatedIntegration.revisions).toHaveLength(2);
+        expect(rotatedIntegration.revisions[0]).toEqual(firstRevision);
+        expect(Buffer.from(JSON.stringify(rotatedIntegration.revisions[0]), "utf8"))
+          .toEqual(firstRevisionBytes);
+        expect(rotatedIntegration.activeRevision).toMatchObject({
+          revisionNumber: 2,
+          validationEvidence: {
+            probeBinding: {
+              credentialId,
+              credentialVersionId: `quick-search-version-two-${suffix}`,
+              providerModelId: terra.modelId
+            }
+          }
+        });
         expect(await transaction.accessGrant.count({
           where: {
-            searchStrategy: OPENAI_PROVIDER_SEARCH_STRATEGY_ID,
+            searchStrategy: OPENAI_SEARCH_OPTION_ID,
             userId: actor.userId
           }
         })).toBe(1);
@@ -762,13 +796,13 @@ integration("Prisma provider Quick setup atomic graph", () => {
           grantId: `unused-failed-search-model-grant-${suffix}`,
           mode: "replacement",
           preservedModels: replacementReady.preservedModels,
-          providerNeutralSearch: {
+          search: {
             idPrefix: `unused-failed-search-${suffix}`,
             status: "unavailable"
           },
           versionId: `quick-search-version-three-${suffix}`
         }))).resolves.toMatchObject({
-          providerNeutralSearch: "needs_attention",
+          search: "needs_attention",
           status: "ready"
         });
         expect(await transaction.searchStrategy.findUniqueOrThrow({
@@ -792,7 +826,98 @@ integration("Prisma provider Quick setup atomic graph", () => {
     }
   }, 30_000);
 
-  it("leaves a non-owned reserved Search row untouched while completing provider setup", async () => {
+  it("moves to the collision-free managed route when the preferred route is archived", async () => {
+    const isolated = await createIsolatedQuickSetupDatabase();
+    try {
+      await expect(isolated.client.$transaction(async (transaction) => {
+        await resetOpenAiToInitial(transaction);
+        const suffix = randomUUID();
+        const actor = await createActor(transaction, suffix);
+        const repository = createPrismaAdminProviderQuickSetupRepository(
+          transactionBackedClient(transaction)
+        );
+        const initial = await repository.inspect({
+          ...actor,
+          now: new Date("2026-07-26T10:00:00.000Z"),
+          provider: "openai"
+        });
+        const credentialId = `archived-route-credential-${suffix}`;
+
+        await expect(repository.commit(plan({
+          actor,
+          credentialId,
+          credentialVersion: 1,
+          expectedFingerprint: initial.fingerprint,
+          grantId: `archived-route-model-grant-${suffix}`,
+          mode: "initial",
+          preservedModels: initial.preservedModels,
+          search: {
+            idPrefix: `archived-route-first-${suffix}`,
+            status: "available"
+          },
+          versionId: `archived-route-version-one-${suffix}`
+        }))).resolves.toMatchObject({ search: "ready", status: "ready" });
+
+        const preferred = await transaction.searchStrategy.findUniqueOrThrow({
+          where: { strategyId: OPENAI_PROVIDER_SEARCH_STRATEGY_ID }
+        });
+        const archivedAt = new Date("2026-07-26T10:00:03.000Z");
+        await transaction.searchStrategy.update({
+          data: { archivedAt, enabled: false },
+          where: { id: preferred.id }
+        });
+
+        const replacement = await repository.inspect({
+          ...actor,
+          now: new Date("2026-07-26T10:00:04.000Z"),
+          provider: "openai"
+        });
+        await expect(repository.commit(plan({
+          actor,
+          credentialId,
+          credentialIsNew: false,
+          credentialVersion: 2,
+          expectedFingerprint: replacement.fingerprint,
+          grantId: `unused-archived-route-grant-${suffix}`,
+          mode: "replacement",
+          preservedModels: replacement.preservedModels,
+          search: {
+            idPrefix: `archived-route-second-${suffix}`,
+            status: "available"
+          },
+          versionId: `archived-route-version-two-${suffix}`
+        }))).resolves.toMatchObject({ search: "ready", status: "ready" });
+
+        const fallbackId = `openai-search-client:${policy.connection.id}`;
+        expect(await transaction.searchStrategy.findUniqueOrThrow({
+          where: { strategyId: fallbackId }
+        })).toMatchObject({
+          archivedAt: null,
+          enabled: true,
+          providerModelId: terra.modelId,
+          searchOptionId: "00000000-0000-4000-8000-000000001402"
+        });
+        expect(await transaction.searchStrategy.findUniqueOrThrow({
+          where: { id: preferred.id }
+        })).toMatchObject({ archivedAt, enabled: false });
+        expect(await transaction.searchStrategy.count({
+          where: {
+            adapterKind: "provider_model_client",
+            archivedAt: null,
+            searchOptionId: "00000000-0000-4000-8000-000000001402"
+          }
+        })).toBe(1);
+
+        throw new RollbackFixture("archived_preferred_search_route_fixture_complete");
+      }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable })).rejects.toBeInstanceOf(
+        RollbackFixture
+      );
+    } finally {
+      await isolated.cleanup();
+    }
+  }, 30_000);
+
+  it("leaves a reserved Search alias untouched and reports Search needs attention", async () => {
     const isolated = await createIsolatedQuickSetupDatabase();
     try {
       await expect(isolated.client.$transaction(async (transaction) => {
@@ -804,8 +929,8 @@ integration("Prisma provider Quick setup atomic graph", () => {
             adapterKind: "provider_model_client",
             config: {},
             credentialMode: "provider_model",
-            description: "Query-only OpenAI web search for any tool-capable answer model.",
-            displayName: "OpenAI Search (provider-neutral)",
+            description: "Web search provided by OpenAI.",
+            displayName: "OpenAI Search",
             draft: {},
             enabled: false,
             id: `operator-search-${suffix}`,
@@ -813,6 +938,7 @@ integration("Prisma provider Quick setup atomic graph", () => {
             modelId: terra.configuration.upstreamModelId,
             provider: "openai",
             providerModelId: terra.modelId,
+            searchOptionId: "00000000-0000-4000-8000-000000001402",
             strategyId: OPENAI_PROVIDER_SEARCH_STRATEGY_ID
           }
         });
@@ -832,13 +958,13 @@ integration("Prisma provider Quick setup atomic graph", () => {
           grantId: `manual-row-model-grant-${suffix}`,
           mode: "initial",
           preservedModels: initial.preservedModels,
-          providerNeutralSearch: {
+          search: {
             idPrefix: `must-not-write-search-${suffix}`,
             status: "available"
           },
           versionId: `manual-row-version-${suffix}`
         }))).resolves.toMatchObject({
-          providerNeutralSearch: "needs_attention",
+          search: "needs_attention",
           status: "ready"
         });
         expect(await transaction.searchStrategy.findUniqueOrThrow({
@@ -846,10 +972,13 @@ integration("Prisma provider Quick setup atomic graph", () => {
         })).toEqual(manual);
         expect(await transaction.accessGrant.count({
           where: {
-            searchStrategy: OPENAI_PROVIDER_SEARCH_STRATEGY_ID,
+            searchStrategy: OPENAI_SEARCH_OPTION_ID,
             userId: actor.userId
           }
         })).toBe(0);
+        expect(await transaction.searchStrategy.findUnique({
+          where: { strategyId: `openai-search-client:${policy.connection.id}` }
+        })).toBeNull();
         expect(await repository.inspect({
           ...actor,
           now: new Date("2026-07-26T10:00:03.000Z"),
@@ -864,7 +993,7 @@ integration("Prisma provider Quick setup atomic graph", () => {
     }
   }, 30_000);
 
-  it("leaves a non-owned managed Search primary id untouched while completing provider setup", async () => {
+  it("leaves a non-owned managed Search id untouched and reports Search needs attention", async () => {
     const isolated = await createIsolatedQuickSetupDatabase();
     try {
       await expect(isolated.client.$transaction(async (transaction) => {
@@ -885,6 +1014,7 @@ integration("Prisma provider Quick setup atomic graph", () => {
             modelId: terra.configuration.upstreamModelId,
             provider: "openai",
             providerModelId: terra.modelId,
+            searchOptionId: "00000000-0000-4000-8000-000000001402",
             strategyId: `operator-search-${suffix}`
           }
         });
@@ -904,13 +1034,13 @@ integration("Prisma provider Quick setup atomic graph", () => {
           grantId: `manual-id-model-grant-${suffix}`,
           mode: "initial",
           preservedModels: initial.preservedModels,
-          providerNeutralSearch: {
+          search: {
             idPrefix: `must-not-write-managed-id-${suffix}`,
             status: "available"
           },
           versionId: `manual-id-version-${suffix}`
         }))).resolves.toMatchObject({
-          providerNeutralSearch: "needs_attention",
+          search: "needs_attention",
           status: "ready"
         });
         expect(await transaction.searchStrategy.findUniqueOrThrow({
@@ -919,9 +1049,12 @@ integration("Prisma provider Quick setup atomic graph", () => {
         expect(await transaction.searchStrategy.count({
           where: { strategyId: OPENAI_PROVIDER_SEARCH_STRATEGY_ID }
         })).toBe(0);
+        expect(await transaction.searchStrategy.findUnique({
+          where: { strategyId: `openai-search-client:${policy.connection.id}` }
+        })).toBeNull();
         expect(await transaction.accessGrant.count({
           where: {
-            searchStrategy: OPENAI_PROVIDER_SEARCH_STRATEGY_ID,
+            searchStrategy: OPENAI_SEARCH_OPTION_ID,
             userId: actor.userId
           }
         })).toBe(0);

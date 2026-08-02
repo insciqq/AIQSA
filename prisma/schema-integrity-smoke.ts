@@ -11,7 +11,12 @@ const expectedConstraintNames = [
   "AuthSession_revocation_attribution_check",
   "AuthSession_revokedByUserId_fkey",
   "Chat_id_activeLeafMessageId_fkey",
-  "Message_chatId_parentMessageId_fkey"
+  "Message_chatId_parentMessageId_fkey",
+  "SearchOption_archive_check",
+  "SearchOption_kind_check",
+  "SearchOption_source_check",
+  "SearchOption_sourceConnectionId_fkey",
+  "SearchStrategy_searchOptionId_fkey"
 ] as const;
 
 class ExpectedRollback extends Error {}
@@ -142,7 +147,12 @@ async function assertConstraintCatalog(): Promise<void> {
       'AuthSession_revocation_attribution_check',
       'AuthSession_revokedByUserId_fkey',
       'Chat_id_activeLeafMessageId_fkey',
-      'Message_chatId_parentMessageId_fkey'
+      'Message_chatId_parentMessageId_fkey',
+      'SearchOption_archive_check',
+      'SearchOption_kind_check',
+      'SearchOption_source_check',
+      'SearchOption_sourceConnectionId_fkey',
+      'SearchStrategy_searchOptionId_fkey'
     )
     ORDER BY conname
   `;
@@ -152,6 +162,69 @@ async function assertConstraintCatalog(): Promise<void> {
       throw new Error(`Expected validated database constraint ${name}.`);
     }
   }
+  const destinationIndexes = await prisma.$queryRaw<Array<{ indexdef: string }>>`
+    SELECT indexdef
+    FROM pg_indexes
+    WHERE schemaname = current_schema()
+      AND indexname = 'SearchOption_sourceConnectionId_kind_key'
+  `;
+  if (
+    destinationIndexes.length !== 1 ||
+    !/CREATE UNIQUE INDEX.*"sourceConnectionId".*"?kind"?/u.test(
+      destinationIndexes[0]!.indexdef
+    )
+  ) {
+    throw new Error("Expected unique logical Search destination index.");
+  }
+  const activeRouteIndexes = await prisma.$queryRaw<Array<{ indexdef: string }>>`
+    SELECT indexdef
+    FROM pg_indexes
+    WHERE schemaname = current_schema()
+      AND indexname = 'SearchStrategy_searchOptionId_adapterKind_active_key'
+  `;
+  if (
+    activeRouteIndexes.length !== 1 ||
+    !/CREATE UNIQUE INDEX.*"searchOptionId".*"adapterKind".*WHERE.*"archivedAt" IS NULL/u.test(
+      activeRouteIndexes[0]!.indexdef
+    )
+  ) {
+    throw new Error("Expected one active physical Search route per adapter kind.");
+  }
+}
+
+async function assertSearchOptionSources(): Promise<void> {
+  await expectDatabaseRejection(
+    "non-Off Search without source",
+    "SearchOption_source_check",
+    async (tx) => {
+      await tx.searchOption.create({
+        data: {
+          description: "Invalid source",
+          displayName: "Invalid Search",
+          id: randomUUID(),
+          kind: "web_search",
+          optionId: `invalid-search-${randomUUID()}`,
+          sourceConnectionId: null
+        }
+      });
+    }
+  );
+  await expectDatabaseRejection(
+    "arbitrary connectionless Off Search",
+    "SearchOption_source_check",
+    async (tx) => {
+      await tx.searchOption.create({
+        data: {
+          description: "Invalid Off",
+          displayName: "Invalid Off",
+          id: randomUUID(),
+          kind: "none",
+          optionId: `invalid-off-${randomUUID()}`,
+          sourceConnectionId: null
+        }
+      });
+    }
+  );
 }
 
 async function assertSameChatRelations(): Promise<void> {
@@ -361,6 +434,7 @@ async function assertStatusEnums(): Promise<void> {
 
 async function main() {
   await assertConstraintCatalog();
+  await assertSearchOptionSources();
   await assertSameChatRelations();
   await assertGrantShapes();
   await assertStatusEnums();

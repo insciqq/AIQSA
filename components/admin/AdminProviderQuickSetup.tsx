@@ -359,7 +359,7 @@ function ReadyProvider({
   const confirmation = controller.state.readyConfirmation?.provider === provider.provider
     ? controller.state.readyConfirmation
     : null;
-  const providerNeutralSearch = confirmation?.providerNeutralSearch ?? null;
+  const search = confirmation?.search ?? null;
   const profileLabels = confirmation?.profilesFilled.map((profile) =>
     profile.charAt(0).toUpperCase() + profile.slice(1)
   ) ?? [];
@@ -389,11 +389,11 @@ function ReadyProvider({
           <p>Access: available to this administrator.</p>
           <p>Default selection: {confirmation.defaultChanged ? "updated" : "unchanged"}.</p>
           <p>Run profiles filled: {profileLabels.length ? profileLabels.join(", ") : "none"}.</p>
-          {providerNeutralSearch ? (
+          {search ? (
             <p>
-              {providerNeutralSearch.displayName}: {providerNeutralSearch.status === "ready"
-                ? "activated for any tool-capable answer model"
-                : "not activated; finish setup in Search"}.
+              {search.displayName}: {search.status === "ready"
+                ? "ready for supported models"
+                : "requires attention; finish setup in Search"}.
             </p>
           ) : null}
         </div>
@@ -402,11 +402,11 @@ function ReadyProvider({
       {provider.provider === "openai" ? (
         <div className="mt-4 border-l-2 border-proof/45 pl-3 text-xs leading-5 text-ink-secondary">
           <p>
-            {providerNeutralSearch?.status === "ready"
-              ? "Provider-neutral OpenAI Search is ready for Anthropic, Gemini, and other tool-capable answer models."
-              : providerNeutralSearch?.status === "needs_attention"
-                ? "The provider is ready, but provider-neutral OpenAI Search did not pass its separate source probe and remains disabled."
-                : "Provider-neutral OpenAI Search is managed separately from OpenAI's native hosted option."}
+            {search?.status === "ready"
+              ? "OpenAI Search is ready for supported OpenAI, Anthropic, Gemini, and other answer models."
+              : search?.status === "needs_attention"
+                ? "The provider is ready, but OpenAI Search still needs a successful source check before it can serve broader models."
+                : "OpenAI Search can be reviewed and managed from the Search section."}
           </p>
           <Link className={`${quietButton} mt-2`} href="/admin?section=search">
             Manage OpenAI Search

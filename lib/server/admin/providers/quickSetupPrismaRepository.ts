@@ -27,6 +27,11 @@ import {
   type ProviderModelConfiguration
 } from "../../providers/providerConfiguration";
 import {
+  searchValidationFingerprint,
+  withSearchProbeBinding,
+  type SearchProbeBinding
+} from "../../search/probeBinding";
+import {
   adminProviderQuickSetupPolicy,
   providerModelConfigurationFromCatalogEntry
 } from "./quickSetupPolicy";
@@ -52,6 +57,7 @@ type QuickSetupDb = Pick<
   | "providerUserCredentialAssignment"
   | "runProfile"
   | "searchIntegrationRevision"
+  | "searchOption"
   | "searchStrategy"
   | "user"
   | "userGroup"
@@ -65,9 +71,14 @@ type QuickSetupRepositoryOptions = Readonly<{
 class QuickSetupCatalogUnavailableError extends Error {}
 
 const MAX_QUICK_SETUP_PRESERVED_MODELS = 64;
-const OPENAI_PROVIDER_SEARCH_DISPLAY_NAME = "OpenAI Search (provider-neutral)";
+const OPENAI_SEARCH_OPTION_DATABASE_ID = "00000000-0000-4000-8000-000000001402";
+const OPENAI_SEARCH_OPTION_ID = "openai-native-web-search";
+const OPENAI_SEARCH_OPTION_TEMPLATE_KEY = "search:openai";
+const OPENAI_PROVIDER_SEARCH_DISPLAY_NAME = "OpenAI Search";
 const OPENAI_PROVIDER_SEARCH_DESCRIPTION =
-  "Query-only OpenAI web search for any tool-capable answer model.";
+  "Web search provided by OpenAI.";
+const OPENAI_PROVIDER_SEARCH_FALLBACK_ID =
+  `openai-search-client:${adminProviderQuickSetupPolicy("openai").connection.id}`;
 
 function isSerializationConflict(error: Prisma.PrismaClientKnownRequestError): boolean {
   return error.code === "P2034" || (
@@ -724,9 +735,18 @@ export async function lockAdminProviderQuickSetupState(
   `);
   if (plan.provider === "openai") {
     await tx.$queryRaw(Prisma.sql`
+      SELECT "id" FROM "SearchOption"
+      WHERE "optionId" = ${OPENAI_SEARCH_OPTION_ID}
+         OR "id" = ${OPENAI_SEARCH_OPTION_DATABASE_ID}
+      ORDER BY "id"
+      FOR UPDATE
+    `);
+    await tx.$queryRaw(Prisma.sql`
       SELECT "id" FROM "SearchStrategy"
       WHERE "strategyId" = ${OPENAI_PROVIDER_SEARCH_STRATEGY_ID}
          OR "id" = ${OPENAI_PROVIDER_SEARCH_INTEGRATION_ID}
+         OR "strategyId" = ${OPENAI_PROVIDER_SEARCH_FALLBACK_ID}
+         OR "id" = ${OPENAI_PROVIDER_SEARCH_FALLBACK_ID}
       ORDER BY "id"
       FOR UPDATE
     `);
@@ -808,7 +828,7 @@ export async function lockAdminProviderQuickSetupState(
          SELECT "id" FROM "ProviderConnection" WHERE "family" = ${policy.provider}
        )
        OR (${plan.provider === "openai"} AND
-         grant_row."searchStrategy" = ${OPENAI_PROVIDER_SEARCH_STRATEGY_ID})
+         grant_row."searchStrategy" = ${OPENAI_SEARCH_OPTION_ID})
     ORDER BY grant_row."id" FOR UPDATE OF grant_row
   `);
   if ("mode" in plan && plan.mode === "initial") {
@@ -825,11 +845,12 @@ export async function lockAdminProviderQuickSetupState(
   }
 }
 
-async function synchronizeProviderNeutralOpenAISearch(
+async function synchronizeOpenAISearch(
   tx: Prisma.TransactionClient,
-  plan: AdminProviderQuickSetupCommitPlan
+  plan: AdminProviderQuickSetupCommitPlan,
+  probeBinding: SearchProbeBinding
 ): Promise<"needs_attention" | "ready" | null> {
-  const search = plan.providerNeutralSearch;
+  const search = plan.search;
   if (!search) return null;
   if (
     plan.provider !== "openai" ||
@@ -840,6 +861,78 @@ async function synchronizeProviderNeutralOpenAISearch(
     search.integrationId !== OPENAI_PROVIDER_SEARCH_INTEGRATION_ID
   ) {
     return "needs_attention";
+  }
+  const storedEvidence = withSearchProbeBinding(search.evidence, probeBinding);
+  const validationFingerprint = searchValidationFingerprint(storedEvidence);
+
+  const optionOwner = await tx.searchOption.findUnique({
+    where: { optionId: OPENAI_SEARCH_OPTION_ID }
+  });
+  const optionIdOwner = optionOwner?.id === OPENAI_SEARCH_OPTION_DATABASE_ID
+    ? optionOwner
+    : await tx.searchOption.findUnique({
+        where: { id: OPENAI_SEARCH_OPTION_DATABASE_ID }
+      });
+  if (
+    (optionOwner && optionOwner.id !== OPENAI_SEARCH_OPTION_DATABASE_ID) ||
+    (optionIdOwner && optionIdOwner.optionId !== OPENAI_SEARCH_OPTION_ID)
+  ) {
+    return "needs_attention";
+  }
+  const currentOption = optionOwner ?? optionIdOwner;
+  if (currentOption && (
+    currentOption.kind !== "web_search" ||
+    currentOption.templateKey !== OPENAI_SEARCH_OPTION_TEMPLATE_KEY
+  )) {
+    return "needs_attention";
+  }
+  const option = currentOption ?? await tx.searchOption.create({
+    data: {
+      description: OPENAI_PROVIDER_SEARCH_DESCRIPTION,
+      displayName: OPENAI_PROVIDER_SEARCH_DISPLAY_NAME,
+      enabled: true,
+      id: OPENAI_SEARCH_OPTION_DATABASE_ID,
+      kind: "web_search",
+      optionId: OPENAI_SEARCH_OPTION_ID,
+      sourceConnectionId: adminProviderQuickSetupPolicy("openai").connection.id,
+      templateKey: OPENAI_SEARCH_OPTION_TEMPLATE_KEY
+    }
+  });
+  await tx.searchOption.update({
+    data: {
+      archivedAt: null,
+      description: OPENAI_PROVIDER_SEARCH_DESCRIPTION,
+      displayName: OPENAI_PROVIDER_SEARCH_DISPLAY_NAME,
+      enabled: true,
+      sourceConnectionId: adminProviderQuickSetupPolicy("openai").connection.id
+    },
+    where: { id: option.id }
+  });
+
+  const hosted = await tx.searchStrategy.findUnique({
+    where: { strategyId: OPENAI_SEARCH_OPTION_ID }
+  });
+  if (hosted) {
+    if (
+      hosted.archivedAt !== null ||
+      hosted.adapterKind !== "answer_provider_hosted" ||
+      hosted.credentialMode !== "answer_provider" ||
+      hosted.kind !== "openai_native_web_search"
+    ) {
+      return "needs_attention";
+    }
+    if (hosted.searchOptionId !== option.id ||
+      hosted.displayName !== OPENAI_PROVIDER_SEARCH_DISPLAY_NAME ||
+      hosted.description !== OPENAI_PROVIDER_SEARCH_DESCRIPTION) {
+      await tx.searchStrategy.update({
+        data: {
+          description: OPENAI_PROVIDER_SEARCH_DESCRIPTION,
+          displayName: OPENAI_PROVIDER_SEARCH_DISPLAY_NAME,
+          searchOptionId: option.id
+        },
+        where: { id: hosted.id }
+      });
+    }
   }
 
   const strategyOwner = await tx.searchStrategy.findUnique({
@@ -852,17 +945,63 @@ async function synchronizeProviderNeutralOpenAISearch(
         include: { activeRevision: true },
         where: { id: OPENAI_PROVIDER_SEARCH_INTEGRATION_ID }
       });
-  if (
-    (strategyOwner && strategyOwner.id !== OPENAI_PROVIDER_SEARCH_INTEGRATION_ID) ||
-    (idOwner && idOwner.strategyId !== OPENAI_PROVIDER_SEARCH_STRATEGY_ID)
-  ) {
+  const preferredOwned = strategyOwner?.id === OPENAI_PROVIDER_SEARCH_INTEGRATION_ID &&
+    idOwner?.strategyId === OPENAI_PROVIDER_SEARCH_STRATEGY_ID &&
+    strategyOwner.searchOptionId === option.id
+    ? strategyOwner
+    : null;
+  const preferredFree = !strategyOwner && !idOwner;
+  const fallbackStrategyOwner = await tx.searchStrategy.findUnique({
+    include: { activeRevision: true },
+    where: { strategyId: OPENAI_PROVIDER_SEARCH_FALLBACK_ID }
+  });
+  const fallbackIdOwner = fallbackStrategyOwner?.id === OPENAI_PROVIDER_SEARCH_FALLBACK_ID
+    ? fallbackStrategyOwner
+    : await tx.searchStrategy.findUnique({
+        include: { activeRevision: true },
+        where: { id: OPENAI_PROVIDER_SEARCH_FALLBACK_ID }
+      });
+  const fallbackOwned = fallbackStrategyOwner?.id === OPENAI_PROVIDER_SEARCH_FALLBACK_ID &&
+    fallbackIdOwner?.strategyId === OPENAI_PROVIDER_SEARCH_FALLBACK_ID &&
+    fallbackStrategyOwner.searchOptionId === option.id
+    ? fallbackStrategyOwner
+    : null;
+  const fallbackFree = !fallbackStrategyOwner && !fallbackIdOwner;
+  const currentPreferred = preferredOwned?.archivedAt === null ? preferredOwned : null;
+  const currentFallback = fallbackOwned?.archivedAt === null ? fallbackOwned : null;
+  const unarchivedClientRoute = await tx.searchStrategy.findFirst({
+    select: { id: true },
+    where: {
+      adapterKind: "provider_model_client",
+      archivedAt: null,
+      searchOptionId: option.id
+    }
+  });
+  if (unarchivedClientRoute &&
+    unarchivedClientRoute.id !== currentPreferred?.id &&
+    unarchivedClientRoute.id !== currentFallback?.id) {
+    // An operator-owned draft or route already occupies the one client slot
+    // for this logical source. Quick setup must leave it untouched and finish
+    // provider setup with Search requiring explicit administrator attention.
     return "needs_attention";
   }
-  const current = strategyOwner ?? idOwner;
+  const usePreferred = Boolean(currentPreferred || (!currentFallback && preferredFree));
+  if (!currentPreferred && !currentFallback && !preferredFree && !fallbackFree) {
+    return "needs_attention";
+  }
+  const current = currentPreferred ?? currentFallback;
+  const routeIdentity = usePreferred
+    ? {
+        id: OPENAI_PROVIDER_SEARCH_INTEGRATION_ID,
+        strategyId: OPENAI_PROVIDER_SEARCH_STRATEGY_ID
+      }
+    : {
+        id: OPENAI_PROVIDER_SEARCH_FALLBACK_ID,
+        strategyId: OPENAI_PROVIDER_SEARCH_FALLBACK_ID
+      };
   if (current && (
     current.archivedAt !== null ||
-    current.displayName !== OPENAI_PROVIDER_SEARCH_DISPLAY_NAME ||
-    current.description !== OPENAI_PROVIDER_SEARCH_DESCRIPTION ||
+    current.searchOptionId !== option.id ||
     current.kind !== "provider_model_web_search" ||
     current.adapterKind !== "provider_model_client" ||
     current.credentialMode !== "provider_model" ||
@@ -879,14 +1018,15 @@ async function synchronizeProviderNeutralOpenAISearch(
       description: OPENAI_PROVIDER_SEARCH_DESCRIPTION,
       displayName: OPENAI_PROVIDER_SEARCH_DISPLAY_NAME,
       draft: json(search.draft),
-      draftTestEvidence: json(search.evidence),
+      draftTestEvidence: json(storedEvidence),
       enabled: false,
-      id: search.integrationId,
+      id: routeIdentity.id,
       kind: "provider_model_web_search",
       modelId: plan.candidate.configuration.upstreamModelId,
       provider: "openai",
       providerModelId: plan.candidate.modelId,
-      strategyId: OPENAI_PROVIDER_SEARCH_STRATEGY_ID,
+      searchOptionId: option.id,
+      strategyId: routeIdentity.strategyId,
       testedDraftHash: search.draftHash
     }
   });
@@ -894,11 +1034,14 @@ async function synchronizeProviderNeutralOpenAISearch(
   await tx.searchStrategy.update({
     data: {
       draft: json(search.draft),
-      draftTestEvidence: json(search.evidence),
+      draftTestEvidence: json(storedEvidence),
+      description: OPENAI_PROVIDER_SEARCH_DESCRIPTION,
+      displayName: OPENAI_PROVIDER_SEARCH_DISPLAY_NAME,
       ...(current && !sameJson(current.draft, search.draft)
         ? { draftVersion: { increment: 1 } }
         : {}),
       enabled: search.evidence.status === "available",
+      searchOptionId: option.id,
       ...(stored.activeRevisionId
         ? {}
         : {
@@ -920,7 +1063,7 @@ async function synchronizeProviderNeutralOpenAISearch(
       groupId: null,
       providerConnectionId: null,
       providerModelId: null,
-      searchStrategy: OPENAI_PROVIDER_SEARCH_STRATEGY_ID,
+      searchStrategy: OPENAI_SEARCH_OPTION_ID,
       userId: plan.actor.userId
     }
   });
@@ -939,7 +1082,7 @@ async function synchronizeProviderNeutralOpenAISearch(
         id: search.grantId,
         providerConnectionId: null,
         providerModelId: null,
-        searchStrategy: OPENAI_PROVIDER_SEARCH_STRATEGY_ID,
+        searchStrategy: OPENAI_SEARCH_OPTION_ID,
         userId: plan.actor.userId
       }
     });
@@ -948,9 +1091,10 @@ async function synchronizeProviderNeutralOpenAISearch(
   if (search.evidence.status !== "available") return "needs_attention";
   const existingRevision = await tx.searchIntegrationRevision.findUnique({
     where: {
-      searchStrategyId_draftHash: {
+      searchStrategyId_draftHash_validationFingerprint: {
         draftHash: search.draftHash,
-        searchStrategyId: stored.id
+        searchStrategyId: stored.id,
+        validationFingerprint
       }
     }
   });
@@ -970,7 +1114,8 @@ async function synchronizeProviderNeutralOpenAISearch(
       providerModelId: plan.candidate.modelId,
       revisionNumber: (latestRevision?.revisionNumber ?? 0) + 1,
       searchStrategyId: stored.id,
-      validationEvidence: json(search.evidence)
+      validationEvidence: json(storedEvidence),
+      validationFingerprint
     }
   });
   await tx.searchStrategy.update({
@@ -1377,7 +1522,14 @@ async function applyQuickSetupPlan(
     }
   }
 
-  const providerNeutralSearch = await synchronizeProviderNeutralOpenAISearch(tx, plan);
+  const search = await synchronizeOpenAISearch(tx, plan, {
+    connectionId: policy.connection.id,
+    connectionVersion,
+    credentialId: plan.credential.id,
+    credentialVersionId: plan.credential.versionId,
+    modelVersion: modelVersions.get(plan.candidate.modelId) ?? 1,
+    providerModelId: plan.candidate.modelId
+  });
 
   const eligibleModelIds = await eligibleProviderModelIds(tx, plan.actor.userId, exposeFake);
   if ([...candidateModelIds, ...plan.preservedModels.map(({ id }) => id)].every(
@@ -1419,7 +1571,7 @@ async function applyQuickSetupPlan(
   return {
     defaultChanged,
     profilesFilled,
-    ...(plan.providerNeutralSearch ? { providerNeutralSearch } : {}),
+    ...(plan.search ? { search } : {}),
     status: "ready"
   };
 }

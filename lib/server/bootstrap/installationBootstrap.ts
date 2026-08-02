@@ -21,6 +21,7 @@ import {
   normalizeSearchDraft,
   searchDraftHash
 } from "@/lib/server/search/configuration";
+import { searchValidationFingerprint } from "@/lib/server/search/probeBinding";
 
 const BOOTSTRAP_LOCK_KEY = "aiqsa:installation-bootstrap:v1";
 const INITIAL_PROMPT_NAME = "Helpful Assistant";
@@ -28,6 +29,45 @@ const INITIAL_SYSTEM_PROMPT =
   "You are a helpful AI assistant. Today is {local_date}, local time is {local_time}.";
 const MAX_DISPLAY_NAME_LENGTH = 200;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+const BUILT_IN_SEARCH_OPTIONS = Object.freeze({
+  "gemini-google-search": Object.freeze({
+    description: "Google Search grounding for eligible Gemini models.",
+    displayName: "Google Search",
+    id: "00000000-0000-4000-8000-000000001403",
+    kind: "gemini_google_search",
+    sourceConnectionId: providerTemplateIds.geminiConnection,
+    templateKey: "search:gemini-google"
+  }),
+  "openai-native-web-search": Object.freeze({
+    description: "Web search provided by OpenAI.",
+    displayName: "OpenAI Search",
+    id: "00000000-0000-4000-8000-000000001402",
+    kind: "web_search",
+    sourceConnectionId: providerTemplateIds.openAiConnection,
+    templateKey: "search:openai"
+  }),
+  "perplexity-tool-search": Object.freeze({
+    description: "Web search provided by Perplexity through OpenRouter.",
+    displayName: "Perplexity Search",
+    id: "00000000-0000-4000-8000-000000001404",
+    kind: "perplexity_search",
+    sourceConnectionId: providerTemplateIds.openRouterConnection,
+    templateKey: "search:perplexity"
+  }),
+  "search-disabled": Object.freeze({
+    description: "Answer without web search.",
+    displayName: "Off",
+    id: "00000000-0000-4000-8000-000000001401",
+    kind: "none",
+    sourceConnectionId: null,
+    templateKey: "search:none"
+  })
+});
+
+function builtInSearchOption(strategyId: string) {
+  return BUILT_IN_SEARCH_OPTIONS[strategyId as keyof typeof BUILT_IN_SEARCH_OPTIONS];
+}
 
 export type InstallationBootstrapInput = {
   displayName: string;
@@ -389,69 +429,110 @@ async function synchronizeCodeOwnedCatalog(tx: Prisma.TransactionClient): Promis
     });
   }
 
-  for (const strategy of defaultSearchStrategies.filter(
-    (candidate) => candidate.kind !== "perplexity_tool_search"
-  )) {
-    const draft = builtInSearchDraft({ config: strategy.config, kind: strategy.kind });
-    const draftHash = strategy.kind === "none"
-      ? `bootstrap:${strategy.strategyId}`
-      : searchDraftHash(normalizeSearchDraft(draft));
-    const stored = await tx.searchStrategy.upsert({
+  for (const [optionId, option] of Object.entries(BUILT_IN_SEARCH_OPTIONS)) {
+    await tx.searchOption.upsert({
       create: {
-        adapterKind: String(draft.adapterKind),
-        config: json(strategy.config),
-        credentialMode: String(draft.credentialMode),
-        description: strategy.description,
-        displayName: strategy.displayName,
-        draft: json(draft),
-        draftTestEvidence: json({
-          checkedAt: new Date().toISOString(),
-          method: "configuration",
-          normalizedSourceCount: 0,
-          protocol: draft.protocol,
-          status: "available"
-        }),
+        description: option.description,
+        displayName: option.displayName,
         enabled: true,
-        // SearchStrategy participates in the composite active-revision
-        // relation. Supply the fresh-row identity explicitly so PostgreSQL
-        // never sees a null id through Prisma's upsert path.
-        id: randomNodeUuid(),
-        kind: strategy.kind,
-        modelId: strategy.modelId ?? null,
-        provider: strategy.provider,
-        strategyId: strategy.strategyId,
-        testedDraftHash: draftHash
+        id: option.id,
+        kind: option.kind,
+        optionId,
+        sourceConnectionId: option.sourceConnectionId,
+        templateKey: option.templateKey
       },
       update: {
-        config: json(strategy.config),
-        description: strategy.description,
-        displayName: strategy.displayName,
-        kind: strategy.kind,
-        modelId: strategy.modelId ?? null,
-        provider: strategy.provider
+        description: option.description,
+        displayName: option.displayName,
+        kind: option.kind,
+        sourceConnectionId: option.sourceConnectionId,
+        templateKey: option.templateKey
       },
-      where: {
-        strategyId: strategy.strategyId
-      }
+      where: { id: option.id }
     });
-    if (!stored.activeRevisionId) {
-      const revision = await tx.searchIntegrationRevision.create({
-        data: {
+  }
+
+  for (const logicalOption of defaultSearchStrategies.filter(
+    (candidate) => candidate.kind !== "perplexity_tool_search"
+  )) {
+    const searchOption = builtInSearchOption(logicalOption.strategyId);
+    if (!searchOption) {
+      throw new InstallationBootstrapError(
+        "preflight_failed",
+        `Built-in Search option is missing for ${logicalOption.strategyId}.`
+      );
+    }
+    const physicalRoutes = logicalOption.kind === "none"
+      ? [{ config: {}, kind: "none", physicalStrategyId: logicalOption.strategyId }]
+      : logicalOption.routes;
+    for (const route of physicalRoutes) {
+      const draft = builtInSearchDraft({ config: route.config, kind: route.kind });
+      const draftHash = route.kind === "none"
+        ? `bootstrap:${route.physicalStrategyId}`
+        : searchDraftHash(normalizeSearchDraft(draft));
+      const stored = await tx.searchStrategy.upsert({
+        create: {
           adapterKind: String(draft.adapterKind),
-          configuration: json(draft),
+          config: json(route.config),
           credentialMode: String(draft.credentialMode),
-          draftHash,
+          description: logicalOption.description,
+          displayName: logicalOption.displayName,
+          draft: json(draft),
+          draftTestEvidence: json({
+            checkedAt: new Date().toISOString(),
+            method: "configuration",
+            normalizedSourceCount: 0,
+            protocol: draft.protocol,
+            status: "available"
+          }),
+          enabled: true,
+          // SearchStrategy participates in the composite active-revision
+          // relation. Supply the fresh-row identity explicitly so PostgreSQL
+          // never sees a null id through Prisma's upsert path.
           id: randomNodeUuid(),
-          providerModelId: null,
-          revisionNumber: 1,
-          searchStrategyId: stored.id,
-          validationEvidence: json({ method: "bootstrap", status: "available" })
+          kind: route.kind,
+          modelId: null,
+          provider: logicalOption.sourceConnectionId ?? "fake",
+          searchOptionId: searchOption.id,
+          strategyId: route.physicalStrategyId,
+          testedDraftHash: draftHash
+        },
+        update: {
+          config: json(route.config),
+          description: logicalOption.description,
+          displayName: logicalOption.displayName,
+          kind: route.kind,
+          modelId: null,
+          provider: logicalOption.sourceConnectionId ?? "fake",
+          searchOptionId: searchOption.id
+        },
+        where: {
+          strategyId: route.physicalStrategyId
         }
       });
-      await tx.searchStrategy.update({
-        data: { activeRevisionId: revision.id, activatedAt: new Date() },
-        where: { id: stored.id }
-      });
+      if (!stored.activeRevisionId) {
+        const revision = await tx.searchIntegrationRevision.create({
+          data: {
+            adapterKind: String(draft.adapterKind),
+            configuration: json(draft),
+            credentialMode: String(draft.credentialMode),
+            draftHash,
+            id: randomNodeUuid(),
+            providerModelId: null,
+            revisionNumber: 1,
+            searchStrategyId: stored.id,
+            validationEvidence: json({ method: "bootstrap", status: "available" }),
+            validationFingerprint: searchValidationFingerprint({
+              method: "bootstrap",
+              status: "available"
+            })
+          }
+        });
+        await tx.searchStrategy.update({
+          data: { activeRevisionId: revision.id, activatedAt: new Date() },
+          where: { id: stored.id }
+        });
+      }
     }
   }
 }

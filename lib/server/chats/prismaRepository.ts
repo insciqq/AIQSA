@@ -351,6 +351,29 @@ function searchStrategyFromPayload(payload: unknown): string | null {
   return inner.type === "web_search_call" ? "openai-native-web-search" : null;
 }
 
+type NormalizedSearchIdentity = Readonly<{
+  adapterKind: string | null;
+  displayName: string | null;
+  optionId: string;
+}>;
+
+function searchIdentitiesFromNormalizedRequest(value: unknown): NormalizedSearchIdentity[] {
+  if (!isRecord(value) || !isRecord(value.searchPlan) || !Array.isArray(value.searchPlan.options)) {
+    return [];
+  }
+
+  return value.searchPlan.options.flatMap((option) => {
+    if (!isRecord(option)) return [];
+    const optionId = optionalString(option.optionId);
+    if (!optionId) return [];
+    return [{
+      adapterKind: optionalString(option.adapterKind) ?? null,
+      displayName: optionalString(option.displayName) ?? null,
+      optionId
+    }];
+  });
+}
+
 function citationFromPayload(payload: unknown, fallbackIndex: number): ThreadCitation | null {
   const inner = artifactInnerPayload(payload);
   if (typeof inner === "string" && inner.trim()) {
@@ -434,6 +457,25 @@ export function summarizeMessageRunArtifacts(run: ArtifactSummaryRun): ThreadArt
   }));
   const searchDetails = runSearchDetails.length > 0 ? runSearchDetails : searchDetailsFromArtifacts(searchPayloads);
   const searchCount = Math.max(searchArtifactCount, completedSearchRuns.length);
+  const normalizedSearchIdentities = searchIdentitiesFromNormalizedRequest(run.normalizedRequest);
+  const hostedSearchIdentities = normalizedSearchIdentities.filter(
+    (identity) => identity.adapterKind === "answer_provider_hosted"
+  );
+  const hostedSearchIdentity = searchArtifactCount > 0
+    ? hostedSearchIdentities.length === 1
+      ? hostedSearchIdentities[0]
+      : normalizedSearchIdentities.length === 1
+        ? normalizedSearchIdentities[0]
+        : null
+    : null;
+  const executedOptionIds = new Set([
+    ...run.searchRuns.map((searchRun) => searchRun.strategyId),
+    ...(hostedSearchIdentity ? [hostedSearchIdentity.optionId] : [])
+  ]);
+  const searchDisplayNames = normalizedSearchIdentities
+    .filter((identity) => executedOptionIds.has(identity.optionId) && identity.displayName)
+    .map((identity) => identity.displayName as string);
+  const searchDisplayName = [...new Set(searchDisplayNames)].join(" + ") || null;
   const reasoningPayloads = artifactPayloads.filter((payload) => artifactType(payload) === "reasoning");
   const reasoningSnippets = reasoningPayloads
     .map(reasoningText)
@@ -483,8 +525,10 @@ export function summarizeMessageRunArtifacts(run: ArtifactSummaryRun): ThreadArt
     reasoningText: reasoningSnippets,
     searchCount,
     searchDetails,
+    ...(searchDisplayName ? { searchDisplayName } : {}),
     searchStrategy:
       completedSearchRuns[0]?.strategyId ??
+      hostedSearchIdentity?.optionId ??
       artifactPayloads.map(searchStrategyFromPayload).find((strategy): strategy is string => Boolean(strategy)) ??
       null,
     toolCallCount: toolCalls.length,

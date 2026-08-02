@@ -340,6 +340,14 @@ function maxOutputTokens(params: Record<string, unknown>): number {
   return value;
 }
 
+function usesHostedGoogleSearch(request: ProviderRunRequest): boolean {
+  return request.searchPlan
+    ? request.searchPlan.options.some((option) =>
+        option.adapterKind === "answer_provider_hosted" &&
+        option.protocol === "gemini_google_search")
+    : request.searchStrategy === "gemini-google-search";
+}
+
 function buildGeminiInteractionsBody(
   request: ProviderRunRequest,
   options: BuildOptions
@@ -366,7 +374,7 @@ function buildGeminiInteractionsBody(
   const serializedTools = (request.tools ?? []).map((tool) =>
     geminiInteractionsToolBridge.serializeTool(tool).tool
   );
-  const hostedTools = request.searchStrategy === "gemini-google-search"
+  const hostedTools = usesHostedGoogleSearch(request)
     ? [{ type: "google_search" }]
     : [];
   if (hostedTools.length > 0 && serializedTools.length > 0) {

@@ -7,6 +7,7 @@ import {
   type AdminProviderCustomSetupRequest
 } from "../../../contracts/adminProviderCustomSetup";
 import type { AdminProviderTestEvidence } from "../../../contracts/adminProviders";
+import type { AdminSearchDraft, AdminSearchTestEvidence } from "../../../contracts/adminSearch";
 import {
   encryptProviderCredentialSecret,
   normalizeProviderCredentialSecret
@@ -17,6 +18,8 @@ import {
   type ProviderModelConfiguration
 } from "../../providers/providerConfiguration";
 import { getSecretEncryptionKey } from "../../secrets/envelope";
+import { searchDraftHash } from "../../search/configuration";
+import type { AdminProviderQuickSetupSearchTester } from "./quickSetupSearchTester";
 import type { AdminProviderDraftTestOutcome } from "./tester";
 import type {
   AdminProviderCustomConnectionConfiguration,
@@ -70,6 +73,11 @@ function defaultConnectionDisplayName(apiRoot: string): string {
   return value.length <= MAX_DISPLAY_NAME_LENGTH
     ? value
     : value.slice(0, MAX_DISPLAY_NAME_LENGTH);
+}
+
+function searchDisplayName(connectionName: string): string {
+  const suffix = " Search";
+  return `${connectionName.slice(0, MAX_DISPLAY_NAME_LENGTH - suffix.length).trimEnd()}${suffix}`;
 }
 
 function connectionConfiguration(
@@ -181,6 +189,7 @@ export function createAdminProviderCustomSetupService(input: Readonly<{
   idFactory?: () => string;
   now?: () => Date;
   repository: AdminProviderCustomSetupRepository;
+  searchTester: AdminProviderQuickSetupSearchTester;
   tester: AdminProviderCustomSetupTester;
 }>) {
   const encryptionKey = input.encryptionKey ?? getSecretEncryptionKey;
@@ -228,7 +237,10 @@ export function createAdminProviderCustomSetupService(input: Readonly<{
       const credentialId = idFactory();
       const credentialVersionId = idFactory();
       const grantIds = modelConfigurations.map(() => idFactory());
-      const searchGrantId = modelConfigurations[0]!.capabilities.nativeSearch
+      const primaryModel = modelConfigurations[0]!;
+      const supportsSearch = primaryModel.adapterKind === "openai_responses_compatible" &&
+        primaryModel.capabilities.nativeSearch;
+      const searchGrantId = supportsSearch
         ? idFactory()
         : undefined;
 
@@ -256,7 +268,67 @@ export function createAdminProviderCustomSetupService(input: Readonly<{
         }
         evidence.push(validatedEvidence(testOutcome, model));
       }
+
+      let searchOutcome: Awaited<ReturnType<AdminProviderQuickSetupSearchTester["test"]>> | null = null;
+      if (supportsSearch) {
+        if (secret === null) {
+          searchOutcome = { normalizedSourceCount: 0, status: "unavailable" };
+        } else {
+          try {
+            searchOutcome = await input.searchTester.test({
+              connection,
+              model: primaryModel,
+              secret,
+              signal: inputValue.signal
+            });
+          } catch {
+            if (inputValue.signal?.aborted) {
+              throw new AdminProviderCustomSetupServiceError(
+                "provider_custom_setup_test_failed"
+              );
+            }
+            searchOutcome = { normalizedSourceCount: 0, status: "unavailable" };
+          }
+        }
+      }
       const checkedAt = now();
+      const sourceCount = searchOutcome?.status === "available" &&
+        Number.isSafeInteger(searchOutcome.normalizedSourceCount) &&
+        searchOutcome.normalizedSourceCount > 0
+        ? searchOutcome.normalizedSourceCount
+        : 0;
+      const searchEvidence: AdminSearchTestEvidence | null = searchOutcome
+        ? {
+            checkedAt: checkedAt.toISOString(),
+            method: "provider_search",
+            normalizedSourceCount: sourceCount,
+            protocol: "openai_responses_web_search",
+            status: sourceCount > 0 ? "available" : "unavailable"
+          }
+        : null;
+      const searchName = supportsSearch ? searchDisplayName(connectionName) : null;
+      const hostedSearchDraft: AdminSearchDraft | null = supportsSearch
+        ? {
+            adapterKind: "answer_provider_hosted",
+            credentialMode: "answer_provider",
+            maxResults: 8,
+            protocol: "openai_responses_web_search",
+            providerModelId: null,
+            queryMaxCharacters: 500,
+            timeoutMs: 300_000
+          }
+        : null;
+      const clientSearchDraft: AdminSearchDraft | null = supportsSearch
+        ? {
+            adapterKind: "provider_model_client",
+            credentialMode: "provider_model",
+            maxResults: 8,
+            protocol: "openai_responses_web_search",
+            providerModelId: providerModelIds[0]!,
+            queryMaxCharacters: 500,
+            timeoutMs: 300_000
+          }
+        : null;
       const commit = await input.repository.commit({
         actor: inputValue.actor,
         checkedAt,
@@ -288,7 +360,32 @@ export function createAdminProviderCustomSetupService(input: Readonly<{
           id: providerModelIds[index]!
         })),
         now: now(),
-        ...(searchGrantId ? { searchGrantId } : {})
+        ...(searchGrantId && searchEvidence && searchName && hostedSearchDraft && clientSearchDraft
+          ? {
+              search: {
+                client: {
+                  draft: clientSearchDraft,
+                  draftHash: searchDraftHash(clientSearchDraft),
+                  id: `custom-web-search-client:${connectionId}`,
+                  revisionId: `custom-web-search-client-revision:${connectionId}`,
+                  strategyId: `custom-web-search-client:${connectionId}`
+                },
+                description: `Web search provided by ${connectionName}.`.slice(0, 500),
+                displayName: searchName,
+                evidence: searchEvidence,
+                grantId: searchGrantId,
+                hosted: {
+                  draft: hostedSearchDraft,
+                  draftHash: searchDraftHash(hostedSearchDraft),
+                  id: `custom-web-search-hosted:${connectionId}`,
+                  revisionId: `custom-web-search-hosted-revision:${connectionId}`,
+                  strategyId: `custom-web-search-hosted:${connectionId}`
+                },
+                optionId: `custom-web-search:${connectionId}`,
+                optionRowId: `custom-web-search-option:${connectionId}`
+              }
+            }
+          : {})
       });
       if (commit === "catalog_unavailable") {
         throw new AdminProviderCustomSetupServiceError(
@@ -313,7 +410,13 @@ export function createAdminProviderCustomSetupService(input: Readonly<{
           providerModelId
         })),
         outcome: "ready",
-        providerModelId: providerModelIds[0]!
+        providerModelId: providerModelIds[0]!,
+        search: searchName
+          ? {
+              displayName: searchName,
+              status: commit.search ?? "needs_attention"
+            }
+          : null
       };
     }
   };

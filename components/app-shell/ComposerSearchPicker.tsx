@@ -3,13 +3,10 @@ import { useDialogFocus } from "@/components/app-shell/useDialogFocus";
 import type { SearchPlanMode } from "@/lib/domain/search";
 import { isSearchCombinationCompatible } from "@/lib/domain/catalogMatrix";
 import { Check, ChevronDown, Search, X } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { type KeyboardEvent as ReactKeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
 
 function optionDescription(option: CatalogSearchStrategy): string {
-  const privacy = option.privacy === "query_only"
-    ? "Only the generated query is shared"
-    : "Runs inside the answer-provider request";
-  return `${privacy} · ${option.executionModes?.includes("all_selected") ? "fan-out ready" : "model choice only"}`;
+  return option.description ?? "Web evidence for the next answer";
 }
 
 function summary(
@@ -29,10 +26,32 @@ function summary(
 
 function narrowLabel(option: CatalogSearchStrategy | undefined): string {
   if (!option) return "Off";
-  if (option.kind === "gemini_google_search") return "Google";
-  if (option.kind === "openai_native_web_search") return "OAI";
-  if (option.kind === "perplexity_tool_search") return "PPLXTY";
   return option.displayName;
+}
+
+function moveOptionFocus(event: ReactKeyboardEvent<HTMLDivElement>) {
+  if (
+    event.defaultPrevented ||
+    event.nativeEvent.isComposing ||
+    (event.target instanceof HTMLElement && event.target.matches("input, select, textarea")) ||
+    !["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)
+  ) return;
+
+  const buttons = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>(
+    "button[data-option-value]:not(:disabled)"
+  ));
+  if (buttons.length === 0) return;
+
+  const currentIndex = buttons.indexOf(document.activeElement as HTMLButtonElement);
+  const nextIndex = event.key === "Home"
+    ? 0
+    : event.key === "End"
+      ? buttons.length - 1
+      : event.key === "ArrowDown"
+        ? currentIndex >= 0 ? (currentIndex + 1) % buttons.length : 0
+        : currentIndex >= 0 ? (currentIndex - 1 + buttons.length) % buttons.length : buttons.length - 1;
+  event.preventDefault();
+  buttons[nextIndex]?.focus();
 }
 
 export function ComposerSearchPicker({
@@ -40,6 +59,7 @@ export function ComposerSearchPicker({
   className = "",
   compatibleOptionIds,
   disabled,
+  executionModesByOptionId = {},
   id,
   mode,
   onChange,
@@ -55,6 +75,7 @@ export function ComposerSearchPicker({
   className?: string;
   compatibleOptionIds?: readonly string[];
   disabled: boolean;
+  executionModesByOptionId?: Readonly<Record<string, readonly SearchPlanMode[]>>;
   id: string;
   mode: SearchPlanMode;
   onChange(optionIds: string[], mode: SearchPlanMode): void;
@@ -75,6 +96,10 @@ export function ComposerSearchPicker({
     restoreFocus: () => triggerRef.current
   });
   const available = useMemo(() => options.filter((option) => option.kind !== "none"), [options]);
+  const combinationOptions = useMemo(() => available.map((option) => ({
+    ...option,
+    executionModes: executionModesByOptionId[option.strategyId] ?? option.executionModes
+  })), [available, executionModesByOptionId]);
   const compatible = useMemo(
     () => new Set(compatibleOptionIds ?? available.map((option) => option.strategyId)),
     [available, compatibleOptionIds]
@@ -87,7 +112,9 @@ export function ComposerSearchPicker({
     ? available.find((option) => option.strategyId === selected[0])
     : undefined;
   const allSelectedAvailable = selected.length > 0 && selected.every((idValue) =>
-    available.find((option) => option.strategyId === idValue)?.executionModes?.includes("all_selected") === true);
+    (executionModesByOptionId[idValue] ??
+      available.find((option) => option.strategyId === idValue)?.executionModes)
+      ?.includes("all_selected") === true);
 
   useEffect(() => {
     if (!open) return;
@@ -106,9 +133,11 @@ export function ComposerSearchPicker({
     const next = active
       ? selected.filter((idValue) => idValue !== option.strategyId)
       : [...selected, option.strategyId];
-    if (!active && !isSearchCombinationCompatible(next, available, "model_choice")) return;
+    if (!active && !isSearchCombinationCompatible(next, combinationOptions, "model_choice")) return;
     const supportsFanout = next.length > 0 && next.every((idValue) =>
-      available.find((candidate) => candidate.strategyId === idValue)?.executionModes?.includes("all_selected") === true);
+      (executionModesByOptionId[idValue] ??
+        available.find((candidate) => candidate.strategyId === idValue)?.executionModes)
+        ?.includes("all_selected") === true);
     onChange(next, mode === "all_selected" && !supportsFanout ? "model_choice" : mode);
   }
 
@@ -148,6 +177,7 @@ export function ComposerSearchPicker({
           className={`pop-enter absolute z-50 flex max-h-[min(30rem,calc(100dvh-6rem))] w-[min(25rem,calc(100vw-2rem))] flex-col overflow-hidden rounded-panel border border-trace-subtle bg-overlay-surface p-3 shadow-overlay max-sm:fixed max-sm:inset-x-2 max-sm:bottom-2 max-sm:top-auto max-sm:w-auto max-sm:max-h-[min(78dvh,34rem)] [@media(max-height:32rem)]:!fixed [@media(max-height:32rem)]:!inset-x-2 [@media(max-height:32rem)]:!bottom-2 [@media(max-height:32rem)]:!top-auto [@media(max-height:32rem)]:!w-auto [@media(max-height:32rem)]:!max-h-[calc(100dvh-1rem-env(safe-area-inset-top)-env(safe-area-inset-bottom))] ${align === "right" ? "right-0" : "left-0"} ${placement === "below" ? "top-12" : "bottom-12"}`}
           data-testid={`${id}-options`}
           id={`${id}-dialog`}
+          onKeyDown={moveOptionFocus}
           role="dialog"
         >
           <div className="mb-2 flex items-start justify-between gap-3">
@@ -161,6 +191,7 @@ export function ComposerSearchPicker({
             <button
               aria-pressed={selected.length === 0}
               className={`flex min-h-touch w-full items-start justify-between gap-3 rounded-control px-3 py-2.5 text-left outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-proof/55 ${selected.length === 0 ? "bg-control-selected" : "hover:bg-control-hover"}`}
+              data-option-value="search-disabled"
               onClick={() => onChange([], "all_selected")}
               type="button"
             >
@@ -174,7 +205,7 @@ export function ComposerSearchPicker({
               const capped = !active && selected.length >= 3;
               const incompatible = !active && !isSearchCombinationCompatible(
                 [...selected, option.strategyId],
-                available,
+                combinationOptions,
                 "model_choice"
               );
               return (

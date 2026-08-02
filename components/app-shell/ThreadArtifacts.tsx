@@ -87,7 +87,8 @@ function SearchSummaryBlockComponent({
   embedded?: boolean;
   summary: ThreadArtifactSummary;
 }) {
-  const strategy = summary.searchStrategy ? searchStrategyDescription(summary.searchStrategy) : "Search/tool call";
+  const strategy = summary.searchDisplayName?.trim() ||
+    (summary.searchStrategy ? searchStrategyDescription(summary.searchStrategy) : "Search/tool call");
   const searchDetails = summary.searchDetails ?? [];
   const [open, toggleOpen] = useDisclosureControl({ expanded, onExpandedChange });
 
@@ -147,8 +148,10 @@ function SearchSummaryBlockComponent({
               <div className="mb-2 flex flex-wrap items-center gap-2 text-xs text-ink-muted">
                 <span className="font-mono text-ink-secondary">Search {index + 1}</span>
                 {detail.status ? <span>{detail.status}</span> : null}
-                {detail.provider || detail.modelId ? (
-                  <span>{[detail.provider, detail.modelId].filter(Boolean).join(" / ")}</span>
+                {summary.searchDisplayName?.trim() ? (
+                  <span>Search ran inside {summary.searchDisplayName.trim()}.</span>
+                ) : detail.provider || detail.modelId ? (
+                  <span>Search ran inside the answer provider.</span>
                 ) : null}
               </div>
               {detail.callPreview !== undefined && detail.requestPreview === undefined && detail.responsePreview === undefined ? (
@@ -156,7 +159,7 @@ function SearchSummaryBlockComponent({
                   <div className="text-xs font-medium text-ink-secondary">{searchCallLabel(detail)}</div>
                   {searchCallHasOnlyMetadata(detail.callPreview) ? (
                     <div className="border-l-2 border-trace-subtle px-2 py-1 text-ink-muted">
-                      OpenAI returned call metadata only for this run. Cited URLs, when available, are shown in Citations.
+                      The Search source returned call metadata only for this run. Cited URLs, when available, are shown in Citations.
                     </div>
                   ) : null}
                   <pre className="max-h-52 max-w-full overflow-auto whitespace-pre-wrap break-words rounded-control bg-control-surface p-2 font-mono text-xs leading-5 text-ink-secondary [overflow-wrap:anywhere]">
@@ -199,8 +202,8 @@ function SearchSummaryBlockComponent({
 }
 
 function searchCallLabel(detail: ThreadSearchDetail): string {
-  return detail.strategyId === "openai-native-web-search" || searchCallType(detail.callPreview) === "web_search_call"
-    ? "OpenAI web search call"
+  return searchCallType(detail.callPreview) === "web_search_call"
+    ? "Web search call"
     : "Search call";
 }
 
@@ -376,7 +379,7 @@ function SearchExecutionDisclosure({
       <div className="mt-2 grid gap-3 border-l border-trace-subtle pl-3" data-testid="thread-search-execution-details">
         <div className="flex flex-wrap gap-x-2 gap-y-1 text-ink-muted">
           <span>Search {index + 1}</span>
-          <span>{[execution.provider, execution.modelId].filter(Boolean).join(" / ")}</span>
+          <span>Only the generated search query was sent to {execution.displayName}.</span>
         </div>
         <div>
           <div className="mb-1 font-medium text-ink-secondary">Engine query</div>

@@ -171,6 +171,7 @@ describe("chat wire contracts", () => {
       reasoningText: ["Checked reasoning"],
       searchCount: 0,
       searchDetails: [],
+      searchDisplayName: "Company Gateway Search",
       searchStrategy: null,
       toolCallCount: 0,
       toolCalls: []
@@ -204,6 +205,7 @@ describe("chat wire contracts", () => {
       { ...message, role: "owner" },
       { ...message, status: "finished" },
       { ...message, runUsage: { totalTokens: -1 } },
+      { ...message, artifactSummary: { ...artifactSummary, searchDisplayName: 7 } },
       { ...message, artifactSummary: { ...artifactSummary, reasoningText: "not-an-array" } }
     ]) {
       expect(

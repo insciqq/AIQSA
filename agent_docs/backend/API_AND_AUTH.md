@@ -84,8 +84,8 @@ All administrator routes recheck an active administrator. Non-admin users receiv
 
 ### Search
 
-- The Search control plane owns an ordered installation recommendation of zero to three active ready integrations. A recommendation never grants access.
-- Integration changes follow draft, fixed query-only test, activation, and enablement. Activation requires evidence for the exact draft hash and publishes an immutable revision. Later draft edits do not change accepted runs.
+- The Search control plane owns an ordered installation recommendation of zero to three active ready logical sources. A recommendation never grants access. Each source belongs to one exact provider connection; physical hosted/query-only routes are never separate preference, policy, or grant targets.
+- Source changes coordinate the required physical draft, fixed query-only test, activation, and enablement lifecycle behind one administrator resource. Activation requires evidence for the exact draft and server-resolved connection/model/credential-version authority and publishes an immutable revision. The authority tuple remains server-only; safe responses expose only status, time, protocol, and normalized source count. Later draft edits do not change accepted runs. Admission persists both the requested logical option and selected exact physical route/revision.
 - Technical-only provider deployments may back Search without becoming answer-model candidates. Safe projections may name dependencies but never reveal endpoints, credential identity/value, probe results, source URLs, raw provider bodies, or execution data.
 
 ### MCP

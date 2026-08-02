@@ -8,6 +8,7 @@ import {
   type AdminProviderCustomSetupTester
 } from "./customSetupService";
 import { createAdminProviderDraftTester } from "./tester";
+import { createAdminProviderQuickSetupSearchTester } from "./quickSetupSearchTester";
 
 const draftTester = createAdminProviderDraftTester();
 const tester: AdminProviderCustomSetupTester = {
@@ -32,9 +33,11 @@ const tester: AdminProviderCustomSetupTester = {
 const repository = createPrismaAdminProviderCustomSetupRepository(prisma, {
   exposeFake: exposeFakeProvider()
 });
+const searchTester = createAdminProviderQuickSetupSearchTester();
 
 export const adminProviderCustomSetupService = createAdminProviderCustomSetupService({
   repository,
+  searchTester,
   tester
 });
 

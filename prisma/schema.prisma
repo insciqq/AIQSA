@@ -522,8 +522,29 @@ model ProviderConnection {
   credentials         ProviderCredential[]     @relation("ProviderConnectionCredentials")
   defaultCredential   ProviderCredential?      @relation("ProviderConnectionDefaultCredential", fields: [id, defaultCredentialId], references: [connectionId, id], onDelete: Restrict, onUpdate: Restrict, map: "ProviderConnection_defaultCredential_fkey")
   models              ProviderModel[]
+  searchOptions       SearchOption[]
 
   @@index([enabled])
+}
+
+model SearchOption {
+  id                 String              @id @default(uuid())
+  optionId           String              @unique
+  displayName        String
+  description        String
+  kind               String
+  templateKey        String?             @unique
+  sourceConnectionId String?
+  enabled            Boolean             @default(true)
+  archivedAt         DateTime?
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+  sourceConnection   ProviderConnection? @relation(fields: [sourceConnectionId], references: [id], onDelete: Restrict)
+  strategies         SearchStrategy[]
+
+  @@unique([sourceConnectionId, kind])
+  @@index([sourceConnectionId])
+  @@index([enabled, archivedAt])
 }
 
 model ProviderCredential {
@@ -676,6 +697,7 @@ model ProviderRunBinding {
 
 model SearchStrategy {
   id                String                      @id @default(uuid())
+  searchOptionId    String
   strategyId        String                      @unique
   provider          String
   modelId           String?
@@ -700,9 +722,11 @@ model SearchStrategy {
   providerModel     ProviderModel?              @relation(fields: [providerModelId], references: [id], onDelete: Restrict)
   revisions         SearchIntegrationRevision[] @relation("SearchIntegrationRevisions")
   runBindings       SearchRunBinding[]
+  searchOption      SearchOption                @relation(fields: [searchOptionId], references: [id], onDelete: Restrict)
 
   @@unique([id, activeRevisionId])
   @@index([providerModelId])
+  @@index([searchOptionId])
   @@index([enabled, archivedAt])
 }
 
@@ -716,6 +740,7 @@ model SearchIntegrationRevision {
   providerModelId    String?
   validationEvidence Json
   draftHash          String
+  validationFingerprint String              @default("legacy")
   createdAt          DateTime           @default(now())
   activeFor          SearchStrategy?    @relation("ActiveSearchRevision")
   providerModel      ProviderModel?     @relation(fields: [providerModelId], references: [id], onDelete: Restrict)
@@ -724,7 +749,7 @@ model SearchIntegrationRevision {
   searchRuns         SearchRun[]
 
   @@unique([searchStrategyId, revisionNumber])
-  @@unique([searchStrategyId, draftHash])
+  @@unique([searchStrategyId, draftHash, validationFingerprint], map: "SearchIntegrationRevision_strategy_draft_validation_key")
   @@unique([searchStrategyId, id])
   @@index([providerModelId])
 }

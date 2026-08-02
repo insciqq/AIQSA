@@ -84,6 +84,10 @@ function boundedString(value: unknown, maxLength: number): value is string {
   );
 }
 
+function isAbsent(value: unknown): value is null | undefined {
+  return value === undefined || value === null;
+}
+
 function nonNegativeInteger(value: unknown): number | null {
   return typeof value === "number" && Number.isInteger(value) && value >= 0
     ? value
@@ -136,13 +140,15 @@ function validateTextContent(value: unknown): Record<string, unknown> {
   if (!isRecord(value) || value.type !== "text" || typeof value.text !== "string") {
     throw new Error("gemini_interactions_step_invalid");
   }
-  if (value.annotations !== undefined && !Array.isArray(value.annotations)) {
+  if (!isAbsent(value.annotations) && !Array.isArray(value.annotations)) {
     throw new Error("gemini_interactions_step_invalid");
   }
   if (Array.isArray(value.annotations) && value.annotations.length > MAX_CITATION_COUNT) {
     throw new Error("gemini_interactions_grounding_invalid");
   }
-  return { ...value };
+  const normalized = { ...value };
+  if (isAbsent(value.annotations)) delete normalized.annotations;
+  return normalized;
 }
 
 function validateTextContentArray(value: unknown): Record<string, unknown>[] {
@@ -153,6 +159,7 @@ function validateTextContentArray(value: unknown): Record<string, unknown>[] {
 }
 
 function validateArguments(value: unknown): Record<string, unknown> {
+  if (isAbsent(value)) return {};
   if (!isRecord(value)) {
     throw new Error("gemini_interactions_tool_arguments_invalid");
   }
@@ -160,13 +167,13 @@ function validateArguments(value: unknown): Record<string, unknown> {
 }
 
 function validateSearchArguments(value: unknown): Record<string, unknown> {
-  if (value === undefined) {
+  if (isAbsent(value)) {
     return {};
   }
   if (!isRecord(value)) {
     throw new Error("gemini_interactions_grounding_invalid");
   }
-  if (value.queries !== undefined) {
+  if (!isAbsent(value.queries)) {
     if (
       !Array.isArray(value.queries) ||
       value.queries.length > MAX_SEARCH_QUERY_COUNT ||
@@ -175,11 +182,13 @@ function validateSearchArguments(value: unknown): Record<string, unknown> {
       throw new Error("gemini_interactions_grounding_invalid");
     }
   }
-  return { ...value };
+  const normalized = { ...value };
+  if (isAbsent(value.queries)) delete normalized.queries;
+  return normalized;
 }
 
 function validateSignature(value: unknown): string | undefined {
-  if (value === undefined) {
+  if (isAbsent(value)) {
     return undefined;
   }
   if (!boundedString(value, MAX_SIGNATURE_LENGTH)) {
@@ -203,7 +212,7 @@ function signatureAtStepStart(value: unknown): Readonly<{
 }
 
 function validateSearchResults(value: unknown): Record<string, unknown>[] | undefined {
-  if (value === undefined) {
+  if (isAbsent(value)) {
     return undefined;
   }
   if (!Array.isArray(value) || value.length > MAX_SEARCH_SUGGESTION_COUNT) {
@@ -215,14 +224,16 @@ function validateSearchResults(value: unknown): Record<string, unknown>[] | unde
     if (!isRecord(item)) {
       throw new Error("gemini_interactions_grounding_invalid");
     }
-    if (item.search_suggestions !== undefined) {
+    if (!isAbsent(item.search_suggestions)) {
       const suggestionsHtml = validateGeminiSearchSuggestionsHtml(item.search_suggestions);
       totalBytes += Buffer.byteLength(suggestionsHtml, "utf8");
       if (totalBytes > MAX_SEARCH_SUGGESTIONS_BYTES) {
         throw new Error("gemini_interactions_grounding_invalid");
       }
     }
-    return { ...item };
+    const normalized = { ...item };
+    if (isAbsent(item.search_suggestions)) delete normalized.search_suggestions;
+    return normalized;
   });
 }
 
@@ -234,12 +245,12 @@ function normalizeProviderStep(value: unknown): Record<string, unknown> {
   switch (value.type) {
     case "model_output":
       return protectGeminiInteractionStep({
-        content: value.content === undefined ? [] : validateTextContentArray(value.content),
+        content: isAbsent(value.content) ? [] : validateTextContentArray(value.content),
         type: "model_output"
       });
     case "thought": {
       const signature = validateSignature(value.signature);
-      const summary = value.summary === undefined ? undefined : validateTextContentArray(value.summary);
+      const summary = isAbsent(value.summary) ? undefined : validateTextContentArray(value.summary);
       return protectGeminiInteractionStep({
         ...(signature ? { signature } : {}),
         ...(summary ? { summary } : {}),
@@ -267,7 +278,7 @@ function normalizeProviderStep(value: unknown): Record<string, unknown> {
         throw new Error("gemini_interactions_grounding_invalid");
       }
       if (
-        value.search_type !== undefined &&
+        !isAbsent(value.search_type) &&
         value.search_type !== "web_search" &&
         value.search_type !== "image_search"
       ) {
@@ -286,7 +297,7 @@ function normalizeProviderStep(value: unknown): Record<string, unknown> {
       if (!boundedString(value.call_id, MAX_TOOL_CALL_ID_LENGTH)) {
         throw new Error("gemini_interactions_grounding_invalid");
       }
-      if (value.is_error !== undefined && typeof value.is_error !== "boolean") {
+      if (!isAbsent(value.is_error) && typeof value.is_error !== "boolean") {
         throw new Error("gemini_interactions_grounding_invalid");
       }
       const result = validateSearchResults(value.result);
@@ -578,7 +589,7 @@ function startStep(value: unknown, index: number): StreamStepAccumulator {
         index,
         provisionalSignature: false,
         step: {
-          content: value.content === undefined ? [] : validateTextContentArray(value.content),
+          content: isAbsent(value.content) ? [] : validateTextContentArray(value.content),
           type: "model_output"
         }
       };
@@ -590,7 +601,7 @@ function startStep(value: unknown, index: number): StreamStepAccumulator {
         provisionalSignature: signature.provisional,
         step: {
           ...(signature.signature ? { signature: signature.signature } : {}),
-          ...(value.summary !== undefined ? { summary: validateTextContentArray(value.summary) } : {}),
+          ...(!isAbsent(value.summary) ? { summary: validateTextContentArray(value.summary) } : {}),
           type: "thought"
         }
       };
@@ -607,10 +618,10 @@ function startStep(value: unknown, index: number): StreamStepAccumulator {
         index,
         provisionalSignature: false,
         step: {
-          arguments: value.arguments === undefined ? {} : validateArguments(value.arguments),
+          arguments: isAbsent(value.arguments) ? {} : validateArguments(value.arguments),
           id: value.id,
           name: value.name,
-          ...(value.signature !== undefined ? { signature: validateSignature(value.signature) } : {}),
+          ...(!isAbsent(value.signature) ? { signature: validateSignature(value.signature) } : {}),
           type: "function_call"
         }
       };
@@ -687,14 +698,14 @@ function appendDelta(accumulator: StreamStepAccumulator, value: unknown): string
     return null;
   }
   if (step.type === "google_search_call" && value.type === "google_search_call") {
-    if (value.arguments !== undefined) step.arguments = validateSearchArguments(value.arguments);
-    if (value.signature !== undefined) step.signature = validateSignature(value.signature);
+    if (!isAbsent(value.arguments)) step.arguments = validateSearchArguments(value.arguments);
+    if (!isAbsent(value.signature)) step.signature = validateSignature(value.signature);
     return null;
   }
   if (step.type === "google_search_result" && value.type === "google_search_result") {
-    if (value.result !== undefined) step.result = validateSearchResults(value.result);
-    if (value.signature !== undefined) step.signature = validateSignature(value.signature);
-    if (value.is_error !== undefined) {
+    if (!isAbsent(value.result)) step.result = validateSearchResults(value.result);
+    if (!isAbsent(value.signature)) step.signature = validateSignature(value.signature);
+    if (!isAbsent(value.is_error)) {
       if (typeof value.is_error !== "boolean") {
         throw new Error("gemini_interactions_grounding_invalid");
       }

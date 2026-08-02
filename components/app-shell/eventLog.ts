@@ -174,8 +174,16 @@ function searchStrategyDisplayName(catalog: Catalog | null, strategyId: string):
     return "Off";
   }
 
-  return catalog?.searchStrategies.find((strategy) => strategy.strategyId === strategyId)?.displayName ??
-    readableIdentifier(strategyId);
+  const catalogName = catalog?.searchStrategies.find(
+    (strategy) => strategy.strategyId === strategyId
+  )?.displayName;
+  if (catalogName) return catalogName;
+  if (strategyId === "openai-native-web-search" || strategyId === "openai-provider-web-search") {
+    return "OpenAI Search";
+  }
+  if (strategyId === "perplexity-tool-search") return "Perplexity Search";
+  if (strategyId === "gemini-google-search") return "Google Search";
+  return "Search source";
 }
 
 function artifactType(event: InspectorRunEvent): string | null {

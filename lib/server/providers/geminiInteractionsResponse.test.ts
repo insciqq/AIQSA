@@ -275,7 +275,7 @@ describe("Gemini Interactions response normalization", () => {
     expect(JSON.stringify(normalized.result)).not.toContain("private-search-result-signature");
   });
 
-  it("keeps empty and null signatures invalid outside a provisional step.start", async () => {
+  it("keeps an empty signature invalid outside a provisional step.start", async () => {
     await expect(collect(streamGeminiInteractionsJsonResponse({
       id: "interaction-empty-signature",
       status: "completed",
@@ -305,22 +305,79 @@ describe("Gemini Interactions response normalization", () => {
       ])
     }))).rejects.toThrow("gemini_interactions_step_invalid");
 
-    await expect(collect(parseGeminiInteractionsSse({
-      groundingExpected: true,
+  });
+
+  it("treats null optional fields as absent on the first streamed thought step", async () => {
+    const normalized = await collect(parseGeminiInteractionsSse({
+      groundingExpected: false,
       idleTimeoutMs: 1_000,
       modelId: "gemini-3.6-flash",
       responseBody: sseResponse([
         frame("interaction.created", {
           event_type: "interaction.created",
-          interaction: { id: "stream-null-signature", status: "in_progress" }
+          interaction: { id: "stream-null-optionals", status: "in_progress" }
         }),
         frame("step.start", {
           event_type: "step.start",
           index: 0,
-          step: { id: "search-1", signature: null, type: "google_search_call" }
-        })
+          step: { signature: null, summary: null, type: "thought" }
+        }),
+        frame("step.stop", { event_type: "step.stop", index: 0 }),
+        frame("step.start", {
+          event_type: "step.start",
+          index: 1,
+          step: { content: null, type: "model_output" }
+        }),
+        frame("step.delta", {
+          delta: { text: "Answer after null thought fields", type: "text" },
+          event_type: "step.delta",
+          index: 1
+        }),
+        frame("step.stop", { event_type: "step.stop", index: 1 }),
+        frame("interaction.completed", {
+          event_type: "interaction.completed",
+          interaction: { id: "stream-null-optionals", status: "completed" }
+        }),
+        frame("done", "[DONE]")
       ])
-    }))).rejects.toThrow("gemini_interactions_step_invalid");
+    }));
+
+    expect(normalized.result.finalText).toBe("Answer after null thought fields");
+  });
+
+  it("normalizes null optional fields in terminal Search steps", async () => {
+    const normalized = await collect(streamGeminiInteractionsJsonResponse({
+      id: "interaction-null-optionals",
+      model: "gemini-3.6-flash",
+      status: "completed",
+      steps: [
+        { signature: null, summary: null, type: "thought" },
+        {
+          arguments: null,
+          id: "search-null-optionals",
+          search_type: null,
+          signature: null,
+          type: "google_search_call"
+        },
+        {
+          call_id: "search-null-optionals",
+          is_error: null,
+          result: [{ search_suggestions: suggestionsHtml }],
+          signature: null,
+          type: "google_search_result"
+        },
+        {
+          content: [{ annotations: null, text: "Grounded answer", type: "text" }],
+          type: "model_output"
+        }
+      ]
+    }, { groundingExpected: true, modelId: "gemini-3.6-flash" }));
+
+    expect(normalized.result.finalText).toBe("Grounded answer");
+    expect(normalized.events).toContainEqual(expect.objectContaining({
+      data: expect.objectContaining({ suggestionsHtml }),
+      type: "grounding_display"
+    }));
   });
 
   it("emits an early purge marker, then validated suggestions, then buffered SSE text", async () => {

@@ -471,6 +471,23 @@ test("adapts the composer to 1280 short-height and enlarged-text content width",
 
   const composer = page.getByTestId("composer-drop-zone");
   const directReasoning = page.locator('[data-composer-direct-reasoning="true"]');
+  const expectDirectControlsInsideComposer = async () => {
+    const directControls = page.getByTestId("composer-control-bar");
+    const [surfaceBox, ...controlBoxes] = await Promise.all([
+      composer.boundingBox(),
+      directControls.getByRole("button", { name: "Select model" }).boundingBox(),
+      directControls.getByRole("button", { name: "Run profile" }).boundingBox(),
+      directControls.getByRole("button", { name: /^Reasoning / }).boundingBox(),
+      directControls.getByRole("button", { name: "Search strategy" }).boundingBox(),
+      directControls.getByTestId("composer-run-summary").boundingBox()
+    ]);
+    expect(surfaceBox).toBeTruthy();
+    for (const box of controlBoxes) {
+      expect(box).toBeTruthy();
+      expect(box!.x).toBeGreaterThanOrEqual(surfaceBox!.x - 1);
+      expect(box!.x + box!.width).toBeLessThanOrEqual(surfaceBox!.x + surfaceBox!.width + 1);
+    }
+  };
   await expect(page.getByRole("button", { name: "Open workspace" })).toBeVisible();
   await expect(page.getByTestId("left-chat-pane")).toBeHidden();
   await expect(directReasoning).toBeHidden();
@@ -479,6 +496,11 @@ test("adapts the composer to 1280 short-height and enlarged-text content width",
   expect(shortComposerBox).toBeTruthy();
   expect(shortComposerBox!.height).toBeLessThanOrEqual(260);
 
+  await page.setViewportSize({ height: 800, width: 1280 });
+  await expect(directReasoning).toBeVisible();
+  await expectDirectControlsInsideComposer();
+  await expectNoHorizontalOverflow(page);
+
   await page.setViewportSize({ height: 800, width: 640 });
   await expect(directReasoning).toBeHidden();
   await expectNoHorizontalOverflow(page);
@@ -486,6 +508,7 @@ test("adapts the composer to 1280 short-height and enlarged-text content width",
   await page.setViewportSize({ height: 800, width: 1360 });
   await expect(page.getByRole("button", { name: "Hide workspace" })).toBeVisible();
   await expect(directReasoning).toBeVisible();
+  await expectDirectControlsInsideComposer();
   await expectNoHorizontalOverflow(page);
 });
 
@@ -1318,7 +1341,7 @@ test("keeps direct run choices and one complete More setup inside the thread wor
   const directControls = page.getByTestId("composer-control-bar");
   await expectRunSummary(page, { model: "GPT-5.5", search: "Off" });
   await expect(directControls.getByRole("button", { name: "Select model" })).toBeVisible();
-  await expect(directControls.getByRole("button", { name: "Use Balanced run profile" })).toBeVisible();
+  await expect(directControls.getByRole("button", { name: "Run profile" })).toBeVisible();
   await expect(directControls.getByRole("button", { name: "Search strategy" })).toBeVisible();
   await expect(runSummary).toContainText("More");
   await expect(runSummary).toHaveAttribute("aria-expanded", "false");
@@ -4387,6 +4410,7 @@ test("hides unusable profile shortcuts but keeps their diagnostics in portrait R
     ...matrixCatalog,
     defaults: {
       ...matrixCatalog.defaults,
+      searchPlan: { mode: "model_choice" as const, optionIds: ["perplexity-tool-search"] },
       searchStrategyId: "perplexity-tool-search"
     },
     runProfiles: matrixCatalog.runProfiles.map((profile) => ({
@@ -4405,7 +4429,7 @@ test("hides unusable profile shortcuts but keeps their diagnostics in portrait R
   await expect(page.getByTestId("run-profile-summary")).toHaveCount(0);
   const search = secondary.getByRole("button", { name: "Search strategy" });
   await expect(search.locator(".lucide-search")).toBeVisible();
-  await expect(search.getByText("PPLXTY", { exact: true })).toBeVisible();
+  await expect(search.getByText("Perplexity tool", { exact: true }).first()).toBeVisible();
   await expect(search).toHaveAttribute("title", "Perplexity tool");
 
   const more = secondary.getByTestId("composer-run-summary");

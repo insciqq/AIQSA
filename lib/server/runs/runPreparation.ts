@@ -749,7 +749,7 @@ export async function prepareRun(
   if (!decodedSearchPlan.ok) {
     return failure(decodedSearchPlan.code, 400);
   }
-  const requestedSearchPlan = decodedSearchPlan.plan;
+  let requestedSearchPlan = decodedSearchPlan.plan;
   let requestedSearchPreference: {
     plan: import("../../domain/search").SearchPlan | null;
     source: "organization" | "personal";
@@ -778,7 +778,7 @@ export async function prepareRun(
       : input.source.kind === "send"
         ? chat.defaultModelId
         : input.source.source.assistantMessage?.modelId ?? chat.defaultModelId;
-  const requestedSearchStrategy = legacySearchStrategyFromPlan(requestedSearchPlan);
+  let requestedSearchStrategy = legacySearchStrategyFromPlan(requestedSearchPlan);
   let admissionPlan: ProviderAdmissionPlan | undefined;
   let adapter: ProviderAdapter;
   let executionProvider = selectedProvider;
@@ -819,6 +819,16 @@ export async function prepareRun(
     modelConfiguration = admissionPlan.answer.modelConfiguration;
     executionProvider = admissionPlan.answer.snapshot.providerFamily;
     executionModelId = admissionPlan.answer.snapshot.model.upstreamModelId;
+    requestedSearchPlan = admissionPlan.requestedSearchPlan ?? requestedSearchPlan;
+    requestedSearchStrategy = admissionPlan.requestedSearchStrategyId;
+    if (requestedSearchPreference) {
+      requestedSearchPreference = {
+        plan: admissionPlan.requestedSearchPreferencePlan !== undefined
+          ? admissionPlan.requestedSearchPreferencePlan
+          : requestedSearchPreference.plan,
+        source: requestedSearchPreference.source
+      };
+    }
   } else {
     const selectedAdapter = deps.providers[selectedProvider];
     if (!selectedAdapter) {
@@ -988,9 +998,7 @@ export async function prepareRun(
     return failure(invalidRunParamsError, 400);
   }
   const runParams = mergeModelParams(parameterProvider, defaultParams, paramValidation.params);
-  const searchStrategy = admissionPlan?.searches?.find((candidate) =>
-    candidate.configuration.adapterKind === "answer_provider_hosted")?.optionId ??
-    requestedSearchStrategy;
+  const searchStrategy = requestedSearchStrategy;
   const searchAdapter =
     legacyPerplexitySearch && searchStrategy === perplexityToolSearchStrategyId
       ? deps.searchProviders?.openrouter
@@ -1078,7 +1086,7 @@ export async function prepareRun(
               adapterKind: candidate.configuration.adapterKind!,
               config: candidate.configuration.config,
               credentialMode: candidate.configuration.credentialMode!,
-              displayName: candidate.configuration.displayName ?? candidate.optionId,
+              displayName: candidate.configuration.displayName ?? "Search source",
               executionModes: candidate.configuration.executionModes ?? [],
               modelId: candidate.configuration.modelId,
               optionId: candidate.optionId,

@@ -20,22 +20,24 @@ const draft = {
 
 const search: AdminSearchCatalog = {
   integrations: [{
-    activeRevision: null,
-    adapterKind: "provider_model_client",
     archivedAt: null,
-    credentialMode: "provider_model",
+    broaderModelSetup: "setup_required",
+    configurable: true,
+    configuration: draft,
+    configurationActive: false,
     description: "Query-only evidence",
     displayName: "Company Search",
-    draft,
     draftDirty: true,
     draftTestEvidence: null,
     draftVersion: 1,
     enabled: false,
     executionModes: ["all_selected", "model_choice"],
-    id: "integration-1",
+    id: "source-1",
+    kind: "web_search",
     providerModel: null,
     ready: false,
-    readiness: "activation_required",
+    readiness: "setup_required",
+    sourceConnectionId: "connection-1",
     strategyId: "company-search-12345678",
     system: false
   }],
@@ -52,6 +54,21 @@ function response(value: unknown, status = 200): Response {
 }
 
 describe("adminSearchApi", () => {
+  it("returns the exact logical source selected by create or reuse", async () => {
+    await expect(createAdminSearchIntegration({
+      description: "Query-only evidence",
+      displayName: "Company Search",
+      draft
+    }, vi.fn().mockResolvedValue(response({
+      search,
+      selectedIntegrationId: "source-1"
+    })))).resolves.toEqual({
+      ok: true,
+      search,
+      selectedIntegrationId: "source-1"
+    });
+  });
+
   it("uses narrow endpoints for catalog, draft, update, and lifecycle actions", async () => {
     const fetcher = vi.fn().mockResolvedValue(response({ search }));
 

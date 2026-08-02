@@ -69,10 +69,10 @@ describe("admin grantable catalog", () => {
           })
         ])
       },
-      searchStrategy: {
+      searchOption: {
         findMany: vi.fn(async () => [{
           displayName: "Search option",
-          strategyId: "search-option"
+          optionId: "search-option"
         }])
       }
     };

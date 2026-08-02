@@ -143,11 +143,13 @@ describe("shell labels", () => {
 
   it("formats search strategies and safe ASCII download names", () => {
     expect(searchStrategyDescription("openai-native-web-search")).toBe(
-      "OpenAI web_search"
+      "OpenAI Search"
     );
     expect(searchStrategyDescription("perplexity-tool-search")).toBe(
-      "Perplexity tool"
+      "Perplexity Search"
     );
+    expect(searchStrategyDescription("gemini-google-search")).toBe("Google Search");
+    expect(searchStrategyDescription("custom-web-search:connection-1")).toBe("Search");
     expect(searchStrategyDescription("search-disabled")).toBe("No Search");
     expect(safeDownloadName("Architecture / Notes 2026")).toBe(
       "architecture-notes-2026"

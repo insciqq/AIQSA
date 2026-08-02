@@ -45,6 +45,7 @@ type SearchExecutionResult = SearchExecutionEvidence & Readonly<{
 }>;
 
 export type SearchPlanToolRouter = Readonly<{
+  accepts(name: string): boolean;
   execute(
     call: ModelToolCall,
     request: ProviderRunRequest,
@@ -61,8 +62,26 @@ function zeroUsage(): ModelRunUsage {
   return { inputTokens: 0, outputTokens: 0, reasoningTokens: 0, totalTokens: 0 };
 }
 
-function toolName(option: NormalizedSearchPlanOption, ordinal: number): string {
-  const slug = option.optionId.toLowerCase().replace(/[^a-z0-9]+/gu, "_").replace(/^_+|_+$/gu, "").slice(0, 36);
+function toolName(ordinal: number): string {
+  return `search_engine_${ordinal + 1}`;
+}
+
+function toolDescription(option: NormalizedSearchPlanOption): string {
+  const displayName = option.displayName?.trim().slice(0, 160);
+  return displayName
+    ? `Search the user-selected web source ${JSON.stringify(displayName)} with a concise query.`
+    : "Search one user-selected web source with a concise query.";
+}
+
+function searchDisplayName(option: NormalizedSearchPlanOption): string {
+  return option.displayName?.trim().slice(0, 256) || "Search source";
+}
+
+function legacyToolName(option: NormalizedSearchPlanOption, ordinal: number): string {
+  const slug = option.optionId.toLowerCase()
+    .replace(/[^a-z0-9]+/gu, "_")
+    .replace(/^_+|_+$/gu, "")
+    .slice(0, 36);
   return `search_${ordinal + 1}_${slug || "engine"}`;
 }
 
@@ -234,7 +253,7 @@ async function executeOne(input: Readonly<{
   const invocationId = `${input.call.id}:${input.option.optionId}`.slice(0, 500);
   if (!input.runtime || !input.option.modelId) {
     return {
-      displayName: input.option.displayName ?? input.option.optionId,
+      displayName: searchDisplayName(input.option),
       durationMs: Date.now() - started,
       invocationId,
       modelId: input.option.modelId,
@@ -272,7 +291,7 @@ async function executeOne(input: Readonly<{
       ? providerSearchOperationsFromArtifacts(result.artifacts)
       : null;
     return {
-      displayName: input.option.displayName ?? input.option.optionId,
+      displayName: searchDisplayName(input.option),
       durationMs: Date.now() - started,
       finalText: result.finalText,
       invocationId,
@@ -299,7 +318,7 @@ async function executeOne(input: Readonly<{
   } catch (error) {
     if (input.signal?.aborted) throw error;
     return {
-      displayName: input.option.displayName ?? input.option.optionId,
+      displayName: searchDisplayName(input.option),
       durationMs: Date.now() - started,
       invocationId,
       modelId: input.option.modelId,
@@ -359,7 +378,7 @@ export function searchExecutionsFromToolResult(
       ...(value as unknown as SearchExecutionEvidence),
       displayName: typeof value.displayName === "string" && value.displayName.trim()
         ? value.displayName.trim().slice(0, 256)
-        : value.optionId as string,
+        : "Search source",
       providerOperationsTruncated: value.providerOperationsTruncated === true,
       ...(providerOperations ? { providerOperations } : {})
     }];
@@ -367,6 +386,7 @@ export function searchExecutionsFromToolResult(
 }
 
 export function createSearchPlanToolRouter(input: Readonly<{
+  acceptLegacyToolNames?: boolean;
   plan: NormalizedSearchPlan;
   runtimes: Readonly<Record<string, ProviderRuntimeBinding | undefined>>;
 }>): SearchPlanToolRouter | null {
@@ -386,15 +406,26 @@ export function createSearchPlanToolRouter(input: Readonly<{
     : clientOptions.map((option, ordinal) => ({
         options: [option],
         tool: searchTool(
-          toolName(option, ordinal),
-          `Search the user-selected engine ${option.optionId} with a concise query.`,
+          toolName(ordinal),
+          toolDescription(option),
           configuration(option).queryMaxCharacters
         )
       }));
+  const legacyRoute = (name: string) => input.acceptLegacyToolNames &&
+    input.plan.mode === "model_choice"
+    ? routes.find((candidate, ordinal) =>
+        candidate.options.length === 1 &&
+        legacyToolName(candidate.options[0]!, ordinal) === name)
+    : undefined;
 
   return {
+    accepts(name) {
+      return routes.some((candidate) => candidate.tool.name === name) ||
+        legacyRoute(name) !== undefined;
+    },
     async execute(call, request, options) {
-      const route = routes.find((candidate) => candidate.tool.name === call.name);
+      const route = routes.find((candidate) => candidate.tool.name === call.name) ??
+        legacyRoute(call.name);
       if (!route) throw new Error("search_tool_not_selected");
       const queryLimit = Math.min(
         ...route.options.map((option) => configuration(option).queryMaxCharacters)
@@ -446,11 +477,15 @@ export function createSearchPlanToolRouter(input: Readonly<{
         }))
       );
       const warnings = executions.flatMap((execution) => execution.warning
-        ? [{ optionId: execution.optionId, warning: execution.warning }]
+        ? [{
+            displayName: execution.displayName,
+            optionId: execution.optionId,
+            warning: execution.warning
+          }]
         : []);
       const text = [
         ...successful.flatMap((execution) => execution.finalText
-          ? [`[${execution.optionId}]\n${execution.finalText}`]
+          ? [`Search source ${JSON.stringify(execution.displayName)}:\n${execution.finalText}`]
           : []),
         sources.length
           ? `Sources:\n${sources.map((source, index) =>
@@ -458,7 +493,7 @@ export function createSearchPlanToolRouter(input: Readonly<{
           : "",
         warnings.length
           ? `Search warnings: ${warnings.map((warning) =>
-              `${warning.optionId}: ${warning.warning}`).join("; ")}`
+              `${JSON.stringify(warning.displayName)}: ${warning.warning}`).join("; ")}`
           : ""
       ].filter(Boolean).join("\n\n");
       return {

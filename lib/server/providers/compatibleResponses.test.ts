@@ -4,7 +4,7 @@ import {
   createCompatibleResponsesAdapter
 } from "./compatibleResponses";
 import type { OpenAIResponsesClient } from "./openaiResponsesTransport";
-import type { ProviderRunRequest } from "./types";
+import type { NormalizedSearchPlanOption, ProviderRunRequest } from "./types";
 
 function request(overrides: Partial<ProviderRunRequest> = {}): ProviderRunRequest {
   return {
@@ -44,6 +44,32 @@ function request(overrides: Partial<ProviderRunRequest> = {}): ProviderRunReques
   };
 }
 
+function hostedSearchOption(): NormalizedSearchPlanOption {
+  return {
+    adapterKind: "answer_provider_hosted",
+    config: {},
+    credentialMode: "answer_provider",
+    executionModes: ["model_choice"],
+    modelId: null,
+    optionId: "custom-web-search:connection-custom",
+    protocol: "openai_responses_web_search",
+    provider: "openai_compatible",
+    providerModelId: null,
+    revisionId: "revision-hosted",
+    searchStrategyRowId: "route-hosted"
+  };
+}
+
+function responseBody(frames: readonly string[]): ReadableStream<Uint8Array> {
+  const encoder = new TextEncoder();
+  return new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const frame of frames) controller.enqueue(encoder.encode(frame));
+      controller.close();
+    }
+  });
+}
+
 describe("compatible Responses adapter", () => {
   it("forces stateless manual replay and strips native-only extensions", () => {
     const body = buildCompatibleResponsesRequest(request());
@@ -78,7 +104,10 @@ describe("compatible Responses adapter", () => {
 
   it("serializes standard hosted web search while remaining stateless", () => {
     expect(buildCompatibleResponsesRequest(
-      request({ searchStrategy: "openai-native-web-search" })
+      request({
+        searchPlan: { mode: "model_choice", options: [hostedSearchOption()] },
+        searchStrategy: "custom-web-search:connection-custom"
+      })
     )).toMatchObject({
       background: false,
       include: ["web_search_call.action.sources"],
@@ -154,5 +183,60 @@ describe("compatible Responses adapter", () => {
     expect(events.some((event) => event.type === "usage")).toBe(true);
     expect(events.some((event) => event.type === "token")).toBe(true);
     expect(create).toHaveBeenCalledWith(expect.any(Object), { signal, timeoutMs: 300_000 });
+  });
+
+  it("keeps compatible streaming Search artifacts provider-neutral", async () => {
+    const completed = {
+      response: {
+        id: "response-stream-1",
+        model: "compatible-model",
+        output: [
+          { id: "search-1", status: "completed", type: "web_search_call" },
+          {
+            content: [{ annotations: [], text: "Compatible answer", type: "output_text" }],
+            type: "message"
+          }
+        ],
+        status: "completed",
+        usage: { input_tokens: 2, output_tokens: 1, total_tokens: 3 }
+      },
+      type: "response.completed"
+    };
+    const client: OpenAIResponsesClient = {
+      cancel: async () => ({}),
+      create: async () => ({}),
+      retrieve: async () => ({}),
+      stream: async () => new Response(responseBody([
+        'event: response.created\ndata: {"type":"response.created","response":{"id":"response-stream-1","status":"in_progress"}}\n\n',
+        'event: response.web_search_call.searching\ndata: {"type":"response.web_search_call.searching","response_id":"response-stream-1","item_id":"search-1"}\n\n',
+        `event: response.completed\ndata: ${JSON.stringify(completed)}\n\n`
+      ]))
+    };
+    const adapter = createCompatibleResponsesAdapter({ client });
+    const events = [];
+    const stream = adapter.stream(request({
+      params: { stream: true },
+      searchPlan: { mode: "model_choice", options: [hostedSearchOption()] },
+      searchStrategy: "custom-web-search:connection-custom"
+    }));
+    let next = await stream.next();
+    while (!next.done) {
+      events.push(next.value);
+      next = await stream.next();
+    }
+
+    expect(events).toContainEqual(expect.objectContaining({
+      data: expect.objectContaining({
+        artifactType: "summary",
+        payload: expect.objectContaining({ provider: "openai-compatible" })
+      })
+    }));
+    const searchEvents = events.filter((event) =>
+      event.type === "artifact" && event.data.artifactType === "search");
+    expect(searchEvents.length).toBeGreaterThan(0);
+    expect(JSON.stringify(searchEvents)).not.toContain('"provider":"openai"');
+    expect(next.value.finalProviderResponsePreview).toMatchObject({
+      provider: "openai-compatible"
+    });
   });
 });

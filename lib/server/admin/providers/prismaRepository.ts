@@ -1,4 +1,5 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
+import type { AdminSearchDraft } from "../../../contracts/adminSearch";
 import type {
   AdminProviderActiveCheck,
   AdminProviderConnection,
@@ -13,6 +14,8 @@ import {
   normalizeProviderModelConfiguration,
   type ProviderModelConfiguration
 } from "../../providers/providerConfiguration";
+import { normalizeSearchDraft, searchDraftHash } from "../../search/configuration";
+import { searchValidationFingerprint } from "../../search/probeBinding";
 import type {
   AdminProviderRepository,
   ProviderActivationWrite,
@@ -310,6 +313,237 @@ function checkMatchesWrite(
       ? check.credentialDraftVersion === credential.draftVersion && check.credentialVersionId === null
       : check.credentialDraftVersion === null && check.credentialVersionId === credential.versionId)
   );
+}
+
+async function synchronizeCustomHostedSearch(
+  tx: Prisma.TransactionClient,
+  input: ProviderActivationWrite,
+  connection: Readonly<{
+    displayName: string;
+    family: string;
+    id: string;
+    templateKey: string | null;
+  }>
+): Promise<void> {
+  if (connection.family !== "openai_compatible" || connection.templateKey !== null) return;
+  const eligibleModels = input.models.filter((model) =>
+    model.configuration.adapterKind === "openai_responses_compatible" &&
+    model.configuration.capabilities.nativeSearch === true
+  ).sort((left, right) => left.id.localeCompare(right.id));
+  if (eligibleModels.length === 0) return;
+
+  const optionId = `custom-web-search:${connection.id}`;
+  const optionRowId = `custom-web-search-option:${connection.id}`;
+  const sourceName = connection.displayName.trim() || "Custom endpoint";
+  const displayName = `${sourceName.slice(0, 153)} Search`;
+  const description = `Web search provided by ${sourceName}.`.slice(0, 500);
+  const existingOption = await tx.searchOption.findUnique({
+    where: {
+      sourceConnectionId_kind: {
+        kind: "web_search",
+        sourceConnectionId: connection.id
+      }
+    }
+  });
+  const option = existingOption ?? await tx.searchOption.create({
+    data: {
+      description,
+      displayName,
+      enabled: true,
+      id: optionRowId,
+      kind: "web_search",
+      optionId,
+      sourceConnectionId: connection.id
+    }
+  });
+  if (option.archivedAt) return;
+
+  const hostedDraft: AdminSearchDraft = {
+    adapterKind: "answer_provider_hosted",
+    credentialMode: "answer_provider",
+    maxResults: 8,
+    protocol: "openai_responses_web_search",
+    providerModelId: null,
+    queryMaxCharacters: 500,
+    timeoutMs: 300_000
+  };
+  const hostedId = `custom-web-search-hosted:${connection.id}`;
+  const hostedHash = searchDraftHash(hostedDraft);
+  const existingHosted = await tx.searchStrategy.findFirst({
+    include: { activeRevision: true },
+    orderBy: { strategyId: "asc" },
+    where: {
+      adapterKind: "answer_provider_hosted",
+      archivedAt: null,
+      credentialMode: "answer_provider",
+      searchOptionId: option.id
+    }
+  });
+  const hosted = existingHosted ?? await tx.searchStrategy.create({
+    data: {
+      adapterKind: hostedDraft.adapterKind,
+      config: json({}),
+      credentialMode: hostedDraft.credentialMode,
+      description: option.description,
+      displayName: option.displayName,
+      draft: json(hostedDraft),
+      draftTestEvidence: Prisma.DbNull,
+      enabled: false,
+      id: hostedId,
+      kind: "openai_native_web_search",
+      modelId: null,
+      provider: "openai_compatible",
+      providerModelId: null,
+      searchOptionId: option.id,
+      strategyId: hostedId,
+      testedDraftHash: null
+    },
+    include: { activeRevision: true }
+  });
+  const activationEvidence = {
+    checkedAt: input.now.toISOString(),
+    method: "provider_activation_configuration",
+    normalizedSourceCount: 0,
+    protocol: "openai_responses_web_search",
+    sourceProbe: false,
+    status: "available"
+  } as const;
+  const validationFingerprint = searchValidationFingerprint(activationEvidence);
+  const existingRevision = await tx.searchIntegrationRevision.findUnique({
+    where: {
+      searchStrategyId_draftHash_validationFingerprint: {
+        draftHash: hostedHash,
+        searchStrategyId: hosted.id,
+        validationFingerprint
+      }
+    }
+  });
+  const latestRevision = existingRevision
+    ? null
+    : await tx.searchIntegrationRevision.findFirst({
+        orderBy: { revisionNumber: "desc" },
+        where: { searchStrategyId: hosted.id }
+      });
+  const revision = existingRevision ?? await tx.searchIntegrationRevision.create({
+    data: {
+      adapterKind: hostedDraft.adapterKind,
+      configuration: json(hostedDraft),
+      credentialMode: hostedDraft.credentialMode,
+      draftHash: hostedHash,
+      id: `${hosted.id}:revision:${input.connection.draftVersion}`,
+      providerModelId: null,
+      revisionNumber: (latestRevision?.revisionNumber ?? 0) + 1,
+      searchStrategyId: hosted.id,
+      validationEvidence: json(activationEvidence),
+      validationFingerprint
+    }
+  });
+  await tx.searchStrategy.update({
+    data: {
+      activatedAt: input.now,
+      activeRevisionId: revision.id,
+      adapterKind: hostedDraft.adapterKind,
+      config: json(hostedDraft),
+      credentialMode: hostedDraft.credentialMode,
+      draft: json(hostedDraft),
+      draftTestEvidence: json(activationEvidence),
+      enabled: true,
+      kind: "openai_native_web_search",
+      modelId: null,
+      provider: "openai_compatible",
+      providerModelId: null,
+      testedDraftHash: hostedHash
+    },
+    where: { id: hosted.id }
+  });
+
+  const existingClient = await tx.searchStrategy.findFirst({
+    where: {
+      adapterKind: "provider_model_client",
+      archivedAt: null,
+      credentialMode: "provider_model",
+      searchOptionId: option.id
+    }
+  });
+  const selectedModel = eligibleModels.find((model) => model.id === existingClient?.providerModelId) ??
+    eligibleModels[0]!;
+  if (existingClient) {
+    if (existingClient.providerModelId === selectedModel.id) return;
+    let currentDraft: AdminSearchDraft | null = null;
+    try {
+      currentDraft = normalizeSearchDraft(existingClient.draft);
+    } catch {
+      // A malformed inactive draft is replaced by the bounded canonical one.
+    }
+    const replacementDraft: AdminSearchDraft = {
+      ...hostedDraft,
+      adapterKind: "provider_model_client",
+      credentialMode: "provider_model",
+      maxResults: currentDraft?.maxResults ?? hostedDraft.maxResults,
+      providerModelId: selectedModel.id,
+      queryMaxCharacters: currentDraft?.queryMaxCharacters ?? hostedDraft.queryMaxCharacters,
+      timeoutMs: currentDraft?.timeoutMs ?? hostedDraft.timeoutMs
+    };
+    await tx.searchStrategy.update({
+      data: {
+        draft: json(replacementDraft),
+        draftTestEvidence: Prisma.DbNull,
+        draftVersion: { increment: 1 },
+        enabled: false,
+        testedDraftHash: null
+      },
+      where: { id: existingClient.id }
+    });
+    return;
+  }
+  const clientId = `custom-web-search-client:${connection.id}`;
+  const model = selectedModel;
+  const clientDraft: AdminSearchDraft = {
+    ...hostedDraft,
+    adapterKind: "provider_model_client",
+    credentialMode: "provider_model",
+    providerModelId: model.id
+  };
+  await tx.searchStrategy.create({
+    data: {
+      adapterKind: clientDraft.adapterKind,
+      config: json({}),
+      credentialMode: clientDraft.credentialMode,
+      description: option.description,
+      displayName: option.displayName,
+      draft: json(clientDraft),
+      enabled: false,
+      id: clientId,
+      kind: "provider_model_web_search",
+      modelId: model.configuration.upstreamModelId,
+      provider: "openai_compatible",
+      providerModelId: model.id,
+      searchOptionId: option.id,
+      strategyId: clientId
+    }
+  });
+}
+
+async function invalidateProviderModelClientSearch(
+  tx: Prisma.TransactionClient,
+  connectionId: string
+): Promise<void> {
+  // A provider activation publishes a new connection/model/credential authority.
+  // A source probe performed against the previous authority cannot keep a
+  // provider-model Search route admitted, even when its transport draft did not
+  // change. Keep the accepted revision for history, but require a fresh probe
+  // before the route can be enabled again.
+  await tx.searchStrategy.updateMany({
+    data: {
+      draftTestEvidence: Prisma.DbNull,
+      enabled: false,
+      testedDraftHash: null
+    },
+    where: {
+      adapterKind: "provider_model_client",
+      providerModel: { connectionId }
+    }
+  });
 }
 
 export function createPrismaAdminProviderRepository(
@@ -977,7 +1211,14 @@ export function createPrismaAdminProviderRepository(
       try {
         return await repeatableRead(prisma, async (tx) => {
         const connection = await tx.providerConnection.findUnique({
-          select: { draftConfig: true, draftVersion: true, id: true },
+          select: {
+            displayName: true,
+            draftConfig: true,
+            draftVersion: true,
+            family: true,
+            id: true,
+            templateKey: true
+          },
           where: { id: input.connection.id }
         });
         if (!connection) return "not_found" as const;
@@ -1112,6 +1353,8 @@ export function createPrismaAdminProviderRepository(
           });
           if (updated.count !== 1) throw new ProviderActivationStaleError();
         }
+        await invalidateProviderModelClientSearch(tx, input.connection.id);
+        await synchronizeCustomHostedSearch(tx, input, connection);
 
         const tuples = input.checks.map((check) => ({
           connectionVersion: input.connection.draftVersion,
@@ -1359,7 +1602,7 @@ export function createPrismaAdminProviderRepository(
         await cleanupProviderReferences(tx, { connectionId });
 
         if (connection.family === "openai_compatible" && !connection.templateKey) {
-          const [models, credentials, runBindings] = await Promise.all([
+          const [models, credentials, logicalSearchReferences, runBindings] = await Promise.all([
             tx.providerModel.findMany({
               select: { id: true },
               where: { connectionId }
@@ -1367,6 +1610,9 @@ export function createPrismaAdminProviderRepository(
             tx.providerCredential.findMany({
               select: { id: true },
               where: { connectionId }
+            }),
+            tx.searchOption.count({
+              where: { sourceConnectionId: connectionId }
             }),
             tx.providerRunBinding.count({ where: { connectionId } })
           ]);
@@ -1380,9 +1626,10 @@ export function createPrismaAdminProviderRepository(
               where: { providerModelId: { in: modelIds } }
             })
           ]);
+          const totalSearchReferences = logicalSearchReferences + searchReferences;
           const hardBlockers = blockers([
-            searchReferences
-              ? { count: searchReferences, kind: "search_references" }
+            totalSearchReferences
+              ? { count: totalSearchReferences, kind: "search_references" }
               : null,
             runProfiles ? { count: runProfiles, kind: "run_profiles" } : null,
             runBindings ? { count: runBindings, kind: "run_bindings" } : null
@@ -1427,11 +1674,19 @@ export function createPrismaAdminProviderRepository(
           return { status: "deleted" } as const;
         }
 
-        const [models, credentials, accessGrants, activeChildren, runBindings] = await Promise.all([
+        const [
+          models,
+          credentials,
+          accessGrants,
+          activeChildren,
+          searchReferences,
+          runBindings
+        ] = await Promise.all([
           tx.providerModel.count({ where: { connectionId } }),
           tx.providerCredential.count({ where: { connectionId } }),
           tx.accessGrant.count({ where: { providerConnectionId: connectionId } }),
           tx.providerModel.count({ where: { activeVersion: { gt: 0 }, connectionId } }),
+          tx.searchOption.count({ where: { sourceConnectionId: connectionId } }),
           tx.providerRunBinding.count({ where: { connectionId } })
         ]);
         const blocked = blockers([
@@ -1441,6 +1696,7 @@ export function createPrismaAdminProviderRepository(
           credentials ? { count: credentials, kind: "credentials" } : null,
           accessGrants ? { count: accessGrants, kind: "access_grants" } : null,
           activeChildren ? { count: activeChildren, kind: "active_child_configuration" } : null,
+          searchReferences ? { count: searchReferences, kind: "search_references" } : null,
           runBindings ? { count: runBindings, kind: "run_bindings" } : null
         ]);
         const blockedResult = conflict(blocked);

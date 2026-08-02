@@ -47,20 +47,29 @@ export type ProviderModelCatalogEntry = {
   parameterControls: ModelParameterControls;
 };
 
-export type SearchStrategyCatalogEntry = {
-  strategyId: string;
-  provider: string;
-  modelId?: string;
-  providerModelId?: string;
-  displayName: string;
-  kind: "gemini_google_search" | "none" | "openai_native_web_search" | "perplexity_tool_search" | "provider_model_web_search";
-  description: string;
+export type SearchStrategyRouteCatalogEntry = {
+  adapterKind: SearchAdapterKind;
   config: Record<string, unknown>;
-  adapterKind?: SearchAdapterKind | "none";
-  executionModes?: SearchPlanMode[];
-  privacy?: "answer_provider" | "query_only";
-  protocol?: SearchProtocol;
-  revisionId?: string;
+  credentialMode: "answer_provider" | "provider_model";
+  executionModes: readonly SearchPlanMode[];
+  kind: "gemini_google_search" | "openai_native_web_search" | "perplexity_tool_search" | "provider_model_web_search";
+  physicalStrategyId: string;
+  protocol: SearchProtocol;
+  providerModelId?: string;
+  revisionId: string;
+  searchStrategyRowId: string;
+};
+
+/** One user-visible Search source. Its exact hosted/query-only execution route
+ * is selected for the answer model at catalog/admission time and never exposed
+ * as another user preference. */
+export type SearchStrategyCatalogEntry = {
+  description: string;
+  displayName: string;
+  kind: "gemini_google_search" | "none" | "perplexity_tool_search" | "web_search";
+  routes: SearchStrategyRouteCatalogEntry[];
+  sourceConnectionId?: string;
+  strategyId: string;
 };
 
 type ProviderModelTemplate = Omit<
@@ -851,64 +860,77 @@ export function parameterControlsForModel(input: {
 
 export const defaultSearchStrategies: SearchStrategyCatalogEntry[] = [
   {
-    strategyId: "search-disabled",
-    provider: "fake",
+    description: "Question directly to Answer with no search tool.",
     displayName: "No Search",
     kind: "none",
-    description: "Question directly to Answer with no search tool.",
-    config: {}
+    routes: [],
+    strategyId: "search-disabled"
   },
   {
-    strategyId: "openai-native-web-search",
-    provider: "openai",
-    modelId: "gpt-5.5",
-    displayName: "OpenAI native web_search",
-    kind: "openai_native_web_search",
-    description: "Hosted OpenAI Responses web_search for compatible OpenAI answer models only.",
-    config: {
-      tool: "web_search"
-    }
+    description: "Web evidence from OpenAI Search.",
+    displayName: "OpenAI Search",
+    kind: "web_search",
+    routes: [{
+      adapterKind: "answer_provider_hosted",
+      config: { tool: "web_search" },
+      credentialMode: "answer_provider",
+      executionModes: ["model_choice"],
+      kind: "openai_native_web_search",
+      physicalStrategyId: "openai-native-web-search",
+      protocol: "openai_responses_web_search",
+      revisionId: "template:openai-native-web-search:v1",
+      searchStrategyRowId: "openai-native-web-search"
+    }],
+    sourceConnectionId: "openai",
+    strategyId: "openai-native-web-search"
   },
   {
-    strategyId: "gemini-google-search",
-    provider: "gemini",
+    description: "Google Search grounding for eligible Gemini models.",
     displayName: "Google Search",
     kind: "gemini_google_search",
-    description: "Native Google Search grounding for eligible Gemini models.",
-    config: {
-      liveOnly: true,
-      tool: "google_search"
-    }
+    routes: [{
+      adapterKind: "answer_provider_hosted",
+      config: { liveOnly: true, tool: "google_search" },
+      credentialMode: "answer_provider",
+      executionModes: ["model_choice"],
+      kind: "gemini_google_search",
+      physicalStrategyId: "gemini-google-search",
+      protocol: "gemini_google_search",
+      revisionId: "template:gemini-google-search:v1",
+      searchStrategyRowId: "gemini-google-search"
+    }],
+    sourceConnectionId: "gemini",
+    strategyId: "gemini-google-search"
   },
   {
-    strategyId: "perplexity-tool-search",
-    provider: "openrouter",
-    modelId: "perplexity/sonar-pro-search",
-    providerModelId: "perplexity/sonar-pro-search",
-    displayName: "Perplexity tool",
+    description: "Web evidence from Perplexity through OpenRouter.",
+    displayName: "Perplexity",
     kind: "perplexity_tool_search",
-    description: "Provider-neutral web-search tool backed by Perplexity through OpenRouter.",
-    config: {
-      executor: {
-        provider: "openrouter",
-        modelId: "perplexity/sonar-pro-search"
+    routes: [{
+      adapterKind: "provider_model_client",
+      config: {
+        executor: { modelId: "perplexity/sonar-pro-search", provider: "openrouter" },
+        params: { maxOutputTokens: 1024, temperature: 0 },
+        routeProvider: {
+          allowFallbacks: true,
+          dataCollection: "deny",
+          order: ["perplexity"],
+          requireParameters: false,
+          sort: "throughput",
+          zdr: false
+        },
+        tool: { capability: "web_search", name: "search_via_perplexity" }
       },
-      params: {
-        maxOutputTokens: 1024,
-        temperature: 0
-      },
-      routeProvider: {
-        allowFallbacks: true,
-        dataCollection: "deny",
-        order: ["perplexity"],
-        requireParameters: false,
-        sort: "throughput",
-        zdr: false
-      },
-      tool: {
-        capability: "web_search",
-        name: "search_via_perplexity"
-      }
-    }
+      credentialMode: "provider_model",
+      executionModes: ["all_selected", "model_choice"],
+      kind: "perplexity_tool_search",
+      physicalStrategyId: "perplexity-tool-search",
+      protocol: "openrouter_perplexity_chat",
+      providerModelId: "perplexity/sonar-pro-search",
+      revisionId: "template:perplexity-tool-search:v1",
+      searchStrategyRowId: "perplexity-tool-search"
+    }],
+    sourceConnectionId: "openrouter",
+    strategyId: "perplexity-tool-search"
   }
 ];

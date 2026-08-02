@@ -147,7 +147,7 @@ export function threadSearchExecutionsFromToolPreview(
   const executions = preview.searchExecutions.flatMap((value) => {
     if (!isRecord(value) || !Array.isArray(value.sources)) return [];
     const optionId = boundedString(value.optionId, 512);
-    const displayName = boundedString(value.displayName, 256) ?? optionId;
+    const displayName = boundedString(value.displayName, 256) ?? "Search source";
     const projected = decodeThreadSearchExecution({
       displayName,
       durationMs: value.durationMs ?? null,

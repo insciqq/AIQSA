@@ -44,6 +44,66 @@ describe("summarizeMessageRunArtifacts", () => {
     });
   });
 
+  it("projects the immutable logical Search name from the normalized request", () => {
+    const summary = summarizeMessageRunArtifacts({
+      events: [{
+        payload: {
+          artifactType: "search",
+          payload: { status: "completed", type: "web_search_call" }
+        }
+      }],
+      normalizedRequest: {
+        searchPlan: {
+          mode: "model_choice",
+          options: [{
+            displayName: "Company Gateway Search",
+            optionId: "custom-web-search:connection-1"
+          }]
+        }
+      },
+      searchRuns: []
+    });
+
+    expect(summary).toMatchObject({
+      searchDisplayName: "Company Gateway Search",
+      searchStrategy: "custom-web-search:connection-1"
+    });
+  });
+
+  it("attributes a hosted artifact to its exact source when another client source was selected", () => {
+    const summary = summarizeMessageRunArtifacts({
+      events: [{
+        payload: {
+          artifactType: "search",
+          payload: { status: "completed", type: "web_search_call" }
+        }
+      }],
+      normalizedRequest: {
+        searchPlan: {
+          mode: "model_choice",
+          options: [
+            {
+              adapterKind: "answer_provider_hosted",
+              displayName: "Company Gateway Search",
+              optionId: "custom-web-search:connection-1"
+            },
+            {
+              adapterKind: "provider_model_client",
+              displayName: "Perplexity Search",
+              optionId: "perplexity-tool-search"
+            }
+          ]
+        }
+      },
+      searchRuns: []
+    });
+
+    expect(summary).toMatchObject({
+      searchDisplayName: "Company Gateway Search",
+      searchStrategy: "custom-web-search:connection-1"
+    });
+  });
+
   it("extracts reasoning summary text from provider arrays and ignores empty arrays", () => {
     const summary = summarizeMessageRunArtifacts({
       events: [

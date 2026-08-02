@@ -4,7 +4,7 @@ import {
   buildGeminiInteractionsRequest,
   buildGeminiInteractionsRequestPreview
 } from "./geminiInteractionsRequest";
-import type { ProviderRunRequest } from "./types";
+import type { NormalizedSearchPlanOption, ProviderRunRequest } from "./types";
 
 const tool: RunTool = {
   capability: "mcp",
@@ -56,6 +56,22 @@ function request(overrides: Partial<ProviderRunRequest> = {}): ProviderRunReques
     provider: "gemini",
     searchStrategy: "search-disabled",
     ...overrides
+  };
+}
+
+function hostedGoogleSearch(): NormalizedSearchPlanOption {
+  return {
+    adapterKind: "answer_provider_hosted",
+    config: {},
+    credentialMode: "answer_provider",
+    executionModes: ["model_choice"],
+    modelId: null,
+    optionId: "organization-google-search",
+    protocol: "gemini_google_search",
+    provider: "gemini",
+    providerModelId: null,
+    revisionId: "revision-google-hosted",
+    searchStrategyRowId: "route-google-hosted"
   };
 }
 
@@ -158,13 +174,22 @@ describe("Gemini Interactions request builder", () => {
   });
 
   it("enables only native Google Search and rejects mixed hosted/client tools", () => {
-    const body = buildGeminiInteractionsRequest(request({ searchStrategy: "gemini-google-search" }));
+    const body = buildGeminiInteractionsRequest(request({
+      searchPlan: { mode: "model_choice", options: [hostedGoogleSearch()] },
+      searchStrategy: "organization-google-search"
+    }));
     expect(body.tools).toEqual([{ type: "google_search" }]);
 
     expect(() => buildGeminiInteractionsRequest(request({
-      searchStrategy: "gemini-google-search",
+      searchPlan: { mode: "model_choice", options: [hostedGoogleSearch()] },
+      searchStrategy: "organization-google-search",
       tools: [tool]
     }))).toThrow("gemini_interactions_tool_combination_unsupported");
+
+    expect(buildGeminiInteractionsRequest(request({
+      searchPlan: { mode: "all_selected", options: [] },
+      searchStrategy: "gemini-google-search"
+    }))).not.toHaveProperty("tools");
   });
 
   it("fails closed instead of dropping malformed continuation records", () => {

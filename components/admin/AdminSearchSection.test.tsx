@@ -22,13 +22,10 @@ vi.mock("./adminSearchApi", () => ({
 
 const catalog: AdminSearchCatalog = {
   integrations: [{
-    activeRevision: { activatedAt: "2026-07-29T12:00:00.000Z", id: "revision-1", revisionNumber: 1 },
-    adapterKind: "provider_model_client",
     archivedAt: null,
-    credentialMode: "provider_model",
-    description: "Query-only web evidence",
-    displayName: "Company Search",
-    draft: {
+    broaderModelSetup: "ready",
+    configurable: true,
+    configuration: {
       adapterKind: "provider_model_client",
       credentialMode: "provider_model",
       maxResults: 8,
@@ -37,6 +34,9 @@ const catalog: AdminSearchCatalog = {
       queryMaxCharacters: 500,
       timeoutMs: 300_000
     },
+    configurationActive: true,
+    description: "Query-only web evidence",
+    displayName: "Company Search",
     draftDirty: false,
     draftTestEvidence: {
       checkedAt: "2026-07-29T11:59:00.000Z",
@@ -48,15 +48,17 @@ const catalog: AdminSearchCatalog = {
     draftVersion: 1,
     enabled: true,
     executionModes: ["all_selected", "model_choice"],
-    id: "integration-1",
+    id: "source-1",
+    kind: "web_search",
     providerModel: {
       connectionDisplayName: "Compatible gateway",
+      connectionId: "connection-1",
       displayName: "Search model",
-      id: "technical-1",
-      upstreamModelId: "opaque-search-model"
+      id: "technical-1"
     },
     ready: true,
     readiness: "ready",
+    sourceConnectionId: "connection-1",
     strategyId: "company-search-12345678",
     system: false
   }],
@@ -77,40 +79,40 @@ describe("AdminSearchSection", () => {
     api.updatePolicy.mockReset().mockResolvedValue({ ok: true, search: catalog });
   });
 
-  it("presents Search as an index/detail task workspace with factual route and diagnostics", async () => {
+  it("presents one friendly Search source with configuration and diagnostics", async () => {
     render(<AdminSearchSection active />);
 
-    const index = await screen.findByRole("list", { name: "Search integration catalog" });
+    const index = await screen.findByRole("list", { name: "Search source catalog" });
     fireEvent.click(within(index).getByRole("button", { name: /Company Search/i }));
 
     expect(screen.getByRole("heading", { name: "Company Search" })).toBeVisible();
-    expect(screen.getByText("User option")).toBeVisible();
-    expect(screen.getByText(/Active engine revision 1/)).toBeVisible();
+    expect(screen.getByText("One Search source")).toBeVisible();
     expect(screen.getByText("Compatible answer models")).toBeVisible();
     expect(screen.getByText("5 min")).toBeVisible();
+    expect(screen.getByTestId("admin-search-section").textContent?.toLowerCase()).not.toMatch(
+      /native|provider-neutral|\broute\b|revision|adapter|technical|credential mode|physical/u
+    );
 
     const configurationTab = screen.getByRole("tab", { name: "Configuration" });
     fireEvent.click(configurationTab);
     await waitFor(() => expect(configurationTab).toHaveAttribute("aria-selected", "true"));
-    const timeout = await screen.findByRole("spinbutton", { name: /Engine timeout, seconds/ });
+    const timeout = await screen.findByRole("spinbutton", { name: /Search timeout, seconds/ });
     expect(timeout).toHaveValue(300);
     fireEvent.change(timeout, { target: { value: "420" } });
-    fireEvent.click(screen.getByRole("button", { name: "Save draft" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
     await waitFor(() => expect(api.update).toHaveBeenCalledWith(expect.objectContaining({
       draft: expect.objectContaining({ timeoutMs: 420_000 })
     })));
 
     fireEvent.click(screen.getByRole("tab", { name: "Diagnostics" }));
-    expect(screen.getByRole("region", { name: "Search diagnostics" })).toHaveTextContent(
-      "Normalized sources"
-    );
-    fireEvent.click(screen.getByRole("button", { name: "Test draft" }));
+    expect(screen.getByRole("region", { name: "Search diagnostics" })).toHaveTextContent("Sources found");
+    fireEvent.click(screen.getByRole("button", { name: "Test configuration" }));
     await waitFor(() => expect(api.run).toHaveBeenCalledWith({
       action: "test",
       confirmed: undefined,
-      id: "integration-1"
+      id: "source-1"
     }));
-    expect(await screen.findByText("Search draft tested.")).toBeVisible();
+    expect(await screen.findByText("Search configuration tested.")).toBeVisible();
   });
 
   it("saves a version-fenced organization recommendation without changing grants", async () => {
@@ -129,77 +131,143 @@ describe("AdminSearchSection", () => {
     expect(await screen.findByText("Organization Search default saved.")).toBeVisible();
   });
 
-  it("defaults a new native OpenAI model to provider-neutral query-only Search", async () => {
+  it("creates one Search source from a friendly provider-model choice", async () => {
     api.list.mockResolvedValue({
       ok: true,
       search: {
         ...catalog,
         providerModels: [
           {
-            adapterKind: "openrouter_chat_completions",
             connectionDisplayName: "OpenRouter",
+            connectionId: "connection-openrouter",
             displayName: "Perplexity Search",
             enabled: true,
             id: "technical-openrouter",
-            nativeSearch: true,
-            upstreamModelId: "perplexity/sonar-pro-search"
+            searchKind: "perplexity_search"
           },
           {
-            adapterKind: "openai_responses_native",
             connectionDisplayName: "OpenAI",
+            connectionId: "connection-openai",
             displayName: "GPT Search",
             enabled: true,
             id: "technical-openai",
-            nativeSearch: true,
-            upstreamModelId: "gpt-5.6-search"
+            searchKind: "web_search"
           }
         ]
       }
     });
     render(<AdminSearchSection active />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Add" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Add source" }));
 
-    expect(screen.getByRole("heading", { name: "Add search integration" })).toBeVisible();
-    expect(screen.getByLabelText("User-facing name")).toHaveValue(
-      "OpenAI Search (provider-neutral)"
+    expect(screen.getByRole("heading", { name: "Add Search source" })).toBeVisible();
+    expect(screen.getByLabelText("Name")).toHaveValue("OpenAI Search");
+    expect(screen.getByLabelText("Purpose")).toHaveValue("Web search through OpenAI.");
+    expect(screen.getByLabelText(/Search provider and model/)).toHaveValue("technical-openai");
+    expect(screen.getByTestId("admin-search-section").textContent?.toLowerCase()).not.toMatch(
+      /native|provider-neutral|\broute\b|revision|adapter|technical|credential mode|physical/u
     );
-    expect(screen.getByLabelText("Purpose")).toHaveValue(
-      "Query-only OpenAI web search for any tool-capable answer model."
-    );
-    expect(screen.getByLabelText(/Engine protocol/)).toHaveValue(
-      "openai_responses_web_search"
-    );
-    expect(screen.getByLabelText(/Technical provider model/)).toHaveValue("technical-openai");
-    expect(screen.getByText(/receives only a bounded generated query/i)).toHaveTextContent(
-      "can serve Anthropic, Gemini, or any other tool-capable answer model"
-    );
+
+    const opened = {
+      ...catalog.integrations[0],
+      configuration: {
+        ...catalog.integrations[0]!.configuration!,
+        providerModelId: "technical-openai"
+      },
+      displayName: "OpenAI Search",
+      id: "source-openai",
+      sourceConnectionId: "connection-openai",
+      strategyId: "openai-native-web-search"
+    };
+    api.create.mockResolvedValue({
+      ok: true,
+      search: {
+        ...catalog,
+        integrations: [...catalog.integrations, opened]
+      },
+      selectedIntegrationId: opened.id
+    });
+    fireEvent.click(within(screen.getByTestId("admin-search-detail-pane")).getByRole(
+      "button",
+      { name: "Add source" }
+    ));
+
+    expect(await screen.findByRole("heading", { name: "OpenAI Search" })).toBeVisible();
+    expect(screen.getByText("Search source opened.")).toBeVisible();
   });
 
-  it("separates enabled state from unavailable runtime dependencies", async () => {
+  it("keeps a ready source usable while broader answer-model setup is incomplete", async () => {
     api.list.mockResolvedValue({
       ok: true,
       search: {
         ...catalog,
         integrations: [{
           ...catalog.integrations[0],
-          ready: false,
-          readiness: "provider_model_unavailable"
+          broaderModelSetup: "setup_required",
+          configurationActive: false
         }]
       }
     });
     render(<AdminSearchSection active />);
 
-    const index = await screen.findByRole("list", { name: "Search integration catalog" });
-    expect(within(index).getByText("Technical model unavailable")).toBeVisible();
+    const index = await screen.findByRole("list", { name: "Search source catalog" });
+    expect(within(index).getByText("Ready")).toBeVisible();
     fireEvent.click(within(index).getByRole("button", { name: /Company Search/i }));
-    expect(within(screen.getByTestId("admin-search-detail-pane"))
-      .getAllByText("Technical model unavailable").length).toBeGreaterThan(0);
+    expect(screen.getByText("Works now; support for more answer models needs setup")).toBeVisible();
     expect(within(screen.getByTestId("admin-search-detail-pane")).getAllByText("Enabled").length)
       .toBeGreaterThan(0);
   });
 
-  it("lets an administrator remove an unavailable engine from the recommendation", async () => {
+  it("switches the technical model only within the source connection", async () => {
+    const providerModels: AdminSearchCatalog["providerModels"] = [
+      {
+        connectionDisplayName: "Compatible gateway",
+        connectionId: "connection-1",
+        displayName: "Search model A",
+        enabled: true,
+        id: "technical-1",
+        searchKind: "web_search"
+      },
+      {
+        connectionDisplayName: "Compatible gateway",
+        connectionId: "connection-1",
+        displayName: "Search model B",
+        enabled: true,
+        id: "technical-2",
+        searchKind: "web_search"
+      },
+      {
+        connectionDisplayName: "Other gateway",
+        connectionId: "connection-2",
+        displayName: "Other Search model",
+        enabled: true,
+        id: "technical-other",
+        searchKind: "web_search"
+      }
+    ];
+    api.list.mockResolvedValue({
+      ok: true,
+      search: { ...catalog, providerModels }
+    });
+    render(<AdminSearchSection active />);
+
+    const index = await screen.findByRole("list", { name: "Search source catalog" });
+    fireEvent.click(within(index).getByRole("button", { name: /Company Search/i }));
+    fireEvent.click(screen.getByRole("tab", { name: "Configuration" }));
+    const selector = screen.getByRole("combobox", { name: /Search provider and model/ });
+    expect(selector).toBeEnabled();
+    expect(within(selector).queryByRole("option", { name: /Other Search model/ })).toBeNull();
+
+    fireEvent.change(selector, { target: { value: "technical-2" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+
+    await waitFor(() => expect(api.update).toHaveBeenCalledWith(expect.objectContaining({
+      draft: expect.objectContaining({ providerModelId: "technical-2" }),
+      id: "source-1"
+    })));
+  });
+
+  it("lets an administrator remove an unavailable source from the recommendation", async () => {
     api.list.mockResolvedValue({
       ok: true,
       search: {
@@ -207,7 +275,7 @@ describe("AdminSearchSection", () => {
         integrations: [{
           ...catalog.integrations[0],
           ready: false,
-          readiness: "provider_model_unavailable"
+          readiness: "source_unavailable"
         }],
         policy: {
           ...catalog.policy,
@@ -235,6 +303,29 @@ describe("AdminSearchSection", () => {
         optionIds: []
       },
       expectedVersion: 1
+    }));
+  });
+
+  it("requires an in-product confirmation before archiving a Search source", async () => {
+    render(<AdminSearchSection active />);
+
+    const index = await screen.findByRole("list", { name: "Search source catalog" });
+    fireEvent.click(within(index).getByRole("button", { name: /Company Search/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Archive" }));
+
+    expect(api.run).not.toHaveBeenCalled();
+    const confirmation = screen.getByRole("dialog", {
+      name: "Archive Search source Company Search"
+    });
+    expect(confirmation).toHaveTextContent(
+      "Company Search will be unavailable for future runs. Existing run history remains available."
+    );
+
+    fireEvent.click(within(confirmation).getByRole("button", { name: "Confirm archive source" }));
+    await waitFor(() => expect(api.run).toHaveBeenCalledWith({
+      action: "archive",
+      confirmed: true,
+      id: "source-1"
     }));
   });
 });

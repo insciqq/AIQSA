@@ -43,6 +43,7 @@ import {
 } from "./providerToolLoop";
 import { applyProviderRequestContextBudget } from "./runContextBudget";
 import { loadProviderAttachments } from "./runPreparation";
+import { withPinnedHostedSearchIdentity } from "./searchArtifactIdentity";
 import type { RunRepository, RunUsageAttribution } from "./runRepositoryContract";
 import type { ToolLoopSettledCall } from "./toolLoop";
 import { parsePersistedToolExecutionResult } from "./toolExecutionPersistence";
@@ -422,6 +423,7 @@ async function settleToolLoopRecoveryError(
 }
 
 type RecoverySearchExecutor = Readonly<{
+  accepts(name: string): boolean;
   execute(
     call: ModelToolCall,
     request: ProviderRunRequest,
@@ -443,12 +445,11 @@ type RecoveryToolContext = Readonly<{
   run: CheckpointedToolLoopRun;
   runtime(): RunRecoveryMcpRuntime;
   searchExecutor: RecoverySearchExecutor | null;
-  searchToolNames: ReadonlySet<string>;
   usageAttributions: RunUsageAttribution[];
 }>;
 
 function isRecoveredSearchCall(context: RecoveryToolContext, name: string): boolean {
-  return context.searchToolNames.has(name);
+  return context.searchExecutor?.accepts(name) === true;
 }
 
 async function recordRecoveredSearchResult(input: Readonly<{
@@ -727,19 +728,21 @@ async function recoverCheckpointedToolLoop(
       if (!optionRuntime) {
         throw new ToolLoopRecoveryError(
           "search_policy_not_available",
-          `The saved search binding for ${option.optionId} is no longer available.`
+          `The saved Search source ${JSON.stringify(option.displayName || "Search source")} is no longer available.`
         );
       }
       planRuntimes[option.optionId] = optionRuntime;
     }
     const planSearchRouter = run.normalizedRequest.searchPlan
       ? createSearchPlanToolRouter({
+          acceptLegacyToolNames: true,
           plan: run.normalizedRequest.searchPlan,
           runtimes: planRuntimes
         })
       : null;
     const searchExecutor: RecoverySearchExecutor | null = planSearchRouter
       ? {
+          accepts: (name) => planSearchRouter.accepts(name),
           execute: (call, request, _runId, executionSignal) =>
             planSearchRouter.execute(call, request, { signal: executionSignal }),
           legacy: null,
@@ -747,6 +750,7 @@ async function recoverCheckpointedToolLoop(
         }
       : legacySearchExecutor
         ? {
+            accepts: (name) => name === legacySearchExecutor.tool.name,
             execute: (call, request, recoveredRunId, executionSignal) =>
               legacySearchExecutor.execute(
                 call,
@@ -760,7 +764,6 @@ async function recoverCheckpointedToolLoop(
             tools: [perplexityWebSearchTool]
           }
         : null;
-    const searchToolNames = new Set(searchExecutor?.tools.map((tool) => tool.name) ?? []);
     const tools: RunTool[] = [
       ...(searchExecutor?.tools ?? []),
       ...mcpRunTools(run.normalizedRequest.mcp)
@@ -785,7 +788,6 @@ async function recoverCheckpointedToolLoop(
         return runtime;
       },
       searchExecutor,
-      searchToolNames,
       usageAttributions
     };
     const sequence = { value: await deps.repository.nextRunEventSequence(run.id) };
@@ -816,7 +818,8 @@ async function recoverCheckpointedToolLoop(
     }
 
     async function appendEvent(event: ModelRunSseEvent): Promise<void> {
-      if (isGroundingDisplaySseEvent(event)) {
+      const effectiveEvent = withPinnedHostedSearchIdentity(event, run.normalizedRequest);
+      if (isGroundingDisplaySseEvent(effectiveEvent)) {
         if (run.assistantMessageId) {
           await deps.repository.markAssistantMessageGroundedLiveOnly({
             assistantMessageId: run.assistantMessageId,
@@ -831,8 +834,8 @@ async function recoverCheckpointedToolLoop(
           "Grounded live-only output cannot resume after process recovery."
         );
       }
-      await publishProviderResponseId(providerResponseIdFromEvent(event) ?? undefined);
-      await appendRunEventWithRetry(deps.repository, run.id, sequence, event);
+      await publishProviderResponseId(providerResponseIdFromEvent(effectiveEvent) ?? undefined);
+      await appendRunEventWithRetry(deps.repository, run.id, sequence, effectiveEvent);
     }
 
     async function appendToolResults(
@@ -873,7 +876,7 @@ async function recoverCheckpointedToolLoop(
       const persisted = await deps.repository.persistToolLoopCallBatch({
         calls: calls.map((call, ordinal) => {
           const route = resolveMcpRunTool(run.normalizedRequest.mcp, call.name);
-          if (!route && !searchToolNames.has(call.name)) {
+          if (!route && searchExecutor?.accepts(call.name) !== true) {
             throw new ToolLoopRecoveryError(
               "unsupported_tool_call",
               `The provider requested unsupported tool ${call.name}.`

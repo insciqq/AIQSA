@@ -7,13 +7,24 @@ import {
 type Fetcher = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
 export type AdminSearchApiResult =
-  | Readonly<{ ok: true; search: AdminSearchCatalog }>
+  | Readonly<{ ok: true; search: AdminSearchCatalog; selectedIntegrationId?: string }>
   | Readonly<{ error: string; ok: false }>;
 
 async function read(response: Response): Promise<AdminSearchApiResult> {
   const value = await response.json().catch(() => null);
   const decoded = response.ok ? decodeAdminSearchCatalog(value) : null;
-  if (decoded) return { ok: true, search: decoded };
+  if (decoded) {
+    const selectedIntegrationId = typeof value === "object" && value !== null &&
+      !Array.isArray(value) &&
+      typeof (value as Record<string, unknown>).selectedIntegrationId === "string"
+      ? String((value as Record<string, unknown>).selectedIntegrationId)
+      : undefined;
+    return {
+      ok: true,
+      search: decoded,
+      ...(selectedIntegrationId ? { selectedIntegrationId } : {})
+    };
+  }
   const error = typeof value === "object" && value !== null && !Array.isArray(value) &&
     typeof (value as Record<string, unknown>).error === "string"
     ? String((value as Record<string, unknown>).error)
@@ -93,13 +104,14 @@ export function adminSearchErrorMessage(code: string): string {
     search_admin_action_failed: "The Search action failed.",
     search_catalog_malformed: "The Search catalog response was invalid.",
     search_configuration_invalid: "Review the Search configuration and bounded limits.",
-    search_default_unavailable: "Choose only active, ready Search integrations with compatible execution modes.",
-    search_draft_stale: "This draft changed elsewhere. Reload and apply your edit again.",
-    search_integration_material_identity_changed: "Engine identity cannot change after activation. Add a new integration instead.",
-    search_provider_model_not_available: "Choose an enabled provider model with a compatible native-search protocol.",
+    search_configuration_unavailable: "This Search source has no editable configuration.",
+    search_default_unavailable: "Choose only enabled, ready Search sources that can work together.",
+    search_draft_stale: "This configuration changed elsewhere. Reload and apply your edit again.",
+    search_integration_material_identity_changed: "The Search connection cannot change after this source is in use. Add a new source instead.",
+    search_provider_model_not_available: "Choose an enabled provider model that supports Search for this source.",
     search_policy_stale: "The organization Search default changed elsewhere. Reload and apply your edit again.",
-    search_system_integration_forbidden: "This built-in integration cannot be archived.",
-    search_test_failed: "The provider search test did not produce a usable terminal result."
+    search_system_integration_forbidden: "This built-in Search source cannot be archived.",
+    search_test_failed: "The Search test did not produce a usable result."
   };
   return messages[code] ?? code.replaceAll("_", " ");
 }

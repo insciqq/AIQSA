@@ -70,7 +70,7 @@ async function main() {
   const expectedModelTemplateKeys = defaultProviderModels.map(
     (model) => `${model.provider}:${model.modelId}`
   );
-  const [providerConnections, providerModels, runProfiles, searchStrategies] = await Promise.all([
+  const [providerConnections, providerModels, runProfiles, searchOptions, searchStrategies] = await Promise.all([
     prisma.providerConnection.findMany({
       where: {
         templateKey: { in: providerConnectionTemplates.map((template) => template.templateKey) }
@@ -80,6 +80,13 @@ async function main() {
       where: { templateKey: { in: expectedModelTemplateKeys } }
     }),
     prisma.runProfile.findMany({ orderBy: { id: "asc" } }),
+    prisma.searchOption.findMany({
+      where: {
+        templateKey: {
+          in: ["search:none", "search:openai", "search:gemini-google", "search:perplexity"]
+        }
+      }
+    }),
     prisma.searchStrategy.findMany({
       where: {
         strategyId: { in: defaultSearchStrategies.map((strategy) => strategy.strategyId) }
@@ -91,6 +98,7 @@ async function main() {
   if (
     providerConnections.length !== providerConnectionTemplates.length ||
     providerModels.length !== defaultProviderModels.length ||
+    searchOptions.length !== 4 ||
     searchStrategies.length !== defaultSearchStrategies.length ||
     !fakeModel ||
     !fakeModel.enabled ||
@@ -156,14 +164,32 @@ async function main() {
     }
   }
   for (const strategyTemplate of defaultSearchStrategies) {
+    const route = strategyTemplate.routes[0];
+    const physicalStrategyId = route?.physicalStrategyId ?? strategyTemplate.strategyId;
     const strategy = searchStrategies.find(
-      (candidate) => candidate.strategyId === strategyTemplate.strategyId
+      (candidate) => candidate.strategyId === physicalStrategyId
     );
-    const expectedProviderModelId = strategyTemplate.kind === "perplexity_tool_search"
-      ? modelIdByTemplate.get(`${strategyTemplate.provider}:${strategyTemplate.modelId}`)
+    const expectedProviderModelId = route?.credentialMode === "provider_model"
+      ? modelIdByTemplate.get(
+          `${strategyTemplate.sourceConnectionId}:${route.providerModelId ?? ""}`
+        )
       : null;
-    if (!strategy || strategy.providerModelId !== expectedProviderModelId) {
-      throw new Error(`Seed smoke found invalid search deployment: ${strategyTemplate.strategyId}`);
+    const expectedSearchOption = searchOptions.find((option) =>
+      strategyTemplate.strategyId === "search-disabled"
+        ? option.templateKey === "search:none"
+        : strategyTemplate.strategyId === "openai-native-web-search"
+          ? option.templateKey === "search:openai"
+          : strategyTemplate.strategyId === "gemini-google-search"
+            ? option.templateKey === "search:gemini-google"
+            : option.templateKey === "search:perplexity"
+    );
+    if (
+      !strategy ||
+      !expectedSearchOption ||
+      strategy.providerModelId !== expectedProviderModelId ||
+      strategy.searchOptionId !== expectedSearchOption.id
+    ) {
+      throw new Error(`Seed smoke found invalid search deployment: ${physicalStrategyId}`);
     }
   }
 

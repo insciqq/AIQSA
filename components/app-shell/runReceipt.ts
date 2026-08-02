@@ -117,8 +117,11 @@ export function deriveRunReceipt({
     );
     if (searchCount > 0 && !searchNestedUnderTool) {
       facts.push({
-        ...(artifactSummary.searchStrategy
-          ? { detail: searchStrategyDescription(artifactSummary.searchStrategy) }
+        ...(artifactSummary.searchDisplayName?.trim() || artifactSummary.searchStrategy
+          ? {
+              detail: artifactSummary.searchDisplayName?.trim() ||
+                searchStrategyDescription(artifactSummary.searchStrategy!)
+            }
           : {}),
         kind: "search",
         label: countLabel(searchCount, "search call", "search calls")

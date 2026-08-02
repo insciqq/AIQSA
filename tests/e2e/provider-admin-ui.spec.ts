@@ -1072,7 +1072,11 @@ test("administrator discovers and configures a Custom compatible provider on wid
           providerModelId: `custom-model-${receipt}`
         }],
         outcome: "ready",
-        providerModelId: readyModels[0]?.providerModelId ?? `custom-model-${receipt}`
+        providerModelId: readyModels[0]?.providerModelId ?? `custom-model-${receipt}`,
+        search: {
+          displayName: `Fixture Compatible ${receipt} Search`,
+          status: "ready"
+        }
       }
     });
   });
@@ -1339,8 +1343,8 @@ test("administrator activates a Custom replacement and deletes its complete conf
           contentType: "application/json",
           json: {
             models: [
-              { id: "fixture/lifecycle-model" },
-              { id: "fixture/second-model" }
+              { capabilities: {}, id: "fixture/lifecycle-model" },
+              { capabilities: {}, id: "fixture/second-model" }
             ]
           }
         });
@@ -1956,25 +1960,21 @@ test("administrator remaps the three composer run profiles in one save", async (
 test("administrator saves a versioned Search recommendation that grants no access", async ({ page }) => {
   let search: AdminSearchCatalog = {
     integrations: [{
-      activeRevision: {
-        activatedAt: now,
-        id: "search-revision-1",
-        revisionNumber: 1
-      },
-      adapterKind: "provider_model_client",
       archivedAt: null,
-      credentialMode: "provider_model",
-      description: "Query-only web evidence",
-      displayName: "Company Search",
-      draft: {
+      broaderModelSetup: "ready",
+      configurable: true,
+      configuration: {
         adapterKind: "provider_model_client",
         credentialMode: "provider_model",
         maxResults: 8,
         protocol: "openai_responses_web_search",
-        providerModelId: "technical-search-1",
+        providerModelId: "search-model-1",
         queryMaxCharacters: 500,
         timeoutMs: 300_000
       },
+      configurationActive: true,
+      description: "Query-only web evidence",
+      displayName: "Company Search",
       draftDirty: false,
       draftTestEvidence: {
         checkedAt: now,
@@ -1986,15 +1986,17 @@ test("administrator saves a versioned Search recommendation that grants no acces
       draftVersion: 1,
       enabled: true,
       executionModes: ["all_selected", "model_choice"],
-      id: "search-integration-1",
+      id: "search-source-1",
+      kind: "web_search",
       providerModel: {
         connectionDisplayName: "Compatible gateway",
+        connectionId: "search-connection-1",
         displayName: "Search model",
-        id: "technical-search-1",
-        upstreamModelId: "opaque-search-model"
+        id: "search-model-1"
       },
       ready: true,
       readiness: "ready",
+      sourceConnectionId: "search-connection-1",
       strategyId: "company-search-12345678",
       system: false
     }],
@@ -2028,7 +2030,8 @@ test("administrator saves a versioned Search recommendation that grants no acces
   await page.getByTestId("admin-tab-search").click();
   const section = page.getByTestId("admin-search-section");
   const policy = section.getByRole("region", { name: "Recommended Search plan" });
-  await expect(policy).toContainText("Recommendation only; it never grants Search access.");
+  await expect(policy).toContainText("This recommendation never grants access.");
+  await expect(section).not.toContainText(/native|provider-neutral|\broute\b|revision|adapter|technical|credential mode|physical/iu);
   await policy.getByRole("button", { name: "Company Search" }).click();
   await policy.getByRole("button", { name: "Save default" }).click();
 

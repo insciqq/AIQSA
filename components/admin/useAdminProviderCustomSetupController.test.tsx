@@ -19,7 +19,8 @@ const ready = {
   modelDisplayName: "Model 1",
   models: [{ modelDisplayName: "Model 1", providerModelId: "model-1" }],
   outcome: "ready" as const,
-  providerModelId: "model-1"
+  providerModelId: "model-1",
+  search: null
 };
 
 function fillRequired(

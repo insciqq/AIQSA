@@ -924,7 +924,7 @@ export function AdminProviderModelEditor({
           <fieldset>
             <legend className={fieldLabel}>Capability overrides</legend>
             <div className="flex flex-wrap gap-2">
-              {([['reasoning', 'Reasoning'], ['vision', 'Vision'], ['pdf', 'PDF'], ['nativePdfInput', 'Native PDF input'], ['nativeSearch', 'Native search'], ['toolCalling', 'Tools'], ['streaming', 'Streaming'], ['parallelToolCalls', 'Parallel tools']] as const)
+              {([['reasoning', 'Reasoning'], ['vision', 'Vision'], ['pdf', 'PDF'], ['nativePdfInput', 'Native PDF input'], ['nativeSearch', 'Search'], ['toolCalling', 'Tools'], ['streaming', 'Streaming'], ['parallelToolCalls', 'Parallel tools']] as const)
                 .filter(([key]) => !compatibleAdapters || (key !== "reasoning" && key !== "nativeSearch"))
                 .map(([key, label]) => (
                 <label className={`flex min-h-control items-center gap-2 rounded-control bg-answer-paper px-3 text-xs text-ink-secondary ${touchTarget}`} key={key}>

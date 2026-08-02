@@ -47,6 +47,7 @@ export type ThreadArtifactSummary = {
   reasoningText: string[];
   searchCount: number;
   searchDetails?: ThreadSearchDetail[];
+  searchDisplayName?: string | null;
   searchStrategy: string | null;
   toolCallCount: number;
   toolCalls: ThreadToolActivity[];
@@ -334,12 +335,16 @@ function decodeThreadArtifactSummary(value: unknown): ThreadArtifactSummary | nu
   const reasoningCount = nonNegativeInteger(value.reasoningCount);
   const searchCount = nonNegativeInteger(value.searchCount);
   const toolCallCount = nonNegativeInteger(value.toolCallCount);
+  const searchDisplayName = value.searchDisplayName === undefined
+    ? undefined
+    : nullableString(value.searchDisplayName);
   const searchStrategy = nullableId(value.searchStrategy);
   if (
     citationCount === null ||
     reasoningCount === null ||
     searchCount === null ||
     toolCallCount === null ||
+    (value.searchDisplayName !== undefined && searchDisplayName === undefined) ||
     searchStrategy === undefined ||
     !Array.isArray(value.citations) ||
     !Array.isArray(value.reasoningText) ||
@@ -395,6 +400,7 @@ function decodeThreadArtifactSummary(value: unknown): ThreadArtifactSummary | nu
     reasoningText: value.reasoningText as string[],
     searchCount,
     ...(searchDetails !== undefined ? { searchDetails } : {}),
+    ...(searchDisplayName !== undefined ? { searchDisplayName } : {}),
     searchStrategy,
     toolCallCount,
     toolCalls: toolCalls.filter((toolCall): toolCall is ThreadToolActivity => toolCall !== null)

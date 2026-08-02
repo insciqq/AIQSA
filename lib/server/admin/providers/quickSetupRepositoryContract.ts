@@ -64,7 +64,7 @@ export type AdminProviderQuickSetupCommitPlan = Readonly<{
   now: Date;
   preservedModels: AdminProviderQuickSetupInspection["preservedModels"];
   provider: AdminProviderQuickSetupProviderId;
-  providerNeutralSearch?: Readonly<{
+  search?: Readonly<{
     draft: AdminSearchDraft;
     draftHash: string;
     evidence: AdminSearchTestEvidence;
@@ -81,7 +81,7 @@ export type AdminProviderQuickSetupCommitResult =
   | Readonly<{
       defaultChanged: boolean;
       profilesFilled: RunProfileId[];
-      providerNeutralSearch?: "needs_attention" | "ready" | null;
+      search?: "needs_attention" | "ready" | null;
       status: "ready";
     }>;
 

@@ -91,6 +91,8 @@ export type ModelRunSseEvent =
       data: {
         artifactType: "citation" | "context_truncated" | "reasoning" | "search" | "summary" | "tool_call" | "tool_result";
         payload: unknown;
+        searchDisplayName?: string;
+        searchStrategy?: string;
       };
     }
   | {

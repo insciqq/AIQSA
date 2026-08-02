@@ -77,15 +77,20 @@ export type CatalogWireModel = {
   parameterControls: ModelParameterControls;
   provider: string;
   providerFamily: string;
+  searchOptionCompatibility?: Record<string, {
+    attachments: boolean;
+    executionModes: SearchPlanMode[];
+  }>;
   searchStrategyIds: string[];
   upstreamModelId: string;
 };
 
 export type CatalogWireSearchStrategy = {
   adapterKind?: SearchAdapterKind;
+  description?: string;
   displayName: string;
   executionModes?: SearchPlanMode[];
-  kind: "gemini_google_search" | "none" | "openai_native_web_search" | "perplexity_tool_search" | "provider_model_web_search";
+  kind: "gemini_google_search" | "none" | "openai_native_web_search" | "perplexity_tool_search" | "provider_model_web_search" | "web_search";
   privacy?: "answer_provider" | "query_only";
   protocol?: SearchProtocol;
   revisionId?: string;
@@ -230,6 +235,7 @@ function decodeCatalogModel(value: unknown): CatalogModel | null {
   }
 
   const capabilities = value.capabilities;
+  const searchOptionCompatibility = value.searchOptionCompatibility;
   const documentInputMode = capabilities.documentInputMode;
   if (
     typeof capabilities.background !== "boolean" ||
@@ -242,6 +248,15 @@ function decodeCatalogModel(value: unknown): CatalogModel | null {
     typeof capabilities.reasoning !== "boolean" ||
     typeof capabilities.streaming !== "boolean" ||
     typeof capabilities.toolCalling !== "boolean" ||
+    (searchOptionCompatibility !== undefined && (
+      !isRecord(searchOptionCompatibility) ||
+      Object.values(searchOptionCompatibility).some((candidate) =>
+        !isRecord(candidate) ||
+        typeof candidate.attachments !== "boolean" ||
+        !Array.isArray(candidate.executionModes) ||
+        candidate.executionModes.some((mode) => mode !== "all_selected" && mode !== "model_choice")
+      )
+    )) ||
     ("text" in capabilities && capabilities.text !== true)
   ) {
     return null;
@@ -265,6 +280,19 @@ function decodeCatalogModel(value: unknown): CatalogModel | null {
     parameterControls: value.parameterControls,
     provider: value.provider,
     providerFamily: value.providerFamily,
+    ...(searchOptionCompatibility
+      ? {
+          searchOptionCompatibility: Object.fromEntries(
+            Object.entries(searchOptionCompatibility).map(([optionId, candidate]) => [
+              optionId,
+              {
+                attachments: (candidate as Record<string, unknown>).attachments as boolean,
+                executionModes: (candidate as Record<string, unknown>).executionModes as SearchPlanMode[]
+              }
+            ])
+          )
+        }
+      : {}),
     searchStrategyIds: value.searchStrategyIds,
     upstreamModelId: value.upstreamModelId
   };
@@ -318,7 +346,8 @@ function decodeSearchStrategy(value: unknown): CatalogSearchStrategy | null {
       value.kind !== "gemini_google_search" &&
       value.kind !== "openai_native_web_search" &&
       value.kind !== "perplexity_tool_search" &&
-      value.kind !== "provider_model_web_search") ||
+      value.kind !== "provider_model_web_search" &&
+      value.kind !== "web_search") ||
     !nonEmptyString(value.strategyId)
   ) {
     return null;
@@ -347,6 +376,7 @@ function decodeSearchStrategy(value: unknown): CatalogSearchStrategy | null {
 
   return {
     ...(adapterKind ? { adapterKind } : {}),
+    ...(typeof value.description === "string" ? { description: value.description } : {}),
     displayName: value.displayName,
     ...(executionModes ? { executionModes: executionModes as SearchPlanMode[] } : {}),
     kind: value.kind,

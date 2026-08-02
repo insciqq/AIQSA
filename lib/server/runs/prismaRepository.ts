@@ -11,7 +11,11 @@ import {
   groundedLiveOnlyMessageContent,
   groundedLiveOnlyProviderPreview
 } from "../../domain/grounding";
-import { isGroundingDisplaySseEvent, type ModelRunSseEvent } from "../../domain/modelRunEvents";
+import {
+  isGroundingDisplaySseEvent,
+  textFromContentBlocks,
+  type ModelRunSseEvent
+} from "../../domain/modelRunEvents";
 import { normalizeTokenUsage, sumTokenUsage } from "../../domain/usage";
 import { loadChatUsageStats, summarizeMessageRunArtifacts } from "../chats/prismaRepository";
 import { titleFromMessageContent } from "../chats/titlePolicy";
@@ -529,14 +533,33 @@ type ConversationPathRow = {
   messageGroundedAt: Date | null;
   messageContent: Prisma.JsonValue | null;
   messageId: string | null;
+  messageParentId?: string | null;
   messageRole: string | null;
   messageStatus: string | null;
 };
 
 export function conversationMessagesFromPathRows(rows: ConversationPathRow[]): ProviderConversationMessage[] {
+  const failedWithoutAnswer = new Set<string>();
+  for (let index = 1; index < rows.length; index += 1) {
+    const row = rows[index]!;
+    const parent = rows[index - 1]!;
+    if (
+      row.messageRole === "assistant" &&
+      row.messageStatus === "error" &&
+      (!isRecord(row.messageContent) || !textFromContentBlocks(row.messageContent).trim()) &&
+      parent.messageId &&
+      parent.messageRole === "user" &&
+      parent.messageStatus === "complete" &&
+      (row.messageParentId === undefined || row.messageParentId === parent.messageId)
+    ) {
+      failedWithoutAnswer.add(parent.messageId);
+    }
+  }
+
   return rows.flatMap((row) => {
     if (
       !row.messageId ||
+      failedWithoutAnswer.has(row.messageId) ||
       (row.messageRole !== "user" && row.messageRole !== "assistant") ||
       (row.messageStatus !== "complete" && row.messageStatus !== "streaming")
     ) {
@@ -619,6 +642,7 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
         path."content" AS "messageContent",
         path."groundedAt" AS "messageGroundedAt",
         path."id" AS "messageId",
+        path."parentMessageId" AS "messageParentId",
         path."role" AS "messageRole",
         path."status" AS "messageStatus"
       FROM "selected_chat" AS chat

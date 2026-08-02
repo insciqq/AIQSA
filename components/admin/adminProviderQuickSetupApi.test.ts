@@ -83,8 +83,8 @@ describe("admin provider Quick setup API", () => {
       profilesFilled: ["balanced"],
       provider: "openai",
       providerDisplayName: "OpenAI",
-      providerNeutralSearch: {
-        displayName: "OpenAI Search (provider-neutral)",
+      search: {
+        displayName: "OpenAI Search",
         status: "ready"
       }
     };
@@ -237,8 +237,8 @@ describe("admin provider Quick setup API", () => {
       profilesFilled: [],
       provider: "openai",
       providerDisplayName: "OpenAI",
-      providerNeutralSearch: {
-        displayName: "OpenAI Search (provider-neutral)",
+      search: {
+        displayName: "OpenAI Search",
         status: "available"
       }
     },

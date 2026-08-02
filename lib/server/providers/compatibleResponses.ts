@@ -2,7 +2,8 @@ import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
 import {
   buildOpenAIResponsesRequest,
   buildOpenAIResponsesRequestPreview,
-  type OpenAIResponsesRequestBody
+  type OpenAIResponsesRequestBody,
+  usesHostedOpenAIWebSearch
 } from "./openaiResponsesRequest";
 import {
   extractOpenAIUsage,
@@ -84,7 +85,7 @@ export function buildCompatibleResponsesRequest(
     OPENAI_RESPONSES_REASONING_REQUEST_MAPPING;
   return stripNativeExtensions(
     buildOpenAIResponsesRequest(portableRequest, options),
-    portableRequest.searchStrategy === "openai-native-web-search",
+    usesHostedOpenAIWebSearch(portableRequest),
     reasoningRequestMapping
   );
 }
@@ -102,7 +103,7 @@ export function createCompatibleResponsesAdapter(
         ...preview,
         body: stripNativeExtensions(
           preview.body,
-          portableRequest.searchStrategy === "openai-native-web-search",
+          usesHostedOpenAIWebSearch(portableRequest),
           options.reasoningRequestMapping ?? OPENAI_RESPONSES_REASONING_REQUEST_MAPPING
         ),
         provider: "openai-compatible"
@@ -127,6 +128,7 @@ export function createCompatibleResponsesAdapter(
         return yield* parseOpenAIResponsesSse({
           background: false,
           idleTimeoutMs: providerStreamIdleTimeoutMs(),
+          provider: "openai-compatible",
           responseBody: response.body,
           signal: runOptions.signal,
           stream: true
@@ -149,7 +151,8 @@ export function createCompatibleResponsesAdapter(
 
       const completed = normalizeCompletedOpenAIResponse(
         response,
-        typeof response.id === "string" ? response.id : undefined
+        typeof response.id === "string" ? response.id : undefined,
+        "openai-compatible"
       );
       for (const event of completed.events) {
         yield event;

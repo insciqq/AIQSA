@@ -56,7 +56,7 @@ export function ComposerReasoningPicker({
 
   return (
     <div
-      className="relative hidden [@media(max-height:42rem)]:!hidden"
+      className="relative hidden min-w-0 max-w-[11rem] flex-[1_1_8rem] [@media(max-height:42rem)]:!hidden"
       data-composer-direct-reasoning="true"
       ref={boundaryRef}
     >
@@ -66,7 +66,7 @@ export function ComposerReasoningPicker({
         aria-expanded={open}
         aria-haspopup="dialog"
         aria-label={`Reasoning ${summary}`}
-        className="flex h-control max-w-[11rem] items-center gap-1.5 rounded-control bg-control-surface px-2 text-xs text-ink-secondary outline-none hover:bg-control-hover hover:text-ink focus-visible:ring-2 focus-visible:ring-proof/55 disabled:cursor-not-allowed disabled:text-ink-disabled"
+        className="flex h-control w-full min-w-0 items-center gap-1.5 rounded-control bg-control-surface px-2 text-xs text-ink-secondary outline-none hover:bg-control-hover hover:text-ink focus-visible:ring-2 focus-visible:ring-proof/55 disabled:cursor-not-allowed disabled:text-ink-disabled"
         disabled={disabled}
         onClick={() => setOpen((value) => !value)}
         type="button"
