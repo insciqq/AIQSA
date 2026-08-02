@@ -67,6 +67,7 @@ type NormalizedInteraction = Readonly<{
 type StreamStepAccumulator = {
   argumentDelta: string;
   index: number;
+  provisionalSignature: boolean;
   step: Record<string, unknown>;
 };
 
@@ -185,6 +186,20 @@ function validateSignature(value: unknown): string | undefined {
     throw new Error("gemini_interactions_step_invalid");
   }
   return value;
+}
+
+function signatureAtStepStart(value: unknown): Readonly<{
+  provisional: boolean;
+  signature?: string;
+}> {
+  if (value === "") {
+    return { provisional: true };
+  }
+  const signature = validateSignature(value);
+  return {
+    provisional: false,
+    ...(signature ? { signature } : {})
+  };
 }
 
 function validateSearchResults(value: unknown): Record<string, unknown>[] | undefined {
@@ -561,21 +576,25 @@ function startStep(value: unknown, index: number): StreamStepAccumulator {
       return {
         argumentDelta: "",
         index,
+        provisionalSignature: false,
         step: {
           content: value.content === undefined ? [] : validateTextContentArray(value.content),
           type: "model_output"
         }
       };
-    case "thought":
+    case "thought": {
+      const signature = signatureAtStepStart(value.signature);
       return {
         argumentDelta: "",
         index,
+        provisionalSignature: signature.provisional,
         step: {
-          ...(value.signature !== undefined ? { signature: validateSignature(value.signature) } : {}),
+          ...(signature.signature ? { signature: signature.signature } : {}),
           ...(value.summary !== undefined ? { summary: validateTextContentArray(value.summary) } : {}),
           type: "thought"
         }
       };
+    }
     case "function_call":
       if (
         !boundedString(value.id, MAX_TOOL_CALL_ID_LENGTH) ||
@@ -586,6 +605,7 @@ function startStep(value: unknown, index: number): StreamStepAccumulator {
       return {
         argumentDelta: "",
         index,
+        provisionalSignature: false,
         step: {
           arguments: value.arguments === undefined ? {} : validateArguments(value.arguments),
           id: value.id,
@@ -595,12 +615,18 @@ function startStep(value: unknown, index: number): StreamStepAccumulator {
         }
       };
     case "google_search_call":
-    case "google_search_result":
+    case "google_search_result": {
+      const signature = signatureAtStepStart(value.signature);
       return {
         argumentDelta: "",
         index,
-        step: normalizeProviderStep(value)
+        provisionalSignature: signature.provisional,
+        step: normalizeProviderStep({
+          ...value,
+          ...(signature.provisional ? { signature: undefined } : {})
+        })
       };
+    }
     default:
       throw new Error("gemini_interactions_stream_step_unsupported");
   }
@@ -681,6 +707,9 @@ function appendDelta(accumulator: StreamStepAccumulator, value: unknown): string
 }
 
 function finalizeStep(accumulator: StreamStepAccumulator): Record<string, unknown> {
+  if (accumulator.provisionalSignature && accumulator.step.signature === undefined) {
+    throw new Error("gemini_interactions_step_invalid");
+  }
   if (accumulator.step.type === "function_call" && accumulator.argumentDelta) {
     let argumentsValue: unknown;
     try {

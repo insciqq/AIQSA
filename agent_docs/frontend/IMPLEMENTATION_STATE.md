@@ -42,7 +42,7 @@ Exact response decoders run before store mutation. Workspace summaries contain n
 Browser-local state includes:
 
 - auth drafts and the bounded tab-scoped text-only re-authentication handoff;
-- open menus, popovers, drawers, dialogs, confirmations, palette query/selection, and focus restoration;
+- open menus, popovers, drawers, dialogs, confirmations, palette query/selection, browser-local persistent Workspace-rail visibility, and focus restoration;
 - keyed composer drafts, edit intent, staged attachments, async operation tokens, and local feedback;
 - foreground text buffering and controller ownership;
 - manual Details mode/tab, folder collapse, local notices, and theme choice.
@@ -78,6 +78,8 @@ Async writers capture their source key and token before awaiting. Send snapshots
 `runSurfaceStore` owns the latest compacted event timeline and decoded persisted run per saved chat. Every writer captures a non-null source chat before asynchronous work. New send/regenerate resets only that source; navigation is read-only selection; deletion evicts only the deleted key.
 
 Send and regenerate keep their distinct optimistic preparation but share one lifecycle executor for HTTP/SSE work, persisted-ID adoption, source reconciliation, terminal notification, failure/cancellation, and controller-safe cleanup. A rejected request rolls back only its optimistic rows. An ambiguous accepted/network failure performs a source-keyed durable refresh before retry.
+
+A failed assistant's visible Retry action delegates to that same regenerate owner with the failed assistant id. It therefore creates the ordinary sibling branch under the original user message and does not introduce a second retry store, history-deletion path, or draft mutation.
 
 Foreground token deltas are buffered for React updates and adjacent event aggregation. Historical rows, Markdown/artifacts, and workspace summaries do not repaint for token-only changes. Malformed SSE frames are skipped, later frames continue, and one readable warning appears in the UI/Details.
 
@@ -120,7 +122,8 @@ The memoized left-pane adapter intentionally ignores callback identity churn and
 ### Shell and session ownership
 
 - The conversation edge rail owns Workspace, compact New chat, truthful Pipeline activity, Share, state-aware Details, and Conversation actions. The fixed Workspace footer owns the only visible Account trigger plus Command palette, Prompt library, Settings, Sign out, and entitled Admin.
-- Initial bootstrap has one actionable Retry surface and disables dependent mutations. Blank-chat and zero-model states render only after readiness and distinguish an empty workspace from missing granted access.
+- Initial bootstrap has one actionable Retry surface and disables dependent mutations. Blank-chat and zero-model states render only after readiness and distinguish an empty workspace from missing granted access. The zero-model projection also distinguishes admin authority: only an administrator receives the direct Control Center provider-setup action.
+- Above the compact shell threshold, Workspace-rail visibility is one browser-local presentation preference. Hiding closes rail-owned menus and focuses the surviving Workspace trigger; restoring focuses the rail's hide action. At compact widths the same trigger continues to own the modal drawer, and no chat/folder/account state migrates into this preference.
 - A persisted chat with no provider/model default is valid. The shell may show a visible catalog fallback without persisting it. Legacy paired empty-string defaults remain readable during compatibility; half-populated pairs fail closed.
 - Any Research Chat `401` creates one sticky session-expiry transition. Concurrent failures navigate once, store only the active text draft in tab-scoped owner-bound state, and restore it after the same account reauthenticates only into an untouched matching destination. The handoff expires after 30 minutes and never includes attachments.
 - Sign-out failure remains visibly attributable to Account and retryable. Answer completion may use the local audio/favicon alert; hidden-tab signaling stops when the user returns.

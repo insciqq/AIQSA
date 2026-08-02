@@ -291,6 +291,58 @@ describe("catalog capability matrix", () => {
     ]);
   });
 
+  it("offers provider-neutral OpenAI Search to any tool-capable answer model", () => {
+    const providerNeutralOpenAI = {
+      adapterKind: "provider_model_client" as const,
+      config: {
+        maxResults: 8,
+        queryMaxCharacters: 500,
+        timeoutMs: 300_000
+      },
+      description: "Query-only OpenAI web search.",
+      displayName: "OpenAI Search (provider-neutral)",
+      kind: "provider_model_web_search" as const,
+      modelId: "gpt-5.6-terra",
+      privacy: "query_only" as const,
+      protocol: "openai_responses_web_search" as const,
+      provider: "openai",
+      providerModelId: "technical-openai-search-model",
+      revisionId: "openai-search-revision",
+      strategyId: "openai-provider-web-search"
+    };
+    const anthropic = defaultProviderModels.find(
+      (entry) => entry.provider === "anthropic" && entry.modelId === "claude-opus-5"
+    );
+    const gemini = defaultProviderModels.find(
+      (entry) => entry.provider === "gemini" && entry.modelId === "gemini-3.6-flash"
+    );
+    expect(anthropic).toBeDefined();
+    expect(gemini).toBeDefined();
+
+    expect(availableSearchStrategiesForModel(anthropic!, [providerNeutralOpenAI])).toEqual([
+      "openai-provider-web-search"
+    ]);
+    expect(availableSearchStrategiesForModel(gemini!, [providerNeutralOpenAI])).toEqual([
+      "openai-provider-web-search"
+    ]);
+    expect(availableSearchStrategiesForModel({
+      ...defaultProviderModels.find(
+        (entry) => entry.provider === "openai" && entry.modelId === "gpt-5.5"
+      )!,
+      modelId: providerNeutralOpenAI.providerModelId
+    }, [providerNeutralOpenAI])).toEqual([
+      "openai-provider-web-search"
+    ]);
+    expect(availableSearchStrategiesForModel({
+      ...anthropic!,
+      capabilities: { ...anthropic!.capabilities, toolCalling: false }
+    }, [providerNeutralOpenAI])).toEqual([]);
+    expect(availableSearchStrategiesForModel(anthropic!, [
+      defaultSearchStrategies.find(({ strategyId }) =>
+        strategyId === "openai-native-web-search")!
+    ])).toEqual([]);
+  });
+
   it("lets Claude-through-OpenRouter use Perplexity without native web search", () => {
     const model = defaultProviderModels.find((entry) => entry.modelId === "anthropic/claude-opus-4.8");
     const catalogModel = buildCatalogModel(model!, defaultSearchStrategies);

@@ -21,11 +21,16 @@ import {
   searchExecutionModes
 } from "../../search/configuration";
 import { isSearchCombinationCompatible } from "../../../domain/catalogMatrix";
-import { decodeSearchPlan, type SearchPlan } from "../../../domain/search";
+import {
+  decodeSearchPlan,
+  OPENAI_PROVIDER_SEARCH_STRATEGY_ID,
+  type SearchPlan
+} from "../../../domain/search";
 
 const SYSTEM_SEARCH_IDS = new Set([
   "gemini-google-search",
   "openai-native-web-search",
+  OPENAI_PROVIDER_SEARCH_STRATEGY_ID,
   "perplexity-tool-search",
   "search-disabled"
 ]);
@@ -186,8 +191,12 @@ function serializeIntegration(
     adapterKind: row.adapterKind as AdminSearchIntegration["adapterKind"],
     archivedAt: row.archivedAt?.toISOString() ?? null,
     credentialMode: row.credentialMode as AdminSearchIntegration["credentialMode"],
-    description: row.description,
-    displayName: row.displayName,
+    description: row.strategyId === "openai-native-web-search"
+      ? "Hosted OpenAI Responses web_search for compatible OpenAI answer models only."
+      : row.description,
+    displayName: row.strategyId === "openai-native-web-search"
+      ? "OpenAI native web_search"
+      : row.displayName,
     draft,
     draftDirty:
       !row.testedDraftHash?.startsWith("migration:") &&

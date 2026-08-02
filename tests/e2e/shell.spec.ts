@@ -404,7 +404,7 @@ test("returns through login with the active draft after the session is revoked",
 });
 
 test("closes Account and restores compact navigation focus across the desktop breakpoint", async ({ page }) => {
-  await page.setViewportSize({ height: 720, width: 1280 });
+  await page.setViewportSize({ height: 720, width: 1360 });
   await signIn(page);
 
   const accountTrigger = page.getByTestId("left-chat-pane").getByRole("button", { name: /Account menu/ });
@@ -417,9 +417,76 @@ test("closes Account and restores compact navigation focus across the desktop br
   await expect(page.getByRole("menu", { name: "Account" })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Open workspace" })).toBeFocused();
 
-  await page.setViewportSize({ height: 720, width: 1280 });
+  await page.setViewportSize({ height: 720, width: 1360 });
   await expect(page.getByRole("menu", { name: "Account" })).toHaveCount(0);
   await expect(accountTrigger).toBeFocused();
+});
+
+test("keeps 1280 compact and persists the desktop Workspace rail preference", async ({ page }) => {
+  await page.setViewportSize({ height: 720, width: 1280 });
+  await signIn(page);
+
+  const workspaceTrigger = page.getByRole("button", { name: "Open workspace" });
+  const persistentWorkspace = page.getByTestId("left-chat-pane");
+  await expect(workspaceTrigger).toBeVisible();
+  await expect(persistentWorkspace).toBeHidden();
+
+  await page.setViewportSize({ height: 720, width: 1360 });
+  const hideWorkspace = page.getByRole("button", { name: "Hide workspace" });
+  await expect(hideWorkspace).toBeVisible();
+  await expect(workspaceTrigger).toBeHidden();
+  await hideWorkspace.click();
+
+  await expect(page.getByTestId("shell-workspace-grid")).toHaveAttribute(
+    "data-workspace-rail-hidden",
+    "true"
+  );
+  await expect(workspaceTrigger).toBeVisible();
+  await expect(workspaceTrigger).toBeFocused();
+  expect(await page.evaluate(() => window.localStorage.getItem("aiqsa.workspaceRail"))).toBe("hidden");
+
+  await page.reload();
+  await expect(page.getByTestId("app-shell")).toBeVisible();
+  await expect(page.getByTestId("shell-workspace-grid")).toHaveAttribute(
+    "data-workspace-rail-hidden",
+    "true"
+  );
+  await expect(workspaceTrigger).toBeVisible();
+
+  await workspaceTrigger.click();
+  await expect(page.getByTestId("shell-workspace-grid")).not.toHaveAttribute(
+    "data-workspace-rail-hidden"
+  );
+  await expect(hideWorkspace).toBeFocused();
+  expect(await page.evaluate(() => window.localStorage.getItem("aiqsa.workspaceRail"))).toBe("visible");
+});
+
+test("adapts the composer to 1280 short-height and enlarged-text content width", async ({ page }) => {
+  await page.setViewportSize({ height: 600, width: 1280 });
+  await installMatrixCatalogFixture(page);
+  await signIn(page);
+  await page.evaluate(() => {
+    document.documentElement.style.fontSize = "20px";
+  });
+
+  const composer = page.getByTestId("composer-drop-zone");
+  const directReasoning = page.locator('[data-composer-direct-reasoning="true"]');
+  await expect(page.getByRole("button", { name: "Open workspace" })).toBeVisible();
+  await expect(page.getByTestId("left-chat-pane")).toBeHidden();
+  await expect(directReasoning).toBeHidden();
+  await expectNoHorizontalOverflow(page);
+  const shortComposerBox = await composer.boundingBox();
+  expect(shortComposerBox).toBeTruthy();
+  expect(shortComposerBox!.height).toBeLessThanOrEqual(260);
+
+  await page.setViewportSize({ height: 800, width: 640 });
+  await expect(directReasoning).toBeHidden();
+  await expectNoHorizontalOverflow(page);
+
+  await page.setViewportSize({ height: 800, width: 1360 });
+  await expect(page.getByRole("button", { name: "Hide workspace" })).toBeVisible();
+  await expect(directReasoning).toBeVisible();
+  await expectNoHorizontalOverflow(page);
 });
 
 test("offers first-load workspace recovery in both the conversation and mobile workspace surfaces", async ({ page }) => {

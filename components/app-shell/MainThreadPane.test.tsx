@@ -731,8 +731,31 @@ describe("MainThreadPane", () => {
     const state = screen.getByTestId("no-model-empty-state");
     expect(state).toHaveTextContent("Model access required");
     expect(state).toHaveTextContent("administrator needs to grant model access");
+    expect(screen.queryByRole("link", { name: "Set up providers in Control Center" })).not.toBeInTheDocument();
     expect(state).not.toHaveTextContent("Choose the model");
     expect(screen.queryByLabelText("Question, optional Search, Answer")).not.toBeInTheDocument();
+  });
+
+  it("gives an administrator a direct provider setup recovery path", () => {
+    renderPane({
+      ...readyComposerOverrides,
+      adminEntryVisible: true,
+      catalog: { ...catalog, models: [], providers: [] },
+      composerDisabledHint: "No model is available for this account.",
+      currentModel: undefined
+    });
+
+    const state = screen.getByTestId("no-model-empty-state");
+    expect(state).toHaveTextContent("Provider setup required");
+    expect(state).toHaveTextContent("Connect a provider to start researching");
+    expect(state).not.toHaveTextContent("administrator needs to grant model access");
+    expect(screen.getByRole("link", { name: "Set up providers in Control Center" })).toHaveAttribute(
+      "href",
+      "/admin"
+    );
+    expect(screen.getByTestId("composer-disabled-hint")).toHaveTextContent(
+      "Set up a provider in Control Center before sending."
+    );
   });
 
   it("shows only evidence-based activity on the active streaming tail", () => {
@@ -1040,17 +1063,17 @@ describe("MainThreadPane", () => {
 
   it.each([
     {
-      expectedClassNames: ["h-24", "sm:h-32", "[@media(max-height:32rem)]:!h-0"],
+      expectedClassNames: ["h-24", "sm:h-32", "[@media(max-height:42rem)]:!h-0"],
       spacerTestId: "thread-complete-answer-spacer",
       status: "complete" as const
     },
     {
-      expectedClassNames: ["h-16", "sm:h-24", "[@media(max-height:32rem)]:!h-0"],
+      expectedClassNames: ["h-16", "sm:h-24", "[@media(max-height:42rem)]:!h-0"],
       spacerTestId: "thread-terminal-answer-spacer",
       status: "cancelled" as const
     },
     {
-      expectedClassNames: ["h-16", "sm:h-24", "[@media(max-height:32rem)]:!h-0"],
+      expectedClassNames: ["h-16", "sm:h-24", "[@media(max-height:42rem)]:!h-0"],
       spacerTestId: "thread-terminal-answer-spacer",
       status: "error" as const
     }
@@ -1110,7 +1133,7 @@ describe("MainThreadPane", () => {
       "min-h-0",
       "flex-1",
       "pt-[calc(3.25rem+env(safe-area-inset-top))]",
-      "lg:pt-0",
+      "min-[1281px]:pt-0",
       "[overflow-anchor:none]"
     );
     expect(screen.queryByRole("toolbar", { name: "Chat actions" })).not.toBeInTheDocument();

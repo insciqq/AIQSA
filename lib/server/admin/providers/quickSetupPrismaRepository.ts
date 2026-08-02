@@ -3,6 +3,10 @@ import { Prisma, type PrismaClient } from "@prisma/client";
 import type { RunProfileId } from "../../../contracts/runProfiles";
 import { defaultProviderModels } from "../../../domain/catalog";
 import {
+  OPENAI_PROVIDER_SEARCH_INTEGRATION_ID,
+  OPENAI_PROVIDER_SEARCH_STRATEGY_ID
+} from "../../../domain/search";
+import {
   providerModelTemplateId,
   type ProviderModelTemplateKey
 } from "../../../domain/providerTemplates";
@@ -47,6 +51,8 @@ type QuickSetupDb = Pick<
   | "providerModelCredentialCheck"
   | "providerUserCredentialAssignment"
   | "runProfile"
+  | "searchIntegrationRevision"
+  | "searchStrategy"
   | "user"
   | "userGroup"
   | "userSettings"
@@ -59,6 +65,9 @@ type QuickSetupRepositoryOptions = Readonly<{
 class QuickSetupCatalogUnavailableError extends Error {}
 
 const MAX_QUICK_SETUP_PRESERVED_MODELS = 64;
+const OPENAI_PROVIDER_SEARCH_DISPLAY_NAME = "OpenAI Search (provider-neutral)";
+const OPENAI_PROVIDER_SEARCH_DESCRIPTION =
+  "Query-only OpenAI web search for any tool-capable answer model.";
 
 function isSerializationConflict(error: Prisma.PrismaClientKnownRequestError): boolean {
   return error.code === "P2034" || (
@@ -713,6 +722,22 @@ export async function lockAdminProviderQuickSetupState(
   await tx.$queryRaw(Prisma.sql`
     SELECT "id" FROM "User" WHERE "id" = ${plan.actor.userId} FOR UPDATE
   `);
+  if (plan.provider === "openai") {
+    await tx.$queryRaw(Prisma.sql`
+      SELECT "id" FROM "SearchStrategy"
+      WHERE "strategyId" = ${OPENAI_PROVIDER_SEARCH_STRATEGY_ID}
+         OR "id" = ${OPENAI_PROVIDER_SEARCH_INTEGRATION_ID}
+      ORDER BY "id"
+      FOR UPDATE
+    `);
+    await tx.$queryRaw(Prisma.sql`
+      SELECT revision."id" FROM "SearchIntegrationRevision" AS revision
+      JOIN "SearchStrategy" AS strategy ON strategy."id" = revision."searchStrategyId"
+      WHERE strategy."strategyId" = ${OPENAI_PROVIDER_SEARCH_STRATEGY_ID}
+      ORDER BY revision."revisionNumber", revision."id"
+      FOR UPDATE OF revision
+    `);
+  }
   await tx.$queryRaw(Prisma.sql`
     SELECT "id" FROM "UserSettings" WHERE "userId" = ${plan.actor.userId} FOR UPDATE
   `);
@@ -782,6 +807,8 @@ export async function lockAdminProviderQuickSetupState(
        OR model."connectionId" IN (
          SELECT "id" FROM "ProviderConnection" WHERE "family" = ${policy.provider}
        )
+       OR (${plan.provider === "openai"} AND
+         grant_row."searchStrategy" = ${OPENAI_PROVIDER_SEARCH_STRATEGY_ID})
     ORDER BY grant_row."id" FOR UPDATE OF grant_row
   `);
   if ("mode" in plan && plan.mode === "initial") {
@@ -796,6 +823,172 @@ export async function lockAdminProviderQuickSetupState(
       FOR UPDATE
     `);
   }
+}
+
+async function synchronizeProviderNeutralOpenAISearch(
+  tx: Prisma.TransactionClient,
+  plan: AdminProviderQuickSetupCommitPlan
+): Promise<"needs_attention" | "ready" | null> {
+  const search = plan.providerNeutralSearch;
+  if (!search) return null;
+  if (
+    plan.provider !== "openai" ||
+    search.draft.adapterKind !== "provider_model_client" ||
+    search.draft.credentialMode !== "provider_model" ||
+    search.draft.protocol !== "openai_responses_web_search" ||
+    search.draft.providerModelId !== plan.candidate.modelId ||
+    search.integrationId !== OPENAI_PROVIDER_SEARCH_INTEGRATION_ID
+  ) {
+    return "needs_attention";
+  }
+
+  const strategyOwner = await tx.searchStrategy.findUnique({
+    include: { activeRevision: true },
+    where: { strategyId: OPENAI_PROVIDER_SEARCH_STRATEGY_ID }
+  });
+  const idOwner = strategyOwner?.id === OPENAI_PROVIDER_SEARCH_INTEGRATION_ID
+    ? strategyOwner
+    : await tx.searchStrategy.findUnique({
+        include: { activeRevision: true },
+        where: { id: OPENAI_PROVIDER_SEARCH_INTEGRATION_ID }
+      });
+  if (
+    (strategyOwner && strategyOwner.id !== OPENAI_PROVIDER_SEARCH_INTEGRATION_ID) ||
+    (idOwner && idOwner.strategyId !== OPENAI_PROVIDER_SEARCH_STRATEGY_ID)
+  ) {
+    return "needs_attention";
+  }
+  const current = strategyOwner ?? idOwner;
+  if (current && (
+    current.archivedAt !== null ||
+    current.displayName !== OPENAI_PROVIDER_SEARCH_DISPLAY_NAME ||
+    current.description !== OPENAI_PROVIDER_SEARCH_DESCRIPTION ||
+    current.kind !== "provider_model_web_search" ||
+    current.adapterKind !== "provider_model_client" ||
+    current.credentialMode !== "provider_model" ||
+    current.provider !== "openai"
+  )) {
+    return "needs_attention";
+  }
+
+  const stored = current ?? await tx.searchStrategy.create({
+    data: {
+      adapterKind: search.draft.adapterKind,
+      config: json({}),
+      credentialMode: search.draft.credentialMode,
+      description: OPENAI_PROVIDER_SEARCH_DESCRIPTION,
+      displayName: OPENAI_PROVIDER_SEARCH_DISPLAY_NAME,
+      draft: json(search.draft),
+      draftTestEvidence: json(search.evidence),
+      enabled: false,
+      id: search.integrationId,
+      kind: "provider_model_web_search",
+      modelId: plan.candidate.configuration.upstreamModelId,
+      provider: "openai",
+      providerModelId: plan.candidate.modelId,
+      strategyId: OPENAI_PROVIDER_SEARCH_STRATEGY_ID,
+      testedDraftHash: search.draftHash
+    }
+  });
+
+  await tx.searchStrategy.update({
+    data: {
+      draft: json(search.draft),
+      draftTestEvidence: json(search.evidence),
+      ...(current && !sameJson(current.draft, search.draft)
+        ? { draftVersion: { increment: 1 } }
+        : {}),
+      enabled: search.evidence.status === "available",
+      ...(stored.activeRevisionId
+        ? {}
+        : {
+            adapterKind: search.draft.adapterKind,
+            credentialMode: search.draft.credentialMode,
+            kind: "provider_model_web_search",
+            modelId: plan.candidate.configuration.upstreamModelId,
+            provider: "openai",
+            providerModelId: plan.candidate.modelId
+          }),
+      testedDraftHash: search.draftHash
+    },
+    where: { id: stored.id }
+  });
+
+  const directGrants = await tx.accessGrant.findMany({
+    orderBy: { id: "asc" },
+    where: {
+      groupId: null,
+      providerConnectionId: null,
+      providerModelId: null,
+      searchStrategy: OPENAI_PROVIDER_SEARCH_STRATEGY_ID,
+      userId: plan.actor.userId
+    }
+  });
+  if (directGrants[0]) {
+    if (!directGrants[0].enabled) {
+      await tx.accessGrant.update({
+        data: { enabled: true },
+        where: { id: directGrants[0].id }
+      });
+    }
+  } else {
+    await tx.accessGrant.create({
+      data: {
+        enabled: true,
+        groupId: null,
+        id: search.grantId,
+        providerConnectionId: null,
+        providerModelId: null,
+        searchStrategy: OPENAI_PROVIDER_SEARCH_STRATEGY_ID,
+        userId: plan.actor.userId
+      }
+    });
+  }
+
+  if (search.evidence.status !== "available") return "needs_attention";
+  const existingRevision = await tx.searchIntegrationRevision.findUnique({
+    where: {
+      searchStrategyId_draftHash: {
+        draftHash: search.draftHash,
+        searchStrategyId: stored.id
+      }
+    }
+  });
+  const latestRevision = existingRevision
+    ? null
+    : await tx.searchIntegrationRevision.findFirst({
+        orderBy: { revisionNumber: "desc" },
+        where: { searchStrategyId: stored.id }
+      });
+  const revision = existingRevision ?? await tx.searchIntegrationRevision.create({
+    data: {
+      adapterKind: search.draft.adapterKind,
+      configuration: json(search.draft),
+      credentialMode: search.draft.credentialMode,
+      draftHash: search.draftHash,
+      id: search.revisionId,
+      providerModelId: plan.candidate.modelId,
+      revisionNumber: (latestRevision?.revisionNumber ?? 0) + 1,
+      searchStrategyId: stored.id,
+      validationEvidence: json(search.evidence)
+    }
+  });
+  await tx.searchStrategy.update({
+    data: {
+      activatedAt: plan.now,
+      activeRevisionId: revision.id,
+      adapterKind: search.draft.adapterKind,
+      config: json(search.draft),
+      credentialMode: search.draft.credentialMode,
+      enabled: true,
+      kind: "provider_model_web_search",
+      modelId: plan.candidate.configuration.upstreamModelId,
+      provider: "openai",
+      providerModelId: plan.candidate.modelId
+    },
+    where: { id: stored.id }
+  });
+  return "ready";
 }
 
 async function eligibleProviderModelIds(
@@ -1184,6 +1377,8 @@ async function applyQuickSetupPlan(
     }
   }
 
+  const providerNeutralSearch = await synchronizeProviderNeutralOpenAISearch(tx, plan);
+
   const eligibleModelIds = await eligibleProviderModelIds(tx, plan.actor.userId, exposeFake);
   if ([...candidateModelIds, ...plan.preservedModels.map(({ id }) => id)].every(
     (modelId) => eligibleModelIds.has(modelId)
@@ -1221,7 +1416,12 @@ async function applyQuickSetupPlan(
     });
     profilesFilled.push(profile.id);
   }
-  return { defaultChanged, profilesFilled, status: "ready" };
+  return {
+    defaultChanged,
+    profilesFilled,
+    ...(plan.providerNeutralSearch ? { providerNeutralSearch } : {}),
+    status: "ready"
+  };
 }
 
 async function applyQuickSetupClearPlan(

@@ -1,5 +1,5 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { useLayoutEffect, useRef, useState, type ReactNode, type Ref } from "react";
 import { afterEach, describe, expect, expectTypeOf, it, vi } from "vitest";
 import type { MainThreadPaneProps } from "./MainThreadPane";
 import { powerAppShellViewFeatureKeys } from "./powerAppShellViewContracts";
@@ -13,6 +13,7 @@ import type {
 } from "./powerAppShellViewContracts";
 import type { ShellLeftPaneProps } from "./ShellLeftPane";
 import type { ChatSummary, FolderSummary, InspectorMode, ThreadMessage } from "./types";
+import { AIQSA_WORKSPACE_RAIL_STORAGE_KEY } from "./shellStorage";
 import {
   mobileWorkspaceDesktopMediaQuery,
   PowerAppShellView,
@@ -43,6 +44,7 @@ type MainThreadProjectionKeys =
   | Exclude<keyof ShellThreadView, "copyVisibleThread">
   | keyof ShellComposerView
   | "activeChatId"
+  | "adminEntryVisible"
   | "creatingChat"
   | "noticeSlot"
   | "openMcpSettings"
@@ -63,13 +65,17 @@ vi.mock("@/components/app-shell/ShellLeftPane", () => ({
   ShellLeftPane: ({
     footer,
     layout,
+    onHideWorkspace,
     pane,
-    scrollTopRef
+    scrollTopRef,
+    workspaceToggleRef
   }: {
     footer?: ReactNode;
     layout?: "desktop" | "mobile";
+    onHideWorkspace?(): void;
     pane: ShellWorkspacePaneView;
     scrollTopRef?: { current: number | undefined };
+    workspaceToggleRef?: Ref<HTMLButtonElement>;
   }) => {
     const navigationRef = useRef<HTMLElement>(null);
     useLayoutEffect(() => {
@@ -92,6 +98,11 @@ vi.mock("@/components/app-shell/ShellLeftPane", () => ({
         }}
       >
         Workspace navigation
+        {layout !== "mobile" && onHideWorkspace ? (
+          <button ref={workspaceToggleRef} type="button" onClick={onHideWorkspace}>
+            Hide workspace
+          </button>
+        ) : null}
         {layout === "mobile" ? (
           <button
             type="button"
@@ -540,6 +551,7 @@ function StatefulConfirmedWorkspaceView() {
 afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+  window.localStorage.removeItem(AIQSA_WORKSPACE_RAIL_STORAGE_KEY);
 });
 
 describe("PowerAppShellView feature boundary", () => {
@@ -701,16 +713,66 @@ describe("PowerAppShellView Details composition", () => {
     const conversation = screen.getByTestId("conversation-column");
 
     expect(shell).toHaveClass("h-dvh", "bg-research-canvas", "text-ink");
-    expect(rail).toHaveClass("bg-workspace-rail", "lg:grid");
+    expect(rail).toHaveClass("bg-workspace-rail", "min-[1281px]:grid");
     expect(rail).toContainElement(screen.getByTestId("left-chat-pane"));
     expect(conversation).toHaveClass("bg-answer-paper", "flex-col", "relative");
     expect(conversation).toContainElement(screen.getByTestId("top-rail"));
     expect(conversation).toContainElement(screen.getByTestId("main-thread-pane"));
     expect(screen.queryByTestId("details-pane")).not.toBeInTheDocument();
     expect(grid).toHaveAttribute("data-details-presentation", "closed");
-    expect(grid).toHaveClass("lg:grid-cols-[16rem_minmax(0,1fr)]");
+    expect(grid).toHaveClass("min-[1281px]:grid-cols-[16rem_minmax(0,1fr)]");
     expect(grid.className).not.toContain("minmax(480px");
     expect(screen.getByTestId("shell-primary-content")).not.toHaveAttribute("inert");
+  });
+
+  it("hides and restores the persistent Workspace without replacing conversation state", async () => {
+    vi.stubGlobal(
+      "matchMedia",
+      vi.fn((query: string) =>
+        ({
+          addEventListener: vi.fn(),
+          dispatchEvent: vi.fn(),
+          matches: true,
+          media: query,
+          onchange: null,
+          removeEventListener: vi.fn(),
+          addListener: vi.fn(),
+          removeListener: vi.fn()
+        }) as unknown as MediaQueryList
+      )
+    );
+    render(<StatefulView />);
+
+    const grid = screen.getByTestId("shell-workspace-grid");
+    fireEvent.click(screen.getByRole("button", { name: "Hide workspace" }));
+
+    await waitFor(() => expect(grid).toHaveAttribute("data-workspace-rail-hidden", "true"));
+    expect(grid).not.toHaveClass("min-[1281px]:grid-cols-[16rem_minmax(0,1fr)]");
+    expect(window.localStorage.getItem(AIQSA_WORKSPACE_RAIL_STORAGE_KEY)).toBe("hidden");
+    await waitFor(() => expect(screen.getByRole("button", { name: "Open workspace" })).toHaveFocus());
+    expect(screen.getByTestId("main-thread-pane")).toHaveTextContent("Conversation");
+
+    fireEvent.click(screen.getByRole("button", { name: "Open workspace" }));
+
+    await waitFor(() => expect(grid).not.toHaveAttribute("data-workspace-rail-hidden"));
+    expect(grid).toHaveClass("min-[1281px]:grid-cols-[16rem_minmax(0,1fr)]");
+    expect(window.localStorage.getItem(AIQSA_WORKSPACE_RAIL_STORAGE_KEY)).toBe("visible");
+    await waitFor(() => expect(screen.getByRole("button", { name: "Hide workspace" })).toHaveFocus());
+  });
+
+  it("restores a hidden Workspace preference after hydration", async () => {
+    window.localStorage.setItem(AIQSA_WORKSPACE_RAIL_STORAGE_KEY, "hidden");
+    render(<StatefulView />);
+
+    await waitFor(() =>
+      expect(screen.getByTestId("shell-workspace-grid")).toHaveAttribute(
+        "data-workspace-rail-hidden",
+        "true"
+      )
+    );
+    expect(screen.getByRole("group", { name: "Workspace controls" })).not.toHaveClass(
+      "min-[1281px]:hidden"
+    );
   });
 
   it("opens a modal drawer, contains focus, closes with Escape, and restores the trigger", async () => {

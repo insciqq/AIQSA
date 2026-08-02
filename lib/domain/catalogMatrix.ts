@@ -157,8 +157,7 @@ export function availableSearchStrategiesForModel(
       strategy.kind === "provider_model_web_search" &&
       strategy.adapterKind === "provider_model_client"
     ) {
-      const isAnswerModel = model.modelId !== strategy.providerModelId;
-      if (isAnswerModel && model.capabilities.toolCalling) {
+      if (model.capabilities.toolCalling) {
         strategyIds.add(strategy.strategyId);
       }
       continue;

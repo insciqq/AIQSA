@@ -765,6 +765,17 @@ function ThreadMessageRowComponent({
               <p className="whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
                 {contentText || "The provider did not return an answer."}
               </p>
+              <button
+                aria-describedby={streaming ? `${targetDescriptionId} ${disabledDescriptionId}` : targetDescriptionId}
+                className="mt-3 inline-flex min-h-11 items-center gap-2 rounded-control bg-proof px-3 text-sm font-semibold text-proof-contrast outline-none hover:bg-proof-hover focus-visible:ring-2 focus-visible:ring-proof/55 focus-visible:ring-offset-2 focus-visible:ring-offset-answer-paper disabled:cursor-not-allowed disabled:bg-control-surface disabled:text-ink-disabled disabled:opacity-60 sm:min-h-9 [@media(hover:none)]:!min-h-11 [@media(pointer:coarse)]:!min-h-11"
+                disabled={streaming}
+                title={streaming ? "Retry is disabled while a response is streaming" : "Retry answer"}
+                type="button"
+                onClick={() => onRegenerateMessage(message.id)}
+              >
+                <RefreshCw className="size-3.5" aria-hidden="true" />
+                Retry answer
+              </button>
             </div>
           ) : (
             <>

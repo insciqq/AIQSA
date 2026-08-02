@@ -233,11 +233,14 @@ describe("admin Search service", () => {
     expect(revisionCreate).toHaveBeenCalledTimes(1);
   });
 
-  it("keeps built-in identities archival-safe", async () => {
+  it.each([
+    "openai-native-web-search",
+    "openai-provider-web-search"
+  ])("keeps the system Search identity %s archival-safe", async (strategyId) => {
     const update = vi.fn();
     const prisma = {
       searchStrategy: {
-        findUnique: vi.fn(async () => ({ strategyId: "openai-native-web-search" })),
+        findUnique: vi.fn(async () => ({ strategyId })),
         update
       }
     } as unknown as PrismaClient;

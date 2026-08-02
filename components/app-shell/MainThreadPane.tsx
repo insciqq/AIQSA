@@ -26,6 +26,7 @@ import type {
   ThreadMessage
 } from "@/components/app-shell/types";
 import { ArrowDown, CircleAlert, LoaderCircle, RotateCcw } from "lucide-react";
+import Link from "next/link";
 import type { ReactNode, RefObject } from "react";
 import type { SearchPlanMode } from "@/lib/domain/search";
 import { useCallback, useMemo, useState } from "react";
@@ -49,6 +50,7 @@ export type MainThreadPaneProps = {
   activeChatDetailLoading: boolean;
   activeChatId: string | null;
   activeChatStreaming: boolean;
+  adminEntryVisible?: boolean;
   attachments: ComposerAttachment[];
   backgroundMode: boolean;
   compatibleSearchOptionIds?: string[];
@@ -137,6 +139,7 @@ export function MainThreadPane({
   activeChatDetailLoading,
   activeChatId,
   activeChatStreaming,
+  adminEntryVisible = false,
   attachments,
   backgroundMode,
   compatibleSearchOptionIds = [],
@@ -288,7 +291,9 @@ export function MainThreadPane({
             ? "Loading conversation…"
             : activeChatDetailError
               ? "Conversation unavailable. Retry loading before sending."
-              : composerDisabledHint;
+              : adminEntryVisible && catalog.models.length === 0
+                ? "Set up a provider in Control Center before sending."
+                : composerDisabledHint;
   const activeDisabledHintTone: ComposerHintTone =
     creatingChat ||
     (!catalog && !catalogError) ||
@@ -357,7 +362,7 @@ export function MainThreadPane({
             className={
               centeredEmptyConversation
                 ? "shrink-0 [overflow-anchor:none]"
-                : "min-h-0 flex-1 overflow-y-auto overscroll-contain pt-[calc(3.25rem+env(safe-area-inset-top))] [overflow-anchor:none] lg:pt-0"
+                : "min-h-0 flex-1 overflow-y-auto overscroll-contain pt-[calc(3.25rem+env(safe-area-inset-top))] [overflow-anchor:none] min-[1281px]:pt-0"
             }
             data-testid="thread"
             onScroll={(event) => {
@@ -494,14 +499,28 @@ export function MainThreadPane({
             >
               {catalog && catalog.models.length === 0 ? (
                 <div className="w-full max-w-reading" data-testid="no-model-empty-state">
-                  <p className="text-xs font-medium text-ink-muted">Model access required</p>
+                  <p className="text-xs font-medium text-ink-muted">
+                    {adminEntryVisible ? "Provider setup required" : "Model access required"}
+                  </p>
                   <h2 className="mt-2 max-w-xl text-2xl font-semibold leading-8 text-ink">
-                    This workspace has no models available yet.
+                    {adminEntryVisible
+                      ? "Connect a provider to start researching."
+                      : "This workspace has no models available yet."}
                   </h2>
                   <p className="mt-2 max-w-xl text-sm leading-6 text-ink-secondary">
-                    An administrator needs to grant model access before you can send a question. Your chats,
-                    folders, Settings, and Appearance remain available.
+                    {adminEntryVisible
+                      ? "No runnable models are configured yet. Add a provider key and activate its models in Control Center."
+                      : "An administrator needs to grant model access before you can send a question. Your chats, folders, Settings, and Appearance remain available."}
                   </p>
+                  {adminEntryVisible ? (
+                    <Link
+                      className="mt-4 inline-flex h-touch items-center rounded-control bg-proof px-4 text-sm font-semibold text-proof-contrast outline-none hover:bg-proof-hover focus-visible:ring-2 focus-visible:ring-proof/55 focus-visible:ring-offset-2 focus-visible:ring-offset-answer-paper sm:h-control [@media(hover:none)]:!h-touch [@media(pointer:coarse)]:!h-touch"
+                      href="/admin"
+                      aria-label="Set up providers in Control Center"
+                    >
+                      Set up providers
+                    </Link>
+                  ) : null}
                 </div>
               ) : (
                 <div className="mx-auto w-full max-w-reading sm:text-center">
@@ -596,8 +615,8 @@ export function MainThreadPane({
             <div
               className={
                 visibleMessages.at(-1)?.status === "complete"
-                  ? "h-24 sm:h-32 [@media(max-height:32rem)]:!h-0"
-                  : "h-16 sm:h-24 [@media(max-height:32rem)]:!h-0"
+                  ? "h-24 sm:h-32 [@media(max-height:42rem)]:!h-0"
+                  : "h-16 sm:h-24 [@media(max-height:42rem)]:!h-0"
               }
               aria-hidden="true"
               data-status={visibleMessages.at(-1)?.status}

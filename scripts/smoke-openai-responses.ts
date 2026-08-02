@@ -1,4 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
+import { safeExternalHref } from "../lib/domain/links";
 import { createOpenAIResponsesAdapter, createFetchOpenAIResponsesClient } from "../lib/server/providers/openaiResponses";
 import type { ProviderRunRequest } from "../lib/server/providers/types";
 
@@ -44,7 +45,8 @@ function loadLocalEnv() {
 loadLocalEnv();
 
 const openAIKey = process.env.OPENAI_API_KEY ?? "";
-const maxOutputTokens = 64;
+const searchEnabled = process.env.AIQSA_OPENAI_SMOKE_SEARCH === "1";
+const maxOutputTokens = searchEnabled ? 128 : 64;
 
 if (!openAIKey) {
   console.log("OpenAI smoke skipped: OPENAI_API_KEY is not configured.");
@@ -58,7 +60,9 @@ const request: ProviderRunRequest = {
   content: {
     blocks: [
       {
-        text: "Reply with exactly: AIQSA_OK",
+        text: searchEnabled
+          ? "Find the official OpenAI home page and answer with one short sentence."
+          : "Reply with exactly: AIQSA_OK",
         type: "text"
       }
     ]
@@ -72,14 +76,14 @@ const request: ProviderRunRequest = {
   },
   modelId: process.env.AIQSA_DEFAULT_MODEL || "gpt-5.5",
   params: {
-    background: true,
+    background: false,
     maxOutputTokens,
     reasoning: {
       effort: "none",
       summary: "none"
     },
     stream: false,
-    store: true
+    store: false
   },
   prompt: {
     developer: null,
@@ -87,8 +91,26 @@ const request: ProviderRunRequest = {
     system: "You are running a tiny AIQSA provider adapter smoke test."
   },
   provider: "openai",
-  searchStrategy: "search-disabled"
+  searchStrategy: searchEnabled ? "openai-native-web-search" : "search-disabled"
 };
+
+function safeSourceCount(value: unknown, seen = new WeakSet<object>()): number {
+  if (typeof value !== "object" || value === null) return 0;
+  if (seen.has(value)) return 0;
+  seen.add(value);
+  if (Array.isArray(value)) {
+    return value.reduce((total, entry) => total + safeSourceCount(entry, seen), 0);
+  }
+  let count = 0;
+  for (const [key, entry] of Object.entries(value)) {
+    if ((key === "url" || key === "href") && typeof entry === "string" && safeExternalHref(entry)) {
+      count += 1;
+    } else {
+      count += safeSourceCount(entry, seen);
+    }
+  }
+  return count;
+}
 
 async function main() {
   const adapter = createOpenAIResponsesAdapter({
@@ -100,10 +122,12 @@ async function main() {
     pollTimeoutMs: 30_000
   });
   const stream = adapter.stream(request);
+  const artifacts: unknown[] = [];
   let next = await stream.next();
 
   while (!next.done) {
     const event = next.value;
+    if (event.type === "artifact") artifacts.push(event.data);
     if (event.type === "artifact" && event.data.artifactType === "summary") {
       const payload = event.data.payload as { status?: unknown };
       if (typeof payload.status === "string") {
@@ -114,20 +138,29 @@ async function main() {
     next = await stream.next();
   }
 
+  const finalOutputMatched = !searchEnabled && next.value.finalText.trim() === "AIQSA_OK";
+  const normalizedSourceCount = safeSourceCount(artifacts) +
+    safeSourceCount(next.value.finalProviderResponsePreview);
+  const passed = searchEnabled ? normalizedSourceCount > 0 : finalOutputMatched;
+
   console.log(
     JSON.stringify(
       {
-        outputPreview: next.value.finalText.slice(0, 80),
+        finalOutputMatched,
+        normalizedSourceCount,
         providerResponseIdPresent: Boolean(next.value.providerResponseId),
+        searchEnabled,
+        status: passed ? "passed" : "failed",
         usage: next.value.usage
       },
       null,
       2
     )
   );
+  if (!passed) process.exitCode = 1;
 }
 
-main().catch((error) => {
-  console.error(error instanceof Error ? error.message : "OpenAI smoke failed");
+main().catch(() => {
+  console.error("OpenAI Responses smoke failed.");
   process.exit(1);
 });

@@ -4,6 +4,7 @@ import type { InspectorMode } from "@/components/app-shell/types";
 const AIQSA_ACTIVE_CHAT_STORAGE_KEY = "aiqsa.activeChatId";
 const AIQSA_COLLAPSED_FOLDERS_STORAGE_KEY = "aiqsa.collapsedFolderIds";
 export const AIQSA_DETAILS_MODE_STORAGE_KEY = "aiqsa.detailsMode";
+export const AIQSA_WORKSPACE_RAIL_STORAGE_KEY = "aiqsa.workspaceRail";
 export const AIQSA_SESSION_EXPIRED_DRAFT_STORAGE_KEY = "aiqsa.sessionExpiredDraft.v1";
 const SESSION_EXPIRED_DRAFT_MAX_AGE_MS = 30 * 60 * 1000;
 
@@ -152,6 +153,33 @@ export function rememberCollapsedFolderIds(ids: Set<string>) {
     AIQSA_COLLAPSED_FOLDERS_STORAGE_KEY,
     JSON.stringify(Array.from(ids))
   );
+}
+
+export function storedWorkspaceRailHidden(): boolean {
+  if (typeof window === "undefined") {
+    return false;
+  }
+
+  try {
+    return window.localStorage.getItem(AIQSA_WORKSPACE_RAIL_STORAGE_KEY) === "hidden";
+  } catch {
+    return false;
+  }
+}
+
+export function rememberWorkspaceRailHidden(hidden: boolean): void {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  try {
+    window.localStorage.setItem(
+      AIQSA_WORKSPACE_RAIL_STORAGE_KEY,
+      hidden ? "hidden" : "visible"
+    );
+  } catch {
+    // Local UI preferences fall back to the visible rail when storage is unavailable.
+  }
 }
 
 function storeClosedDetailsMode() {

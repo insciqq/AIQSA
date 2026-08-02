@@ -368,7 +368,7 @@ export function Composer({
 
   return (
     <form
-      className="w-full min-w-0 shrink-0 bg-answer-paper pb-[max(.5rem,env(safe-area-inset-bottom))] pl-[max(.5rem,env(safe-area-inset-left))] pr-[max(.5rem,env(safe-area-inset-right))] pt-2 sm:pb-[max(.75rem,env(safe-area-inset-bottom))] sm:pl-[max(1rem,env(safe-area-inset-left))] sm:pr-[max(1rem,env(safe-area-inset-right))] [@media(max-height:32rem)]:!pb-[max(.25rem,env(safe-area-inset-bottom))] [@media(max-height:32rem)]:!pt-1"
+      className="w-full min-w-0 shrink-0 bg-answer-paper pb-[max(.5rem,env(safe-area-inset-bottom))] pl-[max(.5rem,env(safe-area-inset-left))] pr-[max(.5rem,env(safe-area-inset-right))] pt-2 sm:pb-[max(.75rem,env(safe-area-inset-bottom))] sm:pl-[max(1rem,env(safe-area-inset-left))] sm:pr-[max(1rem,env(safe-area-inset-right))] [@media(max-height:42rem)]:!pb-[max(.25rem,env(safe-area-inset-bottom))] [@media(max-height:42rem)]:!pt-1"
       data-reading-collapsed={readingCollapsed ? "true" : undefined}
       data-testid="composer-form"
       onSubmit={(event) => {
@@ -473,13 +473,13 @@ export function Composer({
 
           {attachments.length > 0 ? (
             <ul
-              className="flex max-h-28 flex-wrap gap-2 overflow-y-auto border-b border-trace-subtle px-3 py-2 [@media(max-height:32rem)]:!max-h-12 [@media(max-height:32rem)]:!flex-nowrap [@media(max-height:32rem)]:!py-1"
+              className="flex max-h-28 flex-wrap gap-2 overflow-y-auto border-b border-trace-subtle px-3 py-2 [@media(max-height:42rem)]:!max-h-12 [@media(max-height:42rem)]:!flex-nowrap [@media(max-height:42rem)]:!py-1"
               data-testid="attachment-chip-list"
               aria-label="Attachments"
             >
               {attachments.map((attachment) => (
                 <li
-                  className="flex min-h-control-sm max-w-[min(15rem,100%)] items-center gap-1.5 rounded-control bg-control-selected pl-2 text-xs text-ink-secondary [@media(max-height:32rem)]:!min-h-8"
+                  className="flex min-h-control-sm max-w-[min(15rem,100%)] items-center gap-1.5 rounded-control bg-control-selected pl-2 text-xs text-ink-secondary [@media(max-height:42rem)]:!min-h-8"
                   data-testid="attachment-chip"
                   key={attachment.id}
                   title={attachment.fileName}
@@ -506,7 +506,7 @@ export function Composer({
 
           <div
             className={[
-              "px-4 pb-2 pt-3 [@media(max-height:32rem)]:!px-3 [@media(max-height:32rem)]:!pb-1 [@media(max-height:32rem)]:!pt-1",
+              "px-4 pb-2 pt-3 [@media(max-height:42rem)]:!px-3 [@media(max-height:42rem)]:!pb-1 [@media(max-height:42rem)]:!pt-1",
               readingCollapsed
                 ? "grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2 !px-3 !py-0.5"
                 : ""
@@ -518,7 +518,7 @@ export function Composer({
             </label>
             <textarea
               className={[
-                "block max-h-[200px] min-h-14 w-full min-w-0 resize-none bg-transparent text-[15px] leading-7 text-ink outline-none placeholder:text-ink-muted disabled:cursor-not-allowed disabled:text-ink-disabled sm:min-h-[72px] [@media(max-height:32rem)]:!max-h-20 [@media(max-height:32rem)]:!min-h-10 [@media(max-height:32rem)]:!leading-6 [@media(hover:none)]:!min-h-touch [@media(pointer:coarse)]:!min-h-touch",
+                "block max-h-[200px] min-h-14 w-full min-w-0 resize-none bg-transparent text-[15px] leading-7 text-ink outline-none placeholder:text-ink-muted disabled:cursor-not-allowed disabled:text-ink-disabled sm:min-h-[72px] [@media(max-height:42rem)]:!max-h-24 [@media(max-height:42rem)]:!min-h-11 [@media(max-height:42rem)]:!leading-6 [@media(hover:none)]:!min-h-touch [@media(pointer:coarse)]:!min-h-touch",
                 readingCollapsed ? "!max-h-11 !min-h-11 !leading-6 sm:!min-h-11" : ""
               ].join(" ")}
               aria-describedby={disabledHint ? "composer-disabled-hint" : undefined}
@@ -580,12 +580,13 @@ export function Composer({
           >
             <div className={readingCollapsed ? "min-h-0 overflow-hidden" : "min-h-0 overflow-visible"}>
               <div
-                className="flex min-w-0 flex-wrap items-center gap-2 border-t border-trace-subtle px-2 py-2 sm:px-3 [@media(max-height:32rem)]:!gap-1 [@media(max-height:32rem)]:!py-1"
+                className="flex min-w-0 flex-wrap items-center gap-2 border-t border-trace-subtle px-2 py-2 sm:px-3 [@media(max-height:42rem)]:!gap-1 [@media(max-height:42rem)]:!py-1"
                 data-testid="composer-action-footer"
               >
             {controls ? (
               <div
                 className="flex w-full min-w-0 items-center"
+                data-composer-controls-container="true"
                 data-testid="composer-controls-slot"
               >
                 {controls}

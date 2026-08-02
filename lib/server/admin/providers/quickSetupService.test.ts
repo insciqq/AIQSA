@@ -1,5 +1,6 @@
 import { createHmac } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
+import { OPENAI_PROVIDER_SEARCH_INTEGRATION_ID } from "../../../domain/search";
 import type { AdminProviderQuickSetupProviderId } from "../../../contracts/adminProviderQuickSetup";
 import { decryptProviderCredentialSecret } from "../../providers/credentialSecrets";
 import type {
@@ -45,6 +46,8 @@ function fixture(input: {
   inspections?: Partial<Record<AdminProviderQuickSetupProviderId, AdminProviderQuickSetupInspection>>;
   modelIds?: string[];
   repositoryCommit?: AdminProviderQuickSetupRepository["commit"];
+  searchOutcome?: { normalizedSourceCount: number; status: "available" | "unavailable" };
+  searchThrows?: boolean;
 } = {}) {
   const order: string[] = [];
   const inspections = {
@@ -54,9 +57,18 @@ function fixture(input: {
     openrouter: inspection("openrouter"),
     ...input.inspections
   };
-  const commit = vi.fn(input.repositoryCommit ?? (async () => {
+  const commit = vi.fn(input.repositoryCommit ?? (async (plan) => {
     order.push("commit");
-    return { defaultChanged: true, profilesFilled: [], status: "ready" as const };
+    return {
+      defaultChanged: true,
+      profilesFilled: [],
+      providerNeutralSearch: plan.providerNeutralSearch
+        ? plan.providerNeutralSearch.evidence.status === "available"
+          ? "ready" as const
+          : "needs_attention" as const
+        : null,
+      status: "ready" as const
+    };
   }));
   const repository: AdminProviderQuickSetupRepository = {
     clearAssignment: vi.fn(async () => ({ status: "cleared" as const })),
@@ -70,6 +82,11 @@ function fixture(input: {
     order.push("network");
     return { method: "models_catalog" as const, modelIds: input.modelIds ?? [] };
   });
+  const searchTest = vi.fn(async () => {
+    order.push("search");
+    if (input.searchThrows) throw new Error("search probe failed");
+    return input.searchOutcome ?? { normalizedSourceCount: 0, status: "unavailable" as const };
+  });
   let nextId = 0;
   const service = createAdminProviderQuickSetupService({
     credentialTester: { test },
@@ -77,9 +94,12 @@ function fixture(input: {
     idFactory: () => `00000000-0000-4000-8000-${String(++nextId).padStart(12, "0")}`,
     now: () => checkedAt,
     repository,
+    ...(input.searchOutcome || input.searchThrows
+      ? { searchTester: { test: searchTest } }
+      : {}),
     stateTokenKey: () => stateTokenKey
   });
-  return { commit, inspections, order, repository, service, test };
+  return { commit, inspections, order, repository, searchTest, service, test };
 }
 
 async function expectedState(
@@ -203,6 +223,77 @@ describe("provider Quick setup service", () => {
         { displayName: "GPT-5.6 Sol" }
       ],
       outcome: "ready"
+    });
+  });
+
+  it("probes and plans provider-neutral OpenAI Search with no secret in persistence", async () => {
+    const value = fixture({
+      modelIds: ["gpt-5.6-terra"],
+      searchOutcome: { normalizedSourceCount: 3, status: "available" }
+    });
+    const result = await value.service.setup({
+      actor,
+      request: {
+        expectedState: await expectedState(value.service, "openai"),
+        provider: "openai",
+        secret: "sk-provider-neutral-search"
+      }
+    });
+
+    expect(value.searchTest).toHaveBeenCalledWith(expect.objectContaining({
+      model: expect.objectContaining({ upstreamModelId: "gpt-5.6-terra" }),
+      secret: "sk-provider-neutral-search"
+    }));
+    expect(value.order).toEqual(["network", "search", "commit"]);
+    expect(value.commit.mock.calls[0][0].providerNeutralSearch).toMatchObject({
+      draft: {
+        adapterKind: "provider_model_client",
+        credentialMode: "provider_model",
+        protocol: "openai_responses_web_search",
+        providerModelId: value.commit.mock.calls[0][0].candidate.modelId
+      },
+      evidence: {
+        method: "provider_search",
+        normalizedSourceCount: 3,
+        status: "available"
+      },
+      integrationId: OPENAI_PROVIDER_SEARCH_INTEGRATION_ID
+    });
+    expect(result).toMatchObject({
+      outcome: "ready",
+      providerNeutralSearch: {
+        displayName: "OpenAI Search (provider-neutral)",
+        status: "ready"
+      }
+    });
+    expect(JSON.stringify(value.commit.mock.calls[0][0])).not.toContain(
+      "sk-provider-neutral-search"
+    );
+  });
+
+  it("keeps the OpenAI provider ready while committing a disabled Search draft after probe failure", async () => {
+    const value = fixture({
+      modelIds: ["gpt-5.6-terra"],
+      searchThrows: true
+    });
+    const result = await value.service.setup({
+      actor,
+      request: {
+        expectedState: await expectedState(value.service, "openai"),
+        provider: "openai",
+        secret: "sk-provider-only"
+      }
+    });
+
+    expect(value.commit).toHaveBeenCalledOnce();
+    expect(value.commit.mock.calls[0][0].providerNeutralSearch?.evidence).toMatchObject({
+      normalizedSourceCount: 0,
+      status: "unavailable"
+    });
+    expect(result).toMatchObject({
+      outcome: "ready",
+      provider: "openai",
+      providerNeutralSearch: { status: "needs_attention" }
     });
   });
 

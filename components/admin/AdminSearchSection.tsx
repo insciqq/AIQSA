@@ -201,10 +201,16 @@ function SearchDefaultPolicyEditor({
 }
 
 function emptyForm(providerModels: readonly AdminSearchProviderModelOption[]): SearchForm {
-  const providerModel = providerModels.find((model) => model.enabled && model.nativeSearch) ?? null;
+  const providerModel = providerModels.find((model) =>
+    model.enabled && model.nativeSearch && model.adapterKind === "openai_responses_native"
+  ) ?? providerModels.find((model) => model.enabled && model.nativeSearch) ?? null;
+  const openAIResponses = providerModel?.adapterKind === "openai_responses_native" ||
+    providerModel?.adapterKind === "openai_responses_compatible";
   return {
-    description: "Query-only web evidence for Research Chat.",
-    displayName: "",
+    description: openAIResponses
+      ? "Query-only OpenAI web search for any tool-capable answer model."
+      : "Query-only web evidence for Research Chat.",
+    displayName: openAIResponses ? "OpenAI Search (provider-neutral)" : "",
     draft: {
       adapterKind: "provider_model_client",
       credentialMode: "provider_model",
@@ -230,7 +236,7 @@ function formFrom(integration: AdminSearchIntegration): SearchForm {
 function protocolLabel(protocol: AdminSearchDraft["protocol"]): string {
   if (protocol === "gemini_google_search") return "Gemini Google Search";
   if (protocol === "openrouter_perplexity_chat") return "OpenRouter / Perplexity chat search";
-  return "Compatible Responses web search";
+  return "OpenAI Responses web search";
 }
 
 function adapterLabel(integration: AdminSearchIntegration): string {
@@ -439,7 +445,7 @@ function SearchFormFields({
             value={form.draft.protocol}
           >
             {identityLocked && form.draft.protocol === "gemini_google_search" ? <option value="gemini_google_search">Gemini Google Search</option> : null}
-            <option value="openai_responses_web_search">Compatible Responses web search</option>
+            <option value="openai_responses_web_search">OpenAI Responses web search</option>
             <option value="openrouter_perplexity_chat">OpenRouter / Perplexity search</option>
           </select>
           <span className={helpText}>A reviewed typed adapter, never an arbitrary request template.</span>
@@ -768,7 +774,7 @@ export function AdminSearchSection({
               <div>
                 <p className="text-[10px] font-semibold uppercase tracking-[0.1em] text-ink-muted">New installation option</p>
                 <h3 className="mt-1 text-lg font-semibold text-ink">Add search integration</h3>
-                <p className="mt-1 max-w-3xl text-sm leading-6 text-ink-muted">Choose a reviewed engine protocol and an existing technical provider model. The new option stays disabled until its exact draft is tested and activated.</p>
+                <p className="mt-1 max-w-3xl text-sm leading-6 text-ink-muted">Choose a reviewed engine protocol and an existing technical provider model. OpenAI Responses Search receives only a bounded generated query and can serve Anthropic, Gemini, or any other tool-capable answer model. The new option stays disabled until its exact draft is tested and activated.</p>
               </div>
               <SearchFormFields disabled={busy} form={form} identityLocked={false} providerModels={search.providerModels} setForm={setForm} />
               <div className="flex gap-2">

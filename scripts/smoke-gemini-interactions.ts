@@ -39,7 +39,8 @@ if (!apiKey) {
 
 const apiRoot = "https://generativelanguage.googleapis.com/v1";
 const modelId = process.env.AIQSA_GEMINI_SMOKE_MODEL || "gemini-3.6-flash";
-const maxOutputTokens = 64;
+const searchEnabled = process.env.AIQSA_GEMINI_SMOKE_SEARCH === "1";
+const maxOutputTokens = searchEnabled ? 4_096 : 64;
 const connection = {
   allowPrivateNetwork: false,
   apiRoot
@@ -56,7 +57,7 @@ const modelCapabilities = {
 };
 const defaultParams = {
   maxTokens: maxOutputTokens,
-  reasoning: { effort: "minimal" },
+  reasoning: { effort: searchEnabled ? "medium" : "minimal" },
   stream: true
 };
 const smokeTool = {
@@ -80,7 +81,9 @@ const request: ProviderRunRequest = {
   chatId: "smoke-chat",
   content: {
     blocks: [{
-      text: "Call aiqsa_smoke_marker exactly once. After its result, reply exactly AIQSA_TOOL_OK.",
+      text: searchEnabled
+        ? "Find one current news headline from Spain today and answer in one short sentence."
+        : "Call aiqsa_smoke_marker exactly once. After its result, reply exactly AIQSA_TOOL_OK.",
       type: "text"
     }]
   },
@@ -90,15 +93,17 @@ const request: ProviderRunRequest = {
   prompt: {
     developer: null,
     presetId: null,
-    system: [
-      "This is a tiny deterministic AIQSA provider tool-loop smoke test.",
-      "On the first round, call aiqsa_smoke_marker exactly once with marker AIQSA_TOOL_OK.",
-      "Do not answer before the tool result. After the result, reply exactly AIQSA_TOOL_OK."
-    ].join(" ")
+    system: searchEnabled
+      ? "This is a bounded AIQSA Google Search smoke test. Use Google Search before answering."
+      : [
+          "This is a tiny deterministic AIQSA provider tool-loop smoke test.",
+          "On the first round, call aiqsa_smoke_marker exactly once with marker AIQSA_TOOL_OK.",
+          "Do not answer before the tool result. After the result, reply exactly AIQSA_TOOL_OK."
+        ].join(" ")
   },
   provider: "gemini",
-  searchStrategy: "search-disabled",
-  tools: [smokeTool]
+  searchStrategy: searchEnabled ? "gemini-google-search" : "search-disabled",
+  tools: searchEnabled ? [] : [smokeTool]
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -143,6 +148,50 @@ async function main(): Promise<void> {
       version: 1
     }
   });
+
+  if (searchEnabled) {
+    const stream = runtime.adapter.stream(request);
+    let groundingDisplayEvents = 0;
+    let searchCallCount = 0;
+    let suggestionsPresent = false;
+    let next = await stream.next();
+    while (!next.done) {
+      if (next.value.type === "grounding_display") {
+        groundingDisplayEvents += 1;
+        searchCallCount = Math.max(searchCallCount, next.value.data.runSearch.callCount);
+        suggestionsPresent ||= next.value.data.suggestionsHtml.length > 0;
+      }
+      next = await stream.next();
+    }
+    const finalOutputPresent = next.value.finalText.trim().length > 0;
+    const preview = isRecord(next.value.finalProviderResponsePreview)
+      ? next.value.finalProviderResponsePreview
+      : {};
+    const stepTypes = new Set(Array.isArray(preview.steps)
+      ? preview.steps.flatMap((step) => isRecord(step) && typeof step.type === "string"
+        ? [step.type]
+        : [])
+      : []);
+    const passed = finalOutputPresent && searchCallCount > 0 && suggestionsPresent;
+    console.log(JSON.stringify({
+      finalOutputPresent,
+      groundingDisplayEvents,
+      providerResponseIdPresent: Boolean(next.value.providerResponseId),
+      searchCallCount,
+      searchEnabled,
+      googleSearchCallStepPresent: stepTypes.has("google_search_call"),
+      googleSearchResultStepPresent: stepTypes.has("google_search_result"),
+      modelOutputStepPresent: stepTypes.has("model_output"),
+      status: passed ? "passed" : "failed",
+      suggestionsPresent,
+      thoughtStepPresent: stepTypes.has("thought"),
+      toolCallCount: next.value.toolCalls?.length ?? 0,
+      usage: next.value.usage
+    }, null, 2));
+    if (!passed) process.exitCode = 1;
+    return;
+  }
+
   if (!runtime.toolBridge) throw new Error("gemini_smoke_tool_bridge_missing");
 
   let firstRoundSignature: string | null = null;
@@ -217,7 +266,11 @@ async function main(): Promise<void> {
   if (!passed) process.exitCode = 1;
 }
 
-main().catch(() => {
-  console.error("Gemini Interactions tool-loop smoke failed.");
+main().catch((error) => {
+  const message = error instanceof Error ? error.message : "";
+  const failureCode = /^(?:gemini|provider)_[a-z0-9_]+$/u.test(message)
+    ? message
+    : "gemini_smoke_failed";
+  console.error(JSON.stringify({ failureCode, status: "failed" }, null, 2));
   process.exit(1);
 });

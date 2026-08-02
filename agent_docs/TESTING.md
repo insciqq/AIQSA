@@ -175,6 +175,14 @@ npm run smoke:gemini
 
 It reads `GEMINI_API_KEY` and optional `AIQSA_GEMINI_SMOKE_MODEL`, uses the native v1 runtime with `store: false`, and keeps the call bounded. Output may contain only sanitized booleans, counts, status, and usage evidence; it must not print the key, response text, Suggestions markup, citation links, raw provider payload, or signatures. A missing key skips cleanly. Do not run large-context, deep-research, attachment-heavy, or long-background variants without fresh approval.
 
+With the same permission, the exact native Google Search stream/parser path is selected explicitly:
+
+```bash
+AIQSA_GEMINI_SMOKE_SEARCH=1 npm run smoke:gemini
+```
+
+This foreground bounded request uses medium thinking and reports only Search-step presence, Suggestions presence, counts, terminal output presence, status, and usage. It never prints the grounded answer, Suggestions, citations, URLs, payload, or signatures.
+
 The Custom compatible smoke is local and credential-free:
 
 ```bash
@@ -182,3 +190,12 @@ npm run smoke:custom-openai-compatible
 ```
 
 It uses an in-process loopback Chat Completions fixture, reads no provider key, and makes no external request. Other real-provider or gateway proof has no standing permission here; it requires explicit operator authorization, the smallest useful request, and sanitized evidence.
+
+After that explicit authorization, the direct OpenAI Responses smoke reads `OPENAI_API_KEY`, optional `OPENAI_BASE_URL`, and optional `AIQSA_DEFAULT_MODEL`:
+
+```bash
+npm run smoke:openai
+AIQSA_OPENAI_SMOKE_SEARCH=1 npm run smoke:openai
+```
+
+Both modes are foreground and `store: false`. The second adds the hosted `web_search` tool and requires normalized source evidence. Output is limited to booleans, counts, status, and usage; it never prints response text, source URLs, provider payloads, or the key. A missing key skips cleanly.

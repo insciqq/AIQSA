@@ -335,7 +335,7 @@ export function ComposerControls({
       <ComposerModelPicker
         catalog={catalog}
         catalogUnavailable={catalogUnavailable}
-        className="max-w-full flex-[1_1_100%] sm:flex-[0_0_20rem]"
+        className="max-w-full min-w-[min(14rem,100%)] flex-[1_1_16rem]"
         currentModel={currentModel}
         disabled={disabled}
         idPrefix="composer-inline-model"
@@ -351,7 +351,7 @@ export function ComposerControls({
       />
 
       <div
-        className="flex min-w-0 flex-[999_1_20rem] items-center gap-0.5 min-[430px]:gap-1"
+        className="flex min-w-0 flex-[1_1_20rem] items-center gap-0.5 min-[430px]:gap-1"
         data-testid="composer-secondary-controls"
       >
         {hasAvailableProfiles ? (

@@ -4,6 +4,10 @@ import type {
   AdminProviderQuickSetupState
 } from "../../../contracts/adminProviderQuickSetup";
 import type { RunProfileId } from "../../../contracts/runProfiles";
+import type {
+  AdminSearchDraft,
+  AdminSearchTestEvidence
+} from "../../../contracts/adminSearch";
 import type { ProviderModelTemplateKey } from "../../../domain/providerTemplates";
 import type { AdminProviderQuickSetupPolicyCandidate } from "./quickSetupPolicy";
 
@@ -60,6 +64,14 @@ export type AdminProviderQuickSetupCommitPlan = Readonly<{
   now: Date;
   preservedModels: AdminProviderQuickSetupInspection["preservedModels"];
   provider: AdminProviderQuickSetupProviderId;
+  providerNeutralSearch?: Readonly<{
+    draft: AdminSearchDraft;
+    draftHash: string;
+    evidence: AdminSearchTestEvidence;
+    grantId: string;
+    integrationId: string;
+    revisionId: string;
+  }>;
 }>;
 
 export type AdminProviderQuickSetupCommitResult =
@@ -69,6 +81,7 @@ export type AdminProviderQuickSetupCommitResult =
   | Readonly<{
       defaultChanged: boolean;
       profilesFilled: RunProfileId[];
+      providerNeutralSearch?: "needs_attention" | "ready" | null;
       status: "ready";
     }>;
 

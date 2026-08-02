@@ -186,6 +186,7 @@ describe("LeftChatPane", () => {
       "text-ink",
       "border-trace-subtle"
     );
+    expect(pane).toHaveClass("min-[1281px]:flex");
     expect(screen.getByTestId("workspace-identity")).toHaveTextContent("AIQSAWorkspace");
     expect(screen.getByText("History")).toBeVisible();
     expect(screen.getByText("1 chat")).toBeVisible();
@@ -205,6 +206,22 @@ describe("LeftChatPane", () => {
       "bg-overlay-surface",
       "border-trace-subtle"
     );
+  });
+
+  it("offers a labeled persistent-rail hide action without duplicating it in the drawer", () => {
+    const onHideWorkspace = vi.fn();
+    const { rerender, ...view } = renderPane({ onHideWorkspace });
+
+    const hideWorkspace = screen.getByRole("button", { name: "Hide workspace" });
+    expect(hideWorkspace).toHaveClass(
+      "[@media(hover:none)]:!size-11",
+      "[@media(pointer:coarse)]:!size-11"
+    );
+    fireEvent.click(hideWorkspace);
+    expect(onHideWorkspace).toHaveBeenCalledOnce();
+
+    rerender(<LeftChatPane {...view} layout="mobile" onHideWorkspace={onHideWorkspace} />);
+    expect(screen.queryByRole("button", { name: "Hide workspace" })).not.toBeInTheDocument();
   });
 
   it("keeps chat rows quiet and exposes every action in one menu", () => {
@@ -259,9 +276,9 @@ describe("LeftChatPane", () => {
     renderPane({ activeChatId: null });
 
     const actions = screen.getByTestId("chat-row-actions");
-    expect(actions).toHaveClass("lg:opacity-0");
-    expect(actions).toHaveClass("lg:group-hover/chat:opacity-100");
-    expect(actions).toHaveClass("lg:group-focus-within/chat:opacity-100");
+    expect(actions).toHaveClass("min-[1281px]:opacity-0");
+    expect(actions).toHaveClass("min-[1281px]:group-hover/chat:opacity-100");
+    expect(actions).toHaveClass("min-[1281px]:group-focus-within/chat:opacity-100");
     expect(actions).toHaveClass("[@media(hover:none)]:opacity-100");
     expect(actions.querySelectorAll("button")).toHaveLength(1);
   });

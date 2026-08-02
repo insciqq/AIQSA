@@ -600,7 +600,8 @@ export async function loadProviderAdmissionPlan(
     } else {
       if (
         !draft.providerModelId ||
-        draft.providerModelId === input.providerModelId ||
+        (draft.protocol === "openrouter_perplexity_chat" &&
+          draft.providerModelId === input.providerModelId) ||
         !answer.modelConfiguration.capabilities.toolCalling
       ) {
         throw new ProviderAdmissionError("search_strategy_not_available");

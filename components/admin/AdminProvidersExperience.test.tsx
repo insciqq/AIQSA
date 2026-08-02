@@ -172,7 +172,10 @@ function snapshot(options: {
   };
 }
 
-function ready(defaultChanged = true) {
+function ready(
+  defaultChanged = true,
+  providerNeutralSearch?: "needs_attention" | "ready"
+) {
   return {
     checkedAt: "2026-07-26T03:00:00.000Z",
     defaultChanged,
@@ -185,7 +188,15 @@ function ready(defaultChanged = true) {
     outcome: "ready" as const,
     profilesFilled: ["balanced"],
     provider: "openai" as const,
-    providerDisplayName: "OpenAI"
+    providerDisplayName: "OpenAI",
+    ...(providerNeutralSearch
+      ? {
+          providerNeutralSearch: {
+            displayName: "OpenAI Search (provider-neutral)",
+            status: providerNeutralSearch
+          }
+        }
+      : {})
   };
 }
 
@@ -415,6 +426,46 @@ describe("AdminProvidersExperience", () => {
     expect(screen.getByRole("link", { name: "Start chatting" })).toHaveAttribute("href", "/");
     await waitFor(() => expect(onMutationCommitted).toHaveBeenCalledOnce());
     expect(screen.queryByText(/API root|credential version|group assignment|activation counter|diagnostics/i)).not.toBeInTheDocument();
+  });
+
+  it.each([
+    {
+      detail: "activated for any tool-capable answer model",
+      message: "Provider-neutral OpenAI Search is ready for Anthropic, Gemini, and other tool-capable answer models.",
+      status: "ready" as const
+    },
+    {
+      detail: "not activated; finish setup in Search",
+      message: "The provider is ready, but provider-neutral OpenAI Search did not pass its separate source probe and remains disabled.",
+      status: "needs_attention" as const
+    }
+  ])("reports provider-neutral Search as $status without obscuring provider readiness", async ({
+    detail,
+    message,
+    status
+  }) => {
+    api.get
+      .mockResolvedValueOnce({ data: snapshot(), ok: true })
+      .mockResolvedValue({
+        data: snapshot({ openai: "ready", suggestedProvider: "openai" }),
+        ok: true
+      });
+    api.submit.mockResolvedValue({ data: ready(true, status), ok: true });
+    render(<AdminProvidersExperience active groups={[]} />);
+
+    await screen.findByText("Choose a provider to continue.");
+    fireEvent.click(screen.getByRole("button", { name: /OpenAI Not configured/ }));
+    fireEvent.change(screen.getByLabelText("API key"), { target: { value: "one-key" } });
+    fireEvent.click(screen.getByRole("button", { name: "Test & Save" }));
+
+    expect(await screen.findByText("Ready to chat")).toBeInTheDocument();
+    expect(screen.getByTestId("provider-quick-ready-receipt")).toHaveTextContent(
+      `OpenAI Search (provider-neutral): ${detail}.`
+    );
+    expect(screen.getByText(message)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Manage OpenAI Search" }))
+      .toHaveAttribute("href", "/admin?section=search");
+    expect(screen.getByRole("link", { name: "Start chatting" })).toHaveAttribute("href", "/");
   });
 
   it("shows one truthful pending label until the atomic request reaches a terminal result", async () => {

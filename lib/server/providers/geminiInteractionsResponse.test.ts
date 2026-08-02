@@ -162,6 +162,167 @@ describe("Gemini Interactions response normalization", () => {
       .not.toContain("private-function-signature");
   });
 
+  it("accepts a provisional thought signature at step.start when summaries are disabled", async () => {
+    const normalized = await collect(parseGeminiInteractionsSse({
+      groundingExpected: false,
+      idleTimeoutMs: 1_000,
+      modelId: "gemini-3.6-flash",
+      responseBody: sseResponse([
+        frame("interaction.created", {
+          event_type: "interaction.created",
+          interaction: { id: "stream-thought-none", status: "in_progress" }
+        }),
+        frame("step.start", {
+          event_type: "step.start",
+          index: 0,
+          step: { signature: "", type: "thought" }
+        }),
+        frame("step.delta", {
+          delta: { signature: "private-thought-signature", type: "thought_signature" },
+          event_type: "step.delta",
+          index: 0
+        }),
+        frame("step.stop", { event_type: "step.stop", index: 0 }),
+        frame("step.start", {
+          event_type: "step.start",
+          index: 1,
+          step: { type: "model_output" }
+        }),
+        frame("step.delta", {
+          delta: { text: "Answer without a thought summary", type: "text" },
+          event_type: "step.delta",
+          index: 1
+        }),
+        frame("step.stop", { event_type: "step.stop", index: 1 }),
+        frame("interaction.completed", {
+          event_type: "interaction.completed",
+          interaction: { id: "stream-thought-none", status: "completed" }
+        }),
+        frame("done", "[DONE]")
+      ])
+    }));
+
+    expect(normalized.result.finalText).toBe("Answer without a thought summary");
+    expect(JSON.stringify(normalized.result)).not.toContain("private-thought-signature");
+  });
+
+  it("assembles documented provisional Google Search signatures from later deltas", async () => {
+    const normalized = await collect(parseGeminiInteractionsSse({
+      groundingExpected: true,
+      idleTimeoutMs: 1_000,
+      modelId: "gemini-3.6-flash",
+      responseBody: sseResponse([
+        frame("interaction.created", {
+          event_type: "interaction.created",
+          interaction: { id: "stream-search-signatures", status: "in_progress" }
+        }),
+        frame("step.start", {
+          event_type: "step.start",
+          index: 0,
+          step: { id: "search-1", signature: "", type: "google_search_call" }
+        }),
+        frame("step.delta", {
+          delta: {
+            arguments: { queries: ["AIQSA"] },
+            signature: "private-search-call-signature",
+            type: "google_search_call"
+          },
+          event_type: "step.delta",
+          index: 0
+        }),
+        frame("step.stop", { event_type: "step.stop", index: 0 }),
+        frame("step.start", {
+          event_type: "step.start",
+          index: 1,
+          step: { call_id: "search-1", signature: "", type: "google_search_result" }
+        }),
+        frame("step.delta", {
+          delta: {
+            is_error: false,
+            result: [{ search_suggestions: suggestionsHtml }],
+            signature: "private-search-result-signature",
+            type: "google_search_result"
+          },
+          event_type: "step.delta",
+          index: 1
+        }),
+        frame("step.stop", { event_type: "step.stop", index: 1 }),
+        frame("step.start", {
+          event_type: "step.start",
+          index: 2,
+          step: { type: "model_output" }
+        }),
+        frame("step.delta", {
+          delta: { text: "Grounded answer", type: "text" },
+          event_type: "step.delta",
+          index: 2
+        }),
+        frame("step.stop", { event_type: "step.stop", index: 2 }),
+        frame("interaction.completed", {
+          event_type: "interaction.completed",
+          interaction: { id: "stream-search-signatures", status: "completed" }
+        }),
+        frame("done", "[DONE]")
+      ])
+    }));
+
+    expect(normalized.result.finalText).toBe("Grounded answer");
+    expect(normalized.events).toContainEqual(expect.objectContaining({
+      data: expect.objectContaining({ suggestionsHtml }),
+      type: "grounding_display"
+    }));
+    expect(JSON.stringify(normalized.result)).not.toContain("private-search-call-signature");
+    expect(JSON.stringify(normalized.result)).not.toContain("private-search-result-signature");
+  });
+
+  it("keeps empty and null signatures invalid outside a provisional step.start", async () => {
+    await expect(collect(streamGeminiInteractionsJsonResponse({
+      id: "interaction-empty-signature",
+      status: "completed",
+      steps: [
+        { signature: "", type: "thought" },
+        { content: [{ text: "Answer", type: "text" }], type: "model_output" }
+      ]
+    }, { modelId: "gemini-3.6-flash" }))).rejects.toThrow(
+      "gemini_interactions_step_invalid"
+    );
+
+    await expect(collect(parseGeminiInteractionsSse({
+      groundingExpected: false,
+      idleTimeoutMs: 1_000,
+      modelId: "gemini-3.6-flash",
+      responseBody: sseResponse([
+        frame("interaction.created", {
+          event_type: "interaction.created",
+          interaction: { id: "stream-unsettled-signature", status: "in_progress" }
+        }),
+        frame("step.start", {
+          event_type: "step.start",
+          index: 0,
+          step: { signature: "", type: "thought" }
+        }),
+        frame("step.stop", { event_type: "step.stop", index: 0 })
+      ])
+    }))).rejects.toThrow("gemini_interactions_step_invalid");
+
+    await expect(collect(parseGeminiInteractionsSse({
+      groundingExpected: true,
+      idleTimeoutMs: 1_000,
+      modelId: "gemini-3.6-flash",
+      responseBody: sseResponse([
+        frame("interaction.created", {
+          event_type: "interaction.created",
+          interaction: { id: "stream-null-signature", status: "in_progress" }
+        }),
+        frame("step.start", {
+          event_type: "step.start",
+          index: 0,
+          step: { id: "search-1", signature: null, type: "google_search_call" }
+        })
+      ])
+    }))).rejects.toThrow("gemini_interactions_step_invalid");
+  });
+
   it("emits an early purge marker, then validated suggestions, then buffered SSE text", async () => {
     const terminalSteps = [
       {

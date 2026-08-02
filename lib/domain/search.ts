@@ -2,6 +2,8 @@ import { safeExternalHref } from "./links";
 
 export const MAX_SEARCH_PLAN_OPTIONS = 3;
 export const SEARCH_DISABLED_STRATEGY_ID = "search-disabled";
+export const OPENAI_PROVIDER_SEARCH_INTEGRATION_ID = "system-openai-provider-web-search";
+export const OPENAI_PROVIDER_SEARCH_STRATEGY_ID = "openai-provider-web-search";
 
 export const searchPlanModes = ["all_selected", "model_choice"] as const;
 export type SearchPlanMode = (typeof searchPlanModes)[number];

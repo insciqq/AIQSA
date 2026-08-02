@@ -13,7 +13,7 @@ Provider smokes require the standing permission and limits in `CRITICAL_INVARIAN
 
 ## OpenAI Responses API
 
-Last verified: 2026-07-26.
+Last verified: 2026-08-02.
 
 Primary references:
 
@@ -45,6 +45,7 @@ Externally constrained facts:
 - Authenticated `GET /v1/models` returns the model identifiers available to the key. AIQSA uses that bounded read-only catalog for credential preflight and activation-time model-presence evidence; it does not treat catalog presence as a guarantee that a later generation will succeed.
 - Ultra-small generation diagnostics are not portable across current models and routes. AIQSA allows up to 1,000 output tokens for an explicitly confirmed diagnostic; this is a safety cap rather than a provider-wide minimum claim, and diagnostic output is discarded.
 - Native `web_search` uses the Responses tool contract and may return call/action sources and/or message annotations. It does not require a backend regex intent gate.
+- A foreground, non-streaming Responses request can use `web_search` with `store: false`; AIQSA uses that bounded shape for the OpenAI Quick-setup Search probe and query-only client Search rather than requiring stored/background response state.
 - Native `web_search` and parallel custom functions can coexist. Merely offering native web search must not make AIQSA serialize independent custom or MCP calls sequentially.
 - Prompt caching is automatic where eligible; `prompt_cache_key` and retention hints influence routing/retention and must not expose a raw local chat id. GPT-5.6 replaces the older `prompt_cache_retention` field with `prompt_cache_options`; its currently documented TTL is `30m`.
 - Image input may use URLs, data URLs, or provider file ids where the model supports vision. Native PDF file input is model-capability dependent, and direct PDF parsing includes both extracted text and page images in context; provider-hosted File Search/vector stores are a separate provider-specific product from direct file input.
@@ -103,7 +104,7 @@ Current AIQSA defaults and request/event normalization live in `BACKEND.md` and 
 
 ## Gemini Native Interactions API
 
-Last verified: 2026-07-26.
+Last verified: 2026-08-02.
 
 Primary references:
 
@@ -124,6 +125,7 @@ Externally constrained facts:
 - Models catalog entries use identifiers such as `models/gemini-...`. AIQSA strips only that leading wrapper before exact reviewed-policy comparison; it does not normalize arbitrary names or import every result.
 - The reviewed explicit model ids are `gemini-3.6-flash`, `gemini-3.5-flash`, `gemini-3.5-flash-lite`, and `gemini-3.1-pro-preview`. Their reviewed catalog controls use a 1,000,000-token context window and at most 65,536 output tokens, with model-specific `minimal`/`low`/`medium`/`high` reasoning-effort choices. Explicit ids are preferred to hot-swapping latest aliases.
 - Interactions expresses generation controls under `generation_config`, accepts native typed input/step arrays, returns step types such as model output, thought and function calls/results, and exposes cumulative token fields including cached and thought totals. Streaming uses named SSE events and a final done proof; stream EOF alone is not successful completion.
+- Documented native SSE may start a thought or Google Search call/result step with an empty signature placeholder and deliver the non-empty signature in a later typed delta. That empty start value is not terminal provider state: replay still requires the completed bounded signature, while null or an empty final/unary signature remains malformed.
 - Native function continuations require the provider-returned thought/signature steps. Dropping, merging, or fabricating them can invalidate the next request. They are request-critical private state, not display or logging metadata.
 - Native Google Search is a hosted `{ "type": "google_search" }` tool. It can produce search call/result steps, URL citation annotations, and exact `search_suggestions` markup. The documentation requires Suggestions to accompany the grounded content; current terms constrain storage/use of Search Suggestions and citation Links. AIQSA chooses the stricter permitted product boundary: the complete grounded answer, Suggestions, Links, and search result/signature data are live-only and are never durable chat context.
 - The Search-plus-function/MCP combination is deliberately rejected even where some native tool combinations may be documented. This keeps exact provider search results/Suggestions out of the recoverable client-tool checkpoint; broadening it requires a new persistence/privacy proof.

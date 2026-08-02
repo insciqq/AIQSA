@@ -22,10 +22,21 @@
   );
 }
 
-@media (min-width: 1024px) {
+@media (min-width: 1281px) {
   [data-desktop-action-clearance="true"] [data-testid="thread"],
   [data-desktop-action-clearance="true"] [data-testid="persistent-notice-region"] {
     padding-right: 16rem;
+  }
+}
+
+[data-composer-controls-container="true"] {
+  container-name: composer-controls;
+  container-type: inline-size;
+}
+
+@container composer-controls (min-width: 44rem) {
+  [data-composer-direct-reasoning="true"] {
+    display: block;
   }
 }
 

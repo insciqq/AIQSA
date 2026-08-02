@@ -76,6 +76,10 @@ export type AdminProviderQuickSetupReadyResult = Readonly<{
   profilesFilled: RunProfileId[];
   provider: AdminProviderQuickSetupProviderId;
   providerDisplayName: string;
+  providerNeutralSearch?: null | Readonly<{
+    displayName: string;
+    status: "needs_attention" | "ready";
+  }>;
 }>;
 
 export type AdminProviderQuickSetupSelectionRequiredResult = Readonly<{

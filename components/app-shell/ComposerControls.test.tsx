@@ -233,8 +233,13 @@ describe("ComposerControls", () => {
     expect(profile).toHaveClass("bg-control-surface", "h-touch");
     expect(screen.getByTestId("run-model-summary").closest("div.relative")).toHaveClass(
       "max-w-full",
-      "flex-[1_1_100%]",
-      "sm:flex-[0_0_20rem]"
+      "min-w-[min(14rem,100%)]",
+      "flex-[1_1_16rem]"
+    );
+    expect(screen.getByTestId("composer-secondary-controls")).toHaveClass("flex-[1_1_20rem]");
+    expect(controls.querySelector('[data-composer-direct-reasoning="true"]')).toHaveClass(
+      "hidden",
+      "[@media(max-height:42rem)]:!hidden"
     );
   });
 

@@ -56,7 +56,8 @@ export function ComposerReasoningPicker({
 
   return (
     <div
-      className="relative hidden min-[900px]:block [@media(max-height:42rem)]:hidden"
+      className="relative hidden [@media(max-height:42rem)]:!hidden"
+      data-composer-direct-reasoning="true"
       ref={boundaryRef}
     >
       <button

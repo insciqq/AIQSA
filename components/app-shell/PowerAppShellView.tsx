@@ -25,13 +25,17 @@ import { useDialogFocus } from "@/components/app-shell/useDialogFocus";
 import { useEventCallback } from "@/components/app-shell/useEventCallback";
 import { pipelineStage } from "@/components/app-shell/runState";
 import { signOutCurrentSession } from "@/components/app-shell/sessionActions";
+import {
+  rememberWorkspaceRailHidden,
+  storedWorkspaceRailHidden
+} from "@/components/app-shell/shellStorage";
 import type { RunEventView } from "@/components/app-shell/types";
 import { X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 export type { PowerAppShellViewProps } from "@/components/app-shell/powerAppShellViewContracts";
 
-export const mobileWorkspaceDesktopMediaQuery = "(min-width: 1024px)";
+export const mobileWorkspaceDesktopMediaQuery = "(min-width: 1281px)";
 
 function warningText(event: RunEventView): string | null {
   if (event.type !== "warning" || typeof event.data !== "object" || event.data === null || Array.isArray(event.data)) {
@@ -164,11 +168,19 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
   const [desktopAccountMenuOpen, setDesktopAccountMenuOpen] = useState(false);
   const [accountBreakpointFocusTransferred, setAccountBreakpointFocusTransferred] = useState(false);
   const [mobileAccountMenuOpen, setMobileAccountMenuOpen] = useState(false);
+  const [workspaceRailHidden, setWorkspaceRailHidden] = useState(false);
   const desktopAccountButtonRef = useRef<HTMLButtonElement>(null);
+  const desktopWorkspaceToggleRef = useRef<HTMLButtonElement>(null);
   const mobileWorkspaceButtonRef = useRef<HTMLButtonElement>(null);
   const mobileWorkspaceScrollTopRef = useRef<number | undefined>(undefined);
   const cancelDeleteChatEvent = useEventCallback(cancelDeleteChat);
   const cancelDeleteFolderEvent = useEventCallback(cancelDeleteFolder);
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setWorkspaceRailHidden(storedWorkspaceRailHidden());
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, []);
   const closeMobileWorkspaceEvent = useEventCallback(() => {
     setMobileAccountMenuOpen(false);
     closeMobileWorkspace();
@@ -222,14 +234,15 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
 
     const desktopViewport = window.matchMedia(mobileWorkspaceDesktopMediaQuery);
     function preserveAccountFocusAcrossBreakpoint(event: Pick<MediaQueryListEvent, "matches">) {
-      if (!event.matches && desktopAccountMenuOpen) {
+      const desktopRailVisible = event.matches && !workspaceRailHidden;
+      if (!desktopRailVisible && desktopAccountMenuOpen) {
         setDesktopAccountMenuOpen(false);
         setAccountBreakpointFocusTransferred(true);
         window.setTimeout(() => mobileWorkspaceButtonRef.current?.focus({ preventScroll: true }), 0);
         return;
       }
 
-      if (event.matches && accountBreakpointFocusTransferred) {
+      if (desktopRailVisible && accountBreakpointFocusTransferred) {
         setAccountBreakpointFocusTransferred(false);
         window.setTimeout(() => desktopAccountButtonRef.current?.focus({ preventScroll: true }), 0);
       }
@@ -238,7 +251,7 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
     preserveAccountFocusAcrossBreakpoint(desktopViewport);
     desktopViewport.addEventListener("change", preserveAccountFocusAcrossBreakpoint);
     return () => desktopViewport.removeEventListener("change", preserveAccountFocusAcrossBreakpoint);
-  }, [accountBreakpointFocusTransferred, desktopAccountMenuOpen]);
+  }, [accountBreakpointFocusTransferred, desktopAccountMenuOpen, workspaceRailHidden]);
   useEffect(() => {
     if (!accountBreakpointFocusTransferred) {
       return;
@@ -256,6 +269,29 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
   const closeDetails = useCallback(() => {
     setInspectorMode("closed");
   }, [setInspectorMode]);
+  const hideWorkspaceRail = useCallback(() => {
+    workspace.pane.actions.closeMenus();
+    setDesktopAccountMenuOpen(false);
+    rememberWorkspaceRailHidden(true);
+    setWorkspaceRailHidden(true);
+    window.setTimeout(() => mobileWorkspaceButtonRef.current?.focus({ preventScroll: true }), 0);
+  }, [workspace.pane.actions]);
+  const showWorkspaceRail = useCallback(() => {
+    rememberWorkspaceRailHidden(false);
+    setWorkspaceRailHidden(false);
+    window.setTimeout(() => desktopWorkspaceToggleRef.current?.focus({ preventScroll: true }), 0);
+  }, []);
+  const openWorkspaceFromRail = useCallback(() => {
+    if (
+      workspaceRailHidden &&
+      typeof window.matchMedia === "function" &&
+      window.matchMedia(mobileWorkspaceDesktopMediaQuery).matches
+    ) {
+      showWorkspaceRail();
+      return;
+    }
+    workspace.mobile.show();
+  }, [showWorkspaceRail, workspace.mobile, workspaceRailHidden]);
   const handleSignOut = useCallback(async () => {
     if (signingOut) {
       return;
@@ -379,7 +415,7 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
   const shellNotice = notice;
   const persistentNoticeSlot = shellNotice?.persistent ? (
     <div
-      className="shrink-0 border-b border-trace-subtle bg-answer-paper px-3 pb-2 pt-[calc(4rem+env(safe-area-inset-top))] lg:py-2"
+      className="shrink-0 border-b border-trace-subtle bg-answer-paper px-3 pb-2 pt-[calc(4rem+env(safe-area-inset-top))] min-[1281px]:py-2"
       data-testid="persistent-notice-region"
     >
       <div className="mx-auto flex w-full max-w-reading justify-center">
@@ -425,16 +461,25 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
       >
         <div
           className={[
-            "grid h-full min-h-0 grid-cols-1 overflow-hidden bg-research-canvas lg:grid-cols-[16rem_minmax(0,1fr)]",
+            "grid h-full min-h-0 grid-cols-1 overflow-hidden bg-research-canvas",
+            workspaceRailHidden ? "" : "min-[1281px]:grid-cols-[16rem_minmax(0,1fr)]",
             inspectorMode === "pinned"
-              ? "min-[1440px]:grid-cols-[16rem_minmax(0,1fr)_23rem]"
+              ? workspaceRailHidden
+                ? "min-[1440px]:grid-cols-[minmax(0,1fr)_23rem]"
+                : "min-[1440px]:grid-cols-[16rem_minmax(0,1fr)_23rem]"
               : ""
           ].join(" ")}
           data-details-presentation={inspectorMode}
+          data-workspace-rail-hidden={workspaceRailHidden ? "true" : undefined}
           data-testid="shell-workspace-grid"
         >
           <div
-            className="hidden min-h-0 min-w-0 bg-workspace-rail lg:grid lg:grid-rows-[minmax(0,1fr)] lg:pl-[env(safe-area-inset-left)] lg:pt-[env(safe-area-inset-top)]"
+            className={[
+              "hidden min-h-0 min-w-0 bg-workspace-rail",
+              workspaceRailHidden
+                ? ""
+                : "min-[1281px]:grid min-[1281px]:grid-rows-[minmax(0,1fr)] min-[1281px]:pl-[env(safe-area-inset-left)] min-[1281px]:pt-[env(safe-area-inset-top)]"
+            ].join(" ")}
             data-testid="workspace-rail"
           >
             <ShellLeftPane
@@ -442,7 +487,9 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
               availableChatModelKeys={availableChatModelKeys}
               chatModelLabels={chatModelLabels}
               footer={mobileWorkspaceOpen ? null : desktopAccountFooter}
+              onHideWorkspace={hideWorkspaceRail}
               pane={workspace.pane}
+              workspaceToggleRef={desktopWorkspaceToggleRef}
             />
           </div>
 
@@ -472,10 +519,11 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
               }}
               onOpenBranches={() => openDetails("branch")}
               onOpenPipeline={() => openDetails("events")}
-              onOpenWorkspace={workspace.mobile.show}
+              onOpenWorkspace={openWorkspaceFromRail}
               onShare={() => void shareActiveBranch()}
               onStartNewChat={() => void workspace.pane.actions.createChat()}
               workspaceButtonRef={mobileWorkspaceButtonRef}
+              workspaceRailHidden={workspaceRailHidden}
               workspaceAttention={Boolean(signOutError)}
             />
 
@@ -483,6 +531,7 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
               {...threadPane}
               {...composer}
               activeChatId={activeChatId}
+              adminEntryVisible={adminEntryVisible}
               creatingChat={workspace.pane.state.creatingChat}
               noticeSlot={persistentNoticeSlot}
               openMcpSettings={settings.openMcp}
@@ -551,14 +600,14 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
       {mobileWorkspaceOpen ? (
         <>
           <div
-            className="fixed inset-0 z-40 bg-scrim/55 lg:hidden"
+            className="fixed inset-0 z-40 bg-scrim/55 min-[1281px]:hidden"
             data-testid="workspace-pane-mobile-backdrop"
             role="presentation"
             onMouseDown={closeMobileWorkspaceEvent}
           />
           <div
             ref={mobileWorkspaceDialogRef}
-            className={`pop-enter fixed bottom-[max(0.5rem,env(safe-area-inset-bottom))] left-[max(0.5rem,env(safe-area-inset-left))] top-[max(0.5rem,env(safe-area-inset-top))] flex flex-col overflow-hidden rounded-panel border border-trace-subtle bg-workspace-rail shadow-overlay lg:hidden ${
+            className={`pop-enter fixed bottom-[max(0.5rem,env(safe-area-inset-bottom))] left-[max(0.5rem,env(safe-area-inset-left))] top-[max(0.5rem,env(safe-area-inset-top))] flex flex-col overflow-hidden rounded-panel border border-trace-subtle bg-workspace-rail shadow-overlay min-[1281px]:hidden ${
               mobileAccountMenuOpen ? "z-[80]" : "z-50"
             }`}
             data-testid="workspace-pane-mobile"

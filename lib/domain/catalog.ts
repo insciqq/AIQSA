@@ -862,9 +862,9 @@ export const defaultSearchStrategies: SearchStrategyCatalogEntry[] = [
     strategyId: "openai-native-web-search",
     provider: "openai",
     modelId: "gpt-5.5",
-    displayName: "OpenAI web_search",
+    displayName: "OpenAI native web_search",
     kind: "openai_native_web_search",
-    description: "OpenAI Responses API web_search tool for direct OpenAI models.",
+    description: "Hosted OpenAI Responses web_search for compatible OpenAI answer models only.",
     config: {
       tool: "web_search"
     }

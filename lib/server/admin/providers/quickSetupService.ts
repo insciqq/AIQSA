@@ -12,6 +12,8 @@ import {
   type AdminProviderQuickSetupResult,
   type AdminProviderQuickSetupSnapshot
 } from "../../../contracts/adminProviderQuickSetup";
+import type { AdminSearchDraft, AdminSearchTestEvidence } from "../../../contracts/adminSearch";
+import { OPENAI_PROVIDER_SEARCH_INTEGRATION_ID } from "../../../domain/search";
 import {
   encryptProviderCredentialSecret,
   normalizeProviderCredentialSecret
@@ -25,9 +27,12 @@ import {
 } from "./quickSetupPolicy";
 import type {
   AdminProviderQuickSetupActor,
+  AdminProviderQuickSetupCommitPlan,
   AdminProviderQuickSetupInspection,
   AdminProviderQuickSetupRepository
 } from "./quickSetupRepositoryContract";
+import type { AdminProviderQuickSetupSearchTester } from "./quickSetupSearchTester";
+import { searchDraftHash } from "../../search/configuration";
 
 export class AdminProviderQuickSetupServiceError extends Error {
   readonly code: AdminProviderQuickSetupErrorCode;
@@ -99,6 +104,7 @@ export function createAdminProviderQuickSetupService(input: Readonly<{
   encryptionKey?: () => Buffer;
   idFactory?: () => string;
   now?: () => Date;
+  searchTester?: AdminProviderQuickSetupSearchTester;
   repository: AdminProviderQuickSetupRepository;
   stateTokenKey: () => Buffer;
 }>) {
@@ -301,6 +307,51 @@ export function createAdminProviderQuickSetupService(input: Readonly<{
         throw new AdminProviderQuickSetupServiceError("provider_draft_stale");
       }
       const versionId = idFactory();
+      let providerNeutralSearch: AdminProviderQuickSetupCommitPlan["providerNeutralSearch"];
+      if (
+        policy.provider === "openai" &&
+        candidate.configuration.capabilities.nativeSearch &&
+        input.searchTester
+      ) {
+        let outcome: Awaited<ReturnType<AdminProviderQuickSetupSearchTester["test"]>>;
+        try {
+          outcome = await input.searchTester.test({
+            connection: policy.connection.configuration,
+            model: candidate.configuration,
+            secret,
+            signal: inputValue.signal
+          });
+        } catch {
+          if (inputValue.signal?.aborted) {
+            throw new AdminProviderQuickSetupServiceError("provider_credential_test_failed");
+          }
+          outcome = { normalizedSourceCount: 0, status: "unavailable" };
+        }
+        const draft: AdminSearchDraft = {
+          adapterKind: "provider_model_client",
+          credentialMode: "provider_model",
+          maxResults: 8,
+          protocol: "openai_responses_web_search",
+          providerModelId: candidate.modelId,
+          queryMaxCharacters: 500,
+          timeoutMs: 300_000
+        };
+        const evidence: AdminSearchTestEvidence = {
+          checkedAt: now().toISOString(),
+          method: "provider_search",
+          normalizedSourceCount: outcome.normalizedSourceCount,
+          protocol: draft.protocol,
+          status: outcome.status
+        };
+        providerNeutralSearch = {
+          draft,
+          draftHash: searchDraftHash(draft),
+          evidence,
+          grantId: idFactory(),
+          integrationId: OPENAI_PROVIDER_SEARCH_INTEGRATION_ID,
+          revisionId: idFactory()
+        };
+      }
       const commit = await input.repository.commit({
         actor: inputValue.actor,
         candidate,
@@ -326,7 +377,8 @@ export function createAdminProviderQuickSetupService(input: Readonly<{
         mode: inspection.mode,
         now: now(),
         preservedModels: inspection.preservedModels,
-        provider: policy.provider
+        provider: policy.provider,
+        ...(providerNeutralSearch ? { providerNeutralSearch } : {})
       });
       if (commit === "stale") {
         throw new AdminProviderQuickSetupServiceError("provider_draft_stale");
@@ -349,7 +401,13 @@ export function createAdminProviderQuickSetupService(input: Readonly<{
         outcome: "ready",
         profilesFilled: commit.profilesFilled,
         provider: policy.provider,
-        providerDisplayName: policy.connection.displayName
+        providerDisplayName: policy.connection.displayName,
+        providerNeutralSearch: commit.providerNeutralSearch
+          ? {
+              displayName: "OpenAI Search (provider-neutral)",
+              status: commit.providerNeutralSearch
+            }
+          : null
       };
     }
   };

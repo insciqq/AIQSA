@@ -112,6 +112,16 @@ function model(value: unknown): value is AdminProviderQuickSetupModel {
   return record(value) && exactKeys(value, ["displayName"]) && safeText(value.displayName);
 }
 
+function providerNeutralSearch(
+  value: unknown
+): value is AdminProviderQuickSetupReadyResult["providerNeutralSearch"] {
+  return value === null || (
+    record(value) && exactKeys(value, ["displayName", "status"]) &&
+    safeText(value.displayName, 160) &&
+    (value.status === "needs_attention" || value.status === "ready")
+  );
+}
+
 function provider(value: unknown): AdminProviderQuickSetupProvider | null {
   if (!record(value) || !exactKeys(value, [
     "provider",
@@ -198,13 +208,15 @@ function result(value: unknown): AdminProviderQuickSetupResult | null {
     "outcome",
     "profilesFilled",
     "provider",
-    "providerDisplayName"
+    "providerDisplayName",
+    ...(value.providerNeutralSearch === undefined ? [] : ["providerNeutralSearch"])
   ]) && timestamp(value.checkedAt) && typeof value.defaultChanged === "boolean" &&
     model(value.model) && Array.isArray(value.models) && value.models.length > 0 &&
     value.models.length <= 16 && value.models.every(model) &&
     new Set(value.models.map((entry) => (entry as AdminProviderQuickSetupModel).displayName)).size ===
       value.models.length &&
     providerId(value.provider) && safeText(value.providerDisplayName, 80) &&
+    providerNeutralSearch(value.providerNeutralSearch ?? null) &&
     Array.isArray(value.profilesFilled) &&
     value.profilesFilled.every((entry) => typeof entry === "string" && profileIds.has(entry)) &&
     new Set(value.profilesFilled).size === value.profilesFilled.length) {

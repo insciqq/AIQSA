@@ -73,7 +73,7 @@ describe("TopRail", () => {
     );
 
     expect(screen.getByRole("heading", { level: 1, name: "New chat" })).toHaveClass("sr-only");
-    expect(screen.getByTestId("top-rail")).toHaveClass("lg:h-[env(safe-area-inset-top)]");
+    expect(screen.getByTestId("top-rail")).toHaveClass("min-[1281px]:h-[env(safe-area-inset-top)]");
   });
 
   it("keeps idle and settled pipeline decoration out of the top bar", () => {
@@ -214,8 +214,10 @@ describe("TopRail", () => {
       "[@media(hover:none)]:!size-11"
     );
     const newChat = screen.getByRole("button", { name: "Start new chat" });
-    expect(newChat).toHaveClass("lg:hidden", "[@media(hover:none)]:!size-11");
-    expect(screen.getByRole("group", { name: "Workspace controls" })).toHaveClass("lg:hidden");
+    expect(newChat).toHaveClass("[@media(hover:none)]:!size-11");
+    expect(screen.getByRole("group", { name: "Workspace controls" })).toHaveClass(
+      "min-[1281px]:hidden"
+    );
     expect(screen.getByRole("group", { name: "Workspace controls" })).toHaveClass(
       "pointer-events-auto",
       "rounded-pill",
@@ -242,13 +244,13 @@ describe("TopRail", () => {
     expect(screen.getByRole("button", { name: "Share anonymously" })).toHaveClass(
       "inline-flex",
       "size-11",
-      "lg:h-9",
+      "min-[1281px]:h-9",
       "[@media(pointer:coarse)]:!size-11"
     );
     expect(screen.getByRole("button", { name: "Open details" })).toHaveClass(
       "inline-flex",
       "size-11",
-      "lg:h-9"
+      "min-[1281px]:h-9"
     );
     const conversationActions = screen.getByRole("button", { name: "Conversation actions" });
     fireEvent.click(conversationActions);
@@ -264,5 +266,14 @@ describe("TopRail", () => {
     expect(conversationActions).toHaveFocus();
     await waitFor(() => expect(callbacks.onCopyThread).toHaveBeenCalledOnce());
     expect(screen.queryByRole("button", { name: /Account menu/ })).not.toBeInTheDocument();
+  });
+
+  it("keeps the Workspace trigger available when the persistent rail is hidden", () => {
+    renderTopRail({ workspaceRailHidden: true });
+
+    expect(screen.getByRole("group", { name: "Workspace controls" })).not.toHaveClass(
+      "min-[1281px]:hidden"
+    );
+    expect(screen.getByRole("button", { name: "Open workspace" })).toBeEnabled();
   });
 });

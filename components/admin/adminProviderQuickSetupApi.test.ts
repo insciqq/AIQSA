@@ -82,7 +82,11 @@ describe("admin provider Quick setup API", () => {
       outcome: "ready",
       profilesFilled: ["balanced"],
       provider: "openai",
-      providerDisplayName: "OpenAI"
+      providerDisplayName: "OpenAI",
+      providerNeutralSearch: {
+        displayName: "OpenAI Search (provider-neutral)",
+        status: "ready"
+      }
     };
     const fetcher = vi.fn(async (
       _input: RequestInfo | URL,
@@ -223,6 +227,20 @@ describe("admin provider Quick setup API", () => {
       profilesFilled: [],
       provider: "openai",
       providerDisplayName: "OpenAI"
+    },
+    {
+      checkedAt,
+      defaultChanged: true,
+      model: { displayName: "Model" },
+      models: [{ displayName: "Model" }],
+      outcome: "ready",
+      profilesFilled: [],
+      provider: "openai",
+      providerDisplayName: "OpenAI",
+      providerNeutralSearch: {
+        displayName: "OpenAI Search (provider-neutral)",
+        status: "available"
+      }
     },
     {
       candidates: [],

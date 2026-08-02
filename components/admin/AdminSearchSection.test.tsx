@@ -129,6 +129,53 @@ describe("AdminSearchSection", () => {
     expect(await screen.findByText("Organization Search default saved.")).toBeVisible();
   });
 
+  it("defaults a new native OpenAI model to provider-neutral query-only Search", async () => {
+    api.list.mockResolvedValue({
+      ok: true,
+      search: {
+        ...catalog,
+        providerModels: [
+          {
+            adapterKind: "openrouter_chat_completions",
+            connectionDisplayName: "OpenRouter",
+            displayName: "Perplexity Search",
+            enabled: true,
+            id: "technical-openrouter",
+            nativeSearch: true,
+            upstreamModelId: "perplexity/sonar-pro-search"
+          },
+          {
+            adapterKind: "openai_responses_native",
+            connectionDisplayName: "OpenAI",
+            displayName: "GPT Search",
+            enabled: true,
+            id: "technical-openai",
+            nativeSearch: true,
+            upstreamModelId: "gpt-5.6-search"
+          }
+        ]
+      }
+    });
+    render(<AdminSearchSection active />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Add" }));
+
+    expect(screen.getByRole("heading", { name: "Add search integration" })).toBeVisible();
+    expect(screen.getByLabelText("User-facing name")).toHaveValue(
+      "OpenAI Search (provider-neutral)"
+    );
+    expect(screen.getByLabelText("Purpose")).toHaveValue(
+      "Query-only OpenAI web search for any tool-capable answer model."
+    );
+    expect(screen.getByLabelText(/Engine protocol/)).toHaveValue(
+      "openai_responses_web_search"
+    );
+    expect(screen.getByLabelText(/Technical provider model/)).toHaveValue("technical-openai");
+    expect(screen.getByText(/receives only a bounded generated query/i)).toHaveTextContent(
+      "can serve Anthropic, Gemini, or any other tool-capable answer model"
+    );
+  });
+
   it("separates enabled state from unavailable runtime dependencies", async () => {
     api.list.mockResolvedValue({
       ok: true,

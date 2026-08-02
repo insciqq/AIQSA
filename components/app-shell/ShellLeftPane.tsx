@@ -3,7 +3,7 @@ import type { ShellWorkspacePaneView } from "@/components/app-shell/powerAppShel
 import type { ChatSummary } from "@/components/app-shell/types";
 import { useEventCallback } from "@/components/app-shell/useEventCallback";
 import { useWorkspaceStore } from "@/components/app-shell/workspaceStore";
-import type { ReactNode } from "react";
+import type { ReactNode, Ref } from "react";
 
 export type ShellLeftPaneProps = {
   activeChatId: string | null;
@@ -11,8 +11,10 @@ export type ShellLeftPaneProps = {
   chatModelLabels: ReadonlyMap<string, string> | null;
   footer?: ReactNode;
   layout?: "desktop" | "mobile";
+  onHideWorkspace?(): void;
   pane: ShellWorkspacePaneView;
   scrollTopRef?: { current: number | undefined };
+  workspaceToggleRef?: Ref<HTMLButtonElement>;
 };
 
 export function ShellLeftPane({
@@ -21,8 +23,10 @@ export function ShellLeftPane({
   chatModelLabels,
   footer,
   layout = "desktop",
+  onHideWorkspace,
   pane,
-  scrollTopRef
+  scrollTopRef,
+  workspaceToggleRef
 }: ShellLeftPaneProps) {
   const { actions, state } = pane;
 
@@ -78,6 +82,7 @@ export function ShellLeftPane({
       onEditFolderNameChange={actions.changeEditingFolderName}
       onExportChat={(chat) => actions.exportChat(currentChat(chat))}
       onFolderMenuToggle={actions.toggleFolderMenu}
+      onHideWorkspace={onHideWorkspace}
       onMoveChat={(chatId, folderId) => void actions.moveChat(chatId, folderId)}
       onMoveFolder={(folder, folderId) => void actions.moveFolder(folder, folderId)}
       onNewFolderNameChange={actions.changeNewFolderName}
@@ -95,6 +100,7 @@ export function ShellLeftPane({
       onSubfolderNameChange={actions.changeSubfolderName}
       onToggleChatFavorite={(chat) => void actions.toggleChatFavorite(currentChat(chat))}
       onToggleFolderCollapsed={actions.toggleFolderCollapsed}
+      workspaceToggleRef={workspaceToggleRef}
     />
   );
 }

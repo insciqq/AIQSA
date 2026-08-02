@@ -56,17 +56,18 @@ describe("Composer", () => {
     expect(surface).toContainElement(controls);
     expect(surface).toContainElement(send);
     expect(form).toHaveClass("sm:pb-[max(.75rem,env(safe-area-inset-bottom))]");
-    expect(form).toHaveClass("[@media(max-height:32rem)]:!pt-1");
+    expect(form).toHaveClass("[@media(max-height:42rem)]:!pt-1");
     expect(controls).toHaveClass("flex", "w-full", "min-w-0");
+    expect(controls).toHaveAttribute("data-composer-controls-container", "true");
     expect(textarea).toHaveClass(
       "min-h-14",
       "sm:min-h-[72px]",
-      "[@media(max-height:32rem)]:!min-h-10",
-      "[@media(max-height:32rem)]:!max-h-20"
+      "[@media(max-height:42rem)]:!min-h-11",
+      "[@media(max-height:42rem)]:!max-h-24"
     );
     expect(screen.getByRole("list", { name: "Attachments" })).toHaveClass(
-      "[@media(max-height:32rem)]:!max-h-12",
-      "[@media(max-height:32rem)]:!flex-nowrap"
+      "[@media(max-height:42rem)]:!max-h-12",
+      "[@media(max-height:42rem)]:!flex-nowrap"
     );
     expect(textarea).toHaveAttribute("placeholder", "Ask AIQSA…");
     expect(send).toHaveTextContent("Send");

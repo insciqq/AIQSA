@@ -414,8 +414,12 @@ export function searchStrategyToCatalogEntry(
   return {
     adapterKind: draft.adapterKind,
     config: { ...draft },
-    description: strategy.description,
-    displayName: strategy.displayName,
+    description: strategy.strategyId === "openai-native-web-search"
+      ? "Hosted OpenAI Responses web_search for compatible OpenAI answer models only."
+      : strategy.description,
+    displayName: strategy.strategyId === "openai-native-web-search"
+      ? "OpenAI native web_search"
+      : strategy.displayName,
     executionModes: searchExecutionModes(draft.adapterKind),
     kind,
     ...(strategy.modelId ? { modelId: strategy.modelId } : {}),

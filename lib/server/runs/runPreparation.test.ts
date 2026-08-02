@@ -170,6 +170,120 @@ function compatibleAdmissionPlan(
   };
 }
 
+function providerNeutralOpenAISearchPlan(
+  adapterKind: "anthropic_messages" | "gemini_interactions_native"
+): ProviderAdmissionPlan {
+  const providerFamily = adapterKind === "anthropic_messages" ? "anthropic" : "gemini";
+  const providerConnectionId = `connection-${providerFamily}`;
+  const providerModelId = `deployment-${providerFamily}`;
+  const modelId = adapterKind === "anthropic_messages"
+    ? "claude-opus-5"
+    : "gemini-3.6-flash";
+  const capabilities: ProviderModelCapabilities = {
+    ...baseCapabilities,
+    nativeSearch: false,
+    toolCalling: true
+  };
+  const technicalCapabilities: ProviderModelCapabilities = {
+    ...baseCapabilities,
+    nativeSearch: true,
+    toolCalling: true
+  };
+  const technicalRole: ProviderAdmissionPlan["answer"] = {
+    credentialSource: "default",
+    modelConfiguration: {
+      adapterKind: "openai_responses_native",
+      capabilities: technicalCapabilities,
+      defaultParams: {}
+    },
+    snapshot: {
+      connection: {
+        allowPrivateNetwork: false,
+        apiRoot: "https://api.openai.com/v1"
+      },
+      connectionDisplayName: "OpenAI",
+      connectionId: "connection-openai-search",
+      credentialId: "credential-openai-search",
+      credentialVersionId: "credential-version-openai-search",
+      model: {
+        adapterKind: "openai_responses_native",
+        answerSelectable: false,
+        capabilities: technicalCapabilities,
+        defaultParams: {},
+        upstreamModelId: "gpt-5.6-search"
+      },
+      modelDisplayName: "OpenAI Search model",
+      providerFamily: "openai",
+      providerModelId: "technical-openai-search",
+      version: 1
+    }
+  };
+  const optionId = "openai-provider-web-search";
+  return {
+    answer: {
+      credentialSource: "default",
+      modelConfiguration: { adapterKind, capabilities, defaultParams: {} },
+      snapshot: {
+        connection: {
+          allowPrivateNetwork: false,
+          apiRoot: adapterKind === "anthropic_messages"
+            ? "https://api.anthropic.com/v1"
+            : "https://generativelanguage.googleapis.com/v1beta"
+        },
+        connectionDisplayName: providerFamily === "anthropic" ? "Anthropic" : "Gemini",
+        connectionId: providerConnectionId,
+        credentialId: `credential-${providerFamily}`,
+        credentialVersionId: `credential-version-${providerFamily}`,
+        model: {
+          adapterKind,
+          answerSelectable: true,
+          capabilities,
+          defaultParams: {},
+          upstreamModelId: modelId
+        },
+        modelDisplayName: modelId,
+        providerFamily,
+        providerModelId,
+        version: 1
+      }
+    },
+    fingerprint: "b".repeat(64),
+    requestedSearchPlan: { mode: "model_choice", optionIds: [optionId] },
+    requestedSearchStrategyId: optionId,
+    searches: [{
+      bindingKey: `search:${optionId}`,
+      configuration: {
+        adapterKind: "provider_model_client",
+        config: {
+          maxResults: 8,
+          modelCapabilities: technicalCapabilities,
+          modelDefaultParams: {},
+          queryMaxCharacters: 500,
+          timeoutMs: 300_000
+        },
+        credentialMode: "provider_model",
+        displayName: "OpenAI Search (provider-neutral)",
+        executionModes: ["all_selected", "model_choice"],
+        kind: "provider_model_web_search",
+        modelId: "gpt-5.6-search",
+        protocol: "openai_responses_web_search",
+        provider: "openai",
+        providerModelId: "technical-openai-search",
+        revisionId: "revision-openai-search",
+        searchStrategyRowId: "integration-openai-search",
+        strategyId: optionId
+      },
+      integrationId: "integration-openai-search",
+      optionId,
+      ordinal: 0,
+      revisionId: "revision-openai-search",
+      role: technicalRole
+    }],
+    selection: { providerConnectionId, providerModelId },
+    userId: "user-1"
+  };
+}
+
 function runAttachment(input: {
   id: string;
   kind: "image" | "pdf";
@@ -1188,6 +1302,49 @@ describe("run preparation", () => {
       "search_selected_engines"
     ]);
   });
+
+  it.each([
+    { adapterKind: "anthropic_messages" as const, provider: "anthropic" },
+    { adapterKind: "gemini_interactions_native" as const, provider: "gemini" }
+  ])(
+    "serializes provider-neutral OpenAI Search as a client tool for $provider answers",
+    async ({ adapterKind, provider }) => {
+      const plan = providerNeutralOpenAISearchPlan(adapterKind);
+      const result = await prepareRun(
+        {
+          ...createHarness({ searchProviderAvailable: false }).deps,
+          allowFakeProvider: false,
+          providerAdmission: { async load() { return plan; } }
+        },
+        sendInput(successBody({
+          modelId: plan.selection.providerModelId,
+          params: {},
+          provider: plan.selection.providerConnectionId,
+          searchPlan: plan.requestedSearchPlan
+        }))
+      );
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) throw new Error(result.code);
+      const prepared = materializePreparedRunData(result.prepared);
+      expect(result.toolBridge?.provider).toBe(provider);
+      expect(prepared.normalizedRequest.searchPlan).toMatchObject({
+        mode: "model_choice",
+        options: [expect.objectContaining({
+          adapterKind: "provider_model_client",
+          optionId: "openai-provider-web-search",
+          protocol: "openai_responses_web_search",
+          provider: "openai",
+          providerModelId: "technical-openai-search"
+        })]
+      });
+      expect(prepared.providerRequest.tools?.map((tool) => tool.name)).toEqual([
+        "search_1_openai_provider_web_search"
+      ]);
+      expect(JSON.stringify(prepared.providerRequestPreview))
+        .toContain("search_1_openai_provider_web_search");
+    }
+  );
 
   it("rejects attachment-bearing client Search before attachment loading", async () => {
     const base = compatibleAdmissionPlan("openai_responses_compatible");

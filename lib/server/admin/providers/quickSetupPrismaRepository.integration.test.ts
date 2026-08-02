@@ -1,12 +1,17 @@
 import { randomUUID } from "node:crypto";
 import { Prisma, PrismaClient, type PrismaClient as PrismaClientType } from "@prisma/client";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import {
+  OPENAI_PROVIDER_SEARCH_INTEGRATION_ID,
+  OPENAI_PROVIDER_SEARCH_STRATEGY_ID
+} from "../../../domain/search";
 import { createPrismaCatalogDataLoader } from "../../catalog/prismaCatalogData";
 import { loadEntitlementsForUser } from "../../auth/dbEntitlements";
 import { resolveEntitlements } from "../../auth/entitlements";
 import { adminProviderQuickSetupPolicy } from "./quickSetupPolicy";
 import { createPrismaAdminProviderQuickSetupRepository } from "./quickSetupPrismaRepository";
 import type { AdminProviderQuickSetupCommitPlan } from "./quickSetupRepositoryContract";
+import { searchDraftHash } from "../../search/configuration";
 
 const enabled = process.env.AIQSA_PROVIDER_QUICK_SETUP_INTEGRATION_TEST === "1";
 const integration = enabled ? describe : describe.skip;
@@ -51,6 +56,8 @@ const WRITE_DELEGATES = new Set([
   "providerModelCredentialCheck",
   "providerUserCredentialAssignment",
   "runProfile",
+  "searchIntegrationRevision",
+  "searchStrategy",
   "userSettings"
 ]);
 const WRITE_METHODS = new Set([
@@ -306,6 +313,22 @@ async function commitTraceRolledBack(
 
 async function resetOpenAiToInitial(transaction: Prisma.TransactionClient): Promise<void> {
   const modelIds = policy.candidates.map((candidate) => candidate.modelId);
+  const managedSearch = await transaction.searchStrategy.findUnique({
+    where: { strategyId: OPENAI_PROVIDER_SEARCH_STRATEGY_ID }
+  });
+  await transaction.accessGrant.deleteMany({
+    where: { searchStrategy: OPENAI_PROVIDER_SEARCH_STRATEGY_ID }
+  });
+  if (managedSearch) {
+    await transaction.searchStrategy.update({
+      data: { activeRevisionId: null },
+      where: { id: managedSearch.id }
+    });
+    await transaction.searchIntegrationRevision.deleteMany({
+      where: { searchStrategyId: managedSearch.id }
+    });
+    await transaction.searchStrategy.delete({ where: { id: managedSearch.id } });
+  }
   await transaction.userSettings.updateMany({
     data: { defaultProviderModelId: null },
     where: { defaultProviderModelId: { in: modelIds } }
@@ -408,9 +431,22 @@ function plan(input: Readonly<{
   grantId: string;
   mode: "initial" | "recovery" | "replacement";
   preservedModels: AdminProviderQuickSetupCommitPlan["preservedModels"];
+  providerNeutralSearch?: Readonly<{
+    idPrefix: string;
+    status: "available" | "unavailable";
+  }>;
   versionId: string;
 }>): AdminProviderQuickSetupCommitPlan {
   const candidates = input.candidates ?? [terra];
+  const searchDraft = {
+    adapterKind: "provider_model_client" as const,
+    credentialMode: "provider_model" as const,
+    maxResults: 8,
+    protocol: "openai_responses_web_search" as const,
+    providerModelId: terra.modelId,
+    queryMaxCharacters: 500,
+    timeoutMs: 300_000
+  };
   return {
     actor: input.actor,
     candidate: terra,
@@ -431,7 +467,23 @@ function plan(input: Readonly<{
     mode: input.mode,
     now: new Date("2026-07-26T10:00:02.000Z"),
     preservedModels: input.preservedModels,
-    provider: "openai"
+    provider: "openai",
+    ...(input.providerNeutralSearch ? {
+      providerNeutralSearch: {
+        draft: searchDraft,
+        draftHash: searchDraftHash(searchDraft),
+        evidence: {
+          checkedAt: "2026-07-26T10:00:01.500Z",
+          method: "provider_search" as const,
+          normalizedSourceCount: input.providerNeutralSearch.status === "available" ? 2 : 0,
+          protocol: "openai_responses_web_search" as const,
+          status: input.providerNeutralSearch.status
+        },
+        grantId: `${input.providerNeutralSearch.idPrefix}-grant`,
+        integrationId: OPENAI_PROVIDER_SEARCH_INTEGRATION_ID,
+        revisionId: `${input.providerNeutralSearch.idPrefix}-revision`
+      }
+    } : {})
   };
 }
 
@@ -451,6 +503,7 @@ const ISOLATED_TABLES = [
   "PromptPreset",
   "RunProfile",
   "SearchIntegrationRevision",
+  "SearchPolicy",
   "SearchStrategy",
   "User",
   "UserGroup",
@@ -508,6 +561,9 @@ async function createIsolatedQuickSetupDatabase(): Promise<Readonly<{
     );
     await administrationDatabase.$executeRawUnsafe(
       `INSERT INTO ${schema}."SearchStrategy" SELECT * FROM ${sourceSchema}."SearchStrategy"`
+    );
+    await administrationDatabase.$executeRawUnsafe(
+      `INSERT INTO ${schema}."SearchPolicy" SELECT * FROM ${sourceSchema}."SearchPolicy"`
     );
     await administrationDatabase.$executeRawUnsafe(
       `CREATE TYPE ${schema}."UserRole" AS ENUM ('admin', 'user')`
@@ -602,6 +658,281 @@ integration("Prisma provider Quick setup atomic graph", () => {
     await sharedIntegrationDatabase?.cleanup();
     await administrationDatabase.$disconnect();
   });
+
+  it("atomically provisions, reuses, and fail-closes the managed provider-neutral OpenAI Search", async () => {
+    const isolated = await createIsolatedQuickSetupDatabase();
+    try {
+      await expect(isolated.client.$transaction(async (transaction) => {
+        await resetOpenAiToInitial(transaction);
+        const suffix = randomUUID();
+        const actor = await createActor(transaction, suffix);
+        const repository = createPrismaAdminProviderQuickSetupRepository(
+          transactionBackedClient(transaction)
+        );
+        const initial = await repository.inspect({
+          ...actor,
+          now: new Date("2026-07-26T10:00:00.000Z"),
+          provider: "openai"
+        });
+        const credentialId = `quick-search-credential-${suffix}`;
+
+        await expect(repository.commit(plan({
+          actor,
+          credentialId,
+          credentialVersion: 1,
+          expectedFingerprint: initial.fingerprint,
+          grantId: `quick-search-model-grant-${suffix}`,
+          mode: "initial",
+          preservedModels: initial.preservedModels,
+          providerNeutralSearch: {
+            idPrefix: `quick-search-first-${suffix}`,
+            status: "available"
+          },
+          versionId: `quick-search-version-one-${suffix}`
+        }))).resolves.toMatchObject({
+          providerNeutralSearch: "ready",
+          status: "ready"
+        });
+
+        const integration = await transaction.searchStrategy.findUniqueOrThrow({
+          include: { activeRevision: true, revisions: true },
+          where: { strategyId: OPENAI_PROVIDER_SEARCH_STRATEGY_ID }
+        });
+        expect(integration).toMatchObject({
+          adapterKind: "provider_model_client",
+          credentialMode: "provider_model",
+          enabled: true,
+          kind: "provider_model_web_search",
+          providerModelId: terra.modelId
+        });
+        expect(integration.activeRevision).toMatchObject({
+          adapterKind: "provider_model_client",
+          credentialMode: "provider_model",
+          providerModelId: terra.modelId
+        });
+        expect(integration.revisions).toHaveLength(1);
+        expect(await transaction.accessGrant.findMany({
+          where: {
+            searchStrategy: OPENAI_PROVIDER_SEARCH_STRATEGY_ID,
+            userId: actor.userId
+          }
+        })).toEqual([expect.objectContaining({ enabled: true })]);
+
+        const ready = await repository.inspect({
+          ...actor,
+          now: new Date("2026-07-26T10:00:03.000Z"),
+          provider: "openai"
+        });
+        await expect(repository.commit(plan({
+          actor,
+          credentialId,
+          credentialIsNew: false,
+          credentialVersion: 2,
+          expectedFingerprint: ready.fingerprint,
+          grantId: `unused-search-model-grant-${suffix}`,
+          mode: "replacement",
+          preservedModels: ready.preservedModels,
+          providerNeutralSearch: {
+            idPrefix: `unused-search-replacement-${suffix}`,
+            status: "available"
+          },
+          versionId: `quick-search-version-two-${suffix}`
+        }))).resolves.toMatchObject({ providerNeutralSearch: "ready" });
+        expect(await transaction.searchIntegrationRevision.count({
+          where: { searchStrategyId: integration.id }
+        })).toBe(1);
+        expect(await transaction.accessGrant.count({
+          where: {
+            searchStrategy: OPENAI_PROVIDER_SEARCH_STRATEGY_ID,
+            userId: actor.userId
+          }
+        })).toBe(1);
+
+        const replacementReady = await repository.inspect({
+          ...actor,
+          now: new Date("2026-07-26T10:00:04.000Z"),
+          provider: "openai"
+        });
+        await expect(repository.commit(plan({
+          actor,
+          credentialId,
+          credentialIsNew: false,
+          credentialVersion: 3,
+          expectedFingerprint: replacementReady.fingerprint,
+          grantId: `unused-failed-search-model-grant-${suffix}`,
+          mode: "replacement",
+          preservedModels: replacementReady.preservedModels,
+          providerNeutralSearch: {
+            idPrefix: `unused-failed-search-${suffix}`,
+            status: "unavailable"
+          },
+          versionId: `quick-search-version-three-${suffix}`
+        }))).resolves.toMatchObject({
+          providerNeutralSearch: "needs_attention",
+          status: "ready"
+        });
+        expect(await transaction.searchStrategy.findUniqueOrThrow({
+          where: { id: integration.id }
+        })).toMatchObject({ enabled: false });
+        expect(await repository.inspect({
+          ...actor,
+          now: new Date("2026-07-26T10:00:05.000Z"),
+          provider: "openai"
+        })).toMatchObject({ state: "ready" });
+        expect(await transaction.providerCredentialVersion.count({
+          where: { credentialId }
+        })).toBe(3);
+
+        throw new RollbackFixture("provider_neutral_search_fixture_complete");
+      }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable })).rejects.toBeInstanceOf(
+        RollbackFixture
+      );
+    } finally {
+      await isolated.cleanup();
+    }
+  }, 30_000);
+
+  it("leaves a non-owned reserved Search row untouched while completing provider setup", async () => {
+    const isolated = await createIsolatedQuickSetupDatabase();
+    try {
+      await expect(isolated.client.$transaction(async (transaction) => {
+        await resetOpenAiToInitial(transaction);
+        const suffix = randomUUID();
+        const actor = await createActor(transaction, suffix);
+        const manual = await transaction.searchStrategy.create({
+          data: {
+            adapterKind: "provider_model_client",
+            config: {},
+            credentialMode: "provider_model",
+            description: "Query-only OpenAI web search for any tool-capable answer model.",
+            displayName: "OpenAI Search (provider-neutral)",
+            draft: {},
+            enabled: false,
+            id: `operator-search-${suffix}`,
+            kind: "provider_model_web_search",
+            modelId: terra.configuration.upstreamModelId,
+            provider: "openai",
+            providerModelId: terra.modelId,
+            strategyId: OPENAI_PROVIDER_SEARCH_STRATEGY_ID
+          }
+        });
+        const repository = createPrismaAdminProviderQuickSetupRepository(
+          transactionBackedClient(transaction)
+        );
+        const initial = await repository.inspect({
+          ...actor,
+          now: new Date("2026-07-26T10:00:00.000Z"),
+          provider: "openai"
+        });
+        await expect(repository.commit(plan({
+          actor,
+          credentialId: `manual-row-credential-${suffix}`,
+          credentialVersion: 1,
+          expectedFingerprint: initial.fingerprint,
+          grantId: `manual-row-model-grant-${suffix}`,
+          mode: "initial",
+          preservedModels: initial.preservedModels,
+          providerNeutralSearch: {
+            idPrefix: `must-not-write-search-${suffix}`,
+            status: "available"
+          },
+          versionId: `manual-row-version-${suffix}`
+        }))).resolves.toMatchObject({
+          providerNeutralSearch: "needs_attention",
+          status: "ready"
+        });
+        expect(await transaction.searchStrategy.findUniqueOrThrow({
+          where: { id: manual.id }
+        })).toEqual(manual);
+        expect(await transaction.accessGrant.count({
+          where: {
+            searchStrategy: OPENAI_PROVIDER_SEARCH_STRATEGY_ID,
+            userId: actor.userId
+          }
+        })).toBe(0);
+        expect(await repository.inspect({
+          ...actor,
+          now: new Date("2026-07-26T10:00:03.000Z"),
+          provider: "openai"
+        })).toMatchObject({ state: "ready" });
+        throw new RollbackFixture("manual_search_row_fixture_complete");
+      }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable })).rejects.toBeInstanceOf(
+        RollbackFixture
+      );
+    } finally {
+      await isolated.cleanup();
+    }
+  }, 30_000);
+
+  it("leaves a non-owned managed Search primary id untouched while completing provider setup", async () => {
+    const isolated = await createIsolatedQuickSetupDatabase();
+    try {
+      await expect(isolated.client.$transaction(async (transaction) => {
+        await resetOpenAiToInitial(transaction);
+        const suffix = randomUUID();
+        const actor = await createActor(transaction, suffix);
+        const manual = await transaction.searchStrategy.create({
+          data: {
+            adapterKind: "provider_model_client",
+            config: {},
+            credentialMode: "provider_model",
+            description: "Operator-owned Search integration.",
+            displayName: "Operator Search",
+            draft: {},
+            enabled: false,
+            id: OPENAI_PROVIDER_SEARCH_INTEGRATION_ID,
+            kind: "provider_model_web_search",
+            modelId: terra.configuration.upstreamModelId,
+            provider: "openai",
+            providerModelId: terra.modelId,
+            strategyId: `operator-search-${suffix}`
+          }
+        });
+        const repository = createPrismaAdminProviderQuickSetupRepository(
+          transactionBackedClient(transaction)
+        );
+        const initial = await repository.inspect({
+          ...actor,
+          now: new Date("2026-07-26T10:00:00.000Z"),
+          provider: "openai"
+        });
+        await expect(repository.commit(plan({
+          actor,
+          credentialId: `manual-id-credential-${suffix}`,
+          credentialVersion: 1,
+          expectedFingerprint: initial.fingerprint,
+          grantId: `manual-id-model-grant-${suffix}`,
+          mode: "initial",
+          preservedModels: initial.preservedModels,
+          providerNeutralSearch: {
+            idPrefix: `must-not-write-managed-id-${suffix}`,
+            status: "available"
+          },
+          versionId: `manual-id-version-${suffix}`
+        }))).resolves.toMatchObject({
+          providerNeutralSearch: "needs_attention",
+          status: "ready"
+        });
+        expect(await transaction.searchStrategy.findUniqueOrThrow({
+          where: { id: manual.id }
+        })).toEqual(manual);
+        expect(await transaction.searchStrategy.count({
+          where: { strategyId: OPENAI_PROVIDER_SEARCH_STRATEGY_ID }
+        })).toBe(0);
+        expect(await transaction.accessGrant.count({
+          where: {
+            searchStrategy: OPENAI_PROVIDER_SEARCH_STRATEGY_ID,
+            userId: actor.userId
+          }
+        })).toBe(0);
+        throw new RollbackFixture("manual_search_primary_id_fixture_complete");
+      }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable })).rejects.toBeInstanceOf(
+        RollbackFixture
+      );
+    } finally {
+      await isolated.cleanup();
+    }
+  }, 30_000);
 
   it("commits a catalog-visible personal graph without group writes and preserves it on replacement", async () => {
     const isolated = await createIsolatedQuickSetupDatabase();

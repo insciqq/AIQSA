@@ -10,6 +10,7 @@ import {
   FolderPlus,
   LoaderCircle,
   MoreHorizontal,
+  PanelLeftClose,
   Pencil,
   Plus,
   Search,
@@ -19,7 +20,16 @@ import {
   Trash2,
   X
 } from "lucide-react";
-import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+  memo,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+  type Ref
+} from "react";
 
 type LeftChatPaneProps = {
   activeChatId: string | null;
@@ -60,6 +70,7 @@ type LeftChatPaneProps = {
   onEditFolderNameChange(value: string): void;
   onExportChat(chat: ChatSummary): void;
   onFolderMenuToggle(folderId: string): void;
+  onHideWorkspace?(): void;
   onMoveChat(chatId: string, folderId: string | null): void;
   onMoveFolder(folder: FolderSummary, folderId: string | null): void;
   onNewFolderNameChange(value: string): void;
@@ -80,6 +91,7 @@ type LeftChatPaneProps = {
   workspaceError: string | null;
   workspaceLoading: boolean;
   workspaceReady: boolean;
+  workspaceToggleRef?: Ref<HTMLButtonElement>;
 };
 
 const focusRing =
@@ -213,6 +225,7 @@ function LeftChatPaneComponent({
   onEditFolderNameChange,
   onExportChat,
   onFolderMenuToggle,
+  onHideWorkspace,
   onMoveChat,
   onMoveFolder,
   onNewFolderNameChange,
@@ -232,7 +245,8 @@ function LeftChatPaneComponent({
   subfolderParentId,
   workspaceError,
   workspaceLoading,
-  workspaceReady
+  workspaceReady,
+  workspaceToggleRef
 }: LeftChatPaneProps) {
   const idPrefix = layout === "mobile" ? "mobile-" : "";
   const touchTarget =
@@ -487,16 +501,28 @@ function LeftChatPaneComponent({
       className={
         layout === "mobile"
           ? "flex h-full min-h-0 min-w-0 w-full flex-col overflow-hidden bg-workspace-rail text-ink"
-          : "hidden h-full min-h-0 min-w-0 w-full overflow-hidden border-r border-trace-subtle bg-workspace-rail text-ink lg:flex lg:flex-col"
+          : "hidden h-full min-h-0 min-w-0 w-full overflow-hidden border-r border-trace-subtle bg-workspace-rail text-ink min-[1281px]:flex min-[1281px]:flex-col"
       }
       data-testid={layout === "mobile" ? "left-chat-pane-mobile" : "left-chat-pane"}
     >
       {layout === "desktop" ? (
-        <div className="flex h-16 shrink-0 items-center px-4" data-testid="workspace-identity">
+        <div className="flex h-16 shrink-0 items-center justify-between gap-3 px-3" data-testid="workspace-identity">
           <div className="min-w-0">
             <p className="truncate text-sm font-semibold tracking-[-0.01em] text-ink">AIQSA</p>
             <p className="truncate text-xs text-ink-muted">Workspace</p>
           </div>
+          {onHideWorkspace ? (
+            <button
+              ref={workspaceToggleRef}
+              className={`grid size-9 shrink-0 place-items-center rounded-control text-ink-muted hover:bg-control-hover hover:text-ink [@media(hover:none)]:!size-11 [@media(pointer:coarse)]:!size-11 ${focusRing}`}
+              type="button"
+              aria-label="Hide workspace"
+              title="Hide workspace"
+              onClick={onHideWorkspace}
+            >
+              <PanelLeftClose className="size-4" aria-hidden="true" />
+            </button>
+          ) : null}
         </div>
       ) : null}
 
@@ -672,7 +698,7 @@ function LeftChatPaneComponent({
           >
             <p>Chats unavailable.</p>
             <button
-              className={`mt-2 inline-flex min-h-control-sm items-center rounded-control border border-critical/25 px-2.5 font-medium hover:bg-critical/10 lg:hidden ${focusRing}`}
+              className={`mt-2 inline-flex min-h-control-sm items-center rounded-control border border-critical/25 px-2.5 font-medium hover:bg-critical/10 min-[1281px]:hidden ${focusRing}`}
               onClick={onRetryWorkspace}
               type="button"
             >
@@ -1168,7 +1194,7 @@ function LeftChatPaneComponent({
                               className={`flex shrink-0 items-stretch transition-opacity duration-100 ${
                                 chatActionId === chat.id
                                   ? "opacity-100"
-                                  : "opacity-100 lg:opacity-0 lg:group-hover/chat:opacity-100 lg:group-focus-within/chat:opacity-100 [@media(hover:none)]:opacity-100 [@media(pointer:coarse)]:opacity-100"
+                                  : "opacity-100 min-[1281px]:opacity-0 min-[1281px]:group-hover/chat:opacity-100 min-[1281px]:group-focus-within/chat:opacity-100 [@media(hover:none)]:opacity-100 [@media(pointer:coarse)]:opacity-100"
                               }`}
                               data-testid="chat-row-actions"
                             >

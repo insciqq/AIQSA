@@ -402,4 +402,193 @@ describe("provider admission", () => {
     });
     expect(plan.requestedSearchPreferenceSource).toBe("personal");
   });
+
+  it.each([
+    {
+      adapterKind: "anthropic_messages" as const,
+      answerConnectionId: "connection-anthropic",
+      answerModelId: "deployment-opus",
+      apiRoot: "https://api.anthropic.com/v1",
+      family: "anthropic" as const,
+      upstreamModelId: "claude-opus-5"
+    },
+    {
+      adapterKind: "gemini_interactions_native" as const,
+      answerConnectionId: "connection-gemini",
+      answerModelId: "deployment-gemini",
+      apiRoot: "https://generativelanguage.googleapis.com/v1beta",
+      family: "gemini" as const,
+      upstreamModelId: "gemini-3.6-flash"
+    },
+    {
+      adapterKind: "openai_responses_native" as const,
+      answerConnectionId: "connection-openai-search",
+      answerModelId: "technical-openai-search",
+      apiRoot: "https://api.openai.com/v1",
+      family: "openai" as const,
+      upstreamModelId: "gpt-5.6-search"
+    }
+  ])(
+    "admits provider-neutral OpenAI Search for $adapterKind answers",
+    async ({
+      adapterKind,
+      answerConnectionId,
+      answerModelId,
+      apiRoot,
+      family,
+      upstreamModelId
+    }) => {
+      const searchModelId = "technical-openai-search";
+      const searchConnectionId = "connection-openai-search";
+      const capabilities = {
+        nativePdfInput: true,
+        nativeSearch: false,
+        pdf: true,
+        reasoning: true,
+        streaming: true,
+        toolCalling: true,
+        vision: true
+      };
+      const model = (id: string) => {
+        const searchCapable = id === searchModelId;
+        const technicalOnly = searchCapable && id !== answerModelId;
+        const connectionId = technicalOnly ? searchConnectionId : answerConnectionId;
+        return {
+          activeConfig: {
+            adapterKind: technicalOnly ? "openai_responses_native" : adapterKind,
+            answerSelectable: !technicalOnly,
+            capabilities: {
+              ...capabilities,
+              nativeSearch: searchCapable
+            },
+            defaultParams: {},
+            upstreamModelId: technicalOnly ? "gpt-5.6-search" : upstreamModelId
+          },
+          activeVersion: 1,
+          connection: {
+            activeConfig: {
+              allowPrivateNetwork: false,
+              apiRoot: technicalOnly ? "https://api.openai.com/v1" : apiRoot
+            },
+            activeVersion: 1,
+            defaultCredentialId: null,
+            displayName: technicalOnly ? "OpenAI Search" : "Answer provider",
+            enabled: true,
+            family: technicalOnly ? "openai" : family,
+            id: connectionId,
+            unassignedPolicy: "use_default"
+          },
+          connectionId,
+          contextWindow: 128_000,
+          displayName: technicalOnly ? "Search model" : "Answer model",
+          enabled: true,
+          id
+        };
+      };
+      const db = {
+        accessGrant: { count: vi.fn(async () => 0) },
+        providerCredential: {
+          findMany: vi.fn(async (args?: { where?: { connectionId?: string } }) => {
+            const connectionId = args?.where?.connectionId ?? "missing";
+            return [{
+              activeVersion: { id: `credential-version:${connectionId}`, revokedAt: null },
+              enabled: true,
+              id: `credential:${connectionId}`
+            }];
+          })
+        },
+        providerGroupCredentialAssignment: { findMany: vi.fn(async () => []) },
+        providerUserCredentialAssignment: {
+          findUnique: vi.fn(async (args?: {
+            where?: { connectionId_userId?: { connectionId?: string } };
+          }) => {
+            const connectionId = args?.where?.connectionId_userId?.connectionId ?? "missing";
+            return { credentialId: `credential:${connectionId}` };
+          })
+        },
+        providerModel: {
+          findFirst: vi.fn(async (args?: { where?: { id?: string } }) =>
+            model(args?.where?.id ?? answerModelId)),
+          findUnique: vi.fn(async () => ({
+            connectionId: answerModelId === searchModelId
+              ? answerConnectionId
+              : searchConnectionId
+          }))
+        },
+        providerModelCredentialCheck: { findFirst: vi.fn(async () => ({ id: "check-1" })) },
+        searchStrategy: {
+          findFirst: vi.fn(async () => ({
+            activeRevision: {
+              adapterKind: "provider_model_client",
+              configuration: {
+                adapterKind: "provider_model_client",
+                credentialMode: "provider_model",
+                maxResults: 8,
+                protocol: "openai_responses_web_search",
+                providerModelId: searchModelId,
+                queryMaxCharacters: 500,
+                timeoutMs: 15_000
+              },
+              credentialMode: "provider_model",
+              id: "revision-openai-search",
+              providerModelId: searchModelId
+            },
+            config: {},
+            displayName: "OpenAI Search (provider-neutral)",
+            enabled: true,
+            id: "integration-openai-search",
+            kind: "provider_model_web_search",
+            providerModelId: searchModelId,
+            strategyId: "openai-provider-web-search"
+          }))
+        },
+        user: { findFirst: vi.fn(async () => ({ id: "user-1" })) },
+        userGroup: {
+          findMany: vi.fn(async () => [{
+            group: { systemRole: "full_access" },
+            groupId: "full-access"
+          }])
+        }
+      };
+
+      const plan = await loadProviderAdmissionPlan(
+        db as unknown as Prisma.TransactionClient,
+        {
+          providerConnectionId: answerConnectionId,
+          providerModelId: answerModelId,
+          searchPlan: {
+            mode: "model_choice",
+            optionIds: ["openai-provider-web-search"]
+          },
+          searchStrategyId: "openai-provider-web-search",
+          userId: "user-1"
+        }
+      );
+
+      expect(plan.answer.snapshot).toMatchObject({
+        model: { adapterKind, upstreamModelId },
+        providerFamily: family
+      });
+      expect(plan.searches).toEqual([expect.objectContaining({
+        bindingKey: "search:openai-provider-web-search",
+        configuration: expect.objectContaining({
+          adapterKind: "provider_model_client",
+          credentialMode: "provider_model",
+          modelId: "gpt-5.6-search",
+          protocol: "openai_responses_web_search",
+          provider: "openai",
+          providerModelId: searchModelId
+        }),
+        integrationId: "integration-openai-search",
+        optionId: "openai-provider-web-search",
+        revisionId: "revision-openai-search",
+        role: expect.objectContaining({
+          snapshot: expect.objectContaining({
+            model: expect.objectContaining({ adapterKind: "openai_responses_native" }),
+            providerFamily: "openai"
+          })
+        })
+      })]);
+    }
+  );
 });

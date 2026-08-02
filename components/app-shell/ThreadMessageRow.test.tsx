@@ -448,6 +448,49 @@ describe("ThreadMessageRow", () => {
     expect(container.querySelector('article[data-role="assistant"]')).toHaveAttribute("aria-busy", "true");
   });
 
+  it("offers a visible answer retry that uses the existing regenerate action", () => {
+    const onRegenerateMessage = vi.fn();
+    renderRow({
+      message: assistantMessage({
+        content: "Provider timed out",
+        id: "failed-answer",
+        status: "error"
+      }),
+      onRegenerateMessage
+    });
+
+    const retry = screen.getByRole("button", { name: "Retry answer" });
+    expect(retry).toBeVisible();
+    expect(retry).toHaveAccessibleDescription("Answer: Provider timed out");
+
+    fireEvent.click(retry);
+
+    expect(onRegenerateMessage).toHaveBeenCalledTimes(1);
+    expect(onRegenerateMessage).toHaveBeenCalledWith("failed-answer");
+  });
+
+  it("disables answer retry while another response is streaming", () => {
+    const onRegenerateMessage = vi.fn();
+    renderRow({
+      message: assistantMessage({
+        content: "Provider timed out",
+        id: "failed-answer",
+        status: "error"
+      }),
+      onRegenerateMessage,
+      streaming: true
+    });
+
+    const retry = screen.getByRole("button", { name: "Retry answer" });
+    expect(retry).toBeDisabled();
+    expect(retry).toHaveAccessibleDescription(
+      /regenerating are unavailable while a response is streaming/u
+    );
+
+    fireEvent.click(retry);
+    expect(onRegenerateMessage).not.toHaveBeenCalled();
+  });
+
   it("distinguishes cancelled, failed, and empty complete answers after explicit detail disclosure", async () => {
     const { rerender } = renderRow({
       message: assistantMessage({ content: "Partial result", status: "cancelled" })

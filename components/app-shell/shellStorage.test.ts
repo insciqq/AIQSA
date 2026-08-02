@@ -2,15 +2,18 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   AIQSA_DETAILS_MODE_STORAGE_KEY,
   AIQSA_SESSION_EXPIRED_DRAFT_STORAGE_KEY,
+  AIQSA_WORKSPACE_RAIL_STORAGE_KEY,
   clearSessionExpiredDraft,
   rememberActiveChatId,
   rememberCollapsedFolderIds,
   rememberInspectorMode,
   rememberSessionExpiredDraft,
+  rememberWorkspaceRailHidden,
   storedActiveChatId,
   storedCollapsedFolderIds,
   storedInspectorMode,
-  storedSessionExpiredDraft
+  storedSessionExpiredDraft,
+  storedWorkspaceRailHidden
 } from "./shellStorage";
 
 describe("shell storage", () => {
@@ -42,6 +45,21 @@ describe("shell storage", () => {
       JSON.stringify(["folder-1", 2, null])
     );
     expect(storedCollapsedFolderIds()).toEqual(new Set(["folder-1"]));
+  });
+
+  it("persists the browser-local Workspace rail preference and fails visible", () => {
+    expect(storedWorkspaceRailHidden()).toBe(false);
+
+    rememberWorkspaceRailHidden(true);
+    expect(window.localStorage.getItem(AIQSA_WORKSPACE_RAIL_STORAGE_KEY)).toBe("hidden");
+    expect(storedWorkspaceRailHidden()).toBe(true);
+
+    rememberWorkspaceRailHidden(false);
+    expect(window.localStorage.getItem(AIQSA_WORKSPACE_RAIL_STORAGE_KEY)).toBe("visible");
+    expect(storedWorkspaceRailHidden()).toBe(false);
+
+    window.localStorage.setItem(AIQSA_WORKSPACE_RAIL_STORAGE_KEY, "invalid");
+    expect(storedWorkspaceRailHidden()).toBe(false);
   });
 });
 
