@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 
 const TARGET_MIGRATION = "20260729113000_search_control_plane";
 const PREFERENCE_MIGRATION = "20260731183000_inherited_search_preferences";
+const LOGICAL_OPTION_REPAIR_MIGRATION = "20260802185000_prepare_logical_search_route_collapse";
 const LOGICAL_OPTION_MIGRATION = "20260802190000_logical_search_options";
 const POSTGRES_SERVICE = "postgres";
 const POSTGRES_USER = "aiqsa";
@@ -90,6 +91,13 @@ function applyLogicalOptionMigration(): void {
     .sort();
   assert(migrations.some((migration) => migration === LOGICAL_OPTION_MIGRATION),
     "expected logical Search option migration");
+  assert(migrations.some((migration) => migration === LOGICAL_OPTION_REPAIR_MIGRATION),
+    "expected logical Search legacy-route repair migration");
+  assert(
+    migrations.indexOf(LOGICAL_OPTION_REPAIR_MIGRATION) <
+      migrations.indexOf(LOGICAL_OPTION_MIGRATION),
+    "legacy-route repair must run before logical Search option collapse"
+  );
   for (const migration of migrations) {
     requireSuccess(psql(migrationSql(migration)), `apply post-preference migration ${migration}`);
   }
@@ -322,6 +330,15 @@ try {
         CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
       ),
       (
+        'search-custom-single-model-secondary', 'search-custom-single', 'openai_compatible',
+        'custom-gpt-5.5', 'Custom GPT-5.5', 128000, true, true,
+        '{"adapterKind":"openai_responses_compatible","upstreamModelId":"custom-gpt-5.5","capabilities":{"nativeSearch":true},"defaultParams":{}}'::jsonb,
+        1,
+        '{"adapterKind":"openai_responses_compatible","upstreamModelId":"custom-gpt-5.5","capabilities":{"nativeSearch":true},"defaultParams":{}}'::jsonb,
+        1, CURRENT_TIMESTAMP, '{"nativeSearch":true}'::jsonb, '{}'::jsonb,
+        CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+      ),
+      (
         'search-custom-multiple-model-a', 'search-custom-multiple', 'openai_compatible',
         'custom-a', 'Custom A', 128000, true, true,
         '{"adapterKind":"openai_responses_compatible","upstreamModelId":"custom-a","capabilities":{"nativeSearch":true},"defaultParams":{}}'::jsonb,
@@ -422,7 +439,7 @@ try {
     SELECT
       'search-contract-custom-secondary', 'custom-secondary-web-search',
       'openai_compatible', model."modelId", model."id", 'Secondary custom Search',
-      'provider_model_web_search', 'Second physical route for one exact source', true,
+      'provider_model_web_search', 'Second physical route for one exact source', false,
       '{"sentinel":"secondary-provider-route"}'::jsonb, 'provider_model_client',
       'provider_model',
       jsonb_build_object(
@@ -438,7 +455,7 @@ try {
       '{"method":"contract","status":"available"}'::jsonb,
       CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
     FROM "ProviderModel" model
-    WHERE model."id" = 'search-custom-single-model';
+    WHERE model."id" = 'search-custom-single-model-secondary';
 
     INSERT INTO "SearchIntegrationRevision" (
       "id", "searchStrategyId", "revisionNumber", "adapterKind",
@@ -554,10 +571,16 @@ try {
     WHERE binding."id" = 'search-contract-secondary-run-binding';
   `);
   const logicalMigrationSql = migrationSql(LOGICAL_OPTION_MIGRATION);
+  const logicalRepairMigrationSql = migrationSql(LOGICAL_OPTION_REPAIR_MIGRATION);
   assert.doesNotMatch(
     logicalMigrationSql,
     /\b(?:INSERT\s+INTO|UPDATE)\s+"ProviderModel"\b/iu,
     "logical Search migration must not backfill or mutate ProviderModel"
+  );
+  assert.doesNotMatch(
+    logicalRepairMigrationSql,
+    /\b(?:INSERT\s+INTO|UPDATE)\s+"ProviderModel"\b/iu,
+    "logical Search legacy-route repair must not mutate ProviderModel"
   );
 
   requireSuccess(psql(`
@@ -617,11 +640,108 @@ try {
     /Logical Search option migration found ambiguous active physical routes/u
   );
   assert.equal(scalar(`SELECT to_regclass('public."SearchOption"') IS NULL;`), 't');
+
   requireSuccess(psql(`
     UPDATE "SearchStrategy"
-    SET "archivedAt" = CURRENT_TIMESTAMP, "enabled" = false
+    SET "enabled" = true, "updatedAt" = CURRENT_TIMESTAMP
     WHERE "id" = 'search-contract-custom-secondary';
-  `), "archive historical duplicate route before logical migration");
+  `), "make both exact-source legacy routes enabled");
+  const ambiguousRepair = psql(logicalRepairMigrationSql);
+  assert.notEqual(ambiguousRepair.status, 0,
+    "legacy-route repair must reject multiple enabled exact-source routes");
+  assert.match(
+    ambiguousRepair.stderr,
+    /Logical Search legacy route repair found multiple or missing enabled routes for one exact source/u
+  );
+  assert.equal(scalar(`
+    SELECT count(*)::text
+    FROM "SearchStrategy"
+    WHERE "id" IN (
+      'system-openai-provider-web-search',
+      'search-contract-custom-secondary'
+    ) AND "archivedAt" IS NULL;
+  `), '2');
+  requireSuccess(psql(`
+    UPDATE "SearchStrategy"
+    SET "enabled" = false, "updatedAt" = CURRENT_TIMESTAMP
+    WHERE "id" = 'search-contract-custom-secondary';
+  `), "restore the disabled legacy route fixture");
+
+  const strategyCountBeforeRepair = scalar(`
+    SELECT count(*)::text FROM "SearchStrategy";
+  `);
+  const enabledStrategyBeforeRepair = scalar(`
+    SELECT row_to_json(strategy)::text
+    FROM "SearchStrategy" strategy
+    WHERE strategy."id" = 'system-openai-provider-web-search';
+  `);
+  const disabledStrategyBeforeRepair = scalar(`
+    SELECT (to_jsonb(strategy) - 'archivedAt' - 'updatedAt')::text
+    FROM "SearchStrategy" strategy
+    WHERE strategy."id" = 'search-contract-custom-secondary';
+  `);
+  const revisionsBeforeRepair = scalar(`
+    SELECT jsonb_agg(to_jsonb(revision) ORDER BY revision."id")::text
+    FROM "SearchIntegrationRevision" revision
+    WHERE revision."id" IN (
+      'search-contract-openai-provider-revision',
+      'search-contract-custom-secondary-revision'
+    );
+  `);
+  const bindingsBeforeRepair = scalar(`
+    SELECT jsonb_agg(to_jsonb(binding) ORDER BY binding."id")::text
+    FROM "SearchRunBinding" binding
+    WHERE binding."id" IN (
+      'search-contract-provider-run-binding',
+      'search-contract-secondary-run-binding'
+    );
+  `);
+
+  requireSuccess(psql(logicalRepairMigrationSql),
+    "archive only the redundant disabled legacy route");
+  assert.equal(scalar(`SELECT count(*)::text FROM "SearchStrategy";`),
+    strategyCountBeforeRepair,
+    "legacy-route repair must preserve every physical strategy row");
+  assert.equal(scalar(`
+    SELECT row_to_json(strategy)::text
+    FROM "SearchStrategy" strategy
+    WHERE strategy."id" = 'system-openai-provider-web-search';
+  `), enabledStrategyBeforeRepair,
+  "legacy-route repair must leave the enabled route byte-for-field unchanged");
+  assert.equal(scalar(`
+    SELECT (to_jsonb(strategy) - 'archivedAt' - 'updatedAt')::text
+    FROM "SearchStrategy" strategy
+    WHERE strategy."id" = 'search-contract-custom-secondary';
+  `), disabledStrategyBeforeRepair,
+  "legacy-route repair may change only archivedAt and updatedAt on the disabled route");
+  assert.equal(scalar(`
+    SELECT concat_ws('|', "enabled", "archivedAt" IS NULL, "activeRevisionId")
+    FROM "SearchStrategy"
+    WHERE "id" = 'system-openai-provider-web-search';
+  `), 't|t|search-contract-openai-provider-revision');
+  assert.equal(scalar(`
+    SELECT concat_ws('|', "enabled", "archivedAt" IS NOT NULL, "activeRevisionId")
+    FROM "SearchStrategy"
+    WHERE "id" = 'search-contract-custom-secondary';
+  `), 'f|t|search-contract-custom-secondary-revision');
+  assert.equal(scalar(`
+    SELECT jsonb_agg(to_jsonb(revision) ORDER BY revision."id")::text
+    FROM "SearchIntegrationRevision" revision
+    WHERE revision."id" IN (
+      'search-contract-openai-provider-revision',
+      'search-contract-custom-secondary-revision'
+    );
+  `), revisionsBeforeRepair,
+  "legacy-route repair must preserve immutable revisions byte-for-field");
+  assert.equal(scalar(`
+    SELECT jsonb_agg(to_jsonb(binding) ORDER BY binding."id")::text
+    FROM "SearchRunBinding" binding
+    WHERE binding."id" IN (
+      'search-contract-provider-run-binding',
+      'search-contract-secondary-run-binding'
+    );
+  `), bindingsBeforeRepair,
+  "legacy-route repair must preserve historical physical bindings byte-for-field");
 
   applyLogicalOptionMigration();
 
@@ -731,6 +851,24 @@ try {
     WHERE binding."id" = 'search-contract-secondary-run-binding';
   `), secondaryBindingBeforeLogicalMigration,
   "logical parent collapse must leave historical physical bindings byte-for-field unchanged");
+  assert.equal(scalar(`
+    SELECT jsonb_agg(to_jsonb(binding) ORDER BY binding."id")::text
+    FROM "SearchRunBinding" binding
+    WHERE binding."id" IN (
+      'search-contract-provider-run-binding',
+      'search-contract-secondary-run-binding'
+    );
+  `), bindingsBeforeRepair,
+  "logical parent collapse must preserve both production-shaped historical bindings");
+  assert.equal(scalar(`
+    SELECT string_agg(concat_ws('|', revision."id", revision."searchStrategyId",
+      revision."providerModelId"), ',' ORDER BY revision."id")
+    FROM "SearchIntegrationRevision" revision
+    WHERE revision."id" IN (
+      'search-contract-openai-provider-revision',
+      'search-contract-custom-secondary-revision'
+    );
+  `), 'search-contract-custom-secondary-revision|search-contract-custom-secondary|search-custom-single-model-secondary,search-contract-openai-provider-revision|system-openai-provider-web-search|search-custom-single-model');
   assert.match(scalar(`
     SELECT indexdef FROM pg_indexes
     WHERE schemaname = 'public'
@@ -815,6 +953,18 @@ try {
       ON official_option."id" = official_route."searchOptionId"
     WHERE custom_route."id" = 'system-openai-provider-web-search';
   `), 'openai-provider-web-search|custom-web-search:search-custom-single|openai-search-client:00000000-0000-4000-8000-000000001102|openai-native-web-search');
+
+  const postLogicalRouteHash = scalar(`
+    SELECT md5(string_agg(row(strategy.*)::text, E'\\n' ORDER BY strategy."id"))
+    FROM "SearchStrategy" strategy;
+  `);
+  requireSuccess(psql(logicalRepairMigrationSql),
+    "repeat legacy-route repair after logical Search migration");
+  assert.equal(scalar(`
+    SELECT md5(string_agg(row(strategy.*)::text, E'\\n' ORDER BY strategy."id"))
+    FROM "SearchStrategy" strategy;
+  `), postLogicalRouteHash,
+  "legacy-route repair must no-op when logical Search options already exist");
 
   process.stdout.write("Search control-plane migration contract: OK\n");
 } finally {
