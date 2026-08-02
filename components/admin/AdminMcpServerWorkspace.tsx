@@ -851,6 +851,7 @@ export function AdminMcpServerWorkspace({
             const active = item.id === task;
             return (
               <button
+                aria-label={`${item.label} ${item.description}`}
                 className={`flex min-h-control w-full min-w-0 items-center gap-2 border-l-2 px-3 py-2 text-left ${active ? "border-proof bg-answer-paper text-ink" : "border-transparent text-ink-secondary hover:bg-control-hover hover:text-ink"}`}
                 key={item.id}
                 onClick={() => openTask(item.id)}

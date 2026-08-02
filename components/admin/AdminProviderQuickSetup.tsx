@@ -603,6 +603,7 @@ export function AdminProviderQuickSetup({
                   const selected = controller.state.selectedProviderId === provider.provider;
                   return (
                     <button
+                      aria-label={`${provider.providerDisplayName} ${stateLabel(provider)}`}
                       className={`min-w-0 bg-answer-paper px-2 py-3 text-left sm:px-4 sm:py-4 ${focusRing} ${touchTarget} ${
                         selected ? "bg-proof/10 text-proof" : "text-ink hover:bg-control-hover"
                       }`}
@@ -637,6 +638,9 @@ export function AdminProviderQuickSetup({
                   );
                 })}
                 <button
+                  aria-label={`Custom ${
+                    customConnectionCount ? `${customConnectionCount} configured` : "OpenAI-compatible"
+                  }`}
                   className={`min-w-0 bg-answer-paper px-2 py-3 text-left text-ink hover:bg-control-hover sm:px-4 sm:py-4 ${focusRing} ${touchTarget}`}
                   disabled={controller.state.formLocked}
                   onClick={onOpenCustom}

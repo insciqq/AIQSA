@@ -1,7 +1,7 @@
 import type {
   FactualRunReceipt,
   RunReceiptSegmentKind
-} from "@/components/app-shell/runReceipt";
+} from "@/components/app-shell/runReceiptModel";
 import { memo } from "react";
 
 const statusClass: Record<FactualRunReceipt["status"], string> = {
@@ -49,6 +49,7 @@ function RunReceiptComponent({
       <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
         {actionableSegments.has("status") ? (
           <button
+            aria-label={`Run ${receipt.statusLabel}`}
             className="-mx-1 inline-flex min-h-7 items-center gap-1.5 rounded-control px-1 font-medium outline-none hover:bg-control-hover hover:text-ink focus-visible:ring-2 focus-visible:ring-proof/45 [@media(hover:none)]:min-h-touch [@media(pointer:coarse)]:min-h-touch"
             data-run-segment="status"
             type="button"

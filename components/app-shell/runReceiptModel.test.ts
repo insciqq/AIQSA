@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ThreadArtifactSummary } from "./types";
-import { deriveRunReceipt } from "./runReceipt";
+import { deriveRunReceipt } from "./runReceiptModel";
 
 function summary(overrides: Partial<ThreadArtifactSummary> = {}): ThreadArtifactSummary {
   return {

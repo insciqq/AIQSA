@@ -607,7 +607,7 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
           />
           <div
             ref={mobileWorkspaceDialogRef}
-            className={`pop-enter fixed bottom-[max(0.5rem,env(safe-area-inset-bottom))] left-[max(0.5rem,env(safe-area-inset-left))] top-[max(0.5rem,env(safe-area-inset-top))] flex flex-col overflow-hidden rounded-panel border border-trace-subtle bg-workspace-rail shadow-overlay min-[1281px]:hidden ${
+            className={`pop-enter fixed bottom-[max(0.5rem,env(safe-area-inset-bottom))] left-[max(0.5rem,env(safe-area-inset-left))] top-[max(0.5rem,env(safe-area-inset-top))] flex w-[min(22rem,calc(100vw_-_1rem_-_env(safe-area-inset-left)_-_env(safe-area-inset-right)))] flex-col overflow-hidden rounded-panel border border-trace-subtle bg-workspace-rail shadow-overlay min-[1281px]:hidden ${
               mobileAccountMenuOpen ? "z-[80]" : "z-50"
             }`}
             data-testid="workspace-pane-mobile"
@@ -616,10 +616,6 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
             aria-hidden={workspaceChildDialogOpen || undefined}
             aria-labelledby="workspace-pane-mobile-heading"
             inert={workspaceChildDialogOpen || undefined}
-            style={{
-              width:
-                "min(22rem, calc(100vw - 1rem - env(safe-area-inset-left) - env(safe-area-inset-right)))"
-            }}
           >
             <div className="flex min-h-touch shrink-0 items-center justify-between gap-3 border-b border-trace-subtle px-3">
               <h2 className="text-sm font-semibold text-ink" id="workspace-pane-mobile-heading">
