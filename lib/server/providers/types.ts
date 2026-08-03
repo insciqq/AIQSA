@@ -3,6 +3,7 @@ import type { ContextTruncationSummary } from "../../domain/contextBudget";
 import type { SearchRunParamControls } from "../../domain/runParams";
 import type { ModelToolCall, RunTool } from "../tools/types";
 import type { McpRunPlanSnapshot } from "../mcp/runPlan";
+import type { SearchSource } from "../search/evidence";
 import type {
   SearchAdapterKind,
   SearchCredentialMode,
@@ -92,7 +93,7 @@ export type NormalizedRunRequest = {
   searchStrategy: string | null;
 };
 
-export type OpenAIResponsesSearchReasoningPolicy =
+export type ProviderSearchReasoningPolicy =
   | "lowest_supported"
   | "provider_default";
 
@@ -109,8 +110,16 @@ export type ProviderSearchPolicy =
       modelCapabilities: ProviderModelCapabilities;
       modelId: string;
       provider: "openai" | "openai_compatible";
-      reasoningPolicy: OpenAIResponsesSearchReasoningPolicy;
+      reasoningPolicy: ProviderSearchReasoningPolicy;
       strategyId: "openai-responses-web-search";
+    }>
+  | Readonly<{
+      maxOutputTokens: number;
+      modelCapabilities: ProviderModelCapabilities;
+      modelId: string;
+      provider: "gemini";
+      reasoningPolicy: ProviderSearchReasoningPolicy;
+      strategyId: "gemini-google-search";
     }>;
 
 export type ProviderConversationMessage = {
@@ -168,9 +177,10 @@ export type ProviderSearchRequest = Readonly<{
 export type ProviderSearchResult = {
   artifacts: ModelRunSseEvent[];
   finalProviderResponsePreview: Record<string, unknown>;
-  finalText: string;
+  findings: string;
   providerResponseId?: string;
   requestPreview: Record<string, unknown>;
+  sources: readonly SearchSource[];
   usage: ModelRunUsage;
 };
 

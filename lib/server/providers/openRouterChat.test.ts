@@ -507,8 +507,9 @@ describe("OpenRouter Chat facade", () => {
     });
     expect(options?.signal).toBe(controller.signal);
     expect(realResult).toMatchObject({
-      finalText: "Search answer [1]",
+      findings: "Search answer [1]",
       providerResponseId: "or-search-1",
+      sources: [{ url: "https://example.com/source" }],
       usage: { inputTokens: 11, outputTokens: 5, totalTokens: 16 }
     });
     expect(realResult.artifacts).toContainEqual(
@@ -525,7 +526,7 @@ describe("OpenRouter Chat facade", () => {
     const fakeResult = await fake.search(search);
 
     expect(fakeResult).toMatchObject({
-      finalText: expect.stringContaining("Fake Perplexity search findings"),
+      findings: expect.stringContaining("Fake Perplexity search findings"),
       providerResponseId: "fake-openrouter-search-1"
     });
     expect(

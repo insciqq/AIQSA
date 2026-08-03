@@ -3,6 +3,8 @@ import { Prisma, type PrismaClient } from "@prisma/client";
 import type { RunProfileId } from "../../../contracts/runProfiles";
 import { defaultProviderModels } from "../../../domain/catalog";
 import {
+  GEMINI_PROVIDER_SEARCH_INTEGRATION_ID,
+  GEMINI_PROVIDER_SEARCH_STRATEGY_ID,
   OPENAI_PROVIDER_SEARCH_INTEGRATION_ID,
   OPENAI_PROVIDER_SEARCH_STRATEGY_ID
 } from "../../../domain/search";
@@ -77,6 +79,59 @@ const OPENAI_PROVIDER_SEARCH_DESCRIPTION =
   "Web search provided by OpenAI.";
 const OPENAI_PROVIDER_SEARCH_FALLBACK_ID =
   `openai-search-client:${adminProviderQuickSetupPolicy("openai").connection.id}`;
+
+type QuickSetupSearchSpec = Readonly<{
+  clientKind: "gemini_google_search" | "provider_model_web_search";
+  description: string;
+  displayName: string;
+  fallbackId: string;
+  integrationId: string;
+  optionDatabaseId: string;
+  optionId: string;
+  optionKind: "gemini_google_search" | "web_search";
+  optionTemplateKey: string;
+  protocol: "gemini_google_search" | "openai_responses_web_search";
+  provider: "gemini" | "openai";
+  strategyId: string;
+}>;
+
+function quickSetupSearchSpec(
+  provider: AdminProviderQuickSetupCommitPlan["provider"]
+): QuickSetupSearchSpec | null {
+  if (provider === "openai") {
+    return {
+      clientKind: "provider_model_web_search",
+      description: OPENAI_PROVIDER_SEARCH_DESCRIPTION,
+      displayName: OPENAI_PROVIDER_SEARCH_DISPLAY_NAME,
+      fallbackId: OPENAI_PROVIDER_SEARCH_FALLBACK_ID,
+      integrationId: OPENAI_PROVIDER_SEARCH_INTEGRATION_ID,
+      optionDatabaseId: OPENAI_SEARCH_OPTION_DATABASE_ID,
+      optionId: OPENAI_SEARCH_OPTION_ID,
+      optionKind: "web_search",
+      optionTemplateKey: OPENAI_SEARCH_OPTION_TEMPLATE_KEY,
+      protocol: "openai_responses_web_search",
+      provider: "openai",
+      strategyId: OPENAI_PROVIDER_SEARCH_STRATEGY_ID
+    };
+  }
+  if (provider === "gemini") {
+    return {
+      clientKind: "gemini_google_search",
+      description: "Google Search grounding for eligible Gemini models.",
+      displayName: "Google Search",
+      fallbackId: `gemini-search-client:${adminProviderQuickSetupPolicy("gemini").connection.id}`,
+      integrationId: GEMINI_PROVIDER_SEARCH_INTEGRATION_ID,
+      optionDatabaseId: "00000000-0000-4000-8000-000000001403",
+      optionId: "gemini-google-search",
+      optionKind: "gemini_google_search",
+      optionTemplateKey: "search:gemini-google",
+      protocol: "gemini_google_search",
+      provider: "gemini",
+      strategyId: GEMINI_PROVIDER_SEARCH_STRATEGY_ID
+    };
+  }
+  return null;
+}
 
 function isSerializationConflict(error: Prisma.PrismaClientKnownRequestError): boolean {
   return error.code === "P2034" || (
@@ -728,30 +783,31 @@ export async function lockAdminProviderQuickSetupState(
   plan: AdminProviderQuickSetupCommitPlan | AdminProviderQuickSetupClearPlan
 ): Promise<void> {
   const policy = adminProviderQuickSetupPolicy(plan.provider);
+  const searchSpec = quickSetupSearchSpec(plan.provider);
   await tx.$queryRaw(Prisma.sql`
     SELECT "id" FROM "User" WHERE "id" = ${plan.actor.userId} FOR UPDATE
   `);
-  if (plan.provider === "openai") {
+  if (searchSpec) {
     await tx.$queryRaw(Prisma.sql`
       SELECT "id" FROM "SearchOption"
-      WHERE "optionId" = ${OPENAI_SEARCH_OPTION_ID}
-         OR "id" = ${OPENAI_SEARCH_OPTION_DATABASE_ID}
+      WHERE "optionId" = ${searchSpec.optionId}
+         OR "id" = ${searchSpec.optionDatabaseId}
       ORDER BY "id"
       FOR UPDATE
     `);
     await tx.$queryRaw(Prisma.sql`
       SELECT "id" FROM "SearchStrategy"
-      WHERE "strategyId" = ${OPENAI_PROVIDER_SEARCH_STRATEGY_ID}
-         OR "id" = ${OPENAI_PROVIDER_SEARCH_INTEGRATION_ID}
-         OR "strategyId" = ${OPENAI_PROVIDER_SEARCH_FALLBACK_ID}
-         OR "id" = ${OPENAI_PROVIDER_SEARCH_FALLBACK_ID}
+      WHERE "strategyId" = ${searchSpec.strategyId}
+         OR "id" = ${searchSpec.integrationId}
+         OR "strategyId" = ${searchSpec.fallbackId}
+         OR "id" = ${searchSpec.fallbackId}
       ORDER BY "id"
       FOR UPDATE
     `);
     await tx.$queryRaw(Prisma.sql`
       SELECT revision."id" FROM "SearchIntegrationRevision" AS revision
       JOIN "SearchStrategy" AS strategy ON strategy."id" = revision."searchStrategyId"
-      WHERE strategy."strategyId" = ${OPENAI_PROVIDER_SEARCH_STRATEGY_ID}
+      WHERE strategy."strategyId" = ${searchSpec.strategyId}
       ORDER BY revision."revisionNumber", revision."id"
       FOR UPDATE OF revision
     `);
@@ -827,6 +883,8 @@ export async function lockAdminProviderQuickSetupState(
        )
        OR (${plan.provider === "openai"} AND
          grant_row."searchStrategy" = ${OPENAI_SEARCH_OPTION_ID})
+       OR (${plan.provider === "gemini"} AND
+         grant_row."searchStrategy" = 'gemini-google-search')
     ORDER BY grant_row."id" FOR UPDATE OF grant_row
   `);
   if ("mode" in plan && plan.mode === "initial") {
@@ -843,93 +901,99 @@ export async function lockAdminProviderQuickSetupState(
   }
 }
 
-async function synchronizeOpenAISearch(
+async function synchronizeQuickSetupSearch(
   tx: Prisma.TransactionClient,
   plan: AdminProviderQuickSetupCommitPlan
 ): Promise<"needs_attention" | "ready" | null> {
   const search = plan.search;
   if (!search) return null;
+  const spec = quickSetupSearchSpec(plan.provider);
   if (
-    plan.provider !== "openai" ||
+    !spec ||
     search.draft.adapterKind !== "provider_model_client" ||
     search.draft.credentialMode !== "provider_model" ||
-    search.draft.protocol !== "openai_responses_web_search" ||
+    search.draft.protocol !== spec.protocol ||
     search.draft.providerModelId !== plan.candidate.modelId ||
     search.evidence.method !== "configuration" ||
-    search.evidence.protocol !== "openai_responses_web_search" ||
+    search.evidence.protocol !== spec.protocol ||
     search.evidence.status !== "available" ||
     search.evidence.normalizedSourceCount !== 0 ||
-    search.integrationId !== OPENAI_PROVIDER_SEARCH_INTEGRATION_ID
+    search.integrationId !== spec.integrationId
   ) {
     return "needs_attention";
   }
+  const sourceConnectionId = adminProviderQuickSetupPolicy(spec.provider).connection.id;
   const storedEvidence = search.evidence;
   const validationFingerprint = searchValidationFingerprint(storedEvidence);
 
   const optionOwner = await tx.searchOption.findUnique({
-    where: { optionId: OPENAI_SEARCH_OPTION_ID }
+    where: { optionId: spec.optionId }
   });
-  const optionIdOwner = optionOwner?.id === OPENAI_SEARCH_OPTION_DATABASE_ID
+  const optionIdOwner = optionOwner?.id === spec.optionDatabaseId
     ? optionOwner
     : await tx.searchOption.findUnique({
-        where: { id: OPENAI_SEARCH_OPTION_DATABASE_ID }
+        where: { id: spec.optionDatabaseId }
       });
   if (
-    (optionOwner && optionOwner.id !== OPENAI_SEARCH_OPTION_DATABASE_ID) ||
-    (optionIdOwner && optionIdOwner.optionId !== OPENAI_SEARCH_OPTION_ID)
+    (optionOwner && optionOwner.id !== spec.optionDatabaseId) ||
+    (optionIdOwner && optionIdOwner.optionId !== spec.optionId)
   ) {
     return "needs_attention";
   }
   const currentOption = optionOwner ?? optionIdOwner;
   if (currentOption && (
-    currentOption.kind !== "web_search" ||
-    currentOption.templateKey !== OPENAI_SEARCH_OPTION_TEMPLATE_KEY
+    currentOption.kind !== spec.optionKind ||
+    currentOption.templateKey !== spec.optionTemplateKey ||
+    currentOption.sourceConnectionId !== sourceConnectionId
   )) {
     return "needs_attention";
   }
   const option = currentOption ?? await tx.searchOption.create({
     data: {
-      description: OPENAI_PROVIDER_SEARCH_DESCRIPTION,
-      displayName: OPENAI_PROVIDER_SEARCH_DISPLAY_NAME,
+      description: spec.description,
+      displayName: spec.displayName,
       enabled: true,
-      id: OPENAI_SEARCH_OPTION_DATABASE_ID,
-      kind: "web_search",
-      optionId: OPENAI_SEARCH_OPTION_ID,
-      sourceConnectionId: adminProviderQuickSetupPolicy("openai").connection.id,
-      templateKey: OPENAI_SEARCH_OPTION_TEMPLATE_KEY
+      id: spec.optionDatabaseId,
+      kind: spec.optionKind,
+      optionId: spec.optionId,
+      sourceConnectionId,
+      templateKey: spec.optionTemplateKey
     }
   });
   await tx.searchOption.update({
     data: {
       archivedAt: null,
-      description: OPENAI_PROVIDER_SEARCH_DESCRIPTION,
-      displayName: OPENAI_PROVIDER_SEARCH_DISPLAY_NAME,
+      description: spec.description,
+      displayName: spec.displayName,
       enabled: true,
-      sourceConnectionId: adminProviderQuickSetupPolicy("openai").connection.id
+      sourceConnectionId
     },
     where: { id: option.id }
   });
 
   const hosted = await tx.searchStrategy.findUnique({
-    where: { strategyId: OPENAI_SEARCH_OPTION_ID }
+    where: { strategyId: spec.optionId }
   });
   if (hosted) {
     if (
       hosted.archivedAt !== null ||
       hosted.adapterKind !== "answer_provider_hosted" ||
       hosted.credentialMode !== "answer_provider" ||
-      hosted.kind !== "openai_native_web_search"
+      hosted.provider !== spec.provider ||
+      hosted.providerModelId !== null ||
+      hosted.searchOptionId !== option.id ||
+      hosted.kind !== (spec.provider === "gemini"
+        ? "gemini_google_search"
+        : "openai_native_web_search")
     ) {
       return "needs_attention";
     }
-    if (hosted.searchOptionId !== option.id ||
-      hosted.displayName !== OPENAI_PROVIDER_SEARCH_DISPLAY_NAME ||
-      hosted.description !== OPENAI_PROVIDER_SEARCH_DESCRIPTION) {
+    if (hosted.displayName !== spec.displayName ||
+      hosted.description !== spec.description) {
       await tx.searchStrategy.update({
         data: {
-          description: OPENAI_PROVIDER_SEARCH_DESCRIPTION,
-          displayName: OPENAI_PROVIDER_SEARCH_DISPLAY_NAME,
-          searchOptionId: option.id
+          description: spec.description,
+          displayName: spec.displayName
         },
         where: { id: hosted.id }
       });
@@ -938,32 +1002,32 @@ async function synchronizeOpenAISearch(
 
   const strategyOwner = await tx.searchStrategy.findUnique({
     include: { activeRevision: true },
-    where: { strategyId: OPENAI_PROVIDER_SEARCH_STRATEGY_ID }
+    where: { strategyId: spec.strategyId }
   });
-  const idOwner = strategyOwner?.id === OPENAI_PROVIDER_SEARCH_INTEGRATION_ID
+  const idOwner = strategyOwner?.id === spec.integrationId
     ? strategyOwner
     : await tx.searchStrategy.findUnique({
         include: { activeRevision: true },
-        where: { id: OPENAI_PROVIDER_SEARCH_INTEGRATION_ID }
+        where: { id: spec.integrationId }
       });
-  const preferredOwned = strategyOwner?.id === OPENAI_PROVIDER_SEARCH_INTEGRATION_ID &&
-    idOwner?.strategyId === OPENAI_PROVIDER_SEARCH_STRATEGY_ID &&
+  const preferredOwned = strategyOwner?.id === spec.integrationId &&
+    idOwner?.strategyId === spec.strategyId &&
     strategyOwner.searchOptionId === option.id
     ? strategyOwner
     : null;
   const preferredFree = !strategyOwner && !idOwner;
   const fallbackStrategyOwner = await tx.searchStrategy.findUnique({
     include: { activeRevision: true },
-    where: { strategyId: OPENAI_PROVIDER_SEARCH_FALLBACK_ID }
+    where: { strategyId: spec.fallbackId }
   });
-  const fallbackIdOwner = fallbackStrategyOwner?.id === OPENAI_PROVIDER_SEARCH_FALLBACK_ID
+  const fallbackIdOwner = fallbackStrategyOwner?.id === spec.fallbackId
     ? fallbackStrategyOwner
     : await tx.searchStrategy.findUnique({
         include: { activeRevision: true },
-        where: { id: OPENAI_PROVIDER_SEARCH_FALLBACK_ID }
+        where: { id: spec.fallbackId }
       });
-  const fallbackOwned = fallbackStrategyOwner?.id === OPENAI_PROVIDER_SEARCH_FALLBACK_ID &&
-    fallbackIdOwner?.strategyId === OPENAI_PROVIDER_SEARCH_FALLBACK_ID &&
+  const fallbackOwned = fallbackStrategyOwner?.id === spec.fallbackId &&
+    fallbackIdOwner?.strategyId === spec.fallbackId &&
     fallbackStrategyOwner.searchOptionId === option.id
     ? fallbackStrategyOwner
     : null;
@@ -993,20 +1057,20 @@ async function synchronizeOpenAISearch(
   const current = currentPreferred ?? currentFallback;
   const routeIdentity = usePreferred
     ? {
-        id: OPENAI_PROVIDER_SEARCH_INTEGRATION_ID,
-        strategyId: OPENAI_PROVIDER_SEARCH_STRATEGY_ID
+        id: spec.integrationId,
+        strategyId: spec.strategyId
       }
     : {
-        id: OPENAI_PROVIDER_SEARCH_FALLBACK_ID,
-        strategyId: OPENAI_PROVIDER_SEARCH_FALLBACK_ID
+        id: spec.fallbackId,
+        strategyId: spec.fallbackId
       };
   if (current && (
     current.archivedAt !== null ||
     current.searchOptionId !== option.id ||
-    current.kind !== "provider_model_web_search" ||
+    current.kind !== spec.clientKind ||
     current.adapterKind !== "provider_model_client" ||
     current.credentialMode !== "provider_model" ||
-    current.provider !== "openai"
+    current.provider !== spec.provider
   )) {
     return "needs_attention";
   }
@@ -1016,15 +1080,15 @@ async function synchronizeOpenAISearch(
       adapterKind: search.draft.adapterKind,
       config: json({}),
       credentialMode: search.draft.credentialMode,
-      description: OPENAI_PROVIDER_SEARCH_DESCRIPTION,
-      displayName: OPENAI_PROVIDER_SEARCH_DISPLAY_NAME,
+      description: spec.description,
+      displayName: spec.displayName,
       draft: json(search.draft),
       draftTestEvidence: json(storedEvidence),
       enabled: false,
       id: routeIdentity.id,
-      kind: "provider_model_web_search",
+      kind: spec.clientKind,
       modelId: plan.candidate.configuration.upstreamModelId,
-      provider: "openai",
+      provider: spec.provider,
       providerModelId: plan.candidate.modelId,
       searchOptionId: option.id,
       strategyId: routeIdentity.strategyId,
@@ -1036,8 +1100,8 @@ async function synchronizeOpenAISearch(
     data: {
       draft: json(search.draft),
       draftTestEvidence: json(storedEvidence),
-      description: OPENAI_PROVIDER_SEARCH_DESCRIPTION,
-      displayName: OPENAI_PROVIDER_SEARCH_DISPLAY_NAME,
+      description: spec.description,
+      displayName: spec.displayName,
       ...(current && !sameJson(current.draft, search.draft)
         ? { draftVersion: { increment: 1 } }
         : {}),
@@ -1048,9 +1112,9 @@ async function synchronizeOpenAISearch(
         : {
             adapterKind: search.draft.adapterKind,
             credentialMode: search.draft.credentialMode,
-            kind: "provider_model_web_search",
+            kind: spec.clientKind,
             modelId: plan.candidate.configuration.upstreamModelId,
-            provider: "openai",
+            provider: spec.provider,
             providerModelId: plan.candidate.modelId
           }),
       testedDraftHash: search.draftHash
@@ -1064,7 +1128,7 @@ async function synchronizeOpenAISearch(
       groupId: null,
       providerConnectionId: null,
       providerModelId: null,
-      searchStrategy: OPENAI_SEARCH_OPTION_ID,
+      searchStrategy: spec.optionId,
       userId: plan.actor.userId
     }
   });
@@ -1083,7 +1147,7 @@ async function synchronizeOpenAISearch(
         id: search.grantId,
         providerConnectionId: null,
         providerModelId: null,
-        searchStrategy: OPENAI_SEARCH_OPTION_ID,
+        searchStrategy: spec.optionId,
         userId: plan.actor.userId
       }
     });
@@ -1126,9 +1190,9 @@ async function synchronizeOpenAISearch(
       config: json(search.draft),
       credentialMode: search.draft.credentialMode,
       enabled: true,
-      kind: "provider_model_web_search",
+      kind: spec.clientKind,
       modelId: plan.candidate.configuration.upstreamModelId,
-      provider: "openai",
+      provider: spec.provider,
       providerModelId: plan.candidate.modelId
     },
     where: { id: stored.id }
@@ -1522,7 +1586,7 @@ async function applyQuickSetupPlan(
     }
   }
 
-  const search = await synchronizeOpenAISearch(tx, plan);
+  const search = await synchronizeQuickSetupSearch(tx, plan);
 
   const eligibleModelIds = await eligibleProviderModelIds(tx, plan.actor.userId, exposeFake);
   if ([...candidateModelIds, ...plan.preservedModels.map(({ id }) => id)].every(

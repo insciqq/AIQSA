@@ -1,3 +1,4 @@
+import type { ProviderRunRequest } from "../providers/types";
 import {
   invalidProviderToolArguments,
   type ModelToolCall,
@@ -50,6 +51,17 @@ function toolResultText(result: ToolExecutionResult): string {
 function suppliedProviderMessages(value: unknown): unknown[] | null {
   if (Array.isArray(value)) return [...value];
   return value === undefined ? null : [value];
+}
+
+function usesHostedSearchRoute(
+  request: ProviderRunRequest,
+  protocol: "gemini_google_search" | "openai_responses_web_search",
+  legacyStrategyId: string
+): boolean {
+  return request.searchPlan
+    ? request.searchPlan.options.some((option) =>
+        option.adapterKind === "answer_provider_hosted" && option.protocol === protocol)
+    : request.searchStrategy === legacyStrategyId;
 }
 
 function openAIFunctionTool(tool: RunTool): SerializedProviderTool {
@@ -147,7 +159,11 @@ export const openAIResponsesToolBridge: ProviderToolBridge = {
     );
   },
   serializeHostedTools(request) {
-    return request.searchStrategy === "openai-native-web-search"
+    return usesHostedSearchRoute(
+      request,
+      "openai_responses_web_search",
+      "openai-native-web-search"
+    )
       ? [{ type: "web_search" }]
       : [];
   },
@@ -290,7 +306,11 @@ export const geminiInteractionsToolBridge: ProviderToolBridge = {
     );
   },
   serializeHostedTools(request) {
-    return request.searchStrategy === "gemini-google-search"
+    return usesHostedSearchRoute(
+      request,
+      "gemini_google_search",
+      "gemini-google-search"
+    )
       ? [{ type: "google_search" }]
       : [];
   },

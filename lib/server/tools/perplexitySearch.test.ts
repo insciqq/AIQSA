@@ -74,8 +74,9 @@ describe("legacy Perplexity tool executor privacy boundary", () => {
       return {
         artifacts: [],
         finalProviderResponsePreview: {},
-        finalText: "Search findings",
+        findings: "Search findings",
         requestPreview: { queryCharacters: request.query.length },
+        sources: [],
         usage: { inputTokens: 1, outputTokens: 2, reasoningTokens: 0, totalTokens: 3 }
       };
     });

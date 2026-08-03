@@ -15,6 +15,11 @@ import {
 } from "./openaiResponsesResponse";
 import type { OpenAIResponsesClient } from "./openaiResponsesTransport";
 import {
+  normalizeSearchFindings,
+  normalizeSearchSources,
+  searchSourcesFromCitationArtifacts
+} from "../search/evidence";
+import {
   ProviderSearchExecutionError,
   type ProviderModelCapabilities,
   type ProviderSearchAdapter,
@@ -249,6 +254,16 @@ function safeSearchArtifacts(
   return artifacts;
 }
 
+function safeActionSources(response: Readonly<Record<string, unknown>>) {
+  const output = Array.isArray(response.output) ? response.output : [];
+  return normalizeSearchSources(output.flatMap((item) =>
+    isRecord(item) && item.type === "web_search_call" && isRecord(item.action) &&
+      Array.isArray(item.action.sources)
+      ? item.action.sources
+      : []
+  ), 20);
+}
+
 function incompleteReason(response: Readonly<Record<string, unknown>>): string | undefined {
   if (openAIResponseStatus(response) !== "incomplete" || !isRecord(response.incomplete_details)) {
     return undefined;
@@ -316,16 +331,32 @@ export function createOpenAIResponsesSearchAdapter(
         providerResponseId,
         normalizedProviderLabel(options.provider)
       );
+      const artifacts = [
+        ...safeSearchArtifacts(response, options.provider),
+        ...completed.events.filter((event) =>
+          event.type === "artifact" && event.data.artifactType !== "search"
+        )
+      ];
+      let findings: string;
+      try {
+        findings = normalizeSearchFindings(completed.result.finalText);
+      } catch {
+        throw new ProviderSearchExecutionError({
+          artifacts,
+          code: "openai_search_findings_invalid",
+          usage: completed.result.usage
+        });
+      }
       return {
-        artifacts: [
-          ...safeSearchArtifacts(response, options.provider),
-          ...completed.events.filter((event) =>
-            event.type === "artifact" && event.data.artifactType !== "search")
-        ],
+        artifacts,
         finalProviderResponsePreview: completed.result.finalProviderResponsePreview,
-        finalText: completed.result.finalText,
+        findings,
         ...(providerResponseId ? { providerResponseId } : {}),
         requestPreview: adapter.buildRequestPreview(request),
+        sources: normalizeSearchSources([
+          ...safeActionSources(response),
+          ...searchSourcesFromCitationArtifacts(artifacts)
+        ], 20),
         usage: completed.result.usage
       };
     }

@@ -48,7 +48,6 @@ export function isSearchCombinationCompatible(
   if (selected.some((option) => !option || option.kind === "none")) return false;
   const concrete = selected as SearchCombinationOption[];
   if (concrete.length > 1) {
-    if (concrete.some((option) => option.kind === "gemini_google_search")) return false;
     if (mode === "all_selected" && concrete.some((option) =>
       option.executionModes !== undefined &&
       !option.executionModes.includes("all_selected"))) {
@@ -165,9 +164,26 @@ function clientRouteCompatible(
   if (route.adapterKind !== "provider_model_client" || !model.capabilities.toolCalling) {
     return false;
   }
-  return route.protocol !== "openrouter_perplexity_chat" ||
-    route.providerModelId !== model.modelId ||
-    option.sourceConnectionId !== model.provider;
+  if (option.kind === "gemini_google_search") {
+    return route.protocol === "gemini_google_search";
+  }
+  if (option.kind === "web_search") {
+    return route.protocol === "openai_responses_web_search";
+  }
+  return option.kind === "perplexity_tool_search" &&
+    route.protocol === "openrouter_perplexity_chat" &&
+    (route.providerModelId !== model.modelId || option.sourceConnectionId !== model.provider);
+}
+
+export function compatibleSearchRoutesForModel(
+  model: ProviderModelCatalogEntry,
+  option: SearchStrategyCatalogEntry
+): SearchStrategyRouteCatalogEntry[] {
+  if (option.kind === "none") return [];
+  return option.routes.filter((route) =>
+    hostedRouteCompatible(model, option, route) ||
+    clientRouteCompatible(model, option, route)
+  );
 }
 
 /** Chooses only within one logical destination. Same-connection hosted Search
@@ -178,9 +194,7 @@ export function resolveSearchRouteForModel(
   option: SearchStrategyCatalogEntry
 ): SearchStrategyRouteCatalogEntry | null {
   if (option.kind === "none") return null;
-  return option.routes.find((route) => hostedRouteCompatible(model, option, route)) ??
-    option.routes.find((route) => clientRouteCompatible(model, option, route)) ??
-    null;
+  return compatibleSearchRoutesForModel(model, option)[0] ?? null;
 }
 
 export function resolveSearchStrategyId(
@@ -206,11 +220,11 @@ export function buildCatalogModel(
 ): CatalogModel {
   const searchStrategyIds = availableSearchStrategiesForModel(model, entitledStrategies);
   const searchOptionCompatibility = Object.fromEntries(entitledStrategies.flatMap((option) => {
-    const route = resolveSearchRouteForModel(model, option);
-    return route
+    const routes = compatibleSearchRoutesForModel(model, option);
+    return routes.length
       ? [[option.strategyId, {
-          attachments: route.adapterKind === "answer_provider_hosted",
-          executionModes: [...route.executionModes]
+          attachments: routes.some((route) => route.adapterKind === "answer_provider_hosted"),
+          executionModes: [...new Set(routes.flatMap((route) => route.executionModes))]
         }]]
       : [];
   }));

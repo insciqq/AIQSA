@@ -59,6 +59,7 @@ export type ProviderAdmissionRole = Readonly<{
 export type ProviderAdmissionPlan = Readonly<{
   answer: ProviderAdmissionRole;
   fingerprint: string;
+  requiresClientToolCoexistence?: true;
   requestedSearchStrategyId: string;
   requestedSearchPlan?: SearchPlan;
   requestedSearchPreferencePlan?: SearchPlan | null;
@@ -478,6 +479,13 @@ type ResolvedSearchRoute = Readonly<{
   strategy: LoadedSearchOption["strategies"][number];
 }>;
 
+type ResolvedSearchRouteCandidate = Readonly<{
+  option: LoadedSearchOption;
+  ordinal: number;
+  role?: ProviderAdmissionRole;
+  route: ResolvedSearchRoute;
+}>;
+
 function supportedSearchOption(option: LoadedSearchOption): boolean {
   if (!option.enabled || option.archivedAt !== null) return false;
   if (option.kind === "none") {
@@ -576,6 +584,9 @@ function clientRouteCompatible(
   if (option.kind === "web_search") {
     return route.draft.protocol === "openai_responses_web_search";
   }
+  if (option.kind === "gemini_google_search") {
+    return route.draft.protocol === "gemini_google_search";
+  }
   return option.kind === "perplexity_search" &&
     route.draft.protocol === "openrouter_perplexity_chat" &&
     route.draft.providerModelId !== answerModelId;
@@ -589,12 +600,69 @@ function routeBelongsToOption(
     return route.draft.protocol === "openai_responses_web_search";
   }
   if (option.kind === "gemini_google_search") {
-    return route.draft.adapterKind === "answer_provider_hosted" &&
-      route.draft.protocol === "gemini_google_search";
+    return route.draft.protocol === "gemini_google_search";
   }
   return option.kind === "perplexity_search" &&
     route.draft.adapterKind === "provider_model_client" &&
     route.draft.protocol === "openrouter_perplexity_chat";
+}
+
+function hostedRouteSupportsClientTools(candidate: ResolvedSearchRouteCandidate): boolean {
+  return candidate.route.draft.adapterKind === "answer_provider_hosted" &&
+    candidate.route.draft.protocol === "openai_responses_web_search";
+}
+
+function validCompleteRouteAssignment(input: Readonly<{
+  assignment: readonly ResolvedSearchRouteCandidate[];
+  mode: SearchPlan["mode"];
+  requiresClientToolCoexistence: boolean;
+}>): boolean {
+  const hosted = input.assignment.filter((candidate) =>
+    candidate.route.draft.adapterKind === "answer_provider_hosted"
+  );
+  if (hosted.length > 1) return false;
+  // A singleton logical source has no fan-out distinction, so its existing
+  // same-connection hosted behavior remains preferred in either UI mode.
+  if (
+    input.assignment.length > 1 &&
+    input.mode === "all_selected" &&
+    hosted.length > 0
+  ) {
+    return false;
+  }
+  if (hosted.length === 0) return true;
+  const mustCoexistWithClientTools = input.requiresClientToolCoexistence ||
+    input.assignment.some((candidate) =>
+      candidate.route.draft.adapterKind === "provider_model_client"
+    );
+  return !mustCoexistWithClientTools || hostedRouteSupportsClientTools(hosted[0]!);
+}
+
+function firstCompleteRouteAssignment(input: Readonly<{
+  candidates: readonly (readonly ResolvedSearchRouteCandidate[])[];
+  mode: SearchPlan["mode"];
+  requiresClientToolCoexistence: boolean;
+}>): ResolvedSearchRouteCandidate[] | null {
+  const assignment: ResolvedSearchRouteCandidate[] = [];
+  function visit(index: number): ResolvedSearchRouteCandidate[] | null {
+    if (index === input.candidates.length) {
+      return validCompleteRouteAssignment({
+        assignment,
+        mode: input.mode,
+        requiresClientToolCoexistence: input.requiresClientToolCoexistence
+      })
+        ? [...assignment]
+        : null;
+    }
+    for (const candidate of input.candidates[index] ?? []) {
+      assignment.push(candidate);
+      const complete = visit(index + 1);
+      assignment.pop();
+      if (complete) return complete;
+    }
+    return null;
+  }
+  return visit(0);
 }
 
 async function loadClientRouteRole(
@@ -678,6 +746,7 @@ export async function loadProviderAdmissionPlan(
   input: {
     providerConnectionId: string;
     providerModelId: string;
+    requiresClientToolCoexistence?: boolean;
     searchPlan?: SearchPlan;
     searchPreferencePlan?: SearchPlan | null;
     searchPreferenceSource?: "organization" | "personal";
@@ -799,10 +868,6 @@ export async function loadProviderAdmissionPlan(
       }
       preferenceOptions.push(option);
     }
-    if (preferenceOptions.length > 1 &&
-      preferenceOptions.some((option) => option.kind === "gemini_google_search")) {
-      throw new ProviderAdmissionError("search_strategy_not_available");
-    }
   } else if (input.searchPreferenceSource !== undefined &&
     input.searchPreferenceSource !== "organization") {
     throw new ProviderAdmissionError("search_strategy_not_available");
@@ -825,6 +890,8 @@ export async function loadProviderAdmissionPlan(
   }
   const optionIds = requestedSearchPlan.optionIds;
   const searches: NonNullable<ProviderAdmissionPlan["searches"]>[number][] = [];
+  const routeCandidates: ResolvedSearchRouteCandidate[][] = [];
+  let routeLoadError: ProviderAdmissionError | undefined;
 
   // The old singleton wire shape historically validates the explicit Off row.
   // New empty plans do not pretend that Off is an installed engine.
@@ -843,69 +910,64 @@ export async function loadProviderAdmissionPlan(
       throw new ProviderAdmissionError("search_strategy_not_available");
     }
     if (option.kind === "none") continue;
-    if (option.kind === "gemini_google_search" && optionIds.length > 1) {
-      throw new ProviderAdmissionError("search_strategy_not_available");
-    }
 
     const routes = option.strategies.flatMap((strategy) => {
       const route = normalizeActiveSearchRoute(strategy);
-      return route ? [route] : [];
+      return route && routeBelongsToOption(option, route) ? [route] : [];
     });
     if (hasAmbiguousRouteKinds(routes)) {
       throw new ProviderAdmissionError("search_strategy_not_available");
     }
-    let route = routes.find((candidate) => hostedRouteCompatible(option, candidate, answer));
-    let role: ProviderAdmissionRole | undefined;
-    let routeLoadError: ProviderAdmissionError | undefined;
-    if (!route) {
-      for (const candidate of routes) {
-        if (!clientRouteCompatible(option, candidate, answer, input.providerModelId)) continue;
-        try {
-          const candidateRole = await loadClientRouteRole(db, {
-            fullAccess,
-            groupIds,
-            option,
-            route: candidate,
-            userId: input.userId
-          });
-          if (!candidateRole) continue;
-          route = candidate;
-          role = candidateRole;
-          break;
-        } catch (error) {
-          if (!(error instanceof ProviderAdmissionError)) throw error;
-          routeLoadError ??= error;
-        }
+    const candidates: ResolvedSearchRouteCandidate[] = routes
+      .filter((route) => hostedRouteCompatible(option, route, answer))
+      .map((route) => ({ option, ordinal, route }));
+    const clientRouteRequired = candidates.length === 0 || optionIds.length > 1 ||
+      input.requiresClientToolCoexistence === true;
+    for (const route of clientRouteRequired ? routes : []) {
+      if (!clientRouteCompatible(option, route, answer, input.providerModelId)) continue;
+      try {
+        const role = await loadClientRouteRole(db, {
+          fullAccess,
+          groupIds,
+          option,
+          route,
+          userId: input.userId
+        });
+        if (role) candidates.push({ option, ordinal, role, route });
+      } catch (error) {
+        if (!(error instanceof ProviderAdmissionError)) throw error;
+        routeLoadError ??= error;
       }
     }
-    if (!route) {
+    if (candidates.length === 0) {
       if (routeLoadError) throw routeLoadError;
       throw new ProviderAdmissionError("search_strategy_not_available");
     }
+    routeCandidates.push(candidates);
+  }
 
+  const assignment = firstCompleteRouteAssignment({
+    candidates: routeCandidates,
+    mode: requestedSearchPlan.mode,
+    requiresClientToolCoexistence: input.requiresClientToolCoexistence === true
+  });
+  if (!assignment) {
+    if (routeLoadError) throw routeLoadError;
+    throw new ProviderAdmissionError("search_strategy_not_available");
+  }
+  for (const candidate of assignment) {
+    const { option, ordinal, role, route } = candidate;
     const configuration = searchConfiguration(option, route, answer, role);
     searches.push({
-      bindingKey: role ? `search:${optionId}` : null,
+      bindingKey: role ? `search:${option.optionId}` : null,
       configuration,
       integrationId: route.strategy.id,
-      optionId,
+      optionId: option.optionId,
       ordinal,
       revisionId: route.revisionId,
       ...(role ? { role } : {})
     });
   }
-
-  if (
-    optionIds.length > 1 &&
-    requestedSearchPlan.mode === "all_selected" &&
-    searches.some((candidate) => candidate.configuration.adapterKind !== "provider_model_client")
-  ) {
-    throw new ProviderAdmissionError("search_strategy_not_available");
-  }
-  const hostedCount = searches.filter(
-    (candidate) => candidate.configuration.adapterKind === "answer_provider_hosted"
-  ).length;
-  if (hostedCount > 1) throw new ProviderAdmissionError("search_strategy_not_available");
 
   const legacySearch = searches.length === 1 ? searches[0] : undefined;
   const search = legacySearch?.role;
@@ -917,6 +979,7 @@ export async function loadProviderAdmissionPlan(
   }
   const withoutFingerprint = {
     answer,
+    ...(input.requiresClientToolCoexistence ? { requiresClientToolCoexistence: true as const } : {}),
     requestedSearchStrategyId,
     requestedSearchPlan,
     ...(input.searchPreferenceSource

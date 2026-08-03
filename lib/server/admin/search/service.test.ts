@@ -44,7 +44,8 @@ function providerModel(input: Readonly<{
 }> = {}) {
   const adapterKind = input.adapterKind ?? "openai_responses_compatible";
   const connectionId = input.connectionId ?? "connection-1";
-  const searchReasoningSupported = adapterKind === "openai_responses_compatible";
+  const searchReasoningSupported = adapterKind === "openai_responses_compatible" ||
+    adapterKind === "gemini_interactions_native";
   return {
     activeConfig: {
       adapterKind,
@@ -1225,7 +1226,7 @@ describe("admin Search service", () => {
     expect(sourceUpdate).not.toHaveBeenCalled();
   });
 
-  it("validates logical policy kinds, Google exclusivity, and client-only fan-out", async () => {
+  it("validates logical policy kinds and permits normalized Google multi-source plans", async () => {
     const updateMany = vi.fn(async () => ({ count: 1 }));
     const geminiDraft: AdminSearchDraft = {
       ...draft,
@@ -1290,13 +1291,13 @@ describe("admin Search service", () => {
     })).rejects.toMatchObject({ code: "search_default_unavailable" });
 
     findMany.mockResolvedValueOnce([openAi, google]);
-    await expect(service.updatePolicy({
+    await service.updatePolicy({
       defaultPlan: {
         mode: "model_choice",
         optionIds: ["openai-search", "gemini-google-search"]
       },
       expectedVersion: 3,
       userId: "admin-1"
-    })).rejects.toMatchObject({ code: "search_default_unavailable" });
+    });
   });
 });

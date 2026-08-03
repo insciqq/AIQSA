@@ -83,7 +83,7 @@ export type AdminSearchProviderModelOption = {
   enabled: boolean;
   id: string;
   searchReasoningSupported: boolean;
-  searchKind: "perplexity_search" | "web_search";
+  searchKind: "gemini_google_search" | "perplexity_search" | "web_search";
 };
 
 export type AdminSearchCatalog = {
@@ -208,7 +208,8 @@ function providerModel(value: unknown): boolean {
     string(value.displayName) && typeof value.enabled === "boolean" && string(value.id) &&
     (value.searchReasoningSupported === undefined ||
       typeof value.searchReasoningSupported === "boolean") &&
-    (value.searchKind === "perplexity_search" || value.searchKind === "web_search");
+    (value.searchKind === "gemini_google_search" ||
+      value.searchKind === "perplexity_search" || value.searchKind === "web_search");
 }
 
 function policy(value: unknown): value is AdminSearchPolicy {

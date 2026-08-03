@@ -462,6 +462,7 @@ function executionInput(input: Readonly<{
   repository: RunExecutionRepository;
   runId?: string;
   searchAdapter?: ProviderSearchAdapter;
+  searchRuntimes?: RunExecutionInput["searchRuntimes"];
 }>): RunExecutionInput {
   return {
     adapter: input.adapter,
@@ -474,6 +475,7 @@ function executionInput(input: Readonly<{
     repository: input.repository,
     ...(input.mcpRuntime ? { mcpRuntime: input.mcpRuntime } : {}),
     ...(input.searchAdapter ? { searchAdapter: input.searchAdapter } : {}),
+    ...(input.searchRuntimes ? { searchRuntimes: input.searchRuntimes } : {}),
     userId: "user-1"
   };
 }
@@ -1326,9 +1328,10 @@ describe("run execution", () => {
             }
           ],
           finalProviderResponsePreview: { search: "safe" },
-          finalText: "Search findings",
+          findings: "Search findings",
           providerResponseId: "search-response-1",
           requestPreview: { query: "latest AIQSA news" },
+          sources: [],
           usage: usage(3, 4, 0)
         };
       }
@@ -1417,6 +1420,181 @@ describe("run execution", () => {
         }
       }
     ]);
+  });
+
+  it("persists normalized Gemini client findings and reuses them in foreground continuation", async () => {
+    const providerRequests: ProviderRunRequest[] = [];
+    const searchRequests: ProviderSearchRequest[] = [];
+    const repository = createRepository({
+      entitlements: {
+        modelKeys: new Set<string>(),
+        providerKeys: new Set(["anthropic"]),
+        searchStrategies: new Set(["gemini-google-search"])
+      }
+    });
+    const answerAdapter = createAdapter(async function* (request) {
+      providerRequests.push(request);
+      if (providerRequests.length === 1) {
+        return providerResult({
+          finalText: "",
+          toolCalls: [{
+            arguments: { query: "weather in Valencia" },
+            id: "gemini-search-call-1",
+            name: "search_engine_1"
+          }],
+          usage: usage(2, 1, 0)
+        });
+      }
+      yield { data: { delta: "It is sunny." }, type: "token" };
+      return providerResult({ finalText: "It is sunny.", usage: usage(5, 4, 0) });
+    });
+    const geminiSearchAdapter: ProviderSearchAdapter = {
+      buildRequestPreview: (request) => ({
+        modelId: request.searchPolicy.modelId,
+        queryCharacters: request.query.length,
+        store: false
+      }),
+      async search(request) {
+        searchRequests.push(request);
+        return {
+          artifacts: [{
+            data: {
+              artifactType: "search",
+              payload: {
+                id: "gemini-google-search-1",
+                queries: [request.query],
+                status: "completed",
+                type: "google_search_call"
+              }
+            },
+            type: "artifact"
+          }],
+          finalProviderResponsePreview: {
+            rawBodyCanary: "RAW_GEMINI_BODY_CANARY",
+            searchSuggestionsHtml: "<div>RAW_SUGGESTIONS_CANARY</div>",
+            thoughtSignature: "RAW_SIGNATURE_CANARY"
+          },
+          findings: "Valencia is sunny and 29 °C.",
+          providerResponseId: "gemini-interaction-1",
+          requestPreview: {
+            modelId: "gemini-3.6-flash",
+            queryCharacters: request.query.length,
+            store: false
+          },
+          sources: [{
+            rank: 1,
+            title: "Valencia weather",
+            url: "https://weather.example.test/valencia"
+          }],
+          usage: usage(3, 4, 1)
+        };
+      }
+    };
+    const base = preparedData({
+      modelId: "claude-opus-5",
+      provider: "anthropic",
+      searchStrategy: "gemini-google-search"
+    });
+    const searchPlan = {
+      mode: "model_choice" as const,
+      options: [{
+        adapterKind: "provider_model_client" as const,
+        config: {
+          maxOutputTokens: 4_096,
+          maxResults: 8,
+          maxSearchCallsPerAnswer: 2,
+          modelCapabilities: {
+            nativePdfInput: false,
+            nativeSearch: true,
+            pdf: true,
+            reasoning: true,
+            streaming: true,
+            toolCalling: true,
+            vision: true
+          },
+          modelDefaultParams: {},
+          queryMaxCharacters: 500,
+          reasoningPolicy: "lowest_supported",
+          timeoutMs: 300_000
+        },
+        credentialMode: "provider_model" as const,
+        displayName: "Google Search",
+        executionModes: ["all_selected" as const, "model_choice" as const],
+        kind: "gemini_google_search",
+        modelId: "gemini-3.6-flash",
+        optionId: "gemini-google-search",
+        protocol: "gemini_google_search" as const,
+        provider: "gemini",
+        providerModelId: "gemini-search-deployment",
+        revisionId: "gemini-search-revision-1",
+        searchStrategyRowId: "gemini-search-client-route"
+      }]
+    };
+    const normalizedRequest = { ...base.normalizedRequest, searchPlan };
+    const prepared: MaterializedPreparedRunData = {
+      ...base,
+      normalizedRequest,
+      providerRequest: { ...base.providerRequest, searchPlan }
+    };
+
+    const events = parseSse(await createRunExecutionResponse(executionInput({
+      adapter: answerAdapter,
+      prepared,
+      repository: repository.repository,
+      searchRuntimes: {
+        "gemini-google-search": {
+          adapter: answerAdapter,
+          searchAdapter: geminiSearchAdapter
+        }
+      }
+    })).text());
+
+    expect(events.at(-1)).toMatchObject({ data: { status: "complete" }, type: "done" });
+    expect(searchRequests).toHaveLength(1);
+    expect(searchRequests[0]).toMatchObject({
+      query: "weather in Valencia",
+      searchPolicy: {
+        modelId: "gemini-3.6-flash",
+        provider: "gemini",
+        reasoningPolicy: "lowest_supported",
+        strategyId: "gemini-google-search"
+      },
+      strategyId: "gemini-google-search"
+    });
+    expect(JSON.stringify(searchRequests[0])).not.toContain("Current question");
+    expect(providerRequests).toHaveLength(2);
+    expect(JSON.stringify(providerRequests[1]?.providerToolMessages))
+      .toContain("Valencia is sunny and 29 °C.");
+    expect(repository.searchRuns).toEqual([
+      expect.objectContaining({
+        artifacts: expect.objectContaining({
+          findings: "Valencia is sunny and 29 °C.",
+          sources: [{
+            rank: 1,
+            title: "Valencia weather",
+            url: "https://weather.example.test/valencia"
+          }],
+          usage: expect.objectContaining({ inputTokens: 3, outputTokens: 4 })
+        }),
+        invocationId: "gemini-search-call-1:gemini-google-search",
+        modelId: "gemini-3.6-flash",
+        provider: "gemini",
+        query: "weather in Valencia",
+        searchRevisionId: "gemini-search-revision-1",
+        status: "complete",
+        strategyId: "gemini-google-search"
+      })
+    ]);
+    const durableSearch = JSON.stringify(repository.searchRuns);
+    expect(durableSearch).not.toContain("RAW_GEMINI_BODY_CANARY");
+    expect(durableSearch).not.toContain("RAW_SUGGESTIONS_CANARY");
+    expect(durableSearch).not.toContain("RAW_SIGNATURE_CANARY");
+    expect(repository.completeRuns[0]?.usage).toMatchObject({
+      inputTokens: 10,
+      outputTokens: 9,
+      reasoningTokens: 1,
+      totalTokens: 19
+    });
   });
 
   it("routes tools from several MCP servers and executes one provider batch in parallel", async () => {
@@ -1736,8 +1914,9 @@ describe("run execution", () => {
         return {
           artifacts: [],
           finalProviderResponsePreview: {},
-          finalText: "Search findings",
+          findings: "Search findings",
           requestPreview: {},
+          sources: [],
           usage: usage(3, 2, 0)
         };
       }

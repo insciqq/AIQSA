@@ -9,6 +9,7 @@ export type GeminiInteractionObject = Record<string, unknown>;
 
 export type GeminiInteractionsClientRequestOptions = Readonly<{
   signal?: AbortSignal;
+  timeoutMs?: number;
 }>;
 
 export type GeminiInteractionsClient = {
@@ -112,7 +113,7 @@ export function createFetchGeminiInteractionsClient(input: Readonly<{
     body: Record<string, unknown>,
     options?: GeminiInteractionsClientRequestOptions
   ): Promise<Readonly<{ response: Response; timeout: ReturnType<typeof withTimeoutSignal> }>> {
-    const timeout = withTimeoutSignal(options?.signal);
+    const timeout = withTimeoutSignal(options?.signal, options?.timeoutMs);
     try {
       const response = await fetchFn(endpoint, {
         body: JSON.stringify(body),

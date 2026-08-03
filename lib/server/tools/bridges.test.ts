@@ -7,6 +7,7 @@ import {
   openAIResponsesToolBridge,
   openRouterChatToolBridge
 } from "./bridges";
+import type { ProviderRunRequest } from "../providers/types";
 import type { RunTool, ToolExecutionResult } from "./types";
 
 const searchTool: RunTool = {
@@ -87,6 +88,34 @@ describe("provider tool bridges", () => {
       result: [{ text: "Search result text", type: "text" }],
       type: "function_result"
     });
+  });
+
+  it("derives hosted Search tools from the admitted physical route", () => {
+    const logicalGeminiClient = {
+      searchPlan: {
+        mode: "model_choice",
+        options: [{
+          adapterKind: "provider_model_client",
+          protocol: "gemini_google_search"
+        }]
+      },
+      searchStrategy: "gemini-google-search"
+    } as unknown as ProviderRunRequest;
+    const hostedOpenAI = {
+      searchPlan: {
+        mode: "model_choice",
+        options: [{
+          adapterKind: "answer_provider_hosted",
+          protocol: "openai_responses_web_search"
+        }]
+      },
+      searchStrategy: "company-search"
+    } as unknown as ProviderRunRequest;
+
+    expect(geminiInteractionsToolBridge.serializeHostedTools?.(logicalGeminiClient)).toEqual([]);
+    expect(openAIResponsesToolBridge.serializeHostedTools?.(hostedOpenAI)).toEqual([
+      { type: "web_search" }
+    ]);
   });
 
   it("owns provider-specific assistant continuation serialization", () => {

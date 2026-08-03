@@ -13,6 +13,10 @@ import {
   openRouterResponseError
 } from "./openRouterChatResponse";
 import type { OpenRouterChatClient } from "./openRouterChatTransport";
+import {
+  normalizeSearchFindings,
+  searchSourcesFromCitationArtifacts
+} from "../search/evidence";
 import type {
   ProviderSearchAdapter,
   ProviderSearchRequest,
@@ -65,12 +69,14 @@ export function createOpenRouterPerplexitySearchAdapter(
 
       const finalText = extractOpenRouterText(response);
 
+      const artifacts = [searchArtifact(response, request), ...extractOpenRouterArtifacts(response)];
       return {
-        artifacts: [searchArtifact(response, request), ...extractOpenRouterArtifacts(response)],
+        artifacts,
         finalProviderResponsePreview: buildOpenRouterResponsePreview(response, finalText),
-        finalText,
+        findings: normalizeSearchFindings(finalText),
         providerResponseId: openRouterProviderResponseId(response),
         requestPreview: adapter.buildRequestPreview(request),
+        sources: searchSourcesFromCitationArtifacts(artifacts),
         usage: extractOpenRouterUsage(response)
       };
     }
@@ -134,9 +140,10 @@ export function createFakeOpenRouterPerplexitySearchAdapter(): ProviderSearchAda
           text: finalText,
           usage
         },
-        finalText,
+        findings: normalizeSearchFindings(finalText),
         providerResponseId: "fake-openrouter-search-1",
         requestPreview: adapter.buildRequestPreview(request),
+        sources: searchSourcesFromCitationArtifacts(artifacts),
         usage: normalizedUsage
       };
     }

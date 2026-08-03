@@ -11,6 +11,8 @@ const LOGICAL_OPTION_REPAIR_MIGRATION = "20260802185000_prepare_logical_search_r
 const LOGICAL_OPTION_MIGRATION = "20260802190000_logical_search_options";
 const PROVIDER_NEUTRAL_BACKFILL_MIGRATION =
   "20260803120000_activate_provider_neutral_search_routes";
+const GEMINI_CLIENT_ROUTE_MIGRATION =
+  "20260803190000_cross_provider_gemini_search_route";
 const POSTGRES_SERVICE = "postgres";
 const POSTGRES_USER = "aiqsa";
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -76,6 +78,22 @@ function providerNeutralDraftHash(input: Readonly<{
     providerModelId: input.providerModelId,
     queryMaxCharacters: input.queryMaxCharacters,
     timeoutMs: input.timeoutMs
+  });
+  return createHash("sha256").update(canonical, "utf8").digest("hex");
+}
+
+function geminiClientDraftHash(providerModelId: string): string {
+  const canonical = JSON.stringify({
+    adapterKind: "provider_model_client",
+    credentialMode: "provider_model",
+    maxOutputTokens: 4_096,
+    maxResults: 8,
+    maxSearchCallsPerAnswer: 2,
+    protocol: "gemini_google_search",
+    providerModelId,
+    queryMaxCharacters: 500,
+    reasoningPolicy: "lowest_supported",
+    timeoutMs: 300_000
   });
   return createHash("sha256").update(canonical, "utf8").digest("hex");
 }
@@ -1400,6 +1418,287 @@ try {
     FROM "SearchOption" option_row;
   `), searchOptionsBeforeProviderNeutralBackfill,
   "repeat backfill must preserve the disabled logical source byte-for-field");
+
+  const geminiClientRouteSql = migrationSql(GEMINI_CLIENT_ROUTE_MIGRATION);
+  assert.doesNotMatch(
+    geminiClientRouteSql,
+    /\b(?:INSERT\s+INTO|UPDATE|DELETE\s+FROM|ALTER\s+TABLE)\s+"ProviderModel"\b/iu,
+    "Gemini Search route migration must not mutate ProviderModel"
+  );
+  assert.doesNotMatch(
+    geminiClientRouteSql,
+    /"(?:ProviderCredential|ProviderCredentialVersion|ProviderDraftCheck|ProviderModelCredentialCheck)"/u,
+    "Gemini Search route migration must not read credential or provider-check state"
+  );
+  assert.doesNotMatch(
+    geminiClientRouteSql,
+    /"supportsNativeSearch"/u,
+    "Gemini Search route migration must trust the active normalized capability"
+  );
+
+  // Simulate an installed Gemini source with two eligible deployments. The
+  // reviewed 3.6 Flash template must win over stable-id ordering when no prior
+  // client route has selected another eligible deployment.
+  requireSuccess(psql(`
+    INSERT INTO "ProviderModel" (
+      "id", "connectionId", "provider", "modelId", "displayName",
+      "contextWindow", "supportsNativeSearch", "enabled", "draftConfig",
+      "draftVersion", "activeConfig", "activeVersion", "activatedAt",
+      "capabilities", "defaultParams", "createdAt", "updatedAt"
+    )
+    SELECT
+      '00000000-0000-4000-8000-000000001213', option_row."sourceConnectionId",
+      'gemini', 'gemini-3.6-flash', 'Gemini 3.6 Flash', 1048576, true, true,
+      '{
+        "adapterKind":"gemini_interactions_native",
+        "upstreamModelId":"gemini-3.6-flash",
+        "capabilities":{"nativeSearch":true},
+        "defaultParams":{}
+      }'::jsonb,
+      1,
+      '{
+        "adapterKind":"gemini_interactions_native",
+        "upstreamModelId":"gemini-3.6-flash",
+        "capabilities":{"nativeSearch":true},
+        "defaultParams":{}
+      }'::jsonb,
+      1, CURRENT_TIMESTAMP, '{"nativeSearch":true}'::jsonb, '{}'::jsonb,
+      CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+    FROM "SearchOption" option_row
+    WHERE option_row."optionId" = 'gemini-google-search';
+
+    UPDATE "ProviderModel" model
+    SET
+      "enabled" = true,
+      "activeConfig" = jsonb_set(
+        jsonb_set(
+          model."draftConfig",
+          '{adapterKind}',
+          to_jsonb('gemini_interactions_native'::text),
+          true
+        ),
+        '{capabilities,nativeSearch}',
+        'true'::jsonb,
+        true
+      ),
+      "activeVersion" = GREATEST(model."activeVersion", 1),
+      "activatedAt" = COALESCE(model."activatedAt", CURRENT_TIMESTAMP),
+      "updatedAt" = CURRENT_TIMESTAMP
+    FROM "SearchOption" option_row
+    WHERE option_row."optionId" = 'gemini-google-search'
+      AND model."id" = 'search-gemini-sentinel-model'
+      AND model."connectionId" = option_row."sourceConnectionId";
+  `), "activate exact Gemini Search migration fixtures");
+  assert.equal(scalar(`
+    SELECT count(*)::text
+    FROM "ProviderModel" model
+    INNER JOIN "SearchOption" option_row
+      ON option_row."sourceConnectionId" = model."connectionId"
+    WHERE option_row."optionId" = 'gemini-google-search'
+      AND model."enabled"
+      AND model."activeConfig" ->> 'adapterKind' = 'gemini_interactions_native'
+      AND model."activeConfig" #> '{capabilities,nativeSearch}' = 'true'::jsonb;
+  `), '2', "fixture must expose two exact eligible Gemini deployments");
+
+  const routeCountBeforeGeminiClient = scalar(`
+    SELECT count(*)::text FROM "SearchStrategy";
+  `);
+  const revisionCountBeforeGeminiClient = scalar(`
+    SELECT count(*)::text FROM "SearchIntegrationRevision";
+  `);
+  const providerModelsBeforeGeminiClient = scalar(`
+    SELECT md5(string_agg(row(model.*)::text, E'\\n' ORDER BY model."id"))
+    FROM "ProviderModel" model;
+  `);
+  const optionsBeforeGeminiClient = scalar(`
+    SELECT md5(string_agg(row(option_row.*)::text, E'\\n' ORDER BY option_row."id"))
+    FROM "SearchOption" option_row;
+  `);
+  const hostedGeminiBeforeClient = scalar(`
+    SELECT md5(string_agg(row(strategy.*)::text, E'\\n' ORDER BY strategy."id"))
+    FROM "SearchStrategy" strategy
+    INNER JOIN "SearchOption" option_row
+      ON option_row."id" = strategy."searchOptionId"
+    WHERE option_row."optionId" = 'gemini-google-search'
+      AND strategy."adapterKind" = 'answer_provider_hosted';
+  `);
+  const grantsBeforeGeminiClient = scalar(`
+    SELECT md5(string_agg(row(grant_row.*)::text, E'\\n' ORDER BY grant_row."id"))
+    FROM "AccessGrant" grant_row;
+  `);
+  const settingsBeforeGeminiClient = scalar(`
+    SELECT md5(string_agg(row(settings.*)::text, E'\\n' ORDER BY settings."id"))
+    FROM "UserSettings" settings;
+  `);
+  const bindingsBeforeGeminiClient = scalar(`
+    SELECT md5(string_agg(row(binding.*)::text, E'\\n' ORDER BY binding."id"))
+    FROM "SearchRunBinding" binding;
+  `);
+  const runsBeforeGeminiClient = scalar(`
+    SELECT md5(string_agg(row(run.*)::text, E'\\n' ORDER BY run."id"))
+    FROM "SearchRun" run;
+  `);
+
+  requireSuccess(psql(geminiClientRouteSql),
+    "publish cross-provider Gemini Search client route");
+
+  assert.equal(
+    scalar(`SELECT count(*)::text FROM "SearchStrategy";`),
+    String(Number(routeCountBeforeGeminiClient) + 1),
+    "Gemini Search migration must add exactly one physical client route"
+  );
+  assert.equal(
+    scalar(`SELECT count(*)::text FROM "SearchIntegrationRevision";`),
+    String(Number(revisionCountBeforeGeminiClient) + 1),
+    "Gemini Search migration must add exactly one immutable revision"
+  );
+  assert.equal(scalar(`
+    SELECT concat_ws('|',
+      option_row."optionId",
+      count(*) FILTER (WHERE strategy."adapterKind" = 'answer_provider_hosted'),
+      count(*) FILTER (WHERE strategy."adapterKind" = 'provider_model_client'),
+      max(strategy."id") FILTER (WHERE strategy."adapterKind" = 'provider_model_client'),
+      max(strategy."strategyId") FILTER (WHERE strategy."adapterKind" = 'provider_model_client')
+    )
+    FROM "SearchOption" option_row
+    INNER JOIN "SearchStrategy" strategy
+      ON strategy."searchOptionId" = option_row."id"
+     AND strategy."archivedAt" IS NULL
+    WHERE option_row."optionId" = 'gemini-google-search'
+    GROUP BY option_row."optionId";
+  `), 'gemini-google-search|1|1|system-gemini-google-search-client|gemini-google-search-client',
+  "one logical Google Search option must own hosted and client routes");
+
+  const configurationFingerprint = createHash("sha256")
+    .update(JSON.stringify(["configuration"]), "utf8")
+    .digest("hex");
+  assert.equal(scalar(`
+    SELECT concat_ws('|',
+      strategy."providerModelId",
+      strategy."provider",
+      strategy."modelId",
+      strategy."kind",
+      strategy."enabled",
+      strategy."activeRevisionId" IS NOT NULL,
+      strategy."draft" ->> 'protocol',
+      strategy."draft" ->> 'maxOutputTokens',
+      strategy."draft" ->> 'maxResults',
+      strategy."draft" ->> 'maxSearchCallsPerAnswer',
+      strategy."draft" ->> 'queryMaxCharacters',
+      strategy."draft" ->> 'reasoningPolicy',
+      strategy."draft" ->> 'timeoutMs',
+      strategy."testedDraftHash",
+      strategy."draftTestEvidence" ->> 'method',
+      revision."validationFingerprint",
+      strategy."config" = strategy."draft",
+      revision."configuration" = strategy."draft",
+      NOT (revision."validationEvidence" ? 'probeBinding')
+    )
+    FROM "SearchStrategy" strategy
+    INNER JOIN "SearchIntegrationRevision" revision
+      ON revision."id" = strategy."activeRevisionId"
+     AND revision."searchStrategyId" = strategy."id"
+    WHERE strategy."id" = 'system-gemini-google-search-client';
+  `), [
+    '00000000-0000-4000-8000-000000001213',
+    'gemini',
+    'gemini-3.6-flash',
+    'gemini_google_search',
+    't',
+    't',
+    'gemini_google_search',
+    '4096',
+    '8',
+    '2',
+    '500',
+    'lowest_supported',
+    '300000',
+    geminiClientDraftHash('00000000-0000-4000-8000-000000001213'),
+    'configuration',
+    configurationFingerprint,
+    't',
+    't',
+    't'
+  ].join('|'), "Gemini client route must use the exact canonical deployment and draft");
+
+  assert.equal(scalar(`
+    SELECT md5(string_agg(row(model.*)::text, E'\\n' ORDER BY model."id"))
+    FROM "ProviderModel" model;
+  `), providerModelsBeforeGeminiClient,
+  "Gemini Search migration must preserve ProviderModel rows");
+  assert.equal(scalar(`
+    SELECT md5(string_agg(row(option_row.*)::text, E'\\n' ORDER BY option_row."id"))
+    FROM "SearchOption" option_row;
+  `), optionsBeforeGeminiClient,
+  "Gemini Search migration must preserve logical Search options");
+  assert.equal(scalar(`
+    SELECT md5(string_agg(row(strategy.*)::text, E'\\n' ORDER BY strategy."id"))
+    FROM "SearchStrategy" strategy
+    INNER JOIN "SearchOption" option_row
+      ON option_row."id" = strategy."searchOptionId"
+    WHERE option_row."optionId" = 'gemini-google-search'
+      AND strategy."adapterKind" = 'answer_provider_hosted';
+  `), hostedGeminiBeforeClient,
+  "Gemini Search migration must preserve hosted Gemini execution byte-for-field");
+  assert.equal(scalar(`
+    SELECT md5(string_agg(row(grant_row.*)::text, E'\\n' ORDER BY grant_row."id"))
+    FROM "AccessGrant" grant_row;
+  `), grantsBeforeGeminiClient, "Gemini Search migration must preserve grants");
+  assert.equal(scalar(`
+    SELECT md5(string_agg(row(settings.*)::text, E'\\n' ORDER BY settings."id"))
+    FROM "UserSettings" settings;
+  `), settingsBeforeGeminiClient, "Gemini Search migration must preserve preferences");
+  assert.equal(scalar(`
+    SELECT md5(string_agg(row(binding.*)::text, E'\\n' ORDER BY binding."id"))
+    FROM "SearchRunBinding" binding;
+  `), bindingsBeforeGeminiClient,
+  "Gemini Search migration must preserve historical Search bindings");
+  assert.equal(scalar(`
+    SELECT md5(string_agg(row(run.*)::text, E'\\n' ORDER BY run."id"))
+    FROM "SearchRun" run;
+  `), runsBeforeGeminiClient,
+  "Gemini Search migration must preserve historical Search executions");
+
+  // Once the new typed shape exists, prove that a technical model belonging
+  // to another source is rejected transactionally rather than silently rebound.
+  requireSuccess(psql(`
+    UPDATE "SearchStrategy"
+    SET "providerModelId" = 'search-custom-single-model'
+    WHERE "id" = 'system-gemini-google-search-client';
+  `), "shape cross-owned Gemini client fixture");
+  const crossOwnedGeminiClient = psql(geminiClientRouteSql);
+  assert.notEqual(crossOwnedGeminiClient.status, 0,
+    "cross-owned Gemini client route must fail closed");
+  assert.match(
+    crossOwnedGeminiClient.stderr,
+    /Gemini Search route backfill found a client route owned by another source/u
+  );
+  requireSuccess(psql(`
+    UPDATE "SearchStrategy"
+    SET "providerModelId" = '00000000-0000-4000-8000-000000001213'
+    WHERE "id" = 'system-gemini-google-search-client';
+  `), "restore exact Gemini client ownership");
+
+  const routesAfterGeminiClient = scalar(`
+    SELECT md5(string_agg(row(strategy.*)::text, E'\\n' ORDER BY strategy."id"))
+    FROM "SearchStrategy" strategy;
+  `);
+  const revisionsAfterGeminiClient = scalar(`
+    SELECT md5(string_agg(row(revision.*)::text, E'\\n' ORDER BY revision."id"))
+    FROM "SearchIntegrationRevision" revision;
+  `);
+  requireSuccess(psql(geminiClientRouteSql),
+    "repeat cross-provider Gemini Search route migration");
+  assert.equal(scalar(`
+    SELECT md5(string_agg(row(strategy.*)::text, E'\\n' ORDER BY strategy."id"))
+    FROM "SearchStrategy" strategy;
+  `), routesAfterGeminiClient,
+  "repeat Gemini Search route migration must preserve routes byte-for-field");
+  assert.equal(scalar(`
+    SELECT md5(string_agg(row(revision.*)::text, E'\\n' ORDER BY revision."id"))
+    FROM "SearchIntegrationRevision" revision;
+  `), revisionsAfterGeminiClient,
+  "repeat Gemini Search route migration must preserve revisions byte-for-field");
 
   process.stdout.write("Search control-plane migration contract: OK\n");
 } finally {

@@ -3,6 +3,8 @@ import { Prisma, PrismaClient, type PrismaClient as PrismaClientType } from "@pr
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { adminSearchExecutionDefaults } from "../../../contracts/adminSearch";
 import {
+  GEMINI_PROVIDER_SEARCH_INTEGRATION_ID,
+  GEMINI_PROVIDER_SEARCH_STRATEGY_ID,
   OPENAI_PROVIDER_SEARCH_INTEGRATION_ID,
   OPENAI_PROVIDER_SEARCH_STRATEGY_ID
 } from "../../../domain/search";
@@ -23,7 +25,10 @@ const policy = adminProviderQuickSetupPolicy("openai");
 const terra = policy.candidates[0];
 const luna = policy.candidates[1];
 const sol = policy.candidates[2];
+const geminiPolicy = adminProviderQuickSetupPolicy("gemini");
+const geminiFlash = geminiPolicy.candidates[0];
 const OPENAI_SEARCH_OPTION_ID = "openai-native-web-search";
+const GEMINI_SEARCH_OPTION_ID = "gemini-google-search";
 
 class RollbackFixture extends Error {}
 class InjectedBoundaryFailure extends Error {}
@@ -400,6 +405,101 @@ async function resetOpenAiToInitial(transaction: Prisma.TransactionClient): Prom
   });
 }
 
+async function resetGeminiToInitial(transaction: Prisma.TransactionClient): Promise<void> {
+  const modelIds = geminiPolicy.candidates.map((candidate) => candidate.modelId);
+  const option = await transaction.searchOption.findUniqueOrThrow({
+    where: { optionId: GEMINI_SEARCH_OPTION_ID }
+  });
+  const managedSearch = await transaction.searchStrategy.findMany({
+    where: {
+      adapterKind: "provider_model_client",
+      searchOptionId: option.id
+    }
+  });
+  await transaction.accessGrant.deleteMany({
+    where: { searchStrategy: GEMINI_SEARCH_OPTION_ID }
+  });
+  for (const route of managedSearch) {
+    if (route.activeRevisionId) {
+      await transaction.searchStrategy.update({
+        data: { activeRevisionId: null },
+        where: { id: route.id }
+      });
+    }
+    await transaction.searchIntegrationRevision.deleteMany({
+      where: { searchStrategyId: route.id }
+    });
+    await transaction.searchStrategy.delete({ where: { id: route.id } });
+  }
+  await transaction.userSettings.updateMany({
+    data: { defaultProviderModelId: null },
+    where: { defaultProviderModelId: { in: modelIds } }
+  });
+  await transaction.providerRunBinding.deleteMany({
+    where: { connectionId: geminiPolicy.connection.id }
+  });
+  await transaction.providerDraftCheck.deleteMany({
+    where: { connectionId: geminiPolicy.connection.id }
+  });
+  await transaction.providerModelCredentialCheck.deleteMany({
+    where: { connectionId: geminiPolicy.connection.id }
+  });
+  await transaction.providerGroupCredentialAssignment.deleteMany({
+    where: { connectionId: geminiPolicy.connection.id }
+  });
+  await transaction.providerUserCredentialAssignment.deleteMany({
+    where: { connectionId: geminiPolicy.connection.id }
+  });
+  await transaction.accessGrant.deleteMany({
+    where: {
+      OR: [
+        { providerConnectionId: geminiPolicy.connection.id },
+        { providerModelId: { in: modelIds } }
+      ]
+    }
+  });
+  await transaction.providerConnection.update({
+    data: { defaultCredentialId: null },
+    where: { id: geminiPolicy.connection.id }
+  });
+  await transaction.providerCredential.updateMany({
+    data: { activeVersionId: null },
+    where: { connectionId: geminiPolicy.connection.id }
+  });
+  await transaction.providerCredentialVersion.deleteMany({
+    where: { credential: { connectionId: geminiPolicy.connection.id } }
+  });
+  await transaction.providerCredential.deleteMany({
+    where: { connectionId: geminiPolicy.connection.id }
+  });
+  for (const candidate of geminiPolicy.candidates) {
+    await transaction.providerModel.update({
+      data: {
+        activeConfig: Prisma.DbNull,
+        activeVersion: 0,
+        activatedAt: null,
+        draftConfig: candidate.configuration as Prisma.InputJsonValue,
+        draftVersion: 1,
+        enabled: false
+      },
+      where: { id: candidate.modelId }
+    });
+  }
+  await transaction.providerConnection.update({
+    data: {
+      activeConfig: Prisma.DbNull,
+      activeVersion: 0,
+      activatedAt: null,
+      defaultCredentialId: null,
+      draftConfig: geminiPolicy.connection.configuration as Prisma.InputJsonValue,
+      draftVersion: 1,
+      enabled: false,
+      unassignedPolicy: "use_default"
+    },
+    where: { id: geminiPolicy.connection.id }
+  });
+}
+
 async function createActor(transaction: Prisma.TransactionClient, suffix: string) {
   const userId = `quick-setup-integration-user-${suffix}`;
   const sessionId = `quick-setup-integration-session-${suffix}`;
@@ -491,6 +591,60 @@ function plan(input: Readonly<{
   };
 }
 
+function geminiPlan(input: Readonly<{
+  actor: Readonly<{ sessionId: string; userId: string }>;
+  credentialId: string;
+  expectedFingerprint: string;
+  idPrefix: string;
+  preservedModels: AdminProviderQuickSetupCommitPlan["preservedModels"];
+}>): AdminProviderQuickSetupCommitPlan {
+  const searchDraft = {
+    adapterKind: "provider_model_client" as const,
+    credentialMode: "provider_model" as const,
+    maxOutputTokens: adminSearchExecutionDefaults.maxOutputTokens,
+    maxResults: 8,
+    maxSearchCallsPerAnswer: adminSearchExecutionDefaults.maxSearchCallsPerAnswer,
+    protocol: "gemini_google_search" as const,
+    providerModelId: geminiFlash.modelId,
+    queryMaxCharacters: 500,
+    reasoningPolicy: adminSearchExecutionDefaults.reasoningPolicy,
+    timeoutMs: 300_000
+  };
+  return {
+    actor: input.actor,
+    candidate: geminiFlash,
+    candidates: [geminiFlash],
+    checkedAt: new Date("2026-08-03T10:00:01.000Z"),
+    credential: {
+      draftVersion: 1,
+      id: input.credentialId,
+      isNew: true,
+      versionEnvelope: "v2.integration.gemini.1",
+      versionId: `${input.idPrefix}-credential-version`
+    },
+    expectedFingerprint: input.expectedFingerprint,
+    grants: [{ id: `${input.idPrefix}-model-grant`, modelId: geminiFlash.modelId }],
+    mode: "initial",
+    now: new Date("2026-08-03T10:00:02.000Z"),
+    preservedModels: input.preservedModels,
+    provider: "gemini",
+    search: {
+      draft: searchDraft,
+      draftHash: searchDraftHash(searchDraft),
+      evidence: {
+        checkedAt: "2026-08-03T10:00:01.500Z",
+        method: "configuration",
+        normalizedSourceCount: 0,
+        protocol: "gemini_google_search",
+        status: "available"
+      },
+      grantId: `${input.idPrefix}-search-grant`,
+      integrationId: GEMINI_PROVIDER_SEARCH_INTEGRATION_ID,
+      revisionId: `${input.idPrefix}-search-revision`
+    }
+  };
+}
+
 const ISOLATED_TABLES = [
   "AccessGrant",
   "AuthSession",
@@ -544,18 +698,26 @@ async function createIsolatedQuickSetupDatabase(): Promise<Readonly<{
         `(LIKE ${sourceSchema}."${table}" INCLUDING ALL)`
       );
     }
+    const connectionIds = [policy.connection.id, geminiPolicy.connection.id];
+    const connectionPlaceholders = connectionIds
+      .map((_, index) => `$${index + 1}`)
+      .join(", ");
     await administrationDatabase.$executeRawUnsafe(
       `INSERT INTO ${schema}."ProviderConnection" ` +
-      `SELECT * FROM ${sourceSchema}."ProviderConnection" WHERE "id" = $1`,
-      policy.connection.id
+      `SELECT * FROM ${sourceSchema}."ProviderConnection" ` +
+      `WHERE "id" IN (${connectionPlaceholders})`,
+      ...connectionIds
     );
-    const modelPlaceholders = policy.candidates.map((_, index) => `$${index + 2}`).join(", ");
+    const candidateModelIds = [...policy.candidates, ...geminiPolicy.candidates]
+      .map((candidate) => candidate.modelId);
+    const modelPlaceholders = candidateModelIds
+      .map((_, index) => `$${index + 1}`)
+      .join(", ");
     await administrationDatabase.$executeRawUnsafe(
       `INSERT INTO ${schema}."ProviderModel" ` +
       `SELECT * FROM ${sourceSchema}."ProviderModel" ` +
-      `WHERE "connectionId" = $1 AND "id" IN (${modelPlaceholders})`,
-      policy.connection.id,
-      ...policy.candidates.map((candidate) => candidate.modelId)
+      `WHERE "id" IN (${modelPlaceholders})`,
+      ...candidateModelIds
     );
     await administrationDatabase.$executeRawUnsafe(
       `INSERT INTO ${schema}."RunProfile" SELECT * FROM ${sourceSchema}."RunProfile"`
@@ -666,6 +828,152 @@ integration("Prisma provider Quick setup atomic graph", () => {
     await sharedIntegrationDatabase?.cleanup();
     await administrationDatabase.$disconnect();
   });
+
+  it("atomically publishes Gemini client Search beside the hosted route", async () => {
+    const isolated = await createIsolatedQuickSetupDatabase();
+    try {
+      await expect(isolated.client.$transaction(async (transaction) => {
+        await resetGeminiToInitial(transaction);
+        const suffix = randomUUID();
+        const actor = await createActor(transaction, suffix);
+        const repository = createPrismaAdminProviderQuickSetupRepository(
+          transactionBackedClient(transaction)
+        );
+        const initial = await repository.inspect({
+          ...actor,
+          now: new Date("2026-08-03T10:00:00.000Z"),
+          provider: "gemini"
+        });
+
+        await expect(repository.commit(geminiPlan({
+          actor,
+          credentialId: `quick-gemini-credential-${suffix}`,
+          expectedFingerprint: initial.fingerprint,
+          idPrefix: `quick-gemini-${suffix}`,
+          preservedModels: initial.preservedModels
+        }))).resolves.toMatchObject({
+          search: "ready",
+          status: "ready"
+        });
+
+        const option = await transaction.searchOption.findUniqueOrThrow({
+          where: { optionId: GEMINI_SEARCH_OPTION_ID }
+        });
+        const [hosted, client] = await Promise.all([
+          transaction.searchStrategy.findUniqueOrThrow({
+            where: { strategyId: GEMINI_SEARCH_OPTION_ID }
+          }),
+          transaction.searchStrategy.findUniqueOrThrow({
+            include: { activeRevision: true, revisions: true },
+            where: { strategyId: GEMINI_PROVIDER_SEARCH_STRATEGY_ID }
+          })
+        ]);
+        expect(hosted).toMatchObject({
+          adapterKind: "answer_provider_hosted",
+          credentialMode: "answer_provider",
+          kind: "gemini_google_search",
+          providerModelId: null,
+          searchOptionId: option.id
+        });
+        expect(client).toMatchObject({
+          adapterKind: "provider_model_client",
+          credentialMode: "provider_model",
+          enabled: true,
+          id: GEMINI_PROVIDER_SEARCH_INTEGRATION_ID,
+          kind: "gemini_google_search",
+          modelId: geminiFlash.configuration.upstreamModelId,
+          provider: "gemini",
+          providerModelId: geminiFlash.modelId,
+          searchOptionId: option.id
+        });
+        expect(client.revisions).toHaveLength(1);
+        expect(client.activeRevision).toMatchObject({
+          adapterKind: "provider_model_client",
+          configuration: expect.objectContaining({
+            protocol: "gemini_google_search",
+            providerModelId: geminiFlash.modelId,
+            reasoningPolicy: "lowest_supported"
+          }),
+          credentialMode: "provider_model",
+          providerModelId: geminiFlash.modelId,
+          validationEvidence: expect.objectContaining({
+            method: "configuration",
+            normalizedSourceCount: 0,
+            status: "available"
+          })
+        });
+        expect(JSON.stringify(client.activeRevision)).not.toContain("probeBinding");
+        expect(await transaction.searchStrategy.count({
+          where: { archivedAt: null, searchOptionId: option.id }
+        })).toBe(2);
+        expect(await transaction.accessGrant.findMany({
+          where: {
+            searchStrategy: GEMINI_SEARCH_OPTION_ID,
+            userId: actor.userId
+          }
+        })).toEqual([expect.objectContaining({ enabled: true })]);
+
+        throw new RollbackFixture("gemini_client_search_fixture_complete");
+      }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable })).rejects.toBeInstanceOf(
+        RollbackFixture
+      );
+    } finally {
+      await isolated.cleanup();
+    }
+  }, 30_000);
+
+  it("leaves a cross-owned Google Search option untouched and reports Search needs attention", async () => {
+    const isolated = await createIsolatedQuickSetupDatabase();
+    try {
+      await expect(isolated.client.$transaction(async (transaction) => {
+        await resetGeminiToInitial(transaction);
+        const suffix = randomUUID();
+        const actor = await createActor(transaction, suffix);
+        const option = await transaction.searchOption.update({
+          data: { sourceConnectionId: policy.connection.id },
+          where: { optionId: GEMINI_SEARCH_OPTION_ID }
+        });
+        const repository = createPrismaAdminProviderQuickSetupRepository(
+          transactionBackedClient(transaction)
+        );
+        const initial = await repository.inspect({
+          ...actor,
+          now: new Date("2026-08-03T10:00:00.000Z"),
+          provider: "gemini"
+        });
+
+        await expect(repository.commit(geminiPlan({
+          actor,
+          credentialId: `quick-gemini-cross-owner-${suffix}`,
+          expectedFingerprint: initial.fingerprint,
+          idPrefix: `quick-gemini-cross-owner-${suffix}`,
+          preservedModels: initial.preservedModels
+        }))).resolves.toMatchObject({
+          search: "needs_attention",
+          status: "ready"
+        });
+
+        expect(await transaction.searchOption.findUniqueOrThrow({
+          where: { optionId: GEMINI_SEARCH_OPTION_ID }
+        })).toEqual(option);
+        expect(await transaction.searchStrategy.findUnique({
+          where: { strategyId: GEMINI_PROVIDER_SEARCH_STRATEGY_ID }
+        })).toBeNull();
+        expect(await transaction.accessGrant.count({
+          where: {
+            searchStrategy: GEMINI_SEARCH_OPTION_ID,
+            userId: actor.userId
+          }
+        })).toBe(0);
+
+        throw new RollbackFixture("gemini_cross_owned_option_fixture_complete");
+      }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable })).rejects.toBeInstanceOf(
+        RollbackFixture
+      );
+    } finally {
+      await isolated.cleanup();
+    }
+  }, 30_000);
 
   it("atomically provisions and reuses managed OpenAI Search across credential rotation", async () => {
     const isolated = await createIsolatedQuickSetupDatabase();

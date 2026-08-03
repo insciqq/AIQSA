@@ -123,6 +123,20 @@ describe("OpenAI Search source probe", () => {
             id: "compatible-web-search",
             status: "completed",
             type: "web_search_call"
+          }, {
+            content: [{
+              annotations: [{
+                title: "Source",
+                type: "url_citation",
+                url: "https://example.com/source"
+              }],
+              text: "Source found.",
+              type: "output_text"
+            }],
+            id: "compatible-message",
+            role: "assistant",
+            status: "completed",
+            type: "message"
           }],
           status: "completed",
           usage: { input_tokens: 8, output_tokens: 1, total_tokens: 9 }

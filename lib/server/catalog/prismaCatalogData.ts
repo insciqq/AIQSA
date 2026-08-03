@@ -390,8 +390,7 @@ function routeBelongsToOption(
     return route.protocol === "openai_responses_web_search";
   }
   if (optionKind === "gemini_google_search") {
-    return route.adapterKind === "answer_provider_hosted" &&
-      route.protocol === "gemini_google_search";
+    return route.protocol === "gemini_google_search";
   }
   if (optionKind === "perplexity_tool_search") {
     return route.adapterKind === "provider_model_client" &&

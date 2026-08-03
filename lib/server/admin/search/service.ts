@@ -12,6 +12,8 @@ import {
 import { isSearchCombinationCompatible } from "../../../domain/catalogMatrix";
 import {
   decodeSearchPlan,
+  GEMINI_PROVIDER_SEARCH_INTEGRATION_ID,
+  GEMINI_PROVIDER_SEARCH_STRATEGY_ID,
   OPENAI_PROVIDER_SEARCH_INTEGRATION_ID,
   OPENAI_PROVIDER_SEARCH_STRATEGY_ID,
   type SearchPlan
@@ -165,6 +167,7 @@ function clientSearchKind(adapterKind: string): AdminSearchProviderModelOption["
   if (adapterKind === "openai_responses_native" || adapterKind === "openai_responses_compatible") {
     return "web_search";
   }
+  if (adapterKind === "gemini_interactions_native") return "gemini_google_search";
   return adapterKind === "openrouter_chat_completions" ? "perplexity_search" : null;
 }
 
@@ -186,6 +189,19 @@ function clientRouteIdentities(
       {
         id: OPENAI_PROVIDER_SEARCH_INTEGRATION_ID,
         strategyId: OPENAI_PROVIDER_SEARCH_STRATEGY_ID
+      },
+      { id: fallbackId, strategyId: fallbackId }
+    ];
+  }
+  if (
+    option.templateKey === "search:gemini-google" &&
+    option.optionId === "gemini-google-search"
+  ) {
+    const fallbackId = `gemini-search-client:${sourceConnectionId}`;
+    return [
+      {
+        id: GEMINI_PROVIDER_SEARCH_INTEGRATION_ID,
+        strategyId: GEMINI_PROVIDER_SEARCH_STRATEGY_ID
       },
       { id: fallbackId, strategyId: fallbackId }
     ];
@@ -218,11 +234,21 @@ function hostedRouteIdentity(
       strategyId: option.optionId
     };
   }
+  if (
+    option.templateKey === "search:gemini-google" &&
+    option.optionId === "gemini-google-search"
+  ) {
+    return {
+      id: "00000000-0000-4000-8000-000000001301",
+      strategyId: option.optionId
+    };
+  }
   return { id: generatedId, strategyId: `${option.optionId}:hosted` };
 }
 
 function hostedDraftFor(draft: AdminSearchDraft): AdminSearchDraft | null {
-  return draft.protocol === "openai_responses_web_search"
+  return draft.protocol === "openai_responses_web_search" ||
+    draft.protocol === "gemini_google_search"
     ? {
         ...draft,
         adapterKind: "answer_provider_hosted",
@@ -442,8 +468,7 @@ export function createAdminSearchService(input: Readonly<{
     if (
       draft.adapterKind !== "provider_model_client" ||
       draft.credentialMode !== "provider_model" ||
-      !draft.providerModelId ||
-      draft.protocol === "gemini_google_search"
+      !draft.providerModelId
     ) {
       throw new AdminSearchServiceError("search_configuration_invalid");
     }
@@ -636,7 +661,8 @@ export function createAdminSearchService(input: Readonly<{
         nativeSearch: configuration.capabilities.nativeSearch,
         searchReasoningSupported:
           (configuration.adapterKind === "openai_responses_native" ||
-            configuration.adapterKind === "openai_responses_compatible") &&
+            configuration.adapterKind === "openai_responses_compatible" ||
+            configuration.adapterKind === "gemini_interactions_native") &&
           Boolean(lowestSupportedOpenAIResponsesSearchEffort(configuration.capabilities)),
         searchKind
       }];

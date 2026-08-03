@@ -87,7 +87,6 @@ export function normalizeSearchDraft(value: unknown): AdminSearchDraft {
     (!hosted && credentialMode !== "provider_model") ||
     (hosted && normalized.providerModelId !== null) ||
     (!hosted && normalized.providerModelId === null) ||
-    (protocol === "gemini_google_search" && !hosted) ||
     (protocol === "openrouter_perplexity_chat" && hosted)
   ) {
     throw new SearchConfigurationError("search_configuration_invalid");

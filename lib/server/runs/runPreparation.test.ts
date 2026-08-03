@@ -393,8 +393,9 @@ function createHarness(options: HarnessOptions = {}) {
       return {
         artifacts: [],
         finalProviderResponsePreview: {},
-        finalText: "unused",
+        findings: "unused",
         requestPreview: {},
+        sources: [],
         usage: {
           inputTokens: 0,
           outputTokens: 0,
@@ -1253,6 +1254,120 @@ describe("run preparation", () => {
     const prepared = materializePreparedRunData(result.prepared);
     expect(prepared.normalizedRequest.searchStrategy).toBe("openai-native-web-search");
     expect(prepared.providerRequest.searchStrategy).toBe("openai-native-web-search");
+  });
+
+  it("re-admits hosted Gemini Search as a client route when MCP tools must coexist", async () => {
+    const base = providerNeutralOpenAISearchPlan("gemini_interactions_native");
+    const optionId = "gemini-google-search";
+    const hosted: ProviderAdmissionPlan = {
+      ...base,
+      requestedSearchPlan: { mode: "model_choice", optionIds: [optionId] },
+      requestedSearchStrategyId: optionId,
+      searches: [{
+        bindingKey: null,
+        configuration: {
+          adapterKind: "answer_provider_hosted",
+          config: { maxResults: 8, queryMaxCharacters: 500, timeoutMs: 300_000 },
+          credentialMode: "answer_provider",
+          displayName: "Google Search",
+          executionModes: ["model_choice"],
+          kind: "gemini_google_search",
+          modelId: null,
+          protocol: "gemini_google_search",
+          provider: "gemini",
+          providerModelId: null,
+          revisionId: "revision-gemini-hosted",
+          searchStrategyRowId: "integration-gemini-hosted",
+          strategyId: optionId
+        },
+        integrationId: "integration-gemini-hosted",
+        optionId,
+        ordinal: 0,
+        revisionId: "revision-gemini-hosted"
+      }]
+    };
+    const client: ProviderAdmissionPlan = {
+      ...base,
+      requiresClientToolCoexistence: true,
+      requestedSearchPlan: { mode: "model_choice", optionIds: [optionId] },
+      requestedSearchStrategyId: optionId,
+      searches: [{
+        bindingKey: `search:${optionId}`,
+        configuration: {
+          adapterKind: "provider_model_client",
+          config: {
+            maxOutputTokens: 4_096,
+            maxResults: 8,
+            maxSearchCallsPerAnswer: 2,
+            modelCapabilities: { ...baseCapabilities, nativeSearch: true },
+            modelDefaultParams: {},
+            queryMaxCharacters: 500,
+            reasoningPolicy: "lowest_supported",
+            timeoutMs: 300_000
+          },
+          credentialMode: "provider_model",
+          displayName: "Google Search",
+          executionModes: ["all_selected", "model_choice"],
+          kind: "gemini_google_search",
+          modelId: "gemini-3.6-flash",
+          protocol: "gemini_google_search",
+          provider: "gemini",
+          providerModelId: base.selection.providerModelId,
+          revisionId: "revision-gemini-client",
+          searchStrategyRowId: "integration-gemini-client",
+          strategyId: optionId
+        },
+        integrationId: "integration-gemini-client",
+        optionId,
+        ordinal: 0,
+        revisionId: "revision-gemini-client",
+        role: base.answer
+      }]
+    };
+    const admissionLoad = vi.fn(async (input: {
+      requiresClientToolCoexistence?: boolean;
+    }) => input.requiresClientToolCoexistence ? client : hosted);
+    const result = await prepareRun(
+      {
+        ...createHarness({ mcpPlan: readyMcpPlan() }).deps,
+        allowFakeProvider: false,
+        providerAdmission: { load: admissionLoad }
+      },
+      sendInput(successBody({
+        modelId: base.selection.providerModelId,
+        params: {},
+        provider: base.selection.providerConnectionId,
+        searchPlan: { mode: "model_choice", optionIds: [optionId] }
+      }))
+    );
+
+    if (!result.ok) throw new Error(`${result.code}: ${result.message}`);
+    expect(result.ok).toBe(true);
+    const prepared = materializePreparedRunData(result.prepared);
+    expect(admissionLoad).toHaveBeenCalledTimes(2);
+    expect(admissionLoad.mock.calls[0]?.[0]).not.toHaveProperty(
+      "requiresClientToolCoexistence"
+    );
+    expect(admissionLoad.mock.calls[1]?.[0]).toMatchObject({
+      requiresClientToolCoexistence: true,
+      searchPlan: { mode: "model_choice", optionIds: [optionId] }
+    });
+    expect(prepared.normalizedRequest.searchPlan).toMatchObject({
+      mode: "model_choice",
+      options: [expect.objectContaining({
+        adapterKind: "provider_model_client",
+        optionId,
+        protocol: "gemini_google_search",
+        provider: "gemini",
+        providerModelId: base.selection.providerModelId
+      })]
+    });
+    expect(prepared.providerRequest.searchStrategy).toBe(optionId);
+    expect(JSON.stringify(prepared.providerRequestPreview)).not.toContain('"type":"google_search"');
+    expect(prepared.providerRequest.tools?.map((tool) => tool.name)).toEqual([
+      "search_engine_1",
+      "mcp_team_lookup_1"
+    ]);
   });
 
   it("routes a provider-admitted multi-engine plan without requiring the legacy Perplexity service", async () => {

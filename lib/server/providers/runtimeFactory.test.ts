@@ -119,6 +119,7 @@ describe("provider runtime factory", () => {
   });
 
   it.each([
+    "gemini_interactions_native",
     "openai_responses_native",
     "openai_responses_compatible"
   ] as const)("exposes the dedicated Search adapter only for Search-capable %s models", (adapterKind) => {

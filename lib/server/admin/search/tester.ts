@@ -1,12 +1,14 @@
-import { Prisma, type PrismaClient } from "@prisma/client";
-import { safeExternalHref } from "../../../domain/links";
-import { textMessageContent } from "../../../domain/content";
+import type { PrismaClient } from "@prisma/client";
+import {
+  adminSearchExecutionLimits,
+  type AdminSearchDraft
+} from "../../../contracts/adminSearch";
 import { decryptProviderCredentialSecret } from "../../providers/credentialSecrets";
 import { providerAuthenticationMode } from "../../providers/providerConfiguration";
 import { createProviderSafeFetch } from "../../providers/providerSafeFetch";
 import { createProviderRuntimeBinding } from "../../providers/runtimeFactory";
 import type {
-  ProviderRunRequest,
+  ProviderModelCapabilities,
   ProviderSearchPolicy,
   ProviderSearchRequest
 } from "../../providers/types";
@@ -17,64 +19,58 @@ import type { AdminSearchTester } from "./service";
 
 const connectivityQuery = "Find the official OpenAI home page and return one source.";
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function safeSourceCount(value: unknown, seen = new WeakSet<object>()): number {
-  if (typeof value !== "object" || value === null) return 0;
-  if (seen.has(value)) return 0;
-  seen.add(value);
-  if (Array.isArray(value)) {
-    return value.reduce((total, entry) => total + safeSourceCount(entry, seen), 0);
-  }
-  let count = 0;
-  for (const [key, entry] of Object.entries(value)) {
-    if ((key === "url" || key === "href") && typeof entry === "string" && safeExternalHref(entry)) {
-      count += 1;
-    } else {
-      count += safeSourceCount(entry, seen);
-    }
-  }
-  return count;
-}
-
-function baseRequest(input: {
-  capabilities: ProviderRunRequest["modelCapabilities"];
+export function adminSearchProviderPolicy(input: Readonly<{
+  capabilities: ProviderModelCapabilities;
+  defaultParams: Readonly<Record<string, unknown>>;
+  draft: AdminSearchDraft;
   modelId: string;
   provider: string;
-  queryMaxCharacters: number;
-}): ProviderRunRequest {
-  const query = connectivityQuery.slice(0, input.queryMaxCharacters);
-  return {
-    attachmentIds: [],
-    attachments: [],
-    chatId: "search-admin-test",
-    content: textMessageContent(query),
-    context: {
-      messages: [{ content: textMessageContent(query), id: "search-admin-query", role: "user" }],
-      mode: "branch_path"
-    },
-    forceNonStreaming: true,
-    modelCapabilities: input.capabilities,
-    modelId: input.modelId,
-    params: {
-      background: false,
-      maxOutputTokens: 512,
-      max_output_tokens: 512,
-      reasoning: { effort: "none", summary: "none" },
-      store: false,
-      stream: false,
-      temperature: 0
-    },
-    prompt: {
-      developer: "Use web search and return only a concise sourced result.",
-      presetId: null,
-      system: null
-    },
-    provider: input.provider,
-    searchStrategy: null
-  };
+}>): ProviderSearchPolicy {
+  if (input.draft.protocol === "openrouter_perplexity_chat") {
+    if (input.provider !== "openrouter") throw new Error("search_protocol_not_supported");
+    return {
+      controls: {
+        maxOutputTokens: {
+          defaultValue: input.draft.maxOutputTokens,
+          maxValue: adminSearchExecutionLimits.maxOutputTokens.maximum
+        },
+        temperature: { defaultValue: 0, maxValue: 2, minValue: 0, supported: true }
+      },
+      defaultParams: {
+        ...input.defaultParams,
+        maxOutputTokens: input.draft.maxOutputTokens,
+        stream: false,
+        temperature: 0
+      },
+      modelId: input.modelId,
+      provider: "openrouter",
+      strategyId: "perplexity-tool-search"
+    };
+  }
+  if (input.draft.protocol === "openai_responses_web_search") {
+    if (input.provider !== "openai" && input.provider !== "openai_compatible") {
+      throw new Error("search_protocol_not_supported");
+    }
+    return {
+      maxOutputTokens: input.draft.maxOutputTokens,
+      modelCapabilities: input.capabilities,
+      modelId: input.modelId,
+      provider: input.provider,
+      reasoningPolicy: input.draft.reasoningPolicy,
+      strategyId: "openai-responses-web-search"
+    };
+  }
+  if (input.draft.protocol === "gemini_google_search" && input.provider === "gemini") {
+    return {
+      maxOutputTokens: input.draft.maxOutputTokens,
+      modelCapabilities: input.capabilities,
+      modelId: input.modelId,
+      provider: "gemini",
+      reasoningPolicy: input.draft.reasoningPolicy,
+      strategyId: "gemini-google-search"
+    };
+  }
+  throw new Error("search_protocol_not_supported");
 }
 
 async function credentialSource(
@@ -131,60 +127,31 @@ export function createAdminSearchTester(prisma: PrismaClient): AdminSearchTester
         secret,
         snapshot: role.snapshot
       });
-      const request = baseRequest({
-        capabilities: role.modelConfiguration.capabilities,
-        modelId: role.snapshot.model.upstreamModelId,
-        provider: role.snapshot.providerFamily,
-        queryMaxCharacters: draft.queryMaxCharacters
-      });
       const signal = AbortSignal.timeout(draft.timeoutMs);
-      let normalizedSourceCount = 0;
-
-      if (draft.protocol === "openrouter_perplexity_chat") {
-        if (!runtime.searchAdapter) throw new Error("search_adapter_not_available");
-        const searchPolicy: ProviderSearchPolicy = {
-          controls: {
-            maxOutputTokens: { defaultValue: 512, maxValue: 2_048 },
-            temperature: { defaultValue: 0, maxValue: 2, minValue: 0, supported: true }
-          },
-          defaultParams: { maxOutputTokens: 512, stream: false, temperature: 0 },
-          modelId: request.modelId,
-          provider: "openrouter",
-          strategyId: "perplexity-tool-search"
-        };
-        const validatedQuery = validateSearchToolArguments(
-          { query: connectivityQuery },
-          draft.queryMaxCharacters
-        );
-        if (!validatedQuery.ok) throw new Error(validatedQuery.code);
-        const searchRequest: ProviderSearchRequest = {
-          correlationId: "search-admin-test",
-          query: validatedQuery.query,
-          searchPolicy,
-          strategyId: "perplexity-tool-search"
-        };
-        const result = await runtime.searchAdapter.search(searchRequest, {
-          signal,
-          timeoutMs: draft.timeoutMs
-        });
-        normalizedSourceCount = safeSourceCount(result.artifacts) +
-          safeSourceCount(result.finalProviderResponsePreview);
-      } else if (draft.protocol === "openai_responses_web_search") {
-        const events: unknown[] = [];
-        const stream = runtime.adapter.stream({
-          ...request,
-          searchStrategy: "openai-native-web-search"
-        }, { signal, timeoutMs: draft.timeoutMs });
-        let next = await stream.next();
-        while (!next.done) {
-          if (next.value.type === "artifact") events.push(next.value.data);
-          next = await stream.next();
-        }
-        normalizedSourceCount = safeSourceCount(events) +
-          safeSourceCount(next.value.finalProviderResponsePreview);
-      } else {
-        throw new Error("search_protocol_not_supported");
-      }
+      if (!runtime.searchAdapter) throw new Error("search_adapter_not_available");
+      const validatedQuery = validateSearchToolArguments(
+        { query: connectivityQuery },
+        draft.queryMaxCharacters
+      );
+      if (!validatedQuery.ok) throw new Error(validatedQuery.code);
+      const searchPolicy = adminSearchProviderPolicy({
+        capabilities: role.modelConfiguration.capabilities,
+        defaultParams: role.modelConfiguration.defaultParams,
+        draft,
+        modelId: role.snapshot.model.upstreamModelId,
+        provider: role.snapshot.providerFamily
+      });
+      const searchRequest: ProviderSearchRequest = {
+        correlationId: "search-admin-test",
+        query: validatedQuery.query,
+        searchPolicy,
+        strategyId: searchPolicy.strategyId
+      };
+      const result = await runtime.searchAdapter.search(searchRequest, {
+        signal,
+        timeoutMs: draft.timeoutMs
+      });
+      const normalizedSourceCount = Math.min(result.sources.length, draft.maxResults);
 
       return {
         method: "provider_search",

@@ -303,6 +303,47 @@ function openAiOption(input: Readonly<{
   };
 }
 
+const geminiModel: ModelSpec = {
+  adapterKind: "gemini_interactions_native",
+  connectionId: "connection-gemini",
+  family: "gemini",
+  id: "model-gemini-answer",
+  nativeSearch: true,
+  upstreamModelId: "gemini-3.6-flash"
+};
+
+const geminiSearchModel: ModelSpec = {
+  ...geminiModel,
+  answerSelectable: false,
+  id: "model-gemini-search"
+};
+
+function geminiOption(includeClient = true): OptionSpec {
+  return {
+    displayName: "Google Search",
+    kind: "gemini_google_search",
+    optionId: "gemini-google-search",
+    routes: [
+      {
+        adapterKind: "answer_provider_hosted",
+        id: "route-hosted:gemini",
+        protocol: "gemini_google_search",
+        revisionId: "revision-hosted:gemini"
+      },
+      ...(includeClient
+        ? [{
+            adapterKind: "provider_model_client" as const,
+            id: "route-client:gemini",
+            protocol: "gemini_google_search" as const,
+            providerModelId: geminiSearchModel.id,
+            revisionId: "revision-client:gemini"
+          }]
+        : [])
+    ],
+    sourceConnectionId: geminiModel.connectionId
+  };
+}
+
 function expectSearch(plan: ProviderAdmissionPlan) {
   expect(plan.searches).toHaveLength(1);
   return plan.searches![0]!;
@@ -434,6 +475,139 @@ describe("provider admission", () => {
       searchStrategyRowId: "route-client:openai"
     });
     expect(search.configuration.config).not.toHaveProperty("modelDefaultParams");
+  });
+
+  it("keeps singleton same-connection Gemini Search hosted", async () => {
+    const option = geminiOption();
+    const { db, providerModelFindUnique } = admissionDb({
+      answer: geminiModel,
+      options: [option],
+      technicalModels: [geminiSearchModel]
+    });
+
+    const plan = await loadProviderAdmissionPlan(db as unknown as Prisma.TransactionClient, {
+      providerConnectionId: geminiModel.connectionId,
+      providerModelId: geminiModel.id,
+      searchPlan: { mode: "all_selected", optionIds: [option.optionId] },
+      searchStrategyId: option.optionId,
+      userId: "user-1"
+    });
+
+    expect(expectSearch(plan)).toMatchObject({
+      bindingKey: null,
+      integrationId: "route-hosted:gemini",
+      configuration: { adapterKind: "answer_provider_hosted" }
+    });
+    expect(providerModelFindUnique).not.toHaveBeenCalled();
+  });
+
+  it("uses the Gemini client route for cross-provider answers and MCP coexistence", async () => {
+    const anthropic: ModelSpec = {
+      adapterKind: "anthropic_messages",
+      connectionId: "connection-anthropic",
+      family: "anthropic",
+      id: "model-opus-gemini-search",
+      upstreamModelId: "claude-opus-5"
+    };
+    const option = geminiOption();
+    for (const request of [
+      {
+        answer: anthropic,
+        requiresClientToolCoexistence: false
+      },
+      {
+        answer: geminiModel,
+        requiresClientToolCoexistence: true
+      }
+    ]) {
+      const { db } = admissionDb({
+        answer: request.answer,
+        options: [option],
+        technicalModels: [geminiSearchModel]
+      });
+      const plan = await loadProviderAdmissionPlan(db as unknown as Prisma.TransactionClient, {
+        providerConnectionId: request.answer.connectionId,
+        providerModelId: request.answer.id,
+        ...(request.requiresClientToolCoexistence
+          ? { requiresClientToolCoexistence: true }
+          : {}),
+        searchPlan: { mode: "model_choice", optionIds: [option.optionId] },
+        searchStrategyId: option.optionId,
+        userId: "user-1"
+      });
+      expect(expectSearch(plan)).toMatchObject({
+        bindingKey: "search:gemini-google-search",
+        integrationId: "route-client:gemini",
+        configuration: { adapterKind: "provider_model_client", provider: "gemini" },
+        role: { snapshot: { connectionId: geminiModel.connectionId } }
+      });
+    }
+  });
+
+  it("resolves a multi-source plan as all-client or fails without a complete assignment", async () => {
+    const openAi = openAiOption();
+    const google = geminiOption();
+    const { db } = admissionDb({
+      answer: geminiModel,
+      options: [google, openAi],
+      technicalModels: [geminiSearchModel, officialOpenAiSearchModel]
+    });
+    const plan = await loadProviderAdmissionPlan(db as unknown as Prisma.TransactionClient, {
+      providerConnectionId: geminiModel.connectionId,
+      providerModelId: geminiModel.id,
+      searchPlan: {
+        mode: "all_selected",
+        optionIds: [google.optionId, openAi.optionId]
+      },
+      searchStrategyId: google.optionId,
+      userId: "user-1"
+    });
+    expect(plan.searches?.map((search) => search.configuration.adapterKind)).toEqual([
+      "provider_model_client",
+      "provider_model_client"
+    ]);
+
+    const modelChoiceDb = admissionDb({
+      answer: officialOpenAiModel,
+      options: [google, openAi],
+      technicalModels: [geminiSearchModel, officialOpenAiSearchModel]
+    });
+    const modelChoice = await loadProviderAdmissionPlan(
+      modelChoiceDb.db as unknown as Prisma.TransactionClient,
+      {
+        providerConnectionId: officialOpenAiModel.connectionId,
+        providerModelId: officialOpenAiModel.id,
+        searchPlan: {
+          mode: "model_choice",
+          optionIds: [google.optionId, openAi.optionId]
+        },
+        searchStrategyId: google.optionId,
+        userId: "user-1"
+      }
+    );
+    expect(modelChoice.searches?.map((search) => search.configuration.adapterKind)).toEqual([
+      "provider_model_client",
+      "answer_provider_hosted"
+    ]);
+
+    const incomplete = admissionDb({
+      answer: geminiModel,
+      options: [geminiOption(false), openAi],
+      technicalModels: [officialOpenAiSearchModel]
+    });
+    await expect(loadProviderAdmissionPlan(
+      incomplete.db as unknown as Prisma.TransactionClient,
+      {
+        providerConnectionId: geminiModel.connectionId,
+        providerModelId: geminiModel.id,
+        searchPlan: {
+          mode: "all_selected",
+          optionIds: ["gemini-google-search", openAi.optionId]
+        },
+        searchStrategyId: "gemini-google-search",
+        userId: "user-1"
+      }
+    )).rejects.toMatchObject({ code: "search_strategy_not_available" });
   });
 
   it.each([

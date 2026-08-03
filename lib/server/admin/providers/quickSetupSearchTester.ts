@@ -1,5 +1,5 @@
 import { textMessageContent } from "../../../domain/content";
-import { normalizeSearchSources } from "../../search/evidence";
+import { searchSourcesFromCitationArtifacts } from "../../search/evidence";
 import {
   type ProviderConnectionConfiguration,
   type ProviderModelConfiguration
@@ -111,10 +111,10 @@ export function createAdminProviderQuickSetupSearchTester(
         if (next.value.type === "artifact") artifacts.push(next.value);
         next = await stream.next();
       }
-      const normalizedSourceCount = normalizeSearchSources([
-        artifacts,
-        next.value.finalProviderResponsePreview
-      ], 8).length;
+      const normalizedSourceCount = searchSourcesFromCitationArtifacts(
+        artifacts as import("../../../domain/modelRunEvents").ModelRunSseEvent[],
+        8
+      ).length;
       return {
         normalizedSourceCount,
         status: normalizedSourceCount > 0 ? "available" : "unavailable"

@@ -296,6 +296,8 @@ function draftForModel(
       adminSearchExecutionDefaults.maxSearchCallsPerAnswer,
     protocol: model.searchKind === "perplexity_search"
       ? "openrouter_perplexity_chat"
+      : model.searchKind === "gemini_google_search"
+        ? "gemini_google_search"
       : "openai_responses_web_search",
     providerModelId: model.id,
     queryMaxCharacters: current?.queryMaxCharacters ?? 500,

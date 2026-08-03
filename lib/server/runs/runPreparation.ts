@@ -92,6 +92,7 @@ export type RunPreparationDeps = Readonly<{
     load(input: {
       providerConnectionId: string;
       providerModelId: string;
+      requiresClientToolCoexistence?: boolean;
       searchPlan?: import("../../domain/search").SearchPlan;
       searchPreferencePlan?: import("../../domain/search").SearchPlan | null;
       searchPreferenceSource?: "organization" | "personal";
@@ -1041,17 +1042,49 @@ export async function prepareRun(
   });
   if (mcpCompatibility) return failure(mcpCompatibility.code, mcpCompatibility.status);
   if (
-    (admissionPlan?.searches?.some((candidate) =>
-      candidate.configuration.protocol === "gemini_google_search") ??
-      requestedSearchStrategy === geminiGoogleSearchStrategyId) &&
+    admissionPlan &&
+    deps.providerAdmission &&
     mcpPlan?.ok &&
-    mcpPlan.snapshot.servers.length > 0
+    mcpPlan.snapshot.servers.length > 0 &&
+    admissionPlan.searches?.some((candidate) =>
+      candidate.configuration.adapterKind === "answer_provider_hosted")
   ) {
-    return failure(
-      "gemini_search_with_client_tools_not_supported",
-      400,
-      "Gemini Google Search cannot be combined with MCP tools in the same run."
-    );
+    try {
+      admissionPlan = await deps.providerAdmission.load({
+        providerConnectionId: selectedProvider,
+        providerModelId: selectedModelId,
+        requiresClientToolCoexistence: true,
+        searchPlan: requestedSearchPlan,
+        ...(requestedSearchPreference
+          ? {
+              searchPreferencePlan: requestedSearchPreference.plan,
+              searchPreferenceSource: requestedSearchPreference.source
+            }
+          : {}),
+        searchStrategyId: requestedSearchStrategy,
+        userId: input.userId
+      });
+    } catch (error) {
+      if (error instanceof ProviderAdmissionError) {
+        return failure(
+          error.code,
+          error.code === "credential_assignment_ambiguous" ? 409 : 403
+        );
+      }
+      throw error;
+    }
+    requestedSearchPlan = admissionPlan.requestedSearchPlan ?? requestedSearchPlan;
+    if (
+      attachmentIds.length > 0 &&
+      admissionPlan.searches?.some((candidate) =>
+        candidate.configuration.adapterKind === "provider_model_client")
+    ) {
+      return failure(
+        "client_search_with_attachments_not_supported",
+        400,
+        "Client Search cannot be combined with attachments without separate disclosure consent."
+      );
+    }
   }
 
   const uniqueAttachmentIds = Array.from(new Set(attachmentIds));

@@ -10,6 +10,11 @@ import {
 import { parseSseStream } from "./sse";
 import type { ProviderRunResult } from "./types";
 import { visibleAnswerText } from "./visibleAnswer";
+import {
+  normalizeSearchFindings,
+  normalizeSearchSources,
+  type SearchSource
+} from "../search/evidence";
 
 const MAX_INTERACTION_ID_LENGTH = 512;
 const MAX_MODEL_LENGTH = 512;
@@ -546,6 +551,96 @@ function resultFromNormalized(input: NormalizedInteraction): ProviderRunResult {
     providerToolCallMessage: input.toolCalls.length > 0 ? input.protectedSteps : undefined,
     toolCalls: input.toolCalls,
     usage: input.usage
+  };
+}
+
+export type GeminiInteractionsSearchResponse = Readonly<{
+  artifacts: ModelRunSseEvent[];
+  finalProviderResponsePreview: Record<string, unknown>;
+  findings: string;
+  providerResponseId?: string;
+  sources: readonly SearchSource[];
+  usage: ModelRunUsage;
+}>;
+
+function geminiSearchOperationArtifacts(
+  protectedSteps: readonly Record<string, unknown>[]
+): ModelRunSseEvent[] {
+  return protectedSteps.flatMap((protectedStep, outputIndex): ModelRunSseEvent[] => {
+    const step = geminiInteractionStepForWire(protectedStep);
+    if (step.type !== "google_search_call" || typeof step.id !== "string") return [];
+    const argumentsRecord = isRecord(step.arguments) ? step.arguments : {};
+    const queries = Array.isArray(argumentsRecord.queries)
+      ? argumentsRecord.queries.filter((query): query is string =>
+          boundedString(query, MAX_SEARCH_QUERY_LENGTH))
+      : [];
+    return [{
+      data: {
+        artifactType: "search",
+        payload: {
+          action: {
+            ...(queries.length ? { queries } : {}),
+            type: "search"
+          },
+          id: step.id,
+          outputIndex,
+          provider: "gemini",
+          status: "completed",
+          type: "web_search_call"
+        }
+      },
+      type: "artifact"
+    }];
+  });
+}
+
+export function normalizeGeminiInteractionsSearchResponse(
+  response: GeminiInteractionRecord,
+  context: GeminiInteractionsResponseContext
+): GeminiInteractionsSearchResponse {
+  const normalized = normalizeInteraction(response, context);
+  if (normalized.status !== "completed") {
+    throw new Error("gemini_interactions_search_not_completed");
+  }
+  if (!normalized.grounding || normalized.grounding.data.runSearch.callCount < 1) {
+    throw new Error("gemini_interactions_search_call_missing");
+  }
+  const sources = normalizeSearchSources(
+    normalized.grounding.data.citations.map((citation) => ({
+      title: citation.title,
+      url: citation.url
+    }))
+  );
+  if (sources.length === 0) {
+    throw new Error("gemini_interactions_search_sources_missing");
+  }
+  const operationArtifacts = geminiSearchOperationArtifacts(normalized.protectedSteps);
+  const citationArtifacts: ModelRunSseEvent[] = sources.map((source) => ({
+    data: {
+      artifactType: "citation",
+      payload: {
+        index: source.rank,
+        source: "gemini",
+        title: source.title,
+        url: source.url
+      }
+    },
+    type: "artifact"
+  }));
+  return {
+    artifacts: [...operationArtifacts, ...citationArtifacts],
+    finalProviderResponsePreview: {
+      ...responsePreview(normalized),
+      grounding: {
+        callCount: normalized.grounding.data.runSearch.callCount,
+        citationCount: sources.length,
+        queryCount: normalized.grounding.data.runSearch.queryCount
+      }
+    },
+    findings: normalizeSearchFindings(normalized.finalText),
+    ...(normalized.id ? { providerResponseId: normalized.id } : {}),
+    sources,
+    usage: normalized.usage
   };
 }
 

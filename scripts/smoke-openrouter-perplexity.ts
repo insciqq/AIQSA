@@ -121,7 +121,7 @@ async function main() {
         artifactTypes: result.artifacts
           .filter((artifact) => artifact.type === "artifact")
           .map((artifact) => artifact.data.artifactType),
-        outputPreview: result.finalText.slice(0, 160),
+        outputPreview: result.findings.slice(0, 160),
         providerResponseIdPresent: Boolean(result.providerResponseId),
         usage: result.usage
       },

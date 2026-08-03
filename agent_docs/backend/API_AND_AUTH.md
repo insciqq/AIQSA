@@ -124,7 +124,7 @@ All administrator routes recheck an active administrator. Non-admin users receiv
 - Search and MCP share a provider-neutral continuation loop. The complete requested batch is persisted before bounded parallel dispatch and provider-order replay. Completed calls may be reused during recovery; a call left running across a crash is outcome-unknown and is never automatically repeated.
 - MCP plans snapshot exact revisions, generations, fingerprints, schemas, namespaced tools, and safe account/source labels. Insert-time fencing rejects stale readiness or access atomically rather than silently dropping tools.
 - Preferred Search intent and model-compatible effective execution are distinct. Run creation revalidates entitlement, compatibility, integration revisions, provider/model/credential state, and deterministic credential resolution before persisting immutable answer and Search bindings. Each actual engine invocation is a separate execution record.
-- Provider continuations retain their accepted native transcript/checkpoint where supported. Private signatures and raw provider payloads never enter previews. Gemini native grounding switches the run to live-only answer persistence; grounded content and signatures remain transient while neutral provenance/usage placeholders remain durable.
+- Provider continuations retain their accepted native transcript/checkpoint where supported. Private signatures and raw provider payloads never enter previews. Hosted-answer Gemini native grounding switches the run to live-only answer persistence; grounded content and signatures remain transient while neutral provenance/usage placeholders remain durable. Query-only Gemini client Search retains only its normalized findings/citations in the ordinary settled tool result and Search evidence.
 - Live events provide immediate tool activity; authenticated chat/run reads project the same bounded, redacted durable tool-call evidence. Cancellation propagates best-effort abort but never claims external rollback.
 
 ### Inspection, terminal settlement, and cancellation
@@ -139,7 +139,7 @@ All administrator routes recheck an active administrator. Non-admin users receiv
 - Upload validates authentication, ownership context, size, extension/type, magic bytes or text content, and image/PDF complexity before persisting. Stored MIME derives from validated content, not the browser declaration. Text-like extraction is local and bounded; PDF work is page/time bounded and terminable.
 - Object keys are unique per upload. If row creation fails after object storage, a durable cleanup job is staged before immediate best-effort deletion; failed cleanup remains retryable.
 - Public shares are immutable sanitized snapshots. The token is hashed for lookup; create/read/revoke never exposes live private state. Missing, invalid, expired, or revoked tokens share one generic unavailable response.
-- Public API/page reads reauthorize against the repository on every request, are force-dynamic, use private no-store and noindex/noarchive policy, and never cache revocation behind the framework or an intermediary. Native Gemini live-only grounded answers cannot be shared as placeholder content.
+- Public API/page reads reauthorize against the repository on every request, are force-dynamic, use private no-store and noindex/noarchive policy, and never cache revocation behind the framework or an intermediary. Hosted-answer native Gemini live-only grounded answers cannot be shared as placeholder content.
 
 ## Change Rules
 

@@ -127,7 +127,7 @@ describe("OpenRouter Perplexity search adapter", () => {
         provider: "openrouter",
         text: "Search answer [1]"
       },
-      finalText: "Search answer [1]",
+      findings: "Search answer [1]",
       providerResponseId: "or-search-1",
       requestPreview: {
         body: {
@@ -149,6 +149,12 @@ describe("OpenRouter Perplexity search adapter", () => {
         totalTokens: 16
       }
     });
+    expect(result.sources).toEqual([{
+      rank: 1,
+      snippet: "A useful source",
+      title: "Primary source",
+      url: "https://example.com/source"
+    }]);
     expect(result.artifacts).toEqual([
       {
         data: {
@@ -312,7 +318,7 @@ describe("OpenRouter Perplexity search adapter", () => {
     });
 
     await expect(adapter.search(searchRequest())).resolves.toMatchObject({
-      finalText: "Search answer"
+      findings: "Search answer"
     });
   });
 
@@ -337,7 +343,7 @@ describe("OpenRouter Perplexity search adapter", () => {
     });
 
     await expect(adapter.search(searchRequest())).resolves.toMatchObject({
-      finalText: "Successful answer",
+      findings: "Successful answer",
       providerResponseId: "or-search-1"
     });
   });
@@ -347,7 +353,7 @@ describe("OpenRouter Perplexity search adapter", () => {
 
     const result = await adapter.search(searchRequest());
 
-    expect(result.finalText).toBe(
+    expect(result.findings).toBe(
       "Fake Perplexity search findings for: Find one concise fact.\n[1] https://example.com/aiqsa-search"
     );
     expect(result.providerResponseId).toBe("fake-openrouter-search-1");
@@ -359,7 +365,7 @@ describe("OpenRouter Perplexity search adapter", () => {
             model: "perplexity/sonar-pro-search",
             provider: "openrouter",
             strategyId: "perplexity-tool-search",
-            text: result.finalText
+            text: result.findings
           }
         },
         type: "artifact"

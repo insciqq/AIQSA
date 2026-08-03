@@ -73,4 +73,52 @@ describe("Gemini Interactions adapter", () => {
     expect(client.streamInteraction).toHaveBeenCalledOnce();
     expect(result.finalText).toBe("ok");
   });
+
+  it("does not require hosted grounding for a logical Google source admitted as client Search", async () => {
+    const body = [
+      'event: interaction.created\ndata: {"event_type":"interaction.created","interaction":{"id":"stream-client-search","status":"in_progress"}}\n\n',
+      'event: step.start\ndata: {"event_type":"step.start","index":0,"step":{"type":"model_output","content":[]}}\n\n',
+      'event: step.delta\ndata: {"event_type":"step.delta","index":0,"delta":{"type":"text","text":"ordinary answer"}}\n\n',
+      'event: step.stop\ndata: {"event_type":"step.stop","index":0}\n\n',
+      'event: interaction.completed\ndata: {"event_type":"interaction.completed","interaction":{"id":"stream-client-search","status":"completed"}}\n\n',
+      "event: done\ndata: [DONE]\n\n"
+    ].join("");
+    const client: GeminiInteractionsClient = {
+      createInteraction: vi.fn(),
+      streamInteraction: vi.fn(async () => new Response(body, {
+        headers: { "content-type": "text/event-stream" }
+      }))
+    };
+    const clientSearchRequest: ProviderRunRequest = {
+      ...request(true),
+      searchPlan: {
+        mode: "model_choice",
+        options: [{
+          adapterKind: "provider_model_client",
+          config: {},
+          credentialMode: "provider_model",
+          displayName: "Google Search",
+          executionModes: ["all_selected", "model_choice"],
+          modelId: "gemini-3.6-flash",
+          optionId: "gemini-google-search",
+          protocol: "gemini_google_search",
+          provider: "gemini",
+          providerModelId: "gemini-search-model",
+          revisionId: "gemini-search-revision",
+          searchStrategyRowId: "gemini-search-client-route"
+        }]
+      },
+      searchStrategy: "gemini-google-search"
+    };
+
+    const result = await collect(
+      createGeminiInteractionsAdapter({ client }).stream(clientSearchRequest)
+    );
+
+    expect(client.streamInteraction).toHaveBeenCalledWith(
+      expect.not.objectContaining({ tools: [{ type: "google_search" }] }),
+      expect.any(Object)
+    );
+    expect(result.finalText).toBe("ordinary answer");
+  });
 });

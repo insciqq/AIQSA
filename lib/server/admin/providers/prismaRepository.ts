@@ -321,14 +321,22 @@ function checkMatchesWrite(
 
 type ProviderSearchPolicy = Readonly<{
   clientId: string;
+  clientKind: "gemini_google_search" | "provider_model_web_search";
   displayName: string;
   description: string;
   hostedId: string;
-  modelAdapterKind: "openai_responses_compatible" | "openai_responses_native";
+  hostedKind: "gemini_google_search" | "openai_native_web_search";
+  hostedStrategyId: string;
+  modelAdapterKind:
+    | "gemini_interactions_native"
+    | "openai_responses_compatible"
+    | "openai_responses_native";
   optionId: string;
+  optionKind: "gemini_google_search" | "web_search";
   optionRowId: string;
   optionTemplateKey: string | null;
-  provider: "openai" | "openai_compatible";
+  protocol: "gemini_google_search" | "openai_responses_web_search";
+  provider: "gemini" | "openai" | "openai_compatible";
 }>;
 
 function providerSearchPolicy(connection: Readonly<{
@@ -340,27 +348,55 @@ function providerSearchPolicy(connection: Readonly<{
   if (connection.family === "openai" && connection.templateKey === "openai") {
     return {
       clientId: `openai-search-client:${connection.id}`,
+      clientKind: "provider_model_web_search",
       description: "Web search provided by OpenAI.",
       displayName: "OpenAI Search",
       hostedId: "openai-native-web-search",
+      hostedKind: "openai_native_web_search",
+      hostedStrategyId: "openai-native-web-search",
       modelAdapterKind: "openai_responses_native",
       optionId: "openai-native-web-search",
+      optionKind: "web_search",
       optionRowId: "00000000-0000-4000-8000-000000001402",
       optionTemplateKey: "search:openai",
+      protocol: "openai_responses_web_search",
       provider: "openai"
+    };
+  }
+  if (connection.family === "gemini" && connection.templateKey === "gemini") {
+    return {
+      clientId: `gemini-search-client:${connection.id}`,
+      clientKind: "gemini_google_search",
+      description: "Google Search grounding for eligible Gemini models.",
+      displayName: "Google Search",
+      hostedId: "00000000-0000-4000-8000-000000001301",
+      hostedKind: "gemini_google_search",
+      hostedStrategyId: "gemini-google-search",
+      modelAdapterKind: "gemini_interactions_native",
+      optionId: "gemini-google-search",
+      optionKind: "gemini_google_search",
+      optionRowId: "00000000-0000-4000-8000-000000001403",
+      optionTemplateKey: "search:gemini-google",
+      protocol: "gemini_google_search",
+      provider: "gemini"
     };
   }
   if (connection.family !== "openai_compatible" || connection.templateKey !== null) return null;
   const sourceName = connection.displayName.trim() || "Custom endpoint";
   return {
     clientId: `custom-web-search-client:${connection.id}`,
+    clientKind: "provider_model_web_search",
     description: `Web search provided by ${sourceName}.`.slice(0, 500),
     displayName: `${sourceName.slice(0, 153)} Search`,
     hostedId: `custom-web-search-hosted:${connection.id}`,
+    hostedKind: "openai_native_web_search",
+    hostedStrategyId: `custom-web-search-hosted:${connection.id}`,
     modelAdapterKind: "openai_responses_compatible",
     optionId: `custom-web-search:${connection.id}`,
+    optionKind: "web_search",
     optionRowId: `custom-web-search-option:${connection.id}`,
     optionTemplateKey: null,
+    protocol: "openai_responses_web_search",
     provider: "openai_compatible"
   };
 }
@@ -371,11 +407,12 @@ async function publishProviderSearchRoute(
     draft: AdminSearchDraft;
     evidence: Record<string, unknown>;
     existing: null | Readonly<{ draft: unknown; id: string }>;
-    kind: "openai_native_web_search" | "provider_model_web_search";
+    kind: "gemini_google_search" | "openai_native_web_search" | "provider_model_web_search";
     modelId: string | null;
     now: Date;
     option: Readonly<{ description: string; displayName: string; id: string }>;
     preferredId: string;
+    preferredStrategyId: string;
     provider: string;
   }>
 ): Promise<void> {
@@ -424,7 +461,7 @@ async function publishProviderSearchRoute(
       provider: input.provider,
       providerModelId: draft.providerModelId,
       searchOptionId: input.option.id,
-      strategyId: input.preferredId,
+      strategyId: input.preferredStrategyId,
       testedDraftHash: null
     }
   });
@@ -496,7 +533,7 @@ async function synchronizeProviderSearch(
   const existingOption = await tx.searchOption.findUnique({
     where: {
       sourceConnectionId_kind: {
-        kind: "web_search",
+        kind: policy.optionKind,
         sourceConnectionId: connection.id
       }
     }
@@ -520,7 +557,7 @@ async function synchronizeProviderSearch(
       displayName: policy.displayName,
       enabled: true,
       id: policy.optionRowId,
-      kind: "web_search",
+      kind: policy.optionKind,
       optionId: policy.optionId,
       sourceConnectionId: connection.id,
       templateKey: policy.optionTemplateKey
@@ -532,7 +569,7 @@ async function synchronizeProviderSearch(
     maxOutputTokens: adminSearchExecutionDefaults.maxOutputTokens,
     maxResults: 8,
     maxSearchCallsPerAnswer: adminSearchExecutionDefaults.maxSearchCallsPerAnswer,
-    protocol: "openai_responses_web_search" as const,
+    protocol: policy.protocol,
     queryMaxCharacters: 500,
     timeoutMs: 300_000
   };
@@ -556,7 +593,7 @@ async function synchronizeProviderSearch(
     checkedAt: input.now.toISOString(),
     method: "provider_activation_configuration",
     normalizedSourceCount: 0,
-    protocol: "openai_responses_web_search",
+    protocol: policy.protocol,
     sourceProbe: false,
     status: "available"
   } as const;
@@ -581,22 +618,24 @@ async function synchronizeProviderSearch(
     draft: hostedDraft,
     evidence: activationEvidence,
     existing: existingHosted,
-    kind: "openai_native_web_search",
+    kind: policy.hostedKind,
     modelId: null,
     now: input.now,
     option,
     preferredId: policy.hostedId,
+    preferredStrategyId: policy.hostedStrategyId,
     provider: policy.provider
   });
   await publishProviderSearchRoute(tx, {
     draft: clientDraft,
     evidence: activationEvidence,
     existing: existingClient,
-    kind: "provider_model_web_search",
+    kind: policy.clientKind,
     modelId: selectedModel.configuration.upstreamModelId,
     now: input.now,
     option,
     preferredId: policy.clientId,
+    preferredStrategyId: policy.clientId,
     provider: policy.provider
   });
 }

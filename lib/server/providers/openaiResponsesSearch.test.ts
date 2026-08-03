@@ -185,7 +185,7 @@ describe("OpenAI Responses query-only Search adapter", () => {
       { signal: controller.signal, timeoutMs: 45_000 }
     );
     expect(result).toMatchObject({
-      finalText: "Current findings.",
+      findings: "Current findings.",
       providerResponseId: "resp-search-1",
       requestPreview: {
         body: {
@@ -209,7 +209,51 @@ describe("OpenAI Responses query-only Search adapter", () => {
         totalTokens: 18
       }
     });
+    expect(result.sources).toEqual([{
+      rank: 1,
+      title: "Source",
+      url: "https://example.com/news"
+    }]);
     expect(result.artifacts.map((event) => event.type)).toEqual(["artifact", "artifact"]);
+  });
+
+  it("normalizes the explicitly requested action sources without response traversal", async () => {
+    const adapter = createOpenAIResponsesSearchAdapter({
+      client: client(async () => ({
+        id: "resp-action-sources",
+        output: [{
+          action: {
+            query: "Moscow news",
+            sources: [{
+              snippet: "Explicit source evidence",
+              title: "Action source",
+              url: "https://example.com/action-source"
+            }],
+            type: "search"
+          },
+          id: "ws-action-sources",
+          status: "completed",
+          type: "web_search_call"
+        }, {
+          content: [{ text: "Current findings.", type: "output_text" }],
+          role: "assistant",
+          type: "message"
+        }],
+        status: "completed",
+        usage: { input_tokens: 2, output_tokens: 2, total_tokens: 4 }
+      })),
+      provider: "openai"
+    });
+
+    await expect(adapter.search(searchRequest())).resolves.toMatchObject({
+      findings: "Current findings.",
+      sources: [{
+        rank: 1,
+        snippet: "Explicit source evidence",
+        title: "Action source",
+        url: "https://example.com/action-source"
+      }]
+    });
   });
 
   it("throws a raw-free typed incomplete error with reason, usage, and bounded operations", async () => {
@@ -338,10 +382,9 @@ describe("OpenAI Responses query-only Search adapter", () => {
           error
         })
       );
-      if (status === "completed") {
-        expect(outcome.error).toBeNull();
-      } else {
-        expect(isProviderSearchExecutionError(outcome.error)).toBe(true);
+      expect(isProviderSearchExecutionError(outcome.error)).toBe(true);
+      if (status === "completed" && isProviderSearchExecutionError(outcome.error)) {
+        expect(outcome.error.code).toBe("openai_search_findings_invalid");
       }
 
       const operations = providerSearchOperationsFromArtifacts(outcome.artifacts);

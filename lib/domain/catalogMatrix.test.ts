@@ -28,9 +28,9 @@ describe("catalog capability matrix", () => {
         strategyId: "client-b"
       },
       {
-        executionModes: ["model_choice"] as const,
+        executionModes: ["all_selected", "model_choice"] as const,
         kind: "gemini_google_search" as const,
-        strategyId: "native-exclusive"
+        strategyId: "google-search"
       }
     ];
 
@@ -40,17 +40,17 @@ describe("catalog capability matrix", () => {
       "all_selected"
     )).toBe(true);
     expect(isSearchCombinationCompatible(
-      ["native-exclusive", "client-a"],
+      ["google-search", "client-a"],
       options,
       "model_choice"
-    )).toBe(false);
+    )).toBe(true);
     expect(reconcileSearchPlanSelection(
-      ["client-a", "native-exclusive", "client-b", "client-a"],
+      ["client-a", "google-search", "client-b", "client-a"],
       "all_selected",
       options
     )).toEqual({
       mode: "all_selected",
-      optionIds: ["client-a", "client-b"]
+      optionIds: ["client-a", "google-search", "client-b"]
     });
   });
 

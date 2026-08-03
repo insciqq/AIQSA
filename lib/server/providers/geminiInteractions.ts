@@ -39,6 +39,9 @@ export function createGeminiInteractionsAdapter(
       const body = buildGeminiInteractionsRequest(request, {
         maxAttachmentTextChars: options.maxAttachmentTextChars
       });
+      const groundingExpected = body.tools?.some((tool) =>
+        tool.type === "google_search"
+      ) ?? false;
       if (body.stream === true) {
         const response = await options.client.streamInteraction(body, {
           signal: runOptions.signal
@@ -47,7 +50,7 @@ export function createGeminiInteractionsAdapter(
           throw new Error("gemini_interactions_stream_body_missing");
         }
         return yield* parseGeminiInteractionsSse({
-          groundingExpected: request.searchStrategy === "gemini-google-search",
+          groundingExpected,
           idleTimeoutMs: providerStreamIdleTimeoutMs(),
           modelId: request.modelId,
           responseBody: response.body,
@@ -59,7 +62,7 @@ export function createGeminiInteractionsAdapter(
         signal: runOptions.signal
       });
       return yield* streamGeminiInteractionsJsonResponse(response, {
-        groundingExpected: request.searchStrategy === "gemini-google-search",
+        groundingExpected,
         modelId: request.modelId
       });
     }

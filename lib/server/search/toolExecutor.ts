@@ -21,7 +21,12 @@ import type {
   ProviderSearchRequest
 } from "../providers/types";
 import type { ModelToolCall, RunTool, ToolExecutionResult } from "../tools/types";
-import { normalizeSearchSources, type SearchSource } from "./evidence";
+import {
+  MAX_SEARCH_FINDINGS_CHARACTERS,
+  normalizeSearchFindings,
+  normalizeSearchSources,
+  type SearchSource
+} from "./evidence";
 import { providerSearchOperationsFromArtifacts } from "./providerOperations";
 import { validateSearchToolArguments } from "./query";
 
@@ -35,6 +40,7 @@ export type SearchExecutionEvidence = Readonly<{
     providerStatus?: string;
     reason?: string;
   }>;
+  findings?: string;
   invocationId: string;
   modelId: string | null;
   optionId: string;
@@ -50,9 +56,7 @@ export type SearchExecutionEvidence = Readonly<{
   warning?: string;
 }>;
 
-type SearchExecutionResult = SearchExecutionEvidence & Readonly<{
-  finalText?: string;
-}>;
+type SearchExecutionResult = SearchExecutionEvidence;
 
 type SearchFailureEvidence = NonNullable<SearchExecutionEvidence["failure"]>;
 
@@ -86,6 +90,15 @@ function boundedFailureField(value: unknown, maximum: number): string | undefine
     !/[\u0000-\u001f\u007f]/u.test(value)
     ? value
     : undefined;
+}
+
+function decodedFindings(value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  try {
+    return normalizeSearchFindings(value);
+  } catch {
+    return undefined;
+  }
 }
 
 function decodedFailure(value: unknown): SearchFailureEvidence | undefined {
@@ -238,6 +251,15 @@ function queryOnlyRequest(
       reasoningPolicy: configured.reasoningPolicy,
       strategyId: "openai-responses-web-search"
     };
+  } else if (option.protocol === "gemini_google_search" && option.provider === "gemini") {
+    searchPolicy = {
+      maxOutputTokens: configured.maxOutputTokens,
+      modelCapabilities: configured.capabilities,
+      modelId: option.modelId ?? "",
+      provider: "gemini",
+      reasoningPolicy: configured.reasoningPolicy,
+      strategyId: "gemini-google-search"
+    };
   } else {
     throw new Error("search_protocol_not_supported");
   }
@@ -257,7 +279,7 @@ async function consumeProviderSearch(
   timeoutMs?: number
 ): Promise<{
   artifacts: ModelRunSseEvent[];
-  finalText: string;
+  findings: string;
   requestPreview: Record<string, unknown>;
   sources: SearchSource[];
   usage: ModelRunUsage;
@@ -266,12 +288,9 @@ async function consumeProviderSearch(
   const result = await runtime.searchAdapter.search(request, { signal, timeoutMs });
   return {
     artifacts: result.artifacts,
-    finalText: result.finalText,
+    findings: normalizeSearchFindings(result.findings),
     requestPreview: result.requestPreview,
-    sources: normalizeSearchSources([
-      result.artifacts,
-      result.finalProviderResponsePreview
-    ], configuration(option).maxResults),
+    sources: normalizeSearchSources(result.sources, configuration(option).maxResults),
     usage: result.usage
   };
 }
@@ -332,13 +351,11 @@ async function executeOne(input: Readonly<{
       timeoutController.signal,
       configured.timeoutMs
     );
-    const providerTrace = input.option.protocol === "openai_responses_web_search"
-      ? providerSearchOperationsFromArtifacts(result.artifacts)
-      : null;
+    const providerTrace = providerSearchOperationsFromArtifacts(result.artifacts);
     return {
       displayName: searchDisplayName(input.option),
       durationMs: Date.now() - started,
-      finalText: result.finalText,
+      findings: result.findings,
       invocationId,
       modelId: input.option.modelId,
       optionId: input.option.optionId,
@@ -415,12 +432,18 @@ export function searchExecutionsFromToolResult(
       typeof value.query === "string" &&
       typeof value.revisionId === "string" &&
       Array.isArray(value.sources) &&
+      (value.findings === undefined || (
+        typeof value.findings === "string" &&
+        value.findings.length <= MAX_SEARCH_FINDINGS_CHARACTERS
+      )) &&
       (value.status === "complete" || value.status === "error") &&
       isRecord(value.usage)
     );
     if (!valid) return [];
     const failure = value.failure === undefined ? undefined : decodedFailure(value.failure);
     if (value.failure !== undefined && !failure) return [];
+    const findings = decodedFindings(value.findings);
+    if (value.findings !== undefined && !findings) return [];
     let providerOperations: ThreadSearchProviderOperation[] | undefined;
     if (value.providerOperations !== undefined) {
       if (!Array.isArray(value.providerOperations) || value.providerOperations.length > 32) return [];
@@ -437,6 +460,7 @@ export function searchExecutionsFromToolResult(
         : "Search source",
       providerOperationsTruncated: value.providerOperationsTruncated === true,
       ...(failure ? { failure } : {}),
+      ...(findings ? { findings } : {}),
       ...(providerOperations ? { providerOperations } : {})
     }];
   });
@@ -595,8 +619,8 @@ export function createSearchPlanToolRouter(input: Readonly<{
           : [];
       });
       const text = [
-        ...successful.flatMap((execution) => execution.finalText
-          ? [`Search source ${JSON.stringify(execution.displayName)}:\n${execution.finalText}`]
+        ...successful.flatMap((execution) => execution.findings
+          ? [`Search source ${JSON.stringify(execution.displayName)}:\n${execution.findings}`]
           : []),
         sources.length
           ? `Sources:\n${sources.map((source, index) =>
@@ -616,7 +640,7 @@ export function createSearchPlanToolRouter(input: Readonly<{
         name: call.name,
         rawPreview: {
           finalProviderResponsePreview: {
-            searchExecutions: executions.map(({ finalText: _finalText, ...execution }) => execution),
+            searchExecutions: executions,
             sources,
             warnings
           },

@@ -5,6 +5,7 @@ import {
   createFetchGeminiInteractionsClient,
   createGeminiInteractionsAdapter
 } from "./geminiInteractions";
+import { createGeminiInteractionsSearchAdapter } from "./geminiInteractionsSearch";
 import {
   createOpenAICompatibleChatAdapter,
   createFetchOpenAICompatibleChatClient
@@ -273,17 +274,22 @@ export function createProviderRuntimeBinding(input: Readonly<{
   const baseUrl = snapshot.connection.apiRoot;
 
   switch (snapshot.model.adapterKind) {
-    case "gemini_interactions_native":
+    case "gemini_interactions_native": {
+      const client = createFetchGeminiInteractionsClient({
+        apiKey: clientSecret,
+        apiRoot: baseUrl,
+        fetchFn
+      });
       return {
         adapter: createGeminiInteractionsAdapter({
-          client: createFetchGeminiInteractionsClient({
-            apiKey: clientSecret,
-            apiRoot: baseUrl,
-            fetchFn
-          })
+          client
         }),
+        ...(snapshot.model.capabilities.nativeSearch
+          ? { searchAdapter: createGeminiInteractionsSearchAdapter({ client }) }
+          : {}),
         toolBridge: geminiInteractionsToolBridge
       };
+    }
     case "openai_responses_native": {
       const client = createFetchOpenAIResponsesClient({ apiKey: clientSecret, baseUrl, fetchFn });
       return {

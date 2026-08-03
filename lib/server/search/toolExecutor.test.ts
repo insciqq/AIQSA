@@ -132,8 +132,13 @@ function runtime(input: Readonly<{
           finalProviderResponsePreview: {
             sources: [{ title: `Source ${modelId}`, url: input.sourceUrl ?? `https://example.com/${modelId}` }]
           },
-          finalText: `Finding from ${modelId}`,
+          findings: `Finding from ${modelId}`,
           requestPreview: { queryCharacters: request.query.length },
+          sources: [{
+            rank: 1,
+            title: `Source ${modelId}`,
+            url: input.sourceUrl ?? `https://example.com/${modelId}`
+          }],
           usage: {
             inputTokens: 2,
             outputTokens: 3,
@@ -273,11 +278,65 @@ describe("Search plan tool router", () => {
       ],
       url: "https://example.com/shared"
     })]);
-    expect(JSON.stringify(preview)).not.toContain("Finding from");
+    expect(preview.searchExecutions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ findings: "Finding from model-first" }),
+      expect.objectContaining({ findings: "Finding from model-second" })
+    ]));
     expect(searchExecutionsFromToolResult(result).map((execution) => execution.optionId)).toEqual([
       "first",
       "second"
     ]);
+  });
+
+  it("fans the same query through Gemini and OpenAI with protocol-specific policies", async () => {
+    const requests: ProviderSearchRequest[] = [];
+    const gemini = option("google", {
+      modelId: "gemini-3.6-flash",
+      protocol: "gemini_google_search",
+      provider: "gemini",
+      providerModelId: "gemini-technical-deployment"
+    });
+    const openai = option("openai", {
+      modelId: "gpt-5.6-terra",
+      providerModelId: "openai-technical-deployment"
+    });
+    const router = createSearchPlanToolRouter({
+      plan: { mode: "all_selected", options: [gemini, openai] },
+      runtimes: {
+        google: runtime({ onRequest: (request) => requests.push(request) }),
+        openai: runtime({ onRequest: (request) => requests.push(request) })
+      }
+    })!;
+
+    const result = await router.execute(
+      call(router.tools[0]!.name, "weather in Valencia"),
+      answerRequest()
+    );
+
+    expect(result.status).toBe("complete");
+    expect(requests).toHaveLength(2);
+    expect(requests.map((request) => request.query)).toEqual([
+      "weather in Valencia",
+      "weather in Valencia"
+    ]);
+    expect(requests[0]?.searchPolicy).toMatchObject({
+      maxOutputTokens: 4_096,
+      modelId: "gemini-3.6-flash",
+      provider: "gemini",
+      reasoningPolicy: "lowest_supported",
+      strategyId: "gemini-google-search"
+    });
+    expect(requests[1]?.searchPolicy).toMatchObject({
+      maxOutputTokens: 4_096,
+      modelId: "gpt-5.6-terra",
+      provider: "openai",
+      reasoningPolicy: "lowest_supported",
+      strategyId: "openai-responses-web-search"
+    });
+    const serialized = JSON.stringify(requests);
+    expect(serialized).not.toContain("private transcript");
+    expect(serialized).not.toContain("private developer prompt");
+    expect(serialized).not.toContain("private system prompt");
   });
 
   it("rejects attachment-bearing client Search before every provider runtime", async () => {

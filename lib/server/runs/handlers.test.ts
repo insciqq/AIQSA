@@ -2878,10 +2878,11 @@ describe("model run route handlers", () => {
           finalProviderResponsePreview: {
             provider: "openrouter"
           },
-          finalText: "very large search result ".repeat(1000),
+          findings: "very large search result ".repeat(1000),
           requestPreview: {
             provider: "openrouter"
           },
+          sources: [],
           usage: {
             inputTokens: 5,
             outputTokens: 5,

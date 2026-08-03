@@ -8,6 +8,8 @@ export type SearchSource = Readonly<{
   url: string;
 }>;
 
+export const MAX_SEARCH_FINDINGS_CHARACTERS = 262_144;
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -34,22 +36,29 @@ function safeHttpHref(value: unknown): string | undefined {
   }
 }
 
-/** Extract only the reviewed common source fields. Raw provider payloads stay
- * out of SearchRun evidence and tool results. */
+export function normalizeSearchFindings(value: unknown): string {
+  if (typeof value !== "string") throw new Error("search_findings_invalid");
+  const normalized = value.trim();
+  if (
+    !normalized ||
+    normalized.length > MAX_SEARCH_FINDINGS_CHARACTERS ||
+    /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u.test(normalized)
+  ) {
+    throw new Error("search_findings_invalid");
+  }
+  return normalized;
+}
+
+/** Normalize only an explicit flat list of adapter-selected source candidates.
+ * This deliberately does not crawl arbitrary provider payloads or previews. */
 export function normalizeSearchSources(value: unknown, maximum = 20): SearchSource[] {
   const sources: SearchSource[] = [];
-  const seenObjects = new WeakSet<object>();
   const seenUrls = new Set<string>();
-
-  function visit(candidate: unknown): void {
-    if (sources.length >= maximum || typeof candidate !== "object" || candidate === null) return;
-    if (seenObjects.has(candidate)) return;
-    seenObjects.add(candidate);
-    if (Array.isArray(candidate)) {
-      for (const entry of candidate) visit(entry);
-      return;
-    }
-    const row = candidate as Record<string, unknown>;
+  if (!Array.isArray(value)) return sources;
+  for (const candidate of value) {
+    if (sources.length >= maximum) break;
+    if (!isRecord(candidate)) continue;
+    const row = candidate;
     const safe = safeHttpHref(row.url) ?? safeHttpHref(row.href);
     if (safe && !seenUrls.has(safe)) {
       seenUrls.add(safe);
@@ -65,9 +74,19 @@ export function normalizeSearchSources(value: unknown, maximum = 20): SearchSour
         url: safe
       });
     }
-    for (const entry of Object.values(row)) visit(entry);
   }
-
-  visit(value);
   return sources;
+}
+
+/** Citation artifacts are already provider-adapter allowlist projections. */
+export function searchSourcesFromCitationArtifacts(
+  artifacts: readonly import("../../domain/modelRunEvents").ModelRunSseEvent[],
+  maximum = 20
+): SearchSource[] {
+  return normalizeSearchSources(artifacts.flatMap((event) =>
+    event.type === "artifact" && event.data.artifactType === "citation" &&
+      isRecord(event.data.payload)
+      ? [event.data.payload]
+      : []
+  ), maximum);
 }

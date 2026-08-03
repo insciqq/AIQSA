@@ -1234,8 +1234,9 @@ describe("run recovery", () => {
           finalProviderResponsePreview: {
             sources: [{ title: "Source", url: "https://example.test/source" }]
           },
-          finalText: "Recovered findings",
+          findings: "Recovered findings",
           requestPreview: {},
+          sources: [{ rank: 1, title: "Source", url: "https://example.test/source" }],
           usage: { inputTokens: 1, outputTokens: 1, reasoningTokens: 0 }
         };
       }
@@ -1304,6 +1305,132 @@ describe("run recovery", () => {
         provider: "openai_compatible",
         usage: expect.objectContaining({ inputTokens: 5, outputTokens: 6 })
       })])
+    });
+    expect(harness.state.recoveredErrors).toEqual([]);
+  });
+
+  it("recovers a pending Gemini client Search without repeating settled answer context", async () => {
+    const answerRequests: ProviderRunRequest[] = [];
+    const searchRequests: ProviderSearchRequest[] = [];
+    const answerAdapter: ProviderAdapter = {
+      buildRequestPreview: () => ({}),
+      async *stream(request) {
+        answerRequests.push(request);
+        return {
+          finalProviderResponsePreview: {},
+          finalText: "Recovered cross-provider answer",
+          usage: { inputTokens: 2, outputTokens: 3, reasoningTokens: 0 }
+        };
+      }
+    };
+    const searchAdapter: ProviderSearchAdapter = {
+      buildRequestPreview: () => ({ store: false }),
+      async search(request) {
+        searchRequests.push(request);
+        return {
+          artifacts: [],
+          finalProviderResponsePreview: {
+            searchSuggestionsHtml: "<div>RECOVERY_RAW_SUGGESTIONS_CANARY</div>",
+            thoughtSignature: "RECOVERY_RAW_SIGNATURE_CANARY"
+          },
+          findings: "Recovered Gemini findings",
+          requestPreview: { queryCharacters: request.query.length, store: false },
+          sources: [{
+            rank: 1,
+            title: "Recovered Gemini source",
+            url: "https://example.test/recovered-gemini"
+          }],
+          usage: { inputTokens: 1, outputTokens: 2, reasoningTokens: 0 }
+        };
+      }
+    };
+    const harness = createHarness({
+      providers: { gemini: answerAdapter, openai: answerAdapter },
+      searchProviders: { gemini: searchAdapter }
+    });
+    const createSearchRun = vi.fn<RunRecoveryRepository["createSearchRun"]>();
+    harness.repository.createSearchRun = createSearchRun;
+    const option = {
+      ...normalizedLegacySearchRequest().searchPlan!.options[0]!,
+      config: {
+        ...normalizedLegacySearchRequest().searchPlan!.options[0]!.config,
+        maxOutputTokens: 4_096,
+        maxSearchCallsPerAnswer: 2,
+        reasoningPolicy: "lowest_supported"
+      },
+      displayName: "Google Search",
+      modelId: "gemini-3.6-flash",
+      optionId: "gemini-google-search",
+      protocol: "gemini_google_search" as const,
+      provider: "gemini",
+      providerModelId: "gemini-search-deployment",
+      revisionId: "gemini-search-revision-1",
+      searchStrategyRowId: "gemini-search-client-route"
+    };
+    const storedCall: PersistedToolLoopCall = {
+      ...persistedRecoveryCall(),
+      arguments: { query: "weather in Valencia" },
+      mcpBinding: null,
+      toolName: "search_engine_1"
+    };
+    const base = checkpointedRun({
+      calls: [storedCall],
+      phase: "tools_pending",
+      providerToolMessages: [{
+        arguments: "{\"query\":\"weather in Valencia\"}",
+        call_id: "provider-call-1",
+        name: "search_engine_1",
+        type: "function_call"
+      }]
+    });
+    installCheckpointState(harness, {
+      ...base,
+      normalizedRequest: {
+        ...normalizedLegacySearchRequest(),
+        searchPlan: { mode: "model_choice", options: [option] },
+        searchStrategy: "gemini-google-search"
+      }
+    });
+
+    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+
+    expect(searchRequests).toHaveLength(1);
+    expect(searchRequests[0]).toMatchObject({
+      query: "weather in Valencia",
+      searchPolicy: {
+        modelId: "gemini-3.6-flash",
+        provider: "gemini",
+        reasoningPolicy: "lowest_supported",
+        strategyId: "gemini-google-search"
+      },
+      strategyId: "gemini-google-search"
+    });
+    expect(JSON.stringify(searchRequests[0])).not.toContain("Recovered cross-provider answer");
+    expect(answerRequests).toHaveLength(1);
+    expect(answerRequests[0]?.providerToolMessages).toEqual(expect.arrayContaining([
+      expect.objectContaining({ output: expect.stringContaining("Recovered Gemini findings") })
+    ]));
+    expect(createSearchRun).toHaveBeenCalledWith(expect.objectContaining({
+      artifacts: expect.objectContaining({
+        findings: "Recovered Gemini findings",
+        sources: [{
+          rank: 1,
+          title: "Recovered Gemini source",
+          url: "https://example.test/recovered-gemini"
+        }]
+      }),
+      modelId: "gemini-3.6-flash",
+      provider: "gemini",
+      query: "weather in Valencia",
+      searchRevisionId: "gemini-search-revision-1",
+      strategyId: "gemini-google-search"
+    }));
+    const durable = JSON.stringify(createSearchRun.mock.calls);
+    expect(durable).not.toContain("RECOVERY_RAW_SUGGESTIONS_CANARY");
+    expect(durable).not.toContain("RECOVERY_RAW_SIGNATURE_CANARY");
+    expect(harness.state.completed).toMatchObject({
+      finalText: "Recovered cross-provider answer",
+      usage: { inputTokens: 3, outputTokens: 5, totalTokens: 8 }
     });
     expect(harness.state.recoveredErrors).toEqual([]);
   });
@@ -1394,8 +1521,9 @@ describe("run recovery", () => {
         return {
           artifacts: [],
           finalProviderResponsePreview: {},
-          finalText: "fresh second-source findings",
+          findings: "fresh second-source findings",
           requestPreview: {},
+          sources: [],
           usage: { inputTokens: 2, outputTokens: 3, reasoningTokens: 0 }
         };
       }

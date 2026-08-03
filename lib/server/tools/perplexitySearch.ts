@@ -81,7 +81,7 @@ export function createPerplexitySearchToolExecutor(input: {
         callId: call.id,
         content: [
           {
-            text: result.finalText,
+            text: result.findings,
             type: "text"
           }
         ],

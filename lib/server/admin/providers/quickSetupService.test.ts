@@ -1,6 +1,9 @@
 import { createHmac } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import { OPENAI_PROVIDER_SEARCH_INTEGRATION_ID } from "../../../domain/search";
+import {
+  GEMINI_PROVIDER_SEARCH_INTEGRATION_ID,
+  OPENAI_PROVIDER_SEARCH_INTEGRATION_ID
+} from "../../../domain/search";
 import type { AdminProviderQuickSetupProviderId } from "../../../contracts/adminProviderQuickSetup";
 import { decryptProviderCredentialSecret } from "../../providers/credentialSecrets";
 import type {
@@ -268,6 +271,22 @@ describe("provider Quick setup service", () => {
       ],
       outcome: "ready",
       provider: "gemini"
+    });
+    expect(plan.search).toMatchObject({
+      draft: {
+        adapterKind: "provider_model_client",
+        protocol: "gemini_google_search",
+        providerModelId: plan.candidate.modelId
+      },
+      evidence: {
+        method: "configuration",
+        normalizedSourceCount: 0,
+        status: "available"
+      },
+      integrationId: GEMINI_PROVIDER_SEARCH_INTEGRATION_ID
+    });
+    expect(result).toMatchObject({
+      search: { displayName: "Google Search", status: "ready" }
     });
   });
 

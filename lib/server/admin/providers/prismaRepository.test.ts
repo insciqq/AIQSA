@@ -276,6 +276,7 @@ describe("Prisma admin provider repository", () => {
       existingClient: false,
       family: "openai_compatible",
       hostedId: "custom-web-search-hosted:connection-1",
+      hostedStrategyId: "custom-web-search-hosted:connection-1",
       label: "custom Responses",
       optionId: "custom-web-search:connection-1",
       optionRowId: "custom-web-search-option:connection-1",
@@ -287,10 +288,23 @@ describe("Prisma admin provider repository", () => {
       existingClient: true,
       family: "openai",
       hostedId: "openai-native-web-search",
+      hostedStrategyId: "openai-native-web-search",
       label: "official OpenAI Responses",
       optionId: "openai-native-web-search",
       optionRowId: "00000000-0000-4000-8000-000000001402",
       templateKey: "openai"
+    },
+    {
+      adapterKind: "gemini_interactions_native" as const,
+      clientId: "gemini-search-client:connection-1",
+      existingClient: false,
+      family: "gemini",
+      hostedId: "00000000-0000-4000-8000-000000001301",
+      hostedStrategyId: "gemini-google-search",
+      label: "native Gemini Interactions",
+      optionId: "gemini-google-search",
+      optionRowId: "00000000-0000-4000-8000-000000001403",
+      templateKey: "gemini"
     }
   ])("atomically materializes a tested $label draft and both active Search routes", async (scenario) => {
     const candidateCheck = storedCheck();
@@ -511,7 +525,8 @@ describe("Prisma admin provider repository", () => {
     expect(createSearchStrategy).toHaveBeenCalledWith(expect.objectContaining({
       data: expect.objectContaining({
         adapterKind: "answer_provider_hosted",
-        id: scenario.hostedId
+        id: scenario.hostedId,
+        strategyId: scenario.hostedStrategyId
       })
     }));
     if (scenario.existingClient) {

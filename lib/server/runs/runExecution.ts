@@ -581,6 +581,7 @@ async function persistPlanSearchExecution(input: Readonly<{
     artifacts: {
       displayName: input.execution.displayName,
       ...(input.execution.failure ? { failure: input.execution.failure } : {}),
+      ...(input.execution.findings ? { findings: input.execution.findings } : {}),
       invocationId: input.execution.invocationId,
       ...(input.execution.providerOperations
         ? { providerOperations: input.execution.providerOperations }

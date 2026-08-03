@@ -48,7 +48,7 @@ const options: CatalogSearchStrategy[] = [
   },
   {
     adapterKind: "answer_provider_hosted",
-    displayName: "Exclusive Gemini Search",
+    displayName: "Gemini Search",
     executionModes: ["model_choice"],
     kind: "gemini_google_search",
     privacy: "answer_provider",
@@ -175,13 +175,16 @@ describe("ComposerSearchPicker", () => {
     expect(within(dialog).getByText(/Model chooses is required/)).toBeVisible();
   });
 
-  it("disables an exclusive native engine when another engine is selected", () => {
-    render(<ControlledPicker />);
+  it("keeps a logical hosted engine selectable so server admission can choose a client route", () => {
+    const onChange = vi.fn();
+    render(<ControlledPicker onChange={onChange} />);
     fireEvent.click(screen.getByRole("button", { name: "Search strategy" }));
     const dialog = screen.getByRole("dialog", { name: "Choose Search engines" });
     fireEvent.click(within(dialog).getByRole("button", { name: /Alpha Search/i }));
 
-    expect(within(dialog).getByRole("button", { name: /Exclusive Gemini Search/i }))
-      .toBeDisabled();
+    const gemini = within(dialog).getByRole("button", { name: /Gemini Search/i });
+    expect(gemini).toBeEnabled();
+    fireEvent.click(gemini);
+    expect(onChange).toHaveBeenLastCalledWith(["alpha", "gemini"], "model_choice");
   });
 });
