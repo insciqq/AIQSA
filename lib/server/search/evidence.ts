@@ -8,7 +8,8 @@ export type SearchSource = Readonly<{
   url: string;
 }>;
 
-export const MAX_SEARCH_FINDINGS_CHARACTERS = 262_144;
+export const MAX_SEARCH_FINDINGS_CHARACTERS = 48 * 1_024;
+export const MAX_SEARCH_FINDINGS_BYTES = 48 * 1_024;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -42,6 +43,7 @@ export function normalizeSearchFindings(value: unknown): string {
   if (
     !normalized ||
     normalized.length > MAX_SEARCH_FINDINGS_CHARACTERS ||
+    Buffer.byteLength(normalized, "utf8") > MAX_SEARCH_FINDINGS_BYTES ||
     /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u.test(normalized)
   ) {
     throw new Error("search_findings_invalid");

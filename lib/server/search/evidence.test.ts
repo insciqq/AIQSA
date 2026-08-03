@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  MAX_SEARCH_FINDINGS_BYTES,
   MAX_SEARCH_FINDINGS_CHARACTERS,
   normalizeSearchFindings,
   normalizeSearchSources
@@ -44,5 +45,28 @@ describe("Search source evidence normalization", () => {
     expect(() => normalizeSearchFindings("x".repeat(
       MAX_SEARCH_FINDINGS_CHARACTERS + 1
     ))).toThrow("search_findings_invalid");
+  });
+
+  it("enforces the findings UTF-8 byte boundary one byte below, at, and above it", () => {
+    const below = `${"é".repeat((MAX_SEARCH_FINDINGS_BYTES - 2) / 2)}a`;
+    const at = "é".repeat(MAX_SEARCH_FINDINGS_BYTES / 2);
+    const above = `${at}a`;
+
+    expect(Buffer.byteLength(below, "utf8")).toBe(MAX_SEARCH_FINDINGS_BYTES - 1);
+    expect(Buffer.byteLength(at, "utf8")).toBe(MAX_SEARCH_FINDINGS_BYTES);
+    expect(Buffer.byteLength(above, "utf8")).toBe(MAX_SEARCH_FINDINGS_BYTES + 1);
+    expect(normalizeSearchFindings(below)).toBe(below);
+    expect(normalizeSearchFindings(at)).toBe(at);
+    expect(() => normalizeSearchFindings(above)).toThrow("search_findings_invalid");
+  });
+
+  it("enforces the ASCII findings boundary one character below, at, and above it", () => {
+    const below = "x".repeat(MAX_SEARCH_FINDINGS_CHARACTERS - 1);
+    const at = "x".repeat(MAX_SEARCH_FINDINGS_CHARACTERS);
+    const above = "x".repeat(MAX_SEARCH_FINDINGS_CHARACTERS + 1);
+
+    expect(normalizeSearchFindings(below)).toBe(below);
+    expect(normalizeSearchFindings(at)).toBe(at);
+    expect(() => normalizeSearchFindings(above)).toThrow("search_findings_invalid");
   });
 });

@@ -76,7 +76,7 @@ describe("legacy Perplexity tool executor privacy boundary", () => {
         finalProviderResponsePreview: {},
         findings: "Search findings",
         requestPreview: { queryCharacters: request.query.length },
-        sources: [],
+        sources: [{ rank: 1, title: "Source", url: "https://example.com/source" }],
         usage: { inputTokens: 1, outputTokens: 2, reasoningTokens: 0, totalTokens: 3 }
       };
     });
@@ -111,6 +111,33 @@ describe("legacy Perplexity tool executor privacy boundary", () => {
     ]) {
       expect(serialized).not.toContain(canary);
     }
+  });
+
+  it("settles source-less provider evidence as a usage-bearing Search error", async () => {
+    const executor = createPerplexitySearchToolExecutor({
+      searchAdapter: adapter(async () => ({
+        artifacts: [],
+        finalProviderResponsePreview: { raw: "must-not-persist" },
+        findings: "Ungrounded findings",
+        requestPreview: {},
+        sources: [],
+        usage: { inputTokens: 4, outputTokens: 5, reasoningTokens: 0, totalTokens: 9 }
+      })),
+      searchPolicy: policy()
+    });
+
+    const result = await executor.execute(
+      { arguments: { query: "latest news" }, id: "call-source-less", name: executor.tool.name },
+      { request: answerRequest(), runId: "run-source-less" }
+    );
+
+    expect(result).toMatchObject({
+      content: [{ text: "Search failed: search_sources_invalid" }],
+      rawPreview: { finalProviderResponsePreview: { error: "search_sources_invalid" } },
+      status: "error",
+      usage: { inputTokens: 4, outputTokens: 5, totalTokens: 9 }
+    });
+    expect(JSON.stringify(result)).not.toMatch(/Ungrounded findings|must-not-persist/u);
   });
 
   it.each([

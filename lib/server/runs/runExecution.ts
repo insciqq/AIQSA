@@ -33,6 +33,7 @@ import { providerToolBridges } from "../tools/bridges";
 import { createPerplexitySearchToolExecutor, perplexityWebSearchTool } from "../tools/perplexitySearch";
 import {
   createSearchPlanToolRouter,
+  searchExecutionPreviewCount,
   searchExecutionsFromToolResult,
   type SearchExecutionEvidence
 } from "../search/toolExecutor";
@@ -830,7 +831,15 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
                   strategyId: searchPolicy!.strategyId
                 });
               } else if (searchPlanRouter?.accepts(call.name)) {
-                for (const execution of searchExecutionsFromToolResult(result)) {
+                const executions = searchExecutionsFromToolResult(result);
+                const previewCount = searchExecutionPreviewCount(result);
+                if (previewCount !== null && executions.length !== previewCount) {
+                  throw new RunPipelineError(
+                    "tool_call_result_invalid",
+                    "Persisted Search result evidence is invalid"
+                  );
+                }
+                for (const execution of executions) {
                   if (hasReportedUsage(execution.usage)) {
                     rememberReportedUsage(execution.provider, execution.modelId ?? "search", execution.usage);
                   }

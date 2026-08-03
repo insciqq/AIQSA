@@ -7,6 +7,10 @@ import {
   DEFAULT_SEARCH_QUERY_MAX_CHARACTERS,
   validateSearchToolArguments
 } from "@/lib/server/search/query";
+import {
+  normalizeSearchFindings,
+  normalizeSearchSources
+} from "@/lib/server/search/evidence";
 import type { ModelToolCall, RunTool, ToolExecutor } from "./types";
 
 export const perplexityWebSearchTool: RunTool = {
@@ -75,19 +79,64 @@ export function createPerplexitySearchToolExecutor(input: {
         strategyId
       };
       const result = await input.searchAdapter.search(request, options);
+      const sources = normalizeSearchSources(result.sources, 20);
+      let findings: string;
+      try {
+        findings = normalizeSearchFindings(result.findings);
+      } catch {
+        return {
+          callId: call.id,
+          content: [{ text: "Search failed: search_findings_invalid", type: "text" }],
+          name: call.name,
+          rawPreview: {
+            finalProviderResponsePreview: { error: "search_findings_invalid" },
+            requestPreview: {
+              modelId: input.searchPolicy.modelId,
+              provider: input.searchPolicy.provider,
+              queryCharacters: validation.query.length,
+              strategyId
+            }
+          },
+          status: "error",
+          usage: result.usage
+        };
+      }
+      if (sources.length === 0) {
+        return {
+          callId: call.id,
+          content: [{ text: "Search failed: search_sources_invalid", type: "text" }],
+          name: call.name,
+          rawPreview: {
+            finalProviderResponsePreview: { error: "search_sources_invalid" },
+            requestPreview: {
+              modelId: input.searchPolicy.modelId,
+              provider: input.searchPolicy.provider,
+              queryCharacters: validation.query.length,
+              strategyId
+            }
+          },
+          status: "error",
+          usage: result.usage
+        };
+      }
 
       return {
         artifacts: result.artifacts,
         callId: call.id,
         content: [
           {
-            text: result.findings,
+            text: findings,
             type: "text"
           }
         ],
         name: call.name,
         rawPreview: {
-          finalProviderResponsePreview: result.finalProviderResponsePreview,
+          finalProviderResponsePreview: {
+            findingsCharacters: findings.length,
+            sourceCount: sources.length,
+            sources,
+            status: "completed"
+          },
           providerResponseId: result.providerResponseId,
           requestPreview: {
             modelId: input.searchPolicy.modelId,

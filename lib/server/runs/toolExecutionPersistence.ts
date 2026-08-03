@@ -5,6 +5,10 @@ import {
   snapshotToolLoopJson,
   type ToolLoopJsonValue
 } from "./toolLoopPersistence";
+import {
+  compactSearchToolExecutionResult,
+  rehydratePersistedSearchToolExecutionResult
+} from "../search/toolResult";
 
 const artifactTypes = new Set([
   "citation",
@@ -146,7 +150,7 @@ export function parsePersistedToolExecutionResult(
   if (value.usage !== undefined && !usage) return null;
   if (value.rawPreview !== undefined && !isRecord(value.rawPreview)) return null;
 
-  return {
+  return rehydratePersistedSearchToolExecutionResult({
     ...(artifacts ? { artifacts } : {}),
     callId: call.id,
     content,
@@ -156,14 +160,16 @@ export function parsePersistedToolExecutionResult(
       : {}),
     status: value.status,
     ...(usage ? { usage } : {})
-  };
+  });
 }
 
 export function snapshotToolExecutionResult(
   result: ToolExecutionResult,
   maxBytes: number
 ): ToolLoopJsonValue | null {
-  const snapshot = snapshotToolLoopJson(result, maxBytes);
+  const durableResult = compactSearchToolExecutionResult(result);
+  if (!durableResult) return null;
+  const snapshot = snapshotToolLoopJson(durableResult, maxBytes);
   return snapshot && parsePersistedToolExecutionResult(
     { id: result.callId, name: result.name },
     snapshot

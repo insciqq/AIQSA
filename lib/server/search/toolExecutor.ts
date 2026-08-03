@@ -1,15 +1,10 @@
 import type { ValidatedSearchQuery } from "../../domain/search";
-import { mergeSearchEvidence } from "../../domain/search";
 import type { ModelRunSseEvent, ModelRunUsage } from "../../domain/modelRunEvents";
 import {
   adminSearchExecutionDefaults,
   adminSearchExecutionLimits,
   type AdminSearchReasoningPolicy
 } from "../../contracts/adminSearch";
-import {
-  decodeThreadSearchProviderOperation,
-  type ThreadSearchProviderOperation
-} from "../../contracts/toolActivity";
 import type { ProviderRuntimeBinding } from "../providers/runtimeFactory";
 import {
   isProviderSearchExecutionError,
@@ -25,39 +20,28 @@ import type {
 } from "../providers/types";
 import type { ModelToolCall, RunTool, ToolExecutionResult } from "../tools/types";
 import {
-  MAX_SEARCH_FINDINGS_CHARACTERS,
   normalizeSearchFindings,
   normalizeSearchSources,
   type SearchSource
 } from "./evidence";
 import { providerSearchOperationsFromArtifacts } from "./providerOperations";
 import { validateSearchToolArguments } from "./query";
+import {
+  SEARCH_TOOL_RESULT_VERSION,
+  searchExecutionsFromToolResult,
+  searchToolResultContent,
+  type SearchExecutionEvidence
+} from "./toolResult";
+import { snapshotToolExecutionResult } from "../runs/toolExecutionPersistence";
+import { toolLoopPersistenceLimits } from "../runs/toolLoopPersistence";
+
+export {
+  searchExecutionPreviewCount,
+  searchExecutionsFromToolResult
+} from "./toolResult";
+export type { SearchExecutionEvidence } from "./toolResult";
 
 const allSelectedToolName = "search_selected_engines";
-
-export type SearchExecutionEvidence = Readonly<{
-  displayName: string;
-  durationMs: number;
-  failure?: Readonly<{
-    code: string;
-    providerStatus?: string;
-    reason?: string;
-  }>;
-  findings?: string;
-  invocationId: string;
-  modelId: string | null;
-  optionId: string;
-  provider: string;
-  providerOperations?: readonly ThreadSearchProviderOperation[];
-  providerOperationsTruncated: boolean;
-  query: string;
-  requestPreview: Readonly<Record<string, unknown>>;
-  revisionId: string;
-  sources: readonly SearchSource[];
-  status: "complete" | "error";
-  usage: ModelRunUsage;
-  warning?: string;
-}>;
 
 type SearchExecutionResult = SearchExecutionEvidence;
 
@@ -93,27 +77,6 @@ function boundedFailureField(value: unknown, maximum: number): string | undefine
     !/[\u0000-\u001f\u007f]/u.test(value)
     ? value
     : undefined;
-}
-
-function decodedFindings(value: unknown): string | undefined {
-  if (value === undefined) return undefined;
-  try {
-    return normalizeSearchFindings(value);
-  } catch {
-    return undefined;
-  }
-}
-
-function decodedFailure(value: unknown): SearchFailureEvidence | undefined {
-  if (!isRecord(value)) return undefined;
-  const code = normalizedFailureCode(value.code);
-  const providerStatus = boundedFailureField(value.providerStatus, 64);
-  const reason = boundedFailureField(value.reason, 128);
-  return {
-    code,
-    ...(providerStatus ? { providerStatus } : {}),
-    ...(reason ? { reason } : {})
-  };
 }
 
 function boundedInteger(value: unknown, minimum: number, maximum: number, fallback: number): number {
@@ -198,7 +161,7 @@ function configuration(option: NormalizedSearchPlanOption): {
       adminSearchExecutionLimits.maxOutputTokens.maximum,
       adminSearchExecutionDefaults.maxOutputTokens
     ),
-    maxResults: Number.isSafeInteger(config.maxResults) ? Number(config.maxResults) : 8,
+    maxResults: boundedInteger(config.maxResults, 1, 20, 8),
     maxSearchCallsPerAnswer: boundedInteger(
       config.maxSearchCallsPerAnswer,
       adminSearchExecutionLimits.maxSearchCallsPerAnswer.minimum,
@@ -292,14 +255,24 @@ async function consumeProviderSearch(
   const sources = normalizeSearchSources(result.sources, configuration(option).maxResults);
   if (sources.length === 0) {
     throw new ProviderSearchExecutionError({
-      artifacts: [],
+      artifacts: result.artifacts,
       code: "search_sources_invalid",
+      usage: result.usage
+    });
+  }
+  let findings: string;
+  try {
+    findings = normalizeSearchFindings(result.findings);
+  } catch {
+    throw new ProviderSearchExecutionError({
+      artifacts: result.artifacts,
+      code: "search_findings_invalid",
       usage: result.usage
     });
   }
   return {
     artifacts: result.artifacts,
-    findings: normalizeSearchFindings(result.findings),
+    findings,
     requestPreview: result.requestPreview,
     sources,
     usage: result.usage
@@ -425,56 +398,120 @@ async function executeOne(input: Readonly<{
   }
 }
 
-export function searchExecutionsFromToolResult(
-  result: ToolExecutionResult
-): SearchExecutionEvidence[] {
-  const preview = result.rawPreview?.finalProviderResponsePreview;
-  if (!isRecord(preview) || !Array.isArray(preview.searchExecutions)) return [];
-  return preview.searchExecutions.flatMap((value): SearchExecutionEvidence[] => {
-    if (!isRecord(value)) return [];
-    const valid = (
-      typeof value.durationMs === "number" &&
-      typeof value.invocationId === "string" &&
-      (value.modelId === null || typeof value.modelId === "string") &&
-      typeof value.optionId === "string" &&
-      typeof value.provider === "string" &&
-      (value.providerOperationsTruncated === undefined ||
-        typeof value.providerOperationsTruncated === "boolean") &&
-      typeof value.query === "string" &&
-      typeof value.revisionId === "string" &&
-      Array.isArray(value.sources) &&
-      (value.findings === undefined || (
-        typeof value.findings === "string" &&
-        value.findings.length <= MAX_SEARCH_FINDINGS_CHARACTERS
-      )) &&
-      (value.status === "complete" || value.status === "error") &&
-      isRecord(value.usage)
+function aggregateSearchUsage(executions: readonly SearchExecutionEvidence[]): ModelRunUsage {
+  return executions.reduce((usage, execution) => ({
+    inputTokens: usage.inputTokens + execution.usage.inputTokens,
+    outputTokens: usage.outputTokens + execution.usage.outputTokens,
+    reasoningTokens: usage.reasoningTokens + execution.usage.reasoningTokens,
+    totalTokens: (usage.totalTokens ?? usage.inputTokens + usage.outputTokens) +
+      (execution.usage.totalTokens ??
+        execution.usage.inputTokens + execution.usage.outputTokens)
+  }), zeroUsage());
+}
+
+function searchToolExecutionResult(input: Readonly<{
+  call: ModelToolCall;
+  executions: readonly SearchExecutionEvidence[];
+  name: string;
+  requestPreview: Readonly<Record<string, unknown>>;
+}>): ToolExecutionResult {
+  return {
+    callId: input.call.id,
+    content: searchToolResultContent(input.executions),
+    name: input.name,
+    rawPreview: {
+      finalProviderResponsePreview: {
+        searchExecutions: input.executions
+      },
+      requestPreview: input.requestPreview,
+      searchResultVersion: SEARCH_TOOL_RESULT_VERSION
+    },
+    status: input.executions.some((execution) => execution.status === "complete")
+      ? "complete"
+      : "error",
+    usage: aggregateSearchUsage(input.executions)
+  };
+}
+
+function oversizedSearchExecution(
+  execution: SearchExecutionEvidence,
+  preserveOperations = true
+): SearchExecutionEvidence {
+  return {
+    displayName: execution.displayName,
+    durationMs: execution.durationMs,
+    failure: { code: "search_result_too_large" },
+    invocationId: execution.invocationId,
+    modelId: execution.modelId,
+    optionId: execution.optionId,
+    provider: execution.provider,
+    ...(preserveOperations && execution.providerOperations
+      ? { providerOperations: execution.providerOperations }
+      : {}),
+    providerOperationsTruncated: preserveOperations
+      ? execution.providerOperationsTruncated
+      : execution.providerOperationsTruncated || Boolean(execution.providerOperations?.length),
+    query: execution.query,
+    requestPreview: preserveOperations ? execution.requestPreview : {},
+    revisionId: execution.revisionId,
+    sources: [],
+    status: "error",
+    usage: execution.usage
+  };
+}
+
+function executionByteSize(execution: SearchExecutionEvidence): number {
+  return Buffer.byteLength(JSON.stringify(execution), "utf8");
+}
+
+function fitDurableSearchToolResult(input: Readonly<{
+  call: ModelToolCall;
+  executions: readonly SearchExecutionEvidence[];
+  name: string;
+  requestPreview: Readonly<Record<string, unknown>>;
+}>): ToolExecutionResult {
+  const executions = [...input.executions];
+  const result = () => searchToolExecutionResult({ ...input, executions });
+  let candidate = result();
+  if (snapshotToolExecutionResult(candidate, toolLoopPersistenceLimits.resultBytes)) {
+    return candidate;
+  }
+
+  const successfulBySize = executions
+    .map((execution, index) => ({ execution, index }))
+    .filter(({ execution }) => execution.status === "complete")
+    .sort((left, right) =>
+      executionByteSize(right.execution) - executionByteSize(left.execution) ||
+      right.index - left.index
     );
-    if (!valid) return [];
-    const failure = value.failure === undefined ? undefined : decodedFailure(value.failure);
-    if (value.failure !== undefined && !failure) return [];
-    const findings = decodedFindings(value.findings);
-    if (value.findings !== undefined && !findings) return [];
-    let providerOperations: ThreadSearchProviderOperation[] | undefined;
-    if (value.providerOperations !== undefined) {
-      if (!Array.isArray(value.providerOperations) || value.providerOperations.length > 32) return [];
-      providerOperations = value.providerOperations.flatMap((operation) => {
-        const decoded = decodeThreadSearchProviderOperation(operation);
-        return decoded ? [decoded] : [];
-      });
-      if (providerOperations.length !== value.providerOperations.length) return [];
+  for (const { index } of successfulBySize) {
+    executions[index] = oversizedSearchExecution(executions[index]!);
+    candidate = result();
+    if (snapshotToolExecutionResult(candidate, toolLoopPersistenceLimits.resultBytes)) {
+      return candidate;
     }
-    return [{
-      ...(value as unknown as SearchExecutionEvidence),
-      displayName: typeof value.displayName === "string" && value.displayName.trim()
-        ? value.displayName.trim().slice(0, 256)
-        : "Search source",
-      providerOperationsTruncated: value.providerOperationsTruncated === true,
-      ...(failure ? { failure } : {}),
-      ...(findings ? { findings } : {}),
-      ...(providerOperations ? { providerOperations } : {})
-    }];
-  });
+  }
+
+  for (const [index, execution] of executions.entries()) {
+    executions[index] = oversizedSearchExecution(execution, false);
+  }
+  candidate = result();
+  if (snapshotToolExecutionResult(candidate, toolLoopPersistenceLimits.resultBytes)) {
+    return candidate;
+  }
+
+  return {
+    callId: input.call.id,
+    content: [{ text: "Search failed: search_result_too_large", type: "text" }],
+    name: input.name,
+    rawPreview: {
+      finalProviderResponsePreview: { error: "search_result_too_large" },
+      providerCall: true,
+      requestPreview: {}
+    },
+    status: "error",
+    usage: aggregateSearchUsage(input.executions)
+  };
 }
 
 export function createSearchPlanToolRouter(input: Readonly<{
@@ -610,74 +647,23 @@ export function createSearchPlanToolRouter(input: Readonly<{
         runtime: input.runtimes[option.optionId],
         ...(options?.signal ? { signal: options.signal } : {})
       })));
-      const successful = executions.filter((execution) => execution.status === "complete");
-      const sources = mergeSearchEvidence(
-        route.options.map((option) => option.optionId),
-        successful.map((execution) => ({
-          invocationId: execution.invocationId,
-          optionId: execution.optionId,
-          sources: execution.sources
-        }))
-      );
-      const warnings = executions.flatMap((execution) => {
-        const warning = execution.failure?.code ?? execution.warning;
-        return warning
-          ? [{
-            displayName: execution.displayName,
-            optionId: execution.optionId,
-            warning
-          }]
-          : [];
-      });
-      const text = [
-        ...successful.flatMap((execution) => execution.findings
-          ? [`Search source ${JSON.stringify(execution.displayName)}:\n${execution.findings}`]
-          : []),
-        sources.length
-          ? `Sources:\n${sources.map((source, index) =>
-              `${index + 1}. ${source.title} — ${source.url}`).join("\n")}`
-          : "",
-        warnings.length
-          ? `Search warnings: ${warnings.map((warning) =>
-              `${JSON.stringify(warning.displayName)}: ${warning.warning}`).join("; ")}`
-          : ""
-      ].filter(Boolean).join("\n\n");
-      return {
-        callId: call.id,
-        content: [{
-          text: text || "Every selected search engine failed.",
-          type: "text"
-        }],
+      return fitDurableSearchToolResult({
+        call,
+        executions,
         name: call.name,
-        rawPreview: {
-          finalProviderResponsePreview: {
-            searchExecutions: executions,
-            sources,
-            warnings
-          },
-          requestPreview: {
-            invocationCounts: Object.fromEntries(route.options.map((option) => [
-              option.optionId,
-              invocationCounts.get(option.optionId) ?? 0
-            ])),
-            maxInvocations: Object.fromEntries(route.options.map((option) => [
-              option.optionId,
-              configuration(option).maxSearchCallsPerAnswer
-            ])),
-            queryCharacters: query.length,
-            selectedOptionIds: route.options.map((option) => option.optionId)
-          }
-        },
-        status: successful.length > 0 ? "complete" : "error",
-        usage: executions.reduce((usage, execution) => ({
-          inputTokens: usage.inputTokens + execution.usage.inputTokens,
-          outputTokens: usage.outputTokens + execution.usage.outputTokens,
-          reasoningTokens: usage.reasoningTokens + execution.usage.reasoningTokens,
-          totalTokens: (usage.totalTokens ?? usage.inputTokens + usage.outputTokens) +
-            (execution.usage.totalTokens ??
-              execution.usage.inputTokens + execution.usage.outputTokens)
-        }), zeroUsage())
-      };
+        requestPreview: {
+          invocationCounts: Object.fromEntries(route.options.map((option) => [
+            option.optionId,
+            invocationCounts.get(option.optionId) ?? 0
+          ])),
+          maxInvocations: Object.fromEntries(route.options.map((option) => [
+            option.optionId,
+            configuration(option).maxSearchCallsPerAnswer
+          ])),
+          queryCharacters: query.length,
+          selectedOptionIds: route.options.map((option) => option.optionId)
+        }
+      });
     },
     optionIdsForTool(name) {
       return routeForName(name)?.options.map((option) => option.optionId) ?? [];

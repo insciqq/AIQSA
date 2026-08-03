@@ -20,6 +20,7 @@ import { providerToolBridges } from "../tools/bridges";
 import { createPerplexitySearchToolExecutor, perplexityWebSearchTool } from "../tools/perplexitySearch";
 import {
   createSearchPlanToolRouter,
+  searchExecutionPreviewCount,
   searchExecutionsFromToolResult,
   type SearchExecutionEvidence
 } from "../search/toolExecutor";
@@ -490,7 +491,15 @@ async function recordRecoveredSearchResult(input: Readonly<{
     return;
   }
 
-  for (const execution of searchExecutionsFromToolResult(input.result)) {
+  const executions = searchExecutionsFromToolResult(input.result);
+  const previewCount = searchExecutionPreviewCount(input.result);
+  if (previewCount !== null && executions.length !== previewCount) {
+    throw new ToolLoopRecoveryError(
+      "tool_call_result_invalid",
+      "Persisted Search result evidence is invalid and cannot be replayed safely."
+    );
+  }
+  for (const execution of executions) {
     if (input.includeUsage && execution.modelId) {
       input.context.usageAttributions.push({
         modelId: execution.modelId,

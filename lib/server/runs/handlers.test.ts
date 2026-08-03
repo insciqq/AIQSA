@@ -2882,7 +2882,11 @@ describe("model run route handlers", () => {
           requestPreview: {
             provider: "openrouter"
           },
-          sources: [],
+          sources: [{
+            rank: 1,
+            title: "Large result source",
+            url: "https://example.com/large-result"
+          }],
           usage: {
             inputTokens: 5,
             outputTokens: 5,

@@ -23,6 +23,11 @@ import {
 } from "./toolLoopPersistence";
 import { snapshotToolExecutionResult } from "./toolExecutionPersistence";
 import {
+  SEARCH_TOOL_RESULT_VERSION,
+  searchToolResultContent,
+  type SearchExecutionEvidence
+} from "../search/toolResult";
+import {
   activeRunStaleMs,
   reconcileInstallationRuns,
   reconcileStaleRuns,
@@ -1458,35 +1463,43 @@ describe("run recovery", () => {
       revisionId: "search-revision-2",
       searchStrategyRowId: "search-strategy-row-2"
     };
+    const settledExecution: SearchExecutionEvidence = {
+      displayName: firstOption.displayName,
+      durationMs: 10,
+      findings: "already persisted findings",
+      invocationId: "provider-call-1:search-option-1",
+      modelId: firstOption.modelId,
+      optionId: firstOption.optionId,
+      provider: firstOption.provider,
+      providerOperationsTruncated: false,
+      query: "first source query",
+      requestPreview: {},
+      revisionId: firstOption.revisionId,
+      sources: [{
+        rank: 1,
+        title: "First source",
+        url: "https://example.com/first-source"
+      }],
+      status: "complete",
+      usage: { inputTokens: 5, outputTokens: 6, reasoningTokens: 0 }
+    };
     const settledResult = snapshotToolExecutionResult({
       callId: "provider-call-1",
-      content: [{ text: "already persisted findings", type: "text" }],
+      content: searchToolResultContent([settledExecution]),
       name: "search_engine_1",
       rawPreview: {
         finalProviderResponsePreview: {
-          searchExecutions: [{
-            displayName: firstOption.displayName,
-            durationMs: 10,
-            invocationId: "provider-call-1:search-option-1",
-            modelId: firstOption.modelId,
-            optionId: firstOption.optionId,
-            provider: firstOption.provider,
-            providerOperationsTruncated: false,
-            query: "first source query",
-            requestPreview: {},
-            revisionId: firstOption.revisionId,
-            sources: [],
-            status: "complete",
-            usage: { inputTokens: 5, outputTokens: 6, reasoningTokens: 0 }
-          }]
+          searchExecutions: [settledExecution]
         },
         providerCall: true,
-        requestPreview: {}
+        requestPreview: {},
+        searchResultVersion: SEARCH_TOOL_RESULT_VERSION
       },
       status: "complete",
       usage: { inputTokens: 5, outputTokens: 6, reasoningTokens: 0 }
     }, 32_000);
     if (!settledResult) throw new Error("invalid_settled_search_fixture");
+    expect(JSON.stringify(settledResult).split("already persisted findings")).toHaveLength(2);
     const firstCall: PersistedToolLoopCall = {
       ...persistedRecoveryCall("complete"),
       arguments: { query: "first source query" },
@@ -1523,7 +1536,11 @@ describe("run recovery", () => {
           finalProviderResponsePreview: {},
           findings: "fresh second-source findings",
           requestPreview: {},
-          sources: [],
+          sources: [{
+            rank: 1,
+            title: "Second source",
+            url: "https://example.com/second-source"
+          }],
           usage: { inputTokens: 2, outputTokens: 3, reasoningTokens: 0 }
         };
       }
@@ -1610,7 +1627,12 @@ describe("run recovery", () => {
             query: "settled query",
             requestPreview: {},
             revisionId: selected.revisionId,
-            sources: [],
+            findings: "settled findings",
+            sources: [{
+              rank: 1,
+              title: "Settled source",
+              url: "https://example.com/settled-source"
+            }],
             status: "complete",
             usage: { inputTokens: 5, outputTokens: 6, reasoningTokens: 0 }
           }]

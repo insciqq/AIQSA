@@ -13,6 +13,9 @@ import {
   createSearchPlanToolRouter,
   searchExecutionsFromToolResult
 } from "./toolExecutor";
+import { MAX_SEARCH_FINDINGS_BYTES, type SearchSource } from "./evidence";
+import { snapshotToolExecutionResult } from "../runs/toolExecutionPersistence";
+import { toolLoopPersistenceLimits } from "../runs/toolLoopPersistence";
 import { describe, expect, it, vi } from "vitest";
 
 function option(id: string, overrides: Partial<NormalizedSearchPlanOption> = {}): NormalizedSearchPlanOption {
@@ -103,8 +106,10 @@ function answerRequestWithAttachment(): ProviderRunRequest {
 function runtime(input: Readonly<{
   artifacts?: ModelRunSseEvent[];
   fail?: string | ProviderSearchExecutionError;
+  findings?: string;
   onOptions?(options: ProviderSearchOptions | undefined): void;
   onRequest?(request: ProviderSearchRequest): void;
+  sources?: readonly SearchSource[];
   sourceUrl?: string;
 }> = {}): ProviderRuntimeBinding {
   return {
@@ -132,9 +137,9 @@ function runtime(input: Readonly<{
           finalProviderResponsePreview: {
             sources: [{ title: `Source ${modelId}`, url: input.sourceUrl ?? `https://example.com/${modelId}` }]
           },
-          findings: `Finding from ${modelId}`,
+          findings: input.findings ?? `Finding from ${modelId}`,
           requestPreview: { queryCharacters: request.query.length },
-          sources: [{
+          sources: input.sources ?? [{
             rank: 1,
             title: `Source ${modelId}`,
             url: input.sourceUrl ?? `https://example.com/${modelId}`
@@ -271,13 +276,8 @@ describe("Search plan tool router", () => {
       expect(JSON.stringify(request)).not.toContain("private system prompt");
     }
     const preview = result.rawPreview?.finalProviderResponsePreview as Record<string, unknown>;
-    expect(preview.sources).toEqual([expect.objectContaining({
-      engines: [
-        { optionId: "first", rank: 1 },
-        { optionId: "second", rank: 1 }
-      ],
-      url: "https://example.com/shared"
-    })]);
+    expect((result.content[0] as { text: string }).text.match(/https:\/\/example\.com\/shared/gu))
+      .toHaveLength(1);
     expect(preview.searchExecutions).toEqual(expect.arrayContaining([
       expect.objectContaining({ findings: "Finding from model-first" }),
       expect.objectContaining({ findings: "Finding from model-second" })
@@ -452,6 +452,127 @@ describe("Search plan tool router", () => {
       })
     ]);
     expect(JSON.stringify(result)).not.toContain("javascript:");
+  });
+
+  it("retains provider usage when multibyte findings exceed the per-engine byte limit", async () => {
+    const selected = option("multibyte-oversize");
+    const router = createSearchPlanToolRouter({
+      plan: { mode: "model_choice", options: [selected] },
+      runtimes: {
+        "multibyte-oversize": runtime({
+          artifacts: [{
+            data: {
+              artifactType: "search",
+              payload: {
+                action: { query: "oversized evidence", type: "search" },
+                id: "oversized-operation",
+                status: "completed",
+                type: "web_search_call"
+              }
+            },
+            type: "artifact"
+          }],
+          findings: `${"é".repeat(MAX_SEARCH_FINDINGS_BYTES / 2)}a`
+        })
+      }
+    });
+    if (!router) throw new Error("expected Search router");
+
+    const result = await router.execute(call(router.tools[0]!.name), answerRequest());
+    const [execution] = searchExecutionsFromToolResult(result);
+
+    expect(result.status).toBe("error");
+    expect(execution).toMatchObject({
+      failure: { code: "search_findings_invalid" },
+      providerOperations: [expect.objectContaining({
+        id: "oversized-operation",
+        kind: "search",
+        status: "complete"
+      })],
+      status: "error",
+      usage: { inputTokens: 2, outputTokens: 3, totalTokens: 5 }
+    });
+    expect(snapshotToolExecutionResult(result, toolLoopPersistenceLimits.resultBytes))
+      .not.toBeNull();
+  });
+
+  it("compacts two-engine findings to one durable copy and rehydrates the same continuation", async () => {
+    const first = option("durable-first");
+    const second = option("durable-second");
+    const firstFindings = `FIRST_CANONICAL_${"a".repeat(32_000)}`;
+    const secondFindings = `SECOND_CANONICAL_${"b".repeat(32_000)}`;
+    const router = createSearchPlanToolRouter({
+      plan: { mode: "all_selected", options: [first, second] },
+      runtimes: {
+        "durable-first": runtime({ findings: firstFindings }),
+        "durable-second": runtime({ findings: secondFindings })
+      }
+    });
+    if (!router) throw new Error("expected Search router");
+
+    const result = await router.execute(call(router.tools[0]!.name), answerRequest());
+    const snapshot = snapshotToolExecutionResult(result, toolLoopPersistenceLimits.resultBytes);
+    if (!snapshot) throw new Error("expected durable Search snapshot");
+    const serialized = JSON.stringify(snapshot);
+
+    expect(result.status).toBe("complete");
+    expect(serialized.split(firstFindings)).toHaveLength(2);
+    expect(serialized.split(secondFindings)).toHaveLength(2);
+    expect(Buffer.byteLength(serialized, "utf8")).toBeLessThanOrEqual(
+      toolLoopPersistenceLimits.resultBytes
+    );
+  });
+
+  it("turns maximum fan-out overflow into attributable settled Search errors", async () => {
+    const options = ["large-first", "large-second", "large-third"].map((id) => option(id, {
+      config: { ...option(id).config, maxResults: 20 }
+    }));
+    const sources = (prefix: string): SearchSource[] => Array.from({ length: 20 }, (_, index) => ({
+      rank: index + 1,
+      snippet: "s".repeat(2_000),
+      title: "t".repeat(500),
+      url: `https://example.com/${prefix}/${index}/${"u".repeat(1_800)}`
+    }));
+    const operationArtifacts = (prefix: string): ModelRunSseEvent[] => Array.from(
+      { length: 32 },
+      (_, index) => ({
+        data: {
+          artifactType: "search" as const,
+          payload: {
+            action: { query: `${prefix}-${index}-${"q".repeat(480)}`, type: "search" },
+            id: `${prefix}-operation-${index}`,
+            outputIndex: index,
+            status: "completed",
+            type: "web_search_call"
+          }
+        },
+        type: "artifact" as const
+      })
+    );
+    const router = createSearchPlanToolRouter({
+      plan: { mode: "all_selected", options },
+      runtimes: Object.fromEntries(options.map((selected, index) => [
+        selected.optionId,
+        runtime({
+          artifacts: operationArtifacts(String(index)),
+          findings: String(index).repeat(MAX_SEARCH_FINDINGS_BYTES),
+          sources: sources(String(index))
+        })
+      ]))
+    });
+    if (!router) throw new Error("expected Search router");
+
+    const result = await router.execute(call(router.tools[0]!.name), answerRequest());
+    const executions = searchExecutionsFromToolResult(result);
+    const snapshot = snapshotToolExecutionResult(result, toolLoopPersistenceLimits.resultBytes);
+
+    expect(snapshot).not.toBeNull();
+    expect(executions).toHaveLength(3);
+    expect(executions.some((execution) => execution.status === "complete")).toBe(true);
+    expect(executions.filter((execution) => execution.failure?.code === "search_result_too_large"))
+      .not.toHaveLength(0);
+    expect(executions.every((execution) => execution.usage.totalTokens === 5)).toBe(true);
+    expect(executions.some((execution) => execution.providerOperationsTruncated)).toBe(true);
   });
 
   it("retains normalized incomplete evidence and usage without a raw provider response", async () => {

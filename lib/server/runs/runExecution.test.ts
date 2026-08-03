@@ -27,6 +27,7 @@ import {
 import type { MaterializedPreparedRunData } from "./runPreparation";
 import type { RunChatUpdateRecord, RunRepository } from "./runRepositoryContract";
 import type { PersistedToolLoopCall } from "./toolLoopPersistence";
+import { parsePersistedToolExecutionResult } from "./toolExecutionPersistence";
 
 type CompleteRunInput = Parameters<RunRepository["completeRun"]>[0];
 type CreateSearchRunInput = Parameters<RunRepository["createSearchRun"]>[0];
@@ -451,7 +452,8 @@ function createRepository(options: RepositoryOptions = {}) {
     providerResponseIds,
     recordedRunUsageEvents,
     repository,
-    searchRuns
+    searchRuns,
+    toolCalls
   };
 }
 
@@ -1331,7 +1333,7 @@ describe("run execution", () => {
           findings: "Search findings",
           providerResponseId: "search-response-1",
           requestPreview: { query: "latest AIQSA news" },
-          sources: [],
+          sources: [{ rank: 1, title: "Search source", url: "https://example.com/search" }],
           usage: usage(3, 4, 0)
         };
       }
@@ -1565,6 +1567,20 @@ describe("run execution", () => {
     expect(providerRequests).toHaveLength(2);
     expect(JSON.stringify(providerRequests[1]?.providerToolMessages))
       .toContain("Valencia is sunny and 29 °C.");
+    const settledCall = [...repository.toolCalls.values()][0];
+    if (!settledCall?.result) throw new Error("expected settled Search checkpoint");
+    const settledJson = JSON.stringify(settledCall.result);
+    expect(settledJson).toContain('"aiqsaType":"search_result"');
+    expect(settledJson.split("Valencia is sunny and 29 °C.")).toHaveLength(2);
+    expect(parsePersistedToolExecutionResult({
+      id: settledCall.providerCallId,
+      name: settledCall.toolName
+    }, settledCall.result)?.content).toEqual([
+      expect.objectContaining({
+        text: expect.stringContaining("Valencia is sunny and 29 °C."),
+        type: "text"
+      })
+    ]);
     expect(repository.searchRuns).toEqual([
       expect.objectContaining({
         artifacts: expect.objectContaining({
@@ -1916,7 +1932,7 @@ describe("run execution", () => {
           finalProviderResponsePreview: {},
           findings: "Search findings",
           requestPreview: {},
-          sources: [],
+          sources: [{ rank: 1, title: "Search source", url: "https://example.com/search" }],
           usage: usage(3, 2, 0)
         };
       }
