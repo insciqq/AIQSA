@@ -9,7 +9,7 @@ import { RunReceipt } from "@/components/app-shell/RunReceipt";
 import {
   deriveRunReceipt,
   type RunReceiptSegmentKind
-} from "@/components/app-shell/runReceipt";
+} from "@/components/app-shell/runReceiptModel";
 import { runActivityLabel, type PipelineSnapshot } from "@/components/app-shell/runState";
 import {
   attachmentBlocksFromThreadContent,

@@ -1129,7 +1129,7 @@ describe("PowerAppShellView mobile Workspace composition", () => {
     expect(workspace.className).toContain("left-[max(0.5rem,env(safe-area-inset-left))]");
     expect(workspace.className).toContain("top-[max(0.5rem,env(safe-area-inset-top))]");
     expect(workspace.className).toContain("bottom-[max(0.5rem,env(safe-area-inset-bottom))]");
-    expect(workspace.style.width).toContain("env(safe-area-inset-right)");
+    expect(workspace.className).toContain("env(safe-area-inset-right)");
     expect(workspace).toHaveClass("border-trace-subtle", "bg-workspace-rail");
     expect(screen.getByTestId("workspace-pane-mobile-backdrop")).not.toHaveClass("backdrop-blur-sm");
     expect(close.className).toContain("size-11");

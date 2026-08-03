@@ -92,6 +92,12 @@ function SearchSummaryBlockComponent({
   const allAttemptsFailed = !active && activities.length > 0 &&
     activities.every((activity) => activity.status === "error");
   const sourceFact = searchSourceCountFact(activities);
+  const citationFact = summary.citationCount > 0
+    ? `${summary.citationCount} ${summary.citationCount === 1 ? "citation" : "citations"}`
+    : null;
+  const accessibleName = ["Search", strategy, status, sourceFact, citationFact]
+    .filter(Boolean)
+    .join(" ");
   const [open, toggleOpen] = useDisclosureControl({ expanded, onExpandedChange });
 
   return (
@@ -101,6 +107,7 @@ function SearchSummaryBlockComponent({
       aria-label="Search activity"
     >
       <button
+        aria-label={accessibleName}
         className="-mx-2 flex min-h-control w-[calc(100%+1rem)] cursor-pointer flex-wrap items-center gap-x-2 gap-y-1 rounded-control px-2 text-left outline-none hover:bg-control-hover focus-visible:ring-2 focus-visible:ring-proof/45 [@media(hover:none)]:min-h-touch [@media(pointer:coarse)]:min-h-touch"
         type="button"
         aria-expanded={open}
@@ -196,6 +203,9 @@ function SearchAttemptDisclosure({
   return (
     <section className="min-w-0 py-1" data-testid="thread-search-attempt">
       <button
+        aria-label={[`Attempt ${index + 1}`, activity.displayName, status, sourceFact]
+          .filter(Boolean)
+          .join(" ")}
         aria-expanded={open}
         className="-mx-2 flex min-h-control w-[calc(100%+1rem)] items-center gap-2 rounded-control px-2 py-1.5 text-left outline-none hover:bg-control-hover focus-visible:ring-2 focus-visible:ring-proof/45 [@media(hover:none)]:min-h-touch [@media(pointer:coarse)]:min-h-touch"
         onClick={() => setOpen((value) => !value)}
@@ -505,6 +515,9 @@ function ToolActivityBlockComponent({
       aria-label="Tool activity"
     >
       <button
+        aria-label={`${headline}${failed > 0 ? ` ${failed} failed` : ""}${
+          servers.length > 0 ? ` ${servers.join(", ")}` : ""
+        }`}
         className="-mx-2 flex min-h-control w-[calc(100%+1rem)] flex-wrap items-center gap-x-2 gap-y-1 rounded-control px-2 text-left outline-none hover:bg-control-hover focus-visible:ring-2 focus-visible:ring-proof/45 [@media(hover:none)]:min-h-touch [@media(pointer:coarse)]:min-h-touch"
         type="button"
         aria-expanded={open}
@@ -625,6 +638,7 @@ function CitationBlockComponent({
     >
       {!embedded ? (
         <button
+          aria-label={`Citations ${summary.citationCount}`}
           className="-mx-2 flex min-h-control w-[calc(100%+1rem)] items-center gap-2 rounded-control px-2 text-left outline-none hover:bg-control-hover focus-visible:ring-2 focus-visible:ring-proof/45 [@media(hover:none)]:min-h-touch [@media(pointer:coarse)]:min-h-touch"
           type="button"
           aria-expanded={open}
@@ -704,6 +718,7 @@ function ReasoningBlockComponent({
       data-testid="thread-reasoning-block"
     >
       <button
+        aria-label={`Reasoning ${summary.reasoningCount}`}
         className="-mx-2 flex min-h-control w-[calc(100%+1rem)] items-center gap-2 rounded-control px-2 text-left font-semibold text-ink outline-none hover:bg-control-hover focus-visible:ring-2 focus-visible:ring-proof/45 [@media(hover:none)]:min-h-touch [@media(pointer:coarse)]:min-h-touch"
         type="button"
         aria-expanded={open}

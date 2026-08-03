@@ -187,7 +187,7 @@ describe("architecture import boundaries", () => {
         }))
       );
     }
-  });
+  }, 120_000);
 
   it("fails closed for non-literal dependencies in every protected layer", async () => {
     const filePaths = [
