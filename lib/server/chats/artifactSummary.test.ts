@@ -339,11 +339,30 @@ describe("summarizeMessageRunArtifacts", () => {
         startedAt: "2026-07-31T12:00:00.000Z",
         state: "complete",
         toolName: "search_selected_engines"
+      }, {
+        arguments: { query: "latest news in Moscow retry" },
+        completedAt: "2026-07-31T12:02:26.100Z",
+        ordinal: 1,
+        providerCallId: "search-call-2",
+        result: {
+          callId: "search-call-2",
+          content: [{ text: "Search failed: search_invocation_limit_reached", type: "text" }],
+          name: "search_selected_engines",
+          rawPreview: {
+            finalProviderResponsePreview: { error: "search_invocation_limit_reached" },
+            providerCall: false
+          },
+          status: "error"
+        },
+        roundIndex: 1,
+        startedAt: "2026-07-31T12:02:26.000Z",
+        state: "error",
+        toolName: "search_selected_engines"
       }]
     });
 
     expect(summary).toMatchObject({
-      searchCount: 1,
+      searchCount: 2,
       searchActivity: [{
           displayName: "Web Search · Sol",
           providerOperations: [{
@@ -353,6 +372,10 @@ describe("summarizeMessageRunArtifacts", () => {
           query: "latest news in Moscow",
           sourceCount: 1,
           sources: [{ title: "Moscow news", url: "https://example.com/moscow" }]
+      }, {
+          failureReason: "This Search source reached its request limit for this answer.",
+          query: "latest news in Moscow retry",
+          status: "error"
       }],
       toolCallCount: 0,
       toolCalls: []
@@ -361,5 +384,77 @@ describe("summarizeMessageRunArtifacts", () => {
     expect(JSON.stringify(summary)).not.toContain("gpt-5.6-sol");
     expect(JSON.stringify(summary)).not.toContain("openai-compatible");
     expect(JSON.stringify(summary)).not.toContain("revision-1");
+  });
+
+  it("keeps every persisted Search attempt and a friendly failure reason after reload", () => {
+    const summary = summarizeMessageRunArtifacts({
+      events: [],
+      normalizedRequest: {
+        searchPlan: {
+          mode: "all_selected",
+          options: [
+            {
+              adapterKind: "provider_model_client",
+              displayName: "OpenAI Search",
+              optionId: "openai-search"
+            },
+            {
+              adapterKind: "provider_model_client",
+              displayName: "Company Search",
+              optionId: "company-search"
+            }
+          ]
+        }
+      },
+      searchRuns: [
+        {
+          artifacts: {
+            providerOperations: [],
+            providerOperationsTruncated: false,
+            sources: [{ rank: 1, title: "Evidence", url: "https://example.com/evidence" }]
+          },
+          query: "latest evidence",
+          status: "complete",
+          strategyId: "openai-search"
+        },
+        {
+          artifacts: {
+            failure: {
+              code: "openai_response_incomplete",
+              providerStatus: "incomplete",
+              reason: "max_output_tokens",
+              rawProviderMessage: "private provider detail"
+            },
+            providerOperations: [],
+            providerOperationsTruncated: false,
+            sources: []
+          },
+          query: "latest evidence",
+          status: "error",
+          strategyId: "company-search"
+        }
+      ],
+      status: "complete"
+    });
+
+    expect(summary).toMatchObject({
+      searchActivity: [
+        {
+          displayName: "OpenAI Search",
+          query: "latest evidence",
+          sourceCount: 1,
+          status: "complete"
+        },
+        {
+          displayName: "Company Search",
+          failureReason: "Search reached its output limit before completing.",
+          query: "latest evidence",
+          sourceCount: 0,
+          status: "error"
+        }
+      ],
+      searchCount: 2
+    });
+    expect(JSON.stringify(summary)).not.toMatch(/private provider|openai_response_incomplete|max_output_tokens|providerStatus/);
   });
 });

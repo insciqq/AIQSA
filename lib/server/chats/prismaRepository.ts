@@ -7,9 +7,8 @@ import {
   projectThreadToolActivity
 } from "../../domain/toolActivity";
 import {
-  projectHostedSearchActivity,
-  projectSearchRunActivity,
-  projectToolSearchActivity
+  projectClientSearchActivity,
+  projectHostedSearchActivity
 } from "../../domain/searchDisclosure";
 import { prisma } from "../prisma";
 import { lockOwnedPromptPreset, lockUserPromptDefaultsShared } from "../prompts/promptDefaultsLock";
@@ -427,7 +426,6 @@ export function summarizeMessageRunArtifacts(run: ArtifactSummaryRun): ThreadArt
   const artifactPayloads = run.events.map((event) => event.payload);
   const searchPayloads = artifactPayloads.filter((payload) => artifactType(payload) === "search");
   const searchArtifactCount = searchPayloads.length;
-  const completedSearchRuns = run.searchRuns.filter((searchRun) => searchRun.status === "complete");
   const normalizedSearchIdentities = searchIdentitiesFromNormalizedRequest(run.normalizedRequest);
   const hostedSearchIdentities = normalizedSearchIdentities.filter(
     (identity) => identity.adapterKind === "answer_provider_hosted"
@@ -488,25 +486,33 @@ export function summarizeMessageRunArtifacts(run: ArtifactSummaryRun): ThreadArt
     payloads: searchPayloads.map(artifactInnerPayload),
     runStatus: run.status
   });
-  const searchRunActivity = run.searchRuns.flatMap((searchRun) => {
-    const identity = normalizedSearchIdentities.find(
-      (candidate) => candidate.optionId === searchRun.strategyId
-    );
-    const activity = projectSearchRunActivity(
-      searchRun,
-      identity?.displayName ?? searchDisplayName
-    );
-    return activity ? [activity] : [];
+  const clientSearchActivity = projectClientSearchActivity({
+    fallbackDisplayName: searchDisplayName ?? "Search source",
+    searchRuns: run.searchRuns.map((searchRun) => {
+      const identity = normalizedSearchIdentities.find(
+        (candidate) => candidate.optionId === searchRun.strategyId
+      );
+      return identity?.displayName
+        ? {
+            ...searchRun,
+            artifacts: {
+              ...(typeof searchRun.artifacts === "object" && searchRun.artifacts !== null &&
+                !Array.isArray(searchRun.artifacts)
+                ? searchRun.artifacts
+                : {}),
+              displayName: identity.displayName
+            }
+          }
+        : searchRun;
+    }),
+    toolCalls: observedToolCalls
   });
-  const clientSearchActivity = searchRunActivity.length > 0
-    ? searchRunActivity
-    : projectToolSearchActivity(observedToolCalls, searchDisplayName ?? "Search source");
   const searchActivity = [
     ...(hostedSearchActivity ? [hostedSearchActivity] : []),
     ...clientSearchActivity
   ].slice(0, 12);
   const toolCalls = observedToolCalls.filter((call) => call.capability === "mcp");
-  const searchCount = Math.max(searchArtifactCount, completedSearchRuns.length, searchActivity.length);
+  const searchCount = Math.max(searchArtifactCount, run.searchRuns.length, searchActivity.length);
 
   if (searchCount === 0 && reasoningPayloads.length === 0 && citationCount === 0 && !contextTruncation && toolCalls.length === 0) {
     return null;
@@ -522,7 +528,7 @@ export function summarizeMessageRunArtifacts(run: ArtifactSummaryRun): ThreadArt
     searchCount,
     ...(searchDisplayName ? { searchDisplayName } : {}),
     searchStrategy:
-      completedSearchRuns[0]?.strategyId ??
+      run.searchRuns[0]?.strategyId ??
       hostedSearchIdentity?.optionId ??
       artifactPayloads.map(searchStrategyFromPayload).find((strategy): strategy is string => Boolean(strategy)) ??
       null,

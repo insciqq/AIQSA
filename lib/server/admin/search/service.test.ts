@@ -9,17 +9,21 @@ const NOW = new Date("2026-07-29T12:00:00.000Z");
 const draft: AdminSearchDraft = {
   adapterKind: "provider_model_client",
   credentialMode: "provider_model",
+  maxOutputTokens: 4_096,
   maxResults: 8,
+  maxSearchCallsPerAnswer: 2,
   protocol: "openai_responses_web_search",
   providerModelId: "technical-1",
   queryMaxCharacters: 500,
+  reasoningPolicy: "lowest_supported",
   timeoutMs: 15_000
 };
 const hostedDraft: AdminSearchDraft = {
   ...draft,
   adapterKind: "answer_provider_hosted",
   credentialMode: "answer_provider",
-  providerModelId: null
+  providerModelId: null,
+  reasoningPolicy: "provider_default"
 };
 const PROBE_BINDING = {
   connectionId: "connection-1",
@@ -40,6 +44,7 @@ function providerModel(input: Readonly<{
 }> = {}) {
   const adapterKind = input.adapterKind ?? "openai_responses_compatible";
   const connectionId = input.connectionId ?? "connection-1";
+  const searchReasoningSupported = adapterKind === "openai_responses_compatible";
   return {
     activeConfig: {
       adapterKind,
@@ -48,7 +53,10 @@ function providerModel(input: Readonly<{
         nativePdfInput: false,
         nativeSearch: true,
         pdf: false,
-        reasoning: false,
+        reasoning: searchReasoningSupported,
+        ...(searchReasoningSupported
+          ? { defaultReasoningEffort: "low", reasoningEfforts: ["low", "medium"] }
+          : {}),
         streaming: true,
         toolCalling: true,
         vision: false
@@ -235,7 +243,8 @@ describe("admin Search service", () => {
       expect.objectContaining({
         connectionId: "connection-1",
         id: "technical-1",
-        searchKind: "web_search"
+        searchKind: "web_search",
+        searchReasoningSupported: true
       })
     ]);
   });
@@ -884,6 +893,67 @@ describe("admin Search service", () => {
     });
   });
 
+  it("applies advanced execution controls only to the broader-model route", async () => {
+    const advancedDraft: AdminSearchDraft = {
+      ...draft,
+      maxOutputTokens: 8_192,
+      maxSearchCallsPerAnswer: 4,
+      reasoningPolicy: "provider_default"
+    };
+    const strategyUpdateMany = vi.fn(async () => ({ count: 1 }));
+    const strategyPublish = vi.fn(async () => undefined);
+    const revisions = revisionRepository();
+    const tx = {
+      providerModel: {
+        findFirst: vi.fn(async () => providerModel())
+      },
+      searchOption: {
+        findUnique: vi.fn(async () => option([
+          child(draft),
+          child(hostedDraft, { id: "strategy-hosted", strategyId: "physical-hosted" })
+        ])),
+        update: vi.fn(async () => undefined)
+      },
+      searchIntegrationRevision: revisions,
+      searchStrategy: { update: strategyPublish, updateMany: strategyUpdateMany }
+    };
+    const prisma = {
+      $transaction: async (operation: (client: typeof tx) => Promise<unknown>) => operation(tx)
+    } as unknown as PrismaClient;
+    const service = createAdminSearchService({ prisma, tester: { test: vi.fn() } });
+
+    await service.updateDraft({
+      description: "Web evidence",
+      displayName: "OpenAI Search",
+      draft: advancedDraft,
+      expectedDraftVersion: 1,
+      id: "source-1"
+    });
+
+    expect(revisions.create).toHaveBeenCalledTimes(1);
+    expect(revisions.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        adapterKind: "provider_model_client",
+        configuration: advancedDraft,
+        searchStrategyId: "strategy-1"
+      })
+    });
+    expect(strategyPublish).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        config: advancedDraft,
+        draft: advancedDraft
+      }),
+      where: { id: "strategy-1" }
+    });
+    expect(strategyPublish).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        config: hostedDraft,
+        draft: hostedDraft
+      }),
+      where: { id: "strategy-hosted" }
+    });
+  });
+
   it("keeps the activate endpoint as a network-free compatibility publication", async () => {
     const revisionCreate = vi.fn()
       .mockResolvedValueOnce({ id: "revision-2" })
@@ -1027,7 +1097,8 @@ describe("admin Search service", () => {
       ...changedDraft,
       adapterKind: "answer_provider_hosted",
       credentialMode: "answer_provider",
-      providerModelId: null
+      providerModelId: null,
+      reasoningPolicy: "provider_default"
     };
     const evidence = {
       checkedAt: NOW.toISOString(),

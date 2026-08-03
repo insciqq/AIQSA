@@ -1,12 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { Prisma, type PrismaClient } from "@prisma/client";
-import type {
-  AdminSearchCatalog,
-  AdminSearchDraft,
-  AdminSearchIntegration,
-  AdminSearchKind,
-  AdminSearchProviderModelOption,
-  AdminSearchTestEvidence
+import {
+  adminSearchExecutionDefaults,
+  type AdminSearchCatalog,
+  type AdminSearchDraft,
+  type AdminSearchIntegration,
+  type AdminSearchKind,
+  type AdminSearchProviderModelOption,
+  type AdminSearchTestEvidence
 } from "../../../contracts/adminSearch";
 import { isSearchCombinationCompatible } from "../../../domain/catalogMatrix";
 import {
@@ -16,6 +17,7 @@ import {
   type SearchPlan
 } from "../../../domain/search";
 import { normalizeProviderModelConfiguration } from "../../providers/providerConfiguration";
+import { lowestSupportedOpenAIResponsesSearchEffort } from "../../providers/openaiResponsesSearch";
 import {
   SearchConfigurationError,
   compatibleTechnicalAdapter,
@@ -225,7 +227,10 @@ function hostedDraftFor(draft: AdminSearchDraft): AdminSearchDraft | null {
         ...draft,
         adapterKind: "answer_provider_hosted",
         credentialMode: "answer_provider",
-        providerModelId: null
+        maxOutputTokens: adminSearchExecutionDefaults.maxOutputTokens,
+        maxSearchCallsPerAnswer: adminSearchExecutionDefaults.maxSearchCallsPerAnswer,
+        providerModelId: null,
+        reasoningPolicy: "provider_default"
       }
     : null;
 }
@@ -629,6 +634,10 @@ export function createAdminSearchService(input: Readonly<{
           model.connection.activeConfig !== null,
         id: model.id,
         nativeSearch: configuration.capabilities.nativeSearch,
+        searchReasoningSupported:
+          (configuration.adapterKind === "openai_responses_native" ||
+            configuration.adapterKind === "openai_responses_compatible") &&
+          Boolean(lowestSupportedOpenAIResponsesSearchEffort(configuration.capabilities)),
         searchKind
       }];
     });
@@ -648,6 +657,7 @@ export function createAdminSearchService(input: Readonly<{
               displayName: model.displayName,
               enabled: model.enabled,
               id: model.id,
+              searchReasoningSupported: model.searchReasoningSupported,
               searchKind
             }]
           : [];

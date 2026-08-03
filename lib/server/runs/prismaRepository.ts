@@ -2196,6 +2196,7 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
         select: {
           cachedInputTokens: true,
           cacheWriteInputTokens: true,
+          createdAt: true,
           estimatedCostMicros: true,
           inputTokens: true,
           modelId: true,
@@ -2210,6 +2211,7 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
         estimatedCostMicros: row.estimatedCostMicros,
         modelId: row.modelId,
         provider: row.provider,
+        recordedAt: row.createdAt.toISOString(),
         usage: {
           cachedInputTokens: row.cachedInputTokens,
           cacheWriteInputTokens: row.cacheWriteInputTokens,

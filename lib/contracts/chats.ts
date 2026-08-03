@@ -70,6 +70,7 @@ export type ThreadSearchOperation = Omit<ThreadSearchProviderOperation, "id">;
 
 export type ThreadSearchActivity = {
   displayName: string;
+  failureReason?: string | null;
   providerOperations: ThreadSearchOperation[] | null;
   providerOperationsTruncated: boolean;
   query: string | null;
@@ -343,15 +344,23 @@ function decodeThreadSearchOperation(value: unknown): ThreadSearchOperation | nu
 function decodeThreadSearchActivity(value: unknown): ThreadSearchActivity | null {
   if (!isRecord(value)) return null;
   const displayName = boundedRequiredString(value.displayName, 256);
+  let failureReason: string | null | undefined;
+  if (value.failureReason === undefined || value.failureReason === null) {
+    failureReason = value.failureReason;
+  } else {
+    failureReason = boundedRequiredString(value.failureReason, 256) ?? undefined;
+  }
   const query = value.query === null ? null : boundedRequiredString(value.query, 2_000);
   const sourceCount = value.sourceCount === null ? null : nonNegativeInteger(value.sourceCount);
   const status = decodeThreadSearchActivityStatus(value.status);
   if (
     !displayName ||
+    (value.failureReason !== undefined && failureReason === undefined) ||
     (query === null && value.query !== null) ||
     (sourceCount === null && value.sourceCount !== null) ||
     (sourceCount !== null && sourceCount > 100) ||
     !status ||
+    (typeof failureReason === "string" && status !== "error" && status !== "partial") ||
     typeof value.providerOperationsTruncated !== "boolean" ||
     !Array.isArray(value.sources) ||
     value.sources.length > 20
@@ -383,6 +392,7 @@ function decodeThreadSearchActivity(value: unknown): ThreadSearchActivity | null
 
   return {
     displayName,
+    ...(failureReason !== undefined ? { failureReason } : {}),
     providerOperations,
     providerOperationsTruncated: value.providerOperationsTruncated,
     query,

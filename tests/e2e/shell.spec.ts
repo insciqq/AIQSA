@@ -3902,57 +3902,55 @@ test("keeps client Search direct, expandable, and independent of generic tool ac
           citations: [],
           reasoningCount: 0,
           reasoningText: [],
-          searchActivity: [{
-            displayName: "Web Search · Sol",
-            providerOperations: [
-              {
-                kind: "search",
-                ordinal: 0,
-                pattern: null,
-                queries: ["Moscow latest news", "Moscow news today"],
-                status: "complete",
-                url: null
-              },
-              {
-                kind: "open_page",
-                ordinal: 1,
-                pattern: null,
-                queries: [],
-                status: "complete",
+          searchActivity: [
+            {
+              displayName: "Web Search · Sol",
+              providerOperations: [
+                {
+                  kind: "search",
+                  ordinal: 0,
+                  pattern: null,
+                  queries: ["Moscow latest news", "Moscow news today"],
+                  status: "complete",
+                  url: null
+                },
+                {
+                  kind: "open_page",
+                  ordinal: 1,
+                  pattern: null,
+                  queries: [],
+                  status: "complete",
+                  url: "https://example.com/moscow"
+                }
+              ],
+              providerOperationsTruncated: false,
+              query: "latest news in Moscow",
+              sourceCount: 4,
+              sources: [{
+                date: "2026-07-31",
+                rank: 1,
+                snippet: "Normalized Moscow news evidence",
+                title: "Moscow news",
                 url: "https://example.com/moscow"
-              }
-            ],
-            providerOperationsTruncated: false,
-            query: "latest news in Moscow",
-            sourceCount: 4,
-            sources: [{
-              date: "2026-07-31",
-              rank: 1,
-              snippet: "Normalized Moscow news evidence",
-              title: "Moscow news",
-              url: "https://example.com/moscow"
-            }],
-            status: "complete"
-          }],
-          searchCount: 1,
+              }],
+              status: "complete"
+            },
+            {
+              displayName: "Web Search · Sol",
+              failureReason: "This Search source reached its request limit for this answer.",
+              providerOperations: null,
+              providerOperationsTruncated: false,
+              query: "latest news in Moscow retry",
+              sourceCount: null,
+              sources: [],
+              status: "error"
+            }
+          ],
+          searchCount: 2,
           searchDisplayName: "Web Search · Sol",
           searchStrategy: "client-search-plan",
-          toolCallCount: 1,
-          toolCalls: [{
-            argumentsPreview: { query: "latest news in Moscow" },
-            callId: "search-call-1",
-            capability: "web_search",
-            credentialSources: [],
-            durationMs: 145_900,
-            errorMessage: null,
-            externalAccountLabel: null,
-            ordinal: 0,
-            resultPreview: null,
-            round: 1,
-            serverName: null,
-            status: "complete",
-            toolName: "search_selected_engines"
-          }]
+          toolCallCount: 0,
+          toolCalls: []
         },
         content: { blocks: [{ text: "Here is the latest news.", type: "text" }] },
         createdAt: "2026-07-31T12:02:26.000Z",
@@ -3981,7 +3979,7 @@ test("keeps client Search direct, expandable, and independent of generic tool ac
   const searchSummary = page.getByTestId("thread-search-summary");
   await expect(searchSummary).toBeVisible();
   const search = searchSummary.getByRole("button", {
-    name: /Search Web Search · Sol.*Completed.*4 sources/i
+    name: /Search Web Search · Sol.*1 of 2 completed.*4\+ sources/i
   });
   await expect(search).toHaveAttribute("aria-expanded", "false");
   await expect(page.getByTestId("thread-tool-activity")).toHaveCount(0);
@@ -3990,6 +3988,17 @@ test("keeps client Search direct, expandable, and independent of generic tool ac
   await search.click();
   await expect(search).toHaveAttribute("aria-expanded", "true");
   const detail = searchSummary.getByTestId("thread-search-details");
+  const attempts = detail.getByTestId("thread-search-attempt");
+  await expect(attempts).toHaveCount(2);
+  const completedAttempt = attempts.nth(0).getByRole("button", {
+    name: /Attempt 1 Web Search · Sol Completed.*4 sources/i
+  });
+  const rejectedAttempt = attempts.nth(1).getByRole("button", {
+    name: /Attempt 2 Web Search · Sol Failed/i
+  });
+  await expect(completedAttempt).toHaveAttribute("aria-expanded", "false");
+  await expect(rejectedAttempt).toHaveAttribute("aria-expanded", "false");
+  await completedAttempt.click();
   await expect(detail).toContainText("latest news in Moscow");
   await expect(detail).toContainText("Provider operations · 2");
   await expect(detail).toContainText("Moscow latest news");
@@ -3999,6 +4008,11 @@ test("keeps client Search direct, expandable, and independent of generic tool ac
     "https://example.com/moscow"
   );
   await expect(detail).toContainText("Normalized Moscow news evidence");
+  await rejectedAttempt.click();
+  await expect(detail).toContainText("latest news in Moscow retry");
+  await expect(detail).toContainText(
+    "This Search source reached its request limit for this answer."
+  );
   await expectNoHorizontalOverflow(page);
 
   const runSetup = await openRunSetup(page);

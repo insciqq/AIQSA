@@ -89,6 +89,8 @@ function SearchSummaryBlockComponent({
   const strategy = activityNames.join(" + ") || summary.searchDisplayName?.trim() ||
     (summary.searchStrategy ? searchStrategyDescription(summary.searchStrategy) : "Search source");
   const status = active ? "Searching" : searchActivitySummaryStatus(activities);
+  const allAttemptsFailed = !active && activities.length > 0 &&
+    activities.every((activity) => activity.status === "error");
   const sourceFact = searchSourceCountFact(activities);
   const [open, toggleOpen] = useDisclosureControl({ expanded, onExpandedChange });
 
@@ -112,7 +114,7 @@ function SearchSummaryBlockComponent({
         <Search className={active ? "size-4 shrink-0 text-proof" : "size-4 shrink-0 text-ink-muted"} aria-hidden="true" />
         <span className="font-semibold text-ink">Search</span>
         <span className="min-w-0 truncate text-ink-muted" title={strategy}>{strategy}</span>
-        <span className={status === "Failed" ? "text-critical" : "text-ink-muted"}>· {status}</span>
+        <span className={status === "Failed" || allAttemptsFailed ? "text-critical" : "text-ink-muted"}>· {status}</span>
         {sourceFact ? <span className="text-ink-muted">· {sourceFact}</span> : null}
         {summary.citationCount > 0 ? (
           <span className="text-ink-muted">
@@ -126,59 +128,12 @@ function SearchSummaryBlockComponent({
           data-testid="thread-search-details"
         >
           {activities.length > 0 ? activities.map((activity, index) => (
-            <section className="min-w-0 py-3" key={`${activity.displayName}:${index}`}>
-              <div className="mb-3 flex flex-wrap items-center gap-x-2 gap-y-1">
-                <span className="font-semibold text-ink">{activity.displayName}</span>
-                <span className={activity.status === "error" ? "text-critical" : "text-ink-muted"}>
-                  {searchActivityStatusLabel(activity.status)}
-                </span>
-              </div>
-              <div className="grid gap-3">
-                <div>
-                  <div className="mb-1 font-medium text-ink-secondary">Generated query</div>
-                  {activity.query ? (
-                    <div className="break-words rounded-control bg-control-surface px-2 py-1.5 font-mono text-[11px] leading-5 text-ink [overflow-wrap:anywhere]">
-                      {activity.query}
-                    </div>
-                  ) : (
-                    <p className="text-ink-muted">The Search source did not report its query.</p>
-                  )}
-                </div>
-                <SearchSources activity={activity} />
-                <div>
-                  <div className="font-medium text-ink-secondary">
-                    Provider operations{activity.providerOperations && activity.providerOperations.length > 0
-                      ? ` · ${activity.providerOperations.length}${activity.providerOperationsTruncated ? "+" : ""}`
-                      : activity.providerOperationsTruncated
-                        ? " · additional activity omitted"
-                        : ""}
-                  </div>
-                  {activity.providerOperations === null ? (
-                    <p className="mt-1 text-ink-muted">Provider operation details are unavailable for this run.</p>
-                  ) : activity.providerOperations.length === 0 ? (
-                    <p className="mt-1 text-ink-muted">
-                      {activity.providerOperationsTruncated
-                        ? "Provider activity exceeded the inspection limit; detailed operations were omitted."
-                        : "The provider reported no detailed web operations."}
-                    </p>
-                  ) : (
-                    <>
-                      <ol className="mt-1 divide-y divide-trace-subtle">
-                        {activity.providerOperations.map((operation) => (
-                          <SearchProviderOperationRow
-                            key={`${operation.ordinal}:${operation.kind}`}
-                            operation={operation}
-                          />
-                        ))}
-                      </ol>
-                      {activity.providerOperationsTruncated ? (
-                        <p className="mt-1 text-ink-muted">Additional provider operations were omitted by the inspection limit.</p>
-                      ) : null}
-                    </>
-                  )}
-                </div>
-              </div>
-            </section>
+            <SearchAttemptDisclosure
+              activity={activity}
+              index={index}
+              initiallyExpanded={activities.length === 1}
+              key={`${activity.displayName}:${index}`}
+            />
           )) : (
             <p className="py-3 text-ink-muted">Detailed Search evidence is unavailable for this run.</p>
           )}
@@ -216,6 +171,108 @@ function SearchSummaryBlockComponent({
   );
 }
 
+function SearchAttemptDisclosure({
+  activity,
+  index,
+  initiallyExpanded
+}: Readonly<{
+  activity: ThreadSearchActivity;
+  index: number;
+  initiallyExpanded: boolean;
+}>) {
+  const [open, setOpen] = useState(initiallyExpanded);
+  const status = searchActivityStatusLabel(activity.status);
+  const sourceFact = activity.sourceCount === null
+    ? null
+    : `${activity.sourceCount} ${activity.sourceCount === 1 ? "source" : "sources"}`;
+  const failureReason = activity.failureReason ?? (
+    activity.status === "error"
+      ? "This Search source could not complete the attempt."
+      : activity.status === "partial"
+        ? "Some Search work did not complete."
+        : null
+  );
+
+  return (
+    <section className="min-w-0 py-1" data-testid="thread-search-attempt">
+      <button
+        aria-expanded={open}
+        className="-mx-2 flex min-h-control w-[calc(100%+1rem)] items-center gap-2 rounded-control px-2 py-1.5 text-left outline-none hover:bg-control-hover focus-visible:ring-2 focus-visible:ring-proof/45 [@media(hover:none)]:min-h-touch [@media(pointer:coarse)]:min-h-touch"
+        onClick={() => setOpen((value) => !value)}
+        type="button"
+      >
+        {open ? (
+          <ChevronDown className="size-3.5 shrink-0 text-ink-muted" aria-hidden="true" />
+        ) : (
+          <ChevronRight className="size-3.5 shrink-0 text-ink-muted" aria-hidden="true" />
+        )}
+        <span className="shrink-0 text-ink-muted">Attempt {index + 1}</span>
+        <span className="min-w-0 flex-1 truncate font-semibold text-ink" title={activity.displayName}>
+          {activity.displayName}
+        </span>
+        <span className={activity.status === "error" ? "shrink-0 text-critical" : "shrink-0 text-ink-muted"}>
+          {status}
+        </span>
+        {sourceFact ? <span className="hidden shrink-0 text-ink-muted sm:inline">· {sourceFact}</span> : null}
+      </button>
+
+      {open ? (
+        <div className="grid gap-3 pb-3 pl-5 pt-2" data-testid="thread-search-attempt-details">
+          {failureReason ? (
+            <div className="border-l-2 border-critical/45 bg-critical/[0.04] px-3 py-2 text-ink-secondary">
+              <div className="font-medium text-critical">Could not complete</div>
+              <p className="mt-0.5 leading-5">{failureReason}</p>
+            </div>
+          ) : null}
+          <div>
+            <div className="mb-1 font-medium text-ink-secondary">Generated query</div>
+            {activity.query ? (
+              <div className="break-words rounded-control bg-control-surface px-2 py-1.5 font-mono text-[11px] leading-5 text-ink [overflow-wrap:anywhere]">
+                {activity.query}
+              </div>
+            ) : (
+              <p className="text-ink-muted">The Search source did not report its query.</p>
+            )}
+          </div>
+          <SearchSources activity={activity} />
+          <div>
+            <div className="font-medium text-ink-secondary">
+              Provider operations{activity.providerOperations && activity.providerOperations.length > 0
+                ? ` · ${activity.providerOperations.length}${activity.providerOperationsTruncated ? "+" : ""}`
+                : activity.providerOperationsTruncated
+                  ? " · additional activity omitted"
+                  : ""}
+            </div>
+            {activity.providerOperations === null ? (
+              <p className="mt-1 text-ink-muted">Provider operation details are unavailable for this run.</p>
+            ) : activity.providerOperations.length === 0 ? (
+              <p className="mt-1 text-ink-muted">
+                {activity.providerOperationsTruncated
+                  ? "Provider activity exceeded the inspection limit; detailed operations were omitted."
+                  : "The provider reported no detailed web operations."}
+              </p>
+            ) : (
+              <>
+                <ol className="mt-1 divide-y divide-trace-subtle">
+                  {activity.providerOperations.map((operation) => (
+                    <SearchProviderOperationRow
+                      key={`${operation.ordinal}:${operation.kind}`}
+                      operation={operation}
+                    />
+                  ))}
+                </ol>
+                {activity.providerOperationsTruncated ? (
+                  <p className="mt-1 text-ink-muted">Additional provider operations were omitted by the inspection limit.</p>
+                ) : null}
+              </>
+            )}
+          </div>
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
 function searchActivityStatusLabel(status: ThreadSearchActivity["status"]): string {
   if (status === "complete") return "Completed";
   if (status === "partial") return "Partially completed";
@@ -228,6 +285,10 @@ function searchActivityStatusLabel(status: ThreadSearchActivity["status"]): stri
 function searchActivitySummaryStatus(activities: readonly ThreadSearchActivity[]): string {
   const statuses = new Set(activities.map((activity) => activity.status));
   if (statuses.has("running")) return "Searching";
+  if (activities.length > 1) {
+    const completed = activities.filter((activity) => activity.status === "complete").length;
+    return `${completed} of ${activities.length} completed`;
+  }
   if (statuses.has("partial")) return "Partially completed";
   const terminalStatusCount = (["complete", "error", "cancelled"] as const)
     .filter((status) => statuses.has(status)).length;

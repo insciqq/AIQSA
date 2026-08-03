@@ -20,6 +20,12 @@ const queryListLimit = 8;
 const sourceLimit = 20;
 const sourceTraversalLimit = 500;
 
+type SearchFailureEvidence = {
+  code: string;
+  providerStatus: string | null;
+  reason: string | null;
+};
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -28,6 +34,52 @@ function boundedString(value: unknown, maximum: number): string | null {
   return typeof value === "string" && value.trim() && value.length <= maximum
     ? value.trim()
     : null;
+}
+
+function searchFailureEvidence(value: unknown): SearchFailureEvidence | null {
+  if (!isRecord(value)) return null;
+  const code = boundedString(value.code, 128);
+  if (!code) return null;
+  return {
+    code,
+    providerStatus: boundedString(value.providerStatus, 64),
+    reason: boundedString(value.reason, 128)
+  };
+}
+
+function friendlySearchFailureReason(
+  status: ThreadSearchActivityStatus,
+  failure: SearchFailureEvidence | null,
+  legacyWarning?: unknown
+): string | null {
+  if (status !== "error" && status !== "partial") return null;
+  const code = failure?.code ?? boundedString(legacyWarning, 512);
+  const reason = failure?.reason;
+
+  if (code === "openai_response_incomplete" && reason === "max_output_tokens") {
+    return "Search reached its output limit before completing.";
+  }
+  if (code === "search_timeout") {
+    return "Search did not respond before the time limit.";
+  }
+  if (code === "search_runtime_not_available") {
+    return "This Search source was unavailable for this attempt.";
+  }
+  if (code === "client_search_with_attachments_not_supported") {
+    return "This Search source could not run with attachments.";
+  }
+  if (code === "search_query_too_long") {
+    return "The generated Search query exceeded this source's limit.";
+  }
+  if (code === "search_query_arguments_invalid" || code === "search_query_required") {
+    return "The generated Search query was not valid for this source.";
+  }
+  if (code === "search_invocation_limit_reached") {
+    return "This Search source reached its request limit for this answer.";
+  }
+  return status === "partial"
+    ? "Some Search work did not complete."
+    : "This Search source could not complete the attempt.";
 }
 
 function httpHref(value: unknown): string | null {
@@ -212,14 +264,17 @@ function toolStatus(status: ThreadToolActivity["status"]): ThreadSearchActivityS
 }
 
 function executionActivity(execution: ThreadSearchExecution): ThreadSearchActivity {
+  const status = execution.status;
+  const failureReason = friendlySearchFailureReason(status, null, execution.warning);
   return {
     displayName: execution.displayName,
+    ...(failureReason ? { failureReason } : {}),
     providerOperations: execution.providerOperations?.map(({ id: _id, ...operation }) => operation) ?? null,
     providerOperationsTruncated: execution.providerOperationsTruncated,
     query: execution.query,
     sourceCount: execution.sourceCount,
     sources: execution.sources ?? [],
-    status: execution.status
+    status
   };
 }
 
@@ -236,17 +291,107 @@ export function projectToolSearchActivity(
       const query = isRecord(call.argumentsPreview)
         ? boundedString(call.argumentsPreview.query, 2_000)
         : null;
+      const status = toolStatus(call.status);
+      const failureReason = friendlySearchFailureReason(status, null, call.errorMessage);
       return [{
         displayName: boundedString(fallbackDisplayName, 256) ?? "Search source",
+        ...(failureReason ? { failureReason } : {}),
         providerOperations: null,
         providerOperationsTruncated: false,
         query,
         sourceCount: null,
         sources: [],
-        status: toolStatus(call.status)
+        status
       }];
     })
     .slice(0, activityLimit);
+}
+
+type ProjectedSearchRun = {
+  activity: ThreadSearchActivity;
+  invocationId: string | null;
+  optionId: string | null;
+  toolCallId: string | null;
+};
+
+function projectedSearchRun(value: unknown, fallbackDisplayName: string): ProjectedSearchRun | null {
+  if (!isRecord(value)) return null;
+  const artifacts = isRecord(value.artifacts) ? value.artifacts : null;
+  const toolCall = artifacts && isRecord(artifacts.toolCall) ? artifacts.toolCall : null;
+  const activity = projectSearchRunActivity(value, fallbackDisplayName);
+  if (!activity) return null;
+  return {
+    activity,
+    invocationId: boundedString(value.invocationId, 1_024) ??
+      boundedString(artifacts?.invocationId, 1_024),
+    optionId: boundedString(value.strategyId, 512),
+    toolCallId: boundedString(toolCall?.id, 512)
+  };
+}
+
+function runMatchesCall(run: ProjectedSearchRun, call: ThreadToolActivity): boolean {
+  return run.toolCallId === call.callId ||
+    (run.optionId !== null && run.invocationId === `${call.callId}:${run.optionId}`);
+}
+
+/** Combines durable provider executions with locally rejected tool attempts
+ * without duplicating the same successful engine call. */
+export function projectClientSearchActivity(input: Readonly<{
+  fallbackDisplayName?: string;
+  searchRuns: readonly unknown[];
+  toolCalls: readonly ThreadToolActivity[];
+}>): ThreadSearchActivity[] {
+  const fallbackDisplayName = boundedString(input.fallbackDisplayName, 256) ?? "Search source";
+  const runs = input.searchRuns.flatMap((value) => {
+    const projected = projectedSearchRun(value, fallbackDisplayName);
+    return projected ? [projected] : [];
+  });
+  const searchCalls = input.toolCalls.filter((call) => call.capability === "web_search");
+  if (runs.length === 0) return projectToolSearchActivity(searchCalls, fallbackDisplayName);
+
+  const usedRuns = new Set<number>();
+  const activities: ThreadSearchActivity[] = [];
+  const takeRun = (predicate: (run: ProjectedSearchRun) => boolean): ThreadSearchActivity | null => {
+    const index = runs.findIndex((run, candidateIndex) =>
+      !usedRuns.has(candidateIndex) && predicate(run)
+    );
+    if (index < 0) return null;
+    usedRuns.add(index);
+    return runs[index]!.activity;
+  };
+
+  for (const call of searchCalls) {
+    if (call.searchExecutions && call.searchExecutions.length > 0) {
+      for (const execution of call.searchExecutions) {
+        const matched = takeRun((run) =>
+          runMatchesCall(run, call) && run.optionId === execution.optionId
+        ) ?? takeRun((run) =>
+          run.optionId === execution.optionId &&
+          run.activity.query === execution.query &&
+          run.activity.status === execution.status
+        );
+        activities.push(matched ?? executionActivity(execution));
+      }
+      continue;
+    }
+
+    const matchingRuns: ThreadSearchActivity[] = [];
+    while (true) {
+      const matched = takeRun((run) => runMatchesCall(run, call));
+      if (!matched) break;
+      matchingRuns.push(matched);
+    }
+    activities.push(...(
+      matchingRuns.length > 0
+        ? matchingRuns
+        : projectToolSearchActivity([call], fallbackDisplayName)
+    ));
+  }
+
+  runs.forEach((run, index) => {
+    if (!usedRuns.has(index)) activities.push(run.activity);
+  });
+  return activities.slice(0, activityLimit);
 }
 
 export function projectHostedSearchActivity(input: Readonly<{
@@ -264,14 +409,17 @@ export function projectHostedSearchActivity(input: Readonly<{
     return action && Array.isArray(action.sources) ? [action.sources] : [];
   });
   const sources = projectThreadSearchSources(sourceValues);
+  const status = activityStatusFromOperations(trace.operations, input.runStatus);
+  const failureReason = friendlySearchFailureReason(status, null);
   return {
     displayName: boundedString(input.displayName, 256) ?? "Search source",
+    ...(failureReason ? { failureReason } : {}),
     providerOperations: trace.operations,
     providerOperationsTruncated: trace.truncated,
     query: trace.operations.flatMap((operation) => operation.queries).at(0) ?? null,
     sourceCount: sourceValues.length > 0 ? sources.length : null,
     sources,
-    status: activityStatusFromOperations(trace.operations, input.runStatus)
+    status
   };
 }
 
@@ -333,6 +481,11 @@ export function projectSearchRunActivity(
         : "unknown";
   const sourceValue = recognizedSearchRunSources(artifacts);
   const sources = projectThreadSearchSources(sourceValue ?? []);
+  const failureReason = friendlySearchFailureReason(
+    status,
+    searchFailureEvidence(artifacts?.failure),
+    artifacts?.warning
+  );
   let providerOperations = decodedOperations(artifacts?.providerOperations);
   let providerOperationsTruncated = artifacts?.providerOperationsTruncated === true;
   if (providerOperations === null && Array.isArray(artifacts?.events)) {
@@ -345,6 +498,7 @@ export function projectSearchRunActivity(
   }
   return {
     displayName,
+    ...(failureReason ? { failureReason } : {}),
     providerOperations,
     providerOperationsTruncated,
     query: queryFromSearchRun(value, artifacts),

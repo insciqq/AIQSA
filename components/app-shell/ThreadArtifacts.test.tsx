@@ -80,17 +80,20 @@ describe("ThreadArtifacts", () => {
   it.each([
     {
       label: "completed and cancelled",
+      summary: "1 of 2 completed",
       statuses: ["complete", "cancelled"] as const
     },
     {
       label: "failed and cancelled",
+      summary: "0 of 2 completed",
       statuses: ["error", "cancelled"] as const
     },
     {
       label: "completed, failed, and cancelled",
+      summary: "1 of 3 completed",
       statuses: ["complete", "error", "cancelled"] as const
     }
-  ])("labels mixed $label Search outcomes as partial", ({ statuses }) => {
+  ])("reports exact completed-attempt progress for $label outcomes", ({ statuses, summary: expectedSummary }) => {
     render(
       <SearchSummaryBlock
         summary={summary({
@@ -104,9 +107,27 @@ describe("ThreadArtifacts", () => {
       />
     );
 
-    const trigger = screen.getByRole("button", { name: /Partially completed/i });
+    const trigger = screen.getByRole("button", { name: new RegExp(expectedSummary) });
     expect(trigger).not.toHaveTextContent("Status unavailable");
     expect(trigger).toHaveAttribute("aria-expanded", "false");
+  });
+
+  it("marks an all-failed multi-attempt Search summary as critical", () => {
+    render(
+      <SearchSummaryBlock
+        summary={summary({
+          searchActivity: [
+            searchActivity({ displayName: "First Search", status: "error" }),
+            searchActivity({ displayName: "Second Search", status: "error" })
+          ],
+          searchCount: 2,
+          searchStrategy: "client-search-plan"
+        })}
+      />
+    );
+
+    const trigger = screen.getByRole("button", { name: /0 of 2 completed/i });
+    expect(within(trigger).getByText("· 0 of 2 completed")).toHaveClass("text-critical");
   });
 
   it("uses the immutable logical Search name instead of exposing its route id", () => {
@@ -126,7 +147,7 @@ describe("ThreadArtifacts", () => {
     expect(trigger).not.toHaveTextContent("custom-web-search");
   });
 
-  it("opens source, status, query, citation, and provider-operation facts in one interaction", () => {
+  it("keeps every Search attempt independently expandable with friendly failure detail", () => {
     render(
       <SearchSummaryBlock
         summary={summary({
@@ -154,6 +175,7 @@ describe("ThreadArtifacts", () => {
             }),
             searchActivity({
               displayName: "Second Search",
+              failureReason: "Search reached its output limit before completing.",
               providerOperations: null,
               query: "second query",
               sourceCount: null,
@@ -177,6 +199,20 @@ describe("ThreadArtifacts", () => {
     const details = screen.getByTestId("thread-search-details");
     expect(within(details).getByText("Company Gateway Search")).toBeVisible();
     expect(within(details).getByText("Second Search")).toBeVisible();
+    const attempts = within(details).getAllByTestId("thread-search-attempt");
+    expect(attempts).toHaveLength(2);
+    const firstAttempt = within(attempts[0]!).getByRole("button", {
+      name: /Attempt 1 Company Gateway Search Completed.*1 source/i
+    });
+    const secondAttempt = within(attempts[1]!).getByRole("button", {
+      name: /Attempt 2 Second Search Failed/i
+    });
+    expect(firstAttempt).toHaveAttribute("aria-expanded", "false");
+    expect(secondAttempt).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(firstAttempt);
+    fireEvent.click(secondAttempt);
+    expect(firstAttempt).toHaveAttribute("aria-expanded", "true");
+    expect(secondAttempt).toHaveAttribute("aria-expanded", "true");
     expect(within(details).getAllByText("Generated query")).toHaveLength(2);
     expect(within(details).getAllByText("current evidence")).toHaveLength(2);
     expect(within(details).getByText("second query")).toBeVisible();
@@ -187,6 +223,7 @@ describe("ThreadArtifacts", () => {
     expect(within(details).getByText("Normalized source summary")).toBeVisible();
     expect(within(details).getByText("Provider operations · 1")).toBeVisible();
     expect(within(details).getByText("Provider operation details are unavailable for this run.")).toBeVisible();
+    expect(within(details).getByText("Search reached its output limit before completing.")).toBeVisible();
     expect(within(details).getByRole("link", { name: "[1] Answer citation" })).toBeVisible();
     expect(details).not.toHaveTextContent(/search-provider|search-model|route-|revision-|credential|Request|Response/);
 

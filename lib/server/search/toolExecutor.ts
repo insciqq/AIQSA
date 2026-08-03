@@ -1,12 +1,17 @@
-import { textMessageContent } from "../../domain/content";
 import type { ValidatedSearchQuery } from "../../domain/search";
 import { mergeSearchEvidence } from "../../domain/search";
 import type { ModelRunSseEvent, ModelRunUsage } from "../../domain/modelRunEvents";
+import {
+  adminSearchExecutionDefaults,
+  adminSearchExecutionLimits,
+  type AdminSearchReasoningPolicy
+} from "../../contracts/adminSearch";
 import {
   decodeThreadSearchProviderOperation,
   type ThreadSearchProviderOperation
 } from "../../contracts/toolActivity";
 import type { ProviderRuntimeBinding } from "../providers/runtimeFactory";
+import { isProviderSearchExecutionError } from "../providers/types";
 import type {
   NormalizedSearchPlan,
   NormalizedSearchPlanOption,
@@ -25,6 +30,11 @@ const allSelectedToolName = "search_selected_engines";
 export type SearchExecutionEvidence = Readonly<{
   displayName: string;
   durationMs: number;
+  failure?: Readonly<{
+    code: string;
+    providerStatus?: string;
+    reason?: string;
+  }>;
   invocationId: string;
   modelId: string | null;
   optionId: string;
@@ -44,6 +54,8 @@ type SearchExecutionResult = SearchExecutionEvidence & Readonly<{
   finalText?: string;
 }>;
 
+type SearchFailureEvidence = NonNullable<SearchExecutionEvidence["failure"]>;
+
 export type SearchPlanToolRouter = Readonly<{
   accepts(name: string): boolean;
   execute(
@@ -51,6 +63,7 @@ export type SearchPlanToolRouter = Readonly<{
     request: ProviderRunRequest,
     options?: { signal?: AbortSignal }
   ): Promise<ToolExecutionResult>;
+  optionIdsForTool(name: string): readonly string[];
   tools: readonly RunTool[];
 }>;
 
@@ -60,6 +73,37 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function zeroUsage(): ModelRunUsage {
   return { inputTokens: 0, outputTokens: 0, reasoningTokens: 0, totalTokens: 0 };
+}
+
+function normalizedFailureCode(value: unknown): string {
+  return typeof value === "string" && /^[a-z][a-z0-9_]{0,127}$/u.test(value)
+    ? value
+    : "search_execution_failed";
+}
+
+function boundedFailureField(value: unknown, maximum: number): string | undefined {
+  return typeof value === "string" && value.length > 0 && value.length <= maximum &&
+    !/[\u0000-\u001f\u007f]/u.test(value)
+    ? value
+    : undefined;
+}
+
+function decodedFailure(value: unknown): SearchFailureEvidence | undefined {
+  if (!isRecord(value)) return undefined;
+  const code = normalizedFailureCode(value.code);
+  const providerStatus = boundedFailureField(value.providerStatus, 64);
+  const reason = boundedFailureField(value.reason, 128);
+  return {
+    code,
+    ...(providerStatus ? { providerStatus } : {}),
+    ...(reason ? { reason } : {})
+  };
+}
+
+function boundedInteger(value: unknown, minimum: number, maximum: number, fallback: number): number {
+  return Number.isSafeInteger(value) && Number(value) >= minimum && Number(value) <= maximum
+    ? Number(value)
+    : fallback;
 }
 
 function toolName(ordinal: number): string {
@@ -110,8 +154,11 @@ function searchTool(name: string, description: string, queryMaxCharacters: numbe
 function configuration(option: NormalizedSearchPlanOption): {
   capabilities: ProviderModelCapabilities;
   defaultParams: Record<string, unknown>;
+  maxOutputTokens: number;
   maxResults: number;
+  maxSearchCallsPerAnswer: number;
   queryMaxCharacters: number;
+  reasoningPolicy: AdminSearchReasoningPolicy;
   timeoutMs: number;
 } {
   const config = option.config;
@@ -129,11 +176,26 @@ function configuration(option: NormalizedSearchPlanOption): {
   return {
     capabilities,
     defaultParams: isRecord(config.modelDefaultParams) ? config.modelDefaultParams : {},
+    maxOutputTokens: boundedInteger(
+      config.maxOutputTokens,
+      adminSearchExecutionLimits.maxOutputTokens.minimum,
+      adminSearchExecutionLimits.maxOutputTokens.maximum,
+      adminSearchExecutionDefaults.maxOutputTokens
+    ),
     maxResults: Number.isSafeInteger(config.maxResults) ? Number(config.maxResults) : 8,
+    maxSearchCallsPerAnswer: boundedInteger(
+      config.maxSearchCallsPerAnswer,
+      adminSearchExecutionLimits.maxSearchCallsPerAnswer.minimum,
+      adminSearchExecutionLimits.maxSearchCallsPerAnswer.maximum,
+      adminSearchExecutionDefaults.maxSearchCallsPerAnswer
+    ),
     queryMaxCharacters: Number.isSafeInteger(config.queryMaxCharacters) &&
       Number(config.queryMaxCharacters) >= 1 && Number(config.queryMaxCharacters) <= 1_000
       ? Number(config.queryMaxCharacters)
       : 500,
+    reasoningPolicy: config.reasoningPolicy === "provider_default"
+      ? "provider_default"
+      : adminSearchExecutionDefaults.reasoningPolicy,
     timeoutMs: Number.isSafeInteger(config.timeoutMs) ? Number(config.timeoutMs) : 300_000
   };
 }
@@ -142,103 +204,75 @@ function queryOnlyRequest(
   correlationId: string,
   option: NormalizedSearchPlanOption,
   query: ValidatedSearchQuery
-): ProviderRunRequest {
+): ProviderSearchRequest {
   const configured = configuration(option);
-  const content = textMessageContent(query);
+  let searchPolicy: ProviderSearchPolicy;
+  if (option.protocol === "openrouter_perplexity_chat") {
+    searchPolicy = {
+      controls: {
+        maxOutputTokens: {
+          defaultValue: configured.maxOutputTokens,
+          maxValue: adminSearchExecutionLimits.maxOutputTokens.maximum
+        },
+        temperature: { defaultValue: 0, maxValue: 2, minValue: 0, supported: true }
+      },
+      defaultParams: {
+        ...configured.defaultParams,
+        maxOutputTokens: configured.maxOutputTokens,
+        stream: false,
+        temperature: 0
+      },
+      modelId: option.modelId ?? "",
+      provider: "openrouter",
+      strategyId: "perplexity-tool-search"
+    };
+  } else if (
+    option.protocol === "openai_responses_web_search" &&
+    (option.provider === "openai" || option.provider === "openai_compatible")
+  ) {
+    searchPolicy = {
+      maxOutputTokens: configured.maxOutputTokens,
+      modelCapabilities: configured.capabilities,
+      modelId: option.modelId ?? "",
+      provider: option.provider,
+      reasoningPolicy: configured.reasoningPolicy,
+      strategyId: "openai-responses-web-search"
+    };
+  } else {
+    throw new Error("search_protocol_not_supported");
+  }
   return {
-    attachmentIds: [],
-    attachments: [],
-    chatId: correlationId,
-    content,
-    context: {
-      messages: [{ content, id: `search-query:${option.optionId}`, role: "user" }],
-      mode: "branch_path"
-    },
-    forceNonStreaming: true,
-    modelCapabilities: configured.capabilities,
-    modelId: option.modelId ?? "",
-    params: {
-      ...configured.defaultParams,
-      background: false,
-      maxOutputTokens: 1_024,
-      max_output_tokens: 1_024,
-      store: false,
-      stream: false
-    },
-    prompt: {
-      developer: "Search the web for the query. Return concise source-backed findings.",
-      presetId: null,
-      system: null
-    },
-    provider: option.provider,
-    searchStrategy: null
+    correlationId,
+    query,
+    searchPolicy,
+    strategyId: option.optionId
   };
 }
 
 async function consumeProviderSearch(
   runtime: ProviderRuntimeBinding,
-  request: ProviderRunRequest,
+  request: ProviderSearchRequest,
   option: NormalizedSearchPlanOption,
-  query: ValidatedSearchQuery,
-  correlationId: string,
   signal?: AbortSignal,
   timeoutMs?: number
 ): Promise<{
   artifacts: ModelRunSseEvent[];
   finalText: string;
+  requestPreview: Record<string, unknown>;
   sources: SearchSource[];
   usage: ModelRunUsage;
 }> {
-  if (option.protocol === "openrouter_perplexity_chat") {
-    if (!runtime.searchAdapter) throw new Error("search_adapter_not_available");
-    const searchPolicy: ProviderSearchPolicy = {
-      controls: {
-        maxOutputTokens: { defaultValue: 1_024, maxValue: 4_096 },
-        temperature: { defaultValue: 0, maxValue: 2, minValue: 0, supported: true }
-      },
-      defaultParams: { ...configuration(option).defaultParams, stream: false },
-      modelId: request.modelId,
-      provider: "openrouter",
-      strategyId: "perplexity-tool-search"
-    };
-    const searchRequest: ProviderSearchRequest = {
-      correlationId,
-      query,
-      searchPolicy,
-      strategyId: option.optionId
-    };
-    const result = await runtime.searchAdapter.search(searchRequest, { signal, timeoutMs });
-    return {
-      artifacts: result.artifacts,
-      finalText: result.finalText,
-      sources: normalizeSearchSources([
-        result.artifacts,
-        result.finalProviderResponsePreview
-      ], configuration(option).maxResults),
-      usage: result.usage
-    };
-  }
-  if (option.protocol !== "openai_responses_web_search") {
-    throw new Error("search_protocol_not_supported");
-  }
-  const artifacts: ModelRunSseEvent[] = [];
-  const stream = runtime.adapter.stream({
-    ...request,
-    searchStrategy: "openai-native-web-search"
-  }, { signal, timeoutMs });
-  let next = await stream.next();
-  while (!next.done) {
-    if (next.value.type === "artifact") artifacts.push(next.value);
-    next = await stream.next();
-  }
+  if (!runtime.searchAdapter) throw new Error("search_adapter_not_available");
+  const result = await runtime.searchAdapter.search(request, { signal, timeoutMs });
   return {
-    artifacts,
-    finalText: next.value.finalText,
+    artifacts: result.artifacts,
+    finalText: result.finalText,
+    requestPreview: result.requestPreview,
     sources: normalizeSearchSources([
-      artifacts,
-      next.value.finalProviderResponsePreview
+      result.artifacts,
+      result.finalProviderResponsePreview
     ], configuration(option).maxResults),
-    usage: next.value.usage
+    usage: result.usage
   };
 }
 
@@ -255,6 +289,7 @@ async function executeOne(input: Readonly<{
     return {
       displayName: searchDisplayName(input.option),
       durationMs: Date.now() - started,
+      failure: { code: "search_runtime_not_available" },
       invocationId,
       modelId: input.option.modelId,
       optionId: input.option.optionId,
@@ -265,11 +300,23 @@ async function executeOne(input: Readonly<{
       revisionId: input.option.revisionId,
       sources: [],
       status: "error",
-      usage: zeroUsage(),
-      warning: "search_runtime_not_available"
+      usage: zeroUsage()
     };
   }
   const request = queryOnlyRequest(invocationId, input.option, input.query);
+  const configured = configuration(input.option);
+  const executionRequestPreview = {
+    maxOutputTokens: configured.maxOutputTokens,
+    modelId: input.option.modelId,
+    protocol: input.option.protocol,
+    provider: input.option.provider,
+    queryCharacters: input.query.length,
+    reasoningPolicy: configured.reasoningPolicy,
+    sourceLimit: configured.maxResults,
+    ...(input.runtime.searchAdapter
+      ? { providerRequest: input.runtime.searchAdapter.buildRequestPreview(request) }
+      : {})
+  };
   const timeoutController = new AbortController();
   const relayAbort = () => timeoutController.abort(input.signal?.reason);
   input.signal?.addEventListener("abort", relayAbort, { once: true });
@@ -282,10 +329,8 @@ async function executeOne(input: Readonly<{
       input.runtime,
       request,
       input.option,
-      input.query,
-      invocationId,
       timeoutController.signal,
-      configuration(input.option).timeoutMs
+      configured.timeoutMs
     );
     const providerTrace = input.option.protocol === "openai_responses_web_search"
       ? providerSearchOperationsFromArtifacts(result.artifacts)
@@ -303,13 +348,7 @@ async function executeOne(input: Readonly<{
         : {}),
       providerOperationsTruncated: providerTrace?.truncated ?? false,
       query: input.query,
-      requestPreview: {
-        modelId: input.option.modelId,
-        protocol: input.option.protocol,
-        provider: input.option.provider,
-        queryCharacters: input.query.length,
-        sourceLimit: configuration(input.option).maxResults
-      },
+      requestPreview: executionRequestPreview,
       revisionId: input.option.revisionId,
       sources: result.sources,
       status: "complete",
@@ -317,25 +356,40 @@ async function executeOne(input: Readonly<{
     };
   } catch (error) {
     if (input.signal?.aborted) throw error;
+    const timedOut = timeoutController.signal.aborted;
+    const providerFailure = isProviderSearchExecutionError(error) ? error : null;
+    const failure: SearchFailureEvidence = timedOut
+      ? { code: "search_timeout" }
+      : providerFailure
+        ? {
+            code: normalizedFailureCode(providerFailure.code),
+            ...(boundedFailureField(providerFailure.providerStatus, 64)
+              ? { providerStatus: providerFailure.providerStatus }
+              : {}),
+            ...(boundedFailureField(providerFailure.reason, 128)
+              ? { reason: providerFailure.reason }
+              : {})
+          }
+        : { code: normalizedFailureCode(error instanceof Error ? error.message : undefined) };
+    const providerTrace = providerFailure
+      ? providerSearchOperationsFromArtifacts(providerFailure.artifacts)
+      : null;
     return {
       displayName: searchDisplayName(input.option),
       durationMs: Date.now() - started,
+      failure,
       invocationId,
       modelId: input.option.modelId,
       optionId: input.option.optionId,
       provider: input.option.provider,
-      providerOperationsTruncated: false,
+      ...(providerTrace ? { providerOperations: providerTrace.operations } : {}),
+      providerOperationsTruncated: providerTrace?.truncated ?? false,
       query: input.query,
-      requestPreview: { queryCharacters: input.query.length },
+      requestPreview: executionRequestPreview,
       revisionId: input.option.revisionId,
       sources: [],
       status: "error",
-      usage: zeroUsage(),
-      warning: timeoutController.signal.aborted
-        ? "search_timeout"
-        : error instanceof Error
-          ? error.message.slice(0, 200)
-          : "search_execution_failed"
+      usage: providerFailure?.usage ?? zeroUsage()
     };
   } finally {
     clearTimeout(timeout);
@@ -365,6 +419,8 @@ export function searchExecutionsFromToolResult(
       isRecord(value.usage)
     );
     if (!valid) return [];
+    const failure = value.failure === undefined ? undefined : decodedFailure(value.failure);
+    if (value.failure !== undefined && !failure) return [];
     let providerOperations: ThreadSearchProviderOperation[] | undefined;
     if (value.providerOperations !== undefined) {
       if (!Array.isArray(value.providerOperations) || value.providerOperations.length > 32) return [];
@@ -380,6 +436,7 @@ export function searchExecutionsFromToolResult(
         ? value.displayName.trim().slice(0, 256)
         : "Search source",
       providerOperationsTruncated: value.providerOperationsTruncated === true,
+      ...(failure ? { failure } : {}),
       ...(providerOperations ? { providerOperations } : {})
     }];
   });
@@ -387,6 +444,7 @@ export function searchExecutionsFromToolResult(
 
 export function createSearchPlanToolRouter(input: Readonly<{
   acceptLegacyToolNames?: boolean;
+  initialInvocationCounts?: Readonly<Record<string, number>>;
   plan: NormalizedSearchPlan;
   runtimes: Readonly<Record<string, ProviderRuntimeBinding | undefined>>;
 }>): SearchPlanToolRouter | null {
@@ -394,12 +452,28 @@ export function createSearchPlanToolRouter(input: Readonly<{
     (option) => option.adapterKind === "provider_model_client"
   );
   if (clientOptions.length === 0) return null;
+  const invocationCounts = new Map(clientOptions.map((option) => {
+    const count = input.initialInvocationCounts?.[option.optionId];
+    return [
+      option.optionId,
+      Number.isSafeInteger(count) && Number(count) > 0 ? Number(count) : 0
+    ] as const;
+  }));
+  const budgetDescription = (options: readonly NormalizedSearchPlanOption[]) => {
+    const available = Math.min(
+      ...options.map((option) => configuration(option).maxSearchCallsPerAnswer)
+    );
+    return ` This source can be requested at most ${available} ${
+      available === 1 ? "time" : "times"
+    } for this answer.`;
+  };
   const routes = input.plan.mode === "all_selected"
     ? [{
         options: clientOptions,
         tool: searchTool(
           allSelectedToolName,
-          "Search every user-selected web engine with the same concise query and combine attributed sources.",
+          "Search every user-selected web engine with the same concise query and combine attributed sources." +
+            budgetDescription(clientOptions),
           Math.min(...clientOptions.map((option) => configuration(option).queryMaxCharacters))
         )
       }]
@@ -407,7 +481,7 @@ export function createSearchPlanToolRouter(input: Readonly<{
         options: [option],
         tool: searchTool(
           toolName(ordinal),
-          toolDescription(option),
+          toolDescription(option) + budgetDescription([option]),
           configuration(option).queryMaxCharacters
         )
       }));
@@ -417,15 +491,15 @@ export function createSearchPlanToolRouter(input: Readonly<{
         candidate.options.length === 1 &&
         legacyToolName(candidate.options[0]!, ordinal) === name)
     : undefined;
+  const routeForName = (name: string) =>
+    routes.find((candidate) => candidate.tool.name === name) ?? legacyRoute(name);
 
   return {
     accepts(name) {
-      return routes.some((candidate) => candidate.tool.name === name) ||
-        legacyRoute(name) !== undefined;
+      return routeForName(name) !== undefined;
     },
     async execute(call, request, options) {
-      const route = routes.find((candidate) => candidate.tool.name === call.name) ??
-        legacyRoute(call.name);
+      const route = routeForName(call.name);
       if (!route) throw new Error("search_tool_not_selected");
       const queryLimit = Math.min(
         ...route.options.map((option) => configuration(option).queryMaxCharacters)
@@ -459,6 +533,40 @@ export function createSearchPlanToolRouter(input: Readonly<{
         };
       }
       if (!validation.ok) throw new Error("search_query_validation_invariant");
+      const exhaustedOption = route.options.find((option) =>
+        (invocationCounts.get(option.optionId) ?? 0) >=
+          configuration(option).maxSearchCallsPerAnswer
+      );
+      if (exhaustedOption) {
+        const limitCode = "search_invocation_limit_reached";
+        const invocationCount = invocationCounts.get(exhaustedOption.optionId) ?? 0;
+        const maxInvocations = configuration(exhaustedOption).maxSearchCallsPerAnswer;
+        return {
+          callId: call.id,
+          content: [{
+            text: `Search failed: ${limitCode}. Continue with the Search evidence already returned.`,
+            type: "text"
+          }],
+          name: call.name,
+          rawPreview: {
+            finalProviderResponsePreview: {
+              error: limitCode,
+              invocationCount,
+              maxInvocations
+            },
+            providerCall: false,
+            requestPreview: {
+              queryCharacters: validation.query.length,
+              selectedOptionIds: route.options.map((option) => option.optionId)
+            }
+          },
+          status: "error",
+          usage: zeroUsage()
+        };
+      }
+      for (const option of route.options) {
+        invocationCounts.set(option.optionId, (invocationCounts.get(option.optionId) ?? 0) + 1);
+      }
       const query = validation.query;
       const executions = await Promise.all(route.options.map((option) => executeOne({
         call,
@@ -476,13 +584,16 @@ export function createSearchPlanToolRouter(input: Readonly<{
           sources: execution.sources
         }))
       );
-      const warnings = executions.flatMap((execution) => execution.warning
-        ? [{
+      const warnings = executions.flatMap((execution) => {
+        const warning = execution.failure?.code ?? execution.warning;
+        return warning
+          ? [{
             displayName: execution.displayName,
             optionId: execution.optionId,
-            warning: execution.warning
+            warning
           }]
-        : []);
+          : [];
+      });
       const text = [
         ...successful.flatMap((execution) => execution.finalText
           ? [`Search source ${JSON.stringify(execution.displayName)}:\n${execution.finalText}`]
@@ -510,6 +621,14 @@ export function createSearchPlanToolRouter(input: Readonly<{
             warnings
           },
           requestPreview: {
+            invocationCounts: Object.fromEntries(route.options.map((option) => [
+              option.optionId,
+              invocationCounts.get(option.optionId) ?? 0
+            ])),
+            maxInvocations: Object.fromEntries(route.options.map((option) => [
+              option.optionId,
+              configuration(option).maxSearchCallsPerAnswer
+            ])),
             queryCharacters: query.length,
             selectedOptionIds: route.options.map((option) => option.optionId)
           }
@@ -524,6 +643,9 @@ export function createSearchPlanToolRouter(input: Readonly<{
               execution.usage.inputTokens + execution.usage.outputTokens)
         }), zeroUsage())
       };
+    },
+    optionIdsForTool(name) {
+      return routeForName(name)?.options.map((option) => option.optionId) ?? [];
     },
     tools: routes.map((route) => route.tool)
   };

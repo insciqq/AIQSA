@@ -58,7 +58,7 @@ function request(overrides: Partial<ProviderRunRequest> = {}): ProviderRunReques
   };
 }
 
-function searchPolicy(): ProviderSearchPolicy {
+function searchPolicy(): Extract<ProviderSearchPolicy, { provider: "openrouter" }> {
   return {
     controls: {
       maxOutputTokens: {

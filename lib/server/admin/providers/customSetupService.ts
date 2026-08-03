@@ -7,7 +7,11 @@ import {
   type AdminProviderCustomSetupRequest
 } from "../../../contracts/adminProviderCustomSetup";
 import type { AdminProviderTestEvidence } from "../../../contracts/adminProviders";
-import type { AdminSearchDraft, AdminSearchTestEvidence } from "../../../contracts/adminSearch";
+import {
+  adminSearchExecutionDefaults,
+  type AdminSearchDraft,
+  type AdminSearchTestEvidence
+} from "../../../contracts/adminSearch";
 import {
   encryptProviderCredentialSecret,
   normalizeProviderCredentialSecret
@@ -283,10 +287,13 @@ export function createAdminProviderCustomSetupService(input: Readonly<{
         ? {
             adapterKind: "answer_provider_hosted",
             credentialMode: "answer_provider",
+            maxOutputTokens: adminSearchExecutionDefaults.maxOutputTokens,
             maxResults: 8,
+            maxSearchCallsPerAnswer: adminSearchExecutionDefaults.maxSearchCallsPerAnswer,
             protocol: "openai_responses_web_search",
             providerModelId: null,
             queryMaxCharacters: 500,
+            reasoningPolicy: "provider_default",
             timeoutMs: 300_000
           }
         : null;
@@ -294,10 +301,13 @@ export function createAdminProviderCustomSetupService(input: Readonly<{
         ? {
             adapterKind: "provider_model_client",
             credentialMode: "provider_model",
+            maxOutputTokens: adminSearchExecutionDefaults.maxOutputTokens,
             maxResults: 8,
+            maxSearchCallsPerAnswer: adminSearchExecutionDefaults.maxSearchCallsPerAnswer,
             protocol: "openai_responses_web_search",
             providerModelId: providerModelIds[0]!,
             queryMaxCharacters: 500,
+            reasoningPolicy: adminSearchExecutionDefaults.reasoningPolicy,
             timeoutMs: 300_000
           }
         : null;

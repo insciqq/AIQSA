@@ -12,7 +12,11 @@ import {
   type AdminProviderQuickSetupResult,
   type AdminProviderQuickSetupSnapshot
 } from "../../../contracts/adminProviderQuickSetup";
-import type { AdminSearchDraft, AdminSearchTestEvidence } from "../../../contracts/adminSearch";
+import {
+  adminSearchExecutionDefaults,
+  type AdminSearchDraft,
+  type AdminSearchTestEvidence
+} from "../../../contracts/adminSearch";
 import { OPENAI_PROVIDER_SEARCH_INTEGRATION_ID } from "../../../domain/search";
 import {
   encryptProviderCredentialSecret,
@@ -315,10 +319,13 @@ export function createAdminProviderQuickSetupService(input: Readonly<{
         const draft: AdminSearchDraft = {
           adapterKind: "provider_model_client",
           credentialMode: "provider_model",
+          maxOutputTokens: adminSearchExecutionDefaults.maxOutputTokens,
           maxResults: 8,
+          maxSearchCallsPerAnswer: adminSearchExecutionDefaults.maxSearchCallsPerAnswer,
           protocol: "openai_responses_web_search",
           providerModelId: candidate.modelId,
           queryMaxCharacters: 500,
+          reasoningPolicy: adminSearchExecutionDefaults.reasoningPolicy,
           timeoutMs: 300_000
         };
         const evidence: AdminSearchTestEvidence = {

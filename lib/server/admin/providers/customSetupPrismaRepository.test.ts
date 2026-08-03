@@ -1,5 +1,6 @@
 import { Prisma } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
+import { adminSearchExecutionDefaults } from "../../../contracts/adminSearch";
 import type { AdminProviderCustomSetupCommitPlan } from "./customSetupRepositoryContract";
 import { createPrismaAdminProviderCustomSetupRepository } from "./customSetupPrismaRepository";
 import { searchDraftHash } from "../../search/configuration";
@@ -116,19 +117,25 @@ function searchPlan(
   const hostedDraft = {
     adapterKind: "answer_provider_hosted" as const,
     credentialMode: "answer_provider" as const,
+    maxOutputTokens: adminSearchExecutionDefaults.maxOutputTokens,
     maxResults: 8,
+    maxSearchCallsPerAnswer: adminSearchExecutionDefaults.maxSearchCallsPerAnswer,
     protocol: "openai_responses_web_search" as const,
     providerModelId: null,
     queryMaxCharacters: 500,
+    reasoningPolicy: "provider_default" as const,
     timeoutMs: 300_000
   };
   const clientDraft = {
     adapterKind: "provider_model_client" as const,
     credentialMode: "provider_model" as const,
+    maxOutputTokens: adminSearchExecutionDefaults.maxOutputTokens,
     maxResults: 8,
+    maxSearchCallsPerAnswer: adminSearchExecutionDefaults.maxSearchCallsPerAnswer,
     protocol: "openai_responses_web_search" as const,
     providerModelId: commitPlan.models[0]!.id,
     queryMaxCharacters: 500,
+    reasoningPolicy: adminSearchExecutionDefaults.reasoningPolicy,
     timeoutMs: 300_000
   };
   return {

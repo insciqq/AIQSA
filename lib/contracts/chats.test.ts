@@ -285,6 +285,8 @@ describe("chat wire contracts", () => {
       credential: "secret",
       displayName: "Company Gateway Search",
       endpoint: "https://provider.example/v1/responses",
+      failure: { code: "private_provider_code", raw: "private" },
+      failureReason: "Search reached its output limit before completing.",
       providerOperations: [{
         id: "provider-operation-id",
         kind: "search",
@@ -305,7 +307,7 @@ describe("chat wire contracts", () => {
         title: "Evidence",
         url: "https://example.com/evidence"
       }],
-      status: "complete"
+      status: "error"
     }];
     const artifactSummary = {
       citationCount: 0,
@@ -330,6 +332,7 @@ describe("chat wire contracts", () => {
 
     expect(decoded?.searchActivity).toEqual([{
       displayName: "Company Gateway Search",
+      failureReason: "Search reached its output limit before completing.",
       providerOperations: [{
         kind: "search",
         ordinal: 0,
@@ -347,9 +350,40 @@ describe("chat wire contracts", () => {
         title: "Evidence",
         url: "https://example.com/evidence"
       }],
-      status: "complete"
+      status: "error"
     }]);
-    expect(JSON.stringify(decoded)).not.toMatch(/secret|provider\.example|provider-operation-id|rawPayload|route-1|rawProviderResponse/);
+    expect(JSON.stringify(decoded)).not.toMatch(/secret|provider\.example|provider-operation-id|private_provider_code|rawPayload|route-1|rawProviderResponse/);
+  });
+
+  it("rejects an unbounded Search failure reason", () => {
+    const artifactSummary = {
+      citationCount: 0,
+      citations: [],
+      reasoningCount: 0,
+      reasoningText: [],
+      searchActivity: [{
+        displayName: "Company Gateway Search",
+        failureReason: "x".repeat(257),
+        providerOperations: [],
+        providerOperationsTruncated: false,
+        query: "current evidence",
+        sourceCount: 0,
+        sources: [],
+        status: "error"
+      }],
+      searchCount: 1,
+      searchStrategy: "custom-web-search:connection-1",
+      toolCallCount: 0,
+      toolCalls: []
+    };
+
+    expect(decodeChatDetailResponse({
+      chat: {
+        ...summary,
+        messages: [{ ...message, artifactSummary }],
+        usageStats
+      }
+    })).toBeNull();
   });
 
   it("rejects a Search provider-operation trace above the wire inspection limit", () => {

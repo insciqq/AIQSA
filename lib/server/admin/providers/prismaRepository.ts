@@ -1,6 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { Prisma, type PrismaClient } from "@prisma/client";
-import type { AdminSearchDraft } from "../../../contracts/adminSearch";
+import {
+  adminSearchExecutionDefaults,
+  type AdminSearchDraft
+} from "../../../contracts/adminSearch";
 import type {
   AdminProviderActiveCheck,
   AdminProviderConnection,
@@ -389,7 +392,14 @@ async function publishProviderSearchRoute(
           ...draft,
           maxResults: current.maxResults,
           queryMaxCharacters: current.queryMaxCharacters,
-          timeoutMs: current.timeoutMs
+          timeoutMs: current.timeoutMs,
+          ...(draft.adapterKind === "provider_model_client"
+            ? {
+                maxOutputTokens: current.maxOutputTokens,
+                maxSearchCallsPerAnswer: current.maxSearchCallsPerAnswer,
+                reasoningPolicy: current.reasoningPolicy
+              }
+            : {})
         };
       }
     } catch {
@@ -519,7 +529,9 @@ async function synchronizeProviderSearch(
   if (option.archivedAt) return;
 
   const baseDraft = {
+    maxOutputTokens: adminSearchExecutionDefaults.maxOutputTokens,
     maxResults: 8,
+    maxSearchCallsPerAnswer: adminSearchExecutionDefaults.maxSearchCallsPerAnswer,
     protocol: "openai_responses_web_search" as const,
     queryMaxCharacters: 500,
     timeoutMs: 300_000
@@ -528,6 +540,7 @@ async function synchronizeProviderSearch(
     adapterKind: "answer_provider_hosted",
     credentialMode: "answer_provider",
     providerModelId: null,
+    reasoningPolicy: "provider_default",
     ...baseDraft
   };
   const existingHosted = await tx.searchStrategy.findFirst({
@@ -561,6 +574,7 @@ async function synchronizeProviderSearch(
     adapterKind: "provider_model_client",
     credentialMode: "provider_model",
     providerModelId: selectedModel.id,
+    reasoningPolicy: adminSearchExecutionDefaults.reasoningPolicy,
     ...baseDraft
   };
   await publishProviderSearchRoute(tx, {

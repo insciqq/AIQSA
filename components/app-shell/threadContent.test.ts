@@ -220,6 +220,97 @@ describe("thread artifact summaries", () => {
     expect(JSON.stringify(summary)).not.toContain("openrouter");
   });
 
+  it("keeps a locally rejected Search attempt when another attempt has a persisted run", () => {
+    const searchExecution = {
+      displayName: "OpenAI Search",
+      durationMs: 15,
+      modelId: "search-model",
+      optionId: "openai-search",
+      provider: "openai",
+      providerOperations: null,
+      providerOperationsTruncated: false,
+      query: "first query",
+      sourceCount: 0,
+      sources: [],
+      status: "complete",
+      warning: null
+    };
+    const toolCall = (callId: string, ordinal: number, query: string) => ({
+      data: {
+        artifactType: "tool_call",
+        payload: {
+          argumentsPreview: { query },
+          callId,
+          ordinal,
+          round: 1,
+          snapshot: {
+            capability: "web_search",
+            credentialSources: [],
+            toolName: "search_selected_engines"
+          },
+          status: "requested"
+        }
+      },
+      type: "artifact" as const
+    });
+    const summary = summarizeThreadArtifacts(
+      [
+        toolCall("call-1", 0, "first query"),
+        {
+          data: {
+            artifactType: "tool_result",
+            payload: {
+              callId: "call-1",
+              ordinal: 0,
+              resultPreview: {},
+              round: 1,
+              searchExecutions: [searchExecution],
+              status: "complete"
+            }
+          },
+          type: "artifact"
+        },
+        toolCall("call-2", 1, "second query"),
+        {
+          data: {
+            artifactType: "tool_result",
+            payload: {
+              callId: "call-2",
+              message: "search_invocation_limit_reached",
+              ordinal: 1,
+              resultPreview: {},
+              round: 1,
+              status: "error"
+            }
+          },
+          type: "artifact"
+        }
+      ],
+      [{
+        artifacts: {
+          displayName: "OpenAI Search",
+          invocationId: "call-1:openai-search",
+          sources: []
+        },
+        query: "first query",
+        status: "complete",
+        strategyId: "openai-search"
+      }]
+    );
+
+    expect(summary).toMatchObject({
+      searchActivity: [
+        { query: "first query", status: "complete" },
+        {
+          failureReason: "This Search source reached its request limit for this answer.",
+          query: "second query",
+          status: "error"
+        }
+      ],
+      searchCount: 2
+    });
+  });
+
   it("extracts reasoning summary text from provider arrays and ignores empty arrays", () => {
     const summary = summarizeThreadArtifacts([
       {

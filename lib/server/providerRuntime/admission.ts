@@ -653,7 +653,9 @@ function searchConfiguration(
       ...(role
         ? {
             modelCapabilities: role.modelConfiguration.capabilities,
-            modelDefaultParams: role.modelConfiguration.defaultParams
+            ...(route.draft.protocol === "openrouter_perplexity_chat"
+              ? { modelDefaultParams: role.modelConfiguration.defaultParams }
+              : {})
           }
         : {})
     },

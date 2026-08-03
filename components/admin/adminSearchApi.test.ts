@@ -12,10 +12,13 @@ import {
 const draft = {
   adapterKind: "provider_model_client" as const,
   credentialMode: "provider_model" as const,
+  maxOutputTokens: 4_096,
   maxResults: 8,
+  maxSearchCallsPerAnswer: 2,
   protocol: "openai_responses_web_search" as const,
   providerModelId: "technical-1",
   queryMaxCharacters: 500,
+  reasoningPolicy: "lowest_supported" as const,
   timeoutMs: 15_000
 };
 

@@ -92,13 +92,26 @@ export type NormalizedRunRequest = {
   searchStrategy: string | null;
 };
 
-export type ProviderSearchPolicy = {
-  controls: SearchRunParamControls;
-  defaultParams: Record<string, unknown>;
-  modelId: string;
-  provider: "openrouter";
-  strategyId: "perplexity-tool-search";
-};
+export type OpenAIResponsesSearchReasoningPolicy =
+  | "lowest_supported"
+  | "provider_default";
+
+export type ProviderSearchPolicy =
+  | Readonly<{
+      controls: SearchRunParamControls;
+      defaultParams: Record<string, unknown>;
+      modelId: string;
+      provider: "openrouter";
+      strategyId: "perplexity-tool-search";
+    }>
+  | Readonly<{
+      maxOutputTokens: number;
+      modelCapabilities: ProviderModelCapabilities;
+      modelId: string;
+      provider: "openai" | "openai_compatible";
+      reasoningPolicy: OpenAIResponsesSearchReasoningPolicy;
+      strategyId: "openai-responses-web-search";
+    }>;
 
 export type ProviderConversationMessage = {
   content: {
@@ -160,6 +173,40 @@ export type ProviderSearchResult = {
   requestPreview: Record<string, unknown>;
   usage: ModelRunUsage;
 };
+
+export type ProviderSearchExecutionFailure = Readonly<{
+  artifacts: ModelRunSseEvent[];
+  code: string;
+  providerStatus?: string;
+  reason?: string;
+  usage: ModelRunUsage;
+}>;
+
+/** A typed, raw-payload-free provider failure that still carries already
+ * observed usage and normalized Search operation evidence. */
+export class ProviderSearchExecutionError extends Error {
+  readonly artifacts: ModelRunSseEvent[];
+  readonly code: string;
+  readonly providerStatus?: string;
+  readonly reason?: string;
+  readonly usage: ModelRunUsage;
+
+  constructor(failure: ProviderSearchExecutionFailure) {
+    super(failure.code);
+    this.name = "ProviderSearchExecutionError";
+    this.artifacts = failure.artifacts;
+    this.code = failure.code;
+    this.providerStatus = failure.providerStatus;
+    this.reason = failure.reason;
+    this.usage = failure.usage;
+  }
+}
+
+export function isProviderSearchExecutionError(
+  value: unknown
+): value is ProviderSearchExecutionError {
+  return value instanceof ProviderSearchExecutionError;
+}
 
 export type ProviderSearchOptions = {
   signal?: AbortSignal;

@@ -5,9 +5,12 @@ import type {
   ProviderAdapter,
   ProviderRunRefreshResult,
   ProviderRunRequest,
-  ProviderRunResult
+  ProviderRunResult,
+  ProviderSearchAdapter,
+  ProviderSearchRequest
 } from "../providers/types";
 import type {
+  PersistedRunUsageAttribution,
   RunControlRecord,
   RunUsageAttribution,
   StaleRunControlRecord
@@ -18,6 +21,7 @@ import {
   type PersistedToolLoopCall,
   type ToolLoopJsonValue
 } from "./toolLoopPersistence";
+import { snapshotToolExecutionResult } from "./toolExecutionPersistence";
 import {
   activeRunStaleMs,
   reconcileInstallationRuns,
@@ -371,7 +375,7 @@ function normalizedLegacySearchRequest(): NormalizedRunRequest {
         modelId: "search-model",
         optionId: "openai-native-web-search",
         protocol: "openai_responses_web_search",
-        provider: "search-provider",
+        provider: "openai_compatible",
         providerModelId: "search-model-row",
         revisionId: "search-revision-1",
         searchStrategyRowId: "search-strategy-row-1"
@@ -450,7 +454,7 @@ function checkpointedRun(input: Readonly<{
 function installCheckpointState(
   harness: ReturnType<typeof createHarness>,
   initial: CheckpointedToolLoopRun,
-  persistedUsage: RunUsageAttribution[] = []
+  persistedUsage: PersistedRunUsageAttribution[] = []
 ) {
   let currentCheckpoint = initial.checkpoint;
   let calls = initial.calls.map((call) => ({ ...call }));
@@ -1209,7 +1213,7 @@ describe("run recovery", () => {
   it("recovers a persisted pre-release Search tool name through its pinned logical source", async () => {
     const legacyToolName = "search_1_openai_native_web_search";
     const answerRequests: ProviderRunRequest[] = [];
-    const searchRequests: ProviderRunRequest[] = [];
+    const searchRequests: ProviderSearchRequest[] = [];
     const answerAdapter: ProviderAdapter = {
       buildRequestPreview: () => ({}),
       async *stream(request) {
@@ -1221,15 +1225,17 @@ describe("run recovery", () => {
         };
       }
     };
-    const searchAdapter: ProviderAdapter = {
+    const searchAdapter: ProviderSearchAdapter = {
       buildRequestPreview: () => ({}),
-      async *stream(request) {
+      async search(request) {
         searchRequests.push(request);
         return {
+          artifacts: [],
           finalProviderResponsePreview: {
             sources: [{ title: "Source", url: "https://example.test/source" }]
           },
           finalText: "Recovered findings",
+          requestPreview: {},
           usage: { inputTokens: 1, outputTokens: 1, reasoningTokens: 0 }
         };
       }
@@ -1237,8 +1243,9 @@ describe("run recovery", () => {
     const harness = createHarness({
       providers: {
         openai: answerAdapter,
-        "search-provider": searchAdapter
-      }
+        openai_compatible: answerAdapter
+      },
+      searchProviders: { openai_compatible: searchAdapter }
     });
     const createSearchRun = vi.fn<RunRecoveryRepository["createSearchRun"]>();
     harness.repository.createSearchRun = createSearchRun;
@@ -1261,15 +1268,24 @@ describe("run recovery", () => {
     installCheckpointState(harness, {
       ...base,
       normalizedRequest: normalizedLegacySearchRequest()
-    });
+    }, [{
+      modelId: "search-model",
+      provider: "openai_compatible",
+      recordedAt: "2026-07-12T09:00:00.000Z",
+      usage: { inputTokens: 4, outputTokens: 5, reasoningTokens: 0 }
+    }]);
 
     await refreshProviderRunIfNeeded(harness.deps, runId, userId);
 
     expect(searchRequests).toHaveLength(1);
     expect(searchRequests[0]).toMatchObject({
-      content: { blocks: [{ text: "latest verified news", type: "text" }] },
-      modelId: "search-model",
-      searchStrategy: "openai-native-web-search"
+      query: "latest verified news",
+      searchPolicy: {
+        modelId: "search-model",
+        provider: "openai_compatible",
+        strategyId: "openai-responses-web-search"
+      },
+      strategyId: "openai-native-web-search"
     });
     expect(createSearchRun).toHaveBeenCalledWith(expect.objectContaining({
       searchRevisionId: "search-revision-1",
@@ -1280,7 +1296,262 @@ describe("run recovery", () => {
       expect.objectContaining({ name: legacyToolName, type: "function_call" }),
       expect.objectContaining({ output: expect.stringContaining("Recovered findings") })
     ]);
-    expect(harness.state.completed).toMatchObject({ finalText: "Recovered sourced answer" });
+    expect(harness.state.completed).toMatchObject({
+      finalText: "Recovered sourced answer",
+      usage: { inputTokens: 7, outputTokens: 9, totalTokens: 16 },
+      usageAttributions: expect.arrayContaining([expect.objectContaining({
+        modelId: "search-model",
+        provider: "openai_compatible",
+        usage: expect.objectContaining({ inputTokens: 5, outputTokens: 6 })
+      })])
+    });
+    expect(harness.state.recoveredErrors).toEqual([]);
+  });
+
+  it("restores Search budgets per source and replays settled Search usage without duplicating it", async () => {
+    const baseRequest = normalizedLegacySearchRequest();
+    const baseOption = baseRequest.searchPlan!.options[0]!;
+    const firstOption = {
+      ...baseOption,
+      config: { ...baseOption.config, maxSearchCallsPerAnswer: 1 },
+      displayName: "First Search",
+      modelId: "search-model-1",
+      optionId: "search-option-1",
+      providerModelId: "search-model-row-1",
+      revisionId: "search-revision-1",
+      searchStrategyRowId: "search-strategy-row-1"
+    };
+    const secondOption = {
+      ...baseOption,
+      config: { ...baseOption.config, maxSearchCallsPerAnswer: 1 },
+      displayName: "Second Search",
+      modelId: "search-model-2",
+      optionId: "search-option-2",
+      providerModelId: "search-model-row-2",
+      revisionId: "search-revision-2",
+      searchStrategyRowId: "search-strategy-row-2"
+    };
+    const settledResult = snapshotToolExecutionResult({
+      callId: "provider-call-1",
+      content: [{ text: "already persisted findings", type: "text" }],
+      name: "search_engine_1",
+      rawPreview: {
+        finalProviderResponsePreview: {
+          searchExecutions: [{
+            displayName: firstOption.displayName,
+            durationMs: 10,
+            invocationId: "provider-call-1:search-option-1",
+            modelId: firstOption.modelId,
+            optionId: firstOption.optionId,
+            provider: firstOption.provider,
+            providerOperationsTruncated: false,
+            query: "first source query",
+            requestPreview: {},
+            revisionId: firstOption.revisionId,
+            sources: [],
+            status: "complete",
+            usage: { inputTokens: 5, outputTokens: 6, reasoningTokens: 0 }
+          }]
+        },
+        providerCall: true,
+        requestPreview: {}
+      },
+      status: "complete",
+      usage: { inputTokens: 5, outputTokens: 6, reasoningTokens: 0 }
+    }, 32_000);
+    if (!settledResult) throw new Error("invalid_settled_search_fixture");
+    const firstCall: PersistedToolLoopCall = {
+      ...persistedRecoveryCall("complete"),
+      arguments: { query: "first source query" },
+      mcpBinding: null,
+      result: settledResult,
+      toolName: "search_engine_1"
+    };
+    const secondCall: PersistedToolLoopCall = {
+      ...persistedRecoveryCall(),
+      arguments: { query: "second source query" },
+      id: "stored-call-2",
+      mcpBinding: null,
+      ordinal: 1,
+      providerCallId: "provider-call-2",
+      toolName: "search_engine_2"
+    };
+    const searchRequests: ProviderSearchRequest[] = [];
+    const answerAdapter: ProviderAdapter = {
+      buildRequestPreview: () => ({}),
+      async *stream() {
+        return {
+          finalProviderResponsePreview: {},
+          finalText: "Recovered with the second source",
+          usage: { inputTokens: 2, outputTokens: 3, reasoningTokens: 0 }
+        };
+      }
+    };
+    const searchAdapter: ProviderSearchAdapter = {
+      buildRequestPreview: () => ({}),
+      async search(request) {
+        searchRequests.push(request);
+        return {
+          artifacts: [],
+          finalProviderResponsePreview: {},
+          finalText: "fresh second-source findings",
+          requestPreview: {},
+          usage: { inputTokens: 2, outputTokens: 3, reasoningTokens: 0 }
+        };
+      }
+    };
+    const harness = createHarness({
+      providers: { openai: answerAdapter, openai_compatible: answerAdapter },
+      searchProviders: { openai_compatible: searchAdapter }
+    });
+    const base = checkpointedRun({
+      calls: [firstCall, secondCall],
+      phase: "tools_pending",
+      providerToolMessages: [{
+        arguments: "{\"query\":\"first source query\"}",
+        call_id: "provider-call-1",
+        name: "search_engine_1",
+        type: "function_call"
+      }, {
+        arguments: "{\"query\":\"second source query\"}",
+        call_id: "provider-call-2",
+        name: "search_engine_2",
+        type: "function_call"
+      }]
+    });
+    installCheckpointState(harness, {
+      ...base,
+      normalizedRequest: {
+        ...baseRequest,
+        searchPlan: { mode: "model_choice", options: [firstOption, secondOption] }
+      }
+    }, [{
+      modelId: "search-model-1",
+      provider: "openai_compatible",
+      recordedAt: "2026-07-12T09:02:00.000Z",
+      usage: { inputTokens: 5, outputTokens: 6, reasoningTokens: 0 }
+    }]);
+
+    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+
+    expect(searchRequests).toHaveLength(1);
+    expect(searchRequests[0]).toMatchObject({
+      query: "second source query",
+      searchPolicy: { modelId: "search-model-2", provider: "openai_compatible" }
+    });
+    expect(harness.state.completed).toMatchObject({
+      finalText: "Recovered with the second source",
+      usage: { inputTokens: 9, outputTokens: 12, totalTokens: 21 },
+      usageAttributions: expect.arrayContaining([expect.objectContaining({
+        modelId: "search-model-1",
+        provider: "openai_compatible",
+        usage: expect.objectContaining({ inputTokens: 5, outputTokens: 6 })
+      }), expect.objectContaining({
+        modelId: "search-model-2",
+        provider: "openai_compatible",
+        usage: expect.objectContaining({ inputTokens: 2, outputTokens: 3 })
+      })])
+    });
+    expect(harness.state.recoveredErrors).toEqual([]);
+  });
+
+  it("recovers settled Search usage recorded after the previous usage snapshot", async () => {
+    const request = normalizedLegacySearchRequest();
+    const selected = {
+      ...request.searchPlan!.options[0]!,
+      modelId: "search-model-1",
+      optionId: "search-option-1",
+      providerModelId: "search-model-row-1",
+      revisionId: "search-revision-1",
+      searchStrategyRowId: "search-strategy-row-1"
+    };
+    const settledResult = snapshotToolExecutionResult({
+      callId: "provider-call-1",
+      content: [{ text: "settled findings", type: "text" }],
+      name: "search_engine_1",
+      rawPreview: {
+        finalProviderResponsePreview: {
+          searchExecutions: [{
+            displayName: "OpenAI Search",
+            durationMs: 10,
+            invocationId: "provider-call-1:search-option-1",
+            modelId: selected.modelId,
+            optionId: selected.optionId,
+            provider: selected.provider,
+            providerOperationsTruncated: false,
+            query: "settled query",
+            requestPreview: {},
+            revisionId: selected.revisionId,
+            sources: [],
+            status: "complete",
+            usage: { inputTokens: 5, outputTokens: 6, reasoningTokens: 0 }
+          }]
+        },
+        providerCall: true,
+        requestPreview: {}
+      },
+      status: "complete",
+      usage: { inputTokens: 5, outputTokens: 6, reasoningTokens: 0 }
+    }, 32_000);
+    if (!settledResult) throw new Error("invalid_settled_search_fixture");
+    const settledCall: PersistedToolLoopCall = {
+      ...persistedRecoveryCall("complete"),
+      arguments: { query: "settled query" },
+      mcpBinding: null,
+      result: settledResult,
+      toolName: "search_engine_1"
+    };
+    const search = vi.fn<ProviderSearchAdapter["search"]>();
+    const adapter: ProviderAdapter = {
+      buildRequestPreview: () => ({}),
+      async *stream() {
+        return {
+          finalProviderResponsePreview: {},
+          finalText: "Recovered answer",
+          usage: { inputTokens: 2, outputTokens: 3, reasoningTokens: 0 }
+        };
+      }
+    };
+    const harness = createHarness({
+      providers: { openai: adapter, openai_compatible: adapter },
+      searchProviders: {
+        openai_compatible: { buildRequestPreview: () => ({}), search }
+      }
+    });
+    installCheckpointState(harness, {
+      ...checkpointedRun({
+        calls: [settledCall],
+        phase: "tools_pending",
+        providerToolMessages: [{
+          arguments: "{\"query\":\"settled query\"}",
+          call_id: "provider-call-1",
+          name: "search_engine_1",
+          type: "function_call"
+        }]
+      }),
+      normalizedRequest: {
+        ...request,
+        searchPlan: { mode: "model_choice", options: [selected] }
+      }
+    }, [{
+      modelId: selected.modelId!,
+      provider: selected.provider,
+      recordedAt: "2026-07-12T09:00:00.000Z",
+      usage: { inputTokens: 4, outputTokens: 5, reasoningTokens: 0 }
+    }]);
+
+    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+
+    expect(search).not.toHaveBeenCalled();
+    expect(harness.state.completed).toMatchObject({
+      finalText: "Recovered answer",
+      usage: { inputTokens: 11, outputTokens: 14, totalTokens: 25 },
+      usageAttributions: expect.arrayContaining([expect.objectContaining({
+        modelId: selected.modelId,
+        provider: selected.provider,
+        usage: expect.objectContaining({ inputTokens: 9, outputTokens: 11 })
+      })])
+    });
     expect(harness.state.recoveredErrors).toEqual([]);
   });
 
@@ -1578,6 +1849,7 @@ describe("run recovery", () => {
       [{
         modelId: "gpt-test",
         provider: "openai",
+        recordedAt: "2026-07-12T09:00:00.000Z",
         usage: { inputTokens: 7, outputTokens: 1, reasoningTokens: 0 }
       }]
     );

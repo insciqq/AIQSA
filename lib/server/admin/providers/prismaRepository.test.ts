@@ -273,6 +273,7 @@ describe("Prisma admin provider repository", () => {
     {
       adapterKind: "openai_responses_compatible" as const,
       clientId: "custom-web-search-client:connection-1",
+      existingClient: false,
       family: "openai_compatible",
       hostedId: "custom-web-search-hosted:connection-1",
       label: "custom Responses",
@@ -283,6 +284,7 @@ describe("Prisma admin provider repository", () => {
     {
       adapterKind: "openai_responses_native" as const,
       clientId: "openai-search-client:connection-1",
+      existingClient: true,
       family: "openai",
       hostedId: "openai-native-web-search",
       label: "official OpenAI Responses",
@@ -383,7 +385,26 @@ describe("Prisma admin provider repository", () => {
       },
       searchStrategy: {
         create: createSearchStrategy,
-        findFirst: vi.fn(async () => null),
+        findFirst: vi.fn()
+          .mockResolvedValueOnce(null)
+          .mockResolvedValueOnce(scenario.existingClient
+            ? {
+                draft: {
+                  adapterKind: "provider_model_client",
+                  credentialMode: "provider_model",
+                  maxOutputTokens: 8_192,
+                  maxResults: 11,
+                  maxSearchCallsPerAnswer: 4,
+                  protocol: "openai_responses_web_search",
+                  providerModelId: "model-1",
+                  queryMaxCharacters: 333,
+                  reasoningPolicy: "provider_default",
+                  timeoutMs: 123_000
+                },
+                id: scenario.clientId,
+                providerModelId: "model-2"
+              }
+            : null),
         update: updateSearchStrategy,
         updateMany: updateSearchStrategies
       }
@@ -493,14 +514,20 @@ describe("Prisma admin provider repository", () => {
         id: scenario.hostedId
       })
     }));
-    expect(createSearchStrategy).toHaveBeenCalledWith(expect.objectContaining({
-      data: expect.objectContaining({
-        adapterKind: "provider_model_client",
-        enabled: false,
-        id: scenario.clientId,
-        providerModelId: "model-1"
-      })
-    }));
+    if (scenario.existingClient) {
+      expect(createSearchStrategy).not.toHaveBeenCalledWith(expect.objectContaining({
+        data: expect.objectContaining({ adapterKind: "provider_model_client" })
+      }));
+    } else {
+      expect(createSearchStrategy).toHaveBeenCalledWith(expect.objectContaining({
+        data: expect.objectContaining({
+          adapterKind: "provider_model_client",
+          enabled: false,
+          id: scenario.clientId,
+          providerModelId: "model-1"
+        })
+      }));
+    }
     expect(createSearchRevision).toHaveBeenCalledWith({
       data: expect.objectContaining({
         searchStrategyId: scenario.hostedId,
@@ -509,7 +536,18 @@ describe("Prisma admin provider repository", () => {
     });
     expect(createSearchRevision).toHaveBeenCalledWith({
       data: expect.objectContaining({
-        providerModelId: "model-1",
+        configuration: expect.objectContaining(scenario.existingClient
+          ? {
+              maxOutputTokens: 8_192,
+              maxResults: 11,
+              maxSearchCallsPerAnswer: 4,
+              providerModelId: "model-2",
+              queryMaxCharacters: 333,
+              reasoningPolicy: "provider_default",
+              timeoutMs: 123_000
+            }
+          : {}),
+        providerModelId: scenario.existingClient ? "model-2" : "model-1",
         searchStrategyId: scenario.clientId,
         validationEvidence: expect.objectContaining({ sourceProbe: false })
       })
@@ -524,8 +562,16 @@ describe("Prisma admin provider repository", () => {
     expect(updateSearchStrategy).toHaveBeenCalledWith({
       data: expect.objectContaining({
         activeRevisionId: `${scenario.clientId}:revision-1`,
+        draft: expect.objectContaining(scenario.existingClient
+          ? {
+              maxOutputTokens: 8_192,
+              maxSearchCallsPerAnswer: 4,
+              providerModelId: "model-2",
+              reasoningPolicy: "provider_default"
+            }
+          : {}),
         enabled: true,
-        providerModelId: "model-1"
+        providerModelId: scenario.existingClient ? "model-2" : "model-1"
       }),
       where: { id: scenario.clientId }
     });

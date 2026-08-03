@@ -6,9 +6,8 @@ import type {
 } from "@/components/app-shell/types";
 import { safeExternalHref } from "@/lib/domain/links";
 import {
-  projectHostedSearchActivity,
-  projectSearchRunActivity,
-  projectToolSearchActivity
+  projectClientSearchActivity,
+  projectHostedSearchActivity
 } from "@/lib/domain/searchDisclosure";
 import {
   mergeThreadToolActivity,
@@ -179,11 +178,7 @@ function searchDisplayNameFromEvent(event: RunEventView): string | null {
 }
 
 function searchRunsCount(searchRuns: unknown[] | undefined): number {
-  return (
-    searchRuns?.filter(
-      (searchRun) => !isRecord(searchRun) || searchRun.status === "complete"
-    ).length ?? 0
-  );
+  return searchRuns?.length ?? 0;
 }
 
 function contextTruncationFromValue(
@@ -275,13 +270,11 @@ export function summarizeThreadArtifacts(
         payloads: searchArtifacts.map(artifactPayload),
         runStatus
       });
-  const runSearchActivity = (searchRuns ?? []).flatMap((searchRun) => {
-    const activity = projectSearchRunActivity(searchRun, searchDisplayName);
-    return activity ? [activity] : [];
+  const clientSearchActivity = projectClientSearchActivity({
+    fallbackDisplayName: searchDisplayName ?? "Search source",
+    searchRuns: searchRuns ?? [],
+    toolCalls: observedToolCalls
   });
-  const clientSearchActivity = runSearchActivity.length > 0
-    ? runSearchActivity
-    : projectToolSearchActivity(observedToolCalls, searchDisplayName ?? "Search source");
   const geminiSearchActivity = grounding
     ? [{
         displayName: "Google Search",

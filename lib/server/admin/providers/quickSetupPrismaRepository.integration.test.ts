@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { Prisma, PrismaClient, type PrismaClient as PrismaClientType } from "@prisma/client";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { adminSearchExecutionDefaults } from "../../../contracts/adminSearch";
 import {
   OPENAI_PROVIDER_SEARCH_INTEGRATION_ID,
   OPENAI_PROVIDER_SEARCH_STRATEGY_ID
@@ -441,10 +442,13 @@ function plan(input: Readonly<{
   const searchDraft = {
     adapterKind: "provider_model_client" as const,
     credentialMode: "provider_model" as const,
+    maxOutputTokens: adminSearchExecutionDefaults.maxOutputTokens,
     maxResults: 8,
+    maxSearchCallsPerAnswer: adminSearchExecutionDefaults.maxSearchCallsPerAnswer,
     protocol: "openai_responses_web_search" as const,
     providerModelId: terra.modelId,
     queryMaxCharacters: 500,
+    reasoningPolicy: adminSearchExecutionDefaults.reasoningPolicy,
     timeoutMs: 300_000
   };
   return {

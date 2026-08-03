@@ -182,6 +182,10 @@ export type RunUsageAttribution = {
   usage: ModelRunUsage;
 };
 
+export type PersistedRunUsageAttribution = RunUsageAttribution & {
+  recordedAt: string;
+};
+
 export type ProviderResponseIdPublication = "cancelled" | "published" | "terminal";
 
 export type RunRepository = {
@@ -345,7 +349,7 @@ export type RunRepository = {
   loadRunUsageAttributions(input: {
     runId: string;
     userId: string;
-  }): Promise<RunUsageAttribution[]>;
+  }): Promise<PersistedRunUsageAttribution[]>;
   loadCheckpointedToolLoopRun(input: {
     runId: string;
     userId: string;

@@ -1,5 +1,10 @@
 import { createHash } from "node:crypto";
-import type { AdminSearchDraft } from "../../contracts/adminSearch";
+import {
+  adminSearchExecutionDefaults,
+  adminSearchExecutionLimits,
+  type AdminSearchDraft,
+  type AdminSearchReasoningPolicy
+} from "../../contracts/adminSearch";
 import {
   searchAdapterKinds,
   searchCredentialModes,
@@ -55,10 +60,24 @@ export function normalizeSearchDraft(value: unknown): AdminSearchDraft {
   const normalized: AdminSearchDraft = {
     adapterKind,
     credentialMode,
+    maxOutputTokens: boundedInteger(
+      value.maxOutputTokens ?? adminSearchExecutionDefaults.maxOutputTokens,
+      adminSearchExecutionLimits.maxOutputTokens.minimum,
+      adminSearchExecutionLimits.maxOutputTokens.maximum
+    ),
     maxResults: boundedInteger(value.maxResults ?? 8, 1, 20),
+    maxSearchCallsPerAnswer: boundedInteger(
+      value.maxSearchCallsPerAnswer ?? adminSearchExecutionDefaults.maxSearchCallsPerAnswer,
+      adminSearchExecutionLimits.maxSearchCallsPerAnswer.minimum,
+      adminSearchExecutionLimits.maxSearchCallsPerAnswer.maximum
+    ),
     protocol,
     providerModelId: providerModelId(value.providerModelId ?? null),
     queryMaxCharacters: boundedInteger(value.queryMaxCharacters ?? 500, 32, 1_000),
+    reasoningPolicy: enumValue<AdminSearchReasoningPolicy>(
+      value.reasoningPolicy ?? adminSearchExecutionDefaults.reasoningPolicy,
+      ["lowest_supported", "provider_default"]
+    ),
     timeoutMs: boundedInteger(value.timeoutMs ?? 300_000, 5_000, 900_000)
   };
 
@@ -143,7 +162,9 @@ export function builtInSearchDraft(input: Readonly<{
     credentialMode: input.kind === "perplexity_tool_search"
       ? "provider_model"
       : "answer_provider",
+    maxOutputTokens: adminSearchExecutionDefaults.maxOutputTokens,
     maxResults: 8,
+    maxSearchCallsPerAnswer: adminSearchExecutionDefaults.maxSearchCallsPerAnswer,
     protocol: input.kind === "gemini_google_search"
       ? "gemini_google_search"
       : input.kind === "perplexity_tool_search"
@@ -151,6 +172,7 @@ export function builtInSearchDraft(input: Readonly<{
         : "openai_responses_web_search",
     providerModelId: input.providerModelId ?? null,
     queryMaxCharacters: 500,
+    reasoningPolicy: adminSearchExecutionDefaults.reasoningPolicy,
     timeoutMs: 300_000
   };
 }

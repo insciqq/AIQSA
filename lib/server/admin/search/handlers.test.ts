@@ -100,10 +100,13 @@ describe("admin Search HTTP handlers", () => {
     const draft = {
       adapterKind: "provider_model_client",
       credentialMode: "provider_model",
+      maxOutputTokens: 4_096,
       maxResults: 8,
+      maxSearchCallsPerAnswer: 2,
       protocol: "openai_responses_web_search",
       providerModelId: "technical-1",
       queryMaxCharacters: 500,
+      reasoningPolicy: "lowest_supported",
       timeoutMs: 15_000
     };
 

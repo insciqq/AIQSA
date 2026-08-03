@@ -992,7 +992,9 @@ export async function prepareRun(
     controls: parameterControls,
     params: paramsBody,
     provider: parameterProvider,
-    ...(searchPolicy ? { searchControls: searchPolicy.controls } : {})
+    ...(searchPolicy?.provider === "openrouter"
+      ? { searchControls: searchPolicy.controls }
+      : {})
   });
   if (!paramValidation.ok) {
     return failure(invalidRunParamsError, 400);

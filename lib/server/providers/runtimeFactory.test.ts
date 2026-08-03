@@ -118,6 +118,38 @@ describe("provider runtime factory", () => {
     })).toThrow("provider_safe_fetch_required");
   });
 
+  it.each([
+    "openai_responses_native",
+    "openai_responses_compatible"
+  ] as const)("exposes the dedicated Search adapter only for Search-capable %s models", (adapterKind) => {
+    const base = snapshot(adapterKind);
+    const searchCapable: ProviderExecutionSnapshot = {
+      ...base,
+      model: {
+        ...base.model,
+        capabilities: {
+          ...base.model.capabilities,
+          defaultReasoningEffort: "medium",
+          nativeSearch: true,
+          reasoning: true,
+          reasoningEfforts: ["none", "low", "medium"]
+        }
+      }
+    };
+    const runtime = createProviderRuntimeBinding({
+      options: { allowFake: false, fetchFn: vi.fn<typeof fetch>() },
+      secret: "secret",
+      snapshot: searchCapable
+    });
+
+    expect(runtime.searchAdapter).toBeDefined();
+    expect(createProviderRuntimeBinding({
+      options: { allowFake: false, fetchFn: vi.fn<typeof fetch>() },
+      secret: "secret",
+      snapshot: base
+    }).searchAdapter).toBeUndefined();
+  });
+
   it("builds a serializer-only preview boundary without a real credential", () => {
     const preview = createProviderPreviewRuntimeBinding(
       snapshot("openai_chat_completions_compatible"),
@@ -288,6 +320,7 @@ describe("provider runtime factory", () => {
       finalText: "ok"
     });
     expect(runtime.toolBridge).toBeDefined();
+    expect(runtime.searchAdapter).toBeDefined();
     expect(fetchFn).toHaveBeenCalledOnce();
   });
 

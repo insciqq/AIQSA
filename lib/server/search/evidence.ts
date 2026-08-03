@@ -18,6 +18,22 @@ function text(value: unknown, max: number): string | undefined {
     : undefined;
 }
 
+function safeHttpHref(value: unknown): string | undefined {
+  const href = text(value, 2_048);
+  const safe = href ? safeExternalHref(href) : null;
+  if (!safe) return undefined;
+  try {
+    const url = new URL(safe);
+    return (url.protocol === "https:" || url.protocol === "http:") &&
+      !url.username &&
+      !url.password
+      ? safe
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** Extract only the reviewed common source fields. Raw provider payloads stay
  * out of SearchRun evidence and tool results. */
 export function normalizeSearchSources(value: unknown, maximum = 20): SearchSource[] {
@@ -34,9 +50,8 @@ export function normalizeSearchSources(value: unknown, maximum = 20): SearchSour
       return;
     }
     const row = candidate as Record<string, unknown>;
-    const rawUrl = text(row.url, 2_048) ?? text(row.href, 2_048);
-    const safe = rawUrl ? safeExternalHref(rawUrl) : null;
-    if (safe && (safe.startsWith("https://") || safe.startsWith("http://")) && !seenUrls.has(safe)) {
+    const safe = safeHttpHref(row.url) ?? safeHttpHref(row.href);
+    if (safe && !seenUrls.has(safe)) {
       seenUrls.add(safe);
       sources.push({
         ...(text(row.date, 80) ?? text(row.publishedAt, 80)

@@ -13,6 +13,7 @@ import {
   createOpenAIResponsesAdapter,
   createFetchOpenAIResponsesClient
 } from "./openaiResponses";
+import { createOpenAIResponsesSearchAdapter } from "./openaiResponsesSearch";
 import {
   createFetchOpenRouterChatClient,
   createOpenRouterChatAdapter,
@@ -221,15 +222,25 @@ export function createProviderRuntimeBinding(input: Readonly<{
     }
     const fetchFn = requiredFetch(input.options);
     if (snapshot.model.adapterKind === "openai_responses_compatible") {
+      const client = createFetchOpenAIResponsesClient({
+        apiKey: null,
+        baseUrl: snapshot.connection.apiRoot,
+        fetchFn
+      });
       return {
         adapter: createCompatibleResponsesAdapter({
-          client: createFetchOpenAIResponsesClient({
-            apiKey: null,
-            baseUrl: snapshot.connection.apiRoot,
-            fetchFn
-          }),
+          client,
           reasoningRequestMapping: snapshot.model.reasoningRequestMapping
         }),
+        ...(snapshot.model.capabilities.nativeSearch
+          ? {
+              searchAdapter: createOpenAIResponsesSearchAdapter({
+                client,
+                provider: "openai_compatible",
+                reasoningRequestMapping: snapshot.model.reasoningRequestMapping
+              })
+            }
+          : {}),
         toolBridge: openAICompatibleResponsesToolBridge
       };
     }
@@ -273,21 +284,40 @@ export function createProviderRuntimeBinding(input: Readonly<{
         }),
         toolBridge: geminiInteractionsToolBridge
       };
-    case "openai_responses_native":
+    case "openai_responses_native": {
+      const client = createFetchOpenAIResponsesClient({ apiKey: clientSecret, baseUrl, fetchFn });
       return {
-        adapter: createOpenAIResponsesAdapter({
-          client: createFetchOpenAIResponsesClient({ apiKey: clientSecret, baseUrl, fetchFn })
-        }),
+        adapter: createOpenAIResponsesAdapter({ client }),
+        ...(snapshot.model.capabilities.nativeSearch
+          ? {
+              searchAdapter: createOpenAIResponsesSearchAdapter({
+                client,
+                provider: "openai"
+              })
+            }
+          : {}),
         toolBridge: openAIResponsesToolBridge
       };
-    case "openai_responses_compatible":
+    }
+    case "openai_responses_compatible": {
+      const client = createFetchOpenAIResponsesClient({ apiKey: clientSecret, baseUrl, fetchFn });
       return {
         adapter: createCompatibleResponsesAdapter({
-          client: createFetchOpenAIResponsesClient({ apiKey: clientSecret, baseUrl, fetchFn }),
+          client,
           reasoningRequestMapping: snapshot.model.reasoningRequestMapping
         }),
+        ...(snapshot.model.capabilities.nativeSearch
+          ? {
+              searchAdapter: createOpenAIResponsesSearchAdapter({
+                client,
+                provider: "openai_compatible",
+                reasoningRequestMapping: snapshot.model.reasoningRequestMapping
+              })
+            }
+          : {}),
         toolBridge: openAICompatibleResponsesToolBridge
       };
+    }
     case "openai_chat_completions_compatible":
       return {
         adapter: createOpenAICompatibleChatAdapter({

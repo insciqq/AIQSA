@@ -424,10 +424,16 @@ describe("provider admission", () => {
     });
     expect(search.configuration).toMatchObject({
       adapterKind: "provider_model_client",
+      config: {
+        maxOutputTokens: 4_096,
+        maxSearchCallsPerAnswer: 2,
+        reasoningPolicy: "lowest_supported"
+      },
       modelId: "gpt-5.6-search",
       providerModelId: "model-openai-search",
       searchStrategyRowId: "route-client:openai"
     });
+    expect(search.configuration.config).not.toHaveProperty("modelDefaultParams");
   });
 
   it.each([

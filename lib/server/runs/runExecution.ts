@@ -580,6 +580,7 @@ async function persistPlanSearchExecution(input: Readonly<{
   await input.repository.createSearchRun({
     artifacts: {
       displayName: input.execution.displayName,
+      ...(input.execution.failure ? { failure: input.execution.failure } : {}),
       invocationId: input.execution.invocationId,
       ...(input.execution.providerOperations
         ? { providerOperations: input.execution.providerOperations }
