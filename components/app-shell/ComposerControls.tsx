@@ -335,7 +335,9 @@ export function ComposerControls({
       />
 
       <div
-        className="flex min-w-0 max-w-full flex-[1_1_20rem] flex-wrap items-center gap-0.5 min-[430px]:gap-1"
+        className="flex min-w-[min(20rem,100%)] max-w-full flex-[1_1_20rem] flex-nowrap items-center gap-0.5 min-[430px]:gap-1"
+        data-composer-secondary-controls="true"
+        data-has-direct-reasoning={reasoningSupported ? "true" : "false"}
         data-testid="composer-secondary-controls"
       >
         {hasAvailableProfiles ? (

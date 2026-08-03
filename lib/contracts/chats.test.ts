@@ -169,8 +169,8 @@ describe("chat wire contracts", () => {
       citations: [],
       reasoningCount: 1,
       reasoningText: ["Checked reasoning"],
+      searchActivity: [],
       searchCount: 0,
-      searchDetails: [],
       searchDisplayName: "Company Gateway Search",
       searchStrategy: null,
       toolCallCount: 0,
@@ -278,5 +278,149 @@ describe("chat wire contracts", () => {
         }
       })
     ).toBeNull();
+  });
+
+  it("keeps only bounded friendly Search disclosure facts in chat messages", () => {
+    const searchActivity = [{
+      credential: "secret",
+      displayName: "Company Gateway Search",
+      endpoint: "https://provider.example/v1/responses",
+      failure: { code: "private_provider_code", raw: "private" },
+      failureReason: "Search reached its output limit before completing.",
+      providerOperations: [{
+        id: "provider-operation-id",
+        kind: "search",
+        ordinal: 0,
+        pattern: null,
+        queries: ["current evidence"],
+        status: "complete",
+        url: null
+      }],
+      providerOperationsTruncated: false,
+      query: "current evidence",
+      rawPayload: { private: true },
+      routeId: "route-1",
+      sourceCount: 1,
+      sources: [{
+        rank: 1,
+        snippet: "Safe summary",
+        title: "Evidence",
+        url: "https://example.com/evidence"
+      }],
+      status: "error"
+    }];
+    const artifactSummary = {
+      citationCount: 0,
+      citations: [],
+      reasoningCount: 0,
+      reasoningText: [],
+      searchActivity,
+      searchCount: 1,
+      searchDetails: [{ rawProviderResponse: "private" }],
+      searchStrategy: "custom-web-search:connection-1",
+      toolCallCount: 0,
+      toolCalls: []
+    };
+
+    const decoded = decodeChatDetailResponse({
+      chat: {
+        ...summary,
+        messages: [{ ...message, artifactSummary }],
+        usageStats
+      }
+    })?.messages[0]?.artifactSummary;
+
+    expect(decoded?.searchActivity).toEqual([{
+      displayName: "Company Gateway Search",
+      failureReason: "Search reached its output limit before completing.",
+      providerOperations: [{
+        kind: "search",
+        ordinal: 0,
+        pattern: null,
+        queries: ["current evidence"],
+        status: "complete",
+        url: null
+      }],
+      providerOperationsTruncated: false,
+      query: "current evidence",
+      sourceCount: 1,
+      sources: [{
+        rank: 1,
+        snippet: "Safe summary",
+        title: "Evidence",
+        url: "https://example.com/evidence"
+      }],
+      status: "error"
+    }]);
+    expect(JSON.stringify(decoded)).not.toMatch(/secret|provider\.example|provider-operation-id|private_provider_code|rawPayload|route-1|rawProviderResponse/);
+  });
+
+  it("rejects an unbounded Search failure reason", () => {
+    const artifactSummary = {
+      citationCount: 0,
+      citations: [],
+      reasoningCount: 0,
+      reasoningText: [],
+      searchActivity: [{
+        displayName: "Company Gateway Search",
+        failureReason: "x".repeat(257),
+        providerOperations: [],
+        providerOperationsTruncated: false,
+        query: "current evidence",
+        sourceCount: 0,
+        sources: [],
+        status: "error"
+      }],
+      searchCount: 1,
+      searchStrategy: "custom-web-search:connection-1",
+      toolCallCount: 0,
+      toolCalls: []
+    };
+
+    expect(decodeChatDetailResponse({
+      chat: {
+        ...summary,
+        messages: [{ ...message, artifactSummary }],
+        usageStats
+      }
+    })).toBeNull();
+  });
+
+  it("rejects a Search provider-operation trace above the wire inspection limit", () => {
+    const providerOperations = Array.from({ length: 32 }, (_, ordinal) => ({
+      kind: "search",
+      ordinal,
+      pattern: null,
+      queries: ["q".repeat(512)],
+      status: "complete",
+      url: null
+    }));
+    const artifactSummary = {
+      citationCount: 0,
+      citations: [],
+      reasoningCount: 0,
+      reasoningText: [],
+      searchActivity: [{
+        displayName: "Company Gateway Search",
+        providerOperations,
+        providerOperationsTruncated: false,
+        query: "current evidence",
+        sourceCount: 0,
+        sources: [],
+        status: "complete"
+      }],
+      searchCount: 1,
+      searchStrategy: "custom-web-search:connection-1",
+      toolCallCount: 0,
+      toolCalls: []
+    };
+
+    expect(decodeChatDetailResponse({
+      chat: {
+        ...summary,
+        messages: [{ ...message, artifactSummary }],
+        usageStats
+      }
+    })).toBeNull();
   });
 });

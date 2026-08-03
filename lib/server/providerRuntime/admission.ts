@@ -25,11 +25,7 @@ import {
   normalizeSearchDraft,
   searchExecutionModes
 } from "../search/configuration";
-import {
-  sameSearchProbeBinding,
-  searchProbeBinding,
-  type SearchProbeBinding
-} from "../search/probeBinding";
+import type { SearchProbeBinding } from "../search/probeBinding";
 
 export type ProviderAdmissionErrorCode =
   | "credential_active_version_missing"
@@ -463,7 +459,6 @@ type LoadedSearchOption = Readonly<{
       credentialMode: string;
       id: string;
       providerModelId: string | null;
-      validationEvidence: unknown;
     }>;
     activeRevisionId: string | null;
     adapterKind: string;
@@ -479,7 +474,6 @@ type LoadedSearchOption = Readonly<{
 
 type ResolvedSearchRoute = Readonly<{
   draft: ReturnType<typeof normalizeSearchDraft>;
-  probeBinding: SearchProbeBinding | null;
   revisionId: string;
   strategy: LoadedSearchOption["strategies"][number];
 }>;
@@ -528,7 +522,6 @@ function normalizeActiveSearchRoute(
   }
   return {
     draft,
-    probeBinding: searchProbeBinding(revision.validationEvidence),
     revisionId: revision.id,
     strategy
   };
@@ -639,8 +632,7 @@ async function loadClientRouteRole(
     requireEntitlement: false,
     userId: input.userId
   });
-  return role.authority && input.route.probeBinding &&
-    sameSearchProbeBinding(role.authority, input.route.probeBinding) &&
+  return role.authority &&
     role.snapshot.connectionId === input.option.sourceConnectionId &&
     role.modelConfiguration.capabilities.nativeSearch === true &&
     compatibleTechnicalAdapter(input.route.draft.protocol, role.snapshot.model.adapterKind)
@@ -661,7 +653,9 @@ function searchConfiguration(
       ...(role
         ? {
             modelCapabilities: role.modelConfiguration.capabilities,
-            modelDefaultParams: role.modelConfiguration.defaultParams
+            ...(route.draft.protocol === "openrouter_perplexity_chat"
+              ? { modelDefaultParams: role.modelConfiguration.defaultParams }
+              : {})
           }
         : {})
     },
@@ -727,9 +721,8 @@ export async function loadProviderAdmissionPlan(
                 adapterKind: true,
                 configuration: true,
                 credentialMode: true,
-                  id: true,
-                  providerModelId: true,
-                  validationEvidence: true
+                id: true,
+                providerModelId: true
               }
             }
           },

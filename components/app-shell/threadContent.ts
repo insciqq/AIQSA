@@ -6,6 +6,10 @@ import type {
 } from "@/components/app-shell/types";
 import { safeExternalHref } from "@/lib/domain/links";
 import {
+  projectClientSearchActivity,
+  projectHostedSearchActivity
+} from "@/lib/domain/searchDisclosure";
+import {
   mergeThreadToolActivity,
   projectThreadToolActivity
 } from "@/lib/domain/toolActivity";
@@ -174,58 +178,7 @@ function searchDisplayNameFromEvent(event: RunEventView): string | null {
 }
 
 function searchRunsCount(searchRuns: unknown[] | undefined): number {
-  return (
-    searchRuns?.filter(
-      (searchRun) => !isRecord(searchRun) || searchRun.status === "complete"
-    ).length ?? 0
-  );
-}
-
-function responsePreviewFromSearchArtifacts(artifacts: unknown): unknown {
-  return isRecord(artifacts) && "finalProviderResponsePreview" in artifacts
-    ? artifacts.finalProviderResponsePreview
-    : artifacts;
-}
-
-function searchDetailsFromRuns(
-  searchRuns: unknown[] | undefined
-): ThreadArtifactSummary["searchDetails"] {
-  return (searchRuns ?? []).flatMap((searchRun) => {
-    if (!isRecord(searchRun)) {
-      return [];
-    }
-
-    return [
-      {
-        modelId: typeof searchRun.modelId === "string" ? searchRun.modelId : null,
-        provider: typeof searchRun.provider === "string" ? searchRun.provider : null,
-        requestPreview: searchRun.requestPreview,
-        responsePreview: responsePreviewFromSearchArtifacts(searchRun.artifacts),
-        status: typeof searchRun.status === "string" ? searchRun.status : null,
-        strategyId:
-          typeof searchRun.strategyId === "string" ? searchRun.strategyId : null
-      }
-    ];
-  });
-}
-
-function searchDetailsFromArtifacts(
-  searchArtifacts: RunEventView[]
-): ThreadArtifactSummary["searchDetails"] {
-  return searchArtifacts.flatMap((event) => {
-    const payload = artifactPayload(event);
-    if (!isRecord(payload)) {
-      return [];
-    }
-
-    return [
-      {
-        callPreview: payload,
-        status: typeof payload.status === "string" ? payload.status : null,
-        strategyId: searchStrategyFromEvent(event)
-      }
-    ];
-  });
+  return searchRuns?.length ?? 0;
 }
 
 function contextTruncationFromValue(
@@ -280,16 +233,11 @@ export function summarizeThreadArtifacts(
     .map((event, index) => citationFromValue(artifactPayload(event), index + 1))
     .filter((citation): citation is ThreadCitation => Boolean(citation)));
   const citationCount = Math.max(citationEvents.length, citations.length);
-  const searchCount = Math.max(
+  const observedSearchCount = Math.max(
     grounding?.display.callCount ?? 0,
     searchArtifacts.length,
     searchRunsCount(searchRuns)
   );
-  const runSearchDetails = searchDetailsFromRuns(searchRuns) ?? [];
-  const searchDetails =
-    runSearchDetails.length > 0
-      ? runSearchDetails
-      : searchDetailsFromArtifacts(searchArtifacts);
   const reasoningText = reasoningEvents
     .map(reasoningSnippet)
     .filter((text): text is string => Boolean(text));
@@ -307,9 +255,49 @@ export function summarizeThreadArtifacts(
       eventCall ? mergeThreadToolActivity(eventCall, call) : call
     );
   }
-  const toolCalls = [...toolCallsById.values()].sort(
+  const observedToolCalls = [...toolCallsById.values()].sort(
     (left, right) => left.round - right.round || left.ordinal - right.ordinal
   );
+  const searchDisplayName =
+    (grounding ? ["Google Search"] : searchArtifacts
+      .map(searchDisplayNameFromEvent)
+      .filter((displayName): displayName is string => Boolean(displayName)))
+      .at(0) ?? null;
+  const hostedSearchActivity = grounding
+    ? null
+    : projectHostedSearchActivity({
+        displayName: searchDisplayName,
+        payloads: searchArtifacts.map(artifactPayload),
+        runStatus
+      });
+  const clientSearchActivity = projectClientSearchActivity({
+    fallbackDisplayName: searchDisplayName ?? "Search source",
+    searchRuns: searchRuns ?? [],
+    toolCalls: observedToolCalls
+  });
+  const geminiSearchActivity = grounding
+    ? [{
+        displayName: "Google Search",
+        providerOperations: null,
+        providerOperationsTruncated: false,
+        query: null,
+        sourceCount: citations.length,
+        sources: citations.map((citation, index) => ({
+          rank: index + 1,
+          ...(citation.snippet ? { snippet: citation.snippet } : {}),
+          title: citation.title,
+          url: citation.url
+        })),
+        status: "complete" as const
+      }]
+    : [];
+  const searchActivity = [
+    ...geminiSearchActivity,
+    ...(hostedSearchActivity ? [hostedSearchActivity] : []),
+    ...clientSearchActivity
+  ].slice(0, 12);
+  const searchCount = Math.max(observedSearchCount, searchActivity.length);
+  const toolCalls = observedToolCalls.filter((call) => call.capability === "mcp");
 
   if (
     searchCount === 0 &&
@@ -328,13 +316,9 @@ export function summarizeThreadArtifacts(
     groundingDisplay: grounding?.display ?? null,
     reasoningCount,
     reasoningText,
+    searchActivity,
     searchCount,
-    searchDetails,
-    searchDisplayName:
-      (grounding ? ["Google Search"] : searchArtifacts
-        .map(searchDisplayNameFromEvent)
-        .filter((displayName): displayName is string => Boolean(displayName)))
-        .at(0) ?? null,
+    searchDisplayName,
     searchStrategy:
       (grounding ? ["gemini-google-search"] : searchArtifacts
         .map(searchStrategyFromEvent)

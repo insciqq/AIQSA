@@ -6,6 +6,10 @@ import {
   mergeThreadToolActivity,
   projectThreadToolActivity
 } from "../../domain/toolActivity";
+import {
+  projectClientSearchActivity,
+  projectHostedSearchActivity
+} from "../../domain/searchDisclosure";
 import { prisma } from "../prisma";
 import { lockOwnedPromptPreset, lockUserPromptDefaultsShared } from "../prompts/promptDefaultsLock";
 import { ActiveRunConflictError } from "../runs/runRepositoryContract";
@@ -57,9 +61,7 @@ const chatDetailInclude = {
             },
             select: {
               artifacts: true,
-              modelId: true,
-              provider: true,
-              requestPreview: true,
+              query: true,
               status: true,
               strategyId: true
             }
@@ -122,6 +124,7 @@ type ArtifactSummaryRun = {
     artifacts?: unknown;
     modelId?: string | null;
     provider?: string;
+    query?: string | null;
     requestPreview?: unknown;
     status: string;
     strategyId: string;
@@ -419,44 +422,10 @@ function contextTruncationFromPayload(payload: unknown): ContextTruncationSummar
   return inner as ContextTruncationSummary;
 }
 
-function responsePreviewFromSearchArtifacts(artifacts: unknown): unknown {
-  return isRecord(artifacts) && "finalProviderResponsePreview" in artifacts
-    ? artifacts.finalProviderResponsePreview
-    : artifacts;
-}
-
-function searchDetailsFromArtifacts(artifactPayloads: unknown[]): ThreadArtifactSummary["searchDetails"] {
-  return artifactPayloads.flatMap((payload) => {
-    const inner = artifactInnerPayload(payload);
-    if (!isRecord(inner)) {
-      return [];
-    }
-
-    return [
-      {
-        callPreview: inner,
-        status: typeof inner.status === "string" ? inner.status : null,
-        strategyId: searchStrategyFromPayload(payload)
-      }
-    ];
-  });
-}
-
 export function summarizeMessageRunArtifacts(run: ArtifactSummaryRun): ThreadArtifactSummary | null {
   const artifactPayloads = run.events.map((event) => event.payload);
   const searchPayloads = artifactPayloads.filter((payload) => artifactType(payload) === "search");
   const searchArtifactCount = searchPayloads.length;
-  const completedSearchRuns = run.searchRuns.filter((searchRun) => searchRun.status === "complete");
-  const runSearchDetails = run.searchRuns.map((searchRun) => ({
-    modelId: searchRun.modelId ?? null,
-    provider: searchRun.provider ?? null,
-    requestPreview: searchRun.requestPreview,
-    responsePreview: responsePreviewFromSearchArtifacts(searchRun.artifacts),
-    status: searchRun.status,
-    strategyId: searchRun.strategyId
-  }));
-  const searchDetails = runSearchDetails.length > 0 ? runSearchDetails : searchDetailsFromArtifacts(searchPayloads);
-  const searchCount = Math.max(searchArtifactCount, completedSearchRuns.length);
   const normalizedSearchIdentities = searchIdentitiesFromNormalizedRequest(run.normalizedRequest);
   const hostedSearchIdentities = normalizedSearchIdentities.filter(
     (identity) => identity.adapterKind === "answer_provider_hosted"
@@ -509,9 +478,41 @@ export function summarizeMessageRunArtifacts(run: ArtifactSummaryRun): ThreadArt
       eventCall ? mergeThreadToolActivity(eventCall, call) : call
     );
   }
-  const toolCalls = [...toolCallsById.values()].sort(
+  const observedToolCalls = [...toolCallsById.values()].sort(
     (left, right) => left.round - right.round || left.ordinal - right.ordinal
   );
+  const hostedSearchActivity = projectHostedSearchActivity({
+    displayName: hostedSearchIdentity?.displayName ?? searchDisplayName,
+    payloads: searchPayloads.map(artifactInnerPayload),
+    runStatus: run.status
+  });
+  const clientSearchActivity = projectClientSearchActivity({
+    fallbackDisplayName: searchDisplayName ?? "Search source",
+    searchRuns: run.searchRuns.map((searchRun) => {
+      const identity = normalizedSearchIdentities.find(
+        (candidate) => candidate.optionId === searchRun.strategyId
+      );
+      return identity?.displayName
+        ? {
+            ...searchRun,
+            artifacts: {
+              ...(typeof searchRun.artifacts === "object" && searchRun.artifacts !== null &&
+                !Array.isArray(searchRun.artifacts)
+                ? searchRun.artifacts
+                : {}),
+              displayName: identity.displayName
+            }
+          }
+        : searchRun;
+    }),
+    toolCalls: observedToolCalls
+  });
+  const searchActivity = [
+    ...(hostedSearchActivity ? [hostedSearchActivity] : []),
+    ...clientSearchActivity
+  ].slice(0, 12);
+  const toolCalls = observedToolCalls.filter((call) => call.capability === "mcp");
+  const searchCount = Math.max(searchArtifactCount, run.searchRuns.length, searchActivity.length);
 
   if (searchCount === 0 && reasoningPayloads.length === 0 && citationCount === 0 && !contextTruncation && toolCalls.length === 0) {
     return null;
@@ -523,11 +524,11 @@ export function summarizeMessageRunArtifacts(run: ArtifactSummaryRun): ThreadArt
     contextTruncation,
     reasoningCount,
     reasoningText: reasoningSnippets,
+    searchActivity,
     searchCount,
-    searchDetails,
     ...(searchDisplayName ? { searchDisplayName } : {}),
     searchStrategy:
-      completedSearchRuns[0]?.strategyId ??
+      run.searchRuns[0]?.strategyId ??
       hostedSearchIdentity?.optionId ??
       artifactPayloads.map(searchStrategyFromPayload).find((strategy): strategy is string => Boolean(strategy)) ??
       null,

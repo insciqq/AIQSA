@@ -112,10 +112,7 @@ export function deriveRunReceipt({
 
   if (artifactSummary) {
     const searchCount = factualCount(artifactSummary.searchCount);
-    const searchNestedUnderTool = artifactSummary.toolCalls.some(
-      (call) => (call.searchExecutions?.length ?? 0) > 0
-    );
-    if (searchCount > 0 && !searchNestedUnderTool) {
+    if (searchCount > 0) {
       facts.push({
         ...(artifactSummary.searchDisplayName?.trim() || artifactSummary.searchStrategy
           ? {
@@ -128,11 +125,12 @@ export function deriveRunReceipt({
       });
     }
 
-    const toolCount = factualCount(artifactSummary.toolCallCount);
+    const genericToolCalls = artifactSummary.toolCalls.filter((call) => call.capability === "mcp");
+    const toolCount = factualCount(genericToolCalls.length);
     if (toolCount > 0) {
       const failedCount = Math.min(
         toolCount,
-        artifactSummary.toolCalls.filter((call) => call.status === "error").length
+        genericToolCalls.filter((call) => call.status === "error").length
       );
       facts.push({
         kind: "tools",

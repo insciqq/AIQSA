@@ -100,7 +100,7 @@ export function runAdminSearchAction(input: Readonly<{
 export function adminSearchErrorMessage(code: string): string {
   const messages: Record<string, string> = {
     network_error: "The Search control plane could not be reached.",
-    search_activation_evidence_missing: "Test this exact draft successfully before activation.",
+    search_activation_evidence_missing: "This Search source is not ready. Check its provider connection, Search-capable model, and saved configuration.",
     search_admin_action_failed: "The Search action failed.",
     search_catalog_malformed: "The Search catalog response was invalid.",
     search_configuration_invalid: "Review the Search configuration and bounded limits.",
@@ -109,6 +109,7 @@ export function adminSearchErrorMessage(code: string): string {
     search_draft_stale: "This configuration changed elsewhere. Reload and apply your edit again.",
     search_integration_material_identity_changed: "The Search connection cannot change after this source is in use. Add a new source instead.",
     search_provider_model_not_available: "Choose an enabled provider model that supports Search for this source.",
+    search_source_not_ready: "This Search source cannot be enabled until its provider connection, Search-capable model, and saved configuration are ready.",
     search_policy_stale: "The organization Search default changed elsewhere. Reload and apply your edit again.",
     search_system_integration_forbidden: "This built-in Search source cannot be archived.",
     search_test_failed: "The Search test did not produce a usable result."

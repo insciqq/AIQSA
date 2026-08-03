@@ -45,14 +45,6 @@ type RouteSpec = Readonly<{
     | "openai_responses_web_search"
     | "openrouter_perplexity_chat";
   providerModelId?: string | null;
-  probeBinding?: Readonly<{
-    connectionId: string;
-    connectionVersion: number;
-    credentialId: string;
-    credentialVersionId: string;
-    modelVersion: number;
-    providerModelId: string;
-  }>;
   revisionId: string;
 }>;
 
@@ -136,10 +128,7 @@ function physicalRoute(spec: RouteSpec) {
       configuration: draft,
       credentialMode,
       id: spec.revisionId,
-      providerModelId,
-      validationEvidence: spec.adapterKind === "provider_model_client" && spec.probeBinding
-        ? { probeBinding: spec.probeBinding }
-        : { method: "configuration" }
+      providerModelId
     },
     activeRevisionId: spec.revisionId,
     adapterKind: spec.adapterKind,
@@ -286,24 +275,8 @@ const officialOpenAiSearchModel: ModelSpec = {
   upstreamModelId: "gpt-5.6-search"
 };
 
-function probeBinding(
-  connectionId: string,
-  providerModelId: string,
-  credentialVersionId = `credential-version:${connectionId}`
-) {
-  return {
-    connectionId,
-    connectionVersion: 1,
-    credentialId: `credential:${connectionId}`,
-    credentialVersionId,
-    modelVersion: 1,
-    providerModelId
-  };
-}
-
 function openAiOption(input: Readonly<{
   clientConnectionModelId?: string;
-  clientProbeBinding?: RouteSpec["probeBinding"];
   optionId?: string;
   sourceConnectionId?: string;
 }> = {}): OptionSpec {
@@ -323,10 +296,6 @@ function openAiOption(input: Readonly<{
         id: `route-client:${input.optionId ?? "openai"}`,
         protocol: "openai_responses_web_search",
         providerModelId: input.clientConnectionModelId ?? officialOpenAiSearchModel.id,
-        probeBinding: input.clientProbeBinding ?? probeBinding(
-          input.sourceConnectionId ?? officialOpenAiModel.connectionId,
-          input.clientConnectionModelId ?? officialOpenAiSearchModel.id
-        ),
         revisionId: `revision-client:${input.optionId ?? "openai"}`
       }
     ],
@@ -455,10 +424,16 @@ describe("provider admission", () => {
     });
     expect(search.configuration).toMatchObject({
       adapterKind: "provider_model_client",
+      config: {
+        maxOutputTokens: 4_096,
+        maxSearchCallsPerAnswer: 2,
+        reasoningPolicy: "lowest_supported"
+      },
       modelId: "gpt-5.6-search",
       providerModelId: "model-openai-search",
       searchStrategyRowId: "route-client:openai"
     });
+    expect(search.configuration.config).not.toHaveProperty("modelDefaultParams");
   });
 
   it.each([
@@ -469,15 +444,20 @@ describe("provider admission", () => {
       credentialVersionIdByConnection: {
         [officialOpenAiModel.connectionId]: "credential-version:connection-openai:replacement"
       },
+      expectedCredentialId: "credential:connection-openai:replacement",
+      expectedCredentialVersionId: "credential-version:connection-openai:replacement",
       label: "credential"
     },
     {
+      credentialIdByConnection: undefined,
       credentialVersionIdByConnection: {
         [officialOpenAiModel.connectionId]: "credential-version:connection-openai:v2"
       },
+      expectedCredentialId: "credential:connection-openai",
+      expectedCredentialVersionId: "credential-version:connection-openai:v2",
       label: "credential version"
     }
-  ])("rejects a client route after its current $label changes", async (authority) => {
+  ])("resolves the current $label at admission without requiring a new Search probe", async (authority) => {
     const anthropic: ModelSpec = {
       adapterKind: "anthropic_messages",
       connectionId: "connection-anthropic",
@@ -494,16 +474,22 @@ describe("provider admission", () => {
       technicalModels: [officialOpenAiSearchModel]
     });
 
-    await expect(loadProviderAdmissionPlan(db as unknown as Prisma.TransactionClient, {
+    const plan = await loadProviderAdmissionPlan(db as unknown as Prisma.TransactionClient, {
       providerConnectionId: anthropic.connectionId,
       providerModelId: anthropic.id,
       searchPlan: { mode: "model_choice", optionIds: [option.optionId] },
       searchStrategyId: option.optionId,
       userId: "user-1"
-    })).rejects.toMatchObject({ code: "search_strategy_not_available" });
+    });
+
+    expect(expectSearch(plan).role?.authority).toMatchObject({
+      credentialId: authority.expectedCredentialId,
+      credentialVersionId: authority.expectedCredentialVersionId,
+      providerModelId: officialOpenAiSearchModel.id
+    });
   });
 
-  it("admits a freshly probed client route for the exact rotated credential version", async () => {
+  it("pins the current rotated credential version without mutating the Search source", async () => {
     const anthropic: ModelSpec = {
       adapterKind: "anthropic_messages",
       connectionId: "connection-anthropic",
@@ -512,13 +498,7 @@ describe("provider admission", () => {
       upstreamModelId: "claude-opus-5"
     };
     const rotatedVersion = "credential-version:connection-openai:v2";
-    const option = openAiOption({
-      clientProbeBinding: probeBinding(
-        officialOpenAiModel.connectionId,
-        officialOpenAiSearchModel.id,
-        rotatedVersion
-      )
-    });
+    const option = openAiOption();
     const { db } = admissionDb({
       answer: anthropic,
       credentialVersionIdByConnection: {
@@ -538,11 +518,14 @@ describe("provider admission", () => {
 
     expect(expectSearch(plan)).toMatchObject({
       integrationId: "route-client:openai",
-      revisionId: "revision-client:openai"
+      revisionId: "revision-client:openai",
+      role: {
+        authority: { credentialVersionId: rotatedVersion }
+      }
     });
   });
 
-  it("rejects an invalidated provider-model client until its source probe is accepted again", async () => {
+  it("rejects a disabled provider-model client route", async () => {
     const anthropic: ModelSpec = {
       adapterKind: "anthropic_messages",
       connectionId: "connection-anthropic",
@@ -760,7 +743,6 @@ describe("provider admission", () => {
         id: "route-perplexity-client",
         protocol: "openrouter_perplexity_chat",
         providerModelId: perplexityModel.id,
-        probeBinding: probeBinding(perplexityModel.connectionId, perplexityModel.id),
         revisionId: "revision-perplexity-client"
       }],
       sourceConnectionId: perplexityModel.connectionId
@@ -1059,7 +1041,6 @@ describe("provider admission", () => {
           id: "route-client-first",
           protocol: "openai_responses_web_search",
           providerModelId: firstSearchModel.id,
-          probeBinding: probeBinding(firstSearchModel.connectionId, firstSearchModel.id),
           revisionId: "revision-client-first"
         },
         {
@@ -1067,7 +1048,6 @@ describe("provider admission", () => {
           id: "route-client-second",
           protocol: "openai_responses_web_search",
           providerModelId: secondSearchModel.id,
-          probeBinding: probeBinding(secondSearchModel.connectionId, secondSearchModel.id),
           revisionId: "revision-client-second"
         }
       ],

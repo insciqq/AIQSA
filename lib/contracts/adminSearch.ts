@@ -12,11 +12,27 @@ export type AdminSearchDraft = {
   adapterKind: SearchAdapterKind;
   credentialMode: SearchCredentialMode;
   maxResults: number;
+  maxOutputTokens: number;
+  maxSearchCallsPerAnswer: number;
   protocol: SearchProtocol;
   providerModelId: string | null;
   queryMaxCharacters: number;
+  reasoningPolicy: AdminSearchReasoningPolicy;
   timeoutMs: number;
 };
+
+export type AdminSearchReasoningPolicy = "lowest_supported" | "provider_default";
+
+export const adminSearchExecutionDefaults = Object.freeze({
+  maxOutputTokens: 4_096,
+  maxSearchCallsPerAnswer: 2,
+  reasoningPolicy: "lowest_supported" as const
+});
+
+export const adminSearchExecutionLimits = Object.freeze({
+  maxOutputTokens: Object.freeze({ maximum: 32_768, minimum: 1_024 }),
+  maxSearchCallsPerAnswer: Object.freeze({ maximum: 4, minimum: 1 })
+});
 
 export type AdminSearchTestEvidence = {
   checkedAt: string;
@@ -66,6 +82,7 @@ export type AdminSearchProviderModelOption = {
   displayName: string;
   enabled: boolean;
   id: string;
+  searchReasoningSupported: boolean;
   searchKind: "perplexity_search" | "web_search";
 };
 
@@ -97,19 +114,50 @@ function nullableString(value: unknown): value is string | null {
   return value === null || string(value);
 }
 
-function draft(value: unknown): value is AdminSearchDraft {
-  if (!isRecord(value)) return false;
-  return (
+function boundedInteger(value: unknown, minimum: number, maximum: number): value is number {
+  return Number.isSafeInteger(value) && Number(value) >= minimum && Number(value) <= maximum;
+}
+
+export function decodeAdminSearchDraft(value: unknown): AdminSearchDraft | null {
+  if (!isRecord(value)) return null;
+  const maxOutputTokens = value.maxOutputTokens ?? adminSearchExecutionDefaults.maxOutputTokens;
+  const maxSearchCallsPerAnswer = value.maxSearchCallsPerAnswer ??
+    adminSearchExecutionDefaults.maxSearchCallsPerAnswer;
+  const reasoningPolicy = value.reasoningPolicy ?? adminSearchExecutionDefaults.reasoningPolicy;
+  if (!(
     (value.adapterKind === "answer_provider_hosted" || value.adapterKind === "provider_model_client") &&
     (value.credentialMode === "answer_provider" || value.credentialMode === "provider_model") &&
     Number.isSafeInteger(value.maxResults) &&
+    boundedInteger(
+      maxOutputTokens,
+      adminSearchExecutionLimits.maxOutputTokens.minimum,
+      adminSearchExecutionLimits.maxOutputTokens.maximum
+    ) &&
+    boundedInteger(
+      maxSearchCallsPerAnswer,
+      adminSearchExecutionLimits.maxSearchCallsPerAnswer.minimum,
+      adminSearchExecutionLimits.maxSearchCallsPerAnswer.maximum
+    ) &&
     (value.protocol === "gemini_google_search" ||
       value.protocol === "openai_responses_web_search" ||
       value.protocol === "openrouter_perplexity_chat") &&
     nullableString(value.providerModelId) &&
     Number.isSafeInteger(value.queryMaxCharacters) &&
+    (reasoningPolicy === "lowest_supported" || reasoningPolicy === "provider_default") &&
     Number.isSafeInteger(value.timeoutMs)
-  );
+  )) return null;
+  return {
+    adapterKind: value.adapterKind,
+    credentialMode: value.credentialMode,
+    maxOutputTokens,
+    maxResults: Number(value.maxResults),
+    maxSearchCallsPerAnswer,
+    protocol: value.protocol,
+    providerModelId: value.providerModelId,
+    queryMaxCharacters: Number(value.queryMaxCharacters),
+    reasoningPolicy,
+    timeoutMs: Number(value.timeoutMs)
+  };
 }
 
 function evidence(value: unknown): value is AdminSearchTestEvidence | null {
@@ -126,7 +174,7 @@ function evidence(value: unknown): value is AdminSearchTestEvidence | null {
   );
 }
 
-function integration(value: unknown): value is AdminSearchIntegration {
+function integration(value: unknown): boolean {
   if (!isRecord(value) || !evidence(value.draftTestEvidence)) return false;
   const providerModel = value.providerModel;
   return (
@@ -134,7 +182,7 @@ function integration(value: unknown): value is AdminSearchIntegration {
     (value.broaderModelSetup === "not_applicable" || value.broaderModelSetup === "ready" ||
       value.broaderModelSetup === "setup_required") &&
     typeof value.configurable === "boolean" &&
-    (value.configuration === null || draft(value.configuration)) &&
+    (value.configuration === null || decodeAdminSearchDraft(value.configuration) !== null) &&
     typeof value.configurationActive === "boolean" &&
     string(value.description) && string(value.displayName) && typeof value.draftDirty === "boolean" &&
     Number.isSafeInteger(value.draftVersion) && typeof value.enabled === "boolean" &&
@@ -155,9 +203,11 @@ function integration(value: unknown): value is AdminSearchIntegration {
   );
 }
 
-function providerModel(value: unknown): value is AdminSearchProviderModelOption {
+function providerModel(value: unknown): boolean {
   return isRecord(value) && string(value.connectionDisplayName) && string(value.connectionId) &&
     string(value.displayName) && typeof value.enabled === "boolean" && string(value.id) &&
+    (value.searchReasoningSupported === undefined ||
+      typeof value.searchReasoningSupported === "boolean") &&
     (value.searchKind === "perplexity_search" || value.searchKind === "web_search");
 }
 
@@ -182,8 +232,19 @@ export function decodeAdminSearchCatalog(value: unknown): AdminSearchCatalog | n
     return null;
   }
   return {
-    integrations: search.integrations,
-    policy: search.policy,
-    providerModels: search.providerModels
+    integrations: search.integrations.map((value) => {
+      const item = value as AdminSearchIntegration;
+      return {
+        ...item,
+        configuration: item.configuration === null
+          ? null
+          : decodeAdminSearchDraft(item.configuration)!
+      };
+    }),
+    policy: search.policy as AdminSearchPolicy,
+    providerModels: search.providerModels.map((value) => ({
+      ...(value as Omit<AdminSearchProviderModelOption, "searchReasoningSupported">),
+      searchReasoningSupported: isRecord(value) && value.searchReasoningSupported === true
+    }))
   };
 }

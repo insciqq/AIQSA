@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
-import type { ThreadArtifactSummary } from "./types";
+import type { ThreadArtifactSummary, ThreadSearchActivity } from "./types";
 import {
   CitationBlock,
   ContextTruncationBlock,
@@ -23,20 +23,34 @@ function summary(overrides: Partial<ThreadArtifactSummary> = {}): ThreadArtifact
   };
 }
 
+function searchActivity(overrides: Partial<ThreadSearchActivity> = {}): ThreadSearchActivity {
+  return {
+    displayName: "OpenAI Search",
+    providerOperations: [],
+    providerOperationsTruncated: false,
+    query: null,
+    sourceCount: 0,
+    sources: [],
+    status: "complete",
+    ...overrides
+  };
+}
+
 describe("ThreadArtifacts", () => {
-  it("uses readable search call wording", () => {
+  it("renders one calm, default-collapsed Search row with friendly facts", () => {
     render(
       <SearchSummaryBlock
         summary={summary({
-          searchCount: 3,
+          citationCount: 2,
+          searchActivity: [searchActivity({ sourceCount: 3 })],
+          searchCount: 1,
           searchStrategy: "perplexity-tool-search"
         })}
       />
     );
 
-    const trigger = screen.getByRole("button", { name: /3 search calls/i });
+    const trigger = screen.getByRole("button", { name: /Search OpenAI Search.*Completed.*3 sources.*2 citations/i });
     expect(trigger).toHaveAttribute("aria-expanded", "false");
-    expect(trigger).toHaveTextContent("Perplexity Search");
     expect(screen.getByTestId("thread-search-summary")).toHaveClass(
       "border-trace-subtle",
       "text-ink-secondary"
@@ -50,22 +64,77 @@ describe("ThreadArtifacts", () => {
         active
         summary={summary({
           citationCount: 2,
+          searchActivity: [searchActivity({ status: "running" })],
           searchCount: 1,
           searchStrategy: "openai-native-web-search"
         })}
       />
     );
 
-    const trigger = screen.getByRole("button", { name: /Searching/i });
+    const trigger = screen.getByRole("button", { name: /Search OpenAI Search.*Searching/i });
     expect(trigger).toHaveTextContent("OpenAI Search");
     expect(trigger).toHaveTextContent("2 citations");
     expect(trigger).toHaveAttribute("aria-expanded", "false");
+  });
+
+  it.each([
+    {
+      label: "completed and cancelled",
+      summary: "1 of 2 completed",
+      statuses: ["complete", "cancelled"] as const
+    },
+    {
+      label: "failed and cancelled",
+      summary: "0 of 2 completed",
+      statuses: ["error", "cancelled"] as const
+    },
+    {
+      label: "completed, failed, and cancelled",
+      summary: "1 of 3 completed",
+      statuses: ["complete", "error", "cancelled"] as const
+    }
+  ])("reports exact completed-attempt progress for $label outcomes", ({ statuses, summary: expectedSummary }) => {
+    render(
+      <SearchSummaryBlock
+        summary={summary({
+          searchActivity: statuses.map((status, index) => searchActivity({
+            displayName: `Search source ${index + 1}`,
+            status
+          })),
+          searchCount: statuses.length,
+          searchStrategy: "client-search-plan"
+        })}
+      />
+    );
+
+    const trigger = screen.getByRole("button", { name: new RegExp(expectedSummary) });
+    expect(trigger).not.toHaveTextContent("Status unavailable");
+    expect(trigger).toHaveAttribute("aria-expanded", "false");
+  });
+
+  it("marks an all-failed multi-attempt Search summary as critical", () => {
+    render(
+      <SearchSummaryBlock
+        summary={summary({
+          searchActivity: [
+            searchActivity({ displayName: "First Search", status: "error" }),
+            searchActivity({ displayName: "Second Search", status: "error" })
+          ],
+          searchCount: 2,
+          searchStrategy: "client-search-plan"
+        })}
+      />
+    );
+
+    const trigger = screen.getByRole("button", { name: /0 of 2 completed/i });
+    expect(within(trigger).getByText("· 0 of 2 completed")).toHaveClass("text-critical");
   });
 
   it("uses the immutable logical Search name instead of exposing its route id", () => {
     render(
       <SearchSummaryBlock
         summary={summary({
+          searchActivity: [searchActivity({ displayName: "Company Gateway Search" })],
           searchCount: 1,
           searchDisplayName: "Company Gateway Search",
           searchStrategy: "custom-web-search:connection-1:client"
@@ -73,67 +142,97 @@ describe("ThreadArtifacts", () => {
       />
     );
 
-    const trigger = screen.getByRole("button", { name: /1 search call/i });
+    const trigger = screen.getByRole("button", { name: /Search Company Gateway Search/i });
     expect(trigger).toHaveTextContent("Company Gateway Search");
     expect(trigger).not.toHaveTextContent("custom-web-search");
   });
 
-  it("expands multiple search records and keeps focus on the disclosure", () => {
+  it("keeps every Search attempt independently expandable with friendly failure detail", () => {
     render(
       <SearchSummaryBlock
         summary={summary({
-          searchCount: 2,
-          searchDetails: [
-            {
-              requestPreview: {
-                body: {
-                  messages: [{ content: "Question:\nasd" }]
-                }
-              },
-              responsePreview: {
-                text: "Search answer"
-              },
-              status: "complete",
-              strategyId: "perplexity-tool-search"
-            },
-            {
-              modelId: "search-model",
-              provider: "search-provider",
-              requestPreview: { query: "second query" },
-              responsePreview: { text: "Second search answer" },
-              status: "complete",
-              strategyId: "perplexity-tool-search"
-            }
+          citationCount: 1,
+          citations: [{ index: 1, title: "Answer citation", url: "https://example.com/citation" }],
+          searchActivity: [
+            searchActivity({
+              displayName: "Company Gateway Search",
+              providerOperations: [{
+                kind: "search",
+                ordinal: 0,
+                pattern: null,
+                queries: ["current evidence"],
+                status: "complete",
+                url: null
+              }],
+              query: "current evidence",
+              sourceCount: 1,
+              sources: [{
+                rank: 1,
+                snippet: "Normalized source summary",
+                title: "Evidence source",
+                url: "https://example.com/source"
+              }]
+            }),
+            searchActivity({
+              displayName: "Second Search",
+              failureReason: "Search reached its output limit before completing.",
+              providerOperations: null,
+              query: "second query",
+              sourceCount: null,
+              status: "error"
+            })
           ],
+          searchCount: 2,
           searchStrategy: "perplexity-tool-search"
         })}
       />
     );
 
-    expect(screen.queryByText("Request")).not.toBeInTheDocument();
+    expect(screen.queryByText("Generated query")).not.toBeInTheDocument();
 
-    const trigger = screen.getByRole("button", { name: /2 search calls/i });
+    const trigger = screen.getByRole("button", { name: /Search Company Gateway Search \+ Second Search/i });
     trigger.focus();
     fireEvent.click(trigger);
 
     expect(trigger).toHaveFocus();
     expect(trigger).toHaveAttribute("aria-expanded", "true");
     const details = screen.getByTestId("thread-search-details");
-    expect(within(details).getByText("Search 1")).toBeVisible();
-    expect(within(details).getByText("Search 2")).toBeVisible();
-    expect(within(details).getByText("Search ran inside the answer provider.")).toBeVisible();
-    expect(details).not.toHaveTextContent("search-provider / search-model");
-    expect(within(details).getAllByText("Request")).toHaveLength(2);
-    expect(within(details).getAllByText("Response")).toHaveLength(2);
-    expect(screen.getByText(/Question/)).toBeVisible();
-    expect(screen.getByText(/Search answer/)).toBeVisible();
+    expect(within(details).getByText("Company Gateway Search")).toBeVisible();
+    expect(within(details).getByText("Second Search")).toBeVisible();
+    const attempts = within(details).getAllByTestId("thread-search-attempt");
+    expect(attempts).toHaveLength(2);
+    const firstAttempt = within(attempts[0]!).getByRole("button", {
+      name: /Attempt 1 Company Gateway Search Completed.*1 source/i
+    });
+    const secondAttempt = within(attempts[1]!).getByRole("button", {
+      name: /Attempt 2 Second Search Failed/i
+    });
+    expect(firstAttempt).toHaveAttribute("aria-expanded", "false");
+    expect(secondAttempt).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(firstAttempt);
+    fireEvent.click(secondAttempt);
+    expect(firstAttempt).toHaveAttribute("aria-expanded", "true");
+    expect(secondAttempt).toHaveAttribute("aria-expanded", "true");
+    expect(within(details).getAllByText("Generated query")).toHaveLength(2);
+    expect(within(details).getAllByText("current evidence")).toHaveLength(2);
+    expect(within(details).getByText("second query")).toBeVisible();
+    expect(within(details).getByRole("link", { name: "Evidence source" })).toHaveAttribute(
+      "href",
+      "https://example.com/source"
+    );
+    expect(within(details).getByText("Normalized source summary")).toBeVisible();
+    expect(within(details).getByText("Provider operations · 1")).toBeVisible();
+    expect(within(details).getByText("Provider operation details are unavailable for this run.")).toBeVisible();
+    expect(within(details).getByText("Search reached its output limit before completing.")).toBeVisible();
+    expect(within(details).getByRole("link", { name: "[1] Answer citation" })).toBeVisible();
+    expect(details).not.toHaveTextContent(/search-provider|search-model|route-|revision-|credential|Request|Response/);
 
     fireEvent.click(trigger);
     expect(trigger).toHaveAttribute("aria-expanded", "false");
     expect(screen.queryByTestId("thread-search-details")).not.toBeInTheDocument();
   });
 
-  it("expands search summaries even when request and response previews were not captured", () => {
+  it("keeps historical missing detail explicit", () => {
     render(
       <SearchSummaryBlock
         summary={summary({
@@ -144,77 +243,68 @@ describe("ThreadArtifacts", () => {
       />
     );
 
-    fireEvent.click(screen.getByRole("button", { name: /2 search calls/i }));
-    expect(screen.getByText("No search/tool request or response preview captured for this run.")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: /Search Perplexity Search/i }));
+    expect(screen.getByText("Detailed Search evidence is unavailable for this run.")).toBeVisible();
   });
 
-  it("renders captured native search call records when request and response previews are unavailable", () => {
+  it("renders bounded hosted Search operations without exposing provider payload ids", () => {
     render(
       <SearchSummaryBlock
         summary={summary({
           citationCount: 3,
-          searchCount: 1,
-          searchDetails: [
-            {
-              callPreview: {
-                action: {
-                  type: "search"
-                },
-                id: "ws_123",
-                status: "completed",
-                type: "web_search_call"
+          searchActivity: [searchActivity({
+            providerOperations: [
+              {
+                kind: "search",
+                ordinal: 0,
+                pattern: null,
+                queries: [],
+                status: "complete",
+                url: null
               },
-              status: "completed",
-              strategyId: "openai-native-web-search"
-            }
-          ],
+              {
+                kind: "open_page",
+                ordinal: 1,
+                pattern: null,
+                queries: [],
+                status: "complete",
+                url: "https://username:password@example.com/private"
+              }
+            ],
+            sourceCount: null
+          })],
+          searchCount: 1,
           searchStrategy: "openai-native-web-search"
         })}
       />
     );
 
-    fireEvent.click(screen.getByRole("button", { name: /1 search call/i }));
-    expect(screen.getByText("Web search call")).toBeVisible();
-    expect(screen.getByText(/metadata only/)).toBeVisible();
-    expect(screen.getByText(/web_search_call/)).toBeVisible();
-    expect(screen.queryByText("No search/tool request or response preview captured for this run.")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Search OpenAI Search/i }));
+    expect(screen.getByText(/Web search/)).toBeVisible();
+    expect(screen.getByText("Provider did not report the internal query.")).toBeVisible();
+    expect(document.body).not.toHaveTextContent(/ws_123|web_search_call|username:password/);
   });
 
-  it("renders web search call action details when the source includes citations", () => {
+  it("renders normalized hosted sources", () => {
     render(
       <SearchSummaryBlock
         summary={summary({
           citationCount: 1,
+          searchActivity: [searchActivity({
+            sourceCount: 1,
+            sources: [{ rank: 1, title: "Example source", url: "https://example.com/source" }]
+          })],
           searchCount: 1,
-          searchDetails: [
-            {
-              callPreview: {
-                action: {
-                  sources: [
-                    {
-                      title: "Example source",
-                      url: "https://example.com/source"
-                    }
-                  ],
-                  type: "search"
-                },
-                id: "ws_456",
-                status: "completed",
-                type: "web_search_call"
-              },
-              status: "completed",
-              strategyId: "openai-native-web-search"
-            }
-          ],
           searchStrategy: "openai-native-web-search"
         })}
       />
     );
 
-    fireEvent.click(screen.getByRole("button", { name: /1 search call/i }));
-    expect(screen.getByText("Web search call")).toBeVisible();
-    expect(screen.getByText(/Example source/)).toBeVisible();
-    expect(screen.queryByText(/metadata only/)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Search OpenAI Search/i }));
+    expect(screen.getByRole("link", { name: "Example source" })).toHaveAttribute(
+      "href",
+      "https://example.com/source"
+    );
   });
 
   it("does not mislabel a custom Responses source as OpenAI in hosted call history", () => {
@@ -222,28 +312,22 @@ describe("ThreadArtifacts", () => {
       <SearchSummaryBlock
         summary={summary({
           searchCount: 1,
-          searchDetails: [{
-            callPreview: {
-              action: { type: "search" },
-              id: "ws_custom",
-              status: "completed",
-              type: "web_search_call"
-            },
-            status: "completed",
-            strategyId: "custom-web-search:connection-1"
-          }],
+          searchActivity: [searchActivity({
+            displayName: "Company Gateway Search",
+            providerOperations: [],
+            sourceCount: null
+          })],
           searchDisplayName: "Company Gateway Search",
           searchStrategy: "custom-web-search:connection-1"
         })}
       />
     );
 
-    const trigger = screen.getByRole("button", { name: /1 search call/i });
+    const trigger = screen.getByRole("button", { name: /Search Company Gateway Search/i });
     expect(trigger).toHaveTextContent("Company Gateway Search");
     fireEvent.click(trigger);
-    expect(screen.getByText("Web search call")).toBeVisible();
-    expect(screen.getByText("Search ran inside Company Gateway Search.")).toBeVisible();
-    expect(screen.getByText(/The Search source returned call metadata only/)).toBeVisible();
+    expect(within(screen.getByTestId("thread-search-details")).getByText("Company Gateway Search")).toBeVisible();
+    expect(screen.getByText("The provider reported no detailed web operations.")).toBeVisible();
     expect(document.body).not.toHaveTextContent("OpenAI web search call");
     expect(document.body).not.toHaveTextContent("OpenAI returned");
   });
@@ -344,29 +428,19 @@ describe("ThreadArtifacts", () => {
     );
   });
 
-  it("contains long search previews inside the local disclosure surface", () => {
-    const longToken = "request-preview-".repeat(80);
+  it("contains a long generated query inside the local disclosure surface", () => {
+    const longToken = "generated-query-".repeat(80);
     render(
       <SearchSummaryBlock
         summary={summary({
           searchCount: 1,
-          searchDetails: [
-            {
-              requestPreview: { query: longToken },
-              responsePreview: { text: longToken },
-              status: "complete"
-            }
-          ]
+          searchActivity: [searchActivity({ query: longToken })]
         })}
       />
     );
 
-    fireEvent.click(screen.getByRole("button", { name: /1 search call/i }));
-    const previews = screen.getByTestId("thread-search-details").querySelectorAll("pre");
-    expect(previews).toHaveLength(2);
-    for (const preview of previews) {
-      expect(preview).toHaveClass("max-w-full", "overflow-auto", "break-words", "[overflow-wrap:anywhere]");
-    }
+    fireEvent.click(screen.getByRole("button", { name: /Search OpenAI Search/i }));
+    expect(screen.getByText(longToken)).toHaveClass("break-words", "[overflow-wrap:anywhere]");
   });
 
   it("renders unsafe citation URLs as inert text and contains long source content", () => {
@@ -490,130 +564,40 @@ describe("ThreadArtifacts", () => {
     );
   });
 
-  it("expands Search tools into engine executions and provider-reported operations", () => {
+  it("does not render Search calls inside generic tool activity", () => {
     render(
-      <ToolActivityBlock
-        summary={summary({
-          searchCount: 1,
-          toolCallCount: 1,
-          toolCalls: [{
-            argumentsPreview: { query: "latest news in Moscow" },
-            callId: "search-call-1",
-            capability: "web_search",
-            credentialSources: [],
-            durationMs: 145_900,
-            errorMessage: null,
-            externalAccountLabel: null,
-            ordinal: 0,
-            resultPreview: { content: [{ text: "Search completed", type: "text" }] },
-            round: 1,
-            searchExecutions: [{
-              displayName: "Web Search · Sol",
-              durationMs: 145_800,
-              modelId: "gpt-5.6-sol",
-              optionId: "web-search-sol",
-              provider: "openai-compatible",
-              providerOperations: [
-                {
-                  id: "ws-1",
-                  kind: "search",
-                  ordinal: 0,
-                  pattern: null,
-                  queries: ["Moscow latest news", "Moscow news today"],
-                  status: "complete",
-                  url: null
-                },
-                {
-                  id: "ws-2",
-                  kind: "open_page",
-                  ordinal: 1,
-                  pattern: null,
-                  queries: [],
-                  status: "complete",
-                  url: "https://example.com/moscow"
-                }
-              ],
-              providerOperationsTruncated: false,
-              query: "latest news in Moscow",
-              sourceCount: 4,
+      <>
+        <SearchSummaryBlock
+          summary={summary({
+            searchActivity: [searchActivity({ query: "latest news in Moscow" })],
+            searchCount: 1
+          })}
+        />
+        <ToolActivityBlock
+          summary={summary({
+            toolCallCount: 1,
+            toolCalls: [{
+              argumentsPreview: { query: "latest news in Moscow" },
+              callId: "search-call-1",
+              capability: "web_search",
+              credentialSources: [],
+              durationMs: 100,
+              errorMessage: null,
+              externalAccountLabel: null,
+              ordinal: 0,
+              resultPreview: null,
+              round: 1,
+              serverName: null,
               status: "complete",
-              warning: null
-            }],
-            serverName: null,
-            status: "complete",
-            toolName: "search_selected_engines"
-          }]
-        })}
-      />
+              toolName: "search_selected_engines"
+            }]
+          })}
+        />
+      </>
     );
 
-    const tools = screen.getByRole("button", { name: /Used 1 tool/i });
-    fireEvent.click(tools);
-    const searchTool = screen.getByText("search_selected_engines").closest("summary");
-    expect(searchTool).not.toBeNull();
-    fireEvent.click(searchTool!);
-
-    const executions = screen.getByTestId("thread-tool-search-executions");
-    expect(within(executions).getByText("Search executions · 1")).toBeVisible();
-    expect(within(executions).getByText("Web Search · Sol")).toBeVisible();
-    expect(within(executions).getByText("4 sources")).toBeVisible();
-    expect(within(executions).getByText("145.8 s")).toBeVisible();
-    expect(within(executions).getByText("Moscow latest news")).not.toBeVisible();
-
-    fireEvent.click(within(executions).getByText("Web Search · Sol").closest("summary")!);
-    const executionDetails = screen.getByTestId("thread-search-execution-details");
-    expect(within(executionDetails).getByText(
-      "Only the generated search query was sent to Web Search · Sol."
-    )).toBeVisible();
-    expect(executionDetails).not.toHaveTextContent("openai-compatible");
-    expect(within(executionDetails).getByText("latest news in Moscow")).toBeVisible();
-    expect(within(executionDetails).getByText("Provider operations · 2")).toBeVisible();
-    expect(within(executionDetails).getByText("Moscow latest news")).toBeVisible();
-    expect(within(executionDetails).getByText("Moscow news today")).toBeVisible();
-    expect(within(executionDetails).getByText("https://example.com/moscow")).toBeVisible();
-  });
-
-  it("keeps historical engine evidence honest when provider operation detail was not saved", () => {
-    render(
-      <ToolActivityBlock
-        summary={summary({
-          toolCallCount: 1,
-          toolCalls: [{
-            argumentsPreview: { query: "latest news in Moscow" },
-            callId: "historical-search-call",
-            capability: "web_search",
-            credentialSources: [],
-            durationMs: 145_900,
-            errorMessage: null,
-            externalAccountLabel: null,
-            ordinal: 0,
-            resultPreview: null,
-            round: 1,
-            searchExecutions: [{
-              displayName: "Web Search · Sol",
-              durationMs: 145_800,
-              modelId: "gpt-5.6-sol",
-              optionId: "web-search-sol",
-              provider: "openai-compatible",
-              providerOperations: null,
-              providerOperationsTruncated: false,
-              query: "latest news in Moscow",
-              sourceCount: 4,
-              status: "complete",
-              warning: null
-            }],
-            serverName: null,
-            status: "complete",
-            toolName: "search_selected_engines"
-          }]
-        })}
-      />
-    );
-
-    fireEvent.click(screen.getByRole("button", { name: /Used 1 tool/i }));
-    fireEvent.click(screen.getByText("search_selected_engines").closest("summary")!);
-    fireEvent.click(screen.getByText("Web Search · Sol").closest("summary")!);
-    expect(screen.getByText("Provider operation details are unavailable for this run.")).toBeVisible();
-    expect(screen.getByText("latest news in Moscow")).toBeVisible();
+    expect(screen.getByTestId("thread-search-summary")).toBeVisible();
+    expect(screen.queryByTestId("thread-tool-activity")).not.toBeInTheDocument();
+    expect(screen.queryByText("search_selected_engines")).not.toBeInTheDocument();
   });
 });

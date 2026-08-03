@@ -8,10 +8,7 @@ import {
 } from "../../catalog/prismaCatalogData";
 import type { ProviderModelConfiguration } from "../../providers/providerConfiguration";
 import { searchDraftHash } from "../../search/configuration";
-import {
-  searchValidationFingerprint,
-  withSearchProbeBinding
-} from "../../search/probeBinding";
+import { searchValidationFingerprint } from "../../search/probeBinding";
 import type {
   AdminProviderCustomSetupCommitPlan,
   AdminProviderCustomSetupCommitResult,
@@ -158,9 +155,10 @@ function validateSearchPlan(plan: AdminProviderCustomSetupCommitPlan): void {
     search.displayName.length > 160 ||
     search.description.length < 1 ||
     search.description.length > 500 ||
-    search.evidence.method !== "provider_search" ||
+    search.evidence.method !== "configuration" ||
     search.evidence.protocol !== "openai_responses_web_search" ||
-    (search.evidence.status === "available" && search.evidence.normalizedSourceCount < 1) ||
+    search.evidence.status !== "available" ||
+    search.evidence.normalizedSourceCount !== 0 ||
     search.hosted.draft.adapterKind !== "answer_provider_hosted" ||
     search.hosted.draft.credentialMode !== "answer_provider" ||
     search.hosted.draft.protocol !== "openai_responses_web_search" ||
@@ -183,7 +181,6 @@ async function createSearchGraph(
   const search = plan.search;
   if (!search) return null;
   const primaryModel = plan.models[0]!;
-  const clientAvailable = search.evidence.status === "available";
 
   await tx.searchOption.create({
     data: {
@@ -212,35 +209,18 @@ async function createSearchGraph(
     }
   ] as const;
   for (const route of routes) {
-    const client = route.draft.adapterKind === "provider_model_client";
-    const routeAvailable = !client || clientAvailable;
-    const routeEvidence = client
-      ? withSearchProbeBinding(search.evidence, {
-          connectionId: plan.connection.id,
-          connectionVersion: 1,
-          credentialId: plan.credential.id,
-          credentialVersionId: plan.credential.versionId,
-          modelVersion: 1,
-          providerModelId: primaryModel.id
-        })
-      : {
-          checkedAt: plan.checkedAt.toISOString(),
-          method: "configuration",
-          normalizedSourceCount: 0,
-          protocol: "openai_responses_web_search",
-          status: "available"
-        };
+    const routeEvidence = search.evidence;
     const validationFingerprint = searchValidationFingerprint(routeEvidence);
     await tx.searchStrategy.create({
       data: {
         adapterKind: route.draft.adapterKind,
-        config: json(routeAvailable ? route.draft : {}),
+        config: json(route.draft),
         credentialMode: route.draft.credentialMode,
         description: search.description,
         displayName: search.displayName,
         draft: json(route.draft),
         draftTestEvidence: json(routeEvidence),
-        enabled: routeAvailable,
+        enabled: true,
         id: route.id,
         kind: route.kind,
         modelId: route.modelId,
@@ -251,29 +231,27 @@ async function createSearchGraph(
         testedDraftHash: route.draftHash
       }
     });
-    if (routeAvailable) {
-      await tx.searchIntegrationRevision.create({
-        data: {
-          adapterKind: route.draft.adapterKind,
-          configuration: json(route.draft),
-          credentialMode: route.draft.credentialMode,
-          draftHash: route.draftHash,
-          id: route.revisionId,
-          providerModelId: route.providerModelId,
-          revisionNumber: 1,
-          searchStrategyId: route.id,
-          validationEvidence: json(routeEvidence),
-          validationFingerprint
-        }
-      });
-      await tx.searchStrategy.update({
-        data: {
-          activatedAt: plan.now,
-          activeRevisionId: route.revisionId
-        },
-        where: { id: route.id }
-      });
-    }
+    await tx.searchIntegrationRevision.create({
+      data: {
+        adapterKind: route.draft.adapterKind,
+        configuration: json(route.draft),
+        credentialMode: route.draft.credentialMode,
+        draftHash: route.draftHash,
+        id: route.revisionId,
+        providerModelId: route.providerModelId,
+        revisionNumber: 1,
+        searchStrategyId: route.id,
+        validationEvidence: json(routeEvidence),
+        validationFingerprint
+      }
+    });
+    await tx.searchStrategy.update({
+      data: {
+        activatedAt: plan.now,
+        activeRevisionId: route.revisionId
+      },
+      where: { id: route.id }
+    });
   }
 
   await tx.accessGrant.create({
@@ -287,7 +265,7 @@ async function createSearchGraph(
       userId: plan.actor.userId
     }
   });
-  return clientAvailable ? "ready" : "needs_attention";
+  return "ready";
 }
 
 async function applyCustomSetupPlan(

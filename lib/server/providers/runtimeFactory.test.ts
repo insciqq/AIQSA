@@ -118,6 +118,38 @@ describe("provider runtime factory", () => {
     })).toThrow("provider_safe_fetch_required");
   });
 
+  it.each([
+    "openai_responses_native",
+    "openai_responses_compatible"
+  ] as const)("exposes the dedicated Search adapter only for Search-capable %s models", (adapterKind) => {
+    const base = snapshot(adapterKind);
+    const searchCapable: ProviderExecutionSnapshot = {
+      ...base,
+      model: {
+        ...base.model,
+        capabilities: {
+          ...base.model.capabilities,
+          defaultReasoningEffort: "medium",
+          nativeSearch: true,
+          reasoning: true,
+          reasoningEfforts: ["none", "low", "medium"]
+        }
+      }
+    };
+    const runtime = createProviderRuntimeBinding({
+      options: { allowFake: false, fetchFn: vi.fn<typeof fetch>() },
+      secret: "secret",
+      snapshot: searchCapable
+    });
+
+    expect(runtime.searchAdapter).toBeDefined();
+    expect(createProviderRuntimeBinding({
+      options: { allowFake: false, fetchFn: vi.fn<typeof fetch>() },
+      secret: "secret",
+      snapshot: base
+    }).searchAdapter).toBeUndefined();
+  });
+
   it("builds a serializer-only preview boundary without a real credential", () => {
     const preview = createProviderPreviewRuntimeBinding(
       snapshot("openai_chat_completions_compatible"),
@@ -225,6 +257,73 @@ describe("provider runtime factory", () => {
     })).toThrow("provider_credential_unexpected");
   });
 
+  it("routes explicit no-auth compatible Responses Search without an authorization header", async () => {
+    const fetchFn = vi.fn<typeof fetch>(async (request, init) => {
+      expect(String(request)).toBe("http://127.0.0.1:11434/v1/responses");
+      expect(new Headers(init?.headers).get("authorization")).toBeNull();
+      expect(JSON.parse(String(init?.body))).toMatchObject({
+        model: "upstream/model",
+        tools: [{ type: "web_search" }]
+      });
+      return new Response(JSON.stringify({
+        id: "response-local-1",
+        model: "upstream/model",
+        output_text: "ok",
+        status: "completed",
+        usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 }
+      }));
+    });
+    const base = snapshot("openai_responses_compatible");
+    const noAuthSnapshot: ProviderExecutionSnapshot = {
+      ...base,
+      connection: {
+        allowPrivateNetwork: true,
+        apiRoot: "http://127.0.0.1:11434/v1",
+        authenticationMode: "none"
+      },
+      model: {
+        ...base.model,
+        capabilities: { ...base.model.capabilities, nativeSearch: true }
+      }
+    };
+    const runtime = createProviderRuntimeBinding({
+      options: { allowFake: false, fetchFn },
+      secret: null,
+      snapshot: noAuthSnapshot
+    });
+    const request = {
+      ...compatibleRequest(),
+      modelCapabilities: {
+        ...compatibleRequest().modelCapabilities,
+        nativeSearch: true
+      },
+      searchPlan: {
+        mode: "model_choice" as const,
+        options: [{
+          adapterKind: "answer_provider_hosted" as const,
+          config: {},
+          credentialMode: "answer_provider" as const,
+          executionModes: ["model_choice" as const],
+          modelId: null,
+          optionId: "custom-web-search:connection-1",
+          protocol: "openai_responses_web_search" as const,
+          provider: "openai_compatible",
+          providerModelId: null,
+          revisionId: "revision-hosted",
+          searchStrategyRowId: "route-hosted"
+        }]
+      },
+      searchStrategy: "custom-web-search:connection-1"
+    };
+
+    await expect(collect(runtime.adapter.stream(request))).resolves.toMatchObject({
+      finalText: "ok"
+    });
+    expect(runtime.toolBridge).toBeDefined();
+    expect(runtime.searchAdapter).toBeDefined();
+    expect(fetchFn).toHaveBeenCalledOnce();
+  });
+
   it("keeps legacy and explicit bearer snapshots fail-closed without a credential", () => {
     const fetchFn = vi.fn<typeof fetch>();
     expect(() => createProviderRuntimeBinding({
@@ -245,9 +344,9 @@ describe("provider runtime factory", () => {
     })).toThrow("provider_credential_missing");
   });
 
-  it("rejects no-auth on every adapter outside compatible Chat", () => {
+  it("rejects no-auth outside compatible Chat and Responses", () => {
     expect(() => normalizeProviderExecutionSnapshot({
-      ...snapshot("openai_responses_compatible"),
+      ...snapshot("openai_responses_native"),
       connection: {
         allowPrivateNetwork: true,
         apiRoot: "http://127.0.0.1:11434/v1",

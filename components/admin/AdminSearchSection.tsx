@@ -22,12 +22,14 @@ import {
   primaryButton,
   quietButton
 } from "@/components/admin/adminPrimitives";
-import type {
-  AdminSearchCatalog,
-  AdminSearchDraft,
-  AdminSearchIntegration,
-  AdminSearchKind,
-  AdminSearchProviderModelOption
+import {
+  adminSearchExecutionDefaults,
+  adminSearchExecutionLimits,
+  type AdminSearchCatalog,
+  type AdminSearchDraft,
+  type AdminSearchIntegration,
+  type AdminSearchKind,
+  type AdminSearchProviderModelOption
 } from "@/lib/contracts/adminSearch";
 import { isSearchCombinationCompatible } from "@/lib/domain/catalogMatrix";
 import type { SearchPlan, SearchPlanMode } from "@/lib/domain/search";
@@ -48,7 +50,7 @@ import {
   Trash2,
   X
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useId, useMemo, useState, type ReactNode } from "react";
 
 type SearchTask = "configuration" | "diagnostics" | "overview";
 type EditorMode = "create" | "detail" | "index";
@@ -57,6 +59,10 @@ type SearchForm = {
   description: string;
   displayName: string;
   draft: AdminSearchDraft;
+  executionInputs: {
+    maxOutputTokens: string;
+    maxSearchCallsPerAnswer: string;
+  };
 };
 
 const tasks: ReadonlyArray<Readonly<{
@@ -71,6 +77,66 @@ const tasks: ReadonlyArray<Readonly<{
 
 const fieldLabel = "text-xs font-medium text-ink-secondary";
 const helpText = "mt-1 block text-[11px] leading-4 text-ink-muted";
+const defaultSearchDescription = "Web search for Research Chat.";
+
+function executionInputValues(
+  draft: Pick<AdminSearchDraft, "maxOutputTokens" | "maxSearchCallsPerAnswer">
+): SearchForm["executionInputs"] {
+  return {
+    maxOutputTokens: String(draft.maxOutputTokens),
+    maxSearchCallsPerAnswer: String(draft.maxSearchCallsPerAnswer)
+  };
+}
+
+function boundedInputInteger(
+  value: string,
+  limits: Readonly<{ maximum: number; minimum: number }>
+): number | null {
+  const parsed = Number(value);
+  return value.trim() && Number.isSafeInteger(parsed) &&
+    parsed >= limits.minimum && parsed <= limits.maximum
+    ? parsed
+    : null;
+}
+
+function searchExecutionValidation(form: SearchForm): Readonly<{
+  maxOutputTokens: string | null;
+  maxSearchCallsPerAnswer: string | null;
+  valid: boolean;
+}> {
+  if (form.draft.adapterKind !== "provider_model_client") {
+    return { maxOutputTokens: null, maxSearchCallsPerAnswer: null, valid: true };
+  }
+  const maxOutputTokens = boundedInputInteger(
+    form.executionInputs.maxOutputTokens,
+    adminSearchExecutionLimits.maxOutputTokens
+  );
+  const maxSearchCallsPerAnswer = boundedInputInteger(
+    form.executionInputs.maxSearchCallsPerAnswer,
+    adminSearchExecutionLimits.maxSearchCallsPerAnswer
+  );
+  return {
+    maxOutputTokens: maxOutputTokens === null
+      ? "Enter a whole number from 1,024 to 32,768."
+      : null,
+    maxSearchCallsPerAnswer: maxSearchCallsPerAnswer === null
+      ? "Enter a whole number from 1 to 4."
+      : null,
+    valid: maxOutputTokens !== null && maxSearchCallsPerAnswer !== null
+  };
+}
+
+function searchMutationInput(form: SearchForm): Readonly<{
+  description: string;
+  displayName: string;
+  draft: AdminSearchDraft;
+}> {
+  return {
+    description: form.description,
+    displayName: form.displayName,
+    draft: form.draft
+  };
+}
 
 function planKind(integration: AdminSearchIntegration) {
   return integration.kind === "perplexity_search"
@@ -211,52 +277,83 @@ function SearchDefaultPolicyEditor({
 
 function draftForModel(
   model: AdminSearchProviderModelOption,
-  current?: Pick<AdminSearchDraft, "maxResults" | "queryMaxCharacters" | "timeoutMs">
+  current?: Pick<
+    AdminSearchDraft,
+    | "maxOutputTokens"
+    | "maxResults"
+    | "maxSearchCallsPerAnswer"
+    | "queryMaxCharacters"
+    | "reasoningPolicy"
+    | "timeoutMs"
+  >
 ): AdminSearchDraft {
   return {
     adapterKind: "provider_model_client",
     credentialMode: "provider_model",
+    maxOutputTokens: current?.maxOutputTokens ?? adminSearchExecutionDefaults.maxOutputTokens,
     maxResults: current?.maxResults ?? 8,
+    maxSearchCallsPerAnswer: current?.maxSearchCallsPerAnswer ??
+      adminSearchExecutionDefaults.maxSearchCallsPerAnswer,
     protocol: model.searchKind === "perplexity_search"
       ? "openrouter_perplexity_chat"
       : "openai_responses_web_search",
     providerModelId: model.id,
     queryMaxCharacters: current?.queryMaxCharacters ?? 500,
+    reasoningPolicy: current?.reasoningPolicy ?? adminSearchExecutionDefaults.reasoningPolicy,
     timeoutMs: current?.timeoutMs ?? 300_000
   };
 }
 
-function emptyForm(providerModels: readonly AdminSearchProviderModelOption[]): SearchForm {
-  const model = providerModels.find((candidate) =>
-    candidate.enabled && candidate.searchKind === "web_search") ??
-    providerModels.find((candidate) => candidate.enabled) ?? null;
-  const sourceName = model?.connectionDisplayName.trim() ?? "";
+function emptyForm(): SearchForm {
+  const draft: AdminSearchDraft = {
+    adapterKind: "provider_model_client",
+    credentialMode: "provider_model",
+    maxOutputTokens: adminSearchExecutionDefaults.maxOutputTokens,
+    maxResults: 8,
+    maxSearchCallsPerAnswer: adminSearchExecutionDefaults.maxSearchCallsPerAnswer,
+    protocol: "openai_responses_web_search",
+    providerModelId: null,
+    queryMaxCharacters: 500,
+    reasoningPolicy: adminSearchExecutionDefaults.reasoningPolicy,
+    timeoutMs: 300_000
+  };
   return {
-    description: sourceName ? `Web search through ${sourceName}.` : "Web search for Research Chat.",
-    displayName: sourceName ? `${sourceName} Search` : "",
-    draft: model
-      ? draftForModel(model)
-      : {
-          adapterKind: "provider_model_client",
-          credentialMode: "provider_model",
-          maxResults: 8,
-          protocol: "openai_responses_web_search",
-          providerModelId: null,
-          queryMaxCharacters: 500,
-          timeoutMs: 300_000
-        }
+    description: defaultSearchDescription,
+    displayName: "",
+    draft,
+    executionInputs: executionInputValues(draft)
   };
 }
 
-function formFrom(
-  integration: AdminSearchIntegration,
-  providerModels: readonly AdminSearchProviderModelOption[]
-): SearchForm {
-  const fallback = emptyForm(providerModels);
+function manuallyAddableModels(catalog: AdminSearchCatalog): AdminSearchProviderModelOption[] {
+  return catalog.providerModels.filter((model) =>
+    model.enabled && model.searchKind === "perplexity_search" &&
+    !catalog.integrations.some((integration) =>
+      integration.archivedAt === null && integration.kind === model.searchKind &&
+      integration.sourceConnectionId === model.connectionId
+    )
+  );
+}
+
+function formFrom(integration: AdminSearchIntegration): SearchForm {
+  const fallback = emptyForm();
+  const draft = integration.configuration ? { ...integration.configuration } : fallback.draft;
   return {
     description: integration.description,
     displayName: integration.displayName,
-    draft: integration.configuration ? { ...integration.configuration } : fallback.draft
+    draft,
+    executionInputs: executionInputValues(draft)
+  };
+}
+
+function sourceIdentity(model: AdminSearchProviderModelOption): Readonly<{
+  description: string;
+  displayName: string;
+}> {
+  const sourceName = model.connectionDisplayName.trim();
+  return {
+    description: sourceName ? `Web search through ${sourceName}.` : defaultSearchDescription,
+    displayName: sourceName ? `${sourceName} Search` : ""
   };
 }
 
@@ -285,12 +382,18 @@ function durationLabel(milliseconds: number): string {
   return seconds >= 60 && seconds % 60 === 0 ? `${seconds / 60} min` : `${seconds} sec`;
 }
 
+function liveDiagnosticEvidence(integration: AdminSearchIntegration) {
+  return integration.draftTestEvidence?.method === "provider_search"
+    ? integration.draftTestEvidence
+    : null;
+}
+
 function testState(integration: AdminSearchIntegration): string {
   if (!integration.configurable) return "Managed with its provider connection";
-  if (integration.draftDirty) return "Changes need testing";
-  if (integration.draftTestEvidence?.status === "available") return "Configuration tested";
-  if (integration.draftTestEvidence?.status === "unavailable") return "Last test unavailable";
-  return "Not tested";
+  const evidence = liveDiagnosticEvidence(integration);
+  if (evidence?.status === "available") return "Last live check passed";
+  if (evidence?.status === "unavailable") return "Last live check unavailable";
+  return "No live check run";
 }
 
 function Feedback({ error, notice, onDismiss }: Readonly<{
@@ -329,12 +432,14 @@ function Fact({ children, label }: Readonly<{ children: ReactNode; label: string
 function SearchCatalogIndex({
   busy,
   integrations,
+  canCreate,
   onCreate,
   onRefresh,
   onSelect,
   selectedId
 }: Readonly<{
   busy: boolean;
+  canCreate: boolean;
   integrations: readonly AdminSearchIntegration[];
   onCreate(): void;
   onRefresh(): void;
@@ -363,9 +468,11 @@ function SearchCatalogIndex({
             <button aria-label="Refresh Search sources" className={quietButton} disabled={busy} onClick={onRefresh} type="button">
               <RefreshCw aria-hidden="true" className={`size-3.5 ${busy ? "animate-spin" : ""}`} />
             </button>
-            <button className={primaryButton} disabled={busy} onClick={onCreate} type="button">
-              <Plus aria-hidden="true" className="size-3.5" />Add source
-            </button>
+            {canCreate ? (
+              <button className={primaryButton} disabled={busy} onClick={onCreate} type="button">
+                <Plus aria-hidden="true" className="size-3.5" />Add source
+              </button>
+            ) : null}
           </div>
         </div>
         <label className="relative block">
@@ -407,7 +514,77 @@ function SearchCatalogIndex({
   );
 }
 
+function SearchModelField({
+  creating,
+  disabled,
+  form,
+  fullWidth = false,
+  options,
+  providerModels,
+  setForm
+}: Readonly<{
+  creating: boolean;
+  disabled: boolean;
+  form: SearchForm;
+  fullWidth?: boolean;
+  options: readonly AdminSearchProviderModelOption[];
+  providerModels: readonly AdminSearchProviderModelOption[];
+  setForm(value: SearchForm): void;
+}>) {
+  return (
+    <label className={`min-w-0 ${fullWidth ? "sm:col-span-2" : ""}`}>
+      <span className={fieldLabel}>Search model</span>
+      <select
+        className={`${inputClass} mt-1.5`}
+        disabled={disabled}
+        onChange={(event) => {
+          const previousModel = providerModels.find((candidate) =>
+            candidate.id === form.draft.providerModelId);
+          const previousIdentity = previousModel ? sourceIdentity(previousModel) : null;
+          const model = providerModels.find((candidate) =>
+            candidate.id === event.currentTarget.value);
+          if (!model) {
+            setForm({
+              ...form,
+              ...(creating && form.displayName === previousIdentity?.displayName
+                ? { displayName: "" }
+                : {}),
+              ...(creating && form.description === previousIdentity?.description
+                ? { description: defaultSearchDescription }
+                : {}),
+              draft: { ...form.draft, providerModelId: null }
+            });
+            return;
+          }
+          const nextIdentity = sourceIdentity(model);
+          setForm({
+            ...form,
+            ...(creating && (
+              !form.displayName.trim() || form.displayName === previousIdentity?.displayName
+            ) ? { displayName: nextIdentity.displayName } : {}),
+            ...(creating && (
+              form.description === defaultSearchDescription ||
+              form.description === previousIdentity?.description
+            ) ? { description: nextIdentity.description } : {}),
+            draft: draftForModel(model, form.draft)
+          });
+        }}
+        value={form.draft.providerModelId ?? ""}
+      >
+        <option value="">Select a Search-capable model</option>
+        {options.map((model) => (
+          <option disabled={!model.enabled} key={model.id} value={model.id}>
+            {model.connectionDisplayName} · {model.displayName}
+          </option>
+        ))}
+      </select>
+      <span className={helpText}>Choose the configured connection and model this Search source will use.</span>
+    </label>
+  );
+}
+
 function SearchFormFields({
+  creating = false,
   disabled,
   form,
   kind,
@@ -415,6 +592,7 @@ function SearchFormFields({
   setForm,
   sourceConnectionId
 }: Readonly<{
+  creating?: boolean;
   disabled: boolean;
   form: SearchForm;
   kind?: AdminSearchKind;
@@ -425,12 +603,29 @@ function SearchFormFields({
   const options = providerModels.filter((model) =>
     (!sourceConnectionId || model.connectionId === sourceConnectionId) &&
     (!kind || kind === model.searchKind));
+  const selectedModel = providerModels.find((model) => model.id === form.draft.providerModelId);
+  const executionValidation = searchExecutionValidation(form);
+  const executionFieldId = useId();
+  const outputHelpId = `${executionFieldId}-output-help`;
+  const outputErrorId = `${executionFieldId}-output-error`;
+  const requestsHelpId = `${executionFieldId}-requests-help`;
+  const requestsErrorId = `${executionFieldId}-requests-error`;
   const updateDraft = (patch: Partial<AdminSearchDraft>) => setForm({
     ...form,
     draft: { ...form.draft, ...patch }
   });
   return (
     <div className="grid gap-4">
+      {creating ? (
+        <SearchModelField
+          creating
+          disabled={disabled}
+          form={form}
+          options={options}
+          providerModels={providerModels}
+          setForm={setForm}
+        />
+      ) : null}
       <label className="min-w-0">
         <span className={fieldLabel}>Name</span>
         <input className={`${inputClass} mt-1.5`} disabled={disabled} maxLength={160} onChange={(event) => setForm({ ...form, displayName: event.currentTarget.value })} value={form.displayName} />
@@ -438,26 +633,6 @@ function SearchFormFields({
       <label className="min-w-0">
         <span className={fieldLabel}>Purpose</span>
         <textarea className={`${inputClass} mt-1.5 min-h-24 py-2`} disabled={disabled} maxLength={500} onChange={(event) => setForm({ ...form, description: event.currentTarget.value })} value={form.description} />
-      </label>
-      <label className="min-w-0">
-        <span className={fieldLabel}>Search provider and model</span>
-        <select
-          className={`${inputClass} mt-1.5`}
-          disabled={disabled}
-          onChange={(event) => {
-            const model = providerModels.find((candidate) => candidate.id === event.currentTarget.value);
-            if (model) setForm({ ...form, draft: draftForModel(model, form.draft) });
-          }}
-          value={form.draft.providerModelId ?? ""}
-        >
-          <option value="">Select a Search-capable model</option>
-          {options.map((model) => (
-            <option disabled={!model.enabled} key={model.id} value={model.id}>
-              {model.connectionDisplayName} · {model.displayName}
-            </option>
-          ))}
-        </select>
-        <span className={helpText}>The source uses the selected connection&apos;s saved server-side access.</span>
       </label>
       <div className="grid gap-4 sm:grid-cols-3">
         <label>
@@ -474,6 +649,115 @@ function SearchFormFields({
           <span className={helpText}>Maximum 15 minutes.</span>
         </label>
       </div>
+      {form.draft.adapterKind === "provider_model_client" ? (
+        <details className="group border-y border-trace-subtle bg-control-surface/45 px-3">
+          <summary className={`flex min-h-touch cursor-pointer list-none items-center justify-between gap-3 py-2.5 text-left ${focusRing}`}>
+            <span>
+              <span className="block text-xs font-semibold text-ink">Advanced Search execution</span>
+              <span className="mt-0.5 block text-[11px] leading-4 text-ink-muted">
+                Choose how this source gathers evidence before the answer.
+              </span>
+            </span>
+            <ChevronRight aria-hidden="true" className="size-3.5 shrink-0 text-ink-muted transition-transform group-open:rotate-90" />
+          </summary>
+          <div className="grid gap-4 border-t border-trace-subtle py-4 sm:grid-cols-2">
+            {!creating ? (
+              <SearchModelField
+                creating={false}
+                disabled={disabled}
+                form={form}
+                fullWidth
+                options={options}
+                providerModels={providerModels}
+                setForm={setForm}
+              />
+            ) : null}
+            <label>
+              <span className={fieldLabel}>Maximum Search output, tokens</span>
+              <input
+                aria-describedby={`${outputHelpId}${executionValidation.maxOutputTokens ? ` ${outputErrorId}` : ""}`}
+                aria-invalid={executionValidation.maxOutputTokens ? true : undefined}
+                className={`${inputClass} mt-1.5`}
+                disabled={disabled}
+                max={adminSearchExecutionLimits.maxOutputTokens.maximum}
+                min={adminSearchExecutionLimits.maxOutputTokens.minimum}
+                onChange={(event) => setForm({
+                  ...form,
+                  draft: {
+                    ...form.draft,
+                    maxOutputTokens: Number(event.currentTarget.value)
+                  },
+                  executionInputs: {
+                    ...form.executionInputs,
+                    maxOutputTokens: event.currentTarget.value
+                  }
+                })}
+                step={1_024}
+                type="number"
+                value={form.executionInputs.maxOutputTokens}
+              />
+              <span className={helpText} id={outputHelpId}>Limits the evidence response before it is passed to the answer model.</span>
+              {executionValidation.maxOutputTokens ? (
+                <span className="mt-1 block text-[11px] leading-4 text-critical" id={outputErrorId}>
+                  {executionValidation.maxOutputTokens}
+                </span>
+              ) : null}
+            </label>
+            {form.draft.protocol === "openai_responses_web_search" &&
+            selectedModel?.searchReasoningSupported ? (
+              <label>
+                <span className={fieldLabel}>Search reasoning</span>
+                <select
+                  className={`${inputClass} mt-1.5`}
+                  disabled={disabled}
+                  onChange={(event) => updateDraft({
+                    reasoningPolicy: event.currentTarget.value as AdminSearchDraft["reasoningPolicy"]
+                  })}
+                  value={form.draft.reasoningPolicy}
+                >
+                  <option value="lowest_supported">Use the lowest supported effort</option>
+                  <option value="provider_default">Use the Search service default</option>
+                </select>
+                <span className={helpText}>Lower effort keeps the Search step focused; the service default leaves the choice to the selected Search model.</span>
+              </label>
+            ) : form.draft.protocol === "openai_responses_web_search" && selectedModel ? (
+              <div className="border-l-2 border-trace-strong pl-3 text-xs leading-5 text-ink-muted">
+                Search reasoning is not configurable for this model. AIQSA uses the service default.
+              </div>
+            ) : null}
+            <label>
+              <span className={fieldLabel}>Maximum requests to this source per answer</span>
+              <input
+                aria-describedby={`${requestsHelpId}${executionValidation.maxSearchCallsPerAnswer ? ` ${requestsErrorId}` : ""}`}
+                aria-invalid={executionValidation.maxSearchCallsPerAnswer ? true : undefined}
+                className={`${inputClass} mt-1.5`}
+                disabled={disabled}
+                max={adminSearchExecutionLimits.maxSearchCallsPerAnswer.maximum}
+                min={adminSearchExecutionLimits.maxSearchCallsPerAnswer.minimum}
+                onChange={(event) => setForm({
+                  ...form,
+                  draft: {
+                    ...form.draft,
+                    maxSearchCallsPerAnswer: Number(event.currentTarget.value)
+                  },
+                  executionInputs: {
+                    ...form.executionInputs,
+                    maxSearchCallsPerAnswer: event.currentTarget.value
+                  }
+                })}
+                type="number"
+                value={form.executionInputs.maxSearchCallsPerAnswer}
+              />
+              <span className={helpText} id={requestsHelpId}>Each generated query sent here uses one request. A round that searches several selected sources uses one request from each source.</span>
+              {executionValidation.maxSearchCallsPerAnswer ? (
+                <span className="mt-1 block text-[11px] leading-4 text-critical" id={requestsErrorId}>
+                  {executionValidation.maxSearchCallsPerAnswer}
+                </span>
+              ) : null}
+            </label>
+          </div>
+        </details>
+      ) : null}
     </div>
   );
 }
@@ -514,7 +798,7 @@ function DetailTask({
   catalog: AdminSearchCatalog;
   form: SearchForm;
   integration: AdminSearchIntegration;
-  onAction(action: "activate" | "archive" | "disable" | "enable" | "test"): void;
+  onAction(action: "archive" | "disable" | "enable" | "test"): void;
   onSave(): void;
   setForm(value: SearchForm): void;
   task: SearchTask;
@@ -524,7 +808,7 @@ function DetailTask({
       <section className="grid gap-5 p-4 sm:p-6" aria-label="Search configuration">
         <div>
           <h4 className="text-sm font-semibold text-ink">Source configuration</h4>
-          <p className="mt-1 text-xs leading-5 text-ink-muted">Saved changes take effect only after a successful test and an explicit switch to the tested configuration.</p>
+          <p className="mt-1 text-xs leading-5 text-ink-muted">Saved changes take effect immediately for new runs.</p>
         </div>
         {integration.configurable ? (
           <>
@@ -536,7 +820,7 @@ function DetailTask({
               setForm={setForm}
               sourceConnectionId={integration.sourceConnectionId}
             />
-            <div><button className={primaryButton} disabled={busy} onClick={onSave} type="button"><Save aria-hidden="true" className="size-3.5" />Save changes</button></div>
+            <div><button className={primaryButton} disabled={busy || !searchExecutionValidation(form).valid} onClick={onSave} type="button"><Save aria-hidden="true" className="size-3.5" />Save changes</button></div>
           </>
         ) : (
           <p className="border-l-2 border-trace-strong pl-3 text-sm leading-6 text-ink-secondary">This built-in source is managed with its provider connection.</p>
@@ -545,15 +829,15 @@ function DetailTask({
     );
   }
   if (task === "diagnostics") {
-    const evidence = integration.draftTestEvidence;
+    const evidence = liveDiagnosticEvidence(integration);
     return (
       <section className="grid gap-5 p-4 sm:p-6" aria-label="Search diagnostics">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
             <h4 className="text-sm font-semibold text-ink">Connection check</h4>
-            <p className="mt-1 max-w-3xl text-xs leading-5 text-ink-muted">The check sends a small fixed request and stores only status and a source count.</p>
+            <p className="mt-1 max-w-3xl text-xs leading-5 text-ink-muted">Optional live check. It sends a small fixed request and stores only status and a source count; its result does not change source availability.</p>
           </div>
-          {integration.configurable ? <button className={primaryButton} disabled={busy} onClick={() => onAction("test")} type="button"><TestTube2 aria-hidden="true" className="size-3.5" />Test configuration</button> : null}
+          {integration.configurable ? <button className={primaryButton} disabled={busy} onClick={() => onAction("test")} type="button"><TestTube2 aria-hidden="true" className="size-3.5" />Run live check</button> : null}
         </div>
         <dl className="grid gap-4 sm:grid-cols-2">
           <Fact label="State">{testState(integration)}</Fact>
@@ -579,13 +863,11 @@ function DetailTask({
         <Fact label="Availability"><AdminAvailabilityStatus enabled={integration.enabled} /></Fact>
         <Fact label="Readiness">{readinessLabel(integration)}</Fact>
         <Fact label="Answer model reach">{broaderModelLabel(integration)}</Fact>
-        <Fact label="Configuration">{testState(integration)}</Fact>
+        <Fact label="Configuration">{integration.configurationActive ? "Active" : "Needs attention"}</Fact>
         <Fact label="Connection">{integration.providerModel ? `${integration.providerModel.connectionDisplayName} · ${integration.providerModel.displayName}` : "Managed by its provider"}</Fact>
         <Fact label="Search timeout">{integration.configuration ? durationLabel(integration.configuration.timeoutMs) : "Provider managed"}</Fact>
       </dl>
       <div className="flex flex-wrap gap-2 border-t border-trace-subtle pt-4">
-        {integration.configurable ? <button className={primaryButton} disabled={busy} onClick={() => onAction("test")} type="button"><TestTube2 aria-hidden="true" className="size-3.5" />Test configuration</button> : null}
-        {integration.configurable ? <button className={quietButton} disabled={busy || integration.draftDirty || integration.draftTestEvidence?.status !== "available"} onClick={() => onAction("activate")} type="button"><CheckCircle2 aria-hidden="true" className="size-3.5" />Use tested configuration</button> : null}
         <button className={integration.enabled ? quietButton : enableButton} disabled={busy || (!integration.enabled && !integration.ready)} onClick={() => onAction(integration.enabled ? "disable" : "enable")} type="button">
           {integration.enabled ? "Disable" : "Enable"}
         </button>
@@ -609,7 +891,7 @@ export function AdminSearchSection({
   const [mode, setMode] = useState<EditorMode>("index");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [task, setTask] = useState<SearchTask>("overview");
-  const [form, setForm] = useState<SearchForm>(() => emptyForm([]));
+  const [form, setForm] = useState<SearchForm>(emptyForm);
   const [archiveCandidate, setArchiveCandidate] = useState<AdminSearchIntegration | null>(null);
   const selected = catalog?.integrations.find((integration) => integration.id === selectedId) ?? null;
 
@@ -674,7 +956,7 @@ export function AdminSearchSection({
 
   function openCreate() {
     if (!catalog) return;
-    setForm(emptyForm(catalog.providerModels));
+    setForm(emptyForm());
     setMode("create");
     setTask("configuration");
   }
@@ -683,20 +965,18 @@ export function AdminSearchSection({
     const integration = catalog?.integrations.find((candidate) => candidate.id === id);
     if (!integration || !catalog) return;
     setSelectedId(id);
-    setForm(formFrom(integration, catalog.providerModels));
+    setForm(formFrom(integration));
     setTask("overview");
     setMode("detail");
   }
 
   function performAction(
-    action: "activate" | "archive" | "disable" | "enable" | "test",
+    action: "archive" | "disable" | "enable" | "test",
     target: AdminSearchIntegration
   ) {
     const success = action === "test"
-      ? "Search configuration tested."
-      : action === "activate"
-        ? "Tested Search configuration is now in use."
-        : action === "enable"
+      ? "Live Search check completed."
+      : action === "enable"
           ? "Search source enabled."
           : action === "disable"
             ? "Search source disabled."
@@ -706,7 +986,7 @@ export function AdminSearchSection({
       success,
       (next) => {
         const updated = next.integrations.find((item) => item.id === target.id);
-        if (updated) setForm(formFrom(updated, next.providerModels));
+        if (updated) setForm(formFrom(updated));
         else {
           setMode("index");
           setSelectedId(next.integrations[0]?.id ?? null);
@@ -715,7 +995,7 @@ export function AdminSearchSection({
     );
   }
 
-  function runAction(action: "activate" | "archive" | "disable" | "enable" | "test") {
+  function runAction(action: "archive" | "disable" | "enable" | "test") {
     if (!selected || !catalog) return;
     if (action === "archive") {
       setArchiveCandidate(selected);
@@ -737,6 +1017,7 @@ export function AdminSearchSection({
     },
     providerModels: []
   };
+  const addableModels = manuallyAddableModels(search);
   return (
     <div className="min-w-0" data-testid="admin-search-section">
       <div
@@ -755,7 +1036,7 @@ export function AdminSearchSection({
         />
         <AdminTaskWorkspace className="mt-2" indexWidth="20rem">
         <AdminTaskIndexPane compactDetailOpen={mode !== "index"} testId="admin-search-index-pane">
-          <SearchCatalogIndex busy={busy} integrations={search.integrations} onCreate={openCreate} onRefresh={() => void load()} onSelect={openIntegration} selectedId={selectedId} />
+          <SearchCatalogIndex busy={busy} canCreate={addableModels.length > 0} integrations={search.integrations} onCreate={openCreate} onRefresh={() => void load()} onSelect={openIntegration} selectedId={selectedId} />
         </AdminTaskIndexPane>
         <AdminTaskDetailPane compactDetailOpen={mode !== "index"} testId="admin-search-detail-pane">
           {mode === "create" ? (
@@ -766,14 +1047,15 @@ export function AdminSearchSection({
                 <h3 className="mt-1 text-lg font-semibold text-ink">Add Search source</h3>
                 <p className="mt-1 max-w-3xl text-sm leading-6 text-ink-muted">Choose a configured provider model that can search the web. Users will see one source, and AIQSA will apply it automatically to compatible answer models.</p>
               </div>
-              <SearchFormFields disabled={busy} form={form} providerModels={search.providerModels} setForm={setForm} />
+              <SearchFormFields creating disabled={busy} form={form} providerModels={addableModels} setForm={setForm} />
               <div className="flex gap-2">
                 <button
                   className={primaryButton}
-                  disabled={busy || !form.displayName.trim() || !form.draft.providerModelId}
+                  disabled={busy || !form.displayName.trim() || !form.draft.providerModelId ||
+                    !searchExecutionValidation(form).valid}
                   onClick={() => void commit(
-                    createAdminSearchIntegration(form),
-                    "Search source opened.",
+                    createAdminSearchIntegration(searchMutationInput(form)),
+                    "Search source added and ready.",
                     (next, previous, selectedIntegrationId) => {
                       const previousIds = new Set(previous?.integrations.map((item) => item.id) ?? []);
                       const created = next.integrations.find((item) =>
@@ -781,9 +1063,9 @@ export function AdminSearchSection({
                         next.integrations.find((item) => !previousIds.has(item.id));
                       if (created) {
                         setSelectedId(created.id);
-                        setForm(formFrom(created, next.providerModels));
+                        setForm(formFrom(created));
                         setMode("detail");
-                        setTask("diagnostics");
+                        setTask("overview");
                       }
                     }
                   )}
@@ -814,14 +1096,14 @@ export function AdminSearchSection({
                 onAction={runAction}
                 onSave={() => void commit(
                   updateAdminSearchIntegration({
-                    ...form,
+                    ...searchMutationInput(form),
                     expectedDraftVersion: selected.draftVersion,
                     id: selected.id
                   }),
                   "Search configuration saved.",
                   (next) => {
                     const updated = next.integrations.find((item) => item.id === selected.id);
-                    if (updated) setForm(formFrom(updated, next.providerModels));
+                    if (updated) setForm(formFrom(updated));
                   }
                 )}
                 setForm={setForm}

@@ -10,7 +10,10 @@ import type {
   AdminProviderDraftCheck,
   AdminProviderModelConfiguration
 } from "../../lib/contracts/adminProviders";
-import type { AdminSearchCatalog } from "../../lib/contracts/adminSearch";
+import {
+  adminSearchExecutionDefaults,
+  type AdminSearchCatalog
+} from "../../lib/contracts/adminSearch";
 import type { AdminRunProfileCatalog } from "../../lib/contracts/runProfiles";
 import { adminProviderQuickSetupPolicy } from "../../lib/server/admin/providers/quickSetupPolicy";
 import { DEFAULT_BOOTSTRAP_USER_ID } from "../../lib/server/auth/config";
@@ -1966,10 +1969,13 @@ test("administrator saves a versioned Search recommendation that grants no acces
       configuration: {
         adapterKind: "provider_model_client",
         credentialMode: "provider_model",
+        maxOutputTokens: adminSearchExecutionDefaults.maxOutputTokens,
         maxResults: 8,
+        maxSearchCallsPerAnswer: adminSearchExecutionDefaults.maxSearchCallsPerAnswer,
         protocol: "openai_responses_web_search",
         providerModelId: "search-model-1",
         queryMaxCharacters: 500,
+        reasoningPolicy: adminSearchExecutionDefaults.reasoningPolicy,
         timeoutMs: 300_000
       },
       configurationActive: true,
@@ -2005,7 +2011,15 @@ test("administrator saves a versioned Search recommendation that grants no acces
       updatedAt: now,
       version: 4
     },
-    providerModels: []
+    providerModels: [{
+      connectionDisplayName: "Compatible gateway",
+      connectionId: "search-connection-1",
+      displayName: "Search model",
+      enabled: true,
+      id: "search-model-1",
+      searchKind: "web_search",
+      searchReasoningSupported: true
+    }]
   };
   let submitted: Record<string, unknown> | null = null;
 
@@ -2044,6 +2058,24 @@ test("administrator saves a versioned Search recommendation that grants no acces
     expectedVersion: 4
   });
   await expect(policy.getByRole("button", { name: "Save default" })).toBeDisabled();
+
+  const sourceCatalog = section.getByRole("list", { name: "Search source catalog" });
+  await sourceCatalog.getByRole("button", { name: /Company Search/i }).click();
+  await section.getByRole("tab", { name: "Configuration" }).click();
+  await expect(section.getByLabel(/^Search model/)).not.toBeVisible();
+  await section.getByText("Advanced Search execution").click();
+  await expect(section.getByLabel(/^Search model/)).toHaveValue("search-model-1");
+  await expect(section.getByRole("spinbutton", {
+    name: /^Maximum Search output, tokens/
+  })).toHaveValue(String(adminSearchExecutionDefaults.maxOutputTokens));
+  await expect(section.getByRole("spinbutton", {
+    name: /^Maximum requests to this source per answer/
+  })).toHaveValue(String(adminSearchExecutionDefaults.maxSearchCallsPerAnswer));
+  await expect(section.getByRole("combobox", { name: /^Search reasoning/ }))
+    .toHaveValue(adminSearchExecutionDefaults.reasoningPolicy);
+  await expect(section).not.toContainText(
+    /native|provider-neutral|\broute\b|revision|adapter|technical|credential mode|physical/iu
+  );
 });
 
 test("ordinary user receives real provider-admin denial without provider metadata", async ({ page }) => {

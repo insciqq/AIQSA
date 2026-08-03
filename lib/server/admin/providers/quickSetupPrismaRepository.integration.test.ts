@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { Prisma, PrismaClient, type PrismaClient as PrismaClientType } from "@prisma/client";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { adminSearchExecutionDefaults } from "../../../contracts/adminSearch";
 import {
   OPENAI_PROVIDER_SEARCH_INTEGRATION_ID,
   OPENAI_PROVIDER_SEARCH_STRATEGY_ID
@@ -434,7 +435,6 @@ function plan(input: Readonly<{
   preservedModels: AdminProviderQuickSetupCommitPlan["preservedModels"];
   search?: Readonly<{
     idPrefix: string;
-    status: "available" | "unavailable";
   }>;
   versionId: string;
 }>): AdminProviderQuickSetupCommitPlan {
@@ -442,10 +442,13 @@ function plan(input: Readonly<{
   const searchDraft = {
     adapterKind: "provider_model_client" as const,
     credentialMode: "provider_model" as const,
+    maxOutputTokens: adminSearchExecutionDefaults.maxOutputTokens,
     maxResults: 8,
+    maxSearchCallsPerAnswer: adminSearchExecutionDefaults.maxSearchCallsPerAnswer,
     protocol: "openai_responses_web_search" as const,
     providerModelId: terra.modelId,
     queryMaxCharacters: 500,
+    reasoningPolicy: adminSearchExecutionDefaults.reasoningPolicy,
     timeoutMs: 300_000
   };
   return {
@@ -475,10 +478,10 @@ function plan(input: Readonly<{
         draftHash: searchDraftHash(searchDraft),
         evidence: {
           checkedAt: "2026-07-26T10:00:01.500Z",
-          method: "provider_search" as const,
-          normalizedSourceCount: input.search.status === "available" ? 2 : 0,
+          method: "configuration" as const,
+          normalizedSourceCount: 0,
           protocol: "openai_responses_web_search" as const,
-          status: input.search.status
+          status: "available" as const
         },
         grantId: `${input.search.idPrefix}-grant`,
         integrationId: OPENAI_PROVIDER_SEARCH_INTEGRATION_ID,
@@ -664,7 +667,7 @@ integration("Prisma provider Quick setup atomic graph", () => {
     await administrationDatabase.$disconnect();
   });
 
-  it("atomically provisions, reuses, and fail-closes the managed OpenAI Search route", async () => {
+  it("atomically provisions and reuses managed OpenAI Search across credential rotation", async () => {
     const isolated = await createIsolatedQuickSetupDatabase();
     try {
       await expect(isolated.client.$transaction(async (transaction) => {
@@ -690,8 +693,7 @@ integration("Prisma provider Quick setup atomic graph", () => {
           mode: "initial",
           preservedModels: initial.preservedModels,
           search: {
-            idPrefix: `quick-search-first-${suffix}`,
-            status: "available"
+            idPrefix: `quick-search-first-${suffix}`
           },
           versionId: `quick-search-version-one-${suffix}`
         }))).resolves.toMatchObject({
@@ -740,8 +742,7 @@ integration("Prisma provider Quick setup atomic graph", () => {
           mode: "replacement",
           preservedModels: ready.preservedModels,
           search: {
-            idPrefix: `unused-search-replacement-${suffix}`,
-            status: "available"
+            idPrefix: `unused-search-replacement-${suffix}`
           },
           versionId: `quick-search-version-two-${suffix}`
         }))).resolves.toMatchObject({ search: "ready" });
@@ -749,7 +750,7 @@ integration("Prisma provider Quick setup atomic graph", () => {
           where: { id: integration.id }
         })).toMatchObject({
           draftTestEvidence: expect.objectContaining({
-            method: "provider_search",
+            method: "configuration",
             status: "available"
           }),
           enabled: true
@@ -761,20 +762,18 @@ integration("Prisma provider Quick setup atomic graph", () => {
           },
           where: { id: integration.id }
         });
-        expect(rotatedIntegration.revisions).toHaveLength(2);
+        expect(rotatedIntegration.revisions).toHaveLength(1);
         expect(rotatedIntegration.revisions[0]).toEqual(firstRevision);
         expect(Buffer.from(JSON.stringify(rotatedIntegration.revisions[0]), "utf8"))
           .toEqual(firstRevisionBytes);
         expect(rotatedIntegration.activeRevision).toMatchObject({
-          revisionNumber: 2,
-          validationEvidence: {
-            probeBinding: {
-              credentialId,
-              credentialVersionId: `quick-search-version-two-${suffix}`,
-              providerModelId: terra.modelId
-            }
-          }
+          revisionNumber: 1,
+          validationEvidence: expect.objectContaining({
+            method: "configuration",
+            status: "available"
+          })
         });
+        expect(JSON.stringify(rotatedIntegration.activeRevision)).not.toContain("probeBinding");
         expect(await transaction.accessGrant.count({
           where: {
             searchStrategy: OPENAI_SEARCH_OPTION_ID,
@@ -797,17 +796,19 @@ integration("Prisma provider Quick setup atomic graph", () => {
           mode: "replacement",
           preservedModels: replacementReady.preservedModels,
           search: {
-            idPrefix: `unused-failed-search-${suffix}`,
-            status: "unavailable"
+            idPrefix: `unused-search-second-rotation-${suffix}`
           },
           versionId: `quick-search-version-three-${suffix}`
         }))).resolves.toMatchObject({
-          search: "needs_attention",
+          search: "ready",
           status: "ready"
         });
         expect(await transaction.searchStrategy.findUniqueOrThrow({
           where: { id: integration.id }
-        })).toMatchObject({ enabled: false });
+        })).toMatchObject({ enabled: true });
+        expect(await transaction.searchIntegrationRevision.count({
+          where: { searchStrategyId: integration.id }
+        })).toBe(1);
         expect(await repository.inspect({
           ...actor,
           now: new Date("2026-07-26T10:00:05.000Z"),
@@ -852,8 +853,7 @@ integration("Prisma provider Quick setup atomic graph", () => {
           mode: "initial",
           preservedModels: initial.preservedModels,
           search: {
-            idPrefix: `archived-route-first-${suffix}`,
-            status: "available"
+            idPrefix: `archived-route-first-${suffix}`
           },
           versionId: `archived-route-version-one-${suffix}`
         }))).resolves.toMatchObject({ search: "ready", status: "ready" });
@@ -882,8 +882,7 @@ integration("Prisma provider Quick setup atomic graph", () => {
           mode: "replacement",
           preservedModels: replacement.preservedModels,
           search: {
-            idPrefix: `archived-route-second-${suffix}`,
-            status: "available"
+            idPrefix: `archived-route-second-${suffix}`
           },
           versionId: `archived-route-version-two-${suffix}`
         }))).resolves.toMatchObject({ search: "ready", status: "ready" });
@@ -959,8 +958,7 @@ integration("Prisma provider Quick setup atomic graph", () => {
           mode: "initial",
           preservedModels: initial.preservedModels,
           search: {
-            idPrefix: `must-not-write-search-${suffix}`,
-            status: "available"
+            idPrefix: `must-not-write-search-${suffix}`
           },
           versionId: `manual-row-version-${suffix}`
         }))).resolves.toMatchObject({
@@ -1035,8 +1033,7 @@ integration("Prisma provider Quick setup atomic graph", () => {
           mode: "initial",
           preservedModels: initial.preservedModels,
           search: {
-            idPrefix: `must-not-write-managed-id-${suffix}`,
-            status: "available"
+            idPrefix: `must-not-write-managed-id-${suffix}`
           },
           versionId: `manual-id-version-${suffix}`
         }))).resolves.toMatchObject({

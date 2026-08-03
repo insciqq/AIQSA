@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { summarizeMessageRunArtifacts } from "./prismaRepository";
 
 describe("summarizeMessageRunArtifacts", () => {
-  it("uses native web search artifacts as expandable search details when search runs are absent", () => {
+  it("uses native web search artifacts as safe direct Search facts when search runs are absent", () => {
     const summary = summarizeMessageRunArtifacts({
       events: [
         {
@@ -25,24 +25,48 @@ describe("summarizeMessageRunArtifacts", () => {
 
     expect(summary).toMatchObject({
       searchCount: 1,
-      searchDetails: [
-        {
-          callPreview: {
-            action: {
-              sources: [{ title: "Example", url: "https://example.com" }],
-              type: "search"
-            },
-            id: "ws_123",
-            status: "completed",
-            type: "web_search_call"
-          },
-          status: "completed",
-          strategyId: "openai-native-web-search"
-        }
-      ],
+      searchActivity: [{
+        displayName: "Search source",
+        providerOperations: [{
+          kind: "search",
+          status: "complete"
+        }],
+        sourceCount: 1,
+        sources: [{ title: "Example", url: "https://example.com" }],
+        status: "complete"
+      }],
       searchStrategy: "openai-native-web-search"
     });
+    expect(JSON.stringify(summary)).not.toContain("ws_123");
   });
+
+  it.each([
+    ["cancelled", "cancelled"],
+    ["error", "error"]
+  ] as const)(
+    "settles reloaded running Search evidence when the run becomes %s",
+    (runStatus, expectedStatus) => {
+      const summary = summarizeMessageRunArtifacts({
+        events: [{
+          payload: {
+            artifactType: "search",
+            payload: {
+              action: { type: "search" },
+              id: "ws_unresolved",
+              status: "in_progress",
+              type: "web_search_call"
+            }
+          }
+        }],
+        searchRuns: [],
+        status: runStatus
+      });
+
+      expect(summary?.searchActivity).toEqual([
+        expect.objectContaining({ status: expectedStatus })
+      ]);
+    }
+  );
 
   it("projects the immutable logical Search name from the normalized request", () => {
     const summary = summarizeMessageRunArtifacts({
@@ -65,6 +89,7 @@ describe("summarizeMessageRunArtifacts", () => {
     });
 
     expect(summary).toMatchObject({
+      searchActivity: [{ displayName: "Company Gateway Search" }],
       searchDisplayName: "Company Gateway Search",
       searchStrategy: "custom-web-search:connection-1"
     });
@@ -99,6 +124,7 @@ describe("summarizeMessageRunArtifacts", () => {
     });
 
     expect(summary).toMatchObject({
+      searchActivity: [{ displayName: "Company Gateway Search" }],
       searchDisplayName: "Company Gateway Search",
       searchStrategy: "custom-web-search:connection-1"
     });
@@ -243,14 +269,29 @@ describe("summarizeMessageRunArtifacts", () => {
     expect(JSON.stringify(summary)).not.toContain("private-secret");
   });
 
-  it("projects durable nested Search evidence when the terminal artifact append was interrupted", () => {
+  it("projects durable Search evidence directly when the terminal artifact append was interrupted", () => {
     const summary = summarizeMessageRunArtifacts({
       events: [],
       normalizedRequest: {},
       searchRuns: [{
-        artifacts: {},
+        artifacts: {
+          displayName: "Web Search · Sol",
+          invocationId: "opaque-chat-invocation",
+          providerOperations: [{
+            id: "ws-1",
+            kind: "search",
+            ordinal: 0,
+            pattern: null,
+            queries: ["Moscow latest news"],
+            status: "complete",
+            url: null
+          }],
+          providerOperationsTruncated: false,
+          sources: [{ rank: 1, title: "Moscow news", url: "https://example.com/moscow" }]
+        },
         modelId: "gpt-5.6-sol",
         provider: "openai-compatible",
+        query: "latest news in Moscow",
         requestPreview: { queryCharacters: 21 },
         status: "complete",
         strategyId: "web-search-sol"
@@ -298,26 +339,122 @@ describe("summarizeMessageRunArtifacts", () => {
         startedAt: "2026-07-31T12:00:00.000Z",
         state: "complete",
         toolName: "search_selected_engines"
+      }, {
+        arguments: { query: "latest news in Moscow retry" },
+        completedAt: "2026-07-31T12:02:26.100Z",
+        ordinal: 1,
+        providerCallId: "search-call-2",
+        result: {
+          callId: "search-call-2",
+          content: [{ text: "Search failed: search_invocation_limit_reached", type: "text" }],
+          name: "search_selected_engines",
+          rawPreview: {
+            finalProviderResponsePreview: { error: "search_invocation_limit_reached" },
+            providerCall: false
+          },
+          status: "error"
+        },
+        roundIndex: 1,
+        startedAt: "2026-07-31T12:02:26.000Z",
+        state: "error",
+        toolName: "search_selected_engines"
       }]
     });
 
     expect(summary).toMatchObject({
-      searchCount: 1,
-      toolCallCount: 1,
-      toolCalls: [{
-        callId: "search-call-1",
-        searchExecutions: [{
+      searchCount: 2,
+      searchActivity: [{
           displayName: "Web Search · Sol",
           providerOperations: [{
             kind: "search",
             queries: ["Moscow latest news"]
           }],
           query: "latest news in Moscow",
-          sourceCount: 1
-        }],
-        toolName: "search_selected_engines"
-      }]
+          sourceCount: 1,
+          sources: [{ title: "Moscow news", url: "https://example.com/moscow" }]
+      }, {
+          failureReason: "This Search source reached its request limit for this answer.",
+          query: "latest news in Moscow retry",
+          status: "error"
+      }],
+      toolCallCount: 0,
+      toolCalls: []
     });
     expect(JSON.stringify(summary)).not.toContain("opaque-chat-invocation");
+    expect(JSON.stringify(summary)).not.toContain("gpt-5.6-sol");
+    expect(JSON.stringify(summary)).not.toContain("openai-compatible");
+    expect(JSON.stringify(summary)).not.toContain("revision-1");
+  });
+
+  it("keeps every persisted Search attempt and a friendly failure reason after reload", () => {
+    const summary = summarizeMessageRunArtifacts({
+      events: [],
+      normalizedRequest: {
+        searchPlan: {
+          mode: "all_selected",
+          options: [
+            {
+              adapterKind: "provider_model_client",
+              displayName: "OpenAI Search",
+              optionId: "openai-search"
+            },
+            {
+              adapterKind: "provider_model_client",
+              displayName: "Company Search",
+              optionId: "company-search"
+            }
+          ]
+        }
+      },
+      searchRuns: [
+        {
+          artifacts: {
+            providerOperations: [],
+            providerOperationsTruncated: false,
+            sources: [{ rank: 1, title: "Evidence", url: "https://example.com/evidence" }]
+          },
+          query: "latest evidence",
+          status: "complete",
+          strategyId: "openai-search"
+        },
+        {
+          artifacts: {
+            failure: {
+              code: "openai_response_incomplete",
+              providerStatus: "incomplete",
+              reason: "max_output_tokens",
+              rawProviderMessage: "private provider detail"
+            },
+            providerOperations: [],
+            providerOperationsTruncated: false,
+            sources: []
+          },
+          query: "latest evidence",
+          status: "error",
+          strategyId: "company-search"
+        }
+      ],
+      status: "complete"
+    });
+
+    expect(summary).toMatchObject({
+      searchActivity: [
+        {
+          displayName: "OpenAI Search",
+          query: "latest evidence",
+          sourceCount: 1,
+          status: "complete"
+        },
+        {
+          displayName: "Company Search",
+          failureReason: "Search reached its output limit before completing.",
+          query: "latest evidence",
+          sourceCount: 0,
+          status: "error"
+        }
+      ],
+      searchCount: 2
+    });
+    expect(JSON.stringify(summary)).not.toMatch(/private provider|openai_response_incomplete|max_output_tokens|providerStatus/);
   });
 });

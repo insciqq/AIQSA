@@ -30,11 +30,7 @@ import {
   normalizeSearchDraft,
   searchExecutionModes
 } from "@/lib/server/search/configuration";
-import {
-  sameSearchProbeBinding,
-  searchProbeBinding,
-  type SearchProbeBinding
-} from "@/lib/server/search/probeBinding";
+import type { SearchProbeBinding } from "@/lib/server/search/probeBinding";
 import type {
   PrismaClient,
   ProviderConnection,
@@ -145,7 +141,6 @@ type CatalogSearchStrategyRow = SearchStrategy & {
     credentialMode: string;
     id: string;
     providerModelId: string | null;
-    validationEvidence: unknown;
   };
 };
 
@@ -511,14 +506,14 @@ export function filterExposedSearchOptions(input: {
 
     const normalizedRoutes = option.strategies.flatMap((strategy) => {
       const route = searchStrategyToCatalogRoute(strategy);
-      return route ? [{ route, strategy }] : [];
+      return route ? [route] : [];
     });
     const adapterKinds = new Set<string>();
-    for (const { route } of normalizedRoutes) {
+    for (const route of normalizedRoutes) {
       if (adapterKinds.has(route.adapterKind)) return [];
       adapterKinds.add(route.adapterKind);
     }
-    const routes = normalizedRoutes.flatMap(({ route, strategy }) => {
+    const routes = normalizedRoutes.flatMap((route) => {
       if (route.adapterKind !== "provider_model_client") return [route];
       if (!route.providerModelId) return [];
       const technicalModel = availableProviderModels.get(route.providerModelId);
@@ -532,10 +527,8 @@ export function filterExposedSearchOptions(input: {
             userId: input.userId
           })
         : null;
-      const testedAuthority = searchProbeBinding(strategy.activeRevision?.validationEvidence);
       return configuration &&
-        currentAuthority && testedAuthority &&
-        sameSearchProbeBinding(currentAuthority, testedAuthority) &&
+        currentAuthority &&
         (!option.sourceConnectionId || technicalModel?.connectionId === option.sourceConnectionId) &&
         compatibleTechnicalAdapter(route.protocol, configuration.adapterKind) &&
         configuration.capabilities.nativeSearch
@@ -666,8 +659,7 @@ export function createPrismaCatalogDataLoader({
                   configuration: true,
                   credentialMode: true,
                   id: true,
-                  providerModelId: true,
-                  validationEvidence: true
+                  providerModelId: true
                 }
               }
             },

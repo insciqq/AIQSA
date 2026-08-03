@@ -34,7 +34,6 @@ function harness(options: {
   };
   testStatus?: "available" | "unavailable";
   unavailableModelId?: string;
-  searchStatus?: "available" | "unavailable";
   searchThrows?: boolean;
 } = {}) {
   const test = vi.fn(async (input: { model: { upstreamModelId: string } }) => ({
@@ -63,9 +62,7 @@ function harness(options: {
   }));
   const searchTest = vi.fn(async () => {
     if (options.searchThrows) throw new Error("search unavailable");
-    return options.searchStatus === "unavailable"
-      ? { normalizedSourceCount: 0, status: "unavailable" as const }
-      : { normalizedSourceCount: 2, status: "available" as const };
+    return { normalizedSourceCount: 2, status: "available" as const };
   });
   const encryptionKey = vi.fn(() => Buffer.alloc(32, 9));
   const ids = [
@@ -83,7 +80,7 @@ function harness(options: {
     idFactory: () => ids.shift()!,
     now: () => times.shift()!,
     repository: { commit },
-    searchTester: { test: searchTest },
+    ...(options.searchThrows ? { searchTester: { test: searchTest } } : {}),
     tester: { test }
   });
   return { commit, encryptionKey, searchTest, service, test };
@@ -166,7 +163,7 @@ describe("custom OpenAI-compatible provider setup service", () => {
     });
   });
 
-  it("probes Responses web search and plans one connection-scoped logical Search", async () => {
+  it("plans one connection-scoped Responses Search without a Search probe", async () => {
     const { commit, searchTest, service, test } = harness();
     const result = await service.setup({
       actor: ACTOR,
@@ -194,14 +191,7 @@ describe("custom OpenAI-compatible provider setup service", () => {
         })
       })
     }));
-    expect(searchTest).toHaveBeenCalledWith(expect.objectContaining({
-      connection: expect.objectContaining({ apiRoot: "https://llm.example.test/v1" }),
-      model: expect.objectContaining({
-        adapterKind: "openai_responses_compatible",
-        upstreamModelId: "vendor/model-1"
-      }),
-      secret: "exact-secret"
-    }));
+    expect(searchTest).not.toHaveBeenCalled();
     expect(commit.mock.calls[0]![0]).toMatchObject({
       search: {
         client: {
@@ -210,8 +200,8 @@ describe("custom OpenAI-compatible provider setup service", () => {
         },
         displayName: "Custom · llm.example.test Search",
         evidence: {
-          method: "provider_search",
-          normalizedSourceCount: 2,
+          method: "configuration",
+          normalizedSourceCount: 0,
           status: "available"
         },
         grantId: "search-grant-1",
@@ -230,8 +220,8 @@ describe("custom OpenAI-compatible provider setup service", () => {
     expect(JSON.stringify(commit.mock.calls[0]![0])).not.toContain("exact-secret");
   });
 
-  it("keeps the provider ready when the separate Search source probe fails", async () => {
-    const { commit, service } = harness({ searchThrows: true });
+  it("does not let an optional Search diagnostic gate the declared Search source", async () => {
+    const { commit, searchTest, service } = harness({ searchThrows: true });
     const result = await service.setup({
       actor: ACTOR,
       request: request({
@@ -244,13 +234,49 @@ describe("custom OpenAI-compatible provider setup service", () => {
     });
 
     expect(commit).toHaveBeenCalledOnce();
+    expect(searchTest).not.toHaveBeenCalled();
     expect(commit.mock.calls[0]![0].search?.evidence).toMatchObject({
       normalizedSourceCount: 0,
-      status: "unavailable"
+      status: "available"
     });
     expect(result).toMatchObject({
       outcome: "ready",
-      search: { status: "needs_attention" }
+      search: { status: "ready" }
+    });
+  });
+
+  it("supports explicit no-auth Responses Search without a probe secret", async () => {
+    const { commit, encryptionKey, searchTest, service, test } = harness();
+    const result = await service.setup({
+      actor: ACTOR,
+      request: request({
+        allowPrivateNetwork: true,
+        apiRoot: "http://127.0.0.1:11434/v1",
+        authenticationMode: "none",
+        capabilities: {
+          ...ADMIN_PROVIDER_CUSTOM_DEFAULT_CAPABILITIES,
+          nativeSearch: true
+        },
+        protocol: "responses",
+        secret: undefined
+      })
+    });
+
+    expect(test).toHaveBeenCalledWith(expect.objectContaining({
+      model: expect.objectContaining({ adapterKind: "openai_responses_compatible" }),
+      secret: null
+    }));
+    expect(searchTest).not.toHaveBeenCalled();
+    expect(encryptionKey).not.toHaveBeenCalled();
+    expect(commit.mock.calls[0]![0]).toMatchObject({
+      credential: { secretEnvelope: null },
+      search: {
+        evidence: { method: "configuration", status: "available" }
+      }
+    });
+    expect(result.search).toEqual({
+      displayName: "Custom · 127.0.0.1 Search",
+      status: "ready"
     });
   });
 
@@ -294,13 +320,6 @@ describe("custom OpenAI-compatible provider setup service", () => {
         vision: false
       },
       protocol: "chat_completions"
-    }),
-    request({
-      allowPrivateNetwork: true,
-      apiRoot: "http://127.0.0.1:11434/v1",
-      authenticationMode: "none",
-      protocol: "responses",
-      secret: undefined
     })
   ])("rejects protocol/tool combinations the runtime cannot honor", async (candidate) => {
     const { commit, service, test } = harness();

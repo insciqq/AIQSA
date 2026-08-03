@@ -27,9 +27,7 @@ import {
   type ProviderModelConfiguration
 } from "../../providers/providerConfiguration";
 import {
-  searchValidationFingerprint,
-  withSearchProbeBinding,
-  type SearchProbeBinding
+  searchValidationFingerprint
 } from "../../search/probeBinding";
 import {
   adminProviderQuickSetupPolicy,
@@ -847,8 +845,7 @@ export async function lockAdminProviderQuickSetupState(
 
 async function synchronizeOpenAISearch(
   tx: Prisma.TransactionClient,
-  plan: AdminProviderQuickSetupCommitPlan,
-  probeBinding: SearchProbeBinding
+  plan: AdminProviderQuickSetupCommitPlan
 ): Promise<"needs_attention" | "ready" | null> {
   const search = plan.search;
   if (!search) return null;
@@ -858,11 +855,15 @@ async function synchronizeOpenAISearch(
     search.draft.credentialMode !== "provider_model" ||
     search.draft.protocol !== "openai_responses_web_search" ||
     search.draft.providerModelId !== plan.candidate.modelId ||
+    search.evidence.method !== "configuration" ||
+    search.evidence.protocol !== "openai_responses_web_search" ||
+    search.evidence.status !== "available" ||
+    search.evidence.normalizedSourceCount !== 0 ||
     search.integrationId !== OPENAI_PROVIDER_SEARCH_INTEGRATION_ID
   ) {
     return "needs_attention";
   }
-  const storedEvidence = withSearchProbeBinding(search.evidence, probeBinding);
+  const storedEvidence = search.evidence;
   const validationFingerprint = searchValidationFingerprint(storedEvidence);
 
   const optionOwner = await tx.searchOption.findUnique({
@@ -1040,7 +1041,7 @@ async function synchronizeOpenAISearch(
       ...(current && !sameJson(current.draft, search.draft)
         ? { draftVersion: { increment: 1 } }
         : {}),
-      enabled: search.evidence.status === "available",
+      enabled: true,
       searchOptionId: option.id,
       ...(stored.activeRevisionId
         ? {}
@@ -1088,7 +1089,6 @@ async function synchronizeOpenAISearch(
     });
   }
 
-  if (search.evidence.status !== "available") return "needs_attention";
   const existingRevision = await tx.searchIntegrationRevision.findUnique({
     where: {
       searchStrategyId_draftHash_validationFingerprint: {
@@ -1522,14 +1522,7 @@ async function applyQuickSetupPlan(
     }
   }
 
-  const search = await synchronizeOpenAISearch(tx, plan, {
-    connectionId: policy.connection.id,
-    connectionVersion,
-    credentialId: plan.credential.id,
-    credentialVersionId: plan.credential.versionId,
-    modelVersion: modelVersions.get(plan.candidate.modelId) ?? 1,
-    providerModelId: plan.candidate.modelId
-  });
+  const search = await synchronizeOpenAISearch(tx, plan);
 
   const eligibleModelIds = await eligibleProviderModelIds(tx, plan.actor.userId, exposeFake);
   if ([...candidateModelIds, ...plan.preservedModels.map(({ id }) => id)].every(

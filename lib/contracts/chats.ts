@@ -4,9 +4,13 @@ import type {
   SessionErrorCode
 } from "./http";
 import {
+  decodeThreadSearchProviderOperation,
+  decodeThreadSearchSource,
   decodeThreadToolActivity,
+  threadSearchProviderOperationTraceWithinLimit,
   type ThreadSearchExecution,
   type ThreadSearchProviderOperation,
+  type ThreadSearchSource,
   type ThreadToolActivity,
   type ThreadToolActivityStatus
 } from "./toolActivity";
@@ -14,6 +18,7 @@ import {
 export type {
   ThreadSearchExecution,
   ThreadSearchProviderOperation,
+  ThreadSearchSource,
   ThreadToolActivity,
   ThreadToolActivityStatus
 };
@@ -45,12 +50,33 @@ export type ThreadArtifactSummary = {
   groundingDisplay?: ThreadGroundingDisplay | null;
   reasoningCount: number;
   reasoningText: string[];
+  searchActivity?: ThreadSearchActivity[];
   searchCount: number;
-  searchDetails?: ThreadSearchDetail[];
   searchDisplayName?: string | null;
   searchStrategy: string | null;
   toolCallCount: number;
   toolCalls: ThreadToolActivity[];
+};
+
+export type ThreadSearchActivityStatus =
+  | "cancelled"
+  | "complete"
+  | "error"
+  | "partial"
+  | "running"
+  | "unknown";
+
+export type ThreadSearchOperation = Omit<ThreadSearchProviderOperation, "id">;
+
+export type ThreadSearchActivity = {
+  displayName: string;
+  failureReason?: string | null;
+  providerOperations: ThreadSearchOperation[] | null;
+  providerOperationsTruncated: boolean;
+  query: string | null;
+  sourceCount: number | null;
+  sources: ThreadSearchSource[];
+  status: ThreadSearchActivityStatus;
 };
 
 export type ThreadGroundingDisplay = {
@@ -58,16 +84,6 @@ export type ThreadGroundingDisplay = {
   provider: "gemini";
   queryCount: number;
   suggestionsHtml: string;
-};
-
-export type ThreadSearchDetail = {
-  callPreview?: unknown;
-  modelId?: string | null;
-  provider?: string | null;
-  requestPreview?: unknown;
-  responsePreview?: unknown;
-  status?: string | null;
-  strategyId?: string | null;
 };
 
 export type ThreadCitation = {
@@ -206,6 +222,12 @@ function requiredString(value: unknown): string | null {
   return typeof value === "string" && value.length > 0 ? value : null;
 }
 
+function boundedRequiredString(value: unknown, maxLength: number): string | null {
+  return typeof value === "string" && value.trim() && value.length <= maxLength
+    ? value.trim()
+    : null;
+}
+
 function nullableString(value: unknown): string | null | undefined {
   return value === null ? null : typeof value === "string" ? value : undefined;
 }
@@ -273,10 +295,6 @@ function validOptionalString(record: Record<string, unknown>, key: string): bool
   return !(key in record) || typeof record[key] === "string";
 }
 
-function validOptionalNullableString(record: Record<string, unknown>, key: string): boolean {
-  return !(key in record) || record[key] === null || typeof record[key] === "string";
-}
-
 function decodeThreadCitation(value: unknown): ThreadCitation | null {
   if (!isRecord(value)) {
     return null;
@@ -304,25 +322,83 @@ function decodeThreadCitation(value: unknown): ThreadCitation | null {
   };
 }
 
-function decodeThreadSearchDetail(value: unknown): ThreadSearchDetail | null {
+function decodeThreadSearchActivityStatus(value: unknown): ThreadSearchActivityStatus | null {
+  return value === "cancelled" ||
+    value === "complete" ||
+    value === "error" ||
+    value === "partial" ||
+    value === "running" ||
+    value === "unknown"
+    ? value
+    : null;
+}
+
+function decodeThreadSearchOperation(value: unknown): ThreadSearchOperation | null {
+  if (!isRecord(value)) return null;
+  const decoded = decodeThreadSearchProviderOperation({ ...value, id: null });
+  if (!decoded) return null;
+  const { id: _id, ...operation } = decoded;
+  return operation;
+}
+
+function decodeThreadSearchActivity(value: unknown): ThreadSearchActivity | null {
+  if (!isRecord(value)) return null;
+  const displayName = boundedRequiredString(value.displayName, 256);
+  let failureReason: string | null | undefined;
+  if (value.failureReason === undefined || value.failureReason === null) {
+    failureReason = value.failureReason;
+  } else {
+    failureReason = boundedRequiredString(value.failureReason, 256) ?? undefined;
+  }
+  const query = value.query === null ? null : boundedRequiredString(value.query, 2_000);
+  const sourceCount = value.sourceCount === null ? null : nonNegativeInteger(value.sourceCount);
+  const status = decodeThreadSearchActivityStatus(value.status);
   if (
-    !isRecord(value) ||
-    !validOptionalNullableString(value, "modelId") ||
-    !validOptionalNullableString(value, "provider") ||
-    !validOptionalNullableString(value, "status") ||
-    !validOptionalNullableString(value, "strategyId")
+    !displayName ||
+    (value.failureReason !== undefined && failureReason === undefined) ||
+    (query === null && value.query !== null) ||
+    (sourceCount === null && value.sourceCount !== null) ||
+    (sourceCount !== null && sourceCount > 100) ||
+    !status ||
+    (typeof failureReason === "string" && status !== "error" && status !== "partial") ||
+    typeof value.providerOperationsTruncated !== "boolean" ||
+    !Array.isArray(value.sources) ||
+    value.sources.length > 20
   ) {
     return null;
   }
 
+  const sources = value.sources.map(decodeThreadSearchSource);
+  if (
+    sources.some((source) => source === null) ||
+    (sourceCount !== null && sources.length > sourceCount)
+  ) {
+    return null;
+  }
+
+  let providerOperations: ThreadSearchOperation[] | null;
+  if (value.providerOperations === null) {
+    providerOperations = null;
+  } else if (Array.isArray(value.providerOperations) && value.providerOperations.length <= 32) {
+    const decodedOperations = value.providerOperations.map(decodeThreadSearchOperation);
+    if (decodedOperations.some((operation) => operation === null)) return null;
+    providerOperations = decodedOperations.filter(
+      (operation): operation is ThreadSearchOperation => operation !== null
+    );
+    if (!threadSearchProviderOperationTraceWithinLimit(providerOperations)) return null;
+  } else {
+    return null;
+  }
+
   return {
-    ...(value.callPreview !== undefined ? { callPreview: value.callPreview } : {}),
-    ...(value.modelId !== undefined ? { modelId: value.modelId as string | null } : {}),
-    ...(value.provider !== undefined ? { provider: value.provider as string | null } : {}),
-    ...(value.requestPreview !== undefined ? { requestPreview: value.requestPreview } : {}),
-    ...(value.responsePreview !== undefined ? { responsePreview: value.responsePreview } : {}),
-    ...(value.status !== undefined ? { status: value.status as string | null } : {}),
-    ...(value.strategyId !== undefined ? { strategyId: value.strategyId as string | null } : {})
+    displayName,
+    ...(failureReason !== undefined ? { failureReason } : {}),
+    providerOperations,
+    providerOperationsTruncated: value.providerOperationsTruncated,
+    query,
+    sourceCount,
+    sources: sources.filter((source): source is ThreadSearchSource => source !== null),
+    status
   };
 }
 
@@ -378,17 +454,17 @@ function decodeThreadArtifactSummary(value: unknown): ThreadArtifactSummary | nu
     return null;
   }
 
-  let searchDetails: ThreadSearchDetail[] | undefined;
-  if (value.searchDetails !== undefined) {
-    if (!Array.isArray(value.searchDetails)) {
+  let searchActivity: ThreadSearchActivity[] | undefined;
+  if (value.searchActivity !== undefined) {
+    if (!Array.isArray(value.searchActivity) || value.searchActivity.length > 12) {
       return null;
     }
-    const decodedSearchDetails = value.searchDetails.map(decodeThreadSearchDetail);
-    if (decodedSearchDetails.some((detail) => detail === null)) {
+    const decodedSearchActivity = value.searchActivity.map(decodeThreadSearchActivity);
+    if (decodedSearchActivity.some((activity) => activity === null)) {
       return null;
     }
-    searchDetails = decodedSearchDetails.filter(
-      (detail): detail is ThreadSearchDetail => detail !== null
+    searchActivity = decodedSearchActivity.filter(
+      (activity): activity is ThreadSearchActivity => activity !== null
     );
   }
 
@@ -398,8 +474,8 @@ function decodeThreadArtifactSummary(value: unknown): ThreadArtifactSummary | nu
     ...(contextTruncation !== undefined ? { contextTruncation } : {}),
     reasoningCount,
     reasoningText: value.reasoningText as string[],
+    ...(searchActivity !== undefined ? { searchActivity } : {}),
     searchCount,
-    ...(searchDetails !== undefined ? { searchDetails } : {}),
     ...(searchDisplayName !== undefined ? { searchDisplayName } : {}),
     searchStrategy,
     toolCallCount,

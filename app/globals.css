@@ -35,6 +35,11 @@
 }
 
 @container composer-controls (min-width: 44rem) {
+  [data-composer-secondary-controls="true"][data-has-direct-reasoning="true"] {
+    flex-basis: 26rem;
+    min-width: min(26rem, 100%);
+  }
+
   [data-composer-direct-reasoning="true"] {
     display: block;
   }

@@ -182,7 +182,7 @@ export function messageFromApi(message: ChatMessageWire): ThreadMessage {
     ? {
         ...message.artifactSummary,
         citations: message.artifactSummary.citations ?? [],
-        searchDetails: message.artifactSummary.searchDetails ?? []
+        searchActivity: message.artifactSummary.searchActivity ?? []
       }
     : null;
 

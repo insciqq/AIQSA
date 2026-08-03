@@ -2,9 +2,11 @@ import { textMessageContent } from "../../domain/content";
 import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
 import type {
   NormalizedSearchPlanOption,
-  ProviderRunOptions,
-  ProviderRunRequest
+  ProviderRunRequest,
+  ProviderSearchOptions,
+  ProviderSearchRequest
 } from "../providers/types";
+import { ProviderSearchExecutionError } from "../providers/types";
 import type { ProviderRuntimeBinding } from "../providers/runtimeFactory";
 import type { ModelToolCall } from "../tools/types";
 import {
@@ -37,7 +39,7 @@ function option(id: string, overrides: Partial<NormalizedSearchPlanOption> = {})
     modelId: `model-${id}`,
     optionId: id,
     protocol: "openai_responses_web_search",
-    provider: `provider-${id}`,
+    provider: "openai",
     providerModelId: `provider-model-${id}`,
     revisionId: `revision-${id}`,
     searchStrategyRowId: `integration-${id}`,
@@ -100,24 +102,38 @@ function answerRequestWithAttachment(): ProviderRunRequest {
 
 function runtime(input: Readonly<{
   artifacts?: ModelRunSseEvent[];
-  fail?: string;
-  onOptions?(options: ProviderRunOptions | undefined): void;
-  onRequest?(request: ProviderRunRequest): void;
+  fail?: string | ProviderSearchExecutionError;
+  onOptions?(options: ProviderSearchOptions | undefined): void;
+  onRequest?(request: ProviderSearchRequest): void;
   sourceUrl?: string;
 }> = {}): ProviderRuntimeBinding {
   return {
     adapter: {
       buildRequestPreview: () => ({ protocol: "responses" }),
-      async *stream(request, options) {
+      async *stream() {
+        throw new Error("answer_adapter_must_not_execute_search");
+      }
+    },
+    searchAdapter: {
+      buildRequestPreview: (request) => ({
+        maxOutputTokens: request.searchPolicy.provider === "openrouter"
+          ? request.searchPolicy.controls.maxOutputTokens.defaultValue
+          : request.searchPolicy.maxOutputTokens,
+        queryCharacters: request.query.length
+      }),
+      async search(request, options) {
         input.onRequest?.(request);
         input.onOptions?.(options);
+        if (input.fail instanceof Error) throw input.fail;
         if (input.fail) throw new Error(input.fail);
-        for (const artifact of input.artifacts ?? []) yield artifact;
+        const modelId = request.searchPolicy.modelId;
         return {
+          artifacts: input.artifacts ?? [],
           finalProviderResponsePreview: {
-            sources: [{ title: `Source ${request.modelId}`, url: input.sourceUrl ?? `https://example.com/${request.modelId}` }]
+            sources: [{ title: `Source ${modelId}`, url: input.sourceUrl ?? `https://example.com/${modelId}` }]
           },
-          finalText: `Finding from ${request.modelId}`,
+          finalText: `Finding from ${modelId}`,
+          requestPreview: { queryCharacters: request.query.length },
           usage: {
             inputTokens: 2,
             outputTokens: 3,
@@ -134,7 +150,13 @@ function hangingRuntime(): ProviderRuntimeBinding {
   return {
     adapter: {
       buildRequestPreview: () => ({}),
-      async *stream(_request, options) {
+      async *stream() {
+        throw new Error("answer_adapter_must_not_execute_search");
+      }
+    },
+    searchAdapter: {
+      buildRequestPreview: () => ({}),
+      async search(_request, options) {
         await new Promise<never>((_resolve, reject) => {
           options?.signal?.addEventListener(
             "abort",
@@ -165,7 +187,7 @@ describe("Search plan tool router", () => {
 
     expect(router.tools).toEqual([
       expect.objectContaining({
-        description: "Search the user-selected web source \"Company Gateway Search\" with a concise query.",
+        description: "Search the user-selected web source \"Company Gateway Search\" with a concise query. This source can be requested at most 2 times for this answer.",
         name: "search_engine_1"
       })
     ]);
@@ -211,8 +233,8 @@ describe("Search plan tool router", () => {
   });
 
   it("fans one query out concurrently, shares query-only context, and merges duplicate URLs deterministically", async () => {
-    const requests: ProviderRunRequest[] = [];
-    const runOptions: Array<ProviderRunOptions | undefined> = [];
+    const requests: ProviderSearchRequest[] = [];
+    const runOptions: Array<ProviderSearchOptions | undefined> = [];
     const first = option("first");
     const second = option("second");
     const router = createSearchPlanToolRouter({
@@ -233,9 +255,11 @@ describe("Search plan tool router", () => {
     expect(requests).toHaveLength(2);
     expect(runOptions[0]).toMatchObject({ timeoutMs: 5_000 });
     for (const request of requests) {
-      expect(request.attachmentIds).toEqual([]);
-      expect(request.attachments).toEqual([]);
-      expect(request.context?.messages).toHaveLength(1);
+      expect(request.query).toBe("bounded query");
+      expect(request.searchPolicy).toMatchObject({
+        maxOutputTokens: 4_096,
+        reasoningPolicy: "lowest_supported"
+      });
       expect(JSON.stringify(request)).toContain("bounded query");
       expect(JSON.stringify(request)).not.toContain("private transcript");
       expect(JSON.stringify(request)).not.toContain("private attachment text");
@@ -342,11 +366,63 @@ describe("Search plan tool router", () => {
     expect(searchExecutionsFromToolResult(result)).toEqual([
       expect.objectContaining({ optionId: "private-source-id-1", status: "complete" }),
       expect.objectContaining({
+        failure: { code: "engine_unavailable" },
         optionId: "private-source-id-2",
-        status: "error",
-        warning: "engine_unavailable"
+        status: "error"
       })
     ]);
+  });
+
+  it("retains normalized incomplete evidence and usage without a raw provider response", async () => {
+    const failure = new ProviderSearchExecutionError({
+      artifacts: [{
+        data: {
+          artifactType: "search",
+          payload: {
+            action: { queries: ["bounded query"], type: "search" },
+            id: "search-op-1",
+            status: "completed",
+            type: "web_search_call"
+          }
+        },
+        type: "artifact"
+      }],
+      code: "openai_response_incomplete",
+      providerStatus: "incomplete",
+      reason: "max_output_tokens",
+      usage: {
+        inputTokens: 11,
+        outputTokens: 4,
+        reasoningTokens: 4,
+        totalTokens: 15
+      }
+    });
+    const selected = option("selected");
+    const router = createSearchPlanToolRouter({
+      plan: { mode: "all_selected", options: [selected] },
+      runtimes: { selected: runtime({ fail: failure }) }
+    })!;
+
+    const result = await router.execute(call(router.tools[0]!.name), answerRequest());
+    const [execution] = searchExecutionsFromToolResult(result);
+
+    expect(result.status).toBe("error");
+    expect(execution).toMatchObject({
+      failure: {
+        code: "openai_response_incomplete",
+        providerStatus: "incomplete",
+        reason: "max_output_tokens"
+      },
+      providerOperations: [expect.objectContaining({ kind: "search", status: "complete" })],
+      status: "error",
+      usage: {
+        inputTokens: 11,
+        outputTokens: 4,
+        reasoningTokens: 4,
+        totalTokens: 15
+      }
+    });
+    expect(JSON.stringify(result.rawPreview)).not.toContain("incomplete_details");
   });
 
   it("retains the provider-reported Responses search operations without the raw payload", async () => {
@@ -430,6 +506,138 @@ describe("Search plan tool router", () => {
     expect(secondRequest).toHaveBeenCalledOnce();
   });
 
+  it("bounds Search invocations per answer without counting fan-out engines separately", async () => {
+    const onFirstRequest = vi.fn();
+    const onSecondRequest = vi.fn();
+    const first = option("first");
+    const second = option("second");
+    const router = createSearchPlanToolRouter({
+      plan: { mode: "all_selected", options: [first, second] },
+      runtimes: {
+        first: runtime({ onRequest: onFirstRequest }),
+        second: runtime({ onRequest: onSecondRequest })
+      }
+    })!;
+    const name = router.tools[0]!.name;
+
+    await expect(router.execute(
+      { ...call(name, "first query"), id: "call-1" },
+      answerRequest()
+    )).resolves.toMatchObject({ status: "complete" });
+    await expect(router.execute(
+      { ...call(name, "second query"), id: "call-2" },
+      answerRequest()
+    )).resolves.toMatchObject({ status: "complete" });
+    const blocked = await router.execute(
+      { ...call(name, "third query"), id: "call-3" },
+      answerRequest()
+    );
+
+    expect(blocked).toMatchObject({
+      rawPreview: {
+        finalProviderResponsePreview: {
+          error: "search_invocation_limit_reached",
+          invocationCount: 2,
+          maxInvocations: 2
+        },
+        providerCall: false
+      },
+      status: "error"
+    });
+    expect(onFirstRequest).toHaveBeenCalledTimes(2);
+    expect(onSecondRequest).toHaveBeenCalledTimes(2);
+    expect(searchExecutionsFromToolResult(blocked)).toEqual([]);
+  });
+
+  it("tracks invocation budgets independently for each selected source", async () => {
+    const onFirstRequest = vi.fn();
+    const onSecondRequest = vi.fn();
+    const first = option("first", {
+      config: { ...option("base").config, maxSearchCallsPerAnswer: 1 }
+    });
+    const second = option("second", {
+      config: { ...option("base").config, maxSearchCallsPerAnswer: 3 }
+    });
+    const router = createSearchPlanToolRouter({
+      plan: { mode: "model_choice", options: [first, second] },
+      runtimes: {
+        first: runtime({ onRequest: onFirstRequest }),
+        second: runtime({ onRequest: onSecondRequest })
+      }
+    })!;
+
+    await router.execute(
+      { ...call(router.tools[0]!.name, "first source query"), id: "call-first-1" },
+      answerRequest()
+    );
+    const firstBlocked = await router.execute(
+      { ...call(router.tools[0]!.name, "first source retry"), id: "call-first-2" },
+      answerRequest()
+    );
+    await router.execute(
+      { ...call(router.tools[1]!.name, "second source query"), id: "call-second-1" },
+      answerRequest()
+    );
+    await router.execute(
+      { ...call(router.tools[1]!.name, "second source retry"), id: "call-second-2" },
+      answerRequest()
+    );
+
+    expect(firstBlocked.rawPreview?.providerCall).toBe(false);
+    expect(onFirstRequest).toHaveBeenCalledOnce();
+    expect(onSecondRequest).toHaveBeenCalledTimes(2);
+  });
+
+  it("blocks fan-out when any participating source has exhausted its own budget", async () => {
+    const onFirstRequest = vi.fn();
+    const onSecondRequest = vi.fn();
+    const first = option("first", {
+      config: { ...option("base").config, maxSearchCallsPerAnswer: 1 }
+    });
+    const second = option("second", {
+      config: { ...option("base").config, maxSearchCallsPerAnswer: 3 }
+    });
+    const router = createSearchPlanToolRouter({
+      plan: { mode: "all_selected", options: [first, second] },
+      runtimes: {
+        first: runtime({ onRequest: onFirstRequest }),
+        second: runtime({ onRequest: onSecondRequest })
+      }
+    })!;
+    const name = router.tools[0]!.name;
+
+    await router.execute(
+      { ...call(name, "combined query"), id: "call-combined-1" },
+      answerRequest()
+    );
+    const blocked = await router.execute(
+      { ...call(name, "combined retry"), id: "call-combined-2" },
+      answerRequest()
+    );
+
+    expect(blocked.rawPreview?.providerCall).toBe(false);
+    expect(onFirstRequest).toHaveBeenCalledOnce();
+    expect(onSecondRequest).toHaveBeenCalledOnce();
+  });
+
+  it("restores the settled invocation count before recovery continues", async () => {
+    const onRequest = vi.fn();
+    const selected = option("selected", {
+      config: { ...option("base").config, maxSearchCallsPerAnswer: 1 }
+    });
+    const router = createSearchPlanToolRouter({
+      initialInvocationCounts: { selected: 1 },
+      plan: { mode: "model_choice", options: [selected] },
+      runtimes: { selected: runtime({ onRequest }) }
+    })!;
+
+    const result = await router.execute(call(router.tools[0]!.name), answerRequest());
+
+    expect(result.rawPreview?.providerCall).toBe(false);
+    expect(result.status).toBe("error");
+    expect(onRequest).not.toHaveBeenCalled();
+  });
+
   it("bounds each engine call with its configured timeout", async () => {
     const timed = option("timed", { config: { ...option("base").config, timeoutMs: 5 } });
     const router = createSearchPlanToolRouter({
@@ -440,7 +648,9 @@ describe("Search plan tool router", () => {
     const result = await router.execute(call(router.tools[0]!.name), answerRequest());
 
     expect(result.status).toBe("error");
-    expect(searchExecutionsFromToolResult(result)[0]).toMatchObject({ warning: "search_timeout" });
+    expect(searchExecutionsFromToolResult(result)[0]).toMatchObject({
+      failure: { code: "search_timeout" }
+    });
   });
 
   it("propagates caller cancellation instead of converting it to an engine warning", async () => {

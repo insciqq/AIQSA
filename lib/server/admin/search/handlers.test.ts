@@ -100,10 +100,13 @@ describe("admin Search HTTP handlers", () => {
     const draft = {
       adapterKind: "provider_model_client",
       credentialMode: "provider_model",
+      maxOutputTokens: 4_096,
       maxResults: 8,
+      maxSearchCallsPerAnswer: 2,
       protocol: "openai_responses_web_search",
       providerModelId: "technical-1",
       queryMaxCharacters: 500,
+      reasoningPolicy: "lowest_supported",
       timeoutMs: 15_000
     };
 
@@ -200,5 +203,20 @@ describe("admin Search HTTP handlers", () => {
     );
     expect(response.status).toBe(409);
     expect(await response.json()).toEqual({ error: "search_activation_evidence_missing" });
+
+    const notReady = createAdminSearchActionHandler({
+      resolveAuth: resolver(auth()),
+      service: service({
+        setEnabled: vi.fn(async () => {
+          throw new AdminSearchServiceError("search_source_not_ready");
+        })
+      })
+    });
+    const notReadyResponse = await notReady(
+      jsonRequest("/api/admin/search/integration-1/actions", { action: "enable" }),
+      context
+    );
+    expect(notReadyResponse.status).toBe(409);
+    expect(await notReadyResponse.json()).toEqual({ error: "search_source_not_ready" });
   });
 });

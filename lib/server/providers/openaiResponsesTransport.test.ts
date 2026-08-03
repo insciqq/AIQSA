@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   createFetchOpenAIResponsesClient,
   openAIRetryableErrorPayload
@@ -73,6 +73,25 @@ describe("OpenAI Responses transport", () => {
       });
       expect(init?.signal).toBeInstanceOf(AbortSignal);
     }
+  });
+
+  it("omits authorization for an explicit no-auth compatible transport", async () => {
+    const fetchFn = vi.fn<typeof fetch>(async (_input, init) => {
+      const headers = new Headers(init?.headers);
+      expect(headers.get("authorization")).toBeNull();
+      expect(headers.get("content-type")).toBe("application/json");
+      return new Response(JSON.stringify({ id: "response-no-auth" }), { status: 200 });
+    });
+    const client = createFetchOpenAIResponsesClient({
+      apiKey: null,
+      baseUrl: "http://127.0.0.1:11434/v1",
+      fetchFn
+    });
+
+    await expect(client.create({ model: "local-model" })).resolves.toEqual({
+      id: "response-no-auth"
+    });
+    expect(fetchFn).toHaveBeenCalledOnce();
   });
 
   it("uses the official base URL when the configured URL is blank", async () => {

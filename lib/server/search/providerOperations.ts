@@ -4,6 +4,7 @@ import {
   type ThreadSearchProviderOperation
 } from "../../contracts/toolActivity";
 import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
+import { normalizeSearchSources } from "./evidence";
 
 const operationLimit = 32;
 const operationTraceByteLimit = 16 * 1_024;
@@ -148,6 +149,7 @@ export function threadSearchExecutionsFromToolPreview(
     if (!isRecord(value) || !Array.isArray(value.sources)) return [];
     const optionId = boundedString(value.optionId, 512);
     const displayName = boundedString(value.displayName, 256) ?? "Search source";
+    const sources = normalizeSearchSources(value.sources, 20);
     const projected = decodeThreadSearchExecution({
       displayName,
       durationMs: value.durationMs ?? null,
@@ -157,7 +159,8 @@ export function threadSearchExecutionsFromToolPreview(
       providerOperations: value.providerOperations ?? null,
       providerOperationsTruncated: value.providerOperationsTruncated === true,
       query: boundedString(value.query, engineQueryLimit),
-      sourceCount: value.sources.length,
+      sourceCount: sources.length,
+      sources,
       status: value.status,
       warning: boundedString(value.warning, 512)
     });

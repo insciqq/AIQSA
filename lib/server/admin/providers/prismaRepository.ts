@@ -1,5 +1,9 @@
+import { randomUUID } from "node:crypto";
 import { Prisma, type PrismaClient } from "@prisma/client";
-import type { AdminSearchDraft } from "../../../contracts/adminSearch";
+import {
+  adminSearchExecutionDefaults,
+  type AdminSearchDraft
+} from "../../../contracts/adminSearch";
 import type {
   AdminProviderActiveCheck,
   AdminProviderConnection,
@@ -315,7 +319,165 @@ function checkMatchesWrite(
   );
 }
 
-async function synchronizeCustomHostedSearch(
+type ProviderSearchPolicy = Readonly<{
+  clientId: string;
+  displayName: string;
+  description: string;
+  hostedId: string;
+  modelAdapterKind: "openai_responses_compatible" | "openai_responses_native";
+  optionId: string;
+  optionRowId: string;
+  optionTemplateKey: string | null;
+  provider: "openai" | "openai_compatible";
+}>;
+
+function providerSearchPolicy(connection: Readonly<{
+  displayName: string;
+  family: string;
+  id: string;
+  templateKey: string | null;
+}>): ProviderSearchPolicy | null {
+  if (connection.family === "openai" && connection.templateKey === "openai") {
+    return {
+      clientId: `openai-search-client:${connection.id}`,
+      description: "Web search provided by OpenAI.",
+      displayName: "OpenAI Search",
+      hostedId: "openai-native-web-search",
+      modelAdapterKind: "openai_responses_native",
+      optionId: "openai-native-web-search",
+      optionRowId: "00000000-0000-4000-8000-000000001402",
+      optionTemplateKey: "search:openai",
+      provider: "openai"
+    };
+  }
+  if (connection.family !== "openai_compatible" || connection.templateKey !== null) return null;
+  const sourceName = connection.displayName.trim() || "Custom endpoint";
+  return {
+    clientId: `custom-web-search-client:${connection.id}`,
+    description: `Web search provided by ${sourceName}.`.slice(0, 500),
+    displayName: `${sourceName.slice(0, 153)} Search`,
+    hostedId: `custom-web-search-hosted:${connection.id}`,
+    modelAdapterKind: "openai_responses_compatible",
+    optionId: `custom-web-search:${connection.id}`,
+    optionRowId: `custom-web-search-option:${connection.id}`,
+    optionTemplateKey: null,
+    provider: "openai_compatible"
+  };
+}
+
+async function publishProviderSearchRoute(
+  tx: Prisma.TransactionClient,
+  input: Readonly<{
+    draft: AdminSearchDraft;
+    evidence: Record<string, unknown>;
+    existing: null | Readonly<{ draft: unknown; id: string }>;
+    kind: "openai_native_web_search" | "provider_model_web_search";
+    modelId: string | null;
+    now: Date;
+    option: Readonly<{ description: string; displayName: string; id: string }>;
+    preferredId: string;
+    provider: string;
+  }>
+): Promise<void> {
+  let draft = input.draft;
+  if (input.existing) {
+    try {
+      const current = normalizeSearchDraft(input.existing.draft);
+      if (
+        current.adapterKind === draft.adapterKind &&
+        current.credentialMode === draft.credentialMode &&
+        current.protocol === draft.protocol
+      ) {
+        draft = {
+          ...draft,
+          maxResults: current.maxResults,
+          queryMaxCharacters: current.queryMaxCharacters,
+          timeoutMs: current.timeoutMs,
+          ...(draft.adapterKind === "provider_model_client"
+            ? {
+                maxOutputTokens: current.maxOutputTokens,
+                maxSearchCallsPerAnswer: current.maxSearchCallsPerAnswer,
+                reasoningPolicy: current.reasoningPolicy
+              }
+            : {})
+        };
+      }
+    } catch {
+      // Replace malformed mutable state with the bounded canonical draft below.
+    }
+  }
+  const draftHash = searchDraftHash(draft);
+  const validationFingerprint = searchValidationFingerprint(input.evidence);
+  const strategy = input.existing ?? await tx.searchStrategy.create({
+    data: {
+      adapterKind: draft.adapterKind,
+      config: json({}),
+      credentialMode: draft.credentialMode,
+      description: input.option.description,
+      displayName: input.option.displayName,
+      draft: json(draft),
+      draftTestEvidence: Prisma.DbNull,
+      enabled: false,
+      id: input.preferredId,
+      kind: input.kind,
+      modelId: input.modelId,
+      provider: input.provider,
+      providerModelId: draft.providerModelId,
+      searchOptionId: input.option.id,
+      strategyId: input.preferredId,
+      testedDraftHash: null
+    }
+  });
+  const existingRevision = await tx.searchIntegrationRevision.findUnique({
+    where: {
+      searchStrategyId_draftHash_validationFingerprint: {
+        draftHash,
+        searchStrategyId: strategy.id,
+        validationFingerprint
+      }
+    }
+  });
+  const latestRevision = existingRevision
+    ? null
+    : await tx.searchIntegrationRevision.findFirst({
+        orderBy: { revisionNumber: "desc" },
+        where: { searchStrategyId: strategy.id }
+      });
+  const revision = existingRevision ?? await tx.searchIntegrationRevision.create({
+    data: {
+      adapterKind: draft.adapterKind,
+      configuration: json(draft),
+      credentialMode: draft.credentialMode,
+      draftHash,
+      id: randomUUID(),
+      providerModelId: draft.providerModelId,
+      revisionNumber: (latestRevision?.revisionNumber ?? 0) + 1,
+      searchStrategyId: strategy.id,
+      validationEvidence: json(input.evidence),
+      validationFingerprint
+    }
+  });
+  await tx.searchStrategy.update({
+    data: {
+      activatedAt: input.now,
+      activeRevisionId: revision.id,
+      adapterKind: draft.adapterKind,
+      config: json(draft),
+      credentialMode: draft.credentialMode,
+      draft: json(draft),
+      draftTestEvidence: json(input.evidence),
+      enabled: true,
+      kind: input.kind,
+      modelId: input.modelId,
+      provider: input.provider,
+      providerModelId: draft.providerModelId,
+      testedDraftHash: draftHash
+    },
+    where: { id: strategy.id }
+  });
+}
+
+async function synchronizeProviderSearch(
   tx: Prisma.TransactionClient,
   input: ProviderActivationWrite,
   connection: Readonly<{
@@ -325,18 +487,12 @@ async function synchronizeCustomHostedSearch(
     templateKey: string | null;
   }>
 ): Promise<void> {
-  if (connection.family !== "openai_compatible" || connection.templateKey !== null) return;
+  const policy = providerSearchPolicy(connection);
+  if (!policy) return;
   const eligibleModels = input.models.filter((model) =>
-    model.configuration.adapterKind === "openai_responses_compatible" &&
+    model.configuration.adapterKind === policy.modelAdapterKind &&
     model.configuration.capabilities.nativeSearch === true
   ).sort((left, right) => left.id.localeCompare(right.id));
-  if (eligibleModels.length === 0) return;
-
-  const optionId = `custom-web-search:${connection.id}`;
-  const optionRowId = `custom-web-search-option:${connection.id}`;
-  const sourceName = connection.displayName.trim() || "Custom endpoint";
-  const displayName = `${sourceName.slice(0, 153)} Search`;
-  const description = `Web search provided by ${sourceName}.`.slice(0, 500);
   const existingOption = await tx.searchOption.findUnique({
     where: {
       sourceConnectionId_kind: {
@@ -345,32 +501,49 @@ async function synchronizeCustomHostedSearch(
       }
     }
   });
+  if (eligibleModels.length === 0) {
+    if (existingOption && !existingOption.archivedAt) {
+      await tx.searchStrategy.updateMany({
+        data: { enabled: false },
+        where: {
+          adapterKind: "provider_model_client",
+          archivedAt: null,
+          searchOptionId: existingOption.id
+        }
+      });
+    }
+    return;
+  }
   const option = existingOption ?? await tx.searchOption.create({
     data: {
-      description,
-      displayName,
+      description: policy.description,
+      displayName: policy.displayName,
       enabled: true,
-      id: optionRowId,
+      id: policy.optionRowId,
       kind: "web_search",
-      optionId,
-      sourceConnectionId: connection.id
+      optionId: policy.optionId,
+      sourceConnectionId: connection.id,
+      templateKey: policy.optionTemplateKey
     }
   });
   if (option.archivedAt) return;
 
-  const hostedDraft: AdminSearchDraft = {
-    adapterKind: "answer_provider_hosted",
-    credentialMode: "answer_provider",
+  const baseDraft = {
+    maxOutputTokens: adminSearchExecutionDefaults.maxOutputTokens,
     maxResults: 8,
-    protocol: "openai_responses_web_search",
-    providerModelId: null,
+    maxSearchCallsPerAnswer: adminSearchExecutionDefaults.maxSearchCallsPerAnswer,
+    protocol: "openai_responses_web_search" as const,
     queryMaxCharacters: 500,
     timeoutMs: 300_000
   };
-  const hostedId = `custom-web-search-hosted:${connection.id}`;
-  const hostedHash = searchDraftHash(hostedDraft);
+  const hostedDraft: AdminSearchDraft = {
+    adapterKind: "answer_provider_hosted",
+    credentialMode: "answer_provider",
+    providerModelId: null,
+    reasoningPolicy: "provider_default",
+    ...baseDraft
+  };
   const existingHosted = await tx.searchStrategy.findFirst({
-    include: { activeRevision: true },
     orderBy: { strategyId: "asc" },
     where: {
       adapterKind: "answer_provider_hosted",
@@ -378,27 +551,6 @@ async function synchronizeCustomHostedSearch(
       credentialMode: "answer_provider",
       searchOptionId: option.id
     }
-  });
-  const hosted = existingHosted ?? await tx.searchStrategy.create({
-    data: {
-      adapterKind: hostedDraft.adapterKind,
-      config: json({}),
-      credentialMode: hostedDraft.credentialMode,
-      description: option.description,
-      displayName: option.displayName,
-      draft: json(hostedDraft),
-      draftTestEvidence: Prisma.DbNull,
-      enabled: false,
-      id: hostedId,
-      kind: "openai_native_web_search",
-      modelId: null,
-      provider: "openai_compatible",
-      providerModelId: null,
-      searchOptionId: option.id,
-      strategyId: hostedId,
-      testedDraftHash: null
-    },
-    include: { activeRevision: true }
   });
   const activationEvidence = {
     checkedAt: input.now.toISOString(),
@@ -408,55 +560,6 @@ async function synchronizeCustomHostedSearch(
     sourceProbe: false,
     status: "available"
   } as const;
-  const validationFingerprint = searchValidationFingerprint(activationEvidence);
-  const existingRevision = await tx.searchIntegrationRevision.findUnique({
-    where: {
-      searchStrategyId_draftHash_validationFingerprint: {
-        draftHash: hostedHash,
-        searchStrategyId: hosted.id,
-        validationFingerprint
-      }
-    }
-  });
-  const latestRevision = existingRevision
-    ? null
-    : await tx.searchIntegrationRevision.findFirst({
-        orderBy: { revisionNumber: "desc" },
-        where: { searchStrategyId: hosted.id }
-      });
-  const revision = existingRevision ?? await tx.searchIntegrationRevision.create({
-    data: {
-      adapterKind: hostedDraft.adapterKind,
-      configuration: json(hostedDraft),
-      credentialMode: hostedDraft.credentialMode,
-      draftHash: hostedHash,
-      id: `${hosted.id}:revision:${input.connection.draftVersion}`,
-      providerModelId: null,
-      revisionNumber: (latestRevision?.revisionNumber ?? 0) + 1,
-      searchStrategyId: hosted.id,
-      validationEvidence: json(activationEvidence),
-      validationFingerprint
-    }
-  });
-  await tx.searchStrategy.update({
-    data: {
-      activatedAt: input.now,
-      activeRevisionId: revision.id,
-      adapterKind: hostedDraft.adapterKind,
-      config: json(hostedDraft),
-      credentialMode: hostedDraft.credentialMode,
-      draft: json(hostedDraft),
-      draftTestEvidence: json(activationEvidence),
-      enabled: true,
-      kind: "openai_native_web_search",
-      modelId: null,
-      provider: "openai_compatible",
-      providerModelId: null,
-      testedDraftHash: hostedHash
-    },
-    where: { id: hosted.id }
-  });
-
   const existingClient = await tx.searchStrategy.findFirst({
     where: {
       adapterKind: "provider_model_client",
@@ -467,82 +570,34 @@ async function synchronizeCustomHostedSearch(
   });
   const selectedModel = eligibleModels.find((model) => model.id === existingClient?.providerModelId) ??
     eligibleModels[0]!;
-  if (existingClient) {
-    if (existingClient.providerModelId === selectedModel.id) return;
-    let currentDraft: AdminSearchDraft | null = null;
-    try {
-      currentDraft = normalizeSearchDraft(existingClient.draft);
-    } catch {
-      // A malformed inactive draft is replaced by the bounded canonical one.
-    }
-    const replacementDraft: AdminSearchDraft = {
-      ...hostedDraft,
-      adapterKind: "provider_model_client",
-      credentialMode: "provider_model",
-      maxResults: currentDraft?.maxResults ?? hostedDraft.maxResults,
-      providerModelId: selectedModel.id,
-      queryMaxCharacters: currentDraft?.queryMaxCharacters ?? hostedDraft.queryMaxCharacters,
-      timeoutMs: currentDraft?.timeoutMs ?? hostedDraft.timeoutMs
-    };
-    await tx.searchStrategy.update({
-      data: {
-        draft: json(replacementDraft),
-        draftTestEvidence: Prisma.DbNull,
-        draftVersion: { increment: 1 },
-        enabled: false,
-        testedDraftHash: null
-      },
-      where: { id: existingClient.id }
-    });
-    return;
-  }
-  const clientId = `custom-web-search-client:${connection.id}`;
-  const model = selectedModel;
   const clientDraft: AdminSearchDraft = {
-    ...hostedDraft,
     adapterKind: "provider_model_client",
     credentialMode: "provider_model",
-    providerModelId: model.id
+    providerModelId: selectedModel.id,
+    reasoningPolicy: adminSearchExecutionDefaults.reasoningPolicy,
+    ...baseDraft
   };
-  await tx.searchStrategy.create({
-    data: {
-      adapterKind: clientDraft.adapterKind,
-      config: json({}),
-      credentialMode: clientDraft.credentialMode,
-      description: option.description,
-      displayName: option.displayName,
-      draft: json(clientDraft),
-      enabled: false,
-      id: clientId,
-      kind: "provider_model_web_search",
-      modelId: model.configuration.upstreamModelId,
-      provider: "openai_compatible",
-      providerModelId: model.id,
-      searchOptionId: option.id,
-      strategyId: clientId
-    }
+  await publishProviderSearchRoute(tx, {
+    draft: hostedDraft,
+    evidence: activationEvidence,
+    existing: existingHosted,
+    kind: "openai_native_web_search",
+    modelId: null,
+    now: input.now,
+    option,
+    preferredId: policy.hostedId,
+    provider: policy.provider
   });
-}
-
-async function invalidateProviderModelClientSearch(
-  tx: Prisma.TransactionClient,
-  connectionId: string
-): Promise<void> {
-  // A provider activation publishes a new connection/model/credential authority.
-  // A source probe performed against the previous authority cannot keep a
-  // provider-model Search route admitted, even when its transport draft did not
-  // change. Keep the accepted revision for history, but require a fresh probe
-  // before the route can be enabled again.
-  await tx.searchStrategy.updateMany({
-    data: {
-      draftTestEvidence: Prisma.DbNull,
-      enabled: false,
-      testedDraftHash: null
-    },
-    where: {
-      adapterKind: "provider_model_client",
-      providerModel: { connectionId }
-    }
+  await publishProviderSearchRoute(tx, {
+    draft: clientDraft,
+    evidence: activationEvidence,
+    existing: existingClient,
+    kind: "provider_model_web_search",
+    modelId: selectedModel.configuration.upstreamModelId,
+    now: input.now,
+    option,
+    preferredId: policy.clientId,
+    provider: policy.provider
   });
 }
 
@@ -1353,8 +1408,7 @@ export function createPrismaAdminProviderRepository(
           });
           if (updated.count !== 1) throw new ProviderActivationStaleError();
         }
-        await invalidateProviderModelClientSearch(tx, input.connection.id);
-        await synchronizeCustomHostedSearch(tx, input, connection);
+        await synchronizeProviderSearch(tx, input, connection);
 
         const tuples = input.checks.map((check) => ({
           connectionVersion: input.connection.draftVersion,

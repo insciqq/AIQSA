@@ -7,7 +7,11 @@ import {
   type AdminProviderCustomSetupRequest
 } from "../../../contracts/adminProviderCustomSetup";
 import type { AdminProviderTestEvidence } from "../../../contracts/adminProviders";
-import type { AdminSearchDraft, AdminSearchTestEvidence } from "../../../contracts/adminSearch";
+import {
+  adminSearchExecutionDefaults,
+  type AdminSearchDraft,
+  type AdminSearchTestEvidence
+} from "../../../contracts/adminSearch";
 import {
   encryptProviderCredentialSecret,
   normalizeProviderCredentialSecret
@@ -117,7 +121,6 @@ function modelConfiguration(
     upstreamModelId
   });
   if (
-    (request.authenticationMode === "none" && protocol === "responses") ||
     ((configuration.capabilities.nativeSearch ||
       configuration.capabilities.nativeImageGeneration) && protocol !== "responses")
   ) {
@@ -189,7 +192,7 @@ export function createAdminProviderCustomSetupService(input: Readonly<{
   idFactory?: () => string;
   now?: () => Date;
   repository: AdminProviderCustomSetupRepository;
-  searchTester: AdminProviderQuickSetupSearchTester;
+  searchTester?: AdminProviderQuickSetupSearchTester;
   tester: AdminProviderCustomSetupTester;
 }>) {
   const encryptionKey = input.encryptionKey ?? getSecretEncryptionKey;
@@ -269,41 +272,14 @@ export function createAdminProviderCustomSetupService(input: Readonly<{
         evidence.push(validatedEvidence(testOutcome, model));
       }
 
-      let searchOutcome: Awaited<ReturnType<AdminProviderQuickSetupSearchTester["test"]>> | null = null;
-      if (supportsSearch) {
-        if (secret === null) {
-          searchOutcome = { normalizedSourceCount: 0, status: "unavailable" };
-        } else {
-          try {
-            searchOutcome = await input.searchTester.test({
-              connection,
-              model: primaryModel,
-              secret,
-              signal: inputValue.signal
-            });
-          } catch {
-            if (inputValue.signal?.aborted) {
-              throw new AdminProviderCustomSetupServiceError(
-                "provider_custom_setup_test_failed"
-              );
-            }
-            searchOutcome = { normalizedSourceCount: 0, status: "unavailable" };
-          }
-        }
-      }
       const checkedAt = now();
-      const sourceCount = searchOutcome?.status === "available" &&
-        Number.isSafeInteger(searchOutcome.normalizedSourceCount) &&
-        searchOutcome.normalizedSourceCount > 0
-        ? searchOutcome.normalizedSourceCount
-        : 0;
-      const searchEvidence: AdminSearchTestEvidence | null = searchOutcome
+      const searchEvidence: AdminSearchTestEvidence | null = supportsSearch
         ? {
             checkedAt: checkedAt.toISOString(),
-            method: "provider_search",
-            normalizedSourceCount: sourceCount,
+            method: "configuration",
+            normalizedSourceCount: 0,
             protocol: "openai_responses_web_search",
-            status: sourceCount > 0 ? "available" : "unavailable"
+            status: "available"
           }
         : null;
       const searchName = supportsSearch ? searchDisplayName(connectionName) : null;
@@ -311,10 +287,13 @@ export function createAdminProviderCustomSetupService(input: Readonly<{
         ? {
             adapterKind: "answer_provider_hosted",
             credentialMode: "answer_provider",
+            maxOutputTokens: adminSearchExecutionDefaults.maxOutputTokens,
             maxResults: 8,
+            maxSearchCallsPerAnswer: adminSearchExecutionDefaults.maxSearchCallsPerAnswer,
             protocol: "openai_responses_web_search",
             providerModelId: null,
             queryMaxCharacters: 500,
+            reasoningPolicy: "provider_default",
             timeoutMs: 300_000
           }
         : null;
@@ -322,10 +301,13 @@ export function createAdminProviderCustomSetupService(input: Readonly<{
         ? {
             adapterKind: "provider_model_client",
             credentialMode: "provider_model",
+            maxOutputTokens: adminSearchExecutionDefaults.maxOutputTokens,
             maxResults: 8,
+            maxSearchCallsPerAnswer: adminSearchExecutionDefaults.maxSearchCallsPerAnswer,
             protocol: "openai_responses_web_search",
             providerModelId: providerModelIds[0]!,
             queryMaxCharacters: 500,
+            reasoningPolicy: adminSearchExecutionDefaults.reasoningPolicy,
             timeoutMs: 300_000
           }
         : null;

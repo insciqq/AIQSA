@@ -10,6 +10,7 @@ export {
   decodeThreadToolActivity,
   type ThreadSearchExecution,
   type ThreadSearchProviderOperation,
+  type ThreadSearchSource,
   type ThreadToolActivity,
   type ThreadToolActivityStatus
 } from "../contracts/toolActivity";

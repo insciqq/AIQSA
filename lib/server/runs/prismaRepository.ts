@@ -1845,6 +1845,7 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
           id: searchRun.id,
           modelId: searchRun.modelId,
           provider: searchRun.provider,
+          query: searchRun.query,
           requestPreview: searchRun.requestPreview,
           status: searchRun.status,
           strategyId: searchRun.strategyId,
@@ -1912,6 +1913,7 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
                       artifacts: true,
                       modelId: true,
                       provider: true,
+                      query: true,
                       requestPreview: true,
                       status: true,
                       strategyId: true
@@ -2194,6 +2196,7 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
         select: {
           cachedInputTokens: true,
           cacheWriteInputTokens: true,
+          createdAt: true,
           estimatedCostMicros: true,
           inputTokens: true,
           modelId: true,
@@ -2208,6 +2211,7 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
         estimatedCostMicros: row.estimatedCostMicros,
         modelId: row.modelId,
         provider: row.provider,
+        recordedAt: row.createdAt.toISOString(),
         usage: {
           cachedInputTokens: row.cachedInputTokens,
           cacheWriteInputTokens: row.cacheWriteInputTokens,

@@ -86,16 +86,18 @@ export function openAIRetryableErrorPayload(error: unknown): OpenAIRetryableErro
 }
 
 export function createFetchOpenAIResponsesClient(input: {
-  apiKey: string;
+  apiKey: string | null;
   baseUrl?: string;
   fetchFn?: typeof fetch;
 }): OpenAIResponsesClient {
   const baseUrl = input.baseUrl?.trim() || "https://api.openai.com/v1";
   const fetchFn = input.fetchFn ?? fetch;
-  const headers = {
-    authorization: `Bearer ${input.apiKey}`,
+  const headers: Record<string, string> = {
     "content-type": "application/json"
   };
+  if (input.apiKey !== null) {
+    headers.authorization = `Bearer ${input.apiKey}`;
+  }
 
   async function postResponse(
     body: OpenAIResponseObject,

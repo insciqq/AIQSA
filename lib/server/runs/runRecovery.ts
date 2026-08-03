@@ -320,6 +320,7 @@ async function persistRecoveredPlanSearchExecution(input: Readonly<{
   await input.repository.createSearchRun({
     artifacts: {
       displayName: input.execution.displayName,
+      ...(input.execution.failure ? { failure: input.execution.failure } : {}),
       invocationId: input.execution.invocationId,
       ...(input.execution.providerOperations
         ? { providerOperations: input.execution.providerOperations }
@@ -440,8 +441,8 @@ type RecoverySearchExecutor = Readonly<{
 type RecoveryToolContext = Readonly<{
   deps: RunRecoveryDeps;
   durations: Map<string, number>;
+  persistedUsageRecordedAt: number | null;
   providerRequest: ProviderRunRequest;
-  persistedUsageKeys: ReadonlySet<string>;
   run: CheckpointedToolLoopRun;
   runtime(): RunRecoveryMcpRuntime;
   searchExecutor: RecoverySearchExecutor | null;
@@ -452,15 +453,25 @@ function isRecoveredSearchCall(context: RecoveryToolContext, name: string): bool
   return context.searchExecutor?.accepts(name) === true;
 }
 
+function settledSearchUsageNeedsRecovery(
+  call: PersistedToolLoopCall,
+  persistedUsageRecordedAt: number | null
+): boolean {
+  if (persistedUsageRecordedAt === null) return true;
+  if (!call.completedAt) return false;
+  const completedAt = Date.parse(call.completedAt);
+  return Number.isFinite(completedAt) && completedAt > persistedUsageRecordedAt;
+}
+
 async function recordRecoveredSearchResult(input: Readonly<{
   call: ModelToolCall;
   context: RecoveryToolContext;
+  includeUsage: boolean;
   result: ToolExecutionResult;
 }>): Promise<void> {
   const legacy = input.context.searchExecutor?.legacy;
   if (legacy) {
-    const usageKey = `openrouter\u0000${legacy.modelId}`;
-    if (input.result.usage && !input.context.persistedUsageKeys.has(usageKey)) {
+    if (input.includeUsage && input.result.usage) {
       input.context.usageAttributions.push({
         modelId: legacy.modelId,
         provider: "openrouter",
@@ -479,8 +490,7 @@ async function recordRecoveredSearchResult(input: Readonly<{
   }
 
   for (const execution of searchExecutionsFromToolResult(input.result)) {
-    const usageKey = `${execution.provider}\u0000${execution.modelId ?? "search"}`;
-    if (execution.modelId && !input.context.persistedUsageKeys.has(usageKey)) {
+    if (input.includeUsage && execution.modelId) {
       input.context.usageAttributions.push({
         modelId: execution.modelId,
         provider: execution.provider,
@@ -531,7 +541,15 @@ async function executePersistedToolCall(
       );
     }
     if (context.searchExecutor && isRecoveredSearchCall(context, call.name)) {
-      await recordRecoveredSearchResult({ call, context, result });
+      await recordRecoveredSearchResult({
+        call,
+        context,
+        includeUsage: settledSearchUsageNeedsRecovery(
+          claim.call,
+          context.persistedUsageRecordedAt
+        ),
+        result
+      });
     }
     return {
       call,
@@ -553,7 +571,7 @@ async function executePersistedToolCall(
         context.run.id,
         signal
       );
-      await recordRecoveredSearchResult({ call, context, result });
+      await recordRecoveredSearchResult({ call, context, includeUsage: true, result });
     } else {
       const route = resolveMcpRunTool(context.run.normalizedRequest.mcp, call.name);
       const generationId = claim.call.mcpBinding?.runtimeGenerationId;
@@ -679,7 +697,14 @@ async function recoverCheckpointedToolLoop(
       runId: run.id,
       userId: run.userId
     });
-    usageAttributions.push(...persistedUsage);
+    const persistedUsageRecordedAt = persistedUsage.reduce<number | null>((latest, attribution) => {
+      const recordedAt = Date.parse(attribution.recordedAt);
+      if (!Number.isFinite(recordedAt)) return latest;
+      return latest === null ? recordedAt : Math.max(latest, recordedAt);
+    }, null);
+    usageAttributions.push(...persistedUsage.map(({ recordedAt: _recordedAt, ...attribution }) =>
+      attribution
+    ));
     for (const attribution of persistedUsage) {
       persistedUsageKeys.add(`${attribution.provider}\u0000${attribution.modelId}`);
     }
@@ -733,9 +758,34 @@ async function recoverCheckpointedToolLoop(
       }
       planRuntimes[option.optionId] = optionRuntime;
     }
+    const candidatePlanSearchRouter = run.normalizedRequest.searchPlan
+      ? createSearchPlanToolRouter({
+          acceptLegacyToolNames: true,
+          plan: run.normalizedRequest.searchPlan,
+          runtimes: planRuntimes
+        })
+      : null;
+    const settledSearchInvocationCounts: Record<string, number> = {};
+    if (candidatePlanSearchRouter) {
+      for (const call of run.calls) {
+        if (
+          (call.state !== "complete" && call.state !== "error") ||
+          !candidatePlanSearchRouter.accepts(call.toolName)
+        ) {
+          continue;
+        }
+        const stored = parsePersistedToolExecutionResult(modelToolCall(call), call.result);
+        if (stored?.rawPreview?.providerCall === false) continue;
+        for (const optionId of candidatePlanSearchRouter.optionIdsForTool(call.toolName)) {
+          settledSearchInvocationCounts[optionId] =
+            (settledSearchInvocationCounts[optionId] ?? 0) + 1;
+        }
+      }
+    }
     const planSearchRouter = run.normalizedRequest.searchPlan
       ? createSearchPlanToolRouter({
           acceptLegacyToolNames: true,
+          initialInvocationCounts: settledSearchInvocationCounts,
           plan: run.normalizedRequest.searchPlan,
           runtimes: planRuntimes
         })
@@ -780,7 +830,7 @@ async function recoverCheckpointedToolLoop(
     const context: RecoveryToolContext = {
       deps,
       durations: new Map(),
-      persistedUsageKeys,
+      persistedUsageRecordedAt,
       providerRequest,
       run,
       runtime() {
