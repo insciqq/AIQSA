@@ -286,6 +286,51 @@ describe("OpenRouter Chat response normalization", () => {
     ]);
   });
 
+  it("normalizes the current nested url_citation annotation shape without traversing hostile nesting", () => {
+    const artifacts = extractOpenRouterArtifacts({
+      choices: [{
+        message: {
+          annotations: [{
+            type: "url_citation",
+            url_citation: {
+              content: "Bounded source excerpt",
+              title: "Nested source",
+              url: "https://example.com/nested"
+            }
+          }, {
+            type: "url_citation",
+            url: "https://example.com/malformed-flat-fallback",
+            url_citation: { nested: { url: "https://example.com/hidden" } }
+          }, {
+            type: "url_citation",
+            url_citation: {
+              title: "Credential-bearing",
+              url: "https://user:PRIVATE_PASSWORD@example.com/private"
+            }
+          }, {
+            type: "unknown",
+            url_citation: { url: "https://example.com/unknown" }
+          }]
+        }
+      }]
+    });
+
+    expect(artifacts).toEqual([{
+      data: {
+        artifactType: "citation",
+        payload: {
+          index: 1,
+          snippet: "Bounded source excerpt",
+          source: "openrouter-annotations",
+          title: "Nested source",
+          url: "https://example.com/nested"
+        }
+      },
+      type: "artifact"
+    }]);
+    expect(JSON.stringify(artifacts)).not.toMatch(/PRIVATE_PASSWORD|hidden|unknown/u);
+  });
+
   it.each([
     {
       response: { error: { code: "top_code", message: remoteSecret } }

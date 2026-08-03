@@ -5,7 +5,6 @@ import {
 } from "./openRouterChatRequest";
 import {
   assertValidOpenRouterTerminalResponse,
-  buildOpenRouterResponsePreview,
   extractOpenRouterArtifacts,
   extractOpenRouterText,
   extractOpenRouterUsage,
@@ -22,6 +21,7 @@ import type {
   ProviderSearchRequest,
   ProviderSearchResult
 } from "./types";
+import { ProviderSearchExecutionError } from "./types";
 
 export type OpenRouterPerplexitySearchAdapterOptions = Readonly<{
   client: OpenRouterChatClient;
@@ -29,13 +29,14 @@ export type OpenRouterPerplexitySearchAdapterOptions = Readonly<{
 
 function searchArtifact(
   response: Readonly<Record<string, unknown>>,
-  request: ProviderSearchRequest
+  request: ProviderSearchRequest,
+  citationCount: number
 ): ModelRunSseEvent {
   return {
     data: {
       artifactType: "search",
       payload: {
-        citationCount: Array.isArray(response.citations) ? response.citations.length : 0,
+        citationCount,
         model: response.model ?? request.searchPolicy.modelId,
         provider: "openrouter",
         responseId: openRouterProviderResponseId(response),
@@ -68,16 +69,43 @@ export function createOpenRouterPerplexitySearchAdapter(
       assertValidOpenRouterTerminalResponse(response, { allowToolCalls: false });
 
       const finalText = extractOpenRouterText(response);
-
-      const artifacts = [searchArtifact(response, request), ...extractOpenRouterArtifacts(response)];
+      const citationArtifacts = extractOpenRouterArtifacts(response);
+      const sources = searchSourcesFromCitationArtifacts(citationArtifacts);
+      const operationArtifact = searchArtifact(response, request, sources.length);
+      const artifacts = [operationArtifact, ...citationArtifacts];
+      const usage = extractOpenRouterUsage(response);
+      let findings: string;
+      try {
+        findings = normalizeSearchFindings(finalText);
+      } catch {
+        throw new ProviderSearchExecutionError({
+          artifacts: [operationArtifact],
+          code: "openrouter_search_findings_invalid",
+          usage
+        });
+      }
+      if (sources.length === 0) {
+        throw new ProviderSearchExecutionError({
+          artifacts: [operationArtifact],
+          code: "openrouter_search_sources_invalid",
+          usage
+        });
+      }
       return {
         artifacts,
-        finalProviderResponsePreview: buildOpenRouterResponsePreview(response, finalText),
-        findings: normalizeSearchFindings(finalText),
+        finalProviderResponsePreview: {
+          findingsCharacters: findings.length,
+          model: response.model ?? request.searchPolicy.modelId,
+          provider: "openrouter",
+          sourceCount: sources.length,
+          status: "completed",
+          usage
+        },
+        findings,
         providerResponseId: openRouterProviderResponseId(response),
         requestPreview: adapter.buildRequestPreview(request),
-        sources: searchSourcesFromCitationArtifacts(artifacts),
-        usage: extractOpenRouterUsage(response)
+        sources,
+        usage
       };
     }
   };
@@ -134,10 +162,11 @@ export function createFakeOpenRouterPerplexitySearchAdapter(): ProviderSearchAda
       return {
         artifacts,
         finalProviderResponsePreview: {
-          citations: ["https://example.com/aiqsa-search"],
+          findingsCharacters: finalText.length,
           model: request.searchPolicy.modelId,
           provider: "openrouter",
-          text: finalText,
+          sourceCount: 1,
+          status: "completed",
           usage
         },
         findings: normalizeSearchFindings(finalText),

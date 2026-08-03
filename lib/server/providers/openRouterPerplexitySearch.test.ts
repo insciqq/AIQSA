@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { validateSearchToolArguments } from "../search/query";
-import type { ProviderSearchRequest } from "./types";
+import { isProviderSearchExecutionError, type ProviderSearchRequest } from "./types";
 import type { OpenRouterChatClient } from "./openRouterChatTransport";
 import {
   createFakeOpenRouterPerplexitySearchAdapter,
@@ -115,17 +115,11 @@ describe("OpenRouter Perplexity search adapter", () => {
     expect(JSON.stringify(body)).toContain("Find one concise fact.");
     expect(result).toMatchObject({
       finalProviderResponsePreview: {
-        citations: [
-          {
-            snippet: "A useful source",
-            title: "Primary source",
-            url: "https://example.com/source"
-          }
-        ],
-        id: "or-search-1",
+        findingsCharacters: 17,
         model: "perplexity/sonar-pro-search",
         provider: "openrouter",
-        text: "Search answer [1]"
+        sourceCount: 1,
+        status: "completed"
       },
       findings: "Search answer [1]",
       providerResponseId: "or-search-1",
@@ -202,7 +196,7 @@ describe("OpenRouter Perplexity search adapter", () => {
     );
   });
 
-  it("omits hostile citations from artifacts while retaining the provider preview", async () => {
+  it("omits hostile citations from artifacts and the bounded provider preview", async () => {
     const adapter = createOpenRouterPerplexitySearchAdapter({
       client: {
         createChatCompletion: async () =>
@@ -235,11 +229,74 @@ describe("OpenRouter Perplexity search adapter", () => {
         type: "artifact"
       }
     ]);
-    expect(result.finalProviderResponsePreview.citations).toEqual([
-      "javascript:alert(1)",
-      "https://example.com/safe",
-      { href: "data:text/html,hostile", title: "Unsafe object" }
-    ]);
+    expect(result.finalProviderResponsePreview).toMatchObject({
+      findingsCharacters: 17,
+      sourceCount: 1,
+      status: "completed"
+    });
+    expect(JSON.stringify(result.finalProviderResponsePreview)).not.toMatch(/javascript:|data:text/u);
+  });
+
+  it("normalizes and deduplicates current nested OpenRouter annotations", async () => {
+    const adapter = createOpenRouterPerplexitySearchAdapter({
+      client: {
+        createChatCompletion: async () => successfulResponse({
+          choices: [{
+            finish_reason: "stop",
+            message: {
+              annotations: [{
+                type: "url_citation",
+                url_citation: {
+                  content: "Nested excerpt",
+                  title: "Nested source",
+                  url: "https://example.com/nested"
+                }
+              }, {
+                type: "url_citation",
+                url_citation: {
+                  title: "Duplicate",
+                  url: "https://example.com/nested"
+                }
+              }],
+              content: "Search answer [1]",
+              role: "assistant"
+            }
+          }],
+          citations: []
+        })
+      }
+    });
+
+    await expect(adapter.search(searchRequest())).resolves.toMatchObject({
+      sources: [{
+        rank: 1,
+        snippet: "Nested excerpt",
+        title: "Nested source",
+        url: "https://example.com/nested"
+      }]
+    });
+  });
+
+  it("returns a raw-free typed failure when no safe source proves Search", async () => {
+    const adapter = createOpenRouterPerplexitySearchAdapter({
+      client: {
+        createChatCompletion: async () => successfulResponse({
+          citations: [{
+            content: "PRIVATE_PROVIDER_CONTENT",
+            url: "https://user:PRIVATE_PASSWORD@example.com/private"
+          }]
+        })
+      }
+    });
+
+    const error = await adapter.search(searchRequest()).then(() => null, (value: unknown) => value);
+    expect(isProviderSearchExecutionError(error)).toBe(true);
+    if (!isProviderSearchExecutionError(error)) throw new Error("expected typed Search error");
+    expect(error).toMatchObject({
+      code: "openrouter_search_sources_invalid",
+      usage: { inputTokens: 11, outputTokens: 5, totalTokens: 16 }
+    });
+    expect(JSON.stringify(error)).not.toMatch(/PRIVATE_PROVIDER_CONTENT|PRIVATE_PASSWORD/u);
   });
 
   it.each([

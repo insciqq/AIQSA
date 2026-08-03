@@ -51,7 +51,7 @@ export type OpenAIResponsesSearchRequestBody = Readonly<{
   reasoning?: Readonly<{ effort: string }>;
   store: false;
   stream: false;
-  tool_choice: "auto";
+  tool_choice: "required";
   tools: readonly [{ type: "web_search" }];
 }>;
 
@@ -143,7 +143,7 @@ export function buildOpenAIResponsesSearchRequest(
     ...(effort ? { reasoning: { effort } } : {}),
     store: false,
     stream: false,
-    tool_choice: "auto",
+    tool_choice: "required",
     tools: [{ type: "web_search" }]
   };
 }
@@ -264,6 +264,13 @@ function safeActionSources(response: Readonly<Record<string, unknown>>) {
   ), 20);
 }
 
+function completedSearchOperationCount(response: Readonly<Record<string, unknown>>): number {
+  const output = Array.isArray(response.output) ? response.output : [];
+  return output.filter((item) =>
+    isRecord(item) && item.type === "web_search_call" && item.status === "completed"
+  ).length;
+}
+
 function incompleteReason(response: Readonly<Record<string, unknown>>): string | undefined {
   if (openAIResponseStatus(response) !== "incomplete" || !isRecord(response.incomplete_details)) {
     return undefined;
@@ -331,32 +338,58 @@ export function createOpenAIResponsesSearchAdapter(
         providerResponseId,
         normalizedProviderLabel(options.provider)
       );
+      const operationArtifacts = safeSearchArtifacts(response, options.provider);
       const artifacts = [
-        ...safeSearchArtifacts(response, options.provider),
+        ...operationArtifacts,
         ...completed.events.filter((event) =>
           event.type === "artifact" && event.data.artifactType !== "search"
         )
       ];
+      const searchOperationCount = completedSearchOperationCount(response);
+      if (searchOperationCount === 0) {
+        throw new ProviderSearchExecutionError({
+          artifacts: operationArtifacts,
+          code: "openai_search_operation_missing",
+          providerStatus: status,
+          usage: completed.result.usage
+        });
+      }
       let findings: string;
       try {
         findings = normalizeSearchFindings(completed.result.finalText);
       } catch {
         throw new ProviderSearchExecutionError({
-          artifacts,
+          artifacts: operationArtifacts,
           code: "openai_search_findings_invalid",
+          usage: completed.result.usage
+        });
+      }
+      const sources = normalizeSearchSources([
+        ...safeActionSources(response),
+        ...searchSourcesFromCitationArtifacts(artifacts)
+      ], 20);
+      if (sources.length === 0) {
+        throw new ProviderSearchExecutionError({
+          artifacts: operationArtifacts,
+          code: "openai_search_sources_invalid",
+          providerStatus: status,
           usage: completed.result.usage
         });
       }
       return {
         artifacts,
-        finalProviderResponsePreview: completed.result.finalProviderResponsePreview,
+        finalProviderResponsePreview: {
+          findingsCharacters: findings.length,
+          provider: normalizedProviderLabel(options.provider),
+          searchOperationCount,
+          sourceCount: sources.length,
+          status,
+          usage: completed.result.usage
+        },
         findings,
         ...(providerResponseId ? { providerResponseId } : {}),
         requestPreview: adapter.buildRequestPreview(request),
-        sources: normalizeSearchSources([
-          ...safeActionSources(response),
-          ...searchSourcesFromCitationArtifacts(artifacts)
-        ], 20),
+        sources,
         usage: completed.result.usage
       };
     }

@@ -11,7 +11,10 @@ import {
   type ThreadSearchProviderOperation
 } from "../../contracts/toolActivity";
 import type { ProviderRuntimeBinding } from "../providers/runtimeFactory";
-import { isProviderSearchExecutionError } from "../providers/types";
+import {
+  isProviderSearchExecutionError,
+  ProviderSearchExecutionError
+} from "../providers/types";
 import type {
   NormalizedSearchPlan,
   NormalizedSearchPlanOption,
@@ -286,11 +289,19 @@ async function consumeProviderSearch(
 }> {
   if (!runtime.searchAdapter) throw new Error("search_adapter_not_available");
   const result = await runtime.searchAdapter.search(request, { signal, timeoutMs });
+  const sources = normalizeSearchSources(result.sources, configuration(option).maxResults);
+  if (sources.length === 0) {
+    throw new ProviderSearchExecutionError({
+      artifacts: [],
+      code: "search_sources_invalid",
+      usage: result.usage
+    });
+  }
   return {
     artifacts: result.artifacts,
     findings: normalizeSearchFindings(result.findings),
     requestPreview: result.requestPreview,
-    sources: normalizeSearchSources(result.sources, configuration(option).maxResults),
+    sources,
     usage: result.usage
   };
 }

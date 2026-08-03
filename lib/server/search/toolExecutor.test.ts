@@ -432,6 +432,28 @@ describe("Search plan tool router", () => {
     ]);
   });
 
+  it("fails closed when an adapter returns findings without a safe normalized source", async () => {
+    const selected = option("source-less");
+    const router = createSearchPlanToolRouter({
+      plan: { mode: "model_choice", options: [selected] },
+      runtimes: { "source-less": runtime({ sourceUrl: "javascript:alert(1)" }) }
+    });
+    if (!router) throw new Error("expected Search router");
+
+    const result = await router.execute(call(router.tools[0]!.name), answerRequest());
+
+    expect(result.status).toBe("error");
+    expect(searchExecutionsFromToolResult(result)).toEqual([
+      expect.objectContaining({
+        failure: { code: "search_sources_invalid" },
+        sources: [],
+        status: "error",
+        usage: expect.objectContaining({ inputTokens: 2, outputTokens: 3, totalTokens: 5 })
+      })
+    ]);
+    expect(JSON.stringify(result)).not.toContain("javascript:");
+  });
+
   it("retains normalized incomplete evidence and usage without a raw provider response", async () => {
     const failure = new ProviderSearchExecutionError({
       artifacts: [{

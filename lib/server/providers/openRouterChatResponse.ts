@@ -1,4 +1,3 @@
-import { safeExternalHref } from "../../domain/links";
 import type { ModelRunSseEvent, ModelRunUsage } from "../../domain/modelRunEvents";
 import { normalizeTokenUsage } from "../../domain/usage";
 import { openRouterChatToolBridge } from "../tools/bridges";
@@ -6,6 +5,7 @@ import { providerStreamIdleTimeoutMs } from "./network";
 import { parseSseStream } from "./sse";
 import type { ProviderRunRequest, ProviderRunResult } from "./types";
 import { visibleAnswerText } from "./visibleAnswer";
+import { normalizeSearchSources } from "../search/evidence";
 
 export type OpenRouterResponseRecord = Readonly<Record<string, unknown>>;
 
@@ -155,34 +155,35 @@ export function extractOpenRouterUsage(response: OpenRouterResponseRecord): Mode
 }
 
 function citationFromValue(value: unknown, index: number): Record<string, unknown> | null {
+  let candidate: Record<string, unknown> | null = null;
   if (typeof value === "string") {
-    const url = safeExternalHref(value);
-    if (!url) {
-      return null;
+    candidate = { title: `Source ${index + 1}`, url: value };
+  } else if (isRecord(value)) {
+    if (value.type === "url_citation") {
+      if (!isRecord(value.url_citation)) return null;
+      candidate = {
+        snippet: value.url_citation.content ?? value.url_citation.snippet,
+        title: value.url_citation.title ?? `Source ${index + 1}`,
+        url: value.url_citation.url ?? value.url_citation.href
+      };
+    } else {
+      candidate = {
+        snippet: value.snippet ?? value.content,
+        title: value.title ?? `Source ${index + 1}`,
+        url: value.url ?? value.href
+      };
     }
-
-    return {
-      index: index + 1,
-      title: `Source ${index + 1}`,
-      url
-    };
   }
-
-  if (!isRecord(value)) {
-    return null;
-  }
-
-  const url = safeExternalHref(stringValue(value.url) ?? stringValue(value.href));
-  if (!url) {
-    return null;
-  }
-
-  return {
-    index: index + 1,
-    snippet: value.snippet,
-    title: stringValue(value.title) ?? `Source ${index + 1}`,
-    url
-  };
+  if (!candidate) return null;
+  const source = normalizeSearchSources([candidate], 1)[0];
+  return source
+    ? {
+        index: index + 1,
+        snippet: source.snippet,
+        title: source.title,
+        url: source.url
+      }
+    : null;
 }
 
 function citationArtifacts(values: unknown, source: string): ModelRunSseEvent[] {

@@ -65,7 +65,7 @@ const request: ProviderSearchRequest = {
   correlationId: "smoke-openrouter-perplexity",
   query: validatedQuery.query,
   searchControls: {
-    maxOutputTokens: 64,
+    maxOutputTokens: 1024,
     temperature: 0
   },
   searchPolicy: {
@@ -82,7 +82,7 @@ const request: ProviderSearchRequest = {
       }
     },
     defaultParams: {
-      maxOutputTokens: 64,
+      maxOutputTokens: 1024,
       provider: {
         allowFallbacks: true,
         dataCollection: "deny",
@@ -121,8 +121,11 @@ async function main() {
         artifactTypes: result.artifacts
           .filter((artifact) => artifact.type === "artifact")
           .map((artifact) => artifact.data.artifactType),
-        outputPreview: result.findings.slice(0, 160),
+        findingsCharacters: result.findings.length,
+        findingsPresent: Boolean(result.findings),
         providerResponseIdPresent: Boolean(result.providerResponseId),
+        sourceCount: result.sources.length,
+        status: "complete",
         usage: result.usage
       },
       null,
@@ -132,6 +135,7 @@ async function main() {
 }
 
 main().catch((error) => {
-  console.error(error instanceof Error ? error.message : "OpenRouter smoke failed");
+  void error;
+  console.error(JSON.stringify({ status: "error" }));
   process.exit(1);
 });

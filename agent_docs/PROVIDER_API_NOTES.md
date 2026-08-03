@@ -137,7 +137,7 @@ Current catalog intersection, native request mapping, stream/parser proof, hoste
 
 ## OpenRouter
 
-Last verified: 2026-07-24.
+Last verified: 2026-08-03.
 
 Primary references:
 
@@ -166,6 +166,7 @@ Externally constrained facts:
 - The current catalog uses `google/gemini-3.5-flash` and the live `~google/gemini-pro-latest` alias. `google/gemini-3-pro-preview` can return no endpoints and must not be inferred as available.
 - The current `perplexity/sonar-pro-search` route uses denied data collection, Perplexity-only routing, throughput sort, and `require_parameters: false`; do not strengthen that flag without revalidating the selected route.
 - OpenRouter web-search server tools exist, but AIQSA integrates Perplexity only through an explicit selected typed client Search integration. The answer model receives the provider-neutral Search-plan tool; the technical OpenRouter request receives only its generated bounded query.
+- Chat Completions web-search citations are standardized as `message.annotations[]` records with `type: "url_citation"` and a nested `url_citation` object containing the URL, title, optional content excerpt, and offsets. Older top-level citation arrays and flat citation records still occur on existing routes, so adapters may support those explicit shapes without recursively traversing provider payloads.
 - Native PDF routing is capability-dependent. OpenRouter file content plus its native PDF parser plugin avoids silently selecting a router-side parser/OCR fallback; unknown custom models must not be assumed native-capable.
 - OpenRouter endpoint tags are canonicalized independently of display casing, so AIQSA compares route tags case-insensitively while preserving the configured value in safe evidence.
 

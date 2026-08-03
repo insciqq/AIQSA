@@ -84,7 +84,7 @@ describe("OpenAI Responses query-only Search adapter", () => {
       reasoning: { effort: "none" },
       store: false,
       stream: false,
-      tool_choice: "auto",
+      tool_choice: "required",
       tools: [{ type: "web_search" }]
     });
   });
@@ -254,6 +254,79 @@ describe("OpenAI Responses query-only Search adapter", () => {
         url: "https://example.com/action-source"
       }]
     });
+  });
+
+  it("fails closed when a completed response has findings and citations but no terminal Search operation", async () => {
+    const adapter = createOpenAIResponsesSearchAdapter({
+      client: client(async () => ({
+        id: "resp-no-search-operation",
+        output: [{
+          content: [{
+            annotations: [{
+              title: "Unproven source",
+              type: "url_citation",
+              url: "https://example.com/unproven"
+            }],
+            text: "Ungrounded findings.",
+            type: "output_text"
+          }],
+          role: "assistant",
+          type: "message"
+        }],
+        status: "completed",
+        usage: { input_tokens: 3, output_tokens: 2, total_tokens: 5 }
+      })),
+      provider: "openai"
+    });
+
+    const error = await adapter.search(searchRequest()).then(() => null, (value: unknown) => value);
+    expect(isProviderSearchExecutionError(error)).toBe(true);
+    if (!isProviderSearchExecutionError(error)) throw new Error("expected typed Search error");
+    expect(error).toMatchObject({
+      artifacts: [],
+      code: "openai_search_operation_missing",
+      providerStatus: "completed",
+      usage: { inputTokens: 3, outputTokens: 2, totalTokens: 5 }
+    });
+    expect(JSON.stringify(error)).not.toContain("Ungrounded findings");
+  });
+
+  it("fails closed when a completed Search operation has findings but no safe source", async () => {
+    const adapter = createOpenAIResponsesSearchAdapter({
+      client: client(async () => ({
+        id: "resp-no-safe-source",
+        output: [{
+          action: {
+            query: "Moscow news",
+            sources: [{
+              title: "Credential-bearing",
+              url: "https://user:PRIVATE_PASSWORD@example.com/private"
+            }],
+            type: "search"
+          },
+          id: "ws-no-source",
+          status: "completed",
+          type: "web_search_call"
+        }, {
+          content: [{ text: "Current findings.", type: "output_text" }],
+          role: "assistant",
+          type: "message"
+        }],
+        status: "completed",
+        usage: { input_tokens: 4, output_tokens: 2, total_tokens: 6 }
+      })),
+      provider: "openai"
+    });
+
+    const error = await adapter.search(searchRequest()).then(() => null, (value: unknown) => value);
+    expect(isProviderSearchExecutionError(error)).toBe(true);
+    if (!isProviderSearchExecutionError(error)) throw new Error("expected typed Search error");
+    expect(error).toMatchObject({
+      code: "openai_search_sources_invalid",
+      providerStatus: "completed",
+      usage: { inputTokens: 4, outputTokens: 2, totalTokens: 6 }
+    });
+    expect(JSON.stringify(error)).not.toContain("PRIVATE_PASSWORD");
   });
 
   it("throws a raw-free typed incomplete error with reason, usage, and bounded operations", async () => {
