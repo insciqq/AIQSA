@@ -42,6 +42,32 @@ describe("MCP safe fetch URL and address policy", () => {
   });
 
   it.each([
+    String.raw`https:\\169.254.169.254/latest/meta-data`,
+    String.raw`https:/\169.254.169.254/latest/meta-data`,
+    String.raw`https:\/169.254.169.254/latest/meta-data`
+  ])("normalizes a backslash authority with the native URL parser before enforcing address policy: %s", async (url) => {
+    const lookupHostname = vi.fn(async () => [{ address: "169.254.169.254", family: 4 as const }]);
+    const dispatch = vi.fn(async () => new Response("unexpected"));
+
+    await rejectedCode(mcpSafeFetch(url, undefined, { dispatch, lookupHostname }), "mcp_http_address_forbidden");
+    expect(lookupHostname).toHaveBeenCalledOnce();
+    expect(lookupHostname).toHaveBeenCalledWith("169.254.169.254");
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+
+  it("canonicalizes a leading-zero IPv4 authority before enforcing address policy", async () => {
+    const lookupHostname = vi.fn(async () => [{ address: "10.0.0.1", family: 4 as const }]);
+    const dispatch = vi.fn(async () => new Response("unexpected"));
+
+    await rejectedCode(mcpSafeFetch("https://012.0.0.1/latest/meta-data", undefined, {
+      dispatch,
+      lookupHostname
+    }), "mcp_http_address_forbidden");
+    expect(lookupHostname).toHaveBeenCalledWith("10.0.0.1");
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+
+  it.each([
     { address: "10.0.0.1", family: 4 as const },
     { address: "127.0.0.1", family: 4 as const },
     { address: "169.254.169.254", family: 4 as const },

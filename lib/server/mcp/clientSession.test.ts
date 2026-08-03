@@ -15,7 +15,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   McpClientSession,
   McpClientSessionError,
-  type McpClientSessionLimits
+  type McpClientSessionLimits,
+  validateMcpToolArguments
 } from "./clientSession";
 import { createMcpClientSessionFactory } from "./clientSessionFactory";
 
@@ -171,6 +172,32 @@ function createSession(
 
 afterEach(async () => {
   await Promise.all([...openFixtures].map((fixture) => fixture.close()));
+});
+
+describe("MCP tool argument schema validation", () => {
+  it("keeps uri formats as bounded validation inputs rather than outbound routing authority", () => {
+    const schema = {
+      additionalProperties: false,
+      properties: {
+        endpoint: { format: "uri", type: "string" },
+        reference: { format: "uri-reference", type: "string" }
+      },
+      required: ["endpoint", "reference"],
+      type: "object"
+    } as const;
+
+    expect(() => validateMcpToolArguments(schema, {
+      endpoint: "https://example.com/mcp",
+      reference: "../resource"
+    })).not.toThrow();
+    expect(() => validateMcpToolArguments(schema, {
+      endpoint: "not a uri",
+      reference: "../resource"
+    })).toThrow(expect.objectContaining({
+      code: "mcp_call_arguments_invalid",
+      operation: "call_tool"
+    }));
+  });
 });
 
 describe("McpClientSession", () => {
