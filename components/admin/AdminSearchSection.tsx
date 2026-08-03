@@ -227,9 +227,7 @@ function draftForModel(
 }
 
 function emptyForm(providerModels: readonly AdminSearchProviderModelOption[]): SearchForm {
-  const model = providerModels.find((candidate) =>
-    candidate.enabled && candidate.searchKind === "web_search") ??
-    providerModels.find((candidate) => candidate.enabled) ?? null;
+  const model = providerModels.find((candidate) => candidate.enabled) ?? null;
   const sourceName = model?.connectionDisplayName.trim() ?? "";
   return {
     description: sourceName ? `Web search through ${sourceName}.` : "Web search for Research Chat.",
@@ -246,6 +244,16 @@ function emptyForm(providerModels: readonly AdminSearchProviderModelOption[]): S
           timeoutMs: 300_000
         }
   };
+}
+
+function manuallyAddableModels(catalog: AdminSearchCatalog): AdminSearchProviderModelOption[] {
+  return catalog.providerModels.filter((model) =>
+    model.enabled && model.searchKind === "perplexity_search" &&
+    !catalog.integrations.some((integration) =>
+      integration.archivedAt === null && integration.kind === model.searchKind &&
+      integration.sourceConnectionId === model.connectionId
+    )
+  );
 }
 
 function formFrom(
@@ -285,12 +293,18 @@ function durationLabel(milliseconds: number): string {
   return seconds >= 60 && seconds % 60 === 0 ? `${seconds / 60} min` : `${seconds} sec`;
 }
 
+function liveDiagnosticEvidence(integration: AdminSearchIntegration) {
+  return integration.draftTestEvidence?.method === "provider_search"
+    ? integration.draftTestEvidence
+    : null;
+}
+
 function testState(integration: AdminSearchIntegration): string {
   if (!integration.configurable) return "Managed with its provider connection";
-  if (integration.draftDirty) return "Changes need testing";
-  if (integration.draftTestEvidence?.status === "available") return "Configuration tested";
-  if (integration.draftTestEvidence?.status === "unavailable") return "Last test unavailable";
-  return "Not tested";
+  const evidence = liveDiagnosticEvidence(integration);
+  if (evidence?.status === "available") return "Last live check passed";
+  if (evidence?.status === "unavailable") return "Last live check unavailable";
+  return "No live check run";
 }
 
 function Feedback({ error, notice, onDismiss }: Readonly<{
@@ -329,12 +343,14 @@ function Fact({ children, label }: Readonly<{ children: ReactNode; label: string
 function SearchCatalogIndex({
   busy,
   integrations,
+  canCreate,
   onCreate,
   onRefresh,
   onSelect,
   selectedId
 }: Readonly<{
   busy: boolean;
+  canCreate: boolean;
   integrations: readonly AdminSearchIntegration[];
   onCreate(): void;
   onRefresh(): void;
@@ -363,9 +379,11 @@ function SearchCatalogIndex({
             <button aria-label="Refresh Search sources" className={quietButton} disabled={busy} onClick={onRefresh} type="button">
               <RefreshCw aria-hidden="true" className={`size-3.5 ${busy ? "animate-spin" : ""}`} />
             </button>
-            <button className={primaryButton} disabled={busy} onClick={onCreate} type="button">
-              <Plus aria-hidden="true" className="size-3.5" />Add source
-            </button>
+            {canCreate ? (
+              <button className={primaryButton} disabled={busy} onClick={onCreate} type="button">
+                <Plus aria-hidden="true" className="size-3.5" />Add source
+              </button>
+            ) : null}
           </div>
         </div>
         <label className="relative block">
@@ -514,7 +532,7 @@ function DetailTask({
   catalog: AdminSearchCatalog;
   form: SearchForm;
   integration: AdminSearchIntegration;
-  onAction(action: "activate" | "archive" | "disable" | "enable" | "test"): void;
+  onAction(action: "archive" | "disable" | "enable" | "test"): void;
   onSave(): void;
   setForm(value: SearchForm): void;
   task: SearchTask;
@@ -524,7 +542,7 @@ function DetailTask({
       <section className="grid gap-5 p-4 sm:p-6" aria-label="Search configuration">
         <div>
           <h4 className="text-sm font-semibold text-ink">Source configuration</h4>
-          <p className="mt-1 text-xs leading-5 text-ink-muted">Saved changes take effect only after a successful test and an explicit switch to the tested configuration.</p>
+          <p className="mt-1 text-xs leading-5 text-ink-muted">Saved changes take effect immediately for new runs.</p>
         </div>
         {integration.configurable ? (
           <>
@@ -545,15 +563,15 @@ function DetailTask({
     );
   }
   if (task === "diagnostics") {
-    const evidence = integration.draftTestEvidence;
+    const evidence = liveDiagnosticEvidence(integration);
     return (
       <section className="grid gap-5 p-4 sm:p-6" aria-label="Search diagnostics">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
             <h4 className="text-sm font-semibold text-ink">Connection check</h4>
-            <p className="mt-1 max-w-3xl text-xs leading-5 text-ink-muted">The check sends a small fixed request and stores only status and a source count.</p>
+            <p className="mt-1 max-w-3xl text-xs leading-5 text-ink-muted">Optional live check. It sends a small fixed request and stores only status and a source count; its result does not change source availability.</p>
           </div>
-          {integration.configurable ? <button className={primaryButton} disabled={busy} onClick={() => onAction("test")} type="button"><TestTube2 aria-hidden="true" className="size-3.5" />Test configuration</button> : null}
+          {integration.configurable ? <button className={primaryButton} disabled={busy} onClick={() => onAction("test")} type="button"><TestTube2 aria-hidden="true" className="size-3.5" />Run live check</button> : null}
         </div>
         <dl className="grid gap-4 sm:grid-cols-2">
           <Fact label="State">{testState(integration)}</Fact>
@@ -579,13 +597,11 @@ function DetailTask({
         <Fact label="Availability"><AdminAvailabilityStatus enabled={integration.enabled} /></Fact>
         <Fact label="Readiness">{readinessLabel(integration)}</Fact>
         <Fact label="Answer model reach">{broaderModelLabel(integration)}</Fact>
-        <Fact label="Configuration">{testState(integration)}</Fact>
+        <Fact label="Configuration">{integration.configurationActive ? "Active" : "Needs attention"}</Fact>
         <Fact label="Connection">{integration.providerModel ? `${integration.providerModel.connectionDisplayName} · ${integration.providerModel.displayName}` : "Managed by its provider"}</Fact>
         <Fact label="Search timeout">{integration.configuration ? durationLabel(integration.configuration.timeoutMs) : "Provider managed"}</Fact>
       </dl>
       <div className="flex flex-wrap gap-2 border-t border-trace-subtle pt-4">
-        {integration.configurable ? <button className={primaryButton} disabled={busy} onClick={() => onAction("test")} type="button"><TestTube2 aria-hidden="true" className="size-3.5" />Test configuration</button> : null}
-        {integration.configurable ? <button className={quietButton} disabled={busy || integration.draftDirty || integration.draftTestEvidence?.status !== "available"} onClick={() => onAction("activate")} type="button"><CheckCircle2 aria-hidden="true" className="size-3.5" />Use tested configuration</button> : null}
         <button className={integration.enabled ? quietButton : enableButton} disabled={busy || (!integration.enabled && !integration.ready)} onClick={() => onAction(integration.enabled ? "disable" : "enable")} type="button">
           {integration.enabled ? "Disable" : "Enable"}
         </button>
@@ -674,7 +690,7 @@ export function AdminSearchSection({
 
   function openCreate() {
     if (!catalog) return;
-    setForm(emptyForm(catalog.providerModels));
+    setForm(emptyForm(manuallyAddableModels(catalog)));
     setMode("create");
     setTask("configuration");
   }
@@ -689,14 +705,12 @@ export function AdminSearchSection({
   }
 
   function performAction(
-    action: "activate" | "archive" | "disable" | "enable" | "test",
+    action: "archive" | "disable" | "enable" | "test",
     target: AdminSearchIntegration
   ) {
     const success = action === "test"
-      ? "Search configuration tested."
-      : action === "activate"
-        ? "Tested Search configuration is now in use."
-        : action === "enable"
+      ? "Live Search check completed."
+      : action === "enable"
           ? "Search source enabled."
           : action === "disable"
             ? "Search source disabled."
@@ -715,7 +729,7 @@ export function AdminSearchSection({
     );
   }
 
-  function runAction(action: "activate" | "archive" | "disable" | "enable" | "test") {
+  function runAction(action: "archive" | "disable" | "enable" | "test") {
     if (!selected || !catalog) return;
     if (action === "archive") {
       setArchiveCandidate(selected);
@@ -737,6 +751,7 @@ export function AdminSearchSection({
     },
     providerModels: []
   };
+  const addableModels = manuallyAddableModels(search);
   return (
     <div className="min-w-0" data-testid="admin-search-section">
       <div
@@ -755,7 +770,7 @@ export function AdminSearchSection({
         />
         <AdminTaskWorkspace className="mt-2" indexWidth="20rem">
         <AdminTaskIndexPane compactDetailOpen={mode !== "index"} testId="admin-search-index-pane">
-          <SearchCatalogIndex busy={busy} integrations={search.integrations} onCreate={openCreate} onRefresh={() => void load()} onSelect={openIntegration} selectedId={selectedId} />
+          <SearchCatalogIndex busy={busy} canCreate={addableModels.length > 0} integrations={search.integrations} onCreate={openCreate} onRefresh={() => void load()} onSelect={openIntegration} selectedId={selectedId} />
         </AdminTaskIndexPane>
         <AdminTaskDetailPane compactDetailOpen={mode !== "index"} testId="admin-search-detail-pane">
           {mode === "create" ? (
@@ -766,14 +781,14 @@ export function AdminSearchSection({
                 <h3 className="mt-1 text-lg font-semibold text-ink">Add Search source</h3>
                 <p className="mt-1 max-w-3xl text-sm leading-6 text-ink-muted">Choose a configured provider model that can search the web. Users will see one source, and AIQSA will apply it automatically to compatible answer models.</p>
               </div>
-              <SearchFormFields disabled={busy} form={form} providerModels={search.providerModels} setForm={setForm} />
+              <SearchFormFields disabled={busy} form={form} providerModels={addableModels} setForm={setForm} />
               <div className="flex gap-2">
                 <button
                   className={primaryButton}
                   disabled={busy || !form.displayName.trim() || !form.draft.providerModelId}
                   onClick={() => void commit(
                     createAdminSearchIntegration(form),
-                    "Search source opened.",
+                    "Search source added and ready.",
                     (next, previous, selectedIntegrationId) => {
                       const previousIds = new Set(previous?.integrations.map((item) => item.id) ?? []);
                       const created = next.integrations.find((item) =>
@@ -783,7 +798,7 @@ export function AdminSearchSection({
                         setSelectedId(created.id);
                         setForm(formFrom(created, next.providerModels));
                         setMode("detail");
-                        setTask("diagnostics");
+                        setTask("overview");
                       }
                     }
                   )}

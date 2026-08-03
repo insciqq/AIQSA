@@ -200,5 +200,20 @@ describe("admin Search HTTP handlers", () => {
     );
     expect(response.status).toBe(409);
     expect(await response.json()).toEqual({ error: "search_activation_evidence_missing" });
+
+    const notReady = createAdminSearchActionHandler({
+      resolveAuth: resolver(auth()),
+      service: service({
+        setEnabled: vi.fn(async () => {
+          throw new AdminSearchServiceError("search_source_not_ready");
+        })
+      })
+    });
+    const notReadyResponse = await notReady(
+      jsonRequest("/api/admin/search/integration-1/actions", { action: "enable" }),
+      context
+    );
+    expect(notReadyResponse.status).toBe(409);
+    expect(await notReadyResponse.json()).toEqual({ error: "search_source_not_ready" });
   });
 });

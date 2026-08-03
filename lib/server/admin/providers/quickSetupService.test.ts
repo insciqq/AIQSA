@@ -271,7 +271,7 @@ describe("provider Quick setup service", () => {
     });
   });
 
-  it("probes and plans OpenAI Search with no secret in persistence", async () => {
+  it("plans OpenAI Search from declared capability without a Search probe", async () => {
     const value = fixture({
       modelIds: ["gpt-5.6-terra"],
       searchOutcome: { normalizedSourceCount: 3, status: "available" }
@@ -285,11 +285,8 @@ describe("provider Quick setup service", () => {
       }
     });
 
-    expect(value.searchTest).toHaveBeenCalledWith(expect.objectContaining({
-      model: expect.objectContaining({ upstreamModelId: "gpt-5.6-terra" }),
-      secret: "sk-provider-neutral-search"
-    }));
-    expect(value.order).toEqual(["network", "search", "commit"]);
+    expect(value.searchTest).not.toHaveBeenCalled();
+    expect(value.order).toEqual(["network", "commit"]);
     expect(value.commit.mock.calls[0][0].search).toMatchObject({
       draft: {
         adapterKind: "provider_model_client",
@@ -298,8 +295,8 @@ describe("provider Quick setup service", () => {
         providerModelId: value.commit.mock.calls[0][0].candidate.modelId
       },
       evidence: {
-        method: "provider_search",
-        normalizedSourceCount: 3,
+        method: "configuration",
+        normalizedSourceCount: 0,
         status: "available"
       },
       integrationId: OPENAI_PROVIDER_SEARCH_INTEGRATION_ID
@@ -316,7 +313,7 @@ describe("provider Quick setup service", () => {
     );
   });
 
-  it("keeps the OpenAI provider ready while committing a disabled Search draft after probe failure", async () => {
+  it("does not let an optional Search diagnostic gate OpenAI Search readiness", async () => {
     const value = fixture({
       modelIds: ["gpt-5.6-terra"],
       searchThrows: true
@@ -331,14 +328,15 @@ describe("provider Quick setup service", () => {
     });
 
     expect(value.commit).toHaveBeenCalledOnce();
+    expect(value.searchTest).not.toHaveBeenCalled();
     expect(value.commit.mock.calls[0][0].search?.evidence).toMatchObject({
       normalizedSourceCount: 0,
-      status: "unavailable"
+      status: "available"
     });
     expect(result).toMatchObject({
       outcome: "ready",
       provider: "openai",
-      search: { status: "needs_attention" }
+      search: { status: "ready" }
     });
   });
 

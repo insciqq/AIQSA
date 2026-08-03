@@ -24,8 +24,6 @@ import {
   searchDraftHash
 } from "../../search/configuration";
 import {
-  sameSearchProbeBinding,
-  searchProbeBinding,
   searchValidationFingerprint,
   type SearchProbeBinding
 } from "../../search/probeBinding";
@@ -55,6 +53,7 @@ export type AdminSearchServiceErrorCode =
   | "search_name_invalid"
   | "search_policy_stale"
   | "search_provider_model_not_available"
+  | "search_source_not_ready"
   | "search_system_integration_forbidden"
   | "search_test_failed";
 
@@ -313,9 +312,7 @@ function activeChildDraft(child: SearchChild): AdminSearchDraft | null {
     child.activeRevision.adapterKind !== draft.adapterKind ||
     child.activeRevision.credentialMode !== draft.credentialMode ||
     child.activeRevision.providerModelId !== draft.providerModelId ||
-    child.providerModelId !== draft.providerModelId ||
-    (draft.adapterKind === "provider_model_client" &&
-      !searchProbeBinding(child.activeRevision.validationEvidence))
+    child.providerModelId !== draft.providerModelId
   ) {
     return null;
   }
@@ -325,23 +322,14 @@ function activeChildDraft(child: SearchChild): AdminSearchDraft | null {
 function routeReady(
   option: SearchOptionRow,
   child: SearchChild,
-  providerModels: readonly RuntimeProviderModel[],
-  currentAuthorities?: ReadonlyMap<string, SearchProbeBinding | null>
+  providerModels: readonly RuntimeProviderModel[]
 ): { adapterKind: AdminSearchDraft["adapterKind"]; draft: AdminSearchDraft } | null {
   const kind = logicalKind(option.kind);
   const draft = activeChildDraft(child);
   if (!kind || !draft || !option.sourceConnectionId || draftKind(draft) !== kind) return null;
   if (draft.adapterKind === "provider_model_client") {
     const model = providerModels.find((candidate) => candidate.id === draft.providerModelId);
-    const testedAuthority = searchProbeBinding(child.activeRevision?.validationEvidence);
-    const currentAuthority = draft.providerModelId && currentAuthorities
-      ? currentAuthorities.get(draft.providerModelId) ?? null
-      : null;
     return model?.enabled && model.connectionId === option.sourceConnectionId &&
-      (!currentAuthorities || Boolean(
-        testedAuthority && currentAuthority &&
-        sameSearchProbeBinding(testedAuthority, currentAuthority)
-      )) &&
       model.nativeSearch && compatibleTechnicalAdapter(draft.protocol, model.adapterKind)
       ? { adapterKind: draft.adapterKind, draft }
       : null;
@@ -356,15 +344,14 @@ function routeReady(
 
 function serializeIntegration(
   option: SearchOptionRow,
-  providerModels: readonly RuntimeProviderModel[],
-  currentAuthorities?: ReadonlyMap<string, SearchProbeBinding | null>
+  providerModels: readonly RuntimeProviderModel[]
 ): AdminSearchIntegration | null {
   const kind = logicalKind(option.kind);
   if (!kind || !option.sourceConnectionId) return null;
   const ambiguousRoutes = hasAmbiguousAdapterChildren(option);
   const editable = ambiguousRoutes ? null : editableChild(option);
   const readyRoutes = ambiguousRoutes ? [] : option.strategies.flatMap((child) => {
-    const route = routeReady(option, child, providerModels, currentAuthorities);
+    const route = routeReady(option, child, providerModels);
     return route ? [route] : [];
   });
   const readyClient = readyRoutes.some((route) => route.adapterKind === "provider_model_client");
@@ -392,9 +379,7 @@ function serializeIntegration(
     configurationActive,
     description: option.description,
     displayName: option.displayName,
-    draftDirty: Boolean(editable &&
-      !editable.child.testedDraftHash?.startsWith("migration:") &&
-      editable.child.testedDraftHash !== searchDraftHash(editable.draft)),
+    draftDirty: Boolean(editable && !configurationActive),
     draftTestEvidence: evidence,
     draftVersion: editable?.child.draftVersion ?? 0,
     enabled: option.enabled,
@@ -486,7 +471,109 @@ export function createAdminSearchService(input: Readonly<{
     return { configuration, model };
   }
 
-  async function list(args: Readonly<{ userId?: string }> = {}): Promise<AdminSearchCatalog> {
+  function configurationEvidence(draft: AdminSearchDraft): AdminSearchTestEvidence {
+    return {
+      checkedAt: now().toISOString(),
+      method: "configuration",
+      normalizedSourceCount: 0,
+      protocol: draft.protocol,
+      status: "available"
+    };
+  }
+
+  async function publishChild(
+    tx: Prisma.TransactionClient,
+    child: SearchChild,
+    draft: AdminSearchDraft,
+    technical: Awaited<ReturnType<typeof providerModelForDraft>>
+  ): Promise<void> {
+    const evidence = configurationEvidence(draft);
+    const draftHash = searchDraftHash(draft);
+    const validationFingerprint = searchValidationFingerprint(evidence);
+    const activeDraft = child.activeRevision
+      ? optionalDraft(child.activeRevision.configuration)
+      : null;
+    const activeIsConfigurationRevision = Boolean(
+      child.activeRevision && activeDraft &&
+      child.activeRevision.id === child.activeRevisionId &&
+      child.activeRevision.draftHash === draftHash &&
+      searchDraftHash(activeDraft) === draftHash &&
+      record(child.activeRevision.validationEvidence).method === "configuration"
+    );
+    let revision = activeIsConfigurationRevision
+      ? child.activeRevision
+      : await tx.searchIntegrationRevision.findUnique({
+          where: {
+            searchStrategyId_draftHash_validationFingerprint: {
+              draftHash,
+              searchStrategyId: child.id,
+              validationFingerprint
+            }
+          }
+        });
+    revision ??= await tx.searchIntegrationRevision.create({
+      data: {
+        adapterKind: draft.adapterKind,
+        configuration: json(draft),
+        credentialMode: draft.credentialMode,
+        draftHash,
+        providerModelId: draft.providerModelId,
+        revisionNumber: (child.revisions?.[0]?.revisionNumber ?? 0) + 1,
+        searchStrategyId: child.id,
+        validationEvidence: json(evidence),
+        validationFingerprint
+      }
+    });
+    await tx.searchStrategy.update({
+      data: {
+        activatedAt: now(),
+        activeRevisionId: revision.id,
+        adapterKind: draft.adapterKind,
+        config: json(draft),
+        credentialMode: draft.credentialMode,
+        draft: json(draft),
+        enabled: true,
+        kind: legacySearchKind(draft.protocol, draft.adapterKind),
+        modelId: draft.adapterKind === "provider_model_client"
+          ? technical.configuration.upstreamModelId
+          : null,
+        provider: technical.model.connection.family,
+        providerModelId: draft.providerModelId
+      },
+      where: { id: child.id }
+    });
+  }
+
+  async function publishLogicalOption(
+    tx: Prisma.TransactionClient,
+    option: SearchOptionRow
+  ): Promise<void> {
+    const editable = editableChild(option);
+    if (!editable) throw new AdminSearchServiceError("search_configuration_unavailable");
+    const technical = await providerModelForDraft(editable.draft, tx);
+    if (technical.model.connectionId !== option.sourceConnectionId) {
+      throw new AdminSearchServiceError("search_provider_model_not_available");
+    }
+    if (editable.child.activeRevision) {
+      const active = normalizedDraft(editable.child.activeRevision.configuration);
+      if (materialIdentity(active) !== materialIdentity(editable.draft)) {
+        throw new AdminSearchServiceError("search_integration_material_identity_changed");
+      }
+    }
+    await publishChild(tx, editable.child, editable.draft, technical);
+
+    const hostedDraft = hostedDraftFor(editable.draft);
+    if (!hostedDraft) return;
+    const hostedChildren = option.strategies.filter((child) =>
+      child.archivedAt === null && child.adapterKind === "answer_provider_hosted"
+    );
+    if (hostedChildren.length !== 1) {
+      throw new AdminSearchServiceError("search_configuration_unavailable");
+    }
+    await publishChild(tx, hostedChildren[0]!, hostedDraft, technical);
+  }
+
+  async function list(_args: Readonly<{ userId?: string }> = {}): Promise<AdminSearchCatalog> {
     const [options, providerModels, searchPolicy] = await Promise.all([
       input.prisma.searchOption.findMany({
         include: {
@@ -545,39 +632,10 @@ export function createAdminSearchService(input: Readonly<{
         searchKind
       }];
     });
-    const currentAuthorities = args.userId
-      ? new Map<string, SearchProbeBinding | null>()
-      : undefined;
-    if (currentAuthorities) {
-      const clientModelIds = new Set<string>();
-      for (const option of options as SearchOptionRow[]) {
-        for (const child of option.strategies) {
-          const active = activeChildDraft(child);
-          if (active?.adapterKind === "provider_model_client" && active.providerModelId) {
-            clientModelIds.add(active.providerModelId);
-          }
-        }
-      }
-      await Promise.all([...clientModelIds].map(async (providerModelId) => {
-        if (!input.tester.currentBinding) {
-          currentAuthorities.set(providerModelId, null);
-          return;
-        }
-        try {
-          currentAuthorities.set(providerModelId, await input.tester.currentBinding({
-            providerModelId,
-            store: input.prisma,
-            userId: args.userId!
-          }));
-        } catch {
-          currentAuthorities.set(providerModelId, null);
-        }
-      }));
-    }
     return {
       integrations: (options as SearchOptionRow[]).flatMap((option) => {
         if (option.kind === "none") return [];
-        const integration = serializeIntegration(option, runtimeModels, currentAuthorities);
+        const integration = serializeIntegration(option, runtimeModels);
         return integration ? [integration] : [];
       }),
       policy: searchPolicy,
@@ -666,7 +724,10 @@ export function createAdminSearchService(input: Readonly<{
       const matchingOptions = await tx.searchOption.findMany({
         include: {
           strategies: {
-            include: { activeRevision: true },
+            include: {
+              activeRevision: true,
+              revisions: { orderBy: { revisionNumber: "desc" }, take: 1 }
+            },
             orderBy: { strategyId: "asc" }
           }
         },
@@ -716,6 +777,24 @@ export function createAdminSearchService(input: Readonly<{
             strategyId: route.strategyId
           }
         });
+      }
+      async function publishOption(optionId: string): Promise<void> {
+        const refreshed = await tx.searchOption.findUnique({
+          include: {
+            strategies: {
+              include: {
+                activeRevision: true,
+                revisions: { orderBy: { revisionNumber: "desc" }, take: 1 }
+              },
+              orderBy: { strategyId: "asc" }
+            }
+          },
+          where: { id: optionId }
+        }) as SearchOptionRow | null;
+        if (!refreshed) {
+          throw new AdminSearchServiceError("search_integration_not_found");
+        }
+        await publishLogicalOption(tx, refreshed);
       }
       async function ensureHostedRoute(
         option: SearchOptionRow,
@@ -780,8 +859,7 @@ export function createAdminSearchService(input: Readonly<{
           searchDraftHash(currentEditable.draft) !== searchDraftHash(draft)
         ) {
           // Reopening an archived logical source honors the model selected in
-          // the Add flow. The accepted revision remains immutable history and
-          // the replacement must pass a fresh source-bearing probe.
+          // the Add flow while retaining prior immutable revision history.
           await tx.searchStrategy.update({
             data: {
               draft: json(draft),
@@ -800,6 +878,7 @@ export function createAdminSearchService(input: Readonly<{
             where: { id: existingOption.id }
           });
         }
+        await publishOption(existingOption.id);
         return { created: false, id: existingOption.id };
       }
       await tx.searchOption.create({
@@ -844,6 +923,7 @@ export function createAdminSearchService(input: Readonly<{
           false
         );
       }
+      await publishOption(optionRowId);
       return { created: true, id: optionRowId };
     });
   }
@@ -860,7 +940,15 @@ export function createAdminSearchService(input: Readonly<{
     const draft = normalizedDraft(args.draft);
     await input.prisma.$transaction(async (tx) => {
       const option = await tx.searchOption.findUnique({
-        include: { strategies: { include: { activeRevision: true }, orderBy: { strategyId: "asc" } } },
+        include: {
+          strategies: {
+            include: {
+              activeRevision: true,
+              revisions: { orderBy: { revisionNumber: "desc" }, take: 1 }
+            },
+            orderBy: { strategyId: "asc" }
+          }
+        },
         where: { id: args.id }
       }) as SearchOptionRow | null;
       if (!option || option.kind === "none") {
@@ -890,10 +978,15 @@ export function createAdminSearchService(input: Readonly<{
         where: { draftVersion: args.expectedDraftVersion, id: editable.child.id }
       });
       if (updated.count !== 1) throw new AdminSearchServiceError("search_draft_stale");
+      editable.child.draft = draft;
+      editable.child.draftTestEvidence = null;
+      editable.child.draftVersion += 1;
+      editable.child.testedDraftHash = null;
       await tx.searchOption.update({
         data: { description, displayName },
         where: { id: option.id }
       });
+      await publishLogicalOption(tx, option);
     });
   }
 
@@ -949,148 +1042,10 @@ export function createAdminSearchService(input: Readonly<{
         where: { id: args.id }
       }) as SearchOptionRow | null;
       if (!option) throw new AdminSearchServiceError("search_integration_not_found");
-      const editable = editableChild(option);
-      if (!editable) throw new AdminSearchServiceError("search_configuration_unavailable");
-      const storedEvidence = record(editable.child.draftTestEvidence);
-      const evidence = testEvidence(storedEvidence);
-      const probeBinding = searchProbeBinding(storedEvidence);
-      if (
-        editable.child.testedDraftHash !== searchDraftHash(editable.draft) ||
-        evidence?.status !== "available" ||
-        !probeBinding ||
-        probeBinding.providerModelId !== editable.draft.providerModelId ||
-        probeBinding.connectionId !== option.sourceConnectionId
-      ) {
-        throw new AdminSearchServiceError("search_activation_evidence_missing");
-      }
-      if (editable.child.activeRevision) {
-        const active = normalizedDraft(editable.child.activeRevision.configuration);
-        if (materialIdentity(active) !== materialIdentity(editable.draft)) {
-          throw new AdminSearchServiceError("search_integration_material_identity_changed");
-        }
-      }
-      const technical = await providerModelForDraft(editable.draft, tx);
-      if (technical.model.connectionId !== option.sourceConnectionId) {
-        throw new AdminSearchServiceError("search_provider_model_not_available");
-      }
-      if (!input.tester.currentBinding) {
-        throw new AdminSearchServiceError("search_activation_evidence_missing");
-      }
-      let currentBinding: SearchProbeBinding;
-      try {
-        currentBinding = await input.tester.currentBinding({
-          providerModelId: editable.draft.providerModelId!,
-          store: tx,
-          userId: args.userId
-        });
-      } catch {
-        throw new AdminSearchServiceError("search_activation_evidence_missing");
-      }
-      if (!sameSearchProbeBinding(probeBinding, currentBinding)) {
-        throw new AdminSearchServiceError("search_activation_evidence_missing");
-      }
-      const validationFingerprint = searchValidationFingerprint(storedEvidence);
-      const existingRevision = await tx.searchIntegrationRevision.findUnique({
-        where: {
-          searchStrategyId_draftHash_validationFingerprint: {
-            draftHash: editable.child.testedDraftHash,
-            searchStrategyId: editable.child.id,
-            validationFingerprint
-          }
-        }
-      });
-      const revision = existingRevision ?? await tx.searchIntegrationRevision.create({
-        data: {
-          adapterKind: editable.draft.adapterKind,
-          configuration: json(editable.draft),
-          credentialMode: editable.draft.credentialMode,
-          draftHash: editable.child.testedDraftHash,
-          providerModelId: editable.draft.providerModelId,
-          revisionNumber: (editable.child.revisions?.[0]?.revisionNumber ?? 0) + 1,
-          searchStrategyId: editable.child.id,
-          validationEvidence: json(storedEvidence),
-          validationFingerprint
-        }
-      });
-      await tx.searchStrategy.update({
-        data: {
-          activatedAt: now(),
-          activeRevisionId: revision.id,
-          adapterKind: editable.draft.adapterKind,
-          config: json(editable.draft),
-          credentialMode: editable.draft.credentialMode,
-          enabled: true,
-          kind: legacySearchKind(editable.draft.protocol, editable.draft.adapterKind),
-          modelId: technical.configuration.upstreamModelId,
-          provider: technical.model.connection.family,
-          providerModelId: editable.draft.providerModelId
-        },
-        where: { id: editable.child.id }
-      });
-
-      const hostedDraft = hostedDraftFor(editable.draft);
-      if (hostedDraft) {
-        const hostedChildren = option.strategies.filter((child) =>
-          child.archivedAt === null && child.adapterKind === "answer_provider_hosted"
-        );
-        if (hostedChildren.length === 0) {
-          throw new AdminSearchServiceError("search_configuration_unavailable");
-        }
-        const hostedHash = searchDraftHash(hostedDraft);
-        const hostedValidationFingerprint = searchValidationFingerprint(storedEvidence);
-        for (const child of hostedChildren) {
-          const activeHostedDraft = child.activeRevision
-            ? optionalDraft(child.activeRevision.configuration)
-            : null;
-          let hostedRevision = child.activeRevision && activeHostedDraft &&
-            child.activeRevision.adapterKind === hostedDraft.adapterKind &&
-            child.activeRevision.credentialMode === hostedDraft.credentialMode &&
-            child.activeRevision.providerModelId === hostedDraft.providerModelId &&
-            child.activeRevision.draftHash === hostedHash &&
-            searchDraftHash(activeHostedDraft) === hostedHash
-            ? child.activeRevision
-            : await tx.searchIntegrationRevision.findUnique({
-                where: {
-                  searchStrategyId_draftHash_validationFingerprint: {
-                    draftHash: hostedHash,
-                    searchStrategyId: child.id,
-                    validationFingerprint: hostedValidationFingerprint
-                  }
-                }
-              });
-          hostedRevision ??= await tx.searchIntegrationRevision.create({
-            data: {
-              adapterKind: hostedDraft.adapterKind,
-              configuration: json(hostedDraft),
-              credentialMode: hostedDraft.credentialMode,
-              draftHash: hostedHash,
-              providerModelId: null,
-              revisionNumber: (child.revisions?.[0]?.revisionNumber ?? 0) + 1,
-              searchStrategyId: child.id,
-              validationEvidence: json(storedEvidence),
-              validationFingerprint: hostedValidationFingerprint
-            }
-          });
-          await tx.searchStrategy.update({
-            data: {
-              activatedAt: now(),
-              activeRevisionId: hostedRevision.id,
-              adapterKind: hostedDraft.adapterKind,
-              config: json(hostedDraft),
-              credentialMode: hostedDraft.credentialMode,
-              draft: json(hostedDraft),
-              draftTestEvidence: json(evidence),
-              enabled: true,
-              kind: legacySearchKind(hostedDraft.protocol, hostedDraft.adapterKind),
-              modelId: null,
-              provider: technical.model.connection.family,
-              providerModelId: null,
-              testedDraftHash: hostedHash
-            },
-            where: { id: child.id }
-          });
-        }
-      }
+      // Compatibility endpoint: activation is now a network-free publication
+      // of the saved configuration. It never depends on a prior live check or
+      // on the credential version used by one administrator.
+      await publishLogicalOption(tx, option);
     });
   }
 
@@ -1104,7 +1059,7 @@ export function createAdminSearchService(input: Readonly<{
     );
     if (!source) throw new AdminSearchServiceError("search_integration_not_found");
     if (args.enabled && (!source.ready || source.archivedAt)) {
-      throw new AdminSearchServiceError("search_activation_evidence_missing");
+      throw new AdminSearchServiceError("search_source_not_ready");
     }
     await input.prisma.searchOption.update({
       data: { enabled: args.enabled },

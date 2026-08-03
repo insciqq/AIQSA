@@ -269,7 +269,28 @@ describe("Prisma admin provider repository", () => {
     expect(remove).not.toHaveBeenCalled();
   });
 
-  it("atomically materializes a tested draft credential and its complete active check", async () => {
+  it.each([
+    {
+      adapterKind: "openai_responses_compatible" as const,
+      clientId: "custom-web-search-client:connection-1",
+      family: "openai_compatible",
+      hostedId: "custom-web-search-hosted:connection-1",
+      label: "custom Responses",
+      optionId: "custom-web-search:connection-1",
+      optionRowId: "custom-web-search-option:connection-1",
+      templateKey: null
+    },
+    {
+      adapterKind: "openai_responses_native" as const,
+      clientId: "openai-search-client:connection-1",
+      family: "openai",
+      hostedId: "openai-native-web-search",
+      label: "official OpenAI Responses",
+      optionId: "openai-native-web-search",
+      optionRowId: "00000000-0000-4000-8000-000000001402",
+      templateKey: "openai"
+    }
+  ])("atomically materializes a tested $label draft and both active Search routes", async (scenario) => {
     const candidateCheck = storedCheck();
     const secondCandidateCheck: StoredProviderDraftCheck = {
       ...candidateCheck,
@@ -294,9 +315,11 @@ describe("Prisma admin provider repository", () => {
       ...data,
       activeRevision: null
     }));
-    const createSearchRevision = vi.fn(async () => ({ id: "hosted-revision-1" }));
+    const createSearchRevision = vi.fn(async ({ data }: {
+      data: { searchStrategyId: string };
+    }) => ({ id: `${data.searchStrategyId}:revision-1` }));
     const updateSearchStrategy = vi.fn(async () => ({}));
-    const invalidateSearchStrategies = vi.fn(async () => ({ count: 1 }));
+    const updateSearchStrategies = vi.fn(async () => ({ count: 1 }));
     const db = transactional({
       providerConnection: {
         findUnique: vi.fn(async () => ({
@@ -304,9 +327,9 @@ describe("Prisma admin provider repository", () => {
           displayName: "Custom gateway",
           draftConfig: {},
           draftVersion: 2,
-          family: "openai_compatible",
+          family: scenario.family,
           id: "connection-1",
-          templateKey: null
+          templateKey: scenario.templateKey
         })),
         updateMany: updateConnection
       },
@@ -362,7 +385,7 @@ describe("Prisma admin provider repository", () => {
         create: createSearchStrategy,
         findFirst: vi.fn(async () => null),
         update: updateSearchStrategy,
-        updateMany: invalidateSearchStrategies
+        updateMany: updateSearchStrategies
       }
     });
     const repository = createPrismaAdminProviderRepository(db as unknown as PrismaClient);
@@ -389,7 +412,7 @@ describe("Prisma admin provider repository", () => {
       }],
       models: [{
         configuration: {
-          adapterKind: "openai_responses_compatible",
+          adapterKind: scenario.adapterKind,
           answerSelectable: true,
           capabilities: {
             nativePdfInput: false,
@@ -405,7 +428,7 @@ describe("Prisma admin provider repository", () => {
         id: "model-1"
       }, {
         configuration: {
-          adapterKind: "openai_responses_compatible",
+          adapterKind: scenario.adapterKind,
           answerSelectable: true,
           capabilities: {
             nativePdfInput: false,
@@ -459,56 +482,54 @@ describe("Prisma admin provider repository", () => {
     });
     expect(createSearchOption).toHaveBeenCalledWith({
       data: expect.objectContaining({
-        id: "custom-web-search-option:connection-1",
-        optionId: "custom-web-search:connection-1",
+        id: scenario.optionRowId,
+        optionId: scenario.optionId,
         sourceConnectionId: "connection-1"
       })
     });
     expect(createSearchStrategy).toHaveBeenCalledWith(expect.objectContaining({
       data: expect.objectContaining({
         adapterKind: "answer_provider_hosted",
-        id: "custom-web-search-hosted:connection-1"
+        id: scenario.hostedId
       })
     }));
     expect(createSearchStrategy).toHaveBeenCalledWith(expect.objectContaining({
       data: expect.objectContaining({
         adapterKind: "provider_model_client",
         enabled: false,
-        id: "custom-web-search-client:connection-1",
+        id: scenario.clientId,
         providerModelId: "model-1"
       })
     }));
     expect(createSearchRevision).toHaveBeenCalledWith({
       data: expect.objectContaining({
-        searchStrategyId: "custom-web-search-hosted:connection-1",
+        searchStrategyId: scenario.hostedId,
+        validationEvidence: expect.objectContaining({ sourceProbe: false })
+      })
+    });
+    expect(createSearchRevision).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        providerModelId: "model-1",
+        searchStrategyId: scenario.clientId,
         validationEvidence: expect.objectContaining({ sourceProbe: false })
       })
     });
     expect(updateSearchStrategy).toHaveBeenCalledWith({
       data: expect.objectContaining({
-        activeRevisionId: "hosted-revision-1",
+        activeRevisionId: `${scenario.hostedId}:revision-1`,
         enabled: true
       }),
-      where: { id: "custom-web-search-hosted:connection-1" }
+      where: { id: scenario.hostedId }
     });
-    expect(invalidateSearchStrategies).toHaveBeenCalledWith({
-      data: {
-        draftTestEvidence: expect.anything(),
-        enabled: false,
-        testedDraftHash: null
-      },
-      where: {
-        adapterKind: "provider_model_client",
-        providerModel: { connectionId: "connection-1" }
-      }
+    expect(updateSearchStrategy).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        activeRevisionId: `${scenario.clientId}:revision-1`,
+        enabled: true,
+        providerModelId: "model-1"
+      }),
+      where: { id: scenario.clientId }
     });
-    const invalidation = (invalidateSearchStrategies.mock.calls as unknown as Array<[
-      { data: Record<string, unknown> }
-    ]>)[0]![0];
-    expect(invalidation.data).not.toHaveProperty("activeRevisionId");
-    expect(invalidation.data).not.toHaveProperty("activatedAt");
-    expect(invalidation.data).not.toHaveProperty("config");
-    expect(invalidation.data).not.toHaveProperty("draft");
+    expect(updateSearchStrategies).not.toHaveBeenCalled();
     expect(
       (updateModel.mock.calls[0]?.[0] as { data?: object } | undefined)?.data
     ).not.toHaveProperty("contextWindow");

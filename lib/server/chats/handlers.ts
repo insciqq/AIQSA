@@ -19,7 +19,7 @@ export type {
   ChatUsageStats,
   ThreadArtifactSummary,
   ThreadCitation,
-  ThreadSearchDetail
+  ThreadSearchActivity
 } from "../../contracts/chats";
 
 export type ChatMessageRecord = {

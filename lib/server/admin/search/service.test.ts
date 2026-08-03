@@ -3,10 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { AdminSearchDraft } from "../../../contracts/adminSearch";
 import { searchDraftHash } from "../../search/configuration";
 import type { SearchProbeBinding } from "../../search/probeBinding";
-import {
-  AdminSearchServiceError,
-  createAdminSearchService
-} from "./service";
+import { createAdminSearchService } from "./service";
 
 const NOW = new Date("2026-07-29T12:00:00.000Z");
 const draft: AdminSearchDraft = {
@@ -89,11 +86,13 @@ function providerModel(input: Readonly<{
 }
 
 function activeRevision(configuration: AdminSearchDraft, id = "revision-1") {
-  const validationEvidence = configuration.adapterKind === "provider_model_client"
-    ? {
-        probeBinding: { ...PROBE_BINDING, providerModelId: configuration.providerModelId! }
-      }
-    : { method: "configuration" };
+  const validationEvidence = {
+    checkedAt: NOW.toISOString(),
+    method: "configuration",
+    normalizedSourceCount: 0,
+    protocol: configuration.protocol,
+    status: "available"
+  };
   return {
     adapterKind: configuration.adapterKind,
     configuration,
@@ -146,6 +145,32 @@ function option(
     strategies,
     templateKey: "search:openai",
     ...overrides
+  };
+}
+
+function pendingChild(
+  configuration: AdminSearchDraft,
+  overrides: Record<string, unknown> = {}
+) {
+  return child(configuration, {
+    activeRevision: null,
+    activeRevisionId: null,
+    activatedAt: null,
+    enabled: false,
+    revisions: [],
+    testedDraftHash: null,
+    ...overrides
+  });
+}
+
+function revisionRepository() {
+  let revision = 0;
+  return {
+    create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => ({
+      ...data,
+      id: `published-revision-${++revision}`
+    })),
+    findUnique: vi.fn(async () => null)
   };
 }
 
@@ -248,7 +273,7 @@ describe("admin Search service", () => {
     });
   });
 
-  it("marks broader-model setup stale when the current credential authority changed", async () => {
+  it("keeps broader-model setup ready across credential rotation without a probe gate", async () => {
     const currentBinding = vi.fn(async (): Promise<SearchProbeBinding> => PROBE_BINDING);
     const prisma = {
       providerModel: { findMany: vi.fn(async () => [providerModel()]) },
@@ -278,19 +303,15 @@ describe("admin Search service", () => {
     });
     const rotated = await service.list({ userId: "admin-1" });
     expect(rotated.integrations[0]).toMatchObject({
-      broaderModelSetup: "setup_required",
-      executionModes: ["model_choice"],
+      broaderModelSetup: "ready",
+      executionModes: ["all_selected", "model_choice"],
       ready: true,
       readiness: "ready"
     });
     expect(JSON.stringify(rotated)).not.toMatch(
       /probeBinding|credentialId|credentialVersionId|credential-version-2/u
     );
-    expect(currentBinding).toHaveBeenCalledWith({
-      providerModelId: "technical-1",
-      store: prisma,
-      userId: "admin-1"
-    });
+    expect(currentBinding).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -327,7 +348,7 @@ describe("admin Search service", () => {
     });
   });
 
-  it("reenables an invalidated client after a fresh probe without replacing its accepted revision", async () => {
+  it("keeps optional diagnostics separate from compatibility publication", async () => {
     const editable = child(draft, {
       draftTestEvidence: null,
       enabled: false,
@@ -357,8 +378,9 @@ describe("admin Search service", () => {
       ...tx,
       $transaction: async (operation: (client: typeof tx) => Promise<unknown>) => operation(tx)
     } as unknown as PrismaClient;
+    const currentBinding = vi.fn(async () => PROBE_BINDING);
     const tester = {
-      currentBinding: vi.fn(async () => PROBE_BINDING),
+      currentBinding,
       test: vi.fn(async () => ({
         method: "provider_search" as const,
         normalizedSourceCount: 2,
@@ -369,8 +391,8 @@ describe("admin Search service", () => {
     };
     const service = createAdminSearchService({ now: () => NOW, prisma, tester });
 
-    await service.testDraft({ id: "source-1", userId: "admin-1" });
     await service.activate({ id: "source-1", userId: "admin-1" });
+    await service.testDraft({ id: "source-1", userId: "admin-1" });
 
     expect(tester.test).toHaveBeenCalledWith({ draft, userId: "admin-1" });
     expect(updateMany).toHaveBeenCalledWith({
@@ -392,15 +414,38 @@ describe("admin Search service", () => {
       where: { id: "strategy-1" }
     });
     expect(revisionCreate).not.toHaveBeenCalled();
+    expect(currentBinding).not.toHaveBeenCalled();
   });
 
   it("creates one disabled parent with linked client and hosted web-search routes", async () => {
     const optionCreate = vi.fn(async () => undefined);
     const strategyCreate = vi.fn(async () => undefined);
+    const strategyUpdate = vi.fn(async () => undefined);
+    const revisions = revisionRepository();
+    const createdOption = option([
+      pendingChild(draft, {
+        id: "87654321-4321-4321-8321-210987654321",
+        strategyId: "company-search-12345678:client"
+      }),
+      pendingChild(hostedDraft, {
+        id: "abcdef12-4321-4321-8321-210987654321",
+        strategyId: "company-search-12345678:hosted"
+      })
+    ], { id: "12345678-1234-4234-8234-123456789012" });
     const tx = {
       $queryRaw: vi.fn(async () => []),
-      searchOption: { create: optionCreate, findMany: vi.fn(async () => []) },
-      searchStrategy: { create: strategyCreate, findUnique: vi.fn(async () => null) }
+      providerModel: { findFirst: vi.fn(async () => providerModel()) },
+      searchIntegrationRevision: revisions,
+      searchOption: {
+        create: optionCreate,
+        findMany: vi.fn(async () => []),
+        findUnique: vi.fn(async () => createdOption)
+      },
+      searchStrategy: {
+        create: strategyCreate,
+        findUnique: vi.fn(async () => null),
+        update: strategyUpdate
+      }
     };
     const ids = [
       "12345678-1234-4234-8234-123456789012",
@@ -459,6 +504,20 @@ describe("admin Search service", () => {
       })
     });
     expect(strategyCreate).toHaveBeenCalledTimes(2);
+    expect(revisions.create).toHaveBeenCalledTimes(2);
+    expect(revisions.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        searchStrategyId: "87654321-4321-4321-8321-210987654321",
+        validationEvidence: expect.objectContaining({ method: "configuration" })
+      })
+    });
+    expect(strategyUpdate).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        activeRevisionId: "published-revision-1",
+        enabled: true
+      }),
+      where: { id: "87654321-4321-4321-8321-210987654321" }
+    });
     expect(JSON.stringify([optionCreate.mock.calls, strategyCreate.mock.calls])).not.toMatch(
       /apiRoot|secret/u
     );
@@ -471,10 +530,32 @@ describe("admin Search service", () => {
     };
     const technical = providerModel({ adapterKind: "openrouter_chat_completions" });
     const strategyCreate = vi.fn(async () => undefined);
+    const strategyUpdate = vi.fn(async () => undefined);
+    const revisions = revisionRepository();
     const tx = {
       $queryRaw: vi.fn(async () => []),
-      searchOption: { create: vi.fn(async () => undefined), findMany: vi.fn(async () => []) },
-      searchStrategy: { create: strategyCreate, findUnique: vi.fn(async () => null) }
+      providerModel: { findFirst: vi.fn(async () => technical) },
+      searchIntegrationRevision: revisions,
+      searchOption: {
+        create: vi.fn(async () => undefined),
+        findMany: vi.fn(async () => []),
+        findUnique: vi.fn(async () => option([
+          pendingChild(perplexityDraft, {
+            id: "perplexity-client",
+            strategyId: "perplexity-search-perplex:client"
+          })
+        ], {
+          id: "perplexity-option",
+          kind: "perplexity_search",
+          optionId: "perplexity-search-perplex",
+          templateKey: null
+        }))
+      },
+      searchStrategy: {
+        create: strategyCreate,
+        findUnique: vi.fn(async () => null),
+        update: strategyUpdate
+      }
     };
     const ids = ["perplexity-option", "perplexity-client"];
     const prisma = {
@@ -494,6 +575,7 @@ describe("admin Search service", () => {
     });
 
     expect(strategyCreate).toHaveBeenCalledTimes(1);
+    expect(revisions.create).toHaveBeenCalledTimes(1);
     expect(strategyCreate).toHaveBeenCalledWith({
       data: expect.objectContaining({
         adapterKind: "provider_model_client",
@@ -525,10 +607,20 @@ describe("admin Search service", () => {
   ])("reuses the existing $label parent and client route instead of duplicating it", async ({ row }) => {
     const optionCreate = vi.fn(async () => undefined);
     const strategyCreate = vi.fn(async () => undefined);
+    const strategyUpdate = vi.fn(async () => undefined);
     const tx = {
       $queryRaw: vi.fn(async () => []),
-      searchOption: { create: optionCreate, findMany: vi.fn(async () => [row]) },
-      searchStrategy: { create: strategyCreate, findUnique: vi.fn(async () => null) }
+      providerModel: { findFirst: vi.fn(async () => providerModel()) },
+      searchOption: {
+        create: optionCreate,
+        findMany: vi.fn(async () => [row]),
+        findUnique: vi.fn(async () => row)
+      },
+      searchStrategy: {
+        create: strategyCreate,
+        findUnique: vi.fn(async () => null),
+        update: strategyUpdate
+      }
     };
     const prisma = {
       $transaction: async (operation: (client: typeof tx) => Promise<unknown>) => operation(tx),
@@ -545,6 +637,7 @@ describe("admin Search service", () => {
     expect(reused).toEqual({ created: false, id: row.id });
     expect(optionCreate).not.toHaveBeenCalled();
     expect(strategyCreate).not.toHaveBeenCalled();
+    expect(strategyUpdate).toHaveBeenCalledTimes(2);
     expect(tx.$queryRaw).toHaveBeenCalledTimes(2);
   });
 
@@ -557,10 +650,34 @@ describe("admin Search service", () => {
     });
     const optionCreate = vi.fn(async () => undefined);
     const strategyCreate = vi.fn(async () => undefined);
+    const strategyUpdate = vi.fn(async () => undefined);
+    const revisions = revisionRepository();
+    const completed = option([
+      child(hostedDraft),
+      pendingChild(draft, {
+        id: "custom-web-search-client:connection-1",
+        strategyId: "custom-web-search-client:connection-1"
+      })
+    ], {
+      displayName: "Compatible gateway Search",
+      id: "custom-web-search-option:connection-1",
+      optionId: "custom-web-search:connection-1",
+      templateKey: null
+    });
     const tx = {
       $queryRaw: vi.fn(async () => []),
-      searchOption: { create: optionCreate, findMany: vi.fn(async () => [existing]) },
-      searchStrategy: { create: strategyCreate, findUnique: vi.fn(async () => null) }
+      providerModel: { findFirst: vi.fn(async () => providerModel()) },
+      searchIntegrationRevision: revisions,
+      searchOption: {
+        create: optionCreate,
+        findMany: vi.fn(async () => [existing]),
+        findUnique: vi.fn(async () => completed)
+      },
+      searchStrategy: {
+        create: strategyCreate,
+        findUnique: vi.fn(async () => null),
+        update: strategyUpdate
+      }
     };
     const prisma = {
       $transaction: async (operation: (client: typeof tx) => Promise<unknown>) => operation(tx),
@@ -604,11 +721,31 @@ describe("admin Search service", () => {
     const strategyCreate = vi.fn(async () => undefined);
     const strategyUpdate = vi.fn(async () => undefined);
     const replacementDraft: AdminSearchDraft = { ...draft, providerModelId: "technical-2" };
+    const reopened = option([
+      child(replacementDraft, {
+        activeRevision: activeRevision(draft),
+        activeRevisionId: "revision-1",
+        providerModelId: draft.providerModelId
+      }),
+      child(hostedDraft, { id: "strategy-hosted", strategyId: "physical-hosted" })
+    ], {
+      archivedAt: null,
+      enabled: false,
+      id: "custom-web-search-option:connection-1",
+      optionId: "custom-web-search:connection-1",
+      templateKey: null
+    });
+    const revisions = revisionRepository();
     const tx = {
       $queryRaw: vi.fn(async () => []),
+      providerModel: {
+        findFirst: vi.fn(async () => providerModel({ id: "technical-2" }))
+      },
+      searchIntegrationRevision: revisions,
       searchOption: {
         create: optionCreate,
         findMany: vi.fn(async () => [existing]),
+        findUnique: vi.fn(async () => reopened),
         update: optionUpdate
       },
       searchStrategy: {
@@ -679,22 +816,28 @@ describe("admin Search service", () => {
     expect(optionUpdate).not.toHaveBeenCalled();
   });
 
-  it("stages a same-source technical-model replacement without displacing the active route", async () => {
+  it("publishes a same-source technical-model replacement immediately on save", async () => {
     const replacementDraft: AdminSearchDraft = {
       ...draft,
       providerModelId: "technical-2"
     };
-    const strategyUpdate = vi.fn(async () => ({ count: 1 }));
+    const strategyUpdateMany = vi.fn(async () => ({ count: 1 }));
+    const strategyPublish = vi.fn(async () => undefined);
     const optionUpdate = vi.fn(async () => undefined);
+    const revisions = revisionRepository();
     const tx = {
       providerModel: {
         findFirst: vi.fn(async () => providerModel({ id: "technical-2" }))
       },
       searchOption: {
-        findUnique: vi.fn(async () => option([child(draft)])),
+        findUnique: vi.fn(async () => option([
+          child(draft),
+          child(hostedDraft, { id: "strategy-hosted", strategyId: "physical-hosted" })
+        ])),
         update: optionUpdate
       },
-      searchStrategy: { updateMany: strategyUpdate }
+      searchIntegrationRevision: revisions,
+      searchStrategy: { update: strategyPublish, updateMany: strategyUpdateMany }
     };
     const prisma = {
       $transaction: async (operation: (client: typeof tx) => Promise<unknown>) => operation(tx)
@@ -709,7 +852,7 @@ describe("admin Search service", () => {
       id: "source-1"
     });
 
-    expect(strategyUpdate).toHaveBeenCalledWith({
+    expect(strategyUpdateMany).toHaveBeenCalledWith({
       data: {
         description: "Web evidence",
         displayName: "OpenAI Search",
@@ -720,15 +863,28 @@ describe("admin Search service", () => {
       },
       where: { draftVersion: 1, id: "strategy-1" }
     });
-    expect(JSON.stringify(strategyUpdate.mock.calls)).not.toContain("activeRevisionId");
-    expect(JSON.stringify(strategyUpdate.mock.calls)).not.toContain('"enabled"');
+    expect(revisions.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        configuration: replacementDraft,
+        searchStrategyId: "strategy-1",
+        validationEvidence: expect.objectContaining({ method: "configuration" })
+      })
+    });
+    expect(strategyPublish).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        activeRevisionId: "published-revision-1",
+        enabled: true,
+        providerModelId: "technical-2"
+      }),
+      where: { id: "strategy-1" }
+    });
     expect(optionUpdate).toHaveBeenCalledWith({
       data: { description: "Web evidence", displayName: "OpenAI Search" },
       where: { id: "source-1" }
     });
   });
 
-  it("activates the editable child while retaining the parent identity and prior revisions", async () => {
+  it("keeps the activate endpoint as a network-free compatibility publication", async () => {
     const revisionCreate = vi.fn()
       .mockResolvedValueOnce({ id: "revision-2" })
       .mockResolvedValueOnce({ id: "revision-hosted-1" });
@@ -767,11 +923,12 @@ describe("admin Search service", () => {
     const prisma = {
       $transaction: async (operation: (client: typeof tx) => Promise<unknown>) => operation(tx)
     } as unknown as PrismaClient;
+    const currentBinding = vi.fn(async () => PROBE_BINDING);
     const service = createAdminSearchService({
       now: () => NOW,
       prisma,
       tester: {
-        currentBinding: vi.fn(async () => PROBE_BINDING),
+        currentBinding,
         test: vi.fn()
       }
     });
@@ -782,7 +939,8 @@ describe("admin Search service", () => {
       data: expect.objectContaining({
         draftHash: searchDraftHash(draft),
         revisionNumber: 2,
-        searchStrategyId: "strategy-1"
+        searchStrategyId: "strategy-1",
+        validationEvidence: expect.objectContaining({ method: "configuration" })
       })
     });
     expect(strategyUpdate).toHaveBeenCalledWith({
@@ -806,60 +964,56 @@ describe("admin Search service", () => {
       where: { id: "strategy-hosted" }
     });
 
-    editable.testedDraftHash = "stale-hash";
-    await expect(service.activate({ id: "source-1", userId: "admin-1" })).rejects.toEqual(
-      expect.objectContaining<Partial<AdminSearchServiceError>>({
-        code: "search_activation_evidence_missing"
-      })
-    );
     expect(revisionCreate).toHaveBeenCalledTimes(2);
+    expect(currentBinding).not.toHaveBeenCalled();
   });
 
-  it("rejects activation when the current credential authority no longer matches the probe", async () => {
-    const editable = child(draft, {
-      activeRevision: null,
-      activeRevisionId: null,
-      draftTestEvidence: {
-        checkedAt: NOW.toISOString(),
-        method: "provider_search",
-        normalizedSourceCount: 2,
-        probeBinding: PROBE_BINDING,
-        protocol: draft.protocol,
-        status: "available"
-      }
-    });
-    const revisionCreate = vi.fn(async () => ({ id: "unexpected-revision" }));
-    const revisionFindUnique = vi.fn(async () => null);
-    const strategyUpdate = vi.fn(async () => undefined);
-    const tx = {
-      providerModel: { findFirst: vi.fn(async () => providerModel()) },
-      searchIntegrationRevision: {
-        create: revisionCreate,
-        findUnique: revisionFindUnique
-      },
-      searchOption: { findUnique: vi.fn(async () => option([editable])) },
-      searchStrategy: { update: strategyUpdate }
-    };
+  it("does not let a failed optional diagnostic disable an active source", async () => {
+    const source = option([
+      child(draft),
+      child(hostedDraft, { id: "strategy-hosted", strategyId: "physical-hosted" })
+    ]);
+    const diagnosticUpdate = vi.fn(async () => ({ count: 1 }));
     const prisma = {
-      $transaction: async (operation: (client: typeof tx) => Promise<unknown>) => operation(tx)
+      providerModel: {
+        findFirst: vi.fn(async () => providerModel()),
+        findMany: vi.fn(async () => [providerModel()])
+      },
+      searchOption: {
+        findMany: vi.fn(async () => [source]),
+        findUnique: vi.fn(async () => source)
+      },
+      searchPolicy: { findUnique: vi.fn(async () => policyRow()) },
+      searchStrategy: { updateMany: diagnosticUpdate }
     } as unknown as PrismaClient;
     const service = createAdminSearchService({
       prisma,
       tester: {
-        currentBinding: vi.fn(async () => ({
-          ...PROBE_BINDING,
-          credentialVersionId: "credential-version-2"
-        })),
-        test: vi.fn()
+        test: vi.fn(async () => ({
+          method: "provider_search" as const,
+          normalizedSourceCount: 0,
+          probeBinding: PROBE_BINDING,
+          protocol: draft.protocol,
+          status: "unavailable" as const
+        }))
       }
     });
 
-    await expect(service.activate({ id: "source-1", userId: "admin-1" })).rejects.toMatchObject({
-      code: "search_activation_evidence_missing"
+    await service.testDraft({ id: "source-1", userId: "admin-1" });
+    expect(diagnosticUpdate).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        draftTestEvidence: expect.objectContaining({ status: "unavailable" })
+      }),
+      where: { draftVersion: 1, id: "strategy-1" }
     });
-    expect(revisionFindUnique).not.toHaveBeenCalled();
-    expect(revisionCreate).not.toHaveBeenCalled();
-    expect(strategyUpdate).not.toHaveBeenCalled();
+    await expect(service.list({ userId: "admin-2" })).resolves.toMatchObject({
+      integrations: [{
+        broaderModelSetup: "ready",
+        executionModes: ["all_selected", "model_choice"],
+        ready: true,
+        readiness: "ready"
+      }]
+    });
   });
 
   it("creates an exact hosted revision when client limits change", async () => {
@@ -978,6 +1132,26 @@ describe("admin Search service", () => {
     await expect(service.archive({ id: "source-1" })).rejects.toMatchObject({
       code: "search_system_integration_forbidden"
     });
+  });
+
+  it("reports readiness rather than activation evidence when enable is unavailable", async () => {
+    const sourceUpdate = vi.fn(async () => undefined);
+    const prisma = {
+      providerModel: { findMany: vi.fn(async () => [providerModel()]) },
+      searchOption: {
+        findMany: vi.fn(async () => [option([pendingChild(draft)], { enabled: false })]),
+        update: sourceUpdate
+      },
+      searchPolicy: { findUnique: vi.fn(async () => policyRow()) }
+    } as unknown as PrismaClient;
+    const service = createAdminSearchService({ prisma, tester: { test: vi.fn() } });
+
+    await expect(service.setEnabled({
+      enabled: true,
+      id: "source-1",
+      userId: "admin-1"
+    })).rejects.toMatchObject({ code: "search_source_not_ready" });
+    expect(sourceUpdate).not.toHaveBeenCalled();
   });
 
   it("validates logical policy kinds, Google exclusivity, and client-only fan-out", async () => {

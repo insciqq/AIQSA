@@ -1,6 +1,7 @@
 import type { AdminSearchCatalog } from "@/lib/contracts/adminSearch";
 import { describe, expect, it, vi } from "vitest";
 import {
+  adminSearchErrorMessage,
   createAdminSearchIntegration,
   requestAdminSearchCatalog,
   runAdminSearchAction,
@@ -121,5 +122,14 @@ describe("adminSearchApi", () => {
       { action: "activate", id: "integration-1" },
       vi.fn().mockResolvedValue(response({ error: "search_activation_evidence_missing" }, 409))
     )).resolves.toEqual({ error: "search_activation_evidence_missing", ok: false });
+  });
+
+  it("explains readiness failures without prescribing a test or activation ritual", () => {
+    const current = adminSearchErrorMessage("search_source_not_ready");
+    const legacy = adminSearchErrorMessage("search_activation_evidence_missing");
+
+    expect(current).toMatch(/provider connection.*Search-capable model.*saved configuration/iu);
+    expect(legacy).toMatch(/provider connection.*Search-capable model.*saved configuration/iu);
+    expect(`${current} ${legacy}`).not.toMatch(/test this|successfully before|activate/iu);
   });
 });

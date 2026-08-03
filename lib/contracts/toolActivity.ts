@@ -1,5 +1,13 @@
 export type ThreadToolActivityStatus = "cancelled" | "complete" | "error" | "running";
 
+export type ThreadSearchSource = {
+  date?: string;
+  rank: number;
+  snippet?: string;
+  title: string;
+  url: string;
+};
+
 export type ThreadSearchProviderOperation = {
   id: string | null;
   kind: "find_in_page" | "open_page" | "search" | "unknown";
@@ -20,6 +28,7 @@ export type ThreadSearchExecution = {
   providerOperationsTruncated: boolean;
   query: string | null;
   sourceCount: number;
+  sources?: ThreadSearchSource[];
   status: "complete" | "error";
   warning: string | null;
 };
@@ -51,6 +60,7 @@ const operationUrlLimit = 2_048;
 const searchExecutionQueryLimit = 2_000;
 const searchExecutionLimit = 3;
 const searchSourceLimit = 100;
+const projectedSearchSourceLimit = 20;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -76,6 +86,16 @@ function boundedPreview(value: unknown): unknown | undefined {
       : undefined;
   } catch {
     return undefined;
+  }
+}
+
+export function threadSearchProviderOperationTraceWithinLimit(value: unknown): boolean {
+  try {
+    const serialized = JSON.stringify(value);
+    return typeof serialized === "string" &&
+      new TextEncoder().encode(serialized).byteLength <= operationTraceByteLimit;
+  } catch {
+    return false;
   }
 }
 
@@ -114,6 +134,47 @@ function nullableBoundedString(value: unknown, maxLength: number): string | null
   return boundedString(value, maxLength) ?? undefined;
 }
 
+function safeHttpHref(value: unknown): string | null {
+  const href = boundedString(value, operationUrlLimit);
+  if (!href || href.startsWith("//") || /[\u0000-\u001F\u007F\s]/.test(href)) return null;
+  try {
+    const url = new URL(href);
+    return (url.protocol === "https:" || url.protocol === "http:") &&
+      !url.username &&
+      !url.password
+      ? href
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+export function decodeThreadSearchSource(value: unknown): ThreadSearchSource | null {
+  if (!isRecord(value)) return null;
+  const date = value.date === undefined ? undefined : boundedString(value.date, 80);
+  const rank = nonNegativeInteger(value.rank);
+  const snippet = value.snippet === undefined ? undefined : boundedString(value.snippet, 2_000);
+  const title = boundedString(value.title, 500);
+  const url = safeHttpHref(value.url);
+  if (
+    (value.date !== undefined && !date) ||
+    rank === null ||
+    rank < 1 ||
+    (value.snippet !== undefined && !snippet) ||
+    !title ||
+    !url
+  ) {
+    return null;
+  }
+  return {
+    ...(date ? { date } : {}),
+    rank,
+    ...(snippet ? { snippet } : {}),
+    title,
+    url
+  };
+}
+
 export function decodeThreadSearchProviderOperation(
   value: unknown
 ): ThreadSearchProviderOperation | null {
@@ -123,7 +184,12 @@ export function decodeThreadSearchProviderOperation(
   const ordinal = nonNegativeInteger(value.ordinal);
   const pattern = nullableBoundedString(value.pattern, operationQueryLimit);
   const status = providerOperationStatus(value.status);
-  const url = nullableBoundedString(value.url, operationUrlLimit);
+  const rawUrl = nullableBoundedString(value.url, operationUrlLimit);
+  const url = rawUrl === null
+    ? null
+    : rawUrl === undefined
+      ? undefined
+      : safeHttpHref(rawUrl) ?? undefined;
   if (
     id === undefined ||
     !kind ||
@@ -174,6 +240,17 @@ export function decodeThreadSearchExecution(value: unknown): ThreadSearchExecuti
   ) {
     return null;
   }
+  let sources: ThreadSearchSource[] | undefined;
+  if (value.sources !== undefined) {
+    if (!Array.isArray(value.sources) || value.sources.length > projectedSearchSourceLimit) {
+      return null;
+    }
+    const decodedSources = value.sources.map(decodeThreadSearchSource);
+    if (decodedSources.some((source) => source === null) || decodedSources.length > sourceCount) {
+      return null;
+    }
+    sources = decodedSources.filter((source): source is ThreadSearchSource => source !== null);
+  }
   let providerOperations: ThreadSearchProviderOperation[] | null;
   if (value.providerOperations === null) {
     providerOperations = null;
@@ -184,18 +261,12 @@ export function decodeThreadSearchExecution(value: unknown): ThreadSearchExecuti
   } else {
     return null;
   }
-  let serializedOperations: string;
-  try {
-    serializedOperations = JSON.stringify(providerOperations);
-  } catch {
-    return null;
-  }
   const providerOperationsTruncated = value.providerOperationsTruncated === undefined
     ? false
     : value.providerOperationsTruncated;
   if (
     typeof providerOperationsTruncated !== "boolean" ||
-    new TextEncoder().encode(serializedOperations).byteLength > operationTraceByteLimit
+    !threadSearchProviderOperationTraceWithinLimit(providerOperations)
   ) {
     return null;
   }
@@ -209,6 +280,7 @@ export function decodeThreadSearchExecution(value: unknown): ThreadSearchExecuti
     providerOperationsTruncated,
     query,
     sourceCount,
+    ...(sources !== undefined ? { sources } : {}),
     status,
     warning
   };

@@ -596,7 +596,7 @@ describe("ThreadMessageRow", () => {
     expect(warnings.querySelectorAll("li")).toHaveLength(2);
   });
 
-  it("keeps run, search, and citations hidden until More explicitly reveals one evidence block", async () => {
+  it("keeps Search directly collapsed under a completed answer and opens its facts in one click", async () => {
     const onOpenRunDetails = vi.fn();
     renderRow({
       artifactSummary: artifactSummary({
@@ -604,8 +604,16 @@ describe("ThreadMessageRow", () => {
         citations: [{ index: 1, title: "Source", url: "https://example.com" }],
         reasoningCount: 1,
         reasoningText: ["Observed reasoning"],
+        searchActivity: [{
+          displayName: "OpenAI Search",
+          providerOperations: [],
+          providerOperationsTruncated: false,
+          query: "evidence",
+          sourceCount: 1,
+          sources: [{ rank: 1, title: "Source", url: "https://example.com" }],
+          status: "complete"
+        }],
         searchCount: 1,
-        searchDetails: [{ requestPreview: { query: "evidence" }, responsePreview: { ok: true } }],
         searchStrategy: "openai-native-web-search",
         toolCallCount: 1,
         toolCalls: [{
@@ -629,6 +637,13 @@ describe("ThreadMessageRow", () => {
     });
 
     expect(screen.queryByTestId("answer-metadata-block")).not.toBeInTheDocument();
+    const directSearch = screen.getByRole("button", { name: /Search OpenAI Search.*Completed/i });
+    expect(directSearch).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(directSearch);
+    expect(directSearch).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByTestId("thread-search-details")).toHaveTextContent("evidence");
+    fireEvent.click(directSearch);
+
     await revealRunDetails();
     const metadata = screen.getByTestId("answer-metadata-block");
     const searchDisclosure = within(metadata).getByRole("button", { name: "1 search call" });
@@ -638,7 +653,7 @@ describe("ThreadMessageRow", () => {
     expect(within(metadata).getByTestId("run-receipt")).toHaveTextContent(
       "Run Complete · Fake / Fake QSA · 1 search call · OpenAI Search · 1 tool call · 1 citation · 1 reasoning trace"
     );
-    expect(screen.queryByTestId("thread-search-summary")).not.toBeInTheDocument();
+    expect(screen.getByTestId("thread-search-summary")).toBeVisible();
     expect(screen.queryByTestId("thread-citations-block")).not.toBeInTheDocument();
 
     fireEvent.click(searchDisclosure);
@@ -650,14 +665,14 @@ describe("ThreadMessageRow", () => {
     expect(toolDisclosure).toHaveAttribute("aria-expanded", "true");
     expect(citationDisclosure).toHaveAttribute("aria-expanded", "true");
     expect(reasoningDisclosure).toHaveAttribute("aria-expanded", "true");
-    expect(within(metadata).getByTestId("thread-search-details")).toHaveTextContent("evidence");
+    expect(screen.getByTestId("thread-search-details")).toHaveTextContent("evidence");
     expect(within(metadata).getByRole("link", { name: "[1] Source" })).toBeVisible();
 
     fireEvent.click(searchDisclosure);
     fireEvent.click(citationDisclosure);
     expect(searchDisclosure).toHaveAttribute("aria-expanded", "false");
     expect(citationDisclosure).toHaveAttribute("aria-expanded", "false");
-    expect(within(metadata).queryByTestId("thread-search-details")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("thread-search-details")).not.toBeInTheDocument();
     expect(within(metadata).queryByRole("link", { name: "[1] Source" })).not.toBeInTheDocument();
     expect(onOpenRunDetails).not.toHaveBeenCalled();
   });
@@ -694,9 +709,17 @@ describe("ThreadMessageRow", () => {
     expect(onOpenRunDetails).toHaveBeenCalledTimes(6);
   });
 
-  it("does not duplicate completed client Search beside its nested tool evidence while streaming", () => {
-    renderRow({
-      artifactSummary: artifactSummary({
+  it("keeps completed client Search direct, independent of generic tool visibility, and not duplicated", () => {
+    const clientSummary = artifactSummary({
+        searchActivity: [{
+          displayName: "OpenAI Search",
+          providerOperations: [],
+          providerOperationsTruncated: false,
+          query: "latest news in Moscow",
+          sourceCount: 4,
+          sources: [],
+          status: "complete"
+        }],
         searchCount: 1,
         searchStrategy: "client-search-plan",
         toolCallCount: 1,
@@ -728,14 +751,38 @@ describe("ThreadMessageRow", () => {
           status: "complete",
           toolName: "search_selected_engines"
         }]
-      }),
-      message: assistantMessage({ content: "Answer in progress", status: "streaming" }),
-      runActivity: { answer: "active", phase: "running", question: "done", search: "done" },
-      streaming: true
+    });
+    const { props, rerender } = renderRow({ artifactSummary: clientSummary });
+
+    expect(screen.getByTestId("thread-search-summary")).toBeVisible();
+    expect(screen.getAllByRole("button", { name: /Search OpenAI Search/i })).toHaveLength(1);
+    expect(screen.queryByTestId("thread-tool-activity")).not.toBeInTheDocument();
+    expect(screen.queryByText("search_selected_engines")).not.toBeInTheDocument();
+
+    rerender(<ThreadMessageRow {...props} artifactSummary={clientSummary} showToolActivity={false} />);
+    expect(screen.getByTestId("thread-search-summary")).toBeVisible();
+    expect(screen.getAllByRole("button", { name: /Search OpenAI Search/i })).toHaveLength(1);
+  });
+
+  it("renders an honest collapsed Search row when only the historical observation survives", () => {
+    renderRow({
+      artifactSummary: artifactSummary({
+        searchActivity: [],
+        searchCount: 1,
+        searchDisplayName: "Perplexity Search",
+        searchStrategy: "perplexity-tool-search"
+      })
     });
 
-    expect(screen.getByTestId("thread-tool-activity")).toBeVisible();
-    expect(screen.queryByTestId("thread-search-summary")).not.toBeInTheDocument();
+    const search = screen.getByRole("button", {
+      name: /Search Perplexity Search.*Status unavailable/i
+    });
+    expect(search).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(search);
+    expect(search).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByTestId("thread-search-details")).toHaveTextContent(
+      "Detailed Search evidence is unavailable for this run."
+    );
   });
 
   it("does not route a historical receipt into another answer's Details events", async () => {

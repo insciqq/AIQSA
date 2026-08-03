@@ -310,23 +310,8 @@ export function createAdminProviderQuickSetupService(input: Readonly<{
       let search: AdminProviderQuickSetupCommitPlan["search"];
       if (
         policy.provider === "openai" &&
-        candidate.configuration.capabilities.nativeSearch &&
-        input.searchTester
+        candidate.configuration.capabilities.nativeSearch
       ) {
-        let outcome: Awaited<ReturnType<AdminProviderQuickSetupSearchTester["test"]>>;
-        try {
-          outcome = await input.searchTester.test({
-            connection: policy.connection.configuration,
-            model: candidate.configuration,
-            secret,
-            signal: inputValue.signal
-          });
-        } catch {
-          if (inputValue.signal?.aborted) {
-            throw new AdminProviderQuickSetupServiceError("provider_credential_test_failed");
-          }
-          outcome = { normalizedSourceCount: 0, status: "unavailable" };
-        }
         const draft: AdminSearchDraft = {
           adapterKind: "provider_model_client",
           credentialMode: "provider_model",
@@ -337,11 +322,11 @@ export function createAdminProviderQuickSetupService(input: Readonly<{
           timeoutMs: 300_000
         };
         const evidence: AdminSearchTestEvidence = {
-          checkedAt: now().toISOString(),
-          method: "provider_search",
-          normalizedSourceCount: outcome.normalizedSourceCount,
+          checkedAt: checkedAt.toISOString(),
+          method: "configuration",
+          normalizedSourceCount: 0,
           protocol: draft.protocol,
-          status: outcome.status
+          status: "available"
         };
         search = {
           draft,

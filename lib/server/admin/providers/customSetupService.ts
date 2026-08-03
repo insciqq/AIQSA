@@ -117,7 +117,6 @@ function modelConfiguration(
     upstreamModelId
   });
   if (
-    (request.authenticationMode === "none" && protocol === "responses") ||
     ((configuration.capabilities.nativeSearch ||
       configuration.capabilities.nativeImageGeneration) && protocol !== "responses")
   ) {
@@ -189,7 +188,7 @@ export function createAdminProviderCustomSetupService(input: Readonly<{
   idFactory?: () => string;
   now?: () => Date;
   repository: AdminProviderCustomSetupRepository;
-  searchTester: AdminProviderQuickSetupSearchTester;
+  searchTester?: AdminProviderQuickSetupSearchTester;
   tester: AdminProviderCustomSetupTester;
 }>) {
   const encryptionKey = input.encryptionKey ?? getSecretEncryptionKey;
@@ -269,41 +268,14 @@ export function createAdminProviderCustomSetupService(input: Readonly<{
         evidence.push(validatedEvidence(testOutcome, model));
       }
 
-      let searchOutcome: Awaited<ReturnType<AdminProviderQuickSetupSearchTester["test"]>> | null = null;
-      if (supportsSearch) {
-        if (secret === null) {
-          searchOutcome = { normalizedSourceCount: 0, status: "unavailable" };
-        } else {
-          try {
-            searchOutcome = await input.searchTester.test({
-              connection,
-              model: primaryModel,
-              secret,
-              signal: inputValue.signal
-            });
-          } catch {
-            if (inputValue.signal?.aborted) {
-              throw new AdminProviderCustomSetupServiceError(
-                "provider_custom_setup_test_failed"
-              );
-            }
-            searchOutcome = { normalizedSourceCount: 0, status: "unavailable" };
-          }
-        }
-      }
       const checkedAt = now();
-      const sourceCount = searchOutcome?.status === "available" &&
-        Number.isSafeInteger(searchOutcome.normalizedSourceCount) &&
-        searchOutcome.normalizedSourceCount > 0
-        ? searchOutcome.normalizedSourceCount
-        : 0;
-      const searchEvidence: AdminSearchTestEvidence | null = searchOutcome
+      const searchEvidence: AdminSearchTestEvidence | null = supportsSearch
         ? {
             checkedAt: checkedAt.toISOString(),
-            method: "provider_search",
-            normalizedSourceCount: sourceCount,
+            method: "configuration",
+            normalizedSourceCount: 0,
             protocol: "openai_responses_web_search",
-            status: sourceCount > 0 ? "available" : "unavailable"
+            status: "available"
           }
         : null;
       const searchName = supportsSearch ? searchDisplayName(connectionName) : null;

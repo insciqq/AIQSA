@@ -107,7 +107,7 @@ describe("deriveRunReceipt", () => {
     expect(JSON.stringify(receipt)).not.toMatch(/profile|cost|search off|usage|elapsed/i);
   });
 
-  it("does not duplicate a Search fact when engine executions are nested under the tool call", () => {
+  it("keeps client Search first-class without duplicating it as a generic tool", () => {
     const receipt = deriveRunReceipt({
       artifactSummary: summary({
         searchCount: 1,
@@ -146,8 +146,12 @@ describe("deriveRunReceipt", () => {
       modelLabel: null
     });
 
-    expect(receipt.facts).toEqual([{ kind: "tools", label: "1 tool call" }]);
-    expect(receipt.facts).not.toContainEqual(expect.objectContaining({ kind: "search" }));
+    expect(receipt.facts).toEqual([{
+      detail: "Search",
+      kind: "search",
+      label: "1 search call"
+    }]);
+    expect(receipt.facts).not.toContainEqual(expect.objectContaining({ kind: "tools" }));
   });
 
   it("includes only terminal message-bound provider usage", () => {

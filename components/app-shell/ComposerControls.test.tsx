@@ -239,7 +239,13 @@ describe("ComposerControls", () => {
     expect(screen.getByTestId("composer-secondary-controls")).toHaveClass(
       "max-w-full",
       "flex-[1_1_20rem]",
-      "flex-wrap"
+      "flex-nowrap",
+      "min-w-[min(20rem,100%)]"
+    );
+    expect(screen.getByTestId("composer-secondary-controls")).not.toHaveClass("flex-wrap");
+    expect(screen.getByTestId("composer-secondary-controls")).toHaveAttribute(
+      "data-has-direct-reasoning",
+      "true"
     );
     expect(profile.closest("div.relative")).toHaveClass("flex-[0_1_9rem]");
     expect(profile.closest("div.relative")).not.toHaveClass("shrink-0");

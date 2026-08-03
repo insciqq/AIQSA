@@ -110,8 +110,7 @@ function readyModel(commitPlan: AdminProviderCustomSetupCommitPlan, index = 0) {
 }
 
 function searchPlan(
-  commitPlan: AdminProviderCustomSetupCommitPlan,
-  status: "available" | "unavailable"
+  commitPlan: AdminProviderCustomSetupCommitPlan
 ): NonNullable<AdminProviderCustomSetupCommitPlan["search"]> {
   const connectionId = commitPlan.connection.id;
   const hostedDraft = {
@@ -144,10 +143,10 @@ function searchPlan(
     displayName: "Custom provider Search",
     evidence: {
       checkedAt: checkedAt.toISOString(),
-      method: "provider_search",
-      normalizedSourceCount: status === "available" ? 2 : 0,
+      method: "configuration",
+      normalizedSourceCount: 0,
       protocol: "openai_responses_web_search",
-      status
+      status: "available"
     },
     grantId: "search-grant-1",
     hosted: {
@@ -364,7 +363,7 @@ describe("Prisma custom provider setup repository", () => {
         }
       }]
     });
-    const withSearch = { ...searchCapable, search: searchPlan(searchCapable, "available") };
+    const withSearch = { ...searchCapable, search: searchPlan(searchCapable) };
     await expect(repository.commit(withSearch)).resolves.toMatchObject({
       search: "ready",
       status: "ready"
@@ -396,6 +395,17 @@ describe("Prisma custom provider setup repository", () => {
       })
     });
     expect(tx.searchIntegrationRevision.create).toHaveBeenCalledTimes(2);
+    expect(tx.searchIntegrationRevision.create).toHaveBeenNthCalledWith(2, {
+      data: expect.objectContaining({
+        validationEvidence: expect.objectContaining({
+          method: "configuration",
+          normalizedSourceCount: 0,
+          status: "available"
+        })
+      })
+    });
+    expect(JSON.stringify(tx.searchIntegrationRevision.create.mock.calls))
+      .not.toContain("probeBinding");
     expect(tx.searchStrategy.update).toHaveBeenCalledTimes(2);
     expect(tx.accessGrant.create).toHaveBeenCalledTimes(2);
     expect(tx.accessGrant.create).toHaveBeenLastCalledWith({
@@ -411,7 +421,7 @@ describe("Prisma custom provider setup repository", () => {
     });
   });
 
-  it("keeps hosted Search usable while the unproven client route remains repairable", async () => {
+  it("publishes the client route without credential-bound probe evidence", async () => {
     const { commitPlan, repository, tx } = harness();
     const searchCapable = plan({
       ...commitPlan,
@@ -429,8 +439,8 @@ describe("Prisma custom provider setup repository", () => {
     });
     await expect(repository.commit({
       ...searchCapable,
-      search: searchPlan(searchCapable, "unavailable")
-    })).resolves.toMatchObject({ search: "needs_attention", status: "ready" });
+      search: searchPlan(searchCapable)
+    })).resolves.toMatchObject({ search: "ready", status: "ready" });
 
     expect(tx.searchOption.create).toHaveBeenCalledWith({
       data: expect.objectContaining({ enabled: true })
@@ -445,18 +455,19 @@ describe("Prisma custom provider setup repository", () => {
     expect(tx.searchStrategy.create).toHaveBeenNthCalledWith(2, {
       data: expect.objectContaining({
         adapterKind: "provider_model_client",
-        enabled: false
+        enabled: true
       })
     });
-    expect(tx.searchIntegrationRevision.create).toHaveBeenCalledOnce();
-    expect(tx.searchIntegrationRevision.create).toHaveBeenCalledWith({
+    expect(tx.searchIntegrationRevision.create).toHaveBeenCalledTimes(2);
+    expect(tx.searchIntegrationRevision.create).toHaveBeenNthCalledWith(2, {
       data: expect.objectContaining({
-        adapterKind: "answer_provider_hosted",
-        providerModelId: null,
-        searchStrategyId: "custom-web-search-hosted:connection-1"
+        adapterKind: "provider_model_client",
+        providerModelId: "model-1",
+        searchStrategyId: "custom-web-search-client:connection-1",
+        validationEvidence: expect.not.objectContaining({ probeBinding: expect.anything() })
       })
     });
-    expect(tx.searchStrategy.update).toHaveBeenCalledOnce();
+    expect(tx.searchStrategy.update).toHaveBeenCalledTimes(2);
   });
 
   it("refuses a stale actor before creating provider state", async () => {

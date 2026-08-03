@@ -144,7 +144,8 @@ export function normalizeProviderExecutionSnapshot(value: unknown): ProviderExec
   }
   if (
     providerAuthenticationMode(connection) === "none" &&
-    model.adapterKind !== "openai_chat_completions_compatible"
+    model.adapterKind !== "openai_chat_completions_compatible" &&
+    model.adapterKind !== "openai_responses_compatible"
   ) {
     throw new Error("provider_execution_snapshot_invalid");
   }
@@ -218,13 +219,27 @@ export function createProviderRuntimeBinding(input: Readonly<{
     if (input.secret !== null) {
       throw new Error("provider_credential_unexpected");
     }
+    const fetchFn = requiredFetch(input.options);
+    if (snapshot.model.adapterKind === "openai_responses_compatible") {
+      return {
+        adapter: createCompatibleResponsesAdapter({
+          client: createFetchOpenAIResponsesClient({
+            apiKey: null,
+            baseUrl: snapshot.connection.apiRoot,
+            fetchFn
+          }),
+          reasoningRequestMapping: snapshot.model.reasoningRequestMapping
+        }),
+        toolBridge: openAICompatibleResponsesToolBridge
+      };
+    }
     return {
       adapter: createOpenAICompatibleChatAdapter({
         client: createFetchOpenAICompatibleChatClient({
           apiRoot: snapshot.connection.apiRoot,
           authenticationMode,
           bearerToken: null,
-          fetchFn: requiredFetch(input.options)
+          fetchFn
         }),
         reasoningRequestMapping: snapshot.model.reasoningRequestMapping
       }),

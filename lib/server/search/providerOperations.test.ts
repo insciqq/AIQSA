@@ -86,7 +86,7 @@ describe("provider Search operation evidence", () => {
           query: "latest news in Moscow",
           requestPreview: {},
           revisionId: "revision-1",
-          sources: [{ title: "Source", url: "https://example.com" }],
+          sources: [{ rank: 1, title: "Source", url: "https://example.com" }],
           status: "complete",
           usage: { inputTokens: 1, outputTokens: 1, reasoningTokens: 0 }
         }]
@@ -101,6 +101,7 @@ describe("provider Search operation evidence", () => {
       providerOperationsTruncated: false,
       query: "latest news in Moscow",
       sourceCount: 1,
+      sources: [{ rank: 1, title: "Source", url: "https://example.com" }],
       status: "complete",
       warning: null
     }]);

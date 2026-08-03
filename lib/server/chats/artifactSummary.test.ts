@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { summarizeMessageRunArtifacts } from "./prismaRepository";
 
 describe("summarizeMessageRunArtifacts", () => {
-  it("uses native web search artifacts as expandable search details when search runs are absent", () => {
+  it("uses native web search artifacts as safe direct Search facts when search runs are absent", () => {
     const summary = summarizeMessageRunArtifacts({
       events: [
         {
@@ -25,24 +25,48 @@ describe("summarizeMessageRunArtifacts", () => {
 
     expect(summary).toMatchObject({
       searchCount: 1,
-      searchDetails: [
-        {
-          callPreview: {
-            action: {
-              sources: [{ title: "Example", url: "https://example.com" }],
-              type: "search"
-            },
-            id: "ws_123",
-            status: "completed",
-            type: "web_search_call"
-          },
-          status: "completed",
-          strategyId: "openai-native-web-search"
-        }
-      ],
+      searchActivity: [{
+        displayName: "Search source",
+        providerOperations: [{
+          kind: "search",
+          status: "complete"
+        }],
+        sourceCount: 1,
+        sources: [{ title: "Example", url: "https://example.com" }],
+        status: "complete"
+      }],
       searchStrategy: "openai-native-web-search"
     });
+    expect(JSON.stringify(summary)).not.toContain("ws_123");
   });
+
+  it.each([
+    ["cancelled", "cancelled"],
+    ["error", "error"]
+  ] as const)(
+    "settles reloaded running Search evidence when the run becomes %s",
+    (runStatus, expectedStatus) => {
+      const summary = summarizeMessageRunArtifacts({
+        events: [{
+          payload: {
+            artifactType: "search",
+            payload: {
+              action: { type: "search" },
+              id: "ws_unresolved",
+              status: "in_progress",
+              type: "web_search_call"
+            }
+          }
+        }],
+        searchRuns: [],
+        status: runStatus
+      });
+
+      expect(summary?.searchActivity).toEqual([
+        expect.objectContaining({ status: expectedStatus })
+      ]);
+    }
+  );
 
   it("projects the immutable logical Search name from the normalized request", () => {
     const summary = summarizeMessageRunArtifacts({
@@ -65,6 +89,7 @@ describe("summarizeMessageRunArtifacts", () => {
     });
 
     expect(summary).toMatchObject({
+      searchActivity: [{ displayName: "Company Gateway Search" }],
       searchDisplayName: "Company Gateway Search",
       searchStrategy: "custom-web-search:connection-1"
     });
@@ -99,6 +124,7 @@ describe("summarizeMessageRunArtifacts", () => {
     });
 
     expect(summary).toMatchObject({
+      searchActivity: [{ displayName: "Company Gateway Search" }],
       searchDisplayName: "Company Gateway Search",
       searchStrategy: "custom-web-search:connection-1"
     });
@@ -243,14 +269,29 @@ describe("summarizeMessageRunArtifacts", () => {
     expect(JSON.stringify(summary)).not.toContain("private-secret");
   });
 
-  it("projects durable nested Search evidence when the terminal artifact append was interrupted", () => {
+  it("projects durable Search evidence directly when the terminal artifact append was interrupted", () => {
     const summary = summarizeMessageRunArtifacts({
       events: [],
       normalizedRequest: {},
       searchRuns: [{
-        artifacts: {},
+        artifacts: {
+          displayName: "Web Search · Sol",
+          invocationId: "opaque-chat-invocation",
+          providerOperations: [{
+            id: "ws-1",
+            kind: "search",
+            ordinal: 0,
+            pattern: null,
+            queries: ["Moscow latest news"],
+            status: "complete",
+            url: null
+          }],
+          providerOperationsTruncated: false,
+          sources: [{ rank: 1, title: "Moscow news", url: "https://example.com/moscow" }]
+        },
         modelId: "gpt-5.6-sol",
         provider: "openai-compatible",
+        query: "latest news in Moscow",
         requestPreview: { queryCharacters: 21 },
         status: "complete",
         strategyId: "web-search-sol"
@@ -303,21 +344,22 @@ describe("summarizeMessageRunArtifacts", () => {
 
     expect(summary).toMatchObject({
       searchCount: 1,
-      toolCallCount: 1,
-      toolCalls: [{
-        callId: "search-call-1",
-        searchExecutions: [{
+      searchActivity: [{
           displayName: "Web Search · Sol",
           providerOperations: [{
             kind: "search",
             queries: ["Moscow latest news"]
           }],
           query: "latest news in Moscow",
-          sourceCount: 1
-        }],
-        toolName: "search_selected_engines"
-      }]
+          sourceCount: 1,
+          sources: [{ title: "Moscow news", url: "https://example.com/moscow" }]
+      }],
+      toolCallCount: 0,
+      toolCalls: []
     });
     expect(JSON.stringify(summary)).not.toContain("opaque-chat-invocation");
+    expect(JSON.stringify(summary)).not.toContain("gpt-5.6-sol");
+    expect(JSON.stringify(summary)).not.toContain("openai-compatible");
+    expect(JSON.stringify(summary)).not.toContain("revision-1");
   });
 });

@@ -66,7 +66,7 @@ export function ComposerReasoningPicker({
         aria-expanded={open}
         aria-haspopup="dialog"
         aria-label={`Reasoning ${summary}`}
-        className="flex h-control w-full min-w-0 items-center gap-1.5 rounded-control bg-control-surface px-2 text-xs text-ink-secondary outline-none hover:bg-control-hover hover:text-ink focus-visible:ring-2 focus-visible:ring-proof/55 disabled:cursor-not-allowed disabled:text-ink-disabled"
+        className="flex h-touch w-full min-w-0 items-center gap-1.5 rounded-control bg-control-surface px-2 text-xs text-ink-secondary outline-none hover:bg-control-hover hover:text-ink focus-visible:ring-2 focus-visible:ring-proof/55 disabled:cursor-not-allowed disabled:text-ink-disabled sm:h-control [@media(hover:none)]:!h-touch [@media(pointer:coarse)]:!h-touch"
         disabled={disabled}
         onClick={() => setOpen((value) => !value)}
         type="button"

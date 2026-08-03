@@ -232,19 +232,7 @@ function searchStrategy(
         },
         credentialMode,
         id: "search-revision",
-        providerModelId,
-        validationEvidence: adapterKind === "provider_model_client"
-          ? {
-              probeBinding: {
-                connectionId: "connection-openai",
-                connectionVersion: 5,
-                credentialId: "credential-default",
-                credentialVersionId: "credential-default-v1",
-                modelVersion: 7,
-                providerModelId
-              }
-            }
-          : { method: "configuration" }
+        providerModelId
       };
   return {
     activatedAt: now,
@@ -271,19 +259,6 @@ function searchStrategy(
     testedDraftHash: null,
     updatedAt: now,
     ...overrides
-  };
-}
-
-function searchStrategyWithBinding(
-  overrides: Partial<CatalogSearchStrategyRow>,
-  binding: Record<string, unknown>
-): CatalogSearchStrategyRow {
-  const route = searchStrategy(overrides);
-  return {
-    ...route,
-    activeRevision: route.activeRevision
-      ? { ...route.activeRevision, validationEvidence: { probeBinding: binding } }
-      : null
   };
 }
 
@@ -810,12 +785,12 @@ describe("prisma catalog data loader", () => {
     })).toEqual([]);
   });
 
-  it("binds client Search exposure to the exact current credential identity and version", () => {
+  it("exposes client Search through each user's current available credential without stored probe state", () => {
     const answer = providerModel({
       connection: { family: "anthropic", id: "connection-anthropic" },
       model: { connectionId: "connection-anthropic", id: "deployment-anthropic" }
     });
-    const binding = {
+    const defaultBinding = {
       connectionId: "connection-openai",
       connectionVersion: 5,
       credentialId: "credential-default",
@@ -823,46 +798,38 @@ describe("prisma catalog data loader", () => {
       modelVersion: 7,
       providerModelId: "technical-search-deployment"
     };
-    const optionFor = (probe: Record<string, unknown>) => searchOption({
+    const option = searchOption({
       displayName: "OpenAI Search",
       kind: "web_search",
       optionId: "openai-native-web-search",
-      strategies: [searchStrategyWithBinding({
+      strategies: [searchStrategy({
         id: "client-route",
         kind: "provider_model_web_search",
         providerModelId: "technical-search-deployment",
         strategyId: "openai-provider-web-search"
-      }, probe)]
+      })]
     });
-    const expose = (
-      technical: CatalogProviderModelRow,
-      probe: Record<string, unknown>,
-      userId?: string
-    ) => filterExposedSearchOptions({
+    const expose = (technical: CatalogProviderModelRow, userId?: string) => filterExposedSearchOptions({
       availableProviderModels: [answer, technical],
       entitlements: entitlements({ searches: ["openai-native-web-search"] }),
       exposedProviderModels: [answer],
       memberships: [],
-      searchOptions: [optionFor(probe)],
+      searchOptions: [option],
       userId
     });
     const exact = providerModel({ model: { id: "technical-search-deployment" } });
-    expect(expose(exact, binding)).toHaveLength(1);
+    expect(expose(exact)).toHaveLength(1);
 
     const rotated = providerModel({
       credentials: [credential("credential-default", { versionId: "credential-default-v2" })],
       model: { id: "technical-search-deployment" }
     });
-    expect(expose(rotated, binding)).toEqual([]);
-    expect(expose(rotated, {
-      ...binding,
-      credentialVersionId: "credential-default-v2"
-    })).toHaveLength(1);
+    expect(expose(rotated)).toHaveLength(1);
 
     const direct = credential("credential-user", { userIds: ["user-1"] });
     const reassigned = providerModel({
       activeCredentialChecks: [{
-        ...binding,
+        ...defaultBinding,
         credentialId: direct.id,
         credentialVersionId: direct.activeVersion!.id,
         status: "available"
@@ -870,12 +837,13 @@ describe("prisma catalog data loader", () => {
       credentials: [credential("credential-default"), direct],
       model: { id: "technical-search-deployment" }
     });
-    expect(expose(reassigned, binding, "user-1")).toEqual([]);
-    expect(expose(reassigned, {
-      ...binding,
-      credentialId: direct.id,
-      credentialVersionId: direct.activeVersion!.id
-    }, "user-1")).toHaveLength(1);
+    expect(expose(reassigned, "user-1")).toHaveLength(1);
+
+    const unchecked = providerModel({
+      activeCredentialChecks: [],
+      model: { id: "technical-search-deployment" }
+    });
+    expect(expose(unchecked)).toEqual([]);
   });
 
   it("rejects malformed logical options and drifted active physical revisions", () => {
@@ -893,8 +861,7 @@ describe("prisma catalog data loader", () => {
         },
         credentialMode: "answer_provider",
         id: "drifted-revision",
-        providerModelId: "technical-search-deployment",
-        validationEvidence: { method: "configuration" }
+        providerModelId: "technical-search-deployment"
       },
       kind: "provider_model_web_search",
       providerModelId: "technical-search-deployment"
@@ -969,18 +936,11 @@ describe("prisma catalog data loader", () => {
             optionId: "perplexity-tool-search",
             sourceConnection: { id: "connection-search" },
             sourceConnectionId: "connection-search",
-            strategies: [searchStrategyWithBinding({
+            strategies: [searchStrategy({
               kind: "perplexity_tool_search",
               provider: "openrouter",
               providerModelId: "deployment-search",
               strategyId: "perplexity-tool-search"
-            }, {
-              connectionId: "connection-search",
-              connectionVersion: 5,
-              credentialId: "credential-default",
-              credentialVersionId: "credential-default-v1",
-              modelVersion: 7,
-              providerModelId: "deployment-search"
             })]
           })
         ])

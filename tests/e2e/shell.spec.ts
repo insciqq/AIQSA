@@ -471,26 +471,47 @@ test("adapts the composer to 1280 short-height and enlarged-text content width",
 
   const composer = page.getByTestId("composer-drop-zone");
   const directReasoning = page.locator('[data-composer-direct-reasoning="true"]');
-  const expectDirectControlsInsideComposer = async () => {
+  const expectStableDirectControlGeometry = async () => {
     const directControls = page.getByTestId("composer-control-bar");
-    const [surfaceBox, ...controlBoxes] = await Promise.all([
+    const secondary = page.getByTestId("composer-secondary-controls");
+    const [surfaceBox, secondaryBox, modelBox, profileBox, searchBox, moreBox] = await Promise.all([
       composer.boundingBox(),
+      secondary.boundingBox(),
       directControls.getByRole("button", { name: "Select model" }).boundingBox(),
       directControls.getByRole("button", { name: "Run profile" }).boundingBox(),
-      directControls.getByRole("button", { name: /^Reasoning / }).boundingBox(),
       directControls.getByRole("button", { name: "Search strategy" }).boundingBox(),
       directControls.getByTestId("composer-run-summary").boundingBox()
     ]);
-    expect(surfaceBox).toBeTruthy();
-    for (const box of controlBoxes) {
-      expect(box).toBeTruthy();
-      expect(box!.x).toBeGreaterThanOrEqual(surfaceBox!.x - 1);
-      expect(box!.x + box!.width).toBeLessThanOrEqual(surfaceBox!.x + surfaceBox!.width + 1);
+    const reasoningBox = await directReasoning.isVisible()
+      ? await directControls.getByRole("button", { name: /^Reasoning / }).boundingBox()
+      : null;
+    if (!surfaceBox || !secondaryBox || !modelBox || !profileBox || !searchBox || !moreBox) {
+      throw new Error("Expected the composer and every direct control to have layout boxes");
     }
+
+    for (const box of [modelBox, profileBox, reasoningBox, searchBox, moreBox].filter(
+      (value): value is NonNullable<typeof value> => value !== null
+    )) {
+      expect(box.x).toBeGreaterThanOrEqual(surfaceBox.x - 1);
+      expect(box.x + box.width).toBeLessThanOrEqual(surfaceBox.x + surfaceBox.width + 1);
+    }
+
+    const secondaryControls = [profileBox, reasoningBox, searchBox, moreBox].filter(
+      (value): value is NonNullable<typeof value> => value !== null
+    );
+    const rowCenter = secondaryControls[0]!.y + secondaryControls[0]!.height / 2;
+    for (const box of secondaryControls) {
+      expect(Math.abs(box.y + box.height / 2 - rowCenter)).toBeLessThanOrEqual(1.5);
+    }
+    expect(secondaryBox.height).toBeLessThanOrEqual(
+      Math.max(...secondaryControls.map((box) => box.height)) + 2
+    );
+    expect(moreBox.x).toBeGreaterThan(searchBox.x);
   };
   await expect(page.getByRole("button", { name: "Open workspace" })).toBeVisible();
   await expect(page.getByTestId("left-chat-pane")).toBeHidden();
   await expect(directReasoning).toBeHidden();
+  await expectStableDirectControlGeometry();
   await expectNoHorizontalOverflow(page);
   const shortComposerBox = await composer.boundingBox();
   expect(shortComposerBox).toBeTruthy();
@@ -498,17 +519,27 @@ test("adapts the composer to 1280 short-height and enlarged-text content width",
 
   await page.setViewportSize({ height: 800, width: 1280 });
   await expect(directReasoning).toBeVisible();
-  await expectDirectControlsInsideComposer();
+  await expectStableDirectControlGeometry();
   await expectNoHorizontalOverflow(page);
+
+  await page.evaluate(() => {
+    document.documentElement.style.fontSize = "16px";
+  });
+  for (const width of [1203, 1024, 768]) {
+    await page.setViewportSize({ height: 800, width });
+    await expectStableDirectControlGeometry();
+    await expectNoHorizontalOverflow(page);
+  }
 
   await page.setViewportSize({ height: 800, width: 640 });
   await expect(directReasoning).toBeHidden();
+  await expectStableDirectControlGeometry();
   await expectNoHorizontalOverflow(page);
 
-  await page.setViewportSize({ height: 800, width: 1360 });
+  await page.setViewportSize({ height: 800, width: 1440 });
   await expect(page.getByRole("button", { name: "Hide workspace" })).toBeVisible();
   await expect(directReasoning).toBeVisible();
-  await expectDirectControlsInsideComposer();
+  await expectStableDirectControlGeometry();
   await expectNoHorizontalOverflow(page);
 });
 
@@ -3560,7 +3591,28 @@ test("recovers a background run after reload and renders search/reasoning thread
                     ],
                     reasoningCount: 1,
                     reasoningText: ["Recovered reasoning summary"],
+                    searchActivity: [{
+                      displayName: "OpenAI Search",
+                      providerOperations: [{
+                        kind: "search",
+                        ordinal: 0,
+                        pattern: null,
+                        queries: ["background recovery evidence"],
+                        status: "complete",
+                        url: null
+                      }],
+                      providerOperationsTruncated: false,
+                      query: "background recovery evidence",
+                      sourceCount: 1,
+                      sources: [{
+                        rank: 1,
+                        title: "Recovered source",
+                        url: "https://example.com/recovered-source"
+                      }],
+                      status: "complete"
+                    }],
                     searchCount: 1,
+                    searchDisplayName: "OpenAI Search",
                     searchStrategy: "openai-native-web-search",
                     toolCallCount: 0,
                     toolCalls: []
@@ -3662,6 +3714,19 @@ test("recovers a background run after reload and renders search/reasoning thread
   await expect(page.getByTestId("streaming-cursor")).toHaveCount(0);
   const answerMetadata = page.getByTestId("answer-metadata-block");
   const recoveredAnswer = page.locator('article[data-role="assistant"]').last();
+  const recoveredSearchSummary = recoveredAnswer.getByTestId("thread-search-summary");
+  await expect(recoveredSearchSummary).toBeVisible();
+  const recoveredSearch = recoveredSearchSummary.getByRole("button", {
+    name: /Search OpenAI Search.*Completed.*1 source.*1 citation/i
+  });
+  await expect(recoveredSearch).toHaveAttribute("aria-expanded", "false");
+  await recoveredSearch.click();
+  await expect(recoveredSearch).toHaveAttribute("aria-expanded", "true");
+  await expect(recoveredSearchSummary.getByTestId("thread-search-details")).toContainText(
+    "background recovery evidence"
+  );
+  await expect(recoveredSearchSummary.getByRole("link", { name: "Recovered source" }).first()).toBeVisible();
+  await recoveredSearch.click();
   await expect(answerMetadata).toHaveCount(0);
   await recoveredAnswer.hover();
   await expect(answerMetadata).toHaveCount(0);
@@ -3670,11 +3735,11 @@ test("recovers a background run after reload and renders search/reasoning thread
   await recoveredActions.getByRole("button", { name: "More message actions" }).click();
   await page.getByRole("menuitem", { name: "Show run details" }).click();
   await expect(answerMetadata).toBeVisible();
-  const recoveredSearch = answerMetadata.getByRole("button", { name: "1 search call" });
-  await expect(recoveredSearch).toHaveAttribute("aria-expanded", "false");
-  await recoveredSearch.click();
+  const recoveredSearchReceipt = answerMetadata.getByRole("button", { name: "1 search call" });
+  await expect(recoveredSearchReceipt).toHaveAttribute("aria-expanded", "false");
+  await recoveredSearchReceipt.click();
+  await expect(recoveredSearchReceipt).toHaveAttribute("aria-expanded", "true");
   await expect(recoveredSearch).toHaveAttribute("aria-expanded", "true");
-  await expect(answerMetadata.getByTestId("thread-search-summary")).toBeVisible();
   const recoveredCitations = answerMetadata.getByRole("button", { name: "1 citation" });
   await expect(recoveredCitations).toHaveAttribute("aria-expanded", "false");
   await recoveredCitations.click();
@@ -3806,7 +3871,7 @@ test("shows tool activity by default and persists hide/show across reload", asyn
   await expect(page.getByTestId("thread-tool-activity")).toContainText("Mem0");
 });
 
-test("expands a Search tool into engine and provider-operation detail", async ({ page }) => {
+test("keeps client Search direct, expandable, and independent of generic tool activity", async ({ page }) => {
   const chatId = "chat-search-tool-trace";
   const chat = {
     activeLeafMessageId: "assistant-search-trace",
@@ -3837,7 +3902,40 @@ test("expands a Search tool into engine and provider-operation detail", async ({
           citations: [],
           reasoningCount: 0,
           reasoningText: [],
+          searchActivity: [{
+            displayName: "Web Search · Sol",
+            providerOperations: [
+              {
+                kind: "search",
+                ordinal: 0,
+                pattern: null,
+                queries: ["Moscow latest news", "Moscow news today"],
+                status: "complete",
+                url: null
+              },
+              {
+                kind: "open_page",
+                ordinal: 1,
+                pattern: null,
+                queries: [],
+                status: "complete",
+                url: "https://example.com/moscow"
+              }
+            ],
+            providerOperationsTruncated: false,
+            query: "latest news in Moscow",
+            sourceCount: 4,
+            sources: [{
+              date: "2026-07-31",
+              rank: 1,
+              snippet: "Normalized Moscow news evidence",
+              title: "Moscow news",
+              url: "https://example.com/moscow"
+            }],
+            status: "complete"
+          }],
           searchCount: 1,
+          searchDisplayName: "Web Search · Sol",
           searchStrategy: "client-search-plan",
           toolCallCount: 1,
           toolCalls: [{
@@ -3849,40 +3947,8 @@ test("expands a Search tool into engine and provider-operation detail", async ({
             errorMessage: null,
             externalAccountLabel: null,
             ordinal: 0,
-            resultPreview: { content: [{ text: "Search completed", type: "text" }] },
+            resultPreview: null,
             round: 1,
-            searchExecutions: [{
-              displayName: "Web Search · Sol",
-              durationMs: 145_800,
-              modelId: "gpt-5.6-sol",
-              optionId: "web-search-sol",
-              provider: "openai-compatible",
-              providerOperations: [
-                {
-                  id: "ws-1",
-                  kind: "search",
-                  ordinal: 0,
-                  pattern: null,
-                  queries: ["Moscow latest news", "Moscow news today"],
-                  status: "complete",
-                  url: null
-                },
-                {
-                  id: "ws-2",
-                  kind: "open_page",
-                  ordinal: 1,
-                  pattern: null,
-                  queries: [],
-                  status: "complete",
-                  url: "https://example.com/moscow"
-                }
-              ],
-              providerOperationsTruncated: false,
-              query: "latest news in Moscow",
-              sourceCount: 4,
-              status: "complete",
-              warning: null
-            }],
             serverName: null,
             status: "complete",
             toolName: "search_selected_engines"
@@ -3912,23 +3978,35 @@ test("expands a Search tool into engine and provider-operation detail", async ({
   await installMatrixCatalogFixture(page, { chats: [chat], contentMatches: [], folders: [] });
   await signIn(page);
 
-  const activity = page.getByTestId("thread-tool-activity");
-  await activity.getByRole("button", { name: /Used 1 tool/ }).click();
-  await page.getByText("search_selected_engines", { exact: true }).click();
-  const executions = page.getByTestId("thread-tool-search-executions");
-  await expect(executions).toContainText("Search executions · 1");
-  await expect(executions).toContainText("Web Search · Sol");
-  await expect(executions).toContainText("4 sources");
-  await expect(page.getByTestId("thread-search-summary")).toHaveCount(0);
+  const searchSummary = page.getByTestId("thread-search-summary");
+  await expect(searchSummary).toBeVisible();
+  const search = searchSummary.getByRole("button", {
+    name: /Search Web Search · Sol.*Completed.*4 sources/i
+  });
+  await expect(search).toHaveAttribute("aria-expanded", "false");
+  await expect(page.getByTestId("thread-tool-activity")).toHaveCount(0);
+  await expect(page.getByText("search_selected_engines", { exact: true })).toHaveCount(0);
 
-  await executions.getByText("Web Search · Sol", { exact: true }).click();
-  const detail = page.getByTestId("thread-search-execution-details");
+  await search.click();
+  await expect(search).toHaveAttribute("aria-expanded", "true");
+  const detail = searchSummary.getByTestId("thread-search-details");
   await expect(detail).toContainText("latest news in Moscow");
   await expect(detail).toContainText("Provider operations · 2");
   await expect(detail).toContainText("Moscow latest news");
   await expect(detail).toContainText("Moscow news today");
-  await expect(detail).toContainText("https://example.com/moscow");
+  await expect(detail.getByRole("link", { name: "Moscow news" })).toHaveAttribute(
+    "href",
+    "https://example.com/moscow"
+  );
+  await expect(detail).toContainText("Normalized Moscow news evidence");
   await expectNoHorizontalOverflow(page);
+
+  const runSetup = await openRunSetup(page);
+  await runSetup.getByRole("button", { name: "Hide tool activity" }).click();
+  await closeRunSetup(page);
+  await expect(searchSummary).toBeVisible();
+  await expect(search).toHaveAttribute("aria-expanded", "true");
+  await expect(page.getByTestId("thread-tool-activity")).toHaveCount(0);
 
   await page.setViewportSize({ height: 844, width: 390 });
   await detail.scrollIntoViewIfNeeded();
@@ -4497,15 +4575,29 @@ for (const viewport of responsiveTouchViewports) {
         contextTruncation: { approxDroppedTokens: 2100, droppedMessages: 3 },
         reasoningCount: 1,
         reasoningText: [`Responsive reasoning ${"stays locally contained. ".repeat(14)}`],
-        searchCount: 2,
-        searchDetails: [
-          {
-            requestPreview: { query: `responsive ${"request-segment/".repeat(18)}` },
-            responsePreview: { result: `responsive ${"response-segment/".repeat(18)}` },
+        searchActivity: [{
+          displayName: "Perplexity Search",
+          providerOperations: [{
+            kind: "search",
+            ordinal: 0,
+            pattern: null,
+            queries: ["responsive viewport evidence"],
             status: "complete",
-            strategyId: "perplexity-tool-search"
-          }
-        ],
+            url: null
+          }],
+          providerOperationsTruncated: false,
+          query: `responsive ${"request-segment/".repeat(18)}`,
+          sourceCount: 1,
+          sources: [{
+            rank: 1,
+            snippet: `Responsive source ${"remains contained. ".repeat(12)}`,
+            title: "Responsive normalized Search source",
+            url: "https://example.com/responsive-search-source"
+          }],
+          status: "complete"
+        }],
+        searchCount: 1,
+        searchDisplayName: "Perplexity Search",
         searchStrategy: "perplexity-tool-search",
         toolCallCount: 0,
         toolCalls: []
@@ -4953,6 +5045,16 @@ for (const viewport of responsiveTouchViewports) {
 
       const artifactAssistant = page.locator('[data-message-id="responsive-assistant-2"]');
       const answerMetadata = artifactAssistant.getByTestId("answer-metadata-block");
+      const searchSummary = artifactAssistant.getByTestId("thread-search-summary");
+      const directSearchTrigger = searchSummary.getByRole("button", {
+        name: /Search Perplexity Search.*Completed.*1 source.*1 citation/i
+      });
+      await expect(searchSummary).toBeVisible();
+      await expect(directSearchTrigger).toHaveAttribute("aria-expanded", "false");
+      await directSearchTrigger.click();
+      await expect(directSearchTrigger).toHaveAttribute("aria-expanded", "true");
+      await expect(searchSummary.getByTestId("thread-search-details")).toContainText("request-segment");
+      await directSearchTrigger.click();
       await expect(answerMetadata).toHaveCount(0);
       await artifactAssistant.getByTestId("assistant-message-content").click({ position: { x: 8, y: 8 } });
       await expect(artifactAssistant).toHaveAttribute("data-mobile-controls-open", "true");
@@ -4960,13 +5062,12 @@ for (const viewport of responsiveTouchViewports) {
       await artifactActions.getByRole("button", { name: "More message actions" }).click();
       await page.getByRole("menuitem", { name: "Show run details" }).click();
       await expect(answerMetadata).toBeVisible();
-      const searchReceiptTrigger = answerMetadata.getByRole("button", { name: "2 search calls" });
+      const searchReceiptTrigger = answerMetadata.getByRole("button", { name: "1 search call" });
       const citationReceiptTrigger = answerMetadata.getByRole("button", { name: "1 citation" });
       const reasoningReceiptTrigger = answerMetadata.getByRole("button", { name: "1 reasoning trace" });
       await searchReceiptTrigger.click();
       await citationReceiptTrigger.click();
       await reasoningReceiptTrigger.click();
-      const searchSummary = answerMetadata.getByTestId("thread-search-summary");
       const citations = answerMetadata.getByTestId("thread-citations-block");
       const reasoning = page.getByTestId("thread-reasoning-block");
       await expect(searchSummary).toContainText("request-segment");

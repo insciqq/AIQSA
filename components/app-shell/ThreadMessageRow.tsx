@@ -527,13 +527,13 @@ function ThreadMessageRowComponent({
   const [expandedDisclosures, setExpandedDisclosures] = useState<ReadonlySet<InlineReceiptDisclosure>>(
     () => new Set()
   );
-  const hasNestedToolSearch = Boolean(
-    artifactSummary?.toolCalls.some((call) => (call.searchExecutions?.length ?? 0) > 0)
-  );
-  const hasInlineSearch = Boolean(artifactSummary?.searchCount) &&
-    !hasNestedToolSearch &&
+  const hasInlineSearch = Boolean(
+    artifactSummary?.searchCount || artifactSummary?.searchActivity?.length
+  ) &&
     runActivity?.search !== "active";
-  const hasInlineTools = showToolActivity && Boolean(artifactSummary?.toolCalls.length);
+  const hasInlineTools = showToolActivity && Boolean(
+    artifactSummary?.toolCalls.some((call) => call.capability === "mcp")
+  );
   const hasInlineCitations = showCitations && Boolean(artifactSummary?.citationCount);
   const hasInlineReasoning = showReasoningBlocks && Boolean(artifactSummary?.reasoningCount);
   const hasExactRunEvents = Boolean(
@@ -823,8 +823,7 @@ function ThreadMessageRowComponent({
             </>
           )}
 
-          {message.status === "streaming" && artifactSummary?.searchCount &&
-          !hasNestedToolSearch && runActivity?.search !== "active" ? (
+          {hasInlineSearch && artifactSummary ? (
             <div className={contentText || message.status !== "streaming" ? "mt-5" : undefined}>
               <SearchSummaryBlock
                 expanded={expandedDisclosures.has("search")}
@@ -836,7 +835,7 @@ function ThreadMessageRowComponent({
           {artifactSummary?.groundingDisplay?.provider === "gemini" ? (
             <GeminiSearchSuggestions html={artifactSummary.groundingDisplay.suggestionsHtml} />
           ) : null}
-          {showToolActivity && artifactSummary?.toolCallCount ? (
+          {hasInlineTools && artifactSummary ? (
             <div className="mt-5">
               <ToolActivityBlock
                 expanded={expandedDisclosures.has("tools")}
@@ -898,14 +897,6 @@ function ThreadMessageRowComponent({
               settled={justCompleted}
               onActivate={activateReceiptSegment}
             />
-            {hasInlineSearch && artifactSummary ? (
-              <SearchSummaryBlock
-                embedded
-                expanded={expandedDisclosures.has("search")}
-                summary={artifactSummary}
-                onExpandedChange={(expanded) => changeDisclosure("search", expanded)}
-              />
-            ) : null}
             {hasInlineCitations && artifactSummary ? (
               <CitationBlock
                 embedded

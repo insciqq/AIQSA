@@ -45,7 +45,8 @@ function serviceError(error: AdminSearchServiceError): Response {
     : error.code === "search_draft_stale" ||
         error.code === "search_policy_stale" ||
         error.code === "search_activation_evidence_missing" ||
-        error.code === "search_integration_material_identity_changed"
+        error.code === "search_integration_material_identity_changed" ||
+        error.code === "search_source_not_ready"
       ? 409
       : error.code === "search_test_failed"
         ? 422

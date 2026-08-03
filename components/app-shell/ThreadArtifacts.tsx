@@ -1,9 +1,8 @@
 import { searchStrategyDescription } from "@/components/app-shell/shellFormatting";
 import type {
   ThreadArtifactSummary,
-  ThreadSearchExecution,
-  ThreadSearchProviderOperation,
-  ThreadSearchDetail,
+  ThreadSearchActivity,
+  ThreadSearchOperation,
   ThreadToolActivity
 } from "@/components/app-shell/types";
 import { safeExternalHref } from "@/lib/domain/links";
@@ -78,175 +77,223 @@ function ContextTruncationBlockComponent({ summary }: { summary: ThreadArtifactS
 
 function SearchSummaryBlockComponent({
   active = false,
-  embedded = false,
   expanded,
   onExpandedChange,
   summary
 }: DisclosureControl & {
   active?: boolean;
-  embedded?: boolean;
   summary: ThreadArtifactSummary;
 }) {
-  const strategy = summary.searchDisplayName?.trim() ||
-    (summary.searchStrategy ? searchStrategyDescription(summary.searchStrategy) : "Search/tool call");
-  const searchDetails = summary.searchDetails ?? [];
+  const activities = summary.searchActivity ?? [];
+  const activityNames = [...new Set(activities.map((activity) => activity.displayName))];
+  const strategy = activityNames.join(" + ") || summary.searchDisplayName?.trim() ||
+    (summary.searchStrategy ? searchStrategyDescription(summary.searchStrategy) : "Search source");
+  const status = active ? "Searching" : searchActivitySummaryStatus(activities);
+  const sourceFact = searchSourceCountFact(activities);
   const [open, toggleOpen] = useDisclosureControl({ expanded, onExpandedChange });
-
-  if (embedded && !open) {
-    return null;
-  }
 
   return (
     <section
-      className={
-        embedded
-          ? "mt-2 border-t border-trace-subtle pt-2 text-xs text-ink-secondary"
-          : "border-t border-trace-subtle pt-2 text-xs text-ink-secondary"
-      }
+      className="border-t border-trace-subtle pt-2 text-xs text-ink-secondary"
       data-testid="thread-search-summary"
-      aria-label={
-        embedded
-          ? `${summary.searchCount} search ${summary.searchCount === 1 ? "call" : "calls"} details`
-          : undefined
-      }
+      aria-label="Search activity"
     >
-      {!embedded ? (
-        <button
-          className="-mx-2 flex min-h-control w-[calc(100%+1rem)] cursor-pointer flex-wrap items-center gap-x-2 gap-y-1 rounded-control px-2 text-left outline-none hover:bg-control-hover focus-visible:ring-2 focus-visible:ring-proof/45 [@media(hover:none)]:min-h-touch [@media(pointer:coarse)]:min-h-touch"
-          type="button"
-          aria-expanded={open}
-          onClick={toggleOpen}
-        >
-          {open ? (
-            <ChevronDown className="size-3.5 shrink-0 text-ink-muted" aria-hidden="true" />
-          ) : (
-            <ChevronRight className="size-3.5 shrink-0 text-ink-muted" aria-hidden="true" />
-          )}
-          <Search className={active ? "size-4 shrink-0 text-proof" : "size-4 shrink-0 text-ink-muted"} aria-hidden="true" />
-          <span className="font-semibold text-ink">
-            {active
-              ? "Searching"
-              : `${summary.searchCount} search ${summary.searchCount === 1 ? "call" : "calls"}`}
+      <button
+        className="-mx-2 flex min-h-control w-[calc(100%+1rem)] cursor-pointer flex-wrap items-center gap-x-2 gap-y-1 rounded-control px-2 text-left outline-none hover:bg-control-hover focus-visible:ring-2 focus-visible:ring-proof/45 [@media(hover:none)]:min-h-touch [@media(pointer:coarse)]:min-h-touch"
+        type="button"
+        aria-expanded={open}
+        onClick={toggleOpen}
+      >
+        {open ? (
+          <ChevronDown className="size-3.5 shrink-0 text-ink-muted" aria-hidden="true" />
+        ) : (
+          <ChevronRight className="size-3.5 shrink-0 text-ink-muted" aria-hidden="true" />
+        )}
+        <Search className={active ? "size-4 shrink-0 text-proof" : "size-4 shrink-0 text-ink-muted"} aria-hidden="true" />
+        <span className="font-semibold text-ink">Search</span>
+        <span className="min-w-0 truncate text-ink-muted" title={strategy}>{strategy}</span>
+        <span className={status === "Failed" ? "text-critical" : "text-ink-muted"}>· {status}</span>
+        {sourceFact ? <span className="text-ink-muted">· {sourceFact}</span> : null}
+        {summary.citationCount > 0 ? (
+          <span className="text-ink-muted">
+            · {summary.citationCount} {summary.citationCount === 1 ? "citation" : "citations"}
           </span>
-          <span className="text-ink-muted">{strategy}</span>
-          {summary.citationCount > 0 ? (
-            <span className="text-ink-muted">· {summary.citationCount} citations</span>
-          ) : null}
-        </button>
-      ) : null}
-      {open && searchDetails.length > 0 ? (
+        ) : null}
+      </button>
+      {open ? (
         <div
-          className={
-            embedded
-              ? "divide-y divide-trace-subtle"
-              : "mt-2 divide-y divide-trace-subtle border-y border-trace-subtle"
-          }
+          className="mt-2 divide-y divide-trace-subtle border-y border-trace-subtle"
           data-testid="thread-search-details"
         >
-          {searchDetails.map((detail, index) => (
-            <div className="min-w-0 py-3" key={index}>
-              <div className="mb-2 flex flex-wrap items-center gap-2 text-xs text-ink-muted">
-                <span className="font-mono text-ink-secondary">Search {index + 1}</span>
-                {detail.status ? <span>{detail.status}</span> : null}
-                {summary.searchDisplayName?.trim() ? (
-                  <span>Search ran inside {summary.searchDisplayName.trim()}.</span>
-                ) : detail.provider || detail.modelId ? (
-                  <span>Search ran inside the answer provider.</span>
-                ) : null}
+          {activities.length > 0 ? activities.map((activity, index) => (
+            <section className="min-w-0 py-3" key={`${activity.displayName}:${index}`}>
+              <div className="mb-3 flex flex-wrap items-center gap-x-2 gap-y-1">
+                <span className="font-semibold text-ink">{activity.displayName}</span>
+                <span className={activity.status === "error" ? "text-critical" : "text-ink-muted"}>
+                  {searchActivityStatusLabel(activity.status)}
+                </span>
               </div>
-              {detail.callPreview !== undefined && detail.requestPreview === undefined && detail.responsePreview === undefined ? (
-                <div className="grid gap-1">
-                  <div className="text-xs font-medium text-ink-secondary">{searchCallLabel(detail)}</div>
-                  {searchCallHasOnlyMetadata(detail.callPreview) ? (
-                    <div className="border-l-2 border-trace-subtle px-2 py-1 text-ink-muted">
-                      The Search source returned call metadata only for this run. Cited URLs, when available, are shown in Citations.
+              <div className="grid gap-3">
+                <div>
+                  <div className="mb-1 font-medium text-ink-secondary">Generated query</div>
+                  {activity.query ? (
+                    <div className="break-words rounded-control bg-control-surface px-2 py-1.5 font-mono text-[11px] leading-5 text-ink [overflow-wrap:anywhere]">
+                      {activity.query}
                     </div>
-                  ) : null}
-                  <pre className="max-h-52 max-w-full overflow-auto whitespace-pre-wrap break-words rounded-control bg-control-surface p-2 font-mono text-xs leading-5 text-ink-secondary [overflow-wrap:anywhere]">
-                    {formatPreview(detail.callPreview)}
-                  </pre>
+                  ) : (
+                    <p className="text-ink-muted">The Search source did not report its query.</p>
+                  )}
                 </div>
-              ) : (
-                <div className="grid gap-2">
-                  <div>
-                    <div className="mb-1 text-xs font-medium text-ink-secondary">Request</div>
-                    <pre className="max-h-52 max-w-full overflow-auto whitespace-pre-wrap break-words rounded-control bg-control-surface p-2 font-mono text-xs leading-5 text-ink-secondary [overflow-wrap:anywhere]">
-                      {formatPreview(detail.requestPreview)}
-                    </pre>
+                <SearchSources activity={activity} />
+                <div>
+                  <div className="font-medium text-ink-secondary">
+                    Provider operations{activity.providerOperations && activity.providerOperations.length > 0
+                      ? ` · ${activity.providerOperations.length}${activity.providerOperationsTruncated ? "+" : ""}`
+                      : activity.providerOperationsTruncated
+                        ? " · additional activity omitted"
+                        : ""}
                   </div>
-                  <div>
-                    <div className="mb-1 text-xs font-medium text-ink-secondary">Response</div>
-                    <pre className="max-h-52 max-w-full overflow-auto whitespace-pre-wrap break-words rounded-control bg-control-surface p-2 font-mono text-xs leading-5 text-ink-secondary [overflow-wrap:anywhere]">
-                      {formatPreview(detail.responsePreview)}
-                    </pre>
-                  </div>
+                  {activity.providerOperations === null ? (
+                    <p className="mt-1 text-ink-muted">Provider operation details are unavailable for this run.</p>
+                  ) : activity.providerOperations.length === 0 ? (
+                    <p className="mt-1 text-ink-muted">
+                      {activity.providerOperationsTruncated
+                        ? "Provider activity exceeded the inspection limit; detailed operations were omitted."
+                        : "The provider reported no detailed web operations."}
+                    </p>
+                  ) : (
+                    <>
+                      <ol className="mt-1 divide-y divide-trace-subtle">
+                        {activity.providerOperations.map((operation) => (
+                          <SearchProviderOperationRow
+                            key={`${operation.ordinal}:${operation.kind}`}
+                            operation={operation}
+                          />
+                        ))}
+                      </ol>
+                      {activity.providerOperationsTruncated ? (
+                        <p className="mt-1 text-ink-muted">Additional provider operations were omitted by the inspection limit.</p>
+                      ) : null}
+                    </>
+                  )}
                 </div>
-              )}
-            </div>
-          ))}
-        </div>
-      ) : null}
-      {open && searchDetails.length === 0 ? (
-        <div
-          className={
-            embedded
-              ? "py-3 text-ink-muted"
-              : "mt-2 border-t border-trace-subtle py-3 text-ink-muted"
-          }
-        >
-          No search/tool request or response preview captured for this run.
+              </div>
+            </section>
+          )) : (
+            <p className="py-3 text-ink-muted">Detailed Search evidence is unavailable for this run.</p>
+          )}
+          {summary.citations.length > 0 ? (
+            <section className="py-3" aria-label="Search citations">
+              <div className="mb-1 font-medium text-ink-secondary">Citations · {summary.citations.length}</div>
+              <ol className="grid gap-1.5">
+                {summary.citations.map((citation) => {
+                  const href = safeSearchEvidenceHref(citation.url);
+                  return (
+                    <li className="min-w-0" key={`${citation.index}:${citation.url}`}>
+                      {href ? (
+                        <a
+                          className="break-words font-medium text-proof underline-offset-2 hover:text-proof-hover hover:underline [overflow-wrap:anywhere]"
+                          href={href}
+                          rel="noreferrer"
+                          target="_blank"
+                        >
+                          [{citation.index}] {citation.title}
+                        </a>
+                      ) : (
+                        <span className="break-words font-medium text-ink [overflow-wrap:anywhere]">
+                          [{citation.index}] {citation.title}
+                        </span>
+                      )}
+                    </li>
+                  );
+                })}
+              </ol>
+            </section>
+          ) : null}
         </div>
       ) : null}
     </section>
   );
 }
 
-function searchCallLabel(detail: ThreadSearchDetail): string {
-  return searchCallType(detail.callPreview) === "web_search_call"
-    ? "Web search call"
-    : "Search call";
+function searchActivityStatusLabel(status: ThreadSearchActivity["status"]): string {
+  if (status === "complete") return "Completed";
+  if (status === "partial") return "Partially completed";
+  if (status === "error") return "Failed";
+  if (status === "cancelled") return "Cancelled";
+  if (status === "running") return "Running";
+  return "Status unavailable";
 }
 
-function searchCallHasOnlyMetadata(callPreview: unknown): boolean {
-  if (typeof callPreview !== "object" || callPreview === null || Array.isArray(callPreview)) {
-    return false;
-  }
-
-  const record = callPreview as Record<string, unknown>;
-  return record.type === "web_search_call" && !searchCallActionHasContent(record.action);
+function searchActivitySummaryStatus(activities: readonly ThreadSearchActivity[]): string {
+  const statuses = new Set(activities.map((activity) => activity.status));
+  if (statuses.has("running")) return "Searching";
+  if (statuses.has("partial")) return "Partially completed";
+  const terminalStatusCount = (["complete", "error", "cancelled"] as const)
+    .filter((status) => statuses.has(status)).length;
+  if (!statuses.has("unknown") && terminalStatusCount > 1) return "Partially completed";
+  if (statuses.size === 1 && statuses.has("complete")) return "Completed";
+  if (statuses.size === 1 && statuses.has("error")) return "Failed";
+  if (statuses.size === 1 && statuses.has("cancelled")) return "Cancelled";
+  return "Status unavailable";
 }
 
-function searchCallType(callPreview: unknown): string | null {
-  return typeof callPreview === "object" &&
-    callPreview !== null &&
-    !Array.isArray(callPreview) &&
-    typeof (callPreview as Record<string, unknown>).type === "string"
-    ? ((callPreview as Record<string, unknown>).type as string)
-    : null;
+function searchSourceCountFact(activities: readonly ThreadSearchActivity[]): string | null {
+  const known = activities.flatMap((activity) =>
+    activity.sourceCount === null ? [] : [activity.sourceCount]
+  );
+  if (known.length === 0) return null;
+  const count = known.reduce((total, value) => total + value, 0);
+  const suffix = known.length < activities.length ? "+" : "";
+  return `${count}${suffix} ${count === 1 && !suffix ? "source" : "sources"}`;
 }
 
-function searchCallActionHasContent(action: unknown): boolean {
-  if (typeof action !== "object" || action === null || Array.isArray(action)) {
-    return false;
-  }
-
-  return Object.entries(action).some(([key, value]) => key !== "type" && hasPreviewValue(value));
-}
-
-function hasPreviewValue(value: unknown): boolean {
-  if (typeof value === "string") {
-    return value.trim().length > 0;
-  }
-
-  if (Array.isArray(value)) {
-    return value.some(hasPreviewValue);
-  }
-
-  if (typeof value === "object" && value !== null) {
-    return Object.values(value).some(hasPreviewValue);
-  }
-
-  return value !== undefined && value !== null;
+function SearchSources({ activity }: Readonly<{ activity: ThreadSearchActivity }>) {
+  return (
+    <div>
+      <div className="font-medium text-ink-secondary">
+        Sources{activity.sourceCount === null ? "" : ` · ${activity.sourceCount}`}
+      </div>
+      {activity.sources.length > 0 ? (
+        <ol className="mt-1 grid gap-2">
+          {activity.sources.map((source) => {
+            const href = safeSearchEvidenceHref(source.url);
+            return (
+              <li className="min-w-0 border-l border-trace-subtle pl-2" key={`${source.rank}:${source.url}`}>
+                {href ? (
+                  <a
+                    className="break-words font-medium text-proof underline-offset-2 hover:text-proof-hover hover:underline [overflow-wrap:anywhere]"
+                    href={href}
+                    rel="noreferrer"
+                    target="_blank"
+                  >
+                    {source.title}
+                  </a>
+                ) : (
+                  <span className="break-words font-medium text-ink [overflow-wrap:anywhere]">{source.title}</span>
+                )}
+                {source.date ? <span className="ml-2 text-ink-muted">{source.date}</span> : null}
+                {source.snippet ? (
+                  <p className="mt-0.5 break-words leading-5 text-ink-muted [overflow-wrap:anywhere]">{source.snippet}</p>
+                ) : null}
+              </li>
+            );
+          })}
+        </ol>
+      ) : activity.sourceCount === null ? (
+        <p className="mt-1 text-ink-muted">Normalized source details are unavailable for this run.</p>
+      ) : activity.sourceCount === 0 ? (
+        <p className="mt-1 text-ink-muted">No normalized sources were captured.</p>
+      ) : (
+        <p className="mt-1 text-ink-muted">Source links are unavailable for this historical run.</p>
+      )}
+      {activity.sourceCount !== null && activity.sourceCount > activity.sources.length && activity.sources.length > 0 ? (
+        <p className="mt-1 text-ink-muted">
+          Showing {activity.sources.length} of {activity.sourceCount} sources.
+        </p>
+      ) : null}
+    </div>
+  );
 }
 
 function formatPreview(value: unknown): string {
@@ -294,27 +341,39 @@ function toolIdentity(call: ThreadToolActivity): string {
   return call.serverName ? `${call.serverName} / ${call.toolName}` : call.toolName;
 }
 
-function searchExecutionStatusLabel(status: ThreadSearchExecution["status"]): string {
-  return status === "complete" ? "Completed" : "Failed";
-}
-
-function providerOperationLabel(kind: ThreadSearchProviderOperation["kind"]): string {
+function providerOperationLabel(kind: ThreadSearchOperation["kind"]): string {
   if (kind === "search") return "Web search";
   if (kind === "open_page") return "Open page";
   if (kind === "find_in_page") return "Find in page";
   return "Provider operation";
 }
 
-function providerOperationStatusLabel(status: ThreadSearchProviderOperation["status"]): string {
+function providerOperationStatusLabel(status: ThreadSearchOperation["status"]): string {
   if (status === "complete") return "Completed";
   if (status === "error") return "Failed";
   if (status === "running") return "Running";
   return "Status unavailable";
 }
 
+function safeSearchEvidenceHref(value: unknown): string | null {
+  const href = safeExternalHref(value);
+  if (!href) return null;
+  try {
+    const url = new URL(href);
+    return (url.protocol === "https:" || url.protocol === "http:") &&
+      !url.username &&
+      !url.password
+      ? href
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 function SearchProviderOperationRow({
   operation
-}: Readonly<{ operation: ThreadSearchProviderOperation }>) {
+}: Readonly<{ operation: ThreadSearchOperation }>) {
+  const operationHref = safeSearchEvidenceHref(operation.url);
   return (
     <li className="min-w-0 py-2" data-provider-operation-kind={operation.kind}>
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
@@ -337,10 +396,15 @@ function SearchProviderOperationRow({
       ) : operation.kind === "search" ? (
         <p className="mt-1 text-ink-muted">Provider did not report the internal query.</p>
       ) : null}
-      {operation.url ? (
-        <p className="mt-1 break-all font-mono text-[11px] leading-5 text-ink-muted">
-          {operation.url}
-        </p>
+      {operationHref ? (
+        <a
+          className="mt-1 block break-all font-mono text-[11px] leading-5 text-proof underline-offset-2 hover:text-proof-hover hover:underline"
+          href={operationHref}
+          rel="noreferrer"
+          target="_blank"
+        >
+          {operationHref}
+        </a>
       ) : null}
       {operation.pattern ? (
         <p className="mt-1 break-words font-mono text-[11px] leading-5 text-ink-secondary [overflow-wrap:anywhere]">
@@ -351,94 +415,12 @@ function SearchProviderOperationRow({
   );
 }
 
-function SearchExecutionDisclosure({
-  execution,
-  index
-}: Readonly<{ execution: ThreadSearchExecution; index: number }>) {
-  const operations = execution.providerOperations;
-  return (
-    <details className="group/search py-2" data-search-execution-status={execution.status}>
-      <summary className="-mx-2 flex min-h-control cursor-pointer list-none flex-wrap items-center gap-2 rounded-control px-2 outline-none marker:hidden hover:bg-control-hover focus-visible:ring-2 focus-visible:ring-proof/45">
-        <Search className="size-3.5 shrink-0 text-proof" aria-hidden="true" />
-        <span className="min-w-0 flex-1 break-words font-medium text-ink [overflow-wrap:anywhere]">
-          {execution.displayName}
-        </span>
-        <span className={execution.status === "error" ? "text-critical" : "text-ink-muted"}>
-          {searchExecutionStatusLabel(execution.status)}
-        </span>
-        {execution.sourceCount > 0 ? (
-          <span className="text-ink-muted">
-            {execution.sourceCount} {execution.sourceCount === 1 ? "source" : "sources"}
-          </span>
-        ) : null}
-        {toolDuration(execution.durationMs) ? (
-          <span className="font-mono text-ink-muted">{toolDuration(execution.durationMs)}</span>
-        ) : null}
-        <ChevronRight className="size-3.5 shrink-0 text-ink-muted transition-transform group-open/search:rotate-90" aria-hidden="true" />
-      </summary>
-      <div className="mt-2 grid gap-3 border-l border-trace-subtle pl-3" data-testid="thread-search-execution-details">
-        <div className="flex flex-wrap gap-x-2 gap-y-1 text-ink-muted">
-          <span>Search {index + 1}</span>
-          <span>Only the generated search query was sent to {execution.displayName}.</span>
-        </div>
-        <div>
-          <div className="mb-1 font-medium text-ink-secondary">Engine query</div>
-          {execution.query ? (
-            <div className="break-words rounded-control bg-control-surface px-2 py-1.5 font-mono text-[11px] leading-5 text-ink [overflow-wrap:anywhere]">
-              {execution.query}
-            </div>
-          ) : (
-            <p className="text-ink-muted">No engine query was captured.</p>
-          )}
-        </div>
-        <div>
-          <div className="font-medium text-ink-secondary">
-            Provider operations{operations && operations.length > 0
-              ? ` · ${operations.length}${execution.providerOperationsTruncated ? "+" : ""}`
-              : execution.providerOperationsTruncated
-                ? " · additional activity omitted"
-                : ""}
-          </div>
-          {operations === null ? (
-            <p className="mt-1 text-ink-muted">Provider operation details are unavailable for this run.</p>
-          ) : operations.length === 0 ? (
-            <p className="mt-1 text-ink-muted">
-              {execution.providerOperationsTruncated
-                ? "Provider activity exceeded the inspection limit; detailed operations were omitted."
-                : "Provider reported no internal web-search operations."}
-            </p>
-          ) : (
-            <>
-              <ol className="mt-1 divide-y divide-trace-subtle">
-                {operations.map((operation) => (
-                  <SearchProviderOperationRow
-                    key={operation.id ?? `${operation.ordinal}:${operation.kind}`}
-                    operation={operation}
-                  />
-                ))}
-              </ol>
-              {execution.providerOperationsTruncated ? (
-                <p className="mt-1 text-ink-muted">
-                  Additional provider operations were omitted by the inspection limit.
-                </p>
-              ) : null}
-            </>
-          )}
-        </div>
-        {execution.warning ? (
-          <p className="break-words text-critical [overflow-wrap:anywhere]">{execution.warning}</p>
-        ) : null}
-      </div>
-    </details>
-  );
-}
-
 function ToolActivityBlockComponent({
   expanded,
   onExpandedChange,
   summary
 }: DisclosureControl & { summary: ThreadArtifactSummary }) {
-  const calls = summary.toolCalls;
+  const calls = summary.toolCalls.filter((call) => call.capability === "mcp");
   const [open, toggleOpen] = useDisclosureControl({ expanded, onExpandedChange });
   if (calls.length === 0) return null;
 
@@ -523,22 +505,6 @@ function ToolActivityBlockComponent({
                             <span>Credentials: {call.credentialSources.join(", ")}</span>
                           ) : null}
                         </div>
-                      ) : null}
-                      {call.searchExecutions && call.searchExecutions.length > 0 ? (
-                        <section data-testid="thread-tool-search-executions" aria-label="Search executions">
-                          <div className="mb-1 font-medium text-ink-secondary">
-                            Search executions · {call.searchExecutions.length}
-                          </div>
-                          <div className="divide-y divide-trace-subtle border-y border-trace-subtle">
-                            {call.searchExecutions.map((execution, index) => (
-                              <SearchExecutionDisclosure
-                                execution={execution}
-                                index={index}
-                                key={`${execution.optionId}:${index}`}
-                              />
-                            ))}
-                          </div>
-                        </section>
                       ) : null}
                       <div>
                         <div className="mb-1 text-xs font-medium text-ink-secondary">Arguments · sensitive values redacted</div>

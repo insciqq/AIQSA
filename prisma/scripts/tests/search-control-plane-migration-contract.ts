@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -8,6 +9,8 @@ const TARGET_MIGRATION = "20260729113000_search_control_plane";
 const PREFERENCE_MIGRATION = "20260731183000_inherited_search_preferences";
 const LOGICAL_OPTION_REPAIR_MIGRATION = "20260802185000_prepare_logical_search_route_collapse";
 const LOGICAL_OPTION_MIGRATION = "20260802190000_logical_search_options";
+const PROVIDER_NEUTRAL_BACKFILL_MIGRATION =
+  "20260803120000_activate_provider_neutral_search_routes";
 const POSTGRES_SERVICE = "postgres";
 const POSTGRES_USER = "aiqsa";
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -57,6 +60,24 @@ function scalar(sql: string): string {
 
 function migrationSql(name: string): string {
   return readFileSync(join(migrationsRoot, name, "migration.sql"), "utf8");
+}
+
+function providerNeutralDraftHash(input: Readonly<{
+  maxResults: number;
+  providerModelId: string;
+  queryMaxCharacters: number;
+  timeoutMs: number;
+}>): string {
+  const canonical = JSON.stringify({
+    adapterKind: "provider_model_client",
+    credentialMode: "provider_model",
+    maxResults: input.maxResults,
+    protocol: "openai_responses_web_search",
+    providerModelId: input.providerModelId,
+    queryMaxCharacters: input.queryMaxCharacters,
+    timeoutMs: input.timeoutMs
+  });
+  return createHash("sha256").update(canonical, "utf8").digest("hex");
 }
 
 function applyPreTargetMigrations(): void {
@@ -313,6 +334,15 @@ try {
         '{"apiRoot":"https://gemini.example.test/v1","allowPrivateNetwork":false}'::jsonb,
         6, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
       );
+
+    UPDATE "ProviderConnection"
+    SET
+      "enabled" = true,
+      "activeConfig" = "draftConfig",
+      "activeVersion" = 1,
+      "activatedAt" = CURRENT_TIMESTAMP,
+      "updatedAt" = CURRENT_TIMESTAMP
+    WHERE "templateKey" = 'openai';
 
     INSERT INTO "ProviderModel" (
       "id", "connectionId", "provider", "modelId", "displayName",
@@ -965,6 +995,411 @@ try {
     FROM "SearchStrategy" strategy;
   `), postLogicalRouteHash,
   "legacy-route repair must no-op when logical Search options already exist");
+
+  const providerNeutralBackfillSql = migrationSql(PROVIDER_NEUTRAL_BACKFILL_MIGRATION);
+  assert.doesNotMatch(
+    providerNeutralBackfillSql,
+    /\b(?:INSERT\s+INTO|UPDATE|DELETE\s+FROM|ALTER\s+TABLE)\s+"ProviderModel"\b/iu,
+    "provider-neutral Search backfill must not mutate ProviderModel"
+  );
+  assert.doesNotMatch(
+    providerNeutralBackfillSql,
+    /"(?:ProviderCredential|ProviderCredentialVersion|ProviderDraftCheck|ProviderModelCredentialCheck)"/u,
+    "provider-neutral Search backfill must not read credential or provider-check state"
+  );
+  assert.doesNotMatch(
+    providerNeutralBackfillSql,
+    /"supportsNativeSearch"/u,
+    "active normalized capability must not be double-gated by the legacy Search flag"
+  );
+  const validationFingerprint = createHash("sha256")
+    .update(JSON.stringify(["configuration"]), "utf8")
+    .digest("hex");
+
+  // Shape representative v0.1.16 states after the logical-parent migration:
+  // an inactive official fallback, an existing custom client whose provider
+  // proof failed after a model change, and an intentionally disabled,
+  // unarchived multi-model custom source with no client route at all.
+  requireSuccess(psql(`
+    UPDATE "SearchStrategy" strategy
+    SET
+      "provider" = model."provider",
+      "modelId" = model."modelId",
+      "providerModelId" = model."id",
+      "enabled" = false,
+      "config" = '{"sentinel":"old-active-config"}'::jsonb,
+      "draft" = jsonb_build_object(
+        'adapterKind', 'provider_model_client',
+        'credentialMode', 'provider_model',
+        'maxResults', 11,
+        'protocol', 'openai_responses_web_search',
+        'providerModelId', model."id",
+        'queryMaxCharacters', 321,
+        'timeoutMs', 123000
+      ),
+      "draftVersion" = 4,
+      "testedDraftHash" = NULL,
+      "draftTestEvidence" = '{
+        "checkedAt":"2026-08-02T12:00:00.000Z",
+        "method":"provider_search",
+        "normalizedSourceCount":0,
+        "protocol":"openai_responses_web_search",
+        "status":"unavailable"
+      }'::jsonb,
+      "updatedAt" = CURRENT_TIMESTAMP
+    FROM "ProviderModel" model
+    WHERE strategy."id" = 'system-openai-provider-web-search'
+      AND model."id" = 'search-custom-single-model-secondary';
+
+    UPDATE "SearchIntegrationRevision"
+    SET
+      "validationEvidence" = '{
+        "checkedAt":"2026-08-02T11:59:00.000Z",
+        "method":"provider_search",
+        "normalizedSourceCount":1,
+        "probeBinding":{
+          "connectionId":"search-custom-single",
+          "connectionVersion":1,
+          "credentialId":"search-contract-old-credential",
+          "credentialVersionId":"search-contract-old-credential-version",
+          "modelVersion":1,
+          "providerModelId":"search-custom-single-model"
+        },
+        "protocol":"openai_responses_web_search",
+        "status":"available"
+      }'::jsonb,
+      "validationFingerprint" = 'search-contract-obsolete-probe-fingerprint'
+    WHERE "id" = 'search-contract-openai-provider-revision';
+
+    -- Legacy denormalized capability flags can drift. The active normalized
+    -- model declaration remains the migration authority.
+    UPDATE "ProviderModel"
+    SET "supportsNativeSearch" = false, "updatedAt" = CURRENT_TIMESTAMP
+    WHERE "id" = 'search-custom-multiple-model-a';
+
+    UPDATE "SearchOption"
+    SET "enabled" = false, "updatedAt" = CURRENT_TIMESTAMP
+    WHERE "optionId" = 'custom-web-search:search-custom-multiple';
+
+    UPDATE "SearchStrategy" strategy
+    SET
+      "enabled" = false,
+      "config" = '{}'::jsonb,
+      "draft" = jsonb_build_object(
+        'adapterKind', 'answer_provider_hosted',
+        'credentialMode', 'answer_provider',
+        'maxResults', 99,
+        'protocol', 'openai_responses_web_search',
+        'providerModelId', NULL,
+        'queryMaxCharacters', 1,
+        'timeoutMs', 1
+      ),
+      "draftVersion" = 3,
+      "testedDraftHash" = NULL,
+      "draftTestEvidence" = '{
+        "checkedAt":"2026-08-02T12:01:00.000Z",
+        "method":"provider_search",
+        "normalizedSourceCount":0,
+        "protocol":"openai_responses_web_search",
+        "status":"unavailable"
+      }'::jsonb,
+      "updatedAt" = CURRENT_TIMESTAMP
+    FROM "ProviderConnection" connection
+    WHERE strategy."strategyId" = 'openai-search-client:' || connection."id"
+      AND connection."templateKey" = 'openai';
+  `), "shape v0.1.16 provider-neutral Search repair fixtures");
+
+  // The current physical client must belong to the logical source's exact
+  // connection. A cross-owned row is corruption and the transaction must make
+  // no partial repair before failing.
+  requireSuccess(psql(`
+    UPDATE "SearchStrategy" strategy
+    SET "providerModelId" = 'search-custom-multiple-model-a'
+    FROM "ProviderConnection" connection
+    WHERE strategy."strategyId" = 'openai-search-client:' || connection."id"
+      AND connection."templateKey" = 'openai';
+  `), "insert cross-owned current client fixture");
+  const corruptOwnership = psql(providerNeutralBackfillSql);
+  assert.notEqual(corruptOwnership.status, 0,
+    "cross-owned current client route must fail closed");
+  assert.match(
+    corruptOwnership.stderr,
+    /Provider-neutral Search backfill found a client route owned by another source/u
+  );
+  assert.equal(scalar(`
+    SELECT count(*)::text
+    FROM "SearchIntegrationRevision"
+    WHERE "validationFingerprint" = '${validationFingerprint}';
+  `), '0', "failed ownership preflight must not publish a revision");
+  requireSuccess(psql(`
+    UPDATE "SearchStrategy" strategy
+    SET "providerModelId" = 'search-official-openai-model'
+    FROM "ProviderConnection" connection
+    WHERE strategy."strategyId" = 'openai-search-client:' || connection."id"
+      AND connection."templateKey" = 'openai';
+  `), "restore exact official Search ownership");
+
+  // Exercise the migration's duplicate guard independently of the steady-state
+  // partial unique index, then restore that schema invariant before success.
+  requireSuccess(psql(`
+    DROP INDEX "SearchStrategy_searchOptionId_adapterKind_active_key";
+    INSERT INTO "SearchStrategy" (
+      "id", "searchOptionId", "strategyId", "provider", "modelId",
+      "providerModelId", "displayName", "kind", "description", "enabled",
+      "config", "adapterKind", "credentialMode", "draft", "draftVersion",
+      "createdAt", "updatedAt"
+    ) VALUES (
+      'search-contract-duplicate-current-client',
+      '00000000-0000-4000-8000-000000001402',
+      'search-contract-duplicate-current-client',
+      'openai', 'official-search-model', 'search-official-openai-model',
+      'Duplicate OpenAI Search', 'provider_model_web_search',
+      'Corrupt duplicate current route', false, '{}'::jsonb,
+      'provider_model_client', 'provider_model',
+      '{
+        "adapterKind":"provider_model_client",
+        "credentialMode":"provider_model",
+        "maxResults":8,
+        "protocol":"openai_responses_web_search",
+        "providerModelId":"search-official-openai-model",
+        "queryMaxCharacters":500,
+        "timeoutMs":300000
+      }'::jsonb,
+      1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+    );
+  `), "insert duplicate current client fixture");
+  const duplicateCurrentRoute = psql(providerNeutralBackfillSql);
+  assert.notEqual(duplicateCurrentRoute.status, 0,
+    "duplicate current client routes must fail closed");
+  assert.match(
+    duplicateCurrentRoute.stderr,
+    /Provider-neutral Search backfill found duplicate current client routes/u
+  );
+  requireSuccess(psql(`
+    DELETE FROM "SearchStrategy"
+    WHERE "id" = 'search-contract-duplicate-current-client';
+    CREATE UNIQUE INDEX "SearchStrategy_searchOptionId_adapterKind_active_key"
+    ON "SearchStrategy"("searchOptionId", "adapterKind")
+    WHERE "archivedAt" IS NULL;
+  `), "remove duplicate client fixture and restore route uniqueness");
+
+  const strategyCountBeforeProviderNeutralBackfill = scalar(`
+    SELECT count(*)::text FROM "SearchStrategy";
+  `);
+  const revisionCountBeforeProviderNeutralBackfill = scalar(`
+    SELECT count(*)::text FROM "SearchIntegrationRevision";
+  `);
+  const providerModelsBeforeProviderNeutralBackfill = scalar(`
+    SELECT md5(string_agg(row(model.*)::text, E'\\n' ORDER BY model."id"))
+    FROM "ProviderModel" model;
+  `);
+  const searchOptionsBeforeProviderNeutralBackfill = scalar(`
+    SELECT md5(string_agg(row(option_row.*)::text, E'\\n' ORDER BY option_row."id"))
+    FROM "SearchOption" option_row;
+  `);
+  const hostedRoutesBeforeProviderNeutralBackfill = scalar(`
+    SELECT md5(string_agg(row(strategy.*)::text, E'\\n' ORDER BY strategy."id"))
+    FROM "SearchStrategy" strategy
+    WHERE strategy."adapterKind" <> 'provider_model_client';
+  `);
+  const grantsBeforeProviderNeutralBackfill = scalar(`
+    SELECT md5(string_agg(row(grant_row.*)::text, E'\\n' ORDER BY grant_row."id"))
+    FROM "AccessGrant" grant_row;
+  `);
+  const settingsBeforeProviderNeutralBackfill = scalar(`
+    SELECT md5(string_agg(row(settings.*)::text, E'\\n' ORDER BY settings."id"))
+    FROM "UserSettings" settings;
+  `);
+  const policyBeforeProviderNeutralBackfill = scalar(`
+    SELECT md5(string_agg(row(policy.*)::text, E'\\n' ORDER BY policy."id"))
+    FROM "SearchPolicy" policy;
+  `);
+  const historicalRevisionsBeforeProviderNeutralBackfill = scalar(`
+    SELECT md5(string_agg(row(revision.*)::text, E'\\n' ORDER BY revision."id"))
+    FROM "SearchIntegrationRevision" revision
+    WHERE revision."validationFingerprint" <> '${validationFingerprint}';
+  `);
+  const historicalBindingsBeforeProviderNeutralBackfill = scalar(`
+    SELECT md5(string_agg(row(binding.*)::text, E'\\n' ORDER BY binding."id"))
+    FROM "SearchRunBinding" binding;
+  `);
+  const providerBindingsBeforeProviderNeutralBackfill = scalar(`
+    SELECT md5(string_agg(row(binding.*)::text, E'\\n' ORDER BY binding."id"))
+    FROM "ProviderRunBinding" binding;
+  `);
+  const acceptedRunsBeforeProviderNeutralBackfill = scalar(`
+    SELECT md5(string_agg(row(run.*)::text, E'\\n' ORDER BY run."id"))
+    FROM "ModelRun" run;
+  `);
+  const searchRunsBeforeProviderNeutralBackfill = scalar(`
+    SELECT md5(string_agg(row(run.*)::text, E'\\n' ORDER BY run."id"))
+    FROM "SearchRun" run;
+  `);
+
+  requireSuccess(psql(providerNeutralBackfillSql),
+    "activate provider-neutral Search routes without a provider probe");
+
+  assert.equal(scalar(`
+    SELECT concat_ws('|', "enabled", "archivedAt" IS NULL)
+    FROM "SearchOption"
+    WHERE "optionId" = 'custom-web-search:search-custom-multiple';
+  `), 'f|t',
+  "backfill must prepare a disabled source without changing its parent lifecycle");
+
+  assert.equal(
+    scalar(`SELECT count(*)::text FROM "SearchStrategy";`),
+    String(Number(strategyCountBeforeProviderNeutralBackfill) + 1),
+    "only the missing multi-model custom client route should be created"
+  );
+  assert.equal(
+    scalar(`SELECT count(*)::text FROM "SearchIntegrationRevision";`),
+    String(Number(revisionCountBeforeProviderNeutralBackfill) + 3),
+    "each repaired/created client route should receive one configuration revision"
+  );
+
+  assert.equal(scalar(`
+    SELECT string_agg(concat_ws('|',
+      option_row."optionId",
+      strategy."id",
+      strategy."strategyId",
+      strategy."providerModelId",
+      strategy."enabled",
+      strategy."activeRevisionId" IS NOT NULL,
+      strategy."draftVersion",
+      strategy."draft" ->> 'maxResults',
+      strategy."draft" ->> 'queryMaxCharacters',
+      strategy."draft" ->> 'timeoutMs',
+      strategy."draftTestEvidence" ->> 'method',
+      strategy."draftTestEvidence" ->> 'status',
+      revision."revisionNumber",
+      revision."validationFingerprint",
+      strategy."config" = strategy."draft",
+      revision."configuration" = strategy."draft",
+      NOT (revision."validationEvidence" ? 'probeBinding')
+    ), E'\\n' ORDER BY option_row."optionId")
+    FROM "SearchOption" option_row
+    INNER JOIN "SearchStrategy" strategy
+      ON strategy."searchOptionId" = option_row."id"
+     AND strategy."adapterKind" = 'provider_model_client'
+     AND strategy."archivedAt" IS NULL
+    INNER JOIN "SearchIntegrationRevision" revision
+      ON revision."id" = strategy."activeRevisionId"
+     AND revision."searchStrategyId" = strategy."id"
+    WHERE option_row."optionId" IN (
+      'openai-native-web-search',
+      'custom-web-search:search-custom-single',
+      'custom-web-search:search-custom-multiple'
+    );
+  `), [
+    `custom-web-search:search-custom-multiple|custom-web-search-client:search-custom-multiple|custom-web-search-client:search-custom-multiple|search-custom-multiple-model-a|t|t|1|8|500|300000|configuration|available|1|${validationFingerprint}|t|t|t`,
+    `custom-web-search:search-custom-single|system-openai-provider-web-search|openai-provider-web-search|search-custom-single-model-secondary|t|t|4|11|321|123000|configuration|available|2|${validationFingerprint}|t|t|t`,
+    `openai-native-web-search|openai-search-client:00000000-0000-4000-8000-000000001102|openai-search-client:00000000-0000-4000-8000-000000001102|search-official-openai-model|t|t|4|8|500|300000|configuration|available|1|${validationFingerprint}|t|t|t`
+  ].join("\n"));
+
+  assert.equal(scalar(`
+    SELECT "testedDraftHash"
+    FROM "SearchStrategy"
+    WHERE "strategyId" = 'openai-search-client:00000000-0000-4000-8000-000000001102';
+  `), providerNeutralDraftHash({
+    maxResults: 8,
+    providerModelId: "search-official-openai-model",
+    queryMaxCharacters: 500,
+    timeoutMs: 300_000
+  }), "migration draft digest must match the application canonical SHA-256");
+  assert.equal(scalar(`
+    SELECT "testedDraftHash"
+    FROM "SearchStrategy"
+    WHERE "id" = 'system-openai-provider-web-search';
+  `), providerNeutralDraftHash({
+    maxResults: 11,
+    providerModelId: "search-custom-single-model-secondary",
+    queryMaxCharacters: 321,
+    timeoutMs: 123_000
+  }), "valid current client bounds and model selection should be preserved");
+
+  assert.equal(scalar(`
+    SELECT md5(string_agg(row(model.*)::text, E'\\n' ORDER BY model."id"))
+    FROM "ProviderModel" model;
+  `), providerModelsBeforeProviderNeutralBackfill,
+  "provider-neutral Search backfill must not mutate ProviderModel rows");
+  assert.equal(scalar(`
+    SELECT md5(string_agg(row(option_row.*)::text, E'\\n' ORDER BY option_row."id"))
+    FROM "SearchOption" option_row;
+  `), searchOptionsBeforeProviderNeutralBackfill,
+  "provider-neutral Search backfill must preserve logical source rows");
+  assert.equal(scalar(`
+    SELECT md5(string_agg(row(strategy.*)::text, E'\\n' ORDER BY strategy."id"))
+    FROM "SearchStrategy" strategy
+    WHERE strategy."adapterKind" <> 'provider_model_client';
+  `), hostedRoutesBeforeProviderNeutralBackfill,
+  "provider-neutral Search backfill must preserve hosted routes byte-for-field");
+  assert.equal(scalar(`
+    SELECT md5(string_agg(row(grant_row.*)::text, E'\\n' ORDER BY grant_row."id"))
+    FROM "AccessGrant" grant_row;
+  `), grantsBeforeProviderNeutralBackfill,
+  "provider-neutral Search backfill must preserve grants");
+  assert.equal(scalar(`
+    SELECT md5(string_agg(row(settings.*)::text, E'\\n' ORDER BY settings."id"))
+    FROM "UserSettings" settings;
+  `), settingsBeforeProviderNeutralBackfill,
+  "provider-neutral Search backfill must preserve user preferences");
+  assert.equal(scalar(`
+    SELECT md5(string_agg(row(policy.*)::text, E'\\n' ORDER BY policy."id"))
+    FROM "SearchPolicy" policy;
+  `), policyBeforeProviderNeutralBackfill,
+  "provider-neutral Search backfill must preserve installation policy");
+  assert.equal(scalar(`
+    SELECT md5(string_agg(row(revision.*)::text, E'\\n' ORDER BY revision."id"))
+    FROM "SearchIntegrationRevision" revision
+    WHERE revision."validationFingerprint" <> '${validationFingerprint}';
+  `), historicalRevisionsBeforeProviderNeutralBackfill,
+  "provider-neutral Search backfill must preserve immutable historical revisions");
+  assert.equal(scalar(`
+    SELECT md5(string_agg(row(binding.*)::text, E'\\n' ORDER BY binding."id"))
+    FROM "SearchRunBinding" binding;
+  `), historicalBindingsBeforeProviderNeutralBackfill,
+  "provider-neutral Search backfill must preserve historical Search bindings");
+  assert.equal(scalar(`
+    SELECT md5(string_agg(row(binding.*)::text, E'\\n' ORDER BY binding."id"))
+    FROM "ProviderRunBinding" binding;
+  `), providerBindingsBeforeProviderNeutralBackfill,
+  "provider-neutral Search backfill must preserve historical provider bindings");
+  assert.equal(scalar(`
+    SELECT md5(string_agg(row(run.*)::text, E'\\n' ORDER BY run."id"))
+    FROM "ModelRun" run;
+  `), acceptedRunsBeforeProviderNeutralBackfill,
+  "provider-neutral Search backfill must preserve accepted runs");
+  assert.equal(scalar(`
+    SELECT md5(string_agg(row(run.*)::text, E'\\n' ORDER BY run."id"))
+    FROM "SearchRun" run;
+  `), searchRunsBeforeProviderNeutralBackfill,
+  "provider-neutral Search backfill must preserve historical Search executions");
+
+  const routesAfterProviderNeutralBackfill = scalar(`
+    SELECT md5(string_agg(row(strategy.*)::text, E'\\n' ORDER BY strategy."id"))
+    FROM "SearchStrategy" strategy;
+  `);
+  const revisionsAfterProviderNeutralBackfill = scalar(`
+    SELECT md5(string_agg(row(revision.*)::text, E'\\n' ORDER BY revision."id"))
+    FROM "SearchIntegrationRevision" revision;
+  `);
+  requireSuccess(psql(providerNeutralBackfillSql),
+    "repeat provider-neutral Search backfill");
+  assert.equal(scalar(`
+    SELECT md5(string_agg(row(strategy.*)::text, E'\\n' ORDER BY strategy."id"))
+    FROM "SearchStrategy" strategy;
+  `), routesAfterProviderNeutralBackfill,
+  "repeat provider-neutral Search backfill must preserve every route byte-for-field");
+  assert.equal(scalar(`
+    SELECT md5(string_agg(row(revision.*)::text, E'\\n' ORDER BY revision."id"))
+    FROM "SearchIntegrationRevision" revision;
+  `), revisionsAfterProviderNeutralBackfill,
+  "repeat provider-neutral Search backfill must preserve revisions byte-for-field");
+  assert.equal(scalar(`
+    SELECT md5(string_agg(row(option_row.*)::text, E'\\n' ORDER BY option_row."id"))
+    FROM "SearchOption" option_row;
+  `), searchOptionsBeforeProviderNeutralBackfill,
+  "repeat backfill must preserve the disabled logical source byte-for-field");
 
   process.stdout.write("Search control-plane migration contract: OK\n");
 } finally {
