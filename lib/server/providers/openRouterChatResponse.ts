@@ -154,9 +154,29 @@ export function extractOpenRouterUsage(response: OpenRouterResponseRecord): Mode
   });
 }
 
-function citationFromValue(value: unknown, index: number): Record<string, unknown> | null {
+function citationFromValue(
+  value: unknown,
+  index: number,
+  shape: "annotation" | "legacy"
+): Record<string, unknown> | null {
   let candidate: Record<string, unknown> | null = null;
-  if (typeof value === "string") {
+  if (shape === "annotation") {
+    if (!isRecord(value)) return null;
+    if (value.type === undefined) {
+      candidate = {
+        snippet: value.snippet ?? value.content,
+        title: value.title ?? `Source ${index + 1}`,
+        url: value.url ?? value.href
+      };
+    } else {
+      if (value.type !== "url_citation" || !isRecord(value.url_citation)) return null;
+      candidate = {
+        snippet: value.url_citation.content ?? value.url_citation.snippet,
+        title: value.url_citation.title ?? `Source ${index + 1}`,
+        url: value.url_citation.url ?? value.url_citation.href
+      };
+    }
+  } else if (typeof value === "string") {
     candidate = { title: `Source ${index + 1}`, url: value };
   } else if (isRecord(value)) {
     if (value.type === "url_citation") {
@@ -186,7 +206,11 @@ function citationFromValue(value: unknown, index: number): Record<string, unknow
     : null;
 }
 
-function citationArtifacts(values: unknown, source: string): ModelRunSseEvent[] {
+function citationArtifacts(
+  values: unknown,
+  source: string,
+  shape: "annotation" | "legacy" = "legacy"
+): ModelRunSseEvent[] {
   if (!Array.isArray(values)) {
     return [];
   }
@@ -195,7 +219,7 @@ function citationArtifacts(values: unknown, source: string): ModelRunSseEvent[] 
   const artifacts: ModelRunSseEvent[] = [];
 
   for (const [index, value] of values.entries()) {
-    const citation = citationFromValue(value, index);
+    const citation = citationFromValue(value, index, shape);
     if (!citation) {
       continue;
     }
@@ -240,7 +264,7 @@ export function extractOpenRouterArtifacts(response: OpenRouterResponseRecord): 
 
   artifacts.push(...citationArtifacts(response.citations, "openrouter"));
   artifacts.push(...citationArtifacts(message?.citations, "openrouter-message"));
-  artifacts.push(...citationArtifacts(message?.annotations, "openrouter-annotations"));
+  artifacts.push(...citationArtifacts(message?.annotations, "openrouter-annotations", "annotation"));
 
   return artifacts;
 }

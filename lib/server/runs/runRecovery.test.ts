@@ -17,11 +17,15 @@ import type {
 } from "./runRepositoryContract";
 import {
   toolLoopCheckpoint,
+  toolLoopPersistenceLimits,
   type CheckpointedToolLoopRun,
   type PersistedToolLoopCall,
   type ToolLoopJsonValue
 } from "./toolLoopPersistence";
-import { snapshotToolExecutionResult } from "./toolExecutionPersistence";
+import {
+  parsePersistedToolExecutionResult,
+  snapshotToolExecutionResult
+} from "./toolExecutionPersistence";
 import {
   SEARCH_TOOL_RESULT_VERSION,
   searchToolResultContent,
@@ -1437,6 +1441,107 @@ describe("run recovery", () => {
       finalText: "Recovered cross-provider answer",
       usage: { inputTokens: 3, outputTokens: 5, totalTokens: 8 }
     });
+    expect(harness.state.recoveredErrors).toEqual([]);
+  });
+
+  it("compacts a large pending fan-out Search result before settling recovery", async () => {
+    const answerRequests: ProviderRunRequest[] = [];
+    const findingsByModel = new Map<string, string>();
+    const answerAdapter: ProviderAdapter = {
+      buildRequestPreview: () => ({}),
+      async *stream(request) {
+        answerRequests.push(request);
+        return {
+          finalProviderResponsePreview: {},
+          finalText: "Recovered large fan-out answer",
+          usage: { inputTokens: 2, outputTokens: 3, reasoningTokens: 0 }
+        };
+      }
+    };
+    const searchAdapter: ProviderSearchAdapter = {
+      buildRequestPreview: () => ({}),
+      async search(request) {
+        const modelId = request.searchPolicy.modelId;
+        const findings = `${modelId}:${modelId.slice(-1).repeat(44_000)}`;
+        findingsByModel.set(modelId, findings);
+        return {
+          artifacts: [],
+          finalProviderResponsePreview: {},
+          findings,
+          requestPreview: { queryCharacters: request.query.length },
+          sources: [{
+            rank: 1,
+            title: `Source ${modelId}`,
+            url: `https://example.com/${modelId}`
+          }],
+          usage: { inputTokens: 1, outputTokens: 2, reasoningTokens: 0 }
+        };
+      }
+    };
+    const harness = createHarness({
+      providers: { openai: answerAdapter, openai_compatible: answerAdapter },
+      searchProviders: { openai_compatible: searchAdapter }
+    });
+    const baseRequest = normalizedLegacySearchRequest();
+    const baseOption = baseRequest.searchPlan!.options[0]!;
+    const options = Array.from({ length: 3 }, (_, index) => ({
+      ...baseOption,
+      displayName: `Search ${index + 1}`,
+      modelId: `search-model-${index + 1}`,
+      optionId: `search-option-${index + 1}`,
+      providerModelId: `search-model-row-${index + 1}`,
+      revisionId: `search-revision-${index + 1}`,
+      searchStrategyRowId: `search-strategy-row-${index + 1}`
+    }));
+    const storedCall: PersistedToolLoopCall = {
+      ...persistedRecoveryCall(),
+      arguments: { query: "large recovery evidence" },
+      mcpBinding: null,
+      toolName: "search_selected_engines"
+    };
+    const base = checkpointedRun({
+      calls: [storedCall],
+      phase: "tools_pending",
+      providerToolMessages: [{
+        arguments: "{\"query\":\"large recovery evidence\"}",
+        call_id: "provider-call-1",
+        name: "search_selected_engines",
+        type: "function_call"
+      }]
+    });
+    const checkpointState = installCheckpointState(harness, {
+      ...base,
+      normalizedRequest: {
+        ...baseRequest,
+        searchPlan: { mode: "all_selected", options }
+      }
+    });
+
+    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+
+    expect(findingsByModel.size).toBe(3);
+    expect(answerRequests).toHaveLength(1);
+    const [settledCall] = checkpointState.calls();
+    expect(settledCall?.state).toBe("complete");
+    if (!settledCall?.result) throw new Error("expected settled large Search result");
+    const serialized = JSON.stringify(settledCall.result);
+    expect(Buffer.byteLength(serialized, "utf8")).toBeLessThanOrEqual(
+      toolLoopPersistenceLimits.resultBytes
+    );
+    expect(serialized).toContain('"aiqsaType":"search_result"');
+    for (const findings of findingsByModel.values()) {
+      expect(serialized.split(findings)).toHaveLength(2);
+    }
+    const replayed = parsePersistedToolExecutionResult({
+      id: settledCall.providerCallId,
+      name: settledCall.toolName
+    }, settledCall.result);
+    expect(replayed?.content).toEqual([
+      expect.objectContaining({
+        text: expect.stringContaining("search-model-1"),
+        type: "text"
+      })
+    ]);
     expect(harness.state.recoveredErrors).toEqual([]);
   });
 

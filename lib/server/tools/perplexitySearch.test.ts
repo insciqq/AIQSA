@@ -1,9 +1,10 @@
 import { textMessageContent } from "../../domain/content";
-import type {
-  ProviderRunRequest,
-  ProviderSearchAdapter,
-  ProviderSearchPolicy,
-  ProviderSearchRequest
+import {
+  ProviderSearchExecutionError,
+  type ProviderRunRequest,
+  type ProviderSearchAdapter,
+  type ProviderSearchPolicy,
+  type ProviderSearchRequest
 } from "../providers/types";
 import { describe, expect, it, vi } from "vitest";
 import { createPerplexitySearchToolExecutor } from "./perplexitySearch";
@@ -138,6 +139,52 @@ describe("legacy Perplexity tool executor privacy boundary", () => {
       usage: { inputTokens: 4, outputTokens: 5, totalTokens: 9 }
     });
     expect(JSON.stringify(result)).not.toMatch(/Ungrounded findings|must-not-persist/u);
+  });
+
+  it("preserves normalized operation evidence and usage from a typed provider failure", async () => {
+    const operation = {
+      data: {
+        artifactType: "search" as const,
+        payload: {
+          id: "search-operation-1",
+          status: "completed",
+          type: "web_search_call"
+        }
+      },
+      type: "artifact" as const
+    };
+    const executor = createPerplexitySearchToolExecutor({
+      searchAdapter: adapter(async () => {
+        throw new ProviderSearchExecutionError({
+          artifacts: [operation],
+          code: "openrouter_search_sources_invalid",
+          providerStatus: "completed",
+          reason: "source_evidence_missing",
+          usage: { inputTokens: 7, outputTokens: 8, reasoningTokens: 1, totalTokens: 16 }
+        });
+      }),
+      searchPolicy: policy()
+    });
+
+    const result = await executor.execute(
+      { arguments: { query: "latest news" }, id: "call-typed-failure", name: executor.tool.name },
+      { request: answerRequest(), runId: "run-typed-failure" }
+    );
+
+    expect(result).toMatchObject({
+      artifacts: [operation],
+      content: [{ text: "Search failed: openrouter_search_sources_invalid" }],
+      rawPreview: {
+        finalProviderResponsePreview: {
+          error: "openrouter_search_sources_invalid",
+          providerStatus: "completed",
+          reason: "source_evidence_missing"
+        },
+        providerCall: true
+      },
+      status: "error",
+      usage: { inputTokens: 7, outputTokens: 8, reasoningTokens: 1, totalTokens: 16 }
+    });
   });
 
   it.each([

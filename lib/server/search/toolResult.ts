@@ -13,6 +13,7 @@ import {
 } from "./evidence";
 
 export const SEARCH_TOOL_RESULT_VERSION = 1;
+const LEGACY_MAX_SEARCH_FINDINGS_CHARACTERS = 262_144;
 
 const persistedContentMarker = Object.freeze({
   type: "json" as const,
@@ -93,8 +94,16 @@ function boundedFailureField(value: unknown, maximum: number): string | undefine
     : undefined;
 }
 
-function decodedFindings(value: unknown): string | undefined {
+function decodedFindings(value: unknown, legacy: boolean): string | undefined {
   if (value === undefined) return undefined;
+  if (legacy) {
+    if (typeof value !== "string") return undefined;
+    const normalized = value.trim();
+    return normalized && normalized.length <= LEGACY_MAX_SEARCH_FINDINGS_CHARACTERS &&
+      !/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u.test(normalized)
+      ? normalized
+      : undefined;
+  }
   try {
     return normalizeSearchFindings(value);
   } catch {
@@ -130,6 +139,9 @@ export function searchExecutionsFromToolResult(
 ): SearchExecutionEvidence[] {
   const values = previewExecutions(result);
   if (!values || values.length > 3) return [];
+  const version = result.rawPreview?.searchResultVersion;
+  const legacy = version === undefined;
+  if (!legacy && version !== SEARCH_TOOL_RESULT_VERSION) return [];
   return values.flatMap((value): SearchExecutionEvidence[] => {
     if (!isRecord(value)) return [];
     const usage = decodedUsage(value.usage);
@@ -146,7 +158,9 @@ export function searchExecutionsFromToolResult(
       Array.isArray(value.sources) &&
       (value.findings === undefined || (
         typeof value.findings === "string" &&
-        value.findings.length <= MAX_SEARCH_FINDINGS_CHARACTERS
+        value.findings.length <= (legacy
+          ? LEGACY_MAX_SEARCH_FINDINGS_CHARACTERS
+          : MAX_SEARCH_FINDINGS_CHARACTERS)
       )) &&
       (value.status === "complete" || value.status === "error") &&
       isRecord(value.requestPreview) &&
@@ -154,7 +168,7 @@ export function searchExecutionsFromToolResult(
     )) return [];
     const failure = value.failure === undefined ? undefined : decodedFailure(value.failure);
     if (value.failure !== undefined && !failure) return [];
-    const findings = decodedFindings(value.findings);
+    const findings = decodedFindings(value.findings, legacy);
     if (value.findings !== undefined && !findings) return [];
     const warning = value.warning === undefined
       ? undefined
@@ -172,8 +186,10 @@ export function searchExecutionsFromToolResult(
     const sourceValues = value.sources as unknown[];
     const sources = normalizeSearchSources(sourceValues, 20);
     if (sources.length !== sourceValues.length) return [];
-    if (value.status === "complete" && (!findings || sources.length === 0 || failure)) return [];
-    if (value.status === "error" && !failure) return [];
+    if (!legacy && value.status === "complete" && (!findings || sources.length === 0 || failure)) {
+      return [];
+    }
+    if (!legacy && value.status === "error" && !failure) return [];
     return [{
       displayName: typeof value.displayName === "string" && value.displayName.trim()
         ? value.displayName.trim().slice(0, 256)
@@ -273,8 +289,9 @@ export function compactSearchToolExecutionResult(
 export function rehydratePersistedSearchToolExecutionResult(
   result: ToolExecutionResult
 ): ToolExecutionResult | null {
-  if (!markerContent(result)) return result;
-  if (result.rawPreview?.searchResultVersion !== SEARCH_TOOL_RESULT_VERSION) return null;
+  const version = result.rawPreview?.searchResultVersion;
+  if (version === undefined) return result;
+  if (version !== SEARCH_TOOL_RESULT_VERSION || !markerContent(result)) return null;
   const executions = canonicalExecutions(result);
   return executions ? { ...result, content: searchToolResultContent(executions) } : null;
 }

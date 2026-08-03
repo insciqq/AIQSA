@@ -69,7 +69,9 @@ export function createOpenRouterPerplexitySearchAdapter(
       assertValidOpenRouterTerminalResponse(response, { allowToolCalls: false });
 
       const finalText = extractOpenRouterText(response);
-      const citationArtifacts = extractOpenRouterArtifacts(response);
+      const citationArtifacts = extractOpenRouterArtifacts(response).filter((event) =>
+        event.type === "artifact" && event.data.artifactType === "citation"
+      );
       const sources = searchSourcesFromCitationArtifacts(citationArtifacts);
       const operationArtifact = searchArtifact(response, request, sources.length);
       const artifacts = [operationArtifact, ...citationArtifacts];

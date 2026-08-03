@@ -309,6 +309,7 @@ describe("OpenRouter Chat response normalization", () => {
             }
           }, {
             type: "unknown",
+            url: "https://example.com/unknown-flat",
             url_citation: { url: "https://example.com/unknown" }
           }]
         }

@@ -9,9 +9,11 @@ import {
 } from "./toolLoopPersistence";
 import {
   SEARCH_TOOL_RESULT_VERSION,
+  searchExecutionsFromToolResult,
   searchToolResultContent,
   type SearchExecutionEvidence
 } from "../search/toolResult";
+import { mcpToolExecutionResult } from "../mcp/toolExecutor";
 
 const call = { id: "call-1", name: "search_via_perplexity" };
 
@@ -166,8 +168,61 @@ describe("persisted tool execution result codec", () => {
       callId: call.id,
       content: [{ type: "json", value: { aiqsaType: "search_result", version: 1 } }],
       name: call.name,
-      rawPreview: { finalProviderResponsePreview: { searchExecutions: [] } },
+      rawPreview: {
+        finalProviderResponsePreview: { searchExecutions: [] },
+        searchResultVersion: SEARCH_TOOL_RESULT_VERSION
+      },
       status: "complete"
     })).toBeNull();
+  });
+
+  it("keeps an unversioned pre-canonical Search execution within the old result bound readable", () => {
+    const findings = "l".repeat(60 * 1_024);
+    const execution: SearchExecutionEvidence = {
+      displayName: "Legacy Search",
+      durationMs: 10,
+      findings,
+      invocationId: "legacy-call:source-1",
+      modelId: "legacy-search-model",
+      optionId: "legacy-source",
+      provider: "openrouter",
+      providerOperationsTruncated: false,
+      query: "legacy query",
+      requestPreview: {},
+      revisionId: "legacy-revision",
+      sources: [],
+      status: "complete",
+      usage: { inputTokens: 2, outputTokens: 3, reasoningTokens: 0, totalTokens: 5 }
+    };
+    const snapshot = snapshotToolLoopJson({
+      callId: call.id,
+      content: [{ text: findings, type: "text" }],
+      name: call.name,
+      rawPreview: { finalProviderResponsePreview: { searchExecutions: [execution] } },
+      status: "complete",
+      usage: execution.usage
+    }, toolLoopPersistenceLimits.resultBytes);
+    if (!snapshot) throw new Error("expected legacy Search snapshot");
+
+    const parsed = parsePersistedToolExecutionResult(call, snapshot);
+    if (!parsed) throw new Error("expected readable legacy Search result");
+    expect(searchExecutionsFromToolResult(parsed)).toEqual([execution]);
+  });
+
+  it("does not confuse marker-shaped MCP structured output with a Search checkpoint", () => {
+    const result = mcpToolExecutionResult({
+      arguments: {},
+      id: call.id,
+      name: call.name
+    }, {
+      isError: false,
+      structuredContent: { aiqsaType: "search_result", version: 1 },
+      text: [],
+      unsupportedContentTypes: []
+    });
+
+    const snapshot = snapshotToolExecutionResult(result, 32_000);
+    expect(snapshot).not.toBeNull();
+    expect(parsePersistedToolExecutionResult(call, snapshot)).toEqual(result);
   });
 });

@@ -1,7 +1,9 @@
-import type {
-  ProviderSearchAdapter,
-  ProviderSearchPolicy,
-  ProviderSearchRequest
+import {
+  isProviderSearchExecutionError,
+  type ProviderSearchAdapter,
+  type ProviderSearchPolicy,
+  type ProviderSearchRequest,
+  type ProviderSearchResult
 } from "@/lib/server/providers/types";
 import {
   DEFAULT_SEARCH_QUERY_MAX_CHARACTERS,
@@ -78,7 +80,47 @@ export function createPerplexitySearchToolExecutor(input: {
         searchPolicy: input.searchPolicy,
         strategyId
       };
-      const result = await input.searchAdapter.search(request, options);
+      let result: ProviderSearchResult;
+      try {
+        result = await input.searchAdapter.search(request, options);
+      } catch (error) {
+        if (!isProviderSearchExecutionError(error)) throw error;
+        const failureCode = /^[a-z][a-z0-9_]{0,127}$/u.test(error.code)
+          ? error.code
+          : "search_execution_failed";
+        const providerStatus = typeof error.providerStatus === "string" &&
+          error.providerStatus.length > 0 && error.providerStatus.length <= 64 &&
+          !/[\u0000-\u001f\u007f]/u.test(error.providerStatus)
+          ? error.providerStatus
+          : undefined;
+        const reason = typeof error.reason === "string" &&
+          error.reason.length > 0 && error.reason.length <= 128 &&
+          !/[\u0000-\u001f\u007f]/u.test(error.reason)
+          ? error.reason
+          : undefined;
+        return {
+          artifacts: error.artifacts,
+          callId: call.id,
+          content: [{ text: `Search failed: ${failureCode}`, type: "text" }],
+          name: call.name,
+          rawPreview: {
+            finalProviderResponsePreview: {
+              error: failureCode,
+              ...(providerStatus ? { providerStatus } : {}),
+              ...(reason ? { reason } : {})
+            },
+            providerCall: true,
+            requestPreview: {
+              modelId: input.searchPolicy.modelId,
+              provider: input.searchPolicy.provider,
+              queryCharacters: validation.query.length,
+              strategyId
+            }
+          },
+          status: "error",
+          usage: error.usage
+        };
+      }
       const sources = normalizeSearchSources(result.sources, 20);
       let findings: string;
       try {

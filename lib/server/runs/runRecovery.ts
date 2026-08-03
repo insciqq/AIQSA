@@ -47,7 +47,10 @@ import { loadProviderAttachments } from "./runPreparation";
 import { withPinnedHostedSearchIdentity } from "./searchArtifactIdentity";
 import type { RunRepository, RunUsageAttribution } from "./runRepositoryContract";
 import type { ToolLoopSettledCall } from "./toolLoop";
-import { parsePersistedToolExecutionResult } from "./toolExecutionPersistence";
+import {
+  parsePersistedToolExecutionResult,
+  snapshotToolExecutionResult
+} from "./toolExecutionPersistence";
 import {
   snapshotToolLoopJson,
   toolLoopPersistenceLimits,
@@ -611,11 +614,13 @@ async function executePersistedToolCall(
   }
   if (signal.aborted) throw new ToolLoopRecoveryStopped();
 
-  const stored = toolLoopJson(
-    result,
-    toolLoopPersistenceLimits.resultBytes,
-    "tool_call_result_invalid"
-  );
+  const stored = snapshotToolExecutionResult(result, toolLoopPersistenceLimits.resultBytes);
+  if (stored === null) {
+    throw new ToolLoopRecoveryError(
+      "tool_call_result_invalid",
+      "A recovered tool result is invalid or too large to persist safely."
+    );
+  }
   const settled = await context.deps.repository.settleToolLoopCall({
     callId: claim.call.id,
     result: stored,

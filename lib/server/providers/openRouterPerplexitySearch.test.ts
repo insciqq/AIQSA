@@ -277,6 +277,38 @@ describe("OpenRouter Perplexity search adapter", () => {
     });
   });
 
+  it("discards provider reasoning from client Search evidence", async () => {
+    const adapter = createOpenRouterPerplexitySearchAdapter({
+      client: {
+        createChatCompletion: async () => successfulResponse({
+          choices: [{
+            finish_reason: "stop",
+            message: {
+              annotations: [{
+                type: "url_citation",
+                url_citation: { url: "https://example.com/grounded" }
+              }],
+              content: "Search answer [1]",
+              reasoning: "PRIVATE_SEARCH_REASONING_CANARY",
+              role: "assistant"
+            }
+          }],
+          citations: []
+        })
+      }
+    });
+
+    const result = await adapter.search(searchRequest());
+
+    expect(result.sources).toEqual([
+      expect.objectContaining({ url: "https://example.com/grounded" })
+    ]);
+    expect(JSON.stringify(result)).not.toContain("PRIVATE_SEARCH_REASONING_CANARY");
+    expect(result.artifacts.every((artifact) =>
+      artifact.type !== "artifact" || artifact.data.artifactType !== "reasoning"
+    )).toBe(true);
+  });
+
   it("returns a raw-free typed failure when no safe source proves Search", async () => {
     const adapter = createOpenRouterPerplexitySearchAdapter({
       client: {
