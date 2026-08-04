@@ -11,6 +11,7 @@ import {
   attachmentPolicyForModel,
   attachmentWarningsForModel
 } from "@/components/app-shell/attachmentCapabilities";
+import { calculateAttachmentLimitUsage } from "@/components/app-shell/attachmentLimitUsage";
 import { ComposerControls } from "@/components/app-shell/ComposerControls";
 import { McpComposerSummary } from "@/components/app-shell/McpComposerSummary";
 import { ThreadMessageRow } from "@/components/app-shell/ThreadMessageRow";
@@ -44,6 +45,11 @@ export type RunWarning = {
 export type MainThreadPaneComposerActions = {
   cancelMessageEdit(): void;
   changeDraft(value: string): void;
+  rejectAttachmentCount(input: {
+    attemptedCount: number;
+    currentCount: number;
+    maxCount: number;
+  }): void;
   rejectAttachments(fileNames: readonly string[]): void;
   removeAttachment(attachmentId: string): void;
 };
@@ -273,6 +279,14 @@ export function MainThreadPane({
   const attachmentWarnings = useMemo(
     () => attachmentWarningsForModel(attachments, currentModel),
     [attachments, currentModel]
+  );
+  const attachmentLimitUsage = useMemo(
+    () => calculateAttachmentLimitUsage(
+      attachments,
+      currentModel,
+      catalog?.attachmentLimits
+    ),
+    [attachments, catalog?.attachmentLimits, currentModel]
   );
   const attachmentWarningBlocksSend = attachmentWarnings.some(
     (warning) => warning.blocking
@@ -661,6 +675,7 @@ export function MainThreadPane({
         </div>
 
         <Composer
+          attachmentLimitUsage={attachmentLimitUsage}
           attachmentPolicy={attachmentPolicy}
           attachmentWarnings={attachmentWarnings}
           attachments={attachments}
@@ -734,6 +749,7 @@ export function MainThreadPane({
           promptFirst={centeredEmptyConversation}
           readingCollapsed={composerReadingCollapsed}
           onChange={composerActions.changeDraft}
+          onAttachmentCountLimitExceeded={composerActions.rejectAttachmentCount}
           onCancelEdit={composerActions.cancelMessageEdit}
           onRemoveAttachment={composerActions.removeAttachment}
           onRejectedFiles={(files) =>
@@ -747,7 +763,9 @@ export function MainThreadPane({
             uploading ||
             creatingChat ||
             editingMessagePending ||
-            (!editingMessageId && attachmentWarningBlocksSend)
+            (!editingMessageId && (
+              attachmentWarningBlocksSend || attachmentLimitUsage.blocking
+            ))
           }
           stopDisabled={!currentRunId}
           streaming={activeChatStreaming}

@@ -1,6 +1,11 @@
 "use client";
 
 import { unsupportedAttachmentMessage } from "@/components/app-shell/attachmentCapabilities";
+import {
+  attachmentCountSelectionLimitMessage,
+  withAttachmentLimitFeedbackMessage,
+  withoutAttachmentLimitFeedbackMessage
+} from "@/components/app-shell/attachmentLimitUsage";
 import { reconcileCurrentComposerAttachments } from "@/components/app-shell/attachmentReconciliation";
 import {
   useComposerControlStore,
@@ -358,13 +363,41 @@ export function PowerAppShell({
     visibleMessages
   });
 
+  const attachmentLimitContextsRef = useRef(new Map<string, string>());
+
   useEffect(() => {
     if (!currentModel) {
       return;
     }
 
-    reconcileCurrentComposerAttachments(activeComposerSessionKey, currentModel);
-  }, [activeComposerSessionKey, attachments, currentModel, uploading]);
+    if (uploading) {
+      return;
+    }
+
+    const attachmentLimits = catalog?.attachmentLimits;
+    const contextFingerprint = [
+      currentModel.provider,
+      currentModel.modelId,
+      currentModel.capabilities.documentInputMode,
+      currentModel.capabilities.imageInput ? "images" : "no-images",
+      attachmentLimits?.maxCount ?? "default-count",
+      attachmentLimits?.maxMaterializedBytes ?? "default-source",
+      attachmentLimits?.maxEncodedBytes ?? "default-encoded"
+    ].join("\u0000");
+    const previousContext = attachmentLimitContextsRef.current.get(
+      activeComposerSessionKey
+    );
+    const clearResolvedLimitFeedback =
+      previousContext !== undefined && previousContext !== contextFingerprint;
+
+    reconcileCurrentComposerAttachments(activeComposerSessionKey, currentModel, {
+      clearResolvedLimitFeedback
+    });
+    attachmentLimitContextsRef.current.set(
+      activeComposerSessionKey,
+      contextFingerprint
+    );
+  }, [activeComposerSessionKey, attachments, catalog?.attachmentLimits, currentModel, uploading]);
 
   useEffect(() => {
     if (!catalog || currentModel || catalog.models.length === 0) {
@@ -793,6 +826,20 @@ export function PowerAppShell({
       sessionStore.cancelEdit(sessionStore.activeSessionKey);
     },
     changeDraft: setDraft,
+    rejectAttachmentCount(input: {
+      attemptedCount: number;
+      currentCount: number;
+      maxCount: number;
+    }) {
+      const store = useComposerSessionStore.getState();
+      const session = selectComposerSession(store, store.activeSessionKey);
+      store.updateSession(store.activeSessionKey, {
+        operationError: withAttachmentLimitFeedbackMessage(
+          session.operationError,
+          attachmentCountSelectionLimitMessage(input)
+        )
+      });
+    },
     rejectAttachments(fileNames: readonly string[]) {
       const store = useComposerSessionStore.getState();
       store.updateSession(store.activeSessionKey, {
@@ -800,7 +847,14 @@ export function PowerAppShell({
       });
     },
     removeAttachment(attachmentId: string) {
-      setAttachments((current) => current.filter((attachment) => attachment.id !== attachmentId));
+      const store = useComposerSessionStore.getState();
+      const session = selectComposerSession(store, store.activeSessionKey);
+      store.updateSession(store.activeSessionKey, {
+        attachments: session.attachments.filter(
+          (attachment) => attachment.id !== attachmentId
+        ),
+        operationError: withoutAttachmentLimitFeedbackMessage(session.operationError)
+      });
     }
   };
 

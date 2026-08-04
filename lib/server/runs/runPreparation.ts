@@ -41,6 +41,17 @@ import type { ProviderToolBridge } from "../tools/types";
 import { perplexityWebSearchTool } from "../tools/perplexitySearch";
 import { createSearchPlanToolRouter } from "../search/toolExecutor";
 import { applyProviderRequestContextBudget } from "./runContextBudget";
+import {
+  getRunAttachmentLimits,
+  type RunAttachmentLimits
+} from "./attachmentLimits";
+import {
+  attachmentIdsFromContentBlocks,
+  enforceAttachmentReferenceLimit,
+  isAttachmentMaterializationError,
+  loadProviderAttachments,
+  type AttachmentLimitNumericFacts
+} from "./runAttachmentMaterialization";
 import type {
   AcceptedRunDefaults,
   RunModelConfiguration,
@@ -88,6 +99,7 @@ type RunPreparationRepository = Pick<
 
 export type RunPreparationDeps = Readonly<{
   allowFakeProvider?: boolean;
+  getAttachmentLimits?: () => RunAttachmentLimits;
   mcp?: Readonly<{
     prepare(userId: string): Promise<McpRunPlanResult>;
   }>;
@@ -142,6 +154,7 @@ export type RegenerateRunPreparationSource = Readonly<{
 
 export type RunPreparationInput = Readonly<{
   body: Readonly<Record<string, unknown>> | null;
+  signal?: AbortSignal;
   source: SendRunPreparationSource | RegenerateRunPreparationSource;
   userId: string;
 }>;
@@ -183,10 +196,12 @@ export type MaterializedPreparedRunData = {
 export type PreparedRun = DeepReadonly<MaterializedPreparedRunData>;
 
 export type RunPreparationFailure = Readonly<{
+  actual?: AttachmentLimitNumericFacts;
   code: string;
+  limits?: AttachmentLimitNumericFacts;
   message?: string;
   ok: false;
-  status: 400 | 403 | 409;
+  status: 400 | 403 | 409 | 413 | 503;
 }>;
 
 export type RunPreparationResult =
@@ -199,12 +214,33 @@ export type RunPreparationResult =
       toolBridge: ProviderToolBridge | undefined;
     }>;
 
-function failure(code: string, status: 400 | 403 | 409, message?: string): RunPreparationFailure {
+function failure(
+  code: string,
+  status: 400 | 403 | 409 | 413 | 503,
+  message?: string,
+  facts: Readonly<{
+    actual?: AttachmentLimitNumericFacts;
+    limits?: AttachmentLimitNumericFacts;
+  }> = {}
+): RunPreparationFailure {
   return Object.freeze({
+    ...(facts.actual ? { actual: facts.actual } : {}),
     code,
+    ...(facts.limits ? { limits: facts.limits } : {}),
     ...(message ? { message } : {}),
     ok: false,
     status
+  });
+}
+
+function attachmentFailure(error: unknown): RunPreparationFailure | null {
+  if (!isAttachmentMaterializationError(error)) {
+    return null;
+  }
+
+  return failure(error.code, error.status, error.message, {
+    ...(Object.keys(error.actual).length > 0 ? { actual: error.actual } : {}),
+    ...(Object.keys(error.limits).length > 0 ? { limits: error.limits } : {})
   });
 }
 
@@ -588,16 +624,6 @@ function promptWithProjectMemory(
   };
 }
 
-function extractAttachmentIds(content: NormalizedRunRequest["content"]): string[] {
-  return content.blocks.flatMap((block) => {
-    if (typeof block === "object" && block && "attachmentId" in block && typeof block.attachmentId === "string") {
-      return [block.attachmentId];
-    }
-
-    return [];
-  });
-}
-
 function hasTextContent(content: NormalizedRunRequest["content"]): boolean {
   return content.blocks.some(
     (block) =>
@@ -609,10 +635,6 @@ function hasTextContent(content: NormalizedRunRequest["content"]): boolean {
       typeof block.text === "string" &&
       Boolean(block.text.trim())
   );
-}
-
-function hasRunnableContent(content: NormalizedRunRequest["content"]): boolean {
-  return hasTextContent(content) || extractAttachmentIds(content).length > 0;
 }
 
 function validateAttachmentCapabilities(
@@ -738,56 +760,6 @@ function validateMcpCapabilities(input: Readonly<{
   return null;
 }
 
-function objectToDataUrl(contentType: string, body: Buffer): string {
-  return `data:${contentType};base64,${body.toString("base64")}`;
-}
-
-export async function loadProviderAttachments(
-  deps: Readonly<{
-    repository: Pick<RunRepository, "loadAttachments">;
-    storage?: Pick<StorageAdapter, "getObject">;
-  }>,
-  userId: string,
-  attachmentIds: string[],
-  options: { loadNativePdfData: boolean } = { loadNativePdfData: false }
-): Promise<ProviderAttachment[]> {
-  if (attachmentIds.length === 0) {
-    return [];
-  }
-
-  const records = await deps.repository.loadAttachments(userId, attachmentIds);
-
-  return Promise.all(
-    records.map(async (record) => {
-      const { storageKey, ...attachment } = record;
-
-      if (options.loadNativePdfData && attachment.kind === "pdf" && deps.storage) {
-        const object = await deps.storage.getObject(storageKey);
-
-        return {
-          ...attachment,
-          base64Data: object.body.toString("base64")
-        };
-      }
-
-      if (attachment.kind !== "image") {
-        return attachment;
-      }
-
-      if (!deps.storage) {
-        return attachment;
-      }
-
-      const object = await deps.storage.getObject(storageKey);
-
-      return {
-        ...attachment,
-        dataUrl: objectToDataUrl(attachment.mimeType || object.contentType, object.body)
-      };
-    })
-  );
-}
-
 export async function prepareRun(
   deps: RunPreparationDeps,
   input: RunPreparationInput
@@ -904,7 +876,17 @@ export async function prepareRun(
     input.source.kind === "send"
       ? normalizeContent(body ?? {})
       : contentFromStored(input.source.source.userMessage.content);
-  if (input.source.kind === "send" && !hasRunnableContent(content)) {
+  const attachmentLimits = deps.getAttachmentLimits?.() ?? getRunAttachmentLimits();
+  let attachmentIds: string[];
+  try {
+    attachmentIds = attachmentIdsFromContentBlocks(content.blocks);
+    enforceAttachmentReferenceLimit(attachmentIds, attachmentLimits);
+  } catch (error) {
+    const rejected = attachmentFailure(error);
+    if (rejected) return rejected;
+    throw error;
+  }
+  if (input.source.kind === "send" && !hasTextContent(content) && attachmentIds.length === 0) {
     return failure("content_required", 400);
   }
 
@@ -970,7 +952,6 @@ export async function prepareRun(
           input.userId,
           input.source.source.userMessage.id
         );
-  const attachmentIds = extractAttachmentIds(content);
   const clientSearchSelected = (
     !admissionPlan && requestedSearchStrategy === perplexityToolSearchStrategyId
   ) || Boolean(
@@ -1134,12 +1115,20 @@ export async function prepareRun(
     }
   }
 
-  const uniqueAttachmentIds = Array.from(new Set(attachmentIds));
-  const attachments = await loadProviderAttachments(deps, input.userId, uniqueAttachmentIds, {
-    loadNativePdfData: modelCapabilities.nativePdfInput
-  });
+  let attachments: ProviderAttachment[];
+  try {
+    attachments = await loadProviderAttachments(deps, input.userId, attachmentIds, {
+      capabilities: modelCapabilities,
+      limits: attachmentLimits,
+      ...(input.signal ? { signal: input.signal } : {})
+    });
+  } catch (error) {
+    const rejected = attachmentFailure(error);
+    if (rejected) return rejected;
+    throw error;
+  }
 
-  if (attachments.length !== uniqueAttachmentIds.length) {
+  if (attachments.length !== attachmentIds.length) {
     return failure("attachment_not_found", 400);
   }
 

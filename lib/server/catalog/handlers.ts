@@ -1,5 +1,10 @@
 import type { CatalogErrorResponse, CatalogResponse } from "../../contracts/catalog";
 import type { RequestAuthResolver } from "../auth/requestAuth";
+import {
+  getRunAttachmentLimits,
+  toCatalogAttachmentLimits,
+  type RunAttachmentLimits
+} from "../runs/attachmentLimits";
 import { buildCurrentUserCatalog, type CatalogData } from "./currentUserCatalog";
 
 export { buildCurrentUserCatalog } from "./currentUserCatalog";
@@ -8,6 +13,7 @@ export type { CatalogData } from "./currentUserCatalog";
 export type CatalogHandlerDeps = {
   loadCatalogData(userId: string): Promise<CatalogData | null>;
   resolveAuth: RequestAuthResolver;
+  resolveRunAttachmentLimits?(): RunAttachmentLimits;
 };
 
 function catalogErrorJson(data: CatalogErrorResponse, init?: ResponseInit): Response {
@@ -32,7 +38,12 @@ export function createCatalogHandler(deps: CatalogHandlerDeps) {
     }
 
     const response = {
-      catalog: buildCurrentUserCatalog(data)
+      catalog: {
+        ...buildCurrentUserCatalog(data),
+        attachmentLimits: toCatalogAttachmentLimits(
+          deps.resolveRunAttachmentLimits?.() ?? getRunAttachmentLimits()
+        )
+      }
     } satisfies CatalogResponse;
 
     return catalogJson(response);

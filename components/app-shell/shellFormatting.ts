@@ -120,25 +120,68 @@ function actionLabel(action: string): string {
   return labels[action] ?? action.replace(/_/g, " ");
 }
 
-export async function responseErrorMessage(
+export type ResponseErrorMessageDetails = {
+  message: string;
+  preserveForComposer: boolean;
+};
+
+export async function responseErrorMessageDetails(
   response: Response,
   fallback: string
-): Promise<string> {
+): Promise<ResponseErrorMessageDetails> {
   const text = await response.text().catch(() => "");
   if (!text) {
-    return humanizeErrorCode(fallback);
+    return {
+      message: humanizeErrorCode(fallback),
+      preserveForComposer: false
+    };
   }
 
   try {
     const body = JSON.parse(text) as unknown;
     if (isRecord(body) && typeof body.error === "string") {
-      return humanizeErrorCode(body.error);
+      const attachmentLimitErrors = new Set([
+        "attachment_count_limit_exceeded",
+        "attachment_encoded_size_limit_exceeded",
+        "attachment_materialization_limit_exceeded",
+        "attachment_object_size_mismatch"
+      ]);
+      if (
+        attachmentLimitErrors.has(body.error) &&
+        typeof body.message === "string" &&
+        body.message.length > 0 &&
+        body.message.length <= 240 &&
+        !/[\u0000-\u001f\u007f]/u.test(body.message)
+      ) {
+        return {
+          message: body.message,
+          preserveForComposer: true
+        };
+      }
+
+      return {
+        message: humanizeErrorCode(body.error),
+        preserveForComposer: false
+      };
     }
   } catch {
-    return text.slice(0, 240);
+    return {
+      message: text.slice(0, 240),
+      preserveForComposer: false
+    };
   }
 
-  return humanizeErrorCode(fallback);
+  return {
+    message: humanizeErrorCode(fallback),
+    preserveForComposer: false
+  };
+}
+
+export async function responseErrorMessage(
+  response: Response,
+  fallback: string
+): Promise<string> {
+  return (await responseErrorMessageDetails(response, fallback)).message;
 }
 
 const modelCapabilityDefinitions = [

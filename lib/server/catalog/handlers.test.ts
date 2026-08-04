@@ -56,7 +56,13 @@ describe("catalog handler", () => {
           showToolActivity: true,
         }
       }),
-      resolveAuth: auth.resolveAuth
+      resolveAuth: auth.resolveAuth,
+      resolveRunAttachmentLimits: () => ({
+        maxCount: 7,
+        maxEncodedBytes: 11_000,
+        maxMaterializedBytes: 9_000,
+        readConcurrency: 3
+      })
     });
     const response = await GET(
       new Request("http://app.local/api/me/catalog", {
@@ -77,8 +83,16 @@ describe("catalog handler", () => {
       "promptPresets",
       "providers",
       "runProfiles",
-      "searchStrategies"
+      "searchStrategies",
+      "attachmentLimits"
     ]);
+    expect(body.catalog.attachmentLimits).toEqual({
+      maxCount: 7,
+      maxEncodedBytes: 11_000,
+      maxMaterializedBytes: 9_000
+    });
+    expect(body.catalog.attachmentLimits).not.toHaveProperty("readConcurrency");
+    expect(catalog?.attachmentLimits).toEqual(body.catalog.attachmentLimits);
     expect(Object.keys(body.catalog.defaults)).toEqual([
       "controlValues",
       "modelId",

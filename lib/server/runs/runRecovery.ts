@@ -43,7 +43,15 @@ import {
   type ProviderToolLoopContinuation
 } from "./providerToolLoop";
 import { applyProviderRequestContextBudget } from "./runContextBudget";
-import { loadProviderAttachments } from "./runPreparation";
+import {
+  getRunAttachmentLimits,
+  type RunAttachmentLimits
+} from "./attachmentLimits";
+import {
+  isAttachmentMaterializationError,
+  loadProviderAttachments,
+  validatePersistedAttachmentReferences
+} from "./runAttachmentMaterialization";
 import { withPinnedHostedSearchIdentity } from "./searchArtifactIdentity";
 import type { RunRepository, RunUsageAttribution } from "./runRepositoryContract";
 import type { ToolLoopSettledCall } from "./toolLoop";
@@ -115,6 +123,7 @@ export type RunRecoveryMcpRuntime = Readonly<{
 }>;
 
 export type RunRecoveryDeps = Readonly<{
+  getAttachmentLimits?: () => RunAttachmentLimits;
   mcpRuntime?: RunRecoveryMcpRuntime;
   providerRuntime?: ProviderRuntimeResolver;
   providers: Readonly<Record<string, ProviderAdapter>>;
@@ -708,6 +717,12 @@ async function recoverCheckpointedToolLoop(
   let currentProviderResponseId = run.providerResponseId;
 
   try {
+    const attachmentLimits = deps.getAttachmentLimits?.() ?? getRunAttachmentLimits();
+    const attachmentIds = validatePersistedAttachmentReferences(
+      run.normalizedRequest.content.blocks,
+      run.normalizedRequest.attachmentIds,
+      attachmentLimits
+    );
     const persistedUsage = await deps.repository.loadRunUsageAttributions({
       runId: run.id,
       userId: run.userId
@@ -733,10 +748,14 @@ async function recoverCheckpointedToolLoop(
     const attachments = await loadProviderAttachments(
       deps,
       run.userId,
-      [...run.normalizedRequest.attachmentIds],
-      { loadNativePdfData: run.normalizedRequest.modelCapabilities.nativePdfInput }
+      attachmentIds,
+      {
+        capabilities: run.normalizedRequest.modelCapabilities,
+        limits: attachmentLimits,
+        signal
+      }
     );
-    if (attachments.length !== new Set(run.normalizedRequest.attachmentIds).size) {
+    if (attachments.length !== attachmentIds.length) {
       throw new ToolLoopRecoveryError(
         "attachment_not_available",
         "A run attachment is no longer available for tool-loop recovery."
@@ -1311,13 +1330,15 @@ async function recoverCheckpointedToolLoop(
       }
     });
   } catch (error) {
-    if (error instanceof ToolLoopRecoveryStopped) return;
+    if (signal.aborted || error instanceof ToolLoopRecoveryStopped) return;
     const failure = error instanceof ToolLoopRecoveryError
       ? error
-      : new ToolLoopRecoveryError(
-          "tool_loop_recovery_failed",
-          error instanceof Error ? error.message : "Tool-loop recovery failed."
-        );
+      : isAttachmentMaterializationError(error)
+        ? new ToolLoopRecoveryError(error.code, error.message)
+        : new ToolLoopRecoveryError(
+            "tool_loop_recovery_failed",
+            error instanceof Error ? error.message : "Tool-loop recovery failed."
+          );
     await settleToolLoopRecoveryError(
       deps,
       run,

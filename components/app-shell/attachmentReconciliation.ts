@@ -2,6 +2,7 @@ import {
   partitionAttachmentsForModel,
   unsupportedAttachmentMessage
 } from "@/components/app-shell/attachmentCapabilities";
+import { withoutAttachmentLimitFeedbackMessage } from "@/components/app-shell/attachmentLimitUsage";
 import { useComposerControlStore } from "@/components/app-shell/composerControlStore";
 import {
   useComposerSessionStore,
@@ -11,7 +12,10 @@ import type { CatalogModel } from "@/components/app-shell/types";
 
 export function reconcileCurrentComposerAttachments(
   sourceSessionKey: ComposerSessionKey,
-  renderedModel: CatalogModel
+  renderedModel: CatalogModel,
+  options: Readonly<{
+    clearResolvedLimitFeedback?: boolean;
+  }> = {}
 ): boolean {
   const sessionStore = useComposerSessionStore.getState();
   if (sessionStore.activeSessionKey !== sourceSessionKey) {
@@ -36,7 +40,15 @@ export function reconcileCurrentComposerAttachments(
     renderedModel
   );
   if (unsupported.length === 0) {
-    return false;
+    const retainedError = withoutAttachmentLimitFeedbackMessage(
+      sourceSession.operationError
+    );
+    return options.clearResolvedLimitFeedback &&
+      retainedError !== sourceSession.operationError
+      ? sessionStore.updateSession(sourceSessionKey, {
+          operationError: retainedError
+        })
+      : false;
   }
 
   const capabilityMessage = unsupportedAttachmentMessage(
@@ -44,10 +56,13 @@ export function reconcileCurrentComposerAttachments(
     renderedModel,
     true
   );
+  const retainedError = withoutAttachmentLimitFeedbackMessage(
+    sourceSession.operationError
+  );
   return sessionStore.updateSession(sourceSessionKey, {
     attachments: supported,
-    operationError: sourceSession.operationError
-      ? `${sourceSession.operationError} ${capabilityMessage}`
+    operationError: retainedError
+      ? `${retainedError} ${capabilityMessage}`
       : capabilityMessage
   });
 }

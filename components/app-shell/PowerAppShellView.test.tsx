@@ -179,6 +179,7 @@ function baseProps(): PowerAppShellViewProps {
       composerActions: {
         cancelMessageEdit: noop,
         changeDraft: noop,
+        rejectAttachmentCount: noop,
         rejectAttachments: noop,
         removeAttachment: noop
       },

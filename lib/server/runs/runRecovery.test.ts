@@ -140,6 +140,7 @@ function deferred() {
 }
 
 function createHarness(options: Readonly<{
+  attachmentLimits?: ReturnType<NonNullable<RunRecoveryDeps["getAttachmentLimits"]>>;
   completeRun?: boolean;
   controls?: readonly (RunControlRecord | null)[];
   failRun?: boolean;
@@ -292,6 +293,9 @@ function createHarness(options: Readonly<{
     updateRunProviderRequestPreview: async () => undefined
   };
   const deps: RunRecoveryDeps = {
+    ...(options.attachmentLimits
+      ? { getAttachmentLimits: () => options.attachmentLimits! }
+      : {}),
     ...(options.mcpRuntime ? { mcpRuntime: options.mcpRuntime } : {}),
     providers: options.providers ?? {},
     registry: options.registry ?? registry(options.liveRunIds),
@@ -1892,9 +1896,17 @@ describe("run recovery", () => {
       normalizedRequest: {
         ...base.normalizedRequest,
         attachmentIds: ["image-1", "pdf-1"],
+        content: {
+          blocks: [
+            ...base.normalizedRequest.content.blocks,
+            { attachmentId: "image-1", type: "image" },
+            { attachmentId: "pdf-1", type: "attachment" }
+          ]
+        },
         modelCapabilities: {
           ...base.normalizedRequest.modelCapabilities,
-          nativePdfInput: true
+          nativePdfInput: true,
+          vision: true
         }
       }
     });
@@ -1936,6 +1948,319 @@ describe("run recovery", () => {
         id: "pdf-1"
       })
     ]);
+  });
+
+  it("reapplies the shared attachment preflight before recovery storage or provider I/O", async () => {
+    const getObject = vi.fn();
+    const providerStream = vi.fn();
+    const harness = createHarness({
+      attachmentLimits: {
+        maxCount: 20,
+        maxEncodedBytes: 1_000,
+        maxMaterializedBytes: 10,
+        readConcurrency: 2
+      },
+      providers: {
+        openai: {
+          buildRequestPreview: () => ({}),
+          async *stream() {
+            providerStream();
+            return providerResult;
+          }
+        }
+      },
+      storage: { getObject }
+    });
+    const base = checkpointedRun({ calls: [persistedRecoveryCall()], phase: "tools_pending" });
+    installCheckpointState(harness, {
+      ...base,
+      normalizedRequest: {
+        ...base.normalizedRequest,
+        attachmentIds: ["image-1"],
+        content: {
+          blocks: [
+            ...base.normalizedRequest.content.blocks,
+            { attachmentId: "image-1", type: "image" }
+          ]
+        },
+        modelCapabilities: {
+          ...base.normalizedRequest.modelCapabilities,
+          vision: true
+        }
+      }
+    });
+    harness.repository.loadAttachments = async () => [
+      {
+        byteSize: 11,
+        extractedText: null,
+        fileName: "diagram.png",
+        id: "image-1",
+        kind: "image",
+        metadata: { image: { height: 10, width: 10 } },
+        mimeType: "image/png",
+        status: "ready",
+        storageKey: "image-key"
+      }
+    ];
+
+    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+
+    expect(getObject).not.toHaveBeenCalled();
+    expect(providerStream).not.toHaveBeenCalled();
+    expect(harness.state.recoveredErrors).toEqual([
+      expect.objectContaining({
+        error: {
+          code: "attachment_materialization_limit_exceeded",
+          message: "Selected attachments require 11 source bytes; the limit is 10."
+        }
+      })
+    ]);
+  });
+
+  it.each([
+    {
+      attachmentIds: ["one", "two"],
+      blocks: [
+        { attachmentId: "one", type: "image" },
+        { attachmentId: "two", type: "image" }
+      ],
+      code: "attachment_count_limit_exceeded",
+      label: "count overflow",
+      maxCount: 1
+    },
+    {
+      attachmentIds: [],
+      blocks: Array.from({ length: 257 }, () => ({ text: "x", type: "text" })),
+      code: "content_block_limit_exceeded",
+      label: "content-block overflow",
+      maxCount: 20
+    },
+    {
+      attachmentIds: ["persisted-only"],
+      blocks: [{ text: "missing attachment block", type: "text" }],
+      code: "attachment_reference_invalid",
+      label: "persisted/content mismatch",
+      maxCount: 20
+    }
+  ])("rejects a recovered $label before attachment or provider I/O", async ({
+    attachmentIds,
+    blocks,
+    code,
+    maxCount
+  }) => {
+    const providerStream = vi.fn();
+    const harness = createHarness({
+      attachmentLimits: {
+        maxCount,
+        maxEncodedBytes: 1_000,
+        maxMaterializedBytes: 1_000,
+        readConcurrency: 2
+      },
+      providers: {
+        openai: {
+          buildRequestPreview: () => ({}),
+          async *stream() {
+            providerStream();
+            return providerResult;
+          }
+        }
+      }
+    });
+    const base = checkpointedRun({ calls: [persistedRecoveryCall()], phase: "tools_pending" });
+    installCheckpointState(harness, {
+      ...base,
+      normalizedRequest: {
+        ...base.normalizedRequest,
+        attachmentIds,
+        content: { blocks }
+      }
+    });
+    const loadAttachments = vi.fn(async () => []);
+    harness.repository.loadAttachments = loadAttachments;
+
+    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+
+    expect(loadAttachments).not.toHaveBeenCalled();
+    expect(providerStream).not.toHaveBeenCalled();
+    expect(harness.state.recoveredErrors).toEqual([
+      expect.objectContaining({ error: expect.objectContaining({ code }) })
+    ]);
+  });
+
+  it.each([
+    {
+      body: Buffer.alloc(3),
+      code: "attachment_encoded_size_limit_exceeded",
+      expectedReads: 0,
+      storageError: null,
+      limits: {
+        maxCount: 20,
+        maxEncodedBytes: 25,
+        maxMaterializedBytes: 1_000,
+        readConcurrency: 2
+      }
+    },
+    {
+      body: Buffer.alloc(2),
+      code: "attachment_object_size_mismatch",
+      expectedReads: 1,
+      storageError: null,
+      limits: {
+        maxCount: 20,
+        maxEncodedBytes: 1_000,
+        maxMaterializedBytes: 1_000,
+        readConcurrency: 2
+      }
+    },
+    {
+      body: Buffer.alloc(3),
+      code: "attachment_object_read_failed",
+      expectedReads: 1,
+      limits: {
+        maxCount: 20,
+        maxEncodedBytes: 1_000,
+        maxMaterializedBytes: 1_000,
+        readConcurrency: 2
+      },
+      storageError: "ENOENT /private/bucket/image-key"
+    }
+  ])("preserves $code during recovery parity", async ({
+    body,
+    code,
+    expectedReads,
+    limits: attachmentLimits,
+    storageError
+  }) => {
+    const getObject = vi.fn(async (storageKey: string) => {
+      if (storageError) throw new Error(storageError);
+      return {
+        body,
+        contentType: "image/png",
+        storageKey
+      };
+    });
+    const providerStream = vi.fn();
+    const harness = createHarness({
+      attachmentLimits,
+      providers: {
+        openai: {
+          buildRequestPreview: () => ({}),
+          async *stream() {
+            providerStream();
+            return providerResult;
+          }
+        }
+      },
+      storage: { getObject }
+    });
+    const base = checkpointedRun({ calls: [persistedRecoveryCall()], phase: "tools_pending" });
+    installCheckpointState(harness, {
+      ...base,
+      normalizedRequest: {
+        ...base.normalizedRequest,
+        attachmentIds: ["image-1"],
+        content: {
+          blocks: [
+            ...base.normalizedRequest.content.blocks,
+            { attachmentId: "image-1", type: "image" }
+          ]
+        },
+        modelCapabilities: {
+          ...base.normalizedRequest.modelCapabilities,
+          vision: true
+        }
+      }
+    });
+    harness.repository.loadAttachments = async () => [{
+      byteSize: 3,
+      extractedText: null,
+      fileName: "diagram.png",
+      id: "image-1",
+      kind: "image",
+      metadata: {},
+      mimeType: "image/png",
+      status: "ready",
+      storageKey: "image-key"
+    }];
+
+    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+
+    expect(getObject).toHaveBeenCalledTimes(expectedReads);
+    expect(providerStream).not.toHaveBeenCalled();
+    expect(harness.state.recoveredErrors).toEqual([
+      expect.objectContaining({ error: expect.objectContaining({ code }) })
+    ]);
+    if (storageError) {
+      expect(JSON.stringify(harness.state.recoveredErrors)).not.toContain(storageError);
+      expect(harness.state.recoveredErrors[0]?.error.message)
+        .toBe("An attachment object could not be read.");
+    }
+  });
+
+  it("treats cancellation during recovered attachment I/O as cancellation, not failure", async () => {
+    const readStarted = deferred();
+    const recoveryRegistry = registry();
+    const providerStream = vi.fn();
+    const getObject = vi.fn((
+      _storageKey: string,
+      options?: { signal?: AbortSignal }
+    ) => new Promise<never>((_resolve, reject) => {
+      readStarted.resolve();
+      const abort = () => reject(options?.signal?.reason);
+      if (options?.signal?.aborted) abort();
+      else options?.signal?.addEventListener("abort", abort, { once: true });
+    }));
+    const harness = createHarness({
+      providers: {
+        openai: {
+          buildRequestPreview: () => ({}),
+          async *stream() {
+            providerStream();
+            return providerResult;
+          }
+        }
+      },
+      registry: recoveryRegistry,
+      storage: { getObject }
+    });
+    const base = checkpointedRun({ calls: [persistedRecoveryCall()], phase: "tools_pending" });
+    installCheckpointState(harness, {
+      ...base,
+      normalizedRequest: {
+        ...base.normalizedRequest,
+        attachmentIds: ["image-1"],
+        content: {
+          blocks: [
+            ...base.normalizedRequest.content.blocks,
+            { attachmentId: "image-1", type: "image" }
+          ]
+        },
+        modelCapabilities: {
+          ...base.normalizedRequest.modelCapabilities,
+          vision: true
+        }
+      }
+    });
+    harness.repository.loadAttachments = async () => [{
+      byteSize: 3,
+      extractedText: null,
+      fileName: "diagram.png",
+      id: "image-1",
+      kind: "image",
+      metadata: {},
+      mimeType: "image/png",
+      status: "ready",
+      storageKey: "image-key"
+    }];
+
+    const recovery = refreshProviderRunIfNeeded(harness.deps, runId, userId);
+    await readStarted.promise;
+    expect(recoveryRegistry.abort(runId)).toBe(true);
+    await recovery;
+
+    expect(providerStream).not.toHaveBeenCalled();
+    expect(harness.state.completed).toBeNull();
+    expect(harness.state.recoveredErrors).toEqual([]);
   });
 
   it("continues multiple post-recovery OpenAI tool rounds through successive response ids", async () => {

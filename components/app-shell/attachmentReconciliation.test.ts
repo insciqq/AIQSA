@@ -87,4 +87,87 @@ describe("attachment reconciliation", () => {
       operationError: expect.stringContaining("paper.pdf")
     });
   });
+
+  it("drops stale limit copy before composing model-capability removal feedback", () => {
+    const sessionA = composerSessionKey("chat-a");
+    const store = useComposerSessionStore.getState();
+    useComposerControlStore.setState({
+      selectedModelId: textOnlyModel.modelId,
+      selectedProvider: textOnlyModel.provider
+    });
+    store.activateSession(sessionA);
+    store.updateSession(sessionA, {
+      attachments: [{ fileName: "paper.pdf", id: "pdf-a", kind: "pdf" }],
+      operationError: "This run contains 24 attachments; the limit is 20."
+    });
+
+    expect(reconcileCurrentComposerAttachments(sessionA, textOnlyModel)).toBe(true);
+    expect(selectComposerSession(useComposerSessionStore.getState(), sessionA).operationError)
+      .toBe("Removed an attachment unsupported by Text model: paper.pdf");
+  });
+
+  it("clears resolved binary-limit feedback only after a model-limit context change", () => {
+    const sessionA = composerSessionKey("chat-a");
+    const extractionModel: CatalogModel = {
+      ...textOnlyModel,
+      capabilities: {
+        ...textOnlyModel.capabilities,
+        documentInputMode: "pdf_text_extraction"
+      }
+    };
+    const store = useComposerSessionStore.getState();
+    useComposerControlStore.setState({
+      selectedModelId: extractionModel.modelId,
+      selectedProvider: extractionModel.provider
+    });
+    store.activateSession(sessionA);
+    store.updateSession(sessionA, {
+      attachments: [{ byteSize: 101, fileName: "paper.pdf", id: "pdf-a", kind: "pdf" }],
+      operationError: "Selected attachments require 101 source bytes; the limit is 100."
+    });
+
+    expect(reconcileCurrentComposerAttachments(sessionA, extractionModel)).toBe(false);
+    expect(reconcileCurrentComposerAttachments(sessionA, extractionModel, {
+      clearResolvedLimitFeedback: true
+    })).toBe(true);
+    expect(selectComposerSession(useComposerSessionStore.getState(), sessionA).operationError)
+      .toBeNull();
+  });
+
+  it("defers context cleanup during upload and applies it after settlement", () => {
+    const sessionA = composerSessionKey("chat-a");
+    const extractionModel: CatalogModel = {
+      ...textOnlyModel,
+      capabilities: {
+        ...textOnlyModel.capabilities,
+        documentInputMode: "pdf_text_extraction"
+      }
+    };
+    const store = useComposerSessionStore.getState();
+    useComposerControlStore.setState({
+      selectedModelId: extractionModel.modelId,
+      selectedProvider: extractionModel.provider
+    });
+    store.activateSession(sessionA);
+    store.updateSession(sessionA, {
+      attachments: [{ byteSize: 101, fileName: "paper.pdf", id: "pdf-a", kind: "pdf" }]
+    });
+    const generation = store.beginUpload(sessionA)!;
+    store.updateSession(sessionA, {
+      operationError: "Selected attachments require 101 source bytes; the limit is 100."
+    });
+
+    expect(reconcileCurrentComposerAttachments(sessionA, extractionModel, {
+      clearResolvedLimitFeedback: true
+    })).toBe(false);
+    expect(selectComposerSession(useComposerSessionStore.getState(), sessionA).operationError)
+      .toContain("101 source bytes");
+
+    expect(store.finishUpload(sessionA, generation, null)).toBe(true);
+    expect(reconcileCurrentComposerAttachments(sessionA, extractionModel, {
+      clearResolvedLimitFeedback: true
+    })).toBe(true);
+    expect(selectComposerSession(useComposerSessionStore.getState(), sessionA).operationError)
+      .toBeNull();
+  });
 });

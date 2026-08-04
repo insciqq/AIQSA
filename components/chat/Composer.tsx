@@ -5,6 +5,10 @@ import {
   composerContextGauge,
   type ComposerContextStats
 } from "@/components/app-shell/composerContextStats";
+import {
+  calculateAttachmentLimitUsage,
+  type AttachmentLimitUsage
+} from "@/components/app-shell/attachmentLimitUsage";
 import { isImeCompositionEvent } from "@/components/keyboard";
 import type { PdfProcessingWire, UploadedAttachmentWire } from "@/lib/contracts/uploads";
 import {
@@ -65,6 +69,7 @@ export type ComposerUsageStats = {
 export type ComposerHintTone = "busy" | "caution";
 
 export type ComposerProps = {
+  attachmentLimitUsage?: AttachmentLimitUsage | null;
   attachmentPolicy?: ComposerAttachmentPolicy;
   attachmentWarnings?: readonly ComposerAttachmentWarning[];
   attachments: ComposerAttachment[];
@@ -77,6 +82,11 @@ export type ComposerProps = {
   editing?: boolean;
   editPending?: boolean;
   onChange(value: string): void;
+  onAttachmentCountLimitExceeded?(input: {
+    attemptedCount: number;
+    currentCount: number;
+    maxCount: number;
+  }): void;
   onCancelEdit?(): void;
   onRequestExpanded?(): void;
   onRemoveAttachment(id: string): void;
@@ -130,6 +140,7 @@ function StopAction({
 }
 
 export function Composer({
+  attachmentLimitUsage = null,
   attachmentPolicy = defaultAttachmentPolicy,
   attachmentWarnings = defaultAttachmentWarnings,
   attachments,
@@ -142,6 +153,7 @@ export function Composer({
   editing = false,
   editPending = false,
   onChange,
+  onAttachmentCountLimitExceeded,
   onCancelEdit,
   onRequestExpanded,
   onRemoveAttachment,
@@ -166,6 +178,7 @@ export function Composer({
   const usageTriggerRef = useRef<HTMLButtonElement>(null);
   const dragDepthRef = useRef(0);
   const previousAttachmentWarningsRef = useRef(new Map<string, string>());
+  const previousAttachmentLimitFeedbackRef = useRef<string | null>(null);
   const [usageOpen, setUsageOpen] = useState(false);
   const [dragActive, setDragActive] = useState(false);
   const [attachmentWarningAnnouncement, setAttachmentWarningAnnouncement] = useState("");
@@ -188,6 +201,10 @@ export function Composer({
   const attachmentWarningsById = new Map(
     resolvedAttachmentWarnings.map((entry) => [entry.attachment.id, entry])
   );
+  const resolvedAttachmentLimitUsage = attachmentLimitUsage ??
+    calculateAttachmentLimitUsage(attachments, undefined, undefined);
+  const attachmentLimitBlocksSend =
+    !editing && resolvedAttachmentLimitUsage.blocking;
   const blockingAttachmentWarningIds = editing
     ? []
     : resolvedAttachmentWarnings
@@ -208,7 +225,8 @@ export function Composer({
     !sendDisabled &&
     !streaming &&
     !uploading &&
-    !editPending;
+    !editPending &&
+    !attachmentLimitBlocksSend;
   const canUploadDroppedFiles =
     Boolean(onUploadFiles) && modelAcceptsAttachments && !disabled && !streaming && !uploading;
   const attachmentDisabled =
@@ -241,6 +259,7 @@ export function Composer({
         : uploading
           ? "composer-upload-status"
           : null,
+    attachmentLimitBlocksSend ? "composer-attachment-limit-feedback" : null,
     ...blockingAttachmentWarningIds
   ]
     .filter(Boolean)
@@ -277,26 +296,36 @@ export function Composer({
     const nextWarnings = new Map(
       resolvedAttachmentWarnings.map(({ attachment, warning }) => [
         attachment.id,
-        warning.message
+        `${attachment.fileName}: ${warning.message}`
       ])
     );
-    const changedWarnings = resolvedAttachmentWarnings.filter(
-      ({ attachment, warning }) =>
-        previousAttachmentWarningsRef.current.get(attachment.id) !== warning.message
+    const changedWarnings = [...nextWarnings].flatMap(([attachmentId, message]) =>
+      previousAttachmentWarningsRef.current.get(attachmentId) === message
+        ? []
+        : [message]
     );
-
-    if (changedWarnings.length > 0) {
-      setAttachmentWarningAnnouncement(
-        changedWarnings
-          .map(({ attachment, warning }) => `${attachment.fileName}: ${warning.message}`)
-          .join(" ")
+    const warningsChanged =
+      nextWarnings.size !== previousAttachmentWarningsRef.current.size ||
+      [...nextWarnings].some(
+        ([attachmentId, message]) =>
+          previousAttachmentWarningsRef.current.get(attachmentId) !== message
       );
-    } else if (nextWarnings.size !== previousAttachmentWarningsRef.current.size) {
+    const nextLimitFeedback = resolvedAttachmentLimitUsage.feedback;
+    const limitChanged =
+      nextLimitFeedback !== previousAttachmentLimitFeedbackRef.current;
+    const announcement = [
+      ...changedWarnings,
+      ...(limitChanged && nextLimitFeedback ? [nextLimitFeedback] : [])
+    ].join(" ");
+
+    if (announcement) {
+      setAttachmentWarningAnnouncement(announcement);
+    } else if (warningsChanged || limitChanged) {
       setAttachmentWarningAnnouncement("");
     }
-
     previousAttachmentWarningsRef.current = nextWarnings;
-  }, [resolvedAttachmentWarnings]);
+    previousAttachmentLimitFeedbackRef.current = nextLimitFeedback;
+  }, [resolvedAttachmentWarnings, resolvedAttachmentLimitUsage.feedback]);
 
   useEffect(() => {
     if (!usageOpen) {
@@ -425,6 +454,25 @@ export function Composer({
       (accepted ? supported : rejected).push(file);
     }
 
+    const maxCount = resolvedAttachmentLimitUsage.limits?.maxCount;
+    const attemptedCount = resolvedAttachmentLimitUsage.count + supported.length;
+    const countLimitExceeded =
+      supported.length > 0 &&
+      typeof maxCount === "number" &&
+      attemptedCount > maxCount;
+
+    if (countLimitExceeded && maxCount !== undefined) {
+      if (rejected.length > 0) {
+        onRejectedFiles?.(rejected);
+      }
+      onAttachmentCountLimitExceeded?.({
+        attemptedCount,
+        currentCount: resolvedAttachmentLimitUsage.count,
+        maxCount
+      });
+      return;
+    }
+
     if (supported.length > 0) {
       onUploadFiles?.(supported);
     }
@@ -538,7 +586,7 @@ export function Composer({
             </span>
           ) : null}
 
-          {resolvedAttachmentWarnings.length > 0 || attachmentWarningAnnouncement ? (
+          {attachments.length > 0 || resolvedAttachmentWarnings.length > 0 || attachmentWarningAnnouncement ? (
             <p
               className="sr-only"
               data-testid="attachment-warning-announcement"
@@ -551,11 +599,40 @@ export function Composer({
           ) : null}
 
           {attachments.length > 0 ? (
-            <ul
-              className="flex max-h-28 flex-wrap gap-2 overflow-y-auto border-b border-trace-subtle px-3 py-2 [@media(max-height:42rem)]:!max-h-12 [@media(max-height:42rem)]:!flex-nowrap [@media(max-height:42rem)]:!py-1"
-              data-testid="attachment-chip-list"
-              aria-label="Attachments"
-            >
+            <div className="border-b border-trace-subtle">
+              <div
+                className={[
+                  "flex min-w-0 items-start gap-2 px-3 py-1.5 text-xs",
+                  resolvedAttachmentLimitUsage.tone === "critical"
+                    ? "bg-critical/[0.07] text-critical"
+                    : resolvedAttachmentLimitUsage.tone === "caution"
+                      ? "bg-caution/[0.07] text-caution"
+                      : "text-ink-muted"
+                ].join(" ")}
+                data-testid="attachment-usage-summary"
+                data-tone={resolvedAttachmentLimitUsage.tone}
+              >
+                {resolvedAttachmentLimitUsage.tone !== "neutral" ? (
+                  <TriangleAlert className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
+                ) : null}
+                <div className="min-w-0 leading-5">
+                  <span className="font-medium">{resolvedAttachmentLimitUsage.summary}</span>
+                  {resolvedAttachmentLimitUsage.feedback ? (
+                    <span
+                      className="ml-2"
+                      data-blocking={resolvedAttachmentLimitUsage.blocking ? "true" : undefined}
+                      id="composer-attachment-limit-feedback"
+                    >
+                      {resolvedAttachmentLimitUsage.feedback}
+                    </span>
+                  ) : null}
+                </div>
+              </div>
+              <ul
+                className="flex max-h-28 flex-wrap gap-2 overflow-y-auto px-3 py-2 [@media(max-height:42rem)]:!max-h-12 [@media(max-height:42rem)]:!flex-nowrap [@media(max-height:42rem)]:!py-1"
+                data-testid="attachment-chip-list"
+                aria-label="Attachments"
+              >
               {attachments.map((attachment) => {
                 const warningEntry = attachmentWarningsById.get(attachment.id);
                 const attachmentSummary = (
@@ -621,7 +698,8 @@ export function Composer({
                   </li>
                 );
               })}
-            </ul>
+              </ul>
+            </div>
           ) : null}
 
           <div

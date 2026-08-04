@@ -1,5 +1,6 @@
 import { useComposerControlStore } from "@/components/app-shell/composerControlStore";
 import { firstBlockingAttachmentWarning } from "@/components/app-shell/attachmentCapabilities";
+import { calculateAttachmentLimitUsage } from "@/components/app-shell/attachmentLimitUsage";
 import {
   chatIdFromComposerSessionKey,
   folderIdFromComposerSessionKey,
@@ -416,6 +417,18 @@ export function useMessageRunActions({
       });
       return;
     }
+    const attachmentLimitUsage = calculateAttachmentLimitUsage(
+      sourceSession.attachments,
+      modelForSend,
+      useWorkspaceStore.getState().catalog?.attachmentLimits
+    );
+    if (attachmentLimitUsage.blocking && attachmentLimitUsage.feedback) {
+      setNotice({
+        kind: "error",
+        text: attachmentLimitUsage.feedback
+      });
+      return;
+    }
     const controlDefaultsForSend = buildControlDraft();
     const paramsForSend = buildParams();
     const effectiveSearchPlan = effectiveSearchSelection(
@@ -460,6 +473,7 @@ export function useMessageRunActions({
     ];
 
     let sendOutcome: "cancelled" | "failed" | "succeeded" = "failed";
+    let sendFailureMessage: string | null = null;
     try {
       let chatIdForSend = sourceComposerChatId;
       const thread = selectThreadSnapshot(useThreadStore.getState(), chatIdForSend);
@@ -632,6 +646,7 @@ export function useMessageRunActions({
         }
       });
       sendOutcome = result.cancelled ? "cancelled" : result.failed ? "failed" : "succeeded";
+      sendFailureMessage = result.failureMessage ?? null;
     } catch (error) {
       setNotice({
         kind: "error",
@@ -641,7 +656,9 @@ export function useMessageRunActions({
       useComposerSessionStore.getState().finishSend(
         sendToken,
         sendOutcome,
-        sendOutcome === "failed" ? "Send failed. Your draft was preserved." : null
+        sendOutcome === "failed"
+          ? sendFailureMessage ?? "Send failed. Your draft was preserved."
+          : null
       );
     }
   }

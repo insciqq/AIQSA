@@ -205,6 +205,7 @@ function renderPane(overrides: Partial<ComponentProps<typeof MainThreadPane>> = 
     composerActions: {
       cancelMessageEdit: vi.fn(),
       changeDraft: vi.fn(),
+      rejectAttachmentCount: vi.fn(),
       rejectAttachments: vi.fn(),
       removeAttachment: vi.fn()
     },
@@ -495,6 +496,109 @@ describe("MainThreadPane", () => {
     );
     fireEvent.click(blockedSend);
     expect(submitComposer).not.toHaveBeenCalled();
+  });
+
+  it("warns at the projected count threshold without blocking Send", async () => {
+    const attachments = Array.from({ length: 4 }, (_, index) => ({
+      byteSize: 1024,
+      fileName: `source-${index + 1}.md`,
+      id: `source-${index + 1}`,
+      kind: "document" as const
+    }));
+    renderPane({
+      ...readyComposerOverrides,
+      attachments,
+      catalog: {
+        ...catalog,
+        attachmentLimits: {
+          maxCount: 5,
+          maxEncodedBytes: 100_000,
+          maxMaterializedBytes: 100_000
+        }
+      },
+      draft: "Compare these sources"
+    });
+
+    const summary = screen.getByTestId("attachment-usage-summary");
+    expect(summary).toHaveAttribute("data-tone", "caution");
+    expect(summary).toHaveTextContent("4 files · 4 KB");
+    expect(summary).toHaveTextContent("4 of 5 attachments selected.");
+    expect(screen.getByRole("button", { name: "Send message" })).toBeEnabled();
+    await waitFor(() => {
+      expect(screen.getByTestId("attachment-warning-announcement")).toHaveTextContent(
+        "4 of 5 attachments selected."
+      );
+    });
+    expect(screen.getAllByRole("status")).toHaveLength(1);
+  });
+
+  it("blocks native-PDF materialization over the limit and recalculates on model change", async () => {
+    const nativeModel: CatalogModel = {
+      ...model,
+      capabilities: {
+        ...model.capabilities,
+        documentInputMode: "native_pdf"
+      }
+    };
+    const extractionModel: CatalogModel = {
+      ...nativeModel,
+      capabilities: {
+        ...nativeModel.capabilities,
+        documentInputMode: "pdf_text_extraction"
+      }
+    };
+    const limitedCatalog: Catalog = {
+      ...catalog,
+      attachmentLimits: {
+        maxCount: 20,
+        maxEncodedBytes: 200,
+        maxMaterializedBytes: 100
+      }
+    };
+    const attachments = [{
+      byteSize: 101,
+      fileName: "paper.pdf",
+      id: "paper",
+      kind: "pdf" as const,
+      mimeType: "application/pdf"
+    }];
+    const view = renderPane({
+      ...readyComposerOverrides,
+      attachments,
+      catalog: limitedCatalog,
+      currentModel: nativeModel,
+      draft: "Review the paper"
+    });
+
+    const blockedSend = screen.getByRole("button", { name: "Send message" });
+    expect(blockedSend).toBeDisabled();
+    expect(screen.getByTestId("attachment-usage-summary")).toHaveAttribute(
+      "data-tone",
+      "critical"
+    );
+    expect(blockedSend).toHaveAccessibleDescription(
+      "Selected attachments require about 101 bytes of the 100 bytes attachment-data limit. Remove files or choose a model that uses extracted text."
+    );
+
+    view.rerender(
+      <MainThreadPane
+        {...view.props}
+        attachments={attachments}
+        catalog={limitedCatalog}
+        currentModel={extractionModel}
+      />
+    );
+
+    expect(screen.getByRole("button", { name: "Send message" })).toBeEnabled();
+    expect(screen.getByTestId("attachment-usage-summary")).toHaveAttribute(
+      "data-tone",
+      "neutral"
+    );
+    expect(screen.getByRole("button", { name: "Remove paper.pdf" })).toBeEnabled();
+    expect(screen.getByTestId("attachment-chip-list")).toHaveTextContent("paper.pdf");
+    await waitFor(() => {
+      expect(screen.getByTestId("attachment-warning-announcement")).toBeEmptyDOMElement();
+    });
   });
 
   it("renders direct model, profile-picker, and Search controls plus one complete More setup", () => {

@@ -154,6 +154,11 @@ export type ShellThreadView = {
 export type ShellComposerActions = {
   cancelMessageEdit(): void;
   changeDraft(value: string): void;
+  rejectAttachmentCount(input: {
+    attemptedCount: number;
+    currentCount: number;
+    maxCount: number;
+  }): void;
   rejectAttachments(fileNames: readonly string[]): void;
   removeAttachment(attachmentId: string): void;
 };

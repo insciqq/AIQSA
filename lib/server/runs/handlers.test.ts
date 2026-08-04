@@ -33,7 +33,11 @@ import {
   type DurableRunControlRecord,
   type RunRepository
 } from "./runRepositoryContract";
-import type { PersistedToolLoopCall } from "./toolLoopPersistence";
+import {
+  toolLoopCheckpoint,
+  type CheckpointedToolLoopRun,
+  type PersistedToolLoopCall
+} from "./toolLoopPersistence";
 
 const config = getAuthConfig({
   AIQSA_BOOTSTRAP_AUTH_TOKEN: "token",
@@ -1100,6 +1104,111 @@ describe("model run route handlers", () => {
     expect(state.created).toBeNull();
   });
 
+  it("returns safe structured attachment-limit details before run creation", async () => {
+    const { repository, state } = createMemoryRepository();
+    const POST = createSendMessageHandler({
+      ...authDeps,
+      getAttachmentLimits: () => ({
+        maxCount: 2,
+        maxEncodedBytes: 100_663_296,
+        maxMaterializedBytes: 67_108_864,
+        readConcurrency: 2
+      }),
+      providers: {
+        fake: createFakeProviderAdapter()
+      },
+      repository
+    });
+    const response = await POST(
+      new Request("http://app.local/api/chats/chat-1/messages", {
+        body: JSON.stringify({
+          content: {
+            blocks: ["one", "two", "three"].map((attachmentId) => ({
+              attachmentId,
+              type: "file"
+            }))
+          },
+          modelId: "fake-qsa",
+          provider: "fake",
+          searchStrategy: "search-disabled"
+        }),
+        headers: {
+          cookie: authCookie()
+        },
+        method: "POST"
+      }),
+      {
+        params: {
+          chatId: "chat-1"
+        }
+      }
+    );
+
+    expect(response.status).toBe(413);
+    await expect(response.json()).resolves.toEqual({
+      actual: { count: 3 },
+      error: "attachment_count_limit_exceeded",
+      limits: { maxCount: 2 },
+      message: "This run contains 3 attachments; the limit is 2."
+    });
+    expect(state.created).toBeNull();
+  });
+
+  it("sanitizes private storage failures in run-admission responses", async () => {
+    const { repository, state } = createMemoryRepository();
+    repository.loadAttachments = async () => [{
+      byteSize: 3,
+      extractedText: null,
+      fileName: "private-diagram.png",
+      id: "image-1",
+      kind: "image",
+      metadata: {},
+      mimeType: "image/png",
+      status: "ready",
+      storageKey: "private/user/object-key"
+    }];
+    const privateFailure = "ENOENT /srv/private/user/object-key";
+    const POST = createSendMessageHandler({
+      ...authDeps,
+      providers: {
+        fake: createFakeProviderAdapter()
+      },
+      repository,
+      storage: {
+        async deleteObject() {},
+        async getObject() {
+          throw new Error(privateFailure);
+        },
+        async putObject() {}
+      }
+    });
+    const response = await POST(
+      new Request("http://app.local/api/chats/chat-1/messages", {
+        body: JSON.stringify({
+          content: {
+            blocks: [{ attachmentId: "image-1", type: "image" }]
+          },
+          modelId: "fake-qsa",
+          provider: "fake",
+          searchStrategy: "search-disabled"
+        }),
+        headers: { cookie: authCookie() },
+        method: "POST"
+      }),
+      { params: { chatId: "chat-1" } }
+    );
+
+    expect(response.status).toBe(503);
+    const body = await response.json();
+    expect(body).toEqual({
+      error: "attachment_object_read_failed",
+      message: "An attachment object could not be read."
+    });
+    expect(JSON.stringify(body)).not.toContain(privateFailure);
+    expect(JSON.stringify(body)).not.toContain("object-key");
+    expect(state.created).toBeNull();
+  });
+
   it("allows provider-wide grants to run enabled catalog models", async () => {
     const { repository, state } = createMemoryRepository({
       modelKeys: new Set(),
@@ -1453,9 +1562,10 @@ describe("model run route handlers", () => {
         vision: true
       }
     );
+    const pdfBytes = Buffer.from("%PDF-1.4\nnative\n");
     repository.loadAttachments = async (_userId, attachmentIds) =>
       attachmentIds.map((id) => ({
-        byteSize: 64,
+        byteSize: pdfBytes.length,
         extractedText: "Extracted fallback text",
         fileName: "brief.pdf",
         id,
@@ -1465,7 +1575,6 @@ describe("model run route handlers", () => {
         status: "ready",
         storageKey: `storage/${id}`
       }));
-    const pdfBytes = Buffer.from("%PDF-1.4\nnative\n");
     let providerAttachments: unknown[] = [];
     const provider: ProviderAdapter = {
       buildRequestPreview: (runRequest) => {
@@ -3344,6 +3453,70 @@ describe("model run route handlers", () => {
     expect(response.status).toBe(200);
     expect(loadCheckpoint).not.toHaveBeenCalled();
     await expect(response.json()).resolves.toMatchObject({ run: { status: "streaming" } });
+  });
+
+  it("uses the handler's effective attachment limits during GET-assisted recovery", async () => {
+    const { repository, state } = createMemoryRepository();
+    const created = openAiCreatedRun();
+    const normalizedRequest = {
+      ...created.normalizedRequest,
+      attachmentIds: ["one", "two"],
+      content: {
+        blocks: [
+          { attachmentId: "one", type: "image" },
+          { attachmentId: "two", type: "image" }
+        ]
+      }
+    };
+    state.created = { ...created, normalizedRequest };
+    const checkpoint = toolLoopCheckpoint({
+      phase: "tools_pending",
+      providerContinuation: {},
+      roundIndex: 1
+    });
+    if (!checkpoint) throw new Error("invalid_test_checkpoint");
+    repository.loadCheckpointedToolLoopRun = async () => ({
+      assistantMessageId: "assistant-message-1",
+      calls: [],
+      chatId: "chat-1",
+      checkpoint,
+      id: "run-1",
+      modelId: created.modelId,
+      normalizedRequest,
+      provider: created.provider,
+      providerResponseId: null,
+      status: "streaming",
+      userId: config.bootstrapUserId
+    } satisfies CheckpointedToolLoopRun);
+    const loadAttachments = vi.fn(repository.loadAttachments);
+    repository.loadAttachments = loadAttachments;
+    const GET = createGetModelRunHandler({
+      ...authDeps,
+      getAttachmentLimits: () => ({
+        maxCount: 1,
+        maxEncodedBytes: 100_663_296,
+        maxMaterializedBytes: 67_108_864,
+        readConcurrency: 2
+      }),
+      providers: {
+        openai: createFakeProviderAdapter()
+      },
+      repository
+    });
+
+    const response = await GET(
+      new Request("http://app.local/api/model-runs/run-1", {
+        headers: { cookie: authCookie() }
+      }),
+      { params: { runId: "run-1" } }
+    );
+
+    expect(response.status).toBe(200);
+    expect(loadAttachments).not.toHaveBeenCalled();
+    expect(state.failed?.error).toMatchObject({
+      code: "attachment_count_limit_exceeded",
+      message: "This run contains 2 attachments; the limit is 1."
+    });
   });
 
   it("regenerates an assistant message by streaming a sibling assistant run", async () => {

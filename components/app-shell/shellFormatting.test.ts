@@ -55,6 +55,34 @@ describe("shell error formatting", () => {
       responseErrorMessage(new Response("", { status: 500 }), "send_failed_500")
     ).resolves.toBe("Send failed with HTTP 500 (send_failed_500)");
   });
+
+  it("uses only allowlisted bounded attachment-limit messages from run admission", async () => {
+    await expect(
+      responseErrorMessage(
+        Response.json(
+          {
+            error: "attachment_count_limit_exceeded",
+            message: "This run contains 24 attachments; the limit is 20."
+          },
+          { status: 413 }
+        ),
+        "send_failed_413"
+      )
+    ).resolves.toBe("This run contains 24 attachments; the limit is 20.");
+
+    await expect(
+      responseErrorMessage(
+        Response.json(
+          {
+            error: "provider_unavailable",
+            message: "Untrusted provider copy"
+          },
+          { status: 503 }
+        ),
+        "send_failed_503"
+      )
+    ).resolves.toBe("provider unavailable (provider_unavailable)");
+  });
 });
 
 describe("shell labels", () => {

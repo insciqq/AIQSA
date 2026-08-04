@@ -332,7 +332,83 @@ describe("message run actions", () => {
     resetComposerSessionStoreForTest();
     resetThreadStoreForTest();
     resetWorkspaceStoreForTest();
+    vi.unstubAllGlobals();
     vi.restoreAllMocks();
+  });
+
+  it("blocks a programmatic send over projected attachment limits without clearing work", async () => {
+    const nativeModel: CatalogModel = {
+      ...model,
+      capabilities: {
+        ...model.capabilities,
+        documentInputMode: "native_pdf"
+      }
+    };
+    const attachment = {
+      byteSize: 101,
+      fileName: "paper.pdf",
+      id: "paper",
+      kind: "pdf" as const
+    };
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const actions = useMessageRunActionsForTest({
+      attachments: [attachment],
+      draft: "Review the paper",
+      model: nativeModel
+    });
+    useWorkspaceStore.setState({
+      catalog: {
+        ...mixedSearchCatalog("personal"),
+        attachmentLimits: {
+          maxCount: 20,
+          maxEncodedBytes: 200,
+          maxMaterializedBytes: 100
+        },
+        models: [nativeModel]
+      }
+    });
+
+    await actions.submitComposer();
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(actions.setNotice).toHaveBeenCalledWith({
+      kind: "error",
+      text: "Selected attachments require about 101 bytes of the 100 bytes attachment-data limit. Remove files or choose a model that uses extracted text."
+    });
+    expect(actions.session(composerSessionKey("chat-a"))).toMatchObject({
+      attachments: [attachment],
+      draft: "Review the paper",
+      pendingSend: null
+    });
+  });
+
+  it("preserves an allowlisted stale-catalog limit message with the restored draft", async () => {
+    const message = "This run contains 24 attachments; the limit is 20.";
+    const fetchMock = vi.fn(async () =>
+      Response.json(
+        {
+          error: "attachment_count_limit_exceeded",
+          message
+        },
+        { status: 413 }
+      )
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const actions = useMessageRunActionsForTest({
+      attachments: [],
+      draft: "Keep this draft"
+    });
+
+    await actions.submitComposer();
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(actions.session(composerSessionKey("chat-a"))).toMatchObject({
+      attachments: [],
+      draft: "Keep this draft",
+      operationError: message,
+      pendingSend: null
+    });
   });
 
   it("rejects a stale programmatic send when a zero-text partial PDF needs extracted text", async () => {

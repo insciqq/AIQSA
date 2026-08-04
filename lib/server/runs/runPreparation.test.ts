@@ -13,6 +13,7 @@ import type {
   ProviderSearchAdapter
 } from "../providers/types";
 import type { RunAttachmentRecord } from "./runRepositoryContract";
+import type { RunAttachmentLimits } from "./attachmentLimits";
 import {
   materializePreparedRunData,
   prepareRun,
@@ -303,22 +304,23 @@ function providerNeutralOpenAISearchPlan(
 }
 
 function runAttachment(input: {
+  byteSize?: number;
   extractedText?: string | null;
   id: string;
-  kind: "image" | "pdf";
+  kind: "document" | "image" | "pdf";
   metadata?: unknown;
   mimeType: string;
   storageKey: string;
 }): RunAttachmentRecord {
   return {
-    byteSize: 32,
+    byteSize: input.byteSize ?? 32,
     extractedText:
       input.extractedText === undefined
         ? input.kind === "pdf"
           ? "Extracted PDF fallback"
           : null
         : input.extractedText,
-    fileName: `${input.id}.${input.kind === "pdf" ? "pdf" : "png"}`,
+    fileName: `${input.id}.${input.kind === "pdf" ? "pdf" : input.kind === "image" ? "png" : "txt"}`,
     id: input.id,
     kind: input.kind,
     metadata: input.metadata ?? {},
@@ -329,6 +331,7 @@ function runAttachment(input: {
 }
 
 type HarnessOptions = Readonly<{
+  attachmentLimits?: RunAttachmentLimits;
   attachments?: readonly RunAttachmentRecord[];
   capabilities?: ProviderModelCapabilities | null;
   defaultParams?: Readonly<Record<string, unknown>>;
@@ -515,12 +518,18 @@ function createHarness(options: HarnessOptions = {}) {
   };
   const storage = options.storageObjects
     ? {
-        async getObject(storageKey: string) {
+        async getObject(storageKey: string, readOptions?: { maxBytes?: number; signal?: AbortSignal }) {
           calls.push(`storage:${storageKey}`);
           storageReads.push(storageKey);
+          if (readOptions?.signal?.aborted) {
+            throw readOptions.signal.reason;
+          }
           const object = options.storageObjects?.[storageKey];
           if (!object) {
             throw new Error("stored_object_not_found");
+          }
+          if (readOptions?.maxBytes !== undefined && object.body.length > readOptions.maxBytes) {
+            throw new Error("test_storage_read_exceeded_bound");
           }
 
           return {
@@ -532,6 +541,9 @@ function createHarness(options: HarnessOptions = {}) {
       }
     : undefined;
   const deps: RunPreparationDeps = {
+    ...(options.attachmentLimits
+      ? { getAttachmentLimits: () => options.attachmentLimits! }
+      : {}),
     ...(options.mcpPlan ? { mcp: { async prepare() { return options.mcpPlan!; } } } : {}),
     providers,
     repository,
@@ -654,7 +666,13 @@ function preparedFrom(result: RunPreparationResult): PreparedRun {
 
 async function expectFailure(input: {
   calls: readonly string[];
-  expected: Readonly<{ code: string; message?: string; status: 400 | 403 }>;
+  expected: Readonly<{
+    actual?: Readonly<Record<string, number>>;
+    code: string;
+    limits?: Readonly<Record<string, number>>;
+    message?: string;
+    status: 400 | 403 | 409 | 413;
+  }>;
   harness?: HarnessOptions;
   messageContains?: string;
   request?: RunPreparationInput;
@@ -2169,6 +2187,7 @@ describe("run preparation", () => {
     const harness = createHarness({
       attachments: [
         runAttachment({
+          byteSize: pdfBytes.length,
           extractedText: null,
           id: "pdf-no-text",
           kind: "pdf",
@@ -2223,6 +2242,7 @@ describe("run preparation", () => {
     const harness = createHarness({
       attachments: [
         runAttachment({
+          byteSize: pdfBytes.length,
           extractedText: null,
           id: "pdf-zero-partial",
           kind: "pdf",
@@ -2273,7 +2293,137 @@ describe("run preparation", () => {
     expect(harness.storageReads).toEqual(["private/pdf-zero-partial"]);
   });
 
-  it("deduplicates private loads while keeping normalized ids and private payloads ephemeral", async () => {
+  it("rejects duplicate attachment references before repository or storage reads", async () => {
+    const harness = createHarness();
+    const result = await prepareRun(
+      harness.deps,
+      sendInput(
+        successBody({
+          content: {
+            blocks: [
+              { attachmentId: "image-1", type: "attachment" },
+              { attachmentId: "image-1", type: "attachment" }
+            ]
+          }
+        })
+      )
+    );
+
+    expect(result).toMatchObject({
+      code: "attachment_reference_invalid",
+      message: "Attachment references must be unique within one run.",
+      status: 400
+    });
+    expect(harness.attachmentLoads).toEqual([]);
+    expect(harness.storageReads).toEqual([]);
+  });
+
+  it("rejects an attachment-count overflow before repository or storage reads", async () => {
+    await expectFailure({
+      calls: ["entitlements"],
+      expected: {
+        actual: { count: 3 },
+        code: "attachment_count_limit_exceeded",
+        limits: { maxCount: 2 },
+        message: "This run contains 3 attachments; the limit is 2.",
+        status: 413
+      },
+      harness: {
+        attachmentLimits: {
+          maxCount: 2,
+          maxEncodedBytes: 1_000,
+          maxMaterializedBytes: 1_000,
+          readConcurrency: 1
+        }
+      },
+      request: sendInput(
+        successBody({
+          content: {
+            blocks: ["one", "two", "three"].map((attachmentId) => ({
+              attachmentId,
+              type: "file"
+            }))
+          }
+        })
+      )
+    });
+  });
+
+  it.each([
+    {
+      expected: {
+        actual: { materializedBytes: 11 },
+        code: "attachment_materialization_limit_exceeded",
+        limits: { maxMaterializedBytes: 10 },
+        message: "Selected attachments require 11 source bytes; the limit is 10."
+      },
+      limits: {
+        maxCount: 20,
+        maxEncodedBytes: 1_000,
+        maxMaterializedBytes: 10,
+        readConcurrency: 2
+      }
+    },
+    {
+      expected: {
+        actual: { encodedBytes: 26 },
+        code: "attachment_encoded_size_limit_exceeded",
+        limits: { maxEncodedBytes: 25 },
+        message: "Selected attachments require about 26 encoded bytes; the limit is 25."
+      },
+      limits: {
+        maxCount: 20,
+        maxEncodedBytes: 25,
+        maxMaterializedBytes: 1_000,
+        readConcurrency: 2
+      }
+    }
+  ])("rejects $expected.code before an object read", async ({ expected, limits: attachmentLimits }) => {
+    const first = runAttachment({
+      byteSize: expected.code.includes("encoded") ? 3 : 6,
+      id: "first",
+      kind: "image",
+      mimeType: "image/png",
+      storageKey: "private/first"
+    });
+    const records = expected.code.includes("encoded")
+      ? [first]
+      : [
+          first,
+          runAttachment({
+            byteSize: 5,
+            id: "second",
+            kind: "image",
+            mimeType: "image/png",
+            storageKey: "private/second"
+          })
+        ];
+    const blocks = records.map(({ id }) => ({ attachmentId: id, type: "image" }));
+    const storageObjects = Object.fromEntries(records.map((record) => [
+      record.storageKey,
+      { body: Buffer.alloc(record.byteSize), contentType: record.mimeType }
+    ]));
+    const harness = createHarness({
+      attachmentLimits,
+      attachments: records,
+      storageObjects
+    });
+    const result = await prepareRun(
+      harness.deps,
+      sendInput(successBody({ content: { blocks } }))
+    );
+
+    expect(result).toMatchObject({
+      ...expected,
+      ok: false,
+      status: 413
+    });
+    expect(harness.attachmentLoads).toHaveLength(1);
+    expect(harness.storageReads).toEqual([]);
+    expect(harness.previewRequests).toEqual([]);
+  });
+
+  it("keeps ordered private payloads ephemeral outside the provider request", async () => {
     const imageBytes = Buffer.from("private-image-bytes");
     const pdfBytes = Buffer.from("private-pdf-bytes");
     const imageDataUrl = `data:image/png;base64,${imageBytes.toString("base64")}`;
@@ -2281,12 +2431,14 @@ describe("run preparation", () => {
     const harness = createHarness({
       attachments: [
         runAttachment({
+          byteSize: imageBytes.length,
           id: "image-1",
           kind: "image",
           mimeType: "image/png",
           storageKey: "private/image-1"
         }),
         runAttachment({
+          byteSize: pdfBytes.length,
           id: "pdf-1",
           kind: "pdf",
           mimeType: "application/pdf",
@@ -2315,7 +2467,6 @@ describe("run preparation", () => {
           content: {
             blocks: [
               { attachmentId: "image-1", type: "attachment" },
-              { attachmentId: "image-1", type: "attachment" },
               { attachmentId: "pdf-1", type: "attachment" }
             ]
           },
@@ -2325,7 +2476,7 @@ describe("run preparation", () => {
     );
     const prepared = preparedFrom(result);
 
-    expect(prepared.normalizedRequest.attachmentIds).toEqual(["image-1", "image-1", "pdf-1"]);
+    expect(prepared.normalizedRequest.attachmentIds).toEqual(["image-1", "pdf-1"]);
     expect(harness.attachmentLoads).toEqual([
       {
         attachmentIds: ["image-1", "pdf-1"],

@@ -1,4 +1,7 @@
-import { errorMessage, responseErrorMessage } from "@/components/app-shell/shellFormatting";
+import {
+  errorMessage,
+  responseErrorMessageDetails
+} from "@/components/app-shell/shellFormatting";
 import { useRunLifecycleStore } from "@/components/app-shell/runLifecycleStore";
 import { useRunSurfaceStore } from "@/components/app-shell/runSurfaceStore";
 import { useThreadStore } from "@/components/app-shell/threadStore";
@@ -57,6 +60,7 @@ export type MessageRunLifecycleResult = {
   assistantMessageId: string;
   cancelled: boolean;
   failed: boolean;
+  failureMessage?: string;
   receivedChatUpdate: boolean;
   runId: string | null;
 };
@@ -155,9 +159,11 @@ export async function executeMessageRunLifecycle({
   let assistantMessageId = optimisticAssistantMessageId;
   let cancelled = false;
   let failed = false;
+  let failureMessage: string | null = null;
   let receivedChatUpdate = false;
   let runId: string | null = null;
   let serverRejectedRequest = false;
+  let userFacingFailureMessage: string | null = null;
   const abortController = new AbortController();
 
   useRunSurfaceStore.getState().resetSurface(chatId);
@@ -177,9 +183,12 @@ export async function executeMessageRunLifecycle({
     const response = await request(abortController.signal);
     if (!response.ok) {
       serverRejectedRequest = true;
-      throw new Error(
-        await responseErrorMessage(response, `${failurePrefix}_${response.status}`)
+      const details = await responseErrorMessageDetails(
+        response,
+        `${failurePrefix}_${response.status}`
       );
+      userFacingFailureMessage = details.preserveForComposer ? details.message : null;
+      throw new Error(details.message);
     }
 
     const streamResult = await consumeRunStream({
@@ -246,6 +255,7 @@ export async function executeMessageRunLifecycle({
     tokenBuffer.flush();
     cancelled = abortController.signal.aborted;
     failed = !cancelled;
+    failureMessage = cancelled ? null : userFacingFailureMessage;
     if (activeStreamAbortRef.current.get(chatId) === abortController) {
       recordStreamFailure({
         assistantMessageId,
@@ -278,6 +288,7 @@ export async function executeMessageRunLifecycle({
     assistantMessageId,
     cancelled,
     failed,
+    ...(failureMessage ? { failureMessage } : {}),
     receivedChatUpdate,
     runId
   };

@@ -49,6 +49,7 @@ export type {
 
 export type RunHandlerDeps = {
   allowFakeProvider?: boolean;
+  getAttachmentLimits?: RunPreparationDeps["getAttachmentLimits"];
   getConfig?: () => AuthConfig;
   mcp?: RunPreparationDeps["mcp"];
   providerAdmission?: RunPreparationDeps["providerAdmission"];
@@ -75,7 +76,9 @@ async function readJson(
 function runPreparationFailureResponse(failure: RunPreparationFailure): Response {
   return Response.json(
     {
+      ...(failure.actual ? { actual: failure.actual } : {}),
       error: failure.code,
+      ...(failure.limits ? { limits: failure.limits } : {}),
       ...(failure.message ? { message: failure.message } : {})
     },
     { status: failure.status }
@@ -93,10 +96,16 @@ function modelRunJson(data: GetModelRunResponse, init?: ResponseInit): Response 
 function recoveryDeps(
   deps: Pick<
     RunHandlerDeps,
-    "providerRuntime" | "providers" | "repository" | "searchProviders" | "storage"
+    | "getAttachmentLimits"
+    | "providerRuntime"
+    | "providers"
+    | "repository"
+    | "searchProviders"
+    | "storage"
   >
 ) {
   return {
+    ...(deps.getAttachmentLimits ? { getAttachmentLimits: deps.getAttachmentLimits } : {}),
     ...(deps.providerRuntime ? { providerRuntime: deps.providerRuntime } : {}),
     providers: deps.providers,
     registry: activeRunControllerRegistry,
@@ -266,6 +275,7 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
     }
     const preparation = await prepareRun(deps, {
       body,
+      signal: request.signal,
       source: {
         chat: {
           ...chat,
@@ -386,6 +396,7 @@ export function createRegenerateModelRunHandler(deps: RunHandlerDeps) {
 
     const preparation = await prepareRun(deps, {
       body,
+      signal: request.signal,
       source: {
         kind: "regenerate",
         source
@@ -462,6 +473,7 @@ export function createGetModelRunHandler(
   deps: Pick<
     RunHandlerDeps,
     | "getConfig"
+    | "getAttachmentLimits"
     | "providerRuntime"
     | "providers"
     | "repository"

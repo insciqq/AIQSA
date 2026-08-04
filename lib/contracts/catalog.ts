@@ -143,7 +143,26 @@ export type CatalogWireProvider = CatalogProvider & {
   family: string;
 };
 
+export type CatalogAttachmentLimits = {
+  maxCount: number;
+  maxEncodedBytes: number;
+  maxMaterializedBytes: number;
+};
+
+export const DEFAULT_CATALOG_ATTACHMENT_LIMITS: Readonly<CatalogAttachmentLimits> = Object.freeze({
+  maxCount: 20,
+  maxEncodedBytes: 100_663_296,
+  maxMaterializedBytes: 67_108_864
+});
+
+export const CATALOG_ATTACHMENT_LIMIT_CEILINGS: Readonly<CatalogAttachmentLimits> = Object.freeze({
+  maxCount: 100,
+  maxEncodedBytes: 402_653_184,
+  maxMaterializedBytes: 268_435_456
+});
+
 export type Catalog = {
+  attachmentLimits?: CatalogAttachmentLimits;
   defaults: CatalogDefaults;
   models: CatalogModel[];
   promptPresets: PromptPreset[];
@@ -173,6 +192,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function finiteNumber(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value);
+}
+
+function positiveSafeInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
 }
 
 function nonEmptyString(value: unknown): value is string {
@@ -435,6 +458,26 @@ function decodeRunProfile(value: unknown): CatalogRunProfile | null {
   };
 }
 
+function decodeCatalogAttachmentLimits(value: unknown): CatalogAttachmentLimits | null {
+  if (
+    !isRecord(value) ||
+    !positiveSafeInteger(value.maxCount) ||
+    value.maxCount > CATALOG_ATTACHMENT_LIMIT_CEILINGS.maxCount ||
+    !positiveSafeInteger(value.maxEncodedBytes) ||
+    value.maxEncodedBytes > CATALOG_ATTACHMENT_LIMIT_CEILINGS.maxEncodedBytes ||
+    !positiveSafeInteger(value.maxMaterializedBytes) ||
+    value.maxMaterializedBytes > CATALOG_ATTACHMENT_LIMIT_CEILINGS.maxMaterializedBytes
+  ) {
+    return null;
+  }
+
+  return {
+    maxCount: value.maxCount,
+    maxEncodedBytes: value.maxEncodedBytes,
+    maxMaterializedBytes: value.maxMaterializedBytes
+  };
+}
+
 export function decodeCatalogResponse(value: unknown): Catalog | null {
   if (!isRecord(value) || !isRecord(value.catalog)) {
     return null;
@@ -442,6 +485,10 @@ export function decodeCatalogResponse(value: unknown): Catalog | null {
 
   const catalog = value.catalog;
   const defaults = catalog.defaults;
+  const hasAttachmentLimits = Object.prototype.hasOwnProperty.call(catalog, "attachmentLimits");
+  const attachmentLimits = hasAttachmentLimits
+    ? decodeCatalogAttachmentLimits(catalog.attachmentLimits)
+    : undefined;
   if (
     !isRecord(defaults) ||
     !isRecord(defaults.controlValues) ||
@@ -480,6 +527,7 @@ export function decodeCatalogResponse(value: unknown): Catalog | null {
     runProfiles.some((profile) => profile === null) ||
     runProfileIds.size !== runProfiles.length ||
     searchStrategies.some((strategy) => strategy === null) ||
+    (hasAttachmentLimits && attachmentLimits === null) ||
     (defaults.searchPlan !== undefined && !decodedSearchPlan?.ok) ||
     !decodedOrganizationSearchPlan.ok ||
     (defaults.searchPreferenceSource !== "organization" && defaults.searchPreferenceSource !== "personal")
@@ -488,6 +536,7 @@ export function decodeCatalogResponse(value: unknown): Catalog | null {
   }
 
   return {
+    ...(attachmentLimits ? { attachmentLimits } : {}),
     defaults: {
       controlValues: defaults.controlValues,
       modelId: defaults.modelId,

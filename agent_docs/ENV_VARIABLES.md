@@ -163,6 +163,31 @@ Internal storage variables are `S3_ENDPOINT`, `S3_REGION`, `S3_BUCKET`, `S3_ACCE
 
 The repository `ops/backup/create.sh` helper deliberately supports only the bundled `http://minio:9000` endpoint and fails closed for external S3. External storage needs the provider's consistent backup/versioning process coordinated with the PostgreSQL backup.
 
+## Run Attachment Materialization
+
+```text
+AIQSA_RUN_ATTACHMENT_MAX_COUNT=20
+AIQSA_RUN_ATTACHMENT_MAX_MATERIALIZED_BYTES=67108864
+AIQSA_RUN_ATTACHMENT_MAX_ENCODED_BYTES=100663296
+AIQSA_RUN_ATTACHMENT_READ_CONCURRENCY=2
+```
+
+These values bound one run without limiting simultaneous runs in different
+chats. The source-object budget defaults to 64 MiB, the estimated encoded
+provider payload to 96 MiB, and object-storage reads to two at a time. The
+authenticated current-user catalog exposes only the effective count, source,
+and encoded byte limits; read concurrency remains server-only. Server admission
+and bounded reads remain authoritative when a client has no current catalog.
+
+Overrides must be positive whole decimal integers. Invalid, zero, negative,
+fractional, or out-of-range values fall back independently to their defaults.
+The hard ceilings are 100 attachments, 268435456 source bytes (256 MiB),
+402653184 encoded bytes (384 MiB), and eight concurrent reads. The count cap
+bounds per-run metadata work, while the byte ceilings keep one run below the
+default 2 GiB application memory limit even with base64 and transient runtime
+overhead; the concurrency cap prevents an operator typo from turning one run
+into unbounded storage fan-out.
+
 ## Advanced Compose Inputs
 
 ```text

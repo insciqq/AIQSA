@@ -125,6 +125,68 @@ describe("catalog wire contract", () => {
     });
   });
 
+  it("strictly decodes the optional attachment-limit projection", () => {
+    const response = validResponse();
+    response.catalog.attachmentLimits = {
+      maxCount: 20,
+      maxEncodedBytes: 100_663_296,
+      maxMaterializedBytes: 67_108_864
+    };
+
+    expect(decodeCatalogResponse(response)?.attachmentLimits).toEqual({
+      maxCount: 20,
+      maxEncodedBytes: 100_663_296,
+      maxMaterializedBytes: 67_108_864
+    });
+
+    const extended = structuredClone(response) as CatalogResponse & {
+      catalog: {
+        attachmentLimits: CatalogResponse["catalog"]["attachmentLimits"] & {
+          readConcurrency: number;
+        };
+      };
+    };
+    extended.catalog.attachmentLimits.readConcurrency = 2;
+    expect(decodeCatalogResponse(extended)?.attachmentLimits).toEqual({
+      maxCount: 20,
+      maxEncodedBytes: 100_663_296,
+      maxMaterializedBytes: 67_108_864
+    });
+  });
+
+  it.each([
+    ["missing field", { maxCount: 20, maxMaterializedBytes: 67_108_864 }],
+    ["zero", { maxCount: 0, maxEncodedBytes: 100_663_296, maxMaterializedBytes: 67_108_864 }],
+    ["fraction", { maxCount: 1.5, maxEncodedBytes: 100_663_296, maxMaterializedBytes: 67_108_864 }],
+    ["unsafe integer", {
+      maxCount: 20,
+      maxEncodedBytes: Number.MAX_SAFE_INTEGER + 1,
+      maxMaterializedBytes: 67_108_864
+    }],
+    ["count above the client ceiling", {
+      maxCount: 101,
+      maxEncodedBytes: 100_663_296,
+      maxMaterializedBytes: 67_108_864
+    }],
+    ["encoded bytes above the client ceiling", {
+      maxCount: 20,
+      maxEncodedBytes: 402_653_185,
+      maxMaterializedBytes: 67_108_864
+    }],
+    ["materialized bytes above the client ceiling", {
+      maxCount: 20,
+      maxEncodedBytes: 100_663_296,
+      maxMaterializedBytes: 268_435_457
+    }]
+  ])("rejects malformed attachment limits: %s", (_label, attachmentLimits) => {
+    const response = validResponse() as unknown as {
+      catalog: { attachmentLimits: unknown };
+    };
+    response.catalog.attachmentLimits = attachmentLimits;
+
+    expect(decodeCatalogResponse(response)).toBeNull();
+  });
+
   it("decodes the native Gemini Google Search strategy", () => {
     const response = validResponse();
     response.catalog.searchStrategies = [{

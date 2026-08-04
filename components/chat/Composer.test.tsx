@@ -1,5 +1,6 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
+import type { AttachmentLimitUsage } from "../app-shell/attachmentLimitUsage";
 import { Composer } from "./Composer";
 
 function fileList(files: File[]): FileList {
@@ -18,6 +19,28 @@ function fileTransfer(files: File[], types = ["Files"]) {
     files: fileList(files),
     types
   } as unknown as DataTransfer;
+}
+
+function limitUsage(
+  overrides: Partial<AttachmentLimitUsage> = {}
+): AttachmentLimitUsage {
+  return {
+    binaryAttachmentCount: 0,
+    blocking: false,
+    count: 1,
+    encodedBytes: 0,
+    feedback: null,
+    limits: {
+      maxCount: 20,
+      maxEncodedBytes: 100_663_296,
+      maxMaterializedBytes: 67_108_864
+    },
+    materializedBytes: 0,
+    summary: "1 file · 1 KB",
+    tone: "neutral",
+    totalSourceBytes: 1024,
+    ...overrides
+  };
 }
 
 describe("Composer", () => {
@@ -53,6 +76,7 @@ describe("Composer", () => {
     expect(messageField).toHaveClass("px-4", "pt-3");
     expect(surface).toContainElement(textarea);
     expect(surface).toContainElement(screen.getByRole("list", { name: "Attachments" }));
+    expect(screen.getByTestId("attachment-warning-announcement")).toBeEmptyDOMElement();
     expect(surface).toContainElement(controls);
     expect(surface).toContainElement(send);
     expect(form).toHaveClass("sm:pb-[max(.75rem,env(safe-area-inset-bottom))]");
@@ -414,6 +438,177 @@ describe("Composer", () => {
     expect(onSend).toHaveBeenCalledTimes(1);
   });
 
+  it("shows one compact critical summary, announces it once, and describes blocked Send", async () => {
+    const feedback =
+      "24 attachments selected. Remove at least 4 attachments before sending.";
+    const view = render(
+      <Composer
+        attachmentLimitUsage={limitUsage({
+          blocking: true,
+          count: 24,
+          feedback,
+          summary: "24 files · 72 MB",
+          tone: "critical"
+        })}
+        attachments={[{
+          byteSize: 75_497_472,
+          fileName: "evidence.pdf",
+          id: "attachment-1",
+          kind: "pdf"
+        }]}
+        onChange={() => undefined}
+        onRemoveAttachment={() => undefined}
+        onSend={() => undefined}
+        value="Review this evidence"
+      />
+    );
+
+    const summary = screen.getByTestId("attachment-usage-summary");
+    expect(summary).toHaveAttribute("data-tone", "critical");
+    expect(summary).toHaveTextContent("24 files · 72 MB");
+    expect(summary).toHaveTextContent(feedback);
+    const send = screen.getByRole("button", { name: "Send message" });
+    expect(send).toBeDisabled();
+    expect(send).toHaveAccessibleDescription(feedback);
+    await waitFor(() => {
+      expect(screen.getByTestId("attachment-warning-announcement")).toHaveTextContent(feedback);
+    });
+    expect(screen.getAllByRole("status")).toHaveLength(1);
+
+    view.rerender(
+      <Composer
+        attachmentLimitUsage={limitUsage({
+          blocking: true,
+          count: 24,
+          feedback,
+          summary: "24 files · 72 MB",
+          tone: "critical"
+        })}
+        attachments={[{
+          byteSize: 75_497_472,
+          fileName: "evidence.pdf",
+          id: "attachment-1",
+          kind: "pdf"
+        }]}
+        editing
+        onChange={() => undefined}
+        onRemoveAttachment={() => undefined}
+        onSend={() => undefined}
+        value="Edited question"
+      />
+    );
+    expect(screen.getByRole("button", { name: "Send message" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Send message" })).not.toHaveAccessibleDescription(
+      feedback
+    );
+  });
+
+  it.each(["picker", "drop"] as const)(
+    "rejects an over-count %s batch before upload with exact counts",
+    (entry) => {
+      const onAttachmentCountLimitExceeded = vi.fn();
+      const onUploadFiles = vi.fn();
+      const files = [
+        new File(["a"], "a.md", { type: "text/markdown" }),
+        new File(["b"], "b.md", { type: "text/markdown" }),
+        new File(["c"], "c.md", { type: "text/markdown" })
+      ];
+
+      render(
+        <Composer
+          attachmentLimitUsage={limitUsage({
+            count: 18,
+            limits: {
+              maxCount: 20,
+              maxEncodedBytes: 100_663_296,
+              maxMaterializedBytes: 67_108_864
+            },
+            summary: "18 files · 18 KB"
+          })}
+          attachments={[{
+            byteSize: 1024,
+            fileName: "existing.md",
+            id: "existing",
+            kind: "document"
+          }]}
+          onAttachmentCountLimitExceeded={onAttachmentCountLimitExceeded}
+          onChange={() => undefined}
+          onRemoveAttachment={() => undefined}
+          onSend={() => undefined}
+          onUploadFiles={onUploadFiles}
+          value=""
+        />
+      );
+
+      if (entry === "picker") {
+        fireEvent.change(screen.getByLabelText("Attach file"), {
+          target: { files: fileList(files) }
+        });
+      } else {
+        fireEvent.drop(screen.getByTestId("composer-drop-zone"), {
+          dataTransfer: fileTransfer(files)
+        });
+      }
+
+      expect(onUploadFiles).not.toHaveBeenCalled();
+      expect(onAttachmentCountLimitExceeded).toHaveBeenCalledWith({
+        attemptedCount: 21,
+        currentCount: 18,
+        maxCount: 20
+      });
+    }
+  );
+
+  it("reports capability and count failures from one mixed selection", () => {
+    const callOrder: string[] = [];
+    const onAttachmentCountLimitExceeded = vi.fn(() => callOrder.push("count"));
+    const onRejectedFiles = vi.fn(() => callOrder.push("capability"));
+    const onUploadFiles = vi.fn();
+    const supported = [
+      new File(["a"], "a.md", { type: "text/markdown" }),
+      new File(["b"], "b.md", { type: "text/markdown" })
+    ];
+    const unsupported = new File(["pdf"], "blocked.pdf", {
+      type: "application/pdf"
+    });
+
+    render(
+      <Composer
+        attachmentLimitUsage={limitUsage({
+          count: 19,
+          limits: {
+            maxCount: 20,
+            maxEncodedBytes: 100_663_296,
+            maxMaterializedBytes: 67_108_864
+          },
+          summary: "19 files · 19 KB"
+        })}
+        attachmentPolicy={{ documents: true, images: false, pdfs: false }}
+        attachments={[]}
+        onAttachmentCountLimitExceeded={onAttachmentCountLimitExceeded}
+        onChange={() => undefined}
+        onRejectedFiles={onRejectedFiles}
+        onRemoveAttachment={() => undefined}
+        onSend={() => undefined}
+        onUploadFiles={onUploadFiles}
+        value=""
+      />
+    );
+
+    fireEvent.change(screen.getByLabelText("Attach file"), {
+      target: { files: fileList([...supported, unsupported]) }
+    });
+
+    expect(onUploadFiles).not.toHaveBeenCalled();
+    expect(onRejectedFiles).toHaveBeenCalledWith([unsupported]);
+    expect(onAttachmentCountLimitExceeded).toHaveBeenCalledWith({
+      attemptedCount: 21,
+      currentCount: 19,
+      maxCount: 20
+    });
+    expect(callOrder).toEqual(["capability", "count"]);
+  });
+
   it("uses one live owner and a keyboard-accessible per-file PDF warning disclosure", async () => {
     const onRemoveAttachment = vi.fn();
     const attachment = {
@@ -465,6 +660,81 @@ describe("Composer", () => {
       />
     );
     expect(screen.getAllByRole("status")).toHaveLength(1);
+  });
+
+  it("announces only changed attachment feedback without repeating surviving warnings", async () => {
+    const first = { fileName: "first.pdf", id: "first", kind: "pdf" as const };
+    const second = { fileName: "second.pdf", id: "second", kind: "pdf" as const };
+    const warnings = [first, second].map((attachment) => ({
+      attachmentId: attachment.id,
+      blocking: false,
+      label: "Text limited" as const,
+      message: `Only bounded text from ${attachment.fileName} will be used.`
+    }));
+    const view = render(
+      <Composer
+        attachmentLimitUsage={limitUsage({
+          count: 4,
+          feedback: "4 of 5 attachments selected.",
+          summary: "4 files · 4 KB",
+          tone: "caution"
+        })}
+        attachmentWarnings={warnings}
+        attachments={[first, second]}
+        onChange={() => undefined}
+        onRemoveAttachment={() => undefined}
+        onSend={() => undefined}
+        value=""
+      />
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId("attachment-warning-announcement")).toHaveTextContent(
+        "first.pdf: Only bounded text from first.pdf will be used."
+      );
+    });
+
+    view.rerender(
+      <Composer
+        attachmentLimitUsage={limitUsage({
+          count: 5,
+          feedback: "5 of 5 attachments selected.",
+          summary: "5 files · 5 KB",
+          tone: "caution"
+        })}
+        attachmentWarnings={warnings}
+        attachments={[first, second]}
+        onChange={() => undefined}
+        onRemoveAttachment={() => undefined}
+        onSend={() => undefined}
+        value=""
+      />
+    );
+    await waitFor(() => {
+      const announcement = screen.getByTestId("attachment-warning-announcement");
+      expect(announcement).toHaveTextContent("5 of 5 attachments selected.");
+      expect(announcement).not.toHaveTextContent("Only bounded text");
+    });
+
+    view.rerender(
+      <Composer
+        attachmentLimitUsage={limitUsage({
+          count: 5,
+          feedback: "5 of 5 attachments selected.",
+          summary: "5 files · 5 KB",
+          tone: "caution"
+        })}
+        attachmentWarnings={[warnings[1]!]}
+        attachments={[second]}
+        onChange={() => undefined}
+        onRemoveAttachment={() => undefined}
+        onSend={() => undefined}
+        value=""
+      />
+    );
+    await waitFor(() => {
+      expect(screen.getByTestId("attachment-warning-announcement")).toBeEmptyDOMElement();
+    });
   });
 
   it("requires edited text even with attachments and exposes cancel and remove actions", () => {
