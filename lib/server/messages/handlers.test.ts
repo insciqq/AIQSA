@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { textMessageContent } from "../../domain/content";
 import { getAuthConfig } from "../auth/config";
 import { createTestAuth } from "../auth/testRequestAuth";
@@ -142,6 +142,40 @@ function createMemoryRepository() {
 }
 
 describe("message branch route handlers", () => {
+  it("returns the shared 413 response before message validation or mutation", async () => {
+    const previousLimit = process.env.AIQSA_JSON_REQUEST_BODY_MAX_BYTES;
+    process.env.AIQSA_JSON_REQUEST_BODY_MAX_BYTES = "32";
+    try {
+      const { repository } = createMemoryRepository();
+      const mutate = vi.spyOn(repository, "createEditedMessageBranch");
+      const PATCH = createEditMessageBranchHandler({
+        repository,
+        resolveAuth: auth.resolveAuth
+      });
+      const response = await PATCH(
+        new Request("http://app.local/api/messages/user-1", {
+          body: JSON.stringify({ text: "x".repeat(64) }),
+          headers: { cookie: authCookie() },
+          method: "PATCH"
+        }),
+        { params: { messageId: "user-1" } }
+      );
+
+      expect(response.status).toBe(413);
+      await expect(response.json()).resolves.toMatchObject({
+        error: "request_body_too_large",
+        limit: 32
+      });
+      expect(mutate).not.toHaveBeenCalled();
+    } finally {
+      if (previousLimit === undefined) {
+        delete process.env.AIQSA_JSON_REQUEST_BODY_MAX_BYTES;
+      } else {
+        process.env.AIQSA_JSON_REQUEST_BODY_MAX_BYTES = previousLimit;
+      }
+    }
+  });
+
   it("edits a user message by creating a sibling branch and moving active leaf", async () => {
     const { repository, state } = createMemoryRepository();
     const PATCH = createEditMessageBranchHandler({

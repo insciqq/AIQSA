@@ -14,6 +14,7 @@ import {
   sessionExpiresAt
 } from "./session";
 import { hashToken } from "./token";
+import { readJsonBodyOrNull, requestBodyErrorResponse } from "../http/requestBody";
 
 export type RegisterHandlerDeps = {
   getConfig(): AuthConfig;
@@ -48,11 +49,7 @@ function json(data: unknown, init?: ResponseInit): Response {
 }
 
 async function readJson(request: Request): Promise<unknown> {
-  try {
-    return await request.json();
-  } catch {
-    return null;
-  }
+  return readJsonBodyOrNull(request, "auth");
 }
 
 function isJsonContentType(contentType: string | null): boolean {
@@ -204,7 +201,28 @@ export function createInviteAcceptanceHandler(deps: InviteAcceptanceHandlerDeps)
       return contentTypeError;
     }
 
-    const body = inviteAcceptanceBody(await readJson(request));
+    const rateLimiter = resolveLoginRateLimiter(
+      deps.inviteAcceptanceRateLimiter,
+      defaultInviteAcceptanceRateLimiter
+    );
+    const clientRateLimitKey = credentialClientRateLimitKey({
+      config,
+      prefix: "invite-acceptance",
+      request
+    });
+
+    if (clientRateLimitKey) {
+      const clientRateLimit = await rateLimiter.check(clientRateLimitKey);
+
+      if (!clientRateLimit.allowed) {
+        return rateLimitedResponse(clientRateLimit);
+      }
+    }
+
+    const rawBody = await readJson(request);
+    const bodyError = requestBodyErrorResponse(rawBody);
+    if (bodyError) return bodyError;
+    const body = inviteAcceptanceBody(rawBody);
 
     if (!body?.token || !body.password) {
       return json({ error: "invite_token_password_required" }, { status: 400 });
@@ -216,24 +234,7 @@ export function createInviteAcceptanceHandler(deps: InviteAcceptanceHandlerDeps)
       return json({ error: passwordError }, { status: 400 });
     }
 
-    const rateLimiter = resolveLoginRateLimiter(
-      deps.inviteAcceptanceRateLimiter,
-      defaultInviteAcceptanceRateLimiter
-    );
-    const clientRateLimitKey = credentialClientRateLimitKey({
-      config,
-      prefix: "invite-acceptance",
-      request
-    });
     const tokenRateLimitKey = inviteTokenRateLimitKey(body.token);
-
-    if (clientRateLimitKey) {
-      const clientRateLimit = await rateLimiter.check(clientRateLimitKey);
-
-      if (!clientRateLimit.allowed) {
-        return rateLimitedResponse(clientRateLimit);
-      }
-    }
 
     const tokenRateLimit = await rateLimiter.check(tokenRateLimitKey);
 
@@ -294,22 +295,6 @@ export function createRegisterHandler(deps: RegisterHandlerDeps) {
       return contentTypeError;
     }
 
-    const body = registerBody(await readJson(request));
-
-    if (!body || !body.email.trim()) {
-      return json({ error: "registration_required" }, { status: 400 });
-    }
-
-    const normalizedEmail = normalizeAuthEmail(body.email);
-
-    if (!isPlausibleEmail(normalizedEmail)) {
-      return json({ error: "email_invalid" }, { status: 400 });
-    }
-
-    const rateLimitKey = credentialRateLimitKey({
-      email: normalizedEmail,
-      prefix: "registration"
-    });
     const clientRateLimitKey = credentialClientRateLimitKey({
       config,
       prefix: "registration",
@@ -328,6 +313,25 @@ export function createRegisterHandler(deps: RegisterHandlerDeps) {
       }
     }
 
+    const rawBody = await readJson(request);
+    const bodyError = requestBodyErrorResponse(rawBody);
+    if (bodyError) return bodyError;
+    const body = registerBody(rawBody);
+
+    if (!body || !body.email.trim()) {
+      return json({ error: "registration_required" }, { status: 400 });
+    }
+
+    const normalizedEmail = normalizeAuthEmail(body.email);
+
+    if (!isPlausibleEmail(normalizedEmail)) {
+      return json({ error: "email_invalid" }, { status: 400 });
+    }
+
+    const rateLimitKey = credentialRateLimitKey({
+      email: normalizedEmail,
+      prefix: "registration"
+    });
     const rateLimit = await rateLimiter.check(rateLimitKey);
 
     if (!rateLimit.allowed) {
@@ -381,7 +385,31 @@ export function createEmailVerificationHandler(deps: EmailVerificationHandlerDep
       return contentTypeError;
     }
 
-    const body = verifyBody(await readJson(request));
+    const config = deps.getConfig();
+    const rateLimiter = resolveLoginRateLimiter(
+      deps.verificationRateLimiter,
+      defaultVerificationRateLimiter
+    );
+    const clientRateLimitKey = config.configured
+      ? credentialClientRateLimitKey({
+          config,
+          prefix: "email-verification",
+          request
+        })
+      : null;
+
+    if (clientRateLimitKey) {
+      const clientRateLimit = await rateLimiter.check(clientRateLimitKey);
+
+      if (!clientRateLimit.allowed) {
+        return rateLimitedResponse(clientRateLimit);
+      }
+    }
+
+    const rawBody = await readJson(request);
+    const bodyError = requestBodyErrorResponse(rawBody);
+    if (bodyError) return bodyError;
+    const body = verifyBody(rawBody);
 
     if (!body || !body.token.trim()) {
       return json({ error: "verification_token_required" }, { status: 400 });
@@ -397,29 +425,11 @@ export function createEmailVerificationHandler(deps: EmailVerificationHandlerDep
       return json({ error: passwordError }, { status: 400 });
     }
 
-    const config = deps.getConfig();
-
     if (!config.configured) {
       return json({ error: "auth_not_configured" }, { status: 503 });
     }
 
-    const rateLimiter = resolveLoginRateLimiter(
-      deps.verificationRateLimiter,
-      defaultVerificationRateLimiter
-    );
-    const clientRateLimitKey = credentialClientRateLimitKey({
-      config,
-      prefix: "email-verification",
-      request
-    });
     const tokenRateLimitKey = verificationTokenRateLimitKey(body.token);
-    if (clientRateLimitKey) {
-      const clientRateLimit = await rateLimiter.check(clientRateLimitKey);
-
-      if (!clientRateLimit.allowed) {
-        return rateLimitedResponse(clientRateLimit);
-      }
-    }
 
     const tokenRateLimit = await rateLimiter.check(tokenRateLimitKey);
 

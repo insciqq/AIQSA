@@ -44,6 +44,8 @@ describe("upload validation", () => {
   it("reads the canonical upload-size setting and falls back safely", () => {
     expect(defaultUploadMaxBytes({ AIQSA_UPLOAD_MAX_BYTES: "1048576" })).toBe(1_048_576);
     expect(defaultUploadMaxBytes({ AIQSA_UPLOAD_MAX_BYTES: "invalid" })).toBe(25_000_000);
+    expect(defaultUploadMaxBytes({ AIQSA_UPLOAD_MAX_BYTES: "1.5" })).toBe(25_000_000);
+    expect(defaultUploadMaxBytes({ AIQSA_UPLOAD_MAX_BYTES: "2000000000" })).toBe(25_000_000);
     expect(defaultUploadMaxBytes({})).toBe(25_000_000);
   });
 

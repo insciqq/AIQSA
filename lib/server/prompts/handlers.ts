@@ -1,4 +1,8 @@
 import type { RequestAuthResolver } from "../auth/requestAuth";
+import {
+  readJsonBodyOrNull,
+  requestBodyErrorResponse
+} from "../http/requestBody";
 
 export type PromptPresetRecord = {
   developerPrompt: string | null;
@@ -31,13 +35,14 @@ export type PromptHandlerDeps = {
   resolveAuth: RequestAuthResolver;
 };
 
-async function readJson(request: Request): Promise<Record<string, unknown> | null> {
-  try {
-    const value = await request.json();
-    return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : null;
-  } catch {
-    return null;
-  }
+async function readJson(
+  request: Request
+): Promise<readonly [Record<string, unknown> | null, Response | null]> {
+  const value = await readJsonBodyOrNull(request, "json");
+  return [
+    typeof value === "object" && value !== null ? (value as Record<string, unknown>) : null,
+    requestBodyErrorResponse(value)
+  ];
 }
 
 function textValue(value: unknown): string | null {
@@ -78,7 +83,10 @@ export function createCreatePromptHandler(deps: PromptHandlerDeps) {
       return result.response;
     }
 
-    const body = await readJson(request);
+    const [body, bodyError] = await readJson(request);
+    if (bodyError) {
+      return bodyError;
+    }
     const name = textValue(body?.name);
     const systemPrompt = textValue(body?.systemPrompt);
     if (!name || !systemPrompt) {
@@ -111,7 +119,10 @@ export function createUpdatePromptHandler(deps: PromptHandlerDeps) {
     }
 
     const params = await context.params;
-    const body = await readJson(request);
+    const [body, bodyError] = await readJson(request);
+    if (bodyError) {
+      return bodyError;
+    }
     const prompt = await deps.repository.updatePrompt({
       developerPrompt: optionalTextValue(body?.developerPrompt),
       name: optionalTextValue(body?.name),

@@ -1,5 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { RequestAuthResolver } from "../auth/requestAuth";
+import { readBoundedFormData, RequestBodyTooLargeError } from "../http/requestBody";
+import { getRequestBodyConfig, type RequestBodyConfig } from "../http/requestBodyConfig";
+import { resolveUploadPermitGate, type UploadPermitGate } from "../http/uploadPermitGate";
 import { extractImageMetadata, type ImageMetadata } from "./imageMetadata";
 import { extractPdfTextChunks, type PdfExtractionResult } from "./pdf";
 import { createS3StorageAdapter, type StorageAdapter } from "./storage";
@@ -27,9 +30,11 @@ export type UploadHandlerDeps = {
   };
   extractImageMetadata?: (buffer: Buffer, mimeType: string) => ImageMetadata;
   extractPdfTextChunks?: (buffer: Buffer) => Promise<PdfExtractionResult>;
+  getBodyConfig?: (uploadMaxBytes: number) => Pick<RequestBodyConfig, "uploadMaxConcurrency" | "uploadMultipartMaxBytes">;
   getMaxBytes?: () => number;
   resolveAuth: RequestAuthResolver;
   storage?: StorageAdapter;
+  uploadPermitGate?: UploadPermitGate;
 };
 
 function safeFileName(fileName: string): string {
@@ -130,97 +135,133 @@ export function createUploadHandler(deps: UploadHandlerDeps) {
       return Response.json({ error: "unauthorized" }, { status: 401 });
     }
 
-    const form = await request.formData();
-    const file = form.get("file");
-
-    if (!(file instanceof File)) {
-      return Response.json({ error: "file_required" }, { status: 400 });
-    }
-
     const maxBytes = deps.getMaxBytes?.() ?? defaultUploadMaxBytes();
-    const initialValidation = validateUpload({
-      byteSize: file.size,
-      fileName: file.name,
-      maxBytes,
-      mimeType: file.type
-    });
+    const bodyConfig = deps.getBodyConfig?.(maxBytes) ?? getRequestBodyConfig(process.env, maxBytes);
+    const permitGate = deps.uploadPermitGate ?? resolveUploadPermitGate(bodyConfig.uploadMaxConcurrency);
+    const releasePermit = permitGate.tryAcquire();
 
-    if (!initialValidation.ok) {
+    if (!releasePermit) {
       return Response.json(
-        { error: initialValidation.code },
-        { status: initialValidation.code === "file_too_large" ? 413 : 400 }
+        { error: "upload_busy", message: "Upload capacity is busy. Try again shortly." },
+        { headers: { "retry-after": "1" }, status: 429 }
       );
     }
 
-    const buffer = Buffer.from(await file.arrayBuffer());
-    const validation = validateUpload({
-      byteSize: buffer.byteLength,
-      bytes: buffer,
-      fileName: file.name,
-      maxBytes,
-      mimeType: file.type
-    });
-
-    if (!validation.ok) {
-      return Response.json({ error: validation.code }, { status: validation.code === "file_too_large" ? 413 : 400 });
-    }
-
-    let processed: Awaited<ReturnType<typeof buildMetadata>>;
     try {
-      processed = await buildMetadata(validation.kind, validation.mimeType, buffer, deps, file.name);
-    } catch (error) {
-      return Response.json(
-        { error: error instanceof Error ? error.message : "attachment_processing_failed" },
-        { status: 400 }
-      );
-    }
-
-    const digest = checksum(buffer);
-    const storageKey = `${auth.userId}/${randomUUID()}-${digest.slice(0, 16)}-${safeFileName(file.name)}`;
-    const storage = deps.storage ?? createS3StorageAdapter();
-    await storage.putObject({
-      body: buffer,
-      contentType: validation.mimeType,
-      storageKey
-    });
-
-    let attachment: CreatedAttachment;
-    try {
-      attachment = await deps.createAttachment({
-        byteSize: buffer.byteLength,
-        checksum: digest,
-        extractedText: processed.extractedText,
-        fileName: file.name,
-        kind: validation.kind,
-        metadata: processed.metadata,
-        mimeType: validation.mimeType,
-        status: "ready",
-        storageKey,
-        userId: auth.userId
-      });
-    } catch (error) {
-      let cleanupJob: { id: string } | null = null;
-
+      let form: FormData;
       try {
-        cleanupJob = (await deps.deletionOutbox?.stage(storageKey)) ?? null;
-      } catch {
-        // Direct object cleanup remains useful when persistence itself is unavailable.
-      }
-
-      try {
-        await storage.deleteObject(storageKey);
-        if (cleanupJob) {
-          await deps.deletionOutbox?.complete(cleanupJob.id);
+        form = await readBoundedFormData(request, bodyConfig.uploadMultipartMaxBytes);
+      } catch (error) {
+        if (error instanceof RequestBodyTooLargeError) {
+          return Response.json(
+            {
+              error: "file_too_large",
+              limit: bodyConfig.uploadMultipartMaxBytes,
+              message: `Upload envelope exceeds the ${bodyConfig.uploadMultipartMaxBytes}-byte limit.`
+            },
+            { status: 413 }
+          );
         }
-      } catch {
-        // A staged job is retryable; if staging failed, preserve the original DB error.
+
+        if (request.signal.aborted) {
+          throw error;
+        }
+
+        return Response.json({ error: "file_required" }, { status: 400 });
       }
 
-      throw error;
-    }
+      const file = form.get("file");
 
-    return Response.json({
-      attachment
-    });
+      if (!(file instanceof File)) {
+        return Response.json({ error: "file_required" }, { status: 400 });
+      }
+
+      const initialValidation = validateUpload({
+        byteSize: file.size,
+        fileName: file.name,
+        maxBytes,
+        mimeType: file.type
+      });
+
+      if (!initialValidation.ok) {
+        return Response.json(
+          { error: initialValidation.code },
+          { status: initialValidation.code === "file_too_large" ? 413 : 400 }
+        );
+      }
+
+      const buffer = Buffer.from(await file.arrayBuffer());
+      const validation = validateUpload({
+        byteSize: buffer.byteLength,
+        bytes: buffer,
+        fileName: file.name,
+        maxBytes,
+        mimeType: file.type
+      });
+
+      if (!validation.ok) {
+        return Response.json({ error: validation.code }, { status: validation.code === "file_too_large" ? 413 : 400 });
+      }
+
+      let processed: Awaited<ReturnType<typeof buildMetadata>>;
+      try {
+        processed = await buildMetadata(validation.kind, validation.mimeType, buffer, deps, file.name);
+      } catch (error) {
+        return Response.json(
+          { error: error instanceof Error ? error.message : "attachment_processing_failed" },
+          { status: 400 }
+        );
+      }
+
+      const digest = checksum(buffer);
+      const storageKey = `${auth.userId}/${randomUUID()}-${digest.slice(0, 16)}-${safeFileName(file.name)}`;
+      const storage = deps.storage ?? createS3StorageAdapter();
+      await storage.putObject({
+        body: buffer,
+        contentType: validation.mimeType,
+        storageKey
+      });
+
+      let attachment: CreatedAttachment;
+      try {
+        attachment = await deps.createAttachment({
+          byteSize: buffer.byteLength,
+          checksum: digest,
+          extractedText: processed.extractedText,
+          fileName: file.name,
+          kind: validation.kind,
+          metadata: processed.metadata,
+          mimeType: validation.mimeType,
+          status: "ready",
+          storageKey,
+          userId: auth.userId
+        });
+      } catch (error) {
+        let cleanupJob: { id: string } | null = null;
+
+        try {
+          cleanupJob = (await deps.deletionOutbox?.stage(storageKey)) ?? null;
+        } catch {
+          // Direct object cleanup remains useful when persistence itself is unavailable.
+        }
+
+        try {
+          await storage.deleteObject(storageKey);
+          if (cleanupJob) {
+            await deps.deletionOutbox?.complete(cleanupJob.id);
+          }
+        } catch {
+          // A staged job is retryable; if staging failed, preserve the original DB error.
+        }
+
+        throw error;
+      }
+
+      return Response.json({
+        attachment
+      });
+    } finally {
+      releasePermit();
+    }
   };
 }

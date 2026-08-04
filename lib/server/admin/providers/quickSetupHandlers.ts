@@ -7,6 +7,10 @@ import {
 } from "../../../contracts/adminProviderQuickSetup";
 import type { RequestAuthResolver } from "../../auth/requestAuth";
 import {
+  readJsonBodyOrNull,
+  requestBodyErrorResponse
+} from "../../http/requestBody";
+import {
   AdminProviderQuickSetupServiceError,
   type AdminProviderQuickSetupService
 } from "./quickSetupService";
@@ -101,12 +105,9 @@ export function createAdminProviderQuickSetupMutationHandler(
     if (!hasJsonContentType(request)) return errorJson("json_required", 415);
     const auth = await requireAdmin(request, deps);
     if (auth.response || !auth.actor) return auth.response ?? errorJson("unauthorized", 401);
-    let body: unknown;
-    try {
-      body = await request.json();
-    } catch {
-      return errorJson("provider_configuration_invalid", 400);
-    }
+    const body = await readJsonBodyOrNull(request, "json");
+    const bodyError = requestBodyErrorResponse(body);
+    if (bodyError) return bodyError;
     if (!body || typeof body !== "object" || Array.isArray(body)) {
       return errorJson("provider_configuration_invalid", 400);
     }
@@ -148,12 +149,9 @@ export function createAdminProviderQuickSetupClearHandler(
     if (!hasJsonContentType(request)) return errorJson("json_required", 415);
     const auth = await requireAdmin(request, deps);
     if (auth.response || !auth.actor) return auth.response ?? errorJson("unauthorized", 401);
-    let body: unknown;
-    try {
-      body = await request.json();
-    } catch {
-      return errorJson("provider_configuration_invalid", 400);
-    }
+    const body = await readJsonBodyOrNull(request, "json");
+    const bodyError = requestBodyErrorResponse(body);
+    if (bodyError) return bodyError;
     if (!body || typeof body !== "object" || Array.isArray(body)) {
       return errorJson("provider_configuration_invalid", 400);
     }

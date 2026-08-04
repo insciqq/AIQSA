@@ -9,6 +9,10 @@ import type {
 } from "../../contracts/email";
 import type { RequestAuthResolver } from "../auth/requestAuth";
 import {
+  readJsonBodyOrNull,
+  requestBodyErrorResponse
+} from "../http/requestBody";
+import {
   normalizeSmtpConfiguration,
   normalizeSmtpProductMessage
 } from "./definitions";
@@ -44,14 +48,12 @@ function hasJsonContentType(request: Request): boolean {
   return contentType === "application/json" || contentType.endsWith("+json");
 }
 
-async function readJsonRecord(request: Request): Promise<Record<string, unknown> | null> {
-  if (!hasJsonContentType(request)) return null;
-  try {
-    const value = await request.json();
-    return isRecord(value) ? value : null;
-  } catch {
-    return null;
-  }
+async function readJsonRecord(
+  request: Request
+): Promise<readonly [Record<string, unknown> | null, Response | null]> {
+  if (!hasJsonContentType(request)) return [null, null];
+  const value = await readJsonBodyOrNull(request, "json");
+  return [isRecord(value) ? value : null, requestBodyErrorResponse(value)];
 }
 
 function version(value: unknown): number | null {
@@ -173,7 +175,9 @@ export function createAdminEmailSaveHandler(deps: AdminEmailHandlerDeps) {
     if (!hasJsonContentType(request)) return errorJson("json_required", 415);
     const auth = await requireAdmin(request, deps);
     if (!auth.session) return auth.response;
-    const body = saveRequest(await readJsonRecord(request));
+    const [value, bodyError] = await readJsonRecord(request);
+    if (bodyError) return bodyError;
+    const body = saveRequest(value);
     if (!body) return errorJson("email_configuration_invalid", 400);
     return mutationResponse(await deps.service.saveDraft({
       actorUserId: auth.session.userId,
@@ -187,7 +191,9 @@ export function createAdminEmailClearHandler(deps: AdminEmailHandlerDeps) {
     if (!hasJsonContentType(request)) return errorJson("json_required", 415);
     const auth = await requireAdmin(request, deps);
     if (!auth.session) return auth.response;
-    const body = clearRequest(await readJsonRecord(request));
+    const [value, bodyError] = await readJsonRecord(request);
+    if (bodyError) return bodyError;
+    const body = clearRequest(value);
     if (!body) return errorJson("email_configuration_invalid", 400);
     return mutationResponse(await deps.service.clear({
       actorUserId: auth.session.userId,
@@ -202,7 +208,9 @@ export function createAdminEmailActionHandler(deps: AdminEmailHandlerDeps) {
     if (!hasJsonContentType(request)) return errorJson("json_required", 415);
     const auth = await requireAdmin(request, deps);
     if (!auth.session) return auth.response;
-    const action = actionRequest(await readJsonRecord(request));
+    const [value, bodyError] = await readJsonRecord(request);
+    if (bodyError) return bodyError;
+    const action = actionRequest(value);
     if (!action) return errorJson("email_configuration_invalid", 400);
 
     if (action.action === "test") {

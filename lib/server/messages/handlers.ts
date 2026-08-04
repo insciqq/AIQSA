@@ -4,6 +4,10 @@ import type {
   WorkspaceChatSummaryWire
 } from "../../contracts/chats";
 import type { RequestAuthResolver } from "../auth/requestAuth";
+import {
+  readJsonBodyOrNull,
+  requestBodyErrorResponse
+} from "../http/requestBody";
 
 export type BranchMessageRecord = {
   chatId: string;
@@ -67,13 +71,14 @@ export type MessageBranchHandlerDeps = {
   resolveAuth: RequestAuthResolver;
 };
 
-async function readJson(request: Request): Promise<Record<string, unknown> | null> {
-  try {
-    const value = await request.json();
-    return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : null;
-  } catch {
-    return null;
-  }
+async function readJson(
+  request: Request
+): Promise<readonly [Record<string, unknown> | null, Response | null]> {
+  const value = await readJsonBodyOrNull(request, "json");
+  return [
+    typeof value === "object" && value !== null ? (value as Record<string, unknown>) : null,
+    requestBodyErrorResponse(value)
+  ];
 }
 
 function normalizeContent(body: Record<string, unknown> | null): { blocks: unknown[] } {
@@ -171,7 +176,10 @@ export function createEditMessageBranchHandler(deps: MessageBranchHandlerDeps) {
       return auth.response;
     }
 
-    const body = await readJson(request);
+    const [body, bodyError] = await readJson(request);
+    if (bodyError) {
+      return bodyError;
+    }
     const content = normalizeContent(body);
     if (content.blocks.length === 0) {
       return Response.json({ error: "content_required" }, { status: 400 });

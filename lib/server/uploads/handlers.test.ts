@@ -3,6 +3,7 @@
 import { describe, expect, it } from "vitest";
 import { getAuthConfig, TEST_AUTH_TOKEN } from "../auth/config";
 import { createTestAuth } from "../auth/testRequestAuth";
+import { createUploadPermitGate } from "../http/uploadPermitGate";
 import { createMemoryStorageAdapter } from "./storage";
 import { createUploadHandler } from "./handlers";
 
@@ -47,15 +48,114 @@ describe("upload handler", () => {
     expect(response.status).toBe(401);
   });
 
+  it("rejects an oversized multipart envelope before parsing it", async () => {
+    const POST = createUploadHandler({
+      createAttachment: async () => {
+        throw new Error("should not create");
+      },
+      getBodyConfig: () => ({ uploadMaxConcurrency: 1, uploadMultipartMaxBytes: 16 }),
+      resolveAuth: auth.resolveAuth,
+      uploadPermitGate: createUploadPermitGate(1)
+    });
+    const request = authenticatedUploadRequest(new File([oneByOnePng], "avatar.png", { type: "image/png" }));
+
+    const response = await POST(request);
+
+    expect(response.status).toBe(413);
+    await expect(response.json()).resolves.toMatchObject({ error: "file_too_large", limit: 16 });
+  });
+
+  it("rejects upload concurrency without reading the request body", async () => {
+    const gate = createUploadPermitGate(1);
+    const release = gate.tryAcquire();
+    const POST = createUploadHandler({
+      createAttachment: async () => {
+        throw new Error("should not create");
+      },
+      getBodyConfig: () => ({ uploadMaxConcurrency: 1, uploadMultipartMaxBytes: 1024 }),
+      resolveAuth: auth.resolveAuth,
+      uploadPermitGate: gate
+    });
+    const request = authenticatedUploadRequest(new File([oneByOnePng], "avatar.png", { type: "image/png" }));
+    const originalBody = request.body;
+    let bodyReads = 0;
+    Object.defineProperty(request, "body", {
+      configurable: true,
+      get() {
+        bodyReads += 1;
+        return originalBody;
+      }
+    });
+
+    const response = await POST(request);
+
+    expect(response.status).toBe(429);
+    expect(response.headers.get("retry-after")).toBe("1");
+    expect(bodyReads).toBe(0);
+    release?.();
+  });
+
+  it("releases the upload permit after malformed multipart input", async () => {
+    const gate = createUploadPermitGate(1);
+    const POST = createUploadHandler({
+      createAttachment: async () => {
+        throw new Error("should not create");
+      },
+      getBodyConfig: () => ({ uploadMaxConcurrency: 1, uploadMultipartMaxBytes: 1024 }),
+      resolveAuth: auth.resolveAuth,
+      uploadPermitGate: gate
+    });
+    const response = await POST(new Request("http://app.local/api/uploads", {
+      body: "not-multipart",
+      headers: { cookie: auth.cookie, "content-type": "multipart/form-data; boundary=missing" },
+      method: "POST"
+    }));
+
+    expect(response.status).toBe(400);
+    expect(gate.snapshot().active).toBe(0);
+    expect(gate.tryAcquire()).toBeTypeOf("function");
+  });
+
+  it("releases the upload permit when the request is cancelled", async () => {
+    const gate = createUploadPermitGate(1);
+    const controller = new AbortController();
+    const reason = new Error("upload_cancelled");
+    const POST = createUploadHandler({
+      createAttachment: async () => {
+        throw new Error("should not create");
+      },
+      getBodyConfig: () => ({ uploadMaxConcurrency: 1, uploadMultipartMaxBytes: 1024 }),
+      resolveAuth: auth.resolveAuth,
+      uploadPermitGate: gate
+    });
+    const request = new Request("http://app.local/api/uploads", {
+      body: new ReadableStream<Uint8Array>(),
+      duplex: "half",
+      headers: {
+        cookie: auth.cookie,
+        "content-type": "multipart/form-data; boundary=pending"
+      },
+      method: "POST",
+      signal: controller.signal
+    } as RequestInit);
+
+    controller.abort(reason);
+
+    await expect(POST(request)).rejects.toBe(reason);
+    expect(gate.snapshot().active).toBe(0);
+  });
+
   it("stores an authenticated image upload and persists metadata", async () => {
     const storage = createMemoryStorageAdapter();
+    const gate = createUploadPermitGate(1);
     const POST = createUploadHandler({
       createAttachment: async (input) => ({
         ...input,
         id: "attachment-1"
       }),
       resolveAuth: auth.resolveAuth,
-      storage
+      storage,
+      uploadPermitGate: gate
     });
     const response = await POST(authenticatedUploadRequest(new File([oneByOnePng], "avatar.png", { type: "image/png" })));
 
@@ -72,6 +172,7 @@ describe("upload handler", () => {
     expect(body.attachment.id).toBe("attachment-1");
     expect(body.attachment.metadata.image).toMatchObject({ height: 1, width: 1 });
     expect(storage.objects.has(body.attachment.storageKey)).toBe(true);
+    expect(gate.snapshot().active).toBe(0);
   });
 
   it("uses a unique object key for identical uploads", async () => {
@@ -97,6 +198,7 @@ describe("upload handler", () => {
 
   it("removes a just-written object and settles its outbox job when attachment persistence fails", async () => {
     const storage = createMemoryStorageAdapter();
+    const gate = createUploadPermitGate(1);
     const staged: string[] = [];
     const completed: string[] = [];
     const POST = createUploadHandler({
@@ -113,7 +215,8 @@ describe("upload handler", () => {
         }
       },
       resolveAuth: auth.resolveAuth,
-      storage
+      storage,
+      uploadPermitGate: gate
     });
 
     await expect(
@@ -122,6 +225,32 @@ describe("upload handler", () => {
     expect(staged).toHaveLength(1);
     expect(completed).toEqual(["cleanup-job"]);
     expect(storage.objects.size).toBe(0);
+    expect(gate.snapshot().active).toBe(0);
+  });
+
+  it("releases the upload permit when object storage fails", async () => {
+    const gate = createUploadPermitGate(1);
+    const POST = createUploadHandler({
+      createAttachment: async () => {
+        throw new Error("should not create");
+      },
+      resolveAuth: auth.resolveAuth,
+      storage: {
+        async deleteObject() {},
+        async getObject() {
+          throw new Error("should not read");
+        },
+        async putObject() {
+          throw new Error("storage_unavailable");
+        }
+      },
+      uploadPermitGate: gate
+    });
+
+    await expect(
+      POST(authenticatedUploadRequest(new File([oneByOnePng], "failed.png", { type: "image/png" })))
+    ).rejects.toThrow("storage_unavailable");
+    expect(gate.snapshot().active).toBe(0);
   });
 
   it("leaves a durable cleanup job when post-put object deletion fails", async () => {
@@ -251,6 +380,7 @@ describe("upload handler", () => {
 
   it("rejects spoofed magic bytes before storage or attachment creation", async () => {
     const storage = createMemoryStorageAdapter();
+    const gate = createUploadPermitGate(1);
     let attachmentCreated = false;
     const POST = createUploadHandler({
       createAttachment: async (input) => {
@@ -262,7 +392,8 @@ describe("upload handler", () => {
         };
       },
       resolveAuth: auth.resolveAuth,
-      storage
+      storage,
+      uploadPermitGate: gate
     });
     const response = await POST(
       authenticatedUploadRequest(new File([Buffer.from("%PDF-1.4\n")], "spoof.png", { type: "image/png" }))
@@ -272,10 +403,12 @@ describe("upload handler", () => {
     await expect(response.json()).resolves.toEqual({ error: "unsupported_type" });
     expect(attachmentCreated).toBe(false);
     expect(storage.objects.size).toBe(0);
+    expect(gate.snapshot().active).toBe(0);
   });
 
   it("rejects complex PDFs before storage or attachment creation", async () => {
     const storage = createMemoryStorageAdapter();
+    const gate = createUploadPermitGate(1);
     let attachmentCreated = false;
     const POST = createUploadHandler({
       createAttachment: async (input) => {
@@ -290,7 +423,8 @@ describe("upload handler", () => {
         throw new Error("pdf_too_complex");
       },
       resolveAuth: auth.resolveAuth,
-      storage
+      storage,
+      uploadPermitGate: gate
     });
     const response = await POST(
       authenticatedUploadRequest(new File([Buffer.from("%PDF-1.4\n")], "large.pdf", { type: "application/pdf" }))
@@ -300,5 +434,6 @@ describe("upload handler", () => {
     await expect(response.json()).resolves.toEqual({ error: "pdf_too_complex" });
     expect(attachmentCreated).toBe(false);
     expect(storage.objects.size).toBe(0);
+    expect(gate.snapshot().active).toBe(0);
   });
 });

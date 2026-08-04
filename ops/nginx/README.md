@@ -10,6 +10,11 @@ Replace the example domain and port, then inspect the rendered file before
 enabling it:
 
 ```bash
+sudo test ! -e /etc/nginx/conf.d/aiqsa-http-limits.conf \
+  || sudo cp -a /etc/nginx/conf.d/aiqsa-http-limits.conf /etc/nginx/conf.d/aiqsa-http-limits.conf.pre-aiqsa
+sudo install -m 0644 \
+  ops/nginx/aiqsa-http-limits.conf \
+  /etc/nginx/conf.d/aiqsa-http-limits.conf
 sudo test ! -e /etc/nginx/sites-available/aiqsa.conf \
   || sudo cp -a /etc/nginx/sites-available/aiqsa.conf /etc/nginx/sites-available/aiqsa.conf.pre-aiqsa
 sed \
@@ -33,6 +38,16 @@ The dedicated JSON access log contains only timestamp, generated request id,
 method, status, and timings: no IP address, query string, share/reset token,
 message content, or header value. `X-Request-ID` lets an operator correlate a
 failed response with that privacy-safe record.
+
+The ordinary site limit is 2 MiB. The exact `/api/uploads` location permits a
+32 MiB multipart envelope and consumes the `aiqsa_upload_per_client` zone from
+the separately installed HTTP-context include. Application limits remain
+authoritative when Nginx is absent. If `AIQSA_UPLOAD_MAX_BYTES` or
+`AIQSA_UPLOAD_MULTIPART_OVERHEAD_BYTES` increases, keep the upload location
+strictly above their sum and validate both files with `nginx -t` before reload.
+Nginx-generated ordinary/upload overflows retain the application's JSON error
+codes, and upload connection saturation returns `upload_busy` with a bounded
+`Retry-After` value rather than an HTML proxy error.
 
 ## Add TLS
 
@@ -60,10 +75,21 @@ sudo nginx -t
 sudo systemctl reload nginx
 ```
 
+If the limits include also replaced an existing file, restore it before
+validation:
+
+```bash
+sudo test ! -e /etc/nginx/conf.d/aiqsa-http-limits.conf.pre-aiqsa \
+  || sudo cp -a /etc/nginx/conf.d/aiqsa-http-limits.conf.pre-aiqsa /etc/nginx/conf.d/aiqsa-http-limits.conf
+sudo nginx -t
+sudo systemctl reload nginx
+```
+
 For a completely new site with no previous config, disable it instead:
 
 ```bash
 sudo rm /etc/nginx/sites-enabled/aiqsa.conf
+sudo rm /etc/nginx/conf.d/aiqsa-http-limits.conf
 sudo nginx -t
 sudo systemctl reload nginx
 ```

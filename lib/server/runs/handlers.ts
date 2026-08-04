@@ -6,6 +6,10 @@ import type {
   ModelRunErrorResponse
 } from "../../contracts/runs";
 import type { RequestAuthResolver } from "../auth/requestAuth";
+import {
+  readJsonBodyOrNull,
+  requestBodyErrorResponse
+} from "../http/requestBody";
 import type { ProviderRuntimeResolver } from "../providerRuntime/runtimeResolver";
 import type { ProviderRuntimeBinding } from "../providers/runtimeFactory";
 import type { ProviderAdapter, ProviderSearchAdapter } from "../providers/types";
@@ -58,13 +62,14 @@ export type RunHandlerDeps = {
 
 const activeRunGateWindowMs = activeRunStaleMs;
 
-async function readJson(request: Request): Promise<Record<string, unknown> | null> {
-  try {
-    const value = await request.json();
-    return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : null;
-  } catch {
-    return null;
-  }
+async function readJson(
+  request: Request
+): Promise<readonly [Record<string, unknown> | null, Response | null]> {
+  const value = await readJsonBodyOrNull(request, "json");
+  return [
+    typeof value === "object" && value !== null ? (value as Record<string, unknown>) : null,
+    requestBodyErrorResponse(value)
+  ];
 }
 
 function runPreparationFailureResponse(failure: RunPreparationFailure): Response {
@@ -233,6 +238,11 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
       return Response.json({ error: "unauthorized" }, { status: 401 });
     }
 
+    const [body, bodyError] = await readJson(request);
+    if (bodyError) {
+      return bodyError;
+    }
+
     const recovery = recoveryDeps(deps);
     await sweepBootOrphanedRunsOnce(recovery);
     await reconcileStaleRuns(recovery, {
@@ -250,7 +260,6 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
       return activeRunResponse;
     }
 
-    const body = await readJson(request);
     const expectedActiveLeaf = expectedActiveLeafFromBody(body, chat.activeLeafMessageId);
     if (!expectedActiveLeaf.ok) {
       return Response.json({ error: "expected_active_leaf_invalid" }, { status: 400 });
@@ -353,6 +362,11 @@ export function createRegenerateModelRunHandler(deps: RunHandlerDeps) {
       return Response.json({ error: "unauthorized" }, { status: 401 });
     }
 
+    const [body, bodyError] = await readJson(request);
+    if (bodyError) {
+      return bodyError;
+    }
+
     const recovery = recoveryDeps(deps);
     await sweepBootOrphanedRunsOnce(recovery);
     await reconcileStaleRuns(recovery, {
@@ -370,7 +384,6 @@ export function createRegenerateModelRunHandler(deps: RunHandlerDeps) {
       return activeRunResponse;
     }
 
-    const body = await readJson(request);
     const preparation = await prepareRun(deps, {
       body,
       source: {

@@ -129,11 +129,27 @@ MCP runs its own independent consent flow.
 ## Uploads
 
 ```text
+AIQSA_AUTH_REQUEST_BODY_MAX_BYTES=65536
+AIQSA_JSON_REQUEST_BODY_MAX_BYTES=1048576
 AIQSA_UPLOAD_MAX_BYTES=25000000
+AIQSA_UPLOAD_MULTIPART_OVERHEAD_BYTES=1048576
+AIQSA_UPLOAD_MAX_CONCURRENCY=4
 AIQSA_UPLOAD_STORAGE_DIR=.aiqsa/uploads
 ```
 
-Uploads are full-buffered after size/type preflight; the byte limit is therefore also a per-request application-memory boundary. Keep an exposed proxy body limit slightly above it. The default Compose stack always supplies private S3/MinIO storage. `AIQSA_UPLOAD_STORAGE_DIR` controls the server-only filesystem fallback when S3 variables are absent outside that stack.
+Auth JSON is capped at 64 KiB and other JSON at 1 MiB before parsing. Uploads
+acquire one of four process-local permits, then buffer at most the configured
+file limit plus 1 MiB of multipart overhead before platform parsing. Excess
+concurrency rejects immediately rather than queueing bodies. Invalid, zero,
+fractional, or excessive values fall back to the safe defaults. Upload file
+size is hard-capped at 64 MiB, multipart overhead at 8 MiB, and
+per-process concurrency at 8; larger configured values fall back to defaults.
+Auth JSON is hard-capped at 1 MiB and other JSON at 16 MiB.
+Keep an exposed proxy upload limit strictly above `AIQSA_UPLOAD_MAX_BYTES +
+AIQSA_UPLOAD_MULTIPART_OVERHEAD_BYTES`; application enforcement remains
+authoritative. The default Compose stack always supplies private S3/MinIO
+storage. `AIQSA_UPLOAD_STORAGE_DIR` controls the server-only filesystem
+fallback when S3 variables are absent outside that stack.
 
 Internal storage variables are `S3_ENDPOINT`, `S3_REGION`, `S3_BUCKET`, `S3_ACCESS_KEY_ID`, and `S3_SECRET_ACCESS_KEY`. Compose generates them from the canonical `AIQSA_S3_*` values. The bucket must remain private.
 

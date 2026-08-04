@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { getAuthConfig } from "./config";
-import { createMemoryAuthMailer, createNoopAuthMailer } from "./mailer";
+import { createMemoryAuthMailer } from "./mailer";
 import { verifyPassword } from "./password";
 import { createFixedWindowLoginRateLimiter } from "./rateLimit";
 import {
@@ -416,6 +416,59 @@ describe("registration auth handlers", () => {
     await expect(
       verifyPassword("chosen-password", repository.verifications[0]!.passwordHash)
     ).resolves.toBe(true);
+  });
+
+  it("preserves verification validation before reporting unconfigured auth", async () => {
+    const POST = createEmailVerificationHandler({
+      getConfig: () => getAuthConfig({}),
+      repository: createMemoryRegistrationRepository()
+    });
+
+    const malformed = await POST(jsonRequest("/api/auth/verify-email", {}));
+    const valid = await POST(
+      jsonRequest("/api/auth/verify-email", {
+        password: "chosen-password",
+        token: "verify"
+      })
+    );
+
+    expect(malformed.status).toBe(400);
+    await expect(malformed.json()).resolves.toEqual({ error: "verification_token_required" });
+    expect(valid.status).toBe(503);
+    await expect(valid.json()).resolves.toEqual({ error: "auth_not_configured" });
+  });
+
+  it("rejects a saturated client bucket before reading the registration body", async () => {
+    const rateLimiter = createFixedWindowLoginRateLimiter({ clock: () => 0, maxAttempts: 1 });
+    const POST = createRegisterHandler({
+      getConfig: () =>
+        getAuthConfig({
+          AIQSA_AUTH_SESSION_SECRET: "test-secret",
+          AIQSA_TRUST_PROXY_HEADERS: "1",
+          AIQSA_TRUSTED_PROXY_COUNT: "1"
+        }),
+      mailer: createMemoryAuthMailer(),
+      registrationRateLimiter: rateLimiter,
+      repository: createMemoryRegistrationRepository()
+    });
+    const first = jsonRequest("/api/auth/register", { email: "first@example.com" });
+    first.headers.set("x-forwarded-for", "203.0.113.91");
+    expect((await POST(first)).status).toBe(200);
+
+    const blocked = jsonRequest("/api/auth/register", { email: "second@example.com" });
+    blocked.headers.set("x-forwarded-for", "203.0.113.91");
+    const originalBody = blocked.body;
+    let bodyReads = 0;
+    Object.defineProperty(blocked, "body", {
+      configurable: true,
+      get() {
+        bodyReads += 1;
+        return originalBody;
+      }
+    });
+
+    expect((await POST(blocked)).status).toBe(429);
+    expect(bodyReads).toBe(0);
   });
 
   it("keeps successful registration attempts in the account bucket", async () => {

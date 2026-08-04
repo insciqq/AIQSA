@@ -908,6 +908,42 @@ describe("model run route handlers", () => {
     resetBootOrphanSweepForTest();
   });
 
+  it.each(["send", "regenerate"] as const)(
+    "rejects an oversized %s body before recovery or repository work",
+    async (kind) => {
+      const { repository, state } = createMemoryRepository();
+      const findOwnedChat = vi.spyOn(repository, "findOwnedChat");
+      const findRegenerationSource = vi.spyOn(repository, "findRegenerationSource");
+      const deps = {
+        ...authDeps,
+        providers: { fake: createFakeProviderAdapter() },
+        repository
+      };
+      const request = new Request("http://app.local/api/model-runs/oversized", {
+        body: "{}",
+        headers: {
+          "content-length": "9007199254740992",
+          cookie: authCookie()
+        },
+        method: "POST"
+      });
+      const response =
+        kind === "send"
+          ? await createSendMessageHandler(deps)(request, { params: { chatId: "chat-1" } })
+          : await createRegenerateModelRunHandler(deps)(request, {
+              params: { messageId: "assistant-1" }
+            });
+
+      expect(response.status).toBe(413);
+      await expect(response.json()).resolves.toMatchObject({ error: "request_body_too_large" });
+      expect(findOwnedChat).not.toHaveBeenCalled();
+      expect(findRegenerationSource).not.toHaveBeenCalled();
+      expect(state.bootSweeps).toEqual([]);
+      expect(state.created).toBeNull();
+      expect(state.regenerated).toBeNull();
+    }
+  );
+
   it("returns a retryable conflict when the requested or commit-time active leaf no longer matches", async () => {
     const context: ProviderConversationMessage[] = [
       {

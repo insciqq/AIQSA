@@ -14,6 +14,7 @@ import { deliverAuthEmail, type AuthMailer } from "./mailer";
 import type { RequestAuthResolver } from "./requestAuth";
 import { createSessionToken } from "./session";
 import { hashToken } from "./token";
+import { readJsonBodyOrNull, requestBodyErrorResponse } from "../http/requestBody";
 
 export type AdminHandlerDeps = {
   getConfig(): Pick<AuthConfig, "appBaseUrl">;
@@ -58,11 +59,7 @@ function unhandledAdminAction(action: never): Response {
 }
 
 async function readJson(request: Request): Promise<unknown> {
-  try {
-    return await request.json();
-  } catch {
-    return null;
-  }
+  return readJsonBodyOrNull(request, "auth");
 }
 
 function isJsonContentType(contentType: string | null): boolean {
@@ -218,7 +215,10 @@ export function createAdminActionHandler(deps: AdminActionHandlerDeps) {
       return admin.response!;
     }
 
-    const candidate = actionFromBody(await readJson(request));
+    const rawBody = await readJson(request);
+    const bodyError = requestBodyErrorResponse(rawBody);
+    if (bodyError) return bodyError;
+    const candidate = actionFromBody(rawBody);
 
     if (!candidate) {
       return json({ error: "action_required" }, { status: 400 });

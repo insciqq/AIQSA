@@ -136,7 +136,7 @@ All administrator routes recheck an active administrator. Non-admin users receiv
 
 ## Uploads And Shares
 
-- Upload validates authentication, ownership context, size, extension/type, magic bytes or text content, and image/PDF complexity before persisting. Stored MIME derives from validated content, not the browser declaration. Text-like extraction is local and bounded; PDF work is page/time bounded and terminable.
+- Upload authenticates before body consumption, acquires a non-queueing process-local permit, and byte-bounds the complete multipart envelope before platform parsing. It then validates ownership context, file size, extension/type, magic bytes or text content, and image/PDF complexity before persisting. Stable overflow/busy outcomes are `413 file_too_large` and `429 upload_busy`; permits release on every terminal path. Stored MIME derives from validated content, not the browser declaration. Text-like extraction is local and bounded; PDF work is page/time bounded and terminable.
 - Object keys are unique per upload. If row creation fails after object storage, a durable cleanup job is staged before immediate best-effort deletion; failed cleanup remains retryable.
 - Public shares are immutable sanitized snapshots. The token is hashed for lookup; create/read/revoke never exposes live private state. Missing, invalid, expired, or revoked tokens share one generic unavailable response.
 - Public API/page reads reauthorize against the repository on every request, are force-dynamic, use private no-store and noindex/noarchive policy, and never cache revocation behind the framework or an intermediary. Hosted-answer native Gemini live-only grounded answers cannot be shared as placeholder content.

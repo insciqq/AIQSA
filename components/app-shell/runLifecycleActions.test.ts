@@ -471,8 +471,31 @@ describe("run lifecycle actions", () => {
       attachments: [{ fileName: "good.pdf", id: "attachment-good", kind: "pdf" }],
       operationError: expect.stringContaining("bad.pdf")
     });
-    expect(composerSession("chat-1").operationError).toContain("upload_failed_413");
+    expect(composerSession("chat-1").operationError).toContain("configured upload size limit");
     expect(composerSession("chat-1").operationError).toContain("omitted.exe");
+  });
+
+  it("shows a specific retryable message when upload capacity is busy", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        Response.json(
+          { error: "upload_busy" },
+          { headers: { "retry-after": "1" }, status: 429 }
+        )
+      )
+    );
+    const { actions, composerSession } = useRunLifecycleActionsForTest();
+
+    await actions.uploadFiles([
+      new File(["busy"], "busy.pdf", { type: "application/pdf" })
+    ]);
+
+    expect(composerSession("chat-1")).toMatchObject({
+      attachments: [],
+      operationError: expect.stringContaining("Upload capacity is busy. Try again shortly."),
+      pendingUploadGenerations: []
+    });
   });
 
   it("keeps mixed-selection rejection feedback after a successful upload settles", async () => {

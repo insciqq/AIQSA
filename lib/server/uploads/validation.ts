@@ -19,6 +19,9 @@ export type UploadValidationResult =
       ok: false;
     };
 
+export const DEFAULT_UPLOAD_MAX_BYTES = 25_000_000;
+export const MAX_UPLOAD_MAX_BYTES = 67_108_864;
+
 const allowedTypes: Record<string, { extensions: string[]; kind: UploadKind }> = {
   "application/pdf": { extensions: [".pdf"], kind: "pdf" },
   "application/json": { extensions: [".json"], kind: "document" },
@@ -102,7 +105,9 @@ export function matchesDeclaredUploadType(mimeType: string, bytes: Buffer | Uint
 export function defaultUploadMaxBytes(env: Record<string, string | undefined> = process.env): number {
   const parsed = Number(env.AIQSA_UPLOAD_MAX_BYTES);
 
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : 25_000_000;
+  return Number.isSafeInteger(parsed) && parsed >= 1 && parsed <= MAX_UPLOAD_MAX_BYTES
+    ? parsed
+    : DEFAULT_UPLOAD_MAX_BYTES;
 }
 
 export function validateUpload(input: UploadValidationInput): UploadValidationResult {

@@ -1,4 +1,8 @@
 import type { RequestAuthResolver } from "../../auth/requestAuth";
+import {
+  readJsonBodyOrNull,
+  requestBodyErrorResponse
+} from "../../http/requestBody";
 import { SearchConfigurationError } from "../../search/configuration";
 import {
   AdminSearchServiceError,
@@ -20,14 +24,12 @@ function hasJsonContentType(request: Request): boolean {
   return contentType === "application/json" || contentType.endsWith("+json");
 }
 
-async function body(request: Request): Promise<Record<string, unknown> | null> {
-  if (!hasJsonContentType(request)) return null;
-  try {
-    const value = await request.json();
-    return isRecord(value) ? value : null;
-  } catch {
-    return null;
-  }
+async function body(
+  request: Request
+): Promise<readonly [Record<string, unknown> | null, Response | null]> {
+  if (!hasJsonContentType(request)) return [null, null];
+  const value = await readJsonBodyOrNull(request, "json");
+  return [isRecord(value) ? value : null, requestBodyErrorResponse(value)];
 }
 
 async function requireAdmin(request: Request, resolveAuth: RequestAuthResolver) {
@@ -87,7 +89,8 @@ export function createAdminSearchCatalogHandler(input: Readonly<{
       }
       const auth = await requireAdmin(request, input.resolveAuth);
       if (auth.error) return auth.error;
-      const value = await body(request);
+      const [value, bodyError] = await body(request);
+      if (bodyError) return bodyError;
       if (!value || typeof value.displayName !== "string" ||
         typeof value.description !== "string" || !isRecord(value.draft)) {
         return Response.json({ error: "search_configuration_invalid" }, { status: 400 });
@@ -112,7 +115,8 @@ export function createAdminSearchCatalogHandler(input: Readonly<{
       }
       const auth = await requireAdmin(request, input.resolveAuth);
       if (auth.error || !auth.session) return auth.error!;
-      const value = await body(request);
+      const [value, bodyError] = await body(request);
+      if (bodyError) return bodyError;
       if (!value || !Number.isSafeInteger(value.expectedVersion) ||
         !isRecord(value.defaultPlan)) {
         return Response.json({ error: "search_configuration_invalid" }, { status: 400 });
@@ -139,7 +143,8 @@ export function createAdminSearchIntegrationHandler(input: Readonly<{
     }
     const auth = await requireAdmin(request, input.resolveAuth);
     if (auth.error || !auth.session) return auth.error!;
-    const value = await body(request);
+    const [value, bodyError] = await body(request);
+    if (bodyError) return bodyError;
     if (!value || typeof value.displayName !== "string" ||
       typeof value.description !== "string" || !isRecord(value.draft) ||
       !Number.isSafeInteger(value.expectedDraftVersion)) {
@@ -171,7 +176,8 @@ export function createAdminSearchActionHandler(input: Readonly<{
     }
     const auth = await requireAdmin(request, input.resolveAuth);
     if (auth.error || !auth.session) return auth.error!;
-    const value = await body(request);
+    const [value, bodyError] = await body(request);
+    if (bodyError) return bodyError;
     const action = value?.action;
     const { integrationId } = await context.params;
     return safely(async () => {

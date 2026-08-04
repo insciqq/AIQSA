@@ -1,4 +1,8 @@
 import type { RequestAuthResolver } from "../auth/requestAuth";
+import {
+  readJsonBodyOrNull,
+  requestBodyErrorResponse
+} from "../http/requestBody";
 import { createShareToken, hashShareToken } from "./tokens";
 import type { PublicShareSnapshot } from "../../domain/shareSnapshot";
 import { applyPublicSharePrivacyHeaders } from "./privacy";
@@ -64,13 +68,14 @@ function serializePublicShare(record: ShareRecord) {
   };
 }
 
-async function readJson(request: Request): Promise<Record<string, unknown> | null> {
-  try {
-    const value = await request.json();
-    return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : null;
-  } catch {
-    return null;
-  }
+async function readJson(
+  request: Request
+): Promise<readonly [Record<string, unknown> | null, Response | null]> {
+  const value = await readJsonBodyOrNull(request, "json");
+  return [
+    typeof value === "object" && value !== null ? (value as Record<string, unknown>) : null,
+    requestBodyErrorResponse(value)
+  ];
 }
 
 async function getSession(request: Request, deps: ShareHandlerDeps) {
@@ -99,7 +104,10 @@ export function createShareChatHandler(deps: ShareHandlerDeps) {
     }
 
     const params = await context.params;
-    const body = await readJson(request);
+    const [body, bodyError] = await readJson(request);
+    if (bodyError) {
+      return bodyError;
+    }
     const shareToken = createShareToken();
     const share = await deps.repository.createChatShare({
       activeLeafMessageId: typeof body?.activeLeafMessageId === "string" ? body.activeLeafMessageId : null,

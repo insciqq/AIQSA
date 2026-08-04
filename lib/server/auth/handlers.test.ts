@@ -315,6 +315,73 @@ describe("auth route handlers", () => {
     expect(blocked.status).toBe(429);
   });
 
+  it("rejects a saturated client bucket before reading the login body", async () => {
+    const loginRateLimiter = createFixedWindowLoginRateLimiter({
+      clock: () => 0,
+      maxAttempts: 1
+    });
+    const POST = createPasswordLoginHandler({
+      getConfig: () => ({
+        ...config,
+        trustForwardedFor: true,
+        trustedProxyCount: 1
+      }),
+      loginRateLimiter,
+      repository: createMemoryPasswordAuthRepository({ identity: null }),
+      verifyPassword: async () => false
+    });
+    const first = jsonRequest("/api/auth/login", {
+      email: "first@aiqsa.local",
+      password: "wrong-password"
+    });
+    first.headers.set("x-forwarded-for", "203.0.113.90");
+    expect((await POST(first)).status).toBe(401);
+
+    const blocked = jsonRequest("/api/auth/login", {
+      email: "second@aiqsa.local",
+      password: "wrong-password"
+    });
+    blocked.headers.set("x-forwarded-for", "203.0.113.90");
+    const originalBody = blocked.body;
+    let bodyReads = 0;
+    Object.defineProperty(blocked, "body", {
+      configurable: true,
+      get() {
+        bodyReads += 1;
+        return originalBody;
+      }
+    });
+
+    expect((await POST(blocked)).status).toBe(429);
+    expect(bodyReads).toBe(0);
+  });
+
+  it("rejects an oversized reset body before password hashing or repository work", async () => {
+    const passwordHasher = vi.fn(async () => "password-hash");
+    const repository = createMemoryPasswordAuthRepository({ identity: null });
+    const completePasswordReset = vi.spyOn(repository, "completePasswordReset");
+    const POST = createPasswordResetCompleteHandler({
+      getConfig: () => config,
+      passwordHasher,
+      repository
+    });
+    const response = await POST(
+      new Request("http://app.local/api/auth/password-reset/complete", {
+        body: JSON.stringify({ password: "new-password", token: "reset-token" }),
+        headers: {
+          "content-length": "9007199254740992",
+          "content-type": "application/json"
+        },
+        method: "POST"
+      })
+    );
+
+    expect(response.status).toBe(413);
+    await expect(response.json()).resolves.toMatchObject({ error: "request_body_too_large" });
+    expect(passwordHasher).not.toHaveBeenCalled();
+    expect(completePasswordReset).not.toHaveBeenCalled();
+  });
+
   it("does not turn an unavailable client identity into a global password-login bucket", async () => {
     const passwordHash = await hashPassword("correct-password");
     const loginRateLimiter = createFixedWindowLoginRateLimiter({ clock: () => 0 });
@@ -553,6 +620,26 @@ describe("auth route handlers", () => {
     expect(first.status).toBe(400);
     expect(blocked.status).toBe(429);
     expect(passwordHasher).toHaveBeenCalledTimes(1);
+  });
+
+  it("preserves reset validation before reporting unconfigured auth", async () => {
+    const POST = createPasswordResetCompleteHandler({
+      getConfig: () => getAuthConfig({}),
+      repository: createMemoryPasswordAuthRepository({ identity: null })
+    });
+
+    const malformed = await POST(jsonRequest("/api/auth/password-reset/complete", {}));
+    const valid = await POST(
+      jsonRequest("/api/auth/password-reset/complete", {
+        password: "new-password",
+        token: "reset-token"
+      })
+    );
+
+    expect(malformed.status).toBe(400);
+    await expect(malformed.json()).resolves.toEqual({ error: "reset_token_password_required" });
+    expect(valid.status).toBe(503);
+    await expect(valid.json()).resolves.toEqual({ error: "auth_not_configured" });
   });
 
   it("shares reset-completion token admission across trusted client keys", async () => {

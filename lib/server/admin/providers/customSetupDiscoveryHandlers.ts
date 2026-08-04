@@ -4,6 +4,10 @@ import {
   type AdminProviderCustomDiscoveryResult
 } from "../../../contracts/adminProviderCustomSetup";
 import type { RequestAuthResolver } from "../../auth/requestAuth";
+import {
+  readJsonBodyOrNull,
+  requestBodyErrorResponse
+} from "../../http/requestBody";
 import { normalizeProviderCredentialSecret } from "../../providers/credentialSecrets";
 import { normalizeProviderConnectionConfiguration } from "../../providers/providerConfiguration";
 import {
@@ -63,12 +67,9 @@ export function createAdminProviderCustomDiscoveryHandler(
       return errorJson("forbidden", 403);
     }
 
-    let body: unknown;
-    try {
-      body = await request.json();
-    } catch {
-      return errorJson("provider_configuration_invalid", 400);
-    }
+    const body = await readJsonBodyOrNull(request, "json");
+    const bodyError = requestBodyErrorResponse(body);
+    if (bodyError) return bodyError;
     if (!isRecord(body)) return errorJson("provider_configuration_invalid", 400);
     const allowedKeys = new Set([
       "allowPrivateNetwork",

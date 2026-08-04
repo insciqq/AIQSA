@@ -21,7 +21,7 @@ import {
   decodeGetModelRunResponse,
   type PersistedRun
 } from "@/lib/contracts/runs";
-import { decodeUploadAttachmentResponse } from "@/lib/contracts/uploads";
+import { decodeUploadAttachmentResponse, decodeUploadErrorResponse } from "@/lib/contracts/uploads";
 import type { Dispatch, SetStateAction } from "react";
 
 type MutableRef<T> = {
@@ -46,6 +46,25 @@ function isTerminalRunFetchOutcome(outcome: RunFetchOutcome): boolean {
 
 function wait(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function uploadFailureMessage(response: Response): Promise<string> {
+  let decoded: ReturnType<typeof decodeUploadErrorResponse> = null;
+  try {
+    decoded = decodeUploadErrorResponse(await response.json());
+  } catch {
+    // Reverse proxies may return a non-JSON body before the application runs.
+  }
+
+  if (decoded?.error === "upload_busy" || response.status === 429) {
+    return "Upload capacity is busy. Try again shortly.";
+  }
+
+  if (decoded?.error === "file_too_large" || response.status === 413) {
+    return "File exceeds the configured upload size limit.";
+  }
+
+  return `upload_failed_${response.status}`;
 }
 
 type RunLifecycleActionsInput = {
@@ -94,7 +113,7 @@ export function useRunLifecycleActions({
           });
 
           if (!response.ok) {
-            throw new Error(`upload_failed_${response.status}`);
+            throw new Error(await uploadFailureMessage(response));
           }
 
           const body = decodeUploadAttachmentResponse(await response.json());

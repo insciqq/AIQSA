@@ -24,6 +24,7 @@ import {
 import { hashToken, verifyTokenHash as verifyTokenHashDefault } from "./token";
 import type { AuthConfig } from "./config";
 import { getLoginRateLimitKey } from "./clientIdentity";
+import { readJsonBodyOrNull, requestBodyErrorResponse } from "../http/requestBody";
 
 export { getLoginRateLimitKey } from "./clientIdentity";
 
@@ -106,11 +107,7 @@ function json(data: unknown, init?: ResponseInit): Response {
 }
 
 async function readJson(request: Request): Promise<unknown> {
-  try {
-    return await request.json();
-  } catch {
-    return null;
-  }
+  return readJsonBodyOrNull(request, "auth");
 }
 
 function unauthorized(): Response {
@@ -294,6 +291,8 @@ export function createTokenLoginHandler(deps: AuthHandlerDeps) {
     }
 
     const body = await readJson(request);
+    const bodyError = requestBodyErrorResponse(body);
+    if (bodyError) return bodyError;
     const token = tokenFromBody(body);
 
     if (typeof token !== "string" || !token) {
@@ -351,22 +350,6 @@ export function createPasswordLoginHandler(deps: PasswordLoginHandlerDeps) {
       return contentTypeError;
     }
 
-    const credentials = credentialsFromBody(await readJson(request));
-
-    if (!credentials || !credentials.email.trim() || !credentials.password) {
-      return json({ error: "credentials_required" }, { status: 400 });
-    }
-
-    const normalizedEmail = normalizeAuthEmail(credentials.email);
-
-    if (!isPlausibleEmail(normalizedEmail)) {
-      return unauthorized();
-    }
-
-    const rateLimitKey = credentialRateLimitKey({
-      email: normalizedEmail,
-      prefix: "password-login"
-    });
     const clientRateLimitKey = credentialClientRateLimitKey({
       config,
       prefix: "password-login",
@@ -385,6 +368,25 @@ export function createPasswordLoginHandler(deps: PasswordLoginHandlerDeps) {
       }
     }
 
+    const rawBody = await readJson(request);
+    const bodyError = requestBodyErrorResponse(rawBody);
+    if (bodyError) return bodyError;
+    const credentials = credentialsFromBody(rawBody);
+
+    if (!credentials || !credentials.email.trim() || !credentials.password) {
+      return json({ error: "credentials_required" }, { status: 400 });
+    }
+
+    const normalizedEmail = normalizeAuthEmail(credentials.email);
+
+    if (!isPlausibleEmail(normalizedEmail)) {
+      return unauthorized();
+    }
+
+    const rateLimitKey = credentialRateLimitKey({
+      email: normalizedEmail,
+      prefix: "password-login"
+    });
     const rateLimit = await loginRateLimiter.check(rateLimitKey);
 
     if (!rateLimit.allowed) {
@@ -447,22 +449,6 @@ export function createPasswordResetRequestHandler(deps: PasswordResetRequestHand
       return contentTypeError;
     }
 
-    const email = emailFromBody(await readJson(request));
-
-    if (!email?.trim()) {
-      return json({ error: "email_required" }, { status: 400 });
-    }
-
-    const normalizedEmail = normalizeAuthEmail(email);
-
-    if (!isPlausibleEmail(normalizedEmail)) {
-      return json({ ok: true });
-    }
-
-    const rateLimitKey = credentialRateLimitKey({
-      email: normalizedEmail,
-      prefix: "password-reset"
-    });
     const clientRateLimitKey = credentialClientRateLimitKey({
       config,
       prefix: "password-reset",
@@ -481,6 +467,25 @@ export function createPasswordResetRequestHandler(deps: PasswordResetRequestHand
       }
     }
 
+    const rawBody = await readJson(request);
+    const bodyError = requestBodyErrorResponse(rawBody);
+    if (bodyError) return bodyError;
+    const email = emailFromBody(rawBody);
+
+    if (!email?.trim()) {
+      return json({ error: "email_required" }, { status: 400 });
+    }
+
+    const normalizedEmail = normalizeAuthEmail(email);
+
+    if (!isPlausibleEmail(normalizedEmail)) {
+      return json({ ok: true });
+    }
+
+    const rateLimitKey = credentialRateLimitKey({
+      email: normalizedEmail,
+      prefix: "password-reset"
+    });
     const rateLimit = await resetRateLimiter.check(rateLimitKey);
 
     if (!rateLimit.allowed) {
@@ -534,7 +539,31 @@ export function createPasswordResetCompleteHandler(deps: PasswordResetCompleteHa
       return contentTypeError;
     }
 
-    const body = resetCompleteBody(await readJson(request));
+    const config = deps.getConfig();
+    const rateLimiter = resolveLoginRateLimiter(
+      deps.resetCompleteRateLimiter,
+      defaultResetCompleteRateLimiter
+    );
+    const clientRateLimitKey = config.configured
+      ? credentialClientRateLimitKey({
+          config,
+          prefix: "password-reset-complete",
+          request
+        })
+      : null;
+
+    if (clientRateLimitKey) {
+      const clientRateLimit = await rateLimiter.check(clientRateLimitKey);
+
+      if (!clientRateLimit.allowed) {
+        return rateLimitedResponse(clientRateLimit);
+      }
+    }
+
+    const rawBody = await readJson(request);
+    const bodyError = requestBodyErrorResponse(rawBody);
+    if (bodyError) return bodyError;
+    const body = resetCompleteBody(rawBody);
 
     if (!body || !body.token.trim() || !body.password) {
       return json({ error: "reset_token_password_required" }, { status: 400 });
@@ -546,32 +575,14 @@ export function createPasswordResetCompleteHandler(deps: PasswordResetCompleteHa
       return json({ error: passwordError }, { status: 400 });
     }
 
-    const config = deps.getConfig();
-
     if (!config.configured) {
       return json({ error: "auth_not_configured" }, { status: 503 });
     }
 
-    const rateLimiter = resolveLoginRateLimiter(
-      deps.resetCompleteRateLimiter,
-      defaultResetCompleteRateLimiter
-    );
-    const clientRateLimitKey = credentialClientRateLimitKey({
-      config,
-      prefix: "password-reset-complete",
-      request
-    });
     const tokenRateLimitKey = credentialTokenRateLimitKey({
       prefix: "password-reset-complete",
       token: body.token
     });
-    if (clientRateLimitKey) {
-      const clientRateLimit = await rateLimiter.check(clientRateLimitKey);
-
-      if (!clientRateLimit.allowed) {
-        return rateLimitedResponse(clientRateLimit);
-      }
-    }
 
     const tokenRateLimit = await rateLimiter.check(tokenRateLimitKey);
 
@@ -656,6 +667,8 @@ export function createMessageAccessValidationHandler(deps: MessageAccessHandlerD
     }
 
     const body = await readJson(request);
+    const bodyError = requestBodyErrorResponse(body);
+    if (bodyError) return bodyError;
     const provider = typeof body === "object" && body && "provider" in body ? body.provider : undefined;
     const modelId = typeof body === "object" && body && "modelId" in body ? body.modelId : undefined;
     const searchStrategy =

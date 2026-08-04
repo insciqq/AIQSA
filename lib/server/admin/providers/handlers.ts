@@ -5,6 +5,10 @@ import type {
   AdminProviderUnassignedPolicy
 } from "../../../contracts/adminProviders";
 import type { RequestAuthResolver } from "../../auth/requestAuth";
+import {
+  readJsonBodyOrNull,
+  requestBodyErrorResponse
+} from "../../http/requestBody";
 import { ProviderConfigurationError } from "../../providers/providerConfiguration";
 import {
   AdminProviderServiceError,
@@ -64,14 +68,12 @@ function hasJsonContentType(request: Request): boolean {
   return contentType === "application/json" || contentType.endsWith("+json");
 }
 
-async function readBody(request: Request): Promise<Record<string, unknown> | null> {
-  if (!hasJsonContentType(request)) return null;
-  try {
-    const value = await request.json();
-    return isRecord(value) ? value : null;
-  } catch {
-    return null;
-  }
+async function readBody(
+  request: Request
+): Promise<readonly [Record<string, unknown> | null, Response | null]> {
+  if (!hasJsonContentType(request)) return [null, null];
+  const value = await readJsonBodyOrNull(request, "json");
+  return [isRecord(value) ? value : null, requestBodyErrorResponse(value)];
 }
 
 function errorJson(error: string, status: number, details?: Record<string, unknown>): Response {
@@ -175,7 +177,8 @@ export function createAdminProviderConnectionCreateHandler(deps: AdminProviderHa
     if (!hasJsonContentType(request)) return errorJson("json_required", 415);
     const authError = await requireAdmin(request, deps);
     if (authError) return authError;
-    const body = await readBody(request);
+    const [body, bodyError] = await readBody(request);
+    if (bodyError) return bodyError;
     const displayName = text(body?.displayName, 160);
     const providerFamily = family(body?.family);
     const unassignedPolicy = body?.unassignedPolicy === undefined
@@ -201,7 +204,8 @@ export function createAdminProviderConnectionUpdateHandler(deps: AdminProviderHa
     if (!hasJsonContentType(request)) return errorJson("json_required", 415);
     const authError = await requireAdmin(request, deps);
     if (authError) return authError;
-    const body = await readBody(request);
+    const [body, bodyError] = await readBody(request);
+    if (bodyError) return bodyError;
     const displayName = text(body?.displayName, 160);
     const expectedDraftVersion = version(body?.expectedDraftVersion);
     const unassignedPolicy = policy(body?.unassignedPolicy);
@@ -228,7 +232,8 @@ export function createAdminProviderConnectionDeleteHandler(deps: AdminProviderHa
     if (!hasJsonContentType(request)) return errorJson("json_required", 415);
     const authError = await requireAdmin(request, deps);
     if (authError) return authError;
-    const body = await readBody(request);
+    const [body, bodyError] = await readBody(request);
+    if (bodyError) return bodyError;
     if (body?.confirmed !== true) return errorJson("provider_delete_confirmation_required", 409);
     const { connectionId } = await context.params;
     return safely(async () => {
@@ -247,7 +252,8 @@ export function createAdminProviderConnectionActionHandler(deps: AdminProviderHa
     if (!hasJsonContentType(request)) return errorJson("json_required", 415);
     const authError = await requireAdmin(request, deps);
     if (authError) return authError;
-    const body = await readBody(request);
+    const [body, bodyError] = await readBody(request);
+    if (bodyError) return bodyError;
     const action = text(body?.action, 64);
     if (!body || !action) return errorJson("provider_action_invalid", 400);
     const { connectionId } = await context.params;
@@ -352,7 +358,8 @@ export function createAdminProviderCredentialCreateHandler(deps: AdminProviderHa
     if (!hasJsonContentType(request)) return errorJson("json_required", 415);
     const authError = await requireAdmin(request, deps);
     if (authError) return authError;
-    const body = await readBody(request);
+    const [body, bodyError] = await readBody(request);
+    if (bodyError) return bodyError;
     const label = text(body?.label, 160);
     const secret = text(body?.secret, 16_384);
     if (!body || !label || !secret) return errorJson("provider_configuration_invalid", 400);
@@ -369,7 +376,8 @@ export function createAdminProviderCredentialTestHandler(deps: AdminProviderHand
     if (!hasJsonContentType(request)) return errorJson("json_required", 415);
     const authError = await requireAdmin(request, deps);
     if (authError) return authError;
-    const body = await readBody(request);
+    const [body, bodyError] = await readBody(request);
+    if (bodyError) return bodyError;
     const expectedConnectionDraftVersion = version(body?.expectedConnectionDraftVersion);
     const secret = text(body?.secret, 16_384);
     if (!body || expectedConnectionDraftVersion === null || !secret) {
@@ -393,7 +401,8 @@ export function createAdminProviderCredentialUpdateHandler(deps: AdminProviderHa
     if (!hasJsonContentType(request)) return errorJson("json_required", 415);
     const authError = await requireAdmin(request, deps);
     if (authError) return authError;
-    const body = await readBody(request);
+    const [body, bodyError] = await readBody(request);
+    if (bodyError) return bodyError;
     const action = text(body?.action, 64);
     if (!body || !action) return errorJson("provider_action_invalid", 400);
     const { connectionId, credentialId } = await context.params;
@@ -448,7 +457,8 @@ export function createAdminProviderCredentialDeleteHandler(deps: AdminProviderHa
     if (!hasJsonContentType(request)) return errorJson("json_required", 415);
     const authError = await requireAdmin(request, deps);
     if (authError) return authError;
-    const body = await readBody(request);
+    const [body, bodyError] = await readBody(request);
+    if (bodyError) return bodyError;
     if (body?.confirmed !== true) return errorJson("provider_delete_confirmation_required", 409);
     const { connectionId, credentialId } = await context.params;
     return safely(async () => {
@@ -469,7 +479,8 @@ export function createAdminProviderModelCreateHandler(deps: AdminProviderHandler
     if (!hasJsonContentType(request)) return errorJson("json_required", 415);
     const authError = await requireAdmin(request, deps);
     if (authError) return authError;
-    const body = await readBody(request);
+    const [body, bodyError] = await readBody(request);
+    if (bodyError) return bodyError;
     const displayName = text(body?.displayName, 160);
     if (!body || !displayName || !isRecord(body.configuration)) {
       return errorJson("provider_configuration_invalid", 400);
@@ -491,7 +502,8 @@ export function createAdminProviderModelUpdateHandler(deps: AdminProviderHandler
     if (!hasJsonContentType(request)) return errorJson("json_required", 415);
     const authError = await requireAdmin(request, deps);
     if (authError) return authError;
-    const body = await readBody(request);
+    const [body, bodyError] = await readBody(request);
+    if (bodyError) return bodyError;
     const action = text(body?.action, 64);
     if (!body || !action) return errorJson("provider_action_invalid", 400);
     const { connectionId, modelId } = await context.params;
@@ -526,7 +538,8 @@ export function createAdminProviderModelDeleteHandler(deps: AdminProviderHandler
     if (!hasJsonContentType(request)) return errorJson("json_required", 415);
     const authError = await requireAdmin(request, deps);
     if (authError) return authError;
-    const body = await readBody(request);
+    const [body, bodyError] = await readBody(request);
+    if (bodyError) return bodyError;
     if (body?.confirmed !== true) return errorJson("provider_delete_confirmation_required", 409);
     const { connectionId, modelId } = await context.params;
     return safely(async () => {
@@ -547,7 +560,8 @@ export function createAdminProviderDraftTestHandler(deps: AdminProviderHandlerDe
     if (!hasJsonContentType(request)) return errorJson("json_required", 415);
     const authError = await requireAdmin(request, deps);
     if (authError) return authError;
-    const body = await readBody(request);
+    const [body, bodyError] = await readBody(request);
+    if (bodyError) return bodyError;
     const credentialId = text(body?.credentialId, 128);
     const mode = body?.mode === "account_catalog" || body?.mode === "tiny_generation"
       ? body.mode

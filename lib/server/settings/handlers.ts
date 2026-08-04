@@ -1,6 +1,10 @@
 import type { CatalogWireModel } from "../../contracts/catalog";
 import type { UserSettingsWire } from "../../contracts/settings";
 import type { RequestAuthResolver } from "../auth/requestAuth";
+import {
+  readJsonBodyOrNull,
+  requestBodyErrorResponse
+} from "../http/requestBody";
 import { decodeSearchPlan, legacySearchStrategyFromPlan, type SearchPlan } from "../../domain/search";
 import { isSearchCombinationCompatible } from "../../domain/catalogMatrix";
 import {
@@ -66,13 +70,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-async function readJson(request: Request): Promise<Record<string, unknown> | null> {
-  try {
-    const value = await request.json();
-    return isRecord(value) ? value : null;
-  } catch {
-    return null;
-  }
+async function readJson(
+  request: Request
+): Promise<readonly [Record<string, unknown> | null, Response | null]> {
+  const value = await readJsonBodyOrNull(request, "json");
+  return [isRecord(value) ? value : null, requestBodyErrorResponse(value)];
 }
 
 function modelKey(model: Pick<CatalogWireModel, "modelId" | "provider">): string {
@@ -328,7 +330,11 @@ export function createUpdateSettingsHandler(deps: SettingsHandlerDeps) {
       return Response.json({ error: "settings_not_found" }, { status: 404 });
     }
 
-    const result = buildSettingsUpdate(await readJson(request), data);
+    const [body, bodyError] = await readJson(request);
+    if (bodyError) {
+      return bodyError;
+    }
+    const result = buildSettingsUpdate(body, data);
     if (!result.update) {
       return Response.json({ error: result.error ?? "settings_update_required" }, { status: 400 });
     }

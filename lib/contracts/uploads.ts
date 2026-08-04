@@ -13,6 +13,11 @@ export type UploadAttachmentResponseWire = {
   attachment: UploadedAttachmentWire;
 };
 
+export type UploadErrorResponseWire = {
+  error: "file_too_large" | "upload_busy";
+  limit?: number;
+};
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -61,5 +66,23 @@ export function decodeUploadAttachmentResponse(value: unknown): UploadAttachment
       ...(attachment.mimeType === undefined ? {} : { mimeType: attachment.mimeType }),
       ...(attachment.status === undefined ? {} : { status: attachment.status })
     }
+  };
+}
+
+export function decodeUploadErrorResponse(value: unknown): UploadErrorResponseWire | null {
+  if (!isRecord(value) || (value.error !== "file_too_large" && value.error !== "upload_busy")) {
+    return null;
+  }
+
+  if (
+    value.limit !== undefined &&
+    (typeof value.limit !== "number" || !Number.isSafeInteger(value.limit) || value.limit < 1)
+  ) {
+    return null;
+  }
+
+  return {
+    error: value.error,
+    ...(value.limit === undefined ? {} : { limit: value.limit })
   };
 }

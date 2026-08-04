@@ -1,4 +1,8 @@
 import type { RequestAuthResolver } from "../auth/requestAuth";
+import {
+  readJsonBodyOrNull,
+  requestBodyErrorResponse
+} from "../http/requestBody";
 import { ActiveRunConflictError } from "../runs/runRepositoryContract";
 import type {
   ChatDetailResponseWire,
@@ -109,15 +113,14 @@ type UntrustedWire<Wire extends object> = Partial<Record<keyof Wire, unknown>>;
 
 async function readJson<Wire extends object = Record<string, unknown>>(
   request: Request
-): Promise<UntrustedWire<Wire> | null> {
-  try {
-    const value = await request.json();
-    return typeof value === "object" && value !== null
+): Promise<readonly [UntrustedWire<Wire> | null, Response | null]> {
+  const value = await readJsonBodyOrNull(request, "json");
+  return [
+    typeof value === "object" && value !== null
       ? (value as UntrustedWire<Wire>)
-      : null;
-  } catch {
-    return null;
-  }
+      : null,
+    requestBodyErrorResponse(value)
+  ];
 }
 
 function textValue(value: unknown): string | null {
@@ -320,7 +323,10 @@ export function createCreateChatHandler(deps: ChatHandlerDeps) {
       return result.response;
     }
 
-    const body = await readJson<CreateChatRequestWire>(request);
+    const [body, bodyError] = await readJson<CreateChatRequestWire>(request);
+    if (bodyError) {
+      return bodyError;
+    }
     const chat = await deps.repository.createChat({
       folderId: body && "folderId" in body ? folderValue(body) : null,
       title: textValue(body?.title),
@@ -346,7 +352,10 @@ export function createUpdateChatHandler(deps: ChatHandlerDeps) {
     }
 
     const params = await context.params;
-    const body = await readJson<UpdateChatRequestWire>(request);
+    const [body, bodyError] = await readJson<UpdateChatRequestWire>(request);
+    if (bodyError) {
+      return bodyError;
+    }
     let chat: ChatSummaryRecord | null;
     try {
       chat = await deps.repository.updateChat({
@@ -416,7 +425,10 @@ export function createCreateFolderHandler(deps: ChatHandlerDeps) {
       return result.response;
     }
 
-    const body = await readJson(request);
+    const [body, bodyError] = await readJson(request);
+    if (bodyError) {
+      return bodyError;
+    }
     const name = textValue(body?.name);
     if (!name) {
       return Response.json({ error: "folder_name_required" }, { status: 400 });
@@ -476,7 +488,10 @@ export function createUpdateFolderHandler(deps: ChatHandlerDeps) {
     }
 
     const params = await context.params;
-    const body = await readJson(request);
+    const [body, bodyError] = await readJson(request);
+    if (bodyError) {
+      return bodyError;
+    }
     const name = optionalTextValue(body, "name");
     const projectMemory = optionalTextValue(body, "projectMemory");
     const parentId = parentFolderValue(body);

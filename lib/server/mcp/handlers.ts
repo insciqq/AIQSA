@@ -8,6 +8,10 @@ import type {
   UserMcpCatalogResponse
 } from "@/lib/contracts/mcp";
 import type { RequestAuthResolver } from "@/lib/server/auth/requestAuth";
+import {
+  readJsonBodyOrNull,
+  requestBodyErrorResponse
+} from "@/lib/server/http/requestBody";
 import { validateMcpDraft } from "./definitions";
 import { McpDraftValidationUnavailableError } from "./draftValidator";
 import { McpEncryptionError } from "./encryption";
@@ -56,14 +60,12 @@ function hasJsonContentType(request: Request): boolean {
   return contentType === "application/json" || contentType.endsWith("+json");
 }
 
-async function readJsonRecord(request: Request): Promise<Record<string, unknown> | null> {
-  if (!hasJsonContentType(request)) return null;
-  try {
-    const body = await request.json();
-    return isRecord(body) ? body : null;
-  } catch {
-    return null;
-  }
+async function readJsonRecord(
+  request: Request
+): Promise<readonly [Record<string, unknown> | null, Response | null]> {
+  if (!hasJsonContentType(request)) return [null, null];
+  const body = await readJsonBodyOrNull(request, "json");
+  return [isRecord(body) ? body : null, requestBodyErrorResponse(body)];
 }
 
 function text(value: unknown, maxLength: number): string | null {
@@ -158,7 +160,8 @@ export function createAdminMcpCreateHandler(deps: McpHandlerDeps) {
     if (!hasJsonContentType(request)) return errorJson("json_required", 415);
     const auth = await requireAdmin(request, deps);
     if (!auth.session) return auth.response;
-    const body = await readJsonRecord(request);
+    const [body, bodyError] = await readJsonRecord(request);
+    if (bodyError) return bodyError;
     const name = text(body?.name, 120);
     const description = typeof body?.description === "undefined" ? "" : descriptionText(body.description, 4_000);
     const draft = validateMcpDraft(body?.draft);
@@ -191,7 +194,8 @@ export function createAdminMcpUpdateHandler(deps: McpHandlerDeps) {
     if (!hasJsonContentType(request)) return errorJson("json_required", 415);
     const auth = await requireAdmin(request, deps);
     if (!auth.session) return auth.response;
-    const body = await readJsonRecord(request);
+    const [body, bodyError] = await readJsonRecord(request);
+    if (bodyError) return bodyError;
     if (!body) return errorJson("invalid_draft", 400);
     const name = optionalText(body.name, 120);
     const description = optionalDescriptionText(body.description, 4_000);
@@ -245,7 +249,8 @@ export function createAdminMcpDraftTestHandler(deps: McpHandlerDeps) {
     if (!hasJsonContentType(request)) return errorJson("json_required", 415);
     const auth = await requireAdmin(request, deps);
     if (!auth.session) return auth.response;
-    const body = await readJsonRecord(request);
+    const [body, bodyError] = await readJsonRecord(request);
+    if (bodyError) return bodyError;
     if (!body) return errorJson("invalid_mcp_values", 400);
     const parsedValues = slotValues(body.oneTimeValues);
     if (!parsedValues || Object.values(parsedValues).some((value) => value === null)) {
@@ -272,7 +277,8 @@ export function createAdminMcpRebuildHandler(deps: McpHandlerDeps) {
     if (!hasJsonContentType(request)) return errorJson("json_required", 415);
     const auth = await requireAdmin(request, deps);
     if (!auth.session) return auth.response;
-    const body = await readJsonRecord(request);
+    const [body, bodyError] = await readJsonRecord(request);
+    if (bodyError) return bodyError;
     const revisionId = text(body?.revisionId, 128);
     const parsedValues = slotValues(body?.oneTimeValues);
     if (!revisionId || !parsedValues || Object.values(parsedValues).some((value) => value === null) ||
@@ -322,7 +328,8 @@ export function createAdminMcpRollbackHandler(deps: McpHandlerDeps) {
     if (!hasJsonContentType(request)) return errorJson("json_required", 415);
     const auth = await requireAdmin(request, deps);
     if (!auth.session) return auth.response;
-    const body = await readJsonRecord(request);
+    const [body, bodyError] = await readJsonRecord(request);
+    if (bodyError) return bodyError;
     const revisionId = text(body?.revisionId, 128);
     if (!revisionId) return errorJson("mcp_revision_required", 400);
     const { serverId } = await context.params;
@@ -339,7 +346,8 @@ export function createAdminMcpGrantHandler(deps: McpHandlerDeps) {
     if (!hasJsonContentType(request)) return errorJson("json_required", 415);
     const auth = await requireAdmin(request, deps);
     if (!auth.session) return auth.response;
-    const body = await readJsonRecord(request);
+    const [body, bodyError] = await readJsonRecord(request);
+    if (bodyError) return bodyError;
     const hasUserId = Boolean(body && Object.hasOwn(body, "userId"));
     const hasGroupId = Boolean(body && Object.hasOwn(body, "groupId"));
     const userId = typeof body?.userId === "undefined" ? null : text(body.userId, 128);
@@ -391,7 +399,8 @@ export function createUserMcpUpdateHandler(deps: McpHandlerDeps) {
     if (!hasJsonContentType(request)) return errorJson("json_required", 415);
     const session = await requireUser(request, deps);
     if (!session) return errorJson("unauthorized", 401);
-    const body = await readJsonRecord(request);
+    const [body, bodyError] = await readJsonRecord(request);
+    if (bodyError) return bodyError;
     const values = typeof body?.values === "undefined" ? undefined : slotValues(body.values);
     if (!body || (typeof body.enabled !== "undefined" && typeof body.enabled !== "boolean") || values === null ||
       (typeof body.enabled === "undefined" && typeof values === "undefined")) {

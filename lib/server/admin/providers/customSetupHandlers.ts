@@ -11,6 +11,10 @@ import type {
   AdminProviderReasoningRequestMapping
 } from "../../../contracts/adminProviders";
 import type { RequestAuthResolver } from "../../auth/requestAuth";
+import {
+  readJsonBodyOrNull,
+  requestBodyErrorResponse
+} from "../../http/requestBody";
 import { ProviderConfigurationError } from "../../providers/providerConfiguration";
 import {
   AdminProviderCustomSetupServiceError,
@@ -121,12 +125,9 @@ export function createAdminProviderCustomSetupHandler(
     if (auth.response || !auth.actor) {
       return auth.response ?? errorJson("unauthorized", 401);
     }
-    let body: unknown;
-    try {
-      body = await request.json();
-    } catch {
-      return errorJson("provider_configuration_invalid", 400);
-    }
+    const body = await readJsonBodyOrNull(request, "json");
+    const bodyError = requestBodyErrorResponse(body);
+    if (bodyError) return bodyError;
     if (!isRecord(body)) return errorJson("provider_configuration_invalid", 400);
     const allowedKeys = new Set([
       "allowPrivateNetwork",
