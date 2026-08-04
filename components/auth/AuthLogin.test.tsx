@@ -23,6 +23,20 @@ describe("AuthLogin", () => {
     });
   }
 
+  function expectAssociatedInvalidField(
+    field: HTMLElement,
+    alert: HTMLElement,
+    helpId?: string
+  ) {
+    expect(alert.id).not.toBe("");
+    expect(field).toHaveAttribute("aria-invalid", "true");
+    expect(field).toHaveAttribute("aria-errormessage", alert.id);
+    expect(field.getAttribute("aria-describedby")?.split(/\s+/)).toEqual(
+      expect.arrayContaining([...(helpId ? [helpId] : []), alert.id])
+    );
+    expect(field).toHaveClass("border-critical", "focus:ring-focus");
+  }
+
   it("presents a restrained, labeled sign-in workspace with autofill-safe field contracts", () => {
     render(<AuthLogin nextPath="/" />);
 
@@ -333,6 +347,124 @@ describe("AuthLogin", () => {
     expect(password).toHaveClass("border-critical", "focus:ring-focus");
   });
 
+  it.each([
+    {
+      expectedError: "Enter an email address to request access. (registration_required)",
+      fieldId: "register-email",
+      helpId: "register-email-help",
+      name: "access request",
+      prepare: () => fireEvent.click(screen.getByRole("button", { name: "Request access" })),
+      renderAuth: () => <AuthLogin nextPath="/" />,
+      submitName: "Request access",
+      unrelatedFieldId: "register-name"
+    },
+    {
+      expectedError: "Enter an email address. (email_required)",
+      fieldId: "reset-email",
+      helpId: "reset-email-help",
+      name: "reset request",
+      prepare: () => fireEvent.click(screen.getByRole("button", { name: "Reset password" })),
+      renderAuth: () => <AuthLogin nextPath="/" />,
+      submitName: "Send reset link",
+      unrelatedFieldId: undefined
+    },
+    {
+      expectedError: "Open the invite link and choose a password. (invite_token_password_required)",
+      fieldId: "invite-password",
+      helpId: "invite-password-help",
+      name: "invite acceptance",
+      prepare: undefined,
+      renderAuth: () => <AuthLogin inviteToken="invite-token" nextPath="/" />,
+      submitName: "Create account",
+      unrelatedFieldId: "register-name"
+    },
+    {
+      expectedError: "Open the verification link and choose a password. (verification_token_password_required)",
+      fieldId: "verification-password",
+      helpId: "verification-password-help",
+      name: "email verification",
+      prepare: undefined,
+      renderAuth: () => <AuthLogin nextPath="/" verifyToken="verify-token" />,
+      submitName: "Set password and verify",
+      unrelatedFieldId: undefined
+    },
+    {
+      expectedError: "Enter a new password. (reset_token_password_required)",
+      fieldId: "new-password",
+      helpId: "new-password-help",
+      name: "reset completion",
+      prepare: undefined,
+      renderAuth: () => <AuthLogin nextPath="/" resetToken="reset-token" />,
+      submitName: "Update password",
+      unrelatedFieldId: undefined
+    }
+  ])("associates a local $name error with its attributable field", async ({
+    expectedError,
+    fieldId,
+    helpId,
+    prepare,
+    renderAuth,
+    submitName,
+    unrelatedFieldId
+  }) => {
+    render(renderAuth());
+    prepare?.();
+
+    fireEvent.submit(screen.getByRole("button", { name: submitName }).closest("form")!);
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(expectedError);
+    expectAssociatedInvalidField(document.getElementById(fieldId)!, alert, helpId);
+    if (unrelatedFieldId) {
+      expect(document.getElementById(unrelatedFieldId)).not.toHaveAttribute("aria-invalid");
+    }
+  });
+
+  it.each([
+    {
+      fieldId: "invite-password",
+      fieldLabel: "Password",
+      helpId: "invite-password-help",
+      name: "invite acceptance",
+      renderAuth: () => <AuthLogin inviteToken="invite-token" nextPath="/" />,
+      submitName: "Create account"
+    },
+    {
+      fieldId: "verification-password",
+      fieldLabel: "New password",
+      helpId: "verification-password-help",
+      name: "email verification",
+      renderAuth: () => <AuthLogin nextPath="/" verifyToken="verify-token" />,
+      submitName: "Set password and verify"
+    },
+    {
+      fieldId: "new-password",
+      fieldLabel: "New password",
+      helpId: "new-password-help",
+      name: "reset completion",
+      renderAuth: () => <AuthLogin nextPath="/" resetToken="reset-token" />,
+      submitName: "Update password"
+    }
+  ])("associates a server password error with the $name field", async ({
+    fieldId,
+    fieldLabel,
+    helpId,
+    renderAuth,
+    submitName
+  }) => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ error: "password_too_short" }), { status: 400 })
+    );
+    render(renderAuth());
+    fireEvent.change(screen.getByLabelText(fieldLabel), { target: { value: "short" } });
+
+    fireEvent.submit(screen.getByRole("button", { name: submitName }).closest("form")!);
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("Use at least 8 characters. (password_too_short)");
+    expectAssociatedInvalidField(document.getElementById(fieldId)!, alert, helpId);
+  });
+
   it("marks both credential fields and keeps a rejected login next to its action", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response(JSON.stringify({ error: "unauthorized" }), {
@@ -351,8 +483,8 @@ describe("AuthLogin", () => {
     expect(alert).toHaveTextContent("The credentials were not accepted. (unauthorized)");
     expect(submit.compareDocumentPosition(alert) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(alert.compareDocumentPosition(resetPassword) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(screen.getByLabelText("Email")).toHaveAttribute("aria-invalid", "true");
-    expect(screen.getByLabelText("Password")).toHaveAttribute("aria-invalid", "true");
+    expectAssociatedInvalidField(screen.getByLabelText("Email"), alert);
+    expectAssociatedInvalidField(screen.getByLabelText("Password"), alert, "password-help");
   });
 
   it("shows a readable network error when credential login cannot reach the server", async () => {
@@ -368,6 +500,109 @@ describe("AuthLogin", () => {
       );
     });
     expect(screen.getByLabelText("Email")).toHaveFocus();
+  });
+
+  it.each([
+    {
+      expectedError: "Sign in failed. Try again. (login_failed)",
+      fieldId: "email",
+      name: "sign in",
+      prepare: fillCredentialForm,
+      renderAuth: () => <AuthLogin nextPath="/" />,
+      submitName: "Sign in"
+    },
+    {
+      expectedError: "Access request failed. Try again. (access_request_failed)",
+      fieldId: "register-email",
+      name: "access request",
+      prepare: () => {
+        fireEvent.click(screen.getByRole("button", { name: "Request access" }));
+        fireEvent.change(screen.getByLabelText("Email"), { target: { value: "person@example.com" } });
+      },
+      renderAuth: () => <AuthLogin nextPath="/" />,
+      submitName: "Request access"
+    },
+    {
+      expectedError: "Password reset request failed. Try again. (reset_request_failed)",
+      fieldId: "reset-email",
+      name: "reset request",
+      prepare: () => {
+        fireEvent.click(screen.getByRole("button", { name: "Reset password" }));
+        fireEvent.change(screen.getByLabelText("Email"), { target: { value: "person@example.com" } });
+      },
+      renderAuth: () => <AuthLogin nextPath="/" />,
+      submitName: "Send reset link"
+    },
+    {
+      expectedError: "Account creation failed. Try again. (invite_acceptance_failed)",
+      fieldId: "invite-password",
+      name: "invite acceptance",
+      prepare: () => fireEvent.change(screen.getByLabelText("Password"), { target: { value: "password-value" } }),
+      renderAuth: () => <AuthLogin inviteToken="invite-token" nextPath="/" />,
+      submitName: "Create account"
+    },
+    {
+      expectedError: "Email verification failed. Try again. (verification_failed)",
+      fieldId: "verification-password",
+      name: "email verification",
+      prepare: () => fireEvent.change(screen.getByLabelText("New password"), { target: { value: "password-value" } }),
+      renderAuth: () => <AuthLogin nextPath="/" verifyToken="verify-token" />,
+      submitName: "Set password and verify"
+    },
+    {
+      expectedError: "Password update failed. Try again. (password_reset_failed)",
+      fieldId: "new-password",
+      name: "reset completion",
+      prepare: () => fireEvent.change(screen.getByLabelText("New password"), { target: { value: "password-value" } }),
+      renderAuth: () => <AuthLogin nextPath="/" resetToken="reset-token" />,
+      submitName: "Update password"
+    }
+  ])("uses operation-specific recovery copy for a malformed $name response", async ({
+    expectedError,
+    fieldId,
+    prepare,
+    renderAuth,
+    submitName
+  }) => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("not-json", { status: 200 }));
+    render(renderAuth());
+    prepare();
+
+    fireEvent.submit(screen.getByRole("button", { name: submitName }).closest("form")!);
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(expectedError);
+    expect(document.getElementById(fieldId)).not.toHaveAttribute("aria-invalid");
+    expect(document.getElementById(fieldId)).not.toHaveAttribute("aria-errormessage");
+  });
+
+  it("does not navigate when sign-in returns an ok-only response without a user", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ ok: true }), { status: 200 })
+    );
+    const navigateAfterLogin = vi.fn();
+    render(<AuthLogin navigateAfterLogin={navigateAfterLogin} nextPath="/" />);
+    fillCredentialForm();
+
+    fireEvent.submit(screen.getByRole("button", { name: "Sign in" }).closest("form")!);
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Sign in failed. Try again. (login_failed)"
+    );
+    expect(navigateAfterLogin).not.toHaveBeenCalled();
+  });
+
+  it("uses fallback copy when a stable backend code matches an object prototype key", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ error: "constructor" }), { status: 500 })
+    );
+    render(<AuthLogin nextPath="/" />);
+    fillCredentialForm();
+
+    fireEvent.submit(screen.getByRole("button", { name: "Sign in" }).closest("form")!);
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Sign in failed. Try again. (constructor)"
+    );
   });
 
   it("locks the active form and exposes readable busy status during sign in", async () => {
@@ -396,7 +631,7 @@ describe("AuthLogin", () => {
 
     await act(async () => {
       resolveFetch(
-        new Response(JSON.stringify({ ok: true }), {
+        new Response(JSON.stringify({ user: { id: "user-1" } }), {
           status: 200
         })
       );
@@ -406,7 +641,7 @@ describe("AuthLogin", () => {
 
   it("sanitizes unsafe post-login redirect targets at navigation time", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      new Response(JSON.stringify({ ok: true }), {
+      new Response(JSON.stringify({ user: { id: "user-1" } }), {
         status: 200
       })
     );
@@ -423,7 +658,7 @@ describe("AuthLogin", () => {
 
   it("keeps legitimate internal post-login redirect targets", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      new Response(JSON.stringify({ ok: true }), {
+      new Response(JSON.stringify({ user: { id: "user-1" } }), {
         status: 200
       })
     );
@@ -528,8 +763,13 @@ describe("AuthLogin", () => {
     fireEvent.change(screen.getByLabelText("Password"), { target: { value: "kept-password" } });
     fireEvent.submit(screen.getByRole("button", { name: "Create account" }).closest("form")!);
 
-    expect(await screen.findByRole("alert")).toHaveTextContent(
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(
       "This invite link is invalid or expired. (invalid_invite_token)"
+    );
+    expect(screen.getByLabelText("Password")).not.toHaveAttribute("aria-invalid");
+    expect(screen.getByLabelText("Password")).toHaveAccessibleDescription(
+      "Use at least 8 characters. The invitation works only once."
     );
     expect(screen.getByLabelText("Name")).toHaveValue("Kept Name");
     expect(screen.getByLabelText("Password")).toHaveValue("kept-password");
@@ -577,9 +817,11 @@ describe("AuthLogin", () => {
     });
     fireEvent.submit(screen.getByRole("button", { name: "Request access" }).closest("form")!);
 
-    expect(await screen.findByRole("alert")).toHaveTextContent(
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(
       "This email or domain is not allowed to request access. (registration_not_allowed)"
     );
+    expectAssociatedInvalidField(screen.getByLabelText("Email"), alert, "register-email-help");
     expect(screen.queryByText("Use the verification link we sent before signing in.")).not.toBeInTheDocument();
   });
 
@@ -599,9 +841,12 @@ describe("AuthLogin", () => {
     });
     fireEvent.submit(screen.getByRole("button", { name: "Request access" }).closest("form")!);
 
-    expect(await screen.findByRole("alert")).toHaveTextContent(
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(
       "Verification email is not configured on this server. Ask the operator to configure SMTP. (verification_email_unavailable)"
     );
+    expect(screen.getByLabelText("Email")).not.toHaveAttribute("aria-invalid");
+    expect(screen.getByLabelText("Email")).toHaveAttribute("aria-describedby", "register-email-help");
     expect(screen.queryByText("Use the verification link we sent before signing in.")).not.toBeInTheDocument();
   });
 
@@ -718,9 +963,11 @@ describe("AuthLogin", () => {
     });
     fireEvent.submit(screen.getByRole("button", { name: "Set password and verify" }).closest("form")!);
 
-    expect(await screen.findByRole("alert")).toHaveTextContent(
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(
       "This verification link is invalid or expired. (invalid_or_expired_verification_token)"
     );
+    expect(screen.getByLabelText("New password")).not.toHaveAttribute("aria-invalid");
     expect(screen.getByRole("heading", { level: 1, name: "Choose your password" })).toBeInTheDocument();
     expect(screen.getByLabelText("New password")).toHaveValue("kept-password");
     expect(screen.getByRole("button", { name: "Back to sign in" })).toBeInTheDocument();
@@ -834,9 +1081,11 @@ describe("AuthLogin", () => {
     });
     fireEvent.submit(screen.getByRole("button", { name: "Update password" }).closest("form")!);
 
-    expect(await screen.findByRole("alert")).toHaveTextContent(
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(
       "This reset link is invalid or expired. (invalid_or_expired_reset_token)"
     );
+    expect(screen.getByLabelText("New password")).not.toHaveAttribute("aria-invalid");
     expect(screen.getByLabelText("New password")).toHaveValue("new-password-value");
     expect(screen.getByRole("button", { name: "Update password" })).toBeEnabled();
   });

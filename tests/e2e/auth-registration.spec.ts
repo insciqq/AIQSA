@@ -50,6 +50,22 @@ async function expectWithinViewport(page: Page, locator: Locator) {
   expect(box!.y + box!.height).toBeLessThanOrEqual(viewport!.height + 1);
 }
 
+async function expectAssociatedValidation(
+  field: Locator,
+  alert: Locator,
+  helpId?: string
+) {
+  const errorId = await alert.getAttribute("id");
+  expect(errorId).toBeTruthy();
+  await expect(field).toHaveAttribute("aria-invalid", "true");
+  await expect(field).toHaveAttribute("aria-errormessage", errorId!);
+  const describedBy = (await field.getAttribute("aria-describedby"))?.split(/\s+/) ?? [];
+  expect(describedBy).toContain(errorId);
+  if (helpId) {
+    expect(describedBy).toContain(helpId);
+  }
+}
+
 test.afterAll(async () => {
   await prisma.$disconnect();
 });
@@ -102,8 +118,8 @@ test("keeps auth forms keyboard-safe and mobile-friendly without exposing recove
   await page.getByRole("button", { name: "Sign in" }).click();
   const validationAlert = page.getByRole("alert").filter({ hasText: "credentials_required" });
   await expect(validationAlert).toContainText("credentials_required");
-  await expect(email).toHaveAttribute("aria-invalid", "true");
-  await expect(password).toHaveAttribute("aria-invalid", "true");
+  await expectAssociatedValidation(email, validationAlert);
+  await expectAssociatedValidation(password, validationAlert, "password-help");
   await expect(validationAlert).toBeInViewport();
 
   await email.fill("keyboard.user@example.com");
@@ -125,6 +141,11 @@ test("keeps auth forms keyboard-safe and mobile-friendly without exposing recove
   await expect(page.getByLabel("Name")).toHaveAttribute("autocomplete", "name");
   await expect(page.getByLabel("Email")).toHaveAttribute("autocomplete", "email");
   await expect(page.getByLabel("Password", { exact: true })).toHaveCount(0);
+  await page.getByRole("button", { name: "Request access" }).click();
+  const accessAlert = page.getByRole("alert").filter({ hasText: "registration_required" });
+  await expect(accessAlert).toContainText("registration_required");
+  await expectAssociatedValidation(page.getByLabel("Email"), accessAlert, "register-email-help");
+  await expect(page.getByLabel("Name")).not.toHaveAttribute("aria-invalid");
   await expect(page.getByRole("button", { name: "Request access" })).toBeInViewport();
   await expectNoHorizontalOverflow(page);
 
@@ -141,6 +162,15 @@ test("keeps auth forms keyboard-safe and mobile-friendly without exposing recove
   await expect(page.getByLabel("Name")).toHaveAttribute("autocomplete", "name");
   await expect(page.getByLabel("Password", { exact: true })).toHaveAttribute("autocomplete", "new-password");
   await expect(page.getByLabel("Email")).toHaveCount(0);
+  await page.getByRole("button", { name: "Create account" }).click();
+  const inviteAlert = page.getByRole("alert").filter({ hasText: "invite_token_password_required" });
+  await expect(inviteAlert).toContainText("invite_token_password_required");
+  await expectAssociatedValidation(
+    page.getByLabel("Password", { exact: true }),
+    inviteAlert,
+    "invite-password-help"
+  );
+  await expect(page.getByLabel("Name")).not.toHaveAttribute("aria-invalid");
   await expect(page.getByRole("button", { name: "Create account" })).toBeInViewport();
   await expect(page.getByText("browser-evidence-invite-token")).toHaveCount(0);
   await expectNoHorizontalOverflow(page);
@@ -149,18 +179,38 @@ test("keeps auth forms keyboard-safe and mobile-friendly without exposing recove
   await page.getByRole("button", { name: "Reset password" }).click();
   await expect(page.getByRole("heading", { level: 1, name: "Reset your password" })).toBeVisible();
   await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(0);
+  await page.getByRole("button", { name: "Send reset link" }).click();
+  const resetRequestAlert = page.getByRole("alert").filter({ hasText: "email_required" });
+  await expect(resetRequestAlert).toContainText("email_required");
+  await expectAssociatedValidation(page.getByLabel("Email"), resetRequestAlert, "reset-email-help");
   await expect(page.getByRole("button", { name: "Send reset link" })).toBeInViewport();
   await expectNoHorizontalOverflow(page);
 
   await page.goto("/login?reset=browser-evidence-reset-token");
   await expect(page.getByRole("heading", { level: 1, name: "Choose a new password" })).toBeVisible();
   await expect(page.getByLabel("New password", { exact: true })).toHaveAttribute("autocomplete", "new-password");
+  await page.getByRole("button", { name: "Update password" }).click();
+  const resetCompleteAlert = page.getByRole("alert").filter({ hasText: "reset_token_password_required" });
+  await expect(resetCompleteAlert).toContainText("reset_token_password_required");
+  await expectAssociatedValidation(
+    page.getByLabel("New password", { exact: true }),
+    resetCompleteAlert,
+    "new-password-help"
+  );
   await expect(page.getByRole("button", { name: "Update password" })).toBeInViewport();
   await expectNoHorizontalOverflow(page);
 
   await page.goto("/login?verify=browser-evidence-verification-token");
   await expect(page.getByRole("heading", { level: 1, name: "Choose your password" })).toBeVisible();
   await expect(page.getByLabel("New password", { exact: true })).toHaveAttribute("autocomplete", "new-password");
+  await page.getByRole("button", { name: "Set password and verify" }).click();
+  const verificationAlert = page.getByRole("alert").filter({ hasText: "verification_token_password_required" });
+  await expect(verificationAlert).toContainText("verification_token_password_required");
+  await expectAssociatedValidation(
+    page.getByLabel("New password", { exact: true }),
+    verificationAlert,
+    "verification-password-help"
+  );
   await expect(page.getByRole("button", { name: "Set password and verify" })).toBeInViewport();
   await expectNoHorizontalOverflow(page);
 });

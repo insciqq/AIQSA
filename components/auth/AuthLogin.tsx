@@ -33,6 +33,20 @@ type ActiveAuthProof =
 
 type PendingAction = "accept-invite" | "login" | "register" | "reset-complete" | "reset-request" | "verify";
 
+type AuthFieldId =
+  | "email"
+  | "invite-password"
+  | "new-password"
+  | "password"
+  | "register-email"
+  | "reset-email"
+  | "verification-password";
+
+type AuthFieldError = Readonly<{
+  code: string;
+  fieldIds: readonly AuthFieldId[];
+}>;
+
 type RegistrationOutcome = "request-received" | "verification-required";
 
 type AuthPostResult = {
@@ -224,7 +238,25 @@ function AuthFeedback({
   );
 }
 
-function authErrorMessage(code: string): string {
+const authOperationFallbacks: Record<PendingAction, string> = {
+  "accept-invite": "Account creation failed. Try again.",
+  login: "Sign in failed. Try again.",
+  register: "Access request failed. Try again.",
+  "reset-complete": "Password update failed. Try again.",
+  "reset-request": "Password reset request failed. Try again.",
+  verify: "Email verification failed. Try again."
+};
+
+const authResponseFallbackCodes: Record<PendingAction, string> = {
+  "accept-invite": "invite_acceptance_failed",
+  login: "login_failed",
+  register: "access_request_failed",
+  "reset-complete": "password_reset_failed",
+  "reset-request": "reset_request_failed",
+  verify: "verification_failed"
+};
+
+function authErrorMessage(code: string, operation: PendingAction): string {
   const messages: Record<string, string> = {
     auth_not_configured: "Authentication is not configured on this server.",
     credentials_required: "Enter email and password.",
@@ -249,10 +281,85 @@ function authErrorMessage(code: string): string {
     verification_token_required: "Open the verification link from your email."
   };
 
-  return `${messages[code] ?? "Sign in failed."} (${code})`;
+  const message = Object.prototype.hasOwnProperty.call(messages, code)
+    ? messages[code]
+    : authOperationFallbacks[operation];
+
+  return `${message} (${code})`;
 }
 
-async function postJson(url: string, body: Record<string, unknown>): Promise<AuthPostResult> {
+function authFieldIdsForError(operation: PendingAction, code: string): readonly AuthFieldId[] {
+  if (operation === "login") {
+    if (code === "email_invalid" || code === "email_required") return ["email"];
+    if (code === "password_too_long" || code === "password_too_short") return ["password"];
+    if (code === "credentials_required" || code === "unauthorized") return ["email", "password"];
+    return [];
+  }
+
+  if (operation === "register") {
+    return ["email_invalid", "email_required", "registration_not_allowed", "registration_required"].includes(code)
+      ? ["register-email"]
+      : [];
+  }
+
+  if (operation === "accept-invite") {
+    return ["invite_token_password_required", "password_too_long", "password_too_short"].includes(code)
+      ? ["invite-password"]
+      : [];
+  }
+
+  if (operation === "verify") {
+    return ["password_too_long", "password_too_short", "verification_token_password_required"].includes(code)
+      ? ["verification-password"]
+      : [];
+  }
+
+  if (operation === "reset-request") {
+    return ["email_invalid", "email_required"].includes(code) ? ["reset-email"] : [];
+  }
+
+  return ["password_too_long", "password_too_short", "reset_token_password_required"].includes(code)
+    ? ["new-password"]
+    : [];
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function stableAuthErrorCode(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const code = value.trim();
+  return /^[a-z][a-z0-9_]{0,127}$/.test(code) ? code : null;
+}
+
+function decodeAuthSuccess(operation: PendingAction, data: unknown): AuthPostResult | null {
+  if (!isRecord(data)) return null;
+
+  if (operation === "login") {
+    return isRecord(data.user) ? { ok: true } : null;
+  }
+  if (operation === "reset-request" || operation === "reset-complete") {
+    return data.ok === true ? { ok: true } : null;
+  }
+  if (operation === "accept-invite") {
+    return data.status === "active" ? { ok: true, status: "active" } : null;
+  }
+  if (operation === "register") {
+    return data.status === "request_received" || data.status === "verification_required"
+      ? { ok: true, status: data.status }
+      : null;
+  }
+  return data.status === "active" || data.status === "pending"
+    ? { ok: true, status: data.status }
+    : null;
+}
+
+async function postJson(
+  url: string,
+  body: Record<string, unknown>,
+  operation: PendingAction
+): Promise<AuthPostResult> {
   const response = await fetch(url, {
     body: JSON.stringify(body),
     headers: {
@@ -261,17 +368,15 @@ async function postJson(url: string, body: Record<string, unknown>): Promise<Aut
     method: "POST"
   });
 
-  const data = (await response.json().catch(() => null)) as { error?: string; status?: AuthPostResult["status"] } | null;
+  const data: unknown = await response.json().catch(() => null);
+  const fallbackError = authResponseFallbackCodes[operation];
 
   if (response.ok) {
-    return {
-      ok: true,
-      status: data?.status
-    };
+    return decodeAuthSuccess(operation, data) ?? { error: fallbackError, ok: false };
   }
 
   return {
-    error: data?.error ?? "login_failed",
+    error: isRecord(data) ? stableAuthErrorCode(data.error) ?? fallbackError : fallbackError,
     ok: false
   };
 }
@@ -322,7 +427,7 @@ export function AuthLogin({
     initialAuthProof({ inviteToken, resetToken, verifyToken })
   );
   const [error, setError] = useState<string | null>(initialFeedback.error);
-  const [loginFieldErrorCode, setLoginFieldErrorCode] = useState<string | null>(null);
+  const [fieldError, setFieldError] = useState<AuthFieldError | null>(null);
   const [mode, setMode] = useState<Mode>(() => modeForAuthProof(activeProof));
   const [notice, setNotice] = useState<string | null>(initialFeedback.notice);
   const [passwordVisible, setPasswordVisible] = useState(false);
@@ -338,18 +443,22 @@ export function AuthLogin({
   const activeResetToken = activeProof?.kind === "reset" ? activeProof.token : null;
   const activeVerifyToken = activeProof?.kind === "verify" ? activeProof.token : null;
   const registerLabel = activeInviteToken ? "Create account" : "Request access";
+  const feedbackId = mode === "password"
+    ? "login-feedback"
+    : mode === "register"
+      ? activeInviteToken ? "invite-feedback" : "registration-feedback"
+      : mode === "verify-email"
+        ? "verification-feedback"
+        : mode === "reset-request"
+          ? "reset-request-feedback"
+          : "reset-complete-feedback";
+  const invalidFieldIds = new Set(fieldError?.fieldIds ?? []);
   const showInitialAuthFeedback =
     mode === "password" &&
     ((initialFeedback.error !== null && error === initialFeedback.error) ||
       (initialFeedback.notice !== null && notice === initialFeedback.notice));
-  const loginEmailInvalid =
-    loginFieldErrorCode === "credentials_required" ||
-    loginFieldErrorCode === "email_invalid" ||
-    loginFieldErrorCode === "email_required" ||
-    loginFieldErrorCode === "unauthorized";
-  const loginPasswordInvalid =
-    loginFieldErrorCode === "credentials_required" ||
-    loginFieldErrorCode === "unauthorized";
+  const loginEmailInvalid = invalidFieldIds.has("email");
+  const loginPasswordInvalid = invalidFieldIds.has("password");
 
   useEffect(() => {
     if (proofInputKey === previousProofInputKeyRef.current) {
@@ -362,7 +471,7 @@ export function AuthLogin({
     const nextProof = initialAuthProof({ inviteToken, resetToken, verifyToken });
     setActiveProof(nextProof);
     setError(null);
-    setLoginFieldErrorCode(null);
+    setFieldError(null);
     setNotice(null);
     setPendingAction(null);
     setPasswordVisible(false);
@@ -453,6 +562,25 @@ export function AuthLogin({
     );
   }
 
+  function clearFeedback() {
+    setError(null);
+    setFieldError(null);
+    setNotice(null);
+  }
+
+  function showAuthError(
+    operation: PendingAction,
+    code: string,
+    fieldIds: readonly AuthFieldId[] = authFieldIdsForError(operation, code)
+  ) {
+    setError(authErrorMessage(code, operation));
+    setFieldError(fieldIds.length > 0 ? { code, fieldIds } : null);
+  }
+
+  function fieldDescription(helpId: string, fieldId: AuthFieldId): string {
+    return invalidFieldIds.has(fieldId) ? `${helpId} ${feedbackId}` : helpId;
+  }
+
   function switchMode(nextMode: Mode) {
     if (submitting) {
       return;
@@ -464,7 +592,7 @@ export function AuthLogin({
     }
 
     setError(null);
-    setLoginFieldErrorCode(null);
+    setFieldError(null);
     setNotice(null);
     setPasswordVisible(false);
     setMode(nextMode);
@@ -496,13 +624,10 @@ export function AuthLogin({
     const formData = new FormData(event.currentTarget);
     const email = String(formData.get("email") ?? "").trim();
     const password = String(formData.get("password") ?? "");
-    setError(null);
-    setLoginFieldErrorCode(null);
-    setNotice(null);
+    clearFeedback();
 
     if (!email || !password) {
-      setLoginFieldErrorCode("credentials_required");
-      setError(authErrorMessage("credentials_required"));
+      showAuthError("login", "credentials_required", ["email", "password"]);
       return;
     }
 
@@ -510,15 +635,14 @@ export function AuthLogin({
     setPendingAction("login");
 
     try {
-      const result = await postJson("/api/auth/login", { email, password });
+      const result = await postJson("/api/auth/login", { email, password }, "login");
       if (!requestIsCurrent(owner)) {
         return;
       }
 
       if (!result.ok) {
         const errorCode = result.error ?? "unauthorized";
-        setLoginFieldErrorCode(errorCode);
-        setError(authErrorMessage(errorCode));
+        showAuthError("login", errorCode);
         return;
       }
 
@@ -526,8 +650,7 @@ export function AuthLogin({
       (navigateAfterLogin ?? window.location.assign.bind(window.location))(redirectTarget);
     } catch {
       if (requestIsCurrent(owner)) {
-        setLoginFieldErrorCode(null);
-        setError(authErrorMessage("network_error"));
+        showAuthError("login", "network_error");
       }
     } finally {
       if (requestIsCurrent(owner)) {
@@ -539,11 +662,10 @@ export function AuthLogin({
   async function submitResetRequest(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const email = String(new FormData(event.currentTarget).get("email") ?? "").trim();
-    setError(null);
-    setNotice(null);
+    clearFeedback();
 
     if (!email) {
-      setError(authErrorMessage("email_required"));
+      showAuthError("reset-request", "email_required");
       return;
     }
 
@@ -551,20 +673,24 @@ export function AuthLogin({
     setPendingAction("reset-request");
 
     try {
-      const result = await postJson("/api/auth/password-reset/request", { email });
+      const result = await postJson(
+        "/api/auth/password-reset/request",
+        { email },
+        "reset-request"
+      );
       if (!requestIsCurrent(owner)) {
         return;
       }
 
       if (!result.ok) {
-        setError(authErrorMessage(result.error ?? "login_failed"));
+        showAuthError("reset-request", result.error ?? "reset_request_failed");
         return;
       }
 
       setNotice("If the account can reset, a link has been sent.");
     } catch {
       if (requestIsCurrent(owner)) {
-        setError(authErrorMessage("network_error"));
+        showAuthError("reset-request", "network_error");
       }
     } finally {
       if (requestIsCurrent(owner)) {
@@ -576,11 +702,10 @@ export function AuthLogin({
   async function submitResetComplete(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const password = String(new FormData(event.currentTarget).get("password") ?? "");
-    setError(null);
-    setNotice(null);
+    clearFeedback();
 
     if (!password || !activeResetToken) {
-      setError(authErrorMessage("reset_token_password_required"));
+      showAuthError("reset-complete", "reset_token_password_required");
       return;
     }
 
@@ -591,13 +716,13 @@ export function AuthLogin({
       const result = await postJson("/api/auth/password-reset/complete", {
         password,
         token: activeResetToken
-      });
+      }, "reset-complete");
       if (!requestIsCurrent(owner, true)) {
         return;
       }
 
       if (!result.ok) {
-        setError(authErrorMessage(result.error ?? "login_failed"));
+        showAuthError("reset-complete", result.error ?? "password_reset_failed");
         return;
       }
 
@@ -608,7 +733,7 @@ export function AuthLogin({
       setNotice("Password updated. Sign in to continue.");
     } catch {
       if (requestIsCurrent(owner, true)) {
-        setError(authErrorMessage("network_error"));
+        showAuthError("reset-complete", "network_error");
       }
     } finally {
       if (requestIsCurrent(owner, true)) {
@@ -622,11 +747,10 @@ export function AuthLogin({
     const formData = new FormData(event.currentTarget);
     const displayName = String(formData.get("displayName") ?? "").trim();
     const email = String(formData.get("email") ?? "").trim();
-    setError(null);
-    setNotice(null);
+    clearFeedback();
 
     if (!email) {
-      setError(authErrorMessage("registration_required"));
+      showAuthError("register", "registration_required");
       return;
     }
 
@@ -637,13 +761,13 @@ export function AuthLogin({
       const result = await postJson("/api/auth/register", {
         displayName,
         email
-      });
+      }, "register");
       if (!requestIsCurrent(owner)) {
         return;
       }
 
       if (!result.ok) {
-        setError(authErrorMessage(result.error ?? "login_failed"));
+        showAuthError("register", result.error ?? "access_request_failed");
         return;
       }
 
@@ -651,7 +775,7 @@ export function AuthLogin({
       setMode("check-email");
     } catch {
       if (requestIsCurrent(owner)) {
-        setError(authErrorMessage("network_error"));
+        showAuthError("register", "network_error");
       }
     } finally {
       if (requestIsCurrent(owner)) {
@@ -665,11 +789,10 @@ export function AuthLogin({
     const formData = new FormData(event.currentTarget);
     const displayName = String(formData.get("displayName") ?? "").trim();
     const password = String(formData.get("password") ?? "");
-    setError(null);
-    setNotice(null);
+    clearFeedback();
 
     if (!password || !activeInviteToken) {
-      setError(authErrorMessage("invite_token_password_required"));
+      showAuthError("accept-invite", "invite_token_password_required");
       return;
     }
 
@@ -681,13 +804,13 @@ export function AuthLogin({
         displayName,
         password,
         token: activeInviteToken
-      });
+      }, "accept-invite");
       if (!requestIsCurrent(owner, true)) {
         return;
       }
 
       if (!result.ok) {
-        setError(authErrorMessage(result.error ?? "invalid_invite_token"));
+        showAuthError("accept-invite", result.error ?? "invite_acceptance_failed");
         return;
       }
 
@@ -697,7 +820,7 @@ export function AuthLogin({
       (navigateAfterLogin ?? window.location.assign.bind(window.location))(redirectTarget);
     } catch {
       if (requestIsCurrent(owner, true)) {
-        setError(authErrorMessage("network_error"));
+        showAuthError("accept-invite", "network_error");
       }
     } finally {
       if (requestIsCurrent(owner, true)) {
@@ -709,11 +832,10 @@ export function AuthLogin({
   async function submitEmailVerification(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const password = String(new FormData(event.currentTarget).get("password") ?? "");
-    setError(null);
-    setNotice(null);
+    clearFeedback();
 
     if (!password || !activeVerifyToken) {
-      setError(authErrorMessage("verification_token_password_required"));
+      showAuthError("verify", "verification_token_password_required");
       return;
     }
 
@@ -724,13 +846,13 @@ export function AuthLogin({
       const result = await postJson("/api/auth/verify-email", {
         password,
         token: activeVerifyToken
-      });
+      }, "verify");
       if (!requestIsCurrent(owner, true)) {
         return;
       }
 
       if (!result.ok) {
-        setError(authErrorMessage(result.error ?? "invalid_or_expired_verification_token"));
+        showAuthError("verify", result.error ?? "verification_failed");
         return;
       }
 
@@ -745,7 +867,7 @@ export function AuthLogin({
       );
     } catch {
       if (requestIsCurrent(owner, true)) {
-        setError(authErrorMessage("network_error"));
+        showAuthError("verify", "network_error");
       }
     } finally {
       if (requestIsCurrent(owner, true)) {
@@ -826,8 +948,8 @@ export function AuthLogin({
                   Email
                 </label>
                 <input
-                  aria-describedby={loginEmailInvalid ? "login-feedback" : undefined}
-                  aria-errormessage={loginEmailInvalid ? "login-feedback" : undefined}
+                  aria-describedby={loginEmailInvalid ? feedbackId : undefined}
+                  aria-errormessage={loginEmailInvalid ? feedbackId : undefined}
                   aria-invalid={loginEmailInvalid || undefined}
                   autoCapitalize="none"
                   autoComplete="email"
@@ -854,8 +976,8 @@ export function AuthLogin({
                 </div>
                 <div className="relative">
                   <input
-                    aria-describedby={loginPasswordInvalid ? "password-help login-feedback" : "password-help"}
-                    aria-errormessage={loginPasswordInvalid ? "login-feedback" : undefined}
+                    aria-describedby={fieldDescription("password-help", "password")}
+                    aria-errormessage={loginPasswordInvalid ? feedbackId : undefined}
                     aria-invalid={loginPasswordInvalid || undefined}
                     autoComplete="current-password"
                     className={`${fieldClassName} pr-14 ${loginPasswordInvalid ? invalidFieldClassName : ""}`}
@@ -889,7 +1011,7 @@ export function AuthLogin({
                 <AuthFeedback
                   adjacent
                   error={error}
-                  feedbackId="login-feedback"
+                  feedbackId={feedbackId}
                   notice={notice}
                 />
               ) : null}
@@ -950,9 +1072,11 @@ export function AuthLogin({
                   </label>
                   <div className="relative">
                     <input
-                      aria-describedby="invite-password-help"
+                      aria-describedby={fieldDescription("invite-password-help", "invite-password")}
+                      aria-errormessage={invalidFieldIds.has("invite-password") ? feedbackId : undefined}
+                      aria-invalid={invalidFieldIds.has("invite-password") || undefined}
                       autoComplete="new-password"
-                      className={`${fieldClassName} pr-14`}
+                      className={`${fieldClassName} pr-14 ${invalidFieldIds.has("invite-password") ? invalidFieldClassName : ""}`}
                       disabled={submitting}
                       id="invite-password"
                       name="password"
@@ -976,10 +1100,12 @@ export function AuthLogin({
                     Email
                   </label>
                   <input
-                    aria-describedby="register-email-help"
+                    aria-describedby={fieldDescription("register-email-help", "register-email")}
+                    aria-errormessage={invalidFieldIds.has("register-email") ? feedbackId : undefined}
+                    aria-invalid={invalidFieldIds.has("register-email") || undefined}
                     autoCapitalize="none"
                     autoComplete="email"
-                    className={fieldClassName}
+                    className={`${fieldClassName} ${invalidFieldIds.has("register-email") ? invalidFieldClassName : ""}`}
                     disabled={submitting}
                     id="register-email"
                     inputMode="email"
@@ -1050,9 +1176,11 @@ export function AuthLogin({
                 </label>
                 <div className="relative">
                   <input
-                    aria-describedby="verification-password-help"
+                    aria-describedby={fieldDescription("verification-password-help", "verification-password")}
+                    aria-errormessage={invalidFieldIds.has("verification-password") ? feedbackId : undefined}
+                    aria-invalid={invalidFieldIds.has("verification-password") || undefined}
                     autoComplete="new-password"
-                    className={`${fieldClassName} pr-14`}
+                    className={`${fieldClassName} pr-14 ${invalidFieldIds.has("verification-password") ? invalidFieldClassName : ""}`}
                     disabled={submitting}
                     id="verification-password"
                     name="password"
@@ -1093,10 +1221,12 @@ export function AuthLogin({
                   Email
                 </label>
                 <input
-                  aria-describedby="reset-email-help"
+                  aria-describedby={fieldDescription("reset-email-help", "reset-email")}
+                  aria-errormessage={invalidFieldIds.has("reset-email") ? feedbackId : undefined}
+                  aria-invalid={invalidFieldIds.has("reset-email") || undefined}
                   autoCapitalize="none"
                   autoComplete="email"
-                  className={fieldClassName}
+                  className={`${fieldClassName} ${invalidFieldIds.has("reset-email") ? invalidFieldClassName : ""}`}
                   disabled={submitting}
                   id="reset-email"
                   inputMode="email"
@@ -1140,9 +1270,11 @@ export function AuthLogin({
                 </label>
                 <div className="relative">
                   <input
-                    aria-describedby="new-password-help"
+                    aria-describedby={fieldDescription("new-password-help", "new-password")}
+                    aria-errormessage={invalidFieldIds.has("new-password") ? feedbackId : undefined}
+                    aria-invalid={invalidFieldIds.has("new-password") || undefined}
                     autoComplete="new-password"
-                    className={`${fieldClassName} pr-14`}
+                    className={`${fieldClassName} pr-14 ${invalidFieldIds.has("new-password") ? invalidFieldClassName : ""}`}
                     disabled={submitting}
                     id="new-password"
                     name="password"
@@ -1178,7 +1310,7 @@ export function AuthLogin({
           ) : null}
 
           {mode !== "password" && !showInitialAuthFeedback ? (
-            <AuthFeedback error={error} notice={notice} />
+            <AuthFeedback error={error} feedbackId={feedbackId} notice={notice} />
           ) : null}
           </div>
         </div>
