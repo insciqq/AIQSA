@@ -80,6 +80,17 @@ async function expectTouchTarget(locator: Locator) {
   expect(box!.height).toBeGreaterThanOrEqual(43);
 }
 
+async function expectReadableDetail(page: Page, detail: Locator) {
+  const box = await detail.boundingBox();
+  const viewport = page.viewportSize();
+  expect(box).not.toBeNull();
+  expect(viewport).not.toBeNull();
+  if (!box || !viewport) return;
+  expect(box.width).toBeGreaterThanOrEqual(640);
+  expect(box.x).toBeGreaterThanOrEqual(-1);
+  expect(box.x + box.width).toBeLessThanOrEqual(viewport.width + 1);
+}
+
 async function createPasswordUser(input: {
   displayName: string;
   email: string;
@@ -1161,13 +1172,25 @@ test("admin console keeps every section touch-operable in the documented compact
     const newInvite = invites.getByRole("button", { exact: true, name: "New invite" });
     await expectTouchTarget(newInvite);
     await newInvite.click();
+    const backToInvites = invites.getByRole("button", { name: "Back to invites" });
+    await expect(backToInvites).toBeFocused();
     await expectTouchTarget(invites.getByLabel("Email", { exact: true }));
     await expectTouchTarget(invites.getByRole("button", { exact: true, name: "Create invite" }));
     await expectTouchTarget(invites.getByLabel(compactGroupName).locator(".."));
     await expectNoPageOverflow(page);
-    const backToInvites = invites.getByRole("button", { name: "Back to invites" });
+    for (const viewport of [
+      { height: 768, width: 1024 },
+      { height: 500, width: 1280 },
+      { height: 900, width: 1440 }
+    ]) {
+      await page.setViewportSize(viewport);
+      await expectNoPageOverflow(page);
+      await expectReadableDetail(page, invites.getByTestId("admin-invites-detail-pane"));
+    }
+    await page.setViewportSize({ height: 844, width: 390 });
     await expectTouchTarget(backToInvites);
     await backToInvites.click();
+    await expect(newInvite).toBeFocused();
     await expect(invites.getByLabel("Search invites")).toHaveValue(compactGroupName);
 
     await openAdminSection(page, adminSection("access-rules"));
@@ -1176,14 +1199,26 @@ test("admin console keeps every section touch-operable in the documented compact
     const newRule = rules.getByRole("button", { exact: true, name: "New rule" });
     await expectTouchTarget(newRule);
     await newRule.click();
+    const backToRules = rules.getByRole("button", { name: "Back to access rules" });
+    await expect(backToRules).toBeFocused();
     await expectTouchTarget(rules.getByLabel("Kind"));
     await expectTouchTarget(rules.getByLabel("Value"));
     await expectTouchTarget(rules.getByRole("button", { exact: true, name: "Save rule" }));
     await expectTouchTarget(rules.getByLabel(compactGroupName).locator(".."));
     await expectNoPageOverflow(page);
-    const backToRules = rules.getByRole("button", { name: "Back to access rules" });
+    for (const viewport of [
+      { height: 768, width: 1024 },
+      { height: 500, width: 1280 },
+      { height: 900, width: 1440 }
+    ]) {
+      await page.setViewportSize(viewport);
+      await expectNoPageOverflow(page);
+      await expectReadableDetail(page, rules.getByTestId("admin-access-rules-detail-pane"));
+    }
+    await page.setViewportSize({ height: 844, width: 390 });
     await expectTouchTarget(backToRules);
     await backToRules.click();
+    await expect(newRule).toBeFocused();
     await expect(rules.getByLabel("Search access rules")).toHaveValue(compactGroupName);
 
     await openAdminSection(page, adminSection("safety"));

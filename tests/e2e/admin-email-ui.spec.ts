@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 import type { AdminDashboard } from "../../lib/contracts/admin";
 import type {
   AdminEmailConfiguration,
@@ -98,6 +98,17 @@ async function signInOrdinaryUser(page: Page): Promise<void> {
   await page.getByLabel("Password", { exact: true }).fill(LOCAL_RESTRICTED_MEMBER.password);
   await page.getByRole("button", { name: "Sign in" }).click();
   await expect(page).toHaveURL("/");
+}
+
+async function expectReadableDetail(page: Page, detail: Locator) {
+  const box = await detail.boundingBox();
+  const viewport = page.viewportSize();
+  expect(box).not.toBeNull();
+  expect(viewport).not.toBeNull();
+  if (!box || !viewport) return;
+  expect(box.width).toBeGreaterThanOrEqual(640);
+  expect(box.x).toBeGreaterThanOrEqual(-1);
+  expect(box.x + box.width).toBeLessThanOrEqual(viewport.width + 1);
 }
 
 test("admin saves, tests, and activates a write-only SMTP draft without network SMTP", async ({ page }) => {
@@ -241,6 +252,16 @@ test("admin saves, tests, and activates a write-only SMTP draft without network 
   await expect(section.locator('[data-resource-availability="enabled"]').first()).toHaveText("Enabled");
   await expect(section.getByRole("button", { name: "Disable", exact: true })).toBeVisible();
   expect(email.active).toMatchObject({ enabled: true, passwordConfigured: true, version: 1 });
+
+  for (const viewport of [
+    { height: 768, width: 1024 },
+    { height: 500, width: 1280 },
+    { height: 900, width: 1440 }
+  ]) {
+    await page.setViewportSize(viewport);
+    await expectNoHorizontalOverflow(page);
+    await expectReadableDetail(page, section.getByTestId("email-task-detail"));
+  }
 
   await page.setViewportSize({ height: 900, width: 768 });
   await expectNoHorizontalOverflow(page);

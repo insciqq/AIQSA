@@ -52,6 +52,36 @@
   }
 }
 
+/*
+ * Control Center resource navigation follows the space left inside the task
+ * surface, not the viewport. Below this threshold the explicit navigation
+ * state owns one pane; a sufficiently wide surface may retain index context.
+ */
+[data-admin-task-container="true"] {
+  container-name: admin-task-workspace;
+  container-type: inline-size;
+}
+
+@container admin-task-workspace (min-width: 64rem) {
+  [data-admin-task-layout="true"] {
+    display: grid;
+  }
+
+  [data-admin-task-layout="true"] > [data-admin-task-view="index"],
+  [data-admin-task-layout="true"] > [data-admin-task-view="detail"] {
+    display: block;
+  }
+
+  [data-admin-task-layout="true"] > [data-admin-task-view="index"] {
+    border-right-width: 1px;
+    border-bottom-width: 0;
+  }
+
+  [data-admin-task-back="responsive"] {
+    display: none;
+  }
+}
+
 [data-message-interaction-surface="true"] {
   transition:
     background-color 150ms cubic-bezier(0.4, 0, 0.2, 1),

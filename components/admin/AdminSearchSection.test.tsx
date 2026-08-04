@@ -90,6 +90,16 @@ describe("AdminSearchSection", () => {
     api.updatePolicy.mockReset().mockResolvedValue({ ok: true, search: catalog });
   });
 
+  it("waits for an explicit Search source selection after loading", async () => {
+    render(<AdminSearchSection active />);
+
+    const index = await screen.findByRole("list", { name: "Search source catalog" });
+    expect(within(index).getByRole("button", { name: /Company Search/i })).not.toHaveAttribute(
+      "aria-current"
+    );
+    expect(screen.getByText("Select or add a Search source.")).toBeInTheDocument();
+  });
+
   it("presents one friendly Search source with configuration and diagnostics", async () => {
     render(<AdminSearchSection active />);
 

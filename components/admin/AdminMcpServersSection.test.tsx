@@ -462,7 +462,7 @@ describe("AdminMcpServersSection", () => {
     expect(screen.getByLabelText("Display name")).toHaveValue("Unfinished draft");
   });
 
-  it("uses separate compact catalog, server task index, and task detail views", () => {
+  it("uses one compact catalog or detail with persistent horizontal server tasks", () => {
     const view = viewController();
     render(<TestSection controller={view.controller} />);
 
@@ -471,16 +471,47 @@ describe("AdminMcpServersSection", () => {
 
     fireEvent.click(screen.getByRole("listitem"));
     expect(screen.getByTestId("mcp-catalog-view")).toHaveClass("hidden");
-    expect(screen.getByTestId("mcp-server-task-index")).toHaveClass("block");
+    expect(screen.getByTestId("mcp-detail-view")).toHaveClass("block");
+    expect(screen.queryByTestId("mcp-server-task-index")).not.toBeInTheDocument();
+    const taskNavigation = screen.getByRole("navigation", { name: "MCP server tasks" });
+    expect(within(taskNavigation).getAllByRole("button")).toHaveLength(6);
+    expect(within(taskNavigation).getByRole("button", { name: /Overview Publication and trust/i })).toHaveAttribute(
+      "aria-current",
+      "page"
+    );
 
-    fireEvent.click(screen.getByRole("button", { name: /Validate & tools/i }));
-    expect(screen.getByTestId("mcp-server-task-index")).toHaveClass("hidden");
-    expect(screen.getByTestId("mcp-server-task-detail")).toHaveClass("block");
+    fireEvent.click(within(taskNavigation).getByRole("button", { name: /Validate & tools/i }));
+    expect(within(taskNavigation).getByRole("button", { name: /Validate & tools/i })).toHaveAttribute(
+      "aria-current",
+      "page"
+    );
+    expect(screen.getByRole("heading", { name: "Validate & tools" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Back to server tasks" })).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "Back to server tasks" }));
-    expect(screen.getByTestId("mcp-server-task-index")).toHaveClass("block");
     fireEvent.click(screen.getByRole("button", { name: "Back to MCP servers" }));
     expect(screen.getByTestId("mcp-catalog-view")).toHaveClass("block");
+  });
+
+  it("returns to the compact catalog when refresh or deletion removes the selected server", async () => {
+    const view = viewController();
+    const { rerender } = render(<TestSection controller={view.controller} />);
+
+    fireEvent.click(screen.getByRole("listitem"));
+    expect(screen.getByTestId("mcp-catalog-view")).toHaveClass("hidden");
+    expect(screen.getByTestId("mcp-detail-view")).toHaveClass("block");
+
+    const removedController = {
+      ...view.controller,
+      state: {
+        ...view.controller.state,
+        selectedServer: null,
+        servers: []
+      }
+    } as AdminMcpController;
+    rerender(<TestSection controller={removedController} />);
+
+    await waitFor(() => expect(screen.getByTestId("mcp-catalog-view")).toHaveClass("block"));
+    expect(screen.getByTestId("mcp-detail-view")).toHaveClass("hidden");
   });
 
   it("selects the OAuth callback server and scrubs only callback query parameters", async () => {

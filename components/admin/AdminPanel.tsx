@@ -102,7 +102,7 @@ function AdminHeaderAction({
 
   const FormIcon = form.Icon;
   return (
-    <button className={primaryButton} onClick={form.toggle} type="button">
+    <button className={primaryButton} data-admin-task-opener="true" onClick={form.toggle} type="button">
       <FormIcon aria-hidden="true" className="size-3.5" />
       {form.open ? "Hide form" : `New ${form.label}`}
     </button>

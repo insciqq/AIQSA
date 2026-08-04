@@ -177,7 +177,7 @@ function RuleDetail({ actions, rule, status }: Readonly<{
 export function AdminAccessRulesSection(props: AdminAccessRulesSectionProps) {
   const { actions, data, state, status } = props;
   return (
-    <AdminTaskWorkspace indexWidth="22rem">
+    <AdminTaskWorkspace detailOpen={state.compactDetailOpen} indexWidth="22rem">
       <AdminTaskIndexPane compactDetailOpen={state.compactDetailOpen} testId="admin-access-rules-index">
         <div className="border-b border-trace-subtle p-3">
           <label className="block text-xs font-medium text-ink-secondary" htmlFor="admin-access-rules-search">Search access rules</label>
@@ -211,7 +211,7 @@ export function AdminAccessRulesSection(props: AdminAccessRulesSectionProps) {
                 <AdminAvailabilityStatus enabled={rule.enabled} />
               </div>
               <div className="mt-2 flex justify-end">
-                <button className={quietButton} onClick={() => actions.selectRule(rule.id)} type="button">Details</button>
+                <button className={quietButton} data-admin-task-opener="true" onClick={() => actions.selectRule(rule.id)} type="button">Details</button>
               </div>
             </article>
           )) : (

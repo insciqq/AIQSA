@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 import type { AdminDashboard } from "../../lib/contracts/admin";
 import type {
   AdminMcpCreateRequest,
@@ -14,6 +14,17 @@ import {
 import { signInWithLocalToken } from "./support/localAuth";
 
 const fixedTime = "2026-07-26T08:00:00.000Z";
+
+async function expectReadableDetail(page: Page, detail: Locator) {
+  const box = await detail.boundingBox();
+  const viewport = page.viewportSize();
+  expect(box).not.toBeNull();
+  expect(viewport).not.toBeNull();
+  if (!box || !viewport) return;
+  expect(box.width).toBeGreaterThanOrEqual(640);
+  expect(box.x).toBeGreaterThanOrEqual(-1);
+  expect(box.x + box.width).toBeLessThanOrEqual(viewport.width + 1);
+}
 
 function emptyAdminDashboard(): AdminDashboard {
   return {
@@ -329,15 +340,22 @@ test("admin MCP task workspace preserves compact context and drives the tested r
 
   await expect(section.getByTestId("mcp-catalog-view")).toBeVisible();
   await expect(section.getByTestId("mcp-detail-view")).toBeVisible();
+  await expect(section.getByText("No MCP server selected")).toBeVisible();
   await expectNoHorizontalOverflow(page);
 
   await page.setViewportSize({ height: 900, width: 768 });
   await expectNoHorizontalOverflow(page);
   const search = section.getByRole("searchbox", { name: "Search MCP servers" });
   await search.fill("Existing Search");
-  await section.getByRole("listitem").filter({ hasText: "Existing Search Server" }).click();
-  await expect(section.getByTestId("mcp-server-task-index")).toBeVisible();
-  await section.getByRole("button", { name: "Back to MCP servers" }).click();
+  const existingRow = section.getByRole("listitem").filter({ hasText: "Existing Search Server" });
+  await existingRow.focus();
+  await existingRow.press("Enter");
+  const backToCatalog = section.getByRole("button", { name: "Back to MCP servers" });
+  await expect(backToCatalog).toBeFocused();
+  await expect(section.getByRole("navigation", { name: "MCP server tasks" })).toBeVisible();
+  await expect(section.getByTestId("mcp-server-task-index")).toHaveCount(0);
+  await backToCatalog.press("Enter");
+  await expect(existingRow).toBeFocused();
   await expect(search).toHaveValue("Existing Search");
   await search.fill("");
 
@@ -389,17 +407,41 @@ test("admin MCP task workspace preserves compact context and drives the tested r
   await expectTouchSafe(overviewTask);
   await overviewTask.click();
   await expect(section.getByTestId("mcp-server-task-detail")).toBeVisible();
+  await expect(overviewTask).toHaveAttribute("aria-current", "page");
 
   await page.setViewportSize({ height: 390, width: 844 });
   await expectNoHorizontalOverflow(page);
-  const backToServerTasks = section.getByRole("button", { name: "Back to server tasks" });
-  await backToServerTasks.scrollIntoViewIfNeeded();
-  await backToServerTasks.click();
-  await expect(section.getByTestId("mcp-server-task-index")).toBeVisible();
+  await expect(section.getByRole("button", { name: "Back to server tasks" })).toHaveCount(0);
+  await expect(section.getByRole("navigation", { name: "MCP server tasks" })).toBeVisible();
   await expectTouchSafe(section.getByRole("button", { name: /Validate & tools/u }));
 
-  await page.setViewportSize({ height: 900, width: 1440 });
-  await expectNoHorizontalOverflow(page);
+  for (const viewport of [
+    { height: 768, width: 1024 },
+    { height: 500, width: 1280 },
+    { height: 900, width: 1440 }
+  ]) {
+    await page.setViewportSize(viewport);
+    await expectNoHorizontalOverflow(page);
+    await expectReadableDetail(page, section.getByTestId("mcp-detail-view"));
+    const taskNavigation = section.getByRole("navigation", { name: "MCP server tasks" });
+    await expect(taskNavigation).toBeVisible();
+    await expect(section.getByTestId("mcp-server-task-index")).toHaveCount(0);
+    const overviewBox = await taskNavigation.getByRole("button", { name: /Overview/u }).boundingBox();
+    const definitionBox = await taskNavigation.getByRole("button", { name: /Definition/u }).boundingBox();
+    expect(overviewBox).not.toBeNull();
+    expect(definitionBox).not.toBeNull();
+    if (overviewBox && definitionBox) {
+      expect(Math.abs(overviewBox.y - definitionBox.y)).toBeLessThanOrEqual(1);
+      expect(definitionBox.x).toBeGreaterThan(overviewBox.x);
+    }
+    if (viewport.width === 1280) {
+      await taskNavigation.getByRole("button", { name: /Validate & tools/u }).click();
+      await expect(section.getByRole("heading", { name: "Validate & tools" })).toBeVisible();
+      await expectNoHorizontalOverflow(page);
+      await taskNavigation.getByRole("button", { name: /Overview/u }).click();
+    }
+  }
+
   await section.getByRole("button", { name: /Validate & tools/u }).click();
   await section.getByRole("button", { name: /Overview Publication and trust/u }).click();
   await expect(section.getByText("Active revision tested")).toBeVisible();
@@ -420,10 +462,13 @@ test("admin MCP task workspace preserves compact context and drives the tested r
   await section.getByRole("button", { name: "Enable" }).click();
   await expect(runtimeDetail.locator('[data-resource-availability="enabled"]')).toHaveText("Enabled");
 
+  await page.setViewportSize({ height: 900, width: 768 });
   await section.getByRole("button", { name: /Delete Irreversible removal/u }).click();
   await section.getByRole("button", { name: "Delete…" }).click();
   await section.getByRole("button", { name: "Delete server" }).click();
   await expect(section.getByText("MCP server deleted.")).toBeVisible();
+  await expect(section.getByTestId("mcp-catalog-view")).toBeVisible();
+  await expect(section.getByTestId("mcp-detail-view")).toBeHidden();
   await expect(section.getByRole("listitem").filter({ hasText: "browser-mcp" })).toHaveCount(0);
 
   expect(requests).toEqual(expect.arrayContaining([

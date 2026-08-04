@@ -82,8 +82,10 @@ describe("AdminInvitesSection", () => {
     const sectionActions = actions();
     render(<AdminInvitesSection {...props(sectionActions)} />);
 
-    expect(screen.getByTestId("admin-invites-index")).toHaveClass("block", "lg:block");
-    expect(screen.getByTestId("admin-invites-detail-pane")).toHaveClass("hidden", "lg:block");
+    expect(screen.getByTestId("admin-invites-index")).toHaveClass("block");
+    expect(screen.getByTestId("admin-invites-index")).not.toHaveClass("lg:block");
+    expect(screen.getByTestId("admin-invites-detail-pane")).toHaveClass("hidden");
+    expect(screen.getByTestId("admin-invites-detail-pane")).not.toHaveClass("lg:block");
     expect(screen.queryByRole("table")).not.toBeInTheDocument();
     fireEvent.change(screen.getByLabelText("Search invites"), { target: { value: "accepted" } });
     fireEvent.click(screen.getByRole("button", { name: "Expiring soon" }));

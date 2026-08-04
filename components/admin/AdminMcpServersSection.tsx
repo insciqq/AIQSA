@@ -133,7 +133,7 @@ function ServerCatalog({
             <p className="text-metadata font-semibold uppercase tracking-[0.1em] text-ink-muted">Installation catalog</p>
             <p className="mt-0.5 text-xs text-ink-secondary">{controller.state.servers.length} server{controller.state.servers.length === 1 ? "" : "s"}</p>
           </div>
-          <button className={primaryButton} disabled={controller.state.busy} onClick={onCreate} type="button">
+          <button className={primaryButton} data-admin-task-opener="true" disabled={controller.state.busy} onClick={onCreate} type="button">
             <Plus aria-hidden="true" className="size-3.5" />
             New server
           </button>
@@ -164,6 +164,7 @@ function ServerCatalog({
                       ? "border-l-2 border-l-critical/55 bg-critical/5"
                       : adminAvailabilityRowClass(server.enabled)
                   } ${current ? "ring-1 ring-inset ring-proof/45" : "hover:bg-control-hover"}`}
+                  data-admin-task-opener="true"
                   data-resource-availability-row={server.archivedAt ? undefined : server.enabled ? "enabled" : "disabled"}
                   key={server.id}
                   onClick={() => onSelect(server.id)}
@@ -397,7 +398,6 @@ export function AdminMcpServersSection({ controller, section }: AdminMcpServersS
   const { actions, state } = section;
   const {
     compactDetailOpen,
-    compactTaskOpen,
     form,
     importError,
     imported,
@@ -408,6 +408,12 @@ export function AdminMcpServersSection({ controller, section }: AdminMcpServersS
   } = state;
   const [oauthReturn] = useState<AdminMcpOAuthReturn | null>(readAdminMcpOAuthReturn);
   const selected = controller.state.selectedServer;
+
+  useEffect(() => {
+    if (controller.state.loaded && compactDetailOpen && mode === null && !selected) {
+      actions.showCatalog();
+    }
+  }, [actions, compactDetailOpen, controller.state.loaded, mode, selected]);
 
   useEffect(() => {
     if (!controller.state.loaded || !oauthReturn || typeof window === "undefined") return;
@@ -488,7 +494,7 @@ export function AdminMcpServersSection({ controller, section }: AdminMcpServersS
           Refresh MCP
         </button>
       </div>
-      <AdminTaskWorkspace indexWidth="18rem">
+      <AdminTaskWorkspace detailOpen={compactDetailOpen} indexWidth="18rem">
         <AdminTaskIndexPane compactDetailOpen={compactDetailOpen} testId="mcp-catalog-view">
           <ServerCatalog
             controller={controller}
@@ -531,13 +537,11 @@ export function AdminMcpServersSection({ controller, section }: AdminMcpServersS
             </div>
           ) : selected ? (
             <AdminMcpServerWorkspace
-              compactTaskOpen={compactTaskOpen}
               controller={controller}
               key={selected.id}
               onBackToCatalog={actions.showCatalog}
               onEdit={() => actions.startEdit(selected)}
               onOpenTask={actions.openTask}
-              onShowTaskIndex={actions.showTaskIndex}
               server={selected}
               task={task}
             />

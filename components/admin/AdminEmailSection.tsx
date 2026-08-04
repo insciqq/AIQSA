@@ -249,6 +249,7 @@ function EmailTaskIndex({
           return (
             <button
               className={`flex min-h-control w-full min-w-0 items-center gap-2 border-l-2 px-3 py-2 text-left ${active ? "border-proof bg-answer-paper text-ink" : "border-transparent text-ink-secondary hover:bg-control-hover hover:text-ink"}`}
+              data-admin-task-opener="true"
               key={item.id}
               onClick={() => onOpenTask(item.id)}
               type="button"
@@ -640,7 +641,7 @@ function AdminEmailContent({ controller, email }: Readonly<{
       <div className="border-b border-trace-subtle px-4 py-3">
         <p className="text-xs text-ink-muted">Singleton SMTP delivery control plane · draft {email.draft.version} · active {email.active.version}</p>
       </div>
-      <AdminTaskWorkspace indexWidth="18rem">
+      <AdminTaskWorkspace detailOpen={compactTaskOpen} indexWidth="18rem">
         <AdminTaskIndexPane compactDetailOpen={compactTaskOpen} testId="email-task-index">
           <EmailTaskIndex email={email} onOpenTask={openTask} task={task} />
         </AdminTaskIndexPane>

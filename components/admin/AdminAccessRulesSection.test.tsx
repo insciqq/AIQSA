@@ -49,8 +49,10 @@ describe("AdminAccessRulesSection", () => {
     const sectionActions = actions();
     render(<AdminAccessRulesSection {...props(sectionActions)} />);
 
-    expect(screen.getByTestId("admin-access-rules-index")).toHaveClass("block", "lg:block");
-    expect(screen.getByTestId("admin-access-rules-detail-pane")).toHaveClass("hidden", "lg:block");
+    expect(screen.getByTestId("admin-access-rules-index")).toHaveClass("block");
+    expect(screen.getByTestId("admin-access-rules-index")).not.toHaveClass("lg:block");
+    expect(screen.getByTestId("admin-access-rules-detail-pane")).toHaveClass("hidden");
+    expect(screen.getByTestId("admin-access-rules-detail-pane")).not.toHaveClass("lg:block");
     expect(screen.getByText("Enabled")).toHaveClass("border-positive/35", "text-ink");
     expect(screen.queryByRole("table")).not.toBeInTheDocument();
     fireEvent.change(screen.getByLabelText("Search access rules"), { target: { value: "domain" } });

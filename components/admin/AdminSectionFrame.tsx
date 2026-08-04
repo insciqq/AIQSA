@@ -23,6 +23,7 @@ export function AdminSectionFrame({
       <section
         aria-labelledby={adminSectionTabId(activeSection)}
         className="min-h-full min-w-0 bg-answer-paper"
+        data-admin-task-focus-scope="true"
         data-testid={`admin-section-${activeSection}`}
         id={adminSectionPanelId(activeSection)}
         role="tabpanel"

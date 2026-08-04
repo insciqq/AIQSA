@@ -617,6 +617,17 @@ async function expectNoPageOverflow(page: Page): Promise<void> {
   })).toBe(true);
 }
 
+async function expectReadableDetail(page: Page, detail: Locator): Promise<void> {
+  const box = await detail.boundingBox();
+  const viewport = page.viewportSize();
+  expect(box).not.toBeNull();
+  expect(viewport).not.toBeNull();
+  if (!box || !viewport) return;
+  expect(box.width).toBeGreaterThanOrEqual(640);
+  expect(box.x).toBeGreaterThanOrEqual(-1);
+  expect(box.x + box.width).toBeLessThanOrEqual(viewport.width + 1);
+}
+
 test("administrator completes the Quick direct-user picker, retry, Ready, and safe replacement journey", async ({ page }) => {
   const upstream = await startLocalResponsesServer();
   const enabledMcpPreferences = await prisma.mcpUserServer.findMany({
@@ -2045,6 +2056,7 @@ test("administrator saves a versioned Search recommendation that grants no acces
   const section = page.getByTestId("admin-search-section");
   const policy = section.getByRole("region", { name: "Recommended Search plan" });
   await expect(policy).toContainText("This recommendation never grants access.");
+  await expect(section.getByText("Select or add a Search source.")).toBeVisible();
   await expect(section).not.toContainText(/native|provider-neutral|\broute\b|revision|adapter|technical|credential mode|physical/iu);
   await policy.getByRole("button", { name: "Company Search" }).click();
   await policy.getByRole("button", { name: "Save default" }).click();
@@ -2059,8 +2071,30 @@ test("administrator saves a versioned Search recommendation that grants no acces
   });
   await expect(policy.getByRole("button", { name: "Save default" })).toBeDisabled();
 
+  await page.setViewportSize({ height: 768, width: 1024 });
+  const sourceQuery = section.getByRole("searchbox", { name: "Search sources" });
+  await sourceQuery.fill("Company");
   const sourceCatalog = section.getByRole("list", { name: "Search source catalog" });
-  await sourceCatalog.getByRole("button", { name: /Company Search/i }).click();
+  const sourceButton = sourceCatalog.getByRole("button", { name: /Company Search/i });
+  await sourceButton.focus();
+  await sourceButton.press("Enter");
+  const backToSearch = section.getByRole("button", { name: "Back to Search" });
+  await expect(backToSearch).toBeFocused();
+  await backToSearch.press("Enter");
+  await expect(sourceButton).toBeFocused();
+  await expect(sourceQuery).toHaveValue("Company");
+  await sourceButton.press("Enter");
+
+  for (const viewport of [
+    { height: 768, width: 1024 },
+    { height: 500, width: 1280 },
+    { height: 900, width: 1440 }
+  ]) {
+    await page.setViewportSize(viewport);
+    await expectNoPageOverflow(page);
+    await expectReadableDetail(page, section.getByTestId("admin-search-detail-pane"));
+  }
+
   await section.getByRole("tab", { name: "Configuration" }).click();
   await expect(section.getByLabel(/^Search model/)).not.toBeVisible();
   await section.getByText("Advanced Search execution").click();

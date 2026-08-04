@@ -15,14 +15,13 @@ import { adminMcpErrorMessage } from "@/components/admin/adminMcpApi";
 import {
   AdminAvailabilityStatus,
   AdminTaskBackButton,
-  AdminTaskDetailPane,
-  AdminTaskIndexPane,
-  AdminTaskWorkspace,
   dangerButton,
   enableButton,
+  focusRing,
   inputClass,
   primaryButton,
-  quietButton
+  quietButton,
+  touchTarget
 } from "@/components/admin/adminPrimitives";
 import type { AdminMcpController } from "@/components/admin/useAdminMcpController";
 import type { AdminMcpTask } from "@/components/admin/useAdminMcpSectionState";
@@ -33,12 +32,8 @@ import type {
   McpToolInventoryEntry
 } from "@/lib/contracts/mcp";
 import {
-  Braces,
   CircleAlert,
-  ChevronRight,
   ExternalLink,
-  FileClock,
-  Gauge,
   LoaderCircle,
   Pencil,
   RotateCcw,
@@ -54,16 +49,15 @@ const helpText = "mt-1 text-metadata text-ink-muted";
 
 const tasks: ReadonlyArray<{
   description: string;
-  icon: typeof Gauge;
   id: AdminMcpTask;
   label: string;
 }> = [
-  { description: "Publication and trust", icon: Gauge, id: "overview", label: "Overview" },
-  { description: "Source, auth, and fields", icon: Braces, id: "definition", label: "Definition" },
-  { description: "Evidence and tool changes", icon: TestTube2, id: "validation", label: "Validate & tools" },
-  { description: "Rollback and rebuild", icon: FileClock, id: "revisions", label: "Revisions" },
-  { description: "Availability to users", icon: Wrench, id: "runtime", label: "Runtime" },
-  { description: "Irreversible removal", icon: Trash2, id: "danger", label: "Delete" }
+  { description: "Publication and trust", id: "overview", label: "Overview" },
+  { description: "Source, auth, and fields", id: "definition", label: "Definition" },
+  { description: "Evidence and tool changes", id: "validation", label: "Validate & tools" },
+  { description: "Rollback and rebuild", id: "revisions", label: "Revisions" },
+  { description: "Availability to users", id: "runtime", label: "Runtime" },
+  { description: "Irreversible removal", id: "danger", label: "Delete" }
 ];
 
 function testedRevisionIsActive(server: AdminMcpServer): boolean {
@@ -158,12 +152,10 @@ function Fact({ detail, label, tone, value }: Readonly<{
 }
 
 function ActivationReceipt({
-  compact = false,
   controller,
   onReviewDefinition,
   server
 }: Readonly<{
-  compact?: boolean;
   controller: AdminMcpController;
   onReviewDefinition(): void;
   server: AdminMcpServer;
@@ -172,18 +164,6 @@ function ActivationReceipt({
   const stage = adminMcpActivationStage(server);
 
   if (stage && activation && isAdminMcpActivationPending(activation)) {
-    if (compact) {
-      return (
-        <div className="mt-3 border-l-2 border-proof bg-proof/[0.07] px-3 py-2 text-metadata text-proof lg:hidden" data-testid="admin-mcp-activation-summary" role="status">
-          <span className="inline-flex items-center gap-1.5 font-medium">
-            <LoaderCircle aria-hidden="true" className="size-3 animate-spin" />
-            Setup in progress
-          </span>
-          <span className="mt-0.5 block text-ink-secondary">{stage.label} · step {stage.step} of {stage.total}</span>
-        </div>
-      );
-    }
-
     return (
       <section
         aria-live="polite"
@@ -217,15 +197,6 @@ function ActivationReceipt({
     code: activation.errorCode ?? "mcp_admin_action_failed",
     issues: activation.issues
   });
-
-  if (compact) {
-    return (
-      <div className="mt-3 border-l-2 border-critical bg-critical/[0.07] px-3 py-2 text-metadata text-critical lg:hidden" data-testid="admin-mcp-activation-summary" role="alert">
-        <span className="font-medium">Activation failed</span>
-        <span className="mt-0.5 block text-ink-secondary">Open a task to review the failure and retry.</span>
-      </div>
-    );
-  }
 
   return (
     <section className="mb-6 border-l-2 border-critical bg-critical/[0.07] px-4 py-3" data-testid="admin-mcp-activation-failed" role="alert">
@@ -806,21 +777,17 @@ function TaskBody({
 }
 
 export function AdminMcpServerWorkspace({
-  compactTaskOpen,
   controller,
   onBackToCatalog,
   onEdit,
   onOpenTask,
-  onShowTaskIndex,
   server,
   task
 }: Readonly<{
-  compactTaskOpen: boolean;
   controller: AdminMcpController;
   onBackToCatalog(): void;
   onEdit(): void;
   onOpenTask(task: AdminMcpTask): void;
-  onShowTaskIndex(): void;
   server: AdminMcpServer;
   task: AdminMcpTask;
 }>) {
@@ -836,60 +803,58 @@ export function AdminMcpServerWorkspace({
   const current = tasks.find((item) => item.id === task) ?? tasks[0];
 
   return (
-    <AdminTaskWorkspace className="min-h-[34rem]" indexWidth="13.5rem">
-      <AdminTaskIndexPane compactDetailOpen={compactTaskOpen} testId="mcp-server-task-index">
-        <div className="p-4">
-          <AdminTaskBackButton label="Back to MCP servers" onClick={onBackToCatalog} />
+    <article className="min-h-[34rem] min-w-0" data-testid="mcp-server-task-detail">
+      <div className="px-4 pt-4 sm:px-5 sm:pt-5 lg:px-6 lg:pt-6">
+        <AdminTaskBackButton label="Back to MCP servers" onClick={onBackToCatalog} />
+        <header className="pb-5">
           <p className="text-metadata font-semibold uppercase tracking-[0.1em] text-ink-muted">Selected server</p>
-          <h3 className="mt-1 break-words text-base font-semibold text-ink [overflow-wrap:anywhere]">{server.name}</h3>
+          <h3 className="mt-1 break-words text-lg font-semibold tracking-tight text-ink [overflow-wrap:anywhere]">{server.name}</h3>
           <p className="mt-1 break-words font-mono text-metadata text-ink-muted [overflow-wrap:anywhere]">{sourceDisplay(server.draft.source)}</p>
-          <ActivationReceipt compact controller={controller} onReviewDefinition={() => openTask("definition")} server={server} />
-        </div>
-        <nav className="border-t border-trace-subtle p-2" aria-label="MCP server tasks">
-          {tasks.map((item) => {
-            const Icon = item.icon;
-            const active = item.id === task;
-            return (
-              <button
-                aria-label={`${item.label} ${item.description}`}
-                className={`flex min-h-control w-full min-w-0 items-center gap-2 border-l-2 px-3 py-2 text-left ${active ? "border-proof bg-answer-paper text-ink" : "border-transparent text-ink-secondary hover:bg-control-hover hover:text-ink"}`}
-                key={item.id}
-                onClick={() => openTask(item.id)}
-                type="button"
-              >
-                <Icon aria-hidden="true" className="size-3.5 shrink-0" />
-                <span className="min-w-0 flex-1">
-                  <span className="block text-xs font-medium">{item.label}</span>
-                  <span className="mt-0.5 block truncate text-metadata text-ink-muted">{item.description}</span>
-                </span>
-                <ChevronRight aria-hidden="true" className="size-3.5 shrink-0 lg:hidden" />
-              </button>
-            );
-          })}
-        </nav>
-      </AdminTaskIndexPane>
-      <AdminTaskDetailPane compactDetailOpen={compactTaskOpen} testId="mcp-server-task-detail">
-        <article className="min-w-0 p-4 sm:p-5 lg:p-6">
-          <AdminTaskBackButton label="Back to server tasks" onClick={onShowTaskIndex} />
-          <header className="mb-6 border-b border-trace-subtle pb-4">
-            <p className="text-metadata font-semibold uppercase tracking-[0.1em] text-ink-muted">{server.name}</p>
-            <h3 className="mt-1 text-lg font-semibold tracking-tight text-ink">{current.label}</h3>
-            <p className="mt-1 text-xs leading-5 text-ink-muted">{current.description}</p>
-          </header>
-          <ActivationReceipt controller={controller} onReviewDefinition={() => openTask("definition")} server={server} />
-          <TaskBody
-            controller={controller}
-            onEdit={onEdit}
-            onOpenTask={openTask}
-            oneTimeValues={oneTimeValues}
-            rebuildRevisionId={rebuildRevisionId}
-            server={server}
-            setOneTimeValues={setOneTimeValues}
-            setRebuildRevisionId={setRebuildRevisionId}
-            task={task}
-          />
-        </article>
-      </AdminTaskDetailPane>
-    </AdminTaskWorkspace>
+        </header>
+      </div>
+      <nav
+        aria-label="MCP server tasks"
+        className="flex min-w-0 gap-6 overflow-x-auto overscroll-x-contain border-b border-trace-subtle px-4 [scrollbar-width:none] sm:px-5 lg:px-6 [&::-webkit-scrollbar]:hidden"
+        data-testid="mcp-server-task-tabs"
+      >
+        {tasks.map((item) => {
+          const active = item.id === task;
+          return (
+            <button
+              aria-label={`${item.label} ${item.description}`}
+              aria-current={active ? "page" : undefined}
+              className={`-mb-px min-h-touch shrink-0 border-b-2 px-0.5 text-sm font-medium ${focusRing} ${touchTarget} ${
+                active
+                  ? "border-proof text-ink"
+                  : "border-transparent text-ink-muted hover:border-trace-strong hover:text-ink-secondary"
+              }`}
+              key={item.id}
+              onClick={() => openTask(item.id)}
+              type="button"
+            >
+              {item.label}
+            </button>
+          );
+        })}
+      </nav>
+      <div className="min-w-0 p-4 sm:p-5 lg:p-6">
+        <header className="mb-6 border-b border-trace-subtle pb-4">
+          <h4 className="text-base font-semibold tracking-tight text-ink">{current.label}</h4>
+          <p className="mt-1 text-xs leading-5 text-ink-muted">{current.description}</p>
+        </header>
+        <ActivationReceipt controller={controller} onReviewDefinition={() => openTask("definition")} server={server} />
+        <TaskBody
+          controller={controller}
+          onEdit={onEdit}
+          onOpenTask={openTask}
+          oneTimeValues={oneTimeValues}
+          rebuildRevisionId={rebuildRevisionId}
+          server={server}
+          setOneTimeValues={setOneTimeValues}
+          setRebuildRevisionId={setRebuildRevisionId}
+          task={task}
+        />
+      </div>
+    </article>
   );
 }

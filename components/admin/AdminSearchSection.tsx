@@ -473,7 +473,7 @@ function SearchCatalogIndex({
               <RefreshCw aria-hidden="true" className={`size-3.5 ${busy ? "animate-spin" : ""}`} />
             </button>
             {canCreate ? (
-              <button className={primaryButton} disabled={busy} onClick={onCreate} type="button">
+              <button className={primaryButton} data-admin-task-opener="true" disabled={busy} onClick={onCreate} type="button">
                 <Plus aria-hidden="true" className="size-3.5" />Add source
               </button>
             ) : null}
@@ -493,6 +493,7 @@ function SearchCatalogIndex({
                 <button
                   aria-current={selectedId === integration.id ? "true" : undefined}
                   className={`flex min-h-touch w-full min-w-0 items-center gap-2 border-l-2 px-3 py-2 text-left ${focusRing} ${integration.enabled ? "border-positive" : "border-trace-strong"} ${selectedId === integration.id ? "bg-answer-paper ring-1 ring-inset ring-proof/40" : "hover:bg-control-hover"}`}
+                  data-admin-task-opener="true"
                   onClick={() => onSelect(integration.id)}
                   type="button"
                 >
@@ -915,7 +916,7 @@ export function AdminSearchSection({
     setCatalog(result.search);
     setSelectedId((current) => current && result.search.integrations.some((item) => item.id === current)
       ? current
-      : result.search.integrations[0]?.id ?? null);
+      : null);
   }, [active]);
 
   useEffect(() => {
@@ -929,7 +930,7 @@ export function AdminSearchSection({
         return;
       }
       setCatalog(result.search);
-      setSelectedId(result.search.integrations[0]?.id ?? null);
+      setSelectedId(null);
     });
     return () => {
       cancelled = true;
@@ -996,7 +997,7 @@ export function AdminSearchSection({
         if (updated) setForm(formFrom(updated));
         else {
           setMode("index");
-          setSelectedId(next.integrations[0]?.id ?? null);
+          setSelectedId(null);
         }
       }
     );
@@ -1041,7 +1042,7 @@ export function AdminSearchSection({
             "Organization Search default saved."
           )}
         />
-        <AdminTaskWorkspace className="mt-2" indexWidth="20rem">
+        <AdminTaskWorkspace className="mt-2" detailOpen={mode !== "index"} indexWidth="20rem">
         <AdminTaskIndexPane compactDetailOpen={mode !== "index"} testId="admin-search-index-pane">
           <SearchCatalogIndex busy={busy} canCreate={addableModels.length > 0} integrations={search.integrations} onCreate={openCreate} onRefresh={() => void load()} onSelect={openIntegration} selectedId={selectedId} />
         </AdminTaskIndexPane>

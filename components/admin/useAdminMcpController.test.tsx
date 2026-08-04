@@ -48,6 +48,9 @@ describe("useAdminMcpController", () => {
     rerender({ active: true });
     await waitFor(() => expect(result.current.state.loaded).toBe(true));
     expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(result.current.state.selectedServer).toBeNull();
+
+    act(() => result.current.actions.select("server-1"));
     expect(result.current.state.selectedServer?.name).toBe("Tools");
   });
 
@@ -64,6 +67,7 @@ describe("useAdminMcpController", () => {
       onMutationCommitted
     }));
     await waitFor(() => expect(result.current.state.loaded).toBe(true));
+    act(() => result.current.actions.select(original.id));
 
     await act(async () => {
       expect(await result.current.actions.update(original.id, { enabled: true })).toBe(true);
@@ -88,6 +92,7 @@ describe("useAdminMcpController", () => {
       .mockResolvedValueOnce(response({ server: tombstone }));
     const { result } = renderHook(() => useAdminMcpController({ active: true, fetcher }));
     await waitFor(() => expect(result.current.state.loaded).toBe(true));
+    act(() => result.current.actions.select(original.id));
 
     await act(async () => {
       expect(await result.current.actions.delete(original.id)).toBe(true);
@@ -166,7 +171,8 @@ describe("useAdminMcpController", () => {
       .mockResolvedValueOnce(response({ servers: [queued] }))
       .mockResolvedValueOnce(response({ servers: [ready] }));
     const { result } = renderHook(() => useAdminMcpController({ active: true, fetcher }));
-
+    await waitFor(() => expect(result.current.state.loaded).toBe(true));
+    act(() => result.current.actions.select(queued.id));
     await waitFor(() => expect(result.current.state.selectedServer?.activation?.stage).toBe("ready"), {
       timeout: 2_500
     });
@@ -218,6 +224,7 @@ describe("useAdminMcpController", () => {
       .mockResolvedValueOnce(response({ servers: [disconnected] }));
     const { result } = renderHook(() => useAdminMcpController({ active: true, fetcher }));
     await waitFor(() => expect(result.current.state.loaded).toBe(true));
+    act(() => result.current.actions.select(connected.id));
 
     await act(async () => {
       expect(await result.current.actions.disconnectValidationOAuth(connected.id)).toBe(true);

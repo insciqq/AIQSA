@@ -25,11 +25,9 @@ export type AdminMcpSectionState = Readonly<{
     startEdit(server: AdminMcpServer): void;
     startImport(): void;
     showCatalog(): void;
-    showTaskIndex(): void;
   }>;
   state: Readonly<{
     compactDetailOpen: boolean;
-    compactTaskOpen: boolean;
     form: AdminMcpServerForm;
     importError: string | null;
     imported: boolean;
@@ -45,7 +43,6 @@ export function useAdminMcpSectionState(): AdminMcpSectionState {
   const [mode, setMode] = useState<AdminMcpEditorMode>(null);
   const [task, setTask] = useState<AdminMcpTask>("overview");
   const [compactDetailOpen, setCompactDetailOpen] = useState(false);
-  const [compactTaskOpen, setCompactTaskOpen] = useState(false);
   const [form, setForm] = useState<AdminMcpServerForm>(() => blankMcpServerForm());
   const [importValue, setImportValueState] = useState("");
   const [importError, setImportError] = useState<string | null>(null);
@@ -75,13 +72,11 @@ export function useAdminMcpSectionState(): AdminMcpSectionState {
       openServer: () => {
         setMode(null);
         setCompactDetailOpen(true);
-        setCompactTaskOpen(false);
       },
       openTask: (nextTask) => {
         setMode(null);
         setTask(nextTask);
         setCompactDetailOpen(true);
-        setCompactTaskOpen(true);
       },
       setForm,
       setImportValue: (value: string) => {
@@ -107,12 +102,10 @@ export function useAdminMcpSectionState(): AdminMcpSectionState {
         setMode("import");
         setCompactDetailOpen(true);
       },
-      showCatalog: () => setCompactDetailOpen(false),
-      showTaskIndex: () => setCompactTaskOpen(false)
+      showCatalog: () => setCompactDetailOpen(false)
     },
     state: {
       compactDetailOpen,
-      compactTaskOpen,
       form,
       importError,
       imported,
@@ -121,5 +114,5 @@ export function useAdminMcpSectionState(): AdminMcpSectionState {
       query,
       task
     }
-  }), [compactDetailOpen, compactTaskOpen, form, importError, importValue, imported, mode, query, task]);
+  }), [compactDetailOpen, form, importError, importValue, imported, mode, query, task]);
 }

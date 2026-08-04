@@ -231,7 +231,7 @@ function InviteDetail({ actions, invite, nowMs, status }: Readonly<{
 export function AdminInvitesSection(props: AdminInvitesSectionProps) {
   const { actions, data, state, status } = props;
   return (
-    <AdminTaskWorkspace indexWidth="22rem">
+    <AdminTaskWorkspace detailOpen={state.compactDetailOpen} indexWidth="22rem">
       <AdminTaskIndexPane compactDetailOpen={state.compactDetailOpen} testId="admin-invites-index">
         <div className="border-b border-trace-subtle p-3">
           <label className="block text-xs font-medium text-ink-secondary" htmlFor="admin-invites-search">Search invites</label>
@@ -281,7 +281,7 @@ export function AdminInvitesSection(props: AdminInvitesSectionProps) {
                   <p className="text-metadata text-ink-muted">
                     {invite.acceptedAt ? `Accepted ${formatDate(invite.acceptedAt)}` : invite.revokedAt ? `Revoked ${formatDate(invite.revokedAt)}` : `Expires ${formatDate(invite.expiresAt)}`}
                   </p>
-                  <button className={quietButton} onClick={() => actions.selectInvite(invite.id)} type="button">Details</button>
+                  <button className={quietButton} data-admin-task-opener="true" onClick={() => actions.selectInvite(invite.id)} type="button">Details</button>
                 </div>
               </article>
             );

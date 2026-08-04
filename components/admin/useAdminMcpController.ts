@@ -292,7 +292,9 @@ export function useAdminMcpController({
   }, [fetcher, onMutationCommitted]);
 
   const selectedServer = useMemo(() => {
-    return servers.find((server) => server.id === selectedId) ?? servers[0] ?? null;
+    return selectedId
+      ? servers.find((server) => server.id === selectedId) ?? null
+      : null;
   }, [selectedId, servers]);
 
   return {
