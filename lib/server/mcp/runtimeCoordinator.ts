@@ -1,7 +1,8 @@
 import {
   McpClientSessionError,
   validateMcpToolArguments,
-  type AiqsaMcpToolCallResult
+  type AiqsaMcpToolCallResult,
+  type McpFatalResponseErrorCode
 } from "./clientSession";
 import { redactMcpToolCallResult } from "./resultRedaction";
 import { ToolHiveClientError } from "./toolhiveClient";
@@ -47,6 +48,8 @@ export type McpRuntimeSession = {
   close(): Promise<void>;
   dispose?(): Promise<void>;
   exactKnownSecrets?(): readonly string[];
+  fatalResponseErrorCode?(): McpFatalResponseErrorCode | null;
+  isClosed?(): boolean;
   listTools(signal?: AbortSignal): Promise<McpRuntimeInventoryTool[]>;
 };
 
@@ -82,9 +85,11 @@ export type McpRuntimeLifecycle = {
 };
 
 type LiveRuntime = {
+  evictionErrorCode: string | null;
   fingerprint: string;
   local: boolean;
   redactionValues: readonly string[];
+  repositoryStateWrite: Promise<boolean> | null;
   session: McpRuntimeSession;
 };
 
@@ -125,6 +130,12 @@ type StartingRuntime = {
 
 const DEFAULT_INTERVAL_MS = 30_000;
 const MAX_PARALLEL_STARTS = 4;
+const RESPONSE_LIMIT_ERROR_CODES: ReadonlySet<McpClientSessionError["code"]> = new Set([
+  "mcp_call_result_too_large",
+  "mcp_initialize_response_too_large",
+  "mcp_inventory_response_too_large",
+  "mcp_response_too_large"
+]);
 
 async function mapLimit<Value>(
   values: Value[],
@@ -145,6 +156,9 @@ function stableRuntimeError(error: unknown): string {
   if (error instanceof ToolHiveClientError && error.code === "toolhive_artifact_missing") {
     return "mcp_artifact_missing";
   }
+  if (error instanceof McpClientSessionError && RESPONSE_LIMIT_ERROR_CODES.has(error.code)) {
+    return error.code;
+  }
   if (error instanceof Error) {
     if (error.name === "AbortError" || /timed?\s*out|timeout/iu.test(error.message)) return "mcp_timeout";
     if (/unauthori[sz]ed|authorization|required|\b401\b|\b403\b/iu.test(error.message)) {
@@ -153,6 +167,27 @@ function stableRuntimeError(error: unknown): string {
     if (/invalid.*tool|schema|cursor|inventory/iu.test(error.message)) return "mcp_inventory_invalid";
   }
   return "mcp_connect_failed";
+}
+
+function isClosedSession(session: McpRuntimeSession): boolean {
+  try {
+    return session.isClosed?.() === true;
+  } catch {
+    return true;
+  }
+}
+
+function fatalResponseErrorCode(session: McpRuntimeSession): McpFatalResponseErrorCode | null {
+  try {
+    const code = session.fatalResponseErrorCode?.() ?? null;
+    return code && RESPONSE_LIMIT_ERROR_CODES.has(code) ? code : null;
+  } catch {
+    return null;
+  }
+}
+
+function closedSessionErrorCode(session: McpRuntimeSession): string {
+  return fatalResponseErrorCode(session) ?? "mcp_connect_failed";
 }
 
 function isNonresponsiveLocalCall(error: unknown, signal: AbortSignal | undefined): boolean {
@@ -175,6 +210,35 @@ export class McpRuntimeCoordinator {
   readonly #pendingUsers = new Set<string>();
   #runPromise: Promise<void> | null = null;
   #timer: ReturnType<typeof setInterval> | null = null;
+
+  async #evictFailedRuntime(
+    generationId: string,
+    runtime: LiveRuntime,
+    errorCode: string,
+    cleanup: "close" | "dispose" = "dispose"
+  ): Promise<boolean> {
+    if (this.#live.get(generationId) !== runtime) return false;
+    runtime.evictionErrorCode = errorCode;
+    this.#live.delete(generationId);
+    const repositoryStateWrite = runtime.repositoryStateWrite;
+    const cleanupPromise = cleanup === "dispose"
+      ? runtime.session.dispose?.() ?? runtime.session.close()
+      : runtime.session.close();
+    const failed = (async () => {
+      await repositoryStateWrite?.catch(() => undefined);
+      await this.#repository.markFailed({
+        errorCode,
+        fingerprint: runtime.fingerprint,
+        generationId,
+        now: this.#now()
+      });
+    })();
+    await Promise.allSettled([
+      cleanupPromise,
+      failed
+    ]);
+    return true;
+  }
 
   constructor(input: {
     intervalMs?: number;
@@ -251,38 +315,50 @@ export class McpRuntimeCoordinator {
       });
       return redactMcpToolCallResult(result, runtime.redactionValues);
     } catch (error) {
-      if (runtime.local && isNonresponsiveLocalCall(error, input.signal) &&
+      const fatalErrorCode = fatalResponseErrorCode(runtime.session);
+      if (fatalErrorCode) {
+        await this.#evictFailedRuntime(input.generationId, runtime, fatalErrorCode);
+      } else if (isClosedSession(runtime.session)) {
+        await this.#evictFailedRuntime(input.generationId, runtime, "mcp_connect_failed");
+      } else if (runtime.local && isNonresponsiveLocalCall(error, input.signal) &&
         this.#live.get(input.generationId) === runtime) {
-        this.#live.delete(input.generationId);
-        await Promise.allSettled([
-          runtime.session.dispose?.() ?? runtime.session.close(),
-          this.#repository.markFailed({
-            errorCode: "mcp_timeout",
-            fingerprint: runtime.fingerprint,
-            generationId: input.generationId,
-            now: this.#now()
-          })
-        ]);
+        await this.#evictFailedRuntime(input.generationId, runtime, "mcp_timeout");
       }
       throw error;
     }
   }
 
   hasLiveGeneration(generationId: string): boolean {
-    return this.#live.has(generationId);
+    const runtime = this.#live.get(generationId);
+    return runtime !== undefined && !isClosedSession(runtime.session);
   }
 
   async ensureAcceptedGeneration(generationId: string): Promise<boolean> {
-    if (this.#live.has(generationId)) return true;
+    const live = this.#live.get(generationId);
+    if (live) {
+      if (!isClosedSession(live.session)) return true;
+      await this.#evictFailedRuntime(generationId, live, closedSessionErrorCode(live.session));
+      return false;
+    }
     const starting = this.#starts.get(generationId);
     if (starting) {
       await starting.promise;
-      if (this.#live.has(generationId)) return true;
+      const started = this.#live.get(generationId);
+      if (started) {
+        if (!isClosedSession(started.session)) return true;
+        await this.#evictFailedRuntime(
+          generationId,
+          started,
+          closedSessionErrorCode(started.session)
+        );
+        return false;
+      }
     }
     const launch = await this.#repository.loadAcceptedGeneration(generationId, this.#now());
     if (!launch) return false;
     await this.#start(launch);
-    return this.#live.get(generationId)?.fingerprint === launch.fingerprint;
+    const restored = this.#live.get(generationId);
+    return restored?.fingerprint === launch.fingerprint && !isClosedSession(restored.session);
   }
 
   async #drainKicks(): Promise<void> {
@@ -307,6 +383,14 @@ export class McpRuntimeCoordinator {
     });
     await mapLimit(launches, MAX_PARALLEL_STARTS, async (launch) => {
       const live = this.#live.get(launch.generationId);
+      if (live && isClosedSession(live.session)) {
+        await this.#evictFailedRuntime(
+          launch.generationId,
+          live,
+          closedSessionErrorCode(live.session)
+        );
+        return;
+      }
       if (live?.fingerprint === launch.fingerprint) {
         if (launch.inventoryRefreshRequired) {
           await this.#refresh(launch.generationId, launch.fingerprint);
@@ -344,6 +428,14 @@ export class McpRuntimeCoordinator {
 
   async #performStart(launch: McpRuntimeLaunch): Promise<void> {
     const live = this.#live.get(launch.generationId);
+    if (live && isClosedSession(live.session)) {
+      await this.#evictFailedRuntime(
+        launch.generationId,
+        live,
+        closedSessionErrorCode(live.session)
+      );
+      return;
+    }
     if (live?.fingerprint === launch.fingerprint) return;
     if (live) {
       this.#live.delete(launch.generationId);
@@ -366,6 +458,7 @@ export class McpRuntimeCoordinator {
         }
       });
       const tools = await session.listTools();
+      if (isClosedSession(session)) throw new Error("mcp_session_closed");
       assertInventoryDoesNotExposeCredentials(tools, launch.redactionValues, session);
       const accepted = await this.#repository.markReady({
         fingerprint: launch.fingerprint,
@@ -377,16 +470,22 @@ export class McpRuntimeCoordinator {
         await session.close().catch(() => undefined);
         return;
       }
+      if (isClosedSession(session)) throw new Error("mcp_session_closed");
       this.#live.set(launch.generationId, {
+        evictionErrorCode: null,
         fingerprint: launch.fingerprint,
         local: Boolean(launch.toolHive),
         redactionValues: [...launch.redactionValues],
+        repositoryStateWrite: null,
         session
       });
     } catch (error) {
+      const errorCode = session
+        ? fatalResponseErrorCode(session) ?? stableRuntimeError(error)
+        : stableRuntimeError(error);
       await session?.close().catch(() => undefined);
       await this.#repository.markFailed({
-        errorCode: stableRuntimeError(error),
+        errorCode,
         fingerprint: launch.fingerprint,
         generationId: launch.generationId,
         now: this.#now()
@@ -427,31 +526,35 @@ export class McpRuntimeCoordinator {
   async #performRefresh(generationId: string, fingerprint: string): Promise<boolean> {
     const live = this.#live.get(generationId);
     if (!live || live.fingerprint !== fingerprint) return false;
+    if (isClosedSession(live.session)) {
+      await this.#evictFailedRuntime(
+        generationId,
+        live,
+        closedSessionErrorCode(live.session)
+      );
+      return false;
+    }
     try {
-      if (!(await this.#repository.markStarting({
+      const startingWrite = this.#repository.markStarting({
         fingerprint,
         generationId,
-        now: this.#now()
-      }))) {
-        if (this.#live.get(generationId) === live) this.#live.delete(generationId);
-        await live.session.close().catch(() => undefined);
-        return false;
-      }
-      const tools = await live.session.listTools();
-      assertInventoryDoesNotExposeCredentials(tools, live.redactionValues, live.session);
-      if (this.#live.get(generationId) !== live) return false;
-      const accepted = await this.#repository.markReady({
-        fingerprint,
-        generationId,
-        inventory: { tools, version: 1 },
         now: this.#now()
       });
-      if (!accepted) {
+      live.repositoryStateWrite = startingWrite;
+      let started: boolean;
+      try {
+        started = await startingWrite;
+      } finally {
+        if (live.repositoryStateWrite === startingWrite) live.repositoryStateWrite = null;
+      }
+      if (!started) {
+        if (live.evictionErrorCode !== null) return false;
         if (this.#live.get(generationId) === live) this.#live.delete(generationId);
         await live.session.close().catch(() => undefined);
         return false;
       }
       if (this.#live.get(generationId) !== live) {
+        if (live.evictionErrorCode !== null) return false;
         await this.#repository.markFailed({
           errorCode: "mcp_connect_failed",
           fingerprint,
@@ -460,12 +563,56 @@ export class McpRuntimeCoordinator {
         });
         return false;
       }
+      const tools = await live.session.listTools();
+      if (isClosedSession(live.session)) throw new Error("mcp_session_closed");
+      assertInventoryDoesNotExposeCredentials(tools, live.redactionValues, live.session);
+      if (this.#live.get(generationId) !== live) return false;
+      const readinessWrite = this.#repository.markReady({
+        fingerprint,
+        generationId,
+        inventory: { tools, version: 1 },
+        now: this.#now()
+      });
+      live.repositoryStateWrite = readinessWrite;
+      let accepted: boolean;
+      try {
+        accepted = await readinessWrite;
+      } finally {
+        if (live.repositoryStateWrite === readinessWrite) live.repositoryStateWrite = null;
+      }
+      if (!accepted) {
+        if (this.#live.get(generationId) === live) this.#live.delete(generationId);
+        await live.session.close().catch(() => undefined);
+        return false;
+      }
+      if (this.#live.get(generationId) !== live) {
+        if (live.evictionErrorCode !== null) return false;
+        await this.#repository.markFailed({
+          errorCode: "mcp_connect_failed",
+          fingerprint,
+          generationId,
+          now: this.#now()
+        });
+        return false;
+      }
+      if (isClosedSession(live.session)) throw new Error("mcp_session_closed");
       return true;
     } catch (error) {
-      if (this.#live.get(generationId) === live) this.#live.delete(generationId);
+      if (live.evictionErrorCode !== null) return false;
+      const fatalErrorCode = fatalResponseErrorCode(live.session);
+      const errorCode = fatalErrorCode ?? stableRuntimeError(error);
+      if (this.#live.get(generationId) === live) {
+        await this.#evictFailedRuntime(
+          generationId,
+          live,
+          errorCode,
+          fatalErrorCode !== null || isClosedSession(live.session) ? "dispose" : "close"
+        );
+        return false;
+      }
       await live.session.close().catch(() => undefined);
       await this.#repository.markFailed({
-        errorCode: stableRuntimeError(error),
+        errorCode,
         fingerprint,
         generationId,
         now: this.#now()

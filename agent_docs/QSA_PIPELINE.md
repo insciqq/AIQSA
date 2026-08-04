@@ -44,6 +44,23 @@ Streaming is a provider-neutral run capability. Catalog `capabilities.streaming`
 
 MCP extends the middle of this pipeline with model-requested tools rather than adding a separate run mode. Every accepted tool-capable run receives the complete immutable namespaced inventory from all of that user's enabled, entitled, ready MCP servers; granting a server grants all of its valid tools, and no enabled-but-unready server is silently omitted. For a catalog model that cannot call tools, the composer explicitly sends `tools: "none"`, so preparation skips the MCP plan for that run without changing persistent server enablement; omission of this override retains the server-side capability/backstop checks. The model may request zero, one, or several calls over multiple rounds, including calls whose arguments use conversation data or a prior enabled server's result. Requested batches are persisted before bounded parallel execution, results return in provider order, and provisional streamed text is reset before the tool round. Foreground, Stream, and provider-native Background remain available whenever the selected adapter/model capabilities advertise the combination. Durable recovery reuses settled calls and native provider handles, reloads provider attachment payloads, and replays the same persisted provider transcript and accepted chat context under the same budget; it never retries a crash-ambiguous external side effect.
 
+Remote MCP HTTP responses are byte-bounded before the official SDK parses JSON
+or SSE, with operation-aware initialize, inventory, call, and unknown limits.
+Persistent session streams have bounded individual events rather than a small
+lifetime cap, and correlated replies receive the originating operation's
+stricter wire limit. A wire overflow is non-retryable and maps initialize,
+inventory, call, and unknown/session respectively to
+`mcp_initialize_response_too_large`, `mcp_inventory_response_too_large`,
+`mcp_call_result_too_large`, and `mcp_response_too_large`. It contributes no
+partial tool result to a later model round. Public failures expose at most the
+stable code and safe message; a durable error preview may add bounded call
+id/name, while structured logs may additionally retain server/tool identity,
+operation, configured/reached bytes, transport, and opaque run correlation.
+None may retain the body, arguments, endpoint, headers, credentials, or parser
+details. The existing 128 KiB normalized post-parse result limit remains a
+separate defense in depth; neither boundary changes MCP grants or introduces
+per-call confirmation.
+
 Model selection carries opaque database deployment IDs, not trusted provider/upstream strings. The run-creation transaction resolves current grants plus one effective administrator-owned default/group credential, rechecks exact deployment compatibility, and persists immutable answer/search provider bindings before any network call. Later ordinary provider/RBAC changes affect future runs only; continuation, cancellation, and recovery retain the accepted endpoint, protocol, routing, model, and credential version.
 
 ## Transparency Contract

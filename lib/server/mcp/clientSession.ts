@@ -13,6 +13,12 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import packageMetadata from "@/package.json";
 import { canonicalMcpJson, hashCanonicalMcpValue } from "./definitions";
+import { McpResponseGuard } from "./responseGuard";
+import {
+  McpResponseTooLargeError,
+  type McpResponseOperation,
+  type McpResponseWireLimits
+} from "./responseLimits";
 
 type SessionOperation = "call_tool" | "close" | "initialize" | "list_tools" | "session";
 
@@ -24,6 +30,7 @@ export type McpClientSessionErrorCode =
   | "mcp_call_result_too_large"
   | "mcp_call_result_unsupported"
   | "mcp_initialize_failed"
+  | "mcp_initialize_response_too_large"
   | "mcp_inventory_cursor_cycle"
   | "mcp_inventory_page_limit"
   | "mcp_inventory_metadata_limit"
@@ -31,12 +38,20 @@ export type McpClientSessionErrorCode =
   | "mcp_inventory_secret_exposed"
   | "mcp_inventory_tool_invalid"
   | "mcp_inventory_tool_limit"
+  | "mcp_inventory_response_too_large"
   | "mcp_list_tools_failed"
+  | "mcp_response_too_large"
   | "mcp_request_cancelled"
   | "mcp_request_timeout"
   | "mcp_session_closed"
   | "mcp_session_configuration_invalid"
   | "mcp_session_not_ready";
+
+export type McpFatalResponseErrorCode =
+  | "mcp_call_result_too_large"
+  | "mcp_initialize_response_too_large"
+  | "mcp_inventory_response_too_large"
+  | "mcp_response_too_large";
 
 const ERROR_MESSAGES: Record<McpClientSessionErrorCode, string> = {
   mcp_call_arguments_invalid: "MCP tool arguments are invalid or do not match the snapshotted input schema.",
@@ -46,6 +61,7 @@ const ERROR_MESSAGES: Record<McpClientSessionErrorCode, string> = {
   mcp_call_result_too_large: "The MCP tool result exceeds the configured byte limit.",
   mcp_call_result_unsupported: "The MCP tool result contains no supported content.",
   mcp_initialize_failed: "The MCP session could not be initialized.",
+  mcp_initialize_response_too_large: "The MCP initialization response exceeds the configured byte limit.",
   mcp_inventory_cursor_cycle: "The MCP tool inventory repeated a pagination cursor.",
   mcp_inventory_metadata_limit: "MCP tool metadata exceeds the configured byte limit.",
   mcp_inventory_page_limit: "The MCP tool inventory exceeds the configured page limit.",
@@ -53,7 +69,9 @@ const ERROR_MESSAGES: Record<McpClientSessionErrorCode, string> = {
   mcp_inventory_secret_exposed: "The MCP tool inventory contains an exact known credential.",
   mcp_inventory_tool_invalid: "The MCP tool inventory contains an invalid tool definition.",
   mcp_inventory_tool_limit: "The MCP tool inventory exceeds the configured tool limit.",
+  mcp_inventory_response_too_large: "The MCP tool inventory response exceeds the configured byte limit.",
   mcp_list_tools_failed: "The MCP tool inventory could not be loaded.",
+  mcp_response_too_large: "The MCP response exceeds the configured byte limit.",
   mcp_request_cancelled: "The MCP request was cancelled.",
   mcp_request_timeout: "The MCP request timed out.",
   mcp_session_closed: "The MCP session is closed.",
@@ -153,6 +171,7 @@ export type McpClientSessionOptions = Readonly<{
   limits: McpClientSessionLimits;
   onInventoryStale?: () => void;
   requestTimeoutMs: number;
+  responseLimits?: Partial<McpResponseWireLimits>;
   url: URL;
 }>;
 
@@ -180,12 +199,33 @@ function sessionError(
   return new McpClientSessionError({ code, operation, retryable });
 }
 
+function responseTooLargeErrorCode(error: McpResponseTooLargeError): McpFatalResponseErrorCode {
+  return error.operation === "initialize"
+    ? "mcp_initialize_response_too_large"
+    : error.operation === "list_tools"
+      ? "mcp_inventory_response_too_large"
+      : error.operation === "call_tool"
+        ? "mcp_call_result_too_large"
+        : "mcp_response_too_large";
+}
+
+function responseTooLargeFailure(error: McpResponseTooLargeError): McpClientSessionError {
+  const code = responseTooLargeErrorCode(error);
+  const operation: SessionOperation = error.operation === "unknown"
+    ? "session"
+    : error.operation;
+  return sessionError(code, operation);
+}
+
 function requestFailure(
   error: unknown,
   operation: Exclude<SessionOperation, "close" | "session">,
   signal: AbortSignal | undefined,
   fallbackCode: McpClientSessionErrorCode
 ): McpClientSessionError {
+  if (error instanceof McpResponseTooLargeError) {
+    return responseTooLargeFailure(error);
+  }
   if (error instanceof McpClientSessionError) {
     return error;
   }
@@ -497,6 +537,8 @@ export class McpClientSession {
   private inventoryStaleValue = true;
   private readonly limits: McpClientSessionLimits;
   private readonly onInventoryStale: (() => void) | undefined;
+  private fatalCauseExposed = false;
+  private readonly responseGuard: McpResponseGuard;
   private serverEvidenceValue: AiqsaMcpServerEvidence | null = null;
   private state: SessionState = "new";
 
@@ -505,10 +547,13 @@ export class McpClientSession {
     this.defaultRequestTimeoutMs = options.requestTimeoutMs;
     this.limits = options.limits;
     this.onInventoryStale = options.onInventoryStale;
+    this.responseGuard = new McpResponseGuard(
+      options.responseLimits ? { limits: options.responseLimits } : {}
+    );
     const staticHeaders = new Headers(options.headers);
     const transport = new StreamableHTTPClientTransport(new URL(options.url.toString()), {
       ...(options.authProvider ? { authProvider: options.authProvider } : {}),
-      fetch: options.fetch,
+      fetch: this.responseGuard.wrapFetch(options.fetch),
       requestInit: { headers: staticHeaders }
     });
     this.client = new Client(
@@ -525,12 +570,26 @@ export class McpClientSession {
       }
     );
     this.transport = transport;
+    this.responseGuard.setFatalHandler(() => {
+      this.state = "closed";
+      this.inventoryStaleValue = true;
+      void transport.close().catch(() => undefined);
+    });
   }
 
   private readonly transport: StreamableHTTPClientTransport;
 
   get inventoryStale(): boolean {
     return this.inventoryStaleValue;
+  }
+
+  isClosed(): boolean {
+    return this.state === "closed";
+  }
+
+  fatalResponseErrorCode(): McpFatalResponseErrorCode | null {
+    const fatalFailure = this.responseGuard.fatalFailure();
+    return fatalFailure ? responseTooLargeErrorCode(fatalFailure) : null;
   }
 
   get serverEvidence(): AiqsaMcpServerEvidence | null {
@@ -547,8 +606,48 @@ export class McpClientSession {
     }
   }
 
+  private async guardedRequest<Value>(
+    operation: Exclude<McpResponseOperation, "unknown">,
+    timeoutMs: number | undefined,
+    callback: () => Value | Promise<Value>
+  ): Promise<Value> {
+    const guarded = this.responseGuard.beginRequest(operation, timeoutMs);
+    try {
+      return await guarded.run(callback);
+    } catch (error) {
+      const scopedFailure = guarded.failure();
+      if (scopedFailure) {
+        this.fatalCauseExposed = true;
+        throw scopedFailure;
+      }
+      const fatalFailure = this.consumeUnscopedFatalFailure();
+      if (fatalFailure) throw fatalFailure;
+      if (this.responseGuard.fatalFailure()) throw sessionError("mcp_session_closed", operation);
+      throw error;
+    } finally {
+      guarded.finish();
+    }
+  }
+
+  private consumeUnscopedFatalFailure(): McpResponseTooLargeError | undefined {
+    const fatalFailure = this.responseGuard.fatalFailure();
+    if (
+      this.fatalCauseExposed ||
+      !fatalFailure ||
+      fatalFailure.operation !== "unknown"
+    ) {
+      return undefined;
+    }
+    this.fatalCauseExposed = true;
+    return fatalFailure;
+  }
+
   private requireReady(operation: "call_tool" | "list_tools"): void {
     if (this.state === "closed") {
+      const fatalFailure = this.consumeUnscopedFatalFailure();
+      if (fatalFailure) {
+        throw responseTooLargeFailure(fatalFailure);
+      }
       throw sessionError("mcp_session_closed", operation);
     }
     if (this.state !== "ready") {
@@ -569,7 +668,11 @@ export class McpClientSession {
     this.state = "initializing";
     this.initializePromise = (async () => {
       try {
-        await this.client.connect(this.transport, sdkOptions);
+        await this.guardedRequest(
+          "initialize",
+          sdkOptions.timeout,
+          () => this.client.connect(this.transport, sdkOptions)
+        );
         if (this.state === "closed") {
           throw sessionError("mcp_session_closed", "initialize");
         }
@@ -579,27 +682,34 @@ export class McpClientSession {
         );
         this.state = "ready";
       } catch (error) {
-        this.state = "closed";
-        await this.client.close().catch(() => undefined);
-        throw requestFailure(
+        const failure = requestFailure(
           error,
           "initialize",
           options?.signal,
           "mcp_initialize_failed"
         );
+        this.state = "closed";
+        await this.client.close().catch(() => undefined);
+        this.responseGuard.close();
+        throw failure;
       }
     })();
     return this.initializePromise;
   }
 
   async close(): Promise<void> {
-    if (this.state === "closed") return;
+    if (this.state === "closed") {
+      this.responseGuard.close();
+      return;
+    }
     this.state = "closed";
     this.inventoryStaleValue = true;
     try {
       await this.client.close();
     } catch {
       // The SDK transport is already locally aborted; close stays idempotent.
+    } finally {
+      this.responseGuard.close();
     }
   }
 
@@ -619,9 +729,13 @@ export class McpClientSession {
           throw sessionError("mcp_inventory_page_limit", "list_tools");
         }
         page += 1;
-        const result = await this.client.listTools(
-          cursor === undefined ? undefined : { cursor },
-          sdkOptions
+        const result = await this.guardedRequest(
+          "list_tools",
+          sdkOptions.timeout,
+          () => this.client.listTools(
+            cursor === undefined ? undefined : { cursor },
+            sdkOptions
+          )
         );
         if (tools.length + result.tools.length > this.limits.maxTools) {
           throw sessionError("mcp_inventory_tool_limit", "list_tools");
@@ -674,18 +788,23 @@ export class McpClientSession {
       "mcp_call_arguments_invalid",
       "call_tool"
     );
-    if (argumentSnapshot.bytes > this.limits.maxToolArgumentBytes || !isRecord(argumentSnapshot.value)) {
-      if (!isRecord(argumentSnapshot.value)) {
-        throw sessionError("mcp_call_arguments_invalid", "call_tool");
-      }
+    if (!isRecord(argumentSnapshot.value)) {
+      throw sessionError("mcp_call_arguments_invalid", "call_tool");
+    }
+    if (argumentSnapshot.bytes > this.limits.maxToolArgumentBytes) {
       throw sessionError("mcp_call_arguments_too_large", "call_tool");
     }
+    const validatedArguments = argumentSnapshot.value;
 
     try {
-      const result = await this.client.callTool(
-        { arguments: argumentSnapshot.value, name },
-        undefined,
-        sdkOptions
+      const result = await this.guardedRequest(
+        "call_tool",
+        sdkOptions.timeout,
+        () => this.client.callTool(
+          { arguments: validatedArguments, name },
+          undefined,
+          sdkOptions
+        )
       );
       const resultSnapshot = jsonSnapshot(result, "mcp_call_result_invalid", "call_tool");
       if (resultSnapshot.bytes > this.limits.maxToolResultBytes) {

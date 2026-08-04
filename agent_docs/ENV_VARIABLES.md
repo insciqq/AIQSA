@@ -81,8 +81,40 @@ Provider connections, endpoints, adapter protocols, explicit compatible authenti
 ## MCP Runtime Wiring
 
 ```text
+AIQSA_MCP_INITIALIZE_RESPONSE_MAX_BYTES=1048576
+AIQSA_MCP_LIST_TOOLS_RESPONSE_MAX_BYTES=16777216
+AIQSA_MCP_CALL_TOOL_RESPONSE_MAX_BYTES=524288
+AIQSA_MCP_UNKNOWN_RESPONSE_MAX_BYTES=1048576
+AIQSA_MCP_SSE_EVENT_MAX_BYTES=16777216
 AIQSA_TOOLHIVE_URL=http://toolhive-runtime:8080
 ```
+
+The five response limits cap remote MCP wire envelopes before the pinned SDK
+parses JSON or SSE. Initialize defaults to 1 MiB, paginated tool inventory to
+16 MiB per response, tool calls to 512 KiB, and other finite responses to
+1 MiB. A persistent GET/session stream has no small cumulative lifetime cap;
+each complete SSE event is first capped at 16 MiB, then a response correlated
+to initialize, `tools/list`, or `tools/call` receives that operation's stricter
+limit. POST SSE remains cumulatively bounded by its originating operation, and
+a mixed JSON-RPC batch uses the tightest represented operation limit.
+The independent post-parse normalized tool-result limit remains 128 KiB.
+
+Overrides must be positive whole decimal integers. Invalid, zero, fractional,
+or excessive values fall back independently to their defaults. Initialize,
+tool-call, and unknown-response values have a 16777216-byte hard ceiling;
+tool-inventory and SSE-event values have a 67108864-byte hard ceiling. The
+outbound JSON-RPC request reader has a fixed 1 MiB safety cap before operation
+and bounded request-id classification. Overflow cancels the upstream response.
+Initialize maps to `mcp_initialize_response_too_large`, `tools/list` to
+`mcp_inventory_response_too_large`, `tools/call` to
+`mcp_call_result_too_large`, and unknown/session frames to
+`mcp_response_too_large`. Public failures expose at most the stable code and
+safe message; a durable tool-error preview may additionally keep the
+bounded call id/name, never arguments or partial result. The internal typed
+cause retains operation, configured maximum, and observed bytes. Structured
+logs may add server id, tool name, operation, configured/reached bytes,
+transport, and opaque run correlation; body, arguments, endpoint, headers,
+credentials, and parser details remain excluded.
 
 `AIQSA_TOOLHIVE_URL` is internal Compose wiring, not a normal operator endpoint override and not a browser-visible variable. Both Compose files hardcode it to the pinned ToolHive service on the private `mcp-control` network. ToolHive and its dynamic proxy endpoints are not published to the host. MCP server endpoints, source selectors, OAuth policy, shared values, and user values live in the administrator/user persistence model rather than `.env`.
 

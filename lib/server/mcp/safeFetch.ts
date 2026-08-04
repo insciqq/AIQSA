@@ -3,6 +3,11 @@ import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { isIP, type LookupFunction } from "node:net";
 import { Readable } from "node:stream";
+import {
+  readBoundedRequestBody,
+  RequestBodyTooLargeError
+} from "@/lib/server/http/requestBody";
+import { MCP_JSON_RPC_REQUEST_MAX_BYTES } from "./responseLimits";
 
 const DEFAULT_MAX_REDIRECTS = 3;
 const MAX_CONFIGURED_REDIRECTS = 10;
@@ -44,6 +49,7 @@ export type McpSafeFetchErrorCode =
   | "mcp_http_https_required"
   | "mcp_http_invalid_request"
   | "mcp_http_protocol_forbidden"
+  | "mcp_http_request_body_too_large"
   | "mcp_http_redirect_forbidden"
   | "mcp_http_redirect_invalid"
   | "mcp_http_request_failed"
@@ -416,6 +422,25 @@ function configuredMaxRedirects(options: McpSafeFetchOptions): number {
   return value;
 }
 
+function attachFinalResponseMetadata(response: Response, url: URL, redirected: boolean): Response {
+  for (const [property, value] of [
+    ["redirected", redirected],
+    ["url", url.toString()]
+  ] as const) {
+    try {
+      Object.defineProperty(response, property, {
+        configurable: true,
+        enumerable: false,
+        value
+      });
+    } catch {
+      // The response remains usable on runtimes that do not permit shadowing
+      // optional fetch metadata.
+    }
+  }
+  return response;
+}
+
 export async function mcpSafeFetch(
   input: RequestInfo | URL,
   init: RequestInit | undefined = undefined,
@@ -439,9 +464,16 @@ export async function mcpSafeFetch(
 
   let body: Uint8Array | null = null;
   try {
-    if (sourceRequest.body) body = new Uint8Array(await sourceRequest.arrayBuffer());
-  } catch {
+    if (sourceRequest.body) {
+      body = await readBoundedRequestBody(sourceRequest, {
+        maxBytes: MCP_JSON_RPC_REQUEST_MAX_BYTES
+      });
+    }
+  } catch (error) {
     if (sourceRequest.signal.aborted) throw abortReason(sourceRequest.signal);
+    if (error instanceof RequestBodyTooLargeError) {
+      throw new McpSafeFetchError("mcp_http_request_body_too_large");
+    }
     throw new McpSafeFetchError("mcp_http_invalid_request");
   }
 
@@ -460,8 +492,12 @@ export async function mcpSafeFetch(
     const address = await resolvePinnedAddress(current.url, options);
     const pinnedRequest = { ...current, address };
     const response = await (options.dispatch ?? defaultDispatch)(pinnedRequest);
-    if (!isRedirectStatus(response.status) || !response.headers.has("location")) return response;
-    if (sourceRequest.redirect === "manual") return response;
+    if (!isRedirectStatus(response.status) || !response.headers.has("location")) {
+      return attachFinalResponseMetadata(response, current.url, redirectCount > 0);
+    }
+    if (sourceRequest.redirect === "manual") {
+      return attachFinalResponseMetadata(response, current.url, redirectCount > 0);
+    }
     if (sourceRequest.redirect === "error") {
       await discardResponse(response);
       throw new McpSafeFetchError("mcp_http_redirect_forbidden");

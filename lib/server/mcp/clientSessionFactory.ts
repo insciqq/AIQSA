@@ -6,6 +6,7 @@ import {
   type McpClientSessionLimits
 } from "./clientSession";
 import { redactMcpToolCallResult } from "./resultRedaction";
+import type { McpResponseWireLimits } from "./responseLimits";
 import type { McpRuntimeLaunch, McpRuntimeSessionFactory } from "./runtimeCoordinator";
 
 export function createMcpClientSessionFactory(input: Readonly<{
@@ -13,6 +14,7 @@ export function createMcpClientSessionFactory(input: Readonly<{
   fetch: FetchLike;
   fetchForLaunch?: (launch: McpRuntimeLaunch) => FetchLike | Promise<FetchLike>;
   limits: McpClientSessionLimits;
+  responseLimits?: Partial<McpResponseWireLimits>;
 }>): McpRuntimeSessionFactory {
   return {
     async create(launch) {
@@ -44,6 +46,7 @@ export function createMcpClientSessionFactory(input: Readonly<{
         limits: input.limits,
         onInventoryStale: launch.onToolsChanged,
         requestTimeoutMs: launch.callTimeoutMs,
+        ...(input.responseLimits ? { responseLimits: input.responseLimits } : {}),
         url
       });
       try {
@@ -77,6 +80,7 @@ export function createMcpClientSessionFactory(input: Readonly<{
             });
           }
         },
+        fatalResponseErrorCode: () => session.fatalResponseErrorCode(),
         close: () => session.close(),
         exactKnownSecrets() {
           if (!authProvider || !("exactKnownSecrets" in authProvider) ||
@@ -86,6 +90,7 @@ export function createMcpClientSessionFactory(input: Readonly<{
             ? values.filter((value): value is string => typeof value === "string")
             : [];
         },
+        isClosed: () => session.isClosed(),
         async listTools(signal) {
           return [...await session.listAllTools({
             ...(signal ? { signal } : {}),

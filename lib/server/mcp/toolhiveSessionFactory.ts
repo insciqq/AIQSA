@@ -54,6 +54,8 @@ export function createToolHiveMcpSessionFactory(input: Readonly<{
           await input.driver.deleteOwnedWorkload(local.generationToken).catch(() => undefined);
         },
         exactKnownSecrets: () => active.exactKnownSecrets?.() ?? [],
+        fatalResponseErrorCode: () => active.fatalResponseErrorCode?.() ?? null,
+        isClosed: () => active.isClosed?.() ?? false,
         listTools: (signal) => active.listTools(signal)
       };
     }

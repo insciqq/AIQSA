@@ -8,6 +8,7 @@ import {
 import type { ModelRunSseEvent, ModelRunUsage } from "../../domain/modelRunEvents";
 import { textFromContentBlocks } from "../../domain/modelRunEvents";
 import type { ResolvedEntitlements } from "../auth/entitlements";
+import { McpClientSessionError } from "../mcp/clientSession";
 import type { McpRunPlanSnapshot } from "../mcp/runPlan";
 import { ProviderStreamTooLargeError } from "../providers/streamSafety";
 import type {
@@ -1910,6 +1911,111 @@ describe("run execution", () => {
       }
     });
     expect(repository.completeRuns[0]?.finalText).toBe("Combined answer");
+  });
+
+  it.each([
+    { code: "mcp_initialize_response_too_large", operation: "initialize" },
+    { code: "mcp_inventory_response_too_large", operation: "list_tools" },
+    { code: "mcp_call_result_too_large", operation: "call_tool" },
+    { code: "mcp_response_too_large", operation: "session" }
+  ] as const)("keeps $code durable error evidence free of arguments and partial response data", async ({
+    code,
+    operation
+  }) => {
+    const argumentMarker = `private-argument-${code}`;
+    const partialResultMarker = `private-partial-result-${code}`;
+    const namespacedName = "mcp_overflow_lookup_a";
+    const mcp: McpRunPlanSnapshot = {
+      servers: [{
+        fingerprint: "fingerprint-overflow",
+        revisionId: "revision-overflow",
+        serverId: "server-overflow",
+        serverName: "Overflow fixture"
+      }],
+      tools: [{
+        definitionHash: "c".repeat(64),
+        description: "Return bounded evidence",
+        inputSchema: { type: "object" },
+        name: "lookup",
+        namespacedName,
+        originalName: "lookup",
+        serverId: "server-overflow",
+        serverName: "Overflow fixture"
+      }],
+      version: 1
+    };
+    const repository = createRepository();
+    const providerRequests: ProviderRunRequest[] = [];
+    const adapter = createAdapter(async function* (request) {
+      providerRequests.push(request);
+      if (providerRequests.length === 1) {
+        return providerResult({
+          finalText: "",
+          toolCalls: [{
+            arguments: { marker: argumentMarker },
+            id: "overflow-call",
+            name: namespacedName
+          }],
+          usage: usage(1, 1, 0)
+        });
+      }
+      return providerResult({ finalText: "Safe completion", usage: usage(1, 1, 0) });
+    });
+    const overflow = new McpClientSessionError({ code, operation });
+    Object.defineProperty(overflow, "partialResult", {
+      enumerable: true,
+      value: partialResultMarker
+    });
+    const mcpRuntime: NonNullable<RunExecutionInput["mcpRuntime"]> = {
+      async callTool() {
+        throw overflow;
+      },
+      async ensureAcceptedGeneration(generationId) {
+        return generationId === "generation-fingerprint-overflow";
+      }
+    };
+
+    const events = parseSse(await createRunExecutionResponse(executionInput({
+      adapter,
+      mcpRuntime,
+      prepared: preparedData({ mcp, modelId: "gpt-tool-model", provider: "openai" }),
+      repository: repository.repository
+    })).text());
+
+    const toolResultEvent = events.find((event) =>
+      event.type === "artifact" && event.data.artifactType === "tool_result"
+    );
+    expect(toolResultEvent).toMatchObject({
+      data: {
+        payload: {
+          message: overflow.message,
+          status: "error"
+        }
+      }
+    });
+    expect(JSON.stringify(toolResultEvent)).not.toContain(argumentMarker);
+    expect(JSON.stringify(toolResultEvent)).not.toContain(partialResultMarker);
+    const settledCall = [...repository.toolCalls.values()][0];
+    expect(settledCall).toMatchObject({
+      arguments: { marker: argumentMarker },
+      state: "error"
+    });
+    if (!settledCall?.result) throw new Error("expected persisted overflow result");
+    expect(settledCall.result).toMatchObject({
+      callId: "overflow-call",
+      content: [{ text: `Tool failed: ${overflow.message}`, type: "text" }],
+      name: namespacedName,
+      rawPreview: {
+        finalProviderResponsePreview: { code, error: overflow.message },
+        requestPreview: {
+          toolCall: { id: "overflow-call", name: namespacedName }
+        }
+      },
+      status: "error"
+    });
+    const durableError = JSON.stringify(settledCall.result);
+    expect(durableError).not.toContain(argumentMarker);
+    expect(durableError).not.toContain(partialResultMarker);
   });
 
   it("fails a legacy attachment-bearing Perplexity tool call closed without a SearchRun", async () => {

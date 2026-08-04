@@ -8,6 +8,7 @@ import {
   type McpPinnedHttpRequest,
   type McpResolvedAddress
 } from "./safeFetch";
+import { MCP_JSON_RPC_REQUEST_MAX_BYTES } from "./responseLimits";
 
 const PUBLIC_IPV4: McpResolvedAddress = { address: "93.184.216.34", family: 4 };
 
@@ -169,6 +170,29 @@ describe("MCP safe fetch request and redirect behavior", () => {
     expect(requests[1].headers.get("x-api-key")).toBeNull();
     expect(requests[1].headers.get("x-safe")).toBeNull();
     expect(requests[1].headers.get("content-type")).toBe("application/json");
+    expect(response.redirected).toBe(true);
+    expect(response.url).toBe("https://second.example.test/rpc");
+  });
+
+  it("bounds the outbound body before dispatch while accepting the exact limit", async () => {
+    const dispatch = vi.fn(async (request: McpPinnedHttpRequest) => {
+      expect(request.body?.byteLength).toBe(MCP_JSON_RPC_REQUEST_MAX_BYTES);
+      return new Response("ok");
+    });
+    const options = {
+      dispatch,
+      lookupHostname: async () => [PUBLIC_IPV4]
+    };
+
+    await expect(mcpSafeFetch("https://mcp.example.test/rpc", {
+      body: "x".repeat(MCP_JSON_RPC_REQUEST_MAX_BYTES),
+      method: "POST"
+    }, options)).resolves.toBeInstanceOf(Response);
+    await rejectedCode(mcpSafeFetch("https://mcp.example.test/rpc", {
+      body: "x".repeat(MCP_JSON_RPC_REQUEST_MAX_BYTES + 1),
+      method: "POST"
+    }, options), "mcp_http_request_body_too_large");
+    expect(dispatch).toHaveBeenCalledTimes(1);
   });
 
   it("rejects a redirect before dispatch when the next DNS answer is private", async () => {

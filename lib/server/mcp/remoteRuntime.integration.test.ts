@@ -24,7 +24,11 @@ async function closeHttpServer(server: HttpServer): Promise<void> {
   });
 }
 
-async function startRemoteFixture(secret: string, echoSecret = false): Promise<Fixture> {
+async function startRemoteFixture(
+  secret: string,
+  echoSecret = false,
+  toolDescription = "Create a task"
+): Promise<Fixture> {
   const cursors: Array<string | undefined> = [];
   const observedStaticHeaders: Array<string | undefined> = [];
   const server = new Server(
@@ -38,7 +42,7 @@ async function startRemoteFixture(secret: string, echoSecret = false): Promise<F
       ? {
           nextCursor: "page-2",
           tools: [{
-            description: echoSecret ? `Upstream accidentally echoed ${secret}` : "Create a task",
+            description: echoSecret ? `Upstream accidentally echoed ${secret}` : toolDescription,
             inputSchema: { properties: { title: { type: "string" } }, type: "object" },
             name: "create_task"
           }]
@@ -189,5 +193,56 @@ describe("remote MCP runtime integration", () => {
       kind: "invalid"
     });
     expect(JSON.stringify(outcome)).not.toContain(staticSecret);
+  });
+
+  it("rejects an oversized tools/list wire response without exposing its body or request context", async () => {
+    const staticSecret = "integration-wire-limit-static-secret";
+    const privateBodyMarker = "private-inventory-wire-payload";
+    const fixture = await startRemoteFixture(
+      staticSecret,
+      false,
+      privateBodyMarker.repeat(512)
+    );
+    const previousLimit = process.env.AIQSA_MCP_LIST_TOOLS_RESPONSE_MAX_BYTES;
+    process.env.AIQSA_MCP_LIST_TOOLS_RESPONSE_MAX_BYTES = "1024";
+
+    try {
+      const validator = createRemoteMcpDraftValidator({
+        fetch: createMcpSafeFetch({ allowInsecureHttp: true, allowPrivateNetwork: true })
+      });
+      const outcome = await validator.validate({
+        draft: {
+          auth: { mode: "static" },
+          runtime: { callTimeoutMs: 2_000, startupTimeoutMs: 2_000 },
+          slots: [{
+            label: "Validation secret",
+            policy: { allowPersonalOverride: false, kind: "shared" },
+            sensitive: true,
+            slotKey: "validation-secret",
+            target: { kind: "header", name: "X-Validation-Secret" },
+            valueType: "secret"
+          }],
+          source: { kind: "remote", url: fixture.url.toString() },
+          transport: "streamable_http"
+        },
+        values: { "validation-secret": staticSecret }
+      });
+
+      expect(outcome).toEqual({
+        issues: [{ code: "mcp_inventory_response_too_large", path: "tools" }],
+        kind: "invalid"
+      });
+      expect(fixture.cursors).toEqual([undefined]);
+      const serialized = JSON.stringify(outcome);
+      expect(serialized).not.toContain(privateBodyMarker);
+      expect(serialized).not.toContain(staticSecret);
+      expect(serialized).not.toContain(fixture.url.toString());
+    } finally {
+      if (previousLimit === undefined) {
+        delete process.env.AIQSA_MCP_LIST_TOOLS_RESPONSE_MAX_BYTES;
+      } else {
+        process.env.AIQSA_MCP_LIST_TOOLS_RESPONSE_MAX_BYTES = previousLimit;
+      }
+    }
   });
 });

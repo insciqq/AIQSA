@@ -19,6 +19,7 @@ import {
   validateMcpToolArguments
 } from "./clientSession";
 import { createMcpClientSessionFactory } from "./clientSessionFactory";
+import type { McpResponseWireLimits } from "./responseLimits";
 
 type FixtureOptions = Readonly<{
   callTool?: (input: Readonly<{
@@ -26,6 +27,8 @@ type FixtureOptions = Readonly<{
     name: string;
     signal: AbortSignal;
   }>) => CallToolResult | Promise<CallToolResult>;
+  enableJsonResponse?: boolean;
+  enableLogging?: boolean;
   listTools?: (cursor: string | undefined) => ListToolsResult | Promise<ListToolsResult>;
 }>;
 
@@ -36,6 +39,7 @@ type Fixture = Readonly<{
     method: string;
     staticValue: string | undefined;
   }>>;
+  sendLoggingMessage(data: unknown): Promise<void>;
   sendToolListChanged(): Promise<void>;
   url: URL;
 }>;
@@ -89,7 +93,12 @@ async function startFixture(options: FixtureOptions = {}): Promise<Fixture> {
   const requestHeaders: Fixture["requestHeaders"] = [];
   const server = new Server(
     { name: "aiqsa-test-mcp", title: "AIQSA test MCP", version: "1.0.0" },
-    { capabilities: { tools: { listChanged: true } } }
+    {
+      capabilities: {
+        ...(options.enableLogging ? { logging: {} } : {}),
+        tools: { listChanged: true }
+      }
+    }
   );
   server.setRequestHandler(ListToolsRequestSchema, async (request) =>
     options.listTools?.(request.params?.cursor) ?? { tools: [tool("echo")] }
@@ -105,7 +114,7 @@ async function startFixture(options: FixtureOptions = {}): Promise<Fixture> {
   );
 
   const transport = new StreamableHTTPServerTransport({
-    enableJsonResponse: true,
+    enableJsonResponse: options.enableJsonResponse ?? true,
     sessionIdGenerator: () => "aiqsa-test-session"
   });
   await server.connect(transport);
@@ -143,6 +152,7 @@ async function startFixture(options: FixtureOptions = {}): Promise<Fixture> {
       await closeHttpServer(httpServer);
     },
     requestHeaders,
+    sendLoggingMessage: (data) => server.sendLoggingMessage({ data, level: "info" }),
     sendToolListChanged: () => server.sendToolListChanged(),
     url: new URL(`http://127.0.0.1:${address.port}/mcp`)
   };
@@ -157,6 +167,7 @@ function createSession(
     limits?: Partial<McpClientSessionLimits>;
     onInventoryStale?: () => void;
     requestTimeoutMs?: number;
+    responseLimits?: Partial<McpResponseWireLimits>;
   }> = {}
 ): McpClientSession {
   const fetchImplementation: FetchLike = input.fetch ?? ((url, init) => fetch(url, init));
@@ -166,6 +177,7 @@ function createSession(
     limits: { ...defaultLimits, ...input.limits },
     onInventoryStale: input.onInventoryStale,
     requestTimeoutMs: input.requestTimeoutMs ?? 1_000,
+    ...(input.responseLimits ? { responseLimits: input.responseLimits } : {}),
     url: fixture.url
   });
 }
@@ -458,6 +470,118 @@ describe("McpClientSession", () => {
       }
     }
     await session.close();
+  });
+
+  it("maps initialize and inventory wire overflows to stable non-retryable errors", async () => {
+    const privateMarker = "private-wire-inventory-marker";
+    const fixture = await startFixture({
+      listTools: () => ({
+        tools: [tool("large-inventory", { type: "object" }, privateMarker.repeat(128))]
+      })
+    });
+    const initializeSession = createSession(fixture, {
+      responseLimits: { initializeResponseMaxBytes: 64 }
+    });
+
+    await expect(initializeSession.initialize()).rejects.toMatchObject({
+      code: "mcp_initialize_response_too_large",
+      operation: "initialize",
+      retryable: false
+    });
+    expect(initializeSession.isClosed()).toBe(true);
+
+    const inventoryFixture = await startFixture({
+      listTools: () => ({
+        tools: [tool("large-inventory", { type: "object" }, privateMarker.repeat(128))]
+      })
+    });
+    const inventorySession = createSession(inventoryFixture, {
+      responseLimits: { listToolsResponseMaxBytes: 512 }
+    });
+    await inventorySession.initialize();
+    try {
+      await inventorySession.listAllTools();
+      throw new Error("expected_inventory_wire_failure");
+    } catch (error) {
+      expect(error).toBeInstanceOf(McpClientSessionError);
+      expect(error).toMatchObject({
+        code: "mcp_inventory_response_too_large",
+        operation: "list_tools",
+        retryable: false
+      });
+      expect(JSON.stringify(error)).not.toContain(privateMarker);
+    }
+    expect(inventorySession.isClosed()).toBe(true);
+  });
+
+  it("closes an SDK POST-SSE call on wire overflow and keeps the semantic result bound separate", async () => {
+    const privateMarker = "private-wire-call-marker";
+    const called = vi.fn();
+    const fixture = await startFixture({
+      callTool() {
+        called();
+        return { content: [{ text: privateMarker.repeat(128), type: "text" }] };
+      },
+      enableJsonResponse: false
+    });
+    const session = createSession(fixture, {
+      limits: { maxToolResultBytes: 16 * 1_024 },
+      requestTimeoutMs: 1_000,
+      responseLimits: { callToolResponseMaxBytes: 512 }
+    });
+    await session.initialize();
+
+    try {
+      await session.callTool("large-wire-result", {});
+      throw new Error("expected_call_wire_failure");
+    } catch (error) {
+      expect(error).toBeInstanceOf(McpClientSessionError);
+      expect(error).toMatchObject({
+        code: "mcp_call_result_too_large",
+        operation: "call_tool",
+        retryable: false
+      });
+      expect(JSON.stringify(error)).not.toContain(privateMarker);
+    }
+    expect(called).toHaveBeenCalledOnce();
+    expect(session.isClosed()).toBe(true);
+  });
+
+  it("closes an oversized persistent GET event and suppresses SDK reconnect", async () => {
+    const privateMarker = "private-persistent-sse-marker";
+    const fixture = await startFixture({ enableLogging: true });
+    const session = createSession(fixture, {
+      responseLimits: {
+        sseEventMaxBytes: 256,
+        unknownResponseMaxBytes: 64
+      }
+    });
+    await session.initialize();
+    await waitFor(() => fixture.requestHeaders.some(({ method }) => method === "GET"));
+    const initialGetCount = fixture.requestHeaders.filter(({ method }) => method === "GET").length;
+
+    await fixture.sendLoggingMessage({ detail: privateMarker.repeat(32) });
+    await waitFor(() => session.isClosed());
+
+    try {
+      await session.callTool("after-background-overflow", {});
+      throw new Error("expected_background_wire_failure");
+    } catch (error) {
+      expect(error).toMatchObject({
+        code: "mcp_response_too_large",
+        operation: "session",
+        retryable: false
+      });
+      expect(JSON.stringify(error)).not.toContain(privateMarker);
+    }
+    await expect(session.callTool("after-consumed-failure", {})).rejects.toMatchObject({
+      code: "mcp_session_closed",
+      operation: "call_tool"
+    });
+    await new Promise((resolve) => setTimeout(resolve, 1_100));
+    expect(fixture.requestHeaders.filter(({ method }) => method === "GET")).toHaveLength(
+      initialGetCount
+    );
   });
 
   it("maps explicit SDK timeouts and AbortSignal cancellation to stable errors", async () => {

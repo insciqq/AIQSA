@@ -6,12 +6,22 @@ import {
   type ToolHiveWorkloadStatus,
   type ToolHiveWorkloadSummary
 } from "./toolhiveClient";
+import {
+  McpClientSessionError,
+  type McpFatalResponseErrorCode
+} from "./clientSession";
 import { isToolHiveGeneratedImage } from "./localArtifact";
 
 const DEFAULT_LIFECYCLE_TIMEOUT_MS = 120_000;
 const DEFAULT_POLL_INTERVAL_MS = 250;
 const OWNER_TOKEN_PATTERN = /^[a-z0-9]{16,24}$/u;
 const GENERATION_TOKEN_PATTERN = /^[a-z0-9]{24,64}$/u;
+const TERMINAL_MCP_RESPONSE_ERROR_CODES: ReadonlySet<string> = new Set<McpFatalResponseErrorCode>([
+  "mcp_call_result_too_large",
+  "mcp_initialize_response_too_large",
+  "mcp_inventory_response_too_large",
+  "mcp_response_too_large"
+]);
 
 export type ToolHiveRuntimeErrorCode =
   | "toolhive_lifecycle_aborted"
@@ -56,6 +66,11 @@ type PollOptions = Readonly<{
 
 function runtimeError(code: ToolHiveRuntimeErrorCode): ToolHiveRuntimeError {
   return new ToolHiveRuntimeError(code);
+}
+
+function isTerminalMcpResponseError(error: unknown): boolean {
+  return error instanceof McpClientSessionError &&
+    TERMINAL_MCP_RESPONSE_ERROR_CODES.has(error.code);
 }
 
 function validateOwnerToken(token: string): void {
@@ -378,8 +393,9 @@ export class ToolHiveMcpRuntimeDriver {
     const url = this.#client.normalizeStdioProxyUrl(workload);
     try {
       await probe(url, signal);
-    } catch {
+    } catch (error) {
       if (signal?.aborted) throw runtimeError("toolhive_lifecycle_aborted");
+      if (isTerminalMcpResponseError(error)) throw error;
       return null;
     }
     return { name: workload.name, port: workload.port, status: "running", url };

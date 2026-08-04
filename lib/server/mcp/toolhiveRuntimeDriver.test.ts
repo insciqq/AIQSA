@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { McpClientSessionError } from "./clientSession";
 import { ToolHiveClient, type ToolHiveFetch, type ToolHiveWorkloadStatus } from "./toolhiveClient";
 import {
   ToolHiveMcpRuntimeDriver,
@@ -322,6 +323,36 @@ describe("ToolHive MCP runtime driver", () => {
       path: `/api/v1beta/workloads/${groupName}-${generationOne}/restart`
     });
     expect(probe).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    "mcp_call_result_too_large",
+    "mcp_initialize_response_too_large",
+    "mcp_inventory_response_too_large",
+    "mcp_response_too_large"
+  ] as const)("preserves terminal MCP response error %s without restarting or polling", async (code) => {
+    const test = harness();
+    test.api.groups.add(groupName);
+    test.api.add({ generationToken: generationOne });
+    const failure = new McpClientSessionError({ code, operation: "initialize" });
+    const probe = vi.fn(async () => {
+      throw failure;
+    });
+
+    const readiness = test.driver.ensureReadyWorkload({
+      cmdArguments: ["--stdio"],
+      envVars: { MEM0_API_KEY: "personal-key" },
+      generationToken: generationOne,
+      image
+    }, { probe });
+
+    await expect(readiness).rejects.toBe(failure);
+    expect(probe).toHaveBeenCalledOnce();
+    expect(test.api.requests).not.toContainEqual({
+      body: null,
+      method: "POST",
+      path: `/api/v1beta/workloads/${groupName}-${generationOne}/restart`
+    });
   });
 
   it("rejects an existing workload with different secret configuration without exposing it", async () => {

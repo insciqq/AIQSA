@@ -11,6 +11,8 @@ function session(): McpRuntimeSession {
       unsupportedContentTypes: []
     })),
     close: vi.fn(async () => undefined),
+    fatalResponseErrorCode: vi.fn(() => null),
+    isClosed: vi.fn(() => false),
     listTools: vi.fn(async () => [])
   };
 }
@@ -76,6 +78,11 @@ describe("ToolHive MCP session factory", () => {
       url: "http://toolhive-runtime:28471/mcp"
     }));
     expect(events).toEqual(["connecting-boundary", "direct-connect"]);
+    vi.mocked(active.fatalResponseErrorCode!).mockReturnValue("mcp_response_too_large");
+    expect(wrapped.fatalResponseErrorCode?.()).toBe("mcp_response_too_large");
+    expect(active.fatalResponseErrorCode).toHaveBeenCalledOnce();
+    expect(wrapped.isClosed?.()).toBe(false);
+    expect(active.isClosed).toHaveBeenCalledOnce();
     await wrapped.close();
     expect(active.close).toHaveBeenCalledTimes(1);
     expect(deleteOwnedWorkload).not.toHaveBeenCalled();
