@@ -242,7 +242,7 @@ export function ComposerSearchPicker({
                   <span><span className="block font-medium text-ink">Model chooses</span><span className="mt-0.5 block text-ink-muted">Each engine is a separate tool</span></span>
                 </label>
               </div>
-              {!allSelectedAvailable ? <p className="mt-2 text-[11px] leading-4 text-caution">This combination includes an engine that cannot fan out. Model chooses is required.</p> : null}
+              {!allSelectedAvailable ? <p className="mt-2 text-metadata text-caution">This combination includes an engine that cannot fan out. Model chooses is required.</p> : null}
             </fieldset>
           ) : null}
           {preferenceSource === "personal" && onUseOrganizationDefault ? (
@@ -257,7 +257,7 @@ export function ComposerSearchPicker({
               >
                 Use organization default
               </button>
-              <p className="mt-1 px-3 text-[11px] leading-4 text-ink-muted">Future admin recommendations apply only when you have access.</p>
+              <p className="mt-1 px-3 text-metadata text-ink-muted">Future admin recommendations apply only when you have access.</p>
             </div>
           ) : null}
         </div>

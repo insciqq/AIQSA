@@ -46,7 +46,7 @@ import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { compatibleReasoningRequestMappingDefault } from "@/lib/contracts/providerReasoningRequestMapping";
 
 const fieldLabel = "mb-1 block text-xs font-medium text-ink-secondary";
-const helpText = "mt-1 text-[11px] leading-4 text-ink-muted";
+const helpText = "mt-1 text-metadata text-ink-muted";
 const collator = new Intl.Collator("en", { numeric: true, sensitivity: "base" });
 
 type ModelForm = {
@@ -310,10 +310,10 @@ function RouteEditor({
               <ol aria-label="Selected provider route priority" className="grid gap-1">
                 {selected.map(({ endpoint, tag }, index) => (
                   <li className="flex min-w-0 items-center gap-2 rounded-control bg-answer-paper px-2 py-1.5" key={tag}>
-                    <span className="w-5 shrink-0 text-center font-mono text-[11px] text-ink-muted">{index + 1}</span>
+                    <span className="w-5 shrink-0 text-center font-mono text-metadata text-ink-muted">{index + 1}</span>
                     <span className="min-w-0 flex-1">
                       <span className="block break-words text-xs font-medium text-ink [overflow-wrap:anywhere]">{endpoint ? endpointLabel(endpoint) : tag}</span>
-                      <span className="block break-all font-mono text-[11px] text-ink-muted">{endpoint ? endpointDetail(endpoint) : tag}</span>
+                      <span className="block break-all font-mono text-metadata text-ink-muted">{endpoint ? endpointDetail(endpoint) : tag}</span>
                     </span>
                     <button aria-label={`Move ${tag} up`} className={quietButton} disabled={index === 0} onClick={() => onChange({ ...form, providerTags: moveItem(form.providerTags, index, -1) })} type="button"><ArrowUp aria-hidden="true" className="size-3" /></button>
                     <button aria-label={`Move ${tag} down`} className={quietButton} disabled={index === form.providerTags.length - 1} onClick={() => onChange({ ...form, providerTags: moveItem(form.providerTags, index, 1) })} type="button"><ArrowDown aria-hidden="true" className="size-3" /></button>
@@ -359,7 +359,7 @@ function RouteEditor({
                       >
                         <span className="min-w-0 flex-1">
                           <span className="block break-words text-xs font-medium text-ink [overflow-wrap:anywhere]">{endpointLabel(endpoint)}</span>
-                          <span className="block break-all font-mono text-[11px] text-ink-muted">{endpointDetail(endpoint)}</span>
+                          <span className="block break-all font-mono text-metadata text-ink-muted">{endpointDetail(endpoint)}</span>
                         </span>
                         <Plus aria-hidden="true" className="size-3.5 shrink-0 text-proof" />
                       </button>
@@ -895,7 +895,7 @@ export function AdminProviderModelEditor({
                   />
                   <span className={helpText}>Configure this when the gateway accepts `standard` / `pro` or equivalent modes.</span>
                 </label>
-                <p className="break-words font-mono text-[11px] leading-4 text-ink-muted md:col-span-2">
+                <p className="break-words font-mono text-metadata text-ink-muted md:col-span-2">
                   Effort → {form.reasoningEffortPath.trim() || "missing"} · Mode → {form.reasoningModePath.trim() || "not sent"}
                 </p>
               </div>

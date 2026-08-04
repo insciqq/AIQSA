@@ -512,7 +512,7 @@ export function PromptWorkbench({
                   }}
                 />
               </label>
-              <p className="mt-2 text-[11px] leading-5 text-ink-muted lg:[@media(min-height:32.01rem)]:hidden">
+              <p className="mt-2 text-metadata text-ink-muted lg:[@media(min-height:32.01rem)]:hidden">
                 Manage prompts here. Choose one for a run in Run setup.
               </p>
             </div>
@@ -589,7 +589,7 @@ export function PromptWorkbench({
                               </span>
                             </span>
                             {isDefault ? (
-                              <span className="inline-flex shrink-0 items-center gap-1 rounded-pill border border-proof/35 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.05em] text-proof">
+                              <span className="inline-flex shrink-0 items-center gap-1 rounded-pill border border-proof/35 px-2 py-0.5 text-metadata font-semibold uppercase tracking-[0.05em] text-proof">
                                 <Star className="size-3" aria-hidden="true" />
                                 Default
                               </span>
@@ -700,7 +700,7 @@ export function PromptWorkbench({
                             Delete prompt
                           </button>
                           {editingPrompt.id === defaultPromptId ? (
-                            <p className="px-3 pb-2 pt-1 text-[11px] leading-4 text-ink-muted" id="default-delete-protection">
+                            <p className="px-3 pb-2 pt-1 text-metadata text-ink-muted" id="default-delete-protection">
                               Make another prompt the default before deleting this one.
                             </p>
                           ) : null}
@@ -790,11 +790,11 @@ export function PromptWorkbench({
                   data-testid="prompt-instruction-stack"
                 >
                   <section className="relative" aria-labelledby="prompt-system-heading">
-                    <span className="absolute -left-12 top-0 hidden size-8 place-items-center rounded-control border border-proof/45 bg-overlay-surface text-[10px] font-semibold tracking-[0.08em] text-proof sm:grid" aria-hidden="true">
+                    <span className="absolute -left-12 top-0 hidden size-8 place-items-center rounded-control border border-proof/45 bg-overlay-surface text-incidental font-semibold tracking-[0.08em] text-proof sm:grid" aria-hidden="true">
                       S
                     </span>
                     <div className="mb-2 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
-                      <span className="inline-flex rounded-control border border-proof/35 px-1.5 py-0.5 text-[10px] font-semibold tracking-[0.08em] text-proof sm:hidden" aria-hidden="true">SYSTEM</span>
+                      <span className="inline-flex rounded-control border border-proof/35 px-1.5 py-0.5 text-incidental font-semibold tracking-[0.08em] text-proof sm:hidden" aria-hidden="true">SYSTEM</span>
                       <h4 className="whitespace-nowrap text-sm font-semibold text-ink" id="prompt-system-heading">System instructions</h4>
                       <span
                         className={`basis-full text-xs sm:basis-auto ${systemInvalid ? "text-critical" : "text-ink-muted"}`}
@@ -827,11 +827,11 @@ export function PromptWorkbench({
                   </section>
 
                   <section className="relative" aria-labelledby="prompt-developer-heading">
-                    <span className="absolute -left-12 top-0 hidden size-8 place-items-center rounded-control border border-trace-subtle bg-overlay-surface text-[10px] font-semibold tracking-[0.08em] text-ink-muted sm:grid" aria-hidden="true">
+                    <span className="absolute -left-12 top-0 hidden size-8 place-items-center rounded-control border border-trace-subtle bg-overlay-surface text-incidental font-semibold tracking-[0.08em] text-ink-muted sm:grid" aria-hidden="true">
                       D
                     </span>
                     <div className="mb-2 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
-                      <span className="inline-flex rounded-control border border-trace-subtle px-1.5 py-0.5 text-[10px] font-semibold tracking-[0.08em] text-ink-muted sm:hidden" aria-hidden="true">DEVELOPER</span>
+                      <span className="inline-flex rounded-control border border-trace-subtle px-1.5 py-0.5 text-incidental font-semibold tracking-[0.08em] text-ink-muted sm:hidden" aria-hidden="true">DEVELOPER</span>
                       <h4 className="whitespace-nowrap text-sm font-semibold text-ink" id="prompt-developer-heading">Developer instructions</h4>
                       <span className="basis-full text-xs text-ink-muted sm:basis-auto">Optional · implementation guidance</span>
                     </div>

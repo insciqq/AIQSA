@@ -805,7 +805,7 @@ export function AuthLogin({
                       >
                         <span
                           aria-hidden="true"
-                          className="absolute left-3 grid size-6 place-items-center rounded-control bg-control-surface text-[11px] font-semibold text-ink-secondary"
+                          className="absolute left-3 grid size-6 place-items-center rounded-control bg-control-surface text-incidental font-semibold text-ink-secondary"
                         >
                           {oauthProviderInitial(provider)}
                         </span>

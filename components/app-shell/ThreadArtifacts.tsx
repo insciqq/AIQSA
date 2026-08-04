@@ -237,7 +237,7 @@ function SearchAttemptDisclosure({
           <div>
             <div className="mb-1 font-medium text-ink-secondary">Generated query</div>
             {activity.query ? (
-              <div className="break-words rounded-control bg-control-surface px-2 py-1.5 font-mono text-[11px] leading-5 text-ink [overflow-wrap:anywhere]">
+              <div className="break-words rounded-control bg-control-surface px-2 py-1.5 font-mono text-metadata text-ink [overflow-wrap:anywhere]">
                 {activity.query}
               </div>
             ) : (
@@ -457,7 +457,7 @@ function SearchProviderOperationRow({
         <ul className="mt-1 grid gap-1" aria-label="Provider search queries">
           {operation.queries.map((query, index) => (
             <li
-              className="break-words border-l border-trace-subtle pl-2 font-mono text-[11px] leading-5 text-ink [overflow-wrap:anywhere]"
+              className="break-words border-l border-trace-subtle pl-2 font-mono text-metadata text-ink [overflow-wrap:anywhere]"
               key={`${operation.ordinal}:${index}:${query}`}
             >
               {query}
@@ -469,7 +469,7 @@ function SearchProviderOperationRow({
       ) : null}
       {operationHref ? (
         <a
-          className="mt-1 block break-all font-mono text-[11px] leading-5 text-proof underline-offset-2 hover:text-proof-hover hover:underline"
+          className="mt-1 block break-all font-mono text-metadata text-proof underline-offset-2 hover:text-proof-hover hover:underline"
           href={operationHref}
           rel="noreferrer"
           target="_blank"
@@ -478,7 +478,7 @@ function SearchProviderOperationRow({
         </a>
       ) : null}
       {operation.pattern ? (
-        <p className="mt-1 break-words font-mono text-[11px] leading-5 text-ink-secondary [overflow-wrap:anywhere]">
+        <p className="mt-1 break-words font-mono text-metadata text-ink-secondary [overflow-wrap:anywhere]">
           Pattern: {operation.pattern}
         </p>
       ) : null}

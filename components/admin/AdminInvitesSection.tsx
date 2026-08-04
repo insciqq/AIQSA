@@ -93,7 +93,7 @@ function InviteCreateTask({ actions, data, state, status }: AdminInvitesSectionP
     <div className="px-4 py-5 sm:px-6 lg:px-8 lg:py-7">
       <AdminTaskBackButton label="Back to invites" onClick={actions.backToList} />
       <div className="max-w-2xl border-b border-trace-subtle pb-5">
-        <p className="text-[11px] font-semibold uppercase tracking-[0.1em] text-ink-muted">New invite</p>
+        <p className="text-metadata font-semibold uppercase tracking-[0.1em] text-ink-muted">New invite</p>
         <h3 className="mt-2 text-xl font-semibold tracking-tight text-ink">Invite one person</h3>
         <p className="mt-2 text-sm leading-6 text-ink-secondary">
           Email delivery is selected by default. The fresh link is shown once for manual copy in every outcome.
@@ -187,7 +187,7 @@ function InviteDetail({ actions, invite, nowMs, status }: Readonly<{
       <AdminTaskBackButton label="Back to invites" onClick={actions.backToList} />
       <div className="flex min-w-0 items-start justify-between gap-4 border-b border-trace-subtle pb-5">
         <div className="min-w-0">
-          <p className="text-[11px] font-semibold uppercase tracking-[0.1em] text-ink-muted">Invite</p>
+          <p className="text-metadata font-semibold uppercase tracking-[0.1em] text-ink-muted">Invite</p>
           <h3 className="mt-2 break-words text-xl font-semibold tracking-tight text-ink [overflow-wrap:anywhere]">{invite.email}</h3>
           <p className="mt-2 text-sm text-ink-secondary">
             {invite.acceptedAt
@@ -272,12 +272,12 @@ export function AdminInvitesSection(props: AdminInvitesSectionProps) {
                     <p className="break-words text-sm font-medium text-ink [overflow-wrap:anywhere]">{invite.email}</p>
                     <p className="mt-1 break-words text-xs text-ink-muted [overflow-wrap:anywhere]">{groupLabel(invite.defaultGroups)}</p>
                   </div>
-                  <span className={`shrink-0 rounded-pill border px-2 py-0.5 text-[11px] capitalize ${inviteStatusClass(currentStatus)}`}>
+                  <span className={`shrink-0 rounded-pill border px-2 py-0.5 text-metadata capitalize ${inviteStatusClass(currentStatus)}`}>
                     {inviteStatusLabel(currentStatus)}
                   </span>
                 </div>
                 <div className="mt-2 flex items-center justify-between gap-3">
-                  <p className="text-[11px] text-ink-muted">
+                  <p className="text-metadata text-ink-muted">
                     {invite.acceptedAt ? `Accepted ${formatDate(invite.acceptedAt)}` : invite.revokedAt ? `Revoked ${formatDate(invite.revokedAt)}` : `Expires ${formatDate(invite.expiresAt)}`}
                   </p>
                   <button className={quietButton} onClick={() => actions.selectInvite(invite.id)} type="button">Details</button>

@@ -179,7 +179,7 @@ export function CommandPalette({
                   aria-labelledby={headingId}
                 >
                   <div
-                    className="flex items-center justify-between px-3 pb-1 pt-2 text-[11px] font-medium text-ink-muted first:pt-1"
+                    className="flex items-center justify-between px-3 pb-1 pt-2 text-metadata font-medium text-ink-muted first:pt-1"
                     id={headingId}
                   >
                     <span>{kindLabels[group.kind].group}</span>

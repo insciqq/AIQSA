@@ -164,7 +164,7 @@ export function AdminMcpGroupAccessPanel({
               <div className="min-w-0">
                 <div className="break-words text-sm font-medium text-ink [overflow-wrap:anywhere]">{server.name}</div>
                 <div className="mt-1 flex flex-wrap items-center gap-2">
-                  <span className="text-[11px] text-ink-muted">Installation-wide</span>
+                  <span className="text-metadata text-ink-muted">Installation-wide</span>
                   <AdminAvailabilityStatus enabled={server.enabled} />
                 </div>
               </div>
@@ -231,13 +231,13 @@ export function AdminMcpUserAccessPanel({
               <div className="min-w-0">
                 <div className="break-words text-sm font-medium text-ink [overflow-wrap:anywhere]">{server.name}</div>
                 <div className="mt-1 flex flex-wrap items-center gap-2">
-                  <span className="text-[11px] text-ink-muted">Installation-wide</span>
+                  <span className="text-metadata text-ink-muted">Installation-wide</span>
                   <AdminAvailabilityStatus enabled={server.enabled} />
                 </div>
               </div>
               <div className="flex flex-wrap items-end gap-2 sm:justify-end">
                 <div className="grid gap-1">
-                  <span className="text-[10px] font-medium uppercase tracking-[0.08em] text-ink-muted">Effective access</span>
+                  <span className="text-metadata font-medium uppercase tracking-[0.08em] text-ink-muted">Effective access</span>
                   <EffectiveAccessFact
                     accountActive={user.status === "active"}
                     direct={direct}
@@ -245,7 +245,7 @@ export function AdminMcpUserAccessPanel({
                   />
                 </div>
                 <div className="grid gap-1">
-                  <span className="text-[10px] font-medium uppercase tracking-[0.08em] text-ink-muted">Direct assignment</span>
+                  <span className="text-metadata font-medium uppercase tracking-[0.08em] text-ink-muted">Direct assignment</span>
                   <DirectGrantAction
                     direct={direct}
                     disabled={disabled}
@@ -261,10 +261,10 @@ export function AdminMcpUserAccessPanel({
             </div>
             {personalSlots.length ? (
               <fieldset className="min-w-0 border-t border-trace-subtle pt-2">
-                <legend className="px-1 text-[11px] text-ink-muted">Permitted personal fields</legend>
+                <legend className="px-1 text-metadata text-ink-muted">Permitted personal fields</legend>
                 <div className="mt-1 flex min-w-0 flex-wrap gap-2">
                   {personalSlots.map((slot) => (
-                    <label className={`flex min-h-control-sm min-w-0 items-center gap-2 rounded-control bg-control-surface px-2.5 text-[11px] text-ink-secondary ${touchTarget}`} key={slot.slotKey}>
+                    <label className={`flex min-h-control-sm min-w-0 items-center gap-2 rounded-control bg-control-surface px-2.5 text-metadata text-ink-secondary ${touchTarget}`} key={slot.slotKey}>
                       <input
                         checked={grantedSlots.has(slot.slotKey)}
                         className="size-4 shrink-0 accent-proof"
@@ -289,13 +289,13 @@ export function AdminMcpUserAccessPanel({
             ) : null}
             {staleSlotKeys.length ? (
               <fieldset className="min-w-0 border-t border-trace-subtle pt-2">
-                <legend className="px-1 text-[11px] text-caution">Removed field permissions</legend>
-                <p className="mt-1 text-[11px] leading-5 text-ink-muted">
+                <legend className="px-1 text-metadata text-caution">Removed field permissions</legend>
+                <p className="mt-1 text-metadata leading-5 text-ink-muted">
                   These keys no longer exist in the active revision. Clear them to finish grant cleanup.
                 </p>
                 <div className="mt-1 flex min-w-0 flex-wrap gap-2">
                   {staleSlotKeys.map((slotKey) => (
-                    <label className={`flex min-h-control-sm min-w-0 items-center gap-2 rounded-control bg-control-surface px-2.5 font-mono text-[11px] text-caution ${touchTarget}`} key={slotKey}>
+                    <label className={`flex min-h-control-sm min-w-0 items-center gap-2 rounded-control bg-control-surface px-2.5 font-mono text-metadata text-caution ${touchTarget}`} key={slotKey}>
                       <input
                         checked
                         className="size-4 shrink-0 accent-proof"
@@ -320,7 +320,7 @@ export function AdminMcpUserAccessPanel({
         );
       })}
       </div>
-      {user.status !== "active" ? <p className="mt-3 text-[11px] text-caution">MCP grants can be edited after this user becomes active.</p> : null}
+      {user.status !== "active" ? <p className="mt-3 text-metadata text-caution">MCP grants can be edited after this user becomes active.</p> : null}
     </section>
   );
 }

@@ -71,7 +71,7 @@ function readAdminMcpOAuthReturn(): AdminMcpOAuthReturn | null {
 function StatusPill({ server }: Readonly<{ server: AdminMcpServer }>) {
   if (server.archivedAt) {
     return (
-      <span className="inline-flex items-center gap-1.5 rounded-pill border border-critical/25 bg-critical/10 px-2 py-0.5 text-[11px] font-medium text-critical">
+      <span className="inline-flex items-center gap-1.5 rounded-pill border border-critical/25 bg-critical/10 px-2 py-0.5 text-metadata font-medium text-critical">
         <span aria-hidden="true" className="size-1.5 rounded-full bg-current" />
         Legacy
       </span>
@@ -130,7 +130,7 @@ function ServerCatalog({
       <div className="grid gap-3 border-b border-trace-subtle p-3">
         <div className="flex items-center justify-between gap-2">
           <div>
-            <p className="text-[10px] font-semibold uppercase tracking-[0.1em] text-ink-muted">Installation catalog</p>
+            <p className="text-metadata font-semibold uppercase tracking-[0.1em] text-ink-muted">Installation catalog</p>
             <p className="mt-0.5 text-xs text-ink-secondary">{controller.state.servers.length} server{controller.state.servers.length === 1 ? "" : "s"}</p>
           </div>
           <button className={primaryButton} disabled={controller.state.busy} onClick={onCreate} type="button">
@@ -172,15 +172,15 @@ function ServerCatalog({
                 >
                   <span className="min-w-0 flex-1">
                     <span className="block break-words text-xs font-medium text-ink [overflow-wrap:anywhere]">{server.name}</span>
-                    <span className="mt-0.5 block truncate text-[11px] text-ink-muted">{sourceDisplay(server.draft.source)}</span>
+                    <span className="mt-0.5 block truncate text-metadata text-ink-muted">{sourceDisplay(server.draft.source)}</span>
                     {activationStage ? (
-                      <span className="mt-0.5 inline-flex items-center gap-1 text-[10px] font-medium text-proof">
+                      <span className="mt-0.5 inline-flex items-center gap-1 text-metadata font-medium text-proof">
                         <LoaderCircle aria-hidden="true" className="size-2.5 animate-spin" />
                         {adminMcpActivationVerb(server)} · {activationStage.label}
                       </span>
                     ) : null}
                     {server.activation?.stage === "failed" ? (
-                      <span className="mt-0.5 inline-flex items-center gap-1 text-[10px] font-medium text-critical">
+                      <span className="mt-0.5 inline-flex items-center gap-1 text-metadata font-medium text-critical">
                         <CircleAlert aria-hidden="true" className="size-2.5" />
                         Activation failed · review and retry
                       </span>
@@ -229,7 +229,7 @@ function ImportForm({
   return (
     <section className="grid min-w-0 gap-5 p-4 sm:p-6">
       <div>
-        <p className="text-[10px] font-semibold uppercase tracking-[0.1em] text-ink-muted">New installation</p>
+        <p className="text-metadata font-semibold uppercase tracking-[0.1em] text-ink-muted">New installation</p>
         <h3 className="mt-1 text-lg font-semibold tracking-tight text-ink">Add an MCP server</h3>
         <p className="mt-1 max-w-3xl text-sm leading-6 text-ink-muted">
           Paste what the MCP provider gives you. AIQSA accepts a direct HTTP URL, one <span className="font-mono">mcpServers</span> JSON entry, or a recognized npx, uvx, pipx, pip install, docker, or podman command. It never executes pasted shell text.
@@ -253,10 +253,10 @@ function ImportForm({
               Configuration document
             </span>
             <span className="flex items-center gap-2">
-              <span className="rounded-pill border border-trace-subtle bg-control-surface px-2 py-0.5 text-[10px] font-medium text-ink-muted">
+              <span className="rounded-pill border border-trace-subtle bg-control-surface px-2 py-0.5 text-metadata font-medium text-ink-muted">
                 Trailing commas accepted
               </span>
-              <span aria-hidden="true" className="shrink-0 font-mono text-[10px] tabular-nums text-ink-muted">
+              <span aria-hidden="true" className="shrink-0 font-mono text-incidental tabular-nums text-ink-muted">
                 {lineCount} {lineCount === 1 ? "line" : "lines"}
               </span>
             </span>
@@ -291,7 +291,7 @@ function ImportForm({
             </div>
           ) : null}
           <div className="flex flex-col gap-3 border-t border-trace-subtle bg-workspace-rail/55 px-3 py-3 sm:flex-row sm:items-center sm:justify-between sm:px-4">
-            <span className="inline-flex min-w-0 items-start gap-2 text-[11px] leading-5 text-ink-muted" id="mcp-import-help">
+            <span className="inline-flex min-w-0 items-start gap-2 text-metadata leading-5 text-ink-muted" id="mcp-import-help">
               <ShieldCheck aria-hidden="true" className="mt-0.5 size-3.5 shrink-0 text-proof" />
               Reviewed before save; pasted commands are never executed, and secrets become write-only fields.
             </span>
@@ -342,7 +342,7 @@ function ServerEditor({
   return (
     <section className="grid min-w-0 gap-5 p-4 sm:p-6">
       <div>
-        <p className="text-[10px] font-semibold uppercase tracking-[0.1em] text-ink-muted">Mutable installation draft</p>
+        <p className="text-metadata font-semibold uppercase tracking-[0.1em] text-ink-muted">Mutable installation draft</p>
         <h3 className="mt-1 text-lg font-semibold tracking-tight text-ink">{creating ? "Review MCP server" : "Edit MCP server"}</h3>
         <p className="mt-1 max-w-3xl text-sm leading-6 text-ink-muted">
           {imported

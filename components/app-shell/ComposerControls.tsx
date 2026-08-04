@@ -557,7 +557,7 @@ export function ComposerControls({
                 >
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <p className="text-xs font-semibold text-ink-secondary">Search plan</p>
-                    <span className="text-[11px] text-ink-muted">
+                    <span className="text-metadata text-ink-muted">
                       {selectedSearchStrategies.length > 1
                         ? searchPlanMode === "all_selected"
                           ? "All selected per search"
@@ -571,10 +571,10 @@ export function ComposerControls({
                     <ol className="mt-2 grid gap-1.5 text-xs text-ink">
                       {selectedSearchStrategies.map((strategy, index) => (
                         <li className="flex min-w-0 items-start gap-2" key={strategy.strategyId}>
-                          <span className="font-mono text-[11px] text-ink-muted">{index + 1}.</span>
+                          <span className="font-mono text-metadata text-ink-muted">{index + 1}.</span>
                           <span className="min-w-0 flex-1">
                             <span className="block break-words font-medium">{strategy.displayName}</span>
-                            <span className="mt-0.5 block text-[11px] leading-4 text-ink-muted">
+                            <span className="mt-0.5 block text-metadata text-ink-muted">
                               {attachmentBlockedSearchOptionIdSet.has(strategy.strategyId)
                                 ? "Unavailable with attachments for this model"
                                 : strategy.description ?? "Available for this model"}
@@ -584,7 +584,7 @@ export function ComposerControls({
                       ))}
                     </ol>
                   ) : (
-                    <p className="mt-1 text-[11px] text-ink-muted">No web engine will be offered to the next run.</p>
+                    <p className="mt-1 text-metadata text-ink-muted">No web engine will be offered to the next run.</p>
                   )}
                 </div>
               </section>

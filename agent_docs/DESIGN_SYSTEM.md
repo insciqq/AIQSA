@@ -112,6 +112,8 @@ Use the already bundled `Golos Text` variable face for UI and document text beca
 | Labels/actions | 13-14px, 500-600 weight; sentence case. |
 | Code/event data | 12-14px mono, 1.5-1.65 line height. |
 
+Use the semantic `text-metadata` utility for the 12px/1.5 small-metadata floor. Raw 10-11px utilities are not a component API. The only smaller recipe is `text-incidental` at 11px/16px, reserved for visually redundant glyphs, indices, or structural markers that are explicitly `aria-hidden`; it must never carry help, status, security, lifecycle, technical evidence, or an action label.
+
 The answer is a readable document, not a chat bubble stack. Use a 46-48rem answer measure. User questions may use a narrower right-aligned surface but must wrap naturally. Long headings, German-like compounds, Cyrillic text, URLs, code, tables, and formulas must not widen the page at the supported viewport compositions.
 
 ## Space, Geometry, And Depth

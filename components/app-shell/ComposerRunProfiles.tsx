@@ -87,7 +87,7 @@ export function ComposerRunProfiles({
                   {profile.description}
                 </span>
                 {profile.available ? (
-                  <span className="mt-1 block break-words font-mono text-[11px] leading-4 text-ink-muted [overflow-wrap:anywhere]">
+                  <span className="mt-1 block break-words font-mono text-metadata text-ink-muted [overflow-wrap:anywhere]">
                     {profile.configurationLabel}
                   </span>
                 ) : null}

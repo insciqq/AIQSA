@@ -63,7 +63,7 @@ function CreateRuleTask({ actions, data, state, status }: AdminAccessRulesSectio
     <div className="px-4 py-5 sm:px-6 lg:px-8 lg:py-7">
       <AdminTaskBackButton label="Back to access rules" onClick={actions.backToList} />
       <div className="max-w-2xl border-b border-trace-subtle pb-5">
-        <p className="text-[11px] font-semibold uppercase tracking-[0.1em] text-ink-muted">New access rule</p>
+        <p className="text-metadata font-semibold uppercase tracking-[0.1em] text-ink-muted">New access rule</p>
         <h3 className="mt-2 text-xl font-semibold tracking-tight text-ink">Approve an exact identity scope</h3>
         <p className="mt-2 text-sm leading-6 text-ink-secondary">
           Rules are durable approval policy. One-off onboarding links remain separate in Invites.
@@ -143,7 +143,7 @@ function RuleDetail({ actions, rule, status }: Readonly<{
     <article className="min-w-0 px-4 py-5 sm:px-6 lg:px-8 lg:py-7" data-testid="admin-access-rule-detail">
       <AdminTaskBackButton label="Back to access rules" onClick={actions.backToList} />
       <div className="border-b border-trace-subtle pb-5">
-        <p className="text-[11px] font-semibold uppercase tracking-[0.1em] text-ink-muted">Exact {rule.kind} rule</p>
+        <p className="text-metadata font-semibold uppercase tracking-[0.1em] text-ink-muted">Exact {rule.kind} rule</p>
         <div className="mt-2 flex min-w-0 items-start gap-3">
           {rule.kind === "email" ? <Mail aria-hidden="true" className="mt-1 size-4 shrink-0 text-proof" /> : <Globe2 aria-hidden="true" className="mt-1 size-4 shrink-0 text-proof" />}
           <h3 className="min-w-0 flex-1 break-words text-xl font-semibold tracking-tight text-ink [overflow-wrap:anywhere]">{rule.value}</h3>

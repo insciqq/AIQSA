@@ -79,21 +79,21 @@ export function AdminGroupOptions({
 
 export function GroupChips({ groups }: { groups: AdminMembership[] }) {
   if (!groups.length) {
-    return <span className="inline-flex rounded-pill bg-caution/10 px-2 py-0.5 text-[11px] text-caution">No groups</span>;
+    return <span className="inline-flex rounded-pill bg-caution/10 px-2 py-0.5 text-metadata text-caution">No groups</span>;
   }
 
   return (
     <span className="flex min-w-0 max-w-full flex-wrap gap-1">
       {groups.slice(0, 3).map((group) => (
         <span
-          className="min-w-0 max-w-full break-words rounded-pill bg-control-surface px-2 py-0.5 text-[11px] text-ink-secondary [overflow-wrap:anywhere]"
+          className="min-w-0 max-w-full break-words rounded-pill bg-control-surface px-2 py-0.5 text-metadata text-ink-secondary [overflow-wrap:anywhere]"
           key={group.groupId}
         >
           {group.name}
         </span>
       ))}
       {groups.length > 3 ? (
-        <span className="rounded-pill bg-control-surface px-2 py-0.5 font-mono text-[11px] text-ink-muted">
+        <span className="rounded-pill bg-control-surface px-2 py-0.5 font-mono text-metadata text-ink-muted">
           +{groups.length - 3}
         </span>
       ) : null}

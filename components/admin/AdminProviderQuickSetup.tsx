@@ -48,7 +48,7 @@ function ConfiguredConnections({
         <h3 className="text-xs font-semibold text-ink" id="provider-configured-connections-title">
           Configured connections
         </h3>
-        <span className="text-[11px] text-ink-muted">{connections.length} total</span>
+        <span className="text-metadata text-ink-muted">{connections.length} total</span>
       </div>
       <div className="divide-y divide-trace-subtle">
         {connections.map((connection) => (

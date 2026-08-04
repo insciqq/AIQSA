@@ -144,7 +144,7 @@ export function AdminSearchablePicker({
   return (
     <div {...boundaryProps} className="relative min-w-0" ref={boundaryRef}>
       <span className="mb-1 block text-xs font-medium text-ink-secondary">{label}</span>
-      {description ? <span className="mb-2 block text-[11px] leading-4 text-ink-muted" id={descriptionId}>{description}</span> : null}
+      {description ? <span className="mb-2 block text-metadata text-ink-muted" id={descriptionId}>{description}</span> : null}
       <button
         {...triggerProps}
         aria-describedby={description ? descriptionId : undefined}
@@ -158,7 +158,7 @@ export function AdminSearchablePicker({
         <span className="min-w-0 flex-1">
           <span className="block break-words text-sm leading-5 [overflow-wrap:anywhere]">{selectedPrimary}</span>
           {selectedSecondary ? (
-            <span className="mt-0.5 block break-words font-mono text-[11px] leading-4 text-ink-muted [overflow-wrap:anywhere]">
+            <span className="mt-0.5 block break-words font-mono text-metadata text-ink-muted [overflow-wrap:anywhere]">
               {selectedSecondary}
             </span>
           ) : null}
@@ -215,7 +215,7 @@ export function AdminSearchablePicker({
             />
           </div>
 
-          <div className="mb-2 flex min-h-5 items-center justify-between gap-3 text-[11px] text-ink-muted">
+          <div className="mb-2 flex min-h-5 items-center justify-between gap-3 text-metadata text-ink-muted">
             <span aria-live="polite" className="tabular-nums">{countText}</span>
             {loading && sortedItems.length > 0 ? <span role="status">Refreshing…</span> : null}
           </div>
@@ -272,7 +272,7 @@ export function AdminSearchablePicker({
                   >
                     <span className="min-w-0 flex-1">
                       <span className="block break-words text-sm leading-5 text-ink [overflow-wrap:anywhere]">{item.label}</span>
-                      <span className="mt-0.5 block break-words font-mono text-[11px] leading-4 text-ink-muted [overflow-wrap:anywhere]">{item.secondaryText}</span>
+                      <span className="mt-0.5 block break-words font-mono text-metadata text-ink-muted [overflow-wrap:anywhere]">{item.secondaryText}</span>
                     </span>
                     {selected ? (
                       <span className="mt-0.5 inline-flex shrink-0 items-center gap-1 text-xs text-proof">

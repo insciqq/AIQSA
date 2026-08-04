@@ -80,7 +80,7 @@ export function ComposerPromptPicker({
         <span className="flex min-w-0 items-center gap-2">
           {icon}
           <span className="min-w-0">
-            <span className="block text-[11px] text-ink-muted">Prompt</span>
+            <span className="block text-metadata text-ink-muted">Prompt</span>
             <span className="block truncate text-sm font-medium" id="prompt-picker-current-value">
               {selected?.name ?? "Prompt"}
             </span>

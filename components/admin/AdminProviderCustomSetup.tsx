@@ -18,7 +18,7 @@ import Link from "next/link";
 import { useId } from "react";
 
 const fieldLabel = "mb-1 block text-xs font-medium text-ink-secondary";
-const helpText = "mt-1 block text-[11px] leading-4 text-ink-muted";
+const helpText = "mt-1 block text-metadata text-ink-muted";
 
 export type AdminProviderCustomSetupProps = Readonly<{
   controller: AdminProviderCustomSetupController;
@@ -45,7 +45,7 @@ export function AdminProviderCustomSetup({
     return (
       <div className="min-w-0 px-4 py-5 sm:px-6 lg:px-8 lg:py-7">
         <section className="max-w-3xl border-t-2 border-positive pt-5">
-          <p className="text-[11px] font-semibold uppercase tracking-[0.1em] text-positive">
+          <p className="text-metadata font-semibold uppercase tracking-[0.1em] text-positive">
             Ready to chat
           </p>
           <h2 className="mt-2 break-words text-xl font-semibold tracking-tight text-ink">
@@ -221,7 +221,7 @@ export function AdminProviderCustomSetup({
                 <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
                   <div className="min-w-0">
                     <p className={fieldLabel}>Selected models</p>
-                    <p className="text-[11px] leading-4 text-ink-muted">
+                    <p className="text-metadata text-ink-muted">
                       {form.selectedModelIds.length} of {discoveredModels.length} selected · up to {MAX_ADMIN_PROVIDER_CUSTOM_SETUP_MODELS}. The first selection has default preference when your current default is unusable.
                     </p>
                   </div>
@@ -280,7 +280,7 @@ export function AdminProviderCustomSetup({
                         <span className="min-w-0">
                           <span className="block break-all font-mono text-xs text-ink">{modelId}</span>
                           {index === 0 ? (
-                            <span className="mt-0.5 block text-[11px] text-ink-muted">First/default candidate</span>
+                            <span className="mt-0.5 block text-metadata text-ink-muted">First/default candidate</span>
                           ) : null}
                         </span>
                         <button
@@ -329,7 +329,7 @@ export function AdminProviderCustomSetup({
           </div>
 
           <div className="rounded-control bg-control-surface/60 px-3 py-2.5">
-            <p className="text-[11px] font-medium uppercase tracking-[0.08em] text-ink-muted">
+            <p className="text-metadata font-medium uppercase tracking-[0.08em] text-ink-muted">
               Request endpoint
             </p>
             <p className="mt-1 break-all font-mono text-xs text-ink-secondary">
@@ -436,7 +436,7 @@ export function AdminProviderCustomSetup({
                     />
                     <span className={helpText}>Set this only when the endpoint accepts modes such as `standard` and `pro`; blank means no mode is sent.</span>
                   </label>
-                  <p className="break-words font-mono text-[11px] leading-4 text-ink-muted md:col-span-2">
+                  <p className="break-words font-mono text-metadata text-ink-muted md:col-span-2">
                     Effort → {form.reasoningEffortPath.trim() || "missing"} · Mode → {form.reasoningModePath.trim() || "not sent"}
                   </p>
                 </div>
@@ -481,7 +481,7 @@ export function AdminProviderCustomSetup({
                   />
                   Image generation (future workflows)
                 </label>
-                <p className="mt-1 text-[11px] leading-4 text-ink-muted">
+                <p className="mt-1 text-metadata text-ink-muted">
                   Web search is usable in QSA runs. Image support is recorded now but is not yet runnable in chat.
                 </p>
               </div>
@@ -598,7 +598,7 @@ export function AdminProviderCustomSetup({
             >
               {controller.state.submitting ? "Testing & saving…" : "Test & Save"}
             </button>
-            <p className="text-[11px] leading-4 text-ink-muted">
+            <p className="text-metadata text-ink-muted">
               Sends {hasDiscoveredCatalog && form.selectedModelIds.length > 1
                 ? `${form.selectedModelIds.length} small generation requests (one per model)`
                 : "one small generation request"} and may use a small amount of provider quota. Nothing is saved unless every selected model passes.

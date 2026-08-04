@@ -632,12 +632,12 @@ function CodeBlock({ code, language, streaming }: { code: string; language: stri
     <div className="group/code min-w-0 max-w-full overflow-hidden rounded-panel border border-trace-subtle bg-answer-paper">
       <div className="flex min-h-control items-center justify-between gap-3 border-b border-trace-subtle px-3">
         {displayLanguage ? (
-          <span className="truncate font-mono text-[11px] text-ink-muted">{displayLanguage}</span>
+          <span className="truncate font-mono text-metadata text-ink-muted">{displayLanguage}</span>
         ) : (
           <span aria-hidden="true" />
         )}
         <button
-          className="inline-flex h-touch items-center gap-1.5 rounded-control px-2 text-[11px] text-ink-secondary opacity-0 outline-none transition-opacity duration-100 hover:bg-control-hover hover:text-ink focus:opacity-100 focus-visible:ring-2 focus-visible:ring-proof/55 group-focus-within/code:opacity-100 group-hover/code:opacity-100 [@media(hover:none)]:!h-touch [@media(hover:none)]:opacity-100 [@media(pointer:coarse)]:!h-touch [@media(pointer:coarse)]:opacity-100 sm:h-control-sm"
+          className="inline-flex h-touch items-center gap-1.5 rounded-control px-2 text-metadata text-ink-secondary opacity-0 outline-none transition-opacity duration-100 hover:bg-control-hover hover:text-ink focus:opacity-100 focus-visible:ring-2 focus-visible:ring-proof/55 group-focus-within/code:opacity-100 group-hover/code:opacity-100 [@media(hover:none)]:!h-touch [@media(hover:none)]:opacity-100 [@media(pointer:coarse)]:!h-touch [@media(pointer:coarse)]:opacity-100 sm:h-control-sm"
           type="button"
           aria-label="Copy code"
           onClick={() => void copyCode()}

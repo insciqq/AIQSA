@@ -40,7 +40,7 @@ export function AdminConsoleHeader({
             Control Center
           </h1>
           {releaseStatus ? (
-            <span className="font-mono text-[11px] text-ink-muted">v{releaseStatus.currentVersion}</span>
+            <span className="font-mono text-metadata text-ink-muted">v{releaseStatus.currentVersion}</span>
           ) : null}
           {releaseStatus?.state === "update_available" && releaseStatus.latestVersion && releaseStatus.releaseUrl ? (
             <details className="group/update relative max-sm:basis-full">

@@ -72,7 +72,7 @@ const tasks: ReadonlyArray<{
 ];
 
 const fieldLabel = "text-xs font-medium text-ink-secondary";
-const helpText = "mt-1 text-[11px] leading-4 text-ink-muted";
+const helpText = "mt-1 text-metadata text-ink-muted";
 
 function formFrom(email: AdminEmailState): EmailForm {
   const configuration = email.draft.configuration;
@@ -138,7 +138,7 @@ function AxisFact({ availability, axis, label }: Readonly<{
 }>) {
   return (
     <div className={`min-w-0 border-l-2 pl-3 ${toneClasses(axis.tone)}`}>
-      <dt className="text-[10px] font-semibold uppercase tracking-[0.09em] text-ink-muted">{label}</dt>
+      <dt className="text-metadata font-semibold uppercase tracking-[0.09em] text-ink-muted">{label}</dt>
       <dd className="mt-1 break-words text-sm font-medium [overflow-wrap:anywhere]">
         {availability === undefined ? axis.label : <AdminAvailabilityStatus enabled={availability} />}
       </dd>
@@ -227,7 +227,7 @@ function EmailTaskIndex({
   return (
     <div className="min-w-0">
       <div className="border-b border-trace-subtle p-4">
-        <p className="text-[10px] font-semibold uppercase tracking-[0.1em] text-ink-muted">SMTP delivery</p>
+        <p className="text-metadata font-semibold uppercase tracking-[0.1em] text-ink-muted">SMTP delivery</p>
         <h3 className="mt-1 text-base font-semibold text-ink">Email tasks</h3>
         <dl className="mt-3 grid gap-2 text-xs">
           <div className="flex items-center justify-between gap-2"><dt className="text-ink-muted">Draft</dt><dd className={toneTextClass(presentation.draft.tone)}>{presentation.draft.label}</dd></div>
@@ -256,7 +256,7 @@ function EmailTaskIndex({
               <Icon aria-hidden="true" className="size-3.5 shrink-0" />
               <span className="min-w-0 flex-1">
                 <span className="block text-xs font-medium">{item.label}</span>
-                <span className="mt-0.5 block truncate text-[10px] text-ink-muted">{item.description}</span>
+                <span className="mt-0.5 block truncate text-metadata text-ink-muted">{item.description}</span>
               </span>
               <ChevronRight aria-hidden="true" className="size-3.5 shrink-0 lg:hidden" />
             </button>
@@ -383,7 +383,7 @@ function ConfigurationTask({
           </Field>
           <label className={`flex min-h-control items-start gap-2 bg-control-surface px-3 py-2 text-xs text-ink-secondary ${touchTarget}`}>
             <input checked={form.allowInternalNetwork} className="mt-0.5 size-4 shrink-0 accent-proof" disabled={busy} onChange={(event) => patchForm({ allowInternalNetwork: event.currentTarget.checked })} type="checkbox" />
-            <span>Allow a reviewed internal-network relay<span className="mt-0.5 block text-[11px] leading-4 text-ink-muted">Private and loopback destinations become eligible; metadata and unsafe address classes stay blocked.</span></span>
+            <span>Allow a reviewed internal-network relay<span className="mt-0.5 block text-metadata text-ink-muted">Private and loopback destinations become eligible; metadata and unsafe address classes stay blocked.</span></span>
           </label>
         </div>
         <div className="mt-3">
@@ -648,7 +648,7 @@ function AdminEmailContent({ controller, email }: Readonly<{
           <article className="min-w-0 p-4 sm:p-5 lg:p-6">
             <AdminTaskBackButton label="Back to email tasks" onClick={() => setCompactTaskOpen(false)} />
             <header className="mb-6 border-b border-trace-subtle pb-4">
-              <p className="text-[10px] font-semibold uppercase tracking-[0.1em] text-ink-muted">Email delivery</p>
+              <p className="text-metadata font-semibold uppercase tracking-[0.1em] text-ink-muted">Email delivery</p>
               <h3 className="mt-1 text-lg font-semibold tracking-tight text-ink">{current.label}</h3>
               <p className="mt-1 text-xs leading-5 text-ink-muted">{current.description}</p>
             </header>
@@ -695,7 +695,7 @@ function AdminEmailContent({ controller, email }: Readonly<{
               <OverviewTask email={email} onOpenTask={openTask} />
             )}
             {task !== "overview" ? (
-              <div className="mt-8 flex flex-wrap items-center gap-x-3 gap-y-2 border-t border-trace-subtle pt-4 text-[11px] leading-5 text-ink-muted">
+              <div className="mt-8 flex flex-wrap items-center gap-x-3 gap-y-2 border-t border-trace-subtle pt-4 text-metadata leading-5 text-ink-muted">
                 <span>Draft: {presentation.draft.label} · Health: {presentation.health.label}</span>
                 {task !== "runtime" && email.active.configuration ? (
                   <span className="inline-flex items-center gap-1.5">

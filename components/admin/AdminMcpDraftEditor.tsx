@@ -35,7 +35,7 @@ type AdminMcpDraftEditorProps = Readonly<{
 }>;
 
 const fieldLabel = "text-xs font-medium text-ink-secondary";
-const helpText = "mt-1 text-[11px] leading-4 text-ink-muted";
+const helpText = "mt-1 text-metadata text-ink-muted";
 const checkboxClass = "size-4 shrink-0 accent-proof";
 
 function nextSlotKey(slots: readonly McpConfigurationSlot[]): string {

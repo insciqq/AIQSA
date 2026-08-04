@@ -17,7 +17,7 @@ export function AdminSafetySection({
   return (
     <div className="min-w-0 px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
       <section className="max-w-3xl border-t border-critical pt-5">
-        <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-critical">
+        <p className="text-metadata font-semibold uppercase tracking-[0.12em] text-critical">
           Installation-wide action
         </p>
         <h3 className="mt-2 text-lg font-semibold tracking-tight text-ink">Global session reset</h3>
@@ -60,7 +60,7 @@ export function AdminSafetySection({
       </section>
 
       <aside className="mt-10 max-w-3xl border-t border-trace-subtle pt-4">
-        <p className="text-[11px] font-semibold uppercase tracking-[0.1em] text-ink-muted">Current admin</p>
+        <p className="text-metadata font-semibold uppercase tracking-[0.1em] text-ink-muted">Current admin</p>
         <div className="mt-2 grid min-w-0 gap-1 text-sm sm:grid-cols-[minmax(0,1fr)_auto] sm:items-baseline sm:gap-4">
           <p className="break-words font-medium text-ink [overflow-wrap:anywhere]">{currentAdminEmail}</p>
           <p className="text-xs text-ink-muted">Last refreshed {lastRefreshedText}</p>

@@ -76,7 +76,7 @@ const tasks: ReadonlyArray<Readonly<{
 ];
 
 const fieldLabel = "text-xs font-medium text-ink-secondary";
-const helpText = "mt-1 block text-[11px] leading-4 text-ink-muted";
+const helpText = "mt-1 block text-metadata text-ink-muted";
 const defaultSearchDescription = "Web search for Research Chat.";
 
 function executionInputValues(
@@ -207,7 +207,7 @@ function SearchDefaultPolicyEditor({
     <section className="border-y border-trace-subtle bg-control-surface/55 px-4 py-4 sm:px-6" aria-labelledby="search-default-heading">
       <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
         <div className="max-w-xl">
-          <p className="text-[10px] font-semibold uppercase tracking-[0.1em] text-proof">Default for users</p>
+          <p className="text-metadata font-semibold uppercase tracking-[0.1em] text-proof">Default for users</p>
           <h3 className="mt-1 text-sm font-semibold text-ink" id="search-default-heading">Recommended Search plan</h3>
           <p className="mt-1 text-xs leading-5 text-ink-muted">Used until a user makes a personal choice. This recommendation never grants access.</p>
         </div>
@@ -427,7 +427,7 @@ function Feedback({ error, notice, onDismiss }: Readonly<{
 function Fact({ children, label }: Readonly<{ children: ReactNode; label: string }>) {
   return (
     <div className="min-w-0 border-l-2 border-trace-strong pl-3">
-      <dt className="text-[10px] font-semibold uppercase tracking-[0.09em] text-ink-muted">{label}</dt>
+      <dt className="text-metadata font-semibold uppercase tracking-[0.09em] text-ink-muted">{label}</dt>
       <dd className="mt-1 break-words text-sm text-ink [overflow-wrap:anywhere]">{children}</dd>
     </div>
   );
@@ -465,7 +465,7 @@ function SearchCatalogIndex({
       <div className="grid gap-3 border-b border-trace-subtle p-3">
         <div className="flex items-start justify-between gap-2">
           <div>
-            <p className="text-[10px] font-semibold uppercase tracking-[0.1em] text-ink-muted">Search sources</p>
+            <p className="text-metadata font-semibold uppercase tracking-[0.1em] text-ink-muted">Search sources</p>
             <p className="mt-1 text-xs text-ink-secondary">{integrations.length} source{integrations.length === 1 ? "" : "s"}</p>
           </div>
           <div className="flex gap-1">
@@ -498,8 +498,8 @@ function SearchCatalogIndex({
                 >
                   <span className="min-w-0 flex-1">
                     <span className="block break-words text-xs font-medium text-ink">{integration.displayName}</span>
-                    <span className="mt-0.5 block line-clamp-2 text-[11px] text-ink-muted">{integration.description}</span>
-                    <span className={`mt-1 inline-flex items-center gap-1 text-[10px] ${integration.ready ? "text-positive" : "text-caution"}`}>
+                    <span className="mt-0.5 block line-clamp-2 text-metadata text-ink-muted">{integration.description}</span>
+                    <span className={`mt-1 inline-flex items-center gap-1 text-metadata ${integration.ready ? "text-positive" : "text-caution"}`}>
                       {integration.ready ? <CheckCircle2 aria-hidden="true" className="size-3" /> : <CircleAlert aria-hidden="true" className="size-3" />}
                       {readinessLabel(integration)}
                     </span>
@@ -659,7 +659,7 @@ function SearchFormFields({
           <summary className={`flex min-h-touch cursor-pointer list-none items-center justify-between gap-3 py-2.5 text-left ${focusRing}`}>
             <span>
               <span className="block text-xs font-semibold text-ink">Advanced Search execution</span>
-              <span className="mt-0.5 block text-[11px] leading-4 text-ink-muted">
+              <span className="mt-0.5 block text-metadata text-ink-muted">
                 Choose how this source gathers evidence before the answer.
               </span>
             </span>
@@ -703,7 +703,7 @@ function SearchFormFields({
               />
               <span className={helpText} id={outputHelpId}>Limits the evidence response before it is passed to the answer model.</span>
               {executionValidation.maxOutputTokens ? (
-                <span className="mt-1 block text-[11px] leading-4 text-critical" id={outputErrorId}>
+                <span className="mt-1 block text-metadata text-critical" id={outputErrorId}>
                   {executionValidation.maxOutputTokens}
                 </span>
               ) : null}
@@ -757,7 +757,7 @@ function SearchFormFields({
               />
               <span className={helpText} id={requestsHelpId}>Each generated query sent here uses one request. A round that searches several selected sources uses one request from each source.</span>
               {executionValidation.maxSearchCallsPerAnswer ? (
-                <span className="mt-1 block text-[11px] leading-4 text-critical" id={requestsErrorId}>
+                <span className="mt-1 block text-metadata text-critical" id={requestsErrorId}>
                   {executionValidation.maxSearchCallsPerAnswer}
                 </span>
               ) : null}
@@ -858,7 +858,7 @@ function DetailTask({
   return (
     <section className="grid gap-6 p-4 sm:p-6" aria-label="Search overview">
       <div className="border-l-2 border-proof bg-proof/[0.05] px-4 py-4">
-        <p className="text-[10px] font-semibold uppercase tracking-[0.1em] text-proof">One Search source</p>
+        <p className="text-metadata font-semibold uppercase tracking-[0.1em] text-proof">One Search source</p>
         <div className="mt-3 flex min-w-0 flex-wrap items-center gap-2 text-sm font-medium text-ink">
           <span className="rounded-control bg-control-surface px-2.5 py-1.5">{integration.displayName}</span>
           <ArrowRight aria-hidden="true" className="size-4 text-ink-muted" />
@@ -1050,7 +1050,7 @@ export function AdminSearchSection({
             <section className="grid gap-5 p-4 sm:p-6">
               <AdminTaskBackButton label="Back to Search" onClick={() => setMode("index")} />
               <div>
-                <p className="text-[10px] font-semibold uppercase tracking-[0.1em] text-ink-muted">New Search source</p>
+                <p className="text-metadata font-semibold uppercase tracking-[0.1em] text-ink-muted">New Search source</p>
                 <h3 className="mt-1 text-lg font-semibold text-ink">Add Search source</h3>
                 <p className="mt-1 max-w-3xl text-sm leading-6 text-ink-muted">Choose a configured provider model that can search the web. Users will see one source, and AIQSA will apply it automatically to compatible answer models.</p>
               </div>
@@ -1088,7 +1088,7 @@ export function AdminSearchSection({
               <div className="flex flex-col gap-3 border-b border-trace-subtle px-4 py-4 sm:flex-row sm:items-start sm:justify-between sm:px-6">
                 <div className="min-w-0">
                   <AdminTaskBackButton label="Back to Search" onClick={() => setMode("index")} />
-                  <p className="text-[10px] font-semibold uppercase tracking-[0.1em] text-ink-muted">Search source</p>
+                  <p className="text-metadata font-semibold uppercase tracking-[0.1em] text-ink-muted">Search source</p>
                   <h3 className="mt-1 break-words text-lg font-semibold text-ink">{selected.displayName}</h3>
                   <p className="mt-1 max-w-3xl text-xs leading-5 text-ink-muted">{selected.description}</p>
                 </div>

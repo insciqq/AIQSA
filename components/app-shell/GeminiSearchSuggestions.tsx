@@ -106,7 +106,7 @@ export function GeminiSearchSuggestions({ html }: Readonly<{ html: string }>) {
       className="mt-5 overflow-hidden rounded-panel border border-trace-subtle bg-control-surface/45 px-3 py-3"
       data-testid="gemini-search-suggestions"
     >
-      <p className="mb-2 text-[11px] font-medium uppercase tracking-[0.08em] text-ink-muted">
+      <p className="mb-2 text-metadata font-medium uppercase tracking-[0.08em] text-ink-muted">
         Google Search suggestions
       </p>
       <p className="text-xs leading-5 text-critical" hidden ref={invalidRef} role="alert">

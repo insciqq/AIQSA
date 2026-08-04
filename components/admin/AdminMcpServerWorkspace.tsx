@@ -50,7 +50,7 @@ import {
 import { useState, type ReactNode } from "react";
 
 const fieldLabel = "text-xs font-medium text-ink-secondary";
-const helpText = "mt-1 text-[11px] leading-4 text-ink-muted";
+const helpText = "mt-1 text-metadata text-ink-muted";
 
 const tasks: ReadonlyArray<{
   description: string;
@@ -150,7 +150,7 @@ function Fact({ detail, label, tone, value }: Readonly<{
 }>) {
   return (
     <div className="min-w-0 border-l border-trace-strong pl-3">
-      <dt className="text-[10px] font-semibold uppercase tracking-[0.09em] text-ink-muted">{label}</dt>
+      <dt className="text-metadata font-semibold uppercase tracking-[0.09em] text-ink-muted">{label}</dt>
       <dd className={`mt-1 break-words text-sm font-medium [overflow-wrap:anywhere] ${tone}`}>{value}</dd>
       <dd className="mt-1 break-words text-xs leading-5 text-ink-muted [overflow-wrap:anywhere]">{detail}</dd>
     </div>
@@ -174,7 +174,7 @@ function ActivationReceipt({
   if (stage && activation && isAdminMcpActivationPending(activation)) {
     if (compact) {
       return (
-        <div className="mt-3 border-l-2 border-proof bg-proof/[0.07] px-3 py-2 text-[11px] leading-4 text-proof lg:hidden" data-testid="admin-mcp-activation-summary" role="status">
+        <div className="mt-3 border-l-2 border-proof bg-proof/[0.07] px-3 py-2 text-metadata text-proof lg:hidden" data-testid="admin-mcp-activation-summary" role="status">
           <span className="inline-flex items-center gap-1.5 font-medium">
             <LoaderCircle aria-hidden="true" className="size-3 animate-spin" />
             Setup in progress
@@ -196,7 +196,7 @@ function ActivationReceipt({
           <div className="min-w-0 flex-1">
             <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
               <h4 className="text-sm font-semibold text-ink">{adminMcpActivationVerb(server)} MCP</h4>
-              <span className="font-mono text-[10px] text-ink-muted">Step {stage.step} of {stage.total}</span>
+              <span className="font-mono text-metadata text-ink-muted">Step {stage.step} of {stage.total}</span>
             </div>
             <p className="mt-1 text-xs font-medium text-proof">{stage.label}</p>
             <p className="mt-1 max-w-3xl text-xs leading-5 text-ink-secondary">{stage.detail}</p>
@@ -205,7 +205,7 @@ function ActivationReceipt({
                 <span className={`h-1 rounded-pill ${index < stage.step ? "bg-proof" : "bg-trace-strong"}`} key={index} />
               ))}
             </div>
-            <p className="mt-2 text-[11px] leading-4 text-ink-muted">Setup continues in the background. You can leave this page and return later.</p>
+            <p className="mt-2 text-metadata text-ink-muted">Setup continues in the background. You can leave this page and return later.</p>
           </div>
         </div>
       </section>
@@ -220,7 +220,7 @@ function ActivationReceipt({
 
   if (compact) {
     return (
-      <div className="mt-3 border-l-2 border-critical bg-critical/[0.07] px-3 py-2 text-[11px] leading-4 text-critical lg:hidden" data-testid="admin-mcp-activation-summary" role="alert">
+      <div className="mt-3 border-l-2 border-critical bg-critical/[0.07] px-3 py-2 text-metadata text-critical lg:hidden" data-testid="admin-mcp-activation-summary" role="alert">
         <span className="font-medium">Activation failed</span>
         <span className="mt-0.5 block text-ink-secondary">Open a task to review the failure and retry.</span>
       </div>
@@ -234,7 +234,7 @@ function ActivationReceipt({
         <div className="min-w-0 flex-1">
           <h4 className="text-sm font-semibold text-ink">Activation failed</h4>
           <p className="mt-1 max-w-3xl break-words text-xs leading-5 text-ink-secondary [overflow-wrap:anywhere]">{failure}</p>
-          <p className="mt-1 text-[11px] leading-4 text-ink-muted">The previous active revision, if any, is unchanged.</p>
+          <p className="mt-1 text-metadata text-ink-muted">The previous active revision, if any, is unchanged.</p>
           <div className="mt-3 flex flex-wrap gap-2">
             <button className={primaryButton} disabled={controller.state.busy || Boolean(server.archivedAt)} onClick={() => void controller.actions.activate(server.id)} type="button">
               Retry activation
@@ -363,8 +363,8 @@ function OAuthValidation({ controller, server }: Readonly<{
       <p className="mt-1 max-w-3xl text-xs leading-5 text-ink-muted">This administrator-owned identity validates the installation draft only. Users authorize their own identities separately.</p>
       <div className={`mt-3 border-l-2 px-3 py-2 text-xs leading-5 ${ready ? "border-positive bg-positive/10 text-positive" : needsReconnect ? "border-caution bg-caution/10 text-caution" : "border-trace-strong bg-workspace-rail/45 text-ink-secondary"}`}>
         <div>{ready ? "Connected" : needsReconnect ? "Reauthorization required" : disconnecting ? "Disconnecting" : "Not connected"}</div>
-        {connection?.accountLabel ? <div className="mt-1 break-words text-[11px] [overflow-wrap:anywhere]">External account: {connection.accountLabel}</div> : null}
-        {connection?.connectedAt ? <div className="mt-1 text-[11px] opacity-80">Last connected {new Date(connection.connectedAt).toLocaleString()}</div> : null}
+        {connection?.accountLabel ? <div className="mt-1 break-words text-metadata [overflow-wrap:anywhere]">External account: {connection.accountLabel}</div> : null}
+        {connection?.connectedAt ? <div className="mt-1 text-metadata opacity-80">Last connected {new Date(connection.connectedAt).toLocaleString()}</div> : null}
       </div>
       <div className="mt-3 flex flex-wrap gap-2">
         {archived ? (
@@ -571,7 +571,7 @@ function ValidationTask({
         <div className="min-w-0">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <h4 className="text-sm font-semibold text-ink">Tested draft tools</h4>
-            <span className="font-mono text-[11px] text-ink-muted">{candidate.length}</span>
+            <span className="font-mono text-metadata text-ink-muted">{candidate.length}</span>
           </div>
           <InventoryList
             empty={staleEvidence
@@ -585,7 +585,7 @@ function ValidationTask({
         <div className="min-w-0">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <h4 className="text-sm font-semibold text-ink">Change from active revision</h4>
-            <span className="text-[11px] text-ink-muted">+{diff.added.length} added · {diff.changed.length} changed · −{diff.removed.length} removed</span>
+            <span className="text-metadata text-ink-muted">+{diff.added.length} added · {diff.changed.length} changed · −{diff.removed.length} removed</span>
           </div>
           {!server.draftTest ? (
             <p className="py-3 text-xs text-ink-muted">A diff appears after the current draft passes validation.</p>
@@ -840,9 +840,9 @@ export function AdminMcpServerWorkspace({
       <AdminTaskIndexPane compactDetailOpen={compactTaskOpen} testId="mcp-server-task-index">
         <div className="p-4">
           <AdminTaskBackButton label="Back to MCP servers" onClick={onBackToCatalog} />
-          <p className="text-[10px] font-semibold uppercase tracking-[0.1em] text-ink-muted">Selected server</p>
+          <p className="text-metadata font-semibold uppercase tracking-[0.1em] text-ink-muted">Selected server</p>
           <h3 className="mt-1 break-words text-base font-semibold text-ink [overflow-wrap:anywhere]">{server.name}</h3>
-          <p className="mt-1 break-words font-mono text-[11px] leading-4 text-ink-muted [overflow-wrap:anywhere]">{sourceDisplay(server.draft.source)}</p>
+          <p className="mt-1 break-words font-mono text-metadata text-ink-muted [overflow-wrap:anywhere]">{sourceDisplay(server.draft.source)}</p>
           <ActivationReceipt compact controller={controller} onReviewDefinition={() => openTask("definition")} server={server} />
         </div>
         <nav className="border-t border-trace-subtle p-2" aria-label="MCP server tasks">
@@ -860,7 +860,7 @@ export function AdminMcpServerWorkspace({
                 <Icon aria-hidden="true" className="size-3.5 shrink-0" />
                 <span className="min-w-0 flex-1">
                   <span className="block text-xs font-medium">{item.label}</span>
-                  <span className="mt-0.5 block truncate text-[10px] text-ink-muted">{item.description}</span>
+                  <span className="mt-0.5 block truncate text-metadata text-ink-muted">{item.description}</span>
                 </span>
                 <ChevronRight aria-hidden="true" className="size-3.5 shrink-0 lg:hidden" />
               </button>
@@ -872,7 +872,7 @@ export function AdminMcpServerWorkspace({
         <article className="min-w-0 p-4 sm:p-5 lg:p-6">
           <AdminTaskBackButton label="Back to server tasks" onClick={onShowTaskIndex} />
           <header className="mb-6 border-b border-trace-subtle pb-4">
-            <p className="text-[10px] font-semibold uppercase tracking-[0.1em] text-ink-muted">{server.name}</p>
+            <p className="text-metadata font-semibold uppercase tracking-[0.1em] text-ink-muted">{server.name}</p>
             <h3 className="mt-1 text-lg font-semibold tracking-tight text-ink">{current.label}</h3>
             <p className="mt-1 text-xs leading-5 text-ink-muted">{current.description}</p>
           </header>

@@ -60,6 +60,10 @@ const config = {
           "Noto Color Emoji"
         ]
       },
+      fontSize: {
+        incidental: ["0.6875rem", { lineHeight: "1rem" }],
+        metadata: ["0.75rem", { lineHeight: "1.5" }]
+      },
       borderRadius: {
         control: "0.625rem",
         panel: "0.875rem",

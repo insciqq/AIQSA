@@ -89,7 +89,7 @@ export function AdminSectionTabs({
 
             return (
               <div className="min-w-0" data-testid={`admin-nav-group-${group.id}`} key={group.id} role="presentation">
-                <p className="px-2.5 text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-muted">
+                <p className="px-2.5 text-metadata font-semibold uppercase tracking-[0.12em] text-ink-muted">
                   {group.label}
                 </p>
 
@@ -134,7 +134,7 @@ export function AdminSectionTabs({
                           {attention > 0 ? (
                             <span
                               aria-hidden="true"
-                              className="shrink-0 rounded-pill bg-caution/10 px-1.5 py-0.5 font-mono text-[10px] text-caution"
+                              className="shrink-0 rounded-pill bg-caution/10 px-1.5 py-0.5 font-mono text-metadata text-caution"
                             >
                               {attention}
                             </span>
