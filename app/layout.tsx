@@ -21,7 +21,10 @@ const mono = JetBrains_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "AIQSA",
+  title: {
+    default: "AIQSA",
+    template: "%s · AIQSA"
+  },
   description: "Question, Search, Answer with transparent provider control",
   icons: {
     icon: "/favicon.svg"

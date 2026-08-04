@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { PrismaClient } from "@prisma/client";
-import { expect, test, type BrowserContext, type Route } from "@playwright/test";
+import { expect, test, type BrowserContext, type Locator, type Route } from "@playwright/test";
 import { DEFAULT_BOOTSTRAP_USER_ID } from "../../lib/server/auth/config";
 import { hashPassword } from "../../lib/server/auth/password";
 import { SESSION_COOKIE_NAME } from "../../lib/server/auth/session";
@@ -46,6 +46,44 @@ import {
 import { cleanupE2eWorkspace } from "./shell/workspace";
 
 test.describe.configure({ mode: "serial" });
+
+async function expectTwoLineChatTitle(scope: Locator, title: string): Promise<void> {
+  const activation = scope.getByRole("button", { exact: true, name: title });
+  const label = activation.getByText(title, { exact: true });
+  await expect(activation).toHaveAttribute("title", title);
+  await expect(label).toBeVisible();
+
+  const geometry = await label.evaluate((element) => {
+    const style = window.getComputedStyle(element);
+    const rect = element.getBoundingClientRect();
+    const actions = element
+      .closest('[data-testid="chat-row"]')
+      ?.querySelector<HTMLElement>('[data-testid="chat-row-actions"]');
+    const actionsRect = actions?.getBoundingClientRect() ?? null;
+
+    return {
+      actionsLeft: actionsRect?.left ?? null,
+      clientHeight: element.clientHeight,
+      height: rect.height,
+      lineClamp: style.webkitLineClamp,
+      lineHeight: Number.parseFloat(style.lineHeight),
+      overflowWrap: style.overflowWrap,
+      right: rect.right,
+      scrollHeight: element.scrollHeight,
+      width: rect.width
+    };
+  });
+
+  expect(geometry.lineClamp).toBe("2");
+  expect(geometry.overflowWrap).toBe("anywhere");
+  expect(geometry.height).toBeGreaterThan(geometry.lineHeight + 1);
+  expect(geometry.height).toBeLessThanOrEqual(geometry.lineHeight * 2 + 1);
+  expect(geometry.scrollHeight, JSON.stringify(geometry)).toBeLessThanOrEqual(
+    geometry.clientHeight + 1
+  );
+  expect(geometry.actionsLeft).not.toBeNull();
+  expect(geometry.right).toBeLessThanOrEqual(geometry.actionsLeft!);
+}
 
 test("anchors explicit mobile sends on the user turn and keeps long answers stable", async ({ page }) => {
   await page.setViewportSize({ height: 844, width: 390 });
@@ -2729,6 +2767,85 @@ test("opens a second blank New Chat while another active run is still running", 
   await expect(page.getByTestId("thread")).not.toContainText("Concurrent answer 1: First concurrent prompt");
   await expect(page.getByTestId("left-chat-pane")).toContainText("Concurrent Chat 1");
   await expect(page.getByTestId("left-chat-pane")).toContainText("Concurrent Chat 2");
+});
+
+test("keeps route-aware titles and complete two-line chat names across shell viewports", async ({ page }) => {
+  const englishTitle = "Comparative research workspace Alpha review";
+  const cyrillicTitle = "Сравнение архитектур поиска Бета итог обзор";
+  const fixtureChat = (id: string, title: string, updatedAt: string) => ({
+    activeLeafMessageId: null,
+    createdAt: "2026-08-01T10:00:00.000Z",
+    defaultModelId: "gpt-5.5",
+    defaultPromptPresetId: null,
+    defaultProvider: "openai",
+    folderId: null,
+    id,
+    messageCount: 0,
+    messages: [],
+    title,
+    updatedAt,
+    usageStats: null
+  });
+
+  await page.addInitScript((activeChatId) => {
+    window.localStorage.setItem("aiqsa.activeChatId", activeChatId);
+  }, "chat-title-alpha");
+  await installMatrixCatalogFixture(page, {
+    chats: [
+      fixtureChat("chat-title-alpha", englishTitle, "2026-08-01T12:00:00.000Z"),
+      fixtureChat("chat-title-beta", cyrillicTitle, "2026-08-01T11:00:00.000Z")
+    ],
+    contentMatches: [],
+    folders: []
+  });
+
+  await page.setViewportSize({ height: 900, width: 1440 });
+  await page.goto("/login");
+  await expect(page).toHaveTitle("Sign in · AIQSA");
+  await signIn(page);
+  await expect(page).toHaveTitle(`${englishTitle} · AIQSA`);
+
+  const desktopWorkspace = page.getByTestId("left-chat-pane");
+  await expectTwoLineChatTitle(desktopWorkspace, englishTitle);
+  await expectTwoLineChatTitle(desktopWorkspace, cyrillicTitle);
+
+  await desktopWorkspace.getByRole("button", { exact: true, name: cyrillicTitle }).click();
+  await expect(page).toHaveTitle(`${cyrillicTitle} · AIQSA`);
+
+  await runAccountMenuAction(page, "Settings");
+  await expect(page).toHaveTitle("Settings · AIQSA");
+  await page.getByRole("button", { name: "Close settings" }).click();
+  await expect(page).toHaveTitle(`${cyrillicTitle} · AIQSA`);
+
+  await runAccountMenuAction(page, "Prompt library");
+  await expect(page).toHaveTitle("Prompt library · AIQSA");
+  await page.getByRole("button", { name: "Back to chat" }).click();
+  await expect(page).toHaveTitle(`${cyrillicTitle} · AIQSA`);
+
+  await desktopWorkspace.getByRole("button", { name: "Start new chat" }).click();
+  await expect(page).toHaveTitle("New chat · AIQSA");
+  await desktopWorkspace.getByRole("button", { exact: true, name: englishTitle }).click();
+  await expect(page).toHaveTitle(`${englishTitle} · AIQSA`);
+
+  for (const viewport of [
+    { height: 844, width: 390 },
+    { height: 390, width: 844 }
+  ]) {
+    await page.setViewportSize(viewport);
+    await page.getByRole("button", { name: "Open workspace" }).click();
+    const mobileWorkspace = page.getByTestId("workspace-pane-mobile");
+    await expect(mobileWorkspace).toBeVisible();
+    await expectTwoLineChatTitle(mobileWorkspace, englishTitle);
+    await expectTwoLineChatTitle(mobileWorkspace, cyrillicTitle);
+    await mobileWorkspace.getByRole("button", { name: "Close workspace" }).click();
+    await expect(page).toHaveTitle(`${englishTitle} · AIQSA`);
+  }
+
+  await page.setViewportSize({ height: 900, width: 1440 });
+  await page.goto("/admin");
+  await expect(page).toHaveTitle("Providers · Control Center · AIQSA");
+  await page.getByRole("tab", { name: "Search" }).click();
+  await expect(page).toHaveTitle("Search · Control Center · AIQSA");
 });
 
 test("exposes the workspace and new-chat command on mobile", async ({ page }) => {

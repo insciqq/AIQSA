@@ -96,6 +96,9 @@ test("contains a long sanitized public snapshot in the dark theme", async ({ bas
     const response = await page.goto(`/s/${token}`);
     expect(response?.status()).toBe(200);
 
+    await expect(page).toHaveTitle("Shared research · AIQSA");
+    expect(await page.title()).not.toContain(title);
+    expect(await page.title()).not.toContain(token);
     await expect(page.locator("html")).toHaveAttribute("data-theme", "graphite");
     await expect(page.locator("html")).toHaveAttribute("data-color-scheme", "dark");
     await expect(page.getByRole("heading", { level: 1 })).toHaveText(title);

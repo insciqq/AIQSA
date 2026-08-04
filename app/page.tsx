@@ -4,8 +4,13 @@ import { authSessionStore } from "@/lib/server/auth/defaultAuth";
 import { resolveAuthToken } from "@/lib/server/auth/requestAuth";
 import { SESSION_COOKIE_NAME } from "@/lib/server/auth/session";
 import { prisma } from "@/lib/server/prisma";
+import type { Metadata } from "next";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
+
+export const metadata: Metadata = {
+  title: "Research Chat"
+};
 
 export default async function Home() {
   const config = getAuthConfig();

@@ -1,6 +1,6 @@
 import { render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import AdminPage from "./page";
+import AdminPage, { metadata } from "./page";
 
 const adminPageMocks = vi.hoisted(() => ({
   adminPanel: vi.fn(),
@@ -76,6 +76,10 @@ describe("AdminPage", () => {
 
   afterEach(() => {
     vi.unstubAllGlobals();
+  });
+
+  it("publishes a privacy-safe Control Center route title", () => {
+    expect(metadata.title).toBe("Control Center");
   });
 
   it("redirects before reading cookies when auth is not configured", async () => {

@@ -464,6 +464,19 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
     Boolean(deleteFolderConfirmation) ||
     Boolean(deleteMessageConfirmation) ||
     Boolean(promptSettings.deletePromptConfirmation);
+  const activeDocumentTitle = activeChatId && activeChatTitle.trim()
+    ? activeChatTitle.trim()
+    : workspace.pane.state.workspaceLoading
+      ? "Research Chat"
+      : "New chat";
+  const documentTitle = promptSettings.open
+    ? promptSettings.section === "prompts"
+      ? "Prompt library · AIQSA"
+      : "Settings · AIQSA"
+    : `${activeDocumentTitle} · AIQSA`;
+  useEffect(() => {
+    document.title = documentTitle;
+  }, [documentTitle]);
   const workspaceChildDialogOpen =
     mobileWorkspaceOpen && Boolean(deleteChatConfirmation || deleteFolderConfirmation);
   const shellNotice = notice;

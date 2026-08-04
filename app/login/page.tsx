@@ -6,6 +6,11 @@ import {
   OAUTH_PROVIDER_IDS
 } from "@/lib/auth/oauth";
 import { getAuthConfig } from "@/lib/server/auth/config";
+import type { Metadata } from "next";
+
+export const metadata: Metadata = {
+  title: "Sign in"
+};
 
 type LoginPageProps = {
   searchParams: Promise<{

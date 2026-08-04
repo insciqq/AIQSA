@@ -257,6 +257,13 @@ export function AdminPanel({ adminEmail, adminUserId }: AdminPanelProps) {
     navigationBlockedRef.current = actionsDisabled;
   }, [actionsDisabled]);
 
+  const documentTitle = resource.dashboard
+    ? `${navigation.activeSectionConfig.label} · Control Center · AIQSA`
+    : "Control Center · AIQSA";
+  useEffect(() => {
+    document.title = documentTitle;
+  }, [documentTitle]);
+
   useEffect(() => {
     requestNavigationConfirmationRef.current = (blockedNavigation) => {
       if (navigationBlockedRef.current) {

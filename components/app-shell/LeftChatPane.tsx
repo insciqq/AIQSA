@@ -1151,7 +1151,7 @@ function LeftChatPaneComponent({
                                     aria-hidden="true"
                                   />
                                 ) : null}
-                                <span className="min-w-0 flex-1 truncate text-[13px] leading-5 text-ink">
+                                <span className="min-w-0 flex-1 overflow-hidden break-words text-[13px] leading-5 text-ink [display:-webkit-box] [overflow-wrap:anywhere] [-webkit-box-orient:vertical] [-webkit-line-clamp:2]">
                                   {chat.title}
                                 </span>
                                 {favorite ? (

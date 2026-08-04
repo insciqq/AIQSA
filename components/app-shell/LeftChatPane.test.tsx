@@ -304,7 +304,8 @@ describe("LeftChatPane", () => {
       "w-11"
     );
     expect(screen.getByText("Research")).toHaveClass("min-w-0", "truncate");
-    expect(screen.getByText("Planning")).toHaveClass("min-w-0", "truncate");
+    expect(screen.getByText("Planning")).toHaveClass("min-w-0", "[-webkit-line-clamp:2]");
+    expect(screen.getByText("Planning")).not.toHaveClass("truncate");
 
     fireEvent.click(screen.getByRole("button", { name: "New folder" }));
     expect(screen.getByLabelText("Folder name")).toHaveClass("min-h-touch");
@@ -438,7 +439,16 @@ describe("LeftChatPane", () => {
     const chatLabel = screen.getByText(longChatTitle);
     expect(folderLabel).toHaveClass("min-w-0", "truncate");
     expect(folderLabel).toHaveAttribute("title", longFolderName);
-    expect(chatLabel).toHaveClass("min-w-0", "truncate");
+    expect(chatLabel).toHaveClass(
+      "min-w-0",
+      "overflow-hidden",
+      "break-words",
+      "[display:-webkit-box]",
+      "[overflow-wrap:anywhere]",
+      "[-webkit-box-orient:vertical]",
+      "[-webkit-line-clamp:2]"
+    );
+    expect(chatLabel).not.toHaveClass("truncate");
     expect(screen.getByRole("button", { name: longChatTitle })).toHaveAttribute("title", longChatTitle);
     expect(screen.getByRole("navigation", { name: "Workspace chats and folders" })).toHaveClass(
       "overflow-x-hidden"

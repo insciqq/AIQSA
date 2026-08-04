@@ -5,9 +5,14 @@ import { resolveAuthToken } from "@/lib/server/auth/requestAuth";
 import { SESSION_COOKIE_NAME } from "@/lib/server/auth/session";
 import { prisma } from "@/lib/server/prisma";
 import { ShieldAlert } from "lucide-react";
+import type { Metadata } from "next";
 import Link from "next/link";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
+
+export const metadata: Metadata = {
+  title: "Control Center"
+};
 
 export default async function AdminPage() {
   const config = getAuthConfig();

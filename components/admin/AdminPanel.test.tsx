@@ -579,12 +579,27 @@ function findResourceListItem(scope: HTMLElement, text: string): HTMLElement {
 describe("AdminPanel", () => {
   beforeEach(() => {
     window.history.replaceState(null, "", "/admin?section=users");
+    document.title = "Control Center · AIQSA";
   });
 
   afterEach(() => {
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
     window.history.replaceState(null, "", "/");
+    document.title = "AIQSA";
+  });
+
+  it("uses only the active public section label in the document title", async () => {
+    mockAdminFetch();
+    render(<AdminPanel adminEmail="private-admin@example.com" adminUserId="private-admin-id" />);
+
+    await screen.findByTestId("admin-section-users");
+    await waitFor(() => expect(document.title).toBe("Users · Control Center · AIQSA"));
+    expect(document.title).not.toContain("private-admin");
+
+    fireEvent.click(screen.getByRole("tab", { name: "Access & groups" }));
+    await screen.findByTestId("admin-section-access");
+    await waitFor(() => expect(document.title).toBe("Access & groups · Control Center · AIQSA"));
   });
 
   it("provides an explicit direct return to the authenticated chat", async () => {

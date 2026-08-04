@@ -570,6 +570,7 @@ afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
   window.localStorage.removeItem(AIQSA_WORKSPACE_RAIL_STORAGE_KEY);
+  document.title = "AIQSA";
 });
 
 describe("PowerAppShellView feature boundary", () => {
@@ -594,6 +595,71 @@ describe("PowerAppShellView feature boundary", () => {
     >().toEqualTypeOf<never>();
     expectTypeOf<RootSetterKey<PowerAppShellViewProps>>().toEqualTypeOf<never>();
     expectTypeOf<RootSetterKey<ShellWorkspacePaneActions>>().toEqualTypeOf<never>();
+  });
+});
+
+describe("PowerAppShellView document title", () => {
+  it("tracks visible chat identity, focused account workspaces, and the blank-chat fallback", async () => {
+    const props = baseProps();
+    const { rerender } = render(<PowerAppShellView {...props} />);
+
+    await waitFor(() => expect(document.title).toBe("Shell test chat · AIQSA"));
+
+    rerender(
+      <PowerAppShellView
+        {...props}
+        session={{ ...props.session, activeChatId: null, activeChatTitle: "Ignored title" }}
+        workspace={{
+          ...props.workspace,
+          pane: {
+            ...props.workspace.pane,
+            state: { ...props.workspace.pane.state, workspaceLoading: true }
+          }
+        }}
+      />
+    );
+    await waitFor(() => expect(document.title).toBe("Research Chat · AIQSA"));
+
+    rerender(
+      <PowerAppShellView
+        {...props}
+        session={{ ...props.session, activeChatId: null, activeChatTitle: "Ignored title" }}
+      />
+    );
+    await waitFor(() => expect(document.title).toBe("New chat · AIQSA"));
+
+    rerender(
+      <PowerAppShellView
+        {...props}
+        settings={{
+          ...props.settings,
+          prompt: { ...props.settings.prompt, open: true, section: "appearance" }
+        }}
+      />
+    );
+    await waitFor(() => expect(document.title).toBe("Settings · AIQSA"));
+
+    rerender(
+      <PowerAppShellView
+        {...props}
+        settings={{
+          ...props.settings,
+          prompt: { ...props.settings.prompt, open: true, section: "prompts" }
+        }}
+      />
+    );
+    await waitFor(() => expect(document.title).toBe("Prompt library · AIQSA"));
+
+    rerender(
+      <PowerAppShellView
+        {...props}
+        overlays={{
+          ...props.overlays,
+          palette: { ...props.overlays.palette, open: true }
+        }}
+      />
+    );
+    await waitFor(() => expect(document.title).toBe("Shell test chat · AIQSA"));
   });
 });
 
