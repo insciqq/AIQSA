@@ -13,6 +13,7 @@ const PROVIDER_NEUTRAL_BACKFILL_MIGRATION =
   "20260803120000_activate_provider_neutral_search_routes";
 const GEMINI_CLIENT_ROUTE_MIGRATION =
   "20260803190000_cross_provider_gemini_search_route";
+const ANTHROPIC_SEARCH_MIGRATION = "20260804120000_anthropic_web_search";
 const POSTGRES_SERVICE = "postgres";
 const POSTGRES_USER = "aiqsa";
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -90,6 +91,22 @@ function geminiClientDraftHash(providerModelId: string): string {
     maxResults: 8,
     maxSearchCallsPerAnswer: 2,
     protocol: "gemini_google_search",
+    providerModelId,
+    queryMaxCharacters: 500,
+    reasoningPolicy: "lowest_supported",
+    timeoutMs: 300_000
+  });
+  return createHash("sha256").update(canonical, "utf8").digest("hex");
+}
+
+function anthropicClientDraftHash(providerModelId: string): string {
+  const canonical = JSON.stringify({
+    adapterKind: "provider_model_client",
+    credentialMode: "provider_model",
+    maxOutputTokens: 4_096,
+    maxResults: 8,
+    maxSearchCallsPerAnswer: 2,
+    protocol: "anthropic_web_search",
     providerModelId,
     queryMaxCharacters: 500,
     reasoningPolicy: "lowest_supported",
@@ -1699,6 +1716,277 @@ try {
     FROM "SearchIntegrationRevision" revision;
   `), revisionsAfterGeminiClient,
   "repeat Gemini Search route migration must preserve revisions byte-for-field");
+
+  const anthropicSearchSql = migrationSql(ANTHROPIC_SEARCH_MIGRATION);
+  assert.doesNotMatch(
+    anthropicSearchSql,
+    /\b(?:INSERT\s+INTO|UPDATE|DELETE\s+FROM|ALTER\s+TABLE)\s+"ProviderModel"\b/iu,
+    "Anthropic Search migration must not mutate ProviderModel"
+  );
+  assert.doesNotMatch(
+    anthropicSearchSql,
+    /"(?:ProviderCredential|ProviderCredentialVersion|ProviderDraftCheck|ProviderModelCredentialCheck)"/u,
+    "Anthropic Search migration must not read credential or provider-check state"
+  );
+  assert.doesNotMatch(
+    anthropicSearchSql,
+    /"(?:AccessGrant|UserSettings|SearchPolicy|ModelRun|SearchRun|SearchRunBinding)"/u,
+    "Anthropic Search migration must not inspect grants, preferences, or run history"
+  );
+  assert.doesNotMatch(
+    anthropicSearchSql,
+    /"supportsNativeSearch"/u,
+    "Anthropic Search migration must trust only the active normalized capability"
+  );
+
+  // Keep the legacy capability fields true while activeConfig says false. The
+  // first migration pass must publish hosted Search only and leave that model
+  // declaration untouched.
+  requireSuccess(psql(`
+    UPDATE "ProviderConnection"
+    SET
+      "enabled" = true,
+      "activeConfig" = "draftConfig",
+      "activeVersion" = GREATEST("activeVersion", 1),
+      "activatedAt" = COALESCE("activatedAt", CURRENT_TIMESTAMP),
+      "updatedAt" = CURRENT_TIMESTAMP
+    WHERE "id" = '00000000-0000-4000-8000-000000001103';
+
+    INSERT INTO "ProviderModel" (
+      "id", "connectionId", "provider", "modelId", "displayName",
+      "contextWindow", "supportsNativeSearch", "enabled", "draftConfig",
+      "draftVersion", "activeConfig", "activeVersion", "activatedAt",
+      "capabilities", "defaultParams", "createdAt", "updatedAt"
+    ) VALUES (
+      '00000000-0000-4000-8000-000000001211',
+      '00000000-0000-4000-8000-000000001103',
+      'anthropic', 'claude-opus-5', 'Claude Opus 5', 1000000, true, true,
+      '{
+        "adapterKind":"anthropic_messages",
+        "upstreamModelId":"claude-opus-5",
+        "capabilities":{"nativeSearch":false},
+        "defaultParams":{}
+      }'::jsonb,
+      1,
+      '{
+        "adapterKind":"anthropic_messages",
+        "upstreamModelId":"claude-opus-5",
+        "capabilities":{"nativeSearch":false},
+        "defaultParams":{}
+      }'::jsonb,
+      1, CURRENT_TIMESTAMP,
+      '{"nativeSearch":true,"sentinel":"legacy-capability"}'::jsonb,
+      '{"sentinel":"legacy-defaults"}'::jsonb,
+      CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+    );
+  `), "insert inactive Anthropic Search capability fixture");
+
+  const routeCountBeforeAnthropic = scalar(`SELECT count(*)::text FROM "SearchStrategy";`);
+  const revisionCountBeforeAnthropic = scalar(`
+    SELECT count(*)::text FROM "SearchIntegrationRevision";
+  `);
+  const optionCountBeforeAnthropic = scalar(`SELECT count(*)::text FROM "SearchOption";`);
+  const anthropicModelBeforeHosted = scalar(`
+    SELECT row_to_json(model)::text
+    FROM "ProviderModel" model
+    WHERE model."id" = '00000000-0000-4000-8000-000000001211';
+  `);
+  const grantsBeforeAnthropic = scalar(`
+    SELECT md5(string_agg(row(grant_row.*)::text, E'\\n' ORDER BY grant_row."id"))
+    FROM "AccessGrant" grant_row;
+  `);
+  const settingsBeforeAnthropic = scalar(`
+    SELECT md5(string_agg(row(settings.*)::text, E'\\n' ORDER BY settings."id"))
+    FROM "UserSettings" settings;
+  `);
+  const modelRunsBeforeAnthropic = scalar(`
+    SELECT md5(string_agg(row(run.*)::text, E'\\n' ORDER BY run."id"))
+    FROM "ModelRun" run;
+  `);
+  const searchRunsBeforeAnthropic = scalar(`
+    SELECT md5(string_agg(row(run.*)::text, E'\\n' ORDER BY run."id"))
+    FROM "SearchRun" run;
+  `);
+
+  requireSuccess(psql(anthropicSearchSql), "publish hosted-only Anthropic Search source");
+  assert.equal(
+    scalar(`SELECT count(*)::text FROM "SearchStrategy";`),
+    String(Number(routeCountBeforeAnthropic) + 1),
+    "inactive configured capability must add hosted Search only"
+  );
+  assert.equal(
+    scalar(`SELECT count(*)::text FROM "SearchIntegrationRevision";`),
+    String(Number(revisionCountBeforeAnthropic) + 1),
+    "hosted Anthropic Search must add one immutable revision"
+  );
+  assert.equal(
+    scalar(`SELECT count(*)::text FROM "SearchOption";`),
+    String(Number(optionCountBeforeAnthropic) + 1),
+    "Anthropic Search must add one logical option"
+  );
+  assert.equal(scalar(`
+    SELECT concat_ws('|',
+      option_row."optionId",
+      strategy."kind",
+      strategy."adapterKind",
+      strategy."credentialMode",
+      strategy."providerModelId" IS NULL,
+      strategy."draft" ->> 'protocol',
+      strategy."activeRevisionId" IS NOT NULL
+    )
+    FROM "SearchOption" option_row
+    INNER JOIN "SearchStrategy" strategy
+      ON strategy."searchOptionId" = option_row."id"
+    WHERE option_row."optionId" = 'anthropic-web-search';
+  `), 'anthropic-web-search|anthropic_native_web_search|answer_provider_hosted|answer_provider|t|anthropic_web_search|t');
+  assert.equal(scalar(`
+    SELECT count(*)::text
+    FROM "SearchStrategy" strategy
+    INNER JOIN "SearchOption" option_row
+      ON option_row."id" = strategy."searchOptionId"
+    WHERE option_row."optionId" = 'anthropic-web-search'
+      AND strategy."adapterKind" = 'provider_model_client';
+  `), '0', "activeConfig nativeSearch=false must not publish a client route");
+  assert.equal(scalar(`
+    SELECT row_to_json(model)::text
+    FROM "ProviderModel" model
+    WHERE model."id" = '00000000-0000-4000-8000-000000001211';
+  `), anthropicModelBeforeHosted,
+  "Anthropic Search migration must not flip or rewrite the model capability");
+
+  const hostedAnthropicBeforeClient = scalar(`
+    SELECT md5(row(strategy.*)::text)
+    FROM "SearchStrategy" strategy
+    WHERE strategy."id" = 'anthropic-web-search';
+  `);
+  requireSuccess(psql(`
+    UPDATE "ProviderModel"
+    SET
+      "activeConfig" = jsonb_set(
+        "activeConfig", '{capabilities,nativeSearch}', 'true'::jsonb, true
+      ),
+      "updatedAt" = CURRENT_TIMESTAMP
+    WHERE "id" = '00000000-0000-4000-8000-000000001211';
+  `), "activate normalized Anthropic Search capability fixture");
+  const anthropicModelBeforeClient = scalar(`
+    SELECT row_to_json(model)::text
+    FROM "ProviderModel" model
+    WHERE model."id" = '00000000-0000-4000-8000-000000001211';
+  `);
+  const routeCountBeforeAnthropicClient = scalar(`SELECT count(*)::text FROM "SearchStrategy";`);
+  const revisionCountBeforeAnthropicClient = scalar(`
+    SELECT count(*)::text FROM "SearchIntegrationRevision";
+  `);
+
+  requireSuccess(psql(anthropicSearchSql), "publish Anthropic query-only client route");
+  assert.equal(
+    scalar(`SELECT count(*)::text FROM "SearchStrategy";`),
+    String(Number(routeCountBeforeAnthropicClient) + 1)
+  );
+  assert.equal(
+    scalar(`SELECT count(*)::text FROM "SearchIntegrationRevision";`),
+    String(Number(revisionCountBeforeAnthropicClient) + 1)
+  );
+  assert.equal(scalar(`
+    SELECT concat_ws('|',
+      option_row."optionId",
+      count(*) FILTER (WHERE strategy."adapterKind" = 'answer_provider_hosted'),
+      count(*) FILTER (WHERE strategy."adapterKind" = 'provider_model_client'),
+      max(strategy."id") FILTER (WHERE strategy."adapterKind" = 'provider_model_client'),
+      max(strategy."strategyId") FILTER (WHERE strategy."adapterKind" = 'provider_model_client')
+    )
+    FROM "SearchOption" option_row
+    INNER JOIN "SearchStrategy" strategy
+      ON strategy."searchOptionId" = option_row."id"
+     AND strategy."archivedAt" IS NULL
+    WHERE option_row."optionId" = 'anthropic-web-search'
+    GROUP BY option_row."optionId";
+  `), 'anthropic-web-search|1|1|system-anthropic-web-search-client|anthropic-web-search-client');
+  assert.equal(scalar(`
+    SELECT concat_ws('|',
+      strategy."providerModelId",
+      strategy."kind",
+      strategy."adapterKind",
+      strategy."credentialMode",
+      strategy."draft" ->> 'protocol',
+      strategy."draft" ->> 'reasoningPolicy',
+      strategy."testedDraftHash",
+      revision."configuration" = strategy."draft",
+      revision."providerModelId" = strategy."providerModelId"
+    )
+    FROM "SearchStrategy" strategy
+    INNER JOIN "SearchIntegrationRevision" revision
+      ON revision."id" = strategy."activeRevisionId"
+     AND revision."searchStrategyId" = strategy."id"
+    WHERE strategy."id" = 'system-anthropic-web-search-client';
+  `), [
+    '00000000-0000-4000-8000-000000001211',
+    'provider_model_web_search',
+    'provider_model_client',
+    'provider_model',
+    'anthropic_web_search',
+    'lowest_supported',
+    anthropicClientDraftHash('00000000-0000-4000-8000-000000001211'),
+    't',
+    't'
+  ].join('|'));
+  assert.equal(scalar(`
+    SELECT row_to_json(model)::text
+    FROM "ProviderModel" model
+    WHERE model."id" = '00000000-0000-4000-8000-000000001211';
+  `), anthropicModelBeforeClient,
+  "client publication must preserve the configured active model declaration");
+  assert.equal(scalar(`
+    SELECT md5(row(strategy.*)::text)
+    FROM "SearchStrategy" strategy
+    WHERE strategy."id" = 'anthropic-web-search';
+  `), hostedAnthropicBeforeClient,
+  "client publication must preserve hosted Anthropic execution byte-for-field");
+  assert.equal(scalar(`
+    SELECT md5(string_agg(row(grant_row.*)::text, E'\\n' ORDER BY grant_row."id"))
+    FROM "AccessGrant" grant_row;
+  `), grantsBeforeAnthropic, "Anthropic Search migration must preserve grants");
+  assert.equal(scalar(`
+    SELECT md5(string_agg(row(settings.*)::text, E'\\n' ORDER BY settings."id"))
+    FROM "UserSettings" settings;
+  `), settingsBeforeAnthropic, "Anthropic Search migration must preserve preferences");
+  assert.equal(scalar(`
+    SELECT md5(string_agg(row(run.*)::text, E'\\n' ORDER BY run."id"))
+    FROM "ModelRun" run;
+  `), modelRunsBeforeAnthropic, "Anthropic Search migration must preserve accepted runs");
+  assert.equal(scalar(`
+    SELECT md5(string_agg(row(run.*)::text, E'\\n' ORDER BY run."id"))
+    FROM "SearchRun" run;
+  `), searchRunsBeforeAnthropic, "Anthropic Search migration must preserve Search runs");
+
+  const corruptHostedAnthropic = psql(`
+    UPDATE "SearchStrategy"
+    SET "adapterKind" = 'provider_model_client'
+    WHERE "id" = 'anthropic-web-search';
+  `);
+  assert.notEqual(corruptHostedAnthropic.status, 0,
+    "Anthropic hosted kind must reject a client adapter shape");
+  assert.match(corruptHostedAnthropic.stderr, /SearchStrategy_provider_model_check/u);
+
+  const routesAfterAnthropic = scalar(`
+    SELECT md5(string_agg(row(strategy.*)::text, E'\\n' ORDER BY strategy."id"))
+    FROM "SearchStrategy" strategy;
+  `);
+  const revisionsAfterAnthropic = scalar(`
+    SELECT md5(string_agg(row(revision.*)::text, E'\\n' ORDER BY revision."id"))
+    FROM "SearchIntegrationRevision" revision;
+  `);
+  requireSuccess(psql(anthropicSearchSql), "repeat Anthropic Search migration");
+  assert.equal(scalar(`
+    SELECT md5(string_agg(row(strategy.*)::text, E'\\n' ORDER BY strategy."id"))
+    FROM "SearchStrategy" strategy;
+  `), routesAfterAnthropic,
+  "repeat Anthropic Search migration must preserve routes byte-for-field");
+  assert.equal(scalar(`
+    SELECT md5(string_agg(row(revision.*)::text, E'\\n' ORDER BY revision."id"))
+    FROM "SearchIntegrationRevision" revision;
+  `), revisionsAfterAnthropic,
+  "repeat Anthropic Search migration must preserve revisions byte-for-field");
 
   process.stdout.write("Search control-plane migration contract: OK\n");
 } finally {

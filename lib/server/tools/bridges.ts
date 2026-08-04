@@ -55,7 +55,7 @@ function suppliedProviderMessages(value: unknown): unknown[] | null {
 
 function usesHostedSearchRoute(
   request: ProviderRunRequest,
-  protocol: "gemini_google_search" | "openai_responses_web_search",
+  protocol: "anthropic_web_search" | "gemini_google_search" | "openai_responses_web_search",
   legacyStrategyId: string
 ): boolean {
   return request.searchPlan
@@ -63,6 +63,13 @@ function usesHostedSearchRoute(
         option.adapterKind === "answer_provider_hosted" && option.protocol === protocol)
     : request.searchStrategy === legacyStrategyId;
 }
+
+export const ANTHROPIC_WEB_SEARCH_TOOL_DECLARATION = Object.freeze({
+  allowed_callers: Object.freeze(["direct"]),
+  max_uses: 3,
+  name: "web_search",
+  type: "web_search_20250305"
+} as const);
 
 function openAIFunctionTool(tool: RunTool): SerializedProviderTool {
   return {
@@ -370,6 +377,18 @@ export const anthropicMessagesToolBridge: ProviderToolBridge = {
       }),
       role: "assistant"
     }];
+  },
+  serializeHostedTools(request) {
+    return usesHostedSearchRoute(
+      request,
+      "anthropic_web_search",
+      "anthropic-web-search"
+    )
+      ? [{
+          ...ANTHROPIC_WEB_SEARCH_TOOL_DECLARATION,
+          allowed_callers: [...ANTHROPIC_WEB_SEARCH_TOOL_DECLARATION.allowed_callers]
+        }]
+      : [];
   },
   serializeTool: anthropicFunctionTool,
   supportsToolCalling(input) {

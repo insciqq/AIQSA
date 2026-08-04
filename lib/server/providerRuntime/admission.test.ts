@@ -41,6 +41,7 @@ type RouteSpec = Readonly<{
   enabled?: boolean;
   id: string;
   protocol:
+    | "anthropic_web_search"
     | "gemini_google_search"
     | "openai_responses_web_search"
     | "openrouter_perplexity_chat";
@@ -108,6 +109,10 @@ function physicalRoute(spec: RouteSpec) {
     : "provider_model";
   const kind = spec.protocol === "gemini_google_search"
     ? "gemini_google_search"
+    : spec.protocol === "anthropic_web_search"
+      ? spec.adapterKind === "answer_provider_hosted"
+        ? "anthropic_native_web_search"
+        : "provider_model_web_search"
     : spec.protocol === "openrouter_perplexity_chat"
       ? "perplexity_tool_search"
       : spec.adapterKind === "answer_provider_hosted"
@@ -274,6 +279,45 @@ const officialOpenAiSearchModel: ModelSpec = {
   id: "model-openai-search",
   upstreamModelId: "gpt-5.6-search"
 };
+
+const officialAnthropicModel: ModelSpec = {
+  adapterKind: "anthropic_messages",
+  connectionId: "connection-anthropic",
+  family: "anthropic",
+  id: "model-anthropic-answer",
+  nativeSearch: true,
+  upstreamModelId: "claude-opus-5"
+};
+
+const officialAnthropicSearchModel: ModelSpec = {
+  ...officialAnthropicModel,
+  answerSelectable: false,
+  id: "model-anthropic-search"
+};
+
+function anthropicOption(clientModelId = officialAnthropicSearchModel.id): OptionSpec {
+  return {
+    displayName: "Anthropic Search",
+    kind: "web_search",
+    optionId: "anthropic-web-search",
+    routes: [
+      {
+        adapterKind: "answer_provider_hosted",
+        id: "route-hosted:anthropic",
+        protocol: "anthropic_web_search",
+        revisionId: "revision-hosted:anthropic"
+      },
+      {
+        adapterKind: "provider_model_client",
+        id: "route-client:anthropic",
+        protocol: "anthropic_web_search",
+        providerModelId: clientModelId,
+        revisionId: "revision-client:anthropic"
+      }
+    ],
+    sourceConnectionId: officialAnthropicModel.connectionId
+  };
+}
 
 function openAiOption(input: Readonly<{
   clientConnectionModelId?: string;
@@ -475,6 +519,114 @@ describe("provider admission", () => {
       searchStrategyRowId: "route-client:openai"
     });
     expect(search.configuration.config).not.toHaveProperty("modelDefaultParams");
+  });
+
+  it("prefers same-connection Anthropic hosted Search", async () => {
+    const option = anthropicOption();
+    const { db, providerModelFindUnique } = admissionDb({
+      answer: officialAnthropicModel,
+      options: [option],
+      technicalModels: [officialAnthropicSearchModel]
+    });
+
+    const plan = await loadProviderAdmissionPlan(db as unknown as Prisma.TransactionClient, {
+      providerConnectionId: officialAnthropicModel.connectionId,
+      providerModelId: officialAnthropicModel.id,
+      searchPlan: { mode: "model_choice", optionIds: [option.optionId] },
+      searchStrategyId: option.optionId,
+      userId: "user-1"
+    });
+
+    expect(expectSearch(plan)).toMatchObject({
+      bindingKey: null,
+      integrationId: "route-hosted:anthropic",
+      optionId: "anthropic-web-search",
+      revisionId: "revision-hosted:anthropic",
+      configuration: {
+        adapterKind: "answer_provider_hosted",
+        provider: "anthropic"
+      }
+    });
+    expect(providerModelFindUnique).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    {
+      answer: officialOpenAiModel,
+      label: "cross-provider answers",
+      requiresClientToolCoexistence: false
+    },
+    {
+      answer: officialAnthropicModel,
+      label: "MCP coexistence",
+      requiresClientToolCoexistence: true
+    }
+  ])("uses the exact Anthropic client route for $label", async (request) => {
+    const option = anthropicOption();
+    const { db } = admissionDb({
+      answer: request.answer,
+      options: [option],
+      technicalModels: [officialAnthropicSearchModel]
+    });
+
+    const plan = await loadProviderAdmissionPlan(db as unknown as Prisma.TransactionClient, {
+      providerConnectionId: request.answer.connectionId,
+      providerModelId: request.answer.id,
+      ...(request.requiresClientToolCoexistence
+        ? { requiresClientToolCoexistence: true }
+        : {}),
+      searchPlan: { mode: "model_choice", optionIds: [option.optionId] },
+      searchStrategyId: option.optionId,
+      userId: "user-1"
+    });
+
+    expect(expectSearch(plan)).toMatchObject({
+      bindingKey: "search:anthropic-web-search",
+      integrationId: "route-client:anthropic",
+      optionId: "anthropic-web-search",
+      revisionId: "revision-client:anthropic",
+      configuration: {
+        adapterKind: "provider_model_client",
+        modelId: "claude-opus-5",
+        provider: "anthropic",
+        providerModelId: "model-anthropic-search"
+      },
+      role: {
+        snapshot: {
+          connectionId: officialAnthropicModel.connectionId,
+          providerFamily: "anthropic"
+        }
+      }
+    });
+  });
+
+  it.each([
+    {
+      label: "does not advertise native Search",
+      technicalModel: { ...officialAnthropicSearchModel, nativeSearch: false }
+    },
+    {
+      label: "is bound to a non-Anthropic adapter",
+      technicalModel: {
+        ...officialAnthropicSearchModel,
+        adapterKind: "openai_responses_native" as const
+      }
+    }
+  ])("fails closed when the Anthropic client model $label", async ({ technicalModel }) => {
+    const option = anthropicOption(technicalModel.id);
+    const { db } = admissionDb({
+      answer: officialOpenAiModel,
+      options: [option],
+      technicalModels: [technicalModel]
+    });
+
+    await expect(loadProviderAdmissionPlan(db as unknown as Prisma.TransactionClient, {
+      providerConnectionId: officialOpenAiModel.connectionId,
+      providerModelId: officialOpenAiModel.id,
+      searchPlan: { mode: "model_choice", optionIds: [option.optionId] },
+      searchStrategyId: option.optionId,
+      userId: "user-1"
+    })).rejects.toMatchObject({ code: "search_strategy_not_available" });
   });
 
   it("keeps singleton same-connection Gemini Search hosted", async () => {

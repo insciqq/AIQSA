@@ -1,5 +1,4 @@
 import { textFromContentBlocks, type ModelRunSseEvent, type ModelRunUsage } from "../../domain/modelRunEvents";
-import { normalizeTokenUsage } from "../../domain/usage";
 import {
   defaultAnthropicMessagesParams,
   maxOutputTokensFromParams,
@@ -23,7 +22,19 @@ import {
 import { providerAttachmentText } from "./attachmentPayload";
 import { parseSseStream } from "./sse";
 import {
+  addAnthropicMessageUsage,
+  addAnthropicWebSearchUsage,
+  ANTHROPIC_WEB_SEARCH_REPLAY_MAX_CHARACTERS,
+  inspectAnthropicWebSearchContent,
+  updateAnthropicMessageUsage,
+  updateAnthropicWebSearchUsage,
+  type AnthropicMessagesSearchClient,
+  type AnthropicWebSearchUsage
+} from "./anthropicMessagesSearch";
+import {
   attachProviderStreamSafetySnapshot,
+  ProviderStreamDeadlineExceededError,
+  ProviderStreamTooLargeError,
   providerStreamSafetySnapshot,
   type ProviderStreamSafetySnapshot
 } from "./streamSafety";
@@ -57,6 +68,8 @@ type AnthropicRequestMessage = {
 
 type AnthropicContentBlockAccumulator = {
   block: Record<string, unknown>;
+  citationCharacters: number;
+  citations: Record<string, unknown>[] | null;
   inputJson: BoundedTextAccumulator;
   signature: BoundedTextAccumulator | null;
   text: BoundedTextAccumulator | null;
@@ -65,8 +78,25 @@ type AnthropicContentBlockAccumulator = {
 
 const MAX_ANTHROPIC_CONTENT_BLOCKS = 256;
 const MAX_ANTHROPIC_TOOL_CALLS = 16;
+const MAX_ANTHROPIC_SEARCH_CITATIONS = 100;
+const MAX_ANTHROPIC_PAUSE_CONTINUATIONS = 3;
 const MAX_ANTHROPIC_TOOL_ID_LENGTH = 512;
 const MAX_ANTHROPIC_TOOL_NAME_LENGTH = 512;
+const anthropicContentBlockTypes = new Set([
+  "redacted_thinking",
+  "server_tool_use",
+  "text",
+  "thinking",
+  "tool_use",
+  "web_search_tool_result"
+]);
+const anthropicContentDeltaTypes = new Set([
+  "citations_delta",
+  "input_json_delta",
+  "signature_delta",
+  "text_delta",
+  "thinking_delta"
+]);
 
 function numberValue(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
@@ -316,7 +346,16 @@ export function buildAnthropicMessagesRequest(
       ...anthropicProviderToolMessages(request.providerToolMessages)
     ]
   );
-  const tools = (request.tools ?? []).map((tool) => anthropicMessagesToolBridge.serializeTool(tool).tool);
+  const clientTools = (request.tools ?? []).map((tool) =>
+    anthropicMessagesToolBridge.serializeTool(tool).tool);
+  const hostedTools = anthropicMessagesToolBridge.serializeHostedTools?.(request) ?? [];
+  if (
+    hostedTools.length > 0 &&
+    (clientTools.length > 0 || (request.providerToolMessages?.length ?? 0) > 0)
+  ) {
+    throw new Error("anthropic_hosted_search_client_tools_unsupported");
+  }
+  const tools = [...hostedTools, ...clientTools];
   const body: Record<string, unknown> = {
     max_tokens: params.maxTokens,
     messages,
@@ -343,6 +382,9 @@ export function buildAnthropicMessagesRequest(
 
   if (tools.length > 0) {
     body.tools = tools;
+  }
+
+  if (clientTools.length > 0) {
     body.tool_choice = {
       type: request.toolChoice ?? "auto",
       ...(request.toolChoice !== "none" && request.parallelToolCalls !== true
@@ -359,46 +401,7 @@ function eventType(event: AnthropicStreamEvent): string {
 }
 
 function usageFromAnthropic(usage: unknown, previous: ModelRunUsage): ModelRunUsage {
-  const usageRecord = objectValue(usage);
-
-  if (!usageRecord) {
-    return previous;
-  }
-
-  const tokenValue = (value: unknown): number | undefined =>
-    typeof value === "number" && Number.isFinite(value) && value >= 0
-      ? Math.floor(value)
-      : undefined;
-  const uncachedInputTokens =
-    tokenValue(usageRecord.input_tokens) ?? tokenValue(usageRecord.uncached_input_tokens);
-  const cachedInputTokens =
-    tokenValue(usageRecord.cache_read_input_tokens) ?? previous.cachedInputTokens ?? 0;
-  const cacheWriteInputTokens =
-    tokenValue(usageRecord.cache_creation_input_tokens) ?? previous.cacheWriteInputTokens ?? 0;
-  const hasInputUsage =
-    uncachedInputTokens !== undefined ||
-    tokenValue(usageRecord.cache_read_input_tokens) !== undefined ||
-    tokenValue(usageRecord.cache_creation_input_tokens) !== undefined;
-  const inputTokens = hasInputUsage
-    ? (uncachedInputTokens ?? 0) + cachedInputTokens + cacheWriteInputTokens
-    : previous.inputTokens;
-  const outputTokens = tokenValue(usageRecord.output_tokens) ?? previous.outputTokens;
-  const outputTokenDetails = objectValue(usageRecord.output_tokens_details);
-  const reasoningTokens =
-    tokenValue(outputTokenDetails?.thinking_tokens) ??
-    tokenValue(usageRecord.reasoning_output_tokens) ??
-    tokenValue(usageRecord.thinking_output_tokens) ??
-    previous.reasoningTokens;
-  const totalTokens = tokenValue(usageRecord.total_tokens);
-
-  return normalizeTokenUsage({
-    cachedInputTokens,
-    cacheWriteInputTokens,
-    inputTokens,
-    outputTokens,
-    reasoningTokens,
-    ...(totalTokens !== undefined ? { totalTokens } : {})
-  });
+  return updateAnthropicMessageUsage(previous, usage);
 }
 
 function messageIdFromStart(event: AnthropicStreamEvent): string | undefined {
@@ -459,13 +462,18 @@ function finalizeAnthropicToolInput(accumulator: AnthropicContentBlockAccumulato
 }
 
 function responsePreview(input: {
+  continuationCount?: number;
   finalText: string;
   messageId?: string;
   model?: string;
   stopReason?: string;
   usage: ModelRunUsage;
+  webSearchUsage?: AnthropicWebSearchUsage;
 }): Record<string, unknown> {
   return {
+    ...(typeof input.continuationCount === "number"
+      ? { continuationCount: input.continuationCount }
+      : {}),
     id: input.messageId,
     model: input.model,
     provider: "anthropic",
@@ -475,8 +483,80 @@ function responsePreview(input: {
       input_tokens: input.usage.inputTokens,
       output_tokens: input.usage.outputTokens,
       reasoning_tokens: input.usage.reasoningTokens
-    }
+    },
+    ...(input.webSearchUsage?.present
+      ? { webSearchRequests: input.webSearchUsage.requests }
+      : {})
   };
+}
+
+function hostedAnthropicSearchBody(body: Record<string, unknown>): boolean {
+  return Array.isArray(body.tools) && body.tools.some((tool) =>
+    objectValue(tool)?.type === "web_search_20250305");
+}
+
+function anthropicContinuationBody(
+  body: Record<string, unknown>,
+  assistantContent: Record<string, unknown>[]
+): Record<string, unknown> {
+  if (!Array.isArray(body.messages)) {
+    throw new Error("anthropic_search_continuation_invalid");
+  }
+  return {
+    ...body,
+    messages: [
+      ...body.messages,
+      { content: assistantContent, role: "assistant" }
+    ]
+  };
+}
+
+function remainingAnthropicStreamLimits(
+  limits: ProviderStreamLimits,
+  startedAt: number,
+  consumedBytes: number
+): ProviderStreamLimits {
+  const durationMs = Date.now() - startedAt;
+  const remainingDurationMs = limits.maxDurationMs - durationMs;
+  if (remainingDurationMs <= 0) {
+    throw new ProviderStreamDeadlineExceededError({
+      maxDurationMs: limits.maxDurationMs,
+      observedDurationMs: durationMs,
+      snapshot: { durationMs, totalStreamBytes: 0 }
+    });
+  }
+  const remainingBytes = limits.maxBytes - consumedBytes;
+  if (remainingBytes <= 0) {
+    throw new ProviderStreamTooLargeError({
+      maxBytes: limits.maxBytes,
+      observedBytes: consumedBytes,
+      snapshot: { durationMs, totalStreamBytes: consumedBytes }
+    });
+  }
+  return {
+    ...limits,
+    maxBytes: remainingBytes,
+    maxDurationMs: remainingDurationMs,
+    maxEventBytes: Math.min(limits.maxEventBytes, remainingBytes)
+  };
+}
+
+function normalizedArtifactIdentity(event: ModelRunSseEvent): string {
+  if (event.type === "artifact") {
+    const payload = objectValue(event.data.payload);
+    if (event.data.artifactType === "search" && payload) {
+      const id = stringValue(payload.id);
+      const status = stringValue(payload.status);
+      if (id) return `search:${id}:${status ?? "unknown"}`;
+      if (payload.outputIndex === Number.MAX_SAFE_INTEGER) return "search:truncated";
+    }
+    if (event.data.artifactType === "citation" && payload) {
+      const url = stringValue(payload.url);
+      const rank = typeof payload.index === "number" ? payload.index : "unknown";
+      if (url) return `citation:${url}:${rank}`;
+    }
+  }
+  return JSON.stringify(event);
 }
 
 export function createAnthropicMessagesAdapter(options: AnthropicMessagesAdapterOptions): ProviderAdapter {
@@ -495,11 +575,12 @@ export function createAnthropicMessagesAdapter(options: AnthropicMessagesAdapter
     },
     async *stream(request, runOptions = {}): AsyncGenerator<ModelRunSseEvent, ProviderRunResult> {
       const streamLimits = resolveProviderStreamLimits(options.streamLimits);
-      const body = buildAnthropicMessagesRequest(request, {
+      let body = buildAnthropicMessagesRequest(request, {
         maxAttachmentTextChars: options.maxAttachmentTextChars,
         redactFiles: false,
         redactImages: false
       });
+      const hostedSearch = hostedAnthropicSearchBody(body);
       const finalText = new BoundedTextAccumulator({
         maxChars: streamLimits.maxOutputChars,
         retainedTextKind: "visible_output"
@@ -508,19 +589,23 @@ export function createAnthropicMessagesAdapter(options: AnthropicMessagesAdapter
         maxChars: streamLimits.maxOutputChars,
         retainedTextKind: "thinking"
       });
+      const allAssistantContent: Record<string, unknown>[] = [];
+      const emittedSearchArtifacts = new Set<string>();
       let messageId: string | undefined;
-      let messageStarted = false;
       let model: string | undefined;
       let stopReason: string | undefined;
-      let terminalSeen = false;
-      const contentBlocks = new Map<number, AnthropicContentBlockAccumulator>();
-      const openContentBlocks = new Set<number>();
-      let toolUseBlockCount = 0;
+      let continuationCount = 0;
       let usage: ModelRunUsage = {
         inputTokens: 0,
         outputTokens: 0,
         reasoningTokens: 0
       };
+      let webSearchUsage: AnthropicWebSearchUsage = {
+        present: false,
+        requests: 0
+      };
+      const streamStartedAt = Date.now();
+      let streamBytesUsed = 0;
 
       yield {
         data: {
@@ -533,259 +618,463 @@ export function createAnthropicMessagesAdapter(options: AnthropicMessagesAdapter
         type: "artifact"
       };
 
-      for await (const event of options.client.stream(body, {
-        signal: runOptions.signal,
-        streamLimits
-      })) {
-        const snapshot = providerStreamSafetySnapshot(event);
-        const type = eventType(event);
+      while (true) {
+        let messageStarted = false;
+        let terminalSeen = false;
+        let attemptMessageId: string | undefined;
+        let attemptModel: string | undefined;
+        let attemptStopReason: string | undefined;
+        let attemptUsage: ModelRunUsage = {
+          inputTokens: 0,
+          outputTokens: 0,
+          reasoningTokens: 0
+        };
+        let attemptWebSearchUsage: AnthropicWebSearchUsage = {
+          present: false,
+          requests: 0
+        };
+        const contentBlocks = new Map<number, AnthropicContentBlockAccumulator>();
+        const openContentBlocks = new Set<number>();
+        let toolUseBlockCount = 0;
+        let attemptStreamBytes = 0;
 
-        if (type === "message_start") {
-          messageStarted = true;
-          const message = objectValue(event.message);
-          messageId = messageIdFromStart(event);
-          model = stringValue(message?.model);
-          usage = usageFromAnthropic(message?.usage, usage);
+        for await (const event of options.client.stream(body, {
+          signal: runOptions.signal,
+          streamLimits: remainingAnthropicStreamLimits(
+            streamLimits,
+            streamStartedAt,
+            streamBytesUsed
+          )
+        })) {
+          const snapshot = providerStreamSafetySnapshot(event);
+          attemptStreamBytes = Math.max(
+            attemptStreamBytes,
+            snapshot?.totalStreamBytes ?? 0
+          );
+          const type = eventType(event);
 
-          yield {
-            data: {
-              artifactType: "summary",
-              payload: {
-                messageId,
-                model,
-                provider: "anthropic",
-                status: "message_start"
-              }
-            },
-            type: "artifact"
-          };
-          if (objectValue(message?.usage)) {
-            yield {
-              data: usage,
-              type: "usage"
-            };
-          }
-          continue;
-        }
+          if (type === "ping") continue;
 
-        if (type === "content_block_start") {
-          const index = contentBlockIndex(event);
-          const contentBlock = objectValue(event.content_block);
-          if (index === null || !contentBlock) {
-            throw new Error("anthropic_stream_truncated");
-          }
-          if (contentBlocks.has(index) || contentBlocks.size >= MAX_ANTHROPIC_CONTENT_BLOCKS) {
-            throw new Error("anthropic_stream_content_block_limit_exceeded");
-          }
-
-          const block = { ...contentBlock };
-          if (block.type === "tool_use") {
-            if (
-              typeof block.id !== "string" ||
-              !block.id ||
-              block.id.length > MAX_ANTHROPIC_TOOL_ID_LENGTH ||
-              typeof block.name !== "string" ||
-              !block.name ||
-              block.name.length > MAX_ANTHROPIC_TOOL_NAME_LENGTH
-            ) {
-              throw new Error("anthropic_stream_tool_call_invalid");
-            }
-            toolUseBlockCount += 1;
-            if (toolUseBlockCount > MAX_ANTHROPIC_TOOL_CALLS) {
-              throw new Error("anthropic_stream_tool_call_limit_exceeded");
-            }
-            assertBoundedStructuredTextLength({
-              maxChars: streamLimits.maxOutputChars,
-              retainedTextKind: "tool_arguments",
-              snapshot,
-              value: block.input
-            });
-          }
-          const accumulator: AnthropicContentBlockAccumulator = {
-            block,
-            inputJson: new BoundedTextAccumulator({
-              maxChars: streamLimits.maxOutputChars,
-              retainedTextKind: "tool_arguments"
-            }),
-            signature: typeof block.signature === "string"
-              ? new BoundedTextAccumulator({
-                  initialValue: block.signature,
-                  maxChars: streamLimits.maxOutputChars,
-                  retainedTextKind: "signature",
-                  snapshot
-                })
-              : null,
-            text: typeof block.text === "string"
-              ? new BoundedTextAccumulator({
-                  initialValue: block.text,
-                  maxChars: streamLimits.maxOutputChars,
-                  retainedTextKind: "visible_output",
-                  snapshot
-                })
-              : null,
-            thinking: typeof block.thinking === "string"
-              ? new BoundedTextAccumulator({
-                  initialValue: block.thinking,
-                  maxChars: streamLimits.maxOutputChars,
-                  retainedTextKind: "thinking",
-                  snapshot
-                })
-              : null
-          };
-          contentBlocks.set(index, accumulator);
-          openContentBlocks.add(index);
-
-          if (block.type === "text" && typeof block.text === "string" && block.text) {
-            finalText.append(block.text, snapshot);
-            yield {
-              data: {
-                delta: block.text
-              },
-              type: "token"
-            };
-          }
-          if (block.type === "thinking" && typeof block.thinking === "string" && block.thinking) {
-            thinkingText.append(block.thinking, snapshot);
-          }
-          continue;
-        }
-
-        if (type === "content_block_delta") {
-          const delta = objectValue(event.delta);
-          const index = contentBlockIndex(event);
-          const accumulator = index === null ? undefined : contentBlocks.get(index);
-
-          if (delta?.type === "text_delta" && typeof delta.text === "string") {
-            finalText.append(delta.text, snapshot);
-            if (accumulator) {
-              appendAnthropicBlockField(
-                accumulator,
-                "text",
-                delta.text,
-                streamLimits.maxOutputChars,
-                snapshot
+          if (type === "message_start") {
+            if (messageStarted) throw new Error("anthropic_stream_truncated");
+            messageStarted = true;
+            const message = objectValue(event.message);
+            attemptMessageId = messageIdFromStart(event);
+            attemptModel = stringValue(message?.model);
+            attemptUsage = usageFromAnthropic(message?.usage, attemptUsage);
+            if (hostedSearch) {
+              attemptWebSearchUsage = updateAnthropicWebSearchUsage(
+                attemptWebSearchUsage,
+                message?.usage
               );
             }
-            yield {
-              data: {
-                delta: delta.text
-              },
-              type: "token"
-            };
-          }
 
-          if (delta?.type === "thinking_delta" && typeof delta.thinking === "string") {
-            thinkingText.append(delta.thinking, snapshot);
-            if (accumulator) {
-              appendAnthropicBlockField(
-                accumulator,
-                "thinking",
-                delta.thinking,
-                streamLimits.maxOutputChars,
-                snapshot
-              );
-            }
             yield {
               data: {
-                artifactType: "reasoning",
+                artifactType: "summary",
                 payload: {
-                  delta: delta.thinking
+                  attempt: continuationCount + 1,
+                  messageId: attemptMessageId,
+                  model: attemptModel,
+                  provider: "anthropic",
+                  status: "message_start"
                 }
               },
               type: "artifact"
             };
+            if (objectValue(message?.usage)) {
+              yield {
+                data: addAnthropicMessageUsage(usage, attemptUsage),
+                type: "usage"
+              };
+            }
+            continue;
           }
 
-          if (delta?.type === "input_json_delta" && typeof delta.partial_json === "string") {
-            if (!accumulator || accumulator.block.type !== "tool_use") {
+          if (type === "content_block_start") {
+            if (!messageStarted) throw new Error("anthropic_stream_truncated");
+            const index = contentBlockIndex(event);
+            const contentBlock = objectValue(event.content_block);
+            if (index === null || !contentBlock) {
               throw new Error("anthropic_stream_truncated");
             }
-            accumulator.inputJson.append(delta.partial_json, snapshot);
+            if (contentBlocks.has(index) || contentBlocks.size >= MAX_ANTHROPIC_CONTENT_BLOCKS) {
+              throw new Error("anthropic_stream_content_block_limit_exceeded");
+            }
+
+            const block = { ...contentBlock };
+            if (
+              typeof block.type !== "string" ||
+              !anthropicContentBlockTypes.has(block.type)
+            ) {
+              throw new Error("anthropic_stream_content_block_unsupported");
+            }
+            if (
+              (block.type === "server_tool_use" ||
+                block.type === "web_search_tool_result") &&
+              !hostedSearch
+            ) {
+              throw new Error("anthropic_server_tool_unexpected");
+            }
+            if (block.type === "tool_use" && hostedSearch) {
+              throw new Error("anthropic_hosted_search_client_tools_unsupported");
+            }
+            if (block.type === "tool_use" || block.type === "server_tool_use") {
+              if (
+                typeof block.id !== "string" ||
+                !block.id ||
+                block.id.length > MAX_ANTHROPIC_TOOL_ID_LENGTH ||
+                typeof block.name !== "string" ||
+                !block.name ||
+                block.name.length > MAX_ANTHROPIC_TOOL_NAME_LENGTH
+              ) {
+                throw new Error("anthropic_stream_tool_call_invalid");
+              }
+              toolUseBlockCount += 1;
+              if (toolUseBlockCount > MAX_ANTHROPIC_TOOL_CALLS) {
+                throw new Error("anthropic_stream_tool_call_limit_exceeded");
+              }
+              assertBoundedStructuredTextLength({
+                maxChars: streamLimits.maxOutputChars,
+                retainedTextKind: "tool_arguments",
+                snapshot,
+                value: block.input
+              });
+            }
+            if (block.type === "web_search_tool_result") {
+              assertBoundedStructuredTextLength({
+                maxChars: ANTHROPIC_WEB_SEARCH_REPLAY_MAX_CHARACTERS,
+                retainedTextKind: "citations",
+                snapshot,
+                value: block
+              });
+            }
+            if (block.type === "redacted_thinking") {
+              assertBoundedStructuredTextLength({
+                maxChars: streamLimits.maxOutputChars,
+                retainedTextKind: "reasoning",
+                snapshot,
+                value: block
+              });
+            }
+            let citations: Record<string, unknown>[] | null = null;
+            let citationCharacters = 0;
+            if (block.citations !== undefined) {
+              if (
+                block.type !== "text" ||
+                !Array.isArray(block.citations) ||
+                block.citations.length > MAX_ANTHROPIC_SEARCH_CITATIONS ||
+                block.citations.some((citation) => !objectValue(citation))
+              ) {
+                throw new Error("anthropic_stream_citation_invalid");
+              }
+              citations = block.citations as Record<string, unknown>[];
+              citationCharacters = assertBoundedStructuredTextLength({
+                maxChars: ANTHROPIC_WEB_SEARCH_REPLAY_MAX_CHARACTERS,
+                retainedTextKind: "citations",
+                snapshot,
+                value: citations
+              });
+              block.citations = citations;
+            }
+            const accumulator: AnthropicContentBlockAccumulator = {
+              block,
+              citationCharacters,
+              citations,
+              inputJson: new BoundedTextAccumulator({
+                maxChars: streamLimits.maxOutputChars,
+                retainedTextKind: "tool_arguments"
+              }),
+              signature: typeof block.signature === "string"
+                ? new BoundedTextAccumulator({
+                    initialValue: block.signature,
+                    maxChars: streamLimits.maxOutputChars,
+                    retainedTextKind: "signature",
+                    snapshot
+                  })
+                : null,
+              text: typeof block.text === "string"
+                ? new BoundedTextAccumulator({
+                    initialValue: block.text,
+                    maxChars: streamLimits.maxOutputChars,
+                    retainedTextKind: "visible_output",
+                    snapshot
+                  })
+                : null,
+              thinking: typeof block.thinking === "string"
+                ? new BoundedTextAccumulator({
+                    initialValue: block.thinking,
+                    maxChars: streamLimits.maxOutputChars,
+                    retainedTextKind: "thinking",
+                    snapshot
+                  })
+                : null
+            };
+            contentBlocks.set(index, accumulator);
+            openContentBlocks.add(index);
+
+            if (block.type === "text" && typeof block.text === "string" && block.text) {
+              finalText.append(block.text, snapshot);
+              yield { data: { delta: block.text }, type: "token" };
+            }
+            if (block.type === "thinking" && typeof block.thinking === "string" && block.thinking) {
+              thinkingText.append(block.thinking, snapshot);
+            }
+            continue;
           }
 
-          if (delta?.type === "signature_delta" && typeof delta.signature === "string" && accumulator) {
-            appendAnthropicBlockField(
-              accumulator,
-              "signature",
-              delta.signature,
-              streamLimits.maxOutputChars,
-              snapshot
+          if (type === "content_block_delta") {
+            if (!messageStarted) throw new Error("anthropic_stream_truncated");
+            const delta = objectValue(event.delta);
+            const index = contentBlockIndex(event);
+            const accumulator = index === null ? undefined : contentBlocks.get(index);
+            const accumulatorOpen = index !== null && openContentBlocks.has(index);
+            if (
+              !delta ||
+              typeof delta.type !== "string" ||
+              !anthropicContentDeltaTypes.has(delta.type)
+            ) {
+              throw new Error("anthropic_stream_content_delta_unsupported");
+            }
+            if (delta.type === "text_delta" && typeof delta.text !== "string") {
+              throw new Error("anthropic_stream_truncated");
+            }
+            if (delta.type === "thinking_delta" && typeof delta.thinking !== "string") {
+              throw new Error("anthropic_stream_truncated");
+            }
+            if (delta.type === "input_json_delta" && typeof delta.partial_json !== "string") {
+              throw new Error("anthropic_stream_truncated");
+            }
+            if (
+              delta.type === "signature_delta" &&
+              (typeof delta.signature !== "string" || !accumulator)
+            ) {
+              throw new Error("anthropic_stream_truncated");
+            }
+            if (delta.type === "citations_delta" && !objectValue(delta.citation)) {
+              throw new Error("anthropic_stream_citation_invalid");
+            }
+            if (!accumulator || !accumulatorOpen) {
+              throw new Error("anthropic_stream_truncated");
+            }
+            if (delta.type === "text_delta" && accumulator.block.type !== "text") {
+              throw new Error("anthropic_stream_truncated");
+            }
+            if (
+              (delta.type === "thinking_delta" || delta.type === "signature_delta") &&
+              accumulator.block.type !== "thinking"
+            ) {
+              throw new Error("anthropic_stream_truncated");
+            }
+
+            if (delta?.type === "text_delta" && typeof delta.text === "string") {
+              finalText.append(delta.text, snapshot);
+              if (accumulator) {
+                appendAnthropicBlockField(
+                  accumulator,
+                  "text",
+                  delta.text,
+                  streamLimits.maxOutputChars,
+                  snapshot
+                );
+              }
+              yield { data: { delta: delta.text }, type: "token" };
+            }
+
+            if (delta?.type === "thinking_delta" && typeof delta.thinking === "string") {
+              thinkingText.append(delta.thinking, snapshot);
+              if (accumulator) {
+                appendAnthropicBlockField(
+                  accumulator,
+                  "thinking",
+                  delta.thinking,
+                  streamLimits.maxOutputChars,
+                  snapshot
+                );
+              }
+              yield {
+                data: {
+                  artifactType: "reasoning",
+                  payload: { delta: delta.thinking }
+                },
+                type: "artifact"
+              };
+            }
+
+            if (delta?.type === "input_json_delta" && typeof delta.partial_json === "string") {
+              if (
+                !accumulator ||
+                (accumulator.block.type !== "tool_use" &&
+                  accumulator.block.type !== "server_tool_use")
+              ) {
+                throw new Error("anthropic_stream_truncated");
+              }
+              accumulator.inputJson.append(delta.partial_json, snapshot);
+            }
+
+            if (delta?.type === "citations_delta") {
+              const citation = objectValue(delta.citation);
+              if (
+                !accumulator ||
+                accumulator.block.type !== "text" ||
+                !citation ||
+                (accumulator.citations?.length ?? 0) >= MAX_ANTHROPIC_SEARCH_CITATIONS
+              ) {
+                throw new Error("anthropic_stream_citation_invalid");
+              }
+              accumulator.citationCharacters = assertBoundedStructuredTextLength({
+                currentChars: accumulator.citationCharacters,
+                maxChars: ANTHROPIC_WEB_SEARCH_REPLAY_MAX_CHARACTERS,
+                retainedTextKind: "citations",
+                snapshot,
+                value: citation
+              });
+              accumulator.citations ??= [];
+              accumulator.citations.push(citation);
+              accumulator.block.citations = accumulator.citations;
+            }
+
+            if (delta?.type === "signature_delta" && typeof delta.signature === "string" && accumulator) {
+              appendAnthropicBlockField(
+                accumulator,
+                "signature",
+                delta.signature,
+                streamLimits.maxOutputChars,
+                snapshot
+              );
+            }
+            continue;
+          }
+
+          if (type === "content_block_stop") {
+            if (!messageStarted) throw new Error("anthropic_stream_truncated");
+            const index = contentBlockIndex(event);
+            if (index === null) throw new Error("anthropic_stream_truncated");
+            const accumulator = contentBlocks.get(index);
+            if (!accumulator || !openContentBlocks.delete(index)) {
+              throw new Error("anthropic_stream_truncated");
+            }
+            finalizeAnthropicBlockFields(accumulator);
+            if (
+              accumulator.block.type === "tool_use" ||
+              accumulator.block.type === "server_tool_use"
+            ) {
+              finalizeAnthropicToolInput(accumulator);
+            }
+            continue;
+          }
+
+          if (type === "message_delta") {
+            if (!messageStarted || openContentBlocks.size > 0) {
+              throw new Error("anthropic_stream_truncated");
+            }
+            const delta = objectValue(event.delta);
+            attemptStopReason = stringValue(delta?.stop_reason) ?? attemptStopReason;
+            attemptUsage = usageFromAnthropic(event.usage, attemptUsage);
+            if (hostedSearch) {
+              attemptWebSearchUsage = updateAnthropicWebSearchUsage(
+                attemptWebSearchUsage,
+                event.usage
+              );
+            }
+            if (objectValue(event.usage)) {
+              yield {
+                data: addAnthropicMessageUsage(usage, attemptUsage),
+                type: "usage"
+              };
+            }
+            continue;
+          }
+
+          if (type === "message_stop") {
+            if (!messageStarted || openContentBlocks.size > 0) {
+              throw new Error("anthropic_stream_truncated");
+            }
+            terminalSeen = true;
+            break;
+          }
+
+          if (type === "error") throw new Error("anthropic_stream_error");
+          throw new Error("anthropic_stream_event_unsupported");
+        }
+
+        if (!terminalSeen) throw new Error("anthropic_stream_truncated");
+        streamBytesUsed += attemptStreamBytes;
+
+        const assistantContent = [...contentBlocks.entries()]
+          .sort(([left], [right]) => left - right)
+          .map(([, value]) => value.block);
+        const providerToolCallMessage = { content: assistantContent, role: "assistant" };
+        const toolCalls = anthropicMessagesToolBridge.parseToolCalls(providerToolCallMessage);
+        usage = addAnthropicMessageUsage(usage, attemptUsage);
+        if (hostedSearch) {
+          webSearchUsage = addAnthropicWebSearchUsage(
+            webSearchUsage,
+            attemptWebSearchUsage
+          );
+          if (toolCalls.length > 0) {
+            throw new Error("anthropic_hosted_search_client_tools_unsupported");
+          }
+          allAssistantContent.push(...assistantContent);
+          const inspection = inspectAnthropicWebSearchContent(allAssistantContent, {
+            allowUnmatchedCalls: attemptStopReason === "pause_turn",
+            webSearchUsage
+          });
+          for (const artifact of inspection.artifacts) {
+            const identity = normalizedArtifactIdentity(artifact);
+            if (!emittedSearchArtifacts.has(identity)) {
+              emittedSearchArtifacts.add(identity);
+              yield artifact;
+            }
+          }
+          if (inspection.embeddedErrorCode) {
+            throw new Error(inspection.embeddedErrorCode);
+          }
+          if (attemptStopReason === "pause_turn") {
+            if (continuationCount >= MAX_ANTHROPIC_PAUSE_CONTINUATIONS) {
+              throw new Error("anthropic_search_pause_limit_exceeded");
+            }
+            body = anthropicContinuationBody(body, assistantContent);
+            continuationCount += 1;
+            continue;
+          }
+          if (attemptStopReason !== "end_turn") {
+            throw new Error(
+              attemptStopReason
+                ? `anthropic_message_${attemptStopReason}`
+                : "anthropic_search_terminal_invalid"
             );
           }
-          continue;
+          if (inspection.operationCount === 0) {
+            throw new Error("anthropic_search_operation_missing");
+          }
+          if (inspection.sources.length === 0) {
+            throw new Error("anthropic_search_sources_missing");
+          }
+        } else if (attemptStopReason === "pause_turn") {
+          throw new Error("anthropic_pause_turn_unexpected");
         }
 
-        if (type === "content_block_stop") {
-          const index = contentBlockIndex(event);
-          if (index === null) {
-            throw new Error("anthropic_stream_truncated");
-          }
-          const accumulator = contentBlocks.get(index);
-          if (!accumulator || !openContentBlocks.delete(index)) {
-            throw new Error("anthropic_stream_truncated");
-          }
-          finalizeAnthropicBlockFields(accumulator);
-          if (accumulator.block.type === "tool_use") {
-            finalizeAnthropicToolInput(accumulator);
-          }
-          continue;
-        }
-
-        if (type === "message_delta") {
-          const delta = objectValue(event.delta);
-          stopReason = stringValue(delta?.stop_reason) ?? stopReason;
-          usage = usageFromAnthropic(event.usage, usage);
-          if (objectValue(event.usage)) {
-            yield {
-              data: usage,
-              type: "usage"
-            };
-          }
-          continue;
-        }
-
-        if (type === "message_stop") {
-          if (!messageStarted || openContentBlocks.size > 0) {
-            throw new Error("anthropic_stream_truncated");
-          }
-
-          terminalSeen = true;
-          break;
-        }
-
-        if (type === "error") {
-          throw new Error("anthropic_stream_error");
-        }
-      }
-
-      if (!terminalSeen) {
-        throw new Error("anthropic_stream_truncated");
-      }
-
-      const assistantContent = [...contentBlocks.entries()]
-        .sort(([left], [right]) => left - right)
-        .map(([, value]) => value.block);
-      const providerToolCallMessage = {
-        content: assistantContent,
-        role: "assistant"
-      };
-      const toolCalls = anthropicMessagesToolBridge.parseToolCalls(providerToolCallMessage);
-      const rawFinalText = finalText.value();
-
-      return {
-        finalProviderResponsePreview: responsePreview({
+        messageId = attemptMessageId ?? messageId;
+        model = attemptModel ?? model;
+        stopReason = attemptStopReason;
+        const rawFinalText = finalText.value();
+        return {
+          finalProviderResponsePreview: responsePreview({
+            ...(hostedSearch ? { continuationCount, webSearchUsage } : {}),
+            finalText: rawFinalText,
+            messageId,
+            model,
+            stopReason,
+            usage
+          }),
           finalText: rawFinalText,
-          messageId,
-          model,
-          stopReason,
+          ...(!hostedSearch && toolCalls.length > 0 ? { providerToolCallMessage } : {}),
+          providerResponseId: messageId,
+          toolCalls: hostedSearch ? [] : toolCalls,
           usage
-        }),
-        finalText: rawFinalText,
-        ...(toolCalls.length > 0 ? { providerToolCallMessage } : {}),
-        providerResponseId: messageId,
-        toolCalls,
-        usage
-      };
+        };
+      }
     }
   };
 }
@@ -807,14 +1096,13 @@ export function createFetchAnthropicMessagesClient(input: {
   baseUrl?: string;
   fetchFn?: typeof fetch;
   version?: string;
-}): AnthropicMessagesClient {
+}): AnthropicMessagesClient & AnthropicMessagesSearchClient {
   const baseUrl = input.baseUrl?.trim() || "https://api.anthropic.com/v1";
   const fetchFn = input.fetchFn ?? fetch;
 
   return {
-    async *stream(body, options) {
-      const streamLimits = resolveProviderStreamLimits(options?.streamLimits);
-      const timeout = withTimeoutSignal(options?.signal);
+    async createMessage(body, options) {
+      const timeout = withTimeoutSignal(options?.signal, options?.timeoutMs);
       try {
         const response = await fetchFn(`${baseUrl}/messages`, {
           body: JSON.stringify(body),
@@ -826,12 +1114,46 @@ export function createFetchAnthropicMessagesClient(input: {
           method: "POST",
           signal: timeout.signal
         });
-
         if (!response.ok) {
           return await throwAnthropicHttpError(response, timeout.signal);
         }
-
+        const text = await readBoundedResponseText(response, { signal: timeout.signal });
+        let parsed: unknown;
+        try {
+          parsed = text ? JSON.parse(text) as unknown : null;
+        } catch {
+          throw new Error("anthropic_response_invalid_json");
+        }
+        const parsedObject = objectValue(parsed);
+        if (!parsedObject) {
+          throw new Error("anthropic_response_not_object");
+        }
+        return parsedObject;
+      } finally {
         timeout.clear();
+      }
+    },
+    async *stream(body, options) {
+      const streamLimits = resolveProviderStreamLimits(options?.streamLimits);
+      const deadline = withTimeoutSignal(options?.signal, streamLimits.maxDurationMs);
+      const requestTimeout = withTimeoutSignal(deadline.signal);
+      try {
+        const response = await fetchFn(`${baseUrl}/messages`, {
+          body: JSON.stringify(body),
+          headers: {
+            "anthropic-version": input.version ?? "2023-06-01",
+            "content-type": "application/json",
+            "x-api-key": input.apiKey
+          },
+          method: "POST",
+          signal: requestTimeout.signal
+        });
+
+        if (!response.ok) {
+          return await throwAnthropicHttpError(response, requestTimeout.signal);
+        }
+
+        requestTimeout.clear();
         if (!response.body) {
           throw new Error("anthropic_stream_body_missing");
         }
@@ -841,7 +1163,7 @@ export function createFetchAnthropicMessagesClient(input: {
           maxBytes: streamLimits.maxBytes,
           maxDurationMs: streamLimits.maxDurationMs,
           maxEventBytes: streamLimits.maxEventBytes,
-          signal: options?.signal
+          signal: deadline.signal
         })) {
           let parsed: unknown;
           try {
@@ -858,7 +1180,8 @@ export function createFetchAnthropicMessagesClient(input: {
           }
         }
       } finally {
-        timeout.clear();
+        requestTimeout.clear();
+        deadline.clear();
       }
     }
   };

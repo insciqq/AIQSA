@@ -75,7 +75,7 @@ AIQSA represents a declared Search-capable Responses path as an ordinary hidden 
 
 ## Anthropic Messages API
 
-Last verified: 2026-07-26.
+Last verified: 2026-08-04.
 
 Primary references:
 
@@ -88,6 +88,11 @@ Primary references:
 - `https://docs.anthropic.com/en/api/models-list`
 - `https://docs.anthropic.com/en/docs/build-with-claude/extended-thinking`
 - `https://platform.claude.com/docs/en/build-with-claude/pdf-support`
+- `https://platform.claude.com/docs/en/agents-and-tools/tool-use/web-search-tool`
+- `https://platform.claude.com/docs/en/agents-and-tools/tool-use/server-tools`
+- `https://platform.claude.com/docs/en/agents-and-tools/tool-use/tool-reference`
+- `https://platform.claude.com/docs/en/build-with-claude/handling-stop-reasons`
+- `https://platform.claude.com/docs/en/manage-claude/api-and-data-retention`
 
 Externally constrained facts:
 
@@ -99,6 +104,11 @@ Externally constrained facts:
 - Claude 5 uses adaptive thinking with effort. Its migration guidance removes manual extended-thinking budgets and non-default sampling combinations for this path, so AIQSA's Claude 5 templates do not expose temperature and default to adaptive thinking with high effort.
 - PDF/document and image support are model capabilities, not provider-wide assumptions. Direct native PDF input uses Messages document content; unsupported routes require the local extracted-text fallback.
 - Authenticated `GET /v1/models` uses `x-api-key` plus the Anthropic version header and returns model identifiers suitable for bounded credential validation and catalog-presence evidence.
+- Web Search is a GA Messages server tool. `web_search_20250305` is the basic direct contract; `web_search_20260209` adds dynamic filtering through automatically provisioned code execution, and `web_search_20260318` adds response inclusion controls. AIQSA deliberately pins the basic version with `allowed_callers: ["direct"]` and a local three-use ceiling rather than inheriting a later version's caller default.
+- A direct Search produces a `server_tool_use` paired by id with `web_search_tool_result`; the result carries an explicit `{ type: "direct" }` caller under this contract, while server-tool caller variants identify code-execution paths. Successful results carry URL/title, optional page age, and opaque `encrypted_content`. Text citations carry URL/title, a short cited excerpt, and opaque `encrypted_index`. Opaque fields must be replayed unchanged when continuing that provider response and are not portable Search evidence.
+- Search operation failures are HTTP-200 result blocks with one of `too_many_requests`, `invalid_tool_input`, `max_uses_exceeded`, `query_too_long`, `request_too_large`, or `unavailable`; an empty result list is successful execution with no matches. Organization-disabled Search instead fails the Messages request with HTTP 400.
+- Streaming emits incremental `server_tool_use` input, an atomic complete Search-result block, text/citation deltas, and the ordinary Messages terminal. `pause_turn` requires replaying the complete assistant content with the same model and tools; callers must impose their own continuation cap. Mixing server and client tools introduces a different deferred-tool lifecycle, so AIQSA does not combine hosted Anthropic Search with app/MCP tools in its initial contract.
+- Usage reports token fields plus `server_tool_use.web_search_requests`. Search is billed per successful use in addition to model tokens. Basic Search is currently ZDR/HIPAA eligible; dynamic filtering is not because it uses code execution. Standard commercial retention and provider trust-and-safety/legal exceptions still apply, so AIQSA does not treat eligibility as a promise about every downstream search processor.
 
 Current AIQSA defaults and request/event normalization live in `BACKEND.md` and adapter tests.
 

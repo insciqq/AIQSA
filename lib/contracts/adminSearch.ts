@@ -83,7 +83,7 @@ export type AdminSearchProviderModelOption = {
   enabled: boolean;
   id: string;
   searchReasoningSupported: boolean;
-  searchKind: "gemini_google_search" | "perplexity_search" | "web_search";
+  searchKind: "anthropic_web_search" | "gemini_google_search" | "perplexity_search" | "web_search";
 };
 
 export type AdminSearchCatalog = {
@@ -138,7 +138,8 @@ export function decodeAdminSearchDraft(value: unknown): AdminSearchDraft | null 
       adminSearchExecutionLimits.maxSearchCallsPerAnswer.minimum,
       adminSearchExecutionLimits.maxSearchCallsPerAnswer.maximum
     ) &&
-    (value.protocol === "gemini_google_search" ||
+    (value.protocol === "anthropic_web_search" ||
+      value.protocol === "gemini_google_search" ||
       value.protocol === "openai_responses_web_search" ||
       value.protocol === "openrouter_perplexity_chat") &&
     nullableString(value.providerModelId) &&
@@ -167,7 +168,8 @@ function evidence(value: unknown): value is AdminSearchTestEvidence | null {
     string(value.checkedAt) &&
     (value.method === "configuration" || value.method === "provider_search") &&
     Number.isSafeInteger(value.normalizedSourceCount) &&
-    (value.protocol === "gemini_google_search" ||
+    (value.protocol === "anthropic_web_search" ||
+      value.protocol === "gemini_google_search" ||
       value.protocol === "openai_responses_web_search" ||
       value.protocol === "openrouter_perplexity_chat") &&
     (value.status === "available" || value.status === "unavailable")
@@ -208,7 +210,8 @@ function providerModel(value: unknown): boolean {
     string(value.displayName) && typeof value.enabled === "boolean" && string(value.id) &&
     (value.searchReasoningSupported === undefined ||
       typeof value.searchReasoningSupported === "boolean") &&
-    (value.searchKind === "gemini_google_search" ||
+    (value.searchKind === "anthropic_web_search" ||
+      value.searchKind === "gemini_google_search" ||
       value.searchKind === "perplexity_search" || value.searchKind === "web_search");
 }
 

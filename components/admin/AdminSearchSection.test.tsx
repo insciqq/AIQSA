@@ -448,6 +448,69 @@ describe("AdminSearchSection", () => {
     })));
   });
 
+  it("keeps Anthropic Search as one logical source while selecting its exact model", async () => {
+    const anthropicCatalog: AdminSearchCatalog = {
+      ...catalog,
+      integrations: [{
+        ...catalog.integrations[0],
+        configuration: {
+          ...catalog.integrations[0]!.configuration!,
+          protocol: "anthropic_web_search",
+          providerModelId: "anthropic-1"
+        },
+        displayName: "Anthropic Search",
+        id: "anthropic-source",
+        providerModel: {
+          connectionDisplayName: "Anthropic",
+          connectionId: "anthropic-connection",
+          displayName: "Claude Opus 5",
+          id: "anthropic-1"
+        },
+        sourceConnectionId: "anthropic-connection",
+        strategyId: "anthropic-web-search",
+        system: true
+      }],
+      providerModels: [{
+        connectionDisplayName: "Anthropic",
+        connectionId: "anthropic-connection",
+        displayName: "Claude Opus 5",
+        enabled: true,
+        id: "anthropic-1",
+        searchKind: "anthropic_web_search",
+        searchReasoningSupported: true
+      }, {
+        connectionDisplayName: "Anthropic",
+        connectionId: "anthropic-connection",
+        displayName: "Claude Sonnet 5",
+        enabled: true,
+        id: "anthropic-2",
+        searchKind: "anthropic_web_search",
+        searchReasoningSupported: true
+      }]
+    };
+    api.list.mockResolvedValue({ ok: true, search: anthropicCatalog });
+    render(<AdminSearchSection active />);
+
+    const index = await screen.findByRole("list", { name: "Search source catalog" });
+    fireEvent.click(within(index).getByRole("button", { name: /Anthropic Search/i }));
+    fireEvent.click(screen.getByRole("tab", { name: "Configuration" }));
+    fireEvent.click(screen.getByText("Advanced Search execution"));
+    const selector = screen.getByRole("combobox", { name: /^Search model/ });
+
+    expect(within(selector).getAllByRole("option")).toHaveLength(3);
+    expect(screen.getByRole("combobox", { name: /^Search reasoning/ })).toBeVisible();
+    fireEvent.change(selector, { target: { value: "anthropic-2" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+
+    await waitFor(() => expect(api.update).toHaveBeenCalledWith(expect.objectContaining({
+      draft: expect.objectContaining({
+        protocol: "anthropic_web_search",
+        providerModelId: "anthropic-2"
+      }),
+      id: "anthropic-source"
+    })));
+  });
+
   it("lets an administrator remove an unavailable source from the recommendation", async () => {
     api.list.mockResolvedValue({
       ok: true,

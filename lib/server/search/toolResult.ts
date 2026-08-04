@@ -11,6 +11,7 @@ import {
   normalizeSearchSources,
   type SearchSource
 } from "./evidence";
+import type { ProviderSearchUsage } from "./providerOperations";
 
 export const SEARCH_TOOL_RESULT_VERSION = 1;
 const LEGACY_MAX_SEARCH_FINDINGS_CHARACTERS = 262_144;
@@ -35,6 +36,7 @@ export type SearchExecutionEvidence = Readonly<{
   provider: string;
   providerOperations?: readonly ThreadSearchProviderOperation[];
   providerOperationsTruncated: boolean;
+  providerUsage?: ProviderSearchUsage;
   query: string;
   requestPreview: Readonly<Record<string, unknown>>;
   revisionId: string;
@@ -79,6 +81,15 @@ function decodedUsage(value: unknown): ModelRunUsage | undefined {
     reasoningTokens: value.reasoningTokens,
     ...(value.totalTokens !== undefined ? { totalTokens: value.totalTokens } : {})
   };
+}
+
+function decodedProviderUsage(value: unknown): ProviderSearchUsage | undefined {
+  if (!isRecord(value) || Object.keys(value).length !== 1) return undefined;
+  const requests = value.webSearchRequests;
+  return typeof requests === "number" && Number.isSafeInteger(requests) &&
+    requests >= 0 && requests <= 100
+    ? { webSearchRequests: requests }
+    : undefined;
 }
 
 function normalizedFailureCode(value: unknown): string {
@@ -168,6 +179,10 @@ export function searchExecutionsFromToolResult(
     )) return [];
     const failure = value.failure === undefined ? undefined : decodedFailure(value.failure);
     if (value.failure !== undefined && !failure) return [];
+    const providerUsage = value.providerUsage === undefined
+      ? undefined
+      : decodedProviderUsage(value.providerUsage);
+    if (value.providerUsage !== undefined && !providerUsage) return [];
     const findings = decodedFindings(value.findings, legacy);
     if (value.findings !== undefined && !findings) return [];
     const warning = value.warning === undefined
@@ -209,6 +224,7 @@ export function searchExecutionsFromToolResult(
       ...(failure ? { failure } : {}),
       ...(findings ? { findings } : {}),
       ...(providerOperations ? { providerOperations } : {}),
+      ...(providerUsage ? { providerUsage } : {}),
       ...(warning ? { warning } : {})
     }];
   });

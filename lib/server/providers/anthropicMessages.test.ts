@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   buildAnthropicMessagesRequest,
   createAnthropicMessagesAdapter,
@@ -9,6 +9,7 @@ import {
 import type { ProviderRunRequest } from "./types";
 import type { RunTool } from "../tools/types";
 import { DEFAULT_PROVIDER_STREAM_LIMITS } from "./network";
+import { attachProviderStreamSafetySnapshot } from "./streamSafety";
 
 const mcpTool: RunTool = {
   capability: "mcp",
@@ -60,6 +61,36 @@ function request(overrides: Partial<ProviderRunRequest> = {}): ProviderRunReques
     searchStrategy: "search-disabled",
     ...overrides
   };
+}
+
+function hostedSearchRequest(
+  overrides: Partial<ProviderRunRequest> = {}
+): ProviderRunRequest {
+  const base = request();
+  return request({
+    modelCapabilities: {
+      ...base.modelCapabilities,
+      nativeSearch: true
+    },
+    searchPlan: {
+      mode: "model_choice",
+      options: [{
+        adapterKind: "answer_provider_hosted",
+        config: {},
+        credentialMode: "answer_provider",
+        executionModes: ["model_choice"],
+        modelId: null,
+        optionId: "anthropic-web-search",
+        protocol: "anthropic_web_search",
+        provider: "anthropic",
+        providerModelId: null,
+        revisionId: "anthropic-search-revision",
+        searchStrategyRowId: "anthropic-search-route"
+      }]
+    },
+    searchStrategy: "anthropic-web-search",
+    ...overrides
+  });
 }
 
 async function* events(values: AnthropicStreamEvent[]): AsyncGenerator<AnthropicStreamEvent> {
@@ -207,6 +238,30 @@ describe("Anthropic Messages adapter", () => {
         process.env.AIQSA_PROVIDER_TIMEOUT_MS = previousTimeout;
       }
     }
+  });
+
+  it("keeps one stream deadline active while awaiting response headers", async () => {
+    const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
+      const signal = init?.signal;
+      if (!signal) throw new Error("test_signal_missing");
+      return await new Promise<Response>((_resolve, reject) => {
+        const rejectOnAbort = () => reject(signal.reason);
+        if (signal.aborted) {
+          rejectOnAbort();
+          return;
+        }
+        signal.addEventListener("abort", rejectOnAbort, { once: true });
+      });
+    });
+    const client = createFetchAnthropicMessagesClient({ apiKey: "key", fetchFn });
+
+    await expect(client.stream({}, {
+      streamLimits: {
+        ...DEFAULT_PROVIDER_STREAM_LIMITS,
+        maxDurationMs: 20
+      }
+    }).next()).rejects.toThrow("Provider request timed out");
+    expect(fetchFn).toHaveBeenCalledOnce();
   });
 
   it("generates streaming Messages requests with system, thinking, and attachments", () => {
@@ -461,6 +516,24 @@ describe("Anthropic Messages adapter", () => {
     });
   });
 
+  it("serializes only the reviewed hosted Search declaration and rejects client-tool mixing", () => {
+    const body = buildAnthropicMessagesRequest(hostedSearchRequest());
+
+    expect(body.tools).toEqual([{
+      allowed_callers: ["direct"],
+      max_uses: 3,
+      name: "web_search",
+      type: "web_search_20250305"
+    }]);
+    expect(body).not.toHaveProperty("tool_choice");
+    expect(() => buildAnthropicMessagesRequest(hostedSearchRequest({
+      tools: [mcpTool]
+    }))).toThrow("anthropic_hosted_search_client_tools_unsupported");
+    expect(() => buildAnthropicMessagesRequest(hostedSearchRequest({
+      providerToolMessages: [{ content: [], role: "assistant" }]
+    }))).toThrow("anthropic_hosted_search_client_tools_unsupported");
+  });
+
   it("redacts image bytes in request previews", () => {
     const client: AnthropicMessagesClient = {
       stream: () => events([])
@@ -507,17 +580,30 @@ describe("Anthropic Messages adapter", () => {
             type: "message_start"
           },
           {
+            content_block: { signature: "", thinking: "", type: "thinking" },
+            index: 0,
+            type: "content_block_start"
+          },
+          {
             delta: {
               thinking: "checking",
               type: "thinking_delta"
             },
+            index: 0,
             type: "content_block_delta"
+          },
+          { index: 0, type: "content_block_stop" },
+          {
+            content_block: { text: "", type: "text" },
+            index: 1,
+            type: "content_block_start"
           },
           {
             delta: {
               text: "Hello",
               type: "text_delta"
             },
+            index: 1,
             type: "content_block_delta"
           },
           {
@@ -525,8 +611,10 @@ describe("Anthropic Messages adapter", () => {
               text: "!",
               type: "text_delta"
             },
+            index: 1,
             type: "content_block_delta"
           },
+          { index: 1, type: "content_block_stop" },
           {
             delta: {
               stop_reason: "end_turn"
@@ -593,6 +681,281 @@ describe("Anthropic Messages adapter", () => {
         totalTokens: 27
       }
     });
+  });
+
+  it("normalizes hosted Search SSE without exposing server blocks as client tool calls", async () => {
+    const client: AnthropicMessagesClient = {
+      stream: () => events([
+        {
+          message: {
+            id: "msg-hosted-search",
+            model: "claude-opus-5",
+            usage: {
+              input_tokens: 8,
+              server_tool_use: { web_search_requests: 1 }
+            }
+          },
+          type: "message_start"
+        },
+        { type: "ping" },
+        {
+          content_block: {
+            id: "srvtoolu-hosted",
+            input: {},
+            name: "web_search",
+            type: "server_tool_use"
+          },
+          index: 0,
+          type: "content_block_start"
+        },
+        {
+          delta: { partial_json: '{"query":"Moscow news"}', type: "input_json_delta" },
+          index: 0,
+          type: "content_block_delta"
+        },
+        { index: 0, type: "content_block_stop" },
+        {
+          content_block: {
+            caller: { type: "direct" },
+            content: [{
+              encrypted_content: "PRIVATE_ENCRYPTED_RESULT",
+              page_age: "2026-08-04",
+              title: "Current report",
+              type: "web_search_result",
+              url: "https://example.com/report"
+            }],
+            tool_use_id: "srvtoolu-hosted",
+            type: "web_search_tool_result"
+          },
+          index: 1,
+          type: "content_block_start"
+        },
+        { index: 1, type: "content_block_stop" },
+        {
+          content_block: { text: "", type: "text" },
+          index: 2,
+          type: "content_block_start"
+        },
+        {
+          delta: { text: "Current findings.", type: "text_delta" },
+          index: 2,
+          type: "content_block_delta"
+        },
+        {
+          delta: {
+            citation: {
+              cited_text: "A concise supported fact.",
+              encrypted_index: "PRIVATE_ENCRYPTED_INDEX",
+              title: null,
+              type: "web_search_result_location",
+              url: "https://example.com/report"
+            },
+            type: "citations_delta"
+          },
+          index: 2,
+          type: "content_block_delta"
+        },
+        { index: 2, type: "content_block_stop" },
+        {
+          delta: { stop_reason: "end_turn" },
+          type: "message_delta",
+          usage: {
+            output_tokens: 5,
+            server_tool_use: { web_search_requests: 1 }
+          }
+        },
+        { type: "message_stop" }
+      ])
+    };
+    const normalized = await collectAdapterStream(
+      client,
+      DEFAULT_PROVIDER_STREAM_LIMITS.maxOutputChars,
+      hostedSearchRequest()
+    );
+
+    expect(normalized.result).toMatchObject({
+      finalProviderResponsePreview: {
+        continuationCount: 0,
+        stopReason: "end_turn",
+        webSearchRequests: 1
+      },
+      finalText: "Current findings.",
+      providerResponseId: "msg-hosted-search",
+      toolCalls: [],
+      usage: { inputTokens: 8, outputTokens: 5, totalTokens: 13 }
+    });
+    expect(normalized.result).not.toHaveProperty("providerToolCallMessage");
+    expect(normalized.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        data: expect.objectContaining({ artifactType: "search" }),
+        type: "artifact"
+      }),
+      expect.objectContaining({
+        data: expect.objectContaining({ artifactType: "citation" }),
+        type: "artifact"
+      })
+    ]));
+    expect(JSON.stringify(normalized)).not.toMatch(
+      /PRIVATE_ENCRYPTED_RESULT|PRIVATE_ENCRYPTED_INDEX/u
+    );
+  });
+
+  it("matches a paused server-tool id on the next hop under shared stream budgets", async () => {
+    const bodies: Record<string, unknown>[] = [];
+    const limits: Array<{ maxBytes: number; maxDurationMs: number }> = [];
+    let attempt = 0;
+    const client: AnthropicMessagesClient = {
+      stream(body, options) {
+        bodies.push(body);
+        limits.push({
+          maxBytes: options?.streamLimits?.maxBytes ?? 0,
+          maxDurationMs: options?.streamLimits?.maxDurationMs ?? 0
+        });
+        attempt += 1;
+        const values: AnthropicStreamEvent[] = attempt === 1
+          ? [
+              { message: { id: "msg-paused", usage: { input_tokens: 2 } }, type: "message_start" },
+              {
+                content_block: {
+                  id: "srvtoolu-paused",
+                  input: { query: "Moscow news" },
+                  name: "web_search",
+                  type: "server_tool_use"
+                },
+                index: 0,
+                type: "content_block_start"
+              },
+              { index: 0, type: "content_block_stop" },
+              {
+                delta: { stop_reason: "pause_turn" },
+                type: "message_delta",
+                usage: {
+                  output_tokens: 1,
+                  server_tool_use: { web_search_requests: 1 }
+                }
+              },
+              { type: "message_stop" }
+            ]
+          : [
+              { message: { id: "msg-finished", usage: { input_tokens: 4 } }, type: "message_start" },
+              {
+                content_block: {
+                  caller: { type: "direct" },
+                  content: [{
+                    encrypted_content: "PRIVATE_CONTINUATION_RESULT",
+                    title: "Current report",
+                    type: "web_search_result",
+                    url: "https://example.com/report"
+                  }],
+                  tool_use_id: "srvtoolu-paused",
+                  type: "web_search_tool_result"
+                },
+                index: 0,
+                type: "content_block_start"
+              },
+              { index: 0, type: "content_block_stop" },
+              {
+                content_block: {
+                  citations: [{
+                    cited_text: "Supported.",
+                    encrypted_index: "PRIVATE_CONTINUATION_INDEX",
+                    title: "Current report",
+                    type: "web_search_result_location",
+                    url: "https://example.com/report"
+                  }],
+                  text: "Done.",
+                  type: "text"
+                },
+                index: 1,
+                type: "content_block_start"
+              },
+              { index: 1, type: "content_block_stop" },
+              {
+                delta: { stop_reason: "end_turn" },
+                type: "message_delta",
+                usage: {
+                  output_tokens: 3,
+                  server_tool_use: { web_search_requests: 0 }
+                }
+              },
+              { type: "message_stop" }
+            ];
+        return (async function* () {
+          for (const value of values) {
+            yield attachProviderStreamSafetySnapshot(value, {
+              durationMs: 1,
+              totalStreamBytes: attempt === 1 ? 60 : 30
+            });
+          }
+        })();
+      }
+    };
+    const adapter = createAnthropicMessagesAdapter({
+      client,
+      streamLimits: {
+        ...DEFAULT_PROVIDER_STREAM_LIMITS,
+        maxBytes: 100,
+        maxDurationMs: 10_000,
+        maxEventBytes: 100
+      }
+    });
+    const stream = adapter.stream(hostedSearchRequest());
+    const seen = [];
+    let next = await stream.next();
+    while (!next.done) {
+      seen.push(next.value);
+      next = await stream.next();
+    }
+
+    expect(bodies).toHaveLength(2);
+    expect((bodies[1]?.messages as Record<string, unknown>[]).at(-1)).toEqual({
+      content: [{
+        id: "srvtoolu-paused",
+        input: { query: "Moscow news" },
+        name: "web_search",
+        type: "server_tool_use"
+      }],
+      role: "assistant"
+    });
+    expect(bodies[1]?.tools).toEqual(bodies[0]?.tools);
+    expect(limits[0]?.maxBytes).toBe(100);
+    expect(limits[1]?.maxBytes).toBe(40);
+    expect(limits[1]?.maxDurationMs).toBeLessThanOrEqual(limits[0]!.maxDurationMs);
+    expect(next.value).toMatchObject({
+      finalProviderResponsePreview: {
+        continuationCount: 1,
+        webSearchRequests: 1
+      },
+      finalText: "Done.",
+      providerResponseId: "msg-finished",
+      toolCalls: [],
+      usage: { inputTokens: 6, outputTokens: 4, totalTokens: 10 }
+    });
+    expect(next.value).not.toHaveProperty("providerToolCallMessage");
+    const searchArtifacts = seen.filter((event) =>
+      event.type === "artifact" && event.data.artifactType === "search");
+    expect(searchArtifacts).toHaveLength(2);
+    expect(JSON.stringify({ next: next.value, seen })).not.toMatch(
+      /PRIVATE_CONTINUATION_RESULT|PRIVATE_CONTINUATION_INDEX/u
+    );
+  });
+
+  it("rejects unsafe hosted Search usage values", async () => {
+    const client: AnthropicMessagesClient = {
+      stream: () => events([{
+        message: {
+          id: "msg-unsafe-usage",
+          usage: { input_tokens: Number.MAX_SAFE_INTEGER + 1 }
+        },
+        type: "message_start"
+      }])
+    };
+
+    await expect(collectAdapterStream(
+      client,
+      DEFAULT_PROVIDER_STREAM_LIMITS.maxOutputChars,
+      hostedSearchRequest()
+    )).rejects.toThrow("anthropic_usage_invalid");
   });
 
   it("assembles multiple streamed tool_use blocks and exposes their continuation message", async () => {
@@ -881,6 +1244,47 @@ describe("Anthropic Messages adapter", () => {
     )).rejects.toThrow("anthropic_stream_tool_call_invalid");
   });
 
+  it("rejects unknown or out-of-order stream structures", async () => {
+    const malformed = (values: AnthropicStreamEvent[]) =>
+      collectAdapterStream(
+        { stream: () => events(values) },
+        DEFAULT_PROVIDER_STREAM_LIMITS.maxOutputChars
+      );
+
+    await expect(malformed([{
+      content_block: { text: "early", type: "text" },
+      index: 0,
+      type: "content_block_start"
+    }])).rejects.toThrow("anthropic_stream_truncated");
+    await expect(malformed([
+      { message: { id: "msg-unknown-block" }, type: "message_start" },
+      { content_block: { type: "future_block" }, index: 0, type: "content_block_start" }
+    ])).rejects.toThrow("anthropic_stream_content_block_unsupported");
+    await expect(malformed([
+      { message: { id: "msg-unknown-delta" }, type: "message_start" },
+      { content_block: { text: "", type: "text" }, index: 0, type: "content_block_start" },
+      { delta: { type: "future_delta" }, index: 0, type: "content_block_delta" }
+    ])).rejects.toThrow("anthropic_stream_content_delta_unsupported");
+    await expect(malformed([
+      { message: { id: "msg-mismatch" }, type: "message_start" },
+      {
+        content_block: { signature: "", thinking: "", type: "thinking" },
+        index: 0,
+        type: "content_block_start"
+      },
+      {
+        delta: { text: "wrong block", type: "text_delta" },
+        index: 0,
+        type: "content_block_delta"
+      }
+    ])).rejects.toThrow("anthropic_stream_truncated");
+
+    await expect(malformed([
+      { message: { id: "msg-unknown-event" }, type: "message_start" },
+      { opaque: true, type: "future_provider_event" }
+    ])).rejects.toThrow("anthropic_stream_event_unsupported");
+  });
+
   it("rejects partial and empty EOF while preserving explicit stream errors", async () => {
     const partialAdapter = createAnthropicMessagesAdapter({
       client: {
@@ -891,9 +1295,16 @@ describe("Anthropic Messages adapter", () => {
               type: "message_start"
             },
             {
+              content_block: { text: "", type: "text" },
+              index: 0,
+              type: "content_block_start"
+            },
+            {
               delta: { text: "Partial", type: "text_delta" },
+              index: 0,
               type: "content_block_delta"
             },
+            { index: 0, type: "content_block_stop" },
             {
               delta: { stop_reason: "end_turn" },
               type: "message_delta",
@@ -959,7 +1370,9 @@ describe("Anthropic Messages adapter", () => {
         new Response(
           responseBody([
             'data: {"type":"message_start","message":{"id":"msg-split","model":"claude-opus-4-8"}}\n\n',
-            'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"Split terminal"}}\n\n',
+            'data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n',
+            'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Split terminal"}}\n\n',
+            'data: {"type":"content_block_stop","index":0}\n\n',
             'data: {"type":"message_st',
             'op"}\n\n'
           ]),

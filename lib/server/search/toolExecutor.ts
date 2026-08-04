@@ -226,6 +226,15 @@ function queryOnlyRequest(
       reasoningPolicy: configured.reasoningPolicy,
       strategyId: "gemini-google-search"
     };
+  } else if (option.protocol === "anthropic_web_search" && option.provider === "anthropic") {
+    searchPolicy = {
+      maxOutputTokens: configured.maxOutputTokens,
+      modelCapabilities: configured.capabilities,
+      modelId: option.modelId ?? "",
+      provider: "anthropic",
+      reasoningPolicy: configured.reasoningPolicy,
+      strategyId: "anthropic-web-search"
+    };
   } else {
     throw new Error("search_protocol_not_supported");
   }
@@ -348,6 +357,7 @@ async function executeOne(input: Readonly<{
         ? { providerOperations: providerTrace.operations }
         : {}),
       providerOperationsTruncated: providerTrace?.truncated ?? false,
+      ...(providerTrace.providerUsage ? { providerUsage: providerTrace.providerUsage } : {}),
       query: input.query,
       requestPreview: executionRequestPreview,
       revisionId: input.option.revisionId,
@@ -385,6 +395,7 @@ async function executeOne(input: Readonly<{
       provider: input.option.provider,
       ...(providerTrace ? { providerOperations: providerTrace.operations } : {}),
       providerOperationsTruncated: providerTrace?.truncated ?? false,
+      ...(providerTrace?.providerUsage ? { providerUsage: providerTrace.providerUsage } : {}),
       query: input.query,
       requestPreview: executionRequestPreview,
       revisionId: input.option.revisionId,
@@ -451,6 +462,7 @@ function oversizedSearchExecution(
     providerOperationsTruncated: preserveOperations
       ? execution.providerOperationsTruncated
       : execution.providerOperationsTruncated || Boolean(execution.providerOperations?.length),
+    ...(execution.providerUsage ? { providerUsage: execution.providerUsage } : {}),
     query: execution.query,
     requestPreview: preserveOperations ? execution.requestPreview : {},
     revisionId: execution.revisionId,

@@ -111,11 +111,27 @@ describe("provider tool bridges", () => {
       },
       searchStrategy: "company-search"
     } as unknown as ProviderRunRequest;
+    const hostedAnthropic = {
+      searchPlan: {
+        mode: "model_choice",
+        options: [{
+          adapterKind: "answer_provider_hosted",
+          protocol: "anthropic_web_search"
+        }]
+      },
+      searchStrategy: "anthropic-web-search"
+    } as unknown as ProviderRunRequest;
 
     expect(geminiInteractionsToolBridge.serializeHostedTools?.(logicalGeminiClient)).toEqual([]);
     expect(openAIResponsesToolBridge.serializeHostedTools?.(hostedOpenAI)).toEqual([
       { type: "web_search" }
     ]);
+    expect(anthropicMessagesToolBridge.serializeHostedTools?.(hostedAnthropic)).toEqual([{
+      allowed_callers: ["direct"],
+      max_uses: 3,
+      name: "web_search",
+      type: "web_search_20250305"
+    }]);
   });
 
   it("owns provider-specific assistant continuation serialization", () => {

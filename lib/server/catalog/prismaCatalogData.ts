@@ -387,7 +387,8 @@ function routeBelongsToOption(
   route: SearchStrategyRouteCatalogEntry
 ): boolean {
   if (optionKind === "web_search") {
-    return route.protocol === "openai_responses_web_search";
+    return route.protocol === "anthropic_web_search" ||
+      route.protocol === "openai_responses_web_search";
   }
   if (optionKind === "gemini_google_search") {
     return route.protocol === "gemini_google_search";

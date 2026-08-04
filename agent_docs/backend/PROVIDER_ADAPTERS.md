@@ -90,7 +90,10 @@ Current adapter behavior:
 - system and developer prompt drafts are combined into top-level `system`;
 - `nativePdfInput` models receive current PDF attachments as Messages `document` blocks with base64 PDF sources; other PDF-capable models receive extracted text blocks;
 - thinking controls map to Anthropic thinking/output config fields where supported;
-- provider SSE events map text deltas to tokens, thinking deltas to reasoning artifacts, and cumulative usage to run usage; `message_stop` is required before the adapter returns success, and prior EOF is `anthropic_stream_truncated`.
+- provider SSE events map text deltas to tokens, thinking deltas to reasoning artifacts, citations and hosted Search activity to bounded normalized artifacts, and cumulative usage to run usage; `message_stop` is required before the adapter returns success, and prior EOF is `anthropic_stream_truncated`;
+- `anthropic-web-search` is one connection-owned logical source. Eligible same-connection answers use hosted Search only when no app/MCP client tools must coexist; otherwise admission selects its exact-model query-only route. Both routes pin `{ type: "web_search_20250305", name: "web_search", max_uses: 3, allowed_callers: ["direct"] }`, and request construction rejects mixing that hosted tool with client tools;
+- query-only Search is non-streaming and receives only the validated query, fixed instruction, exact technical model, bounded output/effort policy, and server tool. It requires an observed successful operation, bounded findings, and safe citations. The cumulative provider-reported Search request count is retained only as bounded normalized usage. Raw result/error bodies and opaque `encrypted_content`/`encrypted_index` never become previews, artifacts, logs, SearchRun data, or downstream context;
+- `pause_turn` continuation replays the complete provider assistant content with the identical tool inside one live adapter deadline, for at most three continuation requests. Opaque replay fields remain in memory only; an interrupted partial continuation is not checkpointed or repeated automatically, while settled query-only calls retain the ordinary tool-result recovery path.
 
 ## Native Gemini Interactions
 

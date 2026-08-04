@@ -31,6 +31,14 @@ const MAX_DISPLAY_NAME_LENGTH = 200;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 const BUILT_IN_SEARCH_OPTIONS = Object.freeze({
+  "anthropic-web-search": Object.freeze({
+    description: "Web search provided by Anthropic.",
+    displayName: "Anthropic Search",
+    id: "00000000-0000-4000-8000-000000001405",
+    kind: "web_search",
+    sourceConnectionId: providerTemplateIds.anthropicConnection,
+    templateKey: "search:anthropic"
+  }),
   "gemini-google-search": Object.freeze({
     description: "Google Search grounding for eligible Gemini models.",
     displayName: "Google Search",
@@ -249,7 +257,7 @@ async function hasApplicationRows(tx: Prisma.TransactionClient): Promise<boolean
         -- This code-owned strategy is inserted by its append-only migration
         -- even on a fresh schema, before installation bootstrap runs.
         UNION ALL SELECT 1 FROM "SearchStrategy"
-          WHERE "strategyId" <> 'gemini-google-search'
+          WHERE "strategyId" NOT IN ('anthropic-web-search', 'gemini-google-search')
         UNION ALL SELECT 1 FROM "Chat"
         UNION ALL SELECT 1 FROM "Message"
         UNION ALL SELECT 1 FROM "ModelRun"

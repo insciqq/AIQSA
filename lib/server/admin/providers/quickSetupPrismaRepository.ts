@@ -3,6 +3,8 @@ import { Prisma, type PrismaClient } from "@prisma/client";
 import type { RunProfileId } from "../../../contracts/runProfiles";
 import { defaultProviderModels } from "../../../domain/catalog";
 import {
+  ANTHROPIC_PROVIDER_SEARCH_INTEGRATION_ID,
+  ANTHROPIC_PROVIDER_SEARCH_STRATEGY_ID,
   GEMINI_PROVIDER_SEARCH_INTEGRATION_ID,
   GEMINI_PROVIDER_SEARCH_STRATEGY_ID,
   OPENAI_PROVIDER_SEARCH_INTEGRATION_ID,
@@ -71,6 +73,8 @@ type QuickSetupRepositoryOptions = Readonly<{
 class QuickSetupCatalogUnavailableError extends Error {}
 
 const MAX_QUICK_SETUP_PRESERVED_MODELS = 64;
+const ANTHROPIC_SEARCH_OPTION_DATABASE_ID = "00000000-0000-4000-8000-000000001405";
+const ANTHROPIC_SEARCH_OPTION_ID = "anthropic-web-search";
 const OPENAI_SEARCH_OPTION_DATABASE_ID = "00000000-0000-4000-8000-000000001402";
 const OPENAI_SEARCH_OPTION_ID = "openai-native-web-search";
 const OPENAI_SEARCH_OPTION_TEMPLATE_KEY = "search:openai";
@@ -85,25 +89,44 @@ type QuickSetupSearchSpec = Readonly<{
   description: string;
   displayName: string;
   fallbackId: string;
+  hostedKind: "anthropic_native_web_search" | "gemini_google_search" | "openai_native_web_search";
   integrationId: string;
   optionDatabaseId: string;
   optionId: string;
   optionKind: "gemini_google_search" | "web_search";
   optionTemplateKey: string;
-  protocol: "gemini_google_search" | "openai_responses_web_search";
-  provider: "gemini" | "openai";
+  protocol: "anthropic_web_search" | "gemini_google_search" | "openai_responses_web_search";
+  provider: "anthropic" | "gemini" | "openai";
   strategyId: string;
 }>;
 
 function quickSetupSearchSpec(
   provider: AdminProviderQuickSetupCommitPlan["provider"]
 ): QuickSetupSearchSpec | null {
+  if (provider === "anthropic") {
+    return {
+      clientKind: "provider_model_web_search",
+      description: "Web search provided by Anthropic.",
+      displayName: "Anthropic Search",
+      fallbackId: `anthropic-search-client:${adminProviderQuickSetupPolicy("anthropic").connection.id}`,
+      hostedKind: "anthropic_native_web_search",
+      integrationId: ANTHROPIC_PROVIDER_SEARCH_INTEGRATION_ID,
+      optionDatabaseId: ANTHROPIC_SEARCH_OPTION_DATABASE_ID,
+      optionId: ANTHROPIC_SEARCH_OPTION_ID,
+      optionKind: "web_search",
+      optionTemplateKey: "search:anthropic",
+      protocol: "anthropic_web_search",
+      provider: "anthropic",
+      strategyId: ANTHROPIC_PROVIDER_SEARCH_STRATEGY_ID
+    };
+  }
   if (provider === "openai") {
     return {
       clientKind: "provider_model_web_search",
       description: OPENAI_PROVIDER_SEARCH_DESCRIPTION,
       displayName: OPENAI_PROVIDER_SEARCH_DISPLAY_NAME,
       fallbackId: OPENAI_PROVIDER_SEARCH_FALLBACK_ID,
+      hostedKind: "openai_native_web_search",
       integrationId: OPENAI_PROVIDER_SEARCH_INTEGRATION_ID,
       optionDatabaseId: OPENAI_SEARCH_OPTION_DATABASE_ID,
       optionId: OPENAI_SEARCH_OPTION_ID,
@@ -120,6 +143,7 @@ function quickSetupSearchSpec(
       description: "Google Search grounding for eligible Gemini models.",
       displayName: "Google Search",
       fallbackId: `gemini-search-client:${adminProviderQuickSetupPolicy("gemini").connection.id}`,
+      hostedKind: "gemini_google_search",
       integrationId: GEMINI_PROVIDER_SEARCH_INTEGRATION_ID,
       optionDatabaseId: "00000000-0000-4000-8000-000000001403",
       optionId: "gemini-google-search",
@@ -881,6 +905,8 @@ export async function lockAdminProviderQuickSetupState(
        OR model."connectionId" IN (
          SELECT "id" FROM "ProviderConnection" WHERE "family" = ${policy.provider}
        )
+       OR (${plan.provider === "anthropic"} AND
+         grant_row."searchStrategy" = ${ANTHROPIC_SEARCH_OPTION_ID})
        OR (${plan.provider === "openai"} AND
          grant_row."searchStrategy" = ${OPENAI_SEARCH_OPTION_ID})
        OR (${plan.provider === "gemini"} AND
@@ -982,9 +1008,7 @@ async function synchronizeQuickSetupSearch(
       hosted.provider !== spec.provider ||
       hosted.providerModelId !== null ||
       hosted.searchOptionId !== option.id ||
-      hosted.kind !== (spec.provider === "gemini"
-        ? "gemini_google_search"
-        : "openai_native_web_search")
+      hosted.kind !== spec.hostedKind
     ) {
       return "needs_attention";
     }

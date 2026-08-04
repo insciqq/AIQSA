@@ -119,6 +119,7 @@ describe("provider runtime factory", () => {
   });
 
   it.each([
+    "anthropic_messages",
     "gemini_interactions_native",
     "openai_responses_native",
     "openai_responses_compatible"

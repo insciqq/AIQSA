@@ -71,6 +71,7 @@ describe("persisted tool execution result codec", () => {
       optionId: "source-1",
       provider: "openai",
       providerOperationsTruncated: false,
+      providerUsage: { webSearchRequests: 2 },
       query: "current facts",
       requestPreview: { queryCharacters: 13 },
       revisionId: "revision-1",
@@ -124,6 +125,30 @@ describe("persisted tool execution result codec", () => {
     }, toolLoopPersistenceLimits.resultBytes);
     if (!malformedUsage) throw new Error("expected malformed usage fixture snapshot");
     expect(parsePersistedToolExecutionResult(call, malformedUsage)).toBeNull();
+    const malformedProviderUsage = snapshotToolLoopJson({
+      callId: call.id,
+      content: [{
+        type: "json",
+        value: { aiqsaType: "search_result", version: SEARCH_TOOL_RESULT_VERSION }
+      }],
+      name: call.name,
+      rawPreview: {
+        finalProviderResponsePreview: {
+          searchExecutions: [{
+            ...execution,
+            providerUsage: { webSearchRequests: 101 }
+          }]
+        },
+        requestPreview: {},
+        searchResultVersion: SEARCH_TOOL_RESULT_VERSION
+      },
+      status: "complete",
+      usage: execution.usage
+    }, toolLoopPersistenceLimits.resultBytes);
+    if (!malformedProviderUsage) {
+      throw new Error("expected malformed provider usage fixture snapshot");
+    }
+    expect(parsePersistedToolExecutionResult(call, malformedProviderUsage)).toBeNull();
   });
 
   it("enforces the complete serialized result boundary one byte below, at, and above", () => {

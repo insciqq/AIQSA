@@ -52,7 +52,7 @@ export type SearchStrategyRouteCatalogEntry = {
   config: Record<string, unknown>;
   credentialMode: "answer_provider" | "provider_model";
   executionModes: readonly SearchPlanMode[];
-  kind: "gemini_google_search" | "openai_native_web_search" | "perplexity_tool_search" | "provider_model_web_search";
+  kind: "anthropic_native_web_search" | "gemini_google_search" | "openai_native_web_search" | "perplexity_tool_search" | "provider_model_web_search";
   physicalStrategyId: string;
   protocol: SearchProtocol;
   providerModelId?: string;
@@ -198,7 +198,7 @@ function anthropicClaude5Model(modelId: string, displayName: string): ProviderMo
       backgroundStreaming: false,
       nativeBackground: false,
       nativePdfInput: true,
-      nativeSearch: false,
+      nativeSearch: true,
       parallelToolCalls: true,
       pdf: true,
       reasoning: true,
@@ -400,7 +400,7 @@ const defaultProviderModelTemplates: ProviderModelTemplate[] = [
       backgroundStreaming: false,
       nativeBackground: false,
       nativePdfInput: true,
-      nativeSearch: false,
+      nativeSearch: true,
       parallelToolCalls: true,
       pdf: true,
       reasoning: true,
@@ -865,6 +865,28 @@ export const defaultSearchStrategies: SearchStrategyCatalogEntry[] = [
     kind: "none",
     routes: [],
     strategyId: "search-disabled"
+  },
+  {
+    description: "Web search provided by Anthropic.",
+    displayName: "Anthropic Search",
+    kind: "web_search",
+    routes: [{
+      adapterKind: "answer_provider_hosted",
+      config: {
+        allowedCallers: ["direct"],
+        maxUses: 3,
+        tool: "web_search_20250305"
+      },
+      credentialMode: "answer_provider",
+      executionModes: ["model_choice"],
+      kind: "anthropic_native_web_search",
+      physicalStrategyId: "anthropic-web-search",
+      protocol: "anthropic_web_search",
+      revisionId: "template:anthropic-web-search:v1",
+      searchStrategyRowId: "anthropic-web-search"
+    }],
+    sourceConnectionId: "anthropic",
+    strategyId: "anthropic-web-search"
   },
   {
     description: "Web evidence from OpenAI Search.",

@@ -2,6 +2,8 @@ import { safeExternalHref } from "./links";
 
 export const MAX_SEARCH_PLAN_OPTIONS = 3;
 export const SEARCH_DISABLED_STRATEGY_ID = "search-disabled";
+export const ANTHROPIC_PROVIDER_SEARCH_INTEGRATION_ID = "system-anthropic-web-search-client";
+export const ANTHROPIC_PROVIDER_SEARCH_STRATEGY_ID = "anthropic-web-search-client";
 export const OPENAI_PROVIDER_SEARCH_INTEGRATION_ID = "system-openai-provider-web-search";
 export const OPENAI_PROVIDER_SEARCH_STRATEGY_ID = "openai-provider-web-search";
 export const GEMINI_PROVIDER_SEARCH_INTEGRATION_ID = "system-gemini-google-search-client";
@@ -20,6 +22,7 @@ export const searchCredentialModes = ["answer_provider", "provider_model"] as co
 export type SearchCredentialMode = (typeof searchCredentialModes)[number];
 
 export const searchProtocols = [
+  "anthropic_web_search",
   "gemini_google_search",
   "openai_responses_web_search",
   "openrouter_perplexity_chat"

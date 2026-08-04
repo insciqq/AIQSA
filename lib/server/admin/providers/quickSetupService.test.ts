@@ -1,6 +1,7 @@
 import { createHmac } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import {
+  ANTHROPIC_PROVIDER_SEARCH_INTEGRATION_ID,
   GEMINI_PROVIDER_SEARCH_INTEGRATION_ID,
   OPENAI_PROVIDER_SEARCH_INTEGRATION_ID
 } from "../../../domain/search";
@@ -330,6 +331,49 @@ describe("provider Quick setup service", () => {
     expect(JSON.stringify(value.commit.mock.calls[0][0])).not.toContain(
       "sk-provider-neutral-search"
     );
+  });
+
+  it("publishes exact Anthropic Search from configuration without a paid Search probe", async () => {
+    const value = fixture({
+      modelIds: ["claude-opus-5"],
+      searchOutcome: { normalizedSourceCount: 3, status: "available" }
+    });
+    const result = await value.service.setup({
+      actor,
+      request: {
+        expectedState: await expectedState(value.service, "anthropic"),
+        provider: "anthropic",
+        secret: "sk-anthropic-provider-search"
+      }
+    });
+
+    const plan = value.commit.mock.calls[0][0];
+    expect(value.searchTest).not.toHaveBeenCalled();
+    expect(value.order).toEqual(["network", "commit"]);
+    expect(plan.search).toMatchObject({
+      draft: {
+        adapterKind: "provider_model_client",
+        credentialMode: "provider_model",
+        protocol: "anthropic_web_search",
+        providerModelId: plan.candidate.modelId
+      },
+      evidence: {
+        method: "configuration",
+        normalizedSourceCount: 0,
+        protocol: "anthropic_web_search",
+        status: "available"
+      },
+      integrationId: ANTHROPIC_PROVIDER_SEARCH_INTEGRATION_ID
+    });
+    expect(result).toMatchObject({
+      outcome: "ready",
+      provider: "anthropic",
+      search: {
+        displayName: "Anthropic Search",
+        status: "ready"
+      }
+    });
+    expect(JSON.stringify(plan)).not.toContain("sk-anthropic-provider-search");
   });
 
   it("does not let an optional Search diagnostic gate OpenAI Search readiness", async () => {

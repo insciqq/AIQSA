@@ -11,6 +11,8 @@ import {
 } from "../../../contracts/adminSearch";
 import { isSearchCombinationCompatible } from "../../../domain/catalogMatrix";
 import {
+  ANTHROPIC_PROVIDER_SEARCH_INTEGRATION_ID,
+  ANTHROPIC_PROVIDER_SEARCH_STRATEGY_ID,
   decodeSearchPlan,
   GEMINI_PROVIDER_SEARCH_INTEGRATION_ID,
   GEMINI_PROVIDER_SEARCH_STRATEGY_ID,
@@ -164,11 +166,20 @@ function draftKind(draft: AdminSearchDraft): AdminSearchKind {
 }
 
 function clientSearchKind(adapterKind: string): AdminSearchProviderModelOption["searchKind"] | null {
+  if (adapterKind === "anthropic_messages") return "anthropic_web_search";
   if (adapterKind === "openai_responses_native" || adapterKind === "openai_responses_compatible") {
     return "web_search";
   }
   if (adapterKind === "gemini_interactions_native") return "gemini_google_search";
   return adapterKind === "openrouter_chat_completions" ? "perplexity_search" : null;
+}
+
+function draftClientSearchKind(
+  draft: AdminSearchDraft
+): AdminSearchProviderModelOption["searchKind"] {
+  if (draft.protocol === "anthropic_web_search") return "anthropic_web_search";
+  if (draft.protocol === "gemini_google_search") return "gemini_google_search";
+  return draft.protocol === "openrouter_perplexity_chat" ? "perplexity_search" : "web_search";
 }
 
 function materialIdentity(draft: AdminSearchDraft): string {
@@ -183,6 +194,16 @@ function clientRouteIdentities(
   sourceConnectionId: string,
   generatedId: string
 ): readonly Readonly<{ id: string; strategyId: string }>[] {
+  if (option.templateKey === "search:anthropic" && option.optionId === "anthropic-web-search") {
+    const fallbackId = `anthropic-search-client:${sourceConnectionId}`;
+    return [
+      {
+        id: ANTHROPIC_PROVIDER_SEARCH_INTEGRATION_ID,
+        strategyId: ANTHROPIC_PROVIDER_SEARCH_STRATEGY_ID
+      },
+      { id: fallbackId, strategyId: fallbackId }
+    ];
+  }
   if (option.templateKey === "search:openai" && option.optionId === "openai-native-web-search") {
     const fallbackId = `openai-search-client:${sourceConnectionId}`;
     return [
@@ -221,6 +242,9 @@ function hostedRouteIdentity(
   sourceConnectionId: string,
   generatedId: string
 ): Readonly<{ id: string; strategyId: string }> {
+  if (option.templateKey === "search:anthropic" && option.optionId === "anthropic-web-search") {
+    return { id: option.optionId, strategyId: option.optionId };
+  }
   if (
     option.templateKey === null &&
     option.optionId === `custom-web-search:${sourceConnectionId}`
@@ -247,7 +271,8 @@ function hostedRouteIdentity(
 }
 
 function hostedDraftFor(draft: AdminSearchDraft): AdminSearchDraft | null {
-  return draft.protocol === "openai_responses_web_search" ||
+  return draft.protocol === "anthropic_web_search" ||
+    draft.protocol === "openai_responses_web_search" ||
     draft.protocol === "gemini_google_search"
     ? {
         ...draft,
@@ -492,7 +517,7 @@ export function createAdminSearchService(input: Readonly<{
     const configuration = providerModelConfiguration(model.activeConfig);
     if (
       !configuration ||
-      clientSearchKind(configuration.adapterKind) !== draftKind(draft) ||
+      clientSearchKind(configuration.adapterKind) !== draftClientSearchKind(draft) ||
       !compatibleTechnicalAdapter(draft.protocol, configuration.adapterKind) ||
       configuration.capabilities.nativeSearch !== true
     ) {
@@ -660,7 +685,8 @@ export function createAdminSearchService(input: Readonly<{
         id: model.id,
         nativeSearch: configuration.capabilities.nativeSearch,
         searchReasoningSupported:
-          (configuration.adapterKind === "openai_responses_native" ||
+          (configuration.adapterKind === "anthropic_messages" ||
+            configuration.adapterKind === "openai_responses_native" ||
             configuration.adapterKind === "openai_responses_compatible" ||
             configuration.adapterKind === "gemini_interactions_native") &&
           Boolean(lowestSupportedOpenAIResponsesSearchEffort(configuration.capabilities)),

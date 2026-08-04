@@ -411,6 +411,45 @@ function normalizedLegacySearchRequest(): NormalizedRunRequest {
   };
 }
 
+function normalizedAnthropicSearchRequest(): NormalizedRunRequest {
+  const request = normalizedLegacySearchRequest();
+  const option = request.searchPlan!.options[0]!;
+  return {
+    ...request,
+    searchPlan: {
+      mode: "model_choice",
+      options: [{
+        ...option,
+        config: {
+          ...option.config,
+          maxOutputTokens: 4_096,
+          maxSearchCallsPerAnswer: 2,
+          modelCapabilities: {
+            nativePdfInput: true,
+            nativeSearch: true,
+            pdf: true,
+            reasoning: true,
+            reasoningEfforts: ["low", "medium", "high"],
+            streaming: true,
+            toolCalling: true,
+            vision: true
+          },
+          reasoningPolicy: "lowest_supported"
+        },
+        displayName: "Anthropic Web Search",
+        modelId: "claude-opus-5",
+        optionId: "anthropic-web-search",
+        protocol: "anthropic_web_search",
+        provider: "anthropic",
+        providerModelId: "anthropic-search-deployment",
+        revisionId: "anthropic-search-revision-1",
+        searchStrategyRowId: "anthropic-search-client-route"
+      }]
+    },
+    searchStrategy: "anthropic-web-search"
+  };
+}
+
 function checkpoint(
   phase: "provider_running" | "tools_pending" | "tools_running",
   roundIndex: number,
@@ -1623,6 +1662,237 @@ describe("run recovery", () => {
     expect(harness.state.recoveredErrors).toEqual([]);
   });
 
+  it("recovers a pending Anthropic client Search with normalized evidence and exact usage", async () => {
+    const answerRequests: ProviderRunRequest[] = [];
+    const searchRequests: ProviderSearchRequest[] = [];
+    const answerAdapter: ProviderAdapter = {
+      buildRequestPreview: () => ({}),
+      async *stream(request) {
+        answerRequests.push(request);
+        return {
+          finalProviderResponsePreview: {},
+          finalText: "Recovered answer from Anthropic evidence",
+          usage: { inputTokens: 2, outputTokens: 3, reasoningTokens: 0 }
+        };
+      }
+    };
+    const searchAdapter: ProviderSearchAdapter = {
+      buildRequestPreview: (request) => ({
+        modelId: request.searchPolicy.modelId,
+        protocol: "anthropic_web_search",
+        queryCharacters: request.query.length
+      }),
+      async search(request) {
+        searchRequests.push(request);
+        return {
+          artifacts: [{
+            data: {
+              artifactType: "search",
+              payload: {
+                action: { queries: [request.query], type: "search" },
+                encrypted_content: "RECOVERY_ENCRYPTED_CONTENT_CANARY",
+                encrypted_index: "RECOVERY_ENCRYPTED_INDEX_CANARY",
+                id: "srvtoolu_recovery_1",
+                provider: "anthropic",
+                rawResultBody: "RECOVERY_RAW_RESULT_CANARY",
+                status: "completed",
+                type: "web_search_call",
+                webSearchRequests: 2
+              }
+            },
+            type: "artifact"
+          }],
+          finalProviderResponsePreview: {
+            encrypted_content: "RECOVERY_ENCRYPTED_CONTENT_CANARY",
+            encrypted_index: "RECOVERY_ENCRYPTED_INDEX_CANARY",
+            rawResultBody: "RECOVERY_RAW_RESULT_CANARY"
+          },
+          findings: "Recovered Anthropic findings",
+          requestPreview: {
+            modelId: "claude-opus-5",
+            queryCharacters: request.query.length,
+            tool: "web_search_20250305"
+          },
+          sources: [{
+            rank: 1,
+            title: "Recovered Anthropic source",
+            url: "https://example.test/recovered-anthropic"
+          }],
+          usage: { inputTokens: 1, outputTokens: 2, reasoningTokens: 1 }
+        };
+      }
+    };
+    const harness = createHarness({
+      providers: { anthropic: answerAdapter, openai: answerAdapter },
+      searchProviders: { anthropic: searchAdapter }
+    });
+    const createSearchRun = vi.fn<RunRecoveryRepository["createSearchRun"]>();
+    harness.repository.createSearchRun = createSearchRun;
+    const storedCall: PersistedToolLoopCall = {
+      ...persistedRecoveryCall(),
+      arguments: { query: "latest Anthropic evidence" },
+      mcpBinding: null,
+      toolName: "search_engine_1"
+    };
+    const base = checkpointedRun({
+      calls: [storedCall],
+      phase: "tools_pending",
+      providerToolMessages: [{
+        arguments: "{\"query\":\"latest Anthropic evidence\"}",
+        call_id: "provider-call-1",
+        name: "search_engine_1",
+        type: "function_call"
+      }]
+    });
+    const checkpointState = installCheckpointState(harness, {
+      ...base,
+      normalizedRequest: normalizedAnthropicSearchRequest()
+    });
+
+    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+
+    expect(searchRequests).toHaveLength(1);
+    expect(searchRequests[0]).toMatchObject({
+      query: "latest Anthropic evidence",
+      searchPolicy: {
+        maxOutputTokens: 4_096,
+        modelId: "claude-opus-5",
+        provider: "anthropic",
+        reasoningPolicy: "lowest_supported",
+        strategyId: "anthropic-web-search"
+      },
+      strategyId: "anthropic-web-search"
+    });
+    expect(answerRequests).toHaveLength(1);
+    expect(answerRequests[0]?.providerToolMessages).toEqual(expect.arrayContaining([
+      expect.objectContaining({ output: expect.stringContaining("Recovered Anthropic findings") })
+    ]));
+    expect(createSearchRun).toHaveBeenCalledWith(expect.objectContaining({
+      artifacts: expect.objectContaining({
+        findings: "Recovered Anthropic findings",
+        providerOperations: [expect.objectContaining({
+          id: "srvtoolu_recovery_1",
+          kind: "search",
+          status: "complete"
+        })],
+        providerUsage: { webSearchRequests: 2 },
+        sources: [{
+          rank: 1,
+          title: "Recovered Anthropic source",
+          url: "https://example.test/recovered-anthropic"
+        }]
+      }),
+      modelId: "claude-opus-5",
+      provider: "anthropic",
+      query: "latest Anthropic evidence",
+      searchRevisionId: "anthropic-search-revision-1",
+      strategyId: "anthropic-web-search"
+    }));
+    expect(harness.state.completed).toMatchObject({
+      finalText: "Recovered answer from Anthropic evidence",
+      usage: { inputTokens: 3, outputTokens: 5, reasoningTokens: 1, totalTokens: 8 },
+      usageAttributions: expect.arrayContaining([
+        expect.objectContaining({
+          modelId: "gpt-test",
+          provider: "openai",
+          usage: expect.objectContaining({ inputTokens: 2, outputTokens: 3 })
+        }),
+        expect.objectContaining({
+          modelId: "claude-opus-5",
+          provider: "anthropic",
+          usage: expect.objectContaining({ inputTokens: 1, outputTokens: 2 })
+        })
+      ])
+    });
+    const durable = JSON.stringify({
+      checkpointCalls: checkpointState.calls(),
+      completed: harness.state.completed,
+      events: harness.state.events,
+      searchRuns: createSearchRun.mock.calls
+    });
+    expect(durable).not.toContain("RECOVERY_ENCRYPTED_CONTENT_CANARY");
+    expect(durable).not.toContain("RECOVERY_ENCRYPTED_INDEX_CANARY");
+    expect(durable).not.toContain("RECOVERY_RAW_RESULT_CANARY");
+    expect(harness.state.recoveredErrors).toEqual([]);
+  });
+
+  it("rechecks the Anthropic client Search attachment fence during recovery", async () => {
+    const search = vi.fn<ProviderSearchAdapter["search"]>();
+    const answerRequests: ProviderRunRequest[] = [];
+    const adapter: ProviderAdapter = {
+      buildRequestPreview: () => ({}),
+      async *stream(request) {
+        answerRequests.push(request);
+        return {
+          finalProviderResponsePreview: {},
+          finalText: "Recovered without disclosing the attachment to Search",
+          usage: { inputTokens: 2, outputTokens: 3, reasoningTokens: 0 }
+        };
+      }
+    };
+    const harness = createHarness({
+      providers: { anthropic: adapter, openai: adapter },
+      searchProviders: {
+        anthropic: { buildRequestPreview: () => ({}), search }
+      }
+    });
+    const createSearchRun = vi.fn<RunRecoveryRepository["createSearchRun"]>();
+    harness.repository.createSearchRun = createSearchRun;
+    const storedCall: PersistedToolLoopCall = {
+      ...persistedRecoveryCall(),
+      arguments: { query: "do not send with attachment" },
+      mcpBinding: null,
+      toolName: "search_engine_1"
+    };
+    const base = checkpointedRun({
+      calls: [storedCall],
+      phase: "tools_pending",
+      providerToolMessages: [{
+        arguments: "{\"query\":\"do not send with attachment\"}",
+        call_id: "provider-call-1",
+        name: "search_engine_1",
+        type: "function_call"
+      }]
+    });
+    const normalized = normalizedAnthropicSearchRequest();
+    installCheckpointState(harness, {
+      ...base,
+      normalizedRequest: {
+        ...normalized,
+        attachmentIds: ["document-1"],
+        content: {
+          blocks: [
+            ...normalized.content.blocks,
+            { attachmentId: "document-1", type: "attachment" }
+          ]
+        }
+      }
+    });
+    harness.repository.loadAttachments = async () => [{
+      byteSize: 32,
+      extractedText: "Private attachment evidence",
+      fileName: "private.txt",
+      id: "document-1",
+      kind: "document",
+      metadata: {},
+      mimeType: "text/plain",
+      status: "ready",
+      storageKey: "private/document-1"
+    }];
+
+    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+
+    expect(search).not.toHaveBeenCalled();
+    expect(createSearchRun).not.toHaveBeenCalled();
+    expect(answerRequests).toHaveLength(1);
+    expect(JSON.stringify(answerRequests[0]?.providerToolMessages))
+      .toContain("client_search_with_attachments_not_supported");
+    expect(harness.state.completed).toMatchObject({
+      finalText: "Recovered without disclosing the attachment to Search"
+    });
+    expect(harness.state.recoveredErrors).toEqual([]);
+  });
+
   it("compacts a large pending fan-out Search result before settling recovery", async () => {
     const answerRequests: ProviderRunRequest[] = [];
     const findingsByModel = new Map<string, string>();
@@ -1884,8 +2154,8 @@ describe("run recovery", () => {
     expect(harness.state.recoveredErrors).toEqual([]);
   });
 
-  it("recovers settled Search usage recorded after the previous usage snapshot", async () => {
-    const request = normalizedLegacySearchRequest();
+  it("reuses a settled Anthropic Search and recovers usage recorded after the prior snapshot", async () => {
+    const request = normalizedAnthropicSearchRequest();
     const selected = {
       ...request.searchPlan!.options[0]!,
       modelId: "search-model-1",
@@ -1901,7 +2171,7 @@ describe("run recovery", () => {
       rawPreview: {
         finalProviderResponsePreview: {
           searchExecutions: [{
-            displayName: "OpenAI Search",
+            displayName: "Anthropic Web Search",
             durationMs: 10,
             invocationId: "provider-call-1:search-option-1",
             modelId: selected.modelId,
@@ -1947,9 +2217,9 @@ describe("run recovery", () => {
       }
     };
     const harness = createHarness({
-      providers: { openai: adapter, openai_compatible: adapter },
+      providers: { anthropic: adapter, openai: adapter },
       searchProviders: {
-        openai_compatible: { buildRequestPreview: () => ({}), search }
+        anthropic: { buildRequestPreview: () => ({}), search }
       }
     });
     installCheckpointState(harness, {

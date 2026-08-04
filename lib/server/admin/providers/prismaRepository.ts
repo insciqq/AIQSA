@@ -325,9 +325,10 @@ type ProviderSearchPolicy = Readonly<{
   displayName: string;
   description: string;
   hostedId: string;
-  hostedKind: "gemini_google_search" | "openai_native_web_search";
+  hostedKind: "anthropic_native_web_search" | "gemini_google_search" | "openai_native_web_search";
   hostedStrategyId: string;
   modelAdapterKind:
+    | "anthropic_messages"
     | "gemini_interactions_native"
     | "openai_responses_compatible"
     | "openai_responses_native";
@@ -335,8 +336,8 @@ type ProviderSearchPolicy = Readonly<{
   optionKind: "gemini_google_search" | "web_search";
   optionRowId: string;
   optionTemplateKey: string | null;
-  protocol: "gemini_google_search" | "openai_responses_web_search";
-  provider: "gemini" | "openai" | "openai_compatible";
+  protocol: "anthropic_web_search" | "gemini_google_search" | "openai_responses_web_search";
+  provider: "anthropic" | "gemini" | "openai" | "openai_compatible";
 }>;
 
 function providerSearchPolicy(connection: Readonly<{
@@ -345,6 +346,24 @@ function providerSearchPolicy(connection: Readonly<{
   id: string;
   templateKey: string | null;
 }>): ProviderSearchPolicy | null {
+  if (connection.family === "anthropic" && connection.templateKey === "anthropic") {
+    return {
+      clientId: `anthropic-search-client:${connection.id}`,
+      clientKind: "provider_model_web_search",
+      description: "Web search provided by Anthropic.",
+      displayName: "Anthropic Search",
+      hostedId: "anthropic-web-search",
+      hostedKind: "anthropic_native_web_search",
+      hostedStrategyId: "anthropic-web-search",
+      modelAdapterKind: "anthropic_messages",
+      optionId: "anthropic-web-search",
+      optionKind: "web_search",
+      optionRowId: "00000000-0000-4000-8000-000000001405",
+      optionTemplateKey: "search:anthropic",
+      protocol: "anthropic_web_search",
+      provider: "anthropic"
+    };
+  }
   if (connection.family === "openai" && connection.templateKey === "openai") {
     return {
       clientId: `openai-search-client:${connection.id}`,
@@ -407,7 +426,7 @@ async function publishProviderSearchRoute(
     draft: AdminSearchDraft;
     evidence: Record<string, unknown>;
     existing: null | Readonly<{ draft: unknown; id: string }>;
-    kind: "gemini_google_search" | "openai_native_web_search" | "provider_model_web_search";
+    kind: "anthropic_native_web_search" | "gemini_google_search" | "openai_native_web_search" | "provider_model_web_search";
     modelId: string | null;
     now: Date;
     option: Readonly<{ description: string; displayName: string; id: string }>;

@@ -1753,6 +1753,226 @@ describe("run execution", () => {
     });
   });
 
+  it("persists only normalized Anthropic client Search evidence with exact usage attribution", async () => {
+    const providerRequests: ProviderRunRequest[] = [];
+    const searchRequests: ProviderSearchRequest[] = [];
+    const repository = createRepository({
+      entitlements: {
+        modelKeys: new Set<string>(),
+        providerKeys: new Set(["openai"]),
+        searchStrategies: new Set(["anthropic-web-search"])
+      }
+    });
+    const answerAdapter = createAdapter(async function* (request) {
+      providerRequests.push(request);
+      if (providerRequests.length === 1) {
+        return providerResult({
+          finalText: "",
+          toolCalls: [{
+            arguments: { query: "current QSA evidence" },
+            id: "anthropic-search-call-1",
+            name: "search_engine_1"
+          }],
+          usage: usage(2, 1, 0)
+        });
+      }
+      yield { data: { delta: "Sourced answer." }, type: "token" };
+      return providerResult({ finalText: "Sourced answer.", usage: usage(5, 4, 0) });
+    });
+    const anthropicSearchAdapter: ProviderSearchAdapter = {
+      buildRequestPreview: (request) => ({
+        maxOutputTokens: request.searchPolicy.provider === "openrouter"
+          ? request.searchPolicy.controls.maxOutputTokens.defaultValue
+          : request.searchPolicy.maxOutputTokens,
+        modelId: request.searchPolicy.modelId,
+        protocol: "anthropic_web_search",
+        queryCharacters: request.query.length,
+        tool: "web_search_20250305"
+      }),
+      async search(request) {
+        searchRequests.push(request);
+        return {
+          artifacts: [{
+            data: {
+              artifactType: "search",
+              payload: {
+                action: { queries: [request.query], type: "search" },
+                encrypted_content: "ENCRYPTED_CONTENT_CANARY",
+                encrypted_index: "ENCRYPTED_INDEX_CANARY",
+                id: "srvtoolu_client_search_1",
+                provider: "anthropic",
+                rawResultBody: "RAW_ANTHROPIC_RESULT_CANARY",
+                status: "completed",
+                type: "web_search_call",
+                webSearchRequests: 2
+              }
+            },
+            type: "artifact"
+          }],
+          finalProviderResponsePreview: {
+            encrypted_content: "ENCRYPTED_CONTENT_CANARY",
+            encrypted_index: "ENCRYPTED_INDEX_CANARY",
+            rawResultBody: "RAW_ANTHROPIC_RESULT_CANARY"
+          },
+          findings: "The current QSA evidence is verified.",
+          providerResponseId: "anthropic-message-search-1",
+          requestPreview: {
+            maxOutputTokens: 4_096,
+            modelId: "claude-opus-5",
+            queryCharacters: request.query.length,
+            tool: "web_search_20250305"
+          },
+          sources: [{
+            rank: 1,
+            title: "Verified QSA source",
+            url: "https://example.test/anthropic-search"
+          }],
+          usage: usage(3, 4, 1)
+        };
+      }
+    };
+    const base = preparedData({
+      modelId: "gpt-answer-model",
+      provider: "openai",
+      searchStrategy: "anthropic-web-search"
+    });
+    const searchPlan = {
+      mode: "model_choice" as const,
+      options: [{
+        adapterKind: "provider_model_client" as const,
+        config: {
+          maxOutputTokens: 4_096,
+          maxResults: 8,
+          maxSearchCallsPerAnswer: 2,
+          modelCapabilities: {
+            nativePdfInput: true,
+            nativeSearch: true,
+            pdf: true,
+            reasoning: true,
+            reasoningEfforts: ["low", "medium", "high"],
+            streaming: true,
+            toolCalling: true,
+            vision: true
+          },
+          modelDefaultParams: {},
+          queryMaxCharacters: 500,
+          reasoningPolicy: "lowest_supported",
+          timeoutMs: 300_000
+        },
+        credentialMode: "provider_model" as const,
+        displayName: "Anthropic Web Search",
+        executionModes: ["all_selected" as const, "model_choice" as const],
+        kind: "provider_model_web_search",
+        modelId: "claude-opus-5",
+        optionId: "anthropic-web-search",
+        protocol: "anthropic_web_search" as const,
+        provider: "anthropic",
+        providerModelId: "anthropic-search-deployment",
+        revisionId: "anthropic-search-revision-1",
+        searchStrategyRowId: "anthropic-search-client-route"
+      }]
+    };
+    const prepared: MaterializedPreparedRunData = {
+      ...base,
+      normalizedRequest: { ...base.normalizedRequest, searchPlan },
+      providerRequest: { ...base.providerRequest, searchPlan }
+    };
+
+    const events = parseSse(await createRunExecutionResponse(executionInput({
+      adapter: answerAdapter,
+      prepared,
+      repository: repository.repository,
+      searchRuntimes: {
+        "anthropic-web-search": {
+          adapter: answerAdapter,
+          searchAdapter: anthropicSearchAdapter
+        }
+      }
+    })).text());
+
+    expect(events.at(-1)).toMatchObject({ data: { status: "complete" }, type: "done" });
+    expect(searchRequests).toHaveLength(1);
+    expect(searchRequests[0]).toMatchObject({
+      query: "current QSA evidence",
+      searchPolicy: {
+        maxOutputTokens: 4_096,
+        modelId: "claude-opus-5",
+        provider: "anthropic",
+        reasoningPolicy: "lowest_supported",
+        strategyId: "anthropic-web-search"
+      },
+      strategyId: "anthropic-web-search"
+    });
+    expect(JSON.stringify(searchRequests[0])).not.toContain("Current question");
+    expect(providerRequests).toHaveLength(2);
+    expect(JSON.stringify(providerRequests[1]?.providerToolMessages))
+      .toContain("The current QSA evidence is verified.");
+    expect(repository.searchRuns).toEqual([
+      expect.objectContaining({
+        artifacts: expect.objectContaining({
+          findings: "The current QSA evidence is verified.",
+          providerOperations: [expect.objectContaining({
+            id: "srvtoolu_client_search_1",
+            kind: "search",
+            status: "complete"
+          })],
+          providerUsage: { webSearchRequests: 2 },
+          sources: [{
+            rank: 1,
+            title: "Verified QSA source",
+            url: "https://example.test/anthropic-search"
+          }],
+          usage: expect.objectContaining({ inputTokens: 3, outputTokens: 4 })
+        }),
+        invocationId: "anthropic-search-call-1:anthropic-web-search",
+        modelId: "claude-opus-5",
+        provider: "anthropic",
+        query: "current QSA evidence",
+        searchRevisionId: "anthropic-search-revision-1",
+        status: "complete",
+        strategyId: "anthropic-web-search"
+      })
+    ]);
+    expect(repository.completeRuns[0]?.usage).toMatchObject({
+      inputTokens: 10,
+      outputTokens: 9,
+      reasoningTokens: 1,
+      totalTokens: 19
+    });
+    expect(repository.completeRuns[0]?.usageAttributions).toEqual([
+      expect.objectContaining({
+        modelId: "gpt-answer-model",
+        provider: "openai",
+        usage: expect.objectContaining({
+          inputTokens: 7,
+          outputTokens: 5,
+          reasoningTokens: 0,
+          totalTokens: 12
+        })
+      }),
+      expect.objectContaining({
+        modelId: "claude-opus-5",
+        provider: "anthropic",
+        usage: expect.objectContaining({
+          inputTokens: 3,
+          outputTokens: 4,
+          reasoningTokens: 1,
+          totalTokens: 7
+        })
+      })
+    ]);
+    const durable = JSON.stringify({
+      completeRuns: repository.completeRuns,
+      persistedEvents: repository.persistedEvents,
+      providerRequestPreviews: repository.providerRequestPreviews,
+      searchRuns: repository.searchRuns,
+      toolCalls: [...repository.toolCalls.values()]
+    });
+    expect(durable).not.toContain("ENCRYPTED_CONTENT_CANARY");
+    expect(durable).not.toContain("ENCRYPTED_INDEX_CANARY");
+    expect(durable).not.toContain("RAW_ANTHROPIC_RESULT_CANARY");
+  });
+
   it("routes tools from several MCP servers and executes one provider batch in parallel", async () => {
     const firstTool = "mcp_memory_lookup_a";
     const secondTool = "mcp_tasks_list_b";

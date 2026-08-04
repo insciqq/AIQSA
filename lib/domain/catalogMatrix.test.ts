@@ -10,6 +10,7 @@ import {
   isSearchCombinationCompatible,
   normalizeOpenRouterRoutePreferences,
   reconcileSearchPlanSelection,
+  resolveSearchRouteForModel,
   resolveSearchStrategyId,
   toCatalogSearchStrategy
 } from "./catalogMatrix";
@@ -222,6 +223,7 @@ describe("catalog capability matrix", () => {
     for (const model of claudeModels) {
       expect(model).toMatchObject({
         adapterKind: "anthropic_messages",
+        capabilities: { nativeSearch: true },
         contextWindow: 1_000_000,
         defaultParams: {
           maxTokens: 128_000,
@@ -274,14 +276,61 @@ describe("catalog capability matrix", () => {
     );
   });
 
-  it("lets a tool-capable Anthropic answer use Perplexity without native web search", () => {
+  it("lets first-party Anthropic answers use hosted Anthropic Search and Perplexity", () => {
     const model = defaultProviderModels.find((entry) => entry.provider === "anthropic");
 
     expect(model).toBeDefined();
     expect(availableSearchStrategiesForModel(model!, defaultSearchStrategies).sort()).toEqual([
+      "anthropic-web-search",
       "perplexity-tool-search",
       "search-disabled"
     ]);
+  });
+
+  it("prefers same-connection hosted Anthropic Search and uses its query-only route cross-provider", () => {
+    const template = defaultSearchStrategies.find(
+      ({ strategyId }) => strategyId === "anthropic-web-search"
+    );
+    expect(template).toBeDefined();
+    const anthropicSearch = {
+      ...template!,
+      routes: [
+        ...template!.routes,
+        {
+          adapterKind: "provider_model_client" as const,
+          config: { maxResults: 8, queryMaxCharacters: 500, timeoutMs: 300_000 },
+          credentialMode: "provider_model" as const,
+          executionModes: ["all_selected", "model_choice"] as const,
+          kind: "provider_model_web_search" as const,
+          physicalStrategyId: "anthropic-web-search-client",
+          protocol: "anthropic_web_search" as const,
+          providerModelId: "anthropic-search-model",
+          revisionId: "anthropic-search-client-revision",
+          searchStrategyRowId: "system-anthropic-web-search-client"
+        }
+      ]
+    };
+    const anthropic = defaultProviderModels.find(
+      (entry) => entry.provider === "anthropic" && entry.modelId === "claude-opus-5"
+    );
+    const openAI = defaultProviderModels.find(
+      (entry) => entry.provider === "openai" && entry.modelId === "gpt-5.5"
+    );
+    expect(anthropic).toBeDefined();
+    expect(openAI).toBeDefined();
+
+    expect(resolveSearchRouteForModel(anthropic!, anthropicSearch)?.adapterKind).toBe(
+      "answer_provider_hosted"
+    );
+    expect(resolveSearchRouteForModel(openAI!, anthropicSearch)).toMatchObject({
+      adapterKind: "provider_model_client",
+      protocol: "anthropic_web_search",
+      providerModelId: "anthropic-search-model"
+    });
+    expect(resolveSearchRouteForModel({
+      ...openAI!,
+      capabilities: { ...openAI!.capabilities, toolCalling: false }
+    }, anthropicSearch)).toBeNull();
   });
 
   it("excludes only the exact Perplexity technical deployment from answering with itself", () => {

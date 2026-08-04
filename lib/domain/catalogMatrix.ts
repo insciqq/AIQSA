@@ -29,6 +29,7 @@ const defaultOpenRouterRoutePreferences: OpenRouterRoutePreferences = {
 type SearchCombinationOption = {
   executionModes?: readonly SearchPlanMode[];
   kind: SearchStrategyCatalogEntry["kind"] |
+    "anthropic_native_web_search" |
     "openai_native_web_search" |
     "provider_model_web_search";
   strategyId: string;
@@ -150,6 +151,10 @@ function hostedRouteCompatible(
     return option.kind === "gemini_google_search" &&
       model.adapterKind === "gemini_interactions_native";
   }
+  if (route.protocol === "anthropic_web_search") {
+    return option.kind === "web_search" &&
+      model.adapterKind === "anthropic_messages";
+  }
   return route.protocol === "openai_responses_web_search" &&
     option.kind === "web_search" &&
     (model.adapterKind === "openai_responses_native" ||
@@ -168,7 +173,8 @@ function clientRouteCompatible(
     return route.protocol === "gemini_google_search";
   }
   if (option.kind === "web_search") {
-    return route.protocol === "openai_responses_web_search";
+    return route.protocol === "anthropic_web_search" ||
+      route.protocol === "openai_responses_web_search";
   }
   return option.kind === "perplexity_tool_search" &&
     route.protocol === "openrouter_perplexity_chat" &&
@@ -276,7 +282,8 @@ export function buildCatalogModel(
           : "none",
       imageInput: model.capabilities.vision,
       nativeWebSearch:
-        (model.adapterKind === "openai_responses_native" ||
+        (model.adapterKind === "anthropic_messages" ||
+          model.adapterKind === "openai_responses_native" ||
           model.adapterKind === "openai_responses_compatible" ||
           model.adapterKind === "gemini_interactions_native") &&
         model.capabilities.nativeSearch,

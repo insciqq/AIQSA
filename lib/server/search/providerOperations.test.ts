@@ -74,6 +74,34 @@ describe("provider Search operation evidence", () => {
     expect(Buffer.byteLength(JSON.stringify(trace.operations), "utf8")).toBeLessThanOrEqual(16 * 1_024);
   });
 
+  it("keeps only a bounded cumulative Anthropic Web Search request count", () => {
+    const artifact = (webSearchRequests: number) => ({
+      data: {
+        artifactType: "search" as const,
+        payload: {
+          action: { query: "bounded query", type: "search" },
+          id: "anthropic-search-1",
+          provider: "anthropic",
+          status: "completed",
+          type: "web_search_call",
+          webSearchRequests
+        }
+      },
+      type: "artifact" as const
+    });
+
+    expect(providerSearchOperationsFromArtifacts([
+      artifact(1),
+      artifact(3)
+    ])).toMatchObject({
+      providerUsage: { webSearchRequests: 3 }
+    });
+    expect(providerSearchOperationsFromArtifacts([
+      artifact(1),
+      artifact(101)
+    ])).not.toHaveProperty("providerUsage");
+  });
+
   it("projects historical Search executions with unavailable provider detail", () => {
     expect(threadSearchExecutionsFromToolPreview({
       finalProviderResponsePreview: {

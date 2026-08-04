@@ -273,37 +273,65 @@ describe("Prisma admin provider repository", () => {
     {
       adapterKind: "openai_responses_compatible" as const,
       clientId: "custom-web-search-client:connection-1",
+      clientKind: "provider_model_web_search" as const,
       existingClient: false,
       family: "openai_compatible",
       hostedId: "custom-web-search-hosted:connection-1",
+      hostedKind: "openai_native_web_search" as const,
       hostedStrategyId: "custom-web-search-hosted:connection-1",
       label: "custom Responses",
       optionId: "custom-web-search:connection-1",
+      optionKind: "web_search" as const,
       optionRowId: "custom-web-search-option:connection-1",
+      protocol: "openai_responses_web_search" as const,
       templateKey: null
     },
     {
       adapterKind: "openai_responses_native" as const,
       clientId: "openai-search-client:connection-1",
+      clientKind: "provider_model_web_search" as const,
       existingClient: true,
       family: "openai",
       hostedId: "openai-native-web-search",
+      hostedKind: "openai_native_web_search" as const,
       hostedStrategyId: "openai-native-web-search",
       label: "official OpenAI Responses",
       optionId: "openai-native-web-search",
+      optionKind: "web_search" as const,
       optionRowId: "00000000-0000-4000-8000-000000001402",
+      protocol: "openai_responses_web_search" as const,
       templateKey: "openai"
+    },
+    {
+      adapterKind: "anthropic_messages" as const,
+      clientId: "anthropic-search-client:connection-1",
+      clientKind: "provider_model_web_search" as const,
+      existingClient: false,
+      family: "anthropic",
+      hostedId: "anthropic-web-search",
+      hostedKind: "anthropic_native_web_search" as const,
+      hostedStrategyId: "anthropic-web-search",
+      label: "official Anthropic Messages",
+      optionId: "anthropic-web-search",
+      optionKind: "web_search" as const,
+      optionRowId: "00000000-0000-4000-8000-000000001405",
+      protocol: "anthropic_web_search" as const,
+      templateKey: "anthropic"
     },
     {
       adapterKind: "gemini_interactions_native" as const,
       clientId: "gemini-search-client:connection-1",
+      clientKind: "gemini_google_search" as const,
       existingClient: false,
       family: "gemini",
       hostedId: "00000000-0000-4000-8000-000000001301",
+      hostedKind: "gemini_google_search" as const,
       hostedStrategyId: "gemini-google-search",
       label: "native Gemini Interactions",
       optionId: "gemini-google-search",
+      optionKind: "gemini_google_search" as const,
       optionRowId: "00000000-0000-4000-8000-000000001403",
+      protocol: "gemini_google_search" as const,
       templateKey: "gemini"
     }
   ])("atomically materializes a tested $label draft and both active Search routes", async (scenario) => {
@@ -518,6 +546,7 @@ describe("Prisma admin provider repository", () => {
     expect(createSearchOption).toHaveBeenCalledWith({
       data: expect.objectContaining({
         id: scenario.optionRowId,
+        kind: scenario.optionKind,
         optionId: scenario.optionId,
         sourceConnectionId: "connection-1"
       })
@@ -526,6 +555,7 @@ describe("Prisma admin provider repository", () => {
       data: expect.objectContaining({
         adapterKind: "answer_provider_hosted",
         id: scenario.hostedId,
+        kind: scenario.hostedKind,
         strategyId: scenario.hostedStrategyId
       })
     }));
@@ -539,20 +569,24 @@ describe("Prisma admin provider repository", () => {
           adapterKind: "provider_model_client",
           enabled: false,
           id: scenario.clientId,
+          kind: scenario.clientKind,
           providerModelId: "model-1"
         })
       }));
     }
     expect(createSearchRevision).toHaveBeenCalledWith({
       data: expect.objectContaining({
+        configuration: expect.objectContaining({ protocol: scenario.protocol }),
         searchStrategyId: scenario.hostedId,
         validationEvidence: expect.objectContaining({ sourceProbe: false })
       })
     });
     expect(createSearchRevision).toHaveBeenCalledWith({
       data: expect.objectContaining({
-        configuration: expect.objectContaining(scenario.existingClient
-          ? {
+        configuration: expect.objectContaining({
+          protocol: scenario.protocol,
+          ...(scenario.existingClient
+            ? {
               maxOutputTokens: 8_192,
               maxResults: 11,
               maxSearchCallsPerAnswer: 4,
@@ -561,7 +595,8 @@ describe("Prisma admin provider repository", () => {
               reasoningPolicy: "provider_default",
               timeoutMs: 123_000
             }
-          : {}),
+            : {})
+        }),
         providerModelId: scenario.existingClient ? "model-2" : "model-1",
         searchStrategyId: scenario.clientId,
         validationEvidence: expect.objectContaining({ sourceProbe: false })

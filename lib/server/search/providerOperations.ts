@@ -12,9 +12,15 @@ const engineQueryLimit = 2_000;
 const queryLimit = 512;
 const queryListLimit = 8;
 const urlLimit = 2_048;
+const webSearchRequestsLimit = 100;
+
+export type ProviderSearchUsage = Readonly<{
+  webSearchRequests: number;
+}>;
 
 export type ProviderSearchOperationTrace = Readonly<{
   operations: ThreadSearchProviderOperation[];
+  providerUsage?: ProviderSearchUsage;
   truncated: boolean;
 }>;
 
@@ -25,6 +31,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function boundedString(value: unknown, maxLength: number): string | null {
   return typeof value === "string" && value.trim() && value.length <= maxLength
     ? value.trim()
+    : null;
+}
+
+function boundedWebSearchRequests(value: unknown): number | null {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 &&
+    value <= webSearchRequestsLimit
+    ? value
     : null;
 }
 
@@ -85,6 +98,8 @@ export function providerSearchOperationsFromArtifacts(
   const operations = new Map<string, ThreadSearchProviderOperation>();
   let nextOrdinal = 0;
   let truncated = false;
+  let webSearchRequests: number | undefined;
+  let webSearchRequestsInvalid = false;
 
   for (const event of artifacts) {
     if (event.type !== "artifact" || event.data.artifactType !== "search" ||
@@ -92,6 +107,14 @@ export function providerSearchOperationsFromArtifacts(
       continue;
     }
     const payload = event.data.payload;
+    if (payload.provider === "anthropic" && payload.webSearchRequests !== undefined) {
+      const requests = boundedWebSearchRequests(payload.webSearchRequests);
+      if (requests === null) {
+        webSearchRequestsInvalid = true;
+      } else {
+        webSearchRequests = Math.max(webSearchRequests ?? 0, requests);
+      }
+    }
     const action = isRecord(payload.action) ? payload.action : null;
     const id = boundedString(payload.id, 256);
     const outputIndex = typeof payload.outputIndex === "number" && Number.isSafeInteger(payload.outputIndex)
@@ -130,7 +153,13 @@ export function providerSearchOperationsFromArtifacts(
     }
     bounded.push(operation);
   }
-  return { operations: bounded, truncated };
+  return {
+    operations: bounded,
+    ...(!webSearchRequestsInvalid && webSearchRequests !== undefined
+      ? { providerUsage: { webSearchRequests } }
+      : {}),
+    truncated
+  };
 }
 
 /**

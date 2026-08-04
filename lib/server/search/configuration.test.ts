@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+  builtInSearchDraft,
   compatibleTechnicalAdapter,
+  legacyProvider,
+  legacySearchKind,
   normalizeSearchDraft,
   searchDraftHash,
   searchExecutionModes
@@ -67,5 +70,48 @@ describe("Search adapter configuration", () => {
     expect(searchDraftHash(clientDraft)).toBe(searchDraftHash({ ...clientDraft }));
     expect(compatibleTechnicalAdapter("openai_responses_web_search", "openai_responses_compatible")).toBe(true);
     expect(compatibleTechnicalAdapter("openai_responses_web_search", "openai_chat_completions_compatible")).toBe(false);
+  });
+
+  it("normalizes Anthropic hosted and query-only Search without conflating their physical kinds", () => {
+    const hosted = {
+      adapterKind: "answer_provider_hosted",
+      credentialMode: "answer_provider",
+      maxOutputTokens: 4_096,
+      maxResults: 8,
+      maxSearchCallsPerAnswer: 2,
+      protocol: "anthropic_web_search",
+      providerModelId: null,
+      queryMaxCharacters: 500,
+      reasoningPolicy: "provider_default",
+      timeoutMs: 300_000
+    } as const;
+    const client = {
+      ...hosted,
+      adapterKind: "provider_model_client",
+      credentialMode: "provider_model",
+      providerModelId: "anthropic-search-model",
+      reasoningPolicy: "lowest_supported"
+    } as const;
+
+    expect(normalizeSearchDraft(hosted)).toEqual(hosted);
+    expect(normalizeSearchDraft(client)).toEqual(client);
+    expect(legacySearchKind(hosted.protocol, hosted.adapterKind)).toBe(
+      "anthropic_native_web_search"
+    );
+    expect(legacySearchKind(client.protocol, client.adapterKind)).toBe(
+      "provider_model_web_search"
+    );
+    expect(legacyProvider(hosted.protocol)).toBe("anthropic");
+    expect(compatibleTechnicalAdapter(hosted.protocol, "anthropic_messages")).toBe(true);
+    expect(compatibleTechnicalAdapter(hosted.protocol, "openai_responses_native")).toBe(false);
+    expect(builtInSearchDraft({
+      config: { tool: "web_search_20250305" },
+      kind: "anthropic_native_web_search"
+    })).toMatchObject({
+      adapterKind: "answer_provider_hosted",
+      credentialMode: "answer_provider",
+      protocol: "anthropic_web_search",
+      providerModelId: null
+    });
   });
 });

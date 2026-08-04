@@ -117,6 +117,11 @@ export function legacySearchKind(
   protocol: SearchProtocol,
   adapterKind: SearchAdapterKind
 ): string {
+  if (protocol === "anthropic_web_search") {
+    return adapterKind === "answer_provider_hosted"
+      ? "anthropic_native_web_search"
+      : "provider_model_web_search";
+  }
   if (protocol === "gemini_google_search") return "gemini_google_search";
   if (protocol === "openrouter_perplexity_chat") return "perplexity_tool_search";
   return adapterKind === "answer_provider_hosted"
@@ -125,12 +130,16 @@ export function legacySearchKind(
 }
 
 export function legacyProvider(protocol: SearchProtocol): string {
+  if (protocol === "anthropic_web_search") return "anthropic";
   if (protocol === "gemini_google_search") return "gemini";
   if (protocol === "openrouter_perplexity_chat") return "openrouter";
   return "openai_compatible";
 }
 
 export function compatibleTechnicalAdapter(protocol: SearchProtocol, adapterKind: string): boolean {
+  if (protocol === "anthropic_web_search") {
+    return adapterKind === "anthropic_messages";
+  }
   if (protocol === "openrouter_perplexity_chat") {
     return adapterKind === "openrouter_chat_completions";
   }
@@ -164,8 +173,10 @@ export function builtInSearchDraft(input: Readonly<{
     maxOutputTokens: adminSearchExecutionDefaults.maxOutputTokens,
     maxResults: 8,
     maxSearchCallsPerAnswer: adminSearchExecutionDefaults.maxSearchCallsPerAnswer,
-    protocol: input.kind === "gemini_google_search"
-      ? "gemini_google_search"
+    protocol: input.kind === "anthropic_native_web_search"
+      ? "anthropic_web_search"
+      : input.kind === "gemini_google_search"
+        ? "gemini_google_search"
       : input.kind === "perplexity_tool_search"
         ? "openrouter_perplexity_chat"
         : "openai_responses_web_search",

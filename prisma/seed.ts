@@ -44,6 +44,14 @@ const ids = {
 };
 
 const builtInSearchOptions = Object.freeze({
+  "anthropic-web-search": Object.freeze({
+    description: "Web search provided by Anthropic.",
+    displayName: "Anthropic Search",
+    id: "00000000-0000-4000-8000-000000001405",
+    kind: "web_search",
+    sourceConnectionId: providerTemplateIds.anthropicConnection,
+    templateKey: "search:anthropic"
+  }),
   "gemini-google-search": Object.freeze({
     description: "Google Search grounding for eligible Gemini models.",
     displayName: "Google Search",

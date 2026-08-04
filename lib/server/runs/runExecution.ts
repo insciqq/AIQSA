@@ -491,6 +491,7 @@ async function persistPlanSearchExecution(input: Readonly<{
         ? { providerOperations: input.execution.providerOperations }
         : {}),
       providerOperationsTruncated: input.execution.providerOperationsTruncated,
+      ...(input.execution.providerUsage ? { providerUsage: input.execution.providerUsage } : {}),
       sources: input.execution.sources,
       usage: input.execution.usage,
       ...(input.execution.warning ? { warning: input.execution.warning } : {})

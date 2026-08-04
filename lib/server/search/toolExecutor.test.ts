@@ -339,6 +339,48 @@ describe("Search plan tool router", () => {
     expect(serialized).not.toContain("private system prompt");
   });
 
+  it("binds Anthropic query-only Search to its exact technical model without answer context", async () => {
+    const requests: ProviderSearchRequest[] = [];
+    const anthropic = option("anthropic-web-search", {
+      modelId: "claude-opus-5",
+      protocol: "anthropic_web_search",
+      provider: "anthropic",
+      providerModelId: "anthropic-technical-deployment"
+    });
+    const router = createSearchPlanToolRouter({
+      plan: { mode: "model_choice", options: [anthropic] },
+      runtimes: {
+        "anthropic-web-search": runtime({
+          onRequest: (request) => requests.push(request)
+        })
+      }
+    })!;
+
+    await expect(router.execute(
+      call(router.tools[0]!.name, "bounded Anthropic query"),
+      answerRequest()
+    )).resolves.toMatchObject({ status: "complete" });
+
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).toMatchObject({
+      query: "bounded Anthropic query",
+      searchPolicy: {
+        maxOutputTokens: 4_096,
+        modelId: "claude-opus-5",
+        provider: "anthropic",
+        reasoningPolicy: "lowest_supported",
+        strategyId: "anthropic-web-search"
+      },
+      strategyId: "anthropic-web-search"
+    });
+    const serialized = JSON.stringify(requests[0]);
+    expect(serialized).not.toContain("answer-model");
+    expect(serialized).not.toContain("private current question");
+    expect(serialized).not.toContain("private transcript");
+    expect(serialized).not.toContain("private developer prompt");
+    expect(serialized).not.toContain("private system prompt");
+  });
+
   it("rejects attachment-bearing client Search before every provider runtime", async () => {
     const onRequest = vi.fn();
     const selected = option("selected");

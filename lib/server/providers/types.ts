@@ -120,6 +120,14 @@ export type ProviderSearchPolicy =
       provider: "gemini";
       reasoningPolicy: ProviderSearchReasoningPolicy;
       strategyId: "gemini-google-search";
+    }>
+  | Readonly<{
+      maxOutputTokens: number;
+      modelCapabilities: ProviderModelCapabilities;
+      modelId: string;
+      provider: "anthropic";
+      reasoningPolicy: ProviderSearchReasoningPolicy;
+      strategyId: "anthropic-web-search";
     }>;
 
 export type ProviderConversationMessage = {

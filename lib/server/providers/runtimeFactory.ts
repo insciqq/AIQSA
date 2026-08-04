@@ -1,4 +1,5 @@
 import { createAnthropicMessagesAdapter, createFetchAnthropicMessagesClient } from "./anthropicMessages";
+import { createAnthropicMessagesSearchAdapter } from "./anthropicMessagesSearch";
 import { createCompatibleResponsesAdapter } from "./compatibleResponses";
 import { createFakeProviderAdapter } from "./fakeProvider";
 import {
@@ -338,13 +339,18 @@ function createProviderRuntimeBindingUnobserved(input: Readonly<{
         }),
         toolBridge: openAICompatibleChatToolBridge
       };
-    case "anthropic_messages":
+    case "anthropic_messages": {
+      const client = createFetchAnthropicMessagesClient({ apiKey: clientSecret, baseUrl, fetchFn });
       return {
         adapter: createAnthropicMessagesAdapter({
-          client: createFetchAnthropicMessagesClient({ apiKey: clientSecret, baseUrl, fetchFn })
+          client
         }),
+        ...(snapshot.model.capabilities.nativeSearch
+          ? { searchAdapter: createAnthropicMessagesSearchAdapter({ client }) }
+          : {}),
         toolBridge: anthropicMessagesToolBridge
       };
+    }
     case "openrouter_chat_completions": {
       const client = createFetchOpenRouterChatClient({ apiKey: clientSecret, baseUrl, fetchFn });
       return {

@@ -177,7 +177,9 @@ async function main() {
     const expectedSearchOption = searchOptions.find((option) =>
       strategyTemplate.strategyId === "search-disabled"
         ? option.templateKey === "search:none"
-        : strategyTemplate.strategyId === "openai-native-web-search"
+        : strategyTemplate.strategyId === "anthropic-web-search"
+          ? option.templateKey === "search:anthropic"
+          : strategyTemplate.strategyId === "openai-native-web-search"
           ? option.templateKey === "search:openai"
           : strategyTemplate.strategyId === "gemini-google-search"
             ? option.templateKey === "search:gemini-google"

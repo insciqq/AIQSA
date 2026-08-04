@@ -202,6 +202,24 @@ describe("catalog wire contract", () => {
     }]);
   });
 
+  it("decodes the Anthropic hosted Search route metadata", () => {
+    const response = validResponse();
+    response.catalog.searchStrategies = [{
+      adapterKind: "answer_provider_hosted",
+      displayName: "Anthropic Search",
+      executionModes: ["model_choice"],
+      kind: "anthropic_native_web_search",
+      privacy: "answer_provider",
+      protocol: "anthropic_web_search",
+      revisionId: "anthropic-web-search:configuration-revision:1",
+      strategyId: "anthropic-web-search"
+    }];
+
+    expect(decodeCatalogResponse(response)?.searchStrategies).toEqual(
+      response.catalog.searchStrategies
+    );
+  });
+
   it("rejects malformed or duplicate run-profile projections", () => {
     const duplicate = validResponse();
     duplicate.catalog.runProfiles.push({ ...duplicate.catalog.runProfiles[0] });

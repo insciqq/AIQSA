@@ -5,6 +5,7 @@ export type SearchPlanMode = "all_selected" | "model_choice";
 export type SearchAdapterKind = "answer_provider_hosted" | "provider_model_client";
 export type SearchCredentialMode = "answer_provider" | "provider_model";
 export type SearchProtocol =
+  | "anthropic_web_search"
   | "gemini_google_search"
   | "openai_responses_web_search"
   | "openrouter_perplexity_chat";

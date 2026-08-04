@@ -18,6 +18,7 @@ import {
   type AdminSearchTestEvidence
 } from "../../../contracts/adminSearch";
 import {
+  ANTHROPIC_PROVIDER_SEARCH_INTEGRATION_ID,
   GEMINI_PROVIDER_SEARCH_INTEGRATION_ID,
   OPENAI_PROVIDER_SEARCH_INTEGRATION_ID
 } from "../../../domain/search";
@@ -315,8 +316,10 @@ export function createAdminProviderQuickSetupService(input: Readonly<{
       }
       const versionId = idFactory();
       let search: AdminProviderQuickSetupCommitPlan["search"];
-      if ((policy.provider === "openai" || policy.provider === "gemini") &&
+      if ((policy.provider === "anthropic" || policy.provider === "openai" ||
+        policy.provider === "gemini") &&
         candidate.configuration.capabilities.nativeSearch) {
+        const anthropic = policy.provider === "anthropic";
         const gemini = policy.provider === "gemini";
         const draft: AdminSearchDraft = {
           adapterKind: "provider_model_client",
@@ -324,7 +327,11 @@ export function createAdminProviderQuickSetupService(input: Readonly<{
           maxOutputTokens: adminSearchExecutionDefaults.maxOutputTokens,
           maxResults: 8,
           maxSearchCallsPerAnswer: adminSearchExecutionDefaults.maxSearchCallsPerAnswer,
-          protocol: gemini ? "gemini_google_search" : "openai_responses_web_search",
+          protocol: anthropic
+            ? "anthropic_web_search"
+            : gemini
+              ? "gemini_google_search"
+              : "openai_responses_web_search",
           providerModelId: candidate.modelId,
           queryMaxCharacters: 500,
           reasoningPolicy: adminSearchExecutionDefaults.reasoningPolicy,
@@ -342,9 +349,11 @@ export function createAdminProviderQuickSetupService(input: Readonly<{
           draftHash: searchDraftHash(draft),
           evidence,
           grantId: idFactory(),
-          integrationId: gemini
-            ? GEMINI_PROVIDER_SEARCH_INTEGRATION_ID
-            : OPENAI_PROVIDER_SEARCH_INTEGRATION_ID,
+          integrationId: anthropic
+            ? ANTHROPIC_PROVIDER_SEARCH_INTEGRATION_ID
+            : gemini
+              ? GEMINI_PROVIDER_SEARCH_INTEGRATION_ID
+              : OPENAI_PROVIDER_SEARCH_INTEGRATION_ID,
           revisionId: idFactory()
         };
       }
@@ -400,7 +409,11 @@ export function createAdminProviderQuickSetupService(input: Readonly<{
         providerDisplayName: policy.connection.displayName,
         search: commit.search
           ? {
-              displayName: policy.provider === "gemini" ? "Google Search" : "OpenAI Search",
+              displayName: policy.provider === "anthropic"
+                ? "Anthropic Search"
+                : policy.provider === "gemini"
+                  ? "Google Search"
+                  : "OpenAI Search",
               status: commit.search
             }
           : null

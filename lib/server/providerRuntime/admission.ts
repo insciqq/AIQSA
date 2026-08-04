@@ -561,6 +561,11 @@ function hostedRouteCompatible(
       answer.snapshot.providerFamily === "gemini" &&
       answer.snapshot.model.adapterKind === "gemini_interactions_native";
   }
+  if (route.draft.protocol === "anthropic_web_search") {
+    return option.kind === "web_search" &&
+      answer.snapshot.providerFamily === "anthropic" &&
+      answer.snapshot.model.adapterKind === "anthropic_messages";
+  }
   return option.kind === "web_search" &&
     route.draft.protocol === "openai_responses_web_search" &&
     (answer.snapshot.model.adapterKind === "openai_responses_native" ||
@@ -582,7 +587,8 @@ function clientRouteCompatible(
     return false;
   }
   if (option.kind === "web_search") {
-    return route.draft.protocol === "openai_responses_web_search";
+    return route.draft.protocol === "anthropic_web_search" ||
+      route.draft.protocol === "openai_responses_web_search";
   }
   if (option.kind === "gemini_google_search") {
     return route.draft.protocol === "gemini_google_search";
@@ -597,7 +603,8 @@ function routeBelongsToOption(
   route: ResolvedSearchRoute
 ): boolean {
   if (option.kind === "web_search") {
-    return route.draft.protocol === "openai_responses_web_search";
+    return route.draft.protocol === "anthropic_web_search" ||
+      route.draft.protocol === "openai_responses_web_search";
   }
   if (option.kind === "gemini_google_search") {
     return route.draft.protocol === "gemini_google_search";
