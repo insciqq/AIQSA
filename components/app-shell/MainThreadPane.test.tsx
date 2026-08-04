@@ -233,6 +233,7 @@ function renderPane(overrides: Partial<ComponentProps<typeof MainThreadPane>> = 
     maxOutputTokens: "1024",
     notificationSoundEnabled: false,
     operationError: null,
+    operationErrorLive: true,
     openRunDetails: vi.fn(),
     openMcpSettings: vi.fn(),
     openPromptLibrary: vi.fn(),
@@ -873,6 +874,19 @@ describe("MainThreadPane", () => {
       "Send failed. Your draft was preserved."
     );
     expect(screen.getByTestId("composer-form")).toBe(composer);
+
+    rerender(
+      <MainThreadPane
+        {...props}
+        activeChatId="chat-created"
+        operationError="Send failed. Your draft was preserved."
+        operationErrorLive={false}
+      />
+    );
+    expect(screen.getByTestId("composer-operation-error")).toHaveTextContent(
+      "Send failed. Your draft was preserved."
+    );
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
 
     rerender(
       <MainThreadPane

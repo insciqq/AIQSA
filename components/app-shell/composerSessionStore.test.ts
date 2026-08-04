@@ -97,11 +97,12 @@ describe("composer session store", () => {
     expect(store.transferSession(source, target)).toBe(true);
     expect(useComposerSessionStore.getState().activeSessionKey).toBe(target);
     expect(session(source)).toBe(emptyComposerSessionSnapshot);
-    expect(store.finishSend(send, "failed", "send failed")).toBe(true);
+    expect(store.finishSend(send, "failed", "send failed", false)).toBe(true);
     expect(session(target)).toMatchObject({
       attachments: [attachment("source")],
       draft: "First question",
       operationError: "send failed",
+      operationErrorLive: false,
       pendingSend: null
     });
     expect(store.transferSession(source, target)).toBe(false);
@@ -114,6 +115,7 @@ describe("composer session store", () => {
       attachments: [attachment("newer")],
       draft: "Newer question",
       operationError: "retry failed",
+      operationErrorLive: true,
       pendingSend: null
     });
 
@@ -148,6 +150,7 @@ describe("composer session store", () => {
       editingMessageId: null,
       latestUploadGeneration: 0,
       operationError: null,
+      operationErrorLive: true,
       pendingEdit: null,
       pendingSend: null,
       pendingUploadGenerations: [],

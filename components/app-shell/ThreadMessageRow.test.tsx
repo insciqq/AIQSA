@@ -429,20 +429,20 @@ describe("ThreadMessageRow", () => {
 
     expect(container.querySelector('[data-message-id="assistant-queued"]')).toHaveAttribute("aria-busy", "true");
     expect(screen.getByTestId("assistant-pending-state")).toHaveTextContent("Working…");
-    expect(screen.getByTestId("assistant-pending-state")).toHaveAttribute("role", "status");
+    expect(screen.getByTestId("assistant-pending-state")).not.toHaveAttribute("role");
     expect(screen.queryByTestId("streaming-cursor")).not.toBeInTheDocument();
     expect(screen.queryByTestId("assistant-empty-state")).not.toBeInTheDocument();
     expect(screen.queryByTestId("run-receipt")).not.toBeInTheDocument();
   });
 
-  it("renders partial streamed markdown with an announced liveness state and caret", () => {
+  it("renders partial streamed markdown with a non-live visual caret", () => {
     const { container } = renderRow({
       message: assistantMessage({ content: "Partial **answer**", status: "streaming" }),
       streaming: true
     });
 
     expect(screen.getByTestId("assistant-message-content")).toHaveTextContent("Partial answer");
-    expect(screen.getByText("Answer streaming")).toHaveAttribute("role", "status");
+    expect(screen.queryByText("Answer streaming")).not.toBeInTheDocument();
     expect(screen.getByTestId("streaming-cursor")).toBeInTheDocument();
     expect(screen.queryByTestId("assistant-pending-state")).not.toBeInTheDocument();
     expect(container.querySelector('article[data-role="assistant"]')).toHaveAttribute("aria-busy", "true");
@@ -498,6 +498,7 @@ describe("ThreadMessageRow", () => {
 
     expect(screen.getByText("Partial result")).toBeVisible();
     expect(screen.getByTestId("assistant-cancelled-state")).toHaveTextContent("Response stopped");
+    expect(screen.getByTestId("assistant-cancelled-state")).not.toHaveAttribute("role");
     expect(screen.queryByTestId("run-receipt")).not.toBeInTheDocument();
     await revealRunDetails();
     expect(screen.getByTestId("run-receipt")).toHaveTextContent("Run Stopped");
@@ -520,8 +521,9 @@ describe("ThreadMessageRow", () => {
         onRegenerateMessage={vi.fn()}
       />
     );
-    expect(screen.getByRole("alert")).toHaveTextContent("Response failed");
-    expect(screen.getByRole("alert")).toHaveTextContent("Provider timed out");
+    expect(screen.getByTestId("assistant-error-state")).toHaveTextContent("Response failed");
+    expect(screen.getByTestId("assistant-error-state")).toHaveTextContent("Provider timed out");
+    expect(screen.getByTestId("assistant-error-state")).not.toHaveAttribute("role");
     expect(screen.getByTestId("run-receipt")).toHaveTextContent("Run Failed");
     expect(screen.queryByTestId("assistant-cancelled-state")).not.toBeInTheDocument();
 
@@ -544,7 +546,7 @@ describe("ThreadMessageRow", () => {
     );
     expect(screen.getByTestId("assistant-empty-state")).toHaveTextContent("No answer text was returned.");
     expect(screen.getByTestId("run-receipt")).toHaveTextContent("Run Complete");
-    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("assistant-error-state")).not.toBeInTheDocument();
   });
 
   it("suppresses the legacy cancelled placeholder while keeping the stopped status", () => {
@@ -580,6 +582,8 @@ describe("ThreadMessageRow", () => {
     const activity = screen.getByTestId("thread-run-activity");
     expect(activity).toHaveTextContent(expected);
     expect(activity).toHaveAccessibleName(`Run status: ${label}`);
+    expect(activity).not.toHaveAttribute("role");
+    expect(activity).not.toHaveAttribute("aria-live");
     expect(activity).not.toHaveTextContent(/Question|waiting/i);
     expect(screen.queryByTestId("assistant-pending-state")).not.toBeInTheDocument();
   });

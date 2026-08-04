@@ -187,6 +187,7 @@ export type ShellComposerView = {
   maxOutputTokens: string;
   notificationSoundEnabled: boolean;
   operationError: string | null;
+  operationErrorLive: boolean;
   reasoningEffort: string;
   reasoningMode: string;
   retryCatalog(): void;

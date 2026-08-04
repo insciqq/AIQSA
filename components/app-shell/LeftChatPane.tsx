@@ -1186,7 +1186,7 @@ function LeftChatPaneComponent({
                               ) : null}
                             </button>
                             {rowStatus ? (
-                              <span className="sr-only" id={rowStatusId} role={running ? "status" : undefined}>
+                              <span className="sr-only" id={rowStatusId}>
                                 {rowStatus}
                               </span>
                             ) : null}

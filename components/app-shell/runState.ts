@@ -22,6 +22,12 @@ export type RunActivityLabel =
   | "Waiting for model"
   | "Working";
 
+export type RunLifecycleAnnouncement =
+  | RunActivityLabel
+  | "Run complete. Message composer ready."
+  | "Run stopped. Message composer ready."
+  | "Run error. Message composer ready.";
+
 export type PipelineRunState = {
   events: RunEventView[];
   searchEnabled: boolean;
@@ -58,6 +64,29 @@ export function runActivityLabel(pipeline: PipelineSnapshot): RunActivityLabel {
   }
 
   return "Working";
+}
+
+/** Provides the single spoken copy for a current run without inventing an unobserved queue phase. */
+export function runLifecycleAnnouncement(
+  pipeline: PipelineSnapshot
+): RunLifecycleAnnouncement | null {
+  if (pipeline.phase === "running") {
+    return runActivityLabel(pipeline);
+  }
+
+  if (pipeline.phase === "settled") {
+    return "Run complete. Message composer ready.";
+  }
+
+  if (pipeline.phase === "cancelled") {
+    return "Run stopped. Message composer ready.";
+  }
+
+  if (pipeline.phase === "error") {
+    return "Run error. Message composer ready.";
+  }
+
+  return null;
 }
 
 function eventArtifactType(event: RunEventView): string | null {

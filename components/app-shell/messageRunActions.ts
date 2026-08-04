@@ -474,6 +474,7 @@ export function useMessageRunActions({
 
     let sendOutcome: "cancelled" | "failed" | "succeeded" = "failed";
     let sendFailureMessage: string | null = null;
+    let sendFailureLive = true;
     try {
       let chatIdForSend = sourceComposerChatId;
       const thread = selectThreadSnapshot(useThreadStore.getState(), chatIdForSend);
@@ -542,6 +543,7 @@ export function useMessageRunActions({
         resetThreadToLatest();
       }
 
+      sendFailureLive = false;
       const result = await executeMessageRunLifecycle({
         activeChatIdRef,
         activeStreamAbortRef,
@@ -638,11 +640,18 @@ export function useMessageRunActions({
             });
             if (startedFromBlankWorkspace) {
               useRunSurfaceStore.getState().resetSurface(chatIdForSend);
+              sendFailureLive = true;
             }
             return;
           }
 
           await reconcileAmbiguousRun(chatIdForSend);
+          if (
+            activeChatIdRef.current === chatIdForSend &&
+            selectThreadSnapshot(useThreadStore.getState(), chatIdForSend).messages.length === 0
+          ) {
+            sendFailureLive = true;
+          }
         }
       });
       sendOutcome = result.cancelled ? "cancelled" : result.failed ? "failed" : "succeeded";
@@ -658,7 +667,8 @@ export function useMessageRunActions({
         sendOutcome,
         sendOutcome === "failed"
           ? sendFailureMessage ?? "Send failed. Your draft was preserved."
-          : null
+          : null,
+        sendFailureLive
       );
     }
   }

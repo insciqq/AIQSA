@@ -18,6 +18,19 @@ export type UseAdminProviderQuickSetupControllerOptions = Readonly<{
   onQuickSetupCommitted?(): void;
 }>;
 
+export type AdminProviderQuickSetupFeedback = Readonly<{
+  message: string;
+  tone: "error" | "status";
+}>;
+
+type SnapshotFeedbackMode = "initial" | "manual" | "reconcile-clear" |
+  "reconcile-setup" | "reconcile-stale";
+
+type ReadyReconciliationExpectation = Readonly<{
+  modelDisplayName: string;
+  provider: AdminProviderQuickSetupId;
+}>;
+
 function notifyMutationCommitted(
   callback: UseAdminProviderQuickSetupControllerOptions["onMutationCommitted"]
 ): void {
@@ -49,6 +62,7 @@ export function useAdminProviderQuickSetupController(
   const [clearing, setClearing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [errorCode, setErrorCode] = useState<string | null>(null);
+  const [feedback, setFeedback] = useState<AdminProviderQuickSetupFeedback | null>(null);
 
   const selectedProviderIdRef = useRef<AdminProviderQuickSetupId | null>(null);
   const snapshotGenerationRef = useRef(0);
@@ -104,7 +118,9 @@ export function useAdminProviderQuickSetupController(
     setSnapshot(next);
     setReadyResult(null);
     setReadyConfirmation((confirmation) => confirmation && next.providers.some((provider) =>
-      provider.provider === confirmation.provider && provider.state === "ready"
+      provider.provider === confirmation.provider &&
+      provider.state === "ready" &&
+      provider.model?.displayName === confirmation.model.displayName
     ) ? confirmation : null);
     if (selected?.state === "ready") {
       formGenerationRef.current += 1;
@@ -112,7 +128,11 @@ export function useAdminProviderQuickSetupController(
     }
   }, [resetFormState]);
 
-  const refreshSnapshot = useCallback(async (required = reconciliationRequiredRef.current) => {
+  const refreshSnapshot = useCallback(async (
+    required = reconciliationRequiredRef.current,
+    feedbackMode: SnapshotFeedbackMode = "manual",
+    readyExpectation?: ReadyReconciliationExpectation
+  ) => {
     if (required) updateReconciliationRequired(true);
     const generation = ++snapshotGenerationRef.current;
     const abort = new AbortController();
@@ -122,6 +142,16 @@ export function useAdminProviderQuickSetupController(
     setLoading(true);
     setRefreshError(null);
     setRefreshErrorCode(null);
+    if (feedbackMode === "initial") {
+      setFeedback({ message: "Provider Quick setup is loading.", tone: "status" });
+    } else if (feedbackMode === "manual") {
+      setFeedback({
+        message: required
+          ? "Confirming saved provider status."
+          : "Refreshing provider status.",
+        tone: "status"
+      });
+    }
 
     const result = await getAdminProviderQuickSetup(fetch, abort.signal);
     if (generation !== snapshotGenerationRef.current) return false;
@@ -131,28 +161,68 @@ export function useAdminProviderQuickSetupController(
     setLoading(false);
     setLoaded(true);
     if (!result.ok) {
-      setRefreshError(adminProviderQuickSetupErrorMessage(result.error));
+      const message = adminProviderQuickSetupErrorMessage(result.error);
+      setRefreshError(message);
       setRefreshErrorCode(result.error.code);
+      setFeedback({
+        message: required
+          ? `Saved provider status could not be confirmed. ${message}`
+          : `Provider status refresh failed. ${message}`,
+        tone: "error"
+      });
       return false;
     }
 
+    const reconciledReadyProvider = readyExpectation
+      ? result.data.providers.find(({ provider }) => provider === readyExpectation.provider)
+      : null;
     applySnapshot(result.data);
     if (required || reconciliationRequiredRef.current) {
       updateReconciliationRequired(false);
+      setError(null);
+      setErrorCode(null);
+    }
+    if (feedbackMode === "initial") {
+      setFeedback({ message: "Provider Quick setup loaded.", tone: "status" });
+    } else if (feedbackMode === "manual") {
+      setFeedback({
+        message: required
+          ? "Saved provider status confirmed."
+          : "Provider status refreshed.",
+        tone: "status"
+      });
+    } else if (feedbackMode === "reconcile-stale") {
+      setFeedback({
+        message: "Provider settings changed. Latest provider status loaded.",
+        tone: "status"
+      });
+    } else if (
+      feedbackMode === "reconcile-setup" &&
+      (reconciledReadyProvider?.state !== "ready" ||
+        reconciledReadyProvider.model?.displayName !== readyExpectation?.modelDisplayName)
+    ) {
+      setFeedback({
+        message: "Provider settings changed. Latest provider status loaded.",
+        tone: "status"
+      });
     }
     return true;
   }, [applySnapshot, updateReconciliationRequired]);
 
-  const reconcileSnapshot = useCallback(() => {
+  const reconcileSnapshot = useCallback((
+    feedbackMode: Extract<SnapshotFeedbackMode,
+      "reconcile-clear" | "reconcile-setup" | "reconcile-stale">,
+    readyExpectation?: ReadyReconciliationExpectation
+  ) => {
     updateReconciliationRequired(true);
-    return refreshSnapshot(true);
+    return refreshSnapshot(true, feedbackMode, readyExpectation);
   }, [refreshSnapshot, updateReconciliationRequired]);
 
   useEffect(() => {
     if (!active || loaded) return;
     let disposed = false;
     queueMicrotask(() => {
-      if (!disposed) void refreshSnapshot(false);
+      if (!disposed) void refreshSnapshot(false, "initial");
     });
     return () => {
       disposed = true;
@@ -174,6 +244,7 @@ export function useAdminProviderQuickSetupController(
       updateReconciliationRequired(false);
       setRefreshError(null);
       setRefreshErrorCode(null);
+      setFeedback(null);
       setLoaded(false);
     });
     return () => {
@@ -207,6 +278,7 @@ export function useAdminProviderQuickSetupController(
   const clearForm = useCallback(() => {
     cancelSubmit();
     resetFormState();
+    setFeedback(null);
   }, [cancelSubmit, resetFormState]);
 
   const leaveQuickSetup = useCallback(() => {
@@ -216,6 +288,7 @@ export function useAdminProviderQuickSetupController(
     updateReconciliationRequired(false);
     setRefreshError(null);
     setRefreshErrorCode(null);
+    setFeedback(null);
   }, [cancelSnapshot, cancelSubmit, resetFormState, updateReconciliationRequired]);
 
   const selectProvider = useCallback((provider: AdminProviderQuickSetupId) => {
@@ -231,7 +304,14 @@ export function useAdminProviderQuickSetupController(
     setReplacing(false);
     setError(null);
     setErrorCode(null);
-  }, [cancelSubmit]);
+    const providerDisplayName = snapshot?.providers.find((candidate) =>
+      candidate.provider === provider
+    )?.providerDisplayName ?? provider;
+    setFeedback({
+      message: `${providerDisplayName} selected. Enter an API key to continue.`,
+      tone: "status"
+    });
+  }, [cancelSubmit, snapshot]);
 
   const changeSecret = useCallback((value: string) => {
     if (snapshotLoadingRef.current || reconciliationRequiredRef.current || submittingRef.current) return;
@@ -241,6 +321,7 @@ export function useAdminProviderQuickSetupController(
     setSelection(null);
     setError(null);
     setErrorCode(null);
+    setFeedback(null);
   }, [cancelSubmit]);
 
   const submit = useCallback(async () => {
@@ -269,6 +350,10 @@ export function useAdminProviderQuickSetupController(
     setClearing(false);
     setError(null);
     setErrorCode(null);
+    setFeedback({
+      message: `Testing and saving ${provider.providerDisplayName}.`,
+      tone: "status"
+    });
     const result = await submitAdminProviderQuickSetup({
       expectedState: selection?.expectedState ?? provider.stateToken,
       provider: provider.provider,
@@ -289,8 +374,13 @@ export function useAdminProviderQuickSetupController(
     submittingRef.current = false;
     setSubmitting(false);
     if (!result.ok) {
-      setError(adminProviderQuickSetupErrorMessage(result.error));
+      const message = adminProviderQuickSetupErrorMessage(result.error);
+      setError(message);
       setErrorCode(result.error.code);
+      setFeedback({
+        message: `${provider.providerDisplayName} setup failed. ${message}`,
+        tone: "error"
+      });
       if (result.error.code === "provider_quick_setup_selection_invalid") {
         setSelection(null);
         setSelectedCandidateId(null);
@@ -298,13 +388,20 @@ export function useAdminProviderQuickSetupController(
       if (result.error.code === "provider_draft_stale") {
         setSelection(null);
         setSelectedCandidateId(null);
-        void reconcileSnapshot();
+        void reconcileSnapshot("reconcile-stale");
       }
       return false;
     }
     if (result.data.provider !== provider.provider) {
-      setError(adminProviderQuickSetupErrorMessage({ code: "provider_quick_setup_response_invalid" }));
+      const message = adminProviderQuickSetupErrorMessage({
+        code: "provider_quick_setup_response_invalid"
+      });
+      setError(message);
       setErrorCode("provider_quick_setup_response_invalid");
+      setFeedback({
+        message: `${provider.providerDisplayName} setup failed. ${message}`,
+        tone: "error"
+      });
       return false;
     }
     if (result.data.outcome === "selection_required") {
@@ -315,10 +412,18 @@ export function useAdminProviderQuickSetupController(
           code: "provider_quick_setup_selection_invalid"
         }));
         setErrorCode("provider_quick_setup_selection_invalid");
+        setFeedback({
+          message: `${provider.providerDisplayName} setup needs another key check before a model can be selected.`,
+          tone: "error"
+        });
         return false;
       }
       setSelection(result.data);
       setSelectedCandidateId(null);
+      setFeedback({
+        message: `${provider.providerDisplayName} needs a model choice. Choose one to finish setup.`,
+        tone: "status"
+      });
       return false;
     }
 
@@ -328,9 +433,16 @@ export function useAdminProviderQuickSetupController(
     setSelection(null);
     setSelectedCandidateId(null);
     setReplacing(false);
+    setFeedback({
+      message: `${provider.providerDisplayName} is ready to chat with ${result.data.model.displayName}.`,
+      tone: "status"
+    });
     onQuickSetupCommitted?.();
     notifyMutationCommitted(onMutationCommitted);
-    void reconcileSnapshot();
+    void reconcileSnapshot("reconcile-setup", {
+      modelDisplayName: result.data.model.displayName,
+      provider: result.data.provider
+    });
     return true;
   }, [onMutationCommitted, onQuickSetupCommitted, reconcileSnapshot, replacing, secret,
     selectedCandidateId, selectedProvider, selection]);
@@ -351,6 +463,10 @@ export function useAdminProviderQuickSetupController(
     setSubmitting(false);
     setError(null);
     setErrorCode(null);
+    setFeedback({
+      message: `Removing the ${provider.providerDisplayName} key assignment.`,
+      tone: "status"
+    });
     const result = await clearAdminProviderQuickSetupAssignment({
       expectedState: provider.stateToken,
       provider: provider.provider
@@ -368,24 +484,40 @@ export function useAdminProviderQuickSetupController(
     submittingRef.current = false;
     setClearing(false);
     if (!result.ok) {
-      setError(adminProviderQuickSetupErrorMessage(result.error));
+      const message = adminProviderQuickSetupErrorMessage(result.error);
+      setError(message);
       setErrorCode(result.error.code);
-      if (result.error.code === "provider_draft_stale") void reconcileSnapshot();
+      setFeedback({
+        message: `${provider.providerDisplayName} key assignment could not be removed. ${message}`,
+        tone: "error"
+      });
+      if (result.error.code === "provider_draft_stale") {
+        void reconcileSnapshot("reconcile-stale");
+      }
       return false;
     }
     if (result.data.provider !== provider.provider || !result.data.credentialRetained) {
-      setError(adminProviderQuickSetupErrorMessage({
+      const message = adminProviderQuickSetupErrorMessage({
         code: "provider_quick_setup_response_invalid"
-      }));
+      });
+      setError(message);
       setErrorCode("provider_quick_setup_response_invalid");
+      setFeedback({
+        message: `${provider.providerDisplayName} key assignment could not be removed. ${message}`,
+        tone: "error"
+      });
       return false;
     }
     setReadyResult(null);
     setReadyConfirmation(null);
     setReplacing(false);
+    setFeedback({
+      message: `${provider.providerDisplayName} key assignment was removed. The stored credential remains available in Connections.`,
+      tone: "status"
+    });
     onQuickSetupCommitted?.();
     notifyMutationCommitted(onMutationCommitted);
-    void reconcileSnapshot();
+    void reconcileSnapshot("reconcile-clear");
     return true;
   }, [onMutationCommitted, onQuickSetupCommitted, reconcileSnapshot, selectedProvider]);
 
@@ -402,6 +534,10 @@ export function useAdminProviderQuickSetupController(
         setReplacing(true);
         setError(null);
         setErrorCode(null);
+        setFeedback({
+          message: `Enter a replacement ${selectedProvider?.providerDisplayName ?? "provider"} API key.`,
+          tone: "status"
+        });
       },
       cancelReplacement: clearForm,
       changeSecret,
@@ -412,19 +548,30 @@ export function useAdminProviderQuickSetupController(
         setSelectedCandidateId(candidateId);
         setError(null);
         setErrorCode(null);
+        const candidate = selection?.candidates.find((item) =>
+          item.candidateId === candidateId
+        );
+        setFeedback({
+          message: candidate
+            ? `${candidate.displayName} selected. Submit again to finish setup.`
+            : "Model selected. Submit again to finish setup.",
+          tone: "status"
+        });
       },
       clearError: () => {
         setError(null);
         setErrorCode(null);
+        setFeedback(null);
       },
       leaveQuickSetup,
-      refresh: () => refreshSnapshot(reconciliationRequiredRef.current),
+      refresh: () => refreshSnapshot(reconciliationRequiredRef.current, "manual"),
       selectProvider,
       submit
     },
     state: {
       error,
       errorCode,
+      feedback,
       clearing,
       formLocked,
       loaded,

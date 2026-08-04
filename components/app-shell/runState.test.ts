@@ -4,7 +4,8 @@ import {
   appendCompactRunEvent,
   mergeThreadMessages,
   pipelineStage,
-  runActivityLabel
+  runActivityLabel,
+  runLifecycleAnnouncement
 } from "./runState";
 import type { RunEventView, ThreadMessage } from "./types";
 
@@ -249,6 +250,24 @@ describe("runActivityLabel", () => {
     expect(runActivityLabel(stage([modelWaitingArtifact]))).toBe("Waiting for model");
     expect(runActivityLabel(stage([modelWaitingArtifact, toolsRunningArtifact]))).toBe("Running 2 tools");
     expect(runActivityLabel(stage([toolsRunningArtifact, tokenEvent]))).toBe("Answering");
+  });
+});
+
+describe("runLifecycleAnnouncement", () => {
+  it("uses truthful current activity and complete, stopped, and error terminal copy", () => {
+    expect(runLifecycleAnnouncement(stage([]))).toBe("Working");
+    expect(runLifecycleAnnouncement(stage([searchArtifact]))).toBe("Searching");
+    expect(runLifecycleAnnouncement(stage([searchArtifact, tokenEvent]))).toBe("Answering");
+    expect(
+      runLifecycleAnnouncement(stage([tokenEvent, doneEvent()], { streaming: false }))
+    ).toBe("Run complete. Message composer ready.");
+    expect(
+      runLifecycleAnnouncement(stage([tokenEvent, doneEvent("cancelled")], { streaming: false }))
+    ).toBe("Run stopped. Message composer ready.");
+    expect(
+      runLifecycleAnnouncement(stage([tokenEvent, errorEvent], { streaming: false }))
+    ).toBe("Run error. Message composer ready.");
+    expect(runLifecycleAnnouncement(stage([], { streaming: false }))).toBeNull();
   });
 });
 

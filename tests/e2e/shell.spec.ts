@@ -259,14 +259,20 @@ test("anchors explicit mobile sends on the user turn and keeps long answers stab
   await expect(liveActivity).toHaveAttribute("data-phase", "running");
   await expect(liveActivity).toContainText("Working…");
   const threadActivity = page.getByTestId("thread-run-activity");
+  const runAnnouncement = page.getByTestId("run-lifecycle-announcer");
   await expect(threadActivity).toHaveText("Working…");
+  await expect(runAnnouncement).toHaveText("Working");
+  await expect(liveActivity.locator("[aria-live]")).toHaveCount(0);
+  await expect(threadActivity).not.toHaveAttribute("role");
   await expect(threadActivity).not.toContainText(/Question|Search|Answer waiting/i);
   await expectNoHorizontalOverflow(page);
   await expect(threadActivity).toHaveText("Searching…");
   await expect(liveActivity).toContainText("Searching…");
+  await expect(runAnnouncement).toHaveText("Searching");
   await expect(assistantContentWithText(page, "Anchored answer start marker")).toBeVisible();
   await expect(threadActivity).toHaveText("Answering…");
   await expect(liveActivity).toContainText("Answering…");
+  await expect(runAnnouncement).toHaveText("Answering");
   await liveActivity.click();
   const details = page.getByTestId("details-pane");
   await expect(details).toHaveAttribute("role", "dialog");
@@ -285,6 +291,7 @@ test("anchors explicit mobile sends on the user turn and keeps long answers stab
   await details.getByRole("button", { name: "Close details" }).click();
   await expect(page.getByTestId("thread-run-warnings")).toContainText("Skipped malformed stream frame");
   await expect(assistantContentWithText(page, "Anchored answer tail marker")).toBeVisible();
+  await expect(runAnnouncement).toHaveText("Run complete. Message composer ready.");
   const thread = page.getByTestId("thread");
   expect(await threadTextIsInViewport(page, "Pinned stream question")).toBe(true);
   expect(await threadTextIsInViewport(page, "Anchored answer start marker")).toBe(true);
@@ -4315,11 +4322,30 @@ test("supports the default QSA chat and folder workflow", async ({ browser, page
   await expect(page.getByTestId("shell-notice")).toContainText("Message deleted");
   await expect(page.getByRole("textbox", { name: "Message" })).toBeFocused();
 
+  let failShareListOnce = true;
+  const shareListRetryRoute = async (route: Route) => {
+    if (route.request().method() === "GET" && failShareListOnce) {
+      failShareListOnce = false;
+      await route.fulfill({
+        contentType: "application/json",
+        json: { error: "share_list_temporarily_unavailable" },
+        status: 503
+      });
+      return;
+    }
+    await route.continue();
+  };
+  await page.route("**/api/chats/*/share", shareListRetryRoute);
   await page.getByRole("button", { name: "Share anonymously" }).click();
   const shareDialog = page.getByRole("dialog", { name: "Share anonymously" });
+  const shareAnnouncement = shareDialog.getByTestId("share-dialog-announcement");
   await expect(shareDialog).toBeVisible();
   await expect(shareDialog).toContainText("sanitized snapshot");
+  await expect(shareAnnouncement).toContainText("Could not load shared links.");
+  await shareDialog.getByRole("button", { name: "Retry loading links" }).click();
   await expect(shareDialog.getByTestId("share-links-empty")).toBeVisible();
+  await expect(shareAnnouncement).toHaveText("No live shared links found.");
+  await page.unroute("**/api/chats/*/share", shareListRetryRoute);
   const shareCreation = page.waitForResponse((response) => {
     const pathname = new URL(response.url()).pathname;
     return response.request().method() === "POST" && /^\/api\/chats\/[^/]+\/share$/.test(pathname);
@@ -4328,8 +4354,13 @@ test("supports the default QSA chat and folder workflow", async ({ browser, page
   const shareCreationResponse = await shareCreation;
   expect(shareCreationResponse.ok()).toBe(true);
   await expect(shareDialog.getByTestId("share-link")).toBeVisible();
+  await expect(shareAnnouncement).toHaveText("Public link created and copied.");
+  await expect(shareDialog.getByTestId("share-link").locator('[aria-live], [role="alert"], [role="status"]'))
+    .toHaveCount(0);
   const shareHref = await shareDialog.getByTestId("share-link").getByRole("link").getAttribute("href");
   expect(shareHref).toBeTruthy();
+  expect(await page.evaluate(() => window.localStorage.getItem("aiqsa.testClipboard")))
+    .toBe(shareHref);
   await shareDialog.getByRole("button", { name: "Close share dialog" }).click();
   await expect(shareDialog).toHaveCount(0);
 
@@ -4371,6 +4402,8 @@ test("supports the default QSA chat and folder workflow", async ({ browser, page
     const shareRevocationResponse = await shareRevocation;
     expect(shareRevocationResponse.ok()).toBe(true);
     await expect(reopenedShareDialog.getByTestId("share-links-empty")).toBeVisible();
+    await expect(reopenedShareDialog.getByTestId("share-dialog-announcement"))
+      .toHaveText("Public link revoked.");
     await reopenedShareDialog.getByRole("button", { name: "Close share dialog" }).click();
     await expect(page.getByRole("button", { name: "Share anonymously" })).toBeFocused();
     const revokedShareResponse = await anonymousPage.goto(shareHref!);

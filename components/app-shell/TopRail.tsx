@@ -54,7 +54,7 @@ function PipelineIndicator({
       onClick={onOpen}
     >
       <Activity className="size-4" data-run-activity="true" aria-hidden="true" />
-      <span aria-live="polite" className="sr-only sm:not-sr-only">
+      <span className="sr-only sm:not-sr-only">
         {label}
         {error ? "" : "…"}
       </span>

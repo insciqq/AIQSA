@@ -27,6 +27,7 @@ export type ComposerSessionSnapshot = {
   editingMessageId: string | null;
   latestUploadGeneration: number;
   operationError: string | null;
+  operationErrorLive: boolean;
   pendingEdit: ComposerPendingEdit | null;
   pendingSend: {
     attachments: ComposerAttachment[];
@@ -76,7 +77,8 @@ type ComposerSessionStore = {
   finishSend(
     token: ComposerSendToken,
     outcome: ComposerSendOutcome,
-    error?: string | null
+    error?: string | null,
+    operationErrorLive?: boolean
   ): boolean;
   finishUpload(key: ComposerSessionKey, generation: number, error: string | null): boolean;
   isEditCurrent(token: ComposerEditToken): boolean;
@@ -107,6 +109,7 @@ export const emptyComposerSessionSnapshot = Object.freeze({
   editingMessageId: null,
   latestUploadGeneration: 0,
   operationError: null,
+  operationErrorLive: true,
   pendingEdit: null,
   pendingSend: null,
   pendingUploadGenerations: emptyUploadGenerations,
@@ -180,6 +183,7 @@ function patchedSession(
     ...(draftChanged ? { draft: patch.draft ?? "" } : {}),
     ...(editChanged ? { editingMessageId: patch.editingMessageId ?? null } : {}),
     ...(errorChanged ? { operationError: patch.operationError ?? null } : {}),
+    ...(errorChanged ? { operationErrorLive: true } : {}),
     editRevision: current.editRevision + (draftChanged || editChanged ? 1 : 0),
     revision: current.revision + (attachmentsChanged || draftChanged || editChanged ? 1 : 0)
   };
@@ -264,6 +268,7 @@ export const useComposerSessionStore = create<ComposerSessionStore>((set, get) =
           ...session,
           editGeneration: generation,
           operationError: null,
+          operationErrorLive: true,
           pendingEdit
         }
       }
@@ -304,6 +309,7 @@ export const useComposerSessionStore = create<ComposerSessionStore>((set, get) =
           draft: "",
           editRevision: session.editRevision + (session.draft ? 1 : 0),
           operationError: null,
+          operationErrorLive: true,
           pendingSend: {
             attachments: [...session.attachments],
             clearedRevision,
@@ -331,6 +337,7 @@ export const useComposerSessionStore = create<ComposerSessionStore>((set, get) =
           ...session,
           latestUploadGeneration: generation,
           operationError: null,
+          operationErrorLive: true,
           pendingUploadGenerations: [...session.pendingUploadGenerations, generation]
         }
       },
@@ -365,6 +372,7 @@ export const useComposerSessionStore = create<ComposerSessionStore>((set, get) =
           editRevision: session.editRevision + (contentChanged ? 1 : 0),
           editingMessageId: null,
           operationError: null,
+          operationErrorLive: true,
           revision: session.revision + (contentChanged ? 1 : 0)
         }
       }
@@ -389,7 +397,7 @@ export const useComposerSessionStore = create<ComposerSessionStore>((set, get) =
         [token.sourceKey]: {
           ...session,
           ...(error
-            ? { operationError: error }
+            ? { operationError: error, operationErrorLive: true }
             : retireEdit
               ? {
                   draft: "",
@@ -397,9 +405,10 @@ export const useComposerSessionStore = create<ComposerSessionStore>((set, get) =
                   editRevision: session.editRevision + 1,
                   editingMessageId: null,
                   operationError: null,
+                  operationErrorLive: true,
                   revision: session.revision + 1
                 }
-              : { operationError: null }),
+              : { operationError: null, operationErrorLive: true }),
           editGeneration: invalidationGeneration,
           pendingEdit: null
         }
@@ -407,7 +416,7 @@ export const useComposerSessionStore = create<ComposerSessionStore>((set, get) =
     });
     return true;
   },
-  finishSend(token, outcome, error = null) {
+  finishSend(token, outcome, error = null, operationErrorLive = true) {
     const state = get();
     const sourceSession = state.sessionsByKey[token.sourceKey];
     const key =
@@ -442,6 +451,7 @@ export const useComposerSessionStore = create<ComposerSessionStore>((set, get) =
               }
             : {}),
           operationError: outcome === "failed" ? error : null,
+          operationErrorLive: outcome === "failed" ? operationErrorLive : true,
           pendingSend: null
         }
       }
@@ -467,7 +477,7 @@ export const useComposerSessionStore = create<ComposerSessionStore>((set, get) =
         ...state.sessionsByKey,
         [key]: {
           ...session,
-          ...(ownsFeedback ? { operationError } : {}),
+          ...(ownsFeedback ? { operationError, operationErrorLive: true } : {}),
           pendingUploadGenerations: session.pendingUploadGenerations.filter(
             (candidate) => candidate !== generation
           )

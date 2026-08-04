@@ -407,6 +407,7 @@ describe("message run actions", () => {
       attachments: [],
       draft: "Keep this draft",
       operationError: message,
+      operationErrorLive: false,
       pendingSend: null
     });
   });
@@ -697,7 +698,8 @@ describe("message run actions", () => {
     expect(fetchMock).not.toHaveBeenCalled();
     expect(actions.session(composerSessionKey("chat-a"))).toMatchObject({
       draft: "Question for selected branch",
-      operationError: "Send failed. Your draft was preserved."
+      operationError: "Send failed. Your draft was preserved.",
+      operationErrorLive: true
     });
     expect(actions.setNotice).toHaveBeenCalledWith({
       kind: "error",
@@ -1593,6 +1595,7 @@ describe("message run actions", () => {
       attachments: [attachment],
       draft: "Question with attachment",
       operationError: "Send failed. Your draft was preserved.",
+      operationErrorLive: false,
       pendingSend: null
     });
     expect(
@@ -1623,6 +1626,66 @@ describe("message run actions", () => {
         type: "error"
       }
     ]);
+  });
+
+  it("keeps Composer as the live owner when ambiguous reconciliation confirms an empty chat", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("", { status: 200 })));
+    const actions = useMessageRunActionsForTest({
+      attachments: [],
+      consumeRunStream: async () => {
+        throw new Error("stream disconnected");
+      },
+      draft: "Question that remains retryable",
+      refreshActiveChat: async (chatId) => {
+        useThreadStore.getState().replaceThread(chatId!, {
+          activeLeafId: null,
+          messages: [],
+          usageStats: null
+        });
+        return null;
+      }
+    });
+
+    await actions.submitComposer();
+
+    expect(selectThreadSnapshot(useThreadStore.getState(), "chat-a").messages).toEqual([]);
+    expect(actions.session(composerSessionKey("chat-a"))).toMatchObject({
+      draft: "Question that remains retryable",
+      operationError: "Send failed. Your draft was preserved.",
+      operationErrorLive: true,
+      pendingSend: null
+    });
+    expect(actions.surface("chat-a").events).toEqual([
+      { data: { message: "stream disconnected" }, type: "error" }
+    ]);
+  });
+
+  it("keeps an empty reconciled background failure historical on later activation", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("", { status: 200 })));
+    let actions!: ReturnType<typeof useMessageRunActionsForTest>;
+    actions = useMessageRunActionsForTest({
+      attachments: [],
+      consumeRunStream: async () => {
+        throw new Error("stream disconnected");
+      },
+      refreshActiveChat: async (chatId) => {
+        actions.activeChatIdRef.current = "chat-b";
+        useWorkspaceStore.getState().setActiveChatId("chat-b");
+        useThreadStore.getState().replaceThread(chatId!, {
+          activeLeafId: null,
+          messages: [],
+          usageStats: null
+        });
+        return null;
+      }
+    });
+
+    await actions.submitComposer();
+
+    expect(actions.session(composerSessionKey("chat-a"))).toMatchObject({
+      operationError: "Send failed. Your draft was preserved.",
+      operationErrorLive: false
+    });
   });
 
   it("settles a rejected first send as one saved-empty chat with restored feedback", async () => {
@@ -1670,6 +1733,7 @@ describe("message run actions", () => {
     expect(actions.session(composerSessionKey(createdChat.id))).toMatchObject({
       draft: "Question that should survive",
       operationError: "Send failed. Your draft was preserved.",
+      operationErrorLive: true,
       pendingSend: null
     });
   });

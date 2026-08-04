@@ -96,6 +96,7 @@ export type MainThreadPaneProps = {
   maxOutputTokens: string;
   notificationSoundEnabled: boolean;
   operationError: string | null;
+  operationErrorLive: boolean;
   openMcpSettings(): void;
   openPromptLibrary(): void;
   openRunDetails(): void;
@@ -185,6 +186,7 @@ export function MainThreadPane({
   maxOutputTokens,
   notificationSoundEnabled,
   operationError,
+  operationErrorLive,
   openMcpSettings,
   openPromptLibrary,
   openRunDetails,
@@ -746,6 +748,7 @@ export function MainThreadPane({
           editing={Boolean(editingMessageId)}
           editPending={editingMessagePending}
           operationError={operationError}
+          operationErrorLive={operationErrorLive}
           promptFirst={centeredEmptyConversation}
           readingCollapsed={composerReadingCollapsed}
           onChange={composerActions.changeDraft}

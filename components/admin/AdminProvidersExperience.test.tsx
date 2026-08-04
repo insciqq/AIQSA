@@ -386,8 +386,13 @@ describe("AdminProvidersExperience", () => {
   });
 
   it("starts with no implicit provider and completes one write-only Test & Save request", async () => {
+    const reconciliation = deferred<{
+      data: ReturnType<typeof snapshot>;
+      ok: true;
+    }>();
     api.get
       .mockResolvedValueOnce({ data: snapshot(), ok: true })
+      .mockReturnValueOnce(reconciliation.promise)
       .mockResolvedValue({
         data: snapshot({ openai: "ready", suggestedProvider: "openai" }),
         ok: true
@@ -438,6 +443,20 @@ describe("AdminProvidersExperience", () => {
     expect(receipt).toHaveTextContent("Access: available to this administrator.");
     expect(screen.getByText("Default selection: unchanged.")).toBeInTheDocument();
     expect(screen.getByText("Run profiles filled: Balanced.")).toBeInTheDocument();
+    const feedback = screen.getByTestId("provider-quick-feedback");
+    expect(feedback).toHaveAttribute("role", "status");
+    expect(feedback).toHaveAttribute("aria-live", "polite");
+    expect(feedback).toHaveTextContent("OpenAI is ready to chat with GPT-5.6 Terra.");
+    expect(screen.getByText("Ready to chat")).not.toHaveAttribute("role");
+    expect(screen.queryByRole("link", { name: "Start chatting" })).not.toBeInTheDocument();
+    await act(async () => {
+      reconciliation.resolve({
+        data: snapshot({ openai: "ready", suggestedProvider: "openai" }),
+        ok: true
+      });
+      await reconciliation.promise;
+    });
+    expect(feedback).toHaveTextContent("OpenAI is ready to chat with GPT-5.6 Terra.");
     expect(screen.getByRole("link", { name: "Start chatting" })).toHaveAttribute("href", "/");
     await waitFor(() => expect(onMutationCommitted).toHaveBeenCalledOnce());
     expect(screen.queryByText(/API root|credential version|group assignment|activation counter|diagnostics/i)).not.toBeInTheDocument();
@@ -500,6 +519,9 @@ describe("AdminProvidersExperience", () => {
 
     expect(await screen.findByRole("button", { name: "Testing & saving…" })).toBeInTheDocument();
     expect(screen.queryByText(/Testing key|Activating model|Granting access/i)).not.toBeInTheDocument();
+    expect(screen.getByTestId("provider-quick-feedback")).toHaveTextContent(
+      "Testing and saving OpenAI."
+    );
 
     await act(async () => {
       pending.resolve({ data: ready(), ok: true });
@@ -544,11 +566,21 @@ describe("AdminProvidersExperience", () => {
     expect(screen.queryByText("GPT-5.6 Sol")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Test & Save" }));
     await screen.findByText("GPT-5.6 Sol");
+    const feedback = screen.getByTestId("provider-quick-feedback");
+    expect(feedback).toHaveAttribute("role", "status");
+    expect(feedback).toHaveTextContent(
+      "OpenAI needs a model choice. Choose one to finish setup."
+    );
     expect(screen.getByTestId("provider-quick-model-required")).toHaveTextContent(
       "Choose one to finish setup"
     );
+    expect(screen.getByTestId("provider-quick-model-required")).not.toHaveAttribute("role");
+    expect(screen.getByTestId("provider-quick-model-required")).not.toHaveAttribute("aria-live");
     expect(screen.getByLabelText("GPT-5.6 Luna")).toHaveFocus();
     fireEvent.click(screen.getByLabelText("GPT-5.6 Sol"));
+    expect(feedback).toHaveTextContent(
+      "GPT-5.6 Sol selected. Submit again to finish setup."
+    );
     fireEvent.click(screen.getByRole("button", { name: "Use selected model & save" }));
 
     await waitFor(() => expect(api.submit).toHaveBeenCalledTimes(3));
@@ -595,9 +627,25 @@ describe("AdminProvidersExperience", () => {
     fireEvent.change(screen.getByLabelText("API key"), { target: { value: "retry-key" } });
     fireEvent.click(screen.getByRole("button", { name: "Test & Save" }));
 
-    await screen.findByText("The provider rejected the key or its account catalog could not be reached.");
+    const visualError = await screen.findByText(
+      "The provider rejected the key or its account catalog could not be reached."
+    );
+    const feedback = screen.getByTestId("provider-quick-feedback");
+    const key = screen.getByLabelText("API key");
+    expect(feedback).toHaveAttribute("role", "status");
+    expect(feedback).toHaveAttribute("aria-live", "polite");
+    expect(feedback).toHaveAttribute("data-feedback-tone", "error");
+    expect(feedback).toHaveTextContent(
+      "OpenAI setup failed. The provider rejected the key or its account catalog could not be reached."
+    );
+    expect(visualError.closest('[role="alert"]')).toBeNull();
+    expect(key).toHaveAttribute("aria-invalid", "true");
+    expect(key).toHaveAttribute("aria-errormessage", visualError.id);
+    expect(key.getAttribute("aria-describedby")?.split(/\s+/)).toEqual(
+      expect.arrayContaining(["provider-quick-api-key-help", visualError.id])
+    );
     expect(screen.getByText("Ready to chat")).toBeInTheDocument();
-    expect(screen.getByLabelText("API key")).toHaveValue("retry-key");
+    expect(key).toHaveValue("retry-key");
     fireEvent.click(screen.getByRole("button", { name: "Cancel replacement" }));
     fireEvent.click(screen.getByRole("button", { name: "Replace API key" }));
     expect(screen.getByLabelText("API key")).toHaveValue("");
@@ -774,10 +822,39 @@ describe("AdminProvidersExperience", () => {
     fireEvent.click(screen.getByRole("button", { name: "Test & Save" }));
 
     const manageButton = await screen.findByRole("button", { name: "Manage provider connection" });
+    const feedback = screen.getByTestId("provider-quick-feedback");
+    const key = screen.getByLabelText("API key");
+    expect(feedback).toHaveAttribute("role", "status");
+    expect(feedback).toHaveAttribute("data-feedback-tone", "error");
+    expect(feedback).toHaveTextContent(
+      "OpenAI setup failed. provider_quick_setup_unsupported_catalog"
+    );
+    expect(key).toHaveAttribute("aria-invalid", "true");
+    expect(key).toHaveAttribute("aria-errormessage", "provider-quick-setup-error");
     fireEvent.click(manageButton);
     expect(await screen.findByTestId("connections-provider-workspace")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("tab", { name: "Quick setup" }));
     expect(await screen.findByLabelText("API key")).toHaveValue("");
+  });
+
+  it("keeps global setup failures off the API key while preserving an announced retry", async () => {
+    api.submit.mockResolvedValue({ error: { code: "network_error" }, ok: false });
+    render(<AdminProvidersExperience active groups={[]} />);
+    await screen.findByText("Choose a provider to continue.");
+    fireEvent.click(screen.getByRole("button", { name: /OpenAI Not configured/ }));
+    const key = screen.getByLabelText("API key");
+    fireEvent.change(key, { target: { value: "retry-key" } });
+    fireEvent.click(screen.getByRole("button", { name: "Test & Save" }));
+
+    const feedback = screen.getByTestId("provider-quick-feedback");
+    await waitFor(() => expect(feedback).toHaveAttribute("data-feedback-tone", "error"));
+    expect(feedback).toHaveAttribute("role", "status");
+    expect(feedback).toHaveTextContent("OpenAI setup failed. network_error");
+    expect(key).not.toHaveAttribute("aria-invalid");
+    expect(key).not.toHaveAttribute("aria-errormessage");
+    expect(key).toHaveAttribute("aria-describedby", "provider-quick-api-key-help");
+    expect(key).toHaveValue("retry-key");
+    expect(screen.getByRole("button", { name: "Test & Save" })).toBeEnabled();
   });
 
   it("blocks peer task navigation while Run profiles are saving", async () => {
@@ -847,10 +924,18 @@ describe("AdminProvidersExperience", () => {
     render(<AdminProvidersExperience active groups={[]} />);
 
     expect(await screen.findByText("network_error")).toBeInTheDocument();
+    const feedback = screen.getByTestId("provider-quick-feedback");
+    expect(feedback).toHaveAttribute("role", "status");
+    expect(feedback).toHaveAttribute("data-feedback-tone", "error");
+    expect(feedback).toHaveTextContent(
+      "Provider status refresh failed. network_error"
+    );
     expect(screen.queryByLabelText("API key")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Retry status refresh" }));
     expect(await screen.findByText("Choose a provider to continue.")).toBeInTheDocument();
     expect(screen.queryByText("network_error")).not.toBeInTheDocument();
+    expect(feedback).toHaveAttribute("role", "status");
+    expect(feedback).toHaveTextContent("Provider status refreshed.");
   });
 
   it("keeps optimistic Ready locked until failed reconciliation is explicitly retried", async () => {

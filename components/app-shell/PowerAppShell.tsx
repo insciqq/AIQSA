@@ -966,6 +966,7 @@ export function PowerAppShell({
     maxOutputTokens,
     notificationSoundEnabled,
     operationError: composerSession.operationError,
+    operationErrorLive: composerSession.operationErrorLive,
     reasoningEffort,
     reasoningMode,
     retryCatalog,

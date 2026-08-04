@@ -76,7 +76,6 @@ function ThreadRunActivity({ pipeline }: { pipeline: PipelineSnapshot }) {
       className={`pipeline-indicator mb-4 inline-flex min-h-5 items-center gap-2 text-xs font-medium ${error ? "text-critical" : "text-ink-secondary"}`}
       data-phase={pipeline.phase}
       data-testid="thread-run-activity"
-      role="status"
       aria-label={`Run status: ${label}`}
     >
       {error ? (
@@ -756,7 +755,6 @@ function ThreadMessageRowComponent({
             <div
               className="border-l-2 border-critical/45 bg-critical/[0.05] px-4 py-3 text-sm leading-6 text-ink-secondary"
               data-testid="assistant-error-state"
-              role="alert"
             >
               <div className="mb-1 flex items-center gap-2 font-semibold text-critical">
                 <CircleAlert className="size-4 shrink-0" aria-hidden="true" />
@@ -786,21 +784,17 @@ function ThreadMessageRowComponent({
                 <div
                   className="flex min-h-12 items-center gap-2 text-sm text-ink-secondary"
                   data-testid="assistant-pending-state"
-                  role="status"
                 >
                   <span className="size-2 animate-pulse rounded-full bg-proof" aria-hidden="true" />
                   Working…
                 </div>
               ) : null}
               {message.status === "streaming" && contentText ? (
-                <>
-                  <span className="sr-only" role="status">Answer streaming</span>
-                  <span
-                    className="ml-1 inline-block h-4 w-1 animate-pulse bg-proof align-[-2px]"
-                    data-testid="streaming-cursor"
-                    aria-hidden="true"
-                  />
-                </>
+                <span
+                  className="ml-1 inline-block h-4 w-1 animate-pulse bg-proof align-[-2px]"
+                  data-testid="streaming-cursor"
+                  aria-hidden="true"
+                />
               ) : null}
               {message.status === "cancelled" ? (
                 <div
@@ -809,7 +803,6 @@ function ThreadMessageRowComponent({
                     contentText && contentText !== "Stopped." ? "mt-3" : ""
                   ].join(" ")}
                   data-testid="assistant-cancelled-state"
-                  role="status"
                 >
                   <Square className="size-3 fill-current" aria-hidden="true" />
                   Response stopped

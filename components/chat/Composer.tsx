@@ -95,6 +95,7 @@ export type ComposerProps = {
   onStop?(): void;
   onUploadFiles?(files: FileList | readonly File[]): void;
   operationError?: string | null;
+  operationErrorLive?: boolean;
   promptFirst?: boolean;
   readingCollapsed?: boolean;
   sendDisabled?: boolean;
@@ -162,6 +163,7 @@ export function Composer({
   onStop,
   onUploadFiles,
   operationError = null,
+  operationErrorLive = true,
   promptFirst = false,
   readingCollapsed = false,
   sendDisabled = false,
@@ -574,7 +576,7 @@ export function Composer({
             <div
               className="border-b border-critical/20 bg-critical/[0.07] px-3 py-2 text-xs text-critical"
               data-testid="composer-operation-error"
-              role="alert"
+              role={operationErrorLive ? "alert" : undefined}
             >
               {operationError}
             </div>

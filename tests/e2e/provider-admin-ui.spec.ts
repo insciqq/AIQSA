@@ -781,7 +781,10 @@ test("administrator completes the Quick direct-user picker, retry, Ready, and sa
   await signInWithLocalToken(page);
   await page.goto("/admin");
   const section = page.getByTestId("admin-section-providers");
+  const quickFeedback = section.getByTestId("provider-quick-feedback");
   await expect(section.getByRole("heading", { exact: true, name: "Providers" }).last()).toBeVisible();
+  await expect(quickFeedback).toHaveAttribute("role", "status");
+  await expect(quickFeedback).toHaveText("Provider Quick setup loaded.");
   await expect(section.getByLabel("API key")).toHaveCount(0);
   await expect(section.getByRole("tab", { name: "Quick setup" })).toHaveAttribute("aria-selected", "true");
   await expect(section.getByTestId("provider-connections-workspace")).toHaveCount(0);
@@ -796,21 +799,39 @@ test("administrator completes the Quick direct-user picker, retry, Ready, and sa
   await expectNoPageOverflow(page);
   await section.getByRole("button", { name: "Test & Save" }).click();
   await expect(section.getByText("Choose a model available to this key")).toBeVisible();
+  await expect(quickFeedback).toHaveText(
+    "OpenAI needs a model choice. Choose one to finish setup."
+  );
   await expect(section.getByLabel("API key")).toHaveValue("e2e-quick-write-only-key");
   await section.getByLabel("GPT-5.6 Sol").click();
+  await expect(quickFeedback).toHaveText(
+    "GPT-5.6 Sol selected. Submit again to finish setup."
+  );
   await section.getByRole("button", { name: "Use selected model & save" }).click();
   await expect(section.getByRole("button", { name: "Testing & saving…" })).toBeVisible();
+  await expect(quickFeedback).toHaveText("Testing and saving OpenAI.");
   await expect(section.getByLabel("API key")).toBeDisabled();
   await expect(section.getByLabel("GPT-5.6 Luna")).toBeDisabled();
   await expect(section.getByLabel("GPT-5.6 Sol")).toBeDisabled();
   await expectNoPageOverflow(page);
   releasePickerRetry();
   await expect(section.getByText(
-    "The provider rejected the key or its account catalog could not be reached."
+    "The provider rejected the key or its account catalog could not be reached.",
+    { exact: true }
   )).toBeVisible();
+  await expect(quickFeedback).toHaveAttribute("role", "status");
+  await expect(quickFeedback).toHaveAttribute("data-feedback-tone", "error");
+  await expect(quickFeedback).toContainText("OpenAI setup failed.");
+  await expect(section.getByLabel("API key")).toHaveAttribute("aria-invalid", "true");
+  await expect(section.getByLabel("API key")).toHaveAttribute(
+    "aria-errormessage",
+    "provider-quick-setup-error"
+  );
   await expect(section.getByLabel("API key")).toHaveValue("e2e-quick-write-only-key");
   await section.getByRole("button", { name: "Use selected model & save" }).click();
-  await expect(section.getByText("Ready to chat")).toBeVisible();
+  await expect(quickFeedback).toHaveAttribute("role", "status");
+  await expect(section.getByLabel("API key")).not.toHaveAttribute("aria-invalid");
+  await expect(section.getByText("Ready to chat", { exact: true })).toBeVisible();
   await expect(section.getByRole("heading", { name: "GPT-5.6 Sol" })).toBeVisible();
   const readyReceipt = section.getByTestId("provider-quick-ready-receipt");
   await expect(readyReceipt).toContainText("API key: saved and verified.");
@@ -822,6 +843,7 @@ test("administrator completes the Quick direct-user picker, retry, Ready, and sa
   await expect(readyReceipt).toContainText("Default selection: updated.");
   await expect(readyReceipt).toContainText("Run profiles filled: Deep.");
   await expect(section.getByRole("link", { name: "Start chatting" })).toHaveAttribute("href", "/");
+  await expect(quickFeedback).toHaveText("OpenAI is ready to chat with GPT-5.6 Sol.");
   await expect(section.getByText("e2e-quick-write-only-key")).toHaveCount(0);
   await expect(section.getByRole("heading", { name: "Configured connections" })).toBeVisible();
   await expect(section.getByTestId("provider-configured-connection-quick-openai-connection"))
@@ -835,14 +857,18 @@ test("administrator completes the Quick direct-user picker, retry, Ready, and sa
   await section.getByLabel("API key").fill("e2e-failing-replacement-key");
   await section.getByRole("button", { name: "Test & Save" }).click();
   await expect(section.getByRole("button", { name: "Testing & saving…" })).toBeVisible();
-  await expect(section.getByText("Ready to chat")).toBeVisible();
+  await expect(section.getByText("Ready to chat", { exact: true })).toBeVisible();
   await expect(section.getByLabel("API key")).toBeDisabled();
   await expectNoPageOverflow(page);
   releaseReplacement();
   await expect(section.getByText(
-    "The provider rejected the key or its account catalog could not be reached."
+    "The provider rejected the key or its account catalog could not be reached.",
+    { exact: true }
   )).toBeVisible();
-  await expect(section.getByText("Ready to chat")).toBeVisible();
+  await expect(quickFeedback).toHaveAttribute("role", "status");
+  await expect(quickFeedback).toHaveAttribute("data-feedback-tone", "error");
+  await expect(section.getByLabel("API key")).toHaveAttribute("aria-invalid", "true");
+  await expect(section.getByText("Ready to chat", { exact: true })).toBeVisible();
   await expect(section.getByLabel("API key")).toHaveValue("e2e-failing-replacement-key");
   await section.getByRole("button", { name: "Cancel replacement" }).click();
   await section.getByRole("button", { name: "Replace API key" }).click();

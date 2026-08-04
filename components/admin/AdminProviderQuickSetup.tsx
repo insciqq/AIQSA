@@ -18,6 +18,10 @@ import Link from "next/link";
 import { CheckCircle2, ChevronRight, KeyRound, ShieldCheck, UserRound } from "lucide-react";
 import { useEffect, useRef } from "react";
 
+const QUICK_SETUP_FEEDBACK_ID = "provider-quick-feedback";
+const QUICK_SETUP_KEY_HELP_ID = "provider-quick-api-key-help";
+const QUICK_SETUP_SETUP_ERROR_ID = "provider-quick-setup-error";
+
 export type AdminProviderQuickSetupProps = Readonly<{
   controller: AdminProviderQuickSetupController;
   onManageConnection(connectionId?: string): void;
@@ -115,7 +119,7 @@ function SetupFeedback({
     "provider_quick_setup_unsupported_catalog";
   return (
     <div className="mt-4 border-l-2 border-critical bg-critical/5 px-3 py-2 text-xs leading-5 text-critical">
-      <p>{controller.state.error}</p>
+      <p id={QUICK_SETUP_SETUP_ERROR_ID}>{controller.state.error}</p>
       {advancedRecommended ? (
         <button
           className={`${quietButton} mt-2 text-critical hover:text-critical`}
@@ -126,6 +130,27 @@ function SetupFeedback({
         </button>
       ) : null}
     </div>
+  );
+}
+
+function QuickSetupFeedback({
+  controller
+}: {
+  controller: AdminProviderQuickSetupController;
+}) {
+  const feedback = controller.state.feedback;
+  return (
+    <p
+      aria-atomic="true"
+      aria-live="polite"
+      className="sr-only"
+      data-feedback-tone={feedback?.tone}
+      data-testid="provider-quick-feedback"
+      id={QUICK_SETUP_FEEDBACK_ID}
+      role="status"
+    >
+      {feedback?.message ?? ""}
+    </p>
   );
 }
 
@@ -186,11 +211,9 @@ function ModelChoice({
         Choose a model available to this key
       </legend>
       <p
-        aria-live="polite"
         className="px-3 pb-2 text-xs leading-5 text-ink-secondary"
         data-testid="provider-quick-model-required"
         id="provider-quick-model-required"
-        role="status"
       >
         A model choice is required. Choose one to finish setup.
       </p>
@@ -235,6 +258,10 @@ function KeyForm({
   replacement?: boolean;
 }) {
   const selectionRequired = Boolean(controller.state.selection);
+  const keyError = controller.state.feedback?.tone === "error" && (
+    controller.state.errorCode === "provider_credential_test_failed" ||
+    controller.state.errorCode === "provider_quick_setup_unsupported_catalog"
+  );
   const submitDisabled = controller.state.formLocked || !controller.state.secret.trim() ||
     (selectionRequired && !controller.state.selectedCandidateId);
   return (
@@ -260,6 +287,11 @@ function KeyForm({
             API key
           </label>
           <input
+            aria-describedby={keyError
+              ? `${QUICK_SETUP_KEY_HELP_ID} ${QUICK_SETUP_SETUP_ERROR_ID}`
+              : QUICK_SETUP_KEY_HELP_ID}
+            aria-errormessage={keyError ? QUICK_SETUP_SETUP_ERROR_ID : undefined}
+            aria-invalid={keyError || undefined}
             autoComplete="new-password"
             className={inputClass}
             disabled={controller.state.formLocked}
@@ -270,7 +302,10 @@ function KeyForm({
             type="password"
             value={controller.state.secret}
           />
-          <span className="mt-1 block text-xs leading-4 text-ink-muted">
+          <span
+            className="mt-1 block text-xs leading-4 text-ink-muted"
+            id={QUICK_SETUP_KEY_HELP_ID}
+          >
             Write-only. Stored keys are never shown again.
           </span>
         </div>
@@ -589,6 +624,7 @@ export function AdminProviderQuickSetup({
     <div className="min-w-0 px-4 py-4 sm:px-6 lg:px-8 lg:py-7">
       <div className="max-w-6xl">
         <h2 className="sr-only">Provider quick setup</h2>
+        <QuickSetupFeedback controller={controller} />
 
         {!controller.state.snapshot && (!controller.state.loaded || controller.state.loading) ? (
           <p className="py-8 text-sm text-ink-muted">Loading provider setup…</p>

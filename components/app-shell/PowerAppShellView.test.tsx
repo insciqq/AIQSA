@@ -126,10 +126,26 @@ vi.mock("@/components/app-shell/ShellLeftPane", () => ({
 }));
 
 vi.mock("@/components/app-shell/MainThreadPane", () => ({
-  MainThreadPane: ({ noticeSlot }: { noticeSlot?: ReactNode }) => (
+  MainThreadPane: ({
+    noticeSlot,
+    operationError,
+    operationErrorLive
+  }: {
+    noticeSlot?: ReactNode;
+    operationError?: string | null;
+    operationErrorLive?: boolean;
+  }) => (
     <section data-testid="main-thread-pane">
       Conversation
       {noticeSlot}
+      {operationError ? (
+        <div
+          data-testid="composer-operation-error"
+          role={operationErrorLive ? "alert" : undefined}
+        >
+          {operationError}
+        </div>
+      ) : null}
     </section>
   )
 }));
@@ -200,6 +216,7 @@ function baseProps(): PowerAppShellViewProps {
       maxOutputTokens: "1024",
       notificationSoundEnabled: false,
       operationError: null,
+      operationErrorLive: true,
       reasoningEffort: "none",
       reasoningMode: "standard",
       retryCatalog: noop,
@@ -701,6 +718,158 @@ describe("PowerAppShellView compact New chat", () => {
     expect(
       screen.getByRole("button", { name: "Run error - open run events" })
     ).toBeVisible();
+  });
+});
+
+describe("PowerAppShellView run lifecycle announcements", () => {
+  const searchEvent = {
+    data: { artifactType: "search", payload: { query: "current research" } },
+    type: "artifact" as const
+  };
+  const tokenEvent = {
+    data: { delta: "Answer" },
+    type: "token" as const
+  };
+  const completeEvent = {
+    data: { status: "complete" },
+    type: "done" as const
+  };
+  const stoppedEvent = {
+    data: { status: "cancelled" },
+    type: "done" as const
+  };
+  const errorEvent = {
+    data: { message: "Provider failed" },
+    type: "error" as const
+  };
+
+  function lifecycleView({
+    activeChatId = "chat-1",
+    events = [],
+    operationError = null,
+    operationErrorLive = true,
+    streaming = false
+  }: {
+    activeChatId?: string | null;
+    events?: PowerAppShellViewProps["details"]["events"];
+    operationError?: string | null;
+    operationErrorLive?: boolean;
+    streaming?: boolean;
+  }) {
+    const props = baseProps();
+    const messages = activeChatId ? [detailsTestMessage] : [];
+
+    return (
+      <PowerAppShellView
+        {...props}
+        composer={{ ...props.composer, operationError, operationErrorLive }}
+        details={{ ...props.details, events, messages }}
+        session={{ ...props.session, activeChatId }}
+        thread={{
+          ...props.thread,
+          activeChatStreaming: streaming,
+          currentRunId: streaming ? "run-current" : null,
+          visibleMessages: messages
+        }}
+      />
+    );
+  }
+
+  it("keeps one stable live owner outside inert shell content and announces meaningful stages", async () => {
+    const { rerender } = render(lifecycleView({ events: [searchEvent], streaming: true }));
+    const announcer = screen.getByTestId("run-lifecycle-announcer");
+    const primaryContent = screen.getByTestId("shell-primary-content");
+
+    expect(announcer).toHaveAttribute("aria-live", "polite");
+    expect(announcer).toHaveAttribute("aria-atomic", "true");
+    expect(announcer).toHaveAttribute("role", "status");
+    expect(announcer).toHaveClass("sr-only");
+    expect(announcer.nextElementSibling).toBe(primaryContent);
+    expect(document.querySelectorAll('[aria-live="polite"]')).toHaveLength(1);
+    await waitFor(() => expect(announcer).toHaveTextContent(/^Working$/));
+
+    rerender(lifecycleView({ events: [searchEvent], streaming: true }));
+    await waitFor(() => expect(announcer).toHaveTextContent(/^Searching$/));
+
+    rerender(lifecycleView({ events: [searchEvent, tokenEvent], streaming: true }));
+    await waitFor(() => expect(announcer).toHaveTextContent(/^Answering$/));
+    expect(screen.getByTestId("run-lifecycle-announcer")).toBe(announcer);
+  });
+
+  it.each([
+    {
+      events: [tokenEvent, completeEvent],
+      expected: "Run complete. Message composer ready."
+    },
+    {
+      events: [tokenEvent, stoppedEvent],
+      expected: "Run stopped. Message composer ready."
+    },
+    {
+      events: [tokenEvent, errorEvent],
+      expected: "Run error. Message composer ready."
+    }
+  ])("announces the observed run terminal as $expected", async ({ events, expected }) => {
+    const { rerender } = render(lifecycleView({ streaming: true }));
+    const announcer = screen.getByTestId("run-lifecycle-announcer");
+    await waitFor(() => expect(announcer).toHaveTextContent(/^Working$/));
+
+    rerender(lifecycleView({ events, streaming: true }));
+    await waitFor(() => expect(announcer).toHaveTextContent(/^Working$/));
+
+    rerender(lifecycleView({ events, streaming: false }));
+
+    await waitFor(() => expect(announcer).toHaveTextContent(expected));
+  });
+
+  it("does not replay historical terminals on mount or chat switch", async () => {
+    const { rerender } = render(lifecycleView({ events: [tokenEvent, completeEvent] }));
+    const announcer = screen.getByTestId("run-lifecycle-announcer");
+
+    await waitFor(() => expect(announcer).toBeEmptyDOMElement());
+
+    rerender(lifecycleView({ streaming: true }));
+    await waitFor(() => expect(announcer).toHaveTextContent(/^Working$/));
+
+    rerender(lifecycleView({ activeChatId: "chat-2", events: [errorEvent] }));
+    await waitFor(() => expect(announcer).toBeEmptyDOMElement());
+
+    rerender(lifecycleView({ activeChatId: "chat-1", events: [tokenEvent, completeEvent] }));
+    await waitFor(() => expect(announcer).toBeEmptyDOMElement());
+  });
+
+  it("keeps accepted run recovery visible but non-live beside the shell-owned error terminal", async () => {
+    const { rerender } = render(lifecycleView({ streaming: true }));
+    const announcer = screen.getByTestId("run-lifecycle-announcer");
+    await waitFor(() => expect(announcer).toHaveTextContent(/^Working$/));
+
+    rerender(lifecycleView({
+      events: [errorEvent],
+      operationError: "Send failed. Your draft was preserved.",
+      operationErrorLive: false,
+      streaming: false
+    }));
+
+    await waitFor(() =>
+      expect(announcer).toHaveTextContent("Run error. Message composer ready.")
+    );
+    expect(screen.getByTestId("composer-operation-error")).toHaveTextContent(
+      "Send failed. Your draft was preserved."
+    );
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("leaves a pre-run rejection with the Composer owner and no historical run terminal", async () => {
+    render(lifecycleView({
+      events: [],
+      operationError: "Send failed. Your draft was preserved.",
+      operationErrorLive: true
+    }));
+
+    expect(screen.getByTestId("run-lifecycle-announcer")).toBeEmptyDOMElement();
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Send failed. Your draft was preserved."
+    );
   });
 });
 

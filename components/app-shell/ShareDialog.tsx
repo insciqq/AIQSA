@@ -5,7 +5,7 @@ import { shellFetch } from "@/components/app-shell/shellApi";
 import type { ChatSummary } from "@/components/app-shell/types";
 import { writeClipboardText } from "@/components/clipboard/writeClipboardText";
 import { X } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useDialogFocus } from "./useDialogFocus";
 
 export type ShareDialogTarget = {
@@ -75,12 +75,20 @@ export function ShareDialog({
   target: ShareDialogTarget;
 }) {
   const [links, setLinks] = useState<ShareLink[] | null>(null);
+  const [linksChatId, setLinksChatId] = useState<string | null>(null);
+  const [listLoading, setListLoading] = useState(true);
   const [listError, setListError] = useState<string | null>(null);
+  const [actionPending, setActionPending] = useState(false);
   const [creating, setCreating] = useState(false);
   const [createdLink, setCreatedLink] = useState<CreatedShareLink | null>(null);
   const [copyStatus, setCopyStatus] = useState<"copied" | "failed" | "idle">("idle");
   const [revokingIds, setRevokingIds] = useState<ReadonlySet<string>>(new Set());
   const [actionError, setActionError] = useState<string | null>(null);
+  const [announcement, setAnnouncement] = useState("");
+  const actionPendingRef = useRef(false);
+  const listLoadingRef = useRef(true);
+  const listRequestGenerationRef = useRef(0);
+  const listAbortControllerRef = useRef<AbortController | null>(null);
   const mountedRef = useRef(true);
   useEffect(() => {
     mountedRef.current = true;
@@ -97,42 +105,114 @@ export function ShareDialog({
   });
 
   const chatId = target.chat.id;
+  const listPending = listLoading || links === null || linksChatId !== chatId;
+  const loadLinks = useCallback(async () => {
+    const requestGeneration = listRequestGenerationRef.current + 1;
+    listRequestGenerationRef.current = requestGeneration;
+    listAbortControllerRef.current?.abort();
+    const controller = new AbortController();
+    listAbortControllerRef.current = controller;
+
+    listLoadingRef.current = true;
+    setListLoading(true);
+    setListError(null);
+    setAnnouncement("Loading shared links.");
+
+    try {
+      const response = await shellFetch(`/api/chats/${chatId}/share`, {
+        signal: controller.signal
+      });
+      if (!response.ok) {
+        throw new Error(await responseErrorMessage(response, `share_list_failed_${response.status}`));
+      }
+
+      const decoded = decodeShareList(await response.json());
+      if (!decoded) {
+        throw new Error("share_list_malformed");
+      }
+      if (!mountedRef.current || requestGeneration !== listRequestGenerationRef.current) {
+        return;
+      }
+
+      setLinksChatId(chatId);
+      setLinks(decoded);
+      setAnnouncement(
+        decoded.length === 0
+          ? "No live shared links found."
+          : `${decoded.length} live shared ${decoded.length === 1 ? "link" : "links"} loaded.`
+      );
+    } catch (error) {
+      if (
+        controller.signal.aborted ||
+        !mountedRef.current ||
+        requestGeneration !== listRequestGenerationRef.current
+      ) {
+        return;
+      }
+
+      const message = errorMessage(error);
+      setLinksChatId(chatId);
+      setLinks([]);
+      setListError(message);
+      setAnnouncement(`Could not load shared links. ${message}`);
+    } finally {
+      if (mountedRef.current && requestGeneration === listRequestGenerationRef.current) {
+        listLoadingRef.current = false;
+        setListLoading(false);
+        listAbortControllerRef.current = null;
+      }
+    }
+  }, [chatId]);
+
   useEffect(() => {
     let stale = false;
-    void (async () => {
-      try {
-        const response = await shellFetch(`/api/chats/${chatId}/share`);
-        if (!response.ok) {
-          throw new Error(await responseErrorMessage(response, `share_list_failed_${response.status}`));
-        }
-
-        const decoded = decodeShareList(await response.json());
-        if (!decoded) {
-          throw new Error("share_list_malformed");
-        }
-        if (!stale) {
-          setLinks(decoded);
-        }
-      } catch (error) {
-        if (!stale) {
-          setLinks([]);
-          setListError(errorMessage(error));
-        }
+    queueMicrotask(() => {
+      if (!stale && mountedRef.current) {
+        void loadLinks();
       }
-    })();
+    });
 
     return () => {
       stale = true;
+      listLoadingRef.current = true;
+      listRequestGenerationRef.current += 1;
+      listAbortControllerRef.current?.abort();
+      listAbortControllerRef.current = null;
     };
-  }, [chatId]);
+  }, [loadLinks]);
+
+  function beginAction(): boolean {
+    if (actionPendingRef.current || listLoadingRef.current) {
+      return false;
+    }
+    actionPendingRef.current = true;
+    setActionPending(true);
+    return true;
+  }
+
+  function finishAction(): void {
+    actionPendingRef.current = false;
+    if (mountedRef.current) {
+      setActionPending(false);
+    }
+  }
+
+  function retryLoadLinks(): void {
+    if (actionPendingRef.current) {
+      return;
+    }
+    void loadLinks();
+  }
 
   async function createLink() {
-    if (creating || !target.activeLeafMessageId) {
+    if (!target.activeLeafMessageId || !beginAction()) {
       return;
     }
 
     setCreating(true);
     setActionError(null);
+    setCopyStatus("idle");
+    setAnnouncement("Creating public link.");
     try {
       const response = await shellFetch(`/api/chats/${chatId}/share`, {
         body: JSON.stringify({
@@ -170,17 +250,24 @@ export function ShareDialog({
         await writeClipboardText(href);
         if (mountedRef.current) {
           setCopyStatus("copied");
+          setAnnouncement("Public link created and copied.");
         }
       } catch {
         if (mountedRef.current) {
           setCopyStatus("failed");
+          setAnnouncement(
+            "Public link created, but copying failed. Use Copy link or select the URL."
+          );
         }
       }
     } catch (error) {
       if (mountedRef.current) {
-        setActionError(errorMessage(error));
+        const message = errorMessage(error);
+        setActionError(message);
+        setAnnouncement(`Could not create public link. ${message}`);
       }
     } finally {
+      finishAction();
       if (mountedRef.current) {
         setCreating(false);
       }
@@ -188,29 +275,36 @@ export function ShareDialog({
   }
 
   async function copyCreatedLink() {
-    if (!createdLink) {
+    if (!createdLink || !beginAction()) {
       return;
     }
 
+    setCopyStatus("idle");
+    setAnnouncement("Copying public link.");
     try {
       await writeClipboardText(createdLink.href);
       if (mountedRef.current) {
         setCopyStatus("copied");
+        setAnnouncement("Public link copied.");
       }
     } catch {
       if (mountedRef.current) {
         setCopyStatus("failed");
+        setAnnouncement("Copying public link failed. Use Copy link or select the URL.");
       }
+    } finally {
+      finishAction();
     }
   }
 
   async function revokeLink(linkId: string) {
-    if (revokingIds.has(linkId)) {
+    if (revokingIds.has(linkId) || !beginAction()) {
       return;
     }
 
     setRevokingIds((current) => new Set(current).add(linkId));
     setActionError(null);
+    setAnnouncement("Revoking public link.");
     try {
       const response = await shellFetch(`/api/shares/${linkId}/revoke`, {
         method: "POST"
@@ -225,11 +319,15 @@ export function ShareDialog({
       }
       setLinks((current) => (current ?? []).filter((link) => link.id !== linkId));
       setCreatedLink((current) => (current?.id === linkId ? null : current));
+      setAnnouncement("Public link revoked.");
     } catch (error) {
       if (mountedRef.current) {
-        setActionError(errorMessage(error));
+        const message = errorMessage(error);
+        setActionError(message);
+        setAnnouncement(`Could not revoke public link. ${message}`);
       }
     } finally {
+      finishAction();
       if (mountedRef.current) {
         setRevokingIds((current) => {
           const next = new Set(current);
@@ -261,9 +359,18 @@ export function ShareDialog({
         role="dialog"
         aria-modal="true"
         aria-label="Share anonymously"
-        aria-busy={creating || undefined}
+        aria-busy={actionPending || undefined}
         data-testid="share-dialog"
       >
+        <p
+          aria-atomic="true"
+          aria-live="polite"
+          className="sr-only"
+          data-testid="share-dialog-announcement"
+          role="status"
+        >
+          {announcement}
+        </p>
         <header className="flex min-h-16 shrink-0 items-center justify-between gap-3 border-b border-trace-subtle px-4">
           <div className="min-w-0">
             <h2 className="text-base font-semibold text-ink">Share anonymously</h2>
@@ -285,7 +392,7 @@ export function ShareDialog({
             and account details are excluded. Anyone with the link can read it until you revoke it.
           </p>
           {actionError ? (
-            <p className="mt-3 break-words text-sm leading-5 text-critical [overflow-wrap:anywhere]" role="alert">
+            <p className="mt-3 break-words text-sm leading-5 text-critical [overflow-wrap:anywhere]">
               {actionError}
             </p>
           ) : null}
@@ -313,13 +420,18 @@ export function ShareDialog({
                 Save it now: the full URL is only shown right after creation.
               </p>
               <div className="mt-2 flex flex-wrap gap-2">
-                <button className={secondaryButtonClass} type="button" onClick={() => void copyCreatedLink()}>
+                <button
+                  className={secondaryButtonClass}
+                  disabled={actionPending || listPending}
+                  type="button"
+                  onClick={() => void copyCreatedLink()}
+                >
                   Copy link
                 </button>
                 <button
                   className={destructiveButtonClass}
                   type="button"
-                  disabled={revokingIds.has(createdLink.id)}
+                  disabled={actionPending || listPending}
                   onClick={() => void revokeLink(createdLink.id)}
                 >
                   {revokingIds.has(createdLink.id) ? "Revoking…" : "Revoke link"}
@@ -331,16 +443,26 @@ export function ShareDialog({
             <h3 className="text-xs font-semibold uppercase tracking-wide text-ink-muted" id="share-dialog-links-heading">
               Live links for this chat
             </h3>
-            {links === null ? (
+            {listPending ? (
               <p className="mt-2 text-sm text-ink-muted" data-testid="share-links-loading">
                 Loading links…
               </p>
             ) : (
               <>
                 {listError ? (
-                  <p className="mt-2 break-words text-sm leading-5 text-critical [overflow-wrap:anywhere]">
-                    {listError}
-                  </p>
+                  <div className="mt-2">
+                    <p className="break-words text-sm leading-5 text-critical [overflow-wrap:anywhere]">
+                      {listError}
+                    </p>
+                    <button
+                      className={`${secondaryButtonClass} mt-2`}
+                      disabled={actionPending}
+                      type="button"
+                      onClick={retryLoadLinks}
+                    >
+                      Retry loading links
+                    </button>
+                  </div>
                 ) : null}
                 {links.length === 0 && !listError ? (
                   <p className="mt-2 text-sm text-ink-muted" data-testid="share-links-empty">
@@ -361,7 +483,7 @@ export function ShareDialog({
                           className={destructiveButtonClass}
                           type="button"
                           aria-label={`Revoke link created ${createdAtLabel(link.createdAt)}`}
-                          disabled={revokingIds.has(link.id)}
+                          disabled={actionPending || listPending}
                           onClick={() => void revokeLink(link.id)}
                         >
                           {revokingIds.has(link.id) ? "Revoking…" : "Revoke link"}
@@ -387,7 +509,7 @@ export function ShareDialog({
             className="h-touch rounded-control bg-proof px-4 text-sm font-semibold text-proof-contrast outline-none hover:bg-proof-hover focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-offset-2 focus-visible:ring-offset-overlay-surface disabled:opacity-50 sm:h-control [@media(hover:none)]:!h-touch [@media(pointer:coarse)]:!h-touch"
             type="button"
             aria-describedby="share-dialog-description"
-            disabled={creating || !target.activeLeafMessageId}
+            disabled={actionPending || listPending || !target.activeLeafMessageId}
             onClick={() => void createLink()}
           >
             {creating ? "Creating link…" : "Create public link"}

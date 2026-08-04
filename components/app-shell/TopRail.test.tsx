@@ -112,6 +112,7 @@ describe("TopRail", () => {
     expect(indicator).toHaveTextContent(expected);
     expect(indicator).toHaveAttribute("data-phase", "running");
     expect(indicator.querySelector("[data-run-activity]")).toBeInTheDocument();
+    expect(indicator.querySelector("[aria-live]")).not.toBeInTheDocument();
 
     fireEvent.click(indicator);
     expect(onOpenPipeline).toHaveBeenCalledOnce();
@@ -132,6 +133,7 @@ describe("TopRail", () => {
     const indicator = screen.getByRole("button", { name: "Run error - open run events" });
     expect(indicator).toHaveAttribute("data-phase", "error");
     expect(indicator).toHaveTextContent("Run error");
+    expect(indicator.querySelector("[aria-live]")).not.toBeInTheDocument();
 
     fireEvent.click(indicator);
     expect(onOpenPipeline).toHaveBeenCalledOnce();

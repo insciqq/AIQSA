@@ -23,7 +23,12 @@ import { ShellNotice } from "@/components/app-shell/ShellNotice";
 import { TopRail } from "@/components/app-shell/TopRail";
 import { useDialogFocus } from "@/components/app-shell/useDialogFocus";
 import { useEventCallback } from "@/components/app-shell/useEventCallback";
-import { pipelineStage } from "@/components/app-shell/runState";
+import {
+  pipelineStage,
+  runLifecycleAnnouncement,
+  type PipelineSnapshot,
+  type RunLifecycleAnnouncement
+} from "@/components/app-shell/runState";
 import { signOutCurrentSession } from "@/components/app-shell/sessionActions";
 import {
   rememberWorkspaceRailHidden,
@@ -169,12 +174,61 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
   const [accountBreakpointFocusTransferred, setAccountBreakpointFocusTransferred] = useState(false);
   const [mobileAccountMenuOpen, setMobileAccountMenuOpen] = useState(false);
   const [workspaceRailHidden, setWorkspaceRailHidden] = useState(false);
+  const runAnnouncerRef = useRef<HTMLParagraphElement>(null);
+  const runAnnouncementStateRef = useRef<{
+    activeChatId: string | null;
+    lastPipeline: PipelineSnapshot | null;
+    observedRunning: boolean;
+  }>({
+    activeChatId,
+    lastPipeline: null,
+    observedRunning: false
+  });
   const desktopAccountButtonRef = useRef<HTMLButtonElement>(null);
   const desktopWorkspaceToggleRef = useRef<HTMLButtonElement>(null);
   const mobileWorkspaceButtonRef = useRef<HTMLButtonElement>(null);
   const mobileWorkspaceScrollTopRef = useRef<number | undefined>(undefined);
   const cancelDeleteChatEvent = useEventCallback(cancelDeleteChat);
   const cancelDeleteFolderEvent = useEventCallback(cancelDeleteFolder);
+  useEffect(() => {
+    const previous = runAnnouncementStateRef.current;
+    const chatChanged = previous.activeChatId !== activeChatId;
+    if (!chatChanged && previous.lastPipeline === pipeline) {
+      return;
+    }
+
+    const state = chatChanged
+      ? { activeChatId, lastPipeline: pipeline, observedRunning: false }
+      : previous;
+    state.lastPipeline = pipeline;
+    let announcement: RunLifecycleAnnouncement | "" = "";
+
+    if (activeChatId && pipeline?.phase === "running") {
+      const initial = !state.observedRunning;
+      state.observedRunning = true;
+      announcement = initial ? "Working" : (runLifecycleAnnouncement(pipeline) ?? "");
+    } else if (
+      activeChatStreaming &&
+      pipeline &&
+      state.observedRunning &&
+      (pipeline.phase === "settled" || pipeline.phase === "error" || pipeline.phase === "cancelled")
+    ) {
+      runAnnouncementStateRef.current = state;
+      return;
+    } else if (
+      pipeline &&
+      state.observedRunning &&
+      (pipeline.phase === "settled" || pipeline.phase === "error" || pipeline.phase === "cancelled")
+    ) {
+      state.observedRunning = false;
+      announcement = runLifecycleAnnouncement(pipeline) ?? "";
+    }
+
+    runAnnouncementStateRef.current = state;
+    if (runAnnouncerRef.current && runAnnouncerRef.current.textContent !== announcement) {
+      runAnnouncerRef.current.textContent = announcement;
+    }
+  }, [activeChatId, activeChatStreaming, pipeline]);
   useEffect(() => {
     const timer = window.setTimeout(() => {
       setWorkspaceRailHidden(storedWorkspaceRailHidden());
@@ -453,6 +507,14 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
           Sign out failed. {signOutError} Open Account to retry.
         </p>
       ) : null}
+      <p
+        ref={runAnnouncerRef}
+        aria-atomic="true"
+        aria-live="polite"
+        className="sr-only"
+        data-testid="run-lifecycle-announcer"
+        role="status"
+      />
       <div
         className="relative min-h-0 flex-1"
         data-testid="shell-primary-content"

@@ -554,6 +554,7 @@ describe("LeftChatPane", () => {
     expect(screen.getByTestId("active-chat-marker")).toHaveClass("bg-proof");
     expect(chat).toHaveAttribute("aria-current", "page");
     expect(chat).toHaveAccessibleDescription(/Favorite.*Response running.*Model unavailable for new runs/);
+    expect(document.getElementById(chat.getAttribute("aria-describedby")!)).not.toHaveAttribute("role");
     expect(screen.getByText("Unavailable")).toHaveClass("text-ink-secondary");
 
     rerender(<LeftChatPane {...view} chatModelLabels={new Map()} />);

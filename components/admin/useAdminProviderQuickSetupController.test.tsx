@@ -151,9 +151,16 @@ describe("useAdminProviderQuickSetupController", () => {
     });
 
     await waitFor(() => expect(api.get).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(result.current.state.reconciliationRequired).toBe(false));
     expect(result.current.state.secret).toBe("browser-only-key");
     expect(result.current.state.selection).toBeNull();
     expect(result.current.state.selectedCandidateId).toBeNull();
+    expect(result.current.state.error).toBeNull();
+    expect(result.current.state.errorCode).toBeNull();
+    expect(result.current.state.feedback).toEqual({
+      message: "Provider settings changed. Latest provider status loaded.",
+      tone: "status"
+    });
 
     await act(async () => {
       await result.current.actions.submit();
@@ -162,6 +169,47 @@ describe("useAdminProviderQuickSetupController", () => {
       expectedState: "state-new",
       provider: "openai",
       secret: "browser-only-key"
+    });
+  });
+
+  it("recovers a non-ready stale draft through the explicit retry after automatic reconciliation fails", async () => {
+    api.get
+      .mockResolvedValueOnce({ data: snapshot("state-old"), ok: true })
+      .mockResolvedValueOnce({ error: { code: "network_error" }, ok: false })
+      .mockResolvedValueOnce({ data: snapshot("state-new"), ok: true });
+    api.submit.mockResolvedValueOnce({
+      error: { code: "provider_draft_stale" },
+      ok: false
+    });
+
+    const { result } = renderHook(() => useAdminProviderQuickSetupController(true));
+    await waitFor(() => expect(result.current.state.loaded).toBe(true));
+    act(() => {
+      result.current.actions.selectProvider("openai");
+      result.current.actions.changeSecret("browser-only-key");
+    });
+
+    await act(async () => {
+      await result.current.actions.submit();
+    });
+    await waitFor(() => expect(result.current.state.refreshError).toBe("network_error"));
+    expect(result.current.state.reconciliationRequired).toBe(true);
+    expect(result.current.state.errorCode).toBe("provider_draft_stale");
+    expect(result.current.state.secret).toBe("browser-only-key");
+
+    await act(async () => {
+      await result.current.actions.refresh();
+    });
+
+    expect(result.current.state.reconciliationRequired).toBe(false);
+    expect(result.current.state.refreshError).toBeNull();
+    expect(result.current.state.error).toBeNull();
+    expect(result.current.state.errorCode).toBeNull();
+    expect(result.current.state.secret).toBe("browser-only-key");
+    expect(result.current.state.selectedProvider?.stateToken).toBe("state-new");
+    expect(result.current.state.feedback).toEqual({
+      message: "Saved provider status confirmed.",
+      tone: "status"
     });
   });
 
@@ -312,6 +360,10 @@ describe("useAdminProviderQuickSetupController", () => {
       await result.current.actions.submit();
     });
     await waitFor(() => expect(api.get).toHaveBeenCalledTimes(2));
+    expect(result.current.state.feedback).toEqual({
+      message: "OpenAI is ready to chat with GPT-5.6 Terra.",
+      tone: "status"
+    });
     const reconciliationSignal = api.get.mock.calls[1]?.[1] as AbortSignal;
     expect(result.current.state.reconciliationRequired).toBe(true);
     expect(result.current.state.formLocked).toBe(true);
@@ -330,6 +382,10 @@ describe("useAdminProviderQuickSetupController", () => {
     await waitFor(() => expect(result.current.state.loading).toBe(false));
     expect(result.current.state.reconciliationRequired).toBe(true);
     expect(result.current.state.refreshError).toBe("network_error");
+    expect(result.current.state.feedback).toEqual({
+      message: "Saved provider status could not be confirmed. network_error",
+      tone: "error"
+    });
     expect(result.current.state.readyResult?.model.displayName).toBe("GPT-5.6 Terra");
     expect(result.current.state.readyConfirmation).toMatchObject({
       defaultChanged: false,
@@ -351,6 +407,10 @@ describe("useAdminProviderQuickSetupController", () => {
     expect(result.current.state.readyConfirmation).toMatchObject({
       defaultChanged: false,
       profilesFilled: ["balanced", "fast"]
+    });
+    expect(result.current.state.feedback).toEqual({
+      message: "Saved provider status confirmed.",
+      tone: "status"
     });
   });
 
@@ -398,6 +458,10 @@ describe("useAdminProviderQuickSetupController", () => {
     expect(result.current.state.selection).toBeNull();
     expect(result.current.state.selectedCandidateId).toBeNull();
     expect(result.current.state.errorCode).toBe("provider_quick_setup_selection_invalid");
+    expect(result.current.state.feedback).toEqual({
+      message: "OpenAI setup failed. provider_quick_setup_selection_invalid",
+      tone: "error"
+    });
   });
 
   it("clears a replacement form when a successful GET reports Ready", async () => {
@@ -472,6 +536,43 @@ describe("useAdminProviderQuickSetupController", () => {
     ));
     expect(result.current.state.readyResult).toBeNull();
     expect(result.current.state.readyConfirmation).toBeNull();
+    expect(result.current.state.feedback).toEqual({
+      message: "Provider settings changed. Latest provider status loaded.",
+      tone: "status"
+    });
+  });
+
+  it("drops an optimistic Ready receipt when reconciliation reports a different model", async () => {
+    const reconciled = readySnapshot("state-different-model");
+    reconciled.providers = reconciled.providers.map((provider) =>
+      provider.provider === "openai"
+        ? { ...provider, model: { displayName: "GPT-5.6 Luna" } }
+        : provider
+    );
+    api.get
+      .mockResolvedValueOnce({ data: snapshot(), ok: true })
+      .mockResolvedValueOnce({ data: reconciled, ok: true });
+    api.submit.mockResolvedValueOnce({ data: readyResult(), ok: true });
+
+    const { result } = renderHook(() => useAdminProviderQuickSetupController(true));
+    await waitFor(() => expect(result.current.state.loaded).toBe(true));
+    act(() => {
+      result.current.actions.selectProvider("openai");
+      result.current.actions.changeSecret("one-key");
+    });
+    await act(async () => {
+      await result.current.actions.submit();
+    });
+
+    await waitFor(() => expect(result.current.state.selectedProvider?.model?.displayName).toBe(
+      "GPT-5.6 Luna"
+    ));
+    expect(result.current.state.readyResult).toBeNull();
+    expect(result.current.state.readyConfirmation).toBeNull();
+    expect(result.current.state.feedback).toEqual({
+      message: "Provider settings changed. Latest provider status loaded.",
+      tone: "status"
+    });
   });
 
   it("loads the initial projection after the Strict Mode effect probe", async () => {
@@ -486,8 +587,13 @@ describe("useAdminProviderQuickSetupController", () => {
   });
 
   it("clears the fenced Quick assignment and reconciles without deleting the credential", async () => {
+    const reconciliation = deferred<{
+      data: ReturnType<typeof snapshot>;
+      ok: true;
+    }>();
     api.get
       .mockResolvedValueOnce({ data: readySnapshot(), ok: true })
+      .mockReturnValueOnce(reconciliation.promise)
       .mockResolvedValue({ data: snapshot("state-after-clear"), ok: true });
     api.clear.mockResolvedValueOnce({
       data: {
@@ -512,9 +618,18 @@ describe("useAdminProviderQuickSetupController", () => {
       expectedState: "state-openai-ready",
       provider: "openai"
     }, expect.any(Function), expect.any(AbortSignal));
+    expect(result.current.state.feedback).toEqual({
+      message: "OpenAI key assignment was removed. The stored credential remains available in Connections.",
+      tone: "status"
+    });
+    reconciliation.resolve({ data: snapshot("state-after-clear"), ok: true });
     await waitFor(() => expect(result.current.state.reconciliationRequired).toBe(false));
     await waitFor(() => expect(onMutationCommitted).toHaveBeenCalledOnce());
     expect(result.current.state.selectedProvider?.quickSetupAssigned).toBe(false);
+    expect(result.current.state.feedback).toEqual({
+      message: "OpenAI key assignment was removed. The stored credential remains available in Connections.",
+      tone: "status"
+    });
   });
 
   it("clears and aborts browser-only form state when the Quick surface becomes inactive", async () => {
