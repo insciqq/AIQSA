@@ -7,7 +7,10 @@ import {
   formatComposerContextStats,
   type ComposerContextStats
 } from "@/components/app-shell/composerContextStats";
-import { attachmentPolicyForModel } from "@/components/app-shell/attachmentCapabilities";
+import {
+  attachmentPolicyForModel,
+  attachmentWarningsForModel
+} from "@/components/app-shell/attachmentCapabilities";
 import { ComposerControls } from "@/components/app-shell/ComposerControls";
 import { McpComposerSummary } from "@/components/app-shell/McpComposerSummary";
 import { ThreadMessageRow } from "@/components/app-shell/ThreadMessageRow";
@@ -266,6 +269,13 @@ export function MainThreadPane({
   const attachmentPolicy = useMemo(
     () => attachmentPolicyForModel(currentModel),
     [currentModel]
+  );
+  const attachmentWarnings = useMemo(
+    () => attachmentWarningsForModel(attachments, currentModel),
+    [attachments, currentModel]
+  );
+  const attachmentWarningBlocksSend = attachmentWarnings.some(
+    (warning) => warning.blocking
   );
   const runWarningsByRunId = useMemo(() => {
     const warnings = new Map<string, string[]>();
@@ -652,6 +662,7 @@ export function MainThreadPane({
 
         <Composer
           attachmentPolicy={attachmentPolicy}
+          attachmentWarnings={attachmentWarnings}
           attachments={attachments}
           controls={
             <ComposerControls
@@ -731,7 +742,13 @@ export function MainThreadPane({
           onSend={submitComposer}
           onStop={() => void stopCurrentRun()}
           onUploadFiles={uploadFiles}
-          sendDisabled={activeChatStreaming || uploading || creatingChat || editingMessagePending}
+          sendDisabled={
+            activeChatStreaming ||
+            uploading ||
+            creatingChat ||
+            editingMessagePending ||
+            (!editingMessageId && attachmentWarningBlocksSend)
+          }
           stopDisabled={!currentRunId}
           streaming={activeChatStreaming}
           tools={(

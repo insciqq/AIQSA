@@ -20,6 +20,7 @@ const nextConfig = {
   allowedDevOrigins: ["127.0.0.1", "localhost", "app", "aiqsa-app-1", "host.docker.internal"],
   devIndicators: false,
   output: "standalone",
+  serverExternalPackages: ["unpdf"],
   async headers() {
     return [
       {

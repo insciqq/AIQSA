@@ -303,18 +303,25 @@ function providerNeutralOpenAISearchPlan(
 }
 
 function runAttachment(input: {
+  extractedText?: string | null;
   id: string;
   kind: "image" | "pdf";
+  metadata?: unknown;
   mimeType: string;
   storageKey: string;
 }): RunAttachmentRecord {
   return {
     byteSize: 32,
-    extractedText: input.kind === "pdf" ? "Extracted PDF fallback" : null,
+    extractedText:
+      input.extractedText === undefined
+        ? input.kind === "pdf"
+          ? "Extracted PDF fallback"
+          : null
+        : input.extractedText,
     fileName: `${input.id}.${input.kind === "pdf" ? "pdf" : "png"}`,
     id: input.id,
     kind: input.kind,
-    metadata: {},
+    metadata: input.metadata ?? {},
     mimeType: input.mimeType,
     status: "ready",
     storageKey: input.storageKey
@@ -2011,6 +2018,259 @@ describe("run preparation", () => {
       "context:send",
       "preview"
     ]);
+  });
+
+  it("rejects typed no-text, zero-emitted partial, and legacy blank PDFs for text-extraction models", async () => {
+    const expected = {
+      code: "pdf_text_unavailable",
+      message:
+        "No extractable text was found. Choose a model with native PDF support or remove this file.",
+      status: 400 as const
+    };
+    const zeroPartialExpected = {
+      code: "pdf_text_unavailable",
+      message:
+        "No PDF text could be retained within the configured limit. Choose a model with native PDF support or remove this file.",
+      status: 400 as const
+    };
+    const content = {
+      blocks: [{ attachmentId: "pdf-no-text", type: "attachment" }]
+    };
+
+    await expectFailure({
+      calls: ["entitlements", "capabilities", "prompt", "context:send", "attachments"],
+      expected,
+      harness: {
+        attachments: [
+          runAttachment({
+            extractedText: "stale text must not override authoritative processing status",
+            id: "pdf-no-text",
+            kind: "pdf",
+            metadata: {
+              pdf: {
+                extractedCharacterCount: 0,
+                pageCount: 3,
+                pagesProcessed: 3,
+                status: "no_text"
+              }
+            },
+            mimeType: "application/pdf",
+            storageKey: "private/pdf-no-text"
+          })
+        ]
+      },
+      request: sendInput(successBody({ content }))
+    });
+
+    await expectFailure({
+      calls: ["entitlements", "capabilities", "prompt", "context:send", "attachments"],
+      expected: zeroPartialExpected,
+      harness: {
+        attachments: [
+          runAttachment({
+            extractedText: "stale text must not override zero-emitted partial status",
+            id: "pdf-no-text",
+            kind: "pdf",
+            metadata: {
+              pdf: {
+                extractedCharacterCount: 0,
+                pageCount: 1,
+                pagesProcessed: 1,
+                status: "partial",
+                truncationReason: "text_limit"
+              }
+            },
+            mimeType: "application/pdf",
+            storageKey: "private/pdf-no-text"
+          })
+        ]
+      },
+      request: sendInput(successBody({ content }))
+    });
+
+    await expectFailure({
+      calls: ["entitlements", "capabilities", "prompt", "context:send", "attachments"],
+      expected,
+      harness: {
+        attachments: [
+          runAttachment({
+            id: "pdf-with-text",
+            kind: "pdf",
+            mimeType: "application/pdf",
+            storageKey: "private/pdf-with-text"
+          }),
+          runAttachment({
+            extractedText: " \n\t ",
+            id: "pdf-no-text",
+            kind: "pdf",
+            mimeType: "application/pdf",
+            storageKey: "private/pdf-no-text"
+          })
+        ]
+      },
+      request: sendInput(
+        successBody({
+          content: {
+            blocks: [
+              { attachmentId: "pdf-with-text", type: "attachment" },
+              { attachmentId: "pdf-no-text", type: "attachment" }
+            ]
+          }
+        })
+      )
+    });
+  });
+
+  it("allows partial PDF text for extraction-mode models", async () => {
+    const harness = createHarness({
+      attachments: [
+        runAttachment({
+          extractedText: "Bounded partial PDF text",
+          id: "pdf-partial",
+          kind: "pdf",
+          metadata: {
+            pdf: {
+              extractedCharacterCount: 24,
+              pageCount: 12,
+              pagesProcessed: 4,
+              status: "partial",
+              truncationReason: "text_limit"
+            }
+          },
+          mimeType: "application/pdf",
+          storageKey: "private/pdf-partial"
+        })
+      ]
+    });
+
+    const result = await prepareRun(
+      harness.deps,
+      sendInput(
+        successBody({
+          content: {
+            blocks: [{ attachmentId: "pdf-partial", type: "attachment" }]
+          }
+        })
+      )
+    );
+
+    const prepared = materializePreparedRunData(preparedFrom(result));
+    expect(prepared.providerRequest.attachments).toEqual([
+      expect.objectContaining({
+        extractedText: "Bounded partial PDF text",
+        id: "pdf-partial"
+      })
+    ]);
+    expect(harness.storageReads).toEqual([]);
+  });
+
+  it("allows no-text PDFs for native-PDF models and hydrates the original bytes", async () => {
+    const pdfBytes = Buffer.from("private-native-pdf-bytes");
+    const harness = createHarness({
+      attachments: [
+        runAttachment({
+          extractedText: null,
+          id: "pdf-no-text",
+          kind: "pdf",
+          metadata: {
+            pdf: {
+              extractedCharacterCount: 0,
+              pageCount: 2,
+              pagesProcessed: 2,
+              status: "no_text"
+            }
+          },
+          mimeType: "application/pdf",
+          storageKey: "private/pdf-no-text"
+        })
+      ],
+      capabilities: {
+        ...baseCapabilities,
+        nativePdfInput: true
+      },
+      storageObjects: {
+        "private/pdf-no-text": {
+          body: pdfBytes,
+          contentType: "application/pdf"
+        }
+      }
+    });
+
+    const result = await prepareRun(
+      harness.deps,
+      sendInput(
+        successBody({
+          content: {
+            blocks: [{ attachmentId: "pdf-no-text", type: "attachment" }]
+          }
+        })
+      )
+    );
+
+    const prepared = materializePreparedRunData(preparedFrom(result));
+    expect(prepared.providerRequest.attachments).toEqual([
+      expect.objectContaining({
+        base64Data: pdfBytes.toString("base64"),
+        extractedText: null,
+        id: "pdf-no-text"
+      })
+    ]);
+    expect(harness.storageReads).toEqual(["private/pdf-no-text"]);
+  });
+
+  it("allows a zero-emitted partial PDF for native-PDF models and hydrates the original bytes", async () => {
+    const pdfBytes = Buffer.from("private-native-zero-partial-pdf-bytes");
+    const harness = createHarness({
+      attachments: [
+        runAttachment({
+          extractedText: null,
+          id: "pdf-zero-partial",
+          kind: "pdf",
+          metadata: {
+            pdf: {
+              extractedCharacterCount: 0,
+              pageCount: 1,
+              pagesProcessed: 1,
+              status: "partial",
+              truncationReason: "text_limit"
+            }
+          },
+          mimeType: "application/pdf",
+          storageKey: "private/pdf-zero-partial"
+        })
+      ],
+      capabilities: {
+        ...baseCapabilities,
+        nativePdfInput: true
+      },
+      storageObjects: {
+        "private/pdf-zero-partial": {
+          body: pdfBytes,
+          contentType: "application/pdf"
+        }
+      }
+    });
+
+    const result = await prepareRun(
+      harness.deps,
+      sendInput(
+        successBody({
+          content: {
+            blocks: [{ attachmentId: "pdf-zero-partial", type: "attachment" }]
+          }
+        })
+      )
+    );
+
+    const prepared = materializePreparedRunData(preparedFrom(result));
+    expect(prepared.providerRequest.attachments).toEqual([
+      expect.objectContaining({
+        base64Data: pdfBytes.toString("base64"),
+        extractedText: null,
+        id: "pdf-zero-partial"
+      })
+    ]);
+    expect(harness.storageReads).toEqual(["private/pdf-zero-partial"]);
   });
 
   it("deduplicates private loads while keeping normalized ids and private payloads ephemeral", async () => {

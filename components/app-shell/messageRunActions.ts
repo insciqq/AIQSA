@@ -1,4 +1,5 @@
 import { useComposerControlStore } from "@/components/app-shell/composerControlStore";
+import { firstBlockingAttachmentWarning } from "@/components/app-shell/attachmentCapabilities";
 import {
   chatIdFromComposerSessionKey,
   folderIdFromComposerSessionKey,
@@ -90,6 +91,20 @@ function effectiveSearchSelection(
     mode,
     modelSearchOptions
   );
+}
+
+function modelForCurrentSelection(
+  renderedModel: CatalogModel | undefined,
+  provider: string,
+  modelId: string
+): CatalogModel | undefined {
+  if (renderedModel?.provider === provider && renderedModel.modelId === modelId) {
+    return renderedModel;
+  }
+
+  return useWorkspaceStore
+    .getState()
+    .catalog?.models.find((model) => model.provider === provider && model.modelId === modelId);
 }
 
 export function useMessageRunActions({
@@ -378,17 +393,33 @@ export function useMessageRunActions({
       searchPlanMode,
       systemPrompt
     } = useComposerControlStore.getState();
+    const modelForSend = modelForCurrentSelection(
+      currentModel,
+      selectedProvider,
+      selectedModelId
+    );
     if (
       (!sourceSession.draft.trim() && sourceSession.attachments.length === 0) ||
-      !currentModel ||
+      !modelForSend ||
       activeChatDetailLoading
     ) {
+      return;
+    }
+    const blockingAttachmentWarning = firstBlockingAttachmentWarning(
+      sourceSession.attachments,
+      modelForSend
+    );
+    if (blockingAttachmentWarning) {
+      setNotice({
+        kind: "error",
+        text: blockingAttachmentWarning.message
+      });
       return;
     }
     const controlDefaultsForSend = buildControlDraft();
     const paramsForSend = buildParams();
     const effectiveSearchPlan = effectiveSearchSelection(
-      currentModel,
+      modelForSend,
       selectedSearchOptionIds,
       searchPlanMode
     );
@@ -573,7 +604,7 @@ export function useMessageRunActions({
                   }
                 : {}),
               searchStrategy: effectiveSearchPlan.optionIds[0] ?? "search-disabled",
-              ...toolsOverride(currentModel)
+              ...toolsOverride(modelForSend)
             }),
             headers: {
               "content-type": "application/json"

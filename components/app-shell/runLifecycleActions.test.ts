@@ -498,6 +498,49 @@ describe("run lifecycle actions", () => {
     });
   });
 
+  it.each([
+    {
+      body: { error: "pdf_password_required", message: "safe server message" },
+      expected: "Password-protected PDFs are not supported."
+    },
+    {
+      body: { error: "pdf_invalid", message: "safe server message" },
+      expected: "This PDF is damaged or invalid."
+    },
+    {
+      body: { error: "pdf_extraction_timeout", message: "safe server message" },
+      expected: "PDF processing timed out."
+    },
+    {
+      body: {
+        error: "pdf_page_limit_exceeded",
+        maxPages: 500,
+        message: "safe server message"
+      },
+      expected: "This PDF has more than 500 pages."
+    },
+    {
+      body: { error: "pdf_extraction_failed", message: "safe server message" },
+      expected: "PDF processing failed. Try another PDF."
+    }
+  ])("shows a file-specific safe message for $body.error", async ({ body, expected }) => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => Response.json(body, { status: 400 }))
+    );
+    const { actions, composerSession } = useRunLifecycleActionsForTest();
+
+    await actions.uploadFiles([
+      new File(["problem"], "problem.pdf", { type: "application/pdf" })
+    ]);
+
+    expect(composerSession("chat-1")).toMatchObject({
+      attachments: [],
+      operationError: `problem.pdf: ${expected}`,
+      pendingUploadGenerations: []
+    });
+  });
+
   it("keeps mixed-selection rejection feedback after a successful upload settles", async () => {
     let resolveUpload!: (response: Response) => void;
     vi.stubGlobal(

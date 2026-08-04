@@ -414,6 +414,59 @@ describe("Composer", () => {
     expect(onSend).toHaveBeenCalledTimes(1);
   });
 
+  it("uses one live owner and a keyboard-accessible per-file PDF warning disclosure", async () => {
+    const onRemoveAttachment = vi.fn();
+    const attachment = {
+      fileName: "limited.pdf",
+      id: "attachment-limited",
+      kind: "pdf" as const
+    };
+    const warning = {
+      attachmentId: attachment.id,
+      blocking: false,
+      label: "Text limited" as const,
+      message: "PDF text was limited after page 3 of 9. The available text will be used."
+    };
+    const view = render(
+      <Composer
+        attachmentWarnings={[warning]}
+        attachments={[attachment]}
+        onChange={() => undefined}
+        onRemoveAttachment={onRemoveAttachment}
+        onSend={() => undefined}
+        value=""
+      />
+    );
+
+    const summary = screen.getByText("Text limited").closest("summary");
+    expect(summary).toHaveAccessibleName("Review PDF warning for limited.pdf: Text limited");
+    expect(screen.getByTestId("attachment-chip")).toHaveAttribute("data-attachment-status", "partial");
+    expect(screen.getByRole("button", { name: "Send message" })).toBeEnabled();
+    expect(screen.getAllByRole("status")).toHaveLength(1);
+    await waitFor(() => {
+      expect(screen.getByTestId("attachment-warning-announcement")).toHaveTextContent(
+        `limited.pdf: ${warning.message}`
+      );
+    });
+
+    fireEvent.click(summary!);
+    expect(screen.getByText(warning.message)).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Remove limited.pdf" }));
+    expect(onRemoveAttachment).toHaveBeenCalledWith(attachment.id);
+
+    view.rerender(
+      <Composer
+        attachmentWarnings={[warning]}
+        attachments={[attachment]}
+        onChange={() => undefined}
+        onRemoveAttachment={onRemoveAttachment}
+        onSend={() => undefined}
+        value=""
+      />
+    );
+    expect(screen.getAllByRole("status")).toHaveLength(1);
+  });
+
   it("requires edited text even with attachments and exposes cancel and remove actions", () => {
     const onCancelEdit = vi.fn();
     const onRemoveAttachment = vi.fn();

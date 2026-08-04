@@ -335,6 +335,69 @@ describe("message run actions", () => {
     vi.restoreAllMocks();
   });
 
+  it("rejects a stale programmatic send when a zero-text partial PDF needs extracted text", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    const renderedNativeModel: CatalogModel = {
+      ...model,
+      capabilities: {
+        ...model.capabilities,
+        documentInputMode: "native_pdf"
+      },
+      modelId: "native-model"
+    };
+    const selectedExtractionModel: CatalogModel = {
+      ...model,
+      modelId: "extraction-model"
+    };
+    const zeroTextPartialPdf: ComposerAttachment = {
+      extractedText: null,
+      fileName: "astral.pdf",
+      id: "attachment-astral",
+      kind: "pdf",
+      processing: {
+        extractedCharacterCount: 0,
+        pageCount: 8,
+        pagesProcessed: 1,
+        status: "partial",
+        truncationReason: "text_limit"
+      }
+    };
+    const actions = useMessageRunActionsForTest({
+      attachments: [zeroTextPartialPdf],
+      draft: "Read this scan",
+      model: renderedNativeModel
+    });
+    const selectedCatalog = mixedSearchCatalog("personal");
+    useWorkspaceStore.setState({
+      catalog: {
+        ...selectedCatalog,
+        defaults: {
+          ...selectedCatalog.defaults,
+          modelId: selectedExtractionModel.modelId,
+          provider: selectedExtractionModel.provider
+        },
+        models: [renderedNativeModel, selectedExtractionModel]
+      }
+    });
+    useComposerControlStore.setState({
+      selectedModelId: selectedExtractionModel.modelId,
+      selectedProvider: selectedExtractionModel.provider
+    });
+
+    await actions.submitComposer();
+
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(actions.session(actions.sourceSessionKey)).toMatchObject({
+      attachments: [zeroTextPartialPdf],
+      draft: "Read this scan",
+      pendingSend: null
+    });
+    expect(actions.setNotice).toHaveBeenCalledWith({
+      kind: "error",
+      text: "No PDF text could be retained within the configured limit. Choose a model with native PDF support or remove this file."
+    });
+  });
+
   it("clears only the completed source session after switching to another composer", async () => {
     const attachmentA = {
       fileName: "a.pdf",

@@ -56,6 +56,26 @@ async function uploadFailureMessage(response: Response): Promise<string> {
     // Reverse proxies may return a non-JSON body before the application runs.
   }
 
+  if (decoded?.error === "pdf_password_required") {
+    return "Password-protected PDFs are not supported.";
+  }
+
+  if (decoded?.error === "pdf_invalid") {
+    return "This PDF is damaged or invalid.";
+  }
+
+  if (decoded?.error === "pdf_extraction_timeout") {
+    return "PDF processing timed out.";
+  }
+
+  if (decoded?.error === "pdf_page_limit_exceeded") {
+    return `This PDF has more than ${decoded.maxPages} pages.`;
+  }
+
+  if (decoded?.error === "pdf_extraction_failed") {
+    return "PDF processing failed. Try another PDF.";
+  }
+
   if (decoded?.error === "upload_busy" || response.status === 429) {
     return "Upload capacity is busy. Try again shortly.";
   }

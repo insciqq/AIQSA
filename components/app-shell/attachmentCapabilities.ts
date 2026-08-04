@@ -1,8 +1,77 @@
 import type { CatalogModel } from "@/components/app-shell/types";
 import type {
   ComposerAttachment,
+  ComposerAttachmentWarning,
+  ComposerPdfProcessing,
   ComposerAttachmentPolicy
 } from "@/components/chat/Composer";
+import { decodePdfProcessing } from "@/lib/contracts/uploads";
+
+export function pdfProcessingForAttachment(
+  attachment: ComposerAttachment
+): ComposerPdfProcessing | null {
+  if (attachment.kind !== "pdf") {
+    return null;
+  }
+
+  return decodePdfProcessing(attachment.processing);
+}
+
+export function attachmentWarningsForModel(
+  attachments: readonly ComposerAttachment[],
+  model: CatalogModel | undefined
+): ComposerAttachmentWarning[] {
+  const warnings: ComposerAttachmentWarning[] = [];
+
+  for (const attachment of attachments) {
+    const processing = pdfProcessingForAttachment(attachment);
+    if (!processing || processing.status === "complete") {
+      continue;
+    }
+
+    if (processing.status === "partial") {
+      if (processing.extractedCharacterCount === 0) {
+        const nativePdf = model?.capabilities.documentInputMode === "native_pdf";
+        warnings.push({
+          attachmentId: attachment.id,
+          blocking: !nativePdf,
+          label: "Text limited",
+          message: nativePdf
+            ? "PDF text exceeded the configured limit before any complete text could be retained. This model can use the original PDF."
+            : "No PDF text could be retained within the configured limit. Choose a model with native PDF support or remove this file."
+        });
+        continue;
+      }
+
+      warnings.push({
+        attachmentId: attachment.id,
+        blocking: false,
+        label: "Text limited",
+        message: `PDF text was limited after page ${processing.pagesProcessed} of ${processing.pageCount}. The available text will be used.`
+      });
+      continue;
+    }
+
+    const nativePdf = model?.capabilities.documentInputMode === "native_pdf";
+    warnings.push({
+      attachmentId: attachment.id,
+      blocking: !nativePdf,
+      label: "No text",
+      message: nativePdf
+        ? "No extractable text was found. This model can use the original PDF."
+        : "No extractable text was found. Choose a model with native PDF support or remove this file."
+    });
+  }
+
+  return warnings;
+}
+
+export function firstBlockingAttachmentWarning(
+  attachments: readonly ComposerAttachment[],
+  model: CatalogModel | undefined
+): ComposerAttachmentWarning | null {
+  return attachmentWarningsForModel(attachments, model).find((warning) => warning.blocking) ?? null;
+}
 
 export function attachmentPolicyForModel(
   model: CatalogModel | undefined

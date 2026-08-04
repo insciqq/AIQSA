@@ -466,8 +466,14 @@ describe("usePowerAppShellViewModel", () => {
           fileName: "notes.pdf",
           id: "attachment-1",
           kind: "pdf",
-          metadata: { pdf: { pageCount: 2 } },
-          mimeType: "application/pdf"
+          metadata: { pdf: { pageCount: 999_999 } },
+          mimeType: "application/pdf",
+          processing: {
+            extractedCharacterCount: 4_000,
+            pageCount: 2,
+            pagesProcessed: 2,
+            status: "complete"
+          }
         }
       ],
       catalog,

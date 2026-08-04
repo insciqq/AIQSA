@@ -425,6 +425,78 @@ describe("MainThreadPane", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("Upload response was malformed");
   });
 
+  it("keeps a no-text PDF staged when switching from native PDF to text extraction", async () => {
+    const submitComposer = vi.fn();
+    const extractionModel: CatalogModel = {
+      ...model,
+      capabilities: {
+        ...model.capabilities,
+        documentInputMode: "pdf_text_extraction"
+      }
+    };
+    const nativeModel: CatalogModel = {
+      ...extractionModel,
+      capabilities: {
+        ...extractionModel.capabilities,
+        documentInputMode: "native_pdf"
+      }
+    };
+    const attachments = [{
+      extractedText: "",
+      fileName: "scan.pdf",
+      id: "scan-pdf",
+      kind: "pdf" as const,
+      processing: {
+        extractedCharacterCount: 0,
+        pageCount: 4,
+        pagesProcessed: 4,
+        status: "no_text" as const
+      }
+    }];
+    const view = renderPane({
+      ...readyComposerOverrides,
+      attachments,
+      currentModel: nativeModel,
+      draft: "Read the scan",
+      submitComposer
+    });
+
+    const allowedSend = screen.getByRole("button", { name: "Send message" });
+    expect(allowedSend).toBeEnabled();
+    await waitFor(() => {
+      expect(screen.getByTestId("attachment-warning-announcement")).toHaveTextContent(
+        "scan.pdf: No extractable text was found. This model can use the original PDF."
+      );
+    });
+    expect(screen.getByTestId("attachment-chip")).toHaveAttribute(
+      "data-attachment-status",
+      "no_text"
+    );
+
+    view.rerender(
+      <MainThreadPane
+        {...view.props}
+        attachments={attachments}
+        currentModel={extractionModel}
+      />
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId("attachment-warning-announcement")).toHaveTextContent(
+        "scan.pdf: No extractable text was found. Choose a model with native PDF support or remove this file."
+      );
+    });
+    expect(screen.getAllByTestId("attachment-chip")).toHaveLength(1);
+    expect(screen.getByRole("button", { name: "Remove scan.pdf" })).toBeEnabled();
+    const blockedSend = screen.getByRole("button", { name: "Send message" });
+    expect(blockedSend).toBeDisabled();
+    expect(blockedSend).toHaveAccessibleDescription(
+      "No extractable text was found. Choose a model with native PDF support or remove this file."
+    );
+    fireEvent.click(blockedSend);
+    expect(submitComposer).not.toHaveBeenCalled();
+  });
+
   it("renders direct model, profile-picker, and Search controls plus one complete More setup", () => {
     const selectRunProfile = vi.fn();
     renderPane({
@@ -498,6 +570,45 @@ describe("MainThreadPane", () => {
     expect(screen.getByRole("button", { name: "Send message" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Cancel edit" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Edit message" })).toBeEnabled();
+  });
+
+  it("does not let an unrelated staged PDF warning block an edited-message submit", () => {
+    const submitComposer = vi.fn();
+    const extractionModel: CatalogModel = {
+      ...model,
+      capabilities: {
+        ...model.capabilities,
+        documentInputMode: "pdf_text_extraction"
+      }
+    };
+    renderPane({
+      ...readyComposerOverrides,
+      attachments: [{
+        extractedText: null,
+        fileName: "scan.pdf",
+        id: "scan-pdf",
+        kind: "pdf",
+        processing: {
+          extractedCharacterCount: 0,
+          pageCount: 2,
+          pagesProcessed: 2,
+          status: "no_text"
+        }
+      }],
+      currentModel: extractionModel,
+      draft: "Edited question",
+      editingMessageId: "question-1",
+      submitComposer,
+      visibleMessages: [userMessage("question-1")]
+    });
+
+    const submit = screen.getByRole("button", { name: "Send message" });
+    expect(submit).toBeEnabled();
+    expect(submit).not.toHaveAccessibleDescription(
+      "No extractable text was found. Choose a model with native PDF support or remove this file."
+    );
+    fireEvent.click(submit);
+    expect(submitComposer).toHaveBeenCalledOnce();
   });
 
   it("selects a composer prompt for the next run without requesting default persistence", async () => {

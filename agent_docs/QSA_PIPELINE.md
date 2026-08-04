@@ -24,7 +24,7 @@ Streaming is a provider-neutral run capability. Catalog `capabilities.streaming`
    - editable system/developer prompt;
    - selected provider and model;
    - explicit request parameters;
-   - optional PDF/image attachments where selected model and user entitlements allow them, plus text-like document attachments that are included as extracted provider text. PDFs route as provider-native files for `nativePdfInput` models and as extracted text for fallback PDF-capable models.
+   - optional PDF/image attachments where selected model and user entitlements allow them, plus text-like document attachments that are included as extracted provider text. PDFs route as provider-native files for `nativePdfInput` models and as extracted text for fallback PDF-capable models. PDF text is extracted sequentially into a bounded `complete`, `partial`, or `no_text` result; non-empty partial text remains usable, while `no_text` or a zero-emitted partial is valid only on the native-PDF route and otherwise rejects as `pdf_text_unavailable` before provider dispatch.
    - context budgeting uses the conservative Unicode estimate defined in `backend/RUNS_AND_STREAMING.md` and counts provider-bound attachment payload estimates. Native PDFs include both extracted-text and page-image proxies, so oversized extracted text, native PDFs, or images can reject before provider dispatch instead of leaking past the budget as small references.
 
 2. Search

@@ -11,6 +11,7 @@ import {
   textFromThreadContent
 } from "@/components/app-shell/threadContent";
 import { buildChatGroups } from "@/components/app-shell/workspaceGroups";
+import { pdfProcessingForAttachment } from "@/components/app-shell/attachmentCapabilities";
 import type { RunSurfaceSnapshot } from "@/components/app-shell/runSurfaceStore";
 import type {
   Catalog,
@@ -101,8 +102,7 @@ function imageProxyTokens(attachment: ComposerAttachment): number {
 }
 
 function nativePdfProxyTokens(attachment: ComposerAttachment): number {
-  const pdf = metadataRecord(attachment, "pdf");
-  const pageCount = numberValue(pdf.pageCount);
+  const pageCount = pdfProcessingForAttachment(attachment)?.pageCount ?? null;
   const extractedTextTokens = attachment.extractedText?.trim() ? estimateApproxTokens(attachment.extractedText) : 0;
   const pageTokens = pageCount ? pageCount * 512 : 0;
   const fallbackByteTokens =

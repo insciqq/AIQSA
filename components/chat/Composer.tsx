@@ -6,6 +6,7 @@ import {
   type ComposerContextStats
 } from "@/components/app-shell/composerContextStats";
 import { isImeCompositionEvent } from "@/components/keyboard";
+import type { PdfProcessingWire, UploadedAttachmentWire } from "@/lib/contracts/uploads";
 import {
   FileText,
   GitBranch,
@@ -15,19 +16,26 @@ import {
   Paperclip,
   Send,
   Square,
+  TriangleAlert,
   X
 } from "lucide-react";
-import { type DragEvent, type ReactNode, useEffect, useRef, useState } from "react";
+import {
+  type DragEvent,
+  type ReactNode,
+  useEffect,
+  useMemo,
+  useRef,
+  useState
+} from "react";
 
-export type ComposerAttachment = {
-  byteSize?: number;
-  extractedText?: string | null;
-  fileName: string;
-  id: string;
-  kind: "document" | "image" | "pdf";
-  metadata?: unknown;
-  mimeType?: string;
-  status?: string;
+export type ComposerPdfProcessing = PdfProcessingWire;
+export type ComposerAttachment = UploadedAttachmentWire;
+
+export type ComposerAttachmentWarning = {
+  attachmentId: string;
+  blocking: boolean;
+  label: "No text" | "Text limited";
+  message: string;
 };
 
 const documentAttachmentAccept =
@@ -45,6 +53,7 @@ const defaultAttachmentPolicy: ComposerAttachmentPolicy = {
   images: true,
   pdfs: true
 };
+const defaultAttachmentWarnings: readonly ComposerAttachmentWarning[] = [];
 
 export type ComposerUsageStats = {
   activeBranchMessageCount: number;
@@ -57,6 +66,7 @@ export type ComposerHintTone = "busy" | "caution";
 
 export type ComposerProps = {
   attachmentPolicy?: ComposerAttachmentPolicy;
+  attachmentWarnings?: readonly ComposerAttachmentWarning[];
   attachments: ComposerAttachment[];
   controls?: ReactNode;
   contextStats?: ComposerContextStats | null;
@@ -121,6 +131,7 @@ function StopAction({
 
 export function Composer({
   attachmentPolicy = defaultAttachmentPolicy,
+  attachmentWarnings = defaultAttachmentWarnings,
   attachments,
   controls,
   contextStats = null,
@@ -154,8 +165,34 @@ export function Composer({
   const usagePopoverRef = useRef<HTMLDivElement>(null);
   const usageTriggerRef = useRef<HTMLButtonElement>(null);
   const dragDepthRef = useRef(0);
+  const previousAttachmentWarningsRef = useRef(new Map<string, string>());
   const [usageOpen, setUsageOpen] = useState(false);
   const [dragActive, setDragActive] = useState(false);
+  const [attachmentWarningAnnouncement, setAttachmentWarningAnnouncement] = useState("");
+  const resolvedAttachmentWarnings = useMemo(() => {
+    const warningsById = new Map(
+      attachmentWarnings.map((warning) => [warning.attachmentId, warning])
+    );
+
+    return attachments.flatMap((attachment, index) => {
+      const warning = warningsById.get(attachment.id);
+      return warning
+        ? [{
+            attachment,
+            detailId: `composer-attachment-warning-${index}`,
+            warning
+          }]
+        : [];
+    });
+  }, [attachmentWarnings, attachments]);
+  const attachmentWarningsById = new Map(
+    resolvedAttachmentWarnings.map((entry) => [entry.attachment.id, entry])
+  );
+  const blockingAttachmentWarningIds = editing
+    ? []
+    : resolvedAttachmentWarnings
+        .filter((entry) => entry.warning.blocking)
+        .map((entry) => entry.detailId);
   const attachmentAccept = [
     attachmentPolicy.documents ? documentAttachmentAccept : null,
     attachmentPolicy.pdfs ? "application/pdf" : null,
@@ -196,13 +233,18 @@ export function Composer({
         ? "composer-upload-status"
         : "composer-attachment-disabled-hint"
     : undefined;
-  const sendDescriptionId = disabledHint
-    ? "composer-disabled-hint"
-    : editPending
-      ? "composer-edit-pending-status"
-      : uploading
-        ? "composer-upload-status"
-        : undefined;
+  const sendDescriptionId = [
+    disabledHint
+      ? "composer-disabled-hint"
+      : editPending
+        ? "composer-edit-pending-status"
+        : uploading
+          ? "composer-upload-status"
+          : null,
+    ...blockingAttachmentWarningIds
+  ]
+    .filter(Boolean)
+    .join(" ") || undefined;
   const stats = usageStats ?? {
     activeBranchMessageCount: 0,
     cachedInputTokens: 0,
@@ -230,6 +272,31 @@ export function Composer({
     textarea.style.height = "0px";
     textarea.style.height = `${Math.min(textarea.scrollHeight, 200)}px`;
   }, [value]);
+
+  useEffect(() => {
+    const nextWarnings = new Map(
+      resolvedAttachmentWarnings.map(({ attachment, warning }) => [
+        attachment.id,
+        warning.message
+      ])
+    );
+    const changedWarnings = resolvedAttachmentWarnings.filter(
+      ({ attachment, warning }) =>
+        previousAttachmentWarningsRef.current.get(attachment.id) !== warning.message
+    );
+
+    if (changedWarnings.length > 0) {
+      setAttachmentWarningAnnouncement(
+        changedWarnings
+          .map(({ attachment, warning }) => `${attachment.fileName}: ${warning.message}`)
+          .join(" ")
+      );
+    } else if (nextWarnings.size !== previousAttachmentWarningsRef.current.size) {
+      setAttachmentWarningAnnouncement("");
+    }
+
+    previousAttachmentWarningsRef.current = nextWarnings;
+  }, [resolvedAttachmentWarnings]);
 
   useEffect(() => {
     if (!usageOpen) {
@@ -471,36 +538,89 @@ export function Composer({
             </span>
           ) : null}
 
+          {resolvedAttachmentWarnings.length > 0 || attachmentWarningAnnouncement ? (
+            <p
+              className="sr-only"
+              data-testid="attachment-warning-announcement"
+              role="status"
+              aria-atomic="true"
+              aria-live="polite"
+            >
+              {attachmentWarningAnnouncement}
+            </p>
+          ) : null}
+
           {attachments.length > 0 ? (
             <ul
               className="flex max-h-28 flex-wrap gap-2 overflow-y-auto border-b border-trace-subtle px-3 py-2 [@media(max-height:42rem)]:!max-h-12 [@media(max-height:42rem)]:!flex-nowrap [@media(max-height:42rem)]:!py-1"
               data-testid="attachment-chip-list"
               aria-label="Attachments"
             >
-              {attachments.map((attachment) => (
-                <li
-                  className="flex min-h-control-sm max-w-[min(15rem,100%)] items-center gap-1.5 rounded-control bg-control-selected pl-2 text-xs text-ink-secondary [@media(max-height:42rem)]:!min-h-8"
-                  data-testid="attachment-chip"
-                  key={attachment.id}
-                  title={attachment.fileName}
-                >
-                  {attachment.kind === "image" ? (
-                    <ImageIcon className="size-3.5 text-ink-muted" aria-hidden="true" />
-                  ) : (
-                    <FileText className="size-3.5 text-ink-muted" aria-hidden="true" />
-                  )}
-                  <span className="truncate">{attachment.fileName}</span>
-                  <button
-                    className="grid size-11 shrink-0 place-items-center rounded-control text-ink-muted hover:bg-control-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-proof/55 sm:size-8 [@media(hover:none)]:!size-11 [@media(pointer:coarse)]:!size-11"
-                    type="button"
-                    aria-label={`Remove ${attachment.fileName}`}
-                    title={`Remove ${attachment.fileName}`}
-                    onClick={() => onRemoveAttachment(attachment.id)}
+              {attachments.map((attachment) => {
+                const warningEntry = attachmentWarningsById.get(attachment.id);
+                const attachmentSummary = (
+                  <>
+                    {attachment.kind === "image" ? (
+                      <ImageIcon className="size-3.5 shrink-0 text-ink-muted" aria-hidden="true" />
+                    ) : (
+                      <FileText className="size-3.5 shrink-0 text-ink-muted" aria-hidden="true" />
+                    )}
+                    <span className="min-w-0 flex-1 truncate">{attachment.fileName}</span>
+                    {warningEntry ? (
+                      <span className="inline-flex shrink-0 items-center gap-1 text-caution">
+                        <TriangleAlert className="size-3.5" aria-hidden="true" />
+                        <span>{warningEntry.warning.label}</span>
+                      </span>
+                    ) : null}
+                  </>
+                );
+
+                return (
+                  <li
+                    className={[
+                      "grid min-h-control-sm max-w-[min(20rem,100%)] grid-cols-[minmax(0,1fr)_auto] items-start rounded-control text-xs text-ink-secondary [@media(max-height:42rem)]:!min-h-8",
+                      warningEntry
+                        ? "bg-caution/[0.07] ring-1 ring-inset ring-caution/20"
+                        : "bg-control-selected"
+                    ].join(" ")}
+                    data-attachment-status={warningEntry?.warning.label === "No text" ? "no_text" : warningEntry ? "partial" : undefined}
+                    data-testid="attachment-chip"
+                    key={attachment.id}
+                    title={attachment.fileName}
                   >
-                    <X className="size-3" aria-hidden="true" />
-                  </button>
-                </li>
-              ))}
+                    {warningEntry ? (
+                      <details className="group min-w-0">
+                        <summary
+                          className="flex min-h-control-sm cursor-pointer list-none items-center gap-1.5 rounded-l-control py-1 pl-2 outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-caution/55 [@media(max-height:42rem)]:!min-h-8 [@media(hover:none)]:!min-h-touch [@media(pointer:coarse)]:!min-h-touch [&::-webkit-details-marker]:hidden"
+                          aria-label={`Review PDF warning for ${attachment.fileName}: ${warningEntry.warning.label}`}
+                        >
+                          {attachmentSummary}
+                        </summary>
+                        <p
+                          className="border-t border-caution/20 px-2 py-1.5 leading-5 text-caution"
+                          data-blocking={warningEntry.warning.blocking ? "true" : undefined}
+                          id={warningEntry.detailId}
+                        >
+                          {warningEntry.warning.message}
+                        </p>
+                      </details>
+                    ) : (
+                      <div className="flex min-h-control-sm min-w-0 items-center gap-1.5 py-1 pl-2 [@media(max-height:42rem)]:!min-h-8">
+                        {attachmentSummary}
+                      </div>
+                    )}
+                    <button
+                      className="grid size-11 shrink-0 place-items-center rounded-control text-ink-muted hover:bg-control-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-proof/55 sm:size-8 [@media(hover:none)]:!size-11 [@media(pointer:coarse)]:!size-11"
+                      type="button"
+                      aria-label={`Remove ${attachment.fileName}`}
+                      title={`Remove ${attachment.fileName}`}
+                      onClick={() => onRemoveAttachment(attachment.id)}
+                    >
+                      <X className="size-3" aria-hidden="true" />
+                    </button>
+                  </li>
+                );
+              })}
             </ul>
           ) : null}
 

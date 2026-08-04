@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import { getAuthConfig, TEST_AUTH_TOKEN } from "../auth/config";
 import { createTestAuth } from "../auth/testRequestAuth";
 import { createUploadPermitGate } from "../http/uploadPermitGate";
+import { PdfExtractionError, type PdfExtractionErrorCode } from "./pdf";
 import { createMemoryStorageAdapter } from "./storage";
 import { createUploadHandler } from "./handlers";
 
@@ -21,7 +22,7 @@ const auth = createTestAuth({
   }
 });
 
-function authenticatedUploadRequest(file: File): Request {
+function authenticatedUploadRequest(file: File, signal?: AbortSignal): Request {
   const form = new FormData();
   form.set("file", file);
 
@@ -30,7 +31,8 @@ function authenticatedUploadRequest(file: File): Request {
     headers: {
       cookie: auth.cookie
     },
-    method: "POST"
+    method: "POST",
+    ...(signal ? { signal } : {})
   });
 }
 
@@ -406,7 +408,197 @@ describe("upload handler", () => {
     expect(gate.snapshot().active).toBe(0);
   });
 
-  it("rejects complex PDFs before storage or attachment creation", async () => {
+  it("stores bounded partial PDF text with a strict processing projection", async () => {
+    const storage = createMemoryStorageAdapter();
+    const POST = createUploadHandler({
+      createAttachment: async (input) => ({
+        ...input,
+        id: "attachment-partial"
+      }),
+      extractPdfTextChunks: async (_buffer, options) => {
+        expect(options?.signal).toBeInstanceOf(AbortSignal);
+        expect(options?.config).toMatchObject({
+          extractedTextMaxChars: 20_000,
+          maxPages: 500,
+          timeoutMs: 20_000
+        });
+
+        return {
+          chunks: [{ index: 0, page: 1, text: "Bounded PDF text" }],
+          extractedCharacterCount: 16,
+          pageCount: 8,
+          pagesProcessed: 3,
+          status: "partial",
+          text: "Bounded PDF text",
+          truncationReason: "text_limit"
+        };
+      },
+      resolveAuth: auth.resolveAuth,
+      storage
+    });
+
+    const response = await POST(
+      authenticatedUploadRequest(new File([Buffer.from("%PDF-1.4\n")], "partial.pdf", { type: "application/pdf" }))
+    );
+
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as {
+      attachment: {
+        extractedText: string;
+        metadata: { pdf: Record<string, unknown> };
+        processing: Record<string, unknown>;
+        status: string;
+        storageKey: string;
+      };
+    };
+    const processing = {
+      extractedCharacterCount: 16,
+      pageCount: 8,
+      pagesProcessed: 3,
+      status: "partial",
+      truncationReason: "text_limit"
+    };
+
+    expect(body.attachment).toMatchObject({
+      extractedText: "Bounded PDF text",
+      processing,
+      status: "ready"
+    });
+    expect(body.attachment.metadata.pdf).toEqual({
+      chunks: [{ index: 0, page: 1, text: "Bounded PDF text" }],
+      extractedTextMaxChars: 20_000,
+      ...processing
+    });
+    expect(body.attachment.metadata.pdf).not.toHaveProperty("originalCharacterCount");
+    expect(storage.objects.has(body.attachment.storageKey)).toBe(true);
+  });
+
+  it("stores a textless PDF as ready without fabricating extracted text", async () => {
+    const storage = createMemoryStorageAdapter();
+    const POST = createUploadHandler({
+      createAttachment: async (input) => ({
+        ...input,
+        id: "attachment-no-text"
+      }),
+      extractPdfTextChunks: async () => ({
+        chunks: [],
+        extractedCharacterCount: 0,
+        pageCount: 2,
+        pagesProcessed: 2,
+        status: "no_text",
+        text: ""
+      }),
+      resolveAuth: auth.resolveAuth,
+      storage
+    });
+
+    const response = await POST(
+      authenticatedUploadRequest(new File([Buffer.from("%PDF-1.4\n")], "scan.pdf", { type: "application/pdf" }))
+    );
+
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as {
+      attachment: {
+        extractedText: string | null;
+        processing: Record<string, unknown>;
+        status: string;
+        storageKey: string;
+      };
+    };
+    expect(body.attachment).toMatchObject({
+      extractedText: null,
+      processing: {
+        extractedCharacterCount: 0,
+        pageCount: 2,
+        pagesProcessed: 2,
+        status: "no_text"
+      },
+      status: "ready"
+    });
+    expect(storage.objects.has(body.attachment.storageKey)).toBe(true);
+  });
+
+  it("stores a zero-emitted partial PDF as ready with no usable fallback text", async () => {
+    const storage = createMemoryStorageAdapter();
+    const POST = createUploadHandler({
+      createAttachment: async (input) => ({
+        ...input,
+        id: "attachment-zero-partial"
+      }),
+      extractPdfTextChunks: async () => ({
+        chunks: [],
+        extractedCharacterCount: 0,
+        pageCount: 1,
+        pagesProcessed: 1,
+        status: "partial",
+        text: "",
+        truncationReason: "text_limit"
+      }),
+      resolveAuth: auth.resolveAuth,
+      storage
+    });
+
+    const response = await POST(
+      authenticatedUploadRequest(new File([Buffer.from("%PDF-1.4\n")], "unicode.pdf", { type: "application/pdf" }))
+    );
+
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as {
+      attachment: {
+        extractedText: string | null;
+        metadata: { pdf: Record<string, unknown> };
+        processing: Record<string, unknown>;
+        status: string;
+      };
+    };
+    const processing = {
+      extractedCharacterCount: 0,
+      pageCount: 1,
+      pagesProcessed: 1,
+      status: "partial",
+      truncationReason: "text_limit"
+    };
+    expect(body.attachment).toMatchObject({
+      extractedText: null,
+      processing,
+      status: "ready"
+    });
+    expect(body.attachment.metadata.pdf).toMatchObject(processing);
+    expect(storage.objects.size).toBe(1);
+  });
+
+  it.each<{
+    code: PdfExtractionErrorCode;
+    expected: Record<string, unknown>;
+  }>([
+    {
+      code: "pdf_page_limit_exceeded",
+      expected: {
+        error: "pdf_page_limit_exceeded",
+        maxPages: 500,
+        message: "This PDF has more than 500 pages."
+      }
+    },
+    {
+      code: "pdf_extraction_timeout",
+      expected: { error: "pdf_extraction_timeout", message: "PDF processing timed out." }
+    },
+    {
+      code: "pdf_password_required",
+      expected: {
+        error: "pdf_password_required",
+        message: "Password-protected PDFs are not supported."
+      }
+    },
+    {
+      code: "pdf_invalid",
+      expected: { error: "pdf_invalid", message: "This PDF is damaged or invalid." }
+    },
+    {
+      code: "pdf_extraction_failed",
+      expected: { error: "pdf_extraction_failed", message: "This PDF could not be processed." }
+    }
+  ])("returns stable $code without storing the PDF", async ({ code, expected }) => {
     const storage = createMemoryStorageAdapter();
     const gate = createUploadPermitGate(1);
     let attachmentCreated = false;
@@ -420,19 +612,71 @@ describe("upload handler", () => {
         };
       },
       extractPdfTextChunks: async () => {
-        throw new Error("pdf_too_complex");
+        throw new PdfExtractionError(code);
       },
       resolveAuth: auth.resolveAuth,
       storage,
       uploadPermitGate: gate
     });
     const response = await POST(
-      authenticatedUploadRequest(new File([Buffer.from("%PDF-1.4\n")], "large.pdf", { type: "application/pdf" }))
+      authenticatedUploadRequest(new File([Buffer.from("%PDF-1.4\n")], "failed.pdf", { type: "application/pdf" }))
     );
 
     expect(response.status).toBe(400);
-    await expect(response.json()).resolves.toEqual({ error: "pdf_too_complex" });
+    await expect(response.json()).resolves.toEqual(expected);
     expect(attachmentCreated).toBe(false);
+    expect(storage.objects.size).toBe(0);
+    expect(gate.snapshot().active).toBe(0);
+  });
+
+  it.each([new Error("pdf_too_complex"), new Error("private parser path and details")])(
+    "sanitizes legacy and unknown PDF errors before returning them",
+    async (error) => {
+      const storage = createMemoryStorageAdapter();
+      const POST = createUploadHandler({
+        createAttachment: async (input) => ({ ...input, id: "should-not-create" }),
+        extractPdfTextChunks: async () => {
+          throw error;
+        },
+        resolveAuth: auth.resolveAuth,
+        storage
+      });
+
+      const response = await POST(
+        authenticatedUploadRequest(new File([Buffer.from("%PDF-1.4\n")], "failed.pdf", { type: "application/pdf" }))
+      );
+
+      expect(response.status).toBe(400);
+      await expect(response.json()).resolves.toEqual({
+        error: "pdf_extraction_failed",
+        message: "This PDF could not be processed."
+      });
+      expect(storage.objects.size).toBe(0);
+    }
+  );
+
+  it("rethrows request cancellation and releases the permit during PDF processing", async () => {
+    const controller = new AbortController();
+    const reason = new Error("operator_cancelled_upload");
+    const gate = createUploadPermitGate(1);
+    const storage = createMemoryStorageAdapter();
+    const POST = createUploadHandler({
+      createAttachment: async (input) => ({ ...input, id: "should-not-create" }),
+      extractPdfTextChunks: async (_buffer, options) => {
+        expect(options?.signal?.aborted).toBe(false);
+        controller.abort(reason);
+        throw reason;
+      },
+      resolveAuth: auth.resolveAuth,
+      storage,
+      uploadPermitGate: gate
+    });
+    const request = authenticatedUploadRequest(
+      new File([Buffer.from("%PDF-1.4\n")], "cancelled.pdf", { type: "application/pdf" }),
+      controller.signal
+    );
+
+    await expect(POST(request)).rejects.toBe(reason);
     expect(storage.objects.size).toBe(0);
     expect(gate.snapshot().active).toBe(0);
   });

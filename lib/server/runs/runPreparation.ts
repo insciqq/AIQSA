@@ -53,6 +53,10 @@ const visibleAnswerContract =
 const perplexityToolSearchStrategyId = "perplexity-tool-search";
 const geminiGoogleSearchStrategyId = "gemini-google-search";
 const currentSendMessageId = "current-user-message";
+const pdfTextUnavailableMessage =
+  "No extractable text was found. Choose a model with native PDF support or remove this file.";
+const zeroEmittedPdfTextUnavailableMessage =
+  "No PDF text could be retained within the configured limit. Choose a model with native PDF support or remove this file.";
 
 function legacyAdapterKind(provider: string): CatalogAdapterKind {
   if (provider === "anthropic") return "anthropic_messages";
@@ -629,6 +633,49 @@ function validateAttachmentCapabilities(
   return null;
 }
 
+function hasNoTextPdfProcessingStatus(metadata: unknown): boolean {
+  if (!isRecord(metadata) || !isRecord(metadata.pdf)) {
+    return false;
+  }
+
+  return metadata.pdf.status === "no_text";
+}
+
+function hasZeroEmittedPartialPdfStatus(metadata: unknown): boolean {
+  if (!isRecord(metadata) || !isRecord(metadata.pdf)) {
+    return false;
+  }
+
+  return metadata.pdf.status === "partial" && metadata.pdf.extractedCharacterCount === 0;
+}
+
+function validatePdfTextAvailability(
+  attachments: ProviderAttachment[],
+  capabilities: ProviderModelCapabilities
+): { code: string; message: string; status: 400 } | null {
+  if (capabilities.nativePdfInput || !capabilities.pdf) {
+    return null;
+  }
+
+  const unavailable = attachments.find(
+    (attachment) =>
+      attachment.kind === "pdf" &&
+      (hasNoTextPdfProcessingStatus(attachment.metadata) ||
+        hasZeroEmittedPartialPdfStatus(attachment.metadata) ||
+        !attachment.extractedText?.trim())
+  );
+
+  return unavailable
+    ? {
+        code: "pdf_text_unavailable",
+        message: hasZeroEmittedPartialPdfStatus(unavailable.metadata)
+          ? zeroEmittedPdfTextUnavailableMessage
+          : pdfTextUnavailableMessage,
+        status: 400
+      }
+    : null;
+}
+
 function validateSearchStrategyForModel(
   adapterKind: CatalogAdapterKind,
   _modelId: string,
@@ -1099,6 +1146,15 @@ export async function prepareRun(
   const attachmentAccess = validateAttachmentCapabilities(attachments, modelCapabilities);
   if (attachmentAccess) {
     return failure(attachmentAccess.code, attachmentAccess.status);
+  }
+
+  const pdfTextAvailability = validatePdfTextAvailability(attachments, modelCapabilities);
+  if (pdfTextAvailability) {
+    return failure(
+      pdfTextAvailability.code,
+      pdfTextAvailability.status,
+      pdfTextAvailability.message
+    );
   }
 
   const unbudgetedNormalizedRequest: NormalizedRunRequest = {
