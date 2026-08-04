@@ -1,3 +1,8 @@
+import {
+  providerStreamSafetyReport,
+  type ProviderStreamSafetyReport
+} from "../providers/streamSafety";
+
 export type ToolLoopCall = Readonly<{
   arguments: unknown;
   id: string;
@@ -9,6 +14,7 @@ export type ToolLoopIssue = Readonly<{
   fatal?: boolean;
   message: string;
   retryable?: boolean;
+  streamSafetyReport?: ProviderStreamSafetyReport;
 }>;
 
 export type ToolLoopToolResult<Value> =
@@ -513,6 +519,9 @@ export async function continueToolLoop<Continuation, ToolValue, FinalValue>(
 
     if (providerRound.kind === "error") {
       const signalFailure = providerRound.error instanceof SignalDeliveryError;
+      const streamSafetyReport = signalFailure
+        ? null
+        : providerStreamSafetyReport(providerRound.error);
       const providerErrorCode = typeof providerRound.error === "object" &&
         providerRound.error !== null &&
         "code" in providerRound.error &&
@@ -523,9 +532,11 @@ export async function continueToolLoop<Continuation, ToolValue, FinalValue>(
         code: signalFailure
           ? "tool_loop_signal_failed"
           : providerErrorCode ?? "provider_round_failed",
-        message: errorMessage(providerRound.error, `Provider round ${round} failed.`),
+        message: streamSafetyReport?.message ??
+          errorMessage(providerRound.error, `Provider round ${round} failed.`),
         round,
-        stage: signalFailure ? "signal" : "provider"
+        stage: signalFailure ? "signal" : "provider",
+        ...(streamSafetyReport ? { streamSafetyReport } : {})
       });
     }
 

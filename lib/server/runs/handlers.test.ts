@@ -4,6 +4,7 @@ import { getAuthConfig } from "../auth/config";
 import type { ResolvedEntitlements } from "../auth/entitlements";
 import { createTestAuth } from "../auth/testRequestAuth";
 import { createFakeProviderAdapter } from "../providers/fakeProvider";
+import { ProviderStreamTooLargeError } from "../providers/streamSafety";
 import { createOpenAIResponsesAdapter, type OpenAIResponsesClient } from "../providers/openaiResponses";
 import {
   createFakeOpenRouterPerplexitySearchAdapter,
@@ -124,6 +125,7 @@ function createMemoryRepository(
 ) {
   const state: {
     assistantText: string;
+    assistantTextWrites: number;
     bootSweeps: { liveRunIds: string[]; sweptRunIds: string[] }[];
     cancelled: Parameters<RunRepository["cancelRun"]>[0]["payload"] | null;
     completed: Parameters<RunRepository["completeRun"]>[0] | null;
@@ -141,6 +143,7 @@ function createMemoryRepository(
     updatedProviderRequestPreview: Record<string, unknown> | null;
   } = {
     assistantText: "",
+    assistantTextWrites: 0,
     bootSweeps: [],
     cancelled: null,
     completed: null,
@@ -165,6 +168,7 @@ function createMemoryRepository(
         : "advanced",
     appendAssistantText: async (_assistantMessageId, text) => {
       state.assistantText = text;
+      state.assistantTextWrites += 1;
     },
     appendRunEvent: async (_runId, sequence, event) => {
       state.events.push({ event, sequence });
@@ -304,8 +308,9 @@ function createMemoryRepository(
     createSearchRun: async (input) => {
       state.searchRuns.push(input);
     },
-    failRun: async (runId, _assistantMessageId, error) => {
+    failRun: async (runId, _assistantMessageId, error, options) => {
       state.failed = { error, runId };
+      state.recoverySettled = options?.recoveryTerminal === true;
       const sequence = state.events.reduce((max, entry) => Math.max(max, entry.sequence), -1) + 1;
       state.events.push({ event: { data: error, type: "error" }, sequence });
       return true;
@@ -2471,6 +2476,94 @@ describe("model run route handlers", () => {
     });
   });
 
+  it("does not refresh a safety-failed run after its provider response id was published", async () => {
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const { repository, state } = createMemoryRepository();
+    const refresh = vi.fn(async (): Promise<ProviderRunRefreshResult> => ({
+      events: [],
+      status: "in_progress",
+      terminal: false
+    }));
+    const provider: ProviderAdapter = {
+      buildRequestPreview: () => ({ provider: "fake" }),
+      refresh,
+      async *stream() {
+        yield {
+          data: {
+            artifactType: "summary",
+            payload: { responseId: "response-before-safety-failure" }
+          },
+          type: "artifact"
+        };
+        yield { data: { delta: "durable partial" }, type: "token" };
+        throw new ProviderStreamTooLargeError({
+          maxBytes: 2048,
+          observedBytes: 2049,
+          snapshot: { durationMs: 40, totalStreamBytes: 2049 }
+        });
+      }
+    };
+    const POST = createSendMessageHandler({
+      ...authDeps,
+      providers: { fake: provider },
+      repository
+    });
+    const postResponse = await POST(
+      new Request("http://app.local/api/chats/chat-1/messages", {
+        body: JSON.stringify({
+          modelId: "fake-qsa",
+          provider: "fake",
+          text: "Fail safely after publishing an id"
+        }),
+        headers: { cookie: authCookie() },
+        method: "POST"
+      }),
+      { params: { chatId: "chat-1" } }
+    );
+    const liveEvents = parseSse(await postResponse.text());
+
+    expect(state.providerResponseId).toBe("response-before-safety-failure");
+    expect(state.assistantText).toBe("durable partial");
+    expect(state.assistantTextWrites).toBe(1);
+    expect(state.recoverySettled).toBe(true);
+    expect(liveEvents.at(-1)).toEqual({
+      data: {
+        code: "provider_stream_too_large",
+        message: "The provider stream exceeded a safety limit."
+      },
+      type: "error"
+    });
+
+    const GET = createGetModelRunHandler({
+      ...authDeps,
+      providers: { fake: provider },
+      repository
+    });
+    const getResponse = await GET(
+      new Request("http://app.local/api/model-runs/run-1", {
+        headers: { cookie: authCookie() }
+      }),
+      { params: { runId: "run-1" } }
+    );
+
+    expect(getResponse.status).toBe(200);
+    await expect(getResponse.json()).resolves.toMatchObject({
+      run: {
+        errorPayload: {
+          code: "provider_stream_too_large",
+          recoveryTerminal: true
+        },
+        status: "error"
+      }
+    });
+    expect(refresh).not.toHaveBeenCalled();
+    expect(state.assistantTextWrites).toBe(1);
+    expect(state.completed).toBeNull();
+    expect(state.events.map(({ event }) => event.type)).not.toContain("done");
+    expect(warning).toHaveBeenCalledOnce();
+    warning.mockRestore();
+  });
+
   it("starts a first-message stream only after atomic run persistence resolves", async () => {
     const { repository, state } = createMemoryRepository();
     const routeOrder: string[] = [];
@@ -3477,6 +3570,7 @@ describe("model run route handlers", () => {
     if (!checkpoint) throw new Error("invalid_test_checkpoint");
     repository.loadCheckpointedToolLoopRun = async () => ({
       assistantMessageId: "assistant-message-1",
+      assistantText: "",
       calls: [],
       chatId: "chat-1",
       checkpoint,

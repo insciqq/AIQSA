@@ -9,6 +9,7 @@ import type {
   ProviderSearchAdapter,
   ProviderSearchRequest
 } from "../providers/types";
+import { ProviderStreamTooLargeError } from "../providers/streamSafety";
 import type {
   PersistedRunUsageAttribution,
   RunControlRecord,
@@ -150,6 +151,7 @@ function createHarness(options: Readonly<{
     inputTokenPriceMicros: number;
     outputTokenPriceMicros: number;
   } | null;
+  pricingError?: Error;
   providers?: Readonly<Record<string, ProviderAdapter>>;
   registry?: RunRecoveryRegistry;
   settleRecoveredRunError?: boolean;
@@ -162,6 +164,8 @@ function createHarness(options: Readonly<{
   let appendCollision = false;
   let nextSequence = 0;
   const state: {
+    assistantAppendOptions: Array<Readonly<{ allowErrored?: boolean }> | undefined>;
+    assistantTexts: string[];
     appendAttempts: { event: ModelRunSseEvent; runId: string; sequence: number }[];
     completed: Parameters<RunRecoveryRepository["completeRun"]>[0] | null;
     events: { event: ModelRunSseEvent; runId: string; sequence: number }[];
@@ -176,6 +180,8 @@ function createHarness(options: Readonly<{
     staleQueries: Parameters<RunRecoveryRepository["findStaleActiveRunsForUser"]>[0][];
     sweeps: string[][];
   } = {
+    assistantAppendOptions: [],
+    assistantTexts: [],
     appendAttempts: [],
     completed: null,
     events: [],
@@ -188,6 +194,11 @@ function createHarness(options: Readonly<{
   };
   const repository: RunRecoveryRepository = {
     advanceToolLoopCallBatch: async () => "not_found",
+    appendAssistantText: async (_assistantMessageId, text, appendOptions) => {
+      state.operations.push("append_assistant_text");
+      state.assistantAppendOptions.push(appendOptions);
+      state.assistantTexts.push(text);
+    },
     appendRunEvent: async (eventRunId, sequence, event) => {
       state.appendAttempts.push({ event, runId: eventRunId, sequence });
       if (appendCollision) {
@@ -247,13 +258,15 @@ function createHarness(options: Readonly<{
     },
     loadAttachments: async () => [],
     loadCheckpointedToolLoopRun: async () => null,
-    loadModelPricing: async () =>
-      options.pricing === undefined
+    loadModelPricing: async () => {
+      if (options.pricingError) throw options.pricingError;
+      return options.pricing === undefined
         ? {
             inputTokenPriceMicros: 10,
             outputTokenPriceMicros: 20
           }
-        : options.pricing,
+        : options.pricing;
+    },
     loadRunUsageAttributions: async () => [],
     markAssistantMessageGroundedLiveOnly: async () => true,
     nextRunEventSequence: async () => nextSequence,
@@ -451,6 +464,7 @@ function checkpointedRun(input: Readonly<{
   } satisfies ToolLoopJsonValue;
   return {
     assistantMessageId: "assistant-1",
+    assistantText: "",
     calls: [...(input.calls ?? [])],
     chatId: "chat-1",
     checkpoint: checkpoint(input.phase, 1, continuation),
@@ -1221,6 +1235,167 @@ describe("run recovery", () => {
       finalText: "Recovered final answer",
       usage: { inputTokens: 8, outputTokens: 5, totalTokens: 13 }
     });
+  });
+
+  it("appends a recovered provider delta to durable pre-crash assistant text", async () => {
+    const refresh = vi.fn(async (): Promise<ProviderRunRefreshResult> => ({
+      events: [{ data: { delta: "recovered" }, type: "token" }],
+      providerResponseId: "response-tool-1",
+      status: "in_progress",
+      terminal: false
+    }));
+    const adapter = providerWithRefresh(refresh);
+    const harness = createHarness({
+      controls: [control({
+        providerResponseId: "response-tool-1",
+        recoverySettled: false,
+        status: "error"
+      })],
+      providers: { openai: adapter }
+    });
+    const durable = {
+      ...checkpointedRun({
+        phase: "provider_running",
+        providerResponseId: "response-tool-1",
+        providerToolMessages: []
+      }),
+      assistantText: "durable ",
+      status: "error" as const
+    };
+    installCheckpointState(harness, durable);
+
+    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+
+    expect(refresh).toHaveBeenCalledOnce();
+    expect(harness.state.assistantTexts).toEqual(["durable recovered"]);
+    expect(harness.state.assistantAppendOptions).toEqual([{ allowErrored: true }]);
+    expect(harness.state.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        event: { data: { delta: "recovered" }, type: "token" }
+      })
+    ]));
+    expect(harness.state.completed).toBeNull();
+    expect(harness.state.recoveredErrors).toEqual([]);
+  });
+
+  it("keeps a published-response safety failure terminal across later refresh requests", async () => {
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    let answerRounds = 0;
+    const adapter: ProviderAdapter = {
+      buildRequestPreview: () => ({}),
+      async *stream() {
+        answerRounds += 1;
+        yield { data: { delta: "recovered partial" }, type: "token" };
+        yield {
+          data: { inputTokens: 4, outputTokens: 2, reasoningTokens: 0 },
+          type: "usage"
+        };
+        throw new ProviderStreamTooLargeError({
+          maxBytes: 512,
+          observedBytes: 513,
+          snapshot: { durationMs: 88, totalStreamBytes: 513 }
+        });
+      }
+    };
+    const runtimeCall = vi.fn(async () => ({
+      isError: false,
+      structuredContent: null,
+      text: ["remembered"],
+      unsupportedContentTypes: []
+    }));
+    const harness = createHarness({
+      controls: [
+        control({ providerResponseId: "response-tool-1" }),
+        control({
+          providerResponseId: "response-tool-1",
+          recoverySettled: true,
+          status: "error"
+        })
+      ],
+      mcpRuntime: {
+        callTool: runtimeCall,
+        ensureAcceptedGeneration: async () => true
+      },
+      pricingError: new Error("pricing_lookup_unavailable"),
+      providers: { openai: adapter }
+    });
+    const durable = checkpointedRun({
+      calls: [persistedRecoveryCall()],
+      phase: "tools_pending",
+      providerResponseId: "response-tool-1"
+    });
+    installCheckpointState(harness, durable);
+
+    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+
+    expect(runtimeCall).toHaveBeenCalledOnce();
+    expect(answerRounds).toBe(1);
+    expect(harness.state.assistantTexts).toEqual(["recovered partial"]);
+    expect(harness.state.assistantAppendOptions).toEqual([{ allowErrored: true }]);
+    expect(harness.state.recoveredErrors).toHaveLength(1);
+    expect(harness.state.recoveredErrors[0]).toMatchObject({
+      error: {
+        code: "provider_stream_too_large",
+        message: "The provider stream exceeded a safety limit."
+      },
+      providerResponseId: "response-tool-1",
+      runId,
+      usageAttributions: [{
+        modelId: "gpt-test",
+        provider: "openai",
+        usage: { inputTokens: 4, outputTokens: 2, reasoningTokens: 0 }
+      }]
+    });
+    expect(harness.state.completed).toBeNull();
+    expect(harness.state.events.map(({ event }) => event.type)).not.toContain("done");
+    expect(warning).toHaveBeenCalledOnce();
+    expect(JSON.parse(String(warning.mock.calls[0]?.[0]))).toMatchObject({
+      code: "provider_stream_too_large",
+      durationMs: 88,
+      limit: 512,
+      observed: 513,
+      termination: "total_limit",
+      totalStreamBytes: 513
+    });
+    warning.mockRestore();
+  });
+
+  it("fails grounded live-only checkpoint recovery before contacting the provider", async () => {
+    const refresh = vi.fn(async (): Promise<ProviderRunRefreshResult> => ({
+      events: [],
+      status: "in_progress",
+      terminal: false
+    }));
+    const adapter = providerWithRefresh(refresh);
+    const stream = vi.spyOn(adapter, "stream");
+    const harness = createHarness({
+      controls: [control({ providerResponseId: "response-tool-1" })],
+      providers: { openai: adapter }
+    });
+    const durable = {
+      ...checkpointedRun({
+        phase: "provider_running",
+        providerResponseId: "response-tool-1"
+      }),
+      assistantText: null
+    };
+    installCheckpointState(harness, durable);
+
+    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+
+    expect(refresh).not.toHaveBeenCalled();
+    expect(stream).not.toHaveBeenCalled();
+    expect(harness.state.assistantTexts).toEqual([]);
+    expect(harness.state.recoveredErrors).toEqual([
+      expect.objectContaining({
+        error: {
+          code: "grounding_live_only_not_recoverable",
+          message: "Grounded live-only output cannot resume after process recovery."
+        },
+        runId
+      })
+    ]);
   });
 
   it("recovers a persisted pre-release Search tool name through its pinned logical source", async () => {

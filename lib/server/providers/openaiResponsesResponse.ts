@@ -2,7 +2,19 @@ import { safeExternalHref } from "../../domain/links";
 import type { ModelRunSseEvent, ModelRunUsage } from "../../domain/modelRunEvents";
 import { normalizeTokenUsage } from "../../domain/usage";
 import { openAIResponsesToolBridge } from "../tools/bridges";
+import {
+  assertBoundedStructuredTextLength,
+  BoundedTextAccumulator
+} from "./boundedText";
+import {
+  resolveProviderStreamLimits,
+  type ProviderStreamLimits
+} from "./network";
 import { parseSseStream } from "./sse";
+import {
+  providerStreamSafetySnapshot,
+  type ProviderStreamSafetySnapshot
+} from "./streamSafety";
 import type { ProviderRunResult } from "./types";
 import { visibleAnswerText } from "./visibleAnswer";
 
@@ -15,6 +27,9 @@ const responseStatuses = new Set([
   "queued"
 ]);
 const terminalStatuses = new Set(["cancelled", "completed", "failed", "incomplete"]);
+const MAX_OPENAI_STREAMED_TOOL_CALLS = 16;
+const MAX_OPENAI_TOOL_ID_LENGTH = 512;
+const MAX_OPENAI_TOOL_NAME_LENGTH = 512;
 
 type OpenAIResponseRecord = Readonly<Record<string, unknown>>;
 
@@ -35,11 +50,11 @@ export type OpenAIResponseSummaryInput = Readonly<{
 
 export type ParseOpenAIResponsesSseInput = Readonly<{
   background: unknown;
-  idleTimeoutMs: number;
   provider?: string;
   responseBody: ReadableStream<Uint8Array>;
   signal?: AbortSignal;
   stream: unknown;
+  streamLimits?: Partial<ProviderStreamLimits>;
 }>;
 
 function valueAtPath(value: unknown, path: readonly string[]): unknown {
@@ -83,13 +98,31 @@ export function isTerminalOpenAIResponse(response: OpenAIResponseRecord): boolea
   return terminalStatuses.has(openAIResponseStatus(response));
 }
 
-function extractOpenAIText(response: OpenAIResponseRecord): string {
+function extractOpenAIText(
+  response: OpenAIResponseRecord,
+  maxOutputChars?: number,
+  snapshot?: ProviderStreamSafetySnapshot | null
+): string {
   const outputText = stringValue(response.output_text);
   if (outputText) {
+    if (maxOutputChars !== undefined) {
+      return new BoundedTextAccumulator({
+        initialValue: outputText,
+        maxChars: maxOutputChars,
+        retainedTextKind: "visible_output",
+        snapshot
+      }).value();
+    }
     return outputText;
   }
 
   const output = Array.isArray(response.output) ? response.output : [];
+  const accumulator = maxOutputChars === undefined
+    ? null
+    : new BoundedTextAccumulator({
+        maxChars: maxOutputChars,
+        retainedTextKind: "visible_output"
+      });
   const parts: string[] = [];
 
   for (const item of output) {
@@ -99,12 +132,16 @@ function extractOpenAIText(response: OpenAIResponseRecord): string {
 
     for (const block of item.content) {
       if (isRecord(block) && block.type === "output_text" && typeof block.text === "string") {
-        parts.push(block.text);
+        if (accumulator) {
+          accumulator.append(block.text, snapshot);
+        } else {
+          parts.push(block.text);
+        }
       }
     }
   }
 
-  return parts.join("");
+  return accumulator?.value() ?? parts.join("");
 }
 
 export function extractOpenAIUsage(response: OpenAIResponseRecord): ModelRunUsage {
@@ -145,6 +182,51 @@ function toolContinuationItems(response: OpenAIResponseRecord): Record<string, u
   return output.filter((item): item is Record<string, unknown> => {
     return isRecord(item) && (item.type === "function_call" || item.type === "reasoning");
   });
+}
+
+function assertBoundedOpenAIRetainedOutput(
+  response: OpenAIResponseRecord,
+  maxOutputChars: number,
+  snapshot: ProviderStreamSafetySnapshot | null
+): void {
+  const output = Array.isArray(response.output) ? response.output : [];
+  let reasoningCharacters = 0;
+  let toolCallCount = 0;
+
+  for (const item of output) {
+    if (!isRecord(item)) continue;
+    if (item.type === "reasoning") {
+      for (const value of [item.summary, item.encrypted_content]) {
+        reasoningCharacters = assertBoundedStructuredTextLength({
+          currentChars: reasoningCharacters,
+          maxChars: maxOutputChars,
+          retainedTextKind: "reasoning",
+          snapshot,
+          value
+        });
+      }
+    }
+    if (item.type !== "function_call") continue;
+
+    toolCallCount += 1;
+    const id = stringValue(item.call_id) ?? stringValue(item.id);
+    const name = stringValue(item.name);
+    if (
+      toolCallCount > MAX_OPENAI_STREAMED_TOOL_CALLS ||
+      !id ||
+      id.length > MAX_OPENAI_TOOL_ID_LENGTH ||
+      !name ||
+      name.length > MAX_OPENAI_TOOL_NAME_LENGTH
+    ) {
+      throw new Error("openai_stream_tool_call_invalid");
+    }
+    assertBoundedStructuredTextLength({
+      maxChars: maxOutputChars,
+      retainedTextKind: "tool_arguments",
+      snapshot,
+      value: item.arguments
+    });
+  }
 }
 
 function extractArtifacts(response: OpenAIResponseRecord): ModelRunSseEvent[] {
@@ -260,9 +342,14 @@ function normalizeOpenAIResponseResult(
   response: OpenAIResponseRecord,
   providerResponseId: string | undefined,
   fallbackRawText = "",
-  provider = "openai"
+  provider = "openai",
+  maxOutputChars?: number,
+  snapshot?: ProviderStreamSafetySnapshot | null
 ): Readonly<{ artifacts: ModelRunSseEvent[]; result: ProviderRunResult }> {
-  const rawFinalText = extractOpenAIText(response) || fallbackRawText;
+  if (maxOutputChars !== undefined) {
+    assertBoundedOpenAIRetainedOutput(response, maxOutputChars, snapshot ?? null);
+  }
+  const rawFinalText = extractOpenAIText(response, maxOutputChars, snapshot) || fallbackRawText;
   const finalText = visibleAnswerText(rawFinalText);
   const toolCalls = openAIResponsesToolBridge.parseToolCalls(response);
 
@@ -376,16 +463,25 @@ function webSearchLifecycleArtifact(input: Readonly<{
 export async function* parseOpenAIResponsesSse(
   input: ParseOpenAIResponsesSseInput
 ): AsyncGenerator<ModelRunSseEvent, ProviderRunResult> {
+  const streamLimits = resolveProviderStreamLimits(input.streamLimits);
   let providerResponseId: string | undefined;
   let finalResponse: Record<string, unknown> | null = null;
-  let rawFinalText = "";
+  const rawFinalText = new BoundedTextAccumulator({
+    maxChars: streamLimits.maxOutputChars,
+    retainedTextKind: "visible_output"
+  });
   let summaryEmitted = false;
   let terminalSeen = false;
+  let latestSnapshot: ProviderStreamSafetySnapshot | null = null;
 
   for await (const event of parseSseStream(input.responseBody, {
-    idleTimeoutMs: input.idleTimeoutMs,
+    idleTimeoutMs: streamLimits.idleTimeoutMs,
+    maxBytes: streamLimits.maxBytes,
+    maxDurationMs: streamLimits.maxDurationMs,
+    maxEventBytes: streamLimits.maxEventBytes,
     signal: input.signal
   })) {
+    latestSnapshot = providerStreamSafetySnapshot(event);
     let parsed: unknown;
     try {
       parsed = JSON.parse(event.data) as unknown;
@@ -447,7 +543,7 @@ export async function* parseOpenAIResponsesSse(
     }
 
     if (eventType === "response.output_text.delta" && typeof parsed.delta === "string") {
-      rawFinalText += parsed.delta;
+      rawFinalText.append(parsed.delta, latestSnapshot);
       yield {
         data: {
           delta: parsed.delta
@@ -485,8 +581,10 @@ export async function* parseOpenAIResponsesSse(
   const normalized = normalizeOpenAIResponseResult(
     finalResponse,
     providerResponseId,
-    rawFinalText,
-    input.provider
+    rawFinalText.value(),
+    input.provider,
+    streamLimits.maxOutputChars,
+    latestSnapshot
   );
 
   for (const artifact of normalized.artifacts) {

@@ -15,6 +15,13 @@ import {
 import { sumTokenUsage } from "../../domain/usage";
 import { validateRunAccess } from "../auth/entitlements";
 import { isProviderTimeoutError } from "../providers/network";
+import {
+  isProviderStreamSafetyCode,
+  providerStreamSafeMessage,
+  providerStreamSafetyReport,
+  type ProviderStreamSafetyReport
+} from "../providers/streamSafety";
+import { warnProviderStreamSafetyOnce } from "../providers/streamSafetyObservability";
 import type {
   ProviderAdapter,
   ProviderRunRequest,
@@ -75,9 +82,8 @@ import {
   toolLoopPhaseArtifact,
   toolResultInspectionArtifact
 } from "./toolInspection";
+import { createRunTokenPersistenceBuffer } from "./runTokenPersistence";
 
-const tokenPersistenceFlushIntervalMs = 400;
-const tokenPersistenceMaxTokens = 32;
 const maxToolRounds = 3;
 
 const globalForRuns = globalThis as unknown as {
@@ -284,125 +290,6 @@ function emitTransient(
   }
 }
 
-function createTokenPersistenceBuffer(input: Readonly<{
-  assistantMessageId: string;
-  repository: RunExecutionRepository;
-  runId: string;
-  sequence: RunEventSequence;
-}>) {
-  let assistantText = "";
-  let pendingDelta = "";
-  let pendingTokenCount = 0;
-  let flushTimer: ReturnType<typeof setTimeout> | null = null;
-  let flushChain = Promise.resolve();
-  let flushError: unknown = null;
-  let persistenceDisabled = false;
-
-  function clearFlushTimer(): void {
-    if (flushTimer) {
-      clearTimeout(flushTimer);
-      flushTimer = null;
-    }
-  }
-
-  async function persistPending(): Promise<void> {
-    clearFlushTimer();
-    if (persistenceDisabled) {
-      pendingDelta = "";
-      pendingTokenCount = 0;
-      return;
-    }
-    if (!pendingDelta) {
-      return;
-    }
-
-    const delta = pendingDelta;
-    const text = assistantText;
-    pendingDelta = "";
-    pendingTokenCount = 0;
-
-    await input.repository.appendAssistantText(input.assistantMessageId, text);
-    await appendRunEventWithRetry(input.repository, input.runId, input.sequence, {
-      data: {
-        delta
-      },
-      type: "token"
-    });
-  }
-
-  function flush(): Promise<void> {
-    if (flushError) {
-      return Promise.reject(flushError);
-    }
-
-    flushChain = flushChain.then(persistPending, persistPending);
-    return flushChain.catch((error: unknown) => {
-      flushError = error;
-      throw error;
-    });
-  }
-
-  function scheduleFlush(): void {
-    if (flushTimer) {
-      return;
-    }
-
-    flushTimer = setTimeout(() => {
-      flushTimer = null;
-      void flush().catch((error: unknown) => {
-        flushError = error;
-      });
-    }, tokenPersistenceFlushIntervalMs);
-  }
-
-  return {
-    async disablePersistence(): Promise<void> {
-      persistenceDisabled = true;
-      clearFlushTimer();
-      assistantText = "";
-      pendingDelta = "";
-      pendingTokenCount = 0;
-      // Wait until a previously-started flush settles before the repository
-      // replaces the message and purges durable provider events. Preserve the
-      // original flush error for the normal pipeline failure path, but do not
-      // let it bypass the live-only persistence fence.
-      await flushChain.catch(() => undefined);
-    },
-    flush,
-    push(delta: string): Promise<void> {
-      if (flushError) {
-        return Promise.reject(flushError);
-      }
-
-      if (persistenceDisabled) {
-        return Promise.resolve();
-      }
-
-      assistantText += delta;
-      pendingDelta += delta;
-      pendingTokenCount += 1;
-
-      if (pendingTokenCount >= tokenPersistenceMaxTokens) {
-        return flush();
-      }
-
-      scheduleFlush();
-      return Promise.resolve();
-    },
-    resetLocal(): void {
-      clearFlushTimer();
-      assistantText = "";
-      pendingDelta = "";
-      pendingTokenCount = 0;
-    },
-    throwIfFailed(): void {
-      if (flushError) {
-        throw flushError;
-      }
-    }
-  };
-}
-
 function providerResponseIdFromEvent(event: ModelRunSseEvent): string | null {
   if (event.type !== "artifact" || event.data.artifactType !== "summary") {
     return null;
@@ -430,10 +317,12 @@ function isAbortError(error: unknown): boolean {
 
 class RunPipelineError extends Error {
   code: string;
+  readonly report?: ProviderStreamSafetyReport;
 
-  constructor(code: string, message: string) {
+  constructor(code: string, message: string, report?: ProviderStreamSafetyReport) {
     super(message);
     this.code = code;
+    if (report) this.report = report;
   }
 }
 
@@ -616,7 +505,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       const signal = abortController.signal;
-      const tokenBuffer = createTokenPersistenceBuffer({
+      const tokenBuffer = createRunTokenPersistenceBuffer({
         assistantMessageId: input.created.assistantMessageId,
         repository: input.repository,
         runId,
@@ -1153,11 +1042,17 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
 
         if (outcome.status === "cancelled") throw abortError();
         if (outcome.status === "failed") {
+          const streamSafetyReport = outcome.failure.streamSafetyReport;
+          const safetyCode = isProviderStreamSafetyCode(outcome.failure.code)
+            ? outcome.failure.code
+            : null;
           throw new RunPipelineError(
             outcome.failure.code === "provider_round_failed"
               ? "provider_stream_failed"
               : outcome.failure.code,
-            outcome.failure.message
+            streamSafetyReport?.message ??
+              (safetyCode ? providerStreamSafeMessage(safetyCode) : outcome.failure.message),
+            streamSafetyReport
           );
         }
         return {
@@ -1312,19 +1207,46 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
         }
 
         let failure = error;
+        const originalStreamSafetyReport = providerStreamSafetyReport(error);
         try {
           await tokenBuffer.flush();
         } catch (flushError) {
-          failure = flushError;
+          if (!originalStreamSafetyReport) failure = flushError;
         }
 
         const timedOut = isProviderTimeoutError(failure);
         const pipelineError = failure instanceof RunPipelineError ? failure : null;
-        const payload = {
-          code: pipelineError?.code ?? (timedOut ? "provider_stream_timeout" : "provider_stream_failed"),
-          message: failure instanceof Error ? failure.message : "Provider stream failed"
-        };
-        const failed = await input.repository.failRun(runId, input.created.assistantMessageId, payload);
+        const streamSafetyReport = providerStreamSafetyReport(failure);
+        const safetyCode = streamSafetyReport?.code ??
+          (pipelineError && isProviderStreamSafetyCode(pipelineError.code)
+            ? pipelineError.code
+            : isRecord(failure) && isProviderStreamSafetyCode(failure.code)
+              ? failure.code
+              : null);
+        const payload = safetyCode
+          ? {
+              code: safetyCode,
+              message: providerStreamSafeMessage(safetyCode)
+            }
+          : {
+              code: pipelineError?.code ??
+                (timedOut ? "provider_stream_timeout" : "provider_stream_failed"),
+              message: failure instanceof Error ? failure.message : "Provider stream failed"
+            };
+        if (streamSafetyReport) {
+          warnProviderStreamSafetyOnce(failure, {
+            adapterKind: "direct",
+            connectionId: "unbound",
+            providerFamily: normalizedRequest.provider,
+            providerModelId: "unbound"
+          });
+        }
+        const failed = await input.repository.failRun(
+          runId,
+          input.created.assistantMessageId,
+          payload,
+          safetyCode ? { recoveryTerminal: true } : undefined
+        );
         await persistReportedUsageForIncompleteRun().catch(() => undefined);
         if (failed) {
           emitTransient(controller, encoder, {

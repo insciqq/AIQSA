@@ -11,6 +11,7 @@ import {
   shouldPollOpenAIResponse,
   type ParseOpenAIResponsesSseInput
 } from "./openaiResponsesResponse";
+import { DEFAULT_PROVIDER_STREAM_LIMITS } from "./network";
 
 function responseBody(frames: readonly string[]): ReadableStream<Uint8Array> {
   const encoder = new TextEncoder();
@@ -31,9 +32,9 @@ function sseInput(
 ): ParseOpenAIResponsesSseInput {
   return {
     background: true,
-    idleTimeoutMs: 1000,
     responseBody: responseBody(frames),
     stream: true,
+    streamLimits: DEFAULT_PROVIDER_STREAM_LIMITS,
     ...overrides
   };
 }
@@ -337,6 +338,96 @@ describe("OpenAI Responses response normalization", () => {
         outputTokens: 2,
         totalTokens: 6
       }
+    });
+  });
+
+  it("accepts an exact visible-output limit and rejects the first character over before yielding it", async () => {
+    const completed = (text: string) => `event: response.completed\ndata: ${JSON.stringify({
+      response: {
+        output_text: text,
+        status: "completed"
+      },
+      type: "response.completed"
+    })}\n\n`;
+    const exact = await collectSse(sseInput([
+      'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"Hel"}\n\n',
+      'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"lo"}\n\n',
+      completed("Hello")
+    ], { streamLimits: { ...DEFAULT_PROVIDER_STREAM_LIMITS, maxOutputChars: 5 } }));
+    expect(exact.result.finalText).toBe("Hello");
+
+    const overflow = parseOpenAIResponsesSse(sseInput([
+      'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"Hello"}\n\n',
+      'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"!"}\n\n'
+    ], { streamLimits: { ...DEFAULT_PROVIDER_STREAM_LIMITS, maxOutputChars: 5 } }));
+    await expect(overflow.next()).resolves.toMatchObject({ value: { type: "token" } });
+    await expect(overflow.next()).rejects.toMatchObject({
+      code: "provider_output_too_large",
+      maxChars: 5,
+      observedChars: 6,
+      retainedTextKind: "visible_output"
+    });
+  });
+
+  it("checks a repeated terminal output snapshot independently from streamed deltas", async () => {
+    const stream = parseOpenAIResponsesSse(sseInput([
+      'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"Hello"}\n\n',
+      `event: response.completed\ndata: ${JSON.stringify({
+        response: { output_text: "Hello!", status: "completed" },
+        type: "response.completed"
+      })}\n\n`
+    ], { streamLimits: { ...DEFAULT_PROVIDER_STREAM_LIMITS, maxOutputChars: 5 } }));
+
+    await expect(stream.next()).resolves.toMatchObject({ value: { type: "token" } });
+    await expect(stream.next()).resolves.toMatchObject({ value: { type: "artifact" } });
+    await expect(stream.next()).rejects.toMatchObject({
+      code: "provider_output_too_large",
+      maxChars: 5,
+      observedChars: 6
+    });
+  });
+
+  it("bounds terminal tool arguments, tool identity, and reasoning text", async () => {
+    const terminal = (output: unknown[]) => `event: response.completed\ndata: ${JSON.stringify({
+      response: { output, output_text: "ok", status: "completed" },
+      type: "response.completed"
+    })}\n\n`;
+    const tool = (argumentsValue: string, name = "lookup") => ({
+      arguments: argumentsValue,
+      call_id: "call-1",
+      name,
+      type: "function_call"
+    });
+
+    await expect(collectSse(sseInput([
+      terminal([tool("Hello")])
+    ], { streamLimits: { ...DEFAULT_PROVIDER_STREAM_LIMITS, maxOutputChars: 5 } }))).resolves.toMatchObject({
+      result: { toolCalls: [{ id: "call-1", name: "lookup" }] }
+    });
+    await expect(collectSse(sseInput([
+      terminal([tool("Hello!")])
+    ], { streamLimits: { ...DEFAULT_PROVIDER_STREAM_LIMITS, maxOutputChars: 5 } }))).rejects.toMatchObject({
+      code: "provider_output_too_large",
+      retainedTextKind: "tool_arguments"
+    });
+    await expect(collectSse(sseInput([
+      terminal([tool("{}", "n".repeat(513))])
+    ]))).rejects.toThrow("openai_stream_tool_call_invalid");
+
+    const reasoning = (text: string) => ({
+      summary: [{ text, type: "summary_text" }],
+      type: "reasoning"
+    });
+    await expect(collectSse(sseInput([
+      terminal([reasoning("ok")])
+    ], { streamLimits: { ...DEFAULT_PROVIDER_STREAM_LIMITS, maxOutputChars: 37 } }))).resolves.toMatchObject({
+      result: { finalText: "ok" }
+    });
+    await expect(collectSse(sseInput([
+      terminal([reasoning("ok!")])
+    ], { streamLimits: { ...DEFAULT_PROVIDER_STREAM_LIMITS, maxOutputChars: 37 } }))).rejects.toMatchObject({
+      code: "provider_output_too_large",
+      retainedTextKind: "reasoning"
     });
   });
 

@@ -1,5 +1,4 @@
 import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
-import { providerStreamIdleTimeoutMs } from "./network";
 import { createOpenAIResponsesLifecycle } from "./openaiResponsesLifecycle";
 import {
   buildOpenAIResponsesRequest,
@@ -138,7 +137,6 @@ export function createOpenAIResponsesAdapter(options: OpenAIResponsesAdapterOpti
 
         return yield* parseOpenAIResponsesSse({
           background: body.background,
-          idleTimeoutMs: providerStreamIdleTimeoutMs(),
           responseBody: response.body,
           signal: runOptions.signal,
           stream: body.stream

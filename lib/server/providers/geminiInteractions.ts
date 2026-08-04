@@ -1,5 +1,4 @@
 import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
-import { providerStreamIdleTimeoutMs } from "./network";
 import {
   buildGeminiInteractionsRequest,
   buildGeminiInteractionsRequestPreview
@@ -51,7 +50,6 @@ export function createGeminiInteractionsAdapter(
         }
         return yield* parseGeminiInteractionsSse({
           groundingExpected,
-          idleTimeoutMs: providerStreamIdleTimeoutMs(),
           modelId: request.modelId,
           responseBody: response.body,
           signal: runOptions.signal

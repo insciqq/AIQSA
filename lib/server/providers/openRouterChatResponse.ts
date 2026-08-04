@@ -1,8 +1,20 @@
 import type { ModelRunSseEvent, ModelRunUsage } from "../../domain/modelRunEvents";
 import { normalizeTokenUsage } from "../../domain/usage";
 import { openRouterChatToolBridge } from "../tools/bridges";
-import { providerStreamIdleTimeoutMs } from "./network";
+import {
+  assertBoundedStructuredTextLength,
+  assertBoundedTextLength,
+  BoundedTextAccumulator
+} from "./boundedText";
+import {
+  resolveProviderStreamLimits,
+  type ProviderStreamLimits
+} from "./network";
 import { parseSseStream } from "./sse";
+import {
+  providerStreamSafetySnapshot,
+  type ProviderStreamSafetySnapshot
+} from "./streamSafety";
 import type { ProviderRunRequest, ProviderRunResult } from "./types";
 import { visibleAnswerText } from "./visibleAnswer";
 import { normalizeSearchSources } from "../search/evidence";
@@ -13,6 +25,10 @@ export type OpenRouterResponseContext = Readonly<Pick<ProviderRunRequest, "model
 
 export const invalidOpenRouterTerminalResponseError =
   "openrouter_terminal_response_invalid";
+const MAX_STREAMED_TOOL_CALLS = 16;
+const MAX_TOOL_CALL_ID_LENGTH = 512;
+const MAX_TOOL_NAME_LENGTH = 512;
+const MAX_TOOL_TYPE_LENGTH = 64;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -245,6 +261,17 @@ function citationArtifacts(
   return artifacts;
 }
 
+function appendCitationArtifacts(
+  target: ModelRunSseEvent[],
+  values: unknown,
+  source: string,
+  shape: "annotation" | "legacy" = "legacy"
+): void {
+  for (const artifact of citationArtifacts(values, source, shape)) {
+    target.push(artifact);
+  }
+}
+
 export function extractOpenRouterArtifacts(response: OpenRouterResponseRecord): ModelRunSseEvent[] {
   const message = firstMessage(response);
   const artifacts: ModelRunSseEvent[] = [];
@@ -262,9 +289,18 @@ export function extractOpenRouterArtifacts(response: OpenRouterResponseRecord): 
     });
   }
 
-  artifacts.push(...citationArtifacts(response.citations, "openrouter"));
-  artifacts.push(...citationArtifacts(message?.citations, "openrouter-message"));
-  artifacts.push(...citationArtifacts(message?.annotations, "openrouter-annotations", "annotation"));
+  appendCitationArtifacts(artifacts, response.citations, "openrouter");
+  appendCitationArtifacts(
+    artifacts,
+    message?.citations,
+    "openrouter-message"
+  );
+  appendCitationArtifacts(
+    artifacts,
+    message?.annotations,
+    "openrouter-annotations",
+    "annotation"
+  );
 
   return artifacts;
 }
@@ -330,14 +366,34 @@ function reasoningFromDelta(delta: Record<string, unknown>): unknown {
   return delta.reasoning ?? delta.reasoning_details;
 }
 
-function pushArray(target: unknown[], value: unknown) {
-  if (Array.isArray(value)) {
-    target.push(...value);
+function pushBoundedStructuredArray(
+  target: unknown[],
+  value: unknown,
+  currentChars: number,
+  maxOutputChars: number,
+  snapshot: ProviderStreamSafetySnapshot | null
+): number {
+  if (!Array.isArray(value)) {
+    return currentChars;
   }
+  if (value.length === 0) {
+    return currentChars;
+  }
+  const nextChars = assertBoundedStructuredTextLength({
+    currentChars: target.length > 0 ? currentChars - 1 : currentChars,
+    maxChars: maxOutputChars,
+    retainedTextKind: "citations",
+    snapshot,
+    value
+  });
+  for (const item of value) {
+    target.push(item);
+  }
+  return nextChars;
 }
 
 type StreamedOpenRouterToolCall = {
-  arguments: Record<string, unknown> | string;
+  arguments: BoundedTextAccumulator | Record<string, unknown>;
   id?: string;
   index: number;
   name?: string;
@@ -347,6 +403,8 @@ type StreamedOpenRouterToolCall = {
 function accumulateStreamedToolCalls(
   target: Map<number, StreamedOpenRouterToolCall>,
   value: unknown,
+  maxOutputChars: number,
+  snapshot: ProviderStreamSafetySnapshot | null,
   replaceArguments = false
 ): void {
   if (!Array.isArray(value)) {
@@ -362,28 +420,58 @@ function accumulateStreamedToolCalls(
       typeof candidate.index === "number" && Number.isInteger(candidate.index) && candidate.index >= 0
         ? candidate.index
         : ordinal;
-    const existing = target.get(index) ?? {
-      arguments: "",
-      index
-    };
+    let existing = target.get(index);
+    if (!existing) {
+      if (target.size >= MAX_STREAMED_TOOL_CALLS) {
+        throw new Error("openrouter_stream_tool_call_limit_exceeded");
+      }
+      existing = {
+        arguments: new BoundedTextAccumulator({
+          maxChars: maxOutputChars,
+          retainedTextKind: "tool_arguments"
+        }),
+        index
+      };
+    }
     const fn = isRecord(candidate.function) ? candidate.function : {};
 
     if (typeof candidate.id === "string" && candidate.id) {
+      if (candidate.id.length > MAX_TOOL_CALL_ID_LENGTH) {
+        throw new Error("openrouter_stream_tool_call_invalid");
+      }
       existing.id = candidate.id;
     }
     if (typeof candidate.type === "string" && candidate.type) {
+      if (candidate.type.length > MAX_TOOL_TYPE_LENGTH) {
+        throw new Error("openrouter_stream_tool_call_invalid");
+      }
       existing.type = candidate.type;
     }
     if (typeof fn.name === "string" && fn.name) {
+      if (fn.name.length > MAX_TOOL_NAME_LENGTH) {
+        throw new Error("openrouter_stream_tool_call_invalid");
+      }
       existing.name = fn.name;
     }
     if (isRecord(fn.arguments)) {
+      assertBoundedStructuredTextLength({
+        maxChars: maxOutputChars,
+        retainedTextKind: "tool_arguments",
+        snapshot,
+        value: fn.arguments
+      });
       existing.arguments = fn.arguments;
     } else if (typeof fn.arguments === "string") {
-      existing.arguments =
-        replaceArguments || typeof existing.arguments !== "string"
-          ? fn.arguments
-          : `${existing.arguments}${fn.arguments}`;
+      if (replaceArguments || !(existing.arguments instanceof BoundedTextAccumulator)) {
+        existing.arguments = new BoundedTextAccumulator({
+          initialValue: fn.arguments,
+          maxChars: maxOutputChars,
+          retainedTextKind: "tool_arguments",
+          snapshot
+        });
+      } else {
+        existing.arguments.append(fn.arguments, snapshot);
+      }
     }
 
     target.set(index, existing);
@@ -395,7 +483,9 @@ function streamedToolCalls(target: ReadonlyMap<number, StreamedOpenRouterToolCal
     .sort((left, right) => left.index - right.index)
     .map((call) => ({
       function: {
-        arguments: call.arguments,
+        arguments: call.arguments instanceof BoundedTextAccumulator
+          ? call.arguments.value()
+          : call.arguments,
         name: call.name
       },
       id: call.id,
@@ -461,17 +551,21 @@ export async function* streamOpenRouterSseResponse(
   response: Response,
   request: OpenRouterResponseContext,
   signal?: AbortSignal,
-  idleTimeoutMs = providerStreamIdleTimeoutMs()
+  configuredStreamLimits?: Partial<ProviderStreamLimits>
 ): AsyncGenerator<ModelRunSseEvent, ProviderRunResult> {
   if (!response.body) {
     throw new Error("openrouter_stream_body_missing");
   }
 
+  const streamLimits = resolveProviderStreamLimits(configuredStreamLimits);
   let responseId: string | undefined = response.headers.get("x-generation-id") ?? undefined;
   let model: unknown = request.modelId;
   let object: unknown = "chat.completion.chunk";
   let finishReason: unknown = null;
-  let rawFinalText = "";
+  const rawFinalText = new BoundedTextAccumulator({
+    maxChars: streamLimits.maxOutputChars,
+    retainedTextKind: "visible_output"
+  });
   let usage: ModelRunUsage = {
     inputTokens: 0,
     outputTokens: 0,
@@ -484,12 +578,19 @@ export async function* streamOpenRouterSseResponse(
   const messageCitations: unknown[] = [];
   const annotations: unknown[] = [];
   const reasoningParts: unknown[] = [];
+  let reasoningCharacters = 0;
+  let reasoningUsesArray = false;
+  let citationCharacters = 0;
   const toolCallParts = new Map<number, StreamedOpenRouterToolCall>();
 
   for await (const event of parseSseStream(response.body, {
-    idleTimeoutMs,
+    idleTimeoutMs: streamLimits.idleTimeoutMs,
+    maxBytes: streamLimits.maxBytes,
+    maxDurationMs: streamLimits.maxDurationMs,
+    maxEventBytes: streamLimits.maxEventBytes,
     signal
   })) {
+    const snapshot = providerStreamSafetySnapshot(event);
     if (event.data === "[DONE]") {
       terminalSeen = true;
       break;
@@ -513,7 +614,13 @@ export async function* streamOpenRouterSseResponse(
     responseId = stringValue(parsed.id) ?? responseId;
     model = parsed.model ?? model;
     object = parsed.object ?? object;
-    pushArray(citations, parsed.citations);
+    citationCharacters = pushBoundedStructuredArray(
+      citations,
+      parsed.citations,
+      citationCharacters,
+      streamLimits.maxOutputChars,
+      snapshot
+    );
     let reportedUsage: ModelRunUsage | null = null;
     if (isRecord(parsed.usage)) {
       rawUsage = parsed.usage;
@@ -552,11 +659,22 @@ export async function* streamOpenRouterSseResponse(
     finishReason = choice.finish_reason ?? finishReason;
     const delta = isRecord(choice.delta) ? choice.delta : {};
     const message = isRecord(choice.message) ? choice.message : {};
-    accumulateStreamedToolCalls(toolCallParts, delta.tool_calls);
-    accumulateStreamedToolCalls(toolCallParts, message.tool_calls, true);
+    accumulateStreamedToolCalls(
+      toolCallParts,
+      delta.tool_calls,
+      streamLimits.maxOutputChars,
+      snapshot
+    );
+    accumulateStreamedToolCalls(
+      toolCallParts,
+      message.tool_calls,
+      streamLimits.maxOutputChars,
+      snapshot,
+      true
+    );
     const text = deltaText(delta);
     if (text) {
-      rawFinalText += text;
+      rawFinalText.append(text, snapshot);
       yield {
         data: {
           delta: text
@@ -567,13 +685,62 @@ export async function* streamOpenRouterSseResponse(
 
     const reasoning = reasoningFromDelta(delta) ?? reasoningFromDelta(message) ?? parsed.reasoning_details;
     if (reasoning) {
+      if (!reasoningUsesArray && typeof reasoning === "string") {
+        reasoningCharacters = assertBoundedTextLength({
+          currentChars: reasoningCharacters,
+          fragment: reasoning,
+          maxChars: streamLimits.maxOutputChars,
+          retainedTextKind: "reasoning",
+          snapshot
+        });
+      } else if (!reasoningUsesArray) {
+        reasoningCharacters = assertBoundedStructuredTextLength({
+          maxChars: streamLimits.maxOutputChars,
+          retainedTextKind: "reasoning",
+          snapshot,
+          value: [...reasoningParts, reasoning]
+        });
+        reasoningUsesArray = true;
+      } else {
+        reasoningCharacters = assertBoundedStructuredTextLength({
+          currentChars: reasoningCharacters - 1,
+          maxChars: streamLimits.maxOutputChars,
+          retainedTextKind: "reasoning",
+          snapshot,
+          value: [reasoning]
+        });
+      }
       reasoningParts.push(reasoning);
     }
 
-    pushArray(messageCitations, delta.citations);
-    pushArray(messageCitations, message.citations);
-    pushArray(annotations, delta.annotations);
-    pushArray(annotations, message.annotations);
+    citationCharacters = pushBoundedStructuredArray(
+      messageCitations,
+      delta.citations,
+      citationCharacters,
+      streamLimits.maxOutputChars,
+      snapshot
+    );
+    citationCharacters = pushBoundedStructuredArray(
+      messageCitations,
+      message.citations,
+      citationCharacters,
+      streamLimits.maxOutputChars,
+      snapshot
+    );
+    citationCharacters = pushBoundedStructuredArray(
+      annotations,
+      delta.annotations,
+      citationCharacters,
+      streamLimits.maxOutputChars,
+      snapshot
+    );
+    citationCharacters = pushBoundedStructuredArray(
+      annotations,
+      message.annotations,
+      citationCharacters,
+      streamLimits.maxOutputChars,
+      snapshot
+    );
   }
 
   if (!terminalSeen) {
@@ -595,6 +762,7 @@ export async function* streamOpenRouterSseResponse(
     };
   }
 
+  const rawText = rawFinalText.value();
   const reasoning =
     reasoningParts.length === 0
       ? undefined
@@ -610,7 +778,7 @@ export async function* streamOpenRouterSseResponse(
         message: {
           annotations,
           citations: messageCitations,
-          content: rawFinalText || null,
+          content: rawText || null,
           ...(reasoning ? { reasoning } : {}),
           role: "assistant",
           ...(rawToolCalls.length > 0 ? { tool_calls: rawToolCalls } : {})
@@ -622,7 +790,7 @@ export async function* streamOpenRouterSseResponse(
     object,
     usage: rawUsage
   };
-  const finalText = visibleAnswerText(rawFinalText);
+  const finalText = visibleAnswerText(rawText);
   const toolCalls = openRouterChatToolBridge.parseToolCalls(syntheticResponse);
 
   if (rawToolCalls.length > 0 && toolCalls.length !== rawToolCalls.length) {
@@ -634,7 +802,7 @@ export async function* streamOpenRouterSseResponse(
   }
 
   return {
-    finalProviderResponsePreview: buildOpenRouterResponsePreview(syntheticResponse, finalText, rawFinalText),
+    finalProviderResponsePreview: buildOpenRouterResponsePreview(syntheticResponse, finalText, rawText),
     finalText,
     ...(toolCalls.length > 0
       ? { providerToolCallMessage: firstMessage(syntheticResponse) ?? undefined }

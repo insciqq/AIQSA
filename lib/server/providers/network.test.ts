@@ -1,14 +1,113 @@
 import { describe, expect, it } from "vitest";
 import {
+  DEFAULT_PROVIDER_STREAM_LIMITS,
+  getProviderStreamLimits,
+  PROVIDER_STREAM_LIMIT_CEILINGS,
   ProviderResponseTooLargeError,
   providerResponseMaxBytes,
+  providerStreamIdleTimeoutMs,
   readBoundedResponseText,
+  resolveProviderStreamLimits,
   timeoutError
 } from "./network";
 
 const encoder = new TextEncoder();
 
 describe("provider network response bounds", () => {
+  it("resolves independent provider-stream defaults", () => {
+    expect(getProviderStreamLimits({})).toEqual(DEFAULT_PROVIDER_STREAM_LIMITS);
+    expect(getProviderStreamLimits({})).toEqual({
+      idleTimeoutMs: 30_000,
+      maxBytes: 64 * 1024 * 1024,
+      maxDurationMs: 600_000,
+      maxEventBytes: 4 * 1024 * 1024,
+      maxOutputChars: 8 * 1024 * 1024
+    });
+    expect(Object.isFrozen(getProviderStreamLimits({}))).toBe(true);
+  });
+
+  it("accepts each documented hard ceiling", () => {
+    expect(getProviderStreamLimits({
+      AIQSA_PROVIDER_STREAM_IDLE_TIMEOUT_MS: String(PROVIDER_STREAM_LIMIT_CEILINGS.idleTimeoutMs),
+      AIQSA_PROVIDER_STREAM_MAX_BYTES: String(PROVIDER_STREAM_LIMIT_CEILINGS.maxBytes),
+      AIQSA_PROVIDER_STREAM_MAX_DURATION_MS: String(PROVIDER_STREAM_LIMIT_CEILINGS.maxDurationMs),
+      AIQSA_PROVIDER_STREAM_MAX_EVENT_BYTES: String(PROVIDER_STREAM_LIMIT_CEILINGS.maxEventBytes),
+      AIQSA_PROVIDER_STREAM_MAX_OUTPUT_CHARS: String(PROVIDER_STREAM_LIMIT_CEILINGS.maxOutputChars)
+    })).toEqual(PROVIDER_STREAM_LIMIT_CEILINGS);
+  });
+
+  it.each([
+    "",
+    "0",
+    "-1",
+    "1.5",
+    "1e3",
+    " 1",
+    "9007199254740992",
+    String(PROVIDER_STREAM_LIMIT_CEILINGS.maxBytes + 1)
+  ])("falls back safely for invalid stream-limit value %j", (value) => {
+    expect(getProviderStreamLimits({
+      AIQSA_PROVIDER_STREAM_MAX_BYTES: value
+    }).maxBytes).toBe(DEFAULT_PROVIDER_STREAM_LIMITS.maxBytes);
+  });
+
+  it("falls back independently and clamps event bytes to total stream bytes", () => {
+    expect(getProviderStreamLimits({
+      AIQSA_PROVIDER_STREAM_IDLE_TIMEOUT_MS: "-1",
+      AIQSA_PROVIDER_STREAM_MAX_BYTES: "1024",
+      AIQSA_PROVIDER_STREAM_MAX_DURATION_MS: "0",
+      AIQSA_PROVIDER_STREAM_MAX_EVENT_BYTES: "2048",
+      AIQSA_PROVIDER_STREAM_MAX_OUTPUT_CHARS: "1.5"
+    })).toEqual({
+      idleTimeoutMs: DEFAULT_PROVIDER_STREAM_LIMITS.idleTimeoutMs,
+      maxBytes: 1024,
+      maxDurationMs: DEFAULT_PROVIDER_STREAM_LIMITS.maxDurationMs,
+      maxEventBytes: 1024,
+      maxOutputChars: DEFAULT_PROVIDER_STREAM_LIMITS.maxOutputChars
+    });
+  });
+
+  it("validates injected stream-limit overrides through the same ceilings and relationships", () => {
+    expect(resolveProviderStreamLimits({
+      idleTimeoutMs: 3,
+      maxBytes: 7,
+      maxDurationMs: 11,
+      maxEventBytes: 9,
+      maxOutputChars: 13
+    }, {})).toEqual({
+      idleTimeoutMs: 3,
+      maxBytes: 7,
+      maxDurationMs: 11,
+      maxEventBytes: 7,
+      maxOutputChars: 13
+    });
+
+    expect(resolveProviderStreamLimits({
+      maxBytes: PROVIDER_STREAM_LIMIT_CEILINGS.maxBytes + 1,
+      maxOutputChars: Number.POSITIVE_INFINITY
+    }, {})).toEqual(DEFAULT_PROVIDER_STREAM_LIMITS);
+  });
+
+  it("keeps the legacy idle-timeout getter while applying the hard ceiling", () => {
+    const previous = process.env.AIQSA_PROVIDER_STREAM_IDLE_TIMEOUT_MS;
+
+    try {
+      process.env.AIQSA_PROVIDER_STREAM_IDLE_TIMEOUT_MS = "1234";
+      expect(providerStreamIdleTimeoutMs()).toBe(1234);
+
+      process.env.AIQSA_PROVIDER_STREAM_IDLE_TIMEOUT_MS = String(
+        PROVIDER_STREAM_LIMIT_CEILINGS.idleTimeoutMs + 1
+      );
+      expect(providerStreamIdleTimeoutMs()).toBe(DEFAULT_PROVIDER_STREAM_LIMITS.idleTimeoutMs);
+    } finally {
+      if (typeof previous === "undefined") {
+        delete process.env.AIQSA_PROVIDER_STREAM_IDLE_TIMEOUT_MS;
+      } else {
+        process.env.AIQSA_PROVIDER_STREAM_IDLE_TIMEOUT_MS = previous;
+      }
+    }
+  });
+
   it("uses the 16 MiB default and accepts a positive environment override", () => {
     const previous = process.env.AIQSA_PROVIDER_RESPONSE_MAX_BYTES;
 

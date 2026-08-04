@@ -584,6 +584,7 @@ describe("Prisma run repository", () => {
           runId: created.runId,
           userId
         })).resolves.toMatchObject({
+          assistantText: "",
           calls: [
             { providerCallId: "call-1", state: "complete" },
             { providerCallId: "call-2", state: "error" }
@@ -695,6 +696,87 @@ describe("Prisma run repository", () => {
         { completedAt: expect.any(Date), startedAt: null, state: "cancelled" }
       ]);
       await expect(repository.getRunControlForUser(created.runId, userId)).resolves.toMatchObject({
+        status: "error"
+      });
+    });
+  });
+
+  it("marks a foreground safety failure terminal for recovery without exposing the marker", async () => {
+    await withRunUser(async ({ userId }) => {
+      const repository = createPrismaRunRepository(prisma);
+      const created = await createActiveRun(repository, userId, "Terminal stream safety failure");
+      await repository.appendAssistantText(created.assistantMessageId, "durable partial");
+
+      await expect(repository.failRun(
+        created.runId,
+        created.assistantMessageId,
+        {
+          code: "provider_stream_too_large",
+          message: "The provider stream exceeded a safety limit."
+        },
+        { recoveryTerminal: true }
+      )).resolves.toBe(true);
+
+      await expect(repository.getRunControlForUser(created.runId, userId)).resolves.toMatchObject({
+        recoverySettled: true,
+        status: "error"
+      });
+      await expect(prisma.modelRun.findUnique({
+        select: { errorPayload: true },
+        where: { id: created.runId }
+      })).resolves.toMatchObject({
+        errorPayload: {
+          code: "provider_stream_too_large",
+          message: "The provider stream exceeded a safety limit.",
+          recoveryTerminal: true
+        }
+      });
+      await expect(prisma.message.findUnique({
+        select: { content: true, errorMessage: true },
+        where: { id: created.assistantMessageId }
+      })).resolves.toMatchObject({
+        content: textMessageContent("durable partial"),
+        errorMessage: "The provider stream exceeded a safety limit."
+      });
+      await expect(prisma.modelRunEvent.findFirst({
+        orderBy: { sequence: "desc" },
+        select: { payload: true },
+        where: { eventType: "error", modelRunId: created.runId }
+      })).resolves.toEqual({
+        payload: {
+          code: "provider_stream_too_large",
+          message: "The provider stream exceeded a safety limit."
+        }
+      });
+      await expect(repository.completeRun(completionInput(created))).resolves.toBe(false);
+    });
+  });
+
+  it("allows recovery to extend partial text while preserving an errored message status", async () => {
+    await withRunUser(async ({ userId }) => {
+      const repository = createPrismaRunRepository(prisma);
+      const created = await createActiveRun(repository, userId, "Refreshable partial recovery");
+      await repository.appendAssistantText(created.assistantMessageId, "durable ");
+      await repository.failRun(created.runId, created.assistantMessageId, {
+        code: "provider_stream_failed",
+        message: "Transient provider failure"
+      });
+
+      await repository.appendAssistantText(
+        created.assistantMessageId,
+        "durable recovered",
+        { allowErrored: true }
+      );
+
+      await expect(prisma.message.findUnique({
+        select: { content: true, status: true },
+        where: { id: created.assistantMessageId }
+      })).resolves.toEqual({
+        content: textMessageContent("durable recovered"),
+        status: "error"
+      });
+      await expect(repository.getRunControlForUser(created.runId, userId)).resolves.toMatchObject({
+        recoverySettled: false,
         status: "error"
       });
     });

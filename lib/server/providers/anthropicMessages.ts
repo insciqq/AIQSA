@@ -7,27 +7,41 @@ import {
   type AnthropicMessagesParams
 } from "../../domain/providerParams";
 import { anthropicMessagesToolBridge } from "../tools/bridges";
+import {
+  assertBoundedStructuredTextLength,
+  BoundedTextAccumulator
+} from "./boundedText";
 import { conversationPreview, textConversationForRequest } from "./context";
 import {
   ProviderResponseTooLargeError,
   providerHttpErrorMessage,
-  providerStreamIdleTimeoutMs,
   readBoundedResponseText,
-  withTimeoutSignal
+  resolveProviderStreamLimits,
+  withTimeoutSignal,
+  type ProviderStreamLimits
 } from "./network";
 import { providerAttachmentText } from "./attachmentPayload";
 import { parseSseStream } from "./sse";
+import {
+  attachProviderStreamSafetySnapshot,
+  providerStreamSafetySnapshot,
+  type ProviderStreamSafetySnapshot
+} from "./streamSafety";
 import type { ProviderAdapter, ProviderAttachment, ProviderRunRequest, ProviderRunResult } from "./types";
 
 export type AnthropicStreamEvent = Record<string, unknown>;
 
 export type AnthropicMessagesClient = {
-  stream(body: Record<string, unknown>, options?: { signal?: AbortSignal }): AsyncGenerator<AnthropicStreamEvent>;
+  stream(
+    body: Record<string, unknown>,
+    options?: { signal?: AbortSignal; streamLimits?: ProviderStreamLimits }
+  ): AsyncGenerator<AnthropicStreamEvent>;
 };
 
 export type AnthropicMessagesAdapterOptions = {
   client: AnthropicMessagesClient;
   maxAttachmentTextChars?: number;
+  streamLimits?: Partial<ProviderStreamLimits>;
 };
 
 type BuildOptions = {
@@ -43,8 +57,16 @@ type AnthropicRequestMessage = {
 
 type AnthropicContentBlockAccumulator = {
   block: Record<string, unknown>;
-  inputJson: string;
+  inputJson: BoundedTextAccumulator;
+  signature: BoundedTextAccumulator | null;
+  text: BoundedTextAccumulator | null;
+  thinking: BoundedTextAccumulator | null;
 };
+
+const MAX_ANTHROPIC_CONTENT_BLOCKS = 256;
+const MAX_ANTHROPIC_TOOL_CALLS = 16;
+const MAX_ANTHROPIC_TOOL_ID_LENGTH = 512;
+const MAX_ANTHROPIC_TOOL_NAME_LENGTH = 512;
 
 function numberValue(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
@@ -389,18 +411,43 @@ function contentBlockIndex(event: AnthropicStreamEvent): number | null {
     : null;
 }
 
-function appendStringField(block: Record<string, unknown>, field: string, value: string): void {
-  block[field] = `${stringValue(block[field]) ?? ""}${value}`;
+function appendAnthropicBlockField(
+  accumulator: AnthropicContentBlockAccumulator,
+  field: "signature" | "text" | "thinking",
+  value: string,
+  maxOutputChars: number,
+  snapshot: ProviderStreamSafetySnapshot | null
+): void {
+  let target = accumulator[field];
+  if (!target) {
+    target = new BoundedTextAccumulator({
+      initialValue: stringValue(accumulator.block[field]) ?? "",
+      maxChars: maxOutputChars,
+      retainedTextKind: field === "text" ? "visible_output" : field,
+      snapshot
+    });
+    accumulator[field] = target;
+  }
+  target.append(value, snapshot);
+}
+
+function finalizeAnthropicBlockFields(accumulator: AnthropicContentBlockAccumulator): void {
+  for (const field of ["signature", "text", "thinking"] as const) {
+    const value = accumulator[field];
+    if (value) {
+      accumulator.block[field] = value.value();
+    }
+  }
 }
 
 function finalizeAnthropicToolInput(accumulator: AnthropicContentBlockAccumulator): void {
-  if (!accumulator.inputJson) {
+  if (accumulator.inputJson.length === 0) {
     return;
   }
 
   let input: unknown;
   try {
-    input = JSON.parse(accumulator.inputJson) as unknown;
+    input = JSON.parse(accumulator.inputJson.value()) as unknown;
   } catch {
     throw new Error("anthropic_tool_input_invalid");
   }
@@ -447,12 +494,20 @@ export function createAnthropicMessagesAdapter(options: AnthropicMessagesAdapter
       };
     },
     async *stream(request, runOptions = {}): AsyncGenerator<ModelRunSseEvent, ProviderRunResult> {
+      const streamLimits = resolveProviderStreamLimits(options.streamLimits);
       const body = buildAnthropicMessagesRequest(request, {
         maxAttachmentTextChars: options.maxAttachmentTextChars,
         redactFiles: false,
         redactImages: false
       });
-      let finalText = "";
+      const finalText = new BoundedTextAccumulator({
+        maxChars: streamLimits.maxOutputChars,
+        retainedTextKind: "visible_output"
+      });
+      const thinkingText = new BoundedTextAccumulator({
+        maxChars: streamLimits.maxOutputChars,
+        retainedTextKind: "thinking"
+      });
       let messageId: string | undefined;
       let messageStarted = false;
       let model: string | undefined;
@@ -460,6 +515,7 @@ export function createAnthropicMessagesAdapter(options: AnthropicMessagesAdapter
       let terminalSeen = false;
       const contentBlocks = new Map<number, AnthropicContentBlockAccumulator>();
       const openContentBlocks = new Set<number>();
+      let toolUseBlockCount = 0;
       let usage: ModelRunUsage = {
         inputTokens: 0,
         outputTokens: 0,
@@ -477,7 +533,11 @@ export function createAnthropicMessagesAdapter(options: AnthropicMessagesAdapter
         type: "artifact"
       };
 
-      for await (const event of options.client.stream(body, { signal: runOptions.signal })) {
+      for await (const event of options.client.stream(body, {
+        signal: runOptions.signal,
+        streamLimits
+      })) {
+        const snapshot = providerStreamSafetySnapshot(event);
         const type = eventType(event);
 
         if (type === "message_start") {
@@ -514,22 +574,78 @@ export function createAnthropicMessagesAdapter(options: AnthropicMessagesAdapter
           if (index === null || !contentBlock) {
             throw new Error("anthropic_stream_truncated");
           }
+          if (contentBlocks.has(index) || contentBlocks.size >= MAX_ANTHROPIC_CONTENT_BLOCKS) {
+            throw new Error("anthropic_stream_content_block_limit_exceeded");
+          }
 
           const block = { ...contentBlock };
-          contentBlocks.set(index, {
+          if (block.type === "tool_use") {
+            if (
+              typeof block.id !== "string" ||
+              !block.id ||
+              block.id.length > MAX_ANTHROPIC_TOOL_ID_LENGTH ||
+              typeof block.name !== "string" ||
+              !block.name ||
+              block.name.length > MAX_ANTHROPIC_TOOL_NAME_LENGTH
+            ) {
+              throw new Error("anthropic_stream_tool_call_invalid");
+            }
+            toolUseBlockCount += 1;
+            if (toolUseBlockCount > MAX_ANTHROPIC_TOOL_CALLS) {
+              throw new Error("anthropic_stream_tool_call_limit_exceeded");
+            }
+            assertBoundedStructuredTextLength({
+              maxChars: streamLimits.maxOutputChars,
+              retainedTextKind: "tool_arguments",
+              snapshot,
+              value: block.input
+            });
+          }
+          const accumulator: AnthropicContentBlockAccumulator = {
             block,
-            inputJson: ""
-          });
+            inputJson: new BoundedTextAccumulator({
+              maxChars: streamLimits.maxOutputChars,
+              retainedTextKind: "tool_arguments"
+            }),
+            signature: typeof block.signature === "string"
+              ? new BoundedTextAccumulator({
+                  initialValue: block.signature,
+                  maxChars: streamLimits.maxOutputChars,
+                  retainedTextKind: "signature",
+                  snapshot
+                })
+              : null,
+            text: typeof block.text === "string"
+              ? new BoundedTextAccumulator({
+                  initialValue: block.text,
+                  maxChars: streamLimits.maxOutputChars,
+                  retainedTextKind: "visible_output",
+                  snapshot
+                })
+              : null,
+            thinking: typeof block.thinking === "string"
+              ? new BoundedTextAccumulator({
+                  initialValue: block.thinking,
+                  maxChars: streamLimits.maxOutputChars,
+                  retainedTextKind: "thinking",
+                  snapshot
+                })
+              : null
+          };
+          contentBlocks.set(index, accumulator);
           openContentBlocks.add(index);
 
           if (block.type === "text" && typeof block.text === "string" && block.text) {
-            finalText += block.text;
+            finalText.append(block.text, snapshot);
             yield {
               data: {
                 delta: block.text
               },
               type: "token"
             };
+          }
+          if (block.type === "thinking" && typeof block.thinking === "string" && block.thinking) {
+            thinkingText.append(block.thinking, snapshot);
           }
           continue;
         }
@@ -540,9 +656,15 @@ export function createAnthropicMessagesAdapter(options: AnthropicMessagesAdapter
           const accumulator = index === null ? undefined : contentBlocks.get(index);
 
           if (delta?.type === "text_delta" && typeof delta.text === "string") {
-            finalText += delta.text;
+            finalText.append(delta.text, snapshot);
             if (accumulator) {
-              appendStringField(accumulator.block, "text", delta.text);
+              appendAnthropicBlockField(
+                accumulator,
+                "text",
+                delta.text,
+                streamLimits.maxOutputChars,
+                snapshot
+              );
             }
             yield {
               data: {
@@ -553,8 +675,15 @@ export function createAnthropicMessagesAdapter(options: AnthropicMessagesAdapter
           }
 
           if (delta?.type === "thinking_delta" && typeof delta.thinking === "string") {
+            thinkingText.append(delta.thinking, snapshot);
             if (accumulator) {
-              appendStringField(accumulator.block, "thinking", delta.thinking);
+              appendAnthropicBlockField(
+                accumulator,
+                "thinking",
+                delta.thinking,
+                streamLimits.maxOutputChars,
+                snapshot
+              );
             }
             yield {
               data: {
@@ -571,11 +700,17 @@ export function createAnthropicMessagesAdapter(options: AnthropicMessagesAdapter
             if (!accumulator || accumulator.block.type !== "tool_use") {
               throw new Error("anthropic_stream_truncated");
             }
-            accumulator.inputJson += delta.partial_json;
+            accumulator.inputJson.append(delta.partial_json, snapshot);
           }
 
           if (delta?.type === "signature_delta" && typeof delta.signature === "string" && accumulator) {
-            appendStringField(accumulator.block, "signature", delta.signature);
+            appendAnthropicBlockField(
+              accumulator,
+              "signature",
+              delta.signature,
+              streamLimits.maxOutputChars,
+              snapshot
+            );
           }
           continue;
         }
@@ -589,6 +724,7 @@ export function createAnthropicMessagesAdapter(options: AnthropicMessagesAdapter
           if (!accumulator || !openContentBlocks.delete(index)) {
             throw new Error("anthropic_stream_truncated");
           }
+          finalizeAnthropicBlockFields(accumulator);
           if (accumulator.block.type === "tool_use") {
             finalizeAnthropicToolInput(accumulator);
           }
@@ -634,16 +770,17 @@ export function createAnthropicMessagesAdapter(options: AnthropicMessagesAdapter
         role: "assistant"
       };
       const toolCalls = anthropicMessagesToolBridge.parseToolCalls(providerToolCallMessage);
+      const rawFinalText = finalText.value();
 
       return {
         finalProviderResponsePreview: responsePreview({
-          finalText,
+          finalText: rawFinalText,
           messageId,
           model,
           stopReason,
           usage
         }),
-        finalText,
+        finalText: rawFinalText,
         ...(toolCalls.length > 0 ? { providerToolCallMessage } : {}),
         providerResponseId: messageId,
         toolCalls,
@@ -676,6 +813,7 @@ export function createFetchAnthropicMessagesClient(input: {
 
   return {
     async *stream(body, options) {
+      const streamLimits = resolveProviderStreamLimits(options?.streamLimits);
       const timeout = withTimeoutSignal(options?.signal);
       try {
         const response = await fetchFn(`${baseUrl}/messages`, {
@@ -699,7 +837,10 @@ export function createFetchAnthropicMessagesClient(input: {
         }
 
         for await (const event of parseSseStream(response.body, {
-          idleTimeoutMs: providerStreamIdleTimeoutMs(),
+          idleTimeoutMs: streamLimits.idleTimeoutMs,
+          maxBytes: streamLimits.maxBytes,
+          maxDurationMs: streamLimits.maxDurationMs,
+          maxEventBytes: streamLimits.maxEventBytes,
           signal: options?.signal
         })) {
           let parsed: unknown;
@@ -709,7 +850,11 @@ export function createFetchAnthropicMessagesClient(input: {
             throw new Error("anthropic_stream_truncated");
           }
           if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
-            yield parsed as AnthropicStreamEvent;
+            const parsedEvent = parsed as AnthropicStreamEvent;
+            const snapshot = providerStreamSafetySnapshot(event);
+            yield snapshot
+              ? attachProviderStreamSafetySnapshot(parsedEvent, snapshot)
+              : parsedEvent;
           }
         }
       } finally {

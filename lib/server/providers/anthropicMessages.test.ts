@@ -8,6 +8,7 @@ import {
 } from "./anthropicMessages";
 import type { ProviderRunRequest } from "./types";
 import type { RunTool } from "../tools/types";
+import { DEFAULT_PROVIDER_STREAM_LIMITS } from "./network";
 
 const mcpTool: RunTool = {
   capability: "mcp",
@@ -65,6 +66,24 @@ async function* events(values: AnthropicStreamEvent[]): AsyncGenerator<Anthropic
   for (const value of values) {
     yield value;
   }
+}
+
+async function collectAdapterStream(
+  client: AnthropicMessagesClient,
+  maxOutputChars: number,
+  requestValue = request()
+) {
+  const stream = createAnthropicMessagesAdapter({
+    client,
+    streamLimits: { ...DEFAULT_PROVIDER_STREAM_LIMITS, maxOutputChars }
+  }).stream(requestValue);
+  const seen = [];
+  let next = await stream.next();
+  while (!next.done) {
+    seen.push(next.value);
+    next = await stream.next();
+  }
+  return { events: seen, result: next.value };
 }
 
 function responseBody(chunks: readonly string[]): ReadableStream<Uint8Array> {
@@ -681,6 +700,185 @@ describe("Anthropic Messages adapter", () => {
       ],
       role: "assistant"
     });
+  });
+
+  it("bounds visible text at the exact limit before yielding one character over", async () => {
+    const client = (text: string): AnthropicMessagesClient => ({
+      stream: () => events([
+        { message: { id: "msg-limit" }, type: "message_start" },
+        { content_block: { text: "", type: "text" }, index: 0, type: "content_block_start" },
+        { delta: { text, type: "text_delta" }, index: 0, type: "content_block_delta" },
+        { index: 0, type: "content_block_stop" },
+        { type: "message_stop" }
+      ])
+    });
+
+    await expect(collectAdapterStream(client("Hello"), 5)).resolves.toMatchObject({
+      result: { finalText: "Hello" }
+    });
+    await expect(collectAdapterStream(client("Hello!"), 5)).rejects.toMatchObject({
+      code: "provider_output_too_large",
+      maxChars: 5,
+      observedChars: 6,
+      retainedTextKind: "visible_output"
+    });
+  });
+
+  it("bounds thinking, signature, and tool-input fragments at exact and over limits", async () => {
+    const thoughtClient = (
+      type: "signature_delta" | "thinking_delta",
+      value: string
+    ): AnthropicMessagesClient => ({
+      stream: () => events([
+        { message: { id: "msg-thought-limit" }, type: "message_start" },
+        {
+          content_block: { signature: "", thinking: "", type: "thinking" },
+          index: 0,
+          type: "content_block_start"
+        },
+        {
+          delta: type === "thinking_delta"
+            ? { thinking: value, type }
+            : { signature: value, type },
+          index: 0,
+          type: "content_block_delta"
+        },
+        { index: 0, type: "content_block_stop" },
+        { type: "message_stop" }
+      ])
+    });
+    await expect(collectAdapterStream(thoughtClient("thinking_delta", "think"), 5)).resolves.toBeDefined();
+    await expect(collectAdapterStream(thoughtClient("thinking_delta", "think!"), 5)).rejects.toMatchObject({
+      code: "provider_output_too_large",
+      retainedTextKind: "thinking"
+    });
+    await expect(collectAdapterStream(thoughtClient("signature_delta", "abcde"), 5)).resolves.toBeDefined();
+    await expect(collectAdapterStream(thoughtClient("signature_delta", "abcdef"), 5)).rejects.toMatchObject({
+      code: "provider_output_too_large",
+      retainedTextKind: "signature"
+    });
+
+    const toolClient = (partialJson: string): AnthropicMessagesClient => ({
+      stream: () => events([
+        { message: { id: "msg-tool-limit" }, type: "message_start" },
+        {
+          content_block: { id: "tool-1", input: {}, name: "lookup", type: "tool_use" },
+          index: 0,
+          type: "content_block_start"
+        },
+        {
+          delta: { partial_json: partialJson, type: "input_json_delta" },
+          index: 0,
+          type: "content_block_delta"
+        },
+        { index: 0, type: "content_block_stop" },
+        { type: "message_stop" }
+      ])
+    });
+    await expect(collectAdapterStream(
+      toolClient('{"x":1}'),
+      7,
+      request({ tools: [mcpTool] })
+    )).resolves.toMatchObject({ result: { toolCalls: [{ arguments: { x: 1 } }] } });
+    await expect(collectAdapterStream(
+      toolClient('{"x":10}'),
+      7,
+      request({ tools: [mcpTool] })
+    )).rejects.toMatchObject({
+      code: "provider_output_too_large",
+      retainedTextKind: "tool_arguments"
+    });
+
+    const initialToolClient = (query: string): AnthropicMessagesClient => ({
+      stream: () => events([
+        { message: { id: "msg-initial-tool-limit" }, type: "message_start" },
+        {
+          content_block: {
+            id: "tool-initial",
+            input: { query },
+            name: "lookup",
+            type: "tool_use"
+          },
+          index: 0,
+          type: "content_block_start"
+        },
+        { index: 0, type: "content_block_stop" },
+        { type: "message_stop" }
+      ])
+    });
+    await expect(collectAdapterStream(
+      initialToolClient("Hello"),
+      17,
+      request({ tools: [mcpTool] })
+    )).resolves.toMatchObject({ result: { toolCalls: [{ arguments: { query: "Hello" } }] } });
+    await expect(collectAdapterStream(
+      initialToolClient("Hello!"),
+      17,
+      request({ tools: [mcpTool] })
+    )).rejects.toMatchObject({
+      code: "provider_output_too_large",
+      retainedTextKind: "tool_arguments"
+    });
+  });
+
+  it("normalizes an injected stream-limit context before sharing it with the client", async () => {
+    let receivedMaxOutputChars: number | undefined;
+    const client: AnthropicMessagesClient = {
+      stream(_body, options) {
+        receivedMaxOutputChars = options?.streamLimits?.maxOutputChars;
+        return events([
+          { message: { id: "msg-normalized-limits" }, type: "message_start" },
+          { content_block: { text: "ok", type: "text" }, index: 0, type: "content_block_start" },
+          { index: 0, type: "content_block_stop" },
+          { type: "message_stop" }
+        ]);
+      }
+    };
+    const adapter = createAnthropicMessagesAdapter({
+      client,
+      streamLimits: { maxOutputChars: 0 }
+    });
+
+    const stream = adapter.stream(request());
+    while (!(await stream.next()).done) {
+      // Consume the complete stream so the shared client context is observed.
+    }
+    expect(receivedMaxOutputChars).toBe(DEFAULT_PROVIDER_STREAM_LIMITS.maxOutputChars);
+  });
+
+  it("bounds streamed tool ids and names at the protocol limit", async () => {
+    const client = (id: string, name: string): AnthropicMessagesClient => ({
+      stream: () => events([
+        { message: { id: "msg-tool-name-limit" }, type: "message_start" },
+        {
+          content_block: { id, input: {}, name, type: "tool_use" },
+          index: 0,
+          type: "content_block_start"
+        },
+        { index: 0, type: "content_block_stop" },
+        { type: "message_stop" }
+      ])
+    });
+    const exact = await collectAdapterStream(
+      client("i".repeat(512), "n".repeat(512)),
+      DEFAULT_PROVIDER_STREAM_LIMITS.maxOutputChars,
+      request({ tools: [mcpTool] })
+    );
+    expect(exact.result.toolCalls).toMatchObject([{
+      id: "i".repeat(512),
+      name: "n".repeat(512)
+    }]);
+
+    await expect(collectAdapterStream(
+      client("i".repeat(513), "lookup"),
+      DEFAULT_PROVIDER_STREAM_LIMITS.maxOutputChars,
+      request({ tools: [mcpTool] })
+    )).rejects.toThrow("anthropic_stream_tool_call_invalid");
+    await expect(collectAdapterStream(
+      client("tool-1", "n".repeat(513)),
+      DEFAULT_PROVIDER_STREAM_LIMITS.maxOutputChars,
+      request({ tools: [mcpTool] })
+    )).rejects.toThrow("anthropic_stream_tool_call_invalid");
   });
 
   it("rejects partial and empty EOF while preserving explicit stream errors", async () => {

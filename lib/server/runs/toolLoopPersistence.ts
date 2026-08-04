@@ -41,6 +41,7 @@ export type PersistedToolLoopCall = Readonly<{
 
 export type CheckpointedToolLoopRun = Readonly<{
   assistantMessageId: string | null;
+  assistantText: string | null;
   calls: readonly PersistedToolLoopCall[];
   chatId: string;
   checkpoint: ToolLoopCheckpointV1;

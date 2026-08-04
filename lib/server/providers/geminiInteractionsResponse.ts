@@ -2,12 +2,24 @@ import { safeExternalHref } from "../../domain/links";
 import type { ModelRunSseEvent, ModelRunUsage } from "../../domain/modelRunEvents";
 import { normalizeTokenUsage } from "../../domain/usage";
 import { geminiInteractionsToolBridge } from "../tools/bridges";
+import {
+  assertBoundedStructuredTextLength,
+  BoundedTextAccumulator
+} from "./boundedText";
+import {
+  resolveProviderStreamLimits,
+  type ProviderStreamLimits
+} from "./network";
 import { validateGeminiSearchSuggestionsHtml } from "./geminiInteractionsGrounding";
 import {
   geminiInteractionStepForWire,
   protectGeminiInteractionStep
 } from "./geminiInteractionsProtocol";
 import { parseSseStream } from "./sse";
+import {
+  providerStreamSafetySnapshot,
+  type ProviderStreamSafetySnapshot
+} from "./streamSafety";
 import type { ProviderRunResult } from "./types";
 import { visibleAnswerText } from "./visibleAnswer";
 import {
@@ -51,10 +63,10 @@ export type GeminiInteractionsResponseContext = Readonly<{
 
 export type ParseGeminiInteractionsSseInput = Readonly<{
   groundingExpected: boolean;
-  idleTimeoutMs: number;
   modelId: string;
   responseBody: ReadableStream<Uint8Array>;
   signal?: AbortSignal;
+  streamLimits?: Partial<ProviderStreamLimits>;
 }>;
 
 type NormalizedInteraction = Readonly<{
@@ -70,10 +82,11 @@ type NormalizedInteraction = Readonly<{
 }>;
 
 type StreamStepAccumulator = {
-  argumentDelta: string;
+  argumentDelta: BoundedTextAccumulator;
   index: number;
   provisionalSignature: boolean;
   step: Record<string, unknown>;
+  textDelta: BoundedTextAccumulator | null;
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -320,7 +333,17 @@ function normalizeProviderStep(value: unknown): Record<string, unknown> {
   }
 }
 
-function textFromSteps(steps: readonly Record<string, unknown>[]): string {
+function textFromSteps(
+  steps: readonly Record<string, unknown>[],
+  maxOutputChars?: number,
+  snapshot?: ProviderStreamSafetySnapshot | null
+): string {
+  const accumulator = maxOutputChars === undefined
+    ? null
+    : new BoundedTextAccumulator({
+        maxChars: maxOutputChars,
+        retainedTextKind: "visible_output"
+      });
   const parts: string[] = [];
   for (const protectedStep of steps) {
     const step = geminiInteractionStepForWire(protectedStep);
@@ -329,11 +352,45 @@ function textFromSteps(steps: readonly Record<string, unknown>[]): string {
     }
     for (const content of step.content) {
       if (isRecord(content) && content.type === "text" && typeof content.text === "string") {
-        parts.push(content.text);
+        if (accumulator) {
+          accumulator.append(content.text, snapshot);
+        } else {
+          parts.push(content.text);
+        }
       }
     }
   }
-  return parts.join("");
+  return accumulator?.value() ?? parts.join("");
+}
+
+function assertBoundedGeminiRetainedSteps(
+  steps: readonly Record<string, unknown>[],
+  maxOutputChars: number,
+  snapshot: ProviderStreamSafetySnapshot | null
+): void {
+  const reasoningText = new BoundedTextAccumulator({
+    maxChars: maxOutputChars,
+    retainedTextKind: "reasoning"
+  });
+
+  for (const protectedStep of steps) {
+    const step = geminiInteractionStepForWire(protectedStep);
+    if (step.type === "thought" && Array.isArray(step.summary)) {
+      for (const content of step.summary) {
+        if (isRecord(content) && typeof content.text === "string") {
+          reasoningText.append(content.text, snapshot);
+        }
+      }
+    }
+    if (step.type === "function_call") {
+      assertBoundedStructuredTextLength({
+        maxChars: maxOutputChars,
+        retainedTextKind: "tool_arguments",
+        snapshot,
+        value: step.arguments
+      });
+    }
+  }
 }
 
 function validCitationIndex(value: unknown): number | null {
@@ -364,11 +421,68 @@ function citationFromAnnotation(value: unknown): GroundingDisplayEvent["data"]["
   return { endIndex, startIndex, title, url };
 }
 
+type GeminiGroundingRetention = Readonly<{
+  annotationCount: number;
+  suggestionBytes: number;
+  suggestionCount: number;
+}>;
+
+function appendGroundingRetention(
+  current: GeminiGroundingRetention,
+  protectedStep: Record<string, unknown>
+): GeminiGroundingRetention {
+  const step = geminiInteractionStepForWire(protectedStep);
+  let annotationCount = current.annotationCount;
+  let suggestionBytes = current.suggestionBytes;
+  let suggestionCount = current.suggestionCount;
+
+  if (step.type === "google_search_result" && Array.isArray(step.result)) {
+    for (const item of step.result) {
+      if (!isRecord(item) || typeof item.search_suggestions !== "string" || !item.search_suggestions) {
+        continue;
+      }
+      suggestionBytes += Buffer.byteLength(item.search_suggestions, "utf8") +
+        (suggestionCount > 0 ? 1 : 0);
+      suggestionCount += 1;
+      if (
+        suggestionCount > MAX_SEARCH_SUGGESTION_COUNT ||
+        suggestionBytes > MAX_SEARCH_SUGGESTIONS_BYTES
+      ) {
+        throw new Error("gemini_interactions_grounding_invalid");
+      }
+    }
+  }
+  if (step.type === "model_output" && Array.isArray(step.content)) {
+    for (const content of step.content) {
+      if (!isRecord(content) || !Array.isArray(content.annotations)) continue;
+      annotationCount += content.annotations.length;
+      if (annotationCount > MAX_CITATION_COUNT) {
+        throw new Error("gemini_interactions_grounding_invalid");
+      }
+    }
+  }
+
+  return { annotationCount, suggestionBytes, suggestionCount };
+}
+
+function groundingRetentionForSteps(
+  steps: readonly Record<string, unknown>[]
+): GeminiGroundingRetention {
+  let retention: GeminiGroundingRetention = {
+    annotationCount: 0,
+    suggestionBytes: 0,
+    suggestionCount: 0
+  };
+  for (const step of steps) retention = appendGroundingRetention(retention, step);
+  return retention;
+}
+
 function groundingDisplayEvent(
   protectedSteps: readonly Record<string, unknown>[]
 ): GroundingDisplayEvent | null {
   let callCount = 0;
   let queryCount = 0;
+  let suggestionBytes = 0;
   const suggestions: string[] = [];
   const citations: GroundingDisplayEvent["data"]["citations"] = [];
 
@@ -389,6 +503,14 @@ function groundingDisplayEvent(
     if (step.type === "google_search_result" && Array.isArray(step.result)) {
       for (const item of step.result) {
         if (isRecord(item) && typeof item.search_suggestions === "string" && item.search_suggestions) {
+          suggestionBytes += Buffer.byteLength(item.search_suggestions, "utf8") +
+            (suggestions.length > 0 ? 1 : 0);
+          if (
+            suggestions.length >= MAX_SEARCH_SUGGESTION_COUNT ||
+            suggestionBytes > MAX_SEARCH_SUGGESTIONS_BYTES
+          ) {
+            throw new Error("gemini_interactions_grounding_invalid");
+          }
           suggestions.push(item.search_suggestions);
         }
       }
@@ -401,10 +523,10 @@ function groundingDisplayEvent(
         for (const annotation of content.annotations) {
           const citation = citationFromAnnotation(annotation);
           if (citation) {
-            citations.push(citation);
-            if (citations.length > MAX_CITATION_COUNT) {
+            if (citations.length >= MAX_CITATION_COUNT) {
               throw new Error("gemini_interactions_grounding_invalid");
             }
+            citations.push(citation);
           }
         }
       }
@@ -415,9 +537,6 @@ function groundingDisplayEvent(
     return null;
   }
   const suggestionsHtml = suggestions.join("\n");
-  if (Buffer.byteLength(suggestionsHtml, "utf8") > MAX_SEARCH_SUGGESTIONS_BYTES) {
-    throw new Error("gemini_interactions_grounding_invalid");
-  }
   if (callCount > 0 && !suggestionsHtml) {
     throw new Error("gemini_interactions_grounding_suggestions_missing");
   }
@@ -672,7 +791,13 @@ function streamIndex(value: unknown): number {
   return index;
 }
 
-function startStep(value: unknown, index: number): StreamStepAccumulator {
+function startStep(
+  value: unknown,
+  index: number,
+  maxOutputChars: number,
+  reasoningText: BoundedTextAccumulator,
+  snapshot: ProviderStreamSafetySnapshot | null
+): StreamStepAccumulator {
   if (!isRecord(value)) {
     throw new Error("gemini_interactions_stream_step_invalid");
   }
@@ -680,57 +805,85 @@ function startStep(value: unknown, index: number): StreamStepAccumulator {
   switch (value.type) {
     case "model_output":
       return {
-        argumentDelta: "",
+        argumentDelta: new BoundedTextAccumulator({
+          maxChars: maxOutputChars,
+          retainedTextKind: "tool_arguments"
+        }),
         index,
         provisionalSignature: false,
         step: {
           content: isAbsent(value.content) ? [] : validateTextContentArray(value.content),
           type: "model_output"
-        }
+        },
+        textDelta: null
       };
     case "thought": {
       const signature = signatureAtStepStart(value.signature);
+      const summary = !isAbsent(value.summary) ? validateTextContentArray(value.summary) : undefined;
+      for (const content of summary ?? []) {
+        reasoningText.append(content.text as string, snapshot);
+      }
       return {
-        argumentDelta: "",
+        argumentDelta: new BoundedTextAccumulator({
+          maxChars: maxOutputChars,
+          retainedTextKind: "tool_arguments"
+        }),
         index,
         provisionalSignature: signature.provisional,
         step: {
           ...(signature.signature ? { signature: signature.signature } : {}),
-          ...(!isAbsent(value.summary) ? { summary: validateTextContentArray(value.summary) } : {}),
+          ...(summary ? { summary } : {}),
           type: "thought"
-        }
+        },
+        textDelta: null
       };
     }
-    case "function_call":
+    case "function_call": {
       if (
         !boundedString(value.id, MAX_TOOL_CALL_ID_LENGTH) ||
         !boundedString(value.name, MAX_TOOL_NAME_LENGTH)
       ) {
         throw new Error("gemini_interactions_stream_step_invalid");
       }
+      const argumentsValue = isAbsent(value.arguments) ? {} : validateArguments(value.arguments);
+      assertBoundedStructuredTextLength({
+        maxChars: maxOutputChars,
+        retainedTextKind: "tool_arguments",
+        snapshot,
+        value: argumentsValue
+      });
       return {
-        argumentDelta: "",
+        argumentDelta: new BoundedTextAccumulator({
+          maxChars: maxOutputChars,
+          retainedTextKind: "tool_arguments"
+        }),
         index,
         provisionalSignature: false,
         step: {
-          arguments: isAbsent(value.arguments) ? {} : validateArguments(value.arguments),
+          arguments: argumentsValue,
           id: value.id,
           name: value.name,
           ...(!isAbsent(value.signature) ? { signature: validateSignature(value.signature) } : {}),
           type: "function_call"
-        }
+        },
+        textDelta: null
       };
+    }
     case "google_search_call":
     case "google_search_result": {
       const signature = signatureAtStepStart(value.signature);
       return {
-        argumentDelta: "",
+        argumentDelta: new BoundedTextAccumulator({
+          maxChars: maxOutputChars,
+          retainedTextKind: "tool_arguments"
+        }),
         index,
         provisionalSignature: signature.provisional,
         step: normalizeProviderStep({
           ...value,
           ...(signature.provisional ? { signature: undefined } : {})
-        })
+        }),
+        textDelta: null
       };
     }
     default:
@@ -750,7 +903,13 @@ function textContent(step: Record<string, unknown>): Record<string, unknown> {
   return block;
 }
 
-function appendDelta(accumulator: StreamStepAccumulator, value: unknown): string | null {
+function appendDelta(
+  accumulator: StreamStepAccumulator,
+  value: unknown,
+  visibleOutput: BoundedTextAccumulator,
+  reasoningText: BoundedTextAccumulator,
+  snapshot: ProviderStreamSafetySnapshot | null
+): string | null {
   if (!isRecord(value) || typeof value.type !== "string") {
     throw new Error("gemini_interactions_stream_delta_invalid");
   }
@@ -758,7 +917,16 @@ function appendDelta(accumulator: StreamStepAccumulator, value: unknown): string
 
   if (step.type === "model_output" && value.type === "text" && typeof value.text === "string") {
     const block = textContent(step);
-    block.text = `${typeof block.text === "string" ? block.text : ""}${value.text}`;
+    visibleOutput.append(value.text, snapshot);
+    if (!accumulator.textDelta) {
+      accumulator.textDelta = new BoundedTextAccumulator({
+        initialValue: typeof block.text === "string" ? block.text : "",
+        maxChars: visibleOutput.maxChars,
+        retainedTextKind: "visible_output",
+        snapshot
+      });
+    }
+    accumulator.textDelta.append(value.text, snapshot);
     return value.text;
   }
   if (step.type === "model_output" && value.type === "text_annotation_delta") {
@@ -781,6 +949,10 @@ function appendDelta(accumulator: StreamStepAccumulator, value: unknown): string
   if (step.type === "thought" && value.type === "thought_summary") {
     const content = validateTextContent(value.content);
     const summary = Array.isArray(step.summary) ? step.summary : [];
+    if (summary.length >= MAX_STEP_COUNT) {
+      throw new Error("gemini_interactions_step_invalid");
+    }
+    reasoningText.append(content.text as string, snapshot);
     summary.push(content);
     step.summary = summary;
     return null;
@@ -789,7 +961,7 @@ function appendDelta(accumulator: StreamStepAccumulator, value: unknown): string
     if (typeof value.arguments !== "string") {
       throw new Error("gemini_interactions_tool_arguments_invalid");
     }
-    accumulator.argumentDelta += value.arguments;
+    accumulator.argumentDelta.append(value.arguments, snapshot);
     return null;
   }
   if (step.type === "google_search_call" && value.type === "google_search_call") {
@@ -816,10 +988,13 @@ function finalizeStep(accumulator: StreamStepAccumulator): Record<string, unknow
   if (accumulator.provisionalSignature && accumulator.step.signature === undefined) {
     throw new Error("gemini_interactions_step_invalid");
   }
-  if (accumulator.step.type === "function_call" && accumulator.argumentDelta) {
+  if (accumulator.step.type === "model_output" && accumulator.textDelta) {
+    textContent(accumulator.step).text = accumulator.textDelta.value();
+  }
+  if (accumulator.step.type === "function_call" && accumulator.argumentDelta.length > 0) {
     let argumentsValue: unknown;
     try {
-      argumentsValue = JSON.parse(accumulator.argumentDelta) as unknown;
+      argumentsValue = JSON.parse(accumulator.argumentDelta.value()) as unknown;
     } catch {
       throw new Error("gemini_interactions_tool_arguments_invalid");
     }
@@ -843,6 +1018,8 @@ function interactionFromEvent(event: Record<string, unknown>): Record<string, un
 export async function* parseGeminiInteractionsSse(
   input: ParseGeminiInteractionsSseInput
 ): AsyncGenerator<ModelRunSseEvent, ProviderRunResult> {
+  const streamLimits = resolveProviderStreamLimits(input.streamLimits);
+  const maxOutputChars = streamLimits.maxOutputChars;
   const activeSteps = new Map<number, StreamStepAccumulator>();
   const protectedSteps: Record<string, unknown>[] = [];
   let created = false;
@@ -858,13 +1035,31 @@ export async function* parseGeminiInteractionsSse(
   let finalGroundingEmitted = false;
   let searchCallCount = 0;
   let searchQueryCount = 0;
-  let streamedRawText = "";
+  let groundingRetention: GeminiGroundingRetention = {
+    annotationCount: 0,
+    suggestionBytes: 0,
+    suggestionCount: 0
+  };
+  const streamedRawText = new BoundedTextAccumulator({
+    maxChars: maxOutputChars,
+    retainedTextKind: "visible_output"
+  });
+  const reasoningText = new BoundedTextAccumulator({
+    maxChars: maxOutputChars,
+    retainedTextKind: "reasoning"
+  });
   const bufferedText: string[] = [];
+  let latestSnapshot: ProviderStreamSafetySnapshot | null = null;
 
   for await (const event of parseSseStream(input.responseBody, {
-    idleTimeoutMs: input.idleTimeoutMs,
+    idleTimeoutMs: streamLimits.idleTimeoutMs,
+    maxBytes: streamLimits.maxBytes,
+    maxDurationMs: streamLimits.maxDurationMs,
+    maxEventBytes: streamLimits.maxEventBytes,
     signal: input.signal
   })) {
+    const snapshot = providerStreamSafetySnapshot(event);
+    latestSnapshot = snapshot;
     if (done) {
       throw new Error("gemini_interactions_stream_trailing_data");
     }
@@ -962,7 +1157,13 @@ export async function* parseGeminiInteractionsSse(
       ) {
         throw new Error("gemini_interactions_stream_step_invalid");
       }
-      const accumulator = startStep(parsed.step, index);
+      const accumulator = startStep(
+        parsed.step,
+        index,
+        maxOutputChars,
+        reasoningText,
+        snapshot
+      );
       activeSteps.set(index, accumulator);
       if (accumulator.step.type === "google_search_call") {
         groundingProven = true;
@@ -978,9 +1179,13 @@ export async function* parseGeminiInteractionsSse(
         groundingDecisionPending = false;
         yield groundingMarkerEvent(searchCallCount, searchQueryCount);
       }
-      const initialText = textFromSteps([protectGeminiInteractionStep(accumulator.step)]);
+      const initialText = textFromSteps(
+        [protectGeminiInteractionStep(accumulator.step)],
+        maxOutputChars,
+        snapshot
+      );
       if (initialText) {
-        streamedRawText += initialText;
+        streamedRawText.append(initialText, snapshot);
         if ((groundingDecisionPending || groundingProven) && !groundingReady) {
           bufferedText.push(initialText);
         } else {
@@ -999,7 +1204,13 @@ export async function* parseGeminiInteractionsSse(
       const previousQueryCount = accumulator.step.type === "google_search_call"
         ? queryCountFromSearchCall(accumulator.step)
         : 0;
-      const textDelta = appendDelta(accumulator, parsed.delta);
+      const textDelta = appendDelta(
+        accumulator,
+        parsed.delta,
+        streamedRawText,
+        reasoningText,
+        snapshot
+      );
       if (accumulator.step.type === "google_search_call") {
         searchQueryCount += queryCountFromSearchCall(accumulator.step) - previousQueryCount;
         if (searchQueryCount < 0 || searchQueryCount > MAX_SEARCH_QUERY_COUNT) {
@@ -1028,7 +1239,6 @@ export async function* parseGeminiInteractionsSse(
         }
       }
       if (textDelta) {
-        streamedRawText += textDelta;
         if ((groundingDecisionPending || groundingProven) && !groundingReady) {
           bufferedText.push(textDelta);
         } else {
@@ -1045,7 +1255,9 @@ export async function* parseGeminiInteractionsSse(
         throw new Error("gemini_interactions_stream_step_invalid");
       }
       activeSteps.delete(index);
-      protectedSteps.push(finalizeStep(accumulator));
+      const finalizedStep = finalizeStep(accumulator);
+      groundingRetention = appendGroundingRetention(groundingRetention, finalizedStep);
+      protectedSteps.push(finalizedStep);
       if (
         groundingProven &&
         !groundingReady &&
@@ -1106,11 +1318,15 @@ export async function* parseGeminiInteractionsSse(
           }
         }
         const terminalSteps = interaction.steps.map(normalizeProviderStep);
-        const terminalText = textFromSteps(terminalSteps);
-        if (streamedRawText && terminalText !== streamedRawText) {
+        const terminalGroundingRetention = groundingRetentionForSteps(terminalSteps);
+        assertBoundedGeminiRetainedSteps(terminalSteps, maxOutputChars, snapshot);
+        const terminalText = textFromSteps(terminalSteps, maxOutputChars, snapshot);
+        const streamedText = streamedRawText.value();
+        if (streamedText && terminalText !== streamedText) {
           throw new Error("gemini_interactions_stream_text_mismatch");
         }
         protectedSteps.splice(0, protectedSteps.length, ...terminalSteps);
+        groundingRetention = terminalGroundingRetention;
       }
       const terminalGrounding = groundingDisplayEvent(protectedSteps);
       if (terminalGrounding) {
@@ -1151,7 +1367,7 @@ export async function* parseGeminiInteractionsSse(
     throw new Error("gemini_interactions_stream_truncated");
   }
 
-  const rawFinalText = textFromSteps(protectedSteps);
+  const rawFinalText = textFromSteps(protectedSteps, maxOutputChars, latestSnapshot);
   const finalText = visibleAnswerText(rawFinalText);
   const toolCalls = geminiInteractionsToolBridge.parseToolCalls(protectedSteps);
   if (terminalStatus === "requires_action" && toolCalls.length === 0) {

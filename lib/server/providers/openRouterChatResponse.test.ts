@@ -13,6 +13,7 @@ import {
   type OpenRouterResponseContext,
   type OpenRouterResponseRecord
 } from "./openRouterChatResponse";
+import { DEFAULT_PROVIDER_STREAM_LIMITS } from "./network";
 
 const responseContext: OpenRouterResponseContext = {
   modelId: "anthropic/claude-opus-4.8"
@@ -284,6 +285,28 @@ describe("OpenRouter Chat response normalization", () => {
         type: "artifact"
       }
     ]);
+  });
+
+  it("preserves common citation normalization without spreading provider-sized arrays", () => {
+    const artifacts = extractOpenRouterArtifacts({
+      choices: [{
+        message: {
+          citations: Array.from(
+            { length: 101 },
+            (_, index) => `https://example.com/message-${index}`
+          )
+        }
+      }],
+      citations: Array.from(
+        { length: 101 },
+        (_, index) => `https://example.com/top-${index}`
+      )
+    });
+
+    expect(artifacts).toHaveLength(202);
+    expect(artifacts.at(-1)).toMatchObject({
+      data: { payload: { url: "https://example.com/message-100" } }
+    });
   });
 
   it("normalizes the current nested url_citation annotation shape without traversing hostile nesting", () => {
@@ -611,6 +634,275 @@ describe("OpenRouter Chat response normalization", () => {
     });
   });
 
+  it("accepts the exact visible-output limit and rejects one character over before yielding it", async () => {
+    const exact = await collect(streamOpenRouterSseResponse(
+      sseResponse([
+        'data: {"choices":[{"delta":{"content":"Hel"}}]}\n\n',
+        'data: {"choices":[{"delta":{"content":"lo"}}]}\n\n',
+        "data: [DONE]\n\n"
+      ]),
+      responseContext,
+      undefined,
+      { ...DEFAULT_PROVIDER_STREAM_LIMITS, maxOutputChars: 5 }
+    ));
+    expect(exact.result.finalText).toBe("Hello");
+
+    const overflow = streamOpenRouterSseResponse(
+      sseResponse([
+        'data: {"choices":[{"delta":{"content":"Hello"}}]}\n\n',
+        'data: {"choices":[{"delta":{"content":"!"}}]}\n\n'
+      ]),
+      responseContext,
+      undefined,
+      { ...DEFAULT_PROVIDER_STREAM_LIMITS, maxOutputChars: 5 }
+    );
+    await expect(overflow.next()).resolves.toMatchObject({ value: { type: "artifact" } });
+    await expect(overflow.next()).resolves.toMatchObject({ value: { type: "token" } });
+    await expect(overflow.next()).rejects.toMatchObject({
+      code: "provider_output_too_large",
+      maxChars: 5,
+      observedChars: 6,
+      retainedTextKind: "visible_output"
+    });
+  });
+
+  it("bounds streamed tool arguments and string reasoning at exact and over limits", async () => {
+    const toolResponse = (argument: string) => sseResponse([
+      `data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [{
+        function: { arguments: argument, name: "lookup" },
+        id: "call-1",
+        index: 0
+      }] } }] })}\n\n`,
+      "data: [DONE]\n\n"
+    ]);
+    const exactTool = await collect(streamOpenRouterSseResponse(
+      toolResponse('{"x":1}'),
+      responseContext,
+      undefined,
+      { ...DEFAULT_PROVIDER_STREAM_LIMITS, maxOutputChars: 7 }
+    ));
+    expect(exactTool.result.toolCalls).toMatchObject([{ arguments: { x: 1 } }]);
+    await expect(collect(streamOpenRouterSseResponse(
+      toolResponse('{"x":10}'),
+      responseContext,
+      undefined,
+      { ...DEFAULT_PROVIDER_STREAM_LIMITS, maxOutputChars: 7 }
+    ))).rejects.toMatchObject({
+      code: "provider_output_too_large",
+      retainedTextKind: "tool_arguments"
+    });
+
+    const structuredToolResponse = (query: string) => sseResponse([
+      `data: ${JSON.stringify({ choices: [{ message: { tool_calls: [{
+        function: { arguments: { query }, name: "lookup" },
+        id: "call-structured"
+      }] } }] })}\n\n`,
+      "data: [DONE]\n\n"
+    ]);
+    await expect(collect(streamOpenRouterSseResponse(
+      structuredToolResponse("Hello"),
+      responseContext,
+      undefined,
+      { ...DEFAULT_PROVIDER_STREAM_LIMITS, maxOutputChars: 17 }
+    ))).resolves.toMatchObject({ result: { toolCalls: [{ arguments: { query: "Hello" } }] } });
+    await expect(collect(streamOpenRouterSseResponse(
+      structuredToolResponse("Hello!"),
+      responseContext,
+      undefined,
+      { ...DEFAULT_PROVIDER_STREAM_LIMITS, maxOutputChars: 17 }
+    ))).rejects.toMatchObject({
+      code: "provider_output_too_large",
+      retainedTextKind: "tool_arguments"
+    });
+
+    const reasoningResponse = (parts: readonly string[]) => sseResponse([
+      'data: {"choices":[{"delta":{"content":"ok"}}]}\n\n',
+      ...parts.map((reasoning) => `data: ${JSON.stringify({
+        choices: [{ delta: { reasoning } }]
+      })}\n\n`),
+      "data: [DONE]\n\n"
+    ]);
+    const exactReasoning = await collect(streamOpenRouterSseResponse(
+      reasoningResponse(["think", "ing"]),
+      responseContext,
+      undefined,
+      { ...DEFAULT_PROVIDER_STREAM_LIMITS, maxOutputChars: 8 }
+    ));
+    expect(exactReasoning.result.finalText).toBe("ok");
+    expect(exactReasoning.events).toContainEqual(expect.objectContaining({
+      data: { artifactType: "reasoning", payload: { reasoning: "thinking" } },
+      type: "artifact"
+    }));
+    await expect(collect(streamOpenRouterSseResponse(
+      reasoningResponse(["thinking", "!"]),
+      responseContext,
+      undefined,
+      { ...DEFAULT_PROVIDER_STREAM_LIMITS, maxOutputChars: 8 }
+    ))).rejects.toMatchObject({
+      code: "provider_output_too_large",
+      retainedTextKind: "reasoning"
+    });
+
+    const structuredReasoningResponse = (text: string) => sseResponse([
+      'data: {"choices":[{"delta":{"content":"ok"}}]}\n\n',
+      `data: ${JSON.stringify({
+        choices: [{ delta: { reasoning_details: [{ text }] } }]
+      })}\n\n`,
+      "data: [DONE]\n\n"
+    ]);
+    await expect(collect(streamOpenRouterSseResponse(
+      structuredReasoningResponse("thinking"),
+      responseContext,
+      undefined,
+      { ...DEFAULT_PROVIDER_STREAM_LIMITS, maxOutputChars: 23 }
+    ))).resolves.toMatchObject({ result: { finalText: "ok" } });
+    await expect(collect(streamOpenRouterSseResponse(
+      structuredReasoningResponse("thinking!"),
+      responseContext,
+      undefined,
+      { ...DEFAULT_PROVIDER_STREAM_LIMITS, maxOutputChars: 23 }
+    ))).rejects.toMatchObject({
+      code: "provider_output_too_large",
+      retainedTextKind: "reasoning"
+    });
+
+    const mixedReasoningResponse = sseResponse([
+      'data: {"choices":[{"delta":{"content":"ok","reasoning":"abc"}}]}\n\n',
+      'data: {"choices":[{"delta":{"reasoning_details":{"step":1}}}]}\n\n',
+      "data: [DONE]\n\n"
+    ]);
+    const exactMixedReasoning = await collect(streamOpenRouterSseResponse(
+      mixedReasoningResponse,
+      responseContext,
+      undefined,
+      { ...DEFAULT_PROVIDER_STREAM_LIMITS, maxOutputChars: 18 }
+    ));
+    expect(exactMixedReasoning.events).toContainEqual(expect.objectContaining({
+      data: {
+        artifactType: "reasoning",
+        payload: { reasoning: ["abc", { step: 1 }] }
+      },
+      type: "artifact"
+    }));
+    await expect(collect(streamOpenRouterSseResponse(
+      sseResponse([
+        'data: {"choices":[{"delta":{"content":"ok","reasoning":"abc"}}]}\n\n',
+        'data: {"choices":[{"delta":{"reasoning_details":{"step":1}}}]}\n\n',
+        "data: [DONE]\n\n"
+      ]),
+      responseContext,
+      undefined,
+      { ...DEFAULT_PROVIDER_STREAM_LIMITS, maxOutputChars: 17 }
+    ))).rejects.toMatchObject({
+      code: "provider_output_too_large",
+      retainedTextKind: "reasoning"
+    });
+  });
+
+  it("bounds streamed tool ids and names at the protocol limit", async () => {
+    const response = (id: string, name: string) => sseResponse([
+      `data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [{
+        function: { arguments: "{}", name },
+        id,
+        index: 0
+      }] } }] })}\n\n`,
+      "data: [DONE]\n\n"
+    ]);
+    const exact = await collect(streamOpenRouterSseResponse(
+      response("i".repeat(512), "n".repeat(512)),
+      responseContext
+    ));
+    expect(exact.result.toolCalls).toMatchObject([{
+      id: "i".repeat(512),
+      name: "n".repeat(512)
+    }]);
+
+    await expect(collect(streamOpenRouterSseResponse(
+      response("i".repeat(513), "lookup"),
+      responseContext
+    ))).rejects.toThrow("openrouter_stream_tool_call_invalid");
+    await expect(collect(streamOpenRouterSseResponse(
+      response("call-1", "n".repeat(513)),
+      responseContext
+    ))).rejects.toThrow("openrouter_stream_tool_call_invalid");
+  });
+
+  it("bounds streamed citations at the exact retained-character limit", async () => {
+    const response = (citation: string) => sseResponse([
+      `data: ${JSON.stringify({ choices: [{ delta: { content: "ok" } }], citations: [citation] })}\n\n`,
+      "data: [DONE]\n\n"
+    ]);
+    await expect(collect(streamOpenRouterSseResponse(
+      response("Hello"),
+      responseContext,
+      undefined,
+      { ...DEFAULT_PROVIDER_STREAM_LIMITS, maxOutputChars: 9 }
+    ))).resolves.toMatchObject({ result: { finalText: "ok" } });
+    await expect(collect(streamOpenRouterSseResponse(
+      response("Hello!"),
+      responseContext,
+      undefined,
+      { ...DEFAULT_PROVIDER_STREAM_LIMITS, maxOutputChars: 9 }
+    ))).rejects.toMatchObject({
+      code: "provider_output_too_large",
+      observedChars: 10,
+      retainedTextKind: "citations"
+    });
+  });
+
+  it("counts streamed citation collections across separate provider fields", async () => {
+    await expect(collect(streamOpenRouterSseResponse(
+      sseResponse([
+        `data: ${JSON.stringify({
+          choices: [{ delta: { citations: ["b"], content: "ok" } }],
+          citations: ["a"]
+        })}\n\n`,
+        "data: [DONE]\n\n"
+      ]),
+      responseContext,
+      undefined,
+      { ...DEFAULT_PROVIDER_STREAM_LIMITS, maxOutputChars: 9 }
+    ))).rejects.toMatchObject({
+      code: "provider_output_too_large",
+      observedChars: 10,
+      retainedTextKind: "citations"
+    });
+  });
+
+  it("counts a flattened citation array independently of SSE event grouping", async () => {
+    const grouped = (values: readonly string[][]) => sseResponse([
+      ...values.map((citations, index) => `data: ${JSON.stringify({
+        choices: index === 0 ? [{ delta: { content: "ok" } }] : [],
+        citations
+      })}\n\n`),
+      "data: [DONE]\n\n"
+    ]);
+    const limits = { ...DEFAULT_PROVIDER_STREAM_LIMITS, maxOutputChars: 9 };
+
+    await expect(collect(streamOpenRouterSseResponse(
+      grouped([["a", "b"]]),
+      responseContext,
+      undefined,
+      limits
+    ))).resolves.toMatchObject({ result: { finalText: "ok" } });
+    await expect(collect(streamOpenRouterSseResponse(
+      grouped([["a"], [], ["b"]]),
+      responseContext,
+      undefined,
+      limits
+    ))).resolves.toMatchObject({ result: { finalText: "ok" } });
+    await expect(collect(streamOpenRouterSseResponse(
+      grouped([["a"], ["bb"]]),
+      responseContext,
+      undefined,
+      limits
+    ))).rejects.toMatchObject({
+      code: "provider_output_too_large",
+      observedChars: 10,
+      retainedTextKind: "citations"
+    });
+  });
+
   it("uses the response header id and legacy sparse zero usage when the stream ends without JSON", async () => {
     const normalized = await collect(
       streamOpenRouterSseResponse(
@@ -744,7 +1036,7 @@ describe("OpenRouter Chat response normalization", () => {
       new Response(new ReadableStream<Uint8Array>()),
       responseContext,
       undefined,
-      1
+      { ...DEFAULT_PROVIDER_STREAM_LIMITS, idleTimeoutMs: 1 }
     );
     await expect(idle.next()).rejects.toThrow("provider_stream_timeout");
 
@@ -754,7 +1046,7 @@ describe("OpenRouter Chat response normalization", () => {
       new Response(new ReadableStream<Uint8Array>()),
       responseContext,
       abortController.signal,
-      1000
+      { ...DEFAULT_PROVIDER_STREAM_LIMITS, idleTimeoutMs: 1_000 }
     );
     await expect(aborted.next()).rejects.toThrow("operator_cancelled");
   });

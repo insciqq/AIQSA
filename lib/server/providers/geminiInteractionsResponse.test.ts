@@ -5,6 +5,7 @@ import {
   parseGeminiInteractionsSse,
   streamGeminiInteractionsJsonResponse
 } from "./geminiInteractionsResponse";
+import { DEFAULT_PROVIDER_STREAM_LIMITS } from "./network";
 
 const suggestionsHtml = [
   "<style>.container { display: flex; position: relative; }</style>",
@@ -165,7 +166,7 @@ describe("Gemini Interactions response normalization", () => {
   it("accepts a provisional thought signature at step.start when summaries are disabled", async () => {
     const normalized = await collect(parseGeminiInteractionsSse({
       groundingExpected: false,
-      idleTimeoutMs: 1_000,
+      streamLimits: DEFAULT_PROVIDER_STREAM_LIMITS,
       modelId: "gemini-3.6-flash",
       responseBody: sseResponse([
         frame("interaction.created", {
@@ -209,7 +210,7 @@ describe("Gemini Interactions response normalization", () => {
   it("assembles documented provisional Google Search signatures from later deltas", async () => {
     const normalized = await collect(parseGeminiInteractionsSse({
       groundingExpected: true,
-      idleTimeoutMs: 1_000,
+      streamLimits: DEFAULT_PROVIDER_STREAM_LIMITS,
       modelId: "gemini-3.6-flash",
       responseBody: sseResponse([
         frame("interaction.created", {
@@ -289,7 +290,7 @@ describe("Gemini Interactions response normalization", () => {
 
     await expect(collect(parseGeminiInteractionsSse({
       groundingExpected: false,
-      idleTimeoutMs: 1_000,
+      streamLimits: DEFAULT_PROVIDER_STREAM_LIMITS,
       modelId: "gemini-3.6-flash",
       responseBody: sseResponse([
         frame("interaction.created", {
@@ -310,7 +311,7 @@ describe("Gemini Interactions response normalization", () => {
   it("treats null optional fields as absent on the first streamed thought step", async () => {
     const normalized = await collect(parseGeminiInteractionsSse({
       groundingExpected: false,
-      idleTimeoutMs: 1_000,
+      streamLimits: DEFAULT_PROVIDER_STREAM_LIMITS,
       modelId: "gemini-3.6-flash",
       responseBody: sseResponse([
         frame("interaction.created", {
@@ -398,7 +399,7 @@ describe("Gemini Interactions response normalization", () => {
     ];
     const normalized = await collect(parseGeminiInteractionsSse({
       groundingExpected: true,
-      idleTimeoutMs: 1_000,
+      streamLimits: DEFAULT_PROVIDER_STREAM_LIMITS,
       modelId: "gemini-3.6-flash",
       responseBody: sseResponse([
         frame("interaction.created", {
@@ -453,7 +454,7 @@ describe("Gemini Interactions response normalization", () => {
   it("fails closed without releasing buffered grounded text when suggestions are missing", async () => {
     const generator = parseGeminiInteractionsSse({
       groundingExpected: true,
-      idleTimeoutMs: 1_000,
+      streamLimits: DEFAULT_PROVIDER_STREAM_LIMITS,
       modelId: "gemini-3.6-flash",
       responseBody: sseResponse([
         frame("interaction.created", {
@@ -504,7 +505,7 @@ describe("Gemini Interactions response normalization", () => {
   it("releases a buffered ordinary answer when auto Search legitimately makes no call", async () => {
     const normalized = await collect(parseGeminiInteractionsSse({
       groundingExpected: true,
-      idleTimeoutMs: 1_000,
+      streamLimits: DEFAULT_PROVIDER_STREAM_LIMITS,
       modelId: "gemini-3.6-flash",
       responseBody: sseResponse([
         frame("interaction.created", {
@@ -540,7 +541,7 @@ describe("Gemini Interactions response normalization", () => {
   it("assembles signed SSE function calls and requires terminal plus done evidence", async () => {
     const normalized = await collect(parseGeminiInteractionsSse({
       groundingExpected: false,
-      idleTimeoutMs: 1_000,
+      streamLimits: DEFAULT_PROVIDER_STREAM_LIMITS,
       modelId: "gemini-3.6-flash",
       responseBody: sseResponse([
         frame("interaction.created", {
@@ -597,7 +598,7 @@ describe("Gemini Interactions response normalization", () => {
 
     await expect(collect(parseGeminiInteractionsSse({
       groundingExpected: false,
-      idleTimeoutMs: 1_000,
+      streamLimits: DEFAULT_PROVIDER_STREAM_LIMITS,
       modelId: "gemini-3.6-flash",
       responseBody: sseResponse([
         frame("interaction.created", {
@@ -608,13 +609,311 @@ describe("Gemini Interactions response normalization", () => {
     }))).rejects.toThrow("gemini_interactions_stream_truncated");
   });
 
+  it("bounds streamed and terminal-only visible output at the exact configured limit", async () => {
+    const visibleFrames = (parts: readonly string[]) => [
+      frame("interaction.created", {
+        event_type: "interaction.created",
+        interaction: { id: "stream-output-limit", status: "in_progress" }
+      }),
+      frame("step.start", {
+        event_type: "step.start",
+        index: 0,
+        step: { type: "model_output" }
+      }),
+      ...parts.map((text) => frame("step.delta", {
+        delta: { text, type: "text" },
+        event_type: "step.delta",
+        index: 0
+      })),
+      frame("step.stop", { event_type: "step.stop", index: 0 }),
+      frame("interaction.completed", {
+        event_type: "interaction.completed",
+        interaction: { id: "stream-output-limit", status: "completed" }
+      }),
+      frame("done", "[DONE]")
+    ];
+    const exact = await collect(parseGeminiInteractionsSse({
+      groundingExpected: false,
+      streamLimits: { ...DEFAULT_PROVIDER_STREAM_LIMITS, maxOutputChars: 5 },
+      modelId: "gemini-3.6-flash",
+      responseBody: sseResponse(visibleFrames(["Hel", "lo"]))
+    }));
+    expect(exact.result.finalText).toBe("Hello");
+
+    await expect(collect(parseGeminiInteractionsSse({
+      groundingExpected: false,
+      streamLimits: { ...DEFAULT_PROVIDER_STREAM_LIMITS, maxOutputChars: 5 },
+      modelId: "gemini-3.6-flash",
+      responseBody: sseResponse(visibleFrames(["Hello", "!"]))
+    }))).rejects.toMatchObject({
+      code: "provider_output_too_large",
+      maxChars: 5,
+      observedChars: 6,
+      retainedTextKind: "visible_output"
+    });
+
+    await expect(collect(parseGeminiInteractionsSse({
+      groundingExpected: false,
+      streamLimits: { ...DEFAULT_PROVIDER_STREAM_LIMITS, maxOutputChars: 5 },
+      modelId: "gemini-3.6-flash",
+      responseBody: sseResponse([
+        frame("interaction.created", {
+          event_type: "interaction.created",
+          interaction: { id: "terminal-output-limit", status: "in_progress" }
+        }),
+        frame("interaction.completed", {
+          event_type: "interaction.completed",
+          interaction: {
+            id: "terminal-output-limit",
+            status: "completed",
+            steps: [{ content: [{ text: "Hello!", type: "text" }], type: "model_output" }]
+          }
+        }),
+        frame("done", "[DONE]")
+      ])
+    }))).rejects.toMatchObject({
+      code: "provider_output_too_large",
+      maxChars: 5,
+      observedChars: 6,
+      retainedTextKind: "visible_output"
+    });
+  });
+
+  it("bounds function argument and thought-summary fragments at exact and over limits", async () => {
+    const toolFrames = (argumentsDelta: string) => [
+      frame("interaction.created", {
+        event_type: "interaction.created",
+        interaction: { id: "stream-tool-limit", status: "in_progress" }
+      }),
+      frame("step.start", {
+        event_type: "step.start",
+        index: 0,
+        step: { id: "call-1", name: "lookup", type: "function_call" }
+      }),
+      frame("step.delta", {
+        delta: { arguments: argumentsDelta, type: "arguments_delta" },
+        event_type: "step.delta",
+        index: 0
+      }),
+      frame("step.stop", { event_type: "step.stop", index: 0 }),
+      frame("interaction.completed", {
+        event_type: "interaction.completed",
+        interaction: { id: "stream-tool-limit", status: "requires_action" }
+      }),
+      frame("done", "[DONE]")
+    ];
+    const exactTool = await collect(parseGeminiInteractionsSse({
+      groundingExpected: false,
+      streamLimits: { ...DEFAULT_PROVIDER_STREAM_LIMITS, maxOutputChars: 7 },
+      modelId: "gemini-3.6-flash",
+      responseBody: sseResponse(toolFrames('{"x":1}'))
+    }));
+    expect(exactTool.result.toolCalls).toMatchObject([{ arguments: { x: 1 } }]);
+    await expect(collect(parseGeminiInteractionsSse({
+      groundingExpected: false,
+      streamLimits: { ...DEFAULT_PROVIDER_STREAM_LIMITS, maxOutputChars: 7 },
+      modelId: "gemini-3.6-flash",
+      responseBody: sseResponse(toolFrames('{"x":10}'))
+    }))).rejects.toMatchObject({
+      code: "provider_output_too_large",
+      retainedTextKind: "tool_arguments"
+    });
+
+    const structuredToolFrames = (query: string) => [
+      frame("interaction.created", {
+        event_type: "interaction.created",
+        interaction: { id: "structured-tool-limit", status: "in_progress" }
+      }),
+      frame("step.start", {
+        event_type: "step.start",
+        index: 0,
+        step: {
+          arguments: { query },
+          id: "call-structured",
+          name: "lookup",
+          type: "function_call"
+        }
+      }),
+      frame("step.stop", { event_type: "step.stop", index: 0 }),
+      frame("interaction.completed", {
+        event_type: "interaction.completed",
+        interaction: { id: "structured-tool-limit", status: "requires_action" }
+      }),
+      frame("done", "[DONE]")
+    ];
+    await expect(collect(parseGeminiInteractionsSse({
+      groundingExpected: false,
+      streamLimits: { ...DEFAULT_PROVIDER_STREAM_LIMITS, maxOutputChars: 17 },
+      modelId: "gemini-3.6-flash",
+      responseBody: sseResponse(structuredToolFrames("Hello"))
+    }))).resolves.toMatchObject({ result: { toolCalls: [{ arguments: { query: "Hello" } }] } });
+    await expect(collect(parseGeminiInteractionsSse({
+      groundingExpected: false,
+      streamLimits: { ...DEFAULT_PROVIDER_STREAM_LIMITS, maxOutputChars: 17 },
+      modelId: "gemini-3.6-flash",
+      responseBody: sseResponse(structuredToolFrames("Hello!"))
+    }))).rejects.toMatchObject({
+      code: "provider_output_too_large",
+      retainedTextKind: "tool_arguments"
+    });
+
+    const thoughtFrames = (text: string) => [
+      frame("interaction.created", {
+        event_type: "interaction.created",
+        interaction: { id: "stream-thought-limit", status: "in_progress" }
+      }),
+      frame("step.start", {
+        event_type: "step.start",
+        index: 0,
+        step: { type: "thought" }
+      }),
+      frame("step.delta", {
+        delta: { content: { text, type: "text" }, type: "thought_summary" },
+        event_type: "step.delta",
+        index: 0
+      }),
+      frame("step.stop", { event_type: "step.stop", index: 0 }),
+      frame("step.start", {
+        event_type: "step.start",
+        index: 1,
+        step: { type: "model_output" }
+      }),
+      frame("step.delta", {
+        delta: { text: "ok", type: "text" },
+        event_type: "step.delta",
+        index: 1
+      }),
+      frame("step.stop", { event_type: "step.stop", index: 1 }),
+      frame("interaction.completed", {
+        event_type: "interaction.completed",
+        interaction: { id: "stream-thought-limit", status: "completed" }
+      }),
+      frame("done", "[DONE]")
+    ];
+    await expect(collect(parseGeminiInteractionsSse({
+      groundingExpected: false,
+      streamLimits: { ...DEFAULT_PROVIDER_STREAM_LIMITS, maxOutputChars: 5 },
+      modelId: "gemini-3.6-flash",
+      responseBody: sseResponse(thoughtFrames("think"))
+    }))).resolves.toMatchObject({ result: { finalText: "ok" } });
+    await expect(collect(parseGeminiInteractionsSse({
+      groundingExpected: false,
+      streamLimits: { ...DEFAULT_PROVIDER_STREAM_LIMITS, maxOutputChars: 5 },
+      modelId: "gemini-3.6-flash",
+      responseBody: sseResponse(thoughtFrames("think!"))
+    }))).rejects.toMatchObject({
+      code: "provider_output_too_large",
+      retainedTextKind: "reasoning"
+    });
+
+    const terminalThoughtFrames = (text: string) => [
+      frame("interaction.created", {
+        event_type: "interaction.created",
+        interaction: { id: "terminal-thought-limit", status: "in_progress" }
+      }),
+      frame("interaction.completed", {
+        event_type: "interaction.completed",
+        interaction: {
+          id: "terminal-thought-limit",
+          status: "completed",
+          steps: [
+            { summary: [{ text, type: "text" }], type: "thought" },
+            { content: [{ text: "ok", type: "text" }], type: "model_output" }
+          ]
+        }
+      }),
+      frame("done", "[DONE]")
+    ];
+    await expect(collect(parseGeminiInteractionsSse({
+      groundingExpected: false,
+      streamLimits: { ...DEFAULT_PROVIDER_STREAM_LIMITS, maxOutputChars: 5 },
+      modelId: "gemini-3.6-flash",
+      responseBody: sseResponse(terminalThoughtFrames("think"))
+    }))).resolves.toMatchObject({ result: { finalText: "ok" } });
+    await expect(collect(parseGeminiInteractionsSse({
+      groundingExpected: false,
+      streamLimits: { ...DEFAULT_PROVIDER_STREAM_LIMITS, maxOutputChars: 5 },
+      modelId: "gemini-3.6-flash",
+      responseBody: sseResponse(terminalThoughtFrames("think!"))
+    }))).rejects.toMatchObject({
+      code: "provider_output_too_large",
+      retainedTextKind: "reasoning"
+    });
+  });
+
+  it("enforces grounding suggestion and annotation totals before retaining a later step", async () => {
+    const searchResultStep = (index: number, count: number) => [
+      frame("step.start", {
+        event_type: "step.start",
+        index,
+        step: {
+          call_id: `search-${index}`,
+          result: Array.from({ length: count }, () => ({
+            search_suggestions: suggestionsHtml
+          })),
+          type: "google_search_result"
+        }
+      }),
+      frame("step.stop", { event_type: "step.stop", index })
+    ];
+    await expect(collect(parseGeminiInteractionsSse({
+      groundingExpected: true,
+      streamLimits: DEFAULT_PROVIDER_STREAM_LIMITS,
+      modelId: "gemini-3.6-flash",
+      responseBody: sseResponse([
+        frame("interaction.created", {
+          event_type: "interaction.created",
+          interaction: { id: "suggestion-total-limit", status: "in_progress" }
+        }),
+        ...searchResultStep(0, 11),
+        ...searchResultStep(1, 10)
+      ])
+    }))).rejects.toThrow("gemini_interactions_grounding_invalid");
+
+    const annotation = {
+      end_index: 1,
+      start_index: 0,
+      title: "Source",
+      type: "url_citation",
+      url: "https://example.com/source"
+    };
+    const modelOutputStep = (index: number) => [
+      frame("step.start", {
+        event_type: "step.start",
+        index,
+        step: {
+          content: [{
+            annotations: Array.from({ length: 60 }, () => annotation),
+            text: "ok",
+            type: "text"
+          }],
+          type: "model_output"
+        }
+      }),
+      frame("step.stop", { event_type: "step.stop", index })
+    ];
+    await expect(collect(parseGeminiInteractionsSse({
+      groundingExpected: false,
+      streamLimits: DEFAULT_PROVIDER_STREAM_LIMITS,
+      modelId: "gemini-3.6-flash",
+      responseBody: sseResponse([
+        frame("interaction.created", {
+          event_type: "interaction.created",
+          interaction: { id: "annotation-total-limit", status: "in_progress" }
+        }),
+        ...modelOutputStep(0),
+        ...modelOutputStep(1)
+      ])
+    }))).rejects.toThrow("gemini_interactions_grounding_invalid");
+  });
+
   it("drops raw SSE error details", async () => {
     const remoteSecret = "remote-error-secret";
     let failure: unknown;
     try {
       await collect(parseGeminiInteractionsSse({
         groundingExpected: false,
-        idleTimeoutMs: 1_000,
+        streamLimits: DEFAULT_PROVIDER_STREAM_LIMITS,
         modelId: "gemini-3.6-flash",
         responseBody: sseResponse([
           frame("interaction.created", {

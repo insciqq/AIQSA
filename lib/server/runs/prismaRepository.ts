@@ -698,16 +698,18 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
         return "advanced" as const;
       });
     },
-    appendAssistantText: async (assistantMessageId, text) => {
+    appendAssistantText: async (assistantMessageId, text, options) => {
       await prismaClient.message.updateMany({
         data: {
           content: json(textMessageContent(text)),
-          status: "streaming"
+          ...(options?.allowErrored ? {} : { status: "streaming" as const })
         },
         where: {
           groundedAt: null,
           id: assistantMessageId,
-          status: "streaming"
+          status: options?.allowErrored
+            ? { in: ["streaming", "error"] }
+            : "streaming"
         }
       });
     },
@@ -1462,7 +1464,7 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
         }
       });
     },
-    failRun: async (runId, assistantMessageId, error) => {
+    failRun: async (runId, assistantMessageId, error, options) => {
       return prismaClient.$transaction(async (tx) => {
         const assistantMessage = await tx.message.findUnique({
           select: { groundedAt: true },
@@ -1474,7 +1476,11 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
           : error;
         const updatedRun = await tx.modelRun.updateMany({
           data: {
-            errorPayload: json(durableError),
+            errorPayload: json(
+              options?.recoveryTerminal
+                ? recoveredRunErrorPayload(durableError)
+                : durableError
+            ),
             ...(groundedLiveOnly
               ? { finalProviderResponsePreview: json(groundedLiveOnlyProviderPreview()) }
               : {}),
@@ -2228,6 +2234,12 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
     loadCheckpointedToolLoopRun: async (input) => {
       const run = await prismaClient.modelRun.findFirst({
         include: {
+          assistantMessage: {
+            select: {
+              content: true,
+              groundedAt: true
+            }
+          },
           toolCalls: {
             include: toolLoopCallInclude,
             orderBy: [{ roundIndex: "asc" }, { ordinal: "asc" }]
@@ -2240,6 +2252,11 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
       if (!checkpoint) throw new Error("tool_loop_checkpoint_invalid_in_storage");
       return {
         assistantMessageId: run.assistantMessageId,
+        assistantText: run.assistantMessage && !run.assistantMessage.groundedAt
+          ? textFromContentBlocks(
+              isRecord(run.assistantMessage.content) ? run.assistantMessage.content : {}
+            )
+          : null,
         calls: run.toolCalls.map(persistedToolLoopCall),
         chatId: run.chatId,
         checkpoint,

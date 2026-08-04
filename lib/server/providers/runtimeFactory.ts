@@ -30,6 +30,7 @@ import {
   type ProviderModelConfiguration
 } from "./providerConfiguration";
 import type { ProviderAdapter, ProviderSearchAdapter } from "./types";
+import { warnProviderStreamSafetyOnce } from "./streamSafetyObservability";
 import {
   assertProviderCredentialSource,
   resolveProviderCredentialSource,
@@ -199,7 +200,7 @@ function fetchWithPerRequestCredential(
   };
 }
 
-export function createProviderRuntimeBinding(input: Readonly<{
+function createProviderRuntimeBindingUnobserved(input: Readonly<{
   options: ProviderRuntimeFactoryOptions;
   secret: ProviderCredentialSource | null;
   snapshot: ProviderExecutionSnapshot;
@@ -353,6 +354,55 @@ export function createProviderRuntimeBinding(input: Readonly<{
       };
     }
   }
+}
+
+function withProviderStreamSafetyObservability(
+  binding: ProviderRuntimeBinding,
+  snapshot: ProviderExecutionSnapshot
+): ProviderRuntimeBinding {
+  const adapter = binding.adapter;
+  const observedAdapter: ProviderAdapter = {
+    buildRequestPreview: (request) => adapter.buildRequestPreview(request),
+    ...(adapter.cancel
+      ? { cancel: (providerResponseId: string) => adapter.cancel!(providerResponseId) }
+      : {}),
+    ...(adapter.refresh
+      ? { refresh: (providerResponseId: string) => adapter.refresh!(providerResponseId) }
+      : {}),
+    ...(adapter.retrieve
+      ? { retrieve: (providerResponseId: string) => adapter.retrieve!(providerResponseId) }
+      : {}),
+    async *stream(request, options) {
+      try {
+        return yield* adapter.stream(request, options);
+      } catch (error) {
+        warnProviderStreamSafetyOnce(error, {
+          adapterKind: snapshot.model.adapterKind,
+          connectionId: snapshot.connectionId,
+          providerFamily: snapshot.providerFamily,
+          providerModelId: snapshot.providerModelId
+        });
+        throw error;
+      }
+    }
+  };
+  return {
+    adapter: observedAdapter,
+    ...(binding.searchAdapter ? { searchAdapter: binding.searchAdapter } : {}),
+    ...(binding.toolBridge ? { toolBridge: binding.toolBridge } : {})
+  };
+}
+
+export function createProviderRuntimeBinding(input: Readonly<{
+  options: ProviderRuntimeFactoryOptions;
+  secret: ProviderCredentialSource | null;
+  snapshot: ProviderExecutionSnapshot;
+}>): ProviderRuntimeBinding {
+  const snapshot = normalizeProviderExecutionSnapshot(input.snapshot);
+  return withProviderStreamSafetyObservability(
+    createProviderRuntimeBindingUnobserved({ ...input, snapshot }),
+    snapshot
+  );
 }
 
 export function createProviderPreviewRuntimeBinding(

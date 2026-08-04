@@ -6,6 +6,7 @@ import {
   streamOpenAICompatibleChatSseResponse,
   type OpenAICompatibleChatResponseContext
 } from "./openaiCompatibleChatResponse";
+import { DEFAULT_PROVIDER_STREAM_LIMITS } from "./network";
 
 const responseContext: OpenAICompatibleChatResponseContext = {
   modelId: "vendor/model-1",
@@ -207,6 +208,119 @@ describe("OpenAI-compatible Chat Completions response", () => {
         }
       ]
     });
+  });
+
+  it("accepts the exact visible-output limit and rejects one character over before yielding it", async () => {
+    const exact = await collect(streamOpenAICompatibleChatSseResponse(
+      sseResponse([
+        'data: {"choices":[{"delta":{"content":"Hel"}}]}\n\n',
+        'data: {"choices":[{"delta":{"content":"lo"}}]}\n\n',
+        "data: [DONE]\n\n"
+      ]),
+      responseContext,
+      undefined,
+      { ...DEFAULT_PROVIDER_STREAM_LIMITS, maxOutputChars: 5 }
+    ));
+    expect(exact.result.finalText).toBe("Hello");
+
+    const overflow = streamOpenAICompatibleChatSseResponse(
+      sseResponse([
+        'data: {"choices":[{"delta":{"content":"Hello"}}]}\n\n',
+        'data: {"choices":[{"delta":{"content":"!"}}]}\n\n'
+      ]),
+      responseContext,
+      undefined,
+      { ...DEFAULT_PROVIDER_STREAM_LIMITS, maxOutputChars: 5 }
+    );
+    await expect(overflow.next()).resolves.toMatchObject({ value: { type: "artifact" } });
+    await expect(overflow.next()).resolves.toMatchObject({ value: { type: "token" } });
+    await expect(overflow.next()).rejects.toMatchObject({
+      code: "provider_output_too_large",
+      maxChars: 5,
+      observedChars: 6,
+      retainedTextKind: "visible_output"
+    });
+  });
+
+  it("bounds streamed tool arguments at the exact limit and rejects one character over", async () => {
+    const response = (secondFragment: string) => sseResponse([
+      'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-1","function":{"name":"lookup","arguments":"{\\"x\\":"}}]}}]}\n\n',
+      `data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [{
+        function: { arguments: secondFragment },
+        index: 0
+      }] } }] })}\n\n`,
+      "data: [DONE]\n\n"
+    ]);
+    const exact = await collect(streamOpenAICompatibleChatSseResponse(
+      response("1}"),
+      responseContext,
+      undefined,
+      { ...DEFAULT_PROVIDER_STREAM_LIMITS, maxOutputChars: 7 }
+    ));
+    expect(exact.result.toolCalls).toMatchObject([{ arguments: { x: 1 } }]);
+
+    await expect(collect(streamOpenAICompatibleChatSseResponse(
+      response("10}"),
+      responseContext,
+      undefined,
+      { ...DEFAULT_PROVIDER_STREAM_LIMITS, maxOutputChars: 7 }
+    ))).rejects.toMatchObject({
+      code: "provider_output_too_large",
+      maxChars: 7,
+      observedChars: 8,
+      retainedTextKind: "tool_arguments"
+    });
+
+    const structuredResponse = (query: string) => sseResponse([
+      `data: ${JSON.stringify({ choices: [{ message: { tool_calls: [{
+        function: { arguments: { query }, name: "lookup" },
+        id: "call-structured"
+      }] } }] })}\n\n`,
+      "data: [DONE]\n\n"
+    ]);
+    await expect(collect(streamOpenAICompatibleChatSseResponse(
+      structuredResponse("Hello"),
+      responseContext,
+      undefined,
+      { ...DEFAULT_PROVIDER_STREAM_LIMITS, maxOutputChars: 17 }
+    ))).resolves.toMatchObject({ result: { toolCalls: [{ arguments: { query: "Hello" } }] } });
+    await expect(collect(streamOpenAICompatibleChatSseResponse(
+      structuredResponse("Hello!"),
+      responseContext,
+      undefined,
+      { ...DEFAULT_PROVIDER_STREAM_LIMITS, maxOutputChars: 17 }
+    ))).rejects.toMatchObject({
+      code: "provider_output_too_large",
+      retainedTextKind: "tool_arguments"
+    });
+  });
+
+  it("bounds streamed tool ids and names at the protocol limit", async () => {
+    const response = (id: string, name: string) => sseResponse([
+      `data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [{
+        function: { arguments: "{}", name },
+        id,
+        index: 0
+      }] } }] })}\n\n`,
+      "data: [DONE]\n\n"
+    ]);
+    const exact = await collect(streamOpenAICompatibleChatSseResponse(
+      response("i".repeat(512), "n".repeat(512)),
+      responseContext
+    ));
+    expect(exact.result.toolCalls).toMatchObject([{
+      id: "i".repeat(512),
+      name: "n".repeat(512)
+    }]);
+
+    await expect(collect(streamOpenAICompatibleChatSseResponse(
+      response("i".repeat(513), "lookup"),
+      responseContext
+    ))).rejects.toThrow("openai_compatible_chat_stream_tool_call_invalid");
+    await expect(collect(streamOpenAICompatibleChatSseResponse(
+      response("call-1", "n".repeat(513)),
+      responseContext
+    ))).rejects.toThrow("openai_compatible_chat_stream_tool_call_invalid");
   });
 
   it("fails closed on malformed, truncated, empty, and untrusted error responses", async () => {

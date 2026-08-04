@@ -9,6 +9,7 @@ import type { ModelRunSseEvent, ModelRunUsage } from "../../domain/modelRunEvent
 import { textFromContentBlocks } from "../../domain/modelRunEvents";
 import type { ResolvedEntitlements } from "../auth/entitlements";
 import type { McpRunPlanSnapshot } from "../mcp/runPlan";
+import { ProviderStreamTooLargeError } from "../providers/streamSafety";
 import type {
   NormalizedRunRequest,
   ProviderAdapter,
@@ -35,6 +36,7 @@ type RecordRunUsageEventsInput = Parameters<RunRepository["recordRunUsageEvents"
 type FailedRun = {
   assistantMessageId: string;
   error: { code: string; message: string };
+  options?: Readonly<{ recoveryTerminal?: boolean }>;
   runId: string;
 };
 type GroundedMark = Parameters<RunRepository["markAssistantMessageGroundedLiveOnly"]>[0];
@@ -47,6 +49,7 @@ type RepositoryOptions = Readonly<{
   modelAvailable?: boolean;
   searchStrategyEnabled?: boolean;
   responseIdPublication?: "cancelled" | "published" | "terminal";
+  usagePersistenceError?: Error;
 }>;
 
 function usage(inputTokens = 2, outputTokens = 3, reasoningTokens = 1): ModelRunUsage {
@@ -308,11 +311,16 @@ function createRepository(options: RepositoryOptions = {}) {
     async createSearchRun(input) {
       searchRuns.push(input);
     },
-    async failRun(runId, assistantMessageId, error) {
+    async failRun(runId, assistantMessageId, error, failureOptions) {
       if (options.failureWins === false) {
         return false;
       }
-      failedRuns.push({ assistantMessageId, error, runId });
+      failedRuns.push({
+        assistantMessageId,
+        error,
+        ...(failureOptions ? { options: failureOptions } : {}),
+        runId
+      });
       persistedEvents.push({
         event: { data: error, type: "error" },
         runId,
@@ -403,6 +411,9 @@ function createRepository(options: RepositoryOptions = {}) {
       return { calls, kind: "persisted" };
     },
     async recordRunUsageEvents(input) {
+      if (options.usagePersistenceError) {
+        throw options.usagePersistenceError;
+      }
       recordedRunUsageEvents.push(input);
       return true;
     },
@@ -1057,6 +1068,134 @@ describe("run execution", () => {
       }
     ]);
     expect(repository.persistedEvents.some(({ event }) => event.type === "usage" || event.type === "done")).toBe(false);
+  });
+
+  it("settles a stream safety failure terminally with exact safe classification and partial text", async () => {
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const repository = createRepository();
+    const adapter = createAdapter(async function* () {
+      yield { data: { delta: "partial" }, type: "token" };
+      yield { data: usage(7, 2, 0), type: "usage" };
+      throw new ProviderStreamTooLargeError({
+        maxBytes: 64,
+        observedBytes: 65,
+        snapshot: { durationMs: 123, totalStreamBytes: 65 }
+      });
+    });
+
+    const events = parseSse(
+      await createRunExecutionResponse(
+        executionInput({ adapter, repository: repository.repository })
+      ).text()
+    );
+
+    expect(events.map((event) => event.type)).toEqual([
+      "run_start",
+      "message_start",
+      "token",
+      "error"
+    ]);
+    expect(events.at(-1)).toEqual({
+      data: {
+        code: "provider_stream_too_large",
+        message: "The provider stream exceeded a safety limit."
+      },
+      type: "error"
+    });
+    expect(repository.assistantTexts).toEqual(["partial"]);
+    expect(repository.failedRuns).toEqual([{
+      assistantMessageId: "assistant-1",
+      error: {
+        code: "provider_stream_too_large",
+        message: "The provider stream exceeded a safety limit."
+      },
+      options: { recoveryTerminal: true },
+      runId: "run-1"
+    }]);
+    expect(repository.completeRuns).toEqual([]);
+    expect(repository.persistedEvents.some(({ event }) =>
+      event.type === "usage" || event.type === "done"
+    )).toBe(false);
+    expect(warning).toHaveBeenCalledOnce();
+    expect(JSON.parse(String(warning.mock.calls[0]?.[0]))).toMatchObject({
+      code: "provider_stream_too_large",
+      durationMs: 123,
+      limit: 64,
+      observed: 65,
+      termination: "total_limit",
+      totalStreamBytes: 65
+    });
+    warning.mockRestore();
+  });
+
+  it("does not execute tools or continue rounds after a tool-enabled stream safety failure", async () => {
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    let answerRounds = 0;
+    const repository = createRepository({
+      usagePersistenceError: new Error("usage_persistence_unavailable")
+    });
+    const adapter = createAdapter(async function* () {
+      answerRounds += 1;
+      yield { data: { delta: "unsafe round partial" }, type: "token" };
+      yield { data: usage(4, 2, 0), type: "usage" };
+      throw new ProviderStreamTooLargeError({
+        maxBytes: 128,
+        observedBytes: 129,
+        snapshot: { durationMs: 20, totalStreamBytes: 129 }
+      });
+    });
+    const search = vi.fn<ProviderSearchAdapter["search"]>();
+    const searchAdapter: ProviderSearchAdapter = {
+      buildRequestPreview: () => ({}),
+      search
+    };
+
+    const events = parseSse(
+      await createRunExecutionResponse(executionInput({
+        adapter,
+        prepared: preparedData({
+          modelId: "openai-answer-model",
+          provider: "openai",
+          searchStrategy: "perplexity-tool-search"
+        }),
+        repository: repository.repository,
+        searchAdapter
+      })).text()
+    );
+
+    expect(answerRounds).toBe(1);
+    expect(search).not.toHaveBeenCalled();
+    expect(repository.toolCalls.size).toBe(0);
+    expect(repository.completeRuns).toEqual([]);
+    expect(repository.assistantTexts).toEqual(["unsafe round partial"]);
+    expect(repository.failedRuns).toEqual([expect.objectContaining({
+      error: {
+        code: "provider_stream_too_large",
+        message: "The provider stream exceeded a safety limit."
+      },
+      options: { recoveryTerminal: true }
+    })]);
+    expect(events.map((event) => event.type)).toEqual([
+      "run_start",
+      "message_start",
+      "token",
+      "error"
+    ]);
+    expect(events.at(-1)).toMatchObject({
+      data: {
+        code: "provider_stream_too_large",
+        message: "The provider stream exceeded a safety limit."
+      },
+      type: "error"
+    });
+    expect(warning).toHaveBeenCalledOnce();
+    expect(JSON.parse(String(warning.mock.calls[0]?.[0]))).toMatchObject({
+      durationMs: 20,
+      limit: 128,
+      observed: 129,
+      totalStreamBytes: 129
+    });
+    warning.mockRestore();
   });
 
   it("does not append an error when durable cancellation wins before failure settlement", async () => {

@@ -204,7 +204,14 @@ export async function runProviderToolLoop(
           next = await stream.next();
         }
       } catch (error) {
-        if (lastReportedUsage) await input.onUsage?.(lastReportedUsage, roundRequest);
+        if (lastReportedUsage) {
+          try {
+            await input.onUsage?.(lastReportedUsage, roundRequest);
+          } catch {
+            // Usage persistence is secondary once the provider round has
+            // already failed and must not replace its causal classification.
+          }
+        }
         throw error;
       }
       const result = next.value;

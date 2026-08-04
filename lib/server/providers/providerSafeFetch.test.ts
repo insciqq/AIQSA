@@ -10,6 +10,7 @@ import {
   ProviderSafeFetchError
 } from "./providerSafeFetch";
 import { parseOpenAIResponsesSse } from "./openaiResponsesResponse";
+import { DEFAULT_PROVIDER_STREAM_LIMITS } from "./network";
 import { createFetchOpenAIResponsesClient } from "./openaiResponsesTransport";
 
 const PUBLIC_ADDRESS: McpResolvedAddress = {
@@ -79,9 +80,9 @@ describe("provider SSRF-safe fetch", () => {
 
       const stream = parseOpenAIResponsesSse({
         background: false,
-        idleTimeoutMs: 1_000,
         responseBody: response.body,
-        stream: true
+        stream: true,
+        streamLimits: { ...DEFAULT_PROVIDER_STREAM_LIMITS, idleTimeoutMs: 1_000 }
       });
       const events = [];
       let next = await stream.next();

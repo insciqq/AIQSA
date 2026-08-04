@@ -194,7 +194,11 @@ export type RunRepository = {
     runId: string;
     userId: string;
   }): Promise<AdvanceToolLoopCallBatchResult>;
-  appendAssistantText(assistantMessageId: string, text: string): Promise<void>;
+  appendAssistantText(
+    assistantMessageId: string,
+    text: string,
+    options?: Readonly<{ allowErrored?: boolean }>
+  ): Promise<void>;
   appendRunEvent(runId: string, sequence: number, event: ModelRunSseEvent): Promise<void>;
   beginToolLoopProviderRound(input: {
     providerContinuation: ToolLoopJsonValue | null;
@@ -276,7 +280,12 @@ export type RunRepository = {
     status: "complete" | "error";
     strategyId: string;
   }): Promise<void>;
-  failRun(runId: string, assistantMessageId: string, error: { code: string; message: string }): Promise<boolean>;
+  failRun(
+    runId: string,
+    assistantMessageId: string,
+    error: { code: string; message: string },
+    options?: Readonly<{ recoveryTerminal?: boolean }>
+  ): Promise<boolean>;
   findOwnedChat(chatId: string, userId: string): Promise<{
     activeLeafMessageId: string | null;
     defaultModelId: string;

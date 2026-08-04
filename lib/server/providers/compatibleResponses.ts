@@ -13,7 +13,6 @@ import {
   parseOpenAIResponsesSse
 } from "./openaiResponsesResponse";
 import type { OpenAIResponsesClient } from "./openaiResponsesTransport";
-import { providerStreamIdleTimeoutMs } from "./network";
 import type { ProviderAdapter, ProviderRunRequest, ProviderRunResult } from "./types";
 import {
   OPENAI_RESPONSES_REASONING_REQUEST_MAPPING,
@@ -127,7 +126,6 @@ export function createCompatibleResponsesAdapter(
         }
         return yield* parseOpenAIResponsesSse({
           background: false,
-          idleTimeoutMs: providerStreamIdleTimeoutMs(),
           provider: "openai-compatible",
           responseBody: response.body,
           signal: runOptions.signal,

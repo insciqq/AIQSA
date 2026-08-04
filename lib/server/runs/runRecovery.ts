@@ -15,6 +15,13 @@ import type {
   ProviderSearchAdapter
 } from "../providers/types";
 import type { ProviderRuntimeBinding } from "../providers/runtimeFactory";
+import {
+  isProviderStreamSafetyCode,
+  providerStreamSafeMessage,
+  providerStreamSafetyReport,
+  type ProviderStreamSafetyReport
+} from "../providers/streamSafety";
+import { warnProviderStreamSafetyOnce } from "../providers/streamSafetyObservability";
 import type { ProviderRuntimeResolver } from "../providerRuntime/runtimeResolver";
 import { providerToolBridges } from "../tools/bridges";
 import { createPerplexitySearchToolExecutor, perplexityWebSearchTool } from "../tools/perplexitySearch";
@@ -72,6 +79,7 @@ import {
   toolLoopPhaseArtifact,
   toolResultInspectionArtifact
 } from "./toolInspection";
+import { createRunTokenPersistenceBuffer } from "./runTokenPersistence";
 
 export const activeRunStaleMs = 10 * 60 * 1000;
 
@@ -87,6 +95,7 @@ export type RunRecoveryRegistry = Readonly<{
 export type RunRecoveryRepository = Pick<
   RunRepository,
   | "advanceToolLoopCallBatch"
+  | "appendAssistantText"
   | "appendRunEvent"
   | "claimToolLoopCall"
   | "completeRun"
@@ -205,9 +214,16 @@ function isRefreshableRun(control: Readonly<{ recoverySettled?: boolean; status:
 }
 
 class ToolLoopRecoveryError extends Error {
-  constructor(readonly code: string, message: string) {
+  readonly report?: ProviderStreamSafetyReport;
+
+  constructor(
+    readonly code: string,
+    message: string,
+    report?: ProviderStreamSafetyReport
+  ) {
     super(message);
     this.name = "ToolLoopRecoveryError";
+    if (report) this.report = report;
   }
 }
 
@@ -423,10 +439,11 @@ async function settleToolLoopRecoveryError(
   events: readonly ModelRunSseEvent[] = [],
   providerResponseId: string | null = run.providerResponseId
 ): Promise<void> {
+  const groupedAttributions = groupedUsageAttributions(usageAttributions);
   const attributed = await usageAttributionsWithEstimatedCost(
     deps.repository,
-    groupedUsageAttributions(usageAttributions)
-  );
+    groupedAttributions
+  ).catch(() => groupedAttributions);
   await deps.repository.settleRecoveredRunError({
     error,
     events: [...events],
@@ -708,15 +725,22 @@ async function recoverCheckpointedToolLoop(
 ): Promise<void> {
   if (signal.aborted || run.status === "cancelled" || !run.assistantMessageId) return;
 
-  const runtime = await resolveAnswerRuntime(deps, run.id, run.provider);
-  const adapter = runtime?.adapter;
-  const bridge = runtime?.toolBridge ??
-    providerToolBridges[run.provider as keyof typeof providerToolBridges];
   const usageAttributions: RunUsageAttribution[] = [];
   const persistedUsageKeys = new Set<string>();
   let currentProviderResponseId = run.providerResponseId;
+  let tokenBuffer: ReturnType<typeof createRunTokenPersistenceBuffer> | null = null;
 
   try {
+    if (run.assistantText === null) {
+      throw new ToolLoopRecoveryError(
+        "grounding_live_only_not_recoverable",
+        "Grounded live-only output cannot resume after process recovery."
+      );
+    }
+    const providerRuntime = await resolveAnswerRuntime(deps, run.id, run.provider);
+    const adapter = providerRuntime?.adapter;
+    const bridge = providerRuntime?.toolBridge ??
+      providerToolBridges[run.provider as keyof typeof providerToolBridges];
     const attachmentLimits = deps.getAttachmentLimits?.() ?? getRunAttachmentLimits();
     const attachmentIds = validatePersistedAttachmentReferences(
       run.normalizedRequest.content.blocks,
@@ -875,6 +899,14 @@ async function recoverCheckpointedToolLoop(
       usageAttributions
     };
     const sequence = { value: await deps.repository.nextRunEventSequence(run.id) };
+    tokenBuffer = createRunTokenPersistenceBuffer({
+      allowErroredAssistant: true,
+      assistantMessageId: run.assistantMessageId,
+      initialText: run.assistantText ?? "",
+      repository: deps.repository,
+      runId: run.id,
+      sequence
+    });
 
     async function persistCumulativeUsage(): Promise<void> {
       const grouped = groupedUsageAttributions(usageAttributions);
@@ -903,7 +935,12 @@ async function recoverCheckpointedToolLoop(
 
     async function appendEvent(event: ModelRunSseEvent): Promise<void> {
       const effectiveEvent = withPinnedHostedSearchIdentity(event, run.normalizedRequest);
+      if (effectiveEvent.type === "token") {
+        await tokenBuffer!.push(effectiveEvent.data.delta);
+        return;
+      }
       if (isGroundingDisplaySseEvent(effectiveEvent)) {
+        await tokenBuffer!.disablePersistence();
         if (run.assistantMessageId) {
           await deps.repository.markAssistantMessageGroundedLiveOnly({
             assistantMessageId: run.assistantMessageId,
@@ -918,6 +955,7 @@ async function recoverCheckpointedToolLoop(
           "Grounded live-only output cannot resume after process recovery."
         );
       }
+      await tokenBuffer!.flush();
       await publishProviderResponseId(providerResponseIdFromEvent(effectiveEvent) ?? undefined);
       await appendRunEventWithRetry(deps.repository, run.id, sequence, effectiveEvent);
     }
@@ -1047,12 +1085,8 @@ async function recoverCheckpointedToolLoop(
         refreshed.result?.providerResponseId ?? refreshed.providerResponseId
       );
       if (!refreshed.terminal) {
-        await appendStoredRunEvents({
-          events: refreshed.events,
-          repository: deps.repository,
-          runId: run.id,
-          sequence
-        });
+        for (const event of refreshed.events) await appendEvent(event);
+        await tokenBuffer.flush();
         return;
       }
       if (!refreshed.result) {
@@ -1134,6 +1168,7 @@ async function recoverCheckpointedToolLoop(
       }
     }
 
+    await tokenBuffer.flush();
     const reset = await deps.repository.resetToolLoopAssistantDraft({
       roundIndex: run.checkpoint.roundIndex,
       runId: run.id,
@@ -1147,6 +1182,7 @@ async function recoverCheckpointedToolLoop(
       );
     }
     sequence.value += 1;
+    tokenBuffer.resetLocal();
 
     if (hasMcpTools && run.checkpoint.phase !== "provider_running") {
       await appendEvent(toolLoopPhaseArtifact({
@@ -1243,9 +1279,10 @@ async function recoverCheckpointedToolLoop(
       },
       onSignal: async (signal) => {
         if (signal.type === "text_delta") {
-          await appendEvent({ data: { delta: signal.delta }, type: "token" });
+          await tokenBuffer!.push(signal.delta);
           return;
         }
+        await tokenBuffer!.flush();
         const didReset = await deps.repository.resetToolLoopAssistantDraft({
           roundIndex: signal.round,
           runId: run.id,
@@ -1259,6 +1296,7 @@ async function recoverCheckpointedToolLoop(
           );
         }
         sequence.value += 1;
+        tokenBuffer!.resetLocal();
       },
       onToolBatchSettled: async ({ results, round }) => {
         await appendToolResults(results, round);
@@ -1306,10 +1344,22 @@ async function recoverCheckpointedToolLoop(
       tools
     });
 
-    if (outcome.status === "cancelled") return;
-    if (outcome.status === "failed") {
-      throw new ToolLoopRecoveryError(outcome.failure.code, outcome.failure.message);
+    if (outcome.status === "cancelled") {
+      await tokenBuffer.flush();
+      return;
     }
+    if (outcome.status === "failed") {
+      const safetyCode = isProviderStreamSafetyCode(outcome.failure.code)
+        ? outcome.failure.code
+        : null;
+      throw new ToolLoopRecoveryError(
+        outcome.failure.code,
+        outcome.failure.streamSafetyReport?.message ??
+          (safetyCode ? providerStreamSafeMessage(safetyCode) : outcome.failure.message),
+        outcome.failure.streamSafetyReport
+      );
+    }
+    await tokenBuffer.flush();
     const groupedAttributions = groupedUsageAttributions(usageAttributions);
     const usage = sumTokenUsage(groupedAttributions.map((attribution) => attribution.usage));
     await finalizeRunCompletion({
@@ -1330,15 +1380,53 @@ async function recoverCheckpointedToolLoop(
       }
     });
   } catch (error) {
-    if (signal.aborted || error instanceof ToolLoopRecoveryStopped) return;
-    const failure = error instanceof ToolLoopRecoveryError
-      ? error
-      : isAttachmentMaterializationError(error)
-        ? new ToolLoopRecoveryError(error.code, error.message)
-        : new ToolLoopRecoveryError(
-            "tool_loop_recovery_failed",
-            error instanceof Error ? error.message : "Tool-loop recovery failed."
-          );
+    if (signal.aborted || error instanceof ToolLoopRecoveryStopped) {
+      await tokenBuffer?.flush().catch(() => undefined);
+      return;
+    }
+    let recoveryError = error;
+    const originalStreamSafetyReport = providerStreamSafetyReport(error);
+    try {
+      await tokenBuffer?.flush();
+    } catch (flushError) {
+      if (!originalStreamSafetyReport) recoveryError = flushError;
+    }
+    const streamSafetyReport = providerStreamSafetyReport(recoveryError);
+    const safetyCode = streamSafetyReport?.code ??
+      (recoveryError instanceof ToolLoopRecoveryError &&
+        isProviderStreamSafetyCode(recoveryError.code)
+        ? recoveryError.code
+        : isRecord(recoveryError) && isProviderStreamSafetyCode(recoveryError.code)
+          ? recoveryError.code
+          : null);
+    const failure = recoveryError instanceof ToolLoopRecoveryError
+      ? safetyCode && recoveryError.message !== providerStreamSafeMessage(safetyCode)
+        ? new ToolLoopRecoveryError(
+            safetyCode,
+            providerStreamSafeMessage(safetyCode),
+            streamSafetyReport ?? undefined
+          )
+        : recoveryError
+      : safetyCode
+        ? new ToolLoopRecoveryError(
+            safetyCode,
+            providerStreamSafeMessage(safetyCode),
+            streamSafetyReport ?? undefined
+          )
+        : isAttachmentMaterializationError(recoveryError)
+          ? new ToolLoopRecoveryError(recoveryError.code, recoveryError.message)
+          : new ToolLoopRecoveryError(
+              "tool_loop_recovery_failed",
+              recoveryError instanceof Error ? recoveryError.message : "Tool-loop recovery failed."
+            );
+    if (streamSafetyReport) {
+      warnProviderStreamSafetyOnce(failure, {
+        adapterKind: "direct",
+        connectionId: "unbound",
+        providerFamily: run.provider,
+        providerModelId: "unbound"
+      });
+    }
     await settleToolLoopRecoveryError(
       deps,
       run,

@@ -5,9 +5,18 @@ import {
   type ModelToolCall
 } from "../tools/types";
 import {
-  providerStreamIdleTimeoutMs
+  resolveProviderStreamLimits,
+  type ProviderStreamLimits
 } from "./network";
+import {
+  assertBoundedStructuredTextLength,
+  BoundedTextAccumulator
+} from "./boundedText";
 import { parseSseStream } from "./sse";
+import {
+  providerStreamSafetySnapshot,
+  type ProviderStreamSafetySnapshot
+} from "./streamSafety";
 import type { ProviderRunRequest, ProviderRunResult } from "./types";
 import { visibleAnswerText } from "./visibleAnswer";
 
@@ -19,6 +28,10 @@ export type OpenAICompatibleChatResponseContext = Readonly<
 
 export const invalidOpenAICompatibleChatTerminalResponseError =
   "openai_compatible_chat_terminal_response_invalid";
+const MAX_STREAMED_TOOL_CALLS = 16;
+const MAX_TOOL_CALL_ID_LENGTH = 512;
+const MAX_TOOL_NAME_LENGTH = 512;
+const MAX_TOOL_TYPE_LENGTH = 64;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -252,7 +265,7 @@ export async function* streamOpenAICompatibleChatJsonResponse(
 }
 
 type StreamedToolCall = {
-  arguments: Record<string, unknown> | string;
+  arguments: BoundedTextAccumulator | Record<string, unknown>;
   id?: string;
   index: number;
   name?: string;
@@ -262,6 +275,8 @@ type StreamedToolCall = {
 function accumulateToolCalls(
   target: Map<number, StreamedToolCall>,
   value: unknown,
+  maxOutputChars: number,
+  snapshot: ProviderStreamSafetySnapshot | null,
   replaceArguments = false
 ): void {
   if (!Array.isArray(value)) {
@@ -279,25 +294,58 @@ function accumulateToolCalls(
       candidate.index >= 0
         ? candidate.index
         : ordinal;
-    const current = target.get(index) ?? { arguments: "", index };
+    let current = target.get(index);
+    if (!current) {
+      if (target.size >= MAX_STREAMED_TOOL_CALLS) {
+        throw new Error("openai_compatible_chat_stream_tool_call_limit_exceeded");
+      }
+      current = {
+        arguments: new BoundedTextAccumulator({
+          maxChars: maxOutputChars,
+          retainedTextKind: "tool_arguments"
+        }),
+        index
+      };
+    }
     const fn = isRecord(candidate.function) ? candidate.function : {};
 
     if (typeof candidate.id === "string" && candidate.id) {
+      if (candidate.id.length > MAX_TOOL_CALL_ID_LENGTH) {
+        throw new Error("openai_compatible_chat_stream_tool_call_invalid");
+      }
       current.id = candidate.id;
     }
     if (typeof candidate.type === "string" && candidate.type) {
+      if (candidate.type.length > MAX_TOOL_TYPE_LENGTH) {
+        throw new Error("openai_compatible_chat_stream_tool_call_invalid");
+      }
       current.type = candidate.type;
     }
     if (typeof fn.name === "string" && fn.name) {
+      if (fn.name.length > MAX_TOOL_NAME_LENGTH) {
+        throw new Error("openai_compatible_chat_stream_tool_call_invalid");
+      }
       current.name = fn.name;
     }
     if (isRecord(fn.arguments)) {
+      assertBoundedStructuredTextLength({
+        maxChars: maxOutputChars,
+        retainedTextKind: "tool_arguments",
+        snapshot,
+        value: fn.arguments
+      });
       current.arguments = fn.arguments;
     } else if (typeof fn.arguments === "string") {
-      current.arguments =
-        replaceArguments || typeof current.arguments !== "string"
-          ? fn.arguments
-          : `${current.arguments}${fn.arguments}`;
+      if (replaceArguments || !(current.arguments instanceof BoundedTextAccumulator)) {
+        current.arguments = new BoundedTextAccumulator({
+          initialValue: fn.arguments,
+          maxChars: maxOutputChars,
+          retainedTextKind: "tool_arguments",
+          snapshot
+        });
+      } else {
+        current.arguments.append(fn.arguments, snapshot);
+      }
     }
 
     target.set(index, current);
@@ -309,7 +357,9 @@ function completedToolCalls(target: ReadonlyMap<number, StreamedToolCall>): Reco
     .sort((left, right) => left.index - right.index)
     .map((call) => ({
       function: {
-        arguments: call.arguments,
+        arguments: call.arguments instanceof BoundedTextAccumulator
+          ? call.arguments.value()
+          : call.arguments,
         name: call.name
       },
       id: call.id,
@@ -321,17 +371,21 @@ export async function* streamOpenAICompatibleChatSseResponse(
   response: Response,
   request: OpenAICompatibleChatResponseContext,
   signal?: AbortSignal,
-  idleTimeoutMs = providerStreamIdleTimeoutMs()
+  configuredStreamLimits?: Partial<ProviderStreamLimits>
 ): AsyncGenerator<ModelRunSseEvent, ProviderRunResult> {
   if (!response.body) {
     throw new Error("openai_compatible_chat_stream_body_missing");
   }
 
+  const streamLimits = resolveProviderStreamLimits(configuredStreamLimits);
   let id: string | undefined;
   let model: unknown = request.modelId;
   let object: unknown = "chat.completion.chunk";
   let finishReason: unknown = null;
-  let rawFinalText = "";
+  const rawFinalText = new BoundedTextAccumulator({
+    maxChars: streamLimits.maxOutputChars,
+    retainedTextKind: "visible_output"
+  });
   let rawUsage: unknown = null;
   let usage: ModelRunUsage = {
     inputTokens: 0,
@@ -342,7 +396,14 @@ export async function* streamOpenAICompatibleChatSseResponse(
   let terminalSeen = false;
   const toolCallParts = new Map<number, StreamedToolCall>();
 
-  for await (const event of parseSseStream(response.body, { idleTimeoutMs, signal })) {
+  for await (const event of parseSseStream(response.body, {
+    idleTimeoutMs: streamLimits.idleTimeoutMs,
+    maxBytes: streamLimits.maxBytes,
+    maxDurationMs: streamLimits.maxDurationMs,
+    maxEventBytes: streamLimits.maxEventBytes,
+    signal
+  })) {
+    const snapshot = providerStreamSafetySnapshot(event);
     if (event.data.trim() === "[DONE]") {
       terminalSeen = true;
       break;
@@ -385,12 +446,18 @@ export async function* streamOpenAICompatibleChatSseResponse(
     finishReason = choice.finish_reason ?? finishReason;
     const delta = isRecord(choice.delta) ? choice.delta : {};
     const message = isRecord(choice.message) ? choice.message : {};
-    accumulateToolCalls(toolCallParts, delta.tool_calls);
-    accumulateToolCalls(toolCallParts, message.tool_calls, true);
+    accumulateToolCalls(toolCallParts, delta.tool_calls, streamLimits.maxOutputChars, snapshot);
+    accumulateToolCalls(
+      toolCallParts,
+      message.tool_calls,
+      streamLimits.maxOutputChars,
+      snapshot,
+      true
+    );
 
     const text = extractTextContent(delta.content);
     if (text) {
-      rawFinalText += text;
+      rawFinalText.append(text, snapshot);
       yield { data: { delta: text }, type: "token" };
     }
   }
@@ -402,9 +469,10 @@ export async function* streamOpenAICompatibleChatSseResponse(
     yield summaryEvent(request, model, id);
   }
 
+  const rawText = rawFinalText.value();
   const streamedToolCalls = completedToolCalls(toolCallParts);
   const message = {
-    content: rawFinalText || null,
+    content: rawText || null,
     role: "assistant",
     ...(streamedToolCalls.length > 0 ? { tool_calls: streamedToolCalls } : {})
   };
@@ -417,7 +485,7 @@ export async function* streamOpenAICompatibleChatSseResponse(
   };
   assertValidTerminalResponse(syntheticResponse);
 
-  const finalText = visibleAnswerText(rawFinalText);
+  const finalText = visibleAnswerText(rawText);
   const toolCalls = parseToolCalls(message);
   if (!finalText && toolCalls.length === 0) {
     throw new Error(invalidOpenAICompatibleChatTerminalResponseError);
@@ -428,7 +496,7 @@ export async function* streamOpenAICompatibleChatSseResponse(
       syntheticResponse,
       request,
       finalText,
-      rawFinalText
+      rawText
     ),
     finalText,
     ...(toolCalls.length > 0 ? { providerToolCallMessage: message } : {}),
