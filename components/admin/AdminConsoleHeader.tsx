@@ -44,7 +44,7 @@ export function AdminConsoleHeader({
           ) : null}
           {releaseStatus?.state === "update_available" && releaseStatus.latestVersion && releaseStatus.releaseUrl ? (
             <details className="group/update relative max-sm:basis-full">
-              <summary className="flex min-h-control-sm w-fit cursor-pointer list-none items-center gap-1.5 rounded-control border border-caution/30 bg-caution/[0.07] px-2 text-xs font-semibold text-caution outline-none marker:hidden hover:bg-caution/[0.12] focus-visible:ring-2 focus-visible:ring-caution/40">
+              <summary className="flex min-h-control-sm w-fit cursor-pointer list-none items-center gap-1.5 rounded-control border border-caution/30 bg-caution/[0.07] px-2 text-xs font-semibold text-caution outline-none marker:hidden hover:bg-caution/[0.12] focus-visible:ring-2 focus-visible:ring-focus">
                 <ArrowUpCircle className="size-3.5" aria-hidden="true" />
                 Update available · v{releaseStatus.latestVersion}
               </summary>

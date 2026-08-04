@@ -62,7 +62,7 @@ export function ComposerRunProfiles({
           return (
             <button
               className={[
-                "grid min-h-[4.5rem] w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-3 px-3.5 py-3 text-left outline-none transition-colors focus-visible:relative focus-visible:z-10 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-proof/55 sm:px-4",
+                "grid min-h-[4.5rem] w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-3 px-3.5 py-3 text-left outline-none transition-colors focus-visible:relative focus-visible:z-10 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-focus sm:px-4",
                 index > 0 ? "border-t border-trace-subtle" : "",
                 active
                   ? "bg-control-selected"

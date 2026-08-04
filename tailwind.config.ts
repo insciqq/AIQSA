@@ -10,11 +10,13 @@ const config = {
         "answer-paper": "rgb(var(--answer-paper) / <alpha-value>)",
         "composer-surface": "rgb(var(--composer-surface) / <alpha-value>)",
         control: {
+          boundary: "rgb(var(--ink-muted) / 0.85)",
           surface: "rgb(var(--control-surface) / <alpha-value>)",
           hover: "rgb(var(--control-hover) / <alpha-value>)",
           pressed: "rgb(var(--control-pressed) / <alpha-value>)",
           selected: "rgb(var(--control-selected) / <alpha-value>)"
         },
+        focus: "rgb(var(--proof) / 0.78)",
         "overlay-surface": "rgb(var(--overlay-surface) / <alpha-value>)",
         trace: {
           subtle: "rgb(var(--trace-subtle) / <alpha-value>)",

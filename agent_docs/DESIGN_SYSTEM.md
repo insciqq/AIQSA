@@ -51,15 +51,19 @@ Components consume semantic tokens only. Raw product colors, palette-specific Ta
 | `answer-paper` | Conversation column, its title-free edge actions, and document plane; not a card around each answer. |
 | `composer-surface` | Composer and focused editing surfaces. |
 | `control-surface` | Inputs, quiet buttons, and repeated interactive rows. |
+| `control-boundary` | Necessary field, picker, and other interactive boundaries; not structural separators or decorative boxes. |
 | `overlay-surface` | Menus, dialogs, sheets, and the Details inspection plane in overlay or pinned form. |
 | `control-hover`, `control-pressed`, `control-selected` | Interaction states, never resting decoration. |
-| `trace-subtle`, `trace-strong` | Structural separators and high-contrast boundaries. |
+| `trace-subtle`, `trace-strong` | Quiet and stronger structural separators; never a substitute for a necessary control boundary. |
 | `ink`, `ink-secondary`, `ink-muted`, `ink-disabled` | Text hierarchy. |
 | `proof`, `proof-hover`, `proof-contrast` | Primary action, selection, links, and live trace. |
+| `focus` | Keyboard and programmatic focus indication, independent of status tone. |
 | `positive`, `caution`, `critical` | Confirmed success, recoverable warning, and error/destructive state. |
 | `scrim` | Modal background isolation. |
 
 Names may receive a CSS/Tailwind prefix, but their semantic role must stay recognizable. `surface-2`, `gray-700`, and similarly context-free aliases are not acceptable component APIs.
+
+The `ring-focus` recipe composites `proof` at 78% and must reach at least 3:1 across adjacent common canvas, rail, answer, composer, control, overlay, and interaction-state surfaces. The compound composer keeps its quiet trace boundary: textarea focus uses the same semantic focus color as a two-pixel divider accent rather than adding a boxed outline inside or around the composer. The `border-control-boundary` recipe composites `ink-muted` at 85% and has the same bounded 3:1 target; use it only where a visible boundary is necessary to identify an enabled control. Disabled controls remain quieter, and `trace-subtle`/`trace-strong` continue to own structural separation. Meaningful small `ink-muted` text on `control-selected` reaches at least 4.5:1 in every theme. These token-pair checks are a bounded visual-system contract, not an application-wide accessibility-conformance claim.
 
 ### Reference neutral palette
 
@@ -77,7 +81,7 @@ The `neutral` theme is the first-use default and the reference against which hie
 | Trace strong | `#b8c1bd` |
 | Ink | `#1c211f` |
 | Ink secondary | `#454d49` |
-| Ink muted | `#67706c` |
+| Ink muted | `#5f6864` |
 | Proof | `#176f65` |
 | Proof contrast | `#ffffff` |
 

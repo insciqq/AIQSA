@@ -538,7 +538,7 @@ export function MainThreadPane({
                   </p>
                   {adminEntryVisible ? (
                     <Link
-                      className="mt-4 inline-flex h-touch items-center rounded-control bg-proof px-4 text-sm font-semibold text-proof-contrast outline-none hover:bg-proof-hover focus-visible:ring-2 focus-visible:ring-proof/55 focus-visible:ring-offset-2 focus-visible:ring-offset-answer-paper sm:h-control [@media(hover:none)]:!h-touch [@media(pointer:coarse)]:!h-touch"
+                      className="mt-4 inline-flex h-touch items-center rounded-control bg-proof px-4 text-sm font-semibold text-proof-contrast outline-none hover:bg-proof-hover focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-offset-2 focus-visible:ring-offset-answer-paper sm:h-control [@media(hover:none)]:!h-touch [@media(pointer:coarse)]:!h-touch"
                       href="/admin"
                       aria-label="Set up providers in Control Center"
                     >
@@ -658,7 +658,7 @@ export function MainThreadPane({
               data-testid="jump-to-latest-region"
             >
               <button
-                className="pointer-events-auto grid size-11 place-items-center rounded-pill border border-trace-subtle bg-overlay-surface text-ink shadow-float outline-none hover:bg-control-hover focus-visible:ring-2 focus-visible:ring-proof/55 [@media(hover:none)]:!size-11 [@media(pointer:coarse)]:!size-11"
+                className="pointer-events-auto grid size-11 place-items-center rounded-pill border border-trace-subtle bg-overlay-surface text-ink shadow-float outline-none hover:bg-control-hover focus-visible:ring-2 focus-visible:ring-focus [@media(hover:none)]:!size-11 [@media(pointer:coarse)]:!size-11"
                 type="button"
                 aria-label="Jump to latest message"
                 data-testid="jump-to-latest"

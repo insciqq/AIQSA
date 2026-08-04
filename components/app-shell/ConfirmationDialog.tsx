@@ -67,7 +67,7 @@ export function ConfirmationDialog({
         </div>
         <div className="mt-4 flex justify-end gap-2">
           <button
-            className="flex h-touch items-center justify-center gap-1.5 rounded-control bg-control-surface px-3 text-sm font-medium text-ink-secondary outline-none hover:bg-control-hover hover:text-ink focus-visible:ring-2 focus-visible:ring-proof/55 focus-visible:ring-offset-2 focus-visible:ring-offset-overlay-surface sm:h-control [@media(hover:none)]:!h-touch [@media(pointer:coarse)]:!h-touch"
+            className="flex h-touch items-center justify-center gap-1.5 rounded-control bg-control-surface px-3 text-sm font-medium text-ink-secondary outline-none hover:bg-control-hover hover:text-ink focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-offset-2 focus-visible:ring-offset-overlay-surface sm:h-control [@media(hover:none)]:!h-touch [@media(pointer:coarse)]:!h-touch"
             type="button"
             onClick={onCancel}
           >
@@ -75,7 +75,7 @@ export function ConfirmationDialog({
           </button>
           <button
             className={[
-              "flex h-touch items-center justify-center gap-1.5 rounded-control px-3 text-sm font-semibold outline-none focus-visible:ring-2 focus-visible:ring-proof/55 focus-visible:ring-offset-2 focus-visible:ring-offset-overlay-surface disabled:opacity-50 sm:h-control [@media(hover:none)]:!h-touch [@media(pointer:coarse)]:!h-touch",
+              "flex h-touch items-center justify-center gap-1.5 rounded-control px-3 text-sm font-semibold outline-none focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-offset-2 focus-visible:ring-offset-overlay-surface disabled:opacity-50 sm:h-control [@media(hover:none)]:!h-touch [@media(pointer:coarse)]:!h-touch",
               toneClasses.button
             ].join(" ")}
             type="button"

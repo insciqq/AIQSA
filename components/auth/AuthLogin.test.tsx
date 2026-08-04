@@ -37,6 +37,11 @@ describe("AuthLogin", () => {
     expect(screen.getByText("Use the email and password for your active account.")).toBeInTheDocument();
     expect(screen.getByLabelText("Email")).toHaveAttribute("autocomplete", "email");
     expect(screen.getByLabelText("Email")).toHaveAttribute("inputmode", "email");
+    expect(screen.getByLabelText("Email")).toHaveClass(
+      "border-control-boundary",
+      "focus:ring-focus",
+      "disabled:border-trace-subtle"
+    );
     expect(screen.getByLabelText("Password")).toHaveAttribute("autocomplete", "current-password");
     expect(screen.getByLabelText("Password")).toHaveAccessibleDescription("Case-sensitive");
     expect(screen.getByRole("button", { name: "Show password" })).toHaveAttribute("aria-controls", "password");
@@ -324,8 +329,8 @@ describe("AuthLogin", () => {
     expect(password).toHaveAttribute("aria-invalid", "true");
     expect(email).toHaveAttribute("aria-errormessage", alert.id);
     expect(password).toHaveAttribute("aria-errormessage", alert.id);
-    expect(email).toHaveClass("border-critical/60");
-    expect(password).toHaveClass("border-critical/60");
+    expect(email).toHaveClass("border-critical", "focus:ring-focus");
+    expect(password).toHaveClass("border-critical", "focus:ring-focus");
   });
 
   it("marks both credential fields and keeps a rejected login next to its action", async () => {

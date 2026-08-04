@@ -66,7 +66,7 @@ export function ProjectSettingsDialog({
             <p className="break-words text-xs text-ink-muted [overflow-wrap:anywhere]">{folder.name}</p>
           </div>
           <button
-            className="grid size-11 shrink-0 place-items-center rounded-control text-ink-muted outline-none hover:bg-control-hover hover:text-ink focus-visible:ring-2 focus-visible:ring-proof/55 focus-visible:ring-offset-2 focus-visible:ring-offset-overlay-surface sm:size-9 [@media(hover:none)]:!size-11 [@media(pointer:coarse)]:!size-11"
+            className="grid size-11 shrink-0 place-items-center rounded-control text-ink-muted outline-none hover:bg-control-hover hover:text-ink focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-offset-2 focus-visible:ring-offset-overlay-surface sm:size-9 [@media(hover:none)]:!size-11 [@media(pointer:coarse)]:!size-11"
             type="button"
             aria-label="Close project settings"
             disabled={saving}
@@ -80,7 +80,7 @@ export function ProjectSettingsDialog({
             Project instructions
           </label>
           <textarea
-            className="h-48 min-h-32 w-full resize-y rounded-control border border-trace-subtle bg-answer-paper p-3 text-sm leading-6 text-ink outline-none focus-visible:border-proof focus-visible:ring-2 focus-visible:ring-proof/55"
+            className="h-48 min-h-32 w-full resize-y rounded-control border border-control-boundary bg-answer-paper p-3 text-sm leading-6 text-ink outline-none focus-visible:border-focus focus-visible:ring-2 focus-visible:ring-focus disabled:cursor-not-allowed disabled:border-trace-subtle disabled:text-ink-disabled"
             id="project-instructions"
             aria-label="Project instructions"
             aria-describedby="project-instructions-help"
@@ -95,7 +95,7 @@ export function ProjectSettingsDialog({
         </div>
         <footer className="flex shrink-0 justify-end gap-2 border-t border-trace-subtle px-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-3 sm:pb-3">
           <button
-            className="h-touch rounded-control bg-control-surface px-3 text-sm font-medium text-ink-secondary outline-none hover:bg-control-hover hover:text-ink focus-visible:ring-2 focus-visible:ring-proof/55 focus-visible:ring-offset-2 focus-visible:ring-offset-overlay-surface sm:h-control [@media(hover:none)]:!h-touch [@media(pointer:coarse)]:!h-touch"
+            className="h-touch rounded-control bg-control-surface px-3 text-sm font-medium text-ink-secondary outline-none hover:bg-control-hover hover:text-ink focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-offset-2 focus-visible:ring-offset-overlay-surface sm:h-control [@media(hover:none)]:!h-touch [@media(pointer:coarse)]:!h-touch"
             type="button"
             disabled={saving}
             onClick={requestCancel}
@@ -103,7 +103,7 @@ export function ProjectSettingsDialog({
             Cancel
           </button>
           <button
-            className="h-touch rounded-control bg-proof px-4 text-sm font-semibold text-proof-contrast outline-none hover:bg-proof-hover focus-visible:ring-2 focus-visible:ring-proof/55 focus-visible:ring-offset-2 focus-visible:ring-offset-overlay-surface disabled:opacity-50 sm:h-control [@media(hover:none)]:!h-touch [@media(pointer:coarse)]:!h-touch"
+            className="h-touch rounded-control bg-proof px-4 text-sm font-semibold text-proof-contrast outline-none hover:bg-proof-hover focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-offset-2 focus-visible:ring-offset-overlay-surface disabled:opacity-50 sm:h-control [@media(hover:none)]:!h-touch [@media(pointer:coarse)]:!h-touch"
             type="button"
             disabled={saving}
             onClick={onSave}

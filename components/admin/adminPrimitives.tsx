@@ -9,7 +9,7 @@ import { ArrowLeft, type LucideIcon } from "lucide-react";
 import type { ReactNode } from "react";
 
 export const focusRing =
-  "outline-none focus-visible:ring-2 focus-visible:ring-proof/45 focus-visible:ring-offset-2 focus-visible:ring-offset-answer-paper";
+  "outline-none focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-offset-2 focus-visible:ring-offset-answer-paper";
 export const touchTarget = "[@media(hover:none)]:!min-h-touch [@media(hover:none)]:!min-w-touch [@media(pointer:coarse)]:!min-h-touch [@media(pointer:coarse)]:!min-w-touch";
 const buttonBase = `inline-flex min-h-control-sm items-center justify-center gap-1.5 rounded-control px-3 text-xs font-medium ${focusRing} ${touchTarget} disabled:cursor-not-allowed disabled:text-ink-disabled disabled:opacity-60`;
 export const primaryButton = `${buttonBase} bg-proof text-proof-contrast hover:bg-proof-hover`;
@@ -17,7 +17,7 @@ export const enableButton = `${buttonBase} ${enableActionTone}`;
 export const quietButton = `${buttonBase} bg-control-surface text-ink-secondary hover:bg-control-hover hover:text-ink active:bg-control-pressed`;
 export const dangerButton = `${buttonBase} bg-critical/10 text-critical hover:bg-critical/15`;
 export const inputClass =
-  `min-h-control w-full rounded-control border border-trace-subtle bg-answer-paper px-3 text-sm text-ink ${focusRing} ${touchTarget} placeholder:text-ink-muted`;
+  `min-h-control w-full rounded-control border border-control-boundary bg-answer-paper px-3 text-sm text-ink ${focusRing} ${touchTarget} placeholder:text-ink-muted aria-[invalid=true]:border-critical disabled:cursor-not-allowed disabled:border-trace-subtle disabled:text-ink-disabled`;
 const fieldLabelClass = "text-xs font-medium text-ink-secondary";
 
 export const adminAvailabilityStatusClass = availabilityStatusClass;

@@ -69,7 +69,7 @@ export function ComposerPromptPicker({
       <button
         {...triggerProps}
         ref={triggerRef}
-        className="flex h-touch w-full items-center justify-between gap-2 rounded-control border border-trace-subtle bg-answer-paper px-3 text-left text-xs text-ink outline-none hover:bg-control-hover focus-visible:ring-2 focus-visible:ring-proof/55 disabled:text-ink-disabled sm:h-control [@media(hover:none)]:!h-touch [@media(pointer:coarse)]:!h-touch"
+        className="flex h-touch w-full items-center justify-between gap-2 rounded-control border border-control-boundary bg-answer-paper px-3 text-left text-xs text-ink outline-none hover:bg-control-hover focus-visible:ring-2 focus-visible:ring-focus disabled:border-trace-subtle disabled:text-ink-disabled sm:h-control [@media(hover:none)]:!h-touch [@media(pointer:coarse)]:!h-touch"
         type="button"
         aria-label="Prompt preset"
         aria-describedby="prompt-picker-current-value"
@@ -102,7 +102,7 @@ export function ComposerPromptPicker({
               <p className="mt-0.5 text-xs text-ink-muted">Changes apply to the next message.</p>
             </div>
             <button
-              className="grid size-11 shrink-0 place-items-center rounded-control text-ink-muted outline-none hover:bg-control-hover hover:text-ink focus-visible:ring-2 focus-visible:ring-proof/55 lg:size-8 [@media(hover:none)]:!size-11 [@media(pointer:coarse)]:!size-11"
+              className="grid size-11 shrink-0 place-items-center rounded-control text-ink-muted outline-none hover:bg-control-hover hover:text-ink focus-visible:ring-2 focus-visible:ring-focus lg:size-8 [@media(hover:none)]:!size-11 [@media(pointer:coarse)]:!size-11"
               type="button"
               aria-label="Close prompt picker"
               onClick={close}
@@ -110,7 +110,7 @@ export function ComposerPromptPicker({
               <X className="size-4" aria-hidden="true" />
             </button>
           </div>
-          <div className="mb-2 flex min-h-touch items-center gap-2 rounded-control border border-trace-subtle bg-answer-paper px-3 sm:min-h-control [@media(hover:none)]:!min-h-touch [@media(pointer:coarse)]:!min-h-touch">
+          <div className="mb-2 flex min-h-touch items-center gap-2 rounded-control border border-control-boundary bg-answer-paper px-3 focus-within:ring-2 focus-within:ring-focus sm:min-h-control [@media(hover:none)]:!min-h-touch [@media(pointer:coarse)]:!min-h-touch">
             <Search className="size-4 shrink-0 text-ink-muted" aria-hidden="true" />
             <input
               ref={searchRef}
@@ -153,7 +153,7 @@ export function ComposerPromptPicker({
                   key={prompt.id}
                   {...getItemProps(index)}
                   className={[
-                    "flex min-h-touch w-full items-start justify-between gap-3 rounded-control px-3 py-2.5 text-left text-xs outline-none hover:bg-control-hover focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-proof/55",
+                    "flex min-h-touch w-full items-start justify-between gap-3 rounded-control px-3 py-2.5 text-left text-xs outline-none hover:bg-control-hover focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-focus",
                     active ? "bg-control-selected text-ink" : "text-ink-secondary"
                   ].join(" ")}
                   data-option-value={prompt.id}

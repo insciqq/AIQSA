@@ -226,7 +226,7 @@ function SearchDefaultPolicyEditor({
           return (
             <button
               aria-pressed={active}
-              className={`inline-flex min-h-control items-center gap-2 rounded-control border px-3 py-2 text-xs outline-none focus-visible:ring-2 focus-visible:ring-proof/55 disabled:cursor-not-allowed disabled:opacity-45 ${active ? "border-proof bg-control-selected text-ink" : "border-trace-subtle bg-answer-paper text-ink-secondary hover:bg-control-hover"}`}
+              className={`inline-flex min-h-control items-center gap-2 rounded-control border px-3 py-2 text-xs outline-none focus-visible:ring-2 focus-visible:ring-focus disabled:cursor-not-allowed disabled:border-trace-subtle disabled:opacity-45 ${active ? "border-proof bg-control-selected text-ink" : "border-control-boundary bg-answer-paper text-ink-secondary hover:bg-control-hover"}`}
               disabled={disabled}
               key={integration.strategyId}
               onClick={() => toggle(integration.strategyId)}
@@ -245,7 +245,7 @@ function SearchDefaultPolicyEditor({
             <button
               aria-label={`Remove unavailable ${displayName}`}
               aria-pressed="true"
-              className="inline-flex min-h-control items-center gap-2 rounded-control border border-caution/55 bg-caution/10 px-3 py-2 text-xs text-caution outline-none hover:bg-caution/15 focus-visible:ring-2 focus-visible:ring-caution/55"
+              className="inline-flex min-h-control items-center gap-2 rounded-control border border-caution/55 bg-caution/10 px-3 py-2 text-xs text-caution outline-none hover:bg-caution/15 focus-visible:ring-2 focus-visible:ring-focus"
               key={optionId}
               onClick={() => toggle(optionId)}
               type="button"

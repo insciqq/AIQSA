@@ -253,7 +253,7 @@ describe("AdminProvidersSection", () => {
 
     openTask("Credentials");
     const disable = screen.getByRole("button", { name: "Disable Primary credential" });
-    expect(screen.getByText("Enabled")).toHaveClass("border-positive/35", "text-positive");
+    expect(screen.getByText("Enabled")).toHaveClass("border-positive/35", "text-ink");
     expect(disable).not.toHaveClass("text-proof");
     fireEvent.click(disable);
     await waitFor(() => expect(view.actions.updateCredential).toHaveBeenCalledWith(
@@ -968,7 +968,7 @@ describe("AdminProvidersSection", () => {
     const models = screen.getByRole("list", { name: "Configured models" });
     const enabledRow = within(models).getByText("Configured model").closest<HTMLElement>('[role="listitem"]')!;
     const disabledRow = within(models).getByText("Disabled model").closest<HTMLElement>('[role="listitem"]')!;
-    expect(within(enabledRow).getByText("Enabled")).toHaveClass("text-positive");
+    expect(within(enabledRow).getByText("Enabled")).toHaveClass("text-ink");
     expect(within(disabledRow).getByText("Disabled")).toHaveClass(
       "border-trace-strong",
       "text-ink"

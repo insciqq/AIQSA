@@ -87,11 +87,11 @@ export function ComposerOptionPicker({
         {...triggerProps}
         ref={triggerRef}
         className={[
-          "flex h-touch w-full min-w-0 items-center justify-between rounded-control text-left text-xs outline-none focus-visible:ring-2 focus-visible:ring-proof/55 disabled:cursor-not-allowed disabled:text-ink-disabled sm:h-control [@media(hover:none)]:!h-touch [@media(pointer:coarse)]:!h-touch",
+          "flex h-touch w-full min-w-0 items-center justify-between rounded-control text-left text-xs outline-none focus-visible:ring-2 focus-visible:ring-focus disabled:cursor-not-allowed disabled:text-ink-disabled sm:h-control [@media(hover:none)]:!h-touch [@media(pointer:coarse)]:!h-touch",
           compactResting ? "gap-1 px-2 max-[429px]:gap-0.5 max-[429px]:px-1.5" : "gap-2 px-3",
           resting
             ? "bg-control-surface text-ink hover:bg-control-hover"
-            : "border border-trace-subtle bg-answer-paper text-ink hover:bg-control-hover"
+            : "border border-control-boundary bg-answer-paper text-ink hover:bg-control-hover disabled:border-trace-subtle"
         ].join(" ")}
         id={id}
         type="button"
@@ -147,7 +147,7 @@ export function ComposerOptionPicker({
               <p className="mt-0.5 text-xs text-ink-muted">{pickerDescription}</p>
             </div>
             <button
-              className="grid size-11 shrink-0 place-items-center rounded-control text-ink-muted outline-none hover:bg-control-hover hover:text-ink focus-visible:ring-2 focus-visible:ring-proof/55 lg:size-8 [@media(hover:none)]:!size-11 [@media(pointer:coarse)]:!size-11"
+              className="grid size-11 shrink-0 place-items-center rounded-control text-ink-muted outline-none hover:bg-control-hover hover:text-ink focus-visible:ring-2 focus-visible:ring-focus lg:size-8 [@media(hover:none)]:!size-11 [@media(pointer:coarse)]:!size-11"
               type="button"
               aria-label={`Close ${dialogLabel.toLocaleLowerCase()} picker`}
               onClick={close}
@@ -174,7 +174,7 @@ export function ComposerOptionPicker({
                   key={option.value}
                   {...getItemProps(index)}
                   className={[
-                    "flex min-h-touch w-full items-start justify-between gap-3 rounded-control px-3 py-2.5 text-left text-xs outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-proof/55",
+                    "flex min-h-touch w-full items-start justify-between gap-3 rounded-control px-3 py-2.5 text-left text-xs outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-focus",
                     active
                       ? "bg-control-selected text-ink"
                       : "text-ink-secondary hover:bg-control-hover hover:text-ink"

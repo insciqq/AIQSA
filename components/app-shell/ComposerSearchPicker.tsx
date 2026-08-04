@@ -149,7 +149,7 @@ export function ComposerSearchPicker({
         aria-expanded={open}
         aria-haspopup="dialog"
         aria-label="Search strategy"
-        className={`flex h-touch w-full min-w-0 items-center justify-between gap-2 rounded-control text-left text-xs outline-none focus-visible:ring-2 focus-visible:ring-proof/55 disabled:cursor-not-allowed disabled:text-ink-disabled sm:h-control ${setup ? "border border-trace-subtle bg-answer-paper px-3" : "bg-control-surface px-2 hover:bg-control-hover"}`}
+        className={`flex h-touch w-full min-w-0 items-center justify-between gap-2 rounded-control text-left text-xs outline-none focus-visible:ring-2 focus-visible:ring-focus disabled:cursor-not-allowed disabled:text-ink-disabled sm:h-control ${setup ? "border border-control-boundary bg-answer-paper px-3 disabled:border-trace-subtle" : "bg-control-surface px-2 hover:bg-control-hover"}`}
         disabled={disabled}
         id={id}
         onClick={() => setOpen((value) => !value)}
@@ -185,12 +185,12 @@ export function ComposerSearchPicker({
               <h3 className="text-sm font-semibold text-ink">Search</h3>
               <p className="mt-0.5 text-xs text-ink-muted">Choose up to three engines for the next answer.</p>
             </div>
-            <button aria-label="Close Search picker" className="grid size-8 shrink-0 place-items-center rounded-control text-ink-muted hover:bg-control-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-proof/55" onClick={() => setOpen(false)} type="button"><X aria-hidden="true" className="size-4" /></button>
+            <button aria-label="Close Search picker" className="grid size-8 shrink-0 place-items-center rounded-control text-ink-muted hover:bg-control-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus" onClick={() => setOpen(false)} type="button"><X aria-hidden="true" className="size-4" /></button>
           </div>
           <div className="min-h-0 flex-1 space-y-1 overflow-y-auto overscroll-contain pr-1">
             <button
               aria-pressed={selected.length === 0}
-              className={`flex min-h-touch w-full items-start justify-between gap-3 rounded-control px-3 py-2.5 text-left outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-proof/55 ${selected.length === 0 ? "bg-control-selected" : "hover:bg-control-hover"}`}
+              className={`flex min-h-touch w-full items-start justify-between gap-3 rounded-control px-3 py-2.5 text-left outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-focus ${selected.length === 0 ? "bg-control-selected" : "hover:bg-control-hover"}`}
               data-option-value="search-disabled"
               onClick={() => onChange([], "all_selected")}
               type="button"
@@ -211,7 +211,7 @@ export function ComposerSearchPicker({
               return (
                 <button
                   aria-pressed={active}
-                  className={`flex min-h-touch w-full items-start justify-between gap-3 rounded-control px-3 py-2.5 text-left outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-proof/55 disabled:cursor-not-allowed disabled:opacity-45 ${active ? "bg-control-selected" : "hover:bg-control-hover"}`}
+                  className={`flex min-h-touch w-full items-start justify-between gap-3 rounded-control px-3 py-2.5 text-left outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-focus disabled:cursor-not-allowed disabled:opacity-45 ${active ? "bg-control-selected" : "hover:bg-control-hover"}`}
                   disabled={!active && (!modelCompatible || capped || incompatible)}
                   data-option-value={option.strategyId}
                   key={option.strategyId}
@@ -224,7 +224,7 @@ export function ComposerSearchPicker({
                       : undefined}
                 >
                   <span className="min-w-0 flex-1"><span className="block break-words text-sm font-semibold text-ink">{option.displayName}</span><span className="mt-0.5 block text-xs leading-5 text-ink-muted">{modelCompatible ? optionDescription(option) : `${unavailableReason ?? "Unavailable for this model"} · preference retained`}</span></span>
-                  <span className={`mt-0.5 grid size-5 shrink-0 place-items-center rounded-control border ${active ? "border-proof bg-proof text-proof-contrast" : "border-trace-strong"}`}>{active ? <Check aria-hidden="true" className="size-3.5" /> : null}</span>
+                  <span className={`mt-0.5 grid size-5 shrink-0 place-items-center rounded-control border ${active ? "border-proof bg-proof text-proof-contrast" : "border-control-boundary"}`}>{active ? <Check aria-hidden="true" className="size-3.5" /> : null}</span>
                 </button>
               );
             })}
@@ -248,7 +248,7 @@ export function ComposerSearchPicker({
           {preferenceSource === "personal" && onUseOrganizationDefault ? (
             <div className="mt-3 border-t border-trace-subtle pt-3">
               <button
-                className="min-h-touch w-full rounded-control px-3 py-2 text-left text-xs font-medium text-ink-secondary outline-none hover:bg-control-hover focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-proof/55"
+                className="min-h-touch w-full rounded-control px-3 py-2 text-left text-xs font-medium text-ink-secondary outline-none hover:bg-control-hover focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-focus"
                 onClick={() => {
                   onUseOrganizationDefault();
                   setOpen(false);

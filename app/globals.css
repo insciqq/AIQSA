@@ -99,7 +99,7 @@
 article[data-role]:focus-visible [data-message-interaction-surface="true"] {
   box-shadow:
     inset 0 0 0 1px rgb(var(--trace-subtle) / 0.8),
-    0 0 0 2px rgb(var(--proof) / 0.24);
+    0 0 0 2px rgb(var(--proof) / 0.78);
 }
 
 :root {
@@ -122,7 +122,7 @@ article[data-role]:focus-visible [data-message-interaction-surface="true"] {
   --trace-strong: 184 193 189;
   --ink: 28 33 31;
   --ink-secondary: 69 77 73;
-  --ink-muted: 103 112 108;
+  --ink-muted: 95 104 100;
   --ink-disabled: 147 156 152;
   --proof: 23 111 101;
   --proof-hover: 18 94 86;
@@ -178,7 +178,7 @@ article[data-role]:focus-visible [data-message-interaction-surface="true"] {
   --trace-strong: 81 92 106;
   --ink: 239 243 246;
   --ink-secondary: 200 209 218;
-  --ink-muted: 151 162 175;
+  --ink-muted: 156 168 180;
   --ink-disabled: 100 112 125;
   --proof: 105 190 202;
   --proof-hover: 124 204 215;
@@ -206,7 +206,7 @@ article[data-role]:focus-visible [data-message-interaction-surface="true"] {
   --trace-strong: 76 94 84;
   --ink: 239 243 240;
   --ink-secondary: 198 210 202;
-  --ink-muted: 148 164 154;
+  --ink-muted: 152 168 158;
   --ink-disabled: 98 113 104;
   --proof: 113 201 157;
   --proof-hover: 132 214 174;
@@ -262,7 +262,7 @@ article[data-role]:focus-visible [data-message-interaction-surface="true"] {
   --trace-strong: 184 184 184;
   --ink: 13 13 13;
   --ink-secondary: 66 66 66;
-  --ink-muted: 110 110 110;
+  --ink-muted: 102 102 102;
   --ink-disabled: 156 156 156;
   --proof: 33 33 33;
   --proof-hover: 0 0 0;

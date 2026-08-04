@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { AdminInviteRecord } from "@/lib/contracts/admin";
 import {
   filterAdminInvites,
+  inviteStatusClass,
   inviteStatus,
   isInviteExpiringSoon,
   isInviteOpen
@@ -23,6 +24,21 @@ function invite(overrides: Partial<AdminInviteRecord> = {}): AdminInviteRecord {
 }
 
 describe("adminInviteView", () => {
+  it("keeps semantic status tones by default and readable text on selected rows", () => {
+    expect(inviteStatusClass("revoked")).toBe(
+      "border-critical/25 bg-critical/10 text-critical"
+    );
+    expect(inviteStatusClass("revoked", true)).toBe(
+      "border-critical/25 bg-critical/10 text-ink"
+    );
+    expect(inviteStatusClass("expired")).toBe(
+      "border-trace-subtle bg-control-surface text-ink-secondary"
+    );
+    expect(inviteStatusClass("expired", true)).toBe(
+      "border-trace-subtle bg-control-surface text-ink"
+    );
+  });
+
   it("keeps open, soon, and exact-expiry boundaries deterministic", () => {
     const open = invite();
     const soon = invite({ expiresAt: "2026-07-15T00:00:00.000Z" });

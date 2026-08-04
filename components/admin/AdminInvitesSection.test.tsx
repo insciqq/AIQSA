@@ -173,6 +173,13 @@ describe("AdminInvitesSection", () => {
         })}
       />
     );
+    const inviteList = within(screen.getByTestId("admin-invites-list"));
+    const selectedOpenRow = inviteList.getByText(openInvite.email).closest<HTMLElement>("[data-testid='admin-invite-row']");
+    const unselectedRevokedRow = inviteList.getByText(revokedInvite.email).closest<HTMLElement>("[data-testid='admin-invite-row']");
+    expect(selectedOpenRow).not.toBeNull();
+    expect(unselectedRevokedRow).not.toBeNull();
+    expect(within(selectedOpenRow!).getByText("open", { exact: true })).toHaveClass("text-ink");
+    expect(within(unselectedRevokedRow!).getByText("revoked", { exact: true })).toHaveClass("text-critical");
     fireEvent.click(screen.getByRole("button", { name: "Revoke invite" }));
     expect(sectionActions.requestRevokeInvite).toHaveBeenCalledWith({ email: openInvite.email, id: openInvite.id });
 

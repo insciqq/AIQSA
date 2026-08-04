@@ -122,7 +122,7 @@ function StopAction({
   return (
     <button
       className={[
-        "inline-flex h-touch min-w-[72px] items-center justify-center gap-2 rounded-control bg-critical text-sm font-semibold text-proof-contrast outline-none hover:bg-critical/85 focus-visible:ring-2 focus-visible:ring-critical/55 disabled:cursor-not-allowed disabled:opacity-50 [@media(hover:none)]:!h-touch [@media(pointer:coarse)]:!h-touch",
+        "inline-flex h-touch min-w-[72px] items-center justify-center gap-2 rounded-control bg-critical text-sm font-semibold text-proof-contrast outline-none hover:bg-critical/85 focus-visible:ring-2 focus-visible:ring-focus disabled:cursor-not-allowed disabled:opacity-50 [@media(hover:none)]:!h-touch [@media(pointer:coarse)]:!h-touch",
         inlineReadingMode ? "shrink-0 px-2" : "px-3 sm:h-control"
       ].join(" ")}
       type="button"
@@ -538,7 +538,7 @@ export function Composer({
                 </span>
               </span>
               <button
-                className="h-touch shrink-0 rounded-control px-2 text-xs font-medium hover:bg-control-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-proof/55 disabled:cursor-not-allowed disabled:text-ink-disabled sm:h-control-sm [@media(hover:none)]:!h-touch [@media(pointer:coarse)]:!h-touch"
+                className="h-touch shrink-0 rounded-control px-2 text-xs font-medium hover:bg-control-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus disabled:cursor-not-allowed disabled:text-ink-disabled sm:h-control-sm [@media(hover:none)]:!h-touch [@media(pointer:coarse)]:!h-touch"
                 type="button"
                 aria-describedby={editPending ? "composer-edit-pending-status" : undefined}
                 disabled={editPending}
@@ -668,7 +668,7 @@ export function Composer({
                     {warningEntry ? (
                       <details className="group min-w-0">
                         <summary
-                          className="flex min-h-control-sm cursor-pointer list-none items-center gap-1.5 rounded-l-control py-1 pl-2 outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-caution/55 [@media(max-height:42rem)]:!min-h-8 [@media(hover:none)]:!min-h-touch [@media(pointer:coarse)]:!min-h-touch [&::-webkit-details-marker]:hidden"
+                          className="flex min-h-control-sm cursor-pointer list-none items-center gap-1.5 rounded-l-control py-1 pl-2 outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-focus [@media(max-height:42rem)]:!min-h-8 [@media(hover:none)]:!min-h-touch [@media(pointer:coarse)]:!min-h-touch [&::-webkit-details-marker]:hidden"
                           aria-label={`Review PDF warning for ${attachment.fileName}: ${warningEntry.warning.label}`}
                         >
                           {attachmentSummary}
@@ -687,7 +687,7 @@ export function Composer({
                       </div>
                     )}
                     <button
-                      className="grid size-11 shrink-0 place-items-center rounded-control text-ink-muted hover:bg-control-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-proof/55 sm:size-8 [@media(hover:none)]:!size-11 [@media(pointer:coarse)]:!size-11"
+                      className="grid size-11 shrink-0 place-items-center rounded-control text-ink-muted hover:bg-control-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus sm:size-8 [@media(hover:none)]:!size-11 [@media(pointer:coarse)]:!size-11"
                       type="button"
                       aria-label={`Remove ${attachment.fileName}`}
                       title={`Remove ${attachment.fileName}`}
@@ -704,7 +704,7 @@ export function Composer({
 
           <div
             className={[
-              "px-4 pb-2 pt-3 [@media(max-height:42rem)]:!px-3 [@media(max-height:42rem)]:!pb-1 [@media(max-height:42rem)]:!pt-1",
+              "relative px-4 pb-2 pt-3 after:pointer-events-none after:absolute after:inset-x-4 after:bottom-0 after:h-0.5 after:origin-center after:scale-x-0 after:rounded-full after:bg-focus after:content-[''] after:transition-transform after:duration-150 has-[textarea:focus-visible]:after:scale-x-100 motion-reduce:after:transition-none [@media(max-height:42rem)]:!px-3 [@media(max-height:42rem)]:!pb-1 [@media(max-height:42rem)]:!pt-1",
               readingCollapsed
                 ? "grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2 !px-3 !py-0.5"
                 : ""
@@ -805,7 +805,7 @@ export function Composer({
                 >
                   <button
                     ref={usageTriggerRef}
-                    className="inline-flex size-11 shrink-0 items-center justify-center rounded-control text-ink-muted hover:bg-control-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-proof/55 sm:size-8 [@media(hover:none)]:!size-11 [@media(pointer:coarse)]:!size-11"
+                    className="inline-flex size-11 shrink-0 items-center justify-center rounded-control text-ink-muted hover:bg-control-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus sm:size-8 [@media(hover:none)]:!size-11 [@media(pointer:coarse)]:!size-11"
                     type="button"
                     aria-expanded={usageOpen}
                     aria-haspopup="dialog"
@@ -855,7 +855,7 @@ export function Composer({
                       <div className="mb-2 flex items-center justify-between gap-3">
                         <p className="text-sm font-semibold text-ink">Context and usage</p>
                         <button
-                          className="grid size-11 shrink-0 place-items-center rounded-control text-ink-muted outline-none hover:bg-control-hover hover:text-ink focus-visible:ring-2 focus-visible:ring-proof/55 lg:size-8 [@media(hover:none)]:!size-11 [@media(pointer:coarse)]:!size-11"
+                          className="grid size-11 shrink-0 place-items-center rounded-control text-ink-muted outline-none hover:bg-control-hover hover:text-ink focus-visible:ring-2 focus-visible:ring-focus lg:size-8 [@media(hover:none)]:!size-11 [@media(pointer:coarse)]:!size-11"
                           type="button"
                           aria-label="Close context and usage statistics"
                           onClick={() => {
@@ -932,7 +932,7 @@ export function Composer({
               ) : null}
               <label
                 className={[
-                  "inline-flex h-touch shrink-0 items-center gap-1.5 rounded-control px-2 text-xs font-medium text-ink-secondary focus-within:ring-2 focus-within:ring-proof/55 sm:h-control [@media(hover:none)]:!h-touch [@media(pointer:coarse)]:!h-touch",
+                  "inline-flex h-touch shrink-0 items-center gap-1.5 rounded-control px-2 text-xs font-medium text-ink-secondary focus-within:ring-2 focus-within:ring-focus sm:h-control [@media(hover:none)]:!h-touch [@media(pointer:coarse)]:!h-touch",
                   uploading
                     ? "cursor-wait bg-control-pressed text-ink"
                     : attachmentDisabled
@@ -970,7 +970,7 @@ export function Composer({
               ) : (
                 <button
                   className={[
-                    "inline-flex h-touch min-w-[72px] items-center justify-center gap-2 rounded-control px-3 text-sm font-semibold outline-none focus-visible:ring-2 focus-visible:ring-proof/55 sm:h-control [@media(hover:none)]:!h-touch [@media(pointer:coarse)]:!h-touch",
+                    "inline-flex h-touch min-w-[72px] items-center justify-center gap-2 rounded-control px-3 text-sm font-semibold outline-none focus-visible:ring-2 focus-visible:ring-focus sm:h-control [@media(hover:none)]:!h-touch [@media(pointer:coarse)]:!h-touch",
                     canSend
                       ? "bg-proof text-proof-contrast hover:bg-proof-hover"
                       : "bg-control-pressed text-ink-disabled"

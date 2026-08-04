@@ -91,7 +91,7 @@ export function DetailedInspector({
         <div className="flex shrink-0 items-center gap-1">
           {pinningAvailable ? (
             <button
-              className="grid size-9 place-items-center rounded-control text-ink-muted outline-none hover:bg-control-hover hover:text-ink focus-visible:ring-2 focus-visible:ring-proof/55 [@media(hover:none)]:!size-11 [@media(pointer:coarse)]:!size-11"
+              className="grid size-9 place-items-center rounded-control text-ink-muted outline-none hover:bg-control-hover hover:text-ink focus-visible:ring-2 focus-visible:ring-focus [@media(hover:none)]:!size-11 [@media(pointer:coarse)]:!size-11"
               type="button"
               aria-label={pinned ? "Unpin details" : "Pin details"}
               aria-pressed={pinned}
@@ -102,7 +102,7 @@ export function DetailedInspector({
             </button>
           ) : null}
           <button
-            className="grid size-9 place-items-center rounded-control text-ink-muted outline-none hover:bg-control-hover hover:text-ink focus-visible:ring-2 focus-visible:ring-proof/55 [@media(hover:none)]:!size-11 [@media(pointer:coarse)]:!size-11"
+            className="grid size-9 place-items-center rounded-control text-ink-muted outline-none hover:bg-control-hover hover:text-ink focus-visible:ring-2 focus-visible:ring-focus [@media(hover:none)]:!size-11 [@media(pointer:coarse)]:!size-11"
             type="button"
             aria-label="Close details"
             title="Close details"
@@ -116,7 +116,7 @@ export function DetailedInspector({
       <InspectorTabs activeTab={activeTab} onTabChange={onActiveTabChange} />
 
       <div
-        className="min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain px-3 py-4 outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-proof/55 sm:px-4 [@media(max-height:32rem)]:py-3"
+        className="min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain px-3 py-4 outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-focus sm:px-4 [@media(max-height:32rem)]:py-3"
         id={inspectorPanelId(activeTab)}
         role="tabpanel"
         aria-labelledby={inspectorTabId(activeTab)}
@@ -332,7 +332,7 @@ function BranchTree({
           const rowClassName = [
             "group relative grid min-h-touch w-full min-w-0 grid-cols-[minmax(0,1fr)_auto] items-start gap-2 border-b border-trace-subtle px-2 py-3 text-left outline-none last:border-b-0 sm:gap-3 sm:px-3",
             alternateVersion
-              ? "bg-overlay-surface text-ink-secondary hover:bg-control-hover hover:text-ink focus-visible:z-10 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-proof/55 disabled:cursor-not-allowed disabled:opacity-55"
+              ? "bg-overlay-surface text-ink-secondary hover:bg-control-hover hover:text-ink focus-visible:z-10 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-focus disabled:cursor-not-allowed disabled:opacity-55"
               : node.active
                 ? "bg-control-selected text-ink before:absolute before:inset-y-2 before:left-0 before:w-0.5 before:rounded-pill before:bg-proof"
                 : "bg-proof/[0.025] text-ink"
@@ -354,7 +354,11 @@ function BranchTree({
                 <span className="min-w-0 flex-1">
                   <span className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs font-medium text-ink-muted">
                     <span>{node.message.role === "user" ? "Question" : "Answer"}</span>
-                    {node.childCount > 1 ? <span className="text-caution">Fork point · {node.childCount} choices</span> : null}
+                    {node.childCount > 1 ? (
+                      <span className={node.active ? "text-ink-secondary" : "text-caution"}>
+                        Fork point · {node.childCount} choices
+                      </span>
+                    ) : null}
                     {node.forkChoice ? <span className="text-proof">Branch version</span> : null}
                   </span>
                   <span className="mt-1 block break-words text-[13px] leading-5 [display:-webkit-box] [overflow-wrap:anywhere] [-webkit-box-orient:vertical] [-webkit-line-clamp:3]">

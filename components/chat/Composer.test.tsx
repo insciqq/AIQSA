@@ -72,8 +72,22 @@ describe("Composer", () => {
     expect(messageLabel).toHaveAttribute("for", "composer");
     expect(messageLabel).toHaveClass("sr-only");
     expect(textarea).not.toHaveClass("mt-1");
-    expect(surface).toHaveClass("bg-composer-surface", "border-trace-strong/70");
-    expect(messageField).toHaveClass("px-4", "pt-3");
+    expect(surface).toHaveClass(
+      "bg-composer-surface",
+      "border-trace-strong/70"
+    );
+    expect(textarea).not.toHaveClass(
+      "rounded-control",
+      "focus-visible:ring-2",
+      "focus-visible:ring-focus"
+    );
+    expect(messageField).toHaveClass(
+      "px-4",
+      "pt-3",
+      "after:bg-focus",
+      "after:scale-x-0",
+      "has-[textarea:focus-visible]:after:scale-x-100"
+    );
     expect(surface).toContainElement(textarea);
     expect(surface).toContainElement(screen.getByRole("list", { name: "Attachments" }));
     expect(screen.getByTestId("attachment-warning-announcement")).toBeEmptyDOMElement();

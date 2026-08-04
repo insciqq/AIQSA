@@ -43,9 +43,12 @@ describe("AdminSearchablePicker", () => {
   it("opens on the search field, sorts a large-catalog slice, and keeps raw ids secondary", () => {
     render(<AdminSearchablePicker {...baseProps} />);
 
-    openPicker();
+    const trigger = openPicker();
 
-    expect(screen.getByRole("combobox", { name: "Search models" })).toHaveFocus();
+    const search = screen.getByRole("combobox", { name: "Search models" });
+    expect(trigger).toHaveClass("border-control-boundary", "focus-visible:ring-focus");
+    expect(search).toHaveFocus();
+    expect(search.parentElement).toHaveClass("border-control-boundary", "focus-within:ring-focus");
     expect(screen.getByText("3 models")).toBeInTheDocument();
     const options = screen.getAllByRole("option");
     expect(options.map((option) => within(option).getByText(/Model/).textContent)).toEqual([

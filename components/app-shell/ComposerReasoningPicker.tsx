@@ -66,7 +66,7 @@ export function ComposerReasoningPicker({
         aria-expanded={open}
         aria-haspopup="dialog"
         aria-label={`Reasoning ${summary}`}
-        className="flex h-touch w-full min-w-0 items-center gap-1.5 rounded-control bg-control-surface px-2 text-xs text-ink-secondary outline-none hover:bg-control-hover hover:text-ink focus-visible:ring-2 focus-visible:ring-proof/55 disabled:cursor-not-allowed disabled:text-ink-disabled sm:h-control [@media(hover:none)]:!h-touch [@media(pointer:coarse)]:!h-touch"
+        className="flex h-touch w-full min-w-0 items-center gap-1.5 rounded-control bg-control-surface px-2 text-xs text-ink-secondary outline-none hover:bg-control-hover hover:text-ink focus-visible:ring-2 focus-visible:ring-focus disabled:cursor-not-allowed disabled:text-ink-disabled sm:h-control [@media(hover:none)]:!h-touch [@media(pointer:coarse)]:!h-touch"
         disabled={disabled}
         onClick={() => setOpen((value) => !value)}
         type="button"
@@ -91,7 +91,7 @@ export function ComposerReasoningPicker({
             </div>
             <button
               aria-label="Close Reasoning settings"
-              className="grid size-8 shrink-0 place-items-center rounded-control text-ink-muted hover:bg-control-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-proof/55"
+              className="grid size-8 shrink-0 place-items-center rounded-control text-ink-muted hover:bg-control-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"
               onClick={() => setOpen(false)}
               type="button"
             >
@@ -106,7 +106,7 @@ export function ComposerReasoningPicker({
                 {modeControl.options.map((option) => (
                   <button
                     aria-pressed={mode === option}
-                    className={`flex min-h-control items-center justify-between rounded-control px-3 py-2 text-left text-xs outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-proof/55 ${mode === option ? "bg-control-selected text-ink" : "text-ink-secondary hover:bg-control-hover"}`}
+                    className={`flex min-h-control items-center justify-between rounded-control px-3 py-2 text-left text-xs outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-focus ${mode === option ? "bg-control-selected text-ink" : "text-ink-secondary hover:bg-control-hover"}`}
                     key={option}
                     onClick={() => onModeChange(option)}
                     type="button"
@@ -125,7 +125,7 @@ export function ComposerReasoningPicker({
               {controls.reasoningEffort.options.map((option) => (
                 <button
                   aria-pressed={effort === option}
-                  className={`flex min-h-control items-center justify-between rounded-control px-3 py-2 text-left text-xs outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-proof/55 ${effort === option ? "bg-control-selected text-ink" : "text-ink-secondary hover:bg-control-hover"}`}
+                  className={`flex min-h-control items-center justify-between rounded-control px-3 py-2 text-left text-xs outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-focus ${effort === option ? "bg-control-selected text-ink" : "text-ink-secondary hover:bg-control-hover"}`}
                   key={option}
                   onClick={() => onEffortChange(option)}
                   type="button"

@@ -55,7 +55,7 @@ describe("ThreadArtifacts", () => {
       "border-trace-subtle",
       "text-ink-secondary"
     );
-    expect(trigger).toHaveClass("hover:bg-control-hover", "focus-visible:ring-proof/45");
+    expect(trigger).toHaveClass("hover:bg-control-hover", "focus-visible:ring-focus");
   });
 
   it("shows honest active search progress without replacing provider context", () => {

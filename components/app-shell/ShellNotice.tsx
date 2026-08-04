@@ -12,7 +12,7 @@ function NoticeActionButton({
   return (
     <button
       className={[
-        "inline-flex min-h-touch items-center rounded-control border px-2 font-medium outline-none hover:bg-control-hover focus-visible:ring-2 focus-visible:ring-current/65 disabled:cursor-not-allowed disabled:opacity-60 sm:min-h-control-sm [@media(hover:none)]:!min-h-touch [@media(pointer:coarse)]:!min-h-touch",
+        "inline-flex min-h-touch items-center rounded-control border px-2 font-medium outline-none hover:bg-control-hover focus-visible:ring-2 focus-visible:ring-focus disabled:cursor-not-allowed disabled:opacity-60 sm:min-h-control-sm [@media(hover:none)]:!min-h-touch [@media(pointer:coarse)]:!min-h-touch",
         action.tone === "destructive"
           ? "border-critical/30 text-critical"
           : action.tone === "neutral"
@@ -87,7 +87,7 @@ export function ShellNotice({
       </span>
       {interactive ? (
         <button
-          className="grid size-11 shrink-0 place-items-center rounded-control text-ink-muted hover:bg-control-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-proof/55 sm:size-9 [@media(hover:none)]:!size-11 [@media(pointer:coarse)]:!size-11"
+          className="grid size-11 shrink-0 place-items-center rounded-control text-ink-muted hover:bg-control-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus sm:size-9 [@media(hover:none)]:!size-11 [@media(pointer:coarse)]:!size-11"
           type="button"
           aria-label="Dismiss notice"
           title="Dismiss notice"

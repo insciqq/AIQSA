@@ -39,7 +39,7 @@ import {
 } from "./mcpReadiness";
 
 const focusRing =
-  "outline-none focus-visible:ring-2 focus-visible:ring-proof/55 focus-visible:ring-offset-2 focus-visible:ring-offset-overlay-surface";
+  "outline-none focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-offset-2 focus-visible:ring-offset-overlay-surface";
 const touchTarget = "[@media(hover:none)]:!min-h-touch [@media(pointer:coarse)]:!min-h-touch";
 const actionButtonBase = `inline-flex min-h-touch items-center justify-center gap-2 rounded-control px-3 text-sm font-medium disabled:cursor-not-allowed disabled:text-ink-disabled disabled:opacity-60 sm:min-h-control ${touchTarget} ${focusRing}`;
 const neutralButton = `${actionButtonBase} bg-control-surface text-ink-secondary hover:bg-control-hover hover:text-ink`;
@@ -111,7 +111,7 @@ function FieldEditor({
     : field.source === "shared"
       ? "Using the administrator’s shared value"
       : "No value configured";
-  const inputClass = `min-h-touch w-full rounded-control border border-trace-subtle bg-answer-paper px-3 text-sm text-ink placeholder:text-ink-muted disabled:cursor-not-allowed disabled:text-ink-disabled sm:min-h-control ${touchTarget} ${focusRing}`;
+  const inputClass = `min-h-touch w-full rounded-control border border-control-boundary bg-answer-paper px-3 text-sm text-ink placeholder:text-ink-muted aria-[invalid=true]:border-critical disabled:cursor-not-allowed disabled:border-trace-subtle disabled:text-ink-disabled sm:min-h-control ${touchTarget} ${focusRing}`;
 
   return (
     <div className="min-w-0 border-l border-trace-subtle pl-3">

@@ -131,7 +131,7 @@ export function McpComposerSummary({
 
   return (
     <button
-      className="inline-flex min-h-touch min-w-0 max-w-36 shrink-0 items-center gap-2 rounded-control px-2 text-left text-xs text-ink-secondary outline-none hover:bg-control-hover hover:text-ink focus-visible:ring-2 focus-visible:ring-proof/55 sm:min-h-control sm:max-w-52"
+      className="inline-flex min-h-touch min-w-0 max-w-36 shrink-0 items-center gap-2 rounded-control px-2 text-left text-xs text-ink-secondary outline-none hover:bg-control-hover hover:text-ink focus-visible:ring-2 focus-visible:ring-focus sm:min-h-control sm:max-w-52"
       data-testid="composer-mcp-summary"
       onClick={onOpenSettings}
       type="button"

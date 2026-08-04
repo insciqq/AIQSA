@@ -242,8 +242,10 @@ function ImportForm({
         <div
           className={`group mt-2 min-w-0 overflow-hidden rounded-panel border bg-answer-paper transition-[border-color,box-shadow,background-color] duration-150 ease-out focus-within:ring-2 focus-within:ring-offset-2 focus-within:ring-offset-answer-paper ${
             error
-              ? "border-critical/60 bg-critical/[0.025] focus-within:border-critical/75 focus-within:ring-critical/20"
-              : "border-trace-strong focus-within:border-proof/55 focus-within:ring-proof/20"
+              ? "border-critical bg-critical/[0.025] focus-within:border-critical focus-within:ring-focus"
+              : disabled
+                ? "border-trace-subtle"
+                : "border-control-boundary focus-within:border-focus focus-within:ring-focus"
           }`}
           data-testid="mcp-configuration-document"
         >

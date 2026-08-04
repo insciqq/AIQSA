@@ -194,7 +194,11 @@ describe("LeftChatPane", () => {
     const newChat = screen.getByRole("button", { name: "Start new chat" });
     expect(newChat).toHaveClass("hover:bg-control-hover", "text-ink");
     expect(newChat).not.toHaveClass("bg-proof");
-    expect(screen.getByTestId("chat-search-control")).toHaveClass("bg-control-surface");
+    expect(screen.getByTestId("chat-search-control")).toHaveClass(
+      "bg-control-surface",
+      "ring-control-boundary",
+      "focus-within:ring-focus"
+    );
     expect(screen.getByTestId("chat-row")).toHaveClass("bg-control-selected");
     expect(screen.getByTestId("active-chat-marker")).toHaveClass("bg-proof");
     const navigation = screen.getByRole("navigation", { name: "Workspace chats and folders" });
@@ -550,7 +554,7 @@ describe("LeftChatPane", () => {
     expect(screen.getByTestId("active-chat-marker")).toHaveClass("bg-proof");
     expect(chat).toHaveAttribute("aria-current", "page");
     expect(chat).toHaveAccessibleDescription(/Favorite.*Response running.*Model unavailable for new runs/);
-    expect(screen.getByText("Unavailable")).toBeVisible();
+    expect(screen.getByText("Unavailable")).toHaveClass("text-ink-secondary");
 
     rerender(<LeftChatPane {...view} chatModelLabels={new Map()} />);
     expect(screen.getByText("Unavailable model")).toBeVisible();
@@ -735,6 +739,8 @@ describe("LeftChatPane", () => {
     expect(screen.getByRole("button", { name: "Start new chat" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "New folder" })).toBeDisabled();
     expect(screen.getByRole("textbox", { name: "Search chats" })).toBeDisabled();
+    expect(screen.getByTestId("chat-search-control")).toHaveClass("ring-trace-subtle");
+    expect(screen.getByTestId("chat-search-control")).not.toHaveClass("ring-control-boundary");
     expect(screen.getByTestId("left-workspace-unavailable")).toHaveTextContent("Chats unavailable");
     fireEvent.click(screen.getByRole("button", { name: "Retry workspace" }));
     expect(onRetryWorkspace).toHaveBeenCalledOnce();

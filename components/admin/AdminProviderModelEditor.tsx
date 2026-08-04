@@ -336,7 +336,7 @@ function RouteEditor({
               <div className="grid gap-2">
                 <label>
                   <span className={fieldLabel}>Add downstream provider</span>
-                  <span className="flex min-h-control items-center gap-2 rounded-control border border-trace-subtle bg-answer-paper px-3 focus-within:ring-2 focus-within:ring-proof/55">
+                  <span className="flex min-h-control items-center gap-2 rounded-control border border-control-boundary bg-answer-paper px-3 focus-within:ring-2 focus-within:ring-focus">
                     <Search aria-hidden="true" className="size-4 shrink-0 text-ink-muted" />
                     <input
                       aria-label="Search downstream providers"

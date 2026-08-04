@@ -108,7 +108,7 @@ function SearchSummaryBlockComponent({
     >
       <button
         aria-label={accessibleName}
-        className="-mx-2 flex min-h-control w-[calc(100%+1rem)] cursor-pointer flex-wrap items-center gap-x-2 gap-y-1 rounded-control px-2 text-left outline-none hover:bg-control-hover focus-visible:ring-2 focus-visible:ring-proof/45 [@media(hover:none)]:min-h-touch [@media(pointer:coarse)]:min-h-touch"
+        className="-mx-2 flex min-h-control w-[calc(100%+1rem)] cursor-pointer flex-wrap items-center gap-x-2 gap-y-1 rounded-control px-2 text-left outline-none hover:bg-control-hover focus-visible:ring-2 focus-visible:ring-focus [@media(hover:none)]:min-h-touch [@media(pointer:coarse)]:min-h-touch"
         type="button"
         aria-expanded={open}
         onClick={toggleOpen}
@@ -207,7 +207,7 @@ function SearchAttemptDisclosure({
           .filter(Boolean)
           .join(" ")}
         aria-expanded={open}
-        className="-mx-2 flex min-h-control w-[calc(100%+1rem)] items-center gap-2 rounded-control px-2 py-1.5 text-left outline-none hover:bg-control-hover focus-visible:ring-2 focus-visible:ring-proof/45 [@media(hover:none)]:min-h-touch [@media(pointer:coarse)]:min-h-touch"
+        className="-mx-2 flex min-h-control w-[calc(100%+1rem)] items-center gap-2 rounded-control px-2 py-1.5 text-left outline-none hover:bg-control-hover focus-visible:ring-2 focus-visible:ring-focus [@media(hover:none)]:min-h-touch [@media(pointer:coarse)]:min-h-touch"
         onClick={() => setOpen((value) => !value)}
         type="button"
       >
@@ -518,7 +518,7 @@ function ToolActivityBlockComponent({
         aria-label={`${headline}${failed > 0 ? ` ${failed} failed` : ""}${
           servers.length > 0 ? ` ${servers.join(", ")}` : ""
         }`}
-        className="-mx-2 flex min-h-control w-[calc(100%+1rem)] flex-wrap items-center gap-x-2 gap-y-1 rounded-control px-2 text-left outline-none hover:bg-control-hover focus-visible:ring-2 focus-visible:ring-proof/45 [@media(hover:none)]:min-h-touch [@media(pointer:coarse)]:min-h-touch"
+        className="-mx-2 flex min-h-control w-[calc(100%+1rem)] flex-wrap items-center gap-x-2 gap-y-1 rounded-control px-2 text-left outline-none hover:bg-control-hover focus-visible:ring-2 focus-visible:ring-focus [@media(hover:none)]:min-h-touch [@media(pointer:coarse)]:min-h-touch"
         type="button"
         aria-expanded={open}
         onClick={toggleOpen}
@@ -558,7 +558,7 @@ function ToolActivityBlockComponent({
                     data-tool-status={call.status}
                     key={call.callId}
                   >
-                    <summary className="-mx-2 flex min-h-control cursor-pointer list-none items-center gap-2 break-words rounded-control px-2 outline-none marker:hidden hover:bg-control-hover focus-visible:ring-2 focus-visible:ring-proof/45 [overflow-wrap:anywhere]">
+                    <summary className="-mx-2 flex min-h-control cursor-pointer list-none items-center gap-2 break-words rounded-control px-2 outline-none marker:hidden hover:bg-control-hover focus-visible:ring-2 focus-visible:ring-focus [overflow-wrap:anywhere]">
                       <ToolStatusIcon status={call.status} />
                       <span className="min-w-0 flex-1 font-medium text-ink">
                         {toolIdentity(call)}
@@ -639,7 +639,7 @@ function CitationBlockComponent({
       {!embedded ? (
         <button
           aria-label={`Citations ${summary.citationCount}`}
-          className="-mx-2 flex min-h-control w-[calc(100%+1rem)] items-center gap-2 rounded-control px-2 text-left outline-none hover:bg-control-hover focus-visible:ring-2 focus-visible:ring-proof/45 [@media(hover:none)]:min-h-touch [@media(pointer:coarse)]:min-h-touch"
+          className="-mx-2 flex min-h-control w-[calc(100%+1rem)] items-center gap-2 rounded-control px-2 text-left outline-none hover:bg-control-hover focus-visible:ring-2 focus-visible:ring-focus [@media(hover:none)]:min-h-touch [@media(pointer:coarse)]:min-h-touch"
           type="button"
           aria-expanded={open}
           onClick={toggleOpen}
@@ -719,7 +719,7 @@ function ReasoningBlockComponent({
     >
       <button
         aria-label={`Reasoning ${summary.reasoningCount}`}
-        className="-mx-2 flex min-h-control w-[calc(100%+1rem)] items-center gap-2 rounded-control px-2 text-left font-semibold text-ink outline-none hover:bg-control-hover focus-visible:ring-2 focus-visible:ring-proof/45 [@media(hover:none)]:min-h-touch [@media(pointer:coarse)]:min-h-touch"
+        className="-mx-2 flex min-h-control w-[calc(100%+1rem)] items-center gap-2 rounded-control px-2 text-left font-semibold text-ink outline-none hover:bg-control-hover focus-visible:ring-2 focus-visible:ring-focus [@media(hover:none)]:min-h-touch [@media(pointer:coarse)]:min-h-touch"
         type="button"
         aria-expanded={open}
         onClick={toggleOpen}

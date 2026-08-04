@@ -622,7 +622,7 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
                 Workspace
               </h2>
               <button
-                className="inline-flex size-11 shrink-0 items-center justify-center rounded-control text-ink-muted hover:bg-control-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-proof/55"
+                className="inline-flex size-11 shrink-0 items-center justify-center rounded-control text-ink-muted hover:bg-control-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"
                 type="button"
                 aria-label="Close workspace"
                 title="Close workspace"

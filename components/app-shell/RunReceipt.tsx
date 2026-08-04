@@ -50,7 +50,7 @@ function RunReceiptComponent({
         {actionableSegments.has("status") ? (
           <button
             aria-label={`Run ${receipt.statusLabel}`}
-            className="-mx-1 inline-flex min-h-7 items-center gap-1.5 rounded-control px-1 font-medium outline-none hover:bg-control-hover hover:text-ink focus-visible:ring-2 focus-visible:ring-proof/45 [@media(hover:none)]:min-h-touch [@media(pointer:coarse)]:min-h-touch"
+            className="-mx-1 inline-flex min-h-7 items-center gap-1.5 rounded-control px-1 font-medium outline-none hover:bg-control-hover hover:text-ink focus-visible:ring-2 focus-visible:ring-focus [@media(hover:none)]:min-h-touch [@media(pointer:coarse)]:min-h-touch"
             data-run-segment="status"
             type="button"
             onClick={() => onActivate("status")}
@@ -71,7 +71,7 @@ function RunReceiptComponent({
             <span aria-hidden="true">{" · "}</span>
             {actionableSegments.has(fact.kind) ? (
               <button
-                className="-mx-1 min-h-7 min-w-0 rounded-control px-1 text-left text-ink-secondary outline-none hover:bg-control-hover hover:text-ink focus-visible:ring-2 focus-visible:ring-proof/45 [overflow-wrap:anywhere] [@media(hover:none)]:min-h-touch [@media(pointer:coarse)]:min-h-touch"
+                className="-mx-1 min-h-7 min-w-0 rounded-control px-1 text-left text-ink-secondary outline-none hover:bg-control-hover hover:text-ink focus-visible:ring-2 focus-visible:ring-focus [overflow-wrap:anywhere] [@media(hover:none)]:min-h-touch [@media(pointer:coarse)]:min-h-touch"
                 data-run-segment={fact.kind}
                 type="button"
                 aria-label={fact.label}

@@ -56,9 +56,13 @@ describe("AdminSectionTabs", () => {
     for (const section of adminSections) {
       expect(screen.getByRole("tab", { name: section.label })).toHaveAccessibleName(section.label);
     }
-    expect(screen.getByRole("tab", { name: "Invites" })).toHaveAttribute("aria-selected", "true");
-    expect(screen.getByRole("tab", { name: "Users" })).toHaveTextContent("2");
-    expect(screen.getByRole("tab", { name: "Invites" })).toHaveTextContent("2");
+    const invitesTab = screen.getByRole("tab", { name: "Invites" });
+    const usersTab = screen.getByRole("tab", { name: "Users" });
+    expect(invitesTab).toHaveAttribute("aria-selected", "true");
+    expect(usersTab).toHaveTextContent("2");
+    expect(invitesTab).toHaveTextContent("2");
+    expect(within(invitesTab).getByText("2")).toHaveClass("text-ink");
+    expect(within(usersTab).getByText("2")).toHaveClass("text-caution");
     expect(screen.getAllByRole("tabpanel")).toHaveLength(1);
 
     for (const section of adminSections) {

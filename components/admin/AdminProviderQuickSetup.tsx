@@ -93,7 +93,7 @@ function ManageConnectionButton({
 }) {
   return (
     <button
-      className={`${quietButton} border border-trace-strong bg-answer-paper`}
+      className={`${quietButton} border border-control-boundary bg-answer-paper`}
       onClick={() => onManageConnection()}
       type="button"
     >
@@ -604,8 +604,10 @@ export function AdminProviderQuickSetup({
                   return (
                     <button
                       aria-label={`${provider.providerDisplayName} ${stateLabel(provider)}`}
-                      className={`min-w-0 bg-answer-paper px-2 py-3 text-left sm:px-4 sm:py-4 ${focusRing} ${touchTarget} ${
-                        selected ? "bg-proof/10 text-proof" : "text-ink hover:bg-control-hover"
+                      className={`min-w-0 px-2 py-3 text-left sm:px-4 sm:py-4 ${focusRing} ${touchTarget} ${
+                        selected
+                          ? "bg-control-selected text-ink"
+                          : "bg-answer-paper text-ink hover:bg-control-hover"
                       }`}
                       disabled={controller.state.formLocked}
                       key={provider.provider}
@@ -623,7 +625,9 @@ export function AdminProviderQuickSetup({
                         </span>
                       ) : (
                         <span className={`mt-1 block text-xs ${
-                          provider.state === "ready"
+                          selected
+                            ? "text-ink-secondary"
+                            : provider.state === "ready"
                             ? "text-positive"
                             : provider.state === "needs_attention"
                               ? "text-caution"

@@ -100,7 +100,7 @@ function MathExpression({ displayMode, raw, source }: { displayMode: boolean; ra
 
   return (
     <div
-      className="max-w-full overflow-x-auto overflow-y-hidden py-1 text-ink outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-proof/55 [&_.katex-display]:!my-0"
+      className="max-w-full overflow-x-auto overflow-y-hidden py-1 text-ink outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-focus [&_.katex-display]:!my-0"
       data-math-display="true"
       role="region"
       aria-label="Scrollable mathematical formula"
@@ -392,7 +392,7 @@ function renderTable(lines: string[], startIndex: number, keyPrefix: string): { 
     nextIndex: index,
     node: (
       <div
-        className="max-w-full overflow-x-auto rounded-control border border-trace-subtle outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-proof/55"
+        className="max-w-full overflow-x-auto rounded-control border border-trace-subtle outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-focus"
         data-testid="markdown-table-scroll"
         key={keyPrefix}
         role="region"
@@ -637,7 +637,7 @@ function CodeBlock({ code, language, streaming }: { code: string; language: stri
           <span aria-hidden="true" />
         )}
         <button
-          className="inline-flex h-touch items-center gap-1.5 rounded-control px-2 text-metadata text-ink-secondary opacity-0 outline-none transition-opacity duration-100 hover:bg-control-hover hover:text-ink focus:opacity-100 focus-visible:ring-2 focus-visible:ring-proof/55 group-focus-within/code:opacity-100 group-hover/code:opacity-100 [@media(hover:none)]:!h-touch [@media(hover:none)]:opacity-100 [@media(pointer:coarse)]:!h-touch [@media(pointer:coarse)]:opacity-100 sm:h-control-sm"
+          className="inline-flex h-touch items-center gap-1.5 rounded-control px-2 text-metadata text-ink-secondary opacity-0 outline-none transition-opacity duration-100 hover:bg-control-hover hover:text-ink focus:opacity-100 focus-visible:ring-2 focus-visible:ring-focus group-focus-within/code:opacity-100 group-hover/code:opacity-100 [@media(hover:none)]:!h-touch [@media(hover:none)]:opacity-100 [@media(pointer:coarse)]:!h-touch [@media(pointer:coarse)]:opacity-100 sm:h-control-sm"
           type="button"
           aria-label="Copy code"
           onClick={() => void copyCode()}
@@ -652,7 +652,7 @@ function CodeBlock({ code, language, streaming }: { code: string; language: stri
       </div>
       {highlightedHtml ? (
         <div
-          className="max-w-full overflow-x-auto p-3 font-mono text-xs leading-5 text-ink outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-proof/55 [overflow-wrap:normal] [&_code]:font-mono [&_pre]:!m-0 [&_pre]:!bg-transparent [&_pre]:!p-0"
+          className="max-w-full overflow-x-auto p-3 font-mono text-xs leading-5 text-ink outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-focus [overflow-wrap:normal] [&_code]:font-mono [&_pre]:!m-0 [&_pre]:!bg-transparent [&_pre]:!p-0"
           data-testid="markdown-code-scroll"
           role="region"
           aria-label="Scrollable code block"
@@ -661,7 +661,7 @@ function CodeBlock({ code, language, streaming }: { code: string; language: stri
         />
       ) : (
         <pre
-          className="max-w-full overflow-x-auto p-3 font-mono text-xs leading-5 text-ink outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-proof/55 [overflow-wrap:normal]"
+          className="max-w-full overflow-x-auto p-3 font-mono text-xs leading-5 text-ink outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-focus [overflow-wrap:normal]"
           data-testid="markdown-code-scroll"
           role="region"
           aria-label="Scrollable code block"

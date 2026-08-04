@@ -98,7 +98,7 @@ describe("McpSettingsSection", () => {
     await waitFor(() => expect(todoist.enabled).toBe(true));
     expect(within(card!).getByText("Enabled", {
       selector: "[data-resource-availability]"
-    })).toHaveClass("border-positive/35", "bg-positive/[0.12]", "text-positive");
+    })).toHaveClass("border-positive/35", "bg-positive/[0.12]", "text-ink");
     const disable = within(card!).getByRole("button", { name: "Disable Todoist" });
     expect(disable).toHaveClass("bg-control-surface", "text-ink-secondary");
 

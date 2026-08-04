@@ -67,16 +67,17 @@ export function inviteStatusLabel(status: AdminInviteStatus): string {
   return labels[status];
 }
 
-export function inviteStatusClass(status: AdminInviteStatus): string {
-  const classes: Record<AdminInviteStatus, string> = {
-    accepted: "border-positive/25 bg-positive/10 text-positive",
-    expired: "border-trace-subtle bg-control-surface text-ink-secondary",
-    open: "border-proof/25 bg-proof/10 text-proof",
-    revoked: "border-critical/25 bg-critical/10 text-critical",
-    soon: "border-caution/25 bg-caution/10 text-caution"
+export function inviteStatusClass(status: AdminInviteStatus, selected = false): string {
+  const classes: Record<AdminInviteStatus, { frame: string; text: string }> = {
+    accepted: { frame: "border-positive/25 bg-positive/10", text: "text-positive" },
+    expired: { frame: "border-trace-subtle bg-control-surface", text: "text-ink-secondary" },
+    open: { frame: "border-proof/25 bg-proof/10", text: "text-proof" },
+    revoked: { frame: "border-critical/25 bg-critical/10", text: "text-critical" },
+    soon: { frame: "border-caution/25 bg-caution/10", text: "text-caution" }
   };
 
-  return classes[status];
+  const presentation = classes[status];
+  return `${presentation.frame} ${selected ? "text-ink" : presentation.text}`;
 }
 
 export function inviteDeletionInfo(invite: AdminInviteRecord, nowMs: number): AdminDeletionInfo {

@@ -149,7 +149,7 @@ export function AdminSearchablePicker({
         {...triggerProps}
         aria-describedby={description ? descriptionId : undefined}
         aria-label={label}
-        className={`flex min-h-control w-full min-w-0 items-center justify-between gap-3 rounded-control border border-trace-subtle bg-answer-paper px-3 py-2 text-left text-ink hover:bg-control-hover ${focusRing} ${touchTarget} disabled:cursor-not-allowed disabled:text-ink-disabled disabled:opacity-60`}
+        className={`flex min-h-control w-full min-w-0 items-center justify-between gap-3 rounded-control border border-control-boundary bg-answer-paper px-3 py-2 text-left text-ink hover:bg-control-hover ${focusRing} ${touchTarget} disabled:cursor-not-allowed disabled:border-trace-subtle disabled:text-ink-disabled disabled:opacity-60`}
         disabled={disabled}
         onClick={toggle}
         ref={triggerRef}
@@ -188,7 +188,7 @@ export function AdminSearchablePicker({
             </button>
           </div>
 
-          <div className="mb-2 flex min-h-control items-center gap-2 rounded-control border border-trace-subtle bg-answer-paper px-3 focus-within:ring-2 focus-within:ring-proof/45 [@media(hover:none)]:!min-h-touch [@media(pointer:coarse)]:!min-h-touch">
+          <div className="mb-2 flex min-h-control items-center gap-2 rounded-control border border-control-boundary bg-answer-paper px-3 focus-within:ring-2 focus-within:ring-focus [@media(hover:none)]:!min-h-touch [@media(pointer:coarse)]:!min-h-touch">
             <Search className="size-4 shrink-0 text-ink-muted" aria-hidden="true" />
             <input
               aria-activedescendant={activeItem ? `${idPrefix}-option-${navigableIndex}` : undefined}
@@ -258,7 +258,7 @@ export function AdminSearchablePicker({
                     {...getItemProps(index)}
                     aria-selected={selected}
                     className={[
-                      "flex min-h-touch w-full min-w-0 items-start justify-between gap-3 rounded-control px-3 py-2 text-left outline-none focus-visible:ring-2 focus-visible:ring-proof/45 sm:min-h-control [@media(hover:none)]:!min-h-touch [@media(pointer:coarse)]:!min-h-touch",
+                      "flex min-h-touch w-full min-w-0 items-start justify-between gap-3 rounded-control px-3 py-2 text-left outline-none focus-visible:ring-2 focus-visible:ring-focus sm:min-h-control [@media(hover:none)]:!min-h-touch [@media(pointer:coarse)]:!min-h-touch",
                       active
                         ? "bg-control-hover text-ink"
                         : selected

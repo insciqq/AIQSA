@@ -10,7 +10,9 @@ import {
   AdminTaskDetailPane,
   AdminTaskIndexPane,
   AdminTaskWorkspace,
-  enableButton
+  enableButton,
+  focusRing,
+  inputClass
 } from "./adminPrimitives";
 
 const activeGroup: AdminGroup = {
@@ -75,9 +77,19 @@ describe("admin lifecycle presentation", () => {
       </>
     );
 
-    expect(screen.getByText("Enabled")).toHaveClass("border-positive/35", "bg-positive/[0.12]", "text-positive");
+    expect(screen.getByText("Enabled")).toHaveClass("border-positive/35", "bg-positive/[0.12]", "text-ink");
     expect(screen.getByText("Disabled")).toHaveClass("border-trace-strong", "bg-control-surface", "text-ink");
     expect(screen.getByRole("button", { name: "Enable resource" })).toHaveClass("border-proof/25", "bg-proof/[0.08]", "text-proof");
+  });
+});
+
+describe("admin interactive recipes", () => {
+  it("keeps enabled, invalid, disabled, and focused fields semantically distinct", () => {
+    expect(inputClass).toContain("border-control-boundary");
+    expect(inputClass).toContain("aria-[invalid=true]:border-critical");
+    expect(inputClass).toContain("disabled:border-trace-subtle");
+    expect(inputClass).toContain("disabled:text-ink-disabled");
+    expect(focusRing).toContain("focus-visible:ring-focus");
   });
 });
 

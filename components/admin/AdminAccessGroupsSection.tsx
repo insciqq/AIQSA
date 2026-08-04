@@ -576,7 +576,7 @@ function GroupDetail({
         ] as const).map(([view, label]) => (
           <button
             aria-pressed={draft.activeView === view}
-            className={`min-h-touch border-b-2 px-3 text-sm font-medium outline-none transition-colors focus-visible:ring-2 focus-visible:ring-proof/55 sm:min-h-control ${
+            className={`min-h-touch border-b-2 px-3 text-sm font-medium outline-none transition-colors focus-visible:ring-2 focus-visible:ring-focus sm:min-h-control ${
               draft.activeView === view
                 ? "border-proof bg-control-selected text-ink"
                 : "border-transparent text-ink-muted hover:border-trace-strong hover:bg-control-hover hover:text-ink-secondary"

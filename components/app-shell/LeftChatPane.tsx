@@ -95,7 +95,7 @@ type LeftChatPaneProps = {
 };
 
 const focusRing =
-  "outline-none focus-visible:ring-2 focus-visible:ring-proof/55 focus-visible:ring-offset-2 focus-visible:ring-offset-workspace-rail";
+  "outline-none focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-offset-2 focus-visible:ring-offset-workspace-rail";
 
 const menuSurface =
   "pop-enter relative z-20 my-1 max-h-[min(25rem,calc(100dvh-12rem))] overflow-y-auto overscroll-contain rounded-panel border border-trace-subtle bg-overlay-surface p-1.5 text-sm text-ink-secondary shadow-overlay";
@@ -570,7 +570,7 @@ function LeftChatPaneComponent({
             </label>
             <input
               autoFocus
-              className={`${toolbarTarget} min-w-0 flex-1 rounded-control border border-trace-subtle bg-answer-paper px-3 text-sm text-ink placeholder:text-ink-muted ${focusRing}`}
+              className={`${toolbarTarget} min-w-0 flex-1 rounded-control border border-control-boundary bg-answer-paper px-3 text-sm text-ink placeholder:text-ink-muted disabled:cursor-not-allowed disabled:border-trace-subtle disabled:text-ink-disabled ${focusRing}`}
               id={`${idPrefix}new-folder-name`}
               placeholder="Folder name"
               value={newFolderName}
@@ -615,7 +615,7 @@ function LeftChatPaneComponent({
           </div>
         ) : null}
         <div
-          className={`mt-2 flex ${toolbarTarget} items-center gap-2 rounded-control bg-control-surface px-3 ring-1 ring-transparent focus-within:bg-answer-paper focus-within:ring-proof/45 ${workspaceReady ? "" : "opacity-60"}`}
+          className={`mt-2 flex ${toolbarTarget} items-center gap-2 rounded-control bg-control-surface px-3 ring-1 focus-within:bg-answer-paper focus-within:ring-2 focus-within:ring-focus ${workspaceReady ? "ring-control-boundary" : "ring-trace-subtle opacity-60"}`}
           data-testid="chat-search-control"
         >
           <Search className="size-4 shrink-0 text-ink-muted" aria-hidden="true" />
@@ -749,7 +749,7 @@ function LeftChatPaneComponent({
                     </label>
                     <input
                       autoFocus
-                      className={`${inlineControlTarget} min-w-0 flex-1 rounded-control border border-trace-subtle bg-answer-paper px-2 text-sm text-ink ${focusRing}`}
+                      className={`${inlineControlTarget} min-w-0 flex-1 rounded-control border border-control-boundary bg-answer-paper px-2 text-sm text-ink ${focusRing}`}
                       id={`${idPrefix}rename-folder-${group.folder.id}`}
                       aria-label={`Rename folder ${group.name}`}
                       value={editingFolderName}
@@ -903,7 +903,7 @@ function LeftChatPaneComponent({
                       <input
                         autoFocus
                         ref={subfolderInputRef}
-                        className={`${inlineControlTarget} min-w-0 flex-1 rounded-control border border-trace-subtle bg-answer-paper px-2 text-sm text-ink ${focusRing}`}
+                        className={`${inlineControlTarget} min-w-0 flex-1 rounded-control border border-control-boundary bg-answer-paper px-2 text-sm text-ink ${focusRing}`}
                         id={`${idPrefix}subfolder-name-${group.folder.id}`}
                         aria-label={`Subfolder name for ${group.name}`}
                         placeholder="Subfolder name"
@@ -1078,7 +1078,7 @@ function LeftChatPaneComponent({
                             </label>
                             <input
                               autoFocus
-                              className={`${inlineControlTarget} min-w-0 flex-1 rounded-control border border-trace-subtle bg-answer-paper px-2 text-sm text-ink ${focusRing}`}
+                              className={`${inlineControlTarget} min-w-0 flex-1 rounded-control border border-control-boundary bg-answer-paper px-2 text-sm text-ink ${focusRing}`}
                               id={`${idPrefix}rename-chat-${chat.id}`}
                               aria-label={`Edit title ${chat.title}`}
                               value={editingChatTitle}
@@ -1170,7 +1170,7 @@ function LeftChatPaneComponent({
                                   ) : null}
                                   {unavailable && providerModel !== "Unavailable model" ? (
                                     <span
-                                      className="shrink-0 text-caution"
+                                      className={`shrink-0 ${active ? "text-ink-secondary" : "text-caution"}`}
                                       title="Unavailable for new runs"
                                       aria-hidden="true"
                                     >

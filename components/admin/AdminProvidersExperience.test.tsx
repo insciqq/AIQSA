@@ -407,7 +407,13 @@ describe("AdminProvidersExperience", () => {
     expect(screen.queryByLabelText("API key")).not.toBeInTheDocument();
     expect(connections.mounts).toBe(0);
     expect(profiles.mounts).toBe(0);
-    fireEvent.click(screen.getByRole("button", { name: /OpenAI Not configured/ }));
+    const openAiChoice = screen.getByRole("button", { name: /OpenAI Not configured/ });
+    expect(openAiChoice).toHaveClass("bg-answer-paper", "text-ink");
+    expect(within(openAiChoice).getByText("Not configured")).toHaveClass("text-ink-muted");
+    fireEvent.click(openAiChoice);
+    expect(openAiChoice).toHaveClass("bg-control-selected", "text-ink");
+    expect(openAiChoice).not.toHaveClass("bg-proof/10", "text-proof");
+    expect(within(openAiChoice).getByText("Not configured")).toHaveClass("text-ink-secondary");
     const key = screen.getByLabelText("API key");
     expect(key).toHaveAttribute("type", "password");
     fireEvent.change(key, { target: { value: "browser-only-key" } });

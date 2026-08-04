@@ -29,7 +29,7 @@ type DiscardIntent =
   | { kind: "new" };
 
 const focusRing =
-  "outline-none focus-visible:ring-2 focus-visible:ring-proof/55 focus-visible:ring-offset-2 focus-visible:ring-offset-overlay-surface";
+  "outline-none focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-offset-2 focus-visible:ring-offset-overlay-surface";
 const coarsePointerTarget = "[@media(hover:none)]:!min-h-touch [@media(pointer:coarse)]:!min-h-touch";
 const quietButton = `inline-flex min-h-touch items-center justify-center gap-2 rounded-control px-3 text-xs font-medium text-ink-secondary hover:bg-control-hover hover:text-ink disabled:cursor-not-allowed disabled:text-ink-disabled disabled:opacity-60 sm:min-h-control-sm ${coarsePointerTarget} ${focusRing}`;
 
@@ -496,7 +496,7 @@ export function PromptWorkbench({
                   aria-hidden="true"
                 />
                 <input
-                  className={`h-touch w-full rounded-control border border-trace-subtle bg-answer-paper pl-9 pr-3 text-sm text-ink placeholder:text-ink-muted sm:h-control ${focusRing}`}
+                  className={`h-touch w-full rounded-control border border-control-boundary bg-answer-paper pl-9 pr-3 text-sm text-ink placeholder:text-ink-muted sm:h-control ${focusRing}`}
                   id="prompt-library-search"
                   type="search"
                   autoComplete="off"
@@ -764,7 +764,7 @@ export function PromptWorkbench({
                     <span className="sr-only">Prompt name</span>
                     <input
                       ref={promptNameRef}
-                      className={`h-touch w-full rounded-control border border-trace-subtle bg-answer-paper px-3 text-sm text-ink placeholder:text-ink-muted disabled:cursor-not-allowed disabled:text-ink-disabled sm:h-control [@media(hover:none)]:!h-touch [@media(pointer:coarse)]:!h-touch ${focusRing}`}
+                      className={`h-touch w-full rounded-control border border-control-boundary bg-answer-paper px-3 text-sm text-ink placeholder:text-ink-muted aria-[invalid=true]:border-critical disabled:cursor-not-allowed disabled:border-trace-subtle disabled:text-ink-disabled sm:h-control [@media(hover:none)]:!h-touch [@media(pointer:coarse)]:!h-touch ${focusRing}`}
                       id="prompt-workbench-name"
                       type="text"
                       aria-label="Prompt name"
@@ -807,7 +807,7 @@ export function PromptWorkbench({
                     <label className="block" htmlFor="prompt-workbench-system">
                       <span className="sr-only">System instructions</span>
                       <textarea
-                        className={`min-h-48 w-full resize-y rounded-control border border-trace-subtle bg-answer-paper px-3 py-3 text-sm leading-6 text-ink placeholder:text-ink-muted disabled:cursor-not-allowed disabled:text-ink-disabled ${focusRing}`}
+                        className={`min-h-48 w-full resize-y rounded-control border border-control-boundary bg-answer-paper px-3 py-3 text-sm leading-6 text-ink placeholder:text-ink-muted aria-[invalid=true]:border-critical disabled:cursor-not-allowed disabled:border-trace-subtle disabled:text-ink-disabled ${focusRing}`}
                         id="prompt-workbench-system"
                         aria-label="System instructions"
                         aria-describedby="prompt-workbench-system-guidance"
@@ -838,7 +838,7 @@ export function PromptWorkbench({
                     <label className="block" htmlFor="prompt-workbench-developer">
                       <span className="sr-only">Developer instructions</span>
                       <textarea
-                        className={`min-h-32 w-full resize-y rounded-control border border-trace-subtle bg-answer-paper px-3 py-3 text-sm leading-6 text-ink placeholder:text-ink-muted disabled:cursor-not-allowed disabled:text-ink-disabled ${focusRing}`}
+                        className={`min-h-32 w-full resize-y rounded-control border border-control-boundary bg-answer-paper px-3 py-3 text-sm leading-6 text-ink placeholder:text-ink-muted disabled:cursor-not-allowed disabled:border-trace-subtle disabled:text-ink-disabled ${focusRing}`}
                         id="prompt-workbench-developer"
                         aria-label="Developer instructions"
                         aria-describedby="prompt-workbench-developer-help"

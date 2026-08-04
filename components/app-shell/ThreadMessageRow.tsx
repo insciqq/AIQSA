@@ -48,10 +48,10 @@ import {
 import { createPortal } from "react-dom";
 
 const iconActionClass =
-  "inline-flex size-11 shrink-0 items-center justify-center rounded-control text-ink-muted outline-none hover:bg-control-hover hover:text-ink focus-visible:ring-2 focus-visible:ring-proof/45 disabled:cursor-not-allowed disabled:text-ink-disabled disabled:opacity-50 sm:size-9 [@media(hover:none)]:!size-11 [@media(pointer:coarse)]:!size-11";
+  "inline-flex size-11 shrink-0 items-center justify-center rounded-control text-ink-muted outline-none hover:bg-control-hover hover:text-ink focus-visible:ring-2 focus-visible:ring-focus disabled:cursor-not-allowed disabled:text-ink-disabled disabled:opacity-50 sm:size-9 [@media(hover:none)]:!size-11 [@media(pointer:coarse)]:!size-11";
 
 const messageMenuItemClass =
-  "flex min-h-11 w-full items-center gap-2 rounded-control px-3 text-left text-sm font-medium text-ink-secondary outline-none hover:bg-control-hover hover:text-ink focus-visible:bg-control-hover focus-visible:text-ink focus-visible:ring-2 focus-visible:ring-proof/45 disabled:cursor-not-allowed disabled:text-ink-disabled disabled:opacity-50 sm:min-h-9 [@media(hover:none)]:!min-h-11 [@media(pointer:coarse)]:!min-h-11";
+  "flex min-h-11 w-full items-center gap-2 rounded-control px-3 text-left text-sm font-medium text-ink-secondary outline-none hover:bg-control-hover hover:text-ink focus-visible:bg-control-hover focus-visible:text-ink focus-visible:ring-2 focus-visible:ring-focus disabled:cursor-not-allowed disabled:text-ink-disabled disabled:opacity-50 sm:min-h-9 [@media(hover:none)]:!min-h-11 [@media(pointer:coarse)]:!min-h-11";
 
 const actionStripClass =
   "absolute bottom-0 right-2 z-10 flex min-h-11 translate-y-1/2 items-center gap-0.5 rounded-panel border border-trace-subtle bg-overlay-surface p-0.5 shadow-float [@media(hover:none)]:!min-h-11 [@media(pointer:coarse)]:!min-h-11 sm:min-h-9";
@@ -767,7 +767,7 @@ function ThreadMessageRowComponent({
               </p>
               <button
                 aria-describedby={streaming ? `${targetDescriptionId} ${disabledDescriptionId}` : targetDescriptionId}
-                className="mt-3 inline-flex min-h-11 items-center gap-2 rounded-control bg-proof px-3 text-sm font-semibold text-proof-contrast outline-none hover:bg-proof-hover focus-visible:ring-2 focus-visible:ring-proof/55 focus-visible:ring-offset-2 focus-visible:ring-offset-answer-paper disabled:cursor-not-allowed disabled:bg-control-surface disabled:text-ink-disabled disabled:opacity-60 sm:min-h-9 [@media(hover:none)]:!min-h-11 [@media(pointer:coarse)]:!min-h-11"
+                className="mt-3 inline-flex min-h-11 items-center gap-2 rounded-control bg-proof px-3 text-sm font-semibold text-proof-contrast outline-none hover:bg-proof-hover focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-offset-2 focus-visible:ring-offset-answer-paper disabled:cursor-not-allowed disabled:bg-control-surface disabled:text-ink-disabled disabled:opacity-60 sm:min-h-9 [@media(hover:none)]:!min-h-11 [@media(pointer:coarse)]:!min-h-11"
                 disabled={streaming}
                 title={streaming ? "Retry is disabled while a response is streaming" : "Retry answer"}
                 type="button"

@@ -395,7 +395,7 @@ export function ComposerControls({
 
         <button
           ref={runSetupTriggerRef}
-          className="inline-flex min-h-touch min-w-touch shrink-0 items-center justify-center gap-1 rounded-control px-1.5 text-left text-xs font-medium text-ink-secondary outline-none hover:bg-control-hover hover:text-ink focus-visible:ring-2 focus-visible:ring-proof/55 disabled:cursor-not-allowed disabled:text-ink-disabled disabled:opacity-65 sm:min-h-control [@media(hover:none)]:!min-h-touch [@media(pointer:coarse)]:!min-h-touch"
+          className="inline-flex min-h-touch min-w-touch shrink-0 items-center justify-center gap-1 rounded-control px-1.5 text-left text-xs font-medium text-ink-secondary outline-none hover:bg-control-hover hover:text-ink focus-visible:ring-2 focus-visible:ring-focus disabled:cursor-not-allowed disabled:text-ink-disabled disabled:opacity-65 sm:min-h-control [@media(hover:none)]:!min-h-touch [@media(pointer:coarse)]:!min-h-touch"
           type="button"
           aria-label={summaryDescription}
           aria-controls="composer-run-setup-panel"
@@ -463,7 +463,7 @@ export function ComposerControls({
                 <p className="mt-0.5 text-xs text-ink-muted">Everything for the next answer, in one place.</p>
               </div>
               <button
-                className="grid size-11 shrink-0 place-items-center rounded-control text-ink-muted outline-none hover:bg-control-hover hover:text-ink focus-visible:ring-2 focus-visible:ring-proof/55"
+                className="grid size-11 shrink-0 place-items-center rounded-control text-ink-muted outline-none hover:bg-control-hover hover:text-ink focus-visible:ring-2 focus-visible:ring-focus"
                 type="button"
                 aria-label="Close run setup"
                 onClick={closeRunSetup}
@@ -594,7 +594,7 @@ export function ComposerControls({
                   <div className="mb-2 flex items-center justify-between gap-3">
                     <h3 className="text-xs font-semibold text-ink-secondary" id="run-prompt-heading">Prompt preset</h3>
                     <button
-                      className="inline-flex h-touch shrink-0 items-center gap-1.5 rounded-control px-2 text-xs font-medium text-ink-secondary hover:bg-control-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-proof/55 sm:h-control-sm [@media(hover:none)]:!h-touch [@media(pointer:coarse)]:!h-touch"
+                      className="inline-flex h-touch shrink-0 items-center gap-1.5 rounded-control px-2 text-xs font-medium text-ink-secondary hover:bg-control-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus sm:h-control-sm [@media(hover:none)]:!h-touch [@media(pointer:coarse)]:!h-touch"
                       type="button"
                       onClick={() => {
                         closeRunSetup();
@@ -621,7 +621,7 @@ export function ComposerControls({
                     <label className="min-w-0 text-xs text-ink-secondary">
                       <span className="mb-1.5 block">Temperature</span>
                       <input
-                        className="h-touch w-full min-w-0 rounded-control border border-trace-subtle bg-answer-paper px-3 text-sm text-ink outline-none focus-visible:ring-2 focus-visible:ring-proof/55 disabled:cursor-not-allowed disabled:text-ink-disabled sm:h-control [@media(hover:none)]:!h-touch [@media(pointer:coarse)]:!h-touch"
+                        className="h-touch w-full min-w-0 rounded-control border border-control-boundary bg-answer-paper px-3 text-sm text-ink outline-none focus-visible:ring-2 focus-visible:ring-focus disabled:cursor-not-allowed disabled:border-trace-subtle disabled:text-ink-disabled sm:h-control [@media(hover:none)]:!h-touch [@media(pointer:coarse)]:!h-touch"
                         type="number"
                         step="0.1"
                         aria-label="Temperature"
@@ -642,7 +642,7 @@ export function ComposerControls({
                     <label className="min-w-0 text-xs text-ink-secondary">
                       <span className="mb-1.5 block">Max output tokens</span>
                       <input
-                        className="h-touch w-full min-w-0 rounded-control border border-trace-subtle bg-answer-paper px-3 text-sm text-ink outline-none focus-visible:ring-2 focus-visible:ring-proof/55 disabled:cursor-not-allowed disabled:text-ink-disabled sm:h-control [@media(hover:none)]:!h-touch [@media(pointer:coarse)]:!h-touch"
+                        className="h-touch w-full min-w-0 rounded-control border border-control-boundary bg-answer-paper px-3 text-sm text-ink outline-none focus-visible:ring-2 focus-visible:ring-focus disabled:cursor-not-allowed disabled:border-trace-subtle disabled:text-ink-disabled sm:h-control [@media(hover:none)]:!h-touch [@media(pointer:coarse)]:!h-touch"
                         type="number"
                         aria-label="Max output tokens"
                         disabled={streaming || !currentModel}
@@ -664,7 +664,7 @@ export function ComposerControls({
                     <label className="mt-3 block text-xs text-ink-secondary">
                       <span className="mb-1.5 block">Reasoning mode</span>
                       <select
-                        className="h-touch w-full rounded-control border border-trace-subtle bg-answer-paper px-3 text-sm text-ink outline-none focus-visible:ring-2 focus-visible:ring-proof/55 disabled:cursor-not-allowed disabled:text-ink-disabled sm:h-control [@media(hover:none)]:!h-touch [@media(pointer:coarse)]:!h-touch"
+                        className="h-touch w-full rounded-control border border-control-boundary bg-answer-paper px-3 text-sm text-ink outline-none focus-visible:ring-2 focus-visible:ring-focus disabled:cursor-not-allowed disabled:border-trace-subtle disabled:text-ink-disabled sm:h-control [@media(hover:none)]:!h-touch [@media(pointer:coarse)]:!h-touch"
                         aria-label="Reasoning mode"
                         disabled={streaming || !currentModel}
                         value={reasoningMode}
@@ -802,7 +802,7 @@ function ToggleSetting({
   return (
     <button
       className={[
-        "flex min-h-touch items-center gap-2 rounded-control px-3 text-left text-xs font-medium outline-none focus-visible:ring-2 focus-visible:ring-proof/55 disabled:cursor-not-allowed disabled:text-ink-disabled disabled:opacity-60 sm:min-h-control [@media(hover:none)]:!min-h-touch [@media(pointer:coarse)]:!min-h-touch",
+        "flex min-h-touch items-center gap-2 rounded-control px-3 text-left text-xs font-medium outline-none focus-visible:ring-2 focus-visible:ring-focus disabled:cursor-not-allowed disabled:text-ink-disabled disabled:opacity-60 sm:min-h-control [@media(hover:none)]:!min-h-touch [@media(pointer:coarse)]:!min-h-touch",
         active
           ? "bg-control-selected text-ink"
           : "bg-control-surface text-ink-secondary hover:bg-control-hover hover:text-ink"

@@ -3,7 +3,7 @@ export const enableActionTone =
 
 export function availabilityStatusClass(enabled: boolean): string {
   return enabled
-    ? "border-positive/35 bg-positive/[0.12] text-positive"
+    ? "border-positive/35 bg-positive/[0.12] text-ink"
     : "border-trace-strong bg-control-surface text-ink";
 }
 
@@ -27,7 +27,7 @@ export function AvailabilityStatus({
       className={`inline-flex shrink-0 items-center gap-1.5 rounded-pill border px-2.5 py-1 text-xs font-semibold leading-none ${availabilityStatusClass(enabled)}`}
       data-resource-availability={enabled ? "enabled" : "disabled"}
     >
-      <span aria-hidden="true" className="size-2 rounded-full bg-current" />
+      <span aria-hidden="true" className={`size-2 rounded-full ${enabled ? "bg-positive" : "bg-current"}`} />
       {enabled ? enabledLabel : disabledLabel}
     </span>
   );

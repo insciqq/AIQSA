@@ -8,7 +8,7 @@ import {
 } from "./AvailabilityStatus";
 
 describe("AvailabilityStatus", () => {
-  it("keeps enabled positive and disabled strongly neutral", () => {
+  it("keeps enabled positive-accented and disabled strongly neutral", () => {
     render(
       <div>
         <AvailabilityStatus enabled />
@@ -19,8 +19,9 @@ describe("AvailabilityStatus", () => {
     expect(screen.getByText("Enabled")).toHaveClass(
       "border-positive/35",
       "bg-positive/[0.12]",
-      "text-positive"
+      "text-ink"
     );
+    expect(screen.getByText("Enabled").firstElementChild).toHaveClass("bg-positive");
     expect(screen.getByText("Enabled")).toHaveAttribute("data-resource-availability", "enabled");
     expect(screen.getByText("Disabled")).toHaveClass(
       "border-trace-strong",
@@ -44,6 +45,6 @@ describe("AvailabilityStatus", () => {
     render(<AvailabilityStatus enabled enabledLabel="Active" />);
 
     expect(screen.getByText("Active")).toHaveAttribute("data-resource-availability", "enabled");
-    expect(screen.getByText("Active")).toHaveClass("text-positive");
+    expect(screen.getByText("Active")).toHaveClass("text-ink");
   });
 });

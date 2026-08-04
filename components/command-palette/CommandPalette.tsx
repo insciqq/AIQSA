@@ -115,7 +115,7 @@ export function CommandPalette({
         <div className="flex shrink-0 items-center gap-2 border-b border-trace-subtle px-3">
           <Search className="size-4 text-ink-muted" aria-hidden="true" />
           <input
-            className="h-14 min-w-0 flex-1 bg-transparent text-sm text-ink outline-none placeholder:text-ink-muted"
+            className="h-14 min-w-0 flex-1 rounded-control bg-transparent text-sm text-ink outline-none placeholder:text-ink-muted focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-focus"
             aria-label="Command search"
             aria-activedescendant={selectedItem ? `command-option-${boundedSelectedIndex}` : undefined}
             aria-autocomplete="list"
@@ -146,7 +146,7 @@ export function CommandPalette({
             }}
           />
           <button
-            className="grid size-11 shrink-0 place-items-center rounded-control text-ink-muted outline-none hover:bg-control-hover hover:text-ink focus-visible:ring-2 focus-visible:ring-proof/55 sm:size-9 [@media(hover:none)]:!size-11 [@media(pointer:coarse)]:!size-11"
+            className="grid size-11 shrink-0 place-items-center rounded-control text-ink-muted outline-none hover:bg-control-hover hover:text-ink focus-visible:ring-2 focus-visible:ring-focus sm:size-9 [@media(hover:none)]:!size-11 [@media(pointer:coarse)]:!size-11"
             type="button"
             aria-label="Close command palette"
             title="Close command palette"
@@ -190,7 +190,7 @@ export function CommandPalette({
                   {group.items.map(({ index, item }) => (
                     <button
                       className={[
-                        "flex min-h-touch w-full items-start justify-between gap-3 rounded-control px-3 py-2 text-left outline-none focus-visible:ring-2 focus-visible:ring-proof/55 sm:min-h-control [@media(hover:none)]:!min-h-touch [@media(pointer:coarse)]:!min-h-touch",
+                        "flex min-h-touch w-full items-start justify-between gap-3 rounded-control px-3 py-2 text-left outline-none focus-visible:ring-2 focus-visible:ring-focus sm:min-h-control [@media(hover:none)]:!min-h-touch [@media(pointer:coarse)]:!min-h-touch",
                         index === boundedSelectedIndex
                           ? "bg-control-selected text-ink"
                           : "text-ink-secondary hover:bg-control-hover hover:text-ink"

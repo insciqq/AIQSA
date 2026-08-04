@@ -134,7 +134,7 @@ export function AdminSectionTabs({
                           {attention > 0 ? (
                             <span
                               aria-hidden="true"
-                              className="shrink-0 rounded-pill bg-caution/10 px-1.5 py-0.5 font-mono text-metadata text-caution"
+                              className={`shrink-0 rounded-pill bg-caution/10 px-1.5 py-0.5 font-mono text-metadata ${active ? "text-ink" : "text-caution"}`}
                             >
                               {attention}
                             </span>

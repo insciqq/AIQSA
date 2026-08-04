@@ -265,14 +265,15 @@ export function AdminInvitesSection(props: AdminInvitesSectionProps) {
         <div className="min-w-0 divide-y divide-trace-subtle" data-testid="admin-invites-list">
           {data.invites.length ? data.invites.map((invite) => {
             const currentStatus = inviteStatus(invite, data.nowMs);
+            const selected = data.selectedInvite?.id === invite.id;
             return (
-              <article className={`min-w-0 px-4 py-3 ${data.selectedInvite?.id === invite.id ? "bg-control-selected" : "bg-transparent"}`} data-testid="admin-invite-row" key={invite.id}>
+              <article className={`min-w-0 px-4 py-3 ${selected ? "bg-control-selected" : "bg-transparent"}`} data-testid="admin-invite-row" key={invite.id}>
                 <div className="flex min-w-0 items-start justify-between gap-3">
                   <div className="min-w-0">
                     <p className="break-words text-sm font-medium text-ink [overflow-wrap:anywhere]">{invite.email}</p>
                     <p className="mt-1 break-words text-xs text-ink-muted [overflow-wrap:anywhere]">{groupLabel(invite.defaultGroups)}</p>
                   </div>
-                  <span className={`shrink-0 rounded-pill border px-2 py-0.5 text-metadata capitalize ${inviteStatusClass(currentStatus)}`}>
+                  <span className={`shrink-0 rounded-pill border px-2 py-0.5 text-metadata capitalize ${inviteStatusClass(currentStatus, selected)}`}>
                     {inviteStatusLabel(currentStatus)}
                   </span>
                 </div>

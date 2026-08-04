@@ -9,7 +9,7 @@ import {
 } from "react";
 
 const menuItemClass =
-  "flex min-h-touch w-full items-center gap-2 rounded-control px-3 text-left text-sm font-medium text-ink-secondary outline-none hover:bg-control-hover hover:text-ink focus-visible:bg-control-hover focus-visible:text-ink focus-visible:ring-2 focus-visible:ring-proof/55 min-[1281px]:min-h-9 [@media(hover:none)]:!min-h-touch [@media(pointer:coarse)]:!min-h-touch";
+  "flex min-h-touch w-full items-center gap-2 rounded-control px-3 text-left text-sm font-medium text-ink-secondary outline-none hover:bg-control-hover hover:text-ink focus-visible:bg-control-hover focus-visible:text-ink focus-visible:ring-2 focus-visible:ring-focus min-[1281px]:min-h-9 [@media(hover:none)]:!min-h-touch [@media(pointer:coarse)]:!min-h-touch";
 
 export type AccountMenuProps = {
   accountEmail: string | null;
@@ -56,7 +56,7 @@ export const AccountMenu = forwardRef<HTMLButtonElement, AccountMenuProps>(funct
   const accountTriggerLabel = `Account menu for ${accountIdentity}`;
   const open = controlledOpen ?? uncontrolledOpen;
   const accountFocusClass =
-    "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-proof/55 focus-visible:ring-offset-2 focus-visible:ring-offset-workspace-rail";
+    "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-offset-2 focus-visible:ring-offset-workspace-rail";
   const setTriggerRef = useCallback(
     (node: HTMLButtonElement | null) => {
       triggerRef.current = node;

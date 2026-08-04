@@ -51,7 +51,7 @@ describe("AdminAccessRulesSection", () => {
 
     expect(screen.getByTestId("admin-access-rules-index")).toHaveClass("block", "lg:block");
     expect(screen.getByTestId("admin-access-rules-detail-pane")).toHaveClass("hidden", "lg:block");
-    expect(screen.getByText("Enabled")).toHaveClass("border-positive/35", "text-positive");
+    expect(screen.getByText("Enabled")).toHaveClass("border-positive/35", "text-ink");
     expect(screen.queryByRole("table")).not.toBeInTheDocument();
     fireEvent.change(screen.getByLabelText("Search access rules"), { target: { value: "domain" } });
     fireEvent.click(within(screen.getByTestId("admin-access-rule-row")).getByRole("button", { name: "Details" }));

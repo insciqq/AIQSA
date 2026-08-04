@@ -18,7 +18,7 @@ describe("InspectorTabs", () => {
     const branchTab = screen.getByRole("tab", { name: "Branch" });
     expect(branchTab).toHaveAttribute("aria-selected", "true");
     expect(branchTab).toHaveAttribute("tabindex", "0");
-    expect(branchTab).toHaveClass("focus-visible:ring-2", "focus-visible:ring-proof/55");
+    expect(branchTab).toHaveClass("focus-visible:ring-2", "focus-visible:ring-focus");
     expect(branchTab).toHaveClass("text-ink", "after:bg-proof");
 
     for (const tab of inspectorTabs) {
