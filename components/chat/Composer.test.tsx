@@ -83,11 +83,10 @@ describe("Composer", () => {
     );
     expect(messageField).toHaveClass(
       "px-4",
-      "pt-3",
-      "after:bg-focus",
-      "after:scale-x-0",
-      "has-[textarea:focus-visible]:after:scale-x-100"
+      "pt-3"
     );
+    expect(messageField).not.toHaveClass("after:bg-focus");
+    expect(textarea).not.toHaveClass("focus-visible:ring-2");
     expect(surface).toContainElement(textarea);
     expect(surface).toContainElement(screen.getByRole("list", { name: "Attachments" }));
     expect(screen.getByTestId("attachment-warning-announcement")).toBeEmptyDOMElement();

@@ -704,7 +704,7 @@ export function Composer({
 
           <div
             className={[
-              "relative px-4 pb-2 pt-3 after:pointer-events-none after:absolute after:inset-x-4 after:bottom-0 after:h-0.5 after:origin-center after:scale-x-0 after:rounded-full after:bg-focus after:content-[''] after:transition-transform after:duration-150 has-[textarea:focus-visible]:after:scale-x-100 motion-reduce:after:transition-none [@media(max-height:42rem)]:!px-3 [@media(max-height:42rem)]:!pb-1 [@media(max-height:42rem)]:!pt-1",
+              "px-4 pb-2 pt-3 [@media(max-height:42rem)]:!px-3 [@media(max-height:42rem)]:!pb-1 [@media(max-height:42rem)]:!pt-1",
               readingCollapsed
                 ? "grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2 !px-3 !py-0.5"
                 : ""
