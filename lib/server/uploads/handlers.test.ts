@@ -51,6 +51,11 @@ describe("upload handler", () => {
   });
 
   it("rejects an oversized multipart envelope before parsing it", async () => {
+    const boundary = "aiqsa-test-boundary";
+    const multipartChunk = new TextEncoder().encode(
+      `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="avatar.png"\r\nContent-Type: image/png\r\n\r\noversized`
+    );
+    let cancelledWith: unknown;
     const POST = createUploadHandler({
       createAttachment: async () => {
         throw new Error("should not create");
@@ -59,12 +64,33 @@ describe("upload handler", () => {
       resolveAuth: auth.resolveAuth,
       uploadPermitGate: createUploadPermitGate(1)
     });
-    const request = authenticatedUploadRequest(new File([oneByOnePng], "avatar.png", { type: "image/png" }));
+    const request = new Request("http://app.local/api/uploads", {
+      body: new ReadableStream<Uint8Array>({
+        cancel(reason) {
+          cancelledWith = reason;
+        },
+        start(controller) {
+          controller.enqueue(multipartChunk);
+        }
+      }),
+      duplex: "half",
+      headers: {
+        cookie: auth.cookie,
+        "content-type": `multipart/form-data; boundary=${boundary}`
+      },
+      method: "POST"
+    } as RequestInit);
 
     const response = await POST(request);
 
     expect(response.status).toBe(413);
     await expect(response.json()).resolves.toMatchObject({ error: "file_too_large", limit: 16 });
+    expect(cancelledWith).toMatchObject({
+      actualBytes: multipartChunk.byteLength,
+      limitBytes: 16,
+      message: "request_body_too_large",
+      name: "RequestBodyTooLargeError"
+    });
   });
 
   it("rejects upload concurrency without reading the request body", async () => {

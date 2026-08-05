@@ -380,10 +380,14 @@ test("admin creates and deletes an installation-owned MCP draft", async ({ page 
     await section.getByLabel("MCP endpoint URL").fill("https://mcp.example.com/mcp");
     await section.getByLabel("Mode").selectOption("oauth");
     await section.getByLabel("Allowed authorization server origins").fill("https://auth.example.com");
-    await section.getByRole("button", { name: "Create draft" }).click();
+    await section.getByRole("button", { name: "Continue to authorization" }).click();
 
     await expect(section.getByRole("heading", { name: serverName })).toBeVisible();
-    await expect(section.getByText("Activation trusts this server as one unit.", { exact: false })).toBeVisible();
+    await expect(
+      section.getByText(
+        "MCP server draft created. Connect OAuth; AIQSA will then test and activate it automatically."
+      )
+    ).toBeVisible();
     await section.getByRole("button", { name: /Delete Irreversible removal/u }).click();
     await section.getByRole("button", { name: "Delete…" }).click();
     await section.getByRole("button", { name: "Delete server" }).click();
@@ -757,12 +761,13 @@ test("admin console keeps all redesigned sections operable end to end", async ({
     await page.setViewportSize({ height: 500, width: 1_440 });
     await page.goto("/admin?section=search");
     const searchSection = page.getByTestId("admin-section-search");
-    const searchCatalog = searchSection.getByRole("list", { name: "Search integration catalog" });
+    const searchCatalog = searchSection.getByRole("list", { name: "Search source catalog" });
     await expect(searchCatalog).toBeVisible();
     await searchCatalog.getByRole("button").first().click();
-    await expect(searchSection.getByText("User option", { exact: true })).toBeVisible();
-    await expect(searchSection.getByText(/Active engine revision/)).toBeVisible();
-    await expect(searchSection.getByText("Compatible answer models", { exact: true })).toBeVisible();
+    const searchOverview = searchSection.getByRole("region", { name: "Search overview" });
+    await expect(searchOverview.getByText("One Search source", { exact: true })).toBeVisible();
+    await expect(searchOverview.getByText("Compatible answer models", { exact: true })).toBeVisible();
+    await expect(searchOverview.getByText("Availability", { exact: true })).toBeVisible();
     await expectNoPageOverflow(page);
     await page.setViewportSize({ height: 900, width: 1_440 });
 
@@ -865,7 +870,7 @@ test("admin console keeps all redesigned sections operable end to end", async ({
       )
       .toBeGreaterThan(0);
 
-    await groupDetail.getByRole("button", { name: "Grant search OpenAI web_search" }).click();
+    await groupDetail.getByRole("button", { name: "Grant search Anthropic Search" }).click();
     await expect
       .poll(async () =>
         prisma.accessGrant.findFirst({
@@ -874,7 +879,7 @@ test("admin console keeps all redesigned sections operable end to end", async ({
             groupId: groupId!,
             providerConnectionId: null,
             providerModelId: null,
-            searchStrategy: "openai-native-web-search"
+            searchStrategy: "anthropic-web-search"
           }
         })
       )

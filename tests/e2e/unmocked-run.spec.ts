@@ -91,7 +91,7 @@ async function prepareFakeBlankChat(page: Page) {
 
   await runSetup.getByRole("button", { name: "Search strategy" }).click();
   await page.getByTestId("search-select-options").locator('[data-option-value="search-disabled"]').click();
-  await expect(page.locator("#search-select-current-value")).toHaveText("Off");
+  await expect(runSetup.getByRole("button", { name: "Search strategy" })).toContainText("Off");
   await runSetup.getByRole("button", { name: "Close run setup" }).click();
   await expect(runSetup).toHaveCount(0);
   await expect(page.getByTestId("composer-run-summary")).toContainText("Fake QSA");
@@ -137,6 +137,21 @@ async function latestRunForChat(page: Page, chatId: string): Promise<RunBody["ru
   return ((await runResponse.json()) as RunBody).run;
 }
 
+async function showLatestRunReceipt(page: Page) {
+  const answer = page.locator('article[data-role="assistant"]').last();
+  const moreActions = answer.getByRole("button", { name: "More message actions" });
+  await expect(async () => {
+    await answer.hover();
+    await expect(moreActions).toBeVisible();
+    await expect(moreActions).toBeEnabled();
+  }).toPass({ timeout: 20_000 });
+  await moreActions.click();
+  await page.getByRole("menuitem", { name: "Show run details" }).click();
+  const receipt = answer.getByTestId("run-receipt");
+  await expect(receipt).toBeVisible();
+  return receipt;
+}
+
 test.beforeEach(async ({ page }) => {
   await signIn(page);
   await cleanupUnmockedChats(page);
@@ -161,7 +176,7 @@ test("runs a fake-provider chat through real routes, Prisma, SSE, and Details", 
 
     await expect(page.getByTestId("thread")).toContainText(`Fake answer: ${prompt}`, { timeout: 20_000 });
     await expect(page.getByTestId("streaming-cursor")).toHaveCount(0, { timeout: 20_000 });
-    const receipt = page.getByTestId("run-receipt").last();
+    const receipt = await showLatestRunReceipt(page);
     await expect(receipt).toContainText("Run Complete");
     await expect(receipt).toContainText("Fake QSA");
     const usageSegment = receipt.getByRole("button", { name: /tokens used/ });
@@ -222,7 +237,7 @@ test("streams a new answer on the branch created by editing an answered question
     await expect(page.getByTestId("thread")).toContainText(editedPrompt, { timeout: 20_000 });
     await expect(page.getByTestId("thread")).toContainText(`Fake answer: ${editedPrompt}`, { timeout: 20_000 });
     await expect(page.getByTestId("streaming-cursor")).toHaveCount(0, { timeout: 20_000 });
-    await expect(page.getByTestId("run-receipt").last()).toContainText("Run Complete");
+    await expect(await showLatestRunReceipt(page)).toContainText("Run Complete");
 
     const run = await latestRunForChat(page, chatId);
     expect(run?.status).toBe("complete");
@@ -267,7 +282,7 @@ test("cancels an in-flight fake-provider stream without leaving the shell stuck"
     await expect(page.getByRole("button", { name: "Stop response" })).toHaveCount(0, { timeout: 10_000 });
     await expect(page.getByTestId("streaming-cursor")).toHaveCount(0);
     await expect(page.getByRole("textbox", { name: "Message" })).toBeEnabled();
-    await expect(page.getByTestId("run-receipt").last()).toContainText("Run Stopped");
+    await expect(await showLatestRunReceipt(page)).toContainText("Run Stopped");
 
     await expect
       .poll(async () => (chatId ? (await latestRunForChat(page, chatId))?.status ?? null : null), {
