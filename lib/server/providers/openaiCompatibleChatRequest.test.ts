@@ -200,20 +200,53 @@ describe("OpenAI-compatible Chat Completions request", () => {
     expect(preview.body).toMatchObject({ reason: { effort: "max", mode: "pro" } });
   });
 
-  it("redacts image data in previews while preserving safe replay evidence", () => {
+  it("redacts attachment and continuation canaries while preserving transport payloads", () => {
     const runRequest = request({
-      attachmentIds: ["image-1"],
+      attachmentIds: ["IMAGE_ID_CANARY", "DOCUMENT_ID_CANARY"],
       attachments: [
         {
           byteSize: 12,
-          dataUrl: "data:image/png;base64,private",
+          dataUrl: "data:image/png;base64,IMAGE_BYTES_CANARY",
           extractedText: null,
-          fileName: "private.png",
-          id: "image-1",
+          fileName: "IMAGE_FILENAME_CANARY",
+          id: "IMAGE_ID_CANARY",
           kind: "image",
-          metadata: {},
+          metadata: { remoteUrl: "IMAGE_METADATA_CANARY" },
           mimeType: "image/png",
           status: "ready"
+        },
+        {
+          byteSize: 16,
+          extractedText: "DOCUMENT_TEXT_CANARY",
+          fileName: "DOCUMENT_FILENAME_CANARY",
+          id: "DOCUMENT_ID_CANARY",
+          kind: "document",
+          metadata: { storageKey: "DOCUMENT_METADATA_CANARY" },
+          mimeType: "text/plain",
+          status: "ready"
+        }
+      ],
+      providerToolMessages: [
+        {
+          content: null,
+          opaque: "ASSISTANT_OPAQUE_CANARY",
+          role: "assistant",
+          tool_calls: [{
+            function: {
+              arguments: "{\"secret\":\"TOOL_ARGUMENT_CANARY\"}",
+              name: "lookup",
+              signature: "FUNCTION_SIGNATURE_CANARY"
+            },
+            id: "call-1",
+            opaque: "TOOL_CALL_OPAQUE_CANARY",
+            type: "function"
+          }]
+        },
+        {
+          content: "TOOL_OUTPUT_CANARY",
+          opaque: "TOOL_OUTPUT_OPAQUE_CANARY",
+          role: "tool",
+          tool_call_id: "call-1"
         }
       ]
     });
@@ -222,9 +255,42 @@ describe("OpenAI-compatible Chat Completions request", () => {
     const actual = JSON.stringify(buildOpenAICompatibleChatRequest(runRequest));
     const safe = JSON.stringify(preview);
 
-    expect(actual).toContain("data:image/png;base64,private");
-    expect(safe).not.toContain("data:image/png;base64,private");
+    for (const canary of [
+      "IMAGE_BYTES_CANARY",
+      "IMAGE_FILENAME_CANARY",
+      "IMAGE_ID_CANARY",
+      "IMAGE_METADATA_CANARY",
+      "DOCUMENT_TEXT_CANARY",
+      "DOCUMENT_FILENAME_CANARY",
+      "DOCUMENT_ID_CANARY",
+      "DOCUMENT_METADATA_CANARY",
+      "ASSISTANT_OPAQUE_CANARY",
+      "TOOL_ARGUMENT_CANARY",
+      "FUNCTION_SIGNATURE_CANARY",
+      "TOOL_CALL_OPAQUE_CANARY",
+      "TOOL_OUTPUT_CANARY",
+      "TOOL_OUTPUT_OPAQUE_CANARY"
+    ]) {
+      expect(safe).not.toContain(canary);
+    }
+    for (const canary of [
+      "IMAGE_BYTES_CANARY",
+      "DOCUMENT_TEXT_CANARY",
+      "DOCUMENT_FILENAME_CANARY",
+      "TOOL_ARGUMENT_CANARY",
+      "FUNCTION_SIGNATURE_CANARY",
+      "TOOL_OUTPUT_CANARY"
+    ]) {
+      expect(actual).toContain(canary);
+    }
     expect(safe).toContain("[image data url omitted]");
+    expect(safe).toContain("[Document attachment text omitted]");
+    expect(safe).toContain("[tool output omitted]");
+    expect(preview.redactions).toEqual([
+      "attachment_extracted_text",
+      "image_data_url",
+      "provider_continuation_opaque_fields"
+    ]);
     expect(preview.provider).toBe("custom-connection-1");
     expect(preview.replayedContext.map(({ id }) => id)).toEqual([
       "message-1",

@@ -123,7 +123,13 @@ describe("OpenAI Responses request builder", () => {
     expect(buildOpenAIResponsesRequestPreview(runRequest)).toEqual({
       body,
       provider: "openai",
-      redactions: ["image_data_url", "pdf_base64"],
+      redactions: [
+        "attachment_extracted_text",
+        "attachment_filename",
+        "image_data_url",
+        "pdf_base64",
+        "provider_continuation_opaque_fields"
+      ],
       replayedContext: [
         {
           id: "current-user-message",
@@ -442,7 +448,13 @@ describe("OpenAI Responses request builder", () => {
     expect(actualJson).toContain("data:image/png;base64,AAAA");
     expect(previewJson).toContain("[image data url omitted]");
     expect(previewJson).not.toContain("data:image/png;base64,AAAA");
-    expect(preview.redactions).toEqual(["image_data_url", "pdf_base64"]);
+    expect(preview.redactions).toEqual([
+      "attachment_extracted_text",
+      "attachment_filename",
+      "image_data_url",
+      "pdf_base64",
+      "provider_continuation_opaque_fields"
+    ]);
 
     const missingDataRequest = request({
       attachmentIds: [image.id],
@@ -578,6 +590,113 @@ describe("OpenAI Responses request builder", () => {
     ]);
     expect(JSON.stringify(body)).not.toContain("input_file");
     expect(JSON.stringify(body)).not.toContain("PRIVATE_PDF_BYTES");
+  });
+
+  it("keeps attachment and opaque continuation canaries out of durable previews", () => {
+    const base = request();
+    const document = attachment({
+      extractedText: "ATTACHMENT_TEXT_CANARY",
+      fileName: "ATTACHMENT_FILENAME_CANARY",
+      id: "ATTACHMENT_ID_CANARY",
+      metadata: { remoteUrl: "ATTACHMENT_METADATA_CANARY" },
+      mimeType: "text/plain"
+    });
+    const pdf = attachment({
+      base64Data: "ATTACHMENT_PDF_BYTES_CANARY",
+      extractedText: "UNUSED_PDF_TEXT_CANARY",
+      fileName: "PDF_FILENAME_CANARY",
+      id: "PDF_ID_CANARY",
+      kind: "pdf",
+      metadata: { storageKey: "PDF_METADATA_CANARY" },
+      mimeType: "application/pdf"
+    });
+    const image = attachment({
+      dataUrl: "data:image/png;base64,ATTACHMENT_IMAGE_BYTES_CANARY",
+      fileName: "IMAGE_FILENAME_CANARY",
+      id: "IMAGE_ID_CANARY",
+      kind: "image",
+      metadata: { remoteUrl: "IMAGE_METADATA_CANARY" },
+      mimeType: "image/png"
+    });
+    const providerToolMessages = [
+      {
+        encrypted_content: "ENCRYPTED_CONTINUATION_CANARY",
+        id: "OPAQUE_REASONING_ID_CANARY",
+        signature: "PROVIDER_SIGNATURE_CANARY",
+        type: "reasoning",
+        unknown: "UNKNOWN_PROVIDER_FIELD_CANARY"
+      },
+      {
+        arguments: "{\"secret\":\"TOOL_ARGUMENT_CANARY\"}",
+        call_id: "call-1",
+        name: "lookup",
+        opaque: "FUNCTION_CALL_OPAQUE_CANARY",
+        type: "function_call"
+      },
+      {
+        call_id: "call-1",
+        output: "TOOL_OUTPUT_CANARY",
+        signature: "TOOL_OUTPUT_SIGNATURE_CANARY",
+        type: "function_call_output"
+      },
+      { payload: "UNKNOWN_ITEM_CANARY", type: "unknown_provider_item" }
+    ];
+    const runRequest = request({
+      attachmentIds: [document.id, pdf.id, image.id],
+      attachments: [document, pdf, image],
+      modelCapabilities: { ...base.modelCapabilities, nativePdfInput: true },
+      providerToolMessages,
+      searchStrategy: "search-disabled"
+    });
+    const actualJson = JSON.stringify(buildOpenAIResponsesRequest(runRequest));
+    const preview = buildOpenAIResponsesRequestPreview(runRequest);
+    const previewJson = JSON.stringify(preview);
+
+    for (const canary of [
+      "ATTACHMENT_TEXT_CANARY",
+      "ATTACHMENT_FILENAME_CANARY",
+      "ATTACHMENT_ID_CANARY",
+      "ATTACHMENT_METADATA_CANARY",
+      "ATTACHMENT_PDF_BYTES_CANARY",
+      "UNUSED_PDF_TEXT_CANARY",
+      "PDF_FILENAME_CANARY",
+      "PDF_ID_CANARY",
+      "PDF_METADATA_CANARY",
+      "ATTACHMENT_IMAGE_BYTES_CANARY",
+      "IMAGE_FILENAME_CANARY",
+      "IMAGE_ID_CANARY",
+      "IMAGE_METADATA_CANARY",
+      "ENCRYPTED_CONTINUATION_CANARY",
+      "OPAQUE_REASONING_ID_CANARY",
+      "PROVIDER_SIGNATURE_CANARY",
+      "UNKNOWN_PROVIDER_FIELD_CANARY",
+      "TOOL_ARGUMENT_CANARY",
+      "FUNCTION_CALL_OPAQUE_CANARY",
+      "TOOL_OUTPUT_CANARY",
+      "TOOL_OUTPUT_SIGNATURE_CANARY",
+      "UNKNOWN_ITEM_CANARY"
+    ]) {
+      expect(previewJson).not.toContain(canary);
+    }
+    for (const canary of [
+      "ATTACHMENT_TEXT_CANARY",
+      "ATTACHMENT_FILENAME_CANARY",
+      "ATTACHMENT_PDF_BYTES_CANARY",
+      "ATTACHMENT_IMAGE_BYTES_CANARY",
+      "ENCRYPTED_CONTINUATION_CANARY",
+      "TOOL_ARGUMENT_CANARY",
+      "TOOL_OUTPUT_CANARY",
+      "UNKNOWN_ITEM_CANARY"
+    ]) {
+      expect(actualJson).toContain(canary);
+    }
+    expect(preview.body.input.slice(-3)).toEqual([
+      { type: "reasoning" },
+      { call_id: "call-1", name: "lookup", type: "function_call" },
+      { call_id: "call-1", output: "[tool output omitted]", type: "function_call_output" }
+    ]);
+    expect(previewJson).toContain("[Document attachment text omitted]");
+    expect(previewJson).toContain("[attachment filename omitted]");
   });
 
   it("keeps an empty input_text block when no usable content remains", () => {

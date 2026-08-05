@@ -47,6 +47,21 @@ export function providerAttachmentText(
   )}`;
 }
 
+export const providerAttachmentPreviewFilename = "[attachment filename omitted]";
+export const providerAttachmentPreviewMediaType = "[attachment media type omitted]";
+
+export function providerAttachmentPreviewText(
+  attachment: ProviderAttachment
+): string | null {
+  if (!attachment.extractedText?.trim()) {
+    return null;
+  }
+
+  return attachment.kind === "pdf"
+    ? "[PDF attachment text omitted]"
+    : "[Document attachment text omitted]";
+}
+
 function imageProxyTokens(attachment: ProviderAttachment): number {
   const image = metadataRecord(attachment, "image");
   const width = numberValue(image.width);

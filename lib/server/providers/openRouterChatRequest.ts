@@ -9,7 +9,11 @@ import {
 } from "../../domain/runParams";
 import { textFromContentBlocks } from "../../domain/modelRunEvents";
 import { openRouterChatToolBridge } from "../tools/bridges";
-import { providerAttachmentText } from "./attachmentPayload";
+import {
+  providerAttachmentPreviewFilename,
+  providerAttachmentPreviewText,
+  providerAttachmentText
+} from "./attachmentPayload";
 import { conversationPreview, providerPromptCacheKey, textConversationForRequest } from "./context";
 import type {
   ProviderAttachment,
@@ -56,7 +60,12 @@ export type OpenRouterChatRequestOptions = Readonly<{
 export type OpenRouterChatRequestPreview = {
   body: OpenRouterChatRequestBody;
   provider: "openrouter";
-  redactions: ["image_data_url", "pdf_base64"];
+  redactions: [
+    "attachment_extracted_text",
+    "attachment_filename",
+    "image_data_url",
+    "pdf_base64"
+  ];
   replayedContext: {
     id: string;
     role: "assistant" | "user";
@@ -77,6 +86,7 @@ export type OpenRouterPerplexitySearchRequestPreview = {
 };
 
 type PrivateBuildOptions = Omit<OpenRouterChatRequestOptions, "redactFiles" | "redactImages"> & {
+  preview: boolean;
   redactFiles: boolean;
   redactImages: boolean;
 };
@@ -106,11 +116,15 @@ function pdfDataUrl(attachment: ProviderAttachment, redactFiles: boolean): strin
   return `data:application/pdf;base64,${attachment.base64Data}`;
 }
 
-function pdfContent(attachment: ProviderAttachment, redactFiles: boolean): Record<string, unknown> {
+function pdfContent(
+  attachment: ProviderAttachment,
+  redactFiles: boolean,
+  preview: boolean
+): Record<string, unknown> {
   return {
     file: {
       file_data: pdfDataUrl(attachment, redactFiles),
-      filename: attachment.fileName
+      filename: preview ? providerAttachmentPreviewFilename : attachment.fileName
     },
     type: "file"
   };
@@ -155,7 +169,9 @@ function buildUserContent(
     }
 
     if (attachment.kind === "pdf" || attachment.kind === "document") {
-      const text = providerAttachmentText(attachment, maxAttachmentTextChars);
+      const text = options.preview
+        ? providerAttachmentPreviewText(attachment)
+        : providerAttachmentText(attachment, maxAttachmentTextChars);
       if (text) {
         textParts.push(text);
       }
@@ -174,7 +190,7 @@ function buildUserContent(
 
     for (const attachment of request.attachments) {
       if (attachment.kind === "pdf" && request.modelCapabilities.nativePdfInput) {
-        contentParts.push(pdfContent(attachment, options.redactFiles));
+        contentParts.push(pdfContent(attachment, options.redactFiles, options.preview));
       }
 
       if (attachment.kind === "image") {
@@ -373,9 +389,9 @@ function buildOpenRouterBody(input: {
   return body;
 }
 
-export function buildOpenRouterChatRequest(
+function buildOpenRouterChatBody(
   request: ProviderRunRequest,
-  options: OpenRouterChatRequestOptions = {}
+  options: PrivateBuildOptions
 ): OpenRouterChatRequestBody {
   const params = normalizeOpenRouterParams(request.params);
   const serializedTools = (request.tools ?? []).map((tool) => openRouterChatToolBridge.serializeTool(tool).tool);
@@ -386,8 +402,9 @@ export function buildOpenRouterChatRequest(
     chatId: request.chatId,
     messages: buildMessages(request, {
       maxAttachmentTextChars: options.maxAttachmentTextChars,
-      redactFiles: options.redactFiles ?? false,
-      redactImages: options.redactImages ?? false
+      preview: options.preview,
+      redactFiles: options.redactFiles,
+      redactImages: options.redactImages
     }),
     metadata: {
       app: "aiqsa",
@@ -404,19 +421,37 @@ export function buildOpenRouterChatRequest(
   });
 }
 
+export function buildOpenRouterChatRequest(
+  request: ProviderRunRequest,
+  options: OpenRouterChatRequestOptions = {}
+): OpenRouterChatRequestBody {
+  return buildOpenRouterChatBody(request, {
+    maxAttachmentTextChars: options.maxAttachmentTextChars,
+    preview: false,
+    redactFiles: options.redactFiles ?? false,
+    redactImages: options.redactImages ?? false
+  });
+}
+
 export function buildOpenRouterChatRequestPreview(
   request: ProviderRunRequest,
   options: OpenRouterChatRequestOptions = {}
 ): OpenRouterChatRequestPreview {
   return {
-    body: buildOpenRouterChatRequest(request, {
-      ...options,
+    body: buildOpenRouterChatBody(request, {
+      maxAttachmentTextChars: options.maxAttachmentTextChars,
+      preview: true,
       redactFiles: true,
       redactImages: true
     }),
     provider: "openrouter",
     replayedContext: conversationPreview(request),
-    redactions: ["image_data_url", "pdf_base64"]
+    redactions: [
+      "attachment_extracted_text",
+      "attachment_filename",
+      "image_data_url",
+      "pdf_base64"
+    ]
   };
 }
 

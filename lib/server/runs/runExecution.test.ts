@@ -10,6 +10,7 @@ import { textFromContentBlocks } from "../../domain/modelRunEvents";
 import type { ResolvedEntitlements } from "../auth/entitlements";
 import { McpClientSessionError } from "../mcp/clientSession";
 import type { McpRunPlanSnapshot } from "../mcp/runPlan";
+import { buildOpenAIResponsesRequestPreview } from "../providers/openaiResponsesRequest";
 import { ProviderStreamTooLargeError } from "../providers/streamSafety";
 import type {
   NormalizedRunRequest,
@@ -1436,28 +1437,42 @@ describe("run execution", () => {
     const previewRequests: ProviderRunRequest[] = [];
     const searchRequests: ProviderSearchRequest[] = [];
     const repository = createRepository();
-    const adapter = createAdapter(async function* (request) {
-      providerRequests.push(request);
-      if (providerRequests.length === 1) {
-        yield { data: { artifactType: "reasoning", payload: { text: "Need current data" } }, type: "artifact" };
-        yield { data: { delta: "discarded draft" }, type: "token" };
-        yield { data: usage(1, 2, 0), type: "usage" };
-        return providerResult({
-          finalText: "",
-          toolCalls: [
-            {
-              arguments: { query: "latest AIQSA news" },
-              id: "tool-call-1",
-              name: "search_via_perplexity"
-            }
-          ],
-          usage: usage(1, 2, 0)
-        });
-      }
+    const adapter: ProviderAdapter = {
+      buildRequestPreview(request) {
+        previewRequests.push(request);
+        return buildOpenAIResponsesRequestPreview(request);
+      },
+      async *stream(request) {
+        providerRequests.push(request);
+        if (providerRequests.length === 1) {
+          yield { data: { artifactType: "reasoning", payload: { text: "Need current data" } }, type: "artifact" };
+          yield { data: { delta: "discarded draft" }, type: "token" };
+          yield { data: usage(1, 2, 0), type: "usage" };
+          return providerResult({
+            finalText: "",
+            providerToolCallMessage: [{
+              arguments: "{\"query\":\"TOOL_ARGUMENT_CANARY\"}",
+              call_id: "tool-call-1",
+              encrypted_content: "ENCRYPTED_CONTINUATION_CANARY",
+              name: "search_via_perplexity",
+              signature: "PROVIDER_SIGNATURE_CANARY",
+              type: "function_call"
+            }],
+            toolCalls: [
+              {
+                arguments: { query: "latest AIQSA news" },
+                id: "tool-call-1",
+                name: "search_via_perplexity"
+              }
+            ],
+            usage: usage(1, 2, 0)
+          });
+        }
 
-      yield { data: { delta: "Sourced answer" }, type: "token" };
-      return providerResult({ finalText: "Sourced answer", usage: usage(5, 6, 1) });
-    }, previewRequests);
+        yield { data: { delta: "Sourced answer" }, type: "token" };
+        return providerResult({ finalText: "Sourced answer", usage: usage(5, 6, 1) });
+      }
+    };
     const searchAdapter: ProviderSearchAdapter = {
       buildRequestPreview: () => ({}),
       async search(request) {
@@ -1514,6 +1529,20 @@ describe("run execution", () => {
     expect(providerRequests[1]?.providerToolMessages).toHaveLength(2);
     expect(previewRequests).toHaveLength(2);
     expect(repository.providerRequestPreviews).toHaveLength(2);
+    const secondTransportJson = JSON.stringify(providerRequests[1]);
+    const secondDurablePreviewJson = JSON.stringify(repository.providerRequestPreviews[1]);
+    expect(secondTransportJson).toContain("TOOL_ARGUMENT_CANARY");
+    expect(secondTransportJson).toContain("ENCRYPTED_CONTINUATION_CANARY");
+    expect(secondTransportJson).toContain("Search findings");
+    for (const canary of [
+      "TOOL_ARGUMENT_CANARY",
+      "ENCRYPTED_CONTINUATION_CANARY",
+      "PROVIDER_SIGNATURE_CANARY",
+      "Search findings"
+    ]) {
+      expect(secondDurablePreviewJson).not.toContain(canary);
+    }
+    expect(secondDurablePreviewJson).toContain("[tool output omitted]");
     expect(searchRequests).toHaveLength(1);
     expect(searchRequests[0]?.query).toBe("latest AIQSA news");
     expect(searchRequests[0]?.searchPolicy).toEqual(

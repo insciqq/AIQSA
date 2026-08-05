@@ -19,7 +19,11 @@ import {
   withTimeoutSignal,
   type ProviderStreamLimits
 } from "./network";
-import { providerAttachmentText } from "./attachmentPayload";
+import {
+  providerAttachmentPreviewMediaType,
+  providerAttachmentPreviewText,
+  providerAttachmentText
+} from "./attachmentPayload";
 import { parseSseStream } from "./sse";
 import {
   addAnthropicMessageUsage,
@@ -57,6 +61,7 @@ export type AnthropicMessagesAdapterOptions = {
 
 type BuildOptions = {
   maxAttachmentTextChars?: number;
+  preview: boolean;
   redactFiles: boolean;
   redactImages: boolean;
 };
@@ -142,8 +147,14 @@ function combineSystem(request: ProviderRunRequest): string | undefined {
   return parts.length > 0 ? parts.join("\n\n") : undefined;
 }
 
-function attachmentTextBlock(attachment: ProviderAttachment, maxChars: number): Record<string, unknown> | null {
-  const text = providerAttachmentText(attachment, maxChars);
+function attachmentTextBlock(
+  attachment: ProviderAttachment,
+  maxChars: number,
+  preview: boolean
+): Record<string, unknown> | null {
+  const text = preview
+    ? providerAttachmentPreviewText(attachment)
+    : providerAttachmentText(attachment, maxChars);
   if (!text) {
     return null;
   }
@@ -177,11 +188,15 @@ function pdfDocumentBlock(attachment: ProviderAttachment, redactFiles: boolean):
   };
 }
 
-function imageSource(attachment: ProviderAttachment, redactImages: boolean): Record<string, unknown> {
+function imageSource(
+  attachment: ProviderAttachment,
+  redactImages: boolean,
+  preview: boolean
+): Record<string, unknown> {
   if (redactImages) {
     return {
       data: "[base64 image data omitted]",
-      media_type: attachment.mimeType,
+      media_type: preview ? providerAttachmentPreviewMediaType : attachment.mimeType,
       type: "base64"
     };
   }
@@ -222,7 +237,11 @@ function buildUserContent(request: ProviderRunRequest, options: BuildOptions): R
     }
 
     if (attachment.kind === "pdf" || attachment.kind === "document") {
-      const block = attachmentTextBlock(attachment, options.maxAttachmentTextChars ?? 20000);
+      const block = attachmentTextBlock(
+        attachment,
+        options.maxAttachmentTextChars ?? 20000,
+        options.preview
+      );
       if (block) {
         content.push(block);
       }
@@ -230,7 +249,7 @@ function buildUserContent(request: ProviderRunRequest, options: BuildOptions): R
 
     if (attachment.kind === "image") {
       content.push({
-        source: imageSource(attachment, options.redactImages),
+        source: imageSource(attachment, options.redactImages, options.preview),
         type: "image"
       });
     }
@@ -337,6 +356,7 @@ export function buildAnthropicMessagesRequest(
           index === conversation.length - 1 && message.role === "user"
             ? buildUserContent(request, {
                 maxAttachmentTextChars: options.maxAttachmentTextChars,
+                preview: options.preview ?? false,
                 redactFiles: options.redactFiles ?? false,
                 redactImages: options.redactImages ?? false
               })
@@ -565,18 +585,25 @@ export function createAnthropicMessagesAdapter(options: AnthropicMessagesAdapter
       return {
         body: buildAnthropicMessagesRequest(request, {
           maxAttachmentTextChars: options.maxAttachmentTextChars,
+          preview: true,
           redactFiles: true,
           redactImages: true
         }),
         provider: "anthropic",
         replayedContext: conversationPreview(request),
-        redactions: ["image_base64", "pdf_base64"]
+        redactions: [
+          "attachment_extracted_text",
+          "attachment_media_type",
+          "image_base64",
+          "pdf_base64"
+        ]
       };
     },
     async *stream(request, runOptions = {}): AsyncGenerator<ModelRunSseEvent, ProviderRunResult> {
       const streamLimits = resolveProviderStreamLimits(options.streamLimits);
       let body = buildAnthropicMessagesRequest(request, {
         maxAttachmentTextChars: options.maxAttachmentTextChars,
+        preview: false,
         redactFiles: false,
         redactImages: false
       });

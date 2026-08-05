@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { estimateApproxTokens } from "../../domain/contextBudget";
 import {
   providerAttachmentBudgetTokens,
+  providerAttachmentPreviewText,
   providerAttachmentText,
   truncateProviderAttachmentText
 } from "./attachmentPayload";
@@ -50,6 +51,22 @@ describe("provider attachment payload helpers", () => {
 
   it("truncates extracted attachment text consistently", () => {
     expect(truncateProviderAttachmentText("abcdef", 3)).toBe("abc\n[truncated 3 chars]");
+  });
+
+  it("projects extracted attachment text to constant preview markers", () => {
+    expect(providerAttachmentPreviewText(attachment({
+      extractedText: "ATTACHMENT_TEXT_CANARY",
+      fileName: "ATTACHMENT_FILENAME_CANARY",
+      id: "ATTACHMENT_ID_CANARY",
+      metadata: { storageKey: "ATTACHMENT_METADATA_CANARY" }
+    }))).toBe("[Document attachment text omitted]");
+    expect(providerAttachmentPreviewText(attachment({
+      extractedText: "PDF_TEXT_CANARY",
+      fileName: "PDF_FILENAME_CANARY",
+      id: "PDF_ID_CANARY",
+      kind: "pdf"
+    }))).toBe("[PDF attachment text omitted]");
+    expect(providerAttachmentPreviewText(attachment({ extractedText: "   " }))).toBeNull();
   });
 
   it("uses proxy estimates for native PDFs and images", () => {

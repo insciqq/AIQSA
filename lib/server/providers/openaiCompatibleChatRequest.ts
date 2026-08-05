@@ -1,7 +1,7 @@
 import { maxOutputTokensFromParams } from "../../domain/providerParams";
 import { textFromContentBlocks } from "../../domain/modelRunEvents";
 import type { RunTool } from "../tools/types";
-import { providerAttachmentText } from "./attachmentPayload";
+import { providerAttachmentPreviewText, providerAttachmentText } from "./attachmentPayload";
 import { conversationPreview, textConversationForRequest } from "./context";
 import type { ProviderRunRequest } from "./types";
 import {
@@ -40,7 +40,11 @@ export type OpenAICompatibleChatRequestOptions = Readonly<{
 export type OpenAICompatibleChatRequestPreview = {
   body: OpenAICompatibleChatRequestBody;
   provider: string;
-  redactions: ["image_data_url"];
+  redactions: [
+    "attachment_extracted_text",
+    "image_data_url",
+    "provider_continuation_opaque_fields"
+  ];
   replayedContext: {
     id: string;
     role: "assistant" | "user";
@@ -49,6 +53,7 @@ export type OpenAICompatibleChatRequestPreview = {
 };
 
 type PrivateBuildOptions = OpenAICompatibleChatRequestOptions & {
+  preview: boolean;
   redactImages: boolean;
 };
 
@@ -77,10 +82,9 @@ function currentUserContent(
       continue;
     }
 
-    const text = providerAttachmentText(
-      attachment,
-      options.maxAttachmentTextChars ?? 20000
-    );
+    const text = options.preview
+      ? providerAttachmentPreviewText(attachment)
+      : providerAttachmentText(attachment, options.maxAttachmentTextChars ?? 20000);
     if (text) {
       textParts.push(text);
     }
@@ -129,6 +133,38 @@ function providerToolMessages(messages: unknown[] | undefined): OpenAICompatible
   });
 }
 
+function providerToolPreviewMessages(
+  messages: unknown[] | undefined
+): OpenAICompatibleChatMessage[] {
+  return providerToolMessages(messages).flatMap((message): OpenAICompatibleChatMessage[] => {
+    if (message.role === "tool") {
+      return [{
+        content: "[tool output omitted]",
+        ...(typeof message.tool_call_id === "string" ? { tool_call_id: message.tool_call_id } : {}),
+        role: "tool" as const
+      }];
+    }
+
+    if (message.role !== "assistant" || !Array.isArray(message.tool_calls)) {
+      return [];
+    }
+
+    const toolCalls = message.tool_calls.flatMap((toolCall) => {
+      if (!isRecord(toolCall) || !isRecord(toolCall.function)) return [];
+      return [{
+        function: {
+          ...(typeof toolCall.function.name === "string" ? { name: toolCall.function.name } : {})
+        },
+        ...(typeof toolCall.id === "string" ? { id: toolCall.id } : {}),
+        type: "function"
+      }];
+    });
+    return toolCalls.length > 0
+      ? [{ content: null, role: "assistant" as const, tool_calls: toolCalls }]
+      : [];
+  });
+}
+
 function buildMessages(
   request: ProviderRunRequest,
   options: PrivateBuildOptions
@@ -149,7 +185,11 @@ function buildMessages(
     });
   });
 
-  messages.push(...providerToolMessages(request.providerToolMessages));
+  messages.push(...(
+    options.preview
+      ? providerToolPreviewMessages(request.providerToolMessages)
+      : providerToolMessages(request.providerToolMessages)
+  ));
   return messages;
 }
 
@@ -209,6 +249,7 @@ export function buildOpenAICompatibleChatRequest(
 ): OpenAICompatibleChatRequestBody {
   return buildBody(request, {
     ...options,
+    preview: false,
     redactImages: options.redactImages ?? false
   });
 }
@@ -218,9 +259,13 @@ export function buildOpenAICompatibleChatRequestPreview(
   options: OpenAICompatibleChatRequestOptions = {}
 ): OpenAICompatibleChatRequestPreview {
   return {
-    body: buildBody(request, { ...options, redactImages: true }),
+    body: buildBody(request, { ...options, preview: true, redactImages: true }),
     provider: request.provider,
-    redactions: ["image_data_url"],
+    redactions: [
+      "attachment_extracted_text",
+      "image_data_url",
+      "provider_continuation_opaque_fields"
+    ],
     replayedContext: conversationPreview(request)
   };
 }

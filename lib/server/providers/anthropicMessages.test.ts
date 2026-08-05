@@ -534,32 +534,87 @@ describe("Anthropic Messages adapter", () => {
     }))).toThrow("anthropic_hosted_search_client_tools_unsupported");
   });
 
-  it("redacts image bytes in request previews", () => {
+  it("redacts attachment canaries in request previews without changing transport", () => {
     const client: AnthropicMessagesClient = {
       stream: () => events([])
     };
     const adapter = createAnthropicMessagesAdapter({ client });
-    const preview = adapter.buildRequestPreview(
-      request({
-        attachmentIds: ["image-1"],
-        attachments: [
-          {
-            byteSize: 12,
-            dataUrl: "data:image/png;base64,AAAA",
-            extractedText: null,
-            fileName: "chart.png",
-            id: "image-1",
-            kind: "image",
-            metadata: {},
-            mimeType: "image/png",
-            status: "ready"
-          }
-        ]
-      })
-    );
+    const base = request();
+    const runRequest = request({
+      attachmentIds: ["PDF_ID_CANARY", "DOCUMENT_ID_CANARY", "IMAGE_ID_CANARY"],
+      attachments: [
+        {
+          base64Data: "PDF_BYTES_CANARY",
+          byteSize: 12,
+          extractedText: "UNUSED_PDF_TEXT_CANARY",
+          fileName: "PDF_FILENAME_CANARY",
+          id: "PDF_ID_CANARY",
+          kind: "pdf",
+          metadata: { storageKey: "PDF_METADATA_CANARY" },
+          mimeType: "application/pdf",
+          status: "ready"
+        },
+        {
+          byteSize: 16,
+          extractedText: "DOCUMENT_TEXT_CANARY",
+          fileName: "DOCUMENT_FILENAME_CANARY",
+          id: "DOCUMENT_ID_CANARY",
+          kind: "document",
+          metadata: { remoteUrl: "DOCUMENT_METADATA_CANARY" },
+          mimeType: "text/plain",
+          status: "ready"
+        },
+        {
+          byteSize: 12,
+          dataUrl: "data:image/png;base64,IMAGE_BYTES_CANARY",
+          extractedText: null,
+          fileName: "IMAGE_FILENAME_CANARY",
+          id: "IMAGE_ID_CANARY",
+          kind: "image",
+          metadata: { remoteUrl: "IMAGE_METADATA_CANARY" },
+          mimeType: "IMAGE_MIME_CANARY",
+          status: "ready"
+        }
+      ],
+      modelCapabilities: { ...base.modelCapabilities, nativePdfInput: true }
+    });
+    const actualJson = JSON.stringify(buildAnthropicMessagesRequest(runRequest));
+    const preview = adapter.buildRequestPreview(runRequest);
+    const previewJson = JSON.stringify(preview);
 
-    expect(JSON.stringify(preview)).toContain("[base64 image data omitted]");
-    expect(JSON.stringify(preview)).not.toContain("AAAA");
+    for (const canary of [
+      "PDF_BYTES_CANARY",
+      "UNUSED_PDF_TEXT_CANARY",
+      "PDF_FILENAME_CANARY",
+      "PDF_ID_CANARY",
+      "PDF_METADATA_CANARY",
+      "DOCUMENT_TEXT_CANARY",
+      "DOCUMENT_FILENAME_CANARY",
+      "DOCUMENT_ID_CANARY",
+      "DOCUMENT_METADATA_CANARY",
+      "IMAGE_BYTES_CANARY",
+      "IMAGE_FILENAME_CANARY",
+      "IMAGE_ID_CANARY",
+      "IMAGE_METADATA_CANARY",
+      "IMAGE_MIME_CANARY"
+    ]) {
+      expect(previewJson).not.toContain(canary);
+    }
+    for (const canary of ["PDF_BYTES_CANARY", "DOCUMENT_TEXT_CANARY", "IMAGE_BYTES_CANARY", "IMAGE_MIME_CANARY"]) {
+      expect(actualJson).toContain(canary);
+    }
+    expect(previewJson).toContain("[base64 PDF data omitted]");
+    expect(previewJson).toContain("[Document attachment text omitted]");
+    expect(previewJson).toContain("[base64 image data omitted]");
+    expect(previewJson).toContain("[attachment media type omitted]");
+    expect(preview).toMatchObject({
+      redactions: [
+        "attachment_extracted_text",
+        "attachment_media_type",
+        "image_base64",
+        "pdf_base64"
+      ]
+    });
   });
 
   it("maps Anthropic stream text, thinking, usage, and provider id", async () => {

@@ -246,9 +246,14 @@ describe("OpenRouter Chat facade", () => {
         stream: true
       },
       provider: "openrouter",
-      redactions: ["image_data_url", "pdf_base64"]
+      redactions: [
+        "attachment_extracted_text",
+        "attachment_filename",
+        "image_data_url",
+        "pdf_base64"
+      ]
     });
-    expect(previewJson).toContain("01234\\n[truncated 5 chars]");
+    expect(previewJson).toContain("[Document attachment text omitted]");
     expect(previewJson).toContain("[base64 PDF data omitted]");
     expect(previewJson).toContain("[image data url omitted]");
     expect(previewJson).not.toContain("PRIVATE_PDF_BYTES");

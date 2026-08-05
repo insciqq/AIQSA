@@ -1,7 +1,11 @@
 import { maxOutputTokensFromParams } from "../../domain/providerParams";
 import { textFromContentBlocks } from "../../domain/modelRunEvents";
 import { geminiInteractionsToolBridge } from "../tools/bridges";
-import { providerAttachmentText } from "./attachmentPayload";
+import {
+  providerAttachmentPreviewMediaType,
+  providerAttachmentPreviewText,
+  providerAttachmentText
+} from "./attachmentPayload";
 import { conversationPreview, textConversationForRequest } from "./context";
 import { geminiInteractionStepForWire } from "./geminiInteractionsProtocol";
 import type { ProviderAttachment, ProviderRunRequest } from "./types";
@@ -44,7 +48,13 @@ export type GeminiInteractionsRequestOptions = Readonly<{
 export type GeminiInteractionsRequestPreview = {
   body: GeminiInteractionsRequestBody;
   provider: "gemini";
-  redactions: ["attachment_base64", "grounding_suggestions", "provider_signatures"];
+  redactions: [
+    "attachment_base64",
+    "attachment_extracted_text",
+    "attachment_media_type",
+    "grounding_suggestions",
+    "provider_signatures"
+  ];
   replayedContext: {
     id: string;
     role: "assistant" | "user";
@@ -105,7 +115,7 @@ function imageContent(attachment: ProviderAttachment, preview: boolean): Record<
 
   return {
     data: imageData(attachment, preview),
-    mime_type: attachment.mimeType,
+    mime_type: preview ? providerAttachmentPreviewMediaType : attachment.mimeType,
     type: "image"
   };
 }
@@ -149,10 +159,9 @@ function latestUserContent(
     }
 
     if (attachment.kind === "pdf" || attachment.kind === "document") {
-      const attachmentText = providerAttachmentText(
-        attachment,
-        options.maxAttachmentTextChars ?? 20_000
-      );
+      const attachmentText = options.preview
+        ? providerAttachmentPreviewText(attachment)
+        : providerAttachmentText(attachment, options.maxAttachmentTextChars ?? 20_000);
       if (attachmentText) {
         content.push({ text: attachmentText, type: "text" });
       }
@@ -427,7 +436,13 @@ export function buildGeminiInteractionsRequestPreview(
   return {
     body: buildGeminiInteractionsBody(request, { ...options, preview: true }),
     provider: "gemini",
-    redactions: ["attachment_base64", "grounding_suggestions", "provider_signatures"],
+    redactions: [
+      "attachment_base64",
+      "attachment_extracted_text",
+      "attachment_media_type",
+      "grounding_suggestions",
+      "provider_signatures"
+    ],
     replayedContext: conversationPreview(request)
   };
 }

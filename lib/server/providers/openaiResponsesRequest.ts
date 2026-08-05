@@ -1,7 +1,11 @@
 import { normalizeOpenAIResponsesParams, type OpenAIResponsesParams } from "../../domain/providerParams";
 import { textFromContentBlocks } from "../../domain/modelRunEvents";
 import { openAIResponsesToolBridge } from "../tools/bridges";
-import { providerAttachmentText } from "./attachmentPayload";
+import {
+  providerAttachmentPreviewFilename,
+  providerAttachmentPreviewText,
+  providerAttachmentText
+} from "./attachmentPayload";
 import { conversationPreview, providerPromptCacheKey, textConversationForRequest } from "./context";
 import type { ProviderAttachment, ProviderRunRequest } from "./types";
 
@@ -75,7 +79,13 @@ export type OpenAIResponsesRequestOptions = Readonly<{
 export type OpenAIResponsesRequestPreview = {
   body: OpenAIResponsesRequestBody;
   provider: "openai";
-  redactions: ["image_data_url", "pdf_base64"];
+  redactions: [
+    "attachment_extracted_text",
+    "attachment_filename",
+    "image_data_url",
+    "pdf_base64",
+    "provider_continuation_opaque_fields"
+  ];
   replayedContext: {
     id: string;
     role: "assistant" | "user";
@@ -84,6 +94,7 @@ export type OpenAIResponsesRequestPreview = {
 };
 
 type PrivateBuildOptions = Omit<OpenAIResponsesRequestOptions, "redactFiles" | "redactImages"> & {
+  preview: boolean;
   redactFiles: boolean;
   redactImages: boolean;
 };
@@ -103,9 +114,12 @@ function combineInstructions(request: ProviderRunRequest): string | undefined {
 
 function attachmentTextBlock(
   attachment: ProviderAttachment,
-  maxChars: number
+  maxChars: number,
+  preview: boolean
 ): OpenAIResponsesTextContentBlock | null {
-  const text = providerAttachmentText(attachment, maxChars);
+  const text = preview
+    ? providerAttachmentPreviewText(attachment)
+    : providerAttachmentText(attachment, maxChars);
   if (!text) {
     return null;
   }
@@ -130,11 +144,12 @@ function pdfFileData(attachment: ProviderAttachment, redactFiles: boolean): stri
 
 function pdfFileBlock(
   attachment: ProviderAttachment,
-  redactFiles: boolean
+  redactFiles: boolean,
+  preview: boolean
 ): OpenAIResponsesFileContentBlock {
   return {
     file_data: pdfFileData(attachment, redactFiles),
-    filename: attachment.fileName,
+    filename: preview ? providerAttachmentPreviewFilename : attachment.fileName,
     type: "input_file"
   };
 }
@@ -178,12 +193,16 @@ function buildInputContent(
 
   for (const attachment of request.attachments) {
     if (attachment.kind === "pdf" && request.modelCapabilities.nativePdfInput) {
-      content.push(pdfFileBlock(attachment, options.redactFiles));
+      content.push(pdfFileBlock(attachment, options.redactFiles, options.preview));
       continue;
     }
 
     if (attachment.kind === "pdf" || attachment.kind === "document") {
-      const block = attachmentTextBlock(attachment, options.maxAttachmentTextChars ?? 20000);
+      const block = attachmentTextBlock(
+        attachment,
+        options.maxAttachmentTextChars ?? 20000,
+        options.preview
+      );
       if (block) {
         content.push(block);
       }
@@ -204,13 +223,48 @@ function buildInputContent(
   return content;
 }
 
-function providerToolInputItems(messages: unknown[] | undefined): Record<string, unknown>[] {
+function providerToolPreviewItem(message: Record<string, unknown>): Record<string, unknown> | null {
+  if (message.type === "reasoning") {
+    return { type: "reasoning" };
+  }
+
+  if (message.type === "function_call") {
+    return {
+      ...(typeof message.call_id === "string" ? { call_id: message.call_id } : {}),
+      ...(typeof message.name === "string" ? { name: message.name } : {}),
+      type: "function_call"
+    };
+  }
+
+  if (message.type === "function_call_output") {
+    return {
+      ...(typeof message.call_id === "string" ? { call_id: message.call_id } : {}),
+      output: "[tool output omitted]",
+      type: "function_call_output"
+    };
+  }
+
+  return null;
+}
+
+function providerToolInputItems(
+  messages: unknown[] | undefined,
+  preview: boolean
+): Record<string, unknown>[] {
   return (messages ?? []).flatMap((message) => {
     if (Array.isArray(message)) {
-      return message.filter(isRecord);
+      return message.flatMap((item) => {
+        if (!isRecord(item)) return [];
+        if (!preview) return [item];
+        const safe = providerToolPreviewItem(item);
+        return safe ? [safe] : [];
+      });
     }
 
-    return isRecord(message) ? [message] : [];
+    if (!isRecord(message)) return [];
+    if (!preview) return [message];
+    const safe = providerToolPreviewItem(message);
+    return safe ? [safe] : [];
   });
 }
 
@@ -264,7 +318,7 @@ function buildOpenAIResponsesBody(
           ],
     role: message.role
   }));
-  input.push(...providerToolInputItems(request.providerToolMessages));
+  input.push(...providerToolInputItems(request.providerToolMessages, options.preview));
   const model = request.modelId || "gpt-5.5";
 
   const body: OpenAIResponsesRequestBody = {
@@ -320,6 +374,7 @@ export function buildOpenAIResponsesRequest(
 ): OpenAIResponsesRequestBody {
   return buildOpenAIResponsesBody(request, {
     ...options,
+    preview: false,
     redactFiles: options.redactFiles ?? false,
     redactImages: options.redactImages ?? false
   });
@@ -332,11 +387,18 @@ export function buildOpenAIResponsesRequestPreview(
   return {
     body: buildOpenAIResponsesBody(request, {
       ...options,
+      preview: true,
       redactFiles: true,
       redactImages: true
     }),
     provider: "openai",
     replayedContext: request.previousProviderResponseId ? [] : conversationPreview(request),
-    redactions: ["image_data_url", "pdf_base64"]
+    redactions: [
+      "attachment_extracted_text",
+      "attachment_filename",
+      "image_data_url",
+      "pdf_base64",
+      "provider_continuation_opaque_fields"
+    ]
   };
 }

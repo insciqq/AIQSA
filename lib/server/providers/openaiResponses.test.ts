@@ -132,13 +132,23 @@ describe("OpenAI Responses adapter", () => {
     const previewJson = JSON.stringify(preview);
 
     expect(preview.provider).toBe("openai");
-    expect(preview.redactions).toEqual(["image_data_url", "pdf_base64"]);
+    expect(preview.redactions).toEqual([
+      "attachment_extracted_text",
+      "attachment_filename",
+      "image_data_url",
+      "pdf_base64",
+      "provider_continuation_opaque_fields"
+    ]);
     expect(preview.body.input.at(-1)?.content).toEqual([
       { text: "Find one concise fact.", type: "input_text" },
       { detail: "auto", image_url: "[image data url omitted]", type: "input_image" },
-      { file_data: "[base64 PDF data omitted]", filename: "brief.pdf", type: "input_file" },
       {
-        text: "[Attached document: notes.txt (text/plain)]\nabc\n[truncated 3 chars]",
+        file_data: "[base64 PDF data omitted]",
+        filename: "[attachment filename omitted]",
+        type: "input_file"
+      },
+      {
+        text: "[Document attachment text omitted]",
         type: "input_text"
       }
     ]);

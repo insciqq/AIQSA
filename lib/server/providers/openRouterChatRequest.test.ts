@@ -301,16 +301,16 @@ describe("OpenRouter request builders", () => {
   it("preserves legacy asymmetric redaction and makes previews unconditionally safe", () => {
     const base = request();
     const runRequest = request({
-      attachmentIds: ["pdf-1", "image-1", "doc-1"],
+      attachmentIds: ["PDF_ID_CANARY", "IMAGE_ID_CANARY", "DOCUMENT_ID_CANARY"],
       attachments: [
         {
           base64Data: "PRIVATE_PDF_BYTES",
           byteSize: 64,
           extractedText: "PDF fallback must not be sent",
-          fileName: "brief.pdf",
-          id: "pdf-1",
+          fileName: "PDF_FILENAME_CANARY",
+          id: "PDF_ID_CANARY",
           kind: "pdf",
-          metadata: {},
+          metadata: { storageKey: "PDF_METADATA_CANARY" },
           mimeType: "application/pdf",
           status: "ready"
         },
@@ -318,20 +318,20 @@ describe("OpenRouter request builders", () => {
           byteSize: 32,
           dataUrl: "data:image/png;base64,PRIVATE_IMAGE_BYTES",
           extractedText: null,
-          fileName: "chart.png",
-          id: "image-1",
+          fileName: "IMAGE_FILENAME_CANARY",
+          id: "IMAGE_ID_CANARY",
           kind: "image",
-          metadata: {},
+          metadata: { remoteUrl: "IMAGE_METADATA_CANARY" },
           mimeType: "image/png",
           status: "ready"
         },
         {
           byteSize: 16,
-          extractedText: "0123456789",
-          fileName: "notes.txt",
-          id: "doc-1",
+          extractedText: "DOCUMENT_TEXT_CANARY",
+          fileName: "DOCUMENT_FILENAME_CANARY",
+          id: "DOCUMENT_ID_CANARY",
           kind: "document",
-          metadata: {},
+          metadata: { storageKey: "DOCUMENT_METADATA_CANARY" },
           mimeType: "text/plain",
           status: "ready"
         }
@@ -353,7 +353,7 @@ describe("OpenRouter request builders", () => {
 
     expect(actual).toContain("PRIVATE_PDF_BYTES");
     expect(actual).toContain("PRIVATE_IMAGE_BYTES");
-    expect(actual).toContain("01234\\n[truncated 5 chars]");
+    expect(actual).toContain("DOCUM\\n[truncated 15 chars]");
     expect(actual).not.toContain("PDF fallback must not be sent");
     expect(filesRedacted).not.toContain("PRIVATE_PDF_BYTES");
     expect(filesRedacted).toContain("PRIVATE_IMAGE_BYTES");
@@ -361,11 +361,34 @@ describe("OpenRouter request builders", () => {
     expect(imagesRedacted).not.toContain("PRIVATE_IMAGE_BYTES");
     expect(previewJson).not.toContain("PRIVATE_PDF_BYTES");
     expect(previewJson).not.toContain("PRIVATE_IMAGE_BYTES");
+    for (const canary of [
+      "PDF_FILENAME_CANARY",
+      "PDF_ID_CANARY",
+      "PDF_METADATA_CANARY",
+      "IMAGE_FILENAME_CANARY",
+      "IMAGE_ID_CANARY",
+      "IMAGE_METADATA_CANARY",
+      "DOCUMENT_TEXT_CANARY",
+      "DOCUMENT_FILENAME_CANARY",
+      "DOCUMENT_ID_CANARY",
+      "DOCUMENT_METADATA_CANARY"
+    ]) {
+      expect(previewJson).not.toContain(canary);
+    }
+    expect(actual).toContain("PDF_FILENAME_CANARY");
+    expect(actual).toContain("DOCUMENT_FILENAME_CANARY");
     expect(previewJson).toContain("[base64 PDF data omitted]");
     expect(previewJson).toContain("[image data url omitted]");
+    expect(previewJson).toContain("[Document attachment text omitted]");
+    expect(previewJson).toContain("[attachment filename omitted]");
     expect(preview).toMatchObject({
       provider: "openrouter",
-      redactions: ["image_data_url", "pdf_base64"],
+      redactions: [
+        "attachment_extracted_text",
+        "attachment_filename",
+        "image_data_url",
+        "pdf_base64"
+      ],
       replayedContext: [
         {
           id: "current-user-message",

@@ -136,27 +136,38 @@ describe("Gemini Interactions request builder", () => {
 
   it("uses native image/PDF payloads only on the wire and redacts the preview", () => {
     const runRequest = request({
+      attachmentIds: ["IMAGE_ID_CANARY", "PDF_ID_CANARY", "DOCUMENT_ID_CANARY"],
       attachments: [
         {
           byteSize: 3,
-          dataUrl: "data:image/png;base64,YWJj",
+          dataUrl: "data:image/png;base64,QUJD",
           extractedText: null,
-          fileName: "image.png",
-          id: "image-1",
+          fileName: "IMAGE_FILENAME_CANARY",
+          id: "IMAGE_ID_CANARY",
           kind: "image",
-          metadata: {},
+          metadata: { remoteUrl: "IMAGE_METADATA_CANARY" },
           mimeType: "image/png",
           status: "ready"
         },
         {
-          base64Data: "ZGVm",
+          base64Data: "REVG",
           byteSize: 3,
-          extractedText: null,
-          fileName: "file.pdf",
-          id: "pdf-1",
+          extractedText: "UNUSED_PDF_TEXT_CANARY",
+          fileName: "PDF_FILENAME_CANARY",
+          id: "PDF_ID_CANARY",
           kind: "pdf",
-          metadata: {},
+          metadata: { storageKey: "PDF_METADATA_CANARY" },
           mimeType: "application/pdf",
+          status: "ready"
+        },
+        {
+          byteSize: 8,
+          extractedText: "DOCUMENT_TEXT_CANARY",
+          fileName: "DOCUMENT_FILENAME_CANARY",
+          id: "DOCUMENT_ID_CANARY",
+          kind: "document",
+          metadata: { remoteUrl: "DOCUMENT_METADATA_CANARY" },
+          mimeType: "text/plain",
           status: "ready"
         }
       ]
@@ -165,12 +176,41 @@ describe("Gemini Interactions request builder", () => {
     expect(buildGeminiInteractionsRequest(runRequest).input.at(-1)).toMatchObject({
       content: [
         { text: "Current question", type: "text" },
-        { data: "YWJj", mime_type: "image/png", type: "image" },
-        { data: "ZGVm", mime_type: "application/pdf", type: "document" }
+        { data: "QUJD", mime_type: "image/png", type: "image" },
+        { data: "REVG", mime_type: "application/pdf", type: "document" },
+        { text: expect.stringContaining("DOCUMENT_TEXT_CANARY"), type: "text" }
       ]
     });
-    expect(JSON.stringify(buildGeminiInteractionsRequestPreview(runRequest))).not.toContain("YWJj");
-    expect(JSON.stringify(buildGeminiInteractionsRequestPreview(runRequest))).not.toContain("ZGVm");
+    const preview = buildGeminiInteractionsRequestPreview(runRequest);
+    const previewJson = JSON.stringify(preview);
+    for (const canary of [
+      "QUJD",
+      "REVG",
+      "IMAGE_FILENAME_CANARY",
+      "IMAGE_ID_CANARY",
+      "IMAGE_METADATA_CANARY",
+      "UNUSED_PDF_TEXT_CANARY",
+      "PDF_FILENAME_CANARY",
+      "PDF_ID_CANARY",
+      "PDF_METADATA_CANARY",
+      "DOCUMENT_TEXT_CANARY",
+      "DOCUMENT_FILENAME_CANARY",
+      "DOCUMENT_ID_CANARY",
+      "DOCUMENT_METADATA_CANARY"
+    ]) {
+      expect(previewJson).not.toContain(canary);
+    }
+    expect(previewJson).toContain("[base64 image data omitted]");
+    expect(previewJson).toContain("[base64 PDF data omitted]");
+    expect(previewJson).toContain("[Document attachment text omitted]");
+    expect(previewJson).toContain("[attachment media type omitted]");
+    expect(preview.redactions).toEqual([
+      "attachment_base64",
+      "attachment_extracted_text",
+      "attachment_media_type",
+      "grounding_suggestions",
+      "provider_signatures"
+    ]);
   });
 
   it("enables only native Google Search and rejects mixed hosted/client tools", () => {
