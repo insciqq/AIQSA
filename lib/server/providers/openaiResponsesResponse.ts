@@ -27,7 +27,7 @@ const responseStatuses = new Set([
   "queued"
 ]);
 const terminalStatuses = new Set(["cancelled", "completed", "failed", "incomplete"]);
-const MAX_OPENAI_STREAMED_TOOL_CALLS = 16;
+const MAX_OPENAI_TOOL_CALLS = 16;
 const MAX_OPENAI_TOOL_ID_LENGTH = 512;
 const MAX_OPENAI_TOOL_NAME_LENGTH = 512;
 
@@ -71,6 +71,11 @@ function stringValue(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
 }
 
+function nonBlankStringValue(value: unknown): string | undefined {
+  const candidate = stringValue(value);
+  return candidate?.trim() ? candidate : undefined;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -96,6 +101,19 @@ export function isFailedOpenAIResponse(response: OpenAIResponseRecord): boolean 
 
 export function isTerminalOpenAIResponse(response: OpenAIResponseRecord): boolean {
   return terminalStatuses.has(openAIResponseStatus(response));
+}
+
+export function resolveOpenAIResponseIdentity(
+  response: OpenAIResponseRecord,
+  pinnedProviderResponseId?: string
+): string | undefined {
+  const pinnedId = nonBlankStringValue(pinnedProviderResponseId);
+  const responseId = nonBlankStringValue(response.id);
+  if (pinnedId && responseId && pinnedId !== responseId) {
+    throw new Error("openai_response_identity_mismatch");
+  }
+
+  return pinnedId ?? responseId;
 }
 
 function extractOpenAIText(
@@ -184,6 +202,28 @@ function toolContinuationItems(response: OpenAIResponseRecord): Record<string, u
   });
 }
 
+function assertValidOpenAIFunctionCalls(response: OpenAIResponseRecord): void {
+  const output = Array.isArray(response.output) ? response.output : [];
+  let toolCallCount = 0;
+
+  for (const item of output) {
+    if (!isRecord(item) || item.type !== "function_call") continue;
+
+    toolCallCount += 1;
+    const id = typeof item.call_id === "string" ? item.call_id : stringValue(item.id);
+    const name = nonBlankStringValue(item.name);
+    if (
+      toolCallCount > MAX_OPENAI_TOOL_CALLS ||
+      !id?.trim() ||
+      id.length > MAX_OPENAI_TOOL_ID_LENGTH ||
+      !name ||
+      name.length > MAX_OPENAI_TOOL_NAME_LENGTH
+    ) {
+      throw new Error("openai_response_tool_call_invalid");
+    }
+  }
+}
+
 function assertBoundedOpenAIRetainedOutput(
   response: OpenAIResponseRecord,
   maxOutputChars: number,
@@ -191,7 +231,6 @@ function assertBoundedOpenAIRetainedOutput(
 ): void {
   const output = Array.isArray(response.output) ? response.output : [];
   let reasoningCharacters = 0;
-  let toolCallCount = 0;
 
   for (const item of output) {
     if (!isRecord(item)) continue;
@@ -208,18 +247,6 @@ function assertBoundedOpenAIRetainedOutput(
     }
     if (item.type !== "function_call") continue;
 
-    toolCallCount += 1;
-    const id = stringValue(item.call_id) ?? stringValue(item.id);
-    const name = stringValue(item.name);
-    if (
-      toolCallCount > MAX_OPENAI_STREAMED_TOOL_CALLS ||
-      !id ||
-      id.length > MAX_OPENAI_TOOL_ID_LENGTH ||
-      !name ||
-      name.length > MAX_OPENAI_TOOL_NAME_LENGTH
-    ) {
-      throw new Error("openai_stream_tool_call_invalid");
-    }
     assertBoundedStructuredTextLength({
       maxChars: maxOutputChars,
       retainedTextKind: "tool_arguments",
@@ -306,10 +333,11 @@ function buildResponsePreview(
   response: OpenAIResponseRecord,
   finalText: string,
   rawText = finalText,
-  provider = "openai"
+  provider = "openai",
+  providerResponseId?: string
 ): Record<string, unknown> {
   return {
-    id: response.id,
+    id: providerResponseId,
     model: response.model,
     output: summarizeOutput(response),
     provider,
@@ -341,25 +369,40 @@ export function openAIResponseSummaryEvent(input: OpenAIResponseSummaryInput): M
 function normalizeOpenAIResponseResult(
   response: OpenAIResponseRecord,
   providerResponseId: string | undefined,
-  fallbackRawText = "",
+  streamedRawText: string | undefined,
   provider = "openai",
   maxOutputChars?: number,
   snapshot?: ProviderStreamSafetySnapshot | null
 ): Readonly<{ artifacts: ModelRunSseEvent[]; result: ProviderRunResult }> {
+  const normalizedProviderResponseId = resolveOpenAIResponseIdentity(
+    response,
+    providerResponseId
+  );
+  assertValidOpenAIFunctionCalls(response);
   if (maxOutputChars !== undefined) {
     assertBoundedOpenAIRetainedOutput(response, maxOutputChars, snapshot ?? null);
   }
-  const rawFinalText = extractOpenAIText(response, maxOutputChars, snapshot) || fallbackRawText;
+  const terminalRawText = extractOpenAIText(response, maxOutputChars, snapshot);
+  if (streamedRawText !== undefined && terminalRawText !== streamedRawText) {
+    throw new Error("openai_response_terminal_text_mismatch");
+  }
+  const rawFinalText = terminalRawText || streamedRawText || "";
   const finalText = visibleAnswerText(rawFinalText);
   const toolCalls = openAIResponsesToolBridge.parseToolCalls(response);
 
   return {
     artifacts: extractArtifacts(response),
     result: {
-      finalProviderResponsePreview: buildResponsePreview(response, finalText, rawFinalText, provider),
+      finalProviderResponsePreview: buildResponsePreview(
+        response,
+        finalText,
+        rawFinalText,
+        provider,
+        normalizedProviderResponseId
+      ),
       finalText,
       providerToolCallMessage: toolCalls.length > 0 ? toolContinuationItems(response) : undefined,
-      providerResponseId,
+      providerResponseId: normalizedProviderResponseId,
       toolCalls,
       usage: extractOpenAIUsage(response)
     }
@@ -375,7 +418,7 @@ export function normalizeCompletedOpenAIResponse(
     throw new Error("openai_response_not_completed");
   }
 
-  const normalized = normalizeOpenAIResponseResult(response, providerResponseId, "", provider);
+  const normalized = normalizeOpenAIResponseResult(response, providerResponseId, undefined, provider);
   const events = [...normalized.artifacts];
 
   if (normalized.result.finalText) {
@@ -397,20 +440,32 @@ function recordValue(value: unknown): Record<string, unknown> | null {
   return isRecord(value) ? value : null;
 }
 
-function responseFromStreamPayload(payload: Record<string, unknown>): Record<string, unknown> | null {
-  return recordValue(payload.response) ?? (payload.status || payload.output || payload.output_text ? payload : null);
+function responseFromStreamPayload(
+  eventType: string,
+  payload: Record<string, unknown>
+): Record<string, unknown> | null {
+  const nestedResponse = recordValue(payload.response);
+  if (nestedResponse) {
+    return nestedResponse;
+  }
+
+  return /^(?:response\.)?(?:created|queued|in_progress|completed|failed|incomplete|cancelled)$/.test(
+    eventType
+  )
+    ? payload
+    : null;
 }
 
-function providerResponseIdFromStreamPayload(
+function providerResponseIdsFromStreamPayload(
   payload: Record<string, unknown>,
   response?: Record<string, unknown> | null
-): string | undefined {
-  return (
-    stringValue(response?.id) ??
-    stringValue(payload.response_id) ??
-    stringValue(payload.responseId) ??
-    stringValue(payload.id)
-  );
+): string[] {
+  return [
+    nonBlankStringValue(response?.id),
+    nonBlankStringValue(payload.response_id),
+    nonBlankStringValue(payload.responseId),
+    ...(response === payload ? [nonBlankStringValue(payload.id)] : [])
+  ].filter((value): value is string => value !== undefined);
 }
 
 function streamErrorCode(eventType: string, payload: Record<string, unknown>): string | null {
@@ -466,11 +521,9 @@ export async function* parseOpenAIResponsesSse(
   const streamLimits = resolveProviderStreamLimits(input.streamLimits);
   let providerResponseId: string | undefined;
   let finalResponse: Record<string, unknown> | null = null;
-  const rawFinalText = new BoundedTextAccumulator({
-    maxChars: streamLimits.maxOutputChars,
-    retainedTextKind: "visible_output"
-  });
+  let streamedRawText: BoundedTextAccumulator | undefined;
   let summaryEmitted = false;
+  let publishedProviderResponseId: string | undefined;
   let terminalSeen = false;
   let latestSnapshot: ProviderStreamSafetySnapshot | null = null;
 
@@ -497,9 +550,15 @@ export async function* parseOpenAIResponsesSse(
       eventType === "response.failed" || eventType === "response.incomplete" || eventType === "response.cancelled"
         ? eventType.replace("response.", "")
         : null;
-    const response = responseFromStreamPayload(parsed);
-    providerResponseId = providerResponseIdFromStreamPayload(parsed, response) ?? providerResponseId;
-    if (response && isRecord(response.usage)) {
+    const response = responseFromStreamPayload(eventType, parsed);
+    for (const candidateResponseId of providerResponseIdsFromStreamPayload(parsed, response)) {
+      if (providerResponseId && candidateResponseId !== providerResponseId) {
+        throw new Error("openai_response_identity_mismatch");
+      }
+      providerResponseId ??= candidateResponseId;
+    }
+    const isCompletedEvent = eventType === "response.completed";
+    if (!isCompletedEvent && response && isRecord(response.usage)) {
       yield {
         data: extractOpenAIUsage(response),
         type: "usage"
@@ -511,7 +570,7 @@ export async function* parseOpenAIResponsesSse(
       throw new Error(errorCode);
     }
 
-    if (eventType === "response.completed") {
+    if (isCompletedEvent) {
       const status = response ? stringValue(response.status) : undefined;
       if (status !== "completed") {
         if (status === "failed" || status === "incomplete" || status === "cancelled") {
@@ -522,8 +581,14 @@ export async function* parseOpenAIResponsesSse(
       }
     }
 
-    if (!summaryEmitted && (providerResponseId || eventType === "response.created")) {
+    const shouldPublishIdentity =
+      providerResponseId !== undefined && providerResponseId !== publishedProviderResponseId;
+    if (
+      !isCompletedEvent &&
+      ((!summaryEmitted && eventType === "response.created") || shouldPublishIdentity)
+    ) {
       summaryEmitted = true;
+      publishedProviderResponseId = providerResponseId;
       yield openAIResponseSummaryEvent({
         background: input.background,
         provider: input.provider,
@@ -533,17 +598,23 @@ export async function* parseOpenAIResponsesSse(
       });
     }
 
-    const searchArtifact = webSearchLifecycleArtifact({
-      eventType,
-      payload: parsed,
-      providerResponseId
-    });
+    const searchArtifact = isCompletedEvent
+      ? null
+      : webSearchLifecycleArtifact({
+          eventType,
+          payload: parsed,
+          providerResponseId
+        });
     if (searchArtifact) {
       yield searchArtifact;
     }
 
     if (eventType === "response.output_text.delta" && typeof parsed.delta === "string") {
-      rawFinalText.append(parsed.delta, latestSnapshot);
+      streamedRawText ??= new BoundedTextAccumulator({
+        maxChars: streamLimits.maxOutputChars,
+        retainedTextKind: "visible_output"
+      });
+      streamedRawText.append(parsed.delta, latestSnapshot);
       yield {
         data: {
           delta: parsed.delta
@@ -553,7 +624,7 @@ export async function* parseOpenAIResponsesSse(
       continue;
     }
 
-    if (eventType === "response.completed" && response) {
+    if (isCompletedEvent && response) {
       terminalSeen = true;
       finalResponse = response;
       break;
@@ -568,7 +639,19 @@ export async function* parseOpenAIResponsesSse(
     throw new Error("openai_stream_truncated");
   }
 
-  if (!summaryEmitted) {
+  const normalized = normalizeOpenAIResponseResult(
+    finalResponse,
+    providerResponseId,
+    streamedRawText?.value(),
+    input.provider,
+    streamLimits.maxOutputChars,
+    latestSnapshot
+  );
+
+  if (
+    !summaryEmitted ||
+    (providerResponseId !== undefined && providerResponseId !== publishedProviderResponseId)
+  ) {
     yield openAIResponseSummaryEvent({
       background: input.background,
       provider: input.provider,
@@ -578,14 +661,12 @@ export async function* parseOpenAIResponsesSse(
     });
   }
 
-  const normalized = normalizeOpenAIResponseResult(
-    finalResponse,
-    providerResponseId,
-    rawFinalText.value(),
-    input.provider,
-    streamLimits.maxOutputChars,
-    latestSnapshot
-  );
+  if (isRecord(finalResponse.usage)) {
+    yield {
+      data: extractOpenAIUsage(finalResponse),
+      type: "usage"
+    };
+  }
 
   for (const artifact of normalized.artifacts) {
     yield artifact;

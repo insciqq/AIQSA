@@ -272,6 +272,41 @@ describe("OpenAI Responses adapter", () => {
     expect(refreshed).not.toHaveProperty("result");
   });
 
+  it("rejects a changed background response identity before a retrieved summary", async () => {
+    const client: OpenAIResponsesClient = {
+      cancel: async () => ({}),
+      create: async () => ({ id: "resp-a", status: "in_progress" }),
+      retrieve: async () => ({ id: "resp-b", status: "in_progress" })
+    };
+    const adapter = createOpenAIResponsesAdapter({ client, pollIntervalMs: 0 });
+    const stream = adapter.stream(request());
+
+    await expect(stream.next()).resolves.toMatchObject({
+      value: {
+        data: { artifactType: "summary", payload: { responseId: "resp-a" } },
+        type: "artifact"
+      }
+    });
+    await expect(stream.next()).rejects.toThrow("openai_response_identity_mismatch");
+  });
+
+  it("rejects malformed completed function calls before non-stream terminal events", async () => {
+    const client: OpenAIResponsesClient = {
+      cancel: async () => ({}),
+      create: async () => ({
+        id: "resp-malformed-tool",
+        output: [{ arguments: "{}", name: "missing_id", type: "function_call" }],
+        status: "completed",
+        usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 }
+      }),
+      retrieve: async () => ({})
+    };
+    const adapter = createOpenAIResponsesAdapter({ client, pollIntervalMs: 0 });
+    const stream = adapter.stream(request({ forceNonStreaming: true }));
+
+    await expect(stream.next()).rejects.toThrow("openai_response_tool_call_invalid");
+  });
+
   it("parses OpenAI function calls for the shared tool loop", async () => {
     const client: OpenAIResponsesClient = {
       cancel: async () => ({}),

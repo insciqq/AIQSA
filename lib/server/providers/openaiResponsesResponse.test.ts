@@ -227,6 +227,101 @@ describe("OpenAI Responses response normalization", () => {
     expect(JSON.stringify(normalized.result.finalProviderResponsePreview)).not.toContain(remoteSecret);
   });
 
+  it("pins completed response identity and rejects a contradictory lifecycle handle", () => {
+    const response = {
+      id: "resp-terminal",
+      output_text: "Terminal answer",
+      status: "completed"
+    };
+
+    const normalized = normalizeCompletedOpenAIResponse(response);
+    expect(normalized.result).toMatchObject({
+      finalProviderResponsePreview: { id: "resp-terminal" },
+      providerResponseId: "resp-terminal"
+    });
+    expect(() => normalizeCompletedOpenAIResponse(response, "resp-created")).toThrow(
+      "openai_response_identity_mismatch"
+    );
+  });
+
+  it.each([
+    { arguments: "{}", name: "lookup", type: "function_call" },
+    { arguments: "{}", call_id: "   ", name: "lookup", type: "function_call" },
+    { arguments: "{}", call_id: "   ", id: "fallback-must-not-win", name: "lookup", type: "function_call" },
+    { arguments: "{}", call_id: "call-1", name: "   ", type: "function_call" },
+    { arguments: "{}", call_id: "c".repeat(513), name: "lookup", type: "function_call" },
+    { arguments: "{}", call_id: "call-1", name: "n".repeat(513), type: "function_call" }
+  ])("rejects malformed recognized non-stream function calls: %j", (functionCall) => {
+    expect(() => normalizeCompletedOpenAIResponse({
+      output: [functionCall],
+      output_text: "ok",
+      status: "completed"
+    })).toThrow("openai_response_tool_call_invalid");
+  });
+
+  it("bounds recognized non-stream function calls without classifying unknown item types as calls", () => {
+    const functionCall = (index: number) => ({
+      arguments: "{}",
+      call_id: `call-${index}`,
+      name: "lookup",
+      type: "function_call"
+    });
+
+    const normalized = normalizeCompletedOpenAIResponse({
+      output: [...Array.from({ length: 16 }, (_, index) => functionCall(index)), {
+        id: "unknown-item-id",
+        type: "future_tool_call"
+      }],
+      output_text: "ok",
+      status: "completed"
+    });
+    expect(normalized.result.toolCalls).toHaveLength(16);
+    expect(normalized.result.providerToolCallMessage).not.toContainEqual(
+      expect.objectContaining({ type: "future_tool_call" })
+    );
+    expect(() => normalizeCompletedOpenAIResponse({
+      output: Array.from({ length: 17 }, (_, index) => functionCall(index)),
+      output_text: "ok",
+      status: "completed"
+    })).toThrow("openai_response_tool_call_invalid");
+  });
+
+  it("preserves official and compatible function-call identities at exact bounds", () => {
+    const boundedId = "i".repeat(512);
+    const boundedName = "n".repeat(512);
+    const normalized = normalizeCompletedOpenAIResponse({
+      output: [
+        {
+          arguments: "{}",
+          call_id: "official-call-id",
+          id: "distinct-output-item-id",
+          name: "official_tool",
+          type: "function_call"
+        },
+        {
+          arguments: "{}",
+          id: boundedId,
+          name: boundedName,
+          type: "function_call"
+        },
+        {
+          arguments: "{}",
+          call_id: 42,
+          id: "compatible-fallback-id",
+          name: "compatible_tool",
+          type: "function_call"
+        }
+      ],
+      status: "completed"
+    });
+
+    expect(normalized.result.toolCalls).toEqual([
+      expect.objectContaining({ id: "official-call-id", name: "official_tool" }),
+      expect.objectContaining({ id: boundedId, name: boundedName }),
+      expect.objectContaining({ id: "compatible-fallback-id", name: "compatible_tool" })
+    ]);
+  });
+
   it("sanitizes visible debug templates while retaining raw text in the provider preview", () => {
     const rawText = [
       "## Question",
@@ -301,8 +396,8 @@ describe("OpenAI Responses response normalization", () => {
     const normalized = await collectSse(
       sseInput([
         'event: response.created\ndata: {"type":"response.created","response":{"id":"resp-stream-1","status":"in_progress"}}\n\n',
-        'event: response.web_search_call.searching\ndata: {"type":"response.web_search_call.searching","response_id":"resp-stream-1","item_id":"search-1","output_index":0}\n\n',
-        'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","responseId":"ignored-lower-precedence","delta":"Hel"}\n\n',
+        'event: response.web_search_call.searching\ndata: {"type":"response.web_search_call.searching","response_id":"resp-stream-1","id":"search-item-id","item_id":"search-1","output_index":0,"status":"searching"}\n\n',
+        'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","responseId":"resp-stream-1","delta":"Hel"}\n\n',
         'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","id":"ignored-lowest-precedence","delta":"lo"}\n\n',
         "event: response.comp",
         `leted\ndata: ${JSON.stringify(completed)}\n\n`
@@ -341,6 +436,195 @@ describe("OpenAI Responses response normalization", () => {
     });
   });
 
+  it("fails before terminal usage when the established response identity changes", async () => {
+    const stream = parseOpenAIResponsesSse(sseInput([
+      'event: response.created\ndata: {"type":"response.created","response":{"id":"resp-a","status":"in_progress"}}\n\n',
+      `event: response.completed\ndata: ${JSON.stringify({
+        response: {
+          id: "resp-b",
+          output_text: "Answer from another response",
+          status: "completed",
+          usage: { input_tokens: 100, output_tokens: 100, total_tokens: 200 }
+        },
+        type: "response.completed"
+      })}\n\n`
+    ]));
+
+    await expect(stream.next()).resolves.toMatchObject({
+      value: { data: { artifactType: "summary" }, type: "artifact" }
+    });
+    await expect(stream.next()).rejects.toThrow("openai_response_identity_mismatch");
+  });
+
+  it("checks native identity and supported compatibility aliases while ignoring item ids", async () => {
+    const conflictingDelta = parseOpenAIResponsesSse(sseInput([
+      'event: response.created\ndata: {"type":"response.created","response":{"id":"resp-a","status":"in_progress"}}\n\n',
+      'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","response_id":"resp-b","id":"item-id","delta":"no"}\n\n'
+    ]));
+    await expect(conflictingDelta.next()).resolves.toMatchObject({ value: { type: "artifact" } });
+    await expect(conflictingDelta.next()).rejects.toThrow("openai_response_identity_mismatch");
+
+    const conflictingTerminalFields = parseOpenAIResponsesSse(sseInput([
+      `event: response.completed\ndata: ${JSON.stringify({
+        response: { id: "resp-a", output_text: "ok", status: "completed" },
+        response_id: "resp-b",
+        type: "response.completed"
+      })}\n\n`
+    ]));
+    await expect(conflictingTerminalFields.next()).rejects.toThrow(
+      "openai_response_identity_mismatch"
+    );
+
+    await expect(collectSse(sseInput([
+      'event: response.created\ndata: {"type":"response.created","id":"resp-flat","status":"in_progress"}\n\n',
+      'event: response.completed\ndata: {"type":"response.completed","id":"resp-flat","output_text":"ok","status":"completed"}\n\n'
+    ]))).resolves.toMatchObject({
+      result: { finalText: "ok", providerResponseId: "resp-flat" }
+    });
+  });
+
+  it("accepts terminal-only text and rejects terminal text that contradicts visible deltas", async () => {
+    await expect(collectSse(sseInput([
+      `event: response.completed\ndata: ${JSON.stringify({
+        response: { id: "resp-terminal-only", output_text: "Terminal only", status: "completed" },
+        type: "response.completed"
+      })}\n\n`
+    ]))).resolves.toMatchObject({
+      result: { finalText: "Terminal only", providerResponseId: "resp-terminal-only" }
+    });
+
+    for (const terminalResponse of [
+      {
+        output_text: "Hello!",
+        status: "completed",
+        usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 }
+      },
+      {
+        status: "completed",
+        usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 }
+      }
+    ]) {
+      const stream = parseOpenAIResponsesSse(sseInput([
+        'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"Hello"}\n\n',
+        `event: response.completed\ndata: ${JSON.stringify({
+          response: terminalResponse,
+          type: "response.completed"
+        })}\n\n`
+      ]));
+
+      await expect(stream.next()).resolves.toMatchObject({ value: { type: "token" } });
+      await expect(stream.next()).rejects.toThrow("openai_response_terminal_text_mismatch");
+    }
+  });
+
+  it("publishes the first late response identity even after an id-less created event", async () => {
+    const normalized = await collectSse(sseInput([
+      'event: response.created\ndata: {"type":"response.created","response":{"status":"in_progress"}}\n\n',
+      'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","response_id":"resp-late","delta":"Hi"}\n\n',
+      `event: response.completed\ndata: ${JSON.stringify({
+        response: { id: "resp-late", output_text: "Hi", status: "completed" },
+        type: "response.completed"
+      })}\n\n`
+    ]));
+    const summaries = normalized.events.filter(
+      (event) => event.type === "artifact" && event.data.artifactType === "summary"
+    );
+
+    expect(summaries).toHaveLength(2);
+    expect(summaries[0]).toMatchObject({ data: { payload: { responseId: undefined } } });
+    expect(summaries[1]).toMatchObject({ data: { payload: { responseId: "resp-late" } } });
+    expect(normalized.result.providerResponseId).toBe("resp-late");
+  });
+
+  it("treats an explicit empty delta as streamed text for terminal reconciliation", async () => {
+    await expect(collectSse(sseInput([
+      'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":""}\n\n',
+      'event: response.completed\ndata: {"type":"response.completed","response":{"status":"completed"}}\n\n'
+    ]))).resolves.toMatchObject({ result: { finalText: "" } });
+
+    const conflicting = parseOpenAIResponsesSse(sseInput([
+      'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":""}\n\n',
+      'event: response.completed\ndata: {"type":"response.completed","response":{"output_text":"not empty","status":"completed"}}\n\n'
+    ]));
+    await expect(conflicting.next()).resolves.toMatchObject({
+      value: { data: { delta: "" }, type: "token" }
+    });
+    await expect(conflicting.next()).rejects.toThrow("openai_response_terminal_text_mismatch");
+  });
+
+  it("rejects malformed terminal tools before terminal usage or artifacts", async () => {
+    const stream = parseOpenAIResponsesSse(sseInput([
+      `event: response.completed\ndata: ${JSON.stringify({
+        response: {
+          id: "resp-invalid-tool",
+          output: [
+            {
+              content: [{
+                annotations: [{
+                  title: "Must not emit",
+                  type: "url_citation",
+                  url: "https://example.com"
+                }],
+                text: "ok",
+                type: "output_text"
+              }],
+              type: "message"
+            },
+            { arguments: "{}", name: "missing_id", type: "function_call" }
+          ],
+          status: "completed",
+          usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 }
+        },
+        type: "response.completed"
+      })}\n\n`
+    ]));
+
+    await expect(stream.next()).rejects.toThrow("openai_response_tool_call_invalid");
+  });
+
+  it("reconciles raw streamed text before applying visible-answer sanitization", async () => {
+    const rawText = [
+      "## Question",
+      "`hi1`",
+      "",
+      "## Answer",
+      "Sanitized answer",
+      "",
+      "## Provider Parameters",
+      "- Model: hidden"
+    ].join("\n");
+    const normalized = await collectSse(sseInput([
+      `event: response.output_text.delta\ndata: ${JSON.stringify({
+        delta: rawText,
+        type: "response.output_text.delta"
+      })}\n\n`,
+      `event: response.completed\ndata: ${JSON.stringify({
+        response: { output_text: rawText, status: "completed" },
+        type: "response.completed"
+      })}\n\n`
+    ]));
+
+    expect(normalized.result.finalText).toBe("Sanitized answer");
+    expect(normalized.result.finalProviderResponsePreview).toMatchObject({ rawText });
+
+    const visibleEquivalentButRawDifferent = rawText.replace("Model: hidden", "Model: changed");
+    const conflicting = parseOpenAIResponsesSse(sseInput([
+      `event: response.output_text.delta\ndata: ${JSON.stringify({
+        delta: rawText,
+        type: "response.output_text.delta"
+      })}\n\n`,
+      `event: response.completed\ndata: ${JSON.stringify({
+        response: {
+          output_text: visibleEquivalentButRawDifferent,
+          status: "completed"
+        },
+        type: "response.completed"
+      })}\n\n`
+    ]));
+    await expect(conflicting.next()).resolves.toMatchObject({ value: { type: "token" } });
+    await expect(conflicting.next()).rejects.toThrow("openai_response_terminal_text_mismatch");
+  });
+
   it("accepts an exact visible-output limit and rejects the first character over before yielding it", async () => {
     const completed = (text: string) => `event: response.completed\ndata: ${JSON.stringify({
       response: {
@@ -373,13 +657,16 @@ describe("OpenAI Responses response normalization", () => {
     const stream = parseOpenAIResponsesSse(sseInput([
       'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"Hello"}\n\n',
       `event: response.completed\ndata: ${JSON.stringify({
-        response: { output_text: "Hello!", status: "completed" },
+        response: {
+          output_text: "Hello!",
+          status: "completed",
+          usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 }
+        },
         type: "response.completed"
       })}\n\n`
     ], { streamLimits: { ...DEFAULT_PROVIDER_STREAM_LIMITS, maxOutputChars: 5 } }));
 
     await expect(stream.next()).resolves.toMatchObject({ value: { type: "token" } });
-    await expect(stream.next()).resolves.toMatchObject({ value: { type: "artifact" } });
     await expect(stream.next()).rejects.toMatchObject({
       code: "provider_output_too_large",
       maxChars: 5,
@@ -412,7 +699,7 @@ describe("OpenAI Responses response normalization", () => {
     });
     await expect(collectSse(sseInput([
       terminal([tool("{}", "n".repeat(513))])
-    ]))).rejects.toThrow("openai_stream_tool_call_invalid");
+    ]))).rejects.toThrow("openai_response_tool_call_invalid");
 
     const reasoning = (text: string) => ({
       summary: [{ text, type: "summary_text" }],

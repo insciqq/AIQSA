@@ -137,13 +137,16 @@ export function createCompatibleResponsesAdapter(
         signal: runOptions.signal,
         ...(typeof runOptions.timeoutMs === "number" ? { timeoutMs: runOptions.timeoutMs } : {})
       });
-      if (typeof response.usage === "object" && response.usage !== null) {
-        yield { data: extractOpenAIUsage(response), type: "usage" };
-      }
+      const usageEvent: ModelRunSseEvent | undefined =
+        typeof response.usage === "object" && response.usage !== null
+          ? { data: extractOpenAIUsage(response), type: "usage" }
+          : undefined;
       if (isFailedOpenAIResponse(response)) {
+        if (usageEvent) yield usageEvent;
         throw new Error(`compatible_response_${openAIResponseStatus(response)}`);
       }
       if (openAIResponseStatus(response) !== "completed") {
+        if (usageEvent) yield usageEvent;
         throw new Error("compatible_response_not_completed");
       }
 
@@ -152,6 +155,7 @@ export function createCompatibleResponsesAdapter(
         typeof response.id === "string" ? response.id : undefined,
         "openai-compatible"
       );
+      if (usageEvent) yield usageEvent;
       for (const event of completed.events) {
         yield event;
       }

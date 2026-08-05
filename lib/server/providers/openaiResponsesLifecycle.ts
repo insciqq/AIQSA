@@ -1,5 +1,9 @@
 import { positiveIntegerEnv } from "./network";
-import { isTerminalOpenAIResponse, shouldPollOpenAIResponse } from "./openaiResponsesResponse";
+import {
+  isTerminalOpenAIResponse,
+  resolveOpenAIResponseIdentity,
+  shouldPollOpenAIResponse
+} from "./openaiResponsesResponse";
 import {
   openAIRetryableErrorPayload,
   type OpenAIResponseObject,
@@ -61,10 +65,6 @@ export type OpenAIResponsesLifecycle = {
 
 const defaultPollIntervalMs = 1000;
 const defaultBackgroundPollTimeoutMs = 11 * 60_000;
-
-function stringValue(value: unknown): string | undefined {
-  return typeof value === "string" ? value : undefined;
-}
 
 function abortError(): Error {
   const error = new Error("provider_run_aborted");
@@ -208,7 +208,11 @@ export function createOpenAIResponsesLifecycle(options: OpenAIResponsesLifecycle
   const maxRetryableRetrieveErrors = options.maxRetryableRetrieveErrors ?? 5;
 
   return {
-    cancel: (providerResponseId) => options.client.cancel(providerResponseId),
+    async cancel(providerResponseId) {
+      const response = await options.client.cancel(providerResponseId);
+      resolveOpenAIResponseIdentity(response, providerResponseId);
+      return response;
+    },
     async *createAndPoll(body, requestOptions = {}) {
       const deadline = new OpenAIBackgroundDeadline(pollTimeoutMs, requestOptions.signal);
 
@@ -219,7 +223,7 @@ export function createOpenAIResponsesLifecycle(options: OpenAIResponsesLifecycle
             ? { timeoutMs: requestOptions.timeoutMs }
             : {})
         }));
-        const providerResponseId = stringValue(response.id);
+        const providerResponseId = resolveOpenAIResponseIdentity(response);
 
         deadline.throwIfInterrupted();
         yield {
@@ -249,6 +253,7 @@ export function createOpenAIResponsesLifecycle(options: OpenAIResponsesLifecycle
                   : {})
               })
             );
+            resolveOpenAIResponseIdentity(response, providerResponseId);
             retryableRetrieveErrors = 0;
           } catch (error) {
             const retryable = openAIRetryableErrorPayload(error);
@@ -294,9 +299,11 @@ export function createOpenAIResponsesLifecycle(options: OpenAIResponsesLifecycle
     },
     async refresh(providerResponseId) {
       try {
+        const response = await options.client.retrieve(providerResponseId);
+        resolveOpenAIResponseIdentity(response, providerResponseId);
         return {
           kind: "response",
-          response: await options.client.retrieve(providerResponseId)
+          response
         };
       } catch (error) {
         const retryable = openAIRetryableErrorPayload(error);
@@ -310,6 +317,10 @@ export function createOpenAIResponsesLifecycle(options: OpenAIResponsesLifecycle
         };
       }
     },
-    retrieve: (providerResponseId) => options.client.retrieve(providerResponseId)
+    async retrieve(providerResponseId) {
+      const response = await options.client.retrieve(providerResponseId);
+      resolveOpenAIResponseIdentity(response, providerResponseId);
+      return response;
+    }
   };
 }

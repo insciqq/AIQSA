@@ -185,6 +185,23 @@ describe("compatible Responses adapter", () => {
     expect(create).toHaveBeenCalledWith(expect.any(Object), { signal, timeoutMs: 300_000 });
   });
 
+  it("rejects malformed completed function calls before non-stream usage", async () => {
+    const client: OpenAIResponsesClient = {
+      cancel: async () => ({}),
+      create: async () => ({
+        id: "response-invalid-tool",
+        output: [{ arguments: "{}", name: "missing_id", type: "function_call" }],
+        status: "completed",
+        usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 }
+      }),
+      retrieve: async () => ({})
+    };
+    const adapter = createCompatibleResponsesAdapter({ client });
+    const stream = adapter.stream(request());
+
+    await expect(stream.next()).rejects.toThrow("openai_response_tool_call_invalid");
+  });
+
   it("keeps compatible streaming Search artifacts provider-neutral", async () => {
     const completed = {
       response: {

@@ -7,10 +7,12 @@ import {
 import {
   extractOpenAIUsage,
   isFailedOpenAIResponse,
+  isTerminalOpenAIResponse,
   normalizeCompletedOpenAIResponse,
   openAIResponseStatus,
   openAIResponseSummaryEvent,
   parseOpenAIResponsesSse,
+  resolveOpenAIResponseIdentity,
   shouldPollOpenAIResponse
 } from "./openaiResponsesResponse";
 import {
@@ -31,10 +33,6 @@ export type OpenAIResponsesAdapterOptions = {
   pollIntervalMs?: number;
   pollTimeoutMs?: number;
 };
-
-function responseId(response: Readonly<Record<string, unknown>>): string | undefined {
-  return typeof response.id === "string" ? response.id : undefined;
-}
 
 export function createOpenAIResponsesAdapter(options: OpenAIResponsesAdapterOptions): ProviderAdapter {
   const lifecycle = createOpenAIResponsesLifecycle({
@@ -148,24 +146,35 @@ export function createOpenAIResponsesAdapter(options: OpenAIResponsesAdapterOpti
         ...(typeof runOptions.timeoutMs === "number" ? { timeoutMs: runOptions.timeoutMs } : {})
       });
       let providerResponseId: string | undefined;
+      let terminalSummary: ModelRunSseEvent | undefined;
       let next = await execution.next();
 
       while (!next.done) {
         const observation = next.value;
         if (observation.kind === "created") {
-          providerResponseId = responseId(observation.response);
-          yield openAIResponseSummaryEvent({
+          providerResponseId = resolveOpenAIResponseIdentity(observation.response);
+          const summary = openAIResponseSummaryEvent({
             background: body.background,
             providerResponseId,
             status: openAIResponseStatus(observation.response),
             stream: body.stream
           });
+          if (isTerminalOpenAIResponse(observation.response)) {
+            terminalSummary = summary;
+          } else {
+            yield summary;
+          }
         } else if (observation.kind === "retrieved") {
-          yield openAIResponseSummaryEvent({
+          const summary = openAIResponseSummaryEvent({
             attempt: observation.attempt,
             providerResponseId,
             status: openAIResponseStatus(observation.response)
           });
+          if (isTerminalOpenAIResponse(observation.response)) {
+            terminalSummary = summary;
+          } else {
+            yield summary;
+          }
         } else {
           yield openAIResponseSummaryEvent({
             attempt: observation.attempt,
@@ -180,20 +189,24 @@ export function createOpenAIResponsesAdapter(options: OpenAIResponsesAdapterOpti
 
       const { response } = next.value;
       providerResponseId = next.value.providerResponseId;
-      if (typeof response.usage === "object" && response.usage !== null) {
-        yield {
-          data: extractOpenAIUsage(response),
-          type: "usage"
-        };
-      }
+      const usageEvent: ModelRunSseEvent | undefined =
+        typeof response.usage === "object" && response.usage !== null
+          ? { data: extractOpenAIUsage(response), type: "usage" }
+          : undefined;
       if (isFailedOpenAIResponse(response)) {
+        if (terminalSummary) yield terminalSummary;
+        if (usageEvent) yield usageEvent;
         throw new Error(`openai_response_${openAIResponseStatus(response)}`);
       }
       if (openAIResponseStatus(response) !== "completed") {
+        if (terminalSummary) yield terminalSummary;
+        if (usageEvent) yield usageEvent;
         throw new Error("openai_response_not_completed");
       }
 
       const completed = normalizeCompletedOpenAIResponse(response, providerResponseId);
+      if (terminalSummary) yield terminalSummary;
+      if (usageEvent) yield usageEvent;
       for (const event of completed.events) {
         if (runOptions.signal?.aborted) {
           const error = new Error("provider_run_aborted");
