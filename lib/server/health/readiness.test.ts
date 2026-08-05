@@ -62,7 +62,7 @@ describe("runtimeConfigurationIssues", () => {
       "session_secret",
       "database_url",
       "app_base_url",
-      "trusted_proxy",
+      "client_identity",
       "bootstrap_login",
       "test_runtime",
       "s3_bucket"
@@ -88,25 +88,56 @@ describe("runtimeConfigurationIssues", () => {
     );
   });
 
-  it("rejects a public origin without an exact trusted-proxy configuration", () => {
+  it("accepts direct non-loopback publication without proxy configuration", () => {
+    expect(
+      runtimeConfigurationIssues({
+        ...productionEnv(),
+        AIQSA_APP_BASE_URL: "http://192.168.10.4:3000",
+        AIQSA_BIND_ADDRESS: "0.0.0.0",
+        AIQSA_COOKIE_SECURE: "0",
+        AIQSA_TRUST_PROXY_HEADERS: "",
+        AIQSA_TRUSTED_PROXY_COUNT: ""
+      })
+    ).toEqual([]);
+  });
+
+  it("rejects contradictory or invalid client-identity topology", () => {
     expect(
       runtimeConfigurationIssues({
         ...productionEnv(),
         AIQSA_TRUST_PROXY_HEADERS: "",
         AIQSA_TRUSTED_PROXY_COUNT: ""
       })
-    ).toContain("trusted_proxy");
+    ).toContain("client_identity");
     expect(
       runtimeConfigurationIssues({
         ...productionEnv(),
         AIQSA_TRUSTED_PROXY_COUNT: "99"
       })
-    ).toContain("trusted_proxy");
+    ).toContain("client_identity");
     expect(
       runtimeConfigurationIssues({
         ...productionEnv(),
         AIQSA_BIND_ADDRESS: "0.0.0.0"
       })
-    ).toContain("trusted_proxy");
+    ).toContain("client_identity");
+    expect(
+      runtimeConfigurationIssues({
+        ...productionEnv(),
+        AIQSA_APP_BASE_URL: "http://localhost:3000",
+        AIQSA_BIND_ADDRESS: "0.0.0.0",
+        AIQSA_COOKIE_SECURE: "0",
+        AIQSA_TRUST_PROXY_HEADERS: "",
+        AIQSA_TRUSTED_PROXY_COUNT: ""
+      })
+    ).toContain("client_identity");
+    expect(
+      runtimeConfigurationIssues({
+        ...productionEnv(),
+        AIQSA_BIND_ADDRESS: "0.0.0.0",
+        AIQSA_TRUST_PROXY_HEADERS: "",
+        AIQSA_TRUSTED_PROXY_COUNT: ""
+      })
+    ).toContain("client_identity");
   });
 });

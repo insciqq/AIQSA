@@ -1,5 +1,4 @@
 import { HeadBucketCommand, S3Client } from "@aws-sdk/client-s3";
-import { isIP } from "node:net";
 import { getAuthConfig } from "@/lib/server/auth/config";
 import {
   parseSecretEncryptionKey,
@@ -16,25 +15,11 @@ function usable(value: string | undefined): value is string {
   return Boolean(value?.trim() && !value.startsWith("replace-with-"));
 }
 
-function isLoopbackHostname(hostname: string): boolean {
-  const normalized = hostname.replace(/^\[|\]$/g, "").toLowerCase();
-
-  if (normalized === "localhost" || normalized.endsWith(".localhost")) {
-    return true;
-  }
-
-  const family = isIP(normalized);
-
-  return (family === 4 && normalized.startsWith("127.")) ||
-    (family === 6 && normalized === "::1");
-}
-
 export function runtimeConfigurationIssues(
   env: Record<string, string | undefined>
 ): string[] {
   const auth = getAuthConfig(env);
   const issues: string[] = [];
-  const bindAddress = env.AIQSA_BIND_ADDRESS?.trim() || "127.0.0.1";
 
   if (!auth.configured) {
     issues.push("session_secret");
@@ -58,11 +43,9 @@ export function runtimeConfigurationIssues(
   }
 
   let secureBaseUrl = false;
-  let loopbackBaseUrl = false;
   try {
     const baseUrl = new URL(auth.appBaseUrl);
     secureBaseUrl = baseUrl.protocol === "https:";
-    loopbackBaseUrl = isLoopbackHostname(baseUrl.hostname);
     if (!new Set(["http:", "https:"]).has(baseUrl.protocol) || baseUrl.username || baseUrl.password) {
       issues.push("app_base_url");
     }
@@ -75,11 +58,9 @@ export function runtimeConfigurationIssues(
   }
 
   if (
-    !auth.trustedProxyConfigurationValid ||
-    !isLoopbackHostname(bindAddress) ||
-    (!loopbackBaseUrl && !auth.trustForwardedFor)
+    auth.clientIdentityMode === "invalid"
   ) {
-    issues.push("trusted_proxy");
+    issues.push("client_identity");
   }
 
   if (auth.bootstrapLoginEnabled) {

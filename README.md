@@ -42,9 +42,11 @@ Open [http://localhost:3000](http://localhost:3000) and sign in with the initial
 
 PostgreSQL and uploaded objects live in named Docker volumes. A normal rebuild or update preserves them. Never run `docker compose down -v` unless permanent deletion of installation data is intentional.
 
-## Exposed installation
+## Network exposure
 
-The default application is intentionally bound to loopback. For public access, keep that bind, set an HTTPS `AIQSA_APP_BASE_URL`, enable secure cookies and the exact trusted-proxy declaration, and expose only a reverse proxy. Do not publish PostgreSQL, MinIO, ToolHive control, or MCP proxy ports.
+The default application is intentionally bound to loopback. A trusted LAN/VPN may publish the app directly without another service by setting `AIQSA_BIND_ADDRESS=0.0.0.0`, using the matching browser-visible HTTP URL, and leaving both proxy variables blank. The release runtime ignores client forwarding headers in this mode and derives login-admission identity from the immediate TCP peer. Direct HTTP is unencrypted and emits a startup warning; an intermediary or NAT may make several users share one peer bucket.
+
+For Internet access or transport security, keep the application bind on loopback, set an HTTPS `AIQSA_APP_BASE_URL`, enable secure cookies and the exact trusted-proxy declaration, and expose only a reverse proxy. Do not publish PostgreSQL, MinIO, ToolHive control, or MCP proxy ports.
 
 The repository includes an [Nginx template and validation procedure](ops/nginx/README.md). For the bundled one-hop template use:
 

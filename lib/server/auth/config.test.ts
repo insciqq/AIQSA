@@ -52,6 +52,7 @@ describe("auth config", () => {
 
   it("keeps forwarded IP trust disabled unless explicitly enabled", () => {
     expect(getAuthConfig({ NODE_ENV: "test" })).toMatchObject({
+      clientIdentityMode: "direct_loopback",
       trustForwardedFor: false,
       trustedProxyConfigurationValid: true,
       trustedProxyCount: 0
@@ -92,6 +93,45 @@ describe("auth config", () => {
         NODE_ENV: "test"
       }).trustedProxyConfigurationValid
     ).toBe(false);
+  });
+
+  it("derives one fail-closed client-identity topology mode", () => {
+    expect(
+      getAuthConfig({
+        AIQSA_APP_BASE_URL: "http://192.168.10.4:3000",
+        AIQSA_AUTH_SESSION_SECRET: "secret",
+        AIQSA_BIND_ADDRESS: "0.0.0.0"
+      }).clientIdentityMode
+    ).toBe("direct_peer");
+    expect(
+      getAuthConfig({
+        AIQSA_AUTH_SESSION_SECRET: "secret",
+        AIQSA_BIND_ADDRESS: "127.0.0.1"
+      }).clientIdentityMode
+    ).toBe("direct_loopback");
+    expect(
+      getAuthConfig({
+        AIQSA_APP_BASE_URL: "https://aiqsa.example",
+        AIQSA_AUTH_SESSION_SECRET: "secret",
+        AIQSA_BIND_ADDRESS: "127.0.0.1",
+        AIQSA_TRUST_PROXY_HEADERS: "1"
+      }).clientIdentityMode
+    ).toBe("trusted_proxy");
+    expect(
+      getAuthConfig({
+        AIQSA_APP_BASE_URL: "https://aiqsa.example",
+        AIQSA_AUTH_SESSION_SECRET: "secret",
+        AIQSA_BIND_ADDRESS: "0.0.0.0"
+      }).clientIdentityMode
+    ).toBe("invalid");
+    expect(
+      getAuthConfig({
+        AIQSA_APP_BASE_URL: "https://aiqsa.example",
+        AIQSA_AUTH_SESSION_SECRET: "secret",
+        AIQSA_BIND_ADDRESS: "0.0.0.0",
+        AIQSA_TRUST_PROXY_HEADERS: "1"
+      }).clientIdentityMode
+    ).toBe("invalid");
   });
 
   it("separates session auth readiness from bootstrap token availability", () => {

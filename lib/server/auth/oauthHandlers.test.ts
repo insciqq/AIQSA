@@ -19,7 +19,9 @@ const config = getAuthConfig({
   AIQSA_GOOGLE_OAUTH_CLIENT_SECRET: "google-secret",
   AIQSA_YANDEX_OAUTH_CLIENT_ID: "yandex-client",
   AIQSA_YANDEX_OAUTH_CLIENT_SECRET: "yandex-secret",
-  AIQSA_AUTH_SESSION_SECRET: "oauth-handler-test-secret"
+  AIQSA_AUTH_SESSION_SECRET: "oauth-handler-test-secret",
+  AIQSA_TRUST_PROXY_HEADERS: "1",
+  AIQSA_TRUSTED_PROXY_COUNT: "1"
 });
 const now = new Date("2026-07-18T12:00:00.000Z");
 
@@ -172,6 +174,77 @@ describe("OAuth route handlers", () => {
     expect(sessions.records.size).toBe(1);
   });
 
+  it("fails a direct OAuth callback closed before provider exchange without a launcher stamp", async () => {
+    const flow = await startFlow();
+    const exchangeCode = vi.fn();
+    const repo = repository();
+    const response = await createOAuthCallbackHandler({
+      exchangeCode,
+      getConfig: () =>
+        getAuthConfig({
+          AIQSA_APP_BASE_URL: "http://192.168.10.4:3000",
+          AIQSA_AUTH_SESSION_SECRET: "oauth-handler-test-secret",
+          AIQSA_BIND_ADDRESS: "0.0.0.0",
+          AIQSA_GOOGLE_OAUTH_CLIENT_ID: "google-client",
+          AIQSA_GOOGLE_OAUTH_CLIENT_SECRET: "google-secret"
+        }),
+      now: () => now,
+      repository: repo.repository,
+      sessions: createMemoryAuthSessionStore()
+    })(
+      callbackRequest({
+        code: "authorization-code",
+        flowToken: flow.flowToken,
+        provider: "google",
+        state: flow.location.searchParams.get("state")!
+      }),
+      {
+        params: {
+          provider: "google"
+        }
+      }
+    );
+
+    expect(response.status).toBe(303);
+    expect(new URL(response.headers.get("location")!).searchParams.get("oauth")).toBe("failed");
+    expect(exchangeCode).not.toHaveBeenCalled();
+    expect(repo.settleIdentity).not.toHaveBeenCalled();
+  });
+
+  it("fails an exposed trusted-proxy topology before provider exchange", async () => {
+    const flow = await startFlow();
+    const exchangeCode = vi.fn();
+    const repo = repository();
+    const response = await createOAuthCallbackHandler({
+      exchangeCode,
+      getConfig: () =>
+        getAuthConfig({
+          AIQSA_APP_BASE_URL: "https://aiqsa.example",
+          AIQSA_AUTH_SESSION_SECRET: "oauth-handler-test-secret",
+          AIQSA_BIND_ADDRESS: "0.0.0.0",
+          AIQSA_GOOGLE_OAUTH_CLIENT_ID: "google-client",
+          AIQSA_GOOGLE_OAUTH_CLIENT_SECRET: "google-secret",
+          AIQSA_TRUST_PROXY_HEADERS: "1"
+        }),
+      now: () => now,
+      repository: repo.repository,
+      sessions: createMemoryAuthSessionStore()
+    })(
+      callbackRequest({
+        code: "authorization-code",
+        flowToken: flow.flowToken,
+        provider: "google",
+        state: flow.location.searchParams.get("state")!
+      }),
+      { params: { provider: "google" } }
+    );
+
+    expect(response.status).toBe(303);
+    expect(new URL(response.headers.get("location")!).searchParams.get("oauth")).toBe("failed");
+    expect(exchangeCode).not.toHaveBeenCalled();
+    expect(repo.settleIdentity).not.toHaveBeenCalled();
+  });
+
   it("rate-limits repeated valid callback exchanges before another provider request", async () => {
     const flow = await startFlow();
     const repo = repository();
@@ -180,11 +253,7 @@ describe("OAuth route handlers", () => {
     });
     const handler = createOAuthCallbackHandler({
       exchangeCode,
-      getConfig: () => ({
-        ...config,
-        trustForwardedFor: true,
-        trustedProxyCount: 1
-      }),
+      getConfig: () => config,
       loginRateLimiter: createFixedWindowLoginRateLimiter({
         clock: () => now.getTime(),
         maxAttempts: 1

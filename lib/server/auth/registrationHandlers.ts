@@ -1,5 +1,8 @@
 import type { AuthConfig } from "./config";
-import { getLoginRateLimitKey } from "./clientIdentity";
+import {
+  resolveLoginRateLimitIdentity,
+  type LoginRateLimitIdentity
+} from "./clientIdentity";
 import { deliverAuthEmail, type AuthMailer } from "./mailer";
 import { hashPassword as hashPasswordDefault, isPlausibleEmail, normalizeAuthEmail, validatePassword } from "./password";
 import type { AuthRegistrationRepository } from "./registrationRepository";
@@ -124,14 +127,12 @@ function credentialClientRateLimitKey(input: {
   config: AuthConfig;
   prefix: string;
   request: Request;
-}): string | null {
-  const client = getLoginRateLimitKey(
-    input.request,
-    input.config.trustForwardedFor,
-    input.config.trustedProxyCount
-  );
+}): LoginRateLimitIdentity {
+  const identity = resolveLoginRateLimitIdentity(input.request, input.config);
 
-  return client ? `${input.prefix}:client:${client}` : null;
+  return identity.status === "available"
+    ? { key: `${input.prefix}:client:${identity.key}`, status: "available" }
+    : identity;
 }
 
 function inviteTokenRateLimitKey(token: string): string {
@@ -158,6 +159,10 @@ function rateLimitedResponse(rateLimit: { retryAfterSeconds: number }): Response
       status: 429
     }
   );
+}
+
+function authAdmissionUnavailable(): Response {
+  return json({ error: "auth_admission_unavailable" }, { status: 503 });
 }
 
 function verificationExpiresAt(now: Date): Date {
@@ -205,11 +210,19 @@ export function createInviteAcceptanceHandler(deps: InviteAcceptanceHandlerDeps)
       deps.inviteAcceptanceRateLimiter,
       defaultInviteAcceptanceRateLimiter
     );
-    const clientRateLimitKey = credentialClientRateLimitKey({
+    const clientIdentity = credentialClientRateLimitKey({
       config,
       prefix: "invite-acceptance",
       request
     });
+
+    if (clientIdentity.status === "unavailable") {
+      return authAdmissionUnavailable();
+    }
+
+    const clientRateLimitKey = clientIdentity.status === "available"
+      ? clientIdentity.key
+      : null;
 
     if (clientRateLimitKey) {
       const clientRateLimit = await rateLimiter.check(clientRateLimitKey);
@@ -295,11 +308,19 @@ export function createRegisterHandler(deps: RegisterHandlerDeps) {
       return contentTypeError;
     }
 
-    const clientRateLimitKey = credentialClientRateLimitKey({
+    const clientIdentity = credentialClientRateLimitKey({
       config,
       prefix: "registration",
       request
     });
+
+    if (clientIdentity.status === "unavailable") {
+      return authAdmissionUnavailable();
+    }
+
+    const clientRateLimitKey = clientIdentity.status === "available"
+      ? clientIdentity.key
+      : null;
     const rateLimiter = resolveLoginRateLimiter(
       deps.registrationRateLimiter,
       defaultRegistrationRateLimiter
@@ -390,12 +411,20 @@ export function createEmailVerificationHandler(deps: EmailVerificationHandlerDep
       deps.verificationRateLimiter,
       defaultVerificationRateLimiter
     );
-    const clientRateLimitKey = config.configured
+    const clientIdentity = config.configured
       ? credentialClientRateLimitKey({
           config,
           prefix: "email-verification",
           request
         })
+      : { status: "not_required" as const };
+
+    if (clientIdentity.status === "unavailable") {
+      return authAdmissionUnavailable();
+    }
+
+    const clientRateLimitKey = clientIdentity.status === "available"
+      ? clientIdentity.key
       : null;
 
     if (clientRateLimitKey) {

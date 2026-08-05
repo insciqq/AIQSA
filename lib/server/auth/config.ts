@@ -1,6 +1,7 @@
 import { hashToken } from "./token";
 import type { OAuthProviderId } from "../../auth/oauth";
 import { isTestAuthAllowedEnv } from "./csrf";
+import { getRuntimePeerSecret, isLoopbackHostname } from "./clientIdentity";
 
 export const DEFAULT_BOOTSTRAP_USER_ID = "00000000-0000-4000-8000-000000000001";
 export const TEST_AUTH_TOKEN = "aiqsa-test-token";
@@ -10,15 +11,23 @@ const TRUE_ENV_VALUES = new Set(["1", "true", "yes", "on"]);
 const FALSE_ENV_VALUES = new Set(["0", "false", "no", "off"]);
 export const MAX_TRUSTED_PROXY_COUNT = 8;
 
+export type ClientIdentityMode =
+  | "direct_loopback"
+  | "direct_peer"
+  | "invalid"
+  | "trusted_proxy";
+
 export type AuthConfig = {
   appBaseUrl: string;
   bootstrapConfigured: boolean;
   bootstrapLoginEnabled: boolean;
   bootstrapTokenHash: string;
   bootstrapUserId: string;
+  clientIdentityMode: ClientIdentityMode;
   cookieSecure: boolean;
   configured: boolean;
   oauthProviders: Partial<Record<OAuthProviderId, OAuthProviderConfig>>;
+  runtimePeerSecret: string;
   sessionSecret: string;
   testAuthEnabled: boolean;
   trustForwardedFor: boolean;
@@ -85,6 +94,48 @@ function secureCookieDefault(appBaseUrl: string): boolean {
   }
 }
 
+function clientIdentityMode(input: {
+  appBaseUrl: string;
+  bindAddress: string;
+  trustForwardedFor: boolean;
+  trustedProxyConfigurationValid: boolean;
+}): ClientIdentityMode {
+  if (!input.trustedProxyConfigurationValid) {
+    return "invalid";
+  }
+
+  let baseUrl: URL;
+
+  try {
+    baseUrl = new URL(input.appBaseUrl);
+  } catch {
+    return "invalid";
+  }
+
+  if (
+    !new Set(["http:", "https:"]).has(baseUrl.protocol) ||
+    baseUrl.username ||
+    baseUrl.password
+  ) {
+    return "invalid";
+  }
+
+  const loopbackBind = isLoopbackHostname(input.bindAddress);
+
+  if (input.trustForwardedFor) {
+    return loopbackBind ? "trusted_proxy" : "invalid";
+  }
+
+  if (
+    baseUrl.protocol !== "http:" ||
+    loopbackBind !== isLoopbackHostname(baseUrl.hostname)
+  ) {
+    return "invalid";
+  }
+
+  return loopbackBind ? "direct_loopback" : "direct_peer";
+}
+
 export function isTestAuthEnabled(env: Record<string, string | undefined> = process.env): boolean {
   return isTestAuthAllowedEnv(env);
 }
@@ -118,6 +169,13 @@ export function getAuthConfig(env: Record<string, string | undefined> = process.
       (trustForwardedFor
         ? !proxyCountSetting || parsedProxyCount !== null
         : !proxyCountSetting));
+  const bindAddress = env.AIQSA_BIND_ADDRESS?.trim() || "127.0.0.1";
+  const resolvedClientIdentityMode = clientIdentityMode({
+    appBaseUrl,
+    bindAddress,
+    trustForwardedFor,
+    trustedProxyConfigurationValid
+  });
   const sessionSecret = usableSecret(env.AIQSA_AUTH_SESSION_SECRET)
     ? env.AIQSA_AUTH_SESSION_SECRET
     : testAuthEnabled
@@ -156,12 +214,14 @@ export function getAuthConfig(env: Record<string, string | undefined> = process.
     bootstrapLoginEnabled,
     bootstrapTokenHash,
     bootstrapUserId: env.AIQSA_BOOTSTRAP_USER_ID || DEFAULT_BOOTSTRAP_USER_ID,
+    clientIdentityMode: resolvedClientIdentityMode,
     cookieSecure,
     configured: Boolean(sessionSecret),
     oauthProviders: {
       ...(googleOAuth ? { google: googleOAuth } : {}),
       ...(yandexOAuth ? { yandex: yandexOAuth } : {})
     },
+    runtimePeerSecret: getRuntimePeerSecret(),
     sessionSecret,
     testAuthEnabled,
     trustForwardedFor,

@@ -23,7 +23,11 @@ import {
 } from "./requestAuth";
 import { hashToken, verifyTokenHash as verifyTokenHashDefault } from "./token";
 import type { AuthConfig } from "./config";
-import { getLoginRateLimitKey } from "./clientIdentity";
+import {
+  getLoginRateLimitKey,
+  resolveLoginRateLimitIdentity,
+  type LoginRateLimitIdentity
+} from "./clientIdentity";
 import { readJsonBodyOrNull, requestBodyErrorResponse } from "../http/requestBody";
 
 export { getLoginRateLimitKey } from "./clientIdentity";
@@ -114,6 +118,10 @@ function unauthorized(): Response {
   return json({ error: "unauthorized" }, { status: 401 });
 }
 
+function authAdmissionUnavailable(): Response {
+  return json({ error: "auth_admission_unavailable" }, { status: 503 });
+}
+
 function isActiveUser(user: SafeUser): boolean {
   return user.status === "active";
 }
@@ -136,10 +144,21 @@ function tokenFromBody(body: unknown): unknown {
   return typeof body === "object" && body && "token" in body ? body.token : undefined;
 }
 
-function bootstrapRateLimitKey(input: { config: AuthConfig; request: Request }): string {
-  const identityKey = getLoginRateLimitKey(input.request, input.config.trustForwardedFor, input.config.trustedProxyCount);
+function bootstrapRateLimitKey(
+  input: { config: AuthConfig; request: Request }
+): { key: string; status: "available" } | { status: "unavailable" } {
+  const identity = resolveLoginRateLimitIdentity(input.request, input.config);
 
-  return identityKey ? `bootstrap-login:client:${identityKey}` : "bootstrap-login:installation";
+  if (identity.status === "unavailable") {
+    return identity;
+  }
+
+  return {
+    key: identity.status === "available"
+      ? `bootstrap-login:client:${identity.key}`
+      : "bootstrap-login:installation",
+    status: "available"
+  };
 }
 
 function credentialRateLimitKey(input: {
@@ -153,10 +172,12 @@ function credentialClientRateLimitKey(input: {
   config: AuthConfig;
   prefix: string;
   request: Request;
-}): string | null {
-  const identityKey = getLoginRateLimitKey(input.request, input.config.trustForwardedFor, input.config.trustedProxyCount);
+}): LoginRateLimitIdentity {
+  const identity = resolveLoginRateLimitIdentity(input.request, input.config);
 
-  return identityKey ? `${input.prefix}:client:${identityKey}` : null;
+  return identity.status === "available"
+    ? { key: `${input.prefix}:client:${identity.key}`, status: "available" }
+    : identity;
 }
 
 function credentialTokenRateLimitKey(input: { prefix: string; token: string }): string {
@@ -283,7 +304,13 @@ export function createTokenLoginHandler(deps: AuthHandlerDeps) {
       deps.loginRateLimiter,
       defaultLoginRateLimiter
     );
-    const rateLimitKey = bootstrapRateLimitKey({ config, request });
+    const rateLimitIdentity = bootstrapRateLimitKey({ config, request });
+
+    if (rateLimitIdentity.status === "unavailable") {
+      return authAdmissionUnavailable();
+    }
+
+    const rateLimitKey = rateLimitIdentity.key;
     const rateLimit = await loginRateLimiter.check(rateLimitKey);
 
     if (!rateLimit.allowed) {
@@ -350,11 +377,19 @@ export function createPasswordLoginHandler(deps: PasswordLoginHandlerDeps) {
       return contentTypeError;
     }
 
-    const clientRateLimitKey = credentialClientRateLimitKey({
+    const clientIdentity = credentialClientRateLimitKey({
       config,
       prefix: "password-login",
       request
     });
+
+    if (clientIdentity.status === "unavailable") {
+      return authAdmissionUnavailable();
+    }
+
+    const clientRateLimitKey = clientIdentity.status === "available"
+      ? clientIdentity.key
+      : null;
     const loginRateLimiter = resolveLoginRateLimiter(
       deps.loginRateLimiter,
       defaultLoginRateLimiter
@@ -449,11 +484,19 @@ export function createPasswordResetRequestHandler(deps: PasswordResetRequestHand
       return contentTypeError;
     }
 
-    const clientRateLimitKey = credentialClientRateLimitKey({
+    const clientIdentity = credentialClientRateLimitKey({
       config,
       prefix: "password-reset",
       request
     });
+
+    if (clientIdentity.status === "unavailable") {
+      return authAdmissionUnavailable();
+    }
+
+    const clientRateLimitKey = clientIdentity.status === "available"
+      ? clientIdentity.key
+      : null;
     const resetRateLimiter = resolveLoginRateLimiter(
       deps.resetRateLimiter,
       defaultResetRateLimiter
@@ -544,12 +587,20 @@ export function createPasswordResetCompleteHandler(deps: PasswordResetCompleteHa
       deps.resetCompleteRateLimiter,
       defaultResetCompleteRateLimiter
     );
-    const clientRateLimitKey = config.configured
+    const clientIdentity = config.configured
       ? credentialClientRateLimitKey({
           config,
           prefix: "password-reset-complete",
           request
         })
+      : { status: "not_required" as const };
+
+    if (clientIdentity.status === "unavailable") {
+      return authAdmissionUnavailable();
+    }
+
+    const clientRateLimitKey = clientIdentity.status === "available"
+      ? clientIdentity.key
       : null;
 
     if (clientRateLimitKey) {

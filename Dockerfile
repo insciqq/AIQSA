@@ -82,7 +82,7 @@ USER node
 
 EXPOSE 3000
 
-CMD ["node", "runtime/server.js"]
+CMD ["node", "scripts/runtime-launcher.cjs", "runtime/server.js"]
 
 # Backward-compatible local target names. Both are byte-identical aliases of
 # the single release image and are not published as separate packages.

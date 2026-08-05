@@ -31,6 +31,11 @@ function jsonRequest(path: string, body: Record<string, unknown>): Request {
 }
 
 const handlerConfig = getAuthConfig({ AIQSA_AUTH_SESSION_SECRET: "test-secret" });
+const proxyHandlerConfig = getAuthConfig({
+  AIQSA_AUTH_SESSION_SECRET: "test-secret",
+  AIQSA_TRUST_PROXY_HEADERS: "1",
+  AIQSA_TRUSTED_PROXY_COUNT: "1"
+});
 
 function createMemoryRegistrationRepository(input: {
   acceptResult?: InviteAcceptanceResult | null;
@@ -81,6 +86,33 @@ describe("registration auth handlers", () => {
     vi.restoreAllMocks();
   });
 
+  it("fails direct registration admission closed without a launcher stamp", async () => {
+    const repository = createMemoryRegistrationRepository();
+    const POST = createRegisterHandler({
+      getConfig: () =>
+        getAuthConfig({
+          AIQSA_APP_BASE_URL: "http://192.168.10.4:3000",
+          AIQSA_AUTH_SESSION_SECRET: "test-secret",
+          AIQSA_BIND_ADDRESS: "0.0.0.0",
+          AIQSA_COOKIE_SECURE: "0"
+        }),
+      mailer: createMemoryAuthMailer(),
+      repository
+    });
+
+    const response = await POST(
+      jsonRequest("/api/auth/register", {
+        email: "direct-user@aiqsa.local"
+      })
+    );
+
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toEqual({
+      error: "auth_admission_unavailable"
+    });
+    expect(repository.registrations).toHaveLength(0);
+  });
+
   it("accepts an invite with a password and returns an authenticated session cookie", async () => {
     const repository = createMemoryRegistrationRepository();
     const POST = createInviteAcceptanceHandler({
@@ -88,7 +120,8 @@ describe("registration auth handlers", () => {
         getAuthConfig({
           AIQSA_APP_BASE_URL: "https://aiqsa.example",
           AIQSA_COOKIE_SECURE: "1",
-          AIQSA_AUTH_SESSION_SECRET: "test-secret"
+          AIQSA_AUTH_SESSION_SECRET: "test-secret",
+          AIQSA_TRUST_PROXY_HEADERS: "1"
         }),
       now: () => new Date("2026-07-17T00:00:00.000Z"),
       repository
@@ -167,7 +200,8 @@ describe("registration auth handlers", () => {
       getConfig: () =>
         getAuthConfig({
           AIQSA_APP_BASE_URL: "https://aiqsa.example",
-          AIQSA_AUTH_SESSION_SECRET: "test-secret"
+          AIQSA_AUTH_SESSION_SECRET: "test-secret",
+          AIQSA_TRUST_PROXY_HEADERS: "1"
         }),
       mailer,
       now: () => new Date("2026-06-14T00:00:00.000Z"),
@@ -206,7 +240,8 @@ describe("registration auth handlers", () => {
     const mailer = createMemoryAuthMailer();
     const config = getAuthConfig({
       AIQSA_APP_BASE_URL: "https://aiqsa.example",
-      AIQSA_AUTH_SESSION_SECRET: "test-secret"
+      AIQSA_AUTH_SESSION_SECRET: "test-secret",
+      AIQSA_TRUST_PROXY_HEADERS: "1"
     });
     const newPOST = createRegisterHandler({
       getConfig: () => config,
@@ -545,11 +580,7 @@ describe("registration auth handlers", () => {
   it("shares verification-token admission across trusted client keys", async () => {
     const passwordHasher = vi.fn(async () => "password-hash");
     const POST = createEmailVerificationHandler({
-      getConfig: () => ({
-        ...handlerConfig,
-        trustForwardedFor: true,
-        trustedProxyCount: 1
-      }),
+      getConfig: () => proxyHandlerConfig,
       passwordHasher,
       repository: createMemoryRegistrationRepository({ verifyResult: null }),
       verificationRateLimiter: createFixedWindowLoginRateLimiter({

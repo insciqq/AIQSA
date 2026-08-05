@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
+import { createRequire } from "node:module";
 import { getAuthConfig, TEST_AUTH_TOKEN } from "./config";
+import { DIRECT_PEER_HEADER } from "./clientIdentity";
 import {
   createLogoutHandler,
   createMeHandler,
@@ -29,6 +31,35 @@ const config = getAuthConfig({
   AIQSA_BOOTSTRAP_LOGIN_ENABLED: "1",
   AIQSA_AUTH_SESSION_SECRET: "test-secret"
 });
+const require = createRequire(import.meta.url);
+const launcher = require("../../../scripts/runtime-launcher.cjs") as {
+  createCurrentPeerStamp(peerAddress: string): string | null;
+};
+
+const proxyConfig = getAuthConfig({
+  AIQSA_BOOTSTRAP_AUTH_TOKEN: TEST_AUTH_TOKEN,
+  AIQSA_BOOTSTRAP_LOGIN_ENABLED: "1",
+  AIQSA_AUTH_SESSION_SECRET: "test-secret",
+  AIQSA_TRUST_PROXY_HEADERS: "1",
+  AIQSA_TRUSTED_PROXY_COUNT: "1"
+});
+
+function directConfig() {
+  return getAuthConfig({
+    AIQSA_APP_BASE_URL: "http://192.168.10.4:3000",
+    AIQSA_AUTH_SESSION_SECRET: "test-secret",
+    AIQSA_BIND_ADDRESS: "0.0.0.0",
+    AIQSA_COOKIE_SECURE: "0"
+  });
+}
+
+function setDirectPeer(request: Request, peerAddress: string): Request {
+  const stamp = launcher.createCurrentPeerStamp(peerAddress);
+
+  if (!stamp) throw new Error("handler_direct_peer_stamp_unavailable");
+  request.headers.set(DIRECT_PEER_HEADER, stamp);
+  return request;
+}
 
 const user: SafeUserWithGroups = {
   displayName: "Local Operator",
@@ -285,11 +316,7 @@ describe("auth route handlers", () => {
       identity: null
     });
     const POST = createPasswordLoginHandler({
-      getConfig: () => ({
-        ...config,
-        trustForwardedFor: true,
-        trustedProxyCount: 1
-      }),
+      getConfig: () => proxyConfig,
       loginRateLimiter,
       repository,
       verifyPassword: async () => false
@@ -315,17 +342,99 @@ describe("auth route handlers", () => {
     expect(blocked.status).toBe(429);
   });
 
+  it("rate-limits direct-peer password sprays without trusting forwarded headers", async () => {
+    const loginRateLimiter = createFixedWindowLoginRateLimiter({
+      clock: () => 0
+    });
+    const POST = createPasswordLoginHandler({
+      getConfig: directConfig,
+      loginRateLimiter,
+      repository: createMemoryPasswordAuthRepository({ identity: null }),
+      verifyPassword: async () => false
+    });
+
+    for (let index = 0; index < 10; index += 1) {
+      const request = setDirectPeer(
+        jsonRequest("/api/auth/login", {
+          email: `direct-spray-${index}@aiqsa.local`,
+          password: "wrong-password"
+        }),
+        "192.168.10.25"
+      );
+      request.headers.set("x-forwarded-for", `198.51.100.${index}`);
+      expect((await POST(request)).status).toBe(401);
+    }
+
+    const blocked = setDirectPeer(
+      jsonRequest("/api/auth/login", {
+        email: "direct-spray-11@aiqsa.local",
+        password: "wrong-password"
+      }),
+      "192.168.10.25"
+    );
+    blocked.headers.set("x-forwarded-for", "198.51.100.250");
+
+    expect((await POST(blocked)).status).toBe(429);
+  });
+
+  it("fails direct auth admission closed when the launcher stamp is unavailable", async () => {
+    const POST = createPasswordLoginHandler({
+      getConfig: directConfig,
+      repository: createMemoryPasswordAuthRepository({ identity: null }),
+      verifyPassword: async () => false
+    });
+    const response = await POST(
+      jsonRequest("/api/auth/login", {
+        email: "operator@aiqsa.local",
+        password: "wrong-password"
+      })
+    );
+
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toEqual({
+      error: "auth_admission_unavailable"
+    });
+  });
+
+  it.each([
+    {
+      AIQSA_APP_BASE_URL: "https://aiqsa.example",
+      AIQSA_AUTH_SESSION_SECRET: "test-secret",
+      AIQSA_BIND_ADDRESS: "0.0.0.0"
+    },
+    {
+      AIQSA_APP_BASE_URL: "https://aiqsa.example",
+      AIQSA_AUTH_SESSION_SECRET: "test-secret",
+      AIQSA_BIND_ADDRESS: "0.0.0.0",
+      AIQSA_TRUST_PROXY_HEADERS: "1"
+    }
+  ])("fails contradictory identity topology before repository work", async (env) => {
+    const repository = createMemoryPasswordAuthRepository({ identity: null });
+    const findIdentity = vi.spyOn(repository, "findPasswordIdentityByEmail");
+    const POST = createPasswordLoginHandler({
+      getConfig: () => getAuthConfig(env),
+      repository,
+      verifyPassword: async () => false
+    });
+    const request = jsonRequest("/api/auth/login", {
+      email: "operator@aiqsa.local",
+      password: "wrong-password"
+    });
+    request.headers.set("x-forwarded-for", "198.51.100.9");
+
+    const response = await POST(request);
+
+    expect(response.status).toBe(503);
+    expect(findIdentity).not.toHaveBeenCalled();
+  });
+
   it("rejects a saturated client bucket before reading the login body", async () => {
     const loginRateLimiter = createFixedWindowLoginRateLimiter({
       clock: () => 0,
       maxAttempts: 1
     });
     const POST = createPasswordLoginHandler({
-      getConfig: () => ({
-        ...config,
-        trustForwardedFor: true,
-        trustedProxyCount: 1
-      }),
+      getConfig: () => proxyConfig,
       loginRateLimiter,
       repository: createMemoryPasswordAuthRepository({ identity: null }),
       verifyPassword: async () => false
@@ -420,11 +529,7 @@ describe("auth route handlers", () => {
     const loginRateLimiter = createFixedWindowLoginRateLimiter({ clock: () => 0 });
     const verifyPasswordMock = vi.fn(async () => false);
     const POST = createPasswordLoginHandler({
-      getConfig: () => ({
-        ...config,
-        trustForwardedFor: true,
-        trustedProxyCount: 1
-      }),
+      getConfig: () => proxyConfig,
       loginRateLimiter,
       repository: createMemoryPasswordAuthRepository({ identity: null }),
       verifyPassword: verifyPasswordMock
@@ -645,11 +750,7 @@ describe("auth route handlers", () => {
   it("shares reset-completion token admission across trusted client keys", async () => {
     const passwordHasher = vi.fn(async () => "password-hash");
     const POST = createPasswordResetCompleteHandler({
-      getConfig: () => ({
-        ...config,
-        trustForwardedFor: true,
-        trustedProxyCount: 1
-      }),
+      getConfig: () => proxyConfig,
       passwordHasher,
       repository: createMemoryPasswordAuthRepository({ identity: null }),
       resetCompleteRateLimiter: createFixedWindowLoginRateLimiter({
@@ -812,11 +913,7 @@ describe("auth route handlers", () => {
     });
     const POST = createTokenLoginHandler({
       findUserById: async () => user,
-      getConfig: () => ({
-        ...config,
-        trustForwardedFor: true,
-        trustedProxyCount: 1
-      }),
+      getConfig: () => proxyConfig,
       loginRateLimiter,
       sessions: createMemoryAuthSessionStore({ user }),
       verifyTokenHash: () => false

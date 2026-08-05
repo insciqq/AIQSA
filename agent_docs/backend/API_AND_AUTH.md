@@ -42,7 +42,7 @@ All private routes resolve an active current user through the shared request-aut
 
 ### Authentication admission
 
-- Password, OAuth, onboarding, invite, verification, bootstrap, and reset entry/completion routes use the shared atomic durable PostgreSQL fixed-window admission boundary. Account/token protection is independent of client identity; an additional client bucket exists only when the configured overwriting proxy chain yields an exact validated identity, and missing identity creates no shared sentinel. `SECURITY.md` owns HMAC keying, proxy-chain validation, and enumeration-resistance threat controls.
+- Password, OAuth, onboarding, invite, verification, bootstrap, and reset entry/completion routes use the shared atomic durable PostgreSQL fixed-window admission boundary. Account/token protection is independent of client identity. The additional client bucket uses either the configured exact overwriting proxy chain or, when proxy trust is off, the release launcher's authenticated immediate TCP peer. Missing direct non-loopback identity or contradictory topology fails admission before body or provider processing; direct loopback and unavailable proxy-chain identity retain the installation-level bootstrap fallback and no shared credential sentinel. `SECURITY.md` owns HMAC keying, peer/proxy validation, and enumeration-resistance threat controls.
 
 ### OAuth
 

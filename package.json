@@ -1,6 +1,6 @@
 {
   "name": "aiqsa",
-  "version": "0.1.21",
+  "version": "0.1.22",
   "private": true,
   "description": "Self-hosted multi-user Question-Search-Answer web app with explicit AI provider, model, and search control.",
   "license": "AGPL-3.0-only",

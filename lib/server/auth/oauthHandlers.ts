@@ -7,7 +7,7 @@ import {
   type OAuthProviderId
 } from "../../auth/oauth";
 import type { AuthConfig } from "./config";
-import { getLoginRateLimitKey } from "./clientIdentity";
+import { resolveLoginRateLimitIdentity } from "./clientIdentity";
 import type { OAuthIdentityRepository } from "./oauthRepository";
 import {
   buildOAuthAuthorizationUrl,
@@ -321,12 +321,23 @@ export function createOAuthCallbackHandler(deps: OAuthCallbackHandlerDeps) {
       deps.loginRateLimiter,
       defaultOAuthLoginRateLimiter
     );
-    const clientKey = getLoginRateLimitKey(
-      request,
-      config.trustForwardedFor,
-      config.trustedProxyCount
-    );
-    const rateLimitKey = clientKey ? `oauth-callback:${rawProvider}:client:${clientKey}` : null;
+    const clientIdentity = resolveLoginRateLimitIdentity(request, config);
+
+    if (clientIdentity.status === "unavailable") {
+      return redirect(
+        outcomeUrl({
+          appBaseUrl: config.appBaseUrl,
+          nextPath: flow.nextPath,
+          outcome: "failed",
+          provider: rawProvider
+        }),
+        [clearCookie]
+      );
+    }
+
+    const rateLimitKey = clientIdentity.status === "available"
+      ? `oauth-callback:${rawProvider}:client:${clientIdentity.key}`
+      : null;
 
     if (rateLimitKey) {
       const rateLimit = await loginRateLimiter.check(rateLimitKey);
