@@ -1,6 +1,10 @@
 import { HeadBucketCommand, S3Client } from "@aws-sdk/client-s3";
 import { isIP } from "node:net";
 import { getAuthConfig } from "@/lib/server/auth/config";
+import {
+  parseSecretEncryptionKey,
+  SecretEnvelopeError
+} from "@/lib/server/secrets/envelope";
 
 const TRUE_VALUES = new Set(["1", "true", "yes", "on"]);
 
@@ -34,6 +38,19 @@ export function runtimeConfigurationIssues(
 
   if (!auth.configured) {
     issues.push("session_secret");
+  }
+
+  try {
+    parseSecretEncryptionKey(env.AIQSA_ENCRYPTION_KEY);
+  } catch (error) {
+    if (
+      error instanceof SecretEnvelopeError &&
+      error.message === "secret_encryption_invalid_key"
+    ) {
+      issues.push("encryption_key");
+    } else {
+      throw error;
+    }
   }
 
   if (!usable(env.DATABASE_URL)) {
