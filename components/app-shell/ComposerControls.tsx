@@ -4,6 +4,7 @@ import { ComposerPromptPicker } from "@/components/app-shell/ComposerPromptPicke
 import { ComposerRunProfiles } from "@/components/app-shell/ComposerRunProfiles";
 import { ComposerSearchPicker } from "@/components/app-shell/ComposerSearchPicker";
 import { ComposerReasoningPicker } from "@/components/app-shell/ComposerReasoningPicker";
+import { projectSearchPlanCompatibility } from "@/components/app-shell/searchPlanCompatibility";
 import { formatTokenCount } from "@/components/app-shell/shellFormatting";
 import {
   findActiveRunProfile,
@@ -177,28 +178,18 @@ export function ComposerControls({
   const modelCompatibleSearchOptionIds = compatibleSearchOptionIds ??
     currentModel?.searchStrategyIds.filter((strategyId) => strategyId !== "search-disabled") ??
     searchOptions.filter((strategy) => strategy.kind !== "none").map((strategy) => strategy.strategyId);
-  const searchExecutionModesByOptionId = Object.fromEntries(searchOptions.map((strategy) => [
-    strategy.strategyId,
-    currentModel?.searchOptionCompatibility?.[strategy.strategyId]?.executionModes ??
-      strategy.executionModes ??
-      []
-  ]));
-  const attachmentBlockedSearchOptionIds = hasAttachments
-    ? searchOptions
-        .filter((strategy) => {
-          const compatibility = currentModel?.searchOptionCompatibility?.[strategy.strategyId];
-          return compatibility
-            ? !compatibility.attachments
-            : strategy.adapterKind === "provider_model_client" ||
-                strategy.kind === "perplexity_tool_search" ||
-                strategy.kind === "provider_model_web_search";
-        })
-        .map((strategy) => strategy.strategyId)
-    : [];
+  const searchPlanProjection = projectSearchPlanCompatibility({
+    hasAttachments,
+    mode: searchPlanMode,
+    model: currentModel,
+    modelCompatibleOptionIds: modelCompatibleSearchOptionIds,
+    searchOptions,
+    selectedOptionIds: selectedSearchOptionIds
+  });
+  const searchExecutionModesByOptionId = searchPlanProjection.executionModesByOptionId;
+  const attachmentBlockedSearchOptionIds = searchPlanProjection.attachmentBlockedOptionIds;
   const attachmentBlockedSearchOptionIdSet = new Set(attachmentBlockedSearchOptionIds);
-  const resolvedCompatibleSearchOptionIds = modelCompatibleSearchOptionIds.filter(
-    (optionId) => !attachmentBlockedSearchOptionIdSet.has(optionId)
-  );
+  const resolvedCompatibleSearchOptionIds = searchPlanProjection.compatibleOptionIds;
   const attachmentUnavailableReasons = Object.fromEntries(
     attachmentBlockedSearchOptionIds.map((optionId) => [
       optionId,

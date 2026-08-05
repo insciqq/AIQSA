@@ -387,6 +387,53 @@ describe("ComposerControls", () => {
     );
   });
 
+  it("projects mixed attachment capabilities without dropping the retained client choice", () => {
+    const clientId = "client-search";
+    const hostedId = "hosted-search";
+    const searchOptions = [
+      {
+        displayName: "Hosted Search",
+        kind: "web_search" as const,
+        strategyId: hostedId
+      },
+      {
+        displayName: "Client Search",
+        kind: "web_search" as const,
+        strategyId: clientId
+      }
+    ];
+    const currentModel = {
+      ...balancedModel,
+      searchOptionCompatibility: {
+        [clientId]: {
+          attachments: false,
+          executionModes: ["all_selected", "model_choice"] as Array<
+            "all_selected" | "model_choice"
+          >
+        },
+        [hostedId]: {
+          attachments: true,
+          executionModes: ["model_choice"] as Array<"model_choice">
+        }
+      },
+      searchStrategyIds: ["search-disabled", hostedId, clientId]
+    };
+    renderControls({
+      currentModel,
+      hasAttachments: true,
+      searchOptions,
+      selectedSearchOptionIds: [hostedId, clientId],
+      selectedSearchStrategy: hostedId
+    });
+
+    const trigger = screen.getByRole("button", { name: "Search strategy" });
+    expect(trigger).toHaveAttribute("title", "1 active · 1 unavailable");
+    fireEvent.click(trigger);
+    expect(screen.getByText(
+      "This Search source is unavailable while this message has attachments · preference retained"
+    )).toBeVisible();
+  });
+
   it("keeps the full model identity available while containing a long direct-control label", () => {
     const longName = "OpenRouter research model with a deliberately long exact display name";
     renderControls({ currentModel: { ...balancedModel, displayName: longName } });

@@ -23,6 +23,16 @@ import type { SavedControlDraft } from "./powerAppShellData";
 
 const hostedSearchOptionId = "hosted-openai-search";
 const clientSearchOptionId = "client-openai-search";
+const searchAttachment = {
+  fileName: "search-evidence.txt",
+  id: "attachment-search-evidence",
+  kind: "document" as const
+};
+const newerSearchAttachment = {
+  fileName: "newer-search-evidence.txt",
+  id: "attachment-newer-search-evidence",
+  kind: "document" as const
+};
 
 const model: CatalogModel = {
   capabilities: {
@@ -72,7 +82,7 @@ const mixedSearchModel: CatalogModel = {
   ...model,
   searchOptionCompatibility: {
     [clientSearchOptionId]: {
-      attachments: true,
+      attachments: false,
       executionModes: ["all_selected", "model_choice"]
     },
     [hostedSearchOptionId]: {
@@ -170,19 +180,22 @@ function editResponse(text: string, chatId = "chat-a", role: "assistant" | "user
   });
 }
 
-function prepareRegenerationThread() {
+function prepareRegenerationThread(
+  userContent: unknown = "Original question",
+  assistantContent: unknown = "Original answer"
+) {
   useThreadStore.getState().replaceThread("chat-a", {
     activeLeafId: "assistant-original",
     messages: [
       {
-        content: "Original question",
+        content: userContent,
         id: "user-original",
         parentMessageId: null,
         role: "user",
         status: "complete"
       },
       {
-        content: "Original answer",
+        content: assistantContent,
         id: "assistant-original",
         parentMessageId: "user-original",
         role: "assistant",
@@ -626,6 +639,193 @@ describe("message run actions", () => {
       });
     }
   );
+
+  it.each([
+    {
+      expectedMode: "all_selected" as const,
+      expectedOptionIds: [] as string[],
+      expectedSearchStrategy: "search-disabled",
+      label: "filters a client-only plan",
+      selectedOptionIds: [clientSearchOptionId]
+    },
+    {
+      expectedMode: "all_selected" as const,
+      expectedOptionIds: [hostedSearchOptionId],
+      expectedSearchStrategy: hostedSearchOptionId,
+      label: "keeps a hosted-only plan",
+      selectedOptionIds: [hostedSearchOptionId]
+    },
+    {
+      expectedMode: "all_selected" as const,
+      expectedOptionIds: [hostedSearchOptionId],
+      expectedSearchStrategy: hostedSearchOptionId,
+      label: "filters and reconciles a mixed plan",
+      selectedOptionIds: [hostedSearchOptionId, clientSearchOptionId]
+    }
+  ])("$label for a send with attachments", async ({
+    expectedMode,
+    expectedOptionIds,
+    expectedSearchStrategy,
+    selectedOptionIds
+  }) => {
+    const fetchMock = vi.fn(async (..._args: unknown[]) =>
+      new Response("", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const actions = useMessageRunActionsForTest({
+      attachments: [searchAttachment],
+      model: mixedSearchModel
+    });
+    useWorkspaceStore.getState().setCatalog(mixedSearchCatalog("personal"));
+    useComposerControlStore.setState({
+      selectedSearchOptionIds: selectedOptionIds,
+      searchPlanMode: "all_selected",
+      selectedSearchStrategy: selectedOptionIds[0] ?? "search-disabled"
+    });
+
+    await actions.submitComposer();
+
+    const [, requestInit] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(JSON.parse(String(requestInit.body))).toMatchObject({
+      searchPlan: {
+        mode: expectedMode,
+        optionIds: expectedOptionIds
+      },
+      searchPreferencePlan: {
+        mode: "all_selected",
+        optionIds: selectedOptionIds
+      },
+      searchPreferenceSource: "personal",
+      searchStrategy: expectedSearchStrategy
+    });
+  });
+
+  it("keeps attachment Search filtering bound to the send token across deferred leaf persistence", async () => {
+    let markPersistStarted!: () => void;
+    let resolvePersist!: () => void;
+    const persistStarted = new Promise<void>((resolve) => {
+      markPersistStarted = resolve;
+    });
+    const persistActiveLeaf = vi.fn(() => {
+      markPersistStarted();
+      return new Promise<void>((resolve) => {
+        resolvePersist = resolve;
+      });
+    });
+    const fetchMock = vi.fn(async () => new Response("", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const actions = useMessageRunActionsForTest({
+      activeChat: { ...chat(), activeLeafMessageId: "message-selected" },
+      attachments: [searchAttachment],
+      draft: "Question with sent attachment",
+      model: mixedSearchModel,
+      persistActiveLeaf
+    });
+    useWorkspaceStore.getState().setCatalog(mixedSearchCatalog("personal"));
+    useComposerControlStore.setState({
+      selectedSearchOptionIds: [clientSearchOptionId],
+      searchPlanMode: "all_selected",
+      selectedSearchStrategy: clientSearchOptionId
+    });
+
+    const submit = actions.submitComposer();
+    await persistStarted;
+    expect(actions.session(composerSessionKey("chat-a")).pendingSend).toMatchObject({
+      attachments: [searchAttachment]
+    });
+    useComposerSessionStore.getState().setDraft("Newer question");
+    useComposerSessionStore.getState().setAttachments([newerSearchAttachment]);
+    resolvePersist();
+    await submit;
+
+    const [, requestInit] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(JSON.parse(String(requestInit.body))).toMatchObject({
+      content: {
+        blocks: [
+          { text: "Question with sent attachment", type: "text" },
+          { attachmentId: searchAttachment.id, type: "file" }
+        ]
+      },
+      searchPlan: {
+        mode: "all_selected",
+        optionIds: []
+      },
+      searchPreferencePlan: {
+        mode: "all_selected",
+        optionIds: [clientSearchOptionId]
+      },
+      searchStrategy: "search-disabled"
+    });
+    expect(actions.session(composerSessionKey("chat-a"))).toMatchObject({
+      attachments: [newerSearchAttachment],
+      draft: "Newer question",
+      pendingSend: null
+    });
+  });
+
+  it("does not apply newer live attachments to a send token captured before deferred chat creation", async () => {
+    let markCreateStarted!: () => void;
+    let resolveCreate!: (chat: ChatSummary) => void;
+    const createStarted = new Promise<void>((resolve) => {
+      markCreateStarted = resolve;
+    });
+    const createdChat = {
+      ...chat(),
+      id: "chat-created-after-send-snapshot"
+    };
+    const createChat = vi.fn(() => {
+      markCreateStarted();
+      return new Promise<ChatSummary>((resolve) => {
+        resolveCreate = resolve;
+      });
+    });
+    const fetchMock = vi.fn(async () => new Response("", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const actions = useMessageRunActionsForTest({
+      activeChat: null,
+      activeChatId: null,
+      attachments: [],
+      createChat,
+      draft: "Question without sent attachments",
+      model: mixedSearchModel
+    });
+    useWorkspaceStore.getState().setCatalog(mixedSearchCatalog("personal"));
+    useComposerControlStore.setState({
+      selectedSearchOptionIds: [clientSearchOptionId],
+      searchPlanMode: "all_selected",
+      selectedSearchStrategy: clientSearchOptionId
+    });
+
+    const submit = actions.submitComposer();
+    await createStarted;
+    expect(actions.session(composerSessionKey(null)).pendingSend).toMatchObject({
+      attachments: []
+    });
+    useComposerSessionStore.getState().setDraft("Newer blank-chat question");
+    useComposerSessionStore.getState().setAttachments([newerSearchAttachment]);
+    resolveCreate(createdChat);
+    await submit;
+
+    const [, requestInit] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(JSON.parse(String(requestInit.body))).toMatchObject({
+      content: {
+        blocks: [{ text: "Question without sent attachments", type: "text" }]
+      },
+      searchPlan: {
+        mode: "all_selected",
+        optionIds: [clientSearchOptionId]
+      },
+      searchPreferencePlan: {
+        mode: "all_selected",
+        optionIds: [clientSearchOptionId]
+      },
+      searchStrategy: clientSearchOptionId
+    });
+    expect(actions.session(composerSessionKey(createdChat.id))).toMatchObject({
+      attachments: [newerSearchAttachment],
+      draft: "Newer blank-chat question",
+      pendingSend: null
+    });
+  });
 
   it("does not send when the composer has neither text nor attachments", async () => {
     const fetchMock = vi.fn(async (..._args: unknown[]) => new Response("", { status: 200 }));
@@ -1414,6 +1614,40 @@ describe("message run actions", () => {
     expect(useRunLifecycleStore.getState().activeStreams).toEqual({});
   });
 
+  it("does not apply staged attachments to the text-only edited branch run", async () => {
+    const fetchMock = vi
+      .fn(async (..._args: unknown[]) => new Response("", { status: 200 }))
+      .mockImplementationOnce(async () => editResponse("Edited question"));
+    vi.stubGlobal("fetch", fetchMock);
+    const actions = useMessageRunActionsForTest({
+      attachments: [searchAttachment],
+      draft: "Edited question",
+      editingMessageId: "message-1",
+      model: mixedSearchModel
+    });
+    useWorkspaceStore.getState().setCatalog(mixedSearchCatalog("personal"));
+    useComposerControlStore.setState({
+      selectedSearchOptionIds: [clientSearchOptionId],
+      searchPlanMode: "all_selected",
+      selectedSearchStrategy: clientSearchOptionId
+    });
+
+    await actions.submitComposer();
+
+    const [, regenerateInit] = fetchMock.mock.calls[1] as unknown as [string, RequestInit];
+    expect(JSON.parse(String(regenerateInit.body))).toMatchObject({
+      searchPlan: {
+        mode: "all_selected",
+        optionIds: [clientSearchOptionId]
+      },
+      searchPreferencePlan: {
+        mode: "all_selected",
+        optionIds: [clientSearchOptionId]
+      },
+      searchStrategy: clientSearchOptionId
+    });
+  });
+
   it("keeps a readable run-error tail on the edited branch when the follow-up run fails to start", async () => {
     vi.spyOn(Date, "now").mockReturnValue(556);
     const fetchMock = vi
@@ -2048,6 +2282,84 @@ describe("message run actions", () => {
           status: "complete"
         })
       ]
+    });
+  });
+
+  it.each(["assistant-original", "user-original"])(
+    "filters client Search when regenerating %s from an attachment-bearing source user",
+    async (messageId) => {
+      const fetchMock = vi.fn(async () => new Response("", { status: 200 }));
+      vi.stubGlobal("fetch", fetchMock);
+      const actions = useMessageRunActionsForTest({
+        attachments: [],
+        model: mixedSearchModel
+      });
+      useWorkspaceStore.getState().setCatalog(mixedSearchCatalog("personal"));
+      useComposerControlStore.setState({
+        selectedSearchOptionIds: [clientSearchOptionId],
+        searchPlanMode: "model_choice",
+        selectedSearchStrategy: clientSearchOptionId
+      });
+      prepareRegenerationThread({
+        blocks: [
+          { text: "Original question", type: "text" },
+          {
+            attachmentId: searchAttachment.id,
+            fileName: searchAttachment.fileName,
+            type: "file"
+          }
+        ]
+      });
+
+      await actions.regenerateMessage(messageId);
+
+      const [, requestInit] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+      expect(JSON.parse(String(requestInit.body))).toMatchObject({
+        searchPlan: {
+          mode: "all_selected",
+          optionIds: []
+        },
+        searchPreferencePlan: {
+          mode: "model_choice",
+          optionIds: [clientSearchOptionId]
+        },
+        searchStrategy: "search-disabled"
+      });
+    }
+  );
+
+  it("uses only the regenerate source user content for attachment compatibility", async () => {
+    const fetchMock = vi.fn(async () => new Response("", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const actions = useMessageRunActionsForTest({
+      attachments: [searchAttachment],
+      model: mixedSearchModel
+    });
+    useWorkspaceStore.getState().setCatalog(mixedSearchCatalog("personal"));
+    useComposerControlStore.setState({
+      selectedSearchOptionIds: [clientSearchOptionId],
+      searchPlanMode: "all_selected",
+      selectedSearchStrategy: clientSearchOptionId
+    });
+    prepareRegenerationThread("Original question", {
+      blocks: [
+        { text: "Original answer", type: "text" },
+        {
+          attachmentId: "assistant-only-attachment",
+          type: "file"
+        }
+      ]
+    });
+
+    await actions.regenerateMessage("assistant-original");
+
+    const [, requestInit] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(JSON.parse(String(requestInit.body))).toMatchObject({
+      searchPlan: {
+        mode: "all_selected",
+        optionIds: [clientSearchOptionId]
+      },
+      searchStrategy: clientSearchOptionId
     });
   });
 

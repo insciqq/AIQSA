@@ -18,7 +18,9 @@ import {
 import { useRunLifecycleStore } from "@/components/app-shell/runLifecycleStore";
 import { useRunSurfaceStore } from "@/components/app-shell/runSurfaceStore";
 import { mergeThreadMessages } from "@/components/app-shell/runState";
+import { projectSearchPlanCompatibility } from "@/components/app-shell/searchPlanCompatibility";
 import { effectiveActiveLeafId } from "@/components/app-shell/threadPath";
+import { attachmentBlocksFromThreadContent } from "@/components/app-shell/threadContent";
 import { selectThreadSnapshot, useThreadStore } from "@/components/app-shell/threadStore";
 import type {
   Catalog,
@@ -31,17 +33,12 @@ import type { SavedControlDraft } from "@/components/app-shell/powerAppShellData
 import type { RunStreamTokenBuffer } from "@/components/app-shell/useRunStream";
 import { useWorkspaceStore } from "@/components/app-shell/workspaceStore";
 import { renderLocalPromptTemplate } from "@/lib/domain/promptTemplates";
-import { reconcileSearchPlanSelection } from "@/lib/domain/catalogMatrix";
 import type { SearchPlanMode } from "@/lib/domain/search";
 
 type MutableRef<T> = { current: T };
 
 type MessageRunControlSnapshot = {
   controlDefaults: SavedControlDraft;
-  effectiveSearchPlan: {
-    mode: SearchPlanMode;
-    optionIds: string[];
-  };
   model: CatalogModel | undefined;
   modelId: string;
   params: Record<string, unknown>;
@@ -56,6 +53,7 @@ type MessageRunControlSnapshot = {
     optionIds: string[];
   };
   searchPreferenceSource: Catalog["defaults"]["searchPreferenceSource"];
+  searchOptions: Catalog["searchStrategies"];
   toolsOverride: { tools: "none" } | Record<string, never>;
 };
 
@@ -92,30 +90,6 @@ type MessageRunActionsInput = {
 
 function toolsOverride(model: CatalogModel | undefined): { tools: "none" } | Record<string, never> {
   return model && !model.capabilities.toolCalling ? { tools: "none" } : {};
-}
-
-function effectiveSearchSelection(
-  model: CatalogModel | undefined,
-  optionIds: readonly string[],
-  mode: SearchPlanMode
-) {
-  const catalog = useWorkspaceStore.getState().catalog;
-  if (!model || !catalog) return { mode: "all_selected" as const, optionIds: [] };
-  const compatibleIds = new Set(model.searchStrategyIds);
-  // Catalog options are logical sources; the selected model owns the exact
-  // hosted/client execution modes used to derive this run without rewriting
-  // the retained personal or organization preference.
-  const modelSearchOptions = catalog.searchStrategies.map((option) => ({
-    ...option,
-    executionModes:
-      model.searchOptionCompatibility?.[option.strategyId]?.executionModes ??
-      option.executionModes
-  }));
-  return reconcileSearchPlanSelection(
-    optionIds.filter((optionId) => compatibleIds.has(optionId)),
-    mode,
-    modelSearchOptions
-  );
 }
 
 function modelForCurrentSelection(
@@ -163,24 +137,35 @@ export function useMessageRunActions({
       searchPlanMode,
       systemPrompt
     } = useComposerControlStore.getState();
-    const model = modelForCurrentSelection(
+    const catalog = useWorkspaceStore.getState().catalog;
+    const selectedModel = modelForCurrentSelection(
       currentModel,
       selectedProvider,
       selectedModelId
     );
+    const model = selectedModel
+      ? {
+          ...selectedModel,
+          searchOptionCompatibility: selectedModel.searchOptionCompatibility
+            ? Object.fromEntries(
+                Object.entries(selectedModel.searchOptionCompatibility).map(
+                  ([optionId, compatibility]) => [
+                    optionId,
+                    {
+                      ...compatibility,
+                      executionModes: [...compatibility.executionModes]
+                    }
+                  ]
+                )
+              )
+            : undefined,
+          searchStrategyIds: [...selectedModel.searchStrategyIds]
+        }
+      : undefined;
     const searchPreferenceOptionIds = [...selectedSearchOptionIds];
-    const effectiveSearchPlan = effectiveSearchSelection(
-      model,
-      searchPreferenceOptionIds,
-      searchPlanMode
-    );
 
     return {
       controlDefaults: { ...buildControlDraft() },
-      effectiveSearchPlan: {
-        mode: effectiveSearchPlan.mode,
-        optionIds: [...effectiveSearchPlan.optionIds]
-      },
       model,
       modelId: selectedModelId,
       params: { ...buildParams() },
@@ -195,19 +180,36 @@ export function useMessageRunActions({
         optionIds: searchPreferenceOptionIds
       },
       searchPreferenceSource:
-        useWorkspaceStore.getState().catalog?.defaults.searchPreferenceSource,
+        catalog?.defaults.searchPreferenceSource,
+      searchOptions: (catalog?.searchStrategies ?? []).map((option) => ({
+        ...option,
+        ...(option.executionModes
+          ? { executionModes: [...option.executionModes] }
+          : {})
+      })),
       toolsOverride: toolsOverride(model)
     };
   }
 
-  function runControlPayload(snapshot: MessageRunControlSnapshot) {
+  function runControlPayload(
+    snapshot: MessageRunControlSnapshot,
+    hasAttachments: boolean
+  ) {
+    const effectiveSearchPlan = projectSearchPlanCompatibility({
+      hasAttachments,
+      mode: snapshot.searchPreferencePlan.mode,
+      model: snapshot.model,
+      searchOptions: snapshot.searchOptions,
+      selectedOptionIds: snapshot.searchPreferencePlan.optionIds
+    }).effectivePlan;
+
     return {
       controlDefaults: snapshot.controlDefaults,
       modelId: snapshot.modelId,
       params: snapshot.params,
       prompt: snapshot.prompt,
       provider: snapshot.provider,
-      searchPlan: snapshot.effectiveSearchPlan,
+      searchPlan: effectiveSearchPlan,
       ...(snapshot.searchPreferenceSource
         ? {
             searchPreferencePlan: snapshot.searchPreferencePlan,
@@ -215,7 +217,7 @@ export function useMessageRunActions({
           }
         : {}),
       searchStrategy:
-        snapshot.effectiveSearchPlan.optionIds[0] ?? "search-disabled",
+        effectiveSearchPlan.optionIds[0] ?? "search-disabled",
       ...snapshot.toolsOverride
     };
   }
@@ -303,7 +305,7 @@ export function useMessageRunActions({
       request(signal) {
         return shellFetch(`/api/messages/${editedUserMessageId}/regenerate`, {
           body: JSON.stringify({
-            ...runControlPayload(runControlSnapshot)
+            ...runControlPayload(runControlSnapshot, false)
           }),
           headers: {
             "content-type": "application/json"
@@ -514,6 +516,10 @@ export function useMessageRunActions({
           : { attachmentId: attachment.id, fileName: attachment.fileName, type: "file" as const }
       )
     ];
+    const sendControlPayload = runControlPayload(
+      runControlSnapshot,
+      sendToken.attachments.length > 0
+    );
 
     let sendOutcome: "cancelled" | "failed" | "succeeded" = "failed";
     let sendFailureMessage: string | null = null;
@@ -643,7 +649,7 @@ export function useMessageRunActions({
                 blocks: contentBlocks
               },
               expectedActiveLeafId: parentLeafForSend,
-              ...runControlPayload(runControlSnapshot)
+              ...sendControlPayload
             }),
             headers: {
               "content-type": "application/json"
@@ -725,6 +731,16 @@ export function useMessageRunActions({
     }
     const regenerationParentMessageId =
       original.role === "assistant" ? original.parentMessageId : original.id;
+    const sourceUserMessage = original.role === "user"
+      ? original
+      : threadBeforeRegenerate.messages.find(
+          (message) =>
+            message.id === original.parentMessageId && message.role === "user"
+        );
+    const regenerateControlPayload = runControlPayload(
+      runControlSnapshot,
+      attachmentBlocksFromThreadContent(sourceUserMessage?.content).length > 0
+    );
 
     const assistantId = `assistant-regen-${Date.now()}`;
     const assistantMessage: ThreadMessage = {
@@ -775,7 +791,7 @@ export function useMessageRunActions({
       request(signal) {
         return shellFetch(`/api/messages/${messageId}/regenerate`, {
           body: JSON.stringify({
-            ...runControlPayload(runControlSnapshot)
+            ...regenerateControlPayload
           }),
           headers: {
             "content-type": "application/json"
