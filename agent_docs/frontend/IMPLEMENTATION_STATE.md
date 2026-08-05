@@ -115,8 +115,8 @@ The memoized left-pane adapter intentionally ignores callback identity churn and
 
 - Run activity renders consumed evidence only: `Working…` before a known stage, `Searching…` after search/citation evidence, `Answering…` after answer tokens, and a readable error after failure. It never invents provider stages or auto-opens Details.
 - Queued, live, cancelled, failed, complete-without-text, and ordinary complete assistant tails remain distinguishable. Search selected-off versus backend-skipped stays inspectable in durable run evidence rather than a fabricated live step.
-- Explicit Send in the still-active source chat reclaims scroll ownership after optimistic rows appear. Passive updates never move an unpinned reader. A streaming turn anchors at the newest question with bounded preceding context and does not chase every token to the tail.
-- `Jump to latest message` appears only when real message content extends beyond the viewport threshold; receipt/action spacers do not trigger it. Activation or deliberate return to bottom resumes tail following.
+- Explicit Send in the still-active source chat reclaims scroll ownership after optimistic rows appear. Passive updates never move an unpinned reader. A streaming turn anchors at the newest question with bounded preceding context when it fits; an oversized newest question instead reveals its trailing edge together with the beginning/status of the live answer. Neither anchor chases every token to the tail.
+- `Jump to latest message` appears only when real message content extends beyond the viewport threshold; the just-submitted oversized question alone and receipt/action spacers do not trigger it. Activation or deliberate return to bottom resumes tail following.
 - Composer context shows approximate current input against the safe input budget, names full model context separately, and shows provider-reported branch usage. It does not estimate currency cost.
 
 ### Shell and session ownership

@@ -253,4 +253,150 @@ describe("usePinnedScroll", () => {
     await waitForAnimationFrame();
     expect(element.scrollTop).toBe(1600);
   });
+
+  it("reveals an oversized submitted question tail and answer preview before deliberate tail following", async () => {
+    const questionDocumentTop = 800;
+    const questionHeight = 420;
+    let answerHeight = 48;
+    let scrollHeight = 1500;
+    const element = scrollElement({
+      clientHeight: 300,
+      scrollHeight,
+      scrollTop: 200
+    });
+    Object.defineProperty(element, "scrollHeight", {
+      configurable: true,
+      get: () => scrollHeight
+    });
+    element.getBoundingClientRect = () =>
+      ({ bottom: 300, height: 300, top: 0 } as DOMRect);
+
+    const question = document.createElement("article");
+    question.dataset.messageId = "user-oversized";
+    question.getBoundingClientRect = () => ({
+      bottom: questionDocumentTop + questionHeight - element.scrollTop,
+      height: questionHeight,
+      top: questionDocumentTop - element.scrollTop
+    } as DOMRect);
+    const answer = document.createElement("article");
+    answer.dataset.messageId = "assistant-live";
+    answer.getBoundingClientRect = () => ({
+      bottom: questionDocumentTop + questionHeight + answerHeight - element.scrollTop,
+      height: answerHeight,
+      top: questionDocumentTop + questionHeight - element.scrollTop
+    } as DOMRect);
+    const spacer = document.createElement("div");
+    spacer.dataset.threadReadingSpacer = "true";
+    element.append(question, answer, spacer);
+
+    const { rerender, result } = renderHook(
+      ({ followKey, readingAnchorKey }) =>
+        usePinnedScroll<HTMLDivElement>({
+          followKey,
+          readingAnchorKey,
+          resetKey: "chat-oversized"
+        }),
+      {
+        initialProps: {
+          followKey: "initial",
+          readingAnchorKey: null as string | null
+        }
+      }
+    );
+
+    act(() => {
+      result.current.containerRef.current = element;
+      result.current.handleScroll();
+    });
+    expect(result.current.isPinned).toBe(false);
+
+    act(() => result.current.resetToLatest());
+    rerender({
+      followKey: "assistant-started",
+      readingAnchorKey: "user-oversized"
+    });
+    await waitForAnimationFrame();
+
+    expect(spacer.style.height).toBe("252px");
+    expect(element.scrollTop).toBe(968);
+    expect(question.getBoundingClientRect()).toMatchObject({ bottom: 252, top: -168 });
+    expect(answer.getBoundingClientRect()).toMatchObject({ bottom: 300, top: 252 });
+    expect(result.current.isPinned).toBe(false);
+    expect(result.current.showJumpToLatest).toBe(false);
+
+    answerHeight = 72;
+    scrollHeight = 1524;
+    rerender({
+      followKey: "small-answer-growth",
+      readingAnchorKey: "user-oversized"
+    });
+    await waitForAnimationFrame();
+
+    expect(spacer.style.height).toBe("228px");
+    expect(element.scrollTop).toBe(968);
+    expect(result.current.showJumpToLatest).toBe(false);
+
+    answerHeight = 240;
+    scrollHeight = 1692;
+    rerender({
+      followKey: "large-answer-growth",
+      readingAnchorKey: "user-oversized"
+    });
+    await waitForAnimationFrame();
+
+    expect(element.scrollTop).toBe(968);
+    expect(result.current.showJumpToLatest).toBe(true);
+
+    act(() => result.current.jumpToLatest());
+    await waitForAnimationFrame();
+    expect(element.scrollTop).toBe(1692);
+    expect(result.current.isPinned).toBe(true);
+    expect(result.current.showJumpToLatest).toBe(false);
+
+    answerHeight = 348;
+    scrollHeight = 1800;
+    rerender({
+      followKey: "tail-following-resumed",
+      readingAnchorKey: "user-oversized"
+    });
+    await waitForAnimationFrame();
+
+    expect(element.scrollTop).toBe(1800);
+  });
+
+  it("keeps an oversized fallback anchor top-aligned when it is also the live tail", async () => {
+    const element = scrollElement({ clientHeight: 300, scrollHeight: 1200, scrollTop: 700 });
+    element.getBoundingClientRect = () =>
+      ({ bottom: 300, height: 300, top: 0 } as DOMRect);
+    const fallback = document.createElement("article");
+    fallback.dataset.messageId = "assistant-fallback";
+    fallback.getBoundingClientRect = () =>
+      ({ bottom: 500, height: 420, top: 80 } as DOMRect);
+    const spacer = document.createElement("div");
+    spacer.dataset.threadReadingSpacer = "true";
+    element.append(fallback, spacer);
+
+    const { rerender, result } = renderHook(
+      ({ readingAnchorKey }) =>
+        usePinnedScroll<HTMLDivElement>({
+          followKey: "fallback",
+          readingAnchorKey,
+          resetKey: "chat-fallback"
+        }),
+      {
+        initialProps: { readingAnchorKey: null as string | null }
+      }
+    );
+
+    act(() => {
+      result.current.containerRef.current = element;
+      result.current.resetToLatest();
+    });
+    rerender({ readingAnchorKey: "assistant-fallback" });
+    await waitForAnimationFrame();
+
+    expect(spacer.style.height).toBe("0px");
+    expect(element.scrollTop).toBe(780);
+    expect(result.current.showJumpToLatest).toBe(false);
+  });
 });

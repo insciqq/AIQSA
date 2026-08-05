@@ -135,8 +135,14 @@ export function usePinnedScroll<T extends HTMLElement>({
       preferredContext,
       Math.max(0, element.clientHeight - targetHeight)
     );
+    const targetViewportOffset =
+      targetHeight > element.clientHeight && liveAnswer !== target
+        ? element.clientHeight -
+          targetHeight -
+          Math.min(preferredContext, liveAnswerHeight)
+        : contextOffset;
 
-    return { contextOffset, target };
+    return { target, targetViewportOffset };
   }, []);
 
   const scheduleReadingAnchor = useCallback((anchorKey: string) => {
@@ -156,7 +162,7 @@ export function usePinnedScroll<T extends HTMLElement>({
       const targetTop = anchor.target.getBoundingClientRect().top;
       element.scrollTop = Math.max(
         0,
-        element.scrollTop + targetTop - containerTop - anchor.contextOffset
+        element.scrollTop + targetTop - containerTop - anchor.targetViewportOffset
       );
       readingAnchorPendingRef.current = false;
       setPinnedState(false);
