@@ -616,6 +616,20 @@ describe("control default freshness", () => {
     expect(compatibleHarness.actions().buildParams()).not.toHaveProperty("stream");
   });
 
+  it("does not reuse a render-captured model for a different selected key", () => {
+    const harness = createRunControlsHarness(model, catalog({}, [model]));
+    useComposerControlStore.setState({
+      selectedModelId: fakeModel.modelId,
+      selectedProvider: fakeModel.provider
+    });
+
+    const params = harness.actions().buildParams();
+
+    expect(params).not.toHaveProperty("background");
+    expect(params).not.toHaveProperty("maxOutputTokens", 128000);
+    expect(params).not.toHaveProperty("reasoning.effort", "medium");
+  });
+
   it("translates Gemini and Claude controls into one valid provider dialect", () => {
     vi.stubGlobal("fetch", settingsFetchMock());
     const geminiModel: CatalogModel = {

@@ -521,7 +521,7 @@ export function useWorkspaceActions({
           .getState()
           .transferSession(sourceSessionKey, composerSessionKey(summary.id));
         if (sourceWasSelected && activeChatIdRef.current === null) {
-          await activateChat(summary);
+          await activateChat(summary, { preserveControls: true });
         }
       } else {
         await activateChat(summary);

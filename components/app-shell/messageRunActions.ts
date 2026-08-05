@@ -21,6 +21,7 @@ import { mergeThreadMessages } from "@/components/app-shell/runState";
 import { effectiveActiveLeafId } from "@/components/app-shell/threadPath";
 import { selectThreadSnapshot, useThreadStore } from "@/components/app-shell/threadStore";
 import type {
+  Catalog,
   CatalogModel,
   ChatDetail,
   ChatSummary,
@@ -34,6 +35,29 @@ import { reconcileSearchPlanSelection } from "@/lib/domain/catalogMatrix";
 import type { SearchPlanMode } from "@/lib/domain/search";
 
 type MutableRef<T> = { current: T };
+
+type MessageRunControlSnapshot = {
+  controlDefaults: SavedControlDraft;
+  effectiveSearchPlan: {
+    mode: SearchPlanMode;
+    optionIds: string[];
+  };
+  model: CatalogModel | undefined;
+  modelId: string;
+  params: Record<string, unknown>;
+  prompt: {
+    developer: string;
+    presetId: string | null;
+    system: string;
+  };
+  provider: string;
+  searchPreferencePlan: {
+    mode: SearchPlanMode;
+    optionIds: string[];
+  };
+  searchPreferenceSource: Catalog["defaults"]["searchPreferenceSource"];
+  toolsOverride: { tools: "none" } | Record<string, never>;
+};
 
 type MessageRunActionsInput = {
   activeChat: ChatSummary | null;
@@ -129,12 +153,80 @@ export function useMessageRunActions({
   resetThreadToLatest,
   setNotice
 }: MessageRunActionsInput) {
+  function captureRunControlSnapshot(): MessageRunControlSnapshot {
+    const {
+      developerPrompt,
+      selectedModelId,
+      selectedPromptId,
+      selectedProvider,
+      selectedSearchOptionIds,
+      searchPlanMode,
+      systemPrompt
+    } = useComposerControlStore.getState();
+    const model = modelForCurrentSelection(
+      currentModel,
+      selectedProvider,
+      selectedModelId
+    );
+    const searchPreferenceOptionIds = [...selectedSearchOptionIds];
+    const effectiveSearchPlan = effectiveSearchSelection(
+      model,
+      searchPreferenceOptionIds,
+      searchPlanMode
+    );
+
+    return {
+      controlDefaults: { ...buildControlDraft() },
+      effectiveSearchPlan: {
+        mode: effectiveSearchPlan.mode,
+        optionIds: [...effectiveSearchPlan.optionIds]
+      },
+      model,
+      modelId: selectedModelId,
+      params: { ...buildParams() },
+      prompt: {
+        developer: renderLocalPromptTemplate(developerPrompt),
+        presetId: selectedPromptId,
+        system: renderLocalPromptTemplate(systemPrompt)
+      },
+      provider: selectedProvider,
+      searchPreferencePlan: {
+        mode: searchPlanMode,
+        optionIds: searchPreferenceOptionIds
+      },
+      searchPreferenceSource:
+        useWorkspaceStore.getState().catalog?.defaults.searchPreferenceSource,
+      toolsOverride: toolsOverride(model)
+    };
+  }
+
+  function runControlPayload(snapshot: MessageRunControlSnapshot) {
+    return {
+      controlDefaults: snapshot.controlDefaults,
+      modelId: snapshot.modelId,
+      params: snapshot.params,
+      prompt: snapshot.prompt,
+      provider: snapshot.provider,
+      searchPlan: snapshot.effectiveSearchPlan,
+      ...(snapshot.searchPreferenceSource
+        ? {
+            searchPreferencePlan: snapshot.searchPreferencePlan,
+            searchPreferenceSource: snapshot.searchPreferenceSource
+          }
+        : {}),
+      searchStrategy:
+        snapshot.effectiveSearchPlan.optionIds[0] ?? "search-disabled",
+      ...snapshot.toolsOverride
+    };
+  }
+
   async function editMessageBranch() {
     const sourceSessionKey = useComposerSessionStore.getState().activeSessionKey;
     const sourceChatId = chatIdFromComposerSessionKey(sourceSessionKey);
     if (!sourceChatId || sourceChatId !== activeChatId) {
       return;
     }
+    const runControlSnapshot = captureRunControlSnapshot();
 
     const committed = await editMessageBranchAction({
       activeChatIdRef,
@@ -148,36 +240,25 @@ export function useMessageRunActions({
       return;
     }
 
-    await startEditedBranchRun(sourceChatId, committed.id);
+    await startEditedBranchRun(sourceChatId, committed.id, runControlSnapshot);
   }
 
-  async function startEditedBranchRun(chatId: string, editedUserMessageId: string) {
+  async function startEditedBranchRun(
+    chatId: string,
+    editedUserMessageId: string,
+    runControlSnapshot: MessageRunControlSnapshot
+  ) {
     if (useRunLifecycleStore.getState().activeStreams[chatId]) {
       return;
     }
 
-    const {
-      developerPrompt,
-      selectedModelId,
-      selectedPromptId,
-      selectedProvider,
-      selectedSearchOptionIds,
-      searchPlanMode,
-      systemPrompt
-    } = useComposerControlStore.getState();
-    const effectiveSearchPlan = effectiveSearchSelection(
-      currentModel,
-      selectedSearchOptionIds,
-      searchPlanMode
-    );
-    const searchPreferenceSource = useWorkspaceStore.getState().catalog?.defaults.searchPreferenceSource;
     const assistantId = `assistant-${Date.now()}`;
     const assistantMessage: ThreadMessage = {
       content: "",
       id: assistantId,
-      modelId: selectedModelId,
+      modelId: runControlSnapshot.modelId,
       parentMessageId: editedUserMessageId,
-      provider: selectedProvider,
+      provider: runControlSnapshot.provider,
       role: "assistant",
       status: "streaming"
     };
@@ -222,27 +303,7 @@ export function useMessageRunActions({
       request(signal) {
         return shellFetch(`/api/messages/${editedUserMessageId}/regenerate`, {
           body: JSON.stringify({
-            modelId: selectedModelId,
-            controlDefaults: buildControlDraft(),
-            params: buildParams(),
-            prompt: {
-              developer: renderLocalPromptTemplate(developerPrompt),
-              presetId: selectedPromptId,
-              system: renderLocalPromptTemplate(systemPrompt)
-            },
-            provider: selectedProvider,
-            searchPlan: {
-              mode: effectiveSearchPlan.mode,
-              optionIds: effectiveSearchPlan.optionIds
-            },
-            ...(searchPreferenceSource
-              ? {
-                  searchPreferencePlan: { mode: searchPlanMode, optionIds: selectedSearchOptionIds },
-                  searchPreferenceSource
-                }
-              : {}),
-            searchStrategy: effectiveSearchPlan.optionIds[0] ?? "search-disabled",
-            ...toolsOverride(currentModel)
+            ...runControlPayload(runControlSnapshot)
           }),
           headers: {
             "content-type": "application/json"
@@ -385,25 +446,15 @@ export function useMessageRunActions({
       useComposerSessionStore.getState(),
       sourceSessionKey
     );
-    const {
-      developerPrompt,
-      selectedModelId,
-      selectedPromptId,
-      selectedProvider,
-      selectedSearchOptionIds,
-      searchPlanMode,
-      systemPrompt
-    } = useComposerControlStore.getState();
-    const modelForSend = modelForCurrentSelection(
-      currentModel,
-      selectedProvider,
-      selectedModelId
-    );
     if (
       (!sourceSession.draft.trim() && sourceSession.attachments.length === 0) ||
-      !modelForSend ||
       activeChatDetailLoading
     ) {
+      return;
+    }
+    const runControlSnapshot = captureRunControlSnapshot();
+    const modelForSend = runControlSnapshot.model;
+    if (!modelForSend) {
       return;
     }
     const blockingAttachmentWarning = firstBlockingAttachmentWarning(
@@ -429,14 +480,6 @@ export function useMessageRunActions({
       });
       return;
     }
-    const controlDefaultsForSend = buildControlDraft();
-    const paramsForSend = buildParams();
-    const effectiveSearchPlan = effectiveSearchSelection(
-      modelForSend,
-      selectedSearchOptionIds,
-      searchPlanMode
-    );
-    const searchPreferenceSource = useWorkspaceStore.getState().catalog?.defaults.searchPreferenceSource;
     const sourceComposerChatId = chatIdFromComposerSessionKey(sourceSessionKey);
     const startedFromBlankWorkspace = sourceComposerChatId === null;
     if (sourceComposerChatId !== activeChatId) {
@@ -520,9 +563,9 @@ export function useMessageRunActions({
       const userMessage: ThreadMessage = {
         content: sendToken.attachments.length > 0 ? { blocks: contentBlocks } : text,
         id: `user-${Date.now()}`,
-        modelId: selectedModelId,
+        modelId: runControlSnapshot.modelId,
         parentMessageId: parentLeafForSend,
-        provider: selectedProvider,
+        provider: runControlSnapshot.provider,
         role: "user",
         status: "complete"
       };
@@ -530,9 +573,9 @@ export function useMessageRunActions({
       const assistantMessage: ThreadMessage = {
         content: "",
         id: assistantId,
-        modelId: selectedModelId,
+        modelId: runControlSnapshot.modelId,
         parentMessageId: userMessage.id,
-        provider: selectedProvider,
+        provider: runControlSnapshot.provider,
         role: "assistant",
         status: "streaming"
       };
@@ -599,28 +642,8 @@ export function useMessageRunActions({
               content: {
                 blocks: contentBlocks
               },
-              controlDefaults: controlDefaultsForSend,
               expectedActiveLeafId: parentLeafForSend,
-              modelId: selectedModelId,
-              params: paramsForSend,
-              prompt: {
-                developer: renderLocalPromptTemplate(developerPrompt),
-                presetId: selectedPromptId,
-                system: renderLocalPromptTemplate(systemPrompt)
-              },
-              provider: selectedProvider,
-              searchPlan: {
-                mode: effectiveSearchPlan.mode,
-                optionIds: effectiveSearchPlan.optionIds
-              },
-              ...(searchPreferenceSource
-                ? {
-                    searchPreferencePlan: { mode: searchPlanMode, optionIds: selectedSearchOptionIds },
-                    searchPreferenceSource
-                  }
-                : {}),
-              searchStrategy: effectiveSearchPlan.optionIds[0] ?? "search-disabled",
-              ...toolsOverride(modelForSend)
+              ...runControlPayload(runControlSnapshot)
             }),
             headers: {
               "content-type": "application/json"
@@ -674,21 +697,6 @@ export function useMessageRunActions({
   }
 
   async function regenerateMessage(messageId: string) {
-    const {
-      developerPrompt,
-      selectedModelId,
-      selectedPromptId,
-      selectedProvider,
-      selectedSearchOptionIds,
-      searchPlanMode,
-      systemPrompt
-    } = useComposerControlStore.getState();
-    const effectiveSearchPlan = effectiveSearchSelection(
-      currentModel,
-      selectedSearchOptionIds,
-      searchPlanMode
-    );
-    const searchPreferenceSource = useWorkspaceStore.getState().catalog?.defaults.searchPreferenceSource;
     const chatIdForRegenerate = activeChatId;
     if (!chatIdForRegenerate) {
       return;
@@ -697,6 +705,7 @@ export function useMessageRunActions({
     if (useRunLifecycleStore.getState().activeStreams[chatIdForRegenerate]) {
       return;
     }
+    const runControlSnapshot = captureRunControlSnapshot();
     if (
       hasUnreconciledOptimisticLeaf(chatIdForRegenerate) &&
       !(await reconcileBeforeRunMutation(chatIdForRegenerate))
@@ -721,9 +730,9 @@ export function useMessageRunActions({
     const assistantMessage: ThreadMessage = {
       content: "",
       id: assistantId,
-      modelId: selectedModelId,
+      modelId: runControlSnapshot.modelId,
       parentMessageId: regenerationParentMessageId,
-      provider: selectedProvider,
+      provider: runControlSnapshot.provider,
       role: "assistant",
       status: "streaming"
     };
@@ -766,27 +775,7 @@ export function useMessageRunActions({
       request(signal) {
         return shellFetch(`/api/messages/${messageId}/regenerate`, {
           body: JSON.stringify({
-            modelId: selectedModelId,
-            controlDefaults: buildControlDraft(),
-            params: buildParams(),
-            prompt: {
-              developer: renderLocalPromptTemplate(developerPrompt),
-              presetId: selectedPromptId,
-              system: renderLocalPromptTemplate(systemPrompt)
-            },
-            provider: selectedProvider,
-            searchPlan: {
-              mode: effectiveSearchPlan.mode,
-              optionIds: effectiveSearchPlan.optionIds
-            },
-            ...(searchPreferenceSource
-              ? {
-                  searchPreferencePlan: { mode: searchPlanMode, optionIds: selectedSearchOptionIds },
-                  searchPreferenceSource
-                }
-              : {}),
-            searchStrategy: effectiveSearchPlan.optionIds[0] ?? "search-disabled",
-            ...toolsOverride(currentModel)
+            ...runControlPayload(runControlSnapshot)
           }),
           headers: {
             "content-type": "application/json"

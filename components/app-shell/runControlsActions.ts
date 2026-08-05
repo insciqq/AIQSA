@@ -66,10 +66,12 @@ export function useRunControlsActions({
   function selectedModelFromStore() {
     const { selectedModelId, selectedProvider } = useComposerControlStore.getState();
     const liveCatalog = currentCatalogFromStore();
+    const renderedModelMatchesSelection =
+      currentModel?.provider === selectedProvider && currentModel.modelId === selectedModelId;
 
     return (
       liveCatalog?.models.find((model) => model.provider === selectedProvider && model.modelId === selectedModelId) ??
-      currentModel
+      (renderedModelMatchesSelection ? currentModel : undefined)
     );
   }
 

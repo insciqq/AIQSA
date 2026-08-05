@@ -19,6 +19,7 @@ import { resetThreadStoreForTest, selectThreadSnapshot, useThreadStore } from ".
 import { resetWorkspaceStoreForTest, useWorkspaceStore } from "./workspaceStore";
 import type { ComposerAttachment } from "@/components/chat/Composer";
 import type { Catalog, CatalogModel, ChatDetail, ChatSummary } from "./types";
+import type { SavedControlDraft } from "./powerAppShellData";
 
 const hostedSearchOptionId = "hosted-openai-search";
 const clientSearchOptionId = "client-openai-search";
@@ -198,6 +199,8 @@ function useMessageRunActionsForTest(input: {
   activeChatId?: string | null;
   activeChatStreaming?: boolean;
   attachments: ComposerAttachment[];
+  buildControlDraft?: () => SavedControlDraft;
+  buildParams?: () => Record<string, unknown>;
   consumeRunStream?: ConsumeMessageRunStream;
   createChat?: (
     folderId?: string | null,
@@ -265,15 +268,17 @@ function useMessageRunActionsForTest(input: {
     activeChatId,
     activeChatIdRef,
     activeStreamAbortRef,
-    buildControlDraft: () => ({
-      backgroundMode: true,
-      maxOutputTokens: "128000",
-      reasoningEffort: "medium",
-      searchStrategyId: "search-disabled",
-      streamMode: false,
-      temperature: "1"
-    }),
-    buildParams: () => ({}),
+    buildControlDraft:
+      input.buildControlDraft ??
+      (() => ({
+        backgroundMode: true,
+        maxOutputTokens: "128000",
+        reasoningEffort: "medium",
+        searchStrategyId: "search-disabled",
+        streamMode: false,
+        temperature: "1"
+      })),
+    buildParams: input.buildParams ?? (() => ({})),
     consumeRunStream:
       input.consumeRunStream ??
       (async () => {
@@ -658,24 +663,39 @@ describe("message run actions", () => {
   });
 
   it("suppresses persisted MCP tools when regenerating with an unsupported model", async () => {
+    const unsupportedModel = {
+      ...model,
+      capabilities: {
+        ...model.capabilities,
+        toolCalling: false
+      },
+      modelId: "selected-without-tools",
+      provider: "selected-provider"
+    };
     const fetchMock = vi.fn(async (..._args: unknown[]) => new Response("", { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);
     const actions = useMessageRunActionsForTest({
       attachments: [],
-      model: {
-        ...model,
-        capabilities: {
-          ...model.capabilities,
-          toolCalling: false
-        }
-      }
+      model
+    });
+    useWorkspaceStore.getState().setCatalog({
+      ...mixedSearchCatalog("personal"),
+      models: [model, unsupportedModel]
+    });
+    useComposerControlStore.setState({
+      selectedModelId: unsupportedModel.modelId,
+      selectedProvider: unsupportedModel.provider
     });
     prepareRegenerationThread();
 
     await actions.regenerateMessage("assistant-original");
 
     const [, requestInit] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
-    expect(JSON.parse(String(requestInit.body))).toMatchObject({ tools: "none" });
+    expect(JSON.parse(String(requestInit.body))).toMatchObject({
+      modelId: unsupportedModel.modelId,
+      provider: unsupportedModel.provider,
+      tools: "none"
+    });
   });
 
   it("restores the draft and skips run creation when pending checkout fails", async () => {
@@ -874,6 +894,77 @@ describe("message run actions", () => {
     });
   });
 
+  it("keeps one selected-model snapshot across blank chat creation", async () => {
+    const selectedModel = {
+      ...model,
+      defaultParams: { maxOutputTokens: 4096 },
+      modelId: "selected-model-b",
+      provider: "selected-provider-b"
+    };
+    const createdChat = {
+      ...chat(),
+      defaultModelId: model.modelId,
+      defaultProvider: model.provider,
+      id: "chat-created-with-old-defaults"
+    };
+    const createChat = vi.fn(async () => {
+      useComposerControlStore.setState({
+        maxOutputTokens: "128000",
+        selectedModelId: model.modelId,
+        selectedProvider: model.provider
+      });
+      return createdChat;
+    });
+    const fetchMock = vi.fn(async () => new Response("", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const actions = useMessageRunActionsForTest({
+      activeChat: null,
+      activeChatId: null,
+      attachments: [],
+      buildControlDraft: () => {
+        const controls = useComposerControlStore.getState();
+        return {
+          maxOutputTokens: controls.maxOutputTokens,
+          reasoningEffort: controls.reasoningEffort
+        };
+      },
+      buildParams: () => {
+        const controls = useComposerControlStore.getState();
+        return {
+          capturedModel: `${controls.selectedProvider}:${controls.selectedModelId}`,
+          maxOutputTokens: Number(controls.maxOutputTokens)
+        };
+      },
+      createChat,
+      model: selectedModel
+    });
+    useWorkspaceStore.getState().setCatalog({
+      ...mixedSearchCatalog("personal"),
+      models: [model, selectedModel]
+    });
+    useComposerControlStore.setState({
+      maxOutputTokens: "4096",
+      selectedModelId: selectedModel.modelId,
+      selectedProvider: selectedModel.provider
+    });
+
+    await actions.submitComposer();
+
+    expect(createChat).toHaveBeenCalledWith(null, composerSessionKey(null));
+    const [, requestInit] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(JSON.parse(String(requestInit.body))).toMatchObject({
+      controlDefaults: {
+        maxOutputTokens: "4096"
+      },
+      modelId: selectedModel.modelId,
+      params: {
+        capturedModel: `${selectedModel.provider}:${selectedModel.modelId}`,
+        maxOutputTokens: 4096
+      },
+      provider: selectedModel.provider
+    });
+  });
+
   it("clears sent attachments immediately and preserves only newer composer work", async () => {
     const sentAttachment = {
       fileName: "sent.pdf",
@@ -943,9 +1034,72 @@ describe("message run actions", () => {
     });
     const actions = useMessageRunActionsForTest({
       attachments: [],
+      buildControlDraft: () => {
+        const controls = useComposerControlStore.getState();
+        return {
+          backgroundMode: controls.backgroundMode,
+          maxOutputTokens: controls.maxOutputTokens,
+          reasoningEffort: controls.reasoningEffort,
+          streamMode: controls.streamMode,
+          temperature: controls.temperature
+        };
+      },
+      buildParams: () => {
+        const controls = useComposerControlStore.getState();
+        return {
+          capturedModel: `${controls.selectedProvider}:${controls.selectedModelId}`,
+          maxOutputTokens: Number(controls.maxOutputTokens)
+        };
+      },
       draft: "Edited answer",
       editingMessageId: "message-1",
+      model: {
+        ...mixedSearchModel,
+        capabilities: {
+          ...mixedSearchModel.capabilities,
+          toolCalling: false
+        },
+        modelId: "source-model",
+        provider: "source-provider"
+      },
       refreshActiveChat
+    });
+    const sourceModel = {
+      ...mixedSearchModel,
+      capabilities: {
+        ...mixedSearchModel.capabilities,
+        toolCalling: false
+      },
+      modelId: "source-model",
+      provider: "source-provider"
+    };
+    const otherModel = {
+      ...model,
+      modelId: "other-model",
+      provider: "other-provider"
+    };
+    useWorkspaceStore.getState().setCatalog({
+      ...mixedSearchCatalog("personal"),
+      defaults: {
+        ...mixedSearchCatalog("personal").defaults,
+        modelId: sourceModel.modelId,
+        provider: sourceModel.provider
+      },
+      models: [sourceModel, otherModel]
+    });
+    useComposerControlStore.setState({
+      backgroundMode: false,
+      developerPrompt: "Source developer prompt",
+      maxOutputTokens: "4096",
+      reasoningEffort: "high",
+      selectedModelId: sourceModel.modelId,
+      selectedPromptId: "source-prompt",
+      selectedProvider: sourceModel.provider,
+      selectedSearchOptionIds: [hostedSearchOptionId, clientSearchOptionId],
+      searchPlanMode: "all_selected",
+      streamMode: true,
+      systemPrompt: "Source system prompt",
+      temperature: "0.25"
     });
     const edit = actions.submitComposer();
     expect(actions.session(composerSessionKey("chat-a")).pendingEdit).toEqual(
@@ -955,6 +1109,20 @@ describe("message run actions", () => {
     useComposerSessionStore.getState().activateSession(composerSessionKey("chat-b"));
     useComposerSessionStore.getState().updateSession(composerSessionKey("chat-b"), {
       draft: "Draft B"
+    });
+    useComposerControlStore.setState({
+      backgroundMode: true,
+      developerPrompt: "Other developer prompt",
+      maxOutputTokens: "8192",
+      reasoningEffort: "low",
+      selectedModelId: otherModel.modelId,
+      selectedPromptId: null,
+      selectedProvider: otherModel.provider,
+      selectedSearchOptionIds: [],
+      searchPlanMode: "model_choice",
+      streamMode: false,
+      systemPrompt: "Other system prompt",
+      temperature: "1"
     });
     resolveEdit(editResponse("Edited answer"));
 
@@ -981,6 +1149,41 @@ describe("message run actions", () => {
       "/api/messages/message-edited/regenerate",
       expect.objectContaining({ method: "POST" })
     );
+    const [, regenerateInit] = fetchMock.mock.calls[1] as unknown as [
+      string,
+      RequestInit
+    ];
+    expect(JSON.parse(String(regenerateInit.body))).toEqual({
+      controlDefaults: {
+        backgroundMode: false,
+        maxOutputTokens: "4096",
+        reasoningEffort: "high",
+        streamMode: true,
+        temperature: "0.25"
+      },
+      modelId: sourceModel.modelId,
+      params: {
+        capturedModel: `${sourceModel.provider}:${sourceModel.modelId}`,
+        maxOutputTokens: 4096
+      },
+      prompt: {
+        developer: "Source developer prompt",
+        presetId: "source-prompt",
+        system: "Source system prompt"
+      },
+      provider: sourceModel.provider,
+      searchPlan: {
+        mode: "model_choice",
+        optionIds: [hostedSearchOptionId, clientSearchOptionId]
+      },
+      searchPreferencePlan: {
+        mode: "all_selected",
+        optionIds: [hostedSearchOptionId, clientSearchOptionId]
+      },
+      searchPreferenceSource: "personal",
+      searchStrategy: hostedSearchOptionId,
+      tools: "none"
+    });
     expect(actions.resetThreadToLatest).not.toHaveBeenCalled();
     expect(actions.refreshActiveChat).toHaveBeenCalledWith("chat-a", {
       preserveControls: true

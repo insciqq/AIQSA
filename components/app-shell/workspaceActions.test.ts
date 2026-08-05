@@ -608,8 +608,8 @@ describe("workspace actions", () => {
         Response.json({
           chat: {
             ...apiChatSummary(created),
-            defaultModelId: null,
-            defaultProvider: null
+            defaultModelId: "server-model-a",
+            defaultProvider: "server-provider-a"
           }
         })
       );
@@ -622,10 +622,12 @@ describe("workspace actions", () => {
       attachments: [attachment],
       draft: "First send"
     });
+    expect(state.setSelectedModelId).not.toHaveBeenCalled();
+    expect(state.setSelectedProvider).not.toHaveBeenCalled();
 
     await expect(state.actions.createChat("folder-1", sourceKey)).resolves.toMatchObject({
-      defaultModelId: "",
-      defaultProvider: "",
+      defaultModelId: "server-model-a",
+      defaultProvider: "server-provider-a",
       id: "chat-created"
     });
     const targetKey = composerSessionKey("chat-created");
@@ -636,6 +638,22 @@ describe("workspace actions", () => {
       attachments: [attachment],
       draft: "First send"
     });
+    expect(state.setSelectedModelId).not.toHaveBeenCalled();
+    expect(state.setSelectedProvider).not.toHaveBeenCalled();
+  });
+
+  it("still applies saved defaults during ordinary chat activation", async () => {
+    const state = useWorkspaceActionsForTest({ attachments: [], draft: "" });
+    const savedChat = {
+      ...state.chatB,
+      defaultModelId: "saved-model-a",
+      defaultProvider: "saved-provider-a"
+    };
+
+    await state.actions.activateChat(savedChat, { resumeRuns: false });
+
+    expect(state.setSelectedModelId).toHaveBeenCalledWith("saved-model-a");
+    expect(state.setSelectedProvider).toHaveBeenCalledWith("saved-provider-a");
   });
 
   it("transfers an inactive blank session without stealing the selected chat", async () => {
