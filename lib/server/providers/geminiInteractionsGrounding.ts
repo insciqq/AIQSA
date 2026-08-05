@@ -1,33 +1,10 @@
-import { parseFragment } from "parse5";
-
-const MAX_HTML_BYTES = 256 * 1_024;
-const MAX_NODES = 512;
-const MAX_DEPTH = 32;
-const MAX_ATTRIBUTES = 1_024;
-const MAX_ATTRIBUTE_VALUE_LENGTH = 8_192;
-const MAX_HREF_LENGTH = 2_048;
-const MAX_CLASS_LENGTH = 512;
-
-const allowedAttributes = new Map<string, ReadonlySet<string>>([
-  ["a", new Set(["class", "href", "rel", "target"])],
-  ["circle", new Set(["class", "cx", "cy", "fill", "r"])],
-  ["div", new Set(["class"])],
-  ["path", new Set(["class", "clip-rule", "d", "fill", "fill-rule"])],
-  ["style", new Set(["type"])],
-  ["svg", new Set(["class", "fill", "height", "viewbox", "width", "xmlns"])]
-]);
-
-const forbiddenCss = [
-  /@import/iu,
-  /url\s*\(/iu,
-  /expression\s*\(/iu,
-  /javascript\s*:/iu,
-  /behavior\s*:/iu,
-  /position\s*:\s*(?:fixed|sticky)\b/iu,
-  /:host\b/iu,
-  /::part\s*\(/iu,
-  /::slotted\s*\(/iu
-];
+import { parseFragment, serialize } from "parse5";
+import {
+  GEMINI_SEARCH_SUGGESTIONS_LIMITS,
+  geminiSearchSuggestionAttributes,
+  hasUnsafeGeminiSuggestionControls,
+  isValidGeminiSearchSuggestionAttribute
+} from "../../domain/geminiSearchSuggestions";
 
 type HtmlNode = {
   attrs?: { name: string; value: string }[];
@@ -37,81 +14,37 @@ type HtmlNode = {
   value?: string;
 };
 
-function isGoogleHttpsHref(value: string): boolean {
-  if (value.length === 0 || value.length > MAX_HREF_LENGTH || /[\u0000-\u0020\u007f]/u.test(value)) {
-    return false;
-  }
-
-  try {
-    const url = new URL(value);
-    const hostname = url.hostname.toLowerCase();
-    return (
-      url.protocol === "https:" &&
-      !url.username &&
-      !url.password &&
-      !url.port &&
-      (hostname === "google.com" || hostname.endsWith(".google.com"))
-    );
-  } catch {
-    return false;
-  }
+function invalidGroundingHtml(): never {
+  throw new Error("gemini_interactions_grounding_html_invalid");
 }
 
-function validClass(value: string): boolean {
-  return value.length <= MAX_CLASS_LENGTH && /^[A-Za-z0-9_ -]*$/u.test(value);
+function isValidStyleAttribute(name: string, value: string): boolean {
+  return (
+    name === "type" &&
+    value === "text/css" &&
+    value.length <= GEMINI_SEARCH_SUGGESTIONS_LIMITS.maxAttributeValueLength
+  );
 }
 
-function validSvgNumber(value: string): boolean {
-  return value.length <= 32 && /^-?(?:\d+(?:\.\d+)?|\.\d+)(?:px)?$/u.test(value);
-}
+function removeStyleNodes(node: HtmlNode): void {
+  if (!node.childNodes) return;
 
-function validAttribute(tagName: string, name: string, value: string): boolean {
-  if (value.length > MAX_ATTRIBUTE_VALUE_LENGTH) {
-    return false;
-  }
-  if (name === "class") return validClass(value);
-  if (tagName === "a" && name === "href") return isGoogleHttpsHref(value);
-  if (tagName === "a" && name === "target") return value === "_blank";
-  if (tagName === "a" && name === "rel") {
-    const tokens = value.toLowerCase().split(/\s+/u).filter(Boolean);
-    return tokens.length > 0 && tokens.every((token) => token === "noopener" || token === "noreferrer");
-  }
-  if (tagName === "style" && name === "type") return value === "text/css";
-  if (tagName === "svg" && name === "xmlns") return value === "http://www.w3.org/2000/svg";
-  if (tagName === "svg" && name === "viewbox") {
-    const values = value.trim().split(/\s+/u);
-    return values.length === 4 && values.every(validSvgNumber);
-  }
-  if (name === "width" || name === "height" || name === "cx" || name === "cy" || name === "r") {
-    return validSvgNumber(value);
-  }
-  if (name === "fill") {
-    return value === "none" || value === "currentColor" || /^#[0-9A-Fa-f]{3,8}$/u.test(value);
-  }
-  if (name === "fill-rule" || name === "clip-rule") {
-    return value === "evenodd" || value === "nonzero";
-  }
-  if (tagName === "path" && name === "d") {
-    return value.length <= MAX_ATTRIBUTE_VALUE_LENGTH && /^[MmZzLlHhVvCcSsQqTtAaEe0-9,.+\-\s]+$/u.test(value);
-  }
-
-  return false;
-}
-
-function validateCss(value: string): void {
-  if (forbiddenCss.some((pattern) => pattern.test(value))) {
-    throw new Error("gemini_interactions_grounding_html_invalid");
-  }
+  node.childNodes = node.childNodes.filter((child) => {
+    const tagName = (child.tagName ?? child.nodeName ?? "").toLowerCase();
+    if (tagName === "style") return false;
+    removeStyleNodes(child);
+    return true;
+  });
 }
 
 export function validateGeminiSearchSuggestionsHtml(value: unknown): string {
   if (
     typeof value !== "string" ||
     value.length === 0 ||
-    Buffer.byteLength(value, "utf8") > MAX_HTML_BYTES ||
-    /[\u0000\u000b\u000c\u007f]/u.test(value)
+    Buffer.byteLength(value, "utf8") > GEMINI_SEARCH_SUGGESTIONS_LIMITS.maxHtmlBytes ||
+    hasUnsafeGeminiSuggestionControls(value)
   ) {
-    throw new Error("gemini_interactions_grounding_html_invalid");
+    invalidGroundingHtml();
   }
 
   const parseErrors: unknown[] = [];
@@ -119,10 +52,8 @@ export function validateGeminiSearchSuggestionsHtml(value: unknown): string {
     onParseError(error) {
       parseErrors.push(error);
     }
-  }) as HtmlNode;
-  if (parseErrors.length > 0) {
-    throw new Error("gemini_interactions_grounding_html_invalid");
-  }
+  });
+  if (parseErrors.length > 0) invalidGroundingHtml();
 
   let attributeCount = 0;
   let nodeCount = 0;
@@ -130,54 +61,53 @@ export function validateGeminiSearchSuggestionsHtml(value: unknown): string {
 
   function visit(node: HtmlNode, depth: number, parentTag?: string): void {
     nodeCount += 1;
-    if (nodeCount > MAX_NODES || depth > MAX_DEPTH) {
-      throw new Error("gemini_interactions_grounding_html_invalid");
+    if (
+      nodeCount > GEMINI_SEARCH_SUGGESTIONS_LIMITS.maxNodes ||
+      depth > GEMINI_SEARCH_SUGGESTIONS_LIMITS.maxDepth
+    ) {
+      invalidGroundingHtml();
     }
 
     const nodeName = node.nodeName ?? "";
     if (nodeName === "#comment" || nodeName === "#documentType") {
-      throw new Error("gemini_interactions_grounding_html_invalid");
+      invalidGroundingHtml();
     }
     if (nodeName === "#text") {
-      const text = node.value ?? "";
-      if (parentTag === "style") {
-        validateCss(text);
-      } else if (/[\u0000\u000b\u000c\u007f]/u.test(text)) {
-        throw new Error("gemini_interactions_grounding_html_invalid");
+      if (parentTag !== "style" && hasUnsafeGeminiSuggestionControls(node.value ?? "")) {
+        invalidGroundingHtml();
       }
       return;
     }
     if (nodeName !== "#document-fragment") {
       const tagName = (node.tagName ?? nodeName).toLowerCase();
-      const tagAttributes = allowedAttributes.get(tagName);
-      if (!tagAttributes) {
-        throw new Error("gemini_interactions_grounding_html_invalid");
-      }
+      const projectedAttributes = geminiSearchSuggestionAttributes(tagName);
+      if (!projectedAttributes && tagName !== "style") invalidGroundingHtml();
+
       const attributes = node.attrs ?? [];
       attributeCount += attributes.length;
-      if (attributeCount > MAX_ATTRIBUTES) {
-        throw new Error("gemini_interactions_grounding_html_invalid");
+      if (attributeCount > GEMINI_SEARCH_SUGGESTIONS_LIMITS.maxAttributes) {
+        invalidGroundingHtml();
       }
+
       const seen = new Set<string>();
       for (const attribute of attributes) {
         const name = attribute.name.toLowerCase();
-        if (
-          seen.has(name) ||
-          !tagAttributes.has(name) ||
-          !validAttribute(tagName, name, attribute.value)
-        ) {
-          throw new Error("gemini_interactions_grounding_html_invalid");
-        }
+        const isValid = tagName === "style"
+          ? isValidStyleAttribute(name, attribute.value)
+          : Boolean(
+              projectedAttributes?.includes(name) &&
+              isValidGeminiSearchSuggestionAttribute(tagName, name, attribute.value)
+            );
+        if (seen.has(name) || !isValid) invalidGroundingHtml();
         seen.add(name);
-        if (tagName === "a" && name === "href") {
-          googleLinkCount += 1;
-        }
+        if (tagName === "a" && name === "href") googleLinkCount += 1;
       }
-      if (tagName === "a" && !seen.has("href")) {
-        throw new Error("gemini_interactions_grounding_html_invalid");
-      }
-      if (tagName === "style" && (node.childNodes ?? []).some((child) => child.nodeName !== "#text")) {
-        throw new Error("gemini_interactions_grounding_html_invalid");
+      if (tagName === "a" && !seen.has("href")) invalidGroundingHtml();
+      if (
+        tagName === "style" &&
+        (node.childNodes ?? []).some((child) => child.nodeName !== "#text")
+      ) {
+        invalidGroundingHtml();
       }
       parentTag = tagName;
     }
@@ -187,10 +117,17 @@ export function validateGeminiSearchSuggestionsHtml(value: unknown): string {
     }
   }
 
-  visit(fragment, 0);
-  if (googleLinkCount === 0) {
-    throw new Error("gemini_interactions_grounding_html_invalid");
+  visit(fragment as HtmlNode, 0);
+  if (googleLinkCount === 0) invalidGroundingHtml();
+
+  removeStyleNodes(fragment as HtmlNode);
+  const projection = serialize(fragment);
+  if (
+    projection.length === 0 ||
+    Buffer.byteLength(projection, "utf8") > GEMINI_SEARCH_SUGGESTIONS_LIMITS.maxHtmlBytes
+  ) {
+    invalidGroundingHtml();
   }
 
-  return value;
+  return projection;
 }

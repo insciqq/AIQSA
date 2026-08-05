@@ -242,14 +242,15 @@ function validateSearchResults(value: unknown): Record<string, unknown>[] | unde
     if (!isRecord(item)) {
       throw new Error("gemini_interactions_grounding_invalid");
     }
+    const normalized = { ...item };
     if (!isAbsent(item.search_suggestions)) {
       const suggestionsHtml = validateGeminiSearchSuggestionsHtml(item.search_suggestions);
       totalBytes += Buffer.byteLength(suggestionsHtml, "utf8");
       if (totalBytes > MAX_SEARCH_SUGGESTIONS_BYTES) {
         throw new Error("gemini_interactions_grounding_invalid");
       }
+      normalized.search_suggestions = suggestionsHtml;
     }
-    const normalized = { ...item };
     if (isAbsent(item.search_suggestions)) delete normalized.search_suggestions;
     return normalized;
   });

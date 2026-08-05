@@ -8,7 +8,13 @@ import {
 import { DEFAULT_PROVIDER_STREAM_LIMITS } from "./network";
 
 const suggestionsHtml = [
-  "<style>.container { display: flex; position: relative; }</style>",
+  "<style>#provider-css-canary { pos\\69 tion: fixed; inset: 0; z-index: 2147483647; }</style>",
+  '<div class="container"><a class="chip" href="https://www.google.com/search?q=aiqsa" target="_blank">Search on Google</a>',
+  '<svg width="20" height="20" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg">',
+  '<circle cx="10" cy="10" r="8" fill="#4285f4"></circle>',
+  '<path d="M1 1 L2 2 Z" fill="currentColor"></path></svg></div>'
+].join("");
+const suggestionsProjection = [
   '<div class="container"><a class="chip" href="https://www.google.com/search?q=aiqsa" target="_blank">Search on Google</a>',
   '<svg width="20" height="20" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg">',
   '<circle cx="10" cy="10" r="8" fill="#4285f4"></circle>',
@@ -102,7 +108,7 @@ describe("Gemini Interactions response normalization", () => {
         }],
         provider: "gemini",
         runSearch: { callCount: 1, queryCount: 1 },
-        suggestionsHtml
+        suggestionsHtml: suggestionsProjection
       },
       type: "grounding_display"
     });
@@ -119,8 +125,11 @@ describe("Gemini Interactions response normalization", () => {
     });
     const durableShape = JSON.stringify(normalized.result);
     expect(durableShape).not.toContain(suggestionsHtml);
+    expect(durableShape).not.toContain(suggestionsProjection);
     expect(durableShape).not.toContain("search-call-signature");
     expect(durableShape).not.toContain("search-result-signature");
+    expect(JSON.stringify(normalized.events)).not.toContain("provider-css-canary");
+    expect(JSON.stringify(normalized.events)).not.toContain("<style");
   });
 
   it("preserves ordered provider signatures only in private function continuation state", async () => {
@@ -269,9 +278,11 @@ describe("Gemini Interactions response normalization", () => {
 
     expect(normalized.result.finalText).toBe("Grounded answer");
     expect(normalized.events).toContainEqual(expect.objectContaining({
-      data: expect.objectContaining({ suggestionsHtml }),
+      data: expect.objectContaining({ suggestionsHtml: suggestionsProjection }),
       type: "grounding_display"
     }));
+    expect(JSON.stringify(normalized.events)).not.toContain("provider-css-canary");
+    expect(JSON.stringify(normalized.events)).not.toContain("<style");
     expect(JSON.stringify(normalized.result)).not.toContain("private-search-call-signature");
     expect(JSON.stringify(normalized.result)).not.toContain("private-search-result-signature");
   });
@@ -376,7 +387,7 @@ describe("Gemini Interactions response normalization", () => {
 
     expect(normalized.result.finalText).toBe("Grounded answer");
     expect(normalized.events).toContainEqual(expect.objectContaining({
-      data: expect.objectContaining({ suggestionsHtml }),
+      data: expect.objectContaining({ suggestionsHtml: suggestionsProjection }),
       type: "grounding_display"
     }));
   });
@@ -443,12 +454,14 @@ describe("Gemini Interactions response normalization", () => {
     const early = markers.find(({ event }) => event.type === "grounding_display" &&
       event.data.suggestionsHtml === "");
     const validated = markers.find(({ event }) => event.type === "grounding_display" &&
-      event.data.suggestionsHtml === suggestionsHtml);
+      event.data.suggestionsHtml === suggestionsProjection);
     const tokenIndex = normalized.events.findIndex((event) => event.type === "token");
     expect(early?.index).toBeGreaterThanOrEqual(0);
     expect(validated?.index).toBeGreaterThan(early?.index ?? -1);
     expect(tokenIndex).toBeGreaterThan(validated?.index ?? Number.MAX_SAFE_INTEGER);
     expect(normalized.result.finalText).toBe("Grounded stream");
+    expect(JSON.stringify(normalized.events)).not.toContain("provider-css-canary");
+    expect(JSON.stringify(normalized.events)).not.toContain("<style");
   });
 
   it("fails closed without releasing buffered grounded text when suggestions are missing", async () => {

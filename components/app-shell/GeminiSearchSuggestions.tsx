@@ -1,85 +1,180 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useId, useRef } from "react";
+import {
+  GEMINI_SEARCH_SUGGESTIONS_LIMITS,
+  geminiSearchSuggestionAttributes,
+  hasUnsafeGeminiSuggestionControls,
+  isValidGeminiSearchSuggestionAttribute
+} from "../../lib/domain/geminiSearchSuggestions";
 
-const maxSuggestionBytes = 256 * 1024;
-const maxSuggestionNodes = 512;
-const allowedAttributes = new Map<string, ReadonlySet<string>>([
-  ["a", new Set(["class", "href", "rel", "target"])],
-  ["circle", new Set(["class", "cx", "cy", "fill", "r"])],
-  ["div", new Set(["class"])],
-  ["path", new Set(["class", "clip-rule", "d", "fill", "fill-rule"])],
-  ["style", new Set(["type"])],
-  ["svg", new Set(["class", "fill", "height", "viewbox", "width", "xmlns"])]
-]);
-
-function safeGoogleHref(value: string): boolean {
-  if (!value || value.length > 2_048 || /[\u0000-\u0020\u007f]/u.test(value)) {
-    return false;
-  }
-  try {
-    const url = new URL(value);
-    return url.protocol === "https:" &&
-      !url.username &&
-      !url.password &&
-      !url.port &&
-      (url.hostname === "google.com" || url.hostname.endsWith(".google.com"));
-  } catch {
-    return false;
-  }
+const suggestionStyles = `
+:host {
+  display: block;
+  contain: layout paint style;
+  inline-size: 100%;
+  max-inline-size: 100%;
+  min-inline-size: 0;
+  overflow: hidden;
+  color: rgb(var(--ink));
+  font: inherit;
 }
 
-function safeStyleText(value: string): boolean {
-  return new TextEncoder().encode(value).byteLength <= maxSuggestionBytes && !(
-    /@import|url\s*\(|expression\s*\(|javascript\s*:|behavior\s*:|position\s*:\s*(?:fixed|sticky)|:host|::part|::slotted/iu
-      .test(value)
-  );
+*, *::before, *::after {
+  box-sizing: border-box;
+  max-inline-size: 100%;
+}
+
+[data-aiqsa-suggestions-content="true"] {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  min-inline-size: 0;
+  max-inline-size: 100%;
+  overflow: hidden;
+}
+
+[data-aiqsa-suggestions-content="true"] div {
+  display: contents;
+}
+
+[data-aiqsa-suggestions-content="true"] a {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-block-size: 44px;
+  max-inline-size: 100%;
+  padding: 0.625rem 0.75rem;
+  border: 1px solid rgb(var(--trace-subtle) / 0.9);
+  border-radius: 0.75rem;
+  background: rgb(var(--control-surface) / 0.8);
+  color: rgb(var(--ink));
+  font: inherit;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+  text-decoration: none;
+  white-space: normal;
+}
+
+[data-aiqsa-suggestions-content="true"] a:hover {
+  background: rgb(var(--control-hover) / 0.9);
+}
+
+[data-aiqsa-suggestions-content="true"] a:focus-visible {
+  outline: 2px solid rgb(var(--proof) / 0.78);
+  outline-offset: -2px;
+}
+
+[data-aiqsa-suggestions-content="true"] svg {
+  display: block;
+  flex: none;
+  inline-size: 1.125rem;
+  block-size: 1.125rem;
+  max-inline-size: 1.125rem;
+  max-block-size: 1.125rem;
+  overflow: hidden;
+}
+`;
+
+type ValidationState = {
+  attributeCount: number;
+  googleLinkCount: number;
+  nodeCount: number;
+};
+
+function validateSuggestionNode(
+  node: Node,
+  depth: number,
+  state: ValidationState
+): boolean {
+  state.nodeCount += 1;
+  if (
+    state.nodeCount > GEMINI_SEARCH_SUGGESTIONS_LIMITS.maxNodes ||
+    depth > GEMINI_SEARCH_SUGGESTIONS_LIMITS.maxDepth
+  ) {
+    return false;
+  }
+
+  if (node.nodeType === Node.TEXT_NODE) {
+    return !hasUnsafeGeminiSuggestionControls(node.nodeValue ?? "");
+  }
+  if (node.nodeType === Node.COMMENT_NODE || node.nodeType === Node.DOCUMENT_TYPE_NODE) {
+    return false;
+  }
+  if (
+    node.nodeType !== Node.DOCUMENT_FRAGMENT_NODE &&
+    node.nodeType !== Node.ELEMENT_NODE
+  ) {
+    return false;
+  }
+
+  if (node.nodeType === Node.ELEMENT_NODE) {
+    const element = node as Element;
+    const tagName = element.localName.toLowerCase();
+    const projectedAttributes = geminiSearchSuggestionAttributes(tagName);
+    if (!projectedAttributes) return false;
+
+    state.attributeCount += element.attributes.length;
+    if (state.attributeCount > GEMINI_SEARCH_SUGGESTIONS_LIMITS.maxAttributes) {
+      return false;
+    }
+
+    let hasHref = false;
+    for (const attribute of element.attributes) {
+      const name = attribute.name.toLowerCase();
+      if (
+        hasUnsafeGeminiSuggestionControls(attribute.value) ||
+        !projectedAttributes.includes(name) ||
+        !isValidGeminiSearchSuggestionAttribute(tagName, name, attribute.value)
+      ) {
+        return false;
+      }
+      if (tagName === "a" && name === "href") hasHref = true;
+    }
+    if (tagName === "a") {
+      if (!hasHref) return false;
+      state.googleLinkCount += 1;
+    }
+  }
+
+  for (const child of node.childNodes) {
+    if (!validateSuggestionNode(child, depth + 1, state)) return false;
+  }
+  return true;
 }
 
 function validatedSuggestionFragment(html: string): DocumentFragment | null {
-  if (!html || new TextEncoder().encode(html).byteLength > maxSuggestionBytes) {
+  if (
+    html.length === 0 ||
+    new TextEncoder().encode(html).byteLength > GEMINI_SEARCH_SUGGESTIONS_LIMITS.maxHtmlBytes ||
+    hasUnsafeGeminiSuggestionControls(html)
+  ) {
     return null;
   }
+
   const template = document.createElement("template");
   template.innerHTML = html;
-  const walker = document.createTreeWalker(template.content, NodeFilter.SHOW_ALL);
-  let nodeCount = 0;
-  let node: Node | null = walker.nextNode();
-  while (node) {
-    nodeCount += 1;
-    if (nodeCount > maxSuggestionNodes) return null;
-    if (node.nodeType === Node.COMMENT_NODE) return null;
-    if (node.nodeType === Node.ELEMENT_NODE) {
-      const element = node as Element;
-      const tag = element.localName.toLowerCase();
-      const attributes = allowedAttributes.get(tag);
-      if (!attributes) return null;
-      for (const attribute of [...element.attributes]) {
-        const name = attribute.name.toLowerCase();
-        if (!attributes.has(name) || name.startsWith("on")) return null;
-        if (name === "href" && !safeGoogleHref(attribute.value)) return null;
-        if (tag === "a" && name === "target" && attribute.value !== "_blank") return null;
-        if (tag === "a" && name === "rel") {
-          const rel = attribute.value.toLowerCase().split(/\s+/u).filter(Boolean);
-          if (!rel.length || rel.some((token) => token !== "noopener" && token !== "noreferrer")) {
-            return null;
-          }
-        }
-        if (tag === "style" && name === "type" && attribute.value !== "text/css") return null;
-      }
-      if (tag === "style" && !safeStyleText(element.textContent ?? "")) return null;
-    } else if (
-      node.nodeType !== Node.TEXT_NODE &&
-      node.nodeType !== Node.DOCUMENT_FRAGMENT_NODE
-    ) {
-      return null;
-    }
-    node = walker.nextNode();
+  const state: ValidationState = { attributeCount: 0, googleLinkCount: 0, nodeCount: 0 };
+  if (!validateSuggestionNode(template.content, 0, state) || state.googleLinkCount === 0) {
+    return null;
   }
   return template.content;
 }
 
+function createSuggestionContent(fragment: DocumentFragment): HTMLDivElement {
+  const wrapper = document.createElement("div");
+  wrapper.dataset.aiqsaSuggestionsContent = "true";
+  wrapper.append(fragment.cloneNode(true));
+  for (const svg of wrapper.querySelectorAll("svg")) {
+    svg.setAttribute("aria-hidden", "true");
+    svg.setAttribute("focusable", "false");
+  }
+  return wrapper;
+}
+
 export function GeminiSearchSuggestions({ html }: Readonly<{ html: string }>) {
+  const headingId = useId();
   const hostRef = useRef<HTMLDivElement>(null);
   const invalidRef = useRef<HTMLParagraphElement>(null);
 
@@ -87,6 +182,7 @@ export function GeminiSearchSuggestions({ html }: Readonly<{ html: string }>) {
     const host = hostRef.current;
     const invalid = invalidRef.current;
     if (!host || !invalid) return;
+
     const fragment = validatedSuggestionFragment(html);
     if (!fragment) {
       host.hidden = true;
@@ -94,25 +190,39 @@ export function GeminiSearchSuggestions({ html }: Readonly<{ html: string }>) {
       host.shadowRoot?.replaceChildren();
       return;
     }
+
+    const style = document.createElement("style");
+    style.dataset.aiqsaSuggestionsStyle = "true";
+    style.textContent = suggestionStyles;
+    const content = createSuggestionContent(fragment);
+    const shadow = host.shadowRoot ?? host.attachShadow({ mode: "open" });
+    shadow.replaceChildren(style, content);
     host.hidden = false;
     invalid.hidden = true;
-    const shadow = host.shadowRoot ?? host.attachShadow({ mode: "open" });
-    shadow.replaceChildren(fragment.cloneNode(true));
+
     return () => shadow.replaceChildren();
   }, [html]);
 
   return (
     <aside
+      aria-labelledby={headingId}
       className="mt-5 overflow-hidden rounded-panel border border-trace-subtle bg-control-surface/45 px-3 py-3"
       data-testid="gemini-search-suggestions"
     >
-      <p className="mb-2 text-metadata font-medium uppercase tracking-[0.08em] text-ink-muted">
+      <p
+        className="mb-2 text-metadata font-medium uppercase tracking-[0.08em] text-ink-muted"
+        id={headingId}
+      >
         Google Search suggestions
       </p>
       <p className="text-xs leading-5 text-critical" hidden ref={invalidRef} role="alert">
         Search suggestions could not be displayed safely.
       </p>
-      <div className="min-w-0" ref={hostRef} />
+      <div
+        className="min-w-0 max-w-full overflow-hidden"
+        data-testid="gemini-search-suggestions-host"
+        ref={hostRef}
+      />
     </aside>
   );
 }
