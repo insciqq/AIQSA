@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
+import { McpClientSessionError } from "../mcp/clientSession";
 import type {
   NormalizedRunRequest,
   ProviderAdapter,
@@ -1274,6 +1275,142 @@ describe("run recovery", () => {
       finalText: "Recovered final answer",
       usage: { inputTokens: 8, outputTokens: 5, totalTokens: 13 }
     });
+  });
+
+  it.each([
+    { code: "mcp_initialize_response_too_large", operation: "initialize" },
+    { code: "mcp_inventory_response_too_large", operation: "list_tools" },
+    { code: "mcp_call_result_too_large", operation: "call_tool" },
+    { code: "mcp_response_too_large", operation: "session" }
+  ] as const)("keeps recovered $code evidence and provider output free of overflow data", async ({
+    code,
+    operation
+  }) => {
+    const argumentMarker = `private-recovery-argument-${code}`;
+    const prohibitedMarkers = {
+      body: `private-recovery-body-${code}`,
+      credential: `private-recovery-credential-${code}`,
+      endpoint: `private-recovery-endpoint-${code}`,
+      headers: `private-recovery-headers-${code}`,
+      parserDetail: `private-recovery-parser-detail-${code}`,
+      partialResult: `private-recovery-partial-result-${code}`
+    };
+    const canonicalArguments = { password: argumentMarker, value: "alpha" };
+    const overflow = new McpClientSessionError({ code, operation });
+    for (const [key, value] of Object.entries(prohibitedMarkers)) {
+      Object.defineProperty(overflow, key, { enumerable: true, value });
+    }
+
+    const requests: ProviderRunRequest[] = [];
+    const adapter: ProviderAdapter = {
+      buildRequestPreview: () => ({}),
+      async *stream(request) {
+        requests.push(request);
+        return {
+          finalProviderResponsePreview: { id: "response-after-overflow" },
+          finalText: "Recovered after safe tool failure",
+          providerResponseId: "response-after-overflow",
+          usage: { inputTokens: 2, outputTokens: 3, reasoningTokens: 0 }
+        };
+      }
+    };
+    const runtimeCall = vi.fn(async () => {
+      throw overflow;
+    });
+    const harness = createHarness({
+      mcpRuntime: {
+        callTool: runtimeCall,
+        ensureAcceptedGeneration: async () => true
+      },
+      providers: { openai: adapter }
+    });
+    const persistedCall: PersistedToolLoopCall = {
+      ...persistedRecoveryCall(),
+      arguments: canonicalArguments
+    };
+    const checkpointState = installCheckpointState(harness, checkpointedRun({
+      calls: [persistedCall],
+      phase: "tools_pending",
+      providerToolMessages: [{
+        arguments: JSON.stringify(canonicalArguments),
+        call_id: "provider-call-1",
+        name: recoveryToolName,
+        type: "function_call"
+      }]
+    }));
+
+    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+
+    expect(runtimeCall).toHaveBeenCalledOnce();
+    expect(runtimeCall).toHaveBeenCalledWith(expect.objectContaining({
+      arguments: canonicalArguments,
+      name: "remember"
+    }));
+    const [settledCall] = checkpointState.calls();
+    expect(settledCall).toMatchObject({
+      arguments: canonicalArguments,
+      state: "error"
+    });
+    expect(settledCall?.result).toMatchObject({
+      callId: "provider-call-1",
+      content: [{ text: `Tool failed: ${overflow.message}`, type: "text" }],
+      name: recoveryToolName,
+      rawPreview: {
+        finalProviderResponsePreview: { code, error: overflow.message },
+        requestPreview: {
+          toolCall: { id: "provider-call-1", name: recoveryToolName }
+        }
+      },
+      status: "error",
+      usage: {
+        inputTokens: 0,
+        outputTokens: 0,
+        reasoningTokens: 0,
+        totalTokens: 0
+      }
+    });
+    const settledResult = JSON.stringify(settledCall?.result);
+    expect(settledResult).not.toContain(argumentMarker);
+    for (const marker of Object.values(prohibitedMarkers)) {
+      expect(settledResult).not.toContain(marker);
+    }
+
+    const events = harness.state.events.map(({ event }) => event);
+    const toolResultEvent = events.find((event) =>
+      event.type === "artifact" && event.data.artifactType === "tool_result"
+    );
+    expect(toolResultEvent).toMatchObject({
+      data: { payload: { message: overflow.message, status: "error" } }
+    });
+    expect(JSON.stringify(toolResultEvent)).not.toContain(argumentMarker);
+    expect(JSON.stringify(events)).not.toContain(argumentMarker);
+    for (const marker of Object.values(prohibitedMarkers)) {
+      expect(JSON.stringify(events)).not.toContain(marker);
+    }
+
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.providerToolMessages).toEqual([
+      {
+        arguments: JSON.stringify(canonicalArguments),
+        call_id: "provider-call-1",
+        name: recoveryToolName,
+        type: "function_call"
+      },
+      {
+        call_id: "provider-call-1",
+        output: `Tool failed: ${overflow.message}`,
+        type: "function_call_output"
+      }
+    ]);
+    const providerOutput = JSON.stringify(requests[0]?.providerToolMessages?.[1]);
+    expect(providerOutput).not.toContain(argumentMarker);
+    for (const marker of Object.values(prohibitedMarkers)) {
+      expect(JSON.stringify(requests)).not.toContain(marker);
+    }
+    expect(harness.state.completed).toMatchObject({
+      finalText: "Recovered after safe tool failure"
+    });
+    expect(harness.state.recoveredErrors).toEqual([]);
   });
 
   it("appends a recovered provider delta to durable pre-crash assistant text", async () => {

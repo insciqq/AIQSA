@@ -2172,7 +2172,14 @@ describe("run execution", () => {
     operation
   }) => {
     const argumentMarker = `private-argument-${code}`;
-    const partialResultMarker = `private-partial-result-${code}`;
+    const prohibitedMarkers = {
+      body: `private-body-${code}`,
+      credential: `private-credential-${code}`,
+      endpoint: `private-endpoint-${code}`,
+      headers: `private-headers-${code}`,
+      parserDetail: `private-parser-detail-${code}`,
+      partialResult: `private-partial-result-${code}`
+    };
     const namespacedName = "mcp_overflow_lookup_a";
     const mcp: McpRunPlanSnapshot = {
       servers: [{
@@ -2211,10 +2218,9 @@ describe("run execution", () => {
       return providerResult({ finalText: "Safe completion", usage: usage(1, 1, 0) });
     });
     const overflow = new McpClientSessionError({ code, operation });
-    Object.defineProperty(overflow, "partialResult", {
-      enumerable: true,
-      value: partialResultMarker
-    });
+    for (const [key, value] of Object.entries(prohibitedMarkers)) {
+      Object.defineProperty(overflow, key, { enumerable: true, value });
+    }
     const mcpRuntime: NonNullable<RunExecutionInput["mcpRuntime"]> = {
       async callTool() {
         throw overflow;
@@ -2243,7 +2249,9 @@ describe("run execution", () => {
       }
     });
     expect(JSON.stringify(toolResultEvent)).not.toContain(argumentMarker);
-    expect(JSON.stringify(toolResultEvent)).not.toContain(partialResultMarker);
+    for (const marker of Object.values(prohibitedMarkers)) {
+      expect(JSON.stringify(toolResultEvent)).not.toContain(marker);
+    }
     const settledCall = [...repository.toolCalls.values()][0];
     expect(settledCall).toMatchObject({
       arguments: { marker: argumentMarker },
@@ -2260,11 +2268,34 @@ describe("run execution", () => {
           toolCall: { id: "overflow-call", name: namespacedName }
         }
       },
-      status: "error"
+      status: "error",
+      usage: usage(0, 0, 0)
     });
     const durableError = JSON.stringify(settledCall.result);
     expect(durableError).not.toContain(argumentMarker);
-    expect(durableError).not.toContain(partialResultMarker);
+    for (const marker of Object.values(prohibitedMarkers)) {
+      expect(durableError).not.toContain(marker);
+    }
+    expect(providerRequests).toHaveLength(2);
+    expect(providerRequests[1]?.providerToolMessages).toEqual([
+      {
+        arguments: JSON.stringify({ marker: argumentMarker }),
+        call_id: "overflow-call",
+        name: namespacedName,
+        status: "completed",
+        type: "function_call"
+      },
+      {
+        call_id: "overflow-call",
+        output: `Tool failed: ${overflow.message}`,
+        type: "function_call_output"
+      }
+    ]);
+    const providerOutput = JSON.stringify(providerRequests[1]?.providerToolMessages?.[1]);
+    expect(providerOutput).not.toContain(argumentMarker);
+    for (const marker of Object.values(prohibitedMarkers)) {
+      expect(JSON.stringify(providerRequests)).not.toContain(marker);
+    }
   });
 
   it("fails a legacy attachment-bearing Perplexity tool call closed without a SearchRun", async () => {

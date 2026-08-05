@@ -29,10 +29,7 @@ import type {
   ProviderSearchAdapter
 } from "../providers/types";
 import type { ProviderRuntimeBinding } from "../providers/runtimeFactory";
-import {
-  McpClientSessionError,
-  type AiqsaMcpToolCallResult
-} from "../mcp/clientSession";
+import type { AiqsaMcpToolCallResult } from "../mcp/clientSession";
 import { getDefaultMcpRuntimeCoordinator } from "../mcp/defaultRuntime";
 import {
   mcpRunTools,
@@ -86,14 +83,9 @@ import {
   toolResultInspectionArtifact
 } from "./toolInspection";
 import { createRunTokenPersistenceBuffer } from "./runTokenPersistence";
+import { mcpResponseOverflowToolExecutionResult } from "./mcpOverflowToolResult";
 
 const maxToolRounds = 3;
-const mcpResponseOverflowCodes: ReadonlySet<McpClientSessionError["code"]> = new Set([
-  "mcp_initialize_response_too_large",
-  "mcp_inventory_response_too_large",
-  "mcp_call_result_too_large",
-  "mcp_response_too_large"
-]);
 
 const globalForRuns = globalThis as unknown as {
   __aiqsaActiveRunControllers?: Map<string, AbortController>;
@@ -390,11 +382,10 @@ function toolExecutionErrorResult(
   error: unknown,
   label: "Search" | "Tool" = "Tool"
 ): ToolExecutionResult {
+  const overflowResult = mcpResponseOverflowToolExecutionResult(call, error, label);
+  if (overflowResult) return overflowResult;
+
   const message = error instanceof Error ? error.message : `${label} execution failed`;
-  const responseOverflowCode = error instanceof McpClientSessionError &&
-    mcpResponseOverflowCodes.has(error.code)
-    ? error.code
-    : null;
 
   return {
     callId: call.id,
@@ -406,13 +397,10 @@ function toolExecutionErrorResult(
     ],
     name: call.name,
     rawPreview: {
-      finalProviderResponsePreview: {
-        ...(responseOverflowCode ? { code: responseOverflowCode } : {}),
-        error: message
-      },
+      finalProviderResponsePreview: { error: message },
       requestPreview: {
         toolCall: {
-          ...(responseOverflowCode ? {} : { arguments: call.arguments }),
+          arguments: call.arguments,
           id: call.id,
           name: call.name
         }

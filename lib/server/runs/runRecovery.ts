@@ -50,6 +50,7 @@ import {
   type ProviderToolLoopContinuation
 } from "./providerToolLoop";
 import { applyProviderRequestContextBudget } from "./runContextBudget";
+import { mcpResponseOverflowToolExecutionResult } from "./mcpOverflowToolResult";
 import {
   getRunAttachmentLimits,
   type RunAttachmentLimits
@@ -275,6 +276,9 @@ function toolExecutionErrorResult(
   error: unknown,
   label: "Search" | "Tool" = "Tool"
 ): ToolExecutionResult {
+  const overflowResult = mcpResponseOverflowToolExecutionResult(call, error, label);
+  if (overflowResult) return overflowResult;
+
   const rawMessage = error instanceof Error ? error.message : `${label} execution failed`;
   const message = rawMessage.slice(0, 512);
   return {
