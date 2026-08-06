@@ -133,13 +133,13 @@ article[data-role]:focus-visible [data-message-interaction-surface="true"] {
 }
 
 :root {
-  background: rgb(var(--research-canvas));
+  background: rgb(var(--app-canvas));
 }
 
 :root,
 [data-theme="neutral"] {
   color-scheme: light;
-  --research-canvas: 251 252 251;
+  --app-canvas: 251 252 251;
   --workspace-rail: 243 245 243;
   --answer-paper: 255 255 255;
   --composer-surface: 255 255 255;
@@ -167,7 +167,7 @@ article[data-role]:focus-visible [data-message-interaction-surface="true"] {
 
 [data-theme="aiqsa"] {
   color-scheme: dark;
-  --research-canvas: 15 18 17;
+  --app-canvas: 15 18 17;
   --workspace-rail: 20 24 22;
   --answer-paper: 24 29 27;
   --composer-surface: 29 35 32;
@@ -195,7 +195,7 @@ article[data-role]:focus-visible [data-message-interaction-surface="true"] {
 
 [data-theme="graphite"] {
   color-scheme: dark;
-  --research-canvas: 14 17 21;
+  --app-canvas: 14 17 21;
   --workspace-rail: 18 22 27;
   --answer-paper: 22 27 33;
   --composer-surface: 27 33 40;
@@ -223,7 +223,7 @@ article[data-role]:focus-visible [data-message-interaction-surface="true"] {
 
 [data-theme="verdant"] {
   color-scheme: dark;
-  --research-canvas: 11 16 14;
+  --app-canvas: 11 16 14;
   --workspace-rail: 15 22 19;
   --answer-paper: 19 27 23;
   --composer-surface: 24 33 29;
@@ -251,7 +251,7 @@ article[data-role]:focus-visible [data-message-interaction-surface="true"] {
 
 [data-theme="classic-dark"] {
   color-scheme: dark;
-  --research-canvas: 25 27 30;
+  --app-canvas: 25 27 30;
   --workspace-rail: 29 32 35;
   --answer-paper: 32 35 39;
   --composer-surface: 36 40 45;
@@ -279,7 +279,7 @@ article[data-role]:focus-visible [data-message-interaction-surface="true"] {
 
 [data-theme="paper"] {
   color-scheme: light;
-  --research-canvas: 250 250 250;
+  --app-canvas: 250 250 250;
   --workspace-rail: 248 248 248;
   --answer-paper: 255 255 255;
   --composer-surface: 255 255 255;
@@ -316,7 +316,7 @@ body {
 
 body {
   margin: 0;
-  background: rgb(var(--research-canvas));
+  background: rgb(var(--app-canvas));
   color: rgb(var(--ink));
 }
 

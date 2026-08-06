@@ -3,17 +3,17 @@
 Owner: Frontend visual-system maintainers
 Scope: Current semantic color, typography, geometry, density, depth, motion recipes, component composition, and visual review gates.
 
-This is the binding visual contract for the current Research Chat and Control Center. Routed `FRONTEND.md` owners define behavior, state, responsive access, and control ownership. This file alone owns visual hierarchy, semantic tokens, component recipes, motion, content presentation, and visual quality gates.
+This is the binding visual contract for the current Chat workspace and Control Center. Routed `FRONTEND.md` owners define behavior, state, responsive access, and control ownership. This file alone owns visual hierarchy, semantic tokens, component recipes, motion, content presentation, and visual quality gates.
 
 All runtime UI consumes this system's product-semantic tokens directly. Compatibility aliases such as `surface-*`, `content-*`, `separator-*`, and generic color-named accents are not part of the component API and must not return.
 
 ## Product Character
 
-AIQSA should feel like a quiet research instrument: familiar enough to understand immediately, precise enough to trust, and calm enough to read for a long time. It is not a generic admin dashboard and not a decorative AI demo.
+AIQSA should feel like a quiet, focused AI workspace: familiar enough to understand immediately, precise enough to trust, and calm enough to read for a long time. It is not a generic admin dashboard and not a decorative AI demo.
 
 The two primary contexts are:
 
-- **Research Chat:** ask, read, inspect evidence, branch, and continue.
+- **Chat:** ask, create, inspect execution, branch, and continue.
 - **Control Center:** connect an installation, manage access, and inspect operational state.
 
 The domain vocabulary is question, answer, evidence, source, branch, event, trace, workspace, and run. Prefer those words over generic dashboard language. The signature interaction is the **message reveal sequence**: one quiet whole-turn hover/keyboard highlight followed by an anchored action dock, keeping reading primary while making the exact question or answer actionable. Touch may reveal the dock but never turns that transient highlight into a selected state. Its deliberate secondary evidence surface is the **Run receipt**, available from that answer's More menu rather than resting in the reading path.
@@ -36,7 +36,7 @@ Reject these defaults:
 - fake activity, confidence, citations, stages, or completion claims;
 - a shrunken desktop table presented as a mobile workflow.
 
-The deliberately distinctive choice is the message reveal sequence paired with an explicitly requested Run receipt. It is justified by the product's Question -> Search -> Answer trace and must remain structural and factual; the rest of the interface stays restrained.
+The deliberately distinctive choice is the message reveal sequence paired with an explicitly requested Run receipt. It is justified by the product's inspectable run trace and must remain structural and factual; the rest of the interface stays restrained.
 
 ## Semantic Color System
 
@@ -46,7 +46,7 @@ Components consume semantic tokens only. Raw product colors, palette-specific Ta
 
 | Token family | Role |
 |---|---|
-| `research-canvas` | Page and application background. |
+| `app-canvas` | Page and application background. |
 | `workspace-rail` | Workspace and Control Center navigation plus the compact Workspace drawer. |
 | `answer-paper` | Conversation column, its title-free edge actions, and document plane; not a card around each answer. |
 | `composer-surface` | Composer and focused editing surfaces. |
@@ -71,7 +71,7 @@ The `neutral` theme is the first-use default and the reference against which hie
 
 | Role | Light `neutral` reference |
 |---|---:|
-| Research canvas | `#fbfcfb` |
+| App canvas | `#fbfcfb` |
 | Workspace rail | `#f3f5f3` |
 | Answer paper | `#ffffff` |
 | Composer surface | `#ffffff` |
@@ -138,7 +138,7 @@ Use a 4px base rhythm with primary steps of 4, 8, 12, 16, 24, 32, and 48px. Rela
 
 Avoid isolated floating rectangles when a plain section, row, or disclosure communicates the relationship more clearly.
 
-## Research Chat Composition
+## Chat Composition
 
 ### Shell and workspace
 
@@ -186,13 +186,13 @@ Below `sm`, or at no more than 32rem height, deliberate reading movement may col
 
 Details is closed by default, opens as an overlay at all widths, and may be pinned only when at least 1440px of useful width remains. It contains Branch and Events inspection, never duplicated next-run editing. Events uses readable stage language instead of internal codes; Branch renders the current linear path as document content and reserves controls only for actual alternate versions.
 
-Settings is a bounded overlay for Appearance and MCP & tools; on compact/short viewports it becomes a safe-area-aware sheet with one local scroll owner. Prompt library is a separate full-viewport Account/Run-setup workbench, not a Settings tab or rounded modal. Persistent chrome gives `Back to chat` clear placement; search and `New prompt` belong to the library header. Only viewports at least 1024px wide **and** taller than 512px use the library/editor split, with independent pane scrolling beneath fixed headers and above the fixed editor footer. Smaller or shorter compositions show one task and a visible `Back to prompts` action. A proof scan edge marks the edited row, the persisted new-chat default stays secondary to content, identity and instructions form explicit groups, `Duplicate` is directly visible, destructive `Delete` lives under `More`, and Save/create is the sole primary action. `FRONTEND.md` owns transition guards, state preservation, focus, and dismissal behavior. Appearance is a divided comparison list, not a card grid.
+Settings is a bounded overlay for Appearance and MCP & tools; on compact/short viewports it becomes a safe-area-aware sheet with one local scroll owner. Prompt library is a separate full-screen prompt-management surface, not a Settings tab or rounded modal. Persistent chrome gives `Back to chat` clear placement; search and `New prompt` belong to the library header. Only viewports at least 1024px wide **and** taller than 512px use the library/editor split, with independent pane scrolling beneath fixed headers and above the fixed editor footer. Smaller or shorter compositions show one task and a visible `Back to prompts` action. A proof scan edge marks the edited row, the persisted new-chat default stays secondary to content, identity and instructions form explicit groups, `Duplicate` is directly visible, destructive `Delete` lives under `More`, and Save/create is the sole primary action. `FRONTEND.md` owns transition guards, state preservation, focus, and dismissal behavior. Appearance is a divided comparison list, not a card grid.
 
 ## Auth And Public Share Composition
 
 Auth uses one flat, spacious answer-paper workspace with a maximum width of 42rem. Product identity and orientation sit above the active task; the form is part of the page rather than a bordered, shadowed, or decorated card. Only the current sign-in, request, invite, verification, reset, pending, success, or error state appears. OAuth actions remain neutral alternatives to the single primary action.
 
-Public share is a reading surface, not a reduced private shell. A quiet workspace-rail header identifies AIQSA, shared-research context, and the immutable read-only state. The title, fixed-copy note, compact questions, and document-flow answers share the normal reading measure. Do not add a composer, private metadata, navigation into the installation, or promotional call to action. Empty and unavailable links remain plain terminal states.
+Public share is a reading surface, not a reduced private shell. A quiet workspace-rail header identifies AIQSA, shared-conversation context, and the immutable read-only state. The title, fixed-copy note, compact questions, and document-flow answers share the normal reading measure. Do not add a composer, private metadata, navigation into the installation, or promotional call to action. Empty and unavailable links remain plain terminal states.
 
 ## Control Center Composition
 
@@ -236,7 +236,7 @@ Each reusable control defines rest, hover, active, selected, disabled, busy, inv
 - **Tabs:** represent peer panels only and keep one obvious selected state.
 - **Resource rows:** when the row's primary purpose is to open a dedicated detail, the whole row is the target; do not reduce discovery to a small `Details` action.
 - **Disclosures:** have a visible summary and expanded state. They do not hide the only path to a frequent action.
-- **Dialogs/drawers/sheets:** isolate the background, support an explicit Close, and keep one local scroll owner. A full-viewport workbench may instead give each persistent pane its own local scroll owner when the responsive contract explicitly calls for it.
+- **Dialogs/drawers/sheets:** isolate the background, support an explicit Close, and keep one local scroll owner. A full-screen split surface may instead give each persistent pane its own local scroll owner when the responsive contract explicitly calls for it.
 - **Empty/error states:** explain the resource and give the next valid action. Loading failure must not masquerade as a true empty result.
 - **Skeletons:** approximate stable content geometry and avoid shifting the eventual content.
 - **Confirmations:** name the affected resource and consequence. Typed confirmation is reserved for exceptional irreversible scope, not ordinary deletion.
@@ -245,7 +245,7 @@ Each reusable control defines rest, hover, active, selected, disabled, busy, inv
 
 Composition follows available space, content, and input capability. Media queries establish shell-level thresholds; container queries adapt composer, headers, navigation rows, and list/detail regions inside their actual space.
 
-- Research Chat Workspace navigation may be persistent only above 1280px; at 1280px and below it is a drawer and the conversation owns the viewport. Other task-specific split thresholds remain with their functional owners.
+- Chat Workspace navigation may be persistent only above 1280px; at 1280px and below it is a drawer and the conversation owns the viewport. Other task-specific split thresholds remain with their functional owners.
 - Details pinning is offered only at 1440px and above; overlay remains available everywhere.
 - Validate at 384/390x844, 844x390, 768x1024, 1024x512, 1024x768, 1280x500, 1280x800, 1281px, and 1440px-or-wider compositions, including enlarged root text at the 1280px compact boundary. Prompt library must remain one-task at the 512px-height boundary and at every width below 1024px; its split appears only when both thresholds pass.
 - Use `dvh`, `viewport-fit=cover`, `interactive-widget=resizes-content`, and every relevant safe-area inset.
@@ -290,7 +290,7 @@ AI-specific presentation is evidence constrained:
 
 ## Visual Review Gate
 
-Before propagating a new recipe, render and critique one representative Research Chat state and one representative Control Center state from real components and deterministic data. Review hierarchy, density, content truth, long text, dark parity, and the smallest supported viewport. Raster concept art may guide composition but never establishes product capabilities or exact copy.
+Before propagating a new recipe, render and critique one representative Chat state and one representative Control Center state from real components and deterministic data. Review hierarchy, density, content truth, long text, dark parity, and the smallest supported viewport. Raster concept art may guide composition but never establishes product capabilities or exact copy.
 
 Every new or changed visual recipe must satisfy these conditions before it becomes the product default:
 

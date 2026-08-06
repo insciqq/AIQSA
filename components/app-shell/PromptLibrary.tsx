@@ -45,7 +45,7 @@ function matchesPrompt(prompt: PromptPreset, query: string) {
     .some((value) => value.toLocaleLowerCase().includes(query));
 }
 
-export function PromptWorkbench({
+export function PromptLibrary({
   defaultPromptId,
   editor,
   nestedDialogOpen = false,
@@ -127,7 +127,7 @@ export function PromptWorkbench({
     onClose();
   };
 
-  const workbenchRef = useDialogFocus<HTMLDivElement>({
+  const libraryDialogRef = useDialogFocus<HTMLDivElement>({
     autoFocus: false,
     closeOnEscape: !childDialogOpen && !promptActionsOpen,
     containFocus: !childDialogOpen,
@@ -297,7 +297,7 @@ export function PromptWorkbench({
     }
   }
 
-  function handleWorkbenchKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
+  function handleLibraryDialogKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
     if (event.key === "Escape" && promptActionsOpen) {
       event.preventDefault();
       event.stopPropagation();
@@ -347,17 +347,17 @@ export function PromptWorkbench({
   return (
     <>
       <div
-        ref={workbenchRef}
+        ref={libraryDialogRef}
         className="fixed inset-0 z-50 grid h-[100dvh] w-full grid-rows-[auto_auto_minmax(0,1fr)] overflow-hidden bg-overlay-surface pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)] pt-[env(safe-area-inset-top)] text-ink"
         role="dialog"
         aria-modal="true"
         aria-hidden={childDialogOpen || undefined}
         aria-label="Prompt library"
         aria-busy={saving}
-        data-presentation="workbench"
-        data-testid="prompt-workbench"
+        data-presentation="library"
+        data-testid="prompt-library"
         inert={childDialogOpen || undefined}
-        onKeyDown={handleWorkbenchKeyDown}
+        onKeyDown={handleLibraryDialogKeyDown}
         onPointerDownCapture={(event) => {
           if (
             promptActionsOpen &&
@@ -373,7 +373,7 @@ export function PromptWorkbench({
           "min-h-16 shrink-0 grid-cols-[auto_minmax(0,1fr)] items-center border-b border-trace-subtle bg-overlay-surface [@media(max-height:32rem)]:!min-h-12 lg:[@media(min-height:32.01rem)]:grid-cols-[20rem_minmax(0,1fr)] xl:[@media(min-height:32.01rem)]:grid-cols-[22.5rem_minmax(0,1fr)]",
           compactPane === "editor" ? "hidden lg:[@media(min-height:32.01rem)]:grid" : "grid"
         ].join(" ")}
-        data-testid="prompt-workbench-header"
+        data-testid="prompt-library-header"
       >
         <div className="flex min-w-0 items-center px-2 sm:px-4 lg:px-5">
           <button
@@ -405,7 +405,7 @@ export function PromptWorkbench({
       {notice ? (
         <div
           className="relative z-20 row-start-2 flex shrink-0 justify-center border-b border-trace-subtle bg-overlay-surface px-3 py-2"
-          data-testid="prompt-workbench-notice-region"
+          data-testid="prompt-library-notice-region"
         >
           <ShellNotice notice={notice} onDismiss={onDismissNotice ?? (() => undefined)} />
         </div>
@@ -414,8 +414,8 @@ export function PromptWorkbench({
       {promptCatalogState !== "ready" ? (
         <section
           className="row-start-3 grid min-h-0 place-items-center overflow-y-auto px-4 py-8"
-          data-testid="prompt-workbench-catalog-state"
-          aria-labelledby="prompt-workbench-catalog-heading"
+          data-testid="prompt-library-catalog-state"
+          aria-labelledby="prompt-library-catalog-heading"
         >
           <div className="w-full max-w-sm text-center">
             {promptCatalogState === "loading" ? (
@@ -426,7 +426,7 @@ export function PromptWorkbench({
             <h3
               ref={promptCatalogHeadingRef}
               className="mt-3 text-base font-semibold text-ink focus:outline-none"
-              id="prompt-workbench-catalog-heading"
+              id="prompt-library-catalog-heading"
               tabIndex={-1}
             >
               {promptCatalogState === "loading" ? "Loading prompt library…" : "Prompt library didn’t load"}
@@ -452,7 +452,7 @@ export function PromptWorkbench({
       ) : (
         <div
           className="row-start-3 grid min-h-0 grid-cols-1 overflow-hidden lg:[@media(min-height:32.01rem)]:grid-cols-[20rem_minmax(0,1fr)] xl:[@media(min-height:32.01rem)]:grid-cols-[22.5rem_minmax(0,1fr)]"
-          data-testid="prompt-workbench-body"
+          data-testid="prompt-library-body"
         >
           <section
             className={[
@@ -760,26 +760,26 @@ export function PromptWorkbench({
                       Required
                     </span>
                   </div>
-                  <label className="block" htmlFor="prompt-workbench-name">
+                  <label className="block" htmlFor="prompt-library-name">
                     <span className="sr-only">Prompt name</span>
                     <input
                       ref={promptNameRef}
                       className={`h-touch w-full rounded-control border border-control-boundary bg-answer-paper px-3 text-sm text-ink placeholder:text-ink-muted aria-[invalid=true]:border-critical disabled:cursor-not-allowed disabled:border-trace-subtle disabled:text-ink-disabled sm:h-control [@media(hover:none)]:!h-touch [@media(pointer:coarse)]:!h-touch ${focusRing}`}
-                      id="prompt-workbench-name"
+                      id="prompt-library-name"
                       type="text"
                       aria-label="Prompt name"
-                      aria-describedby="prompt-workbench-name-guidance"
+                      aria-describedby="prompt-library-name-guidance"
                       aria-invalid={nameInvalid}
                       autoComplete="off"
                       disabled={saving}
-                      placeholder="For example, Research analyst"
+                      placeholder="For example, Code reviewer"
                       value={editor.name}
                       onChange={(event) => onEditorChange({ ...editor, name: event.target.value })}
                     />
                   </label>
                   <p
                     className={`mt-2 text-xs leading-5 ${nameInvalid ? "text-critical" : "text-ink-muted"}`}
-                    id="prompt-workbench-name-guidance"
+                    id="prompt-library-name-guidance"
                   >
                     {nameInvalid ? "Enter a prompt name." : "Visible in the library, Run setup, and command palette."}
                   </p>
@@ -804,13 +804,13 @@ export function PromptWorkbench({
                         Required · highest priority
                       </span>
                     </div>
-                    <label className="block" htmlFor="prompt-workbench-system">
+                    <label className="block" htmlFor="prompt-library-system">
                       <span className="sr-only">System instructions</span>
                       <textarea
                         className={`min-h-48 w-full resize-y rounded-control border border-control-boundary bg-answer-paper px-3 py-3 text-sm leading-6 text-ink placeholder:text-ink-muted aria-[invalid=true]:border-critical disabled:cursor-not-allowed disabled:border-trace-subtle disabled:text-ink-disabled ${focusRing}`}
-                        id="prompt-workbench-system"
+                        id="prompt-library-system"
                         aria-label="System instructions"
-                        aria-describedby="prompt-workbench-system-guidance"
+                        aria-describedby="prompt-library-system-guidance"
                         aria-invalid={systemInvalid}
                         disabled={saving}
                         placeholder="Define the assistant’s role, priorities, and response style."
@@ -820,7 +820,7 @@ export function PromptWorkbench({
                     </label>
                     <p
                       className={`mt-2 text-xs leading-5 ${systemInvalid ? "text-critical" : "text-ink-muted"}`}
-                      id="prompt-workbench-system-guidance"
+                      id="prompt-library-system-guidance"
                     >
                       {systemInvalid ? "Enter system instructions." : "Primary instructions sent whenever this prompt is used."}
                     </p>
@@ -835,20 +835,20 @@ export function PromptWorkbench({
                       <h4 className="whitespace-nowrap text-sm font-semibold text-ink" id="prompt-developer-heading">Developer instructions</h4>
                       <span className="basis-full text-xs text-ink-muted sm:basis-auto">Optional · implementation guidance</span>
                     </div>
-                    <label className="block" htmlFor="prompt-workbench-developer">
+                    <label className="block" htmlFor="prompt-library-developer">
                       <span className="sr-only">Developer instructions</span>
                       <textarea
                         className={`min-h-32 w-full resize-y rounded-control border border-control-boundary bg-answer-paper px-3 py-3 text-sm leading-6 text-ink placeholder:text-ink-muted disabled:cursor-not-allowed disabled:border-trace-subtle disabled:text-ink-disabled ${focusRing}`}
-                        id="prompt-workbench-developer"
+                        id="prompt-library-developer"
                         aria-label="Developer instructions"
-                        aria-describedby="prompt-workbench-developer-help"
+                        aria-describedby="prompt-library-developer-help"
                         disabled={saving}
                         placeholder="Add implementation constraints or provider-specific guidance."
                         value={editor.developerPrompt}
                         onChange={(event) => onEditorChange({ ...editor, developerPrompt: event.target.value })}
                       />
                     </label>
-                    <p className="mt-2 text-xs leading-5 text-ink-muted" id="prompt-workbench-developer-help">
+                    <p className="mt-2 text-xs leading-5 text-ink-muted" id="prompt-library-developer-help">
                       Additional guidance kept separate from the system instructions.
                     </p>
                   </section>

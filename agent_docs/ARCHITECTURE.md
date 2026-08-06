@@ -36,7 +36,7 @@ browser
 
 Route handlers resolve runtime dependencies and compose handler/repository/adapter boundaries. Business behavior belongs below the route file. Provider wire shapes stay inside server adapters; React never calls a provider directly. Shared contracts flow into domain/server/browser consumers without importing those consumers back.
 
-The dependency rules are executable in `eslint.config.mjs` and `tests/harness/import-boundaries.test.ts`: browser components cannot import server/Prisma/Node-only modules, shared contracts and pure domain code cannot depend on consumers or runtime frameworks, API routes cannot import browser components, provider adapters remain Prisma-free, and the Research Chat shell cannot depend on Control Center internals.
+The dependency rules are executable in `eslint.config.mjs` and `tests/harness/import-boundaries.test.ts`: browser components cannot import server/Prisma/Node-only modules, shared contracts and pure domain code cannot depend on consumers or runtime frameworks, API routes cannot import browser components, provider adapters remain Prisma-free, and the Chat shell cannot depend on Control Center internals.
 
 ### Server control planes
 
@@ -124,7 +124,7 @@ Recovery owns boot orphan sweep, explicit provider refresh, checkpointed tool co
 
 Hosted Gemini answer grounding is a special live-only boundary: once detected, answer/artifact drafts are purged and later grounded content/signatures remain transient. Durable state keeps status, usage, provenance, and neutral placeholders rather than misleading stored answer text. The separate query-only Gemini Search adapter never enters that answer mode: it discards Suggestions/signatures/raw steps after validation and returns only ordinary normalized client-Search findings and citations.
 
-`backend/RUNS_AND_STREAMING.md` owns exact lifecycle, cancellation, event, context, usage, and cost semantics. `backend/PROVIDER_ADAPTERS.md` owns provider-specific behavior. `QSA_PIPELINE.md` owns product meaning.
+`backend/RUNS_AND_STREAMING.md` owns exact lifecycle, cancellation, event, context, usage, and cost semantics. `backend/PROVIDER_ADAPTERS.md` owns provider-specific behavior. `RUN_PIPELINE.md` owns product-level run meaning.
 
 ## Frontend Boundary
 

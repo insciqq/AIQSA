@@ -618,7 +618,7 @@ describe("PowerAppShellView document title", () => {
         }}
       />
     );
-    await waitFor(() => expect(document.title).toBe("Research Chat · AIQSA"));
+    await waitFor(() => expect(document.title).toBe("Chat · AIQSA"));
 
     rerender(
       <PowerAppShellView
@@ -948,7 +948,7 @@ describe("PowerAppShellView Details composition", () => {
     const rail = screen.getByTestId("workspace-rail");
     const conversation = screen.getByTestId("conversation-column");
 
-    expect(shell).toHaveClass("h-dvh", "bg-research-canvas", "text-ink");
+    expect(shell).toHaveClass("h-dvh", "bg-app-canvas", "text-ink");
     expect(rail).toHaveClass("bg-workspace-rail", "min-[1281px]:grid");
     expect(rail).toContainElement(screen.getByTestId("left-chat-pane"));
     expect(conversation).toHaveClass("bg-answer-paper", "flex-col", "relative");
@@ -1075,7 +1075,7 @@ describe("PowerAppShellView Details composition", () => {
     expect(trigger).toHaveFocus();
   });
 
-  it("renders Prompt library as a standalone workbench and owns its settings notice", () => {
+  it("renders Prompt library as a standalone full-screen surface and owns its settings notice", () => {
     const props = baseProps();
     const setSettingsNotice = vi.fn();
     render(
@@ -1096,16 +1096,16 @@ describe("PowerAppShellView Details composition", () => {
     );
 
     const primaryContent = screen.getByTestId("shell-primary-content");
-    const workbench = screen.getByTestId("prompt-workbench");
-    const noticeRegion = screen.getByTestId("prompt-workbench-notice-region");
+    const promptLibrary = screen.getByTestId("prompt-library");
+    const noticeRegion = screen.getByTestId("prompt-library-notice-region");
     expect(primaryContent).toHaveAttribute("inert");
     expect(primaryContent).toHaveAttribute("aria-hidden", "true");
-    expect(workbench).toHaveAttribute("data-presentation", "workbench");
+    expect(promptLibrary).toHaveAttribute("data-presentation", "library");
     expect(screen.queryByTestId("settings-dialog")).not.toBeInTheDocument();
     expect(screen.queryByTestId("settings-notice-region")).not.toBeInTheDocument();
     expect(screen.getByRole("alert")).toHaveTextContent("Prompt save failed");
     expect(screen.getByRole("alert")).toHaveClass("pointer-events-auto");
-    expect(workbench).toContainElement(noticeRegion);
+    expect(promptLibrary).toContainElement(noticeRegion);
     expect(screen.queryByTestId("shell-notice-layer")).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Dismiss notice" }));
@@ -1154,11 +1154,11 @@ describe("PowerAppShellView Details composition", () => {
       expect(primaryContent).toHaveAttribute("inert");
       expect(primaryContent).toHaveAttribute("aria-hidden", "true");
       expect(settings).toBeVisible();
-      expect(screen.queryByTestId("prompt-workbench")).not.toBeInTheDocument();
+      expect(screen.queryByTestId("prompt-library")).not.toBeInTheDocument();
       expect(settings).toContainElement(settingsNoticeRegion);
       expect(settingsNoticeRegion).toHaveTextContent("Settings update failed");
       expect(settingsNoticeRegion).not.toHaveTextContent("Public link ready");
-      expect(screen.queryByTestId("prompt-workbench-notice-region")).not.toBeInTheDocument();
+      expect(screen.queryByTestId("prompt-library-notice-region")).not.toBeInTheDocument();
       expect(screen.queryByTestId("shell-notice-layer")).not.toBeInTheDocument();
 
       fireEvent.click(screen.getByRole("button", { name: "Close settings" }));
@@ -1168,7 +1168,7 @@ describe("PowerAppShellView Details composition", () => {
     }
   );
 
-  it("makes the Prompt library workbench inert while nested prompt deletion owns the dialog layer", () => {
+  it("makes the Prompt library surface inert while nested prompt deletion owns the dialog layer", () => {
     const props = baseProps();
     const prompt = {
       developerPrompt: null,
@@ -1198,10 +1198,10 @@ describe("PowerAppShellView Details composition", () => {
       />
     );
 
-    const workbench = screen.getByTestId("prompt-workbench");
+    const promptLibrary = screen.getByTestId("prompt-library");
     expect(screen.getByTestId("shell-primary-content")).toHaveAttribute("inert");
-    expect(workbench).toHaveAttribute("inert");
-    expect(workbench).toHaveAttribute("aria-hidden", "true");
+    expect(promptLibrary).toHaveAttribute("inert");
+    expect(promptLibrary).toHaveAttribute("aria-hidden", "true");
     expect(screen.queryByTestId("settings-dialog")).not.toBeInTheDocument();
     expect(screen.getByRole("dialog", { name: "Delete prompt Delete candidate" })).toBeVisible();
   });

@@ -1,14 +1,14 @@
-# QSA_PIPELINE
+# RUN_PIPELINE
 
-Owner: QSA pipeline maintainers
-Scope: Current product-level Question, Search, Answer, tool, evidence, transparency, and sharing semantics across provider-neutral runs.
+Owner: Run pipeline maintainers
+Scope: Current product-level message, model, optional Search, tool, evidence, transparency, and sharing semantics across provider-neutral runs.
 
 ## Product Thesis
 
-The core product is a transparent QSA workflow:
+The core product is a provider-neutral model run. A run starts from a user message, may use web search and MCP tools, and produces a model response plus inspectable execution evidence. Search is optional rather than the identity of the product, and future agent orchestration should extend the same run, entitlement, and transparency contracts.
 
 ```text
-Question -> Search -> Answer
+Message -> optional search and tools -> model response
 ```
 
 The common conversation path stays calm while giving the operator precise control over API request shape, model parameters, the Search plan, streamed events, response artifacts, branch state, and provider-reported usage.
@@ -17,7 +17,7 @@ Streaming is a provider-neutral run capability. Catalog `capabilities.streaming`
 
 ## Pipeline Stages
 
-1. Question
+1. Input
    - user message;
    - a first-message chat title is derived locally and transactionally from bounded normalized text, ending at a whole-word boundary when one exists and storing no display ellipsis; it is not another provider request and creates no provider usage;
    - active branch conversation context from a recursive same-chat ancestor query that materializes only the selected root-to-leaf path;
@@ -27,14 +27,14 @@ Streaming is a provider-neutral run capability. Catalog `capabilities.streaming`
    - optional PDF/image attachments where selected model and user entitlements allow them, plus text-like document attachments that are included as extracted provider text. Attachment references are unique and one run is bounded by the catalog-projected count, source-object, and encoded-input limits before object storage is read. Images count toward binary materialization only for image-capable models; PDFs count only on the native-PDF route, while documents and extracted-PDF text do not. Object reads then enforce the exact settled size and per-run remainder with bounded concurrency, stable order, cancellation, and the same checks during tool-loop recovery. PDFs route as provider-native files for `nativePdfInput` models and as extracted text for fallback PDF-capable models. PDF text is extracted sequentially into a bounded `complete`, `partial`, or `no_text` result; non-empty partial text remains usable, while `no_text` or a zero-emitted partial is valid only on the native-PDF route and otherwise rejects as `pdf_text_unavailable` before provider dispatch.
    - context budgeting uses the conservative Unicode estimate defined in `backend/RUNS_AND_STREAMING.md` and counts provider-bound attachment payload estimates. Native PDFs include both extracted-text and page-image proxies, so oversized extracted text, native PDFs, or images can reject before provider dispatch instead of leaking past the budget as small references.
 
-2. Search
+2. Optional search and tools
    - optional but first-class;
    - the user keeps one ordered preferred plan of zero to three entitled options and, for a multi-option plan, chooses `all_selected` or `model_choice`; the current model derives the compatible effective subset used by this run without overwriting that preference;
    - each logical option resolves to one active physical route and immutable Search-integration revision and, where needed, an exact technical provider-model credential binding; run admission revalidates readiness, compatibility, entitlement, exact source identity, and the complete combination immediately before provider execution;
    - unsupported, archived, stale, duplicate, over-limit, or incompatible ids and combinations are rejected without substituting another engine; the product behavior is owned by `Search Plans And Integrations` below;
    - live activity never guesses a provider's internal stage: the active tail and application rail say `Working…` while the exact stage is unknown, `Searching…` only after an already-consumed search/citation event proves it, and `Answering…` only after answer tokens arrive. Completed search activity becomes a source/status-first collapsed thread disclosure, with bounded counts and detailed normalized evidence available on demand.
 
-3. Answer
+3. Model response
    - streamed visible answer through the normalized SSE contract;
    - provider EOF is not success: OpenAI Responses requires a completed `response.completed`; native Gemini Interactions requires its valid terminal interaction followed by the native `done` proof; generic compatible Chat and OpenRouter streaming require `[DONE]`; compatible/OpenRouter non-streaming requires a usable first choice/message; and Anthropic requires `message_stop`. Accepted ordinary partial text remains inspectable with error status when terminal proof never arrives, while hosted-answer Gemini grounding is live-only and cannot become partial durable history;
    - OpenAI Responses pins the first non-empty response identity observed in response-level lifecycle fields. A different later response identity fails before terminal usage or artifacts can complete the run. If any visible output delta was emitted, the completed response's raw visible text must exactly equal the JavaScript-string concatenation of those deltas; a valid terminal-only answer remains accepted. Every recognized Responses `function_call` also requires a bounded non-blank call id and name before the shared tool bridge runs, so stream and non-stream normalization cannot turn malformed calls into an ordinary zero-call success;
@@ -102,7 +102,7 @@ Current providers:
 - OpenRouter Chat Completions-compatible API;
 - explicitly configured Search-capable OpenAI Responses deployments as exact-source query-only Search clients for tool-capable answer models;
 - administrator-selected OpenRouter search deployments for provider-neutral search tools;
-- Provider-neutral run-tool contracts for web search, with native or explicitly declared compatible OpenAI Responses, Gemini Interactions, and OpenRouter Chat Completions bridge boundaries. Custom image-generation declarations remain future configuration evidence and do not create a runnable QSA capability.
+- Provider-neutral run-tool contracts for web search, with native or explicitly declared compatible OpenAI Responses, Gemini Interactions, and OpenRouter Chat Completions bridge boundaries. Custom image-generation declarations remain future configuration evidence and do not create a runnable image-generation capability.
 
 Adapter defaults and cache/wire details live in `BACKEND.md`; externally verified constraints live in `PROVIDER_API_NOTES.md`.
 
@@ -135,4 +135,4 @@ Publishing requires an explicit confirmation: the Share action opens a dialog th
 
 ## Logging And Retention
 
-`CRITICAL_INVARIANTS.md` owns the durable privacy rule and `BACKEND.md` owns the exact persistence/retention contract. QSA transparency never authorizes duplicated raw request logs or broader provider-payload retention.
+`CRITICAL_INVARIANTS.md` owns the durable privacy rule and `BACKEND.md` owns the exact persistence/retention contract. Run transparency never authorizes duplicated raw request logs or broader provider-payload retention.

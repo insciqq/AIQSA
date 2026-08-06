@@ -2,7 +2,7 @@
 
 Entry point for agent-driven development in this repository.
 
-AIQSA is a self-hosted QSA web app: Question -> Search -> Answer with explicit provider, model, Search, and run inspection. This harness is a current operating manual: keep current contracts, commands, and open work; delete obsolete narrative and completed tasks. Put durable rationale beside its owning rule.
+AIQSA is a self-hosted, multi-user AI workspace with explicit provider and model control, optional web search, MCP tools, and inspectable runs. This harness is a current operating manual: keep current contracts, commands, and open work; delete obsolete narrative and completed tasks. Put durable rationale beside its owning rule.
 
 ## Autonomy Trigger
 
@@ -46,7 +46,7 @@ Then read only what the scope requires:
 - Read `agent_docs/AUTONOMOUS_WORKFLOW.md` only for broad selection, queued/task-state work, dependencies, multi-session work, or review-required changes. For queued work, also read `agent_docs/tasks/README.md` and the selected task. Named same-session review-optional work does not require the full workflow.
 - When the operator left a product or implementation choice open, read `agent_docs/DECISION_DEFAULTS.md`.
 - Before topology, module-boundary, data-boundary, or deployment-shape work, read `agent_docs/ARCHITECTURE.md`.
-- `agent_docs/QSA_PIPELINE.md` before run-pipeline, Search, provider-run, or inspection work.
+- `agent_docs/RUN_PIPELINE.md` before run-pipeline, Search, tool-loop, provider-run, or inspection work.
 - `agent_docs/FRONTEND.md` before UI behavior, state, accessibility, or shell work; it routes to bounded frontend owners.
 - `agent_docs/DESIGN_SYSTEM.md` additionally before visual composition, theme, geometry, density, or motion work.
 - `agent_docs/BACKEND.md` before route, persistence, auth, upload, run, or server-side behavior work; it routes to bounded backend owners.

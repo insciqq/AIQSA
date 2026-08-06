@@ -1,7 +1,7 @@
 # CRITICAL_INVARIANTS
 
 Owner: Safety and durable product semantics
-Scope: Cross-cutting rules whose violation can cause data loss, security/privacy exposure, incompatible persisted state, destructive verification, or a key QSA semantic change.
+Scope: Cross-cutting rules whose violation can cause data loss, security/privacy exposure, incompatible persisted state, destructive verification, or a key run semantic change.
 
 This is the mandatory short safety read. Scoped contracts retain the same normative force and are routed below; product direction belongs in `PRODUCT_PRINCIPLES.md`, current implementation details in the bounded backend/frontend owners, and visual geometry in `DESIGN_SYSTEM.md`.
 
@@ -33,6 +33,6 @@ This is the mandatory short safety read. Scoped contracts retain the same normat
 
 ## Scoped Contract Routing
 
-- Exact provider transport selection, credential resolution, compatible no-auth, answer eligibility, client Search disclosure, and Gemini grounding behavior live in [provider adapters](backend/PROVIDER_ADAPTERS.md), [provider API notes](PROVIDER_API_NOTES.md), [the QSA pipeline](QSA_PIPELINE.md), and [security](SECURITY.md).
+- Exact provider transport selection, credential resolution, compatible no-auth, answer eligibility, client Search disclosure, and Gemini grounding behavior live in [provider adapters](backend/PROVIDER_ADAPTERS.md), [provider API notes](PROVIDER_API_NOTES.md), [the run pipeline](RUN_PIPELINE.md), and [security](SECURITY.md).
 - Authentication admission and proxy identity live in [API and auth](backend/API_AND_AUTH.md) and [security](SECURITY.md); built-in `full_access` lifecycle and entitlement persistence live in [persistence and retention](backend/PERSISTENCE_AND_RETENTION.md).
 - Theme persistence and client/server presentation-state ownership live in [frontend implementation state](frontend/IMPLEMENTATION_STATE.md).

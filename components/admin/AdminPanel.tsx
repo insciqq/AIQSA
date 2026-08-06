@@ -416,7 +416,7 @@ export function AdminPanel({ adminEmail, adminUserId }: AdminPanelProps) {
   return (
     <main
       aria-busy={isBusy}
-      className="min-h-[100dvh] overflow-x-hidden bg-research-canvas pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)] pt-[env(safe-area-inset-top)] text-ink"
+      className="min-h-[100dvh] overflow-x-hidden bg-app-canvas pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)] pt-[env(safe-area-inset-top)] text-ink"
     >
       <div
         aria-hidden={confirmation.confirmation ? true : undefined}

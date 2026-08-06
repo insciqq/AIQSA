@@ -66,7 +66,7 @@ describe("Composer", () => {
 
     expect(form).toContainElement(surface);
     expect(form).toHaveClass("w-full", "min-w-0", "bg-answer-paper");
-    expect(form).not.toHaveClass("bg-research-canvas");
+    expect(form).not.toHaveClass("bg-app-canvas");
     expect(messageField).toContainElement(messageLabel);
     expect(messageField).toContainElement(textarea);
     expect(messageLabel).toHaveAttribute("for", "composer");

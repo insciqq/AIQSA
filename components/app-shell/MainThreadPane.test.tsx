@@ -833,12 +833,10 @@ describe("MainThreadPane", () => {
     const composer = screen.getByTestId("composer-form");
 
     expect(layout).toHaveAttribute("data-composer-placement", "centered");
-    expect(emptyState).toHaveTextContent("What are you investigating?");
+    expect(emptyState).toHaveTextContent("What do you want to work on?");
     expect(emptyState).toHaveTextContent(
-      "Ask a question. Sources and run evidence stay inspectable."
+      "Choose a model, add tools or web search, and start a conversation."
     );
-    expect(emptyState).not.toHaveTextContent("New research");
-    expect(screen.queryByLabelText("Question, optional Search, Answer")).not.toBeInTheDocument();
     expect(emptyState.querySelector(".max-w-reading")).not.toBeNull();
     expect(composer.querySelector(".max-w-reading")).not.toBeNull();
     expect(screen.getAllByTestId("composer-form")).toHaveLength(1);
@@ -868,7 +866,7 @@ describe("MainThreadPane", () => {
       "thread-tail"
     );
     expect(screen.getByTestId("thread-empty-state")).toHaveTextContent(
-      "What are you investigating?"
+      "What do you want to work on?"
     );
     expect(screen.getByRole("alert")).toHaveTextContent(
       "Send failed. Your draft was preserved."
@@ -962,7 +960,6 @@ describe("MainThreadPane", () => {
     expect(state).toHaveTextContent("administrator needs to grant model access");
     expect(screen.queryByRole("link", { name: "Set up providers in Control Center" })).not.toBeInTheDocument();
     expect(state).not.toHaveTextContent("Choose the model");
-    expect(screen.queryByLabelText("Question, optional Search, Answer")).not.toBeInTheDocument();
   });
 
   it("gives an administrator a direct provider setup recovery path", () => {
@@ -976,7 +973,7 @@ describe("MainThreadPane", () => {
 
     const state = screen.getByTestId("no-model-empty-state");
     expect(state).toHaveTextContent("Provider setup required");
-    expect(state).toHaveTextContent("Connect a provider to start researching");
+    expect(state).toHaveTextContent("Connect a provider to start chatting");
     expect(state).not.toHaveTextContent("administrator needs to grant model access");
     expect(screen.getByRole("link", { name: "Set up providers in Control Center" })).toHaveAttribute(
       "href",

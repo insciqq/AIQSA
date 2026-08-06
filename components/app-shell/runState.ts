@@ -105,11 +105,10 @@ function isSearchSkipArtifact(event: RunEventView): boolean {
 }
 
 /**
- * Derives the live Q -> S -> A indicator state from the active chat's stream
- * events. Stage signals only accumulate within one run (the source chat's
- * keyed surface resets on send/regenerate), so progression is monotonic: S
- * cannot return to active once A has started, and error pins the stage it
- * interrupted.
+ * Derives a compact live-run state from the active chat's event stream.
+ * Stage signals only accumulate within one run (the source chat's keyed
+ * surface resets on send/regenerate), so progress is monotonic and an error
+ * remains attached to the phase it interrupted.
  */
 export function pipelineStage(runState: PipelineRunState): PipelineSnapshot {
   let sawSearch = false;

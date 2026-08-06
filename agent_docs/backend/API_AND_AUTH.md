@@ -5,7 +5,7 @@ Scope: Current route-family ownership and observable server-side auth, admin, ca
 
 ## Backend Goals
 
-The backend supports a transparent QSA workflow without becoming a generic agent platform. It owns:
+The backend supports a transparent, provider-neutral AI workspace without becoming an unrestricted workflow platform. It owns:
 
 - password and optional Google/Yandex OAuth authentication, access requests, direct invites, verification, reset, revocable sessions, and administrator recovery;
 - user/group entitlements and administrator control planes for providers, Search, run profiles, SMTP, and MCP;

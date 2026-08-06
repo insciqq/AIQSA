@@ -38,7 +38,7 @@ describe("PublicSharePage", () => {
   it("publishes an uncached, non-indexable route contract", () => {
     expect(dynamic).toBe("force-dynamic");
     expect(revalidate).toBe(0);
-    expect(metadata.title).toBe("Shared research");
+    expect(metadata.title).toBe("Shared conversation");
     expect(metadata.robots).toEqual({
       follow: false,
       index: false,

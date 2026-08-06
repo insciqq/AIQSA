@@ -30,7 +30,7 @@ export type AdminProviderModelCapabilities = {
   defaultMaxOutputTokens?: number;
   nativeBackground?: boolean;
   /** Administrator-declared support for OpenAI-compatible image generation.
-   * AIQSA records this for future image workflows; the current QSA run pipeline
+   * AIQSA records this for future image workflows; the current run pipeline
    * does not expose image generation as a runnable tool. */
   nativeImageGeneration?: boolean;
   nativePdfInput: boolean;

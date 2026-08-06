@@ -16,7 +16,7 @@ import type {
 } from "@/components/app-shell/powerAppShellViewContracts";
 import { ProjectSettingsDialog } from "@/components/app-shell/ProjectSettingsDialog";
 import { ShareDialog } from "@/components/app-shell/ShareDialog";
-import { PromptWorkbench } from "@/components/app-shell/PromptWorkbench";
+import { PromptLibrary } from "@/components/app-shell/PromptLibrary";
 import { SettingsDialog } from "@/components/app-shell/SettingsDialog";
 import { ShellLeftPane } from "@/components/app-shell/ShellLeftPane";
 import { ShellNotice } from "@/components/app-shell/ShellNotice";
@@ -467,7 +467,7 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
   const activeDocumentTitle = activeChatId && activeChatTitle.trim()
     ? activeChatTitle.trim()
     : workspace.pane.state.workspaceLoading
-      ? "Research Chat"
+      ? "Chat"
       : "New chat";
   const documentTitle = promptSettings.open
     ? promptSettings.section === "prompts"
@@ -512,7 +512,7 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
 
   return (
     <main
-      className="relative flex h-dvh min-h-0 flex-col overflow-hidden bg-research-canvas text-ink"
+      className="relative flex h-dvh min-h-0 flex-col overflow-hidden bg-app-canvas text-ink"
       data-testid="app-shell"
     >
       {signOutError ? (
@@ -536,7 +536,7 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
       >
         <div
           className={[
-            "grid h-full min-h-0 grid-cols-1 overflow-hidden bg-research-canvas",
+            "grid h-full min-h-0 grid-cols-1 overflow-hidden bg-app-canvas",
             workspaceRailHidden ? "" : "min-[1281px]:grid-cols-[16rem_minmax(0,1fr)]",
             inspectorMode === "pinned"
               ? workspaceRailHidden
@@ -743,7 +743,7 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
 
       {promptSettings.open ? (
         promptSettings.section === "prompts" ? (
-          <PromptWorkbench
+          <PromptLibrary
             defaultPromptId={catalog?.defaults.promptPresetId ?? null}
             editor={promptSettings.editor}
             nestedDialogOpen={Boolean(promptSettings.deletePromptConfirmation)}

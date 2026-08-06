@@ -25,7 +25,7 @@ export const metadata: Metadata = {
     default: "AIQSA",
     template: "%s · AIQSA"
   },
-  description: "Question, Search, Answer with transparent provider control",
+  description: "Self-hosted AI workspace with multi-provider chat, MCP tools, and web search",
   icons: {
     icon: "/favicon.svg"
   }

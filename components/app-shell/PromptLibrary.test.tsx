@@ -1,7 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PromptEditorDraft } from "./promptSettingsStore";
-import { PromptWorkbench } from "./PromptWorkbench";
+import { PromptLibrary } from "./PromptLibrary";
 
 const prompts = [
   {
@@ -34,9 +34,9 @@ const customEditor: PromptEditorDraft = {
   systemPrompt: "Research carefully."
 };
 
-function renderWorkbench(
+function renderPromptLibrary(
   editor: PromptEditorDraft = defaultEditor,
-  overrides: Partial<Parameters<typeof PromptWorkbench>[0]> = {}
+  overrides: Partial<Parameters<typeof PromptLibrary>[0]> = {}
 ) {
   const props = {
     defaultPromptId: "prompt-default",
@@ -54,13 +54,13 @@ function renderWorkbench(
     saving: false
   };
   const renderProps = { ...props, ...overrides };
-  const view = render(<PromptWorkbench {...renderProps} />);
+  const view = render(<PromptLibrary {...renderProps} />);
 
   return {
     ...renderProps,
     ...view,
     rerenderEditor(nextEditor: PromptEditorDraft) {
-      view.rerender(<PromptWorkbench {...renderProps} editor={nextEditor} />);
+      view.rerender(<PromptLibrary {...renderProps} editor={nextEditor} />);
     }
   };
 }
@@ -87,7 +87,7 @@ function confirmDiscard() {
   fireEvent.click(screen.getByRole("button", { name: "Confirm discard changes" }));
 }
 
-describe("PromptWorkbench", () => {
+describe("PromptLibrary", () => {
   afterEach(() => {
     cleanup();
     vi.restoreAllMocks();
@@ -95,18 +95,18 @@ describe("PromptWorkbench", () => {
   });
 
   it("renders a full-screen dialog without a backdrop and keeps both desktop work regions mounted", async () => {
-    renderWorkbench();
+    renderPromptLibrary();
 
-    const workbench = screen.getByRole("dialog", { name: "Prompt library" });
-    expect(workbench).toBe(screen.getByTestId("prompt-workbench"));
-    expect(workbench).toHaveAttribute("aria-modal", "true");
-    expect(workbench).toHaveAttribute("data-presentation", "workbench");
-    expect(workbench).toHaveClass("fixed", "inset-0", "h-[100dvh]", "w-full", "overflow-hidden");
-    expect(workbench).not.toHaveClass("rounded-panel", "shadow-overlay");
+    const promptLibrary = screen.getByRole("dialog", { name: "Prompt library" });
+    expect(promptLibrary).toBe(screen.getByTestId("prompt-library"));
+    expect(promptLibrary).toHaveAttribute("aria-modal", "true");
+    expect(promptLibrary).toHaveAttribute("data-presentation", "library");
+    expect(promptLibrary).toHaveClass("fixed", "inset-0", "h-[100dvh]", "w-full", "overflow-hidden");
+    expect(promptLibrary).not.toHaveClass("rounded-panel", "shadow-overlay");
     expect(screen.queryByTestId("settings-backdrop")).not.toBeInTheDocument();
-    expect(screen.queryByTestId("prompt-workbench-backdrop")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("prompt-library-backdrop")).not.toBeInTheDocument();
 
-    const body = screen.getByTestId("prompt-workbench-body");
+    const body = screen.getByTestId("prompt-library-body");
     const library = screen.getByTestId("prompt-library-pane");
     const editor = screen.getByTestId("prompt-editor-pane");
     expect(body).toContainElement(library);
@@ -127,7 +127,7 @@ describe("PromptWorkbench", () => {
   });
 
   it("filters names and instructions, shows a no-results state, and clears the search", () => {
-    renderWorkbench();
+    renderPromptLibrary();
 
     const search = screen.getByRole("searchbox", { name: "Search prompts" });
     fireEvent.change(search, { target: { value: "ASSUMPTIONS" } });
@@ -151,11 +151,11 @@ describe("PromptWorkbench", () => {
 
   it("switches from the compact library to the editor and returns with selection and search intact", async () => {
     useCompactViewport();
-    const props = renderWorkbench();
+    const props = renderPromptLibrary();
 
     const library = screen.getByTestId("prompt-library-pane");
     const editor = screen.getByTestId("prompt-editor-pane");
-    const header = screen.getByTestId("prompt-workbench-header");
+    const header = screen.getByTestId("prompt-library-header");
     const search = screen.getByRole("searchbox", { name: "Search prompts" });
     expect(library).toHaveClass("grid");
     expect(editor).toHaveClass("hidden");
@@ -185,13 +185,13 @@ describe("PromptWorkbench", () => {
   });
 
   it("routes a dirty global close through discard confirmation", () => {
-    const props = renderWorkbench({ ...customEditor, name: "Research Prompt draft" });
+    const props = renderPromptLibrary({ ...customEditor, name: "Research Prompt draft" });
 
     fireEvent.click(screen.getByRole("button", { name: "Back to chat" }));
     const confirmation = screen.getByRole("dialog", { name: "Discard prompt changes" });
     expect(confirmation).toBeVisible();
-    expect(screen.getByTestId("prompt-workbench")).toHaveAttribute("aria-hidden", "true");
-    expect(screen.getByTestId("prompt-workbench")).toHaveAttribute("inert");
+    expect(screen.getByTestId("prompt-library")).toHaveAttribute("aria-hidden", "true");
+    expect(screen.getByTestId("prompt-library")).toHaveAttribute("inert");
     expect(props.onClose).not.toHaveBeenCalled();
 
     fireEvent.click(within(confirmation).getByRole("button", { name: "Keep editing" }));
@@ -203,7 +203,7 @@ describe("PromptWorkbench", () => {
 
   it("confirms a dirty compact Back action before returning to the library", () => {
     useCompactViewport();
-    const props = renderWorkbench({ ...customEditor, name: "Research Prompt draft" });
+    const props = renderPromptLibrary({ ...customEditor, name: "Research Prompt draft" });
 
     fireEvent.click(screen.getByRole("button", { name: "Edit prompt Research Prompt" }));
     expect(screen.getByTestId("prompt-editor-pane")).toHaveClass("grid");
@@ -219,7 +219,7 @@ describe("PromptWorkbench", () => {
 
   it("confirms a dirty New prompt transition before opening the compact editor", () => {
     useCompactViewport();
-    const props = renderWorkbench({ ...customEditor, name: "Research Prompt draft" });
+    const props = renderPromptLibrary({ ...customEditor, name: "Research Prompt draft" });
 
     fireEvent.click(screen.getByRole("button", { name: "New prompt" }));
     expect(screen.getByRole("dialog", { name: "Discard prompt changes" })).toBeVisible();
@@ -232,7 +232,7 @@ describe("PromptWorkbench", () => {
   });
 
   it("keeps pristine create validation neutral, then enables only a valid dirty draft", () => {
-    const props = renderWorkbench({
+    const props = renderPromptLibrary({
       developerPrompt: "",
       id: null,
       name: "",
@@ -274,7 +274,7 @@ describe("PromptWorkbench", () => {
   });
 
   it("enables update only for a valid dirty existing prompt", () => {
-    const props = renderWorkbench({ ...customEditor, name: "Research Prompt revised" });
+    const props = renderPromptLibrary({ ...customEditor, name: "Research Prompt revised" });
 
     const update = screen.getByRole("button", { name: "Save changes" });
     expect(update).toBeEnabled();
@@ -290,7 +290,7 @@ describe("PromptWorkbench", () => {
   });
 
   it("opens More, protects the default prompt, and deletes a non-default prompt", () => {
-    const defaultProps = renderWorkbench();
+    const defaultProps = renderPromptLibrary();
 
     fireEvent.click(screen.getByRole("button", { name: "Prompt actions" }));
     let menu = screen.getByRole("menu", { name: "Prompt actions menu" });
@@ -302,7 +302,7 @@ describe("PromptWorkbench", () => {
     expect(defaultProps.onDeletePrompt).not.toHaveBeenCalled();
     defaultProps.unmount();
 
-    const customProps = renderWorkbench(customEditor);
+    const customProps = renderPromptLibrary(customEditor);
     fireEvent.click(screen.getByRole("button", { name: "Prompt actions" }));
     menu = screen.getByRole("menu", { name: "Prompt actions menu" });
     const deletePrompt = within(menu).getByRole("menuitem", { name: "Delete selected prompt" });
@@ -313,7 +313,7 @@ describe("PromptWorkbench", () => {
   });
 
   it("lets Escape close only the open prompt-actions menu and restores its trigger", async () => {
-    const props = renderWorkbench(customEditor);
+    const props = renderPromptLibrary(customEditor);
     const trigger = screen.getByRole("button", { name: "Prompt actions" });
     trigger.focus();
     fireEvent.click(trigger);
@@ -326,7 +326,7 @@ describe("PromptWorkbench", () => {
   });
 
   it("saves a valid dirty update with both Ctrl+S and Cmd+S but ignores a pristine draft", () => {
-    const props = renderWorkbench({ ...customEditor, name: "Research Prompt revised" });
+    const props = renderPromptLibrary({ ...customEditor, name: "Research Prompt revised" });
     const name = screen.getByLabelText("Prompt name");
 
     fireEvent.keyDown(name, { ctrlKey: true, key: "s" });
@@ -339,7 +339,7 @@ describe("PromptWorkbench", () => {
   });
 
   it("routes Ctrl+S to create for a valid new prompt and ignores invalid drafts", () => {
-    const props = renderWorkbench({
+    const props = renderPromptLibrary({
       developerPrompt: "",
       id: null,
       name: "New prompt",

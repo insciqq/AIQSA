@@ -45,7 +45,7 @@ describe("AuthLogin", () => {
     expect(screen.getByTestId("auth-workspace")).toHaveClass("max-w-[42rem]");
     expect(screen.getByTestId("auth-workspace")).not.toHaveClass("rounded-panel", "border");
     expect(
-      screen.getByText((_, element) => element?.textContent === "Question → Search → Answer")
+      screen.getByText((_, element) => element?.textContent === "Models · Tools · Search")
     ).toBeInTheDocument();
     expect(screen.getByRole("heading", { level: 1, name: "Sign in" })).toBeInTheDocument();
     expect(screen.getByText("Use the email and password for your active account.")).toBeInTheDocument();

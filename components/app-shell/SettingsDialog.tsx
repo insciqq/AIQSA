@@ -239,7 +239,7 @@ export function SettingsDialog({
                       onKeyDown={(event) => handleThemeKeyDown(event, index)}
                     >
                       <span
-                        className="block h-14 overflow-hidden rounded-control border border-trace-subtle bg-research-canvas p-1.5"
+                        className="block h-14 overflow-hidden rounded-control border border-trace-subtle bg-app-canvas p-1.5"
                         data-theme={theme.id}
                         aria-hidden="true"
                       >

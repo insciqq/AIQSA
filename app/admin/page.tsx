@@ -48,7 +48,7 @@ export default async function AdminPage() {
 
   if (user.role !== "admin") {
     return (
-      <main className="flex min-h-[100dvh] items-center justify-center overflow-x-hidden bg-research-canvas pb-[max(1rem,env(safe-area-inset-bottom))] pl-[max(1rem,env(safe-area-inset-left))] pr-[max(1rem,env(safe-area-inset-right))] pt-[max(1rem,env(safe-area-inset-top))] text-ink">
+      <main className="flex min-h-[100dvh] items-center justify-center overflow-x-hidden bg-app-canvas pb-[max(1rem,env(safe-area-inset-bottom))] pl-[max(1rem,env(safe-area-inset-left))] pr-[max(1rem,env(safe-area-inset-right))] pt-[max(1rem,env(safe-area-inset-top))] text-ink">
         <section
           className="flex w-full max-w-[720px] items-start gap-3 border-t border-critical bg-answer-paper px-1 py-5 sm:px-4"
           data-testid="admin-denied"

@@ -34,7 +34,7 @@ test("contains a long sanitized public snapshot in the dark theme", async ({ bas
 
   const token = `public-share-layout-${randomUUID()}`;
   const longEvidence = "ResearchEvidenceWithoutBreaks".repeat(24);
-  const title = `A shared research title that wraps safely ${longEvidence}`;
+  const title = `A shared project title that wraps safely ${longEvidence}`;
   const snapshot = {
     messages: [
       {
@@ -96,7 +96,7 @@ test("contains a long sanitized public snapshot in the dark theme", async ({ bas
     const response = await page.goto(`/s/${token}`);
     expect(response?.status()).toBe(200);
 
-    await expect(page).toHaveTitle("Shared research · AIQSA");
+    await expect(page).toHaveTitle("Shared conversation · AIQSA");
     expect(await page.title()).not.toContain(title);
     expect(await page.title()).not.toContain(token);
     await expect(page.locator("html")).toHaveAttribute("data-theme", "graphite");

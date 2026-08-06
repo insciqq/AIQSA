@@ -11,6 +11,6 @@ This file is a router, not a second endpoint or schema manifest. Read only the o
 - [Provider adapters](backend/PROVIDER_ADAPTERS.md) — current internal provider behavior and defaults.
 - [Generated API and schema reference](generated/API_AND_SCHEMA.md) — route methods plus Prisma model/enum names; regenerate rather than editing it.
 - [Security](SECURITY.md) — threat, privacy, auth, secret, network, and exposure boundaries.
-- [QSA pipeline](QSA_PIPELINE.md) — product-level Question → Search → Answer semantics.
+- [Run pipeline](RUN_PIPELINE.md) — product-level message, optional Search/tool, response, evidence, and sharing semantics.
 
 Executable routes, Prisma schema, and tests remain authoritative for exact code shape. Living backend contracts describe only the current implementation; rationale that must survive belongs beside the current rule in its owner.

@@ -530,7 +530,7 @@ export function MainThreadPane({
                   </p>
                   <h2 className="mt-2 max-w-xl text-2xl font-semibold leading-8 text-ink">
                     {adminEntryVisible
-                      ? "Connect a provider to start researching."
+                      ? "Connect a provider to start chatting."
                       : "This workspace has no models available yet."}
                   </h2>
                   <p className="mt-2 max-w-xl text-sm leading-6 text-ink-secondary">
@@ -551,10 +551,10 @@ export function MainThreadPane({
               ) : (
                 <div className="mx-auto w-full max-w-reading sm:text-center">
                   <h2 className="text-2xl font-semibold leading-8 tracking-[-0.025em] text-ink sm:text-3xl sm:leading-9">
-                    What are you investigating?
+                    What do you want to work on?
                   </h2>
                   <p className="mt-2 text-sm leading-6 text-ink-secondary">
-                    Ask a question. Sources and run evidence stay inspectable.
+                    Choose a model, add tools or web search, and start a conversation.
                   </p>
                 </div>
               )}

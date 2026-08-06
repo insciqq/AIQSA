@@ -482,7 +482,7 @@ export function AdminProviderCustomSetup({
                   Image generation (future workflows)
                 </label>
                 <p className="mt-1 text-metadata text-ink-muted">
-                  Web search is usable in QSA runs. Image support is recorded now but is not yet runnable in chat.
+                  Web search is available in chat. Image support is recorded now but is not yet runnable.
                 </p>
               </div>
               <label>

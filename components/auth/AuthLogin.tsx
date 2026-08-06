@@ -890,10 +890,10 @@ export function AuthLogin({
         <header className="flex shrink-0 items-center justify-between gap-6 border-b border-trace-subtle pb-4 [@media(max-height:32rem)]:!pb-2">
           <div className="min-w-0">
             <p className="text-xl font-semibold tracking-[-0.035em]">AIQSA</p>
-            <p className="mt-0.5 text-xs text-ink-muted">Research workspace</p>
+            <p className="mt-0.5 text-xs text-ink-muted">Self-hosted AI workspace</p>
           </div>
           <p className="hidden shrink-0 text-xs font-medium text-ink-muted sm:block">
-            Question <span className="px-1.5 text-proof">→</span> Search <span className="px-1.5 text-proof">→</span> Answer
+            Models <span className="px-1.5 text-proof">·</span> Tools <span className="px-1.5 text-proof">·</span> Search
           </p>
         </header>
 

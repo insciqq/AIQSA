@@ -9,7 +9,7 @@ type Rgb = readonly [number, number, number];
 const FOCUS_ALPHA = 0.78;
 const CONTROL_BOUNDARY_ALPHA = 0.85;
 const COMMON_SURFACES = [
-  "research-canvas",
+  "app-canvas",
   "workspace-rail",
   "answer-paper",
   "composer-surface",

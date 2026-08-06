@@ -42,7 +42,7 @@ const required = [
   "agent_docs/ENV_VARIABLES.md",
   "agent_docs/PRODUCT_PRINCIPLES.md",
   "agent_docs/PROVIDER_API_NOTES.md",
-  "agent_docs/QSA_PIPELINE.md",
+  "agent_docs/RUN_PIPELINE.md",
   "agent_docs/SECURITY.md",
   "agent_docs/TESTING.md",
   "agent_docs/tasks/README.md",

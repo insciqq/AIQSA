@@ -1798,7 +1798,7 @@ describe("run execution", () => {
         return providerResult({
           finalText: "",
           toolCalls: [{
-            arguments: { query: "current QSA evidence" },
+            arguments: { query: "current run evidence" },
             id: "anthropic-search-call-1",
             name: "search_engine_1"
           }],
@@ -1843,7 +1843,7 @@ describe("run execution", () => {
             encrypted_index: "ENCRYPTED_INDEX_CANARY",
             rawResultBody: "RAW_ANTHROPIC_RESULT_CANARY"
           },
-          findings: "The current QSA evidence is verified.",
+          findings: "The current run evidence is verified.",
           providerResponseId: "anthropic-message-search-1",
           requestPreview: {
             maxOutputTokens: 4_096,
@@ -1853,7 +1853,7 @@ describe("run execution", () => {
           },
           sources: [{
             rank: 1,
-            title: "Verified QSA source",
+            title: "Verified run source",
             url: "https://example.test/anthropic-search"
           }],
           usage: usage(3, 4, 1)
@@ -1922,7 +1922,7 @@ describe("run execution", () => {
     expect(events.at(-1)).toMatchObject({ data: { status: "complete" }, type: "done" });
     expect(searchRequests).toHaveLength(1);
     expect(searchRequests[0]).toMatchObject({
-      query: "current QSA evidence",
+      query: "current run evidence",
       searchPolicy: {
         maxOutputTokens: 4_096,
         modelId: "claude-opus-5",
@@ -1935,11 +1935,11 @@ describe("run execution", () => {
     expect(JSON.stringify(searchRequests[0])).not.toContain("Current question");
     expect(providerRequests).toHaveLength(2);
     expect(JSON.stringify(providerRequests[1]?.providerToolMessages))
-      .toContain("The current QSA evidence is verified.");
+      .toContain("The current run evidence is verified.");
     expect(repository.searchRuns).toEqual([
       expect.objectContaining({
         artifacts: expect.objectContaining({
-          findings: "The current QSA evidence is verified.",
+          findings: "The current run evidence is verified.",
           providerOperations: [expect.objectContaining({
             id: "srvtoolu_client_search_1",
             kind: "search",
@@ -1948,7 +1948,7 @@ describe("run execution", () => {
           providerUsage: { webSearchRequests: 2 },
           sources: [{
             rank: 1,
-            title: "Verified QSA source",
+            title: "Verified run source",
             url: "https://example.test/anthropic-search"
           }],
           usage: expect.objectContaining({ inputTokens: 3, outputTokens: 4 })
@@ -1956,7 +1956,7 @@ describe("run execution", () => {
         invocationId: "anthropic-search-call-1:anthropic-web-search",
         modelId: "claude-opus-5",
         provider: "anthropic",
-        query: "current QSA evidence",
+        query: "current run evidence",
         searchRevisionId: "anthropic-search-revision-1",
         status: "complete",
         strategyId: "anthropic-web-search"

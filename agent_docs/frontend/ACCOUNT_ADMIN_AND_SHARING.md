@@ -32,7 +32,7 @@ Visual tokens, geometry, and reusable recipes belong to `DESIGN_SYSTEM.md`. Serv
 ## Public Share
 
 - `/s/[shareToken]` is anonymous and resolves the hashed token server-side. Missing, revoked, expired, and invalid links all render the same `Shared snapshot unavailable` result without owner, token, or reason detail.
-- The page identifies AIQSA, `Shared research`, and `Read-only snapshot`; it renders one title and explains that the immutable branch neither updates nor changes the original. Blank titles safely become `Shared chat`.
+- The page identifies AIQSA, `Shared conversation`, and `Read-only snapshot`; it renders one title and explains that the immutable branch neither updates nor changes the original. Blank titles safely become `Shared chat`.
 - User turns keep the private thread's compact question treatment; answers remain full-measure document flow. The page has no provider/model metadata, message actions, composer, Details, branch controls, share management, authenticated-shell dependency, or promotional call to action.
 - Rendering consumes only sanitized user/assistant text plus sanitizer-produced attachment-omission text. It never reads private message/share/run/object identifiers, raw provider material, secrets, or user/group data. Shared Markdown keeps safe links/citations and inert raw HTML/unsafe URLs.
 - A branch containing hosted-answer Gemini grounded live-only provenance cannot be shared. The UI explains the limitation and never publishes a neutral storage placeholder as an answer; normalized query-only Gemini Search evidence follows the ordinary client-Search projection instead.
@@ -105,7 +105,7 @@ Visual tokens, geometry, and reusable recipes belong to `DESIGN_SYSTEM.md`. Serv
 
 ### Prompt library
 
-- Prompt library is a full-viewport workbench reached from Account or Run setup, never a Settings subsection or rounded modal. It has explicit Back to chat, no scrim/backdrop dismissal, and no action that implicitly applies the viewed prompt to the next run.
+- Prompt library is a full-screen surface reached from Account or Run setup, never a Settings subsection or rounded modal. It has explicit Back to chat, no scrim/backdrop dismissal, and no action that implicitly applies the viewed prompt to the next run.
 - At width at least 1024px and height above 512px, library and editor may be independent scrolling panes with fixed local headers/footer. Below either threshold, exactly one task is visible and Back to prompts restores query, selection, scroll, and focus context.
 - The editor owns name, required system instructions, optional developer instructions, Duplicate, a protected default-for-new-chats action, and confirmation-gated Delete under More. Save/create is the sole primary footer action and is enabled only for a dirty valid draft with no pending mutation.
 - `Default for new chats` is persisted startup state. `Next run` is chosen only in the composer. Browsing, editing, duplicating, or changing the startup default never applies a prompt to the current composer.

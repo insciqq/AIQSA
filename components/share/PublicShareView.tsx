@@ -14,7 +14,7 @@ function PublicShareHeader() {
         <div className="flex min-w-0 items-center gap-2.5">
           <p className="shrink-0 text-sm font-semibold tracking-[0.01em] text-ink">AIQSA</p>
           <span className="h-4 w-px shrink-0 bg-trace-strong" aria-hidden="true" />
-          <p className="truncate text-xs text-ink-muted">Shared research</p>
+          <p className="truncate text-xs text-ink-muted">Shared conversation</p>
         </div>
         <p className="inline-flex shrink-0 items-center gap-1.5 text-xs font-medium text-ink-secondary">
           <Lock className="size-3.5 text-ink-muted" aria-hidden="true" />

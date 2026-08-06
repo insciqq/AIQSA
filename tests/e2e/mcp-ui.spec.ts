@@ -171,7 +171,7 @@ test("keeps multi-MCP enablement, personal secrets, OAuth return, and composer s
   servers = servers.map((server) => server.id === "notion"
     ? {
         ...server,
-        accountLabel: "Research workspace",
+        accountLabel: "Team workspace",
         enabled: true,
         oauthState: "ready",
         readiness: "ready",
@@ -181,7 +181,7 @@ test("keeps multi-MCP enablement, personal secrets, OAuth return, and composer s
   await page.goto("/?settings=mcp&oauth=connected&server=notion");
   settings = page.getByTestId("settings-dialog");
   await expect(settings.getByText("External account connected and MCP enabled.")).toBeVisible();
-  await expect(settings.getByText("Research workspace")).toBeVisible();
+  await expect(settings.getByText("Team workspace")).toBeVisible();
   await expect(page).not.toHaveURL(/oauth=|settings=mcp|server=notion/u);
 
   await page.setViewportSize({ height: 844, width: 390 });

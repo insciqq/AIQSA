@@ -497,7 +497,7 @@ export function McpSettingsSection({
                 How tools use data
               </summary>
               <div className="space-y-2 border-t border-trace-subtle px-3 py-3 text-xs leading-5 text-ink-muted">
-                <p>Every ready tool is automatically available to your normal AIQSA runs.</p>
+                <p>Every ready tool is automatically available to your chats.</p>
                 <p>One tool’s output may influence a later call to another enabled server.</p>
                 <p>
                   Up to {MCP_RUN_PLAN_LIMITS.maxEnabledServers} servers and {MCP_RUN_PLAN_LIMITS.maxTools} discovered

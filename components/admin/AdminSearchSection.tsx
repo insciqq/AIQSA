@@ -77,7 +77,7 @@ const tasks: ReadonlyArray<Readonly<{
 
 const fieldLabel = "text-xs font-medium text-ink-secondary";
 const helpText = "mt-1 block text-metadata text-ink-muted";
-const defaultSearchDescription = "Web search for Research Chat.";
+const defaultSearchDescription = "Web search available in chat.";
 
 function executionInputValues(
   draft: Pick<AdminSearchDraft, "maxOutputTokens" | "maxSearchCallsPerAnswer">

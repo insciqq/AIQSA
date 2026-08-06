@@ -1,6 +1,6 @@
 # FRONTEND COMPOSER AND CONTROLS
 
-Owner: Research Chat interaction maintainers
+Owner: Chat interaction maintainers
 Scope: Functional interaction contracts for composer, navigation, next-run controls, receipts, and Details; appearance remains in DESIGN_SYSTEM.md.
 
 ## Composer

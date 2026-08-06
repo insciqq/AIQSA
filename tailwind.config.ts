@@ -5,7 +5,7 @@ const config = {
   theme: {
     extend: {
       colors: {
-        "research-canvas": "rgb(var(--research-canvas) / <alpha-value>)",
+        "app-canvas": "rgb(var(--app-canvas) / <alpha-value>)",
         "workspace-rail": "rgb(var(--workspace-rail) / <alpha-value>)",
         "answer-paper": "rgb(var(--answer-paper) / <alpha-value>)",
         "composer-surface": "rgb(var(--composer-surface) / <alpha-value>)",

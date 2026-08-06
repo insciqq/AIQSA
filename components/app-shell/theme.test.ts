@@ -32,7 +32,7 @@ describe("theme preferences", () => {
     expect(AIQSA_THEMES.find((theme) => theme.id === "classic-dark")).toEqual(
       expect.objectContaining({
         colorScheme: "dark",
-        description: "Charcoal dark research palette",
+        description: "Charcoal dark palette",
         name: "Classic Dark"
       })
     );
@@ -48,7 +48,7 @@ describe("theme preferences", () => {
       expect.objectContaining({
         accentLabel: "Graphite",
         colorScheme: "light",
-        description: "Soft monochrome research palette",
+        description: "Soft monochrome palette",
         name: "Paper"
       })
     );

@@ -15,6 +15,6 @@ export async function register(): Promise<void> {
     getDefaultMcpRuntimeCoordinator();
   } catch {
     // MCP is an optional subsystem. A missing/invalid MCP deployment setting must
-    // not prevent the core QSA application from starting.
+    // not prevent the core application from starting.
   }
 }

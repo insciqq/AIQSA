@@ -18,28 +18,28 @@ export const AIQSA_THEMES: ThemeOption[] = [
   {
     accentLabel: "Teal",
     colorScheme: "dark",
-    description: "Warm dark research palette",
+    description: "Warm dark palette",
     id: "aiqsa",
     name: "AIQSA"
   },
   {
     accentLabel: "Blue steel",
     colorScheme: "dark",
-    description: "Cool dark research palette",
+    description: "Cool dark palette",
     id: "graphite",
     name: "Graphite"
   },
   {
     accentLabel: "Mint",
     colorScheme: "dark",
-    description: "Green-black research palette",
+    description: "Green-black palette",
     id: "verdant",
     name: "Verdant"
   },
   {
     accentLabel: "Blue",
     colorScheme: "dark",
-    description: "Charcoal dark research palette",
+    description: "Charcoal dark palette",
     id: "classic-dark",
     name: "Classic Dark"
   },
@@ -53,7 +53,7 @@ export const AIQSA_THEMES: ThemeOption[] = [
   {
     accentLabel: "Graphite",
     colorScheme: "light",
-    description: "Soft monochrome research palette",
+    description: "Soft monochrome palette",
     id: "paper",
     name: "Paper"
   }

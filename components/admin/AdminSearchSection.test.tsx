@@ -311,7 +311,7 @@ describe("AdminSearchSection", () => {
     expect(screen.getByLabelText("Purpose")).toHaveValue("Web search through OpenRouter.");
     fireEvent.change(selector, { target: { value: "" } });
     expect(screen.getByLabelText("Name")).toHaveValue("");
-    expect(screen.getByLabelText("Purpose")).toHaveValue("Web search for Research Chat.");
+    expect(screen.getByLabelText("Purpose")).toHaveValue("Web search available in chat.");
     fireEvent.change(selector, { target: { value: "technical-openrouter-backup" } });
     expect(screen.getByLabelText("Name")).toHaveValue("Backup gateway Search");
     expect(screen.getByLabelText("Purpose")).toHaveValue("Web search through Backup gateway.");

@@ -4,7 +4,7 @@ Use these defaults only when the operator has not decided the point. They route 
 
 ## Product And Architecture Defaults
 
-- Continue the shipped conversation-first QSA product; do not invent a landing page, agent builder, marketplace, or unrelated product direction.
+- Continue the shipped conversation-first, multi-provider AI workspace; do not invent a landing page, marketplace, generic workflow canvas, or unrelated product direction. Agent features require explicit scope and must not be marketed as shipped before they are usable.
 - Keep the Next.js/Postgres/Prisma/S3 modular monolith. Add a runtime, service, or library only after a measured existing boundary blocks the work.
 - Preserve the full reachable capability inventory in `FRONTEND.md`. Prefer progressive disclosure and removal of duplicate editors over hiding a capability.
 - Keep conversation/composer primary, workspace navigation secondary, and Details on demand. Concrete Model, configured Profiles, and Search are direct composer actions; More owns complete next-run editing including Reasoning, and Details owns Branch/Events inspection.

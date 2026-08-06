@@ -5,7 +5,7 @@ Scope: Externally mutable official provider constraints, source links, last-veri
 
 ## Ownership
 
-This conditional document owns official provider references, externally mutable constraints, one last-verified marker per boundary, and provider-specific caveats. `BACKEND.md` owns AIQSA adapter behavior/defaults; `QSA_PIPELINE.md` owns product semantics; `ENV_VARIABLES.md` owns configuration names; executable adapter tests own exact request/response mapping.
+This conditional document owns official provider references, externally mutable constraints, one last-verified marker per boundary, and provider-specific caveats. `BACKEND.md` owns AIQSA adapter behavior/defaults; `RUN_PIPELINE.md` owns product-level run semantics; `ENV_VARIABLES.md` owns configuration names; executable adapter tests own exact request/response mapping.
 
 Reverify the affected primary sources whenever provider-facing work depends on mutable behavior, then replace the section's single marker. Do not append a verification chronology here. Rationale that must survive belongs in the owning current contract; completion evidence belongs in Git history, tests, and release notes.
 

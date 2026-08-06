@@ -68,7 +68,7 @@ jobs:
             type=sha,format=short,prefix=sha-
           labels: |
             org.opencontainers.image.title=AIQSA
-            org.opencontainers.image.description=Self-hosted Question → Search → Answer workspace
+            org.opencontainers.image.description=Self-hosted multi-user AI workspace with multi-provider chat, MCP tools, and web search
 
       - name: Build and publish one release image
         id: image

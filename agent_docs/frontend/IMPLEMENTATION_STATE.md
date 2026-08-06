@@ -11,7 +11,7 @@ This document is a semantic ownership map, not a file inventory. Exact modules r
 | --- | --- | --- |
 | Server entries | `app/` pages | Authenticate/authorize entry, normalize safe URL state, and pass least-data initial props into browser workspaces. |
 | Shared wire contracts | `lib/contracts/` | Client-safe request/response types, runtime decoders, stable errors, and summary/detail boundaries. |
-| Research Chat composition | `components/app-shell/PowerAppShell*` | Compose focused stores/controllers into the seven root view contracts; no server repository or leaf implementation ownership. |
+| Chat composition | `components/app-shell/PowerAppShell*` | Compose focused stores/controllers into the seven root view contracts; no server repository or leaf implementation ownership. |
 | Workspace, thread, composer, run state | focused `components/app-shell/*Store` modules | Keyed durable projections, optimistic state, operation ownership, stream lifecycle, inspection, and next-run controls. |
 | Shell actions/controllers | focused app-shell action and controller modules | Async mutation coordination, navigation/focus lifetimes, reconciliation, and semantic feature ports. |
 | Conversation presentation | app-shell and `components/chat/` leaves | Thread rows, artifacts, receipts, Markdown, composer, Details, rails, menus, and dialogs. |
@@ -125,7 +125,7 @@ The memoized left-pane adapter intentionally ignores callback identity churn and
 - Initial bootstrap has one actionable Retry surface and disables dependent mutations. Blank-chat and zero-model states render only after readiness and distinguish an empty workspace from missing granted access. The zero-model projection also distinguishes admin authority: only an administrator receives the direct Control Center provider-setup action.
 - Above the compact shell threshold, Workspace-rail visibility is one browser-local presentation preference. Hiding closes rail-owned menus and focuses the surviving Workspace trigger; restoring focuses the rail's hide action. At compact widths the same trigger continues to own the modal drawer, and no chat/folder/account state migrates into this preference.
 - A persisted chat with no provider/model default is valid. The shell may show a visible catalog fallback without persisting it. Legacy paired empty-string defaults remain readable during compatibility; half-populated pairs fail closed.
-- Any Research Chat `401` creates one sticky session-expiry transition. Concurrent failures navigate once, store only the active text draft in tab-scoped owner-bound state, and restore it after the same account reauthenticates only into an untouched matching destination. The handoff expires after 30 minutes and never includes attachments.
+- Any Chat `401` creates one sticky session-expiry transition. Concurrent failures navigate once, store only the active text draft in tab-scoped owner-bound state, and restore it after the same account reauthenticates only into an untouched matching destination. The handoff expires after 30 minutes and never includes attachments.
 - Sign-out failure remains visibly attributable to Account and retryable. Answer completion may use the local audio/favicon alert; hidden-tab signaling stops when the user returns.
 
 ### Theme and focus

@@ -701,20 +701,20 @@ test("recovers catalog loading through Prompt library while Settings Appearance 
   await settings.getByRole("button", { name: "Close settings" }).click();
 
   await runAccountMenuAction(page, "Prompt library");
-  const workbench = page.getByTestId("prompt-workbench");
-  const promptRecovery = workbench.getByTestId("prompt-workbench-catalog-state");
+  const promptLibrary = page.getByTestId("prompt-library");
+  const promptRecovery = promptLibrary.getByTestId("prompt-library-catalog-state");
   await expect(promptRecovery).toContainText("Prompt library didn’t load");
-  await expect(workbench.getByLabel("Prompt name")).toHaveCount(0);
-  await expect(workbench.getByRole("button", { name: "New prompt" })).toHaveCount(0);
-  await workbench.getByRole("button", { name: "Retry loading prompt library" }).click();
+  await expect(promptLibrary.getByLabel("Prompt name")).toHaveCount(0);
+  await expect(promptLibrary.getByRole("button", { name: "New prompt" })).toHaveCount(0);
+  await promptLibrary.getByRole("button", { name: "Retry loading prompt library" }).click();
 
-  await expect(workbench.getByLabel("Prompt name")).toBeVisible();
+  await expect(promptLibrary.getByLabel("Prompt name")).toBeVisible();
   await expect(promptRecovery).toHaveCount(0);
   await expect(catalogState).toHaveCount(0);
   await expect.poll(() => catalogReads).toBe(2);
   await expect.poll(() => workspaceReads).toBe(2);
-  await workbench.getByRole("button", { name: "Back to chat" }).click();
-  await expect(workbench).toHaveCount(0);
+  await promptLibrary.getByRole("button", { name: "Back to chat" }).click();
+  await expect(promptLibrary).toHaveCount(0);
   await expect(composer).toBeEnabled();
 });
 
@@ -823,7 +823,7 @@ test("verifies provider controls, prompt preview, Gemini preview, and hidden una
   await expect(page.getByTestId("model-picker").getByRole("button", { name: "Provider Fake" })).toHaveCount(0);
   await page.keyboard.press("Escape");
   await expect(runSetup.getByRole("button", { name: "Prompt preset" })).toContainText("Helpful Assistant");
-  await expect(runSetup.getByRole("button", { name: "Prompt preset" })).not.toContainText("Transparent QSA");
+  await expect(runSetup.getByRole("button", { name: "Prompt preset" })).not.toContainText("Unavailable Prompt");
   await closeRunSetup(page);
   await expect(page.getByTestId("details-pane")).toHaveCount(0);
   await page.getByRole("button", { name: "Open details" }).click();
@@ -1083,54 +1083,54 @@ test("keeps standalone Prompt library and Settings Appearance safe in the narrow
   let runSetup = await openRunSetup(page);
   await expect(runSetup.getByRole("button", { name: "Prompt preset" })).toContainText("Helpful Assistant");
   await runSetup.getByRole("button", { name: "Open library" }).click();
-  let promptWorkbench = page.getByTestId("prompt-workbench");
-  const promptLibraryHeading = promptWorkbench.getByRole("heading", { name: "Prompts" });
-  const promptName = promptWorkbench.getByLabel("Prompt name");
-  await expect(promptWorkbench).toHaveAttribute("aria-label", "Prompt library");
-  await expect(promptWorkbench).toHaveAttribute("data-presentation", "workbench");
-  await expect(promptWorkbench.getByRole("navigation", { name: "Settings sections" })).toHaveCount(0);
+  let promptLibrary = page.getByTestId("prompt-library");
+  const promptLibraryHeading = promptLibrary.getByRole("heading", { name: "Prompts" });
+  const promptName = promptLibrary.getByLabel("Prompt name");
+  await expect(promptLibrary).toHaveAttribute("aria-label", "Prompt library");
+  await expect(promptLibrary).toHaveAttribute("data-presentation", "library");
+  await expect(promptLibrary.getByRole("navigation", { name: "Settings sections" })).toHaveCount(0);
   await expect(promptLibraryHeading).toBeFocused();
-  await expect(promptWorkbench.getByRole("button", { name: "New prompt" })).toBeInViewport();
-  await expect(promptWorkbench.getByTestId("prompt-library-pane")).toBeVisible();
-  await expect(promptWorkbench.getByTestId("prompt-editor-pane")).toBeHidden();
-  await expectWithinViewport(page, promptWorkbench);
+  await expect(promptLibrary.getByRole("button", { name: "New prompt" })).toBeInViewport();
+  await expect(promptLibrary.getByTestId("prompt-library-pane")).toBeVisible();
+  await expect(promptLibrary.getByTestId("prompt-editor-pane")).toBeHidden();
+  await expectWithinViewport(page, promptLibrary);
   await expectNoHorizontalOverflow(page);
 
-  await promptWorkbench.getByRole("button", { name: "Edit prompt Research Prompt" }).click();
-  await expect(promptWorkbench.getByLabel("Prompt name")).toHaveValue("Research Prompt");
+  await promptLibrary.getByRole("button", { name: "Edit prompt Research Prompt" }).click();
+  await expect(promptLibrary.getByLabel("Prompt name")).toHaveValue("Research Prompt");
   await expect(promptName).toBeFocused();
-  await expect(promptWorkbench.getByTestId("prompt-library-pane")).toBeHidden();
-  await expect(promptWorkbench.getByTestId("prompt-editor-pane")).toBeVisible();
-  await expect(promptWorkbench.getByTestId("prompt-default-control")).toBeVisible();
-  await expect(promptWorkbench.getByRole("button", { name: "Save changes" })).toBeInViewport();
-  await expectWithinViewport(page, promptWorkbench);
-  await expectWithinViewport(page, promptWorkbench.getByRole("heading", { name: "Research Prompt" }));
+  await expect(promptLibrary.getByTestId("prompt-library-pane")).toBeHidden();
+  await expect(promptLibrary.getByTestId("prompt-editor-pane")).toBeVisible();
+  await expect(promptLibrary.getByTestId("prompt-default-control")).toBeVisible();
+  await expect(promptLibrary.getByRole("button", { name: "Save changes" })).toBeInViewport();
+  await expectWithinViewport(page, promptLibrary);
+  await expectWithinViewport(page, promptLibrary.getByRole("heading", { name: "Research Prompt" }));
   await expectNoHorizontalOverflow(page);
-  await promptWorkbench.getByRole("button", { name: "Back to prompts" }).click();
-  await expect(promptWorkbench.getByTestId("prompt-library-pane")).toBeVisible();
-  await expect(promptWorkbench.getByRole("button", { name: "Edit prompt Research Prompt" })).toHaveAttribute(
+  await promptLibrary.getByRole("button", { name: "Back to prompts" }).click();
+  await expect(promptLibrary.getByTestId("prompt-library-pane")).toBeVisible();
+  await expect(promptLibrary.getByRole("button", { name: "Edit prompt Research Prompt" })).toHaveAttribute(
     "aria-current",
     "true"
   );
   await expectNoHorizontalOverflow(page);
-  await promptWorkbench.getByRole("button", { name: "Edit prompt Research Prompt" }).click();
+  await promptLibrary.getByRole("button", { name: "Edit prompt Research Prompt" }).click();
   await expect(promptName).toBeFocused();
   await promptName.press("Shift+Tab");
   await expect
     .poll(() =>
-      page.evaluate(() => Boolean(document.activeElement?.closest('[data-testid="prompt-workbench"]')))
+      page.evaluate(() => Boolean(document.activeElement?.closest('[data-testid="prompt-library"]')))
     )
     .toBe(true);
   await page.keyboard.press("Tab");
   await expect(promptName).toBeFocused();
 
-  await promptWorkbench.getByRole("button", { name: "Set selected prompt as default" }).click();
+  await promptLibrary.getByRole("button", { name: "Set selected prompt as default" }).click();
   await expect(page.getByTestId("shell-notice")).toContainText("Default prompt: Research Prompt");
-  await promptWorkbench.getByRole("button", { name: "Prompt actions" }).click();
-  await expect(promptWorkbench.getByRole("menuitem", { name: "Delete selected prompt" })).toBeDisabled();
+  await promptLibrary.getByRole("button", { name: "Prompt actions" }).click();
+  await expect(promptLibrary.getByRole("menuitem", { name: "Delete selected prompt" })).toBeDisabled();
   expect(promptRequests).toEqual([]);
-  await promptWorkbench.getByRole("button", { name: "Back to prompts" }).click();
-  await promptWorkbench.getByRole("button", { name: "Back to chat" }).click();
+  await promptLibrary.getByRole("button", { name: "Back to prompts" }).click();
+  await promptLibrary.getByRole("button", { name: "Back to chat" }).click();
   await expect(page.getByTestId("shell-notice")).toHaveCount(0);
 
   runSetup = await openRunSetup(page);
@@ -1143,25 +1143,25 @@ test("keeps standalone Prompt library and Settings Appearance safe in the narrow
 
   runSetup = await openRunSetup(page);
   await runSetup.getByRole("button", { name: "Open library" }).click();
-  promptWorkbench = page.getByTestId("prompt-workbench");
-  await promptWorkbench.getByRole("button", { name: "Edit prompt Research Prompt" }).click();
-  await promptWorkbench.getByLabel("Prompt name").fill("Research Prompt with unsaved edits");
-  await expect(promptWorkbench.getByText("Unsaved changes", { exact: true })).toBeVisible();
-  await expectCenterUnobscured(promptWorkbench.getByRole("heading", { name: "Research Prompt" }));
-  await expectCenterUnobscured(promptWorkbench.getByRole("button", { name: "Back to prompts" }));
+  promptLibrary = page.getByTestId("prompt-library");
+  await promptLibrary.getByRole("button", { name: "Edit prompt Research Prompt" }).click();
+  await promptLibrary.getByLabel("Prompt name").fill("Research Prompt with unsaved edits");
+  await expect(promptLibrary.getByText("Unsaved changes", { exact: true })).toBeVisible();
+  await expectCenterUnobscured(promptLibrary.getByRole("heading", { name: "Research Prompt" }));
+  await expectCenterUnobscured(promptLibrary.getByRole("button", { name: "Back to prompts" }));
 
   await page.keyboard.press("Escape");
   let discardDialog = page.getByRole("dialog", { name: "Discard prompt changes" });
   await expect(discardDialog).toBeVisible();
   await discardDialog.getByRole("button", { name: "Keep editing" }).click();
   await expect(page.getByTestId("settings-backdrop")).toHaveCount(0);
-  await expect(promptWorkbench).toBeVisible();
+  await expect(promptLibrary).toBeVisible();
 
-  await promptWorkbench.getByRole("button", { name: "Back to prompts" }).click();
+  await promptLibrary.getByRole("button", { name: "Back to prompts" }).click();
   discardDialog = page.getByRole("dialog", { name: "Discard prompt changes" });
   await discardDialog.getByRole("button", { name: "Confirm discard changes" }).click();
-  await promptWorkbench.getByRole("button", { name: "Back to chat" }).click();
-  await expect(promptWorkbench).toHaveCount(0);
+  await promptLibrary.getByRole("button", { name: "Back to chat" }).click();
+  await expect(promptLibrary).toHaveCount(0);
 
   await runAccountMenuAction(page, "Settings");
   settingsDialog = page.getByTestId("settings-dialog");
@@ -1317,38 +1317,38 @@ test("uses prompt split view only when both width and height can support it", as
   await signIn(page);
   await runAccountMenuAction(page, "Prompt library");
 
-  const workbench = page.getByTestId("prompt-workbench");
-  const workbenchHeader = workbench.getByTestId("prompt-workbench-header");
-  const library = workbench.getByTestId("prompt-library-pane");
-  const editor = workbench.getByTestId("prompt-editor-pane");
+  const promptLibrary = page.getByTestId("prompt-library");
+  const promptLibraryHeader = promptLibrary.getByTestId("prompt-library-header");
+  const library = promptLibrary.getByTestId("prompt-library-pane");
+  const editor = promptLibrary.getByTestId("prompt-editor-pane");
   await expect(page.getByTestId("settings-backdrop")).toHaveCount(0);
   await expect(library).toBeVisible();
   await expect(editor).toBeHidden();
 
-  await workbench.getByRole("button", { name: "Edit prompt Threshold reviewer" }).click();
+  await promptLibrary.getByRole("button", { name: "Edit prompt Threshold reviewer" }).click();
   await expect(library).toBeHidden();
   await expect(editor).toBeVisible();
-  await expect(workbenchHeader).toBeHidden();
-  await expect(workbench.getByTestId("prompt-action-region")).toBeInViewport();
+  await expect(promptLibraryHeader).toBeHidden();
+  await expect(promptLibrary.getByTestId("prompt-action-region")).toBeInViewport();
 
   await page.setViewportSize({ height: 500, width: 1280 });
   await expect(library).toBeHidden();
   await expect(editor).toBeVisible();
-  await expect(workbenchHeader).toBeHidden();
-  await expect(workbench.getByRole("button", { name: "Back to prompts" })).toBeVisible();
-  await expect(workbench.getByTestId("prompt-action-region")).toBeInViewport();
+  await expect(promptLibraryHeader).toBeHidden();
+  await expect(promptLibrary.getByRole("button", { name: "Back to prompts" })).toBeVisible();
+  await expect(promptLibrary.getByTestId("prompt-action-region")).toBeInViewport();
 
   await page.setViewportSize({ height: 513, width: 1024 });
   await expect(library).toBeVisible();
   await expect(editor).toBeVisible();
-  await expect(workbenchHeader).toBeVisible();
-  await expect(workbench.getByRole("button", { name: "Back to prompts" })).toBeHidden();
-  await expect(workbench.getByTestId("prompt-library-scroll-region")).toHaveCSS("overflow-y", "auto");
-  await expect(workbench.getByTestId("prompt-editor-scroll-region")).toHaveCSS("overflow-y", "auto");
-  await expect(workbench.getByTestId("prompt-action-region")).toBeInViewport();
+  await expect(promptLibraryHeader).toBeVisible();
+  await expect(promptLibrary.getByRole("button", { name: "Back to prompts" })).toBeHidden();
+  await expect(promptLibrary.getByTestId("prompt-library-scroll-region")).toHaveCSS("overflow-y", "auto");
+  await expect(promptLibrary.getByTestId("prompt-editor-scroll-region")).toHaveCSS("overflow-y", "auto");
+  await expect(promptLibrary.getByTestId("prompt-action-region")).toBeInViewport();
 
-  const workbenchBox = await workbench.boundingBox();
-  expect(workbenchBox).toEqual({ height: 513, width: 1024, x: 0, y: 0 });
+  const promptLibraryBox = await promptLibrary.boundingBox();
+  expect(promptLibraryBox).toEqual({ height: 513, width: 1024, x: 0, y: 0 });
   await expectNoHorizontalOverflow(page);
 });
 
@@ -2770,7 +2770,7 @@ test("opens a second blank New Chat while another active run is still running", 
 });
 
 test("keeps route-aware titles and complete two-line chat names across shell viewports", async ({ page }) => {
-  const englishTitle = "Comparative research workspace Alpha review";
+  const englishTitle = "Comparative multi-model workspace Alpha review";
   const cyrillicTitle = "Сравнение архитектур поиска Бета итог обзор";
   const fixtureChat = (id: string, title: string, updatedAt: string) => ({
     activeLeafMessageId: null,
@@ -4152,7 +4152,7 @@ test("keeps client Search direct, expandable, and independent of generic tool ac
   await expectNoHorizontalOverflow(page);
 });
 
-test("supports the default QSA chat and folder workflow", async ({ browser, page }) => {
+test("supports the default chat and folder workflow", async ({ browser, page }) => {
   test.setTimeout(60_000);
   const suffix = Date.now();
   const folderName = `E2E Folder ${suffix}`;

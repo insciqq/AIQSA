@@ -140,13 +140,18 @@ async function latestRunForChat(page: Page, chatId: string): Promise<RunBody["ru
 async function showLatestRunReceipt(page: Page) {
   const answer = page.locator('article[data-role="assistant"]').last();
   const moreActions = answer.getByRole("button", { name: "More message actions" });
+  const moreActionsMenu = page.getByRole("menu", { name: "More message actions" });
   await expect(async () => {
+    if (await moreActionsMenu.isVisible()) {
+      return;
+    }
     await answer.hover();
     await expect(moreActions).toBeVisible();
     await expect(moreActions).toBeEnabled();
+    await moreActions.click({ timeout: 5_000 });
+    await expect(moreActionsMenu).toBeVisible();
   }).toPass({ timeout: 20_000 });
-  await moreActions.click();
-  await page.getByRole("menuitem", { name: "Show run details" }).click();
+  await moreActionsMenu.getByRole("menuitem", { name: "Show run details" }).click();
   const receipt = answer.getByTestId("run-receipt");
   await expect(receipt).toBeVisible();
   return receipt;

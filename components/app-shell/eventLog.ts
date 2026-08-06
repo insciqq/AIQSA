@@ -80,7 +80,7 @@ const readableAcronyms: Readonly<Record<string, string>> = {
   https: "HTTPS",
   id: "ID",
   mcp: "MCP",
-  qsa: "QSA",
+  qsa: "Run",
   sse: "SSE",
   url: "URL"
 };
