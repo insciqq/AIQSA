@@ -65,7 +65,6 @@ function fixture(input: {
     order.push("commit");
     return {
       defaultChanged: true,
-      profilesFilled: [],
       search: plan.search
         ? plan.search.evidence.status === "available"
           ? "ready" as const

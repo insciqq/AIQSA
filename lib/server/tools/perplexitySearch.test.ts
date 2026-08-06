@@ -53,7 +53,6 @@ function answerRequest(overrides: Partial<ProviderRunRequest> = {}): ProviderRun
     params: { search: { maxOutputTokens: 128, temperature: 0 } },
     prompt: {
       developer: "DEVELOPER_PROMPT_CANARY",
-      presetId: "PRIVATE_PRESET_ID_CANARY",
       system: "SYSTEM_PROMPT_CANARY"
     },
     provider: "PRIVATE_ANSWER_PROVIDER_CANARY",
@@ -105,7 +104,6 @@ describe("legacy Perplexity tool executor privacy boundary", () => {
       "PRIVATE_MESSAGE_ID_CANARY",
       "PRIVATE_ANSWER_MODEL_CANARY",
       "DEVELOPER_PROMPT_CANARY",
-      "PRIVATE_PRESET_ID_CANARY",
       "SYSTEM_PROMPT_CANARY",
       "PRIVATE_ANSWER_PROVIDER_CANARY",
       "TOOL_TRANSCRIPT_CANARY"

@@ -103,7 +103,7 @@ function request(): ProviderRunRequest {
     },
     modelId: "model-1",
     params: { stream: false },
-    prompt: { developer: null, presetId: null, system: null },
+    prompt: { developer: null, system: null },
     provider: "openai_compatible",
     searchStrategy: null
   };

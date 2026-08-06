@@ -4,16 +4,14 @@ export const LOCAL_MCP_MEMBER = Object.freeze({
   displayName: "MCP Member",
   email: "mcp-member@aiqsa.local",
   id: "00000000-0000-4000-8000-000000000002",
-  password: "AIQSA-mcp-member-2026!",
-  promptPresetId: "00000000-0000-4000-8000-000000000302"
+  password: "AIQSA-mcp-member-2026!"
 });
 
 export const LOCAL_RESTRICTED_MEMBER = Object.freeze({
   displayName: "Restricted Member",
   email: "restricted-member@aiqsa.local",
   id: "00000000-0000-4000-8000-000000000003",
-  password: "AIQSA-restricted-member-2026!",
-  promptPresetId: "00000000-0000-4000-8000-000000000303"
+  password: "AIQSA-restricted-member-2026!"
 });
 
 export const LOCAL_ORDINARY_USERS = Object.freeze([

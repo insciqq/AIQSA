@@ -176,7 +176,6 @@ test("anchors explicit mobile sends on the user turn and keeps long answers stab
               activeLeafMessageId: assistantId,
               createdAt: "2026-06-10T00:00:00.000Z",
               defaultModelId: "gpt-5.5",
-              defaultPromptPresetId: "prompt-helpful",
               defaultProvider: "openai",
               folderId: null,
               id: "chat-scroll",
@@ -257,7 +256,6 @@ test("anchors explicit mobile sends on the user turn and keeps long answers stab
     activeLeafMessageId: "assistant-scroll-18",
     createdAt: "2026-06-10T00:00:00.000Z",
     defaultModelId: "gpt-5.5",
-    defaultPromptPresetId: "prompt-helpful",
     defaultProvider: "openai",
     folderId: null,
     id: "chat-scroll",
@@ -519,29 +517,28 @@ test("adapts the composer to 1280 short-height and enlarged-text content width",
   const expectStableDirectControlGeometry = async () => {
     const directControls = page.getByTestId("composer-control-bar");
     const secondary = page.getByTestId("composer-secondary-controls");
-    const [surfaceBox, secondaryBox, modelBox, profileBox, searchBox, moreBox] = await Promise.all([
+    const [surfaceBox, secondaryBox, modelBox, searchBox, moreBox] = await Promise.all([
       composer.boundingBox(),
       secondary.boundingBox(),
       directControls.getByRole("button", { name: "Select model" }).boundingBox(),
-      directControls.getByRole("button", { name: "Run profile" }).boundingBox(),
       directControls.getByRole("button", { name: "Search strategy" }).boundingBox(),
       directControls.getByTestId("composer-run-summary").boundingBox()
     ]);
     const reasoningBox = await directReasoning.isVisible()
       ? await directControls.getByRole("button", { name: /^Reasoning / }).boundingBox()
       : null;
-    if (!surfaceBox || !secondaryBox || !modelBox || !profileBox || !searchBox || !moreBox) {
+    if (!surfaceBox || !secondaryBox || !modelBox || !searchBox || !moreBox) {
       throw new Error("Expected the composer and every direct control to have layout boxes");
     }
 
-    for (const box of [modelBox, profileBox, reasoningBox, searchBox, moreBox].filter(
+    for (const box of [modelBox, reasoningBox, searchBox, moreBox].filter(
       (value): value is NonNullable<typeof value> => value !== null
     )) {
       expect(box.x).toBeGreaterThanOrEqual(surfaceBox.x - 1);
       expect(box.x + box.width).toBeLessThanOrEqual(surfaceBox.x + surfaceBox.width + 1);
     }
 
-    const secondaryControls = [profileBox, reasoningBox, searchBox, moreBox].filter(
+    const secondaryControls = [reasoningBox, searchBox, moreBox].filter(
       (value): value is NonNullable<typeof value> => value !== null
     );
     const rowCenter = secondaryControls[0]!.y + secondaryControls[0]!.height / 2;
@@ -654,7 +651,7 @@ test("offers first-load workspace recovery in both the conversation and mobile w
   await expect(directNewChat).toBeEnabled();
 });
 
-test("recovers catalog loading through Prompt library while Settings Appearance remains usable", async ({ page }) => {
+test("recovers catalog loading through the Library while Settings Appearance remains usable", async ({ page }) => {
   let catalogReads = 0;
   let workspaceReads = 0;
   await page.route("**/api/me/catalog", async (route) => {
@@ -692,30 +689,30 @@ test("recovers catalog loading through Prompt library while Settings Appearance 
   );
   await expectRunSummary(page, { model: "Models unavailable" });
 
-  await runAccountMenuAction(page, "Settings");
-  let settings = page.getByTestId("settings-dialog");
-  await expect(settings.getByRole("heading", { name: "Appearance" })).toBeVisible();
-  await expect(settings.getByRole("button", { name: "Prompts" })).toHaveCount(0);
-  await settings.getByRole("radio", { name: /^Use Graphite theme/ }).click();
-  await expect(page.locator("html")).toHaveAttribute("data-theme", "graphite");
-  await settings.getByRole("button", { name: "Close settings" }).click();
+  await runAccountMenuAction(page, "Library");
+  const library = page.getByTestId("assistant-library");
+  await expect(library).toBeVisible();
+  const libraryError = library.getByRole("alert");
+  await expect(libraryError).toHaveText("The library didn’t load");
+  await expect(library.getByTestId("assistant-library-grid")).toHaveCount(0);
+  await expect(library.getByRole("group", { name: "Filters" })).toHaveCount(0);
+  await library.getByRole("button", { name: "Retry" }).click();
 
-  await runAccountMenuAction(page, "Prompt library");
-  const promptLibrary = page.getByTestId("prompt-library");
-  const promptRecovery = promptLibrary.getByTestId("prompt-library-catalog-state");
-  await expect(promptRecovery).toContainText("Prompt library didn’t load");
-  await expect(promptLibrary.getByLabel("Prompt name")).toHaveCount(0);
-  await expect(promptLibrary.getByRole("button", { name: "New prompt" })).toHaveCount(0);
-  await promptLibrary.getByRole("button", { name: "Retry loading prompt library" }).click();
-
-  await expect(promptLibrary.getByLabel("Prompt name")).toBeVisible();
-  await expect(promptRecovery).toHaveCount(0);
+  await expect(libraryError).toHaveCount(0);
+  await expect(library.getByRole("group", { name: "Filters" })).toBeVisible();
   await expect(catalogState).toHaveCount(0);
   await expect.poll(() => catalogReads).toBe(2);
   await expect.poll(() => workspaceReads).toBe(2);
-  await promptLibrary.getByRole("button", { name: "Back to chat" }).click();
-  await expect(promptLibrary).toHaveCount(0);
+  await library.getByRole("button", { name: "Back to chat" }).click();
+  await expect(library).toHaveCount(0);
   await expect(composer).toBeEnabled();
+
+  await runAccountMenuAction(page, "Settings");
+  const settings = page.getByTestId("settings-dialog");
+  await expect(settings.getByRole("heading", { name: "Appearance" })).toBeVisible();
+  await settings.getByRole("radio", { name: /^Use Graphite theme/ }).click();
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "graphite");
+  await settings.getByRole("button", { name: "Close settings" }).click();
 });
 
 test("keeps a closed-menu sign-out failure discoverable and lets the user retry", async ({ page }) => {
@@ -783,13 +780,12 @@ test("keeps a closed-menu sign-out failure discoverable and lets the user retry"
   expect(signOutAttempts).toBe(2);
 });
 
-test("verifies provider controls, prompt preview, Gemini preview, and hidden unavailable providers", async ({ page }) => {
+test("verifies provider controls, Gemini preview, and hidden unavailable providers", async ({ page }) => {
   let settingsPatchCount = 0;
   const providerControlsChat = {
     activeLeafMessageId: "assistant-provider-controls",
     createdAt: "2026-06-10T12:00:00.000Z",
     defaultModelId: "gpt-5.5",
-    defaultPromptPresetId: "prompt-helpful",
     defaultProvider: "openai",
     folderId: null,
     id: "chat-provider-controls",
@@ -822,8 +818,6 @@ test("verifies provider controls, prompt preview, Gemini preview, and hidden una
   await runSetup.getByRole("button", { name: "Select model" }).click();
   await expect(page.getByTestId("model-picker").getByRole("button", { name: "Provider Fake" })).toHaveCount(0);
   await page.keyboard.press("Escape");
-  await expect(runSetup.getByRole("button", { name: "Prompt preset" })).toContainText("Helpful Assistant");
-  await expect(runSetup.getByRole("button", { name: "Prompt preset" })).not.toContainText("Unavailable Prompt");
   await closeRunSetup(page);
   await expect(page.getByTestId("details-pane")).toHaveCount(0);
   await page.getByRole("button", { name: "Open details" }).click();
@@ -833,7 +827,6 @@ test("verifies provider controls, prompt preview, Gemini preview, and hidden una
     "aria-selected",
     "true"
   );
-  await expect(page.getByRole("tab", { name: "Prompt" })).toHaveCount(0);
 
   await selectModel(page, "openai", "gpt-5.5");
   runSetup = await openRunSetup(page);
@@ -924,7 +917,6 @@ test("keeps searchable pickers and command palette keyboard-safe in the narrow s
   await expect(runSummary).toBeVisible();
   await expectRunSummary(page, {
     model: "GPT-5.5",
-    profile: "Custom",
     reasoning: "Standard · Medium",
     search: "Off"
   });
@@ -969,28 +961,6 @@ test("keeps searchable pickers and command palette keyboard-safe in the narrow s
   await expect(searchTrigger).toBeFocused();
   await expect(runSetup).toBeVisible();
 
-  const promptTrigger = runSetup.getByRole("button", { name: "Prompt preset" });
-  await promptTrigger.click();
-  let promptPicker = page.getByTestId("prompt-picker-options");
-  let promptSearch = promptPicker.getByLabel("Search prompt presets");
-  await expect(promptSearch).toBeFocused();
-  await expectWithinViewport(page, promptPicker);
-  await promptSearch.fill("no-such-prompt-wording");
-  await expect(promptPicker.getByRole("status")).toContainText("No prompts match");
-  await page.keyboard.press("Escape");
-  await expect(promptTrigger).toBeFocused();
-  await promptTrigger.click();
-  promptPicker = page.getByTestId("prompt-picker-options");
-  promptSearch = promptPicker.getByLabel("Search prompt presets");
-  await expect(promptSearch).toHaveValue("");
-  await promptSearch.press("End");
-  await promptSearch.press("Tab");
-  await expect(promptPicker.locator("button:focus")).toContainText("Helpful Assistant");
-  await expect(runSetup.getByRole("heading", { name: "Run setup" })).toBeInViewport();
-  await expect(promptSearch).toBeInViewport();
-  await page.keyboard.press("Escape");
-  await expect(promptTrigger).toBeFocused();
-  await expect(runSetup).toBeVisible();
   await closeRunSetup(page);
   await expect(runSummary).toBeFocused();
 
@@ -1041,31 +1011,18 @@ test("keeps a tall wide-screen Run setup inside the viewport with one local scro
   await closeRunSetup(page);
 });
 
-test("keeps standalone Prompt library and Settings Appearance safe in the narrow sheet layout", async ({ page }) => {
+test("keeps the standalone Library and Settings Appearance safe in the narrow sheet layout", async ({ page }) => {
   await page.setViewportSize({ height: 844, width: 390 });
-  const researchPrompt = {
-    developerPrompt: null,
-    id: "prompt-research",
-    isDefault: false,
-    name: "Research Prompt",
-    systemPrompt: "Research carefully and explain the evidence."
-  };
-  const settingsCatalog = {
-    ...matrixCatalog,
-    promptPresets: [...matrixCatalog.promptPresets, researchPrompt]
-  };
-  const promptRequests: string[] = [];
-
-  await installMatrixCatalogFixture(page, undefined, { catalog: settingsCatalog });
-  await page.route(/\/api\/prompts(?:\/.*)?$/, async (route) => {
-    const request = route.request();
-    const path = new URL(request.url()).pathname;
-    promptRequests.push(`${request.method()} ${path}`);
+  await installMatrixCatalogFixture(page);
+  await page.route("**/api/me/assistants", async (route) => {
+    if (route.request().method() !== "GET") {
+      await route.continue();
+      return;
+    }
 
     await route.fulfill({
       contentType: "application/json",
-      json: { error: "unexpected_prompt_mutation" },
-      status: 500
+      json: { assistants: [], publishableGroups: [], viewer: { canPublishInstallation: false } }
     });
   });
 
@@ -1074,94 +1031,42 @@ test("keeps standalone Prompt library and Settings Appearance safe in the narrow
   let settingsDialog = page.getByTestId("settings-dialog");
   await expect(settingsDialog).toHaveAttribute("aria-label", "Settings");
   await expect(settingsDialog.getByRole("heading", { name: "Appearance" })).toBeVisible();
-  await expect(settingsDialog.getByRole("button", { name: "Prompts" })).toHaveCount(0);
   await expect(settingsDialog.getByRole("button", { name: "MCP & tools" })).toBeVisible();
   await expectWithinViewport(page, settingsDialog);
   await expectNoHorizontalOverflow(page);
   await settingsDialog.getByRole("button", { name: "Close settings" }).click();
 
-  let runSetup = await openRunSetup(page);
-  await expect(runSetup.getByRole("button", { name: "Prompt preset" })).toContainText("Helpful Assistant");
-  await runSetup.getByRole("button", { name: "Open library" }).click();
-  let promptLibrary = page.getByTestId("prompt-library");
-  const promptLibraryHeading = promptLibrary.getByRole("heading", { name: "Prompts" });
-  const promptName = promptLibrary.getByLabel("Prompt name");
-  await expect(promptLibrary).toHaveAttribute("aria-label", "Prompt library");
-  await expect(promptLibrary).toHaveAttribute("data-presentation", "library");
-  await expect(promptLibrary.getByRole("navigation", { name: "Settings sections" })).toHaveCount(0);
-  await expect(promptLibraryHeading).toBeFocused();
-  await expect(promptLibrary.getByRole("button", { name: "New prompt" })).toBeInViewport();
-  await expect(promptLibrary.getByTestId("prompt-library-pane")).toBeVisible();
-  await expect(promptLibrary.getByTestId("prompt-editor-pane")).toBeHidden();
-  await expectWithinViewport(page, promptLibrary);
+  await runAccountMenuAction(page, "Library");
+  const library = page.getByTestId("assistant-library");
+  await expect(library).toHaveAttribute("aria-label", "Assistant library");
+  await expect(library.getByRole("heading", { name: "Library" })).toBeVisible();
+  await expect(library.getByRole("tab", { name: "Discover" })).toHaveAttribute("aria-selected", "true");
+  await expect(library.getByRole("button", { name: "Back to chat" })).toBeInViewport();
+  await expect(library.getByRole("button", { name: "New assistant" })).toBeInViewport();
+  await expect(library.getByLabel("Search assistants")).toBeVisible();
+  await expectWithinViewport(page, library);
   await expectNoHorizontalOverflow(page);
 
-  await promptLibrary.getByRole("button", { name: "Edit prompt Research Prompt" }).click();
-  await expect(promptLibrary.getByLabel("Prompt name")).toHaveValue("Research Prompt");
-  await expect(promptName).toBeFocused();
-  await expect(promptLibrary.getByTestId("prompt-library-pane")).toBeHidden();
-  await expect(promptLibrary.getByTestId("prompt-editor-pane")).toBeVisible();
-  await expect(promptLibrary.getByTestId("prompt-default-control")).toBeVisible();
-  await expect(promptLibrary.getByRole("button", { name: "Save changes" })).toBeInViewport();
-  await expectWithinViewport(page, promptLibrary);
-  await expectWithinViewport(page, promptLibrary.getByRole("heading", { name: "Research Prompt" }));
+  await library.getByRole("tab", { name: "Yours" }).click();
+  await expect(library.getByRole("tab", { name: "Yours" })).toHaveAttribute("aria-selected", "true");
+  await expect(library.getByText("No assistants yet", { exact: true })).toBeVisible();
   await expectNoHorizontalOverflow(page);
-  await promptLibrary.getByRole("button", { name: "Back to prompts" }).click();
-  await expect(promptLibrary.getByTestId("prompt-library-pane")).toBeVisible();
-  await expect(promptLibrary.getByRole("button", { name: "Edit prompt Research Prompt" })).toHaveAttribute(
-    "aria-current",
-    "true"
-  );
+
+  await library.getByRole("button", { name: "New assistant" }).click();
+  const narrowEditor = library.getByTestId("assistant-editor");
+  await expect(narrowEditor).toBeVisible();
+  await expect(library.getByRole("tab", { name: "Discover" })).toHaveCount(0);
+  await expect(narrowEditor.getByRole("button", { name: "Back to library" })).toBeInViewport();
+  await expect(narrowEditor.getByLabel("Name", { exact: true })).toBeVisible();
+  await expect(narrowEditor.getByTestId("assistant-editor-save")).toBeInViewport();
+  await expectWithinViewport(page, library);
   await expectNoHorizontalOverflow(page);
-  await promptLibrary.getByRole("button", { name: "Edit prompt Research Prompt" }).click();
-  await expect(promptName).toBeFocused();
-  await promptName.press("Shift+Tab");
-  await expect
-    .poll(() =>
-      page.evaluate(() => Boolean(document.activeElement?.closest('[data-testid="prompt-library"]')))
-    )
-    .toBe(true);
-  await page.keyboard.press("Tab");
-  await expect(promptName).toBeFocused();
+  await narrowEditor.getByRole("button", { name: "Back to library" }).click();
+  await expect(library.getByTestId("assistant-editor")).toHaveCount(0);
+  await expect(library.getByRole("tab", { name: "Yours" })).toHaveAttribute("aria-selected", "true");
 
-  await promptLibrary.getByRole("button", { name: "Set selected prompt as default" }).click();
-  await expect(page.getByTestId("shell-notice")).toContainText("Default prompt: Research Prompt");
-  await promptLibrary.getByRole("button", { name: "Prompt actions" }).click();
-  await expect(promptLibrary.getByRole("menuitem", { name: "Delete selected prompt" })).toBeDisabled();
-  expect(promptRequests).toEqual([]);
-  await promptLibrary.getByRole("button", { name: "Back to prompts" }).click();
-  await promptLibrary.getByRole("button", { name: "Back to chat" }).click();
-  await expect(page.getByTestId("shell-notice")).toHaveCount(0);
-
-  runSetup = await openRunSetup(page);
-  await expect(runSetup.getByRole("button", { name: "Prompt preset" })).toContainText("Helpful Assistant");
-  await runSetup.getByRole("button", { name: "Prompt preset" }).click();
-  await page.getByTestId("prompt-picker-options").locator('[data-option-value="prompt-research"]').click();
-  await expect(runSetup.getByRole("button", { name: "Prompt preset" })).toContainText("Research Prompt");
-  expect(promptRequests).toEqual([]);
-  await closeRunSetup(page);
-
-  runSetup = await openRunSetup(page);
-  await runSetup.getByRole("button", { name: "Open library" }).click();
-  promptLibrary = page.getByTestId("prompt-library");
-  await promptLibrary.getByRole("button", { name: "Edit prompt Research Prompt" }).click();
-  await promptLibrary.getByLabel("Prompt name").fill("Research Prompt with unsaved edits");
-  await expect(promptLibrary.getByText("Unsaved changes", { exact: true })).toBeVisible();
-  await expectCenterUnobscured(promptLibrary.getByRole("heading", { name: "Research Prompt" }));
-  await expectCenterUnobscured(promptLibrary.getByRole("button", { name: "Back to prompts" }));
-
-  await page.keyboard.press("Escape");
-  let discardDialog = page.getByRole("dialog", { name: "Discard prompt changes" });
-  await expect(discardDialog).toBeVisible();
-  await discardDialog.getByRole("button", { name: "Keep editing" }).click();
-  await expect(page.getByTestId("settings-backdrop")).toHaveCount(0);
-  await expect(promptLibrary).toBeVisible();
-
-  await promptLibrary.getByRole("button", { name: "Back to prompts" }).click();
-  discardDialog = page.getByRole("dialog", { name: "Discard prompt changes" });
-  await discardDialog.getByRole("button", { name: "Confirm discard changes" }).click();
-  await promptLibrary.getByRole("button", { name: "Back to chat" }).click();
-  await expect(promptLibrary).toHaveCount(0);
+  await library.getByRole("button", { name: "Back to chat" }).click();
+  await expect(library).toHaveCount(0);
 
   await runAccountMenuAction(page, "Settings");
   settingsDialog = page.getByTestId("settings-dialog");
@@ -1299,56 +1204,56 @@ test("keeps standalone Prompt library and Settings Appearance safe in the narrow
   await expectNoHorizontalOverflow(page);
 });
 
-test("uses prompt split view only when both width and height can support it", async ({ page }) => {
-  const thresholdPrompt = {
-    developerPrompt: null,
-    id: "prompt-threshold",
-    isDefault: false,
-    name: "Threshold reviewer",
-    systemPrompt: "Review responsive behavior and report any clipping or ambiguous navigation."
-  };
+test("uses the Library editor side column only when both width and height can support it", async ({ page }) => {
   await page.setViewportSize({ height: 512, width: 1024 });
-  await installMatrixCatalogFixture(page, undefined, {
-    catalog: {
-      ...matrixCatalog,
-      promptPresets: [...matrixCatalog.promptPresets, thresholdPrompt]
+  await installMatrixCatalogFixture(page);
+  await page.route("**/api/me/assistants", async (route) => {
+    if (route.request().method() !== "GET") {
+      await route.continue();
+      return;
     }
+
+    await route.fulfill({
+      contentType: "application/json",
+      json: { assistants: [], publishableGroups: [], viewer: { canPublishInstallation: false } }
+    });
   });
   await signIn(page);
-  await runAccountMenuAction(page, "Prompt library");
+  await runAccountMenuAction(page, "Library");
 
-  const promptLibrary = page.getByTestId("prompt-library");
-  const promptLibraryHeader = promptLibrary.getByTestId("prompt-library-header");
-  const library = promptLibrary.getByTestId("prompt-library-pane");
-  const editor = promptLibrary.getByTestId("prompt-editor-pane");
-  await expect(page.getByTestId("settings-backdrop")).toHaveCount(0);
-  await expect(library).toBeVisible();
-  await expect(editor).toBeHidden();
+  const library = page.getByTestId("assistant-library");
+  await library.getByRole("button", { name: "New assistant" }).click();
+  const editor = library.getByTestId("assistant-editor");
+  const identitySection = editor.locator('section[aria-labelledby="assistant-identity-heading"]');
+  const runSetupGroup = editor.getByRole("button", { name: "Run setup" });
+  await expect(identitySection).toBeVisible();
+  await expect(runSetupGroup).toBeVisible();
 
-  await promptLibrary.getByRole("button", { name: "Edit prompt Threshold reviewer" }).click();
-  await expect(library).toBeHidden();
-  await expect(editor).toBeVisible();
-  await expect(promptLibraryHeader).toBeHidden();
-  await expect(promptLibrary.getByTestId("prompt-action-region")).toBeInViewport();
+  const editorColumnLayout = async () => {
+    const [identityBox, runSetupBox] = await Promise.all([
+      identitySection.boundingBox(),
+      runSetupGroup.boundingBox()
+    ]);
+    if (!identityBox || !runSetupBox) {
+      return "unknown";
+    }
+    return runSetupBox.x >= identityBox.x + identityBox.width - 1 ? "beside" : "stacked";
+  };
+
+  await expect.poll(editorColumnLayout).toBe("stacked");
+  await expect(editor.getByTestId("assistant-editor-save")).toBeInViewport();
+  await expectNoHorizontalOverflow(page);
 
   await page.setViewportSize({ height: 500, width: 1280 });
-  await expect(library).toBeHidden();
-  await expect(editor).toBeVisible();
-  await expect(promptLibraryHeader).toBeHidden();
-  await expect(promptLibrary.getByRole("button", { name: "Back to prompts" })).toBeVisible();
-  await expect(promptLibrary.getByTestId("prompt-action-region")).toBeInViewport();
+  await expect.poll(editorColumnLayout).toBe("stacked");
+  await expect(editor.getByTestId("assistant-editor-save")).toBeInViewport();
+  await expectNoHorizontalOverflow(page);
 
   await page.setViewportSize({ height: 513, width: 1024 });
-  await expect(library).toBeVisible();
-  await expect(editor).toBeVisible();
-  await expect(promptLibraryHeader).toBeVisible();
-  await expect(promptLibrary.getByRole("button", { name: "Back to prompts" })).toBeHidden();
-  await expect(promptLibrary.getByTestId("prompt-library-scroll-region")).toHaveCSS("overflow-y", "auto");
-  await expect(promptLibrary.getByTestId("prompt-editor-scroll-region")).toHaveCSS("overflow-y", "auto");
-  await expect(promptLibrary.getByTestId("prompt-action-region")).toBeInViewport();
-
-  const promptLibraryBox = await promptLibrary.boundingBox();
-  expect(promptLibraryBox).toEqual({ height: 513, width: 1024, x: 0, y: 0 });
+  await expect.poll(editorColumnLayout).toBe("beside");
+  await expect(editor.getByTestId("assistant-editor-save")).toBeInViewport();
+  const libraryBox = await library.boundingBox();
+  expect(libraryBox).toEqual({ height: 513, width: 1024, x: 0, y: 0 });
   await expectNoHorizontalOverflow(page);
 });
 
@@ -1358,7 +1263,6 @@ test("keeps direct run choices and one complete More setup inside the thread wor
     activeLeafMessageId: "assistant-direct-controls",
     createdAt: "2026-06-10T12:00:00.000Z",
     defaultModelId: "gpt-5.5",
-    defaultPromptPresetId: "prompt-helpful",
     defaultProvider: "openai",
     folderId: null,
     id: "chat-direct-controls",
@@ -1417,7 +1321,6 @@ test("keeps direct run choices and one complete More setup inside the thread wor
   const directControls = page.getByTestId("composer-control-bar");
   await expectRunSummary(page, { model: "GPT-5.5", search: "Off" });
   await expect(directControls.getByRole("button", { name: "Select model" })).toBeVisible();
-  await expect(directControls.getByRole("button", { name: "Run profile" })).toBeVisible();
   await expect(directControls.getByRole("button", { name: "Search strategy" })).toBeVisible();
   await expect(runSummary).toContainText("More");
   await expect(runSummary).toHaveAttribute("aria-expanded", "false");
@@ -1431,8 +1334,8 @@ test("keeps direct run choices and one complete More setup inside the thread wor
   await expectWithinViewport(page, runSetup);
   await expect(runSetup.getByRole("button", { name: "Select model" })).toBeVisible();
   await expect(runSetup.getByRole("button", { name: "Search strategy" })).toBeVisible();
-  await expect(runSetup.getByRole("button", { name: "Prompt preset" })).toBeVisible();
-  await expect(runSetup.getByRole("button", { name: "Open library" })).toBeVisible();
+  await expect(runSetup.getByRole("heading", { name: "Assistant" })).toBeVisible();
+  await expect(runSetup.getByTestId("run-setup-use-assistant")).toHaveText("Use an assistant…");
   await expect(runSetup.getByRole("button", { name: "Reasoning effort" })).toBeVisible();
   await expect(runSetup.getByLabel("Temperature")).toBeVisible();
   await expect(runSetup.getByLabel("Max output tokens")).toBeVisible();
@@ -1580,7 +1483,6 @@ test("keeps a global Search preference and per-model reasoning across model swit
         settings: {
           defaultControlValues: defaults.controlValues,
           defaultModelId: defaults.modelId,
-          defaultPromptPresetId: defaults.promptPresetId,
           defaultProvider: defaults.provider,
           defaultSearchPlan: defaults.searchPlan,
           defaultSearchStrategyId: defaults.searchStrategyId,
@@ -1649,7 +1551,6 @@ test("saves selected Search as a global personal preference", async ({ page }) =
     activeLeafMessageId: null,
     createdAt: "2026-06-10T00:00:00.000Z",
     defaultModelId: "anthropic/claude-opus-4.8",
-    defaultPromptPresetId: "prompt-helpful",
     defaultProvider: "openrouter",
     folderId: null,
     id: "chat-openrouter-claude",
@@ -1728,7 +1629,6 @@ test("saves selected Search as a global personal preference", async ({ page }) =
         settings: {
           defaultControlValues: defaults.controlValues,
           defaultModelId: defaults.modelId,
-          defaultPromptPresetId: defaults.promptPresetId,
           defaultProvider: defaults.provider,
           defaultSearchPlan: defaults.searchPlan,
           defaultSearchStrategyId: defaults.searchStrategyId,
@@ -1789,7 +1689,6 @@ test("sends GPT-5.6 Pro/max controls and keeps selected search after an immediat
         activeLeafMessageId: null,
         createdAt: "2026-06-10T00:00:00.000Z",
         defaultModelId: defaults.modelId,
-        defaultPromptPresetId: defaults.promptPresetId,
         defaultProvider: defaults.provider,
         folderId: null,
         id: "chat-send-defaults",
@@ -1896,7 +1795,6 @@ test("sends GPT-5.6 Pro/max controls and keeps selected search after an immediat
   await closeRunSetup(page);
   await expectRunSummary(page, {
     model: "GPT-5.6 Sol",
-    profile: "Deep",
     reasoning: "Pro · Maximum",
     search: "Off"
   });
@@ -1973,7 +1871,6 @@ test("loads catalog before activating a stored chat and avoids hydration warning
     activeLeafMessageId: "assistant-bootstrap",
     createdAt: "2026-06-10T13:00:00.000Z",
     defaultModelId: "claude-opus-4-8",
-    defaultPromptPresetId: "prompt-helpful",
     defaultProvider: "anthropic",
     folderId: null,
     id: "chat-bootstrap",
@@ -2044,7 +1941,6 @@ test("loads catalog before activating a stored chat and avoids hydration warning
         settings: {
           defaultControlValues: matrixCatalog.defaults.controlValues,
           defaultModelId: matrixCatalog.defaults.modelId,
-          defaultPromptPresetId: matrixCatalog.defaults.promptPresetId,
           defaultProvider: matrixCatalog.defaults.provider,
           defaultSearchPlan: matrixCatalog.defaults.searchPlan,
           defaultSearchStrategyId: matrixCatalog.defaults.searchStrategyId,
@@ -2095,7 +1991,6 @@ test("keeps chats without a persisted default model accessible", async ({ page }
     activeLeafMessageId: null,
     createdAt: "2026-06-10T13:00:00.000Z",
     defaultModelId: null,
-    defaultPromptPresetId: null,
     defaultProvider: null,
     folderId: null,
     id: "chat-without-default-model",
@@ -2133,7 +2028,6 @@ test("finds never-opened chats through server-side content search", async ({ pag
     activeLeafMessageId: null,
     createdAt: "2026-06-10T13:00:00.000Z",
     defaultModelId: "gpt-5.5",
-    defaultPromptPresetId: "prompt-helpful",
     defaultProvider: "openai",
     folderId: null,
     id: "chat-hidden-content",
@@ -2194,7 +2088,6 @@ test("finds never-opened chats through server-side content search", async ({ pag
         settings: {
           defaultControlValues: matrixCatalog.defaults.controlValues,
           defaultModelId: matrixCatalog.defaults.modelId,
-          defaultPromptPresetId: matrixCatalog.defaults.promptPresetId,
           defaultProvider: matrixCatalog.defaults.provider,
           defaultSearchPlan: matrixCatalog.defaults.searchPlan,
           defaultSearchStrategyId: matrixCatalog.defaults.searchStrategyId,
@@ -2226,7 +2119,6 @@ test("opens a contained full-height branch details sheet from the thread header 
     activeLeafMessageId: "assistant-mobile",
     createdAt: "2026-06-10T12:00:00.000Z",
     defaultModelId: "gpt-5.5",
-    defaultPromptPresetId: "prompt-helpful",
     defaultProvider: "openai",
     folderId: null,
     id: "chat-mobile-details",
@@ -2304,7 +2196,6 @@ test("reveals desktop chat row actions on hover and keyboard focus without layou
     activeLeafMessageId: null,
     createdAt: "2026-06-10T13:30:00.000Z",
     defaultModelId: "gpt-5.5",
-    defaultPromptPresetId: "prompt-helpful",
     defaultProvider: "openai",
     folderId: "folder-long-workspace-label",
     id: "chat-quiet-actions",
@@ -2380,7 +2271,6 @@ test("supports message copy plus user and assistant edit branches", async ({ pag
     activeLeafMessageId,
     createdAt: "2026-06-10T13:00:00.000Z",
     defaultModelId: "gpt-5.5",
-    defaultPromptPresetId: "prompt-helpful",
     defaultProvider: "openai",
     folderId: null,
     id: chatId,
@@ -2584,7 +2474,6 @@ test("opens a second blank New Chat while another active run is still running", 
         activeLeafMessageId,
         createdAt: "2026-06-10T14:00:00.000Z",
         defaultModelId: "gpt-5.5",
-        defaultPromptPresetId: "prompt-helpful",
         defaultProvider: "openai",
         folderId: null,
         id,
@@ -2776,7 +2665,6 @@ test("keeps route-aware titles and complete two-line chat names across shell vie
     activeLeafMessageId: null,
     createdAt: "2026-08-01T10:00:00.000Z",
     defaultModelId: "gpt-5.5",
-    defaultPromptPresetId: null,
     defaultProvider: "openai",
     folderId: null,
     id,
@@ -2817,8 +2705,8 @@ test("keeps route-aware titles and complete two-line chat names across shell vie
   await page.getByRole("button", { name: "Close settings" }).click();
   await expect(page).toHaveTitle(`${cyrillicTitle} · AIQSA`);
 
-  await runAccountMenuAction(page, "Prompt library");
-  await expect(page).toHaveTitle("Prompt library · AIQSA");
+  await runAccountMenuAction(page, "Library");
+  await expect(page).toHaveTitle("Library · AIQSA");
   await page.getByRole("button", { name: "Back to chat" }).click();
   await expect(page).toHaveTitle(`${cyrillicTitle} · AIQSA`);
 
@@ -2942,7 +2830,6 @@ test("keeps delayed chat_update scoped to its source chat after switching chats"
         activeLeafMessageId: "assistant-a-old",
         createdAt: "2026-06-08T10:00:00.000Z",
         defaultModelId: "gpt-5.5",
-        defaultPromptPresetId: "prompt-helpful",
         defaultProvider: "openai",
         folderId: null,
         id: "chat-a",
@@ -2958,7 +2845,6 @@ test("keeps delayed chat_update scoped to its source chat after switching chats"
         activeLeafMessageId: "assistant-b-old",
         createdAt: "2026-06-08T10:01:00.000Z",
         defaultModelId: "gpt-5.5",
-        defaultPromptPresetId: "prompt-helpful",
         defaultProvider: "openai",
         folderId: null,
         id: "chat-b",
@@ -3006,7 +2892,6 @@ test("keeps delayed chat_update scoped to its source chat after switching chats"
             activeLeafMessageId: "assistant-a-new",
             createdAt: "2026-06-08T10:00:00.000Z",
             defaultModelId: "gpt-5.5",
-            defaultPromptPresetId: "prompt-helpful",
             defaultProvider: "openai",
             folderId: null,
             id: "chat-a",
@@ -3189,7 +3074,6 @@ test("recovers a rejected send by preserving the draft and retrying from the sam
     activeLeafMessageId: parentAssistant.id,
     createdAt: "2026-06-08T12:00:00.000Z",
     defaultModelId: "gpt-5.5",
-    defaultPromptPresetId: "prompt-helpful",
     defaultProvider: "openai",
     folderId: null,
     id: chatId,
@@ -3330,7 +3214,6 @@ test("keeps successful attachments and the draft after a mixed upload failure", 
     activeLeafMessageId: parentAssistant.id,
     createdAt: "2026-06-08T13:00:00.000Z",
     defaultModelId: "gpt-5.5",
-    defaultPromptPresetId: "prompt-helpful",
     defaultProvider: "openai",
     folderId: null,
     id: chatId,
@@ -3526,7 +3409,6 @@ test("disables send while active chat detail is loading", async ({ page }) => {
     activeLeafMessageId: "assistant-lazy-old",
     createdAt: "2026-06-08T11:00:00.000Z",
     defaultModelId: "gpt-5.5",
-    defaultPromptPresetId: "prompt-helpful",
     defaultProvider: "openai",
     folderId: null,
     id: "chat-lazy",
@@ -3603,7 +3485,6 @@ test("shows a retryable in-thread error state when chat detail loading fails", a
     activeLeafMessageId: "assistant-failing-old",
     createdAt: "2026-06-08T11:00:00.000Z",
     defaultModelId: "gpt-5.5",
-    defaultPromptPresetId: "prompt-helpful",
     defaultProvider: "openai",
     folderId: null,
     id: "chat-failing",
@@ -3681,7 +3562,6 @@ test("recovers a background run after reload and renders search/reasoning thread
           activeLeafMessageId: "assistant-refresh",
           createdAt: "2026-06-07T09:00:00.000Z",
           defaultModelId: "gpt-5.5",
-          defaultPromptPresetId: "prompt-helpful",
           defaultProvider: "openai",
           folderId: null,
           id: "chat-refresh",
@@ -3897,7 +3777,6 @@ test("shows tool activity by default and persists hide/show across reload", asyn
     activeLeafMessageId: "assistant-tool-activity",
     createdAt: "2026-07-23T12:00:00.000Z",
     defaultModelId: "gpt-5.5",
-    defaultPromptPresetId: "prompt-helpful",
     defaultProvider: "openai",
     folderId: null,
     id: chatId,
@@ -4001,7 +3880,6 @@ test("keeps client Search direct, expandable, and independent of generic tool ac
     activeLeafMessageId: "assistant-search-trace",
     createdAt: "2026-07-31T12:00:00.000Z",
     defaultModelId: "gpt-5.5",
-    defaultPromptPresetId: "prompt-helpful",
     defaultProvider: "openai",
     folderId: null,
     id: chatId,
@@ -4238,7 +4116,6 @@ test("supports the default chat and folder workflow", async ({ browser, page }) 
 
   await selectModel(page, "fake", "Fake QSA", resetModelLabel.split(" / ").at(0) ?? "Fake QSA");
   await expectRunSummary(page, { model: "Fake QSA" });
-  await expect(page.getByLabel("Developer prompt")).toHaveCount(0);
   runSetup = await openRunSetup(page);
   await runSetup.getByLabel("Temperature").fill("0.1");
   await closeRunSetup(page);
@@ -4325,7 +4202,6 @@ test("supports the default chat and folder workflow", async ({ browser, page }) 
   await expect(page.getByRole("tab", { name: "Request" })).toHaveCount(0);
   await expect(page.getByRole("tab", { name: "Response" })).toHaveCount(0);
   await expect(page.getByRole("tab", { name: "Usage" })).toHaveCount(0);
-  await expect(page.getByRole("tab", { name: "Prompt" })).toHaveCount(0);
   await expect(page.getByTestId("token-stats-button")).toBeVisible();
   await expect(page.getByTestId("composer-usage-line")).not.toContainText("cost");
   await page.getByTestId("token-stats-button").click();
@@ -4550,13 +4426,12 @@ test("supports the default chat and folder workflow", async ({ browser, page }) 
   await cleanupE2eWorkspace(page);
 });
 
-test("manages prompt presets and left-pane folders", async ({ page }) => {
+test("manages left-pane folders", async ({ page }) => {
   test.setTimeout(45_000);
   const suffix = Date.now();
   const folderName = `E2E Folder Manage ${suffix}`;
   const renamedFolderName = `E2E Folder Renamed ${suffix}`;
   const subfolderName = `E2E Subfolder ${suffix}`;
-  const promptName = `E2E Prompt ${suffix}`;
 
   await signIn(page);
   await cleanupE2eWorkspace(page);
@@ -4612,95 +4487,7 @@ test("manages prompt presets and left-pane folders", async ({ page }) => {
     .click();
   await expect(page.getByRole("button", { name: `Folder actions ${renamedFolderName}` })).toHaveCount(0);
 
-  await runAccountMenuAction(page, "Prompt library");
-  await expect(page.getByRole("dialog", { name: "Prompt library" })).toBeVisible();
-  await page.getByRole("button", { name: "New prompt" }).click();
-  await page.getByLabel("Prompt name").fill(promptName);
-  await page.getByRole("textbox", { name: "System instructions" }).fill("You are an E2E prompt preset.");
-  await page.getByRole("button", { name: "Create prompt" }).click();
-  await expect(page.getByTestId("shell-notice")).toContainText(`Prompt saved: ${promptName}`);
-  await page.getByRole("button", { name: "Set selected prompt as default" }).click();
-  await expect(page.getByTestId("shell-notice")).toContainText(`Default prompt: ${promptName}`);
-  await page.getByRole("button", { name: "Back to chat" }).click();
-  const runSetup = await openRunSetup(page);
-  await runSetup.getByRole("button", { name: "Prompt preset" }).click();
-  await page.getByTestId("prompt-picker-options").getByText(promptName, { exact: true }).click();
-  await expect(runSetup.getByRole("button", { name: "Prompt preset" })).toContainText(promptName);
-  await closeRunSetup(page);
-
-  await runAccountMenuAction(page, "Prompt library");
-  await expect(page.getByRole("dialog", { name: "Prompt library" })).toBeVisible();
-
-  await page.getByRole("button", { name: "Edit prompt Helpful Assistant" }).click();
-  await page.getByRole("button", { name: "Set selected prompt as default" }).click();
-  await expect(page.getByTestId("shell-notice")).toContainText("Default prompt: Helpful Assistant");
-  await page.getByRole("button", { name: `Edit prompt ${promptName}` }).click();
-  await page.getByRole("button", { name: "Prompt actions" }).click();
-  await page.getByRole("menuitem", { name: "Delete selected prompt" }).click();
-  await page
-    .getByRole("dialog", { name: `Delete prompt ${promptName}` })
-    .getByRole("button", { name: "Confirm delete prompt" })
-    .click();
-  await expect(page.getByTestId("shell-notice")).toContainText("Prompt deleted");
-
   await cleanupE2eWorkspace(page);
-});
-
-test("hides unusable profile shortcuts but keeps their diagnostics in portrait Run setup", async ({ page }) => {
-  await page.setViewportSize({ height: 844, width: 384 });
-  const unavailableCatalog = {
-    ...matrixCatalog,
-    defaults: {
-      ...matrixCatalog.defaults,
-      searchPlan: { mode: "model_choice" as const, optionIds: ["perplexity-tool-search"] },
-      searchStrategyId: "perplexity-tool-search"
-    },
-    runProfiles: matrixCatalog.runProfiles.map((profile) => ({
-      available: false as const,
-      description: profile.description,
-      id: profile.id,
-      label: profile.label,
-      unavailableReason: "model_unavailable"
-    }))
-  } as unknown as typeof matrixCatalog;
-  await installMatrixCatalogFixture(page, undefined, { catalog: unavailableCatalog });
-  await signIn(page);
-
-  const secondary = page.getByTestId("composer-secondary-controls");
-  await expect(secondary.getByRole("button", { name: "Run profile" })).toHaveCount(0);
-  await expect(page.getByTestId("run-profile-summary")).toHaveCount(0);
-  const search = secondary.getByRole("button", { name: "Search strategy" });
-  await expect(search.locator(".lucide-search")).toBeVisible();
-  await expect(search.getByText("Perplexity tool", { exact: true }).first()).toBeVisible();
-  await expect(search).toHaveAttribute("title", "Perplexity tool");
-
-  const more = secondary.getByTestId("composer-run-summary");
-  await expect(more).not.toHaveAccessibleName(/Profile/i);
-  const [secondaryBox, searchBox, moreBox] = await Promise.all([
-    secondary.boundingBox(),
-    search.boundingBox(),
-    more.boundingBox()
-  ]);
-  expect(secondaryBox).toBeTruthy();
-  for (const box of [searchBox, moreBox]) {
-    expect(box).toBeTruthy();
-    expect(box!.x).toBeGreaterThanOrEqual(secondaryBox!.x - 1);
-    expect(box!.x + box!.width).toBeLessThanOrEqual(secondaryBox!.x + secondaryBox!.width + 1);
-  }
-
-  const runSetup = await openRunSetup(page);
-  await expect(runSetup.getByRole("heading", { name: "Profile" })).toBeVisible();
-  const profiles = runSetup.getByRole("group", { name: "Run profile" });
-  for (const name of ["Use Fast run profile", "Use Balanced run profile", "Use Deep run profile"]) {
-    await expect(profiles.getByRole("button", { name })).toBeDisabled();
-  }
-  await expect(profiles.locator('[data-run-profile-availability="unavailable"]')).toHaveCount(3);
-  await expect(profiles.getByText("Unavailable", { exact: true })).toHaveCount(3);
-  await expect(runSetup.getByTestId("run-profile-unavailable-reason")).toContainText(
-    "Unavailable profiles cannot be used with your current model access."
-  );
-  await closeRunSetup(page);
-  await expectNoHorizontalOverflow(page);
 });
 
 for (const viewport of responsiveTouchViewports) {
@@ -4813,7 +4600,6 @@ for (const viewport of responsiveTouchViewports) {
         activeLeafMessageId: "responsive-assistant-3",
         createdAt: "2026-07-11T10:00:00.000Z",
         defaultModelId: "gpt-5.5",
-        defaultPromptPresetId: "prompt-helpful",
         defaultProvider: "openai",
         folderId: "responsive-child",
         id: chatId,
@@ -5053,53 +4839,22 @@ for (const viewport of responsiveTouchViewports) {
       await expect(summary).toBeVisible();
       await expectRunSummary(page, {
         model: "GPT-5.5",
-        profile: "Custom",
         reasoning: "Standard · Medium",
         search: "Off"
       });
       const directModel = page.getByRole("button", { name: "Select model" }).first();
       await expect(directModel).not.toContainText("Model");
-      const profileTrigger = page.getByRole("button", { name: "Run profile" });
-      await expect(profileTrigger).toBeVisible();
-      await expect(profileTrigger).toContainText("Custom");
-      await expectTouchSafe(profileTrigger);
-      await expectWithinViewport(page, profileTrigger);
-      await profileTrigger.click();
-      const profilePicker = page.getByTestId("composer-inline-profile-options");
-      await expectWithinViewport(page, profilePicker);
-      for (const label of ["Deep"]) {
-        const profile = profilePicker.getByRole("button", { name: new RegExp(`^${label}`) });
-        await expect(profile).toBeVisible();
-        await expectTouchSafe(profile);
-      }
-      await expect(profilePicker.getByRole("button", { name: /^Fast/ })).toHaveCount(0);
-      await expect(profilePicker.getByRole("button", { name: /^Balanced/ })).toHaveCount(0);
-      await page.keyboard.press("Escape");
-      await expect(profileTrigger).toBeFocused();
       await expectTouchSafe(summary);
       await expectWithinViewport(page, summary);
 
       let runSetup = await openRunSetup(page);
       await expectWithinViewport(page, runSetup);
-      const runProfiles = runSetup.getByTestId("composer-run-profiles");
-      await expect(runProfiles).toBeVisible();
-      for (const name of ["Use Fast run profile", "Use Balanced run profile", "Use Deep run profile"]) {
-        const profile = runProfiles.getByRole("button", { name });
-        await expect(profile).toBeVisible();
-        await expectTouchSafe(profile);
-      }
-      await runProfiles.getByRole("button", { name: "Use Deep run profile" }).click();
-      await expect(runProfiles.getByRole("button", { name: "Use Deep run profile" })).toHaveAttribute(
-        "aria-pressed",
-        "true"
-      );
+      const useAssistant = runSetup.getByTestId("run-setup-use-assistant");
+      await useAssistant.scrollIntoViewIfNeeded();
+      await expect(useAssistant).toHaveText("Use an assistant…");
+      await expectTouchSafe(useAssistant);
+      await expectWithinViewport(page, useAssistant);
       await closeRunSetup(page);
-      await expectRunSummary(page, {
-        model: "GPT-5.6 Sol",
-        profile: "Deep",
-        reasoning: "Pro · Maximum",
-        search: "Off"
-      });
 
       const thread = page.getByTestId("thread");
       await expect(page.getByTestId("composer-form")).not.toHaveAttribute(
@@ -5283,7 +5038,7 @@ for (const viewport of responsiveTouchViewports) {
 
       runSetup = await openRunSetup(page);
       await expectWithinViewport(page, runSetup);
-      await expect(runSetup.getByTestId("composer-run-profiles")).toBeVisible();
+      await expect(runSetup.getByRole("heading", { name: "Assistant" })).toBeVisible();
       await expect(runSetup.getByRole("heading", { name: "Generation" })).toBeVisible();
       await expect(runSetup.getByRole("heading", { name: "Next run" })).toBeVisible();
       await expect(runSetup.getByRole("heading", { name: "Display preferences" })).toBeVisible();
@@ -5305,7 +5060,6 @@ for (const viewport of responsiveTouchViewports) {
       await page.keyboard.press("Escape");
       await expect(searchTrigger).toBeFocused();
 
-      await expect(runSetup.getByRole("button", { name: "Prompt preset" })).toBeVisible();
       const reasoningTrigger = runSetup.getByRole("button", { name: "Reasoning effort" });
       await reasoningTrigger.click();
       const reasoningPicker = runSetup.getByTestId("composer-reasoning-effort-options");

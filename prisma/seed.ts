@@ -6,10 +6,6 @@ import {
   providerModelTemplateId,
   providerTemplateIds
 } from "../lib/domain/providerTemplates";
-import {
-  DEFAULT_RUN_PROFILE_CONFIGURATIONS,
-  runProfileMetadata
-} from "../lib/domain/runProfiles";
 import { hashCanonicalMcpValue } from "../lib/server/mcp/definitions";
 import { ensureFullAccessGroup } from "../lib/server/auth/fullAccessGroup";
 import {
@@ -39,7 +35,6 @@ const prisma = new PrismaClient();
 
 const ids = {
   group: "00000000-0000-4000-8000-000000000010",
-  promptPreset: "00000000-0000-4000-8000-000000000300",
   user: "00000000-0000-4000-8000-000000000001"
 };
 
@@ -229,35 +224,6 @@ async function synchronizeLocalProviderTemplates(): Promise<Map<string, string>>
   }
 
   return modelIds;
-}
-
-async function synchronizeRunProfiles(modelIds: Map<string, string>): Promise<void> {
-  for (const profile of DEFAULT_RUN_PROFILE_CONFIGURATIONS) {
-    const providerModelId = modelIds.get(profile.targetTemplateKey);
-    if (!providerModelId) {
-      throw new Error(`Missing run profile model template: ${profile.targetTemplateKey}`);
-    }
-    await prisma.runProfile.upsert({
-      create: {
-        description: runProfileMetadata(profile.id).defaultDescription,
-        enabled: true,
-        id: profile.id,
-        providerModelId,
-        reasoningEffort: profile.reasoningEffort,
-        reasoningMode: profile.reasoningMode
-      },
-      update: {
-        description: runProfileMetadata(profile.id).defaultDescription,
-        enabled: true,
-        providerModelId,
-        reasoningEffort: profile.reasoningEffort,
-        reasoningMode: profile.reasoningMode,
-        updatedByUserId: null,
-        version: 1
-      },
-      where: { id: profile.id }
-    });
-  }
 }
 
 async function seedLocalOrdinaryUser(user: (typeof LOCAL_ORDINARY_USERS)[number]) {
@@ -523,7 +489,6 @@ async function main() {
   }
 
   const providerModelIds = await synchronizeLocalProviderTemplates();
-  await synchronizeRunProfiles(providerModelIds);
   const fakeProviderModelId = providerModelIds.get("fake:fake-qsa");
   if (!fakeProviderModelId) {
     throw new Error("Fake provider model template was not seeded");
@@ -584,47 +549,10 @@ async function main() {
       }
     });
 
-    const existingFixtureSettings = await prisma.userSettings.findUnique({
-      select: { defaultPromptPresetId: true },
-      where: { userId: user.id }
-    });
-    const seedPromptIsFixtureDefault = !existingFixtureSettings ||
-      existingFixtureSettings.defaultPromptPresetId === user.promptPresetId;
-
-    if (seedPromptIsFixtureDefault) {
-      await prisma.promptPreset.updateMany({
-        data: { isDefault: false },
-        where: {
-          id: { not: user.promptPresetId },
-          isDefault: true,
-          userId: user.id
-        }
-      });
-    }
-
-    await prisma.promptPreset.upsert({
-      create: {
-        developerPrompt: null,
-        id: user.promptPresetId,
-        isDefault: seedPromptIsFixtureDefault,
-        name: "Helpful Assistant",
-        systemPrompt: "You are a helpful AI assistant. Today is {local_date}, local time is {local_time}.",
-        userId: user.id
-      },
-      update: {
-        developerPrompt: null,
-        isDefault: seedPromptIsFixtureDefault,
-        name: "Helpful Assistant",
-        systemPrompt: "You are a helpful AI assistant. Today is {local_date}, local time is {local_time}."
-      },
-      where: { id: user.promptPresetId }
-    });
-
     await prisma.userSettings.upsert({
       create: {
         defaultControlValues: {},
         defaultFolderId: null,
-        defaultPromptPresetId: user.promptPresetId,
         defaultProviderModelId: fakeProviderModelId,
         defaultSearchPlan: asJson({ mode: "all_selected", optionIds: [] }),
         defaultSearchStrategyId: "search-disabled",
@@ -641,51 +569,6 @@ async function main() {
       where: { userId: user.id }
     });
   }
-
-  const existingSettings = await prisma.userSettings.findUnique({
-    select: {
-      defaultPromptPresetId: true
-    },
-    where: {
-      userId: ids.user
-    }
-  });
-  const seedPromptIsUserDefault = !existingSettings || existingSettings.defaultPromptPresetId === ids.promptPreset;
-
-  if (seedPromptIsUserDefault) {
-    await prisma.promptPreset.updateMany({
-      data: {
-        isDefault: false
-      },
-      where: {
-        id: {
-          not: ids.promptPreset
-        },
-        isDefault: true,
-        userId: ids.user
-      }
-    });
-  }
-
-  await prisma.promptPreset.upsert({
-    create: {
-      developerPrompt: null,
-      id: ids.promptPreset,
-      isDefault: seedPromptIsUserDefault,
-      name: "Helpful Assistant",
-      systemPrompt: "You are a helpful AI assistant. Today is {local_date}, local time is {local_time}.",
-      userId: ids.user
-    },
-    update: {
-      developerPrompt: null,
-      ...(seedPromptIsUserDefault ? { isDefault: true } : {}),
-      name: "Helpful Assistant",
-      systemPrompt: "You are a helpful AI assistant. Today is {local_date}, local time is {local_time}."
-    },
-    where: {
-      id: ids.promptPreset
-    }
-  });
 
   for (const [optionId, option] of Object.entries(builtInSearchOptions)) {
     await prisma.searchOption.upsert({
@@ -807,7 +690,6 @@ async function main() {
     create: {
       defaultControlValues: {},
       defaultFolderId: null,
-      defaultPromptPresetId: ids.promptPreset,
       defaultProviderModelId: fakeProviderModelId,
       defaultSearchPlan: asJson({ mode: "all_selected", optionIds: [] }),
       defaultSearchStrategyId: "search-disabled",

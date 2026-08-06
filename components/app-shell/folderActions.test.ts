@@ -24,7 +24,6 @@ function chat(input: Partial<ChatSummary> & { id: string; title: string }): Chat
     activeLeafMessageId: null,
     createdAt: "2026-06-10T00:00:00.000Z",
     defaultModelId: "gpt-5.5",
-    defaultPromptPresetId: null,
     defaultProvider: "openai",
     folderId: null,
     messageCount: 0,

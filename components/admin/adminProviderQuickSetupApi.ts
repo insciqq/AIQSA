@@ -44,7 +44,6 @@ const providerIds = new Set<AdminProviderQuickSetupId>(
   ADMIN_PROVIDER_QUICK_SETUP_PROVIDERS
 );
 
-const profileIds = new Set(["balanced", "deep", "fast"]);
 
 const forbiddenResponseKeys = new Set([
   "apiKey",
@@ -206,7 +205,6 @@ function result(value: unknown): AdminProviderQuickSetupResult | null {
     "model",
     "models",
     "outcome",
-    "profilesFilled",
     "provider",
     "providerDisplayName",
     ...(value.search === undefined ? [] : ["search"])
@@ -216,10 +214,7 @@ function result(value: unknown): AdminProviderQuickSetupResult | null {
     new Set(value.models.map((entry) => (entry as AdminProviderQuickSetupModel).displayName)).size ===
       value.models.length &&
     providerId(value.provider) && safeText(value.providerDisplayName, 80) &&
-    searchReceipt(value.search ?? null) &&
-    Array.isArray(value.profilesFilled) &&
-    value.profilesFilled.every((entry) => typeof entry === "string" && profileIds.has(entry)) &&
-    new Set(value.profilesFilled).size === value.profilesFilled.length) {
+    searchReceipt(value.search ?? null)) {
     return value as AdminProviderQuickSetupReadyResult;
   }
   if (value.outcome === "selection_required" && exactKeys(value, [

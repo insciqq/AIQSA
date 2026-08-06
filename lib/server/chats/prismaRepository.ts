@@ -10,8 +10,8 @@ import {
   projectClientSearchActivity,
   projectHostedSearchActivity
 } from "../../domain/searchDisclosure";
+import { decodeAssistantAvatarRecipe } from "../../contracts/assistants";
 import { prisma } from "../prisma";
-import { lockOwnedPromptPreset, lockUserPromptDefaultsShared } from "../prompts/promptDefaultsLock";
 import { ActiveRunConflictError } from "../runs/runRepositoryContract";
 import { persistedToolCallActivity } from "../runs/toolInspection";
 import type {
@@ -38,6 +38,14 @@ const chatDetailInclude = {
           createdAt: "desc"
         },
         select: {
+          assistantId: true,
+          assistantRevision: {
+            select: {
+              avatar: true,
+              name: true,
+              revisionNumber: true
+            }
+          },
           cachedInputTokens: true,
           cacheWriteInputTokens: true,
           events: {
@@ -107,7 +115,6 @@ const chatSummarySelect = {
       id: true
     }
   },
-  defaultPromptPresetId: true,
   folderId: true,
   id: true,
   pinned: true,
@@ -224,7 +231,6 @@ function serializeChatDetail(chat: ChatDetailRow): ChatDetailRecord {
     activeLeafMessageId: chat.activeLeafMessageId,
     createdAt: chat.createdAt,
     defaultModelId: chat.defaultProviderModel?.id ?? null,
-    defaultPromptPresetId: chat.defaultPromptPresetId,
     defaultProvider: chat.defaultProviderModel?.connectionId ?? null,
     folderId: chat.folderId,
     id: chat.id,
@@ -234,6 +240,7 @@ function serializeChatDetail(chat: ChatDetailRow): ChatDetailRecord {
 
       return {
         artifactSummary: modelRun ? summarizeMessageRunArtifacts(modelRun) : null,
+        assistantIdentity: serializeAssistantIdentity(modelRun),
         content: message.content,
         createdAt: message.createdAt,
         errorMessage: message.errorMessage,
@@ -263,12 +270,25 @@ function serializeChatDetail(chat: ChatDetailRow): ChatDetailRecord {
   };
 }
 
+function serializeAssistantIdentity(modelRun: {
+  assistantRevision: { avatar: unknown; name: string; revisionNumber: number } | null;
+} | undefined): NonNullable<ChatDetailRecord["messages"][number]["assistantIdentity"]> | null {
+  const revision = modelRun?.assistantRevision;
+  if (!revision) return null;
+  const avatar = decodeAssistantAvatarRecipe(revision.avatar);
+  if (!avatar) return null;
+  return {
+    avatar,
+    name: revision.name,
+    revisionNumber: revision.revisionNumber
+  };
+}
+
 function serializeChatSummary(chat: ChatSummaryRow): ChatSummaryRecord {
   return {
     activeLeafMessageId: chat.activeLeafMessageId,
     createdAt: chat.createdAt,
     defaultModelId: chat.defaultProviderModel?.id ?? null,
-    defaultPromptPresetId: chat.defaultPromptPresetId,
     defaultProvider: chat.defaultProviderModel?.connectionId ?? null,
     folderId: chat.folderId,
     id: chat.id,
@@ -673,12 +693,10 @@ export function createPrismaChatRepository(prismaClient = prisma): ChatRepositor
     },
     createChat: async ({ folderId, title, userId }) => {
       return prismaClient.$transaction(async (tx) => {
-        await lockUserPromptDefaultsShared(tx, userId);
         const [settings, folder] = await Promise.all([
           tx.userSettings.findUnique({
             select: {
               defaultFolderId: true,
-              defaultPromptPresetId: true,
               defaultProviderModel: {
                 select: {
                   id: true
@@ -700,17 +718,10 @@ export function createPrismaChatRepository(prismaClient = prisma): ChatRepositor
         if (folderId && !folder) {
           return null;
         }
-        const defaultPromptPresetId = settings.defaultPromptPresetId
-          ? await lockOwnedPromptPreset(tx, {
-              promptId: settings.defaultPromptPresetId,
-              userId
-            })
-          : null;
 
         const chat = await tx.chat.create({
           data: {
             defaultProviderModelId: settings.defaultProviderModel?.id ?? null,
-            defaultPromptPresetId,
             folderId: resolvedFolderId,
             title: title?.trim() || defaultChatTitle,
             userId

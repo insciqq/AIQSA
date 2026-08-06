@@ -9,7 +9,6 @@ export type ModelRunChatUpdateData = {
     activeLeafMessageId: string | null;
     createdAt: string;
     defaultModelId: string | null;
-    defaultPromptPresetId: string | null;
     defaultProvider: string | null;
     folderId: string | null;
     id: string;
@@ -26,6 +25,7 @@ export type ModelRunChatUpdateData = {
   };
   messages: {
     artifactSummary?: unknown;
+    assistantIdentity?: unknown;
     content: unknown;
     createdAt: string;
     errorMessage?: string | null;

@@ -139,6 +139,10 @@ model User {
   authInvitesCreated            AuthInvite[]                       @relation("AuthInviteCreator")
   authSessions                  AuthSession[]
   authSessionsRevoked           AuthSession[]                      @relation("AuthSessionRevoker")
+  assistantDefinitions          AssistantDefinition[]              @relation("AssistantDefinitionOwner")
+  assistantPins                 AssistantPin[]
+  assistantPublications         AssistantPublication[]             @relation("AssistantPublicationPublisher")
+  assistantRevisionsAuthored    AssistantRevision[]                @relation("AssistantRevisionAuthor")
   chats                         Chat[]
   folders                       Folder[]
   groups                        UserGroup[]
@@ -147,9 +151,7 @@ model User {
   mcpOAuthConnections           McpOAuthConnection[]
   mcpUserServers                McpUserServer[]
   modelRuns                     ModelRun[]
-  promptPresets                 PromptPreset[]
   providerCredentialAssignments ProviderUserCredentialAssignment[]
-  runProfileUpdates             RunProfile[]                       @relation("RunProfileUpdater")
   searchPolicyUpdates           SearchPolicy[]                     @relation("SearchPolicyUpdater")
   settings                      UserSettings?
   sharedSnapshots               SharedChatSnapshot[]
@@ -331,6 +333,7 @@ model Group {
   createdAt                     DateTime                            @default(now())
   updatedAt                     DateTime                            @updatedAt
   accessGrants                  AccessGrant[]
+  assistantPublications         AssistantPublication[]
   authAccessRuleDefaults        AuthAccessRuleGroup[]
   authInviteDefaults            AuthInviteGroup[]
   mcpGrants                     McpGrant[]
@@ -359,7 +362,6 @@ model UserSettings {
   id                      String         @id @default(uuid())
   userId                  String         @unique
   defaultProviderModelId  String?
-  defaultPromptPresetId   String?
   defaultFolderId         String?
   defaultSearchStrategyId String         @default("openai-native-web-search")
   defaultSearchPlan       Json?
@@ -429,19 +431,91 @@ model Folder {
   @@index([userId, parentId, sortOrder])
 }
 
-model PromptPreset {
-  id              String    @id @default(uuid())
-  userId          String
+enum AssistantPublicationScope {
+  group
+  installation
+}
+
+model AssistantDefinition {
+  id                String                 @id @default(uuid())
+  ownerUserId       String
+  currentRevisionId String?                @unique
+  version           Int                    @default(1)
+  archivedAt        DateTime?
+  createdAt         DateTime               @default(now())
+  updatedAt         DateTime               @updatedAt
+  /// The composite relation proves the current pointer targets a revision of this definition.
+  currentRevision   AssistantRevision?     @relation("AssistantCurrentRevision", fields: [id, currentRevisionId], references: [assistantId, id], onDelete: Restrict, onUpdate: Restrict, map: "AssistantDefinition_currentRevision_fkey")
+  owner             User                   @relation("AssistantDefinitionOwner", fields: [ownerUserId], references: [id], onDelete: Restrict)
+  pins              AssistantPin[]
+  publications      AssistantPublication[]
+  revisions         AssistantRevision[]    @relation("AssistantRevisions")
+
+  @@unique([id, currentRevisionId])
+  @@index([ownerUserId, archivedAt])
+}
+
+model AssistantRevision {
+  id              String                 @id @default(uuid())
+  assistantId     String
+  revisionNumber  Int
+  schemaVersion   Int                    @default(1)
   name            String
+  description     String                 @default("")
+  category        String?
+  avatar          Json
+  providerModelId String
   systemPrompt    String
   developerPrompt String?
-  isDefault       Boolean   @default(false)
-  createdAt       DateTime  @default(now())
-  updatedAt       DateTime  @updatedAt
-  messages        Message[]
-  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  runControls     Json                   @default("{}")
+  searchPlan      Json
+  mcpServerIds    String[]               @default([])
+  starterPrompts  String[]               @default([])
+  authorUserId    String?
+  createdAt       DateTime               @default(now())
+  assistant       AssistantDefinition    @relation("AssistantRevisions", fields: [assistantId], references: [id], onDelete: Restrict)
+  author          User?                  @relation("AssistantRevisionAuthor", fields: [authorUserId], references: [id], onDelete: SetNull)
+  currentFor      AssistantDefinition?   @relation("AssistantCurrentRevision")
+  modelRuns       ModelRun[]             @relation("ModelRunAssistantRevision")
+  providerModel   ProviderModel          @relation(fields: [providerModelId], references: [id], onDelete: Restrict)
+  publications    AssistantPublication[] @relation("AssistantPublicationRevision")
 
-  @@unique([userId, name])
+  @@unique([assistantId, revisionNumber])
+  @@unique([assistantId, id])
+  @@index([authorUserId])
+  @@index([providerModelId])
+}
+
+model AssistantPublication {
+  id                String                    @id @default(uuid())
+  assistantId       String
+  revisionId        String
+  scope             AssistantPublicationScope
+  groupId           String?
+  publishedByUserId String?
+  createdAt         DateTime                  @default(now())
+  updatedAt         DateTime                  @updatedAt
+  assistant         AssistantDefinition       @relation(fields: [assistantId], references: [id], onDelete: Restrict)
+  group             Group?                    @relation(fields: [groupId], references: [id], onDelete: Restrict)
+  publishedBy       User?                     @relation("AssistantPublicationPublisher", fields: [publishedByUserId], references: [id], onDelete: SetNull)
+  /// The composite relation proves the pinned revision belongs to the published definition.
+  revision          AssistantRevision         @relation("AssistantPublicationRevision", fields: [assistantId, revisionId], references: [assistantId, id], onDelete: Restrict, onUpdate: Restrict, map: "AssistantPublication_revision_fkey")
+
+  @@unique([assistantId, groupId])
+  @@index([groupId])
+  @@index([assistantId, scope])
+  @@index([revisionId])
+}
+
+model AssistantPin {
+  userId      String
+  assistantId String
+  createdAt   DateTime            @default(now())
+  assistant   AssistantDefinition @relation(fields: [assistantId], references: [id], onDelete: Cascade)
+  user        User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([userId, assistantId])
+  @@index([assistantId])
 }
 
 model ProviderModel {
@@ -470,10 +544,10 @@ model ProviderModel {
   updatedAt              DateTime                       @updatedAt
   accessGrants           AccessGrant[]
   activeCredentialChecks ProviderModelCredentialCheck[]
+  assistantRevisions     AssistantRevision[]
   connection             ProviderConnection             @relation(fields: [connectionId], references: [id], onDelete: Restrict)
   draftChecks            ProviderDraftCheck[]
   providerRunBindings    ProviderRunBinding[]
-  runProfiles            RunProfile[]
   searchStrategies       SearchStrategy[]
   searchRevisions        SearchIntegrationRevision[]
   chatDefaults           Chat[]                         @relation("ChatDefaultProviderModel")
@@ -483,24 +557,6 @@ model ProviderModel {
   @@index([provider, modelId])
   @@index([connectionId, enabled])
   @@index([provider, enabled])
-}
-
-model RunProfile {
-  id              String         @id
-  description     String
-  enabled         Boolean        @default(false)
-  providerModelId String?
-  reasoningEffort String         @default("medium")
-  reasoningMode   String         @default("standard")
-  version         Int            @default(1)
-  updatedByUserId String?
-  createdAt       DateTime       @default(now())
-  updatedAt       DateTime       @updatedAt
-  providerModel   ProviderModel? @relation(fields: [providerModelId], references: [id], onDelete: Restrict)
-  updatedBy       User?          @relation("RunProfileUpdater", fields: [updatedByUserId], references: [id], onDelete: SetNull)
-
-  @@index([providerModelId])
-  @@index([updatedByUserId])
 }
 
 model ProviderConnection {
@@ -781,7 +837,6 @@ model Chat {
   title                  String
   activeLeafMessageId    String?
   defaultProviderModelId String?
-  defaultPromptPresetId  String?
   pinned                 Boolean              @default(false)
   archived               Boolean              @default(false)
   totalInputTokens       Int                  @default(0)
@@ -815,7 +870,6 @@ model Message {
   groundingStrategy  String?
   provider           String?
   modelId            String?
-  promptPresetId     String?
   status             MessageStatus @default(complete)
   inputTokens        Int           @default(0)
   outputTokens       Int           @default(0)
@@ -828,7 +882,6 @@ model Message {
   chat               Chat          @relation("ChatMessages", fields: [chatId], references: [id], onDelete: Cascade)
   children           Message[]     @relation("MessageBranches")
   parent             Message?      @relation("MessageBranches", fields: [chatId, parentMessageId], references: [chatId, id], onDelete: Restrict, onUpdate: Restrict, map: "Message_chatId_parentMessageId_fkey")
-  promptPreset       PromptPreset? @relation(fields: [promptPresetId], references: [id], onDelete: SetNull)
   userModelRuns      ModelRun[]    @relation("UserMessageRun")
 
   @@unique([chatId, id], map: "Message_chatId_id_key")
@@ -843,6 +896,8 @@ model ModelRun {
   userId                       String
   userMessageId                String
   assistantMessageId           String?
+  assistantId                  String?
+  assistantRevisionId          String?
   provider                     String
   modelId                      String
   status                       ModelRunStatus
@@ -862,6 +917,8 @@ model ModelRun {
   createdAt                    DateTime             @default(now())
   updatedAt                    DateTime             @updatedAt
   assistantMessage             Message?             @relation("AssistantMessageRun", fields: [assistantMessageId], references: [id], onDelete: SetNull)
+  /// The composite relation proves the accepted revision belongs to the accepted definition; a check constraint keeps both columns present or absent together.
+  assistantRevision            AssistantRevision?   @relation("ModelRunAssistantRevision", fields: [assistantId, assistantRevisionId], references: [assistantId, id], onDelete: Restrict, onUpdate: Restrict, map: "ModelRun_assistantRevision_fkey")
   chat                         Chat                 @relation(fields: [chatId], references: [id], onDelete: Cascade)
   events                       ModelRunEvent[]
   mcpRunBindings               McpRunBinding[]
@@ -873,6 +930,7 @@ model ModelRun {
   userMessage                  Message              @relation("UserMessageRun", fields: [userMessageId], references: [id], onDelete: Restrict)
   usageEvents                  UsageEvent[]
 
+  @@index([assistantId, assistantRevisionId])
   @@index([chatId, createdAt])
   @@index([provider, modelId])
   @@index([status])

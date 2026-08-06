@@ -192,6 +192,7 @@ export type AdminProviderDeleteBlocker = {
   kind:
     | "access_grants"
     | "active_child_configuration"
+    | "assistant_revisions"
     | "chat_defaults"
     | "code_owned_template"
     | "connection_default"
@@ -199,7 +200,6 @@ export type AdminProviderDeleteBlocker = {
     | "group_assignments"
     | "models"
     | "resource_enabled"
-    | "run_profiles"
     | "run_bindings"
     | "search_references"
     | "user_assignments"

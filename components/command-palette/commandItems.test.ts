@@ -10,11 +10,11 @@ const items: CommandItem[] = [
     subtitle: "OpenAI · Reasoning / stream"
   },
   {
-    id: "prompt:default",
-    kind: "prompt",
-    keywords: ["helpful"],
-    label: "Helpful Assistant",
-    subtitle: "Default prompt"
+    id: "action:open-library",
+    kind: "action",
+    keywords: ["assistants"],
+    label: "Open library",
+    subtitle: "Browse assistants"
   }
 ];
 
@@ -22,13 +22,13 @@ describe("command item helpers", () => {
   it("filters commands by kind, label, subtitle, and keywords", () => {
     expect(filterCommandItems(items, "openai stream").map((item) => item.id)).toEqual(["model:openai:gpt-5.5"]);
     expect(filterCommandItems(items, "responses").map((item) => item.id)).toEqual(["model:openai:gpt-5.5"]);
-    expect(filterCommandItems(items, "prompt helpful").map((item) => item.id)).toEqual(["prompt:default"]);
+    expect(filterCommandItems(items, "action assistants").map((item) => item.id)).toEqual(["action:open-library"]);
   });
 
   it("maps provider category searches to concrete models while retaining item order", () => {
     expect(filterCommandItems(items, "models").map((item) => item.id)).toEqual(["model:openai:gpt-5.5"]);
     expect(filterCommandItems(items, "providers").map((item) => item.id)).toEqual(["model:openai:gpt-5.5"]);
-    expect(filterCommandItems(items, "presets").map((item) => item.id)).toEqual(["prompt:default"]);
+    expect(filterCommandItems(items, "commands").map((item) => item.id)).toEqual(["action:open-library"]);
   });
 
   it("wraps selection movement and supports first/last jumps", () => {

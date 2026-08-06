@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, describe, expect, it } from "vitest";
-import { createPrismaPromptRepository } from "../prompts/prismaRepository";
 import { prisma } from "../prisma";
 import type { SettingsValidationModel, UserSettingsUpdate } from "./handlers";
 import { createPrismaSettingsRepository } from "./prismaRepository";
@@ -23,7 +22,7 @@ type SettingsUserFixture = {
 };
 
 async function withSettingsUser<T>(run: (input: SettingsUserFixture) => Promise<T>): Promise<T> {
-  const userId = `settings-prompt-test-${randomUUID()}`;
+  const userId = `settings-test-${randomUUID()}`;
   const models = await prisma.providerModel.findMany({
     select: {
       connectionId: true,
@@ -56,7 +55,7 @@ async function withSettingsUser<T>(run: (input: SettingsUserFixture) => Promise<
 
   await prisma.user.create({
     data: {
-      displayName: "Settings Prompt Test User",
+      displayName: "Settings Test User",
       id: userId,
       settings: {
         create: {
@@ -77,50 +76,6 @@ async function withSettingsUser<T>(run: (input: SettingsUserFixture) => Promise<
       }
     });
   }
-}
-
-async function createPromptDefaults(userId: string) {
-  const first = await prisma.promptPreset.create({
-    data: {
-      isDefault: true,
-      name: "Default",
-      systemPrompt: "Default system prompt.",
-      userId
-    }
-  });
-  const second = await prisma.promptPreset.create({
-    data: {
-      isDefault: false,
-      name: "Second",
-      systemPrompt: "Second system prompt.",
-      userId
-    }
-  });
-
-  await prisma.userSettings.update({
-    data: {
-      defaultPromptPresetId: first.id
-    },
-    where: {
-      userId
-    }
-  });
-
-  return { first, second };
-}
-
-async function promptFlags(userId: string): Promise<Map<string, boolean>> {
-  const prompts = await prisma.promptPreset.findMany({
-    select: {
-      id: true,
-      isDefault: true
-    },
-    where: {
-      userId
-    }
-  });
-
-  return new Map(prompts.map((prompt) => [prompt.id, prompt.isDefault]));
 }
 
 describe("Prisma settings repository", () => {
@@ -189,84 +144,6 @@ describe("Prisma settings repository", () => {
           showToolActivity: false
         }
       });
-    });
-  });
-
-  it("moves prompt default flags when settings select a prompt id", async () => {
-    await withSettingsUser(async ({ userId, validationModels }) => {
-      const { first, second } = await createPromptDefaults(userId);
-      const settingsRepository = createTestSettingsRepository(validationModels);
-
-      await expect(
-        settingsRepository.updateSettings(userId, {
-          defaultPromptPresetId: second.id
-        })
-      ).resolves.toMatchObject({
-        kind: "updated",
-        settings: {
-          defaultPromptPresetId: second.id
-        }
-      });
-
-      await expect(
-        prisma.userSettings.findUniqueOrThrow({
-          select: {
-            defaultPromptPresetId: true
-          },
-          where: {
-            userId
-          }
-        })
-      ).resolves.toEqual({
-        defaultPromptPresetId: second.id
-      });
-
-      const flags = await promptFlags(userId);
-      expect(flags.get(first.id)).toBe(false);
-      expect(flags.get(second.id)).toBe(true);
-
-      const promptRepository = createPrismaPromptRepository(prisma);
-      await expect(promptRepository.deletePrompt({ promptId: first.id, userId })).resolves.toBe("deleted");
-      await expect(promptRepository.deletePrompt({ promptId: second.id, userId })).resolves.toBe("default");
-    });
-  });
-
-  it("clears prompt default flags when settings clear the prompt id", async () => {
-    await withSettingsUser(async ({ userId, validationModels }) => {
-      await createPromptDefaults(userId);
-      const settingsRepository = createTestSettingsRepository(validationModels);
-
-      await expect(
-        settingsRepository.updateSettings(userId, {
-          defaultPromptPresetId: null
-        })
-      ).resolves.toMatchObject({
-        kind: "updated",
-        settings: {
-          defaultPromptPresetId: null
-        }
-      });
-
-      await expect(
-        prisma.userSettings.findUniqueOrThrow({
-          select: {
-            defaultPromptPresetId: true
-          },
-          where: {
-            userId
-          }
-        })
-      ).resolves.toEqual({
-        defaultPromptPresetId: null
-      });
-      await expect(
-        prisma.promptPreset.findMany({
-          where: {
-            isDefault: true,
-            userId
-          }
-        })
-      ).resolves.toHaveLength(0);
     });
   });
 
@@ -375,57 +252,6 @@ describe("Prisma settings repository", () => {
         defaultSearchPlan: { mode: "all_selected", optionIds: [] },
         defaultSearchStrategyId: "search-disabled"
       });
-    });
-  });
-
-  it("keeps repeated concurrent settings prompt writes to one default flag", async () => {
-    await withSettingsUser(async ({ userId, validationModels }) => {
-      const { second } = await createPromptDefaults(userId);
-      const third = await prisma.promptPreset.create({
-        data: {
-          isDefault: false,
-          name: "Third",
-          systemPrompt: "Third system prompt.",
-          userId
-        }
-      });
-      const settingsRepository = createTestSettingsRepository(validationModels);
-
-      const results = await Promise.all([
-        settingsRepository.updateSettings(userId, {
-          defaultPromptPresetId: second.id
-        }),
-        settingsRepository.updateSettings(userId, {
-          defaultPromptPresetId: third.id
-        })
-      ]);
-
-      expect(results).toHaveLength(2);
-      expect(results.every((result) => result.kind === "updated")).toBe(true);
-
-      const [settings, defaultPrompts] = await Promise.all([
-        prisma.userSettings.findUniqueOrThrow({
-          select: {
-            defaultPromptPresetId: true
-          },
-          where: {
-            userId
-          }
-        }),
-        prisma.promptPreset.findMany({
-          select: {
-            id: true
-          },
-          where: {
-            isDefault: true,
-            userId
-          }
-        })
-      ]);
-
-      expect(defaultPrompts).toHaveLength(1);
-      expect(settings.defaultPromptPresetId).toBe(defaultPrompts[0]?.id);
-      expect([second.id, third.id]).toContain(settings.defaultPromptPresetId);
     });
   });
 });

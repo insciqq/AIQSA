@@ -1,0 +1,719 @@
+import { Prisma, type PrismaClient } from "@prisma/client";
+import {
+  decodeAssistantAvatarRecipe,
+  decodeAssistantRunControls,
+  type AssistantDraft
+} from "../../contracts/assistants";
+import { decodeSearchPlan } from "../../contracts/search";
+import { prisma } from "../prisma";
+import type {
+  AssistantRunMaterialization,
+  AssistantRunResolution,
+  AssistantRunResolver
+} from "./runMaterialization";
+
+export type AssistantRevisionRow = {
+  authorDisplayName: string | null;
+  avatar: unknown;
+  category: string | null;
+  createdAt: Date;
+  description: string;
+  developerPrompt: string | null;
+  id: string;
+  mcpServerIds: string[];
+  name: string;
+  providerModelId: string;
+  revisionNumber: number;
+  runControls: unknown;
+  searchPlan: unknown;
+  starterPrompts: string[];
+  systemPrompt: string;
+};
+
+export type AssistantPublicationRow = {
+  groupId: string | null;
+  groupName: string | null;
+  id: string;
+  revisionNumber: number;
+  scope: "group" | "installation";
+  updatedAt: Date;
+};
+
+export type AssistantAccessEntry = {
+  archived: boolean;
+  id: string;
+  installationScope: boolean;
+  memberGroupNames: string[];
+  owned: boolean;
+  ownerDisplayName: string;
+  pinned: boolean;
+  published: boolean;
+  /** The revision this runner would execute right now. */
+  revision: AssistantRevisionRow;
+  updatedAt: Date;
+  version: number;
+};
+
+export type AssistantDetailData = AssistantAccessEntry & {
+  publications: AssistantPublicationRow[] | null;
+  revisionCount: number | null;
+};
+
+export type AssistantWriteResult =
+  | { assistantId: string; kind: "ok" }
+  | { kind: "archived" }
+  | { kind: "not_found" }
+  | { kind: "version_conflict" };
+
+export type AssistantPublishInput = {
+  actorIsAdmin: boolean;
+  assistantId: string;
+  groupId: string | null;
+  revisionNumber: number | null;
+  scope: "group" | "installation";
+  userId: string;
+};
+
+export type AssistantPublishResult =
+  | { kind: "forbidden" }
+  | { kind: "invalid" }
+  | { kind: "not_found" }
+  | { kind: "ok"; publication: AssistantPublicationRow };
+
+const revisionSelect = {
+  author: { select: { displayName: true } },
+  avatar: true,
+  category: true,
+  createdAt: true,
+  description: true,
+  developerPrompt: true,
+  id: true,
+  mcpServerIds: true,
+  name: true,
+  providerModelId: true,
+  revisionNumber: true,
+  runControls: true,
+  searchPlan: true,
+  starterPrompts: true,
+  systemPrompt: true
+} satisfies Prisma.AssistantRevisionSelect;
+
+type RevisionRecord = Prisma.AssistantRevisionGetPayload<{ select: typeof revisionSelect }>;
+
+function revisionRow(record: RevisionRecord): AssistantRevisionRow {
+  return {
+    authorDisplayName: record.author?.displayName ?? null,
+    avatar: record.avatar,
+    category: record.category,
+    createdAt: record.createdAt,
+    description: record.description,
+    developerPrompt: record.developerPrompt,
+    id: record.id,
+    mcpServerIds: [...record.mcpServerIds],
+    name: record.name,
+    providerModelId: record.providerModelId,
+    revisionNumber: record.revisionNumber,
+    runControls: record.runControls,
+    searchPlan: record.searchPlan,
+    starterPrompts: [...record.starterPrompts],
+    systemPrompt: record.systemPrompt
+  };
+}
+
+function publicationRow(record: {
+  group: { name: string } | null;
+  groupId: string | null;
+  id: string;
+  revision: { revisionNumber: number };
+  scope: "group" | "installation";
+  updatedAt: Date;
+}): AssistantPublicationRow {
+  return {
+    groupId: record.groupId,
+    groupName: record.group?.name ?? null,
+    id: record.id,
+    revisionNumber: record.revision.revisionNumber,
+    scope: record.scope,
+    updatedAt: record.updatedAt
+  };
+}
+
+function revisionDraftData(draft: AssistantDraft): Omit<
+  Prisma.AssistantRevisionUncheckedCreateInput,
+  "assistantId" | "authorUserId" | "revisionNumber"
+> {
+  return {
+    avatar: draft.avatar as unknown as Prisma.InputJsonValue,
+    category: draft.category,
+    description: draft.description,
+    developerPrompt: draft.developerPrompt,
+    mcpServerIds: [...draft.mcpServerIds],
+    name: draft.name,
+    providerModelId: draft.providerModelId,
+    runControls: draft.runControls as Prisma.InputJsonValue,
+    searchPlan: {
+      mode: draft.searchPlan.mode,
+      optionIds: [...draft.searchPlan.optionIds]
+    } as Prisma.InputJsonValue,
+    starterPrompts: [...draft.starterPrompts],
+    systemPrompt: draft.systemPrompt
+  };
+}
+
+async function activeMemberGroupIds(
+  client: Pick<PrismaClient, "userGroup">,
+  userId: string
+): Promise<string[]> {
+  const memberships = await client.userGroup.findMany({
+    select: { groupId: true },
+    where: { group: { archivedAt: null }, userId }
+  });
+  return memberships.map((membership) => membership.groupId);
+}
+
+export function createPrismaAssistantRepository(client: PrismaClient = prisma) {
+  async function loadAccessEntry(
+    userId: string,
+    assistantId: string
+  ): Promise<AssistantAccessEntry | null> {
+    const [definition, memberGroupIds, pin] = await Promise.all([
+      client.assistantDefinition.findUnique({
+        include: {
+          currentRevision: { select: revisionSelect },
+          owner: { select: { displayName: true } },
+          publications: {
+            include: {
+              group: { select: { archivedAt: true, name: true } },
+              revision: { select: revisionSelect }
+            }
+          }
+        },
+        where: { id: assistantId }
+      }),
+      activeMemberGroupIds(client, userId),
+      client.assistantPin.findUnique({
+        select: { userId: true },
+        where: { userId_assistantId: { assistantId, userId } }
+      })
+    ]);
+    if (!definition) return null;
+
+    const owned = definition.ownerUserId === userId;
+    const memberGroups = new Set(memberGroupIds);
+    const accessiblePublications = definition.publications.filter(
+      (publication) =>
+        publication.scope === "installation" ||
+        (publication.groupId !== null &&
+          memberGroups.has(publication.groupId) &&
+          publication.group?.archivedAt === null)
+    );
+
+    if (!owned && (definition.archivedAt || accessiblePublications.length === 0)) {
+      return null;
+    }
+
+    const accessibleRevision = owned
+      ? definition.currentRevision
+      : accessiblePublications
+          .map((publication) => publication.revision)
+          .sort((left, right) => right.revisionNumber - left.revisionNumber)[0] ?? null;
+    if (!accessibleRevision) return null;
+
+    return {
+      archived: definition.archivedAt !== null,
+      id: definition.id,
+      installationScope: definition.publications.some(
+        (publication) => publication.scope === "installation"
+      ),
+      memberGroupNames: accessiblePublications
+        .filter((publication) => publication.scope === "group")
+        .map((publication) => publication.group?.name ?? "")
+        .filter((name) => name.length > 0)
+        .sort((left, right) => left.localeCompare(right)),
+      owned,
+      ownerDisplayName: definition.owner.displayName,
+      pinned: Boolean(pin),
+      published: definition.publications.length > 0,
+      revision: revisionRow(accessibleRevision),
+      updatedAt: definition.updatedAt,
+      version: definition.version
+    };
+  }
+
+  const repository = {
+    async create(userId: string, draft: AssistantDraft): Promise<string> {
+      return client.$transaction(async (tx) => {
+        const definition = await tx.assistantDefinition.create({
+          data: { ownerUserId: userId }
+        });
+        const revision = await tx.assistantRevision.create({
+          data: {
+            ...revisionDraftData(draft),
+            assistantId: definition.id,
+            authorUserId: userId,
+            revisionNumber: 1
+          }
+        });
+        await tx.assistantDefinition.update({
+          data: { currentRevisionId: revision.id },
+          where: { id: definition.id }
+        });
+        return definition.id;
+      });
+    },
+
+    async duplicate(userId: string, assistantId: string): Promise<string | null> {
+      const source = await loadAccessEntry(userId, assistantId);
+      if (!source) return null;
+      const copyName = `Copy of ${source.revision.name}`.slice(0, 80);
+      return client.$transaction(async (tx) => {
+        const definition = await tx.assistantDefinition.create({
+          data: { ownerUserId: userId }
+        });
+        const revision = await tx.assistantRevision.create({
+          data: {
+            assistantId: definition.id,
+            authorUserId: userId,
+            avatar: source.revision.avatar as Prisma.InputJsonValue,
+            category: source.revision.category,
+            description: source.revision.description,
+            developerPrompt: source.revision.developerPrompt,
+            mcpServerIds: [...source.revision.mcpServerIds],
+            name: copyName,
+            providerModelId: source.revision.providerModelId,
+            revisionNumber: 1,
+            runControls: source.revision.runControls as Prisma.InputJsonValue,
+            searchPlan: source.revision.searchPlan as Prisma.InputJsonValue,
+            starterPrompts: [...source.revision.starterPrompts],
+            systemPrompt: source.revision.systemPrompt
+          }
+        });
+        await tx.assistantDefinition.update({
+          data: { currentRevisionId: revision.id },
+          where: { id: definition.id }
+        });
+        return definition.id;
+      });
+    },
+
+    async getDetail(userId: string, assistantId: string): Promise<AssistantDetailData | null> {
+      const entry = await loadAccessEntry(userId, assistantId);
+      if (!entry) return null;
+      if (!entry.owned) {
+        return { ...entry, publications: null, revisionCount: null };
+      }
+      const [publications, revisionCount] = await Promise.all([
+        client.assistantPublication.findMany({
+          include: {
+            group: { select: { name: true } },
+            revision: { select: { revisionNumber: true } }
+          },
+          orderBy: { createdAt: "asc" },
+          where: { assistantId }
+        }),
+        client.assistantRevision.count({ where: { assistantId } })
+      ]);
+      return {
+        ...entry,
+        publications: publications.map(publicationRow),
+        revisionCount
+      };
+    },
+
+    async listForUser(userId: string): Promise<AssistantAccessEntry[]> {
+      const memberGroupIds = await activeMemberGroupIds(client, userId);
+      const [owned, sharedPublications, pins] = await Promise.all([
+        client.assistantDefinition.findMany({
+          include: {
+            currentRevision: { select: revisionSelect },
+            owner: { select: { displayName: true } },
+            publications: { select: { groupId: true, id: true, scope: true } }
+          },
+          where: { ownerUserId: userId }
+        }),
+        client.assistantPublication.findMany({
+          include: {
+            assistant: {
+              include: {
+                owner: { select: { displayName: true } },
+                publications: { select: { id: true, scope: true } }
+              }
+            },
+            group: { select: { archivedAt: true, name: true } },
+            revision: { select: revisionSelect }
+          },
+          where: {
+            assistant: { archivedAt: null, ownerUserId: { not: userId } },
+            OR: [
+              { scope: "installation" },
+              ...(memberGroupIds.length > 0
+                ? [{ groupId: { in: memberGroupIds } }]
+                : [])
+            ]
+          }
+        }),
+        client.assistantPin.findMany({
+          select: { assistantId: true },
+          where: { userId }
+        })
+      ]);
+      const pinned = new Set(pins.map((pin) => pin.assistantId));
+
+      const entries: AssistantAccessEntry[] = owned.flatMap((definition) =>
+        definition.currentRevision
+          ? [
+              {
+                archived: definition.archivedAt !== null,
+                id: definition.id,
+                installationScope: definition.publications.some(
+                  (publication) => publication.scope === "installation"
+                ),
+                memberGroupNames: [],
+                owned: true,
+                ownerDisplayName: definition.owner.displayName,
+                pinned: pinned.has(definition.id),
+                published: definition.publications.length > 0,
+                revision: revisionRow(definition.currentRevision),
+                updatedAt: definition.updatedAt,
+                version: definition.version
+              }
+            ]
+          : []
+      );
+
+      const sharedByAssistant = new Map<string, typeof sharedPublications>();
+      for (const publication of sharedPublications) {
+        if (
+          publication.scope === "group" &&
+          (publication.groupId === null || publication.group?.archivedAt !== null)
+        ) {
+          continue;
+        }
+        const current = sharedByAssistant.get(publication.assistantId) ?? [];
+        current.push(publication);
+        sharedByAssistant.set(publication.assistantId, current);
+      }
+      for (const [assistantId, publications] of sharedByAssistant) {
+        const best = [...publications].sort(
+          (left, right) => right.revision.revisionNumber - left.revision.revisionNumber
+        )[0]!;
+        entries.push({
+          archived: false,
+          id: assistantId,
+          installationScope: publications.some(
+            (publication) => publication.scope === "installation"
+          ),
+          memberGroupNames: publications
+            .filter((publication) => publication.scope === "group")
+            .map((publication) => publication.group?.name ?? "")
+            .filter((name) => name.length > 0)
+            .sort((left, right) => left.localeCompare(right)),
+          owned: false,
+          ownerDisplayName: best.assistant.owner.displayName,
+          pinned: pinned.has(assistantId),
+          published: true,
+          revision: revisionRow(best.revision),
+          updatedAt: best.updatedAt,
+          version: best.assistant.version
+        });
+      }
+
+      return entries.sort((left, right) =>
+        left.revision.name.localeCompare(right.revision.name) || left.id.localeCompare(right.id)
+      );
+    },
+
+    async listRevisions(userId: string, assistantId: string): Promise<AssistantRevisionRow[] | null> {
+      const definition = await client.assistantDefinition.findFirst({
+        select: { id: true },
+        where: { id: assistantId, ownerUserId: userId }
+      });
+      if (!definition) return null;
+      const revisions = await client.assistantRevision.findMany({
+        orderBy: { revisionNumber: "desc" },
+        select: revisionSelect,
+        where: { assistantId }
+      });
+      return revisions.map(revisionRow);
+    },
+
+    async getRevision(
+      userId: string,
+      assistantId: string,
+      revisionNumber: number
+    ): Promise<AssistantRevisionRow | null> {
+      const revision = await client.assistantRevision.findFirst({
+        select: revisionSelect,
+        where: {
+          assistant: { ownerUserId: userId },
+          assistantId,
+          revisionNumber
+        }
+      });
+      return revision ? revisionRow(revision) : null;
+    },
+
+    async revise(
+      userId: string,
+      assistantId: string,
+      expectedVersion: number,
+      draft: AssistantDraft
+    ): Promise<AssistantWriteResult> {
+      return client.$transaction(async (tx) => {
+        const locked = await tx.$queryRaw<
+          Array<{ archivedAt: Date | null; id: string; version: number }>
+        >`
+          SELECT "id", "archivedAt", "version"
+          FROM "AssistantDefinition"
+          WHERE "id" = ${assistantId} AND "ownerUserId" = ${userId}
+          FOR UPDATE
+        `;
+        const definition = locked[0];
+        if (!definition) return { kind: "not_found" as const };
+        if (definition.version !== expectedVersion) return { kind: "version_conflict" as const };
+        if (definition.archivedAt) return { kind: "archived" as const };
+
+        const latest = await tx.assistantRevision.aggregate({
+          _max: { revisionNumber: true },
+          where: { assistantId }
+        });
+        const revision = await tx.assistantRevision.create({
+          data: {
+            ...revisionDraftData(draft),
+            assistantId,
+            authorUserId: userId,
+            revisionNumber: (latest._max.revisionNumber ?? 0) + 1
+          }
+        });
+        await tx.assistantDefinition.update({
+          data: {
+            currentRevisionId: revision.id,
+            version: { increment: 1 }
+          },
+          where: { id: assistantId }
+        });
+        return { assistantId, kind: "ok" as const };
+      });
+    },
+
+    async setArchived(
+      userId: string,
+      assistantId: string,
+      expectedVersion: number,
+      archived: boolean
+    ): Promise<AssistantWriteResult> {
+      return client.$transaction(async (tx) => {
+        const locked = await tx.$queryRaw<
+          Array<{ archivedAt: Date | null; id: string; version: number }>
+        >`
+          SELECT "id", "archivedAt", "version"
+          FROM "AssistantDefinition"
+          WHERE "id" = ${assistantId} AND "ownerUserId" = ${userId}
+          FOR UPDATE
+        `;
+        const definition = locked[0];
+        if (!definition) return { kind: "not_found" as const };
+        if (definition.version !== expectedVersion) return { kind: "version_conflict" as const };
+
+        await tx.assistantDefinition.update({
+          data: {
+            archivedAt: archived ? new Date() : null,
+            version: { increment: 1 }
+          },
+          where: { id: assistantId }
+        });
+        return { assistantId, kind: "ok" as const };
+      });
+    },
+
+    async publish(input: AssistantPublishInput): Promise<AssistantPublishResult> {
+      return client.$transaction(async (tx) => {
+        const locked = await tx.$queryRaw<
+          Array<{ archivedAt: Date | null; id: string }>
+        >`
+          SELECT "id", "archivedAt"
+          FROM "AssistantDefinition"
+          WHERE "id" = ${input.assistantId} AND "ownerUserId" = ${input.userId}
+          FOR UPDATE
+        `;
+        const definition = locked[0];
+        if (!definition) return { kind: "not_found" as const };
+        if (definition.archivedAt) return { kind: "invalid" as const };
+
+        if (input.scope === "installation") {
+          if (!input.actorIsAdmin) return { kind: "forbidden" as const };
+        } else {
+          if (!input.groupId) return { kind: "invalid" as const };
+          const membership = await tx.userGroup.findFirst({
+            select: { groupId: true },
+            where: {
+              group: { archivedAt: null },
+              groupId: input.groupId,
+              userId: input.userId
+            }
+          });
+          if (!membership) return { kind: "forbidden" as const };
+        }
+
+        const revision = input.revisionNumber === null
+          ? await tx.assistantDefinition
+              .findUnique({
+                select: { currentRevision: { select: { id: true, revisionNumber: true } } },
+                where: { id: input.assistantId }
+              })
+              .then((row) => row?.currentRevision ?? null)
+          : await tx.assistantRevision.findFirst({
+              select: { id: true, revisionNumber: true },
+              where: {
+                assistantId: input.assistantId,
+                revisionNumber: input.revisionNumber
+              }
+            });
+        if (!revision) return { kind: "invalid" as const };
+
+        const existing = await tx.assistantPublication.findFirst({
+          select: { id: true },
+          where: {
+            assistantId: input.assistantId,
+            ...(input.scope === "installation"
+              ? { scope: "installation" }
+              : { groupId: input.groupId })
+          }
+        });
+        const publication = existing
+          ? await tx.assistantPublication.update({
+              data: {
+                publishedByUserId: input.userId,
+                revisionId: revision.id
+              },
+              include: {
+                group: { select: { name: true } },
+                revision: { select: { revisionNumber: true } }
+              },
+              where: { id: existing.id }
+            })
+          : await tx.assistantPublication.create({
+              data: {
+                assistantId: input.assistantId,
+                groupId: input.scope === "group" ? input.groupId : null,
+                publishedByUserId: input.userId,
+                revisionId: revision.id,
+                scope: input.scope
+              },
+              include: {
+                group: { select: { name: true } },
+                revision: { select: { revisionNumber: true } }
+              }
+            });
+        return { kind: "ok" as const, publication: publicationRow(publication) };
+      });
+    },
+
+    async revokePublication(input: {
+      actorIsAdmin: boolean;
+      publicationId: string;
+      userId: string;
+    }): Promise<"not_found" | "revoked"> {
+      return client.$transaction(async (tx) => {
+        const publication = await tx.assistantPublication.findUnique({
+          select: {
+            assistant: { select: { ownerUserId: true } },
+            id: true
+          },
+          where: { id: input.publicationId }
+        });
+        if (
+          !publication ||
+          (publication.assistant.ownerUserId !== input.userId && !input.actorIsAdmin)
+        ) {
+          return "not_found" as const;
+        }
+        await tx.assistantPublication.delete({ where: { id: publication.id } });
+        return "revoked" as const;
+      });
+    },
+
+    async setPinned(userId: string, assistantId: string, pinned: boolean): Promise<boolean> {
+      const entry = await loadAccessEntry(userId, assistantId);
+      if (!entry) return false;
+      if (pinned) {
+        await client.assistantPin.upsert({
+          create: { assistantId, userId },
+          update: {},
+          where: { userId_assistantId: { assistantId, userId } }
+        });
+      } else {
+        await client.assistantPin.deleteMany({ where: { assistantId, userId } });
+      }
+      return true;
+    },
+
+    loadAccessEntry,
+
+    async listPublishableGroups(userId: string): Promise<Array<{ id: string; name: string }>> {
+      const memberships = await client.userGroup.findMany({
+        select: { group: { select: { id: true, name: true } } },
+        where: { group: { archivedAt: null }, userId }
+      });
+      return memberships
+        .map((membership) => membership.group)
+        .sort((left, right) => left.name.localeCompare(right.name));
+    },
+
+    async loadUserAccessibleMcpServerIds(userId: string): Promise<Set<string>> {
+      const memberGroupIds = await activeMemberGroupIds(client, userId);
+      const grants = await client.mcpGrant.findMany({
+        select: { serverId: true },
+        where: {
+          canUse: true,
+          server: { archivedAt: null, enabled: true, activeRevisionId: { not: null } },
+          OR: [
+            { userId },
+            ...(memberGroupIds.length > 0 ? [{ groupId: { in: memberGroupIds } }] : [])
+          ]
+        }
+      });
+      return new Set(grants.map((grant) => grant.serverId));
+    }
+  };
+
+  const runResolver: AssistantRunResolver = {
+    async resolveForRun(userId, assistantId): Promise<AssistantRunResolution> {
+      const entry = await loadAccessEntry(userId, assistantId);
+      if (!entry || entry.archived) {
+        return { code: "assistant_not_available", ok: false, status: 404 };
+      }
+      const runControls = decodeAssistantRunControls(entry.revision.runControls ?? {});
+      const searchPlan = decodeSearchPlan(entry.revision.searchPlan);
+      const avatar = decodeAssistantAvatarRecipe(entry.revision.avatar);
+      if (!runControls || !searchPlan.ok || !avatar) {
+        throw new Error("assistant_revision_integrity_invalid");
+      }
+      const model = await client.providerModel.findUnique({
+        select: { connectionId: true, id: true },
+        where: { id: entry.revision.providerModelId }
+      });
+      if (!model) {
+        return { code: "assistant_not_available", ok: false, status: 404 };
+      }
+      const assistant: AssistantRunMaterialization = {
+        assistantId: entry.id,
+        developerPrompt: entry.revision.developerPrompt,
+        mcpServerIds: [...entry.revision.mcpServerIds],
+        name: entry.revision.name,
+        provider: model.connectionId,
+        providerModelId: model.id,
+        revisionId: entry.revision.id,
+        revisionNumber: entry.revision.revisionNumber,
+        runControls,
+        searchPlan: searchPlan.plan,
+        systemPrompt: entry.revision.systemPrompt
+      };
+      return { assistant, ok: true };
+    }
+  };
+
+  return { ...repository, ...runResolver };
+}
+
+export type PrismaAssistantRepository = ReturnType<typeof createPrismaAssistantRepository>;

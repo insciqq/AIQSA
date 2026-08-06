@@ -239,6 +239,7 @@ describe("Prisma admin provider repository", () => {
     const remove = vi.fn(async () => ({}));
     const db = transactional({
       accessGrant: { count: vi.fn(async () => 2) },
+      assistantRevision: { count: vi.fn(async () => 1) },
       chat: { count: vi.fn(async () => 1) },
       providerModel: {
         delete: remove,
@@ -249,7 +250,6 @@ describe("Prisma admin provider repository", () => {
         count: vi.fn(async () => 1),
         updateMany: vi.fn(async () => ({ count: 0 }))
       },
-      runProfile: { count: vi.fn(async () => 1) },
       searchStrategy: { count: vi.fn(async () => 1) },
       userSettings: { count: vi.fn(async () => 1) }
     });
@@ -261,7 +261,7 @@ describe("Prisma admin provider repository", () => {
         { count: 1, kind: "user_defaults" },
         { count: 1, kind: "chat_defaults" },
         { count: 1, kind: "search_references" },
-        { count: 1, kind: "run_profiles" },
+        { count: 1, kind: "assistant_revisions" },
         { count: 1, kind: "run_bindings" }
       ],
       status: "conflict"
@@ -896,7 +896,7 @@ describe("Prisma admin provider repository", () => {
       providerUserCredentialAssignment: {
         deleteMany: vi.fn(async () => ({ count: 1 }))
       },
-      runProfile: { count: vi.fn(async () => 0) },
+      assistantRevision: { count: vi.fn(async () => 0) },
       searchOption: { count: vi.fn(async () => 0) },
       searchStrategy: { count: vi.fn(async () => 0) },
       userSettings: { updateMany: vi.fn(async () => ({ count: 1 })) }
@@ -921,9 +921,10 @@ describe("Prisma admin provider repository", () => {
     });
   });
 
-  it("keeps a Custom connection behind every live-run, profile, and search hard fence", async () => {
+  it("keeps a Custom connection behind every live-run, assistant, and search hard fence", async () => {
     const deleteConnection = vi.fn();
     const db = transactional({
+      assistantRevision: { count: vi.fn(async () => 2) },
       providerConnection: {
         delete: deleteConnection,
         findUnique: vi.fn(async () => ({
@@ -939,7 +940,6 @@ describe("Prisma admin provider repository", () => {
         count: vi.fn(async () => 1),
         updateMany: vi.fn(async () => ({ count: 0 }))
       },
-      runProfile: { count: vi.fn(async () => 2) },
       searchOption: { count: vi.fn(async () => 1) },
       searchStrategy: { count: vi.fn(async () => 3) }
     });
@@ -948,10 +948,13 @@ describe("Prisma admin provider repository", () => {
     await expect(repository.deleteConnection("connection-1")).resolves.toEqual({
       blockers: [
         { count: 4, kind: "search_references" },
-        { count: 2, kind: "run_profiles" },
+        { count: 2, kind: "assistant_revisions" },
         { count: 1, kind: "run_bindings" }
       ],
       status: "conflict"
+    });
+    expect(db.assistantRevision.count).toHaveBeenCalledWith({
+      where: { providerModelId: { in: ["model-1"] } }
     });
     expect(deleteConnection).not.toHaveBeenCalled();
   });
@@ -959,6 +962,7 @@ describe("Prisma admin provider repository", () => {
   it("keeps a Custom connection referenced only by an archived logical Search source", async () => {
     const deleteConnection = vi.fn();
     const db = transactional({
+      assistantRevision: { count: vi.fn(async () => 0) },
       providerConnection: {
         delete: deleteConnection,
         findUnique: vi.fn(async () => ({
@@ -974,7 +978,6 @@ describe("Prisma admin provider repository", () => {
         count: vi.fn(async () => 0),
         updateMany: vi.fn(async () => ({ count: 0 }))
       },
-      runProfile: { count: vi.fn(async () => 0) },
       searchOption: { count: vi.fn(async () => 1) },
       searchStrategy: { count: vi.fn(async () => 0) }
     });

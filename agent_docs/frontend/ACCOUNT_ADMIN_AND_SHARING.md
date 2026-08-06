@@ -1,7 +1,7 @@
 # FRONTEND ACCOUNT ADMIN AND SHARING
 
 Owner: Account and Control Center UI maintainers
-Scope: Functional interaction contracts for authentication, public shares, Control Center, Settings, Prompt library, and guarded navigation.
+Scope: Functional interaction contracts for authentication, public shares, Control Center, Settings, the Assistants Library, and guarded navigation.
 
 Visual tokens, geometry, and reusable recipes belong to `DESIGN_SYSTEM.md`. Server authorization, secret handling, and transactional outcomes belong to `SECURITY.md` and `backend/API_AND_AUTH.md`.
 
@@ -73,15 +73,14 @@ Visual tokens, geometry, and reusable recipes belong to `DESIGN_SYSTEM.md`. Serv
 - Access rules owns durable exact email/domain admission, normalized preview, default groups, search, and confirmation-gated deletion. It explicitly distinguishes durable policy from one-off invites.
 - Usage is read-only provider-reported operational attribution, not billing reconciliation. It shows input/output/cached/cache-write/reasoning/total/last-use facts where available. Failed/cancelled runs count only when usage was reported; detached historical usage may outlive run-count rows; users in multiple groups contribute to each current group attribution.
 
-### Providers and run profiles
+### Providers
 
-- Providers has three persistent peer tasks: Quick setup, Connections, and Run profiles. They retain independent lazy resource owners. Quick setup does not mount the full Connections or profiles controllers; returning to Quick setup clears write-only drafts and refetches its actor-relative projection.
+- Providers has two persistent peer tasks: Quick setup and Connections. They retain independent lazy resource owners. Quick setup does not mount the full Connections controller; returning to Quick setup clears write-only drafts and refetches its actor-relative projection.
 - Quick setup starts with OpenAI, Anthropic, Gemini, OpenRouter, and Custom/OpenAI-compatible choices plus a least-data configured-connections summary. Reviewed providers use an empty write-only key and one Test & Save flow. One feedback owner announces Test & Save, model choice, refresh/reconciliation, ready, failure, and assignment-clear outcomes once; visual receipts remain readable without becoming competing live regions. A provider credential/catalog rejection is associated with the write-only key field, while network, stale-state, authorization, and other global failures are not. Provider change, task exit, success, and unmount clear the secret; retryable failure may retain it locally.
 - Successful OpenAI, Anthropic, and Gemini Quick setup creates one friendly provider-owned Search source and immediately publishes its hidden hosted/query-only routes from the reviewed capability declaration, pinning query-only execution to an exact eligible deployment. The visible sources are `OpenAI Search`, `Anthropic Search`, and `Google Search`; no flow performs a paid Search request or creates a second Search card during replacement, credential rotation, or recovery.
 - Reviewed setup displays only server-returned candidate choices and readiness facts. `Not configured`, `Disabled`, `Needs attention`, and `Ready` remain distinct. A candidate-selection response moves focus into the choice and resubmits the retained secret; Ready names installed models and exact server-reported default/profile consequences. Removing My key assignment is confirmation-gated and states that shared access may remain or disappear.
 - Custom setup is discovery-first with manual fallback. It accepts an API root, explicit auth, selected model IDs, protocol, and bounded reviewed capability controls. Discovery evidence is tied to the current endpoint/auth/secret inputs and is discarded when they change. Up to 32 explicitly ordered models may be selected; every model is tested and nothing is saved unless all pass. Hosted search requires Responses and its declared capability directly creates the one connection-scoped Search source; image-generation capability is recorded as future-only, not advertised as runnable chat behavior. Private/local keyless Chat or Responses requires explicit opt-in.
-- Connections is the complete provider control plane. Its detail owns credentials, authentication policy, models, diagnostics, activation, lifecycle, and destructive deletion. Secrets remain write-only; credential assignment does not grant model entitlement. Model drafts explicitly choose answer eligibility, protocol, reasoning mapping, and hosted tools. Deletion names all removed configuration and returns to the index; run-profile, Search, and accepted-run references remain explicit server blockers.
-- Run profiles remain Fast/Balanced/Deep in fixed order. One Save submits all versioned rows. Dirty drafts expose Unsaved and Discard, are protected from in-app navigation/refresh, and retain native document-exit protection. Availability reflects persisted state; unsaved changes show their future state separately. Disabled/missing/unavailable dependencies are factual diagnostics, not silent profile removal.
+- Connections is the complete provider control plane. Its detail owns credentials, authentication policy, models, diagnostics, activation, lifecycle, and destructive deletion. Secrets remain write-only; credential assignment does not grant model entitlement. Model drafts explicitly choose answer eligibility, protocol, reasoning mapping, and hosted tools. Deletion names all removed configuration and returns to the index; Assistant-revision, Search, and accepted-run references remain explicit server blockers.
 
 ### Search, MCP, email, and safety
 
@@ -93,7 +92,7 @@ Visual tokens, geometry, and reusable recipes belong to `DESIGN_SYSTEM.md`. Serv
 - Email delivery owns one installation SMTP draft and active snapshot. Draft, active lifecycle, and health are distinct. Before activation it is `Not configured`, not falsely Disabled. Passwords remain write-only; Save, one-recipient Test, Activate, and Clear are explicit version-bound actions. Plaintext SMTP requires a fresh exact-relay acknowledgement after every draft change.
 - Safety isolates global session revocation and states that the acting administrator's current session may be included. User-level revocation stays in user detail.
 
-## Settings And Prompt Library
+## Settings And Library
 
 ### Settings and MCP tools
 
@@ -103,18 +102,18 @@ Visual tokens, geometry, and reusable recipes belong to `DESIGN_SYSTEM.md`. Serv
 - Readiness refreshes on entry, mutation/OAuth return, and visibility-aware polling while work is transient. `queued`, `starting`, `idle`, and `restarting` are working states; `Needs setup`, authorization, and runtime failure remain distinct actionable facts.
 - The composer exposes one aggregate Tools entry. Unsupported model capability takes precedence; otherwise it reports Not configured, Disabled, Activating, a concrete blocker, or Enabled with ready-tool count. Persistent per-server enablement is edited only in Settings.
 
-### Prompt library
+### Library
 
-- Prompt library is a full-screen surface reached from Account or Run setup, never a Settings subsection or rounded modal. It has explicit Back to chat, no scrim/backdrop dismissal, and no action that implicitly applies the viewed prompt to the next run.
-- At width at least 1024px and height above 512px, library and editor may be independent scrolling panes with fixed local headers/footer. Below either threshold, exactly one task is visible and Back to prompts restores query, selection, scroll, and focus context.
-- The editor owns name, required system instructions, optional developer instructions, Duplicate, a protected default-for-new-chats action, and confirmation-gated Delete under More. Save/create is the sole primary footer action and is enabled only for a dirty valid draft with no pending mutation.
-- `Default for new chats` is persisted startup state. `Next run` is chosen only in the composer. Browsing, editing, duplicating, or changing the startup default never applies a prompt to the current composer.
-- Loading, resource failure, no search matches, and an empty library are distinct. Until the catalog is ready no editor or mutation action mounts. Mutation failure preserves the catalog, next-run choice, and dirty draft and provides readable retry/dismiss feedback.
-- Dirty edits cannot be replaced by Back, New, selection, Duplicate, destination changes, or deletion without the shared discard decision. Default mutation is serialized with composer settings so stale responses cannot reverse a newer intent.
+- The Library is the authenticated full-screen internal discovery and sharing surface, reached from Account or the Command palette, never a Settings subsection or rounded modal. Its only shipped resource type is Assistants; no empty future type tabs render. It has explicit Back to chat, no scrim/backdrop dismissal, and browsing never applies an Assistant to the composer — only `Use` does, and `Use` navigates to the blank workspace with the exact revision selected without creating a chat until send.
+- Discover and Yours share one avatar-prominent card grid with single-select filter chips (Pinned, groups, installation, unavailable; Yours adds Archived) and one bounded category filter. Cards disclose only runner-safe facts: name, description, capability fingerprint, publisher display name, authorized scope, category, exact published revision, availability, and a per-user pin toggle. An unavailable item stays visible with a privacy-neutral reason such as `Required access unavailable` and never reveals a hidden model, group, tool, or dependency name.
+- Pinned Assistants are per-user server-stored preferences surfacing first in the Library and quick picker; pinning never changes access, publication, or the Assistant, and pin state never enters run evidence. Shared consumers get Use and Duplicate; duplication creates a private copy owned by the consumer. Owned cards additionally expose Edit, Version history, Duplicate, and Archive/Restore in an overflow menu.
+- The identity-first editor owns avatar with browser-only `Generate another`, name, description (explicitly user-facing, never added to prompts), bounded category, system/developer instructions, model, run controls gated by the selected model's capabilities, the logical Search plan, the exact MCP server allowlist, up to four ordered starter prompts, and — in edit mode — Sharing. Save/create is the sole primary footer action; the header shows `Draft` before creation and `Revision N` afterward, and saving explains that existing runs keep the setup they used.
+- Sharing pins exact revisions: any active user may publish an owned Assistant to groups with active membership, installation-wide publication is admin-curated, saving never advances a publication, `Publish update` moves it explicitly, and revoke neither archives the Assistant nor changes accepted runs. Version history is read-only with author, time, and changed sections; Restore creates a new revision from old content and never rewrites history.
+- Loading, resource failure, no matches, and a true empty library are distinct. Editor validation attaches to its field with the stable server code; a CAS conflict reports that the Assistant changed in another session. Mutation failure preserves the list and dirty draft with readable retry/dismiss feedback.
 
 ### Focus, appearance, and project settings
 
-- Settings uses dialog focus containment, Escape/backdrop close, opener restoration, and an inert shell. Prompt library exits only through guarded Back to chat and keeps the covered shell inert without a scrim. Nested confirmations own focus/Escape before returning to their surviving invoker.
+- Settings uses dialog focus containment, Escape/backdrop close, opener restoration, and an inert shell. The Library exits only through Back to chat and keeps the covered shell inert without a scrim. Nested confirmations own focus/Escape before returning to their surviving invoker.
 - Appearance presents the palette registry in stable order: AIQSA, Graphite, Verdant, Classic Dark, Classic Light, Paper. It is a calm divided comparison list at every width. Selection applies immediately.
 - Theme is browser-local UI state: LocalStorage is primary after hydration, mirrored to the same-site theme cookie for server first paint. Invalid local state yields to the validated server theme; runtime updates set theme and color-scheme together. Theme is not account, prompt, or conversation data.
 - Project settings owns `Project instructions`, explains that they are supplied to project chats, and preserves modal focus, Escape, opener restoration, and dirty-confirmation behavior.
@@ -124,4 +123,4 @@ Visual tokens, geometry, and reusable recipes belong to `DESIGN_SYSTEM.md`. Serv
 - Preserve authorization and least-data boundaries; client affordances never replace server enforcement.
 - Keep resource facts, readiness, publication, entitlement, and action state distinct.
 - Keep compact navigation and focus recovery operable at 390x844 and 844x390 without page-level horizontal overflow.
-- Update this document for durable account, admin, share, Settings, or Prompt-library behavior. File wiring and implementation chronology belong in source and focused tests.
+- Update this document for durable account, admin, share, Settings, or Library behavior. File wiring and implementation chronology belong in source and focused tests.

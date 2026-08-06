@@ -72,8 +72,8 @@ Live run cancellation and MCP sessions are process-local. Durable run status, pe
 Postgres/Prisma is authoritative for:
 
 - users, identities, sessions, auth admission, groups, grants, and invitations;
-- folders, chats, message DAGs, prompt/settings state, runs, events, usage, and immutable accepted bindings;
-- provider/model/credential, Search, run-profile, SMTP, and MCP control planes;
+- folders, chats, message DAGs, settings state, Assistant definitions/revisions/publications/pins, runs, events, usage, and immutable accepted bindings;
+- provider/model/credential, Search, SMTP, and MCP control planes;
 - MCP activation/runtime evidence, upload metadata/cleanup work, and public-share snapshots.
 
 Private objects live in S3/MinIO in the bundled stack. A filesystem fallback exists only when S3 is absent outside that topology.

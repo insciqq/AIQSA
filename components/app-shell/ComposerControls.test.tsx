@@ -54,7 +54,6 @@ const catalog: Catalog = {
   defaults: {
     controlValues: {},
     modelId: balancedModel.modelId,
-    promptPresetId: "prompt-default",
     provider: "fake",
     searchStrategyId: "search-disabled",
     showCitations: true,
@@ -62,62 +61,51 @@ const catalog: Catalog = {
     showToolActivity: true
   },
   models: [fastModel, balancedModel, deepModel],
-  promptPresets: [
-    {
-      developerPrompt: null,
-      id: "prompt-default",
-      isDefault: true,
-      name: "Helpful Assistant",
-      systemPrompt: "Be helpful."
-    },
-    {
-      developerPrompt: null,
-      id: "prompt-research",
-      isDefault: false,
-      name: "Research Assistant",
-      systemPrompt: "Investigate carefully."
-    }
-  ],
   providers: [{ id: "fake", models: [fastModel.modelId, balancedModel.modelId, deepModel.modelId], name: "Fake" }],
-  runProfiles: [
-    {
-      available: true,
-      configurationLabel: "Fast Research · Standard · Low",
-      description: "Simple, well-defined questions",
-      id: "fast",
-      label: "Fast",
-      modelId: fastModel.modelId,
-      provider: "fake",
-      reasoningEffort: "low",
-      reasoningMode: "standard"
-    },
-    {
-      available: true,
-      configurationLabel: "Balanced Research · Standard · Medium",
-      description: "Most everyday questions",
-      id: "balanced",
-      label: "Balanced",
-      modelId: balancedModel.modelId,
-      provider: "fake",
-      reasoningEffort: "medium",
-      reasoningMode: "standard"
-    },
-    {
-      available: true,
-      configurationLabel: "Deep Research · Pro · Maximum",
-      description: "Difficult or open-ended questions",
-      id: "deep",
-      label: "Deep",
-      modelId: deepModel.modelId,
-      provider: "fake",
-      reasoningEffort: "max",
-      reasoningMode: "pro"
-    }
-  ],
   searchStrategies: [
     { displayName: "No Search", kind: "none", strategyId: "search-disabled" },
     { displayName: "Web Search", kind: "openai_native_web_search", strategyId: "web-search" }
   ]
+};
+
+type ComposerAssistantView = ComposerControlsProps["assistant"];
+
+function createAssistantView(
+  overrides: Partial<ComposerAssistantView> = {}
+): ComposerAssistantView {
+  return {
+    clearRemovedNotice: vi.fn(),
+    openLibrary: vi.fn(),
+    openPicker: false,
+    pickerItems: [],
+    pickerLoading: false,
+    recentIds: [],
+    remove: vi.fn(),
+    removedNotice: false,
+    selectById: vi.fn(),
+    selected: null,
+    sendStarter: vi.fn(),
+    setPickerOpen: vi.fn(),
+    startFromCurrentSetup: vi.fn(),
+    ...overrides
+  };
+}
+
+const selectedAssistant = {
+  avatar: {
+    accents: [0],
+    backgroundShape: "circle" as const,
+    foregroundShape: "diamond" as const,
+    kind: "generated" as const,
+    paletteId: "ocean" as const,
+    recipeVersion: 1 as const,
+    rotations: [0, 1] as [0, 1]
+  },
+  description: "Careful researcher",
+  id: "assistant-research",
+  name: "Research Helper",
+  promptCharacterCount: 240,
+  starterPrompts: ["Summarize the latest findings"]
 };
 
 function createControlsProps(overrides: Partial<ComposerControlsProps> = {}): ComposerControlsProps {
@@ -125,19 +113,18 @@ function createControlsProps(overrides: Partial<ComposerControlsProps> = {}): Co
   const currentModel = "currentModel" in overrides ? overrides.currentModel : balancedModel;
 
   return {
+    assistant: createAssistantView(),
     backgroundMode: false,
     catalog: renderedCatalog,
     contextLine: "Approx. input: ~21k / 115k safe input · 128k total context",
     currentModel,
     currentParameterControls: overrides.currentParameterControls ?? currentModel?.parameterControls ?? parameterControls,
-    currentPrompt: renderedCatalog?.promptPresets[0] ?? null,
     maxOutputTokens: "2048",
     notificationSoundEnabled: false,
     reasoningEffort: "medium",
     reasoningMode: "standard",
     searchOptions: renderedCatalog?.searchStrategies ?? [],
     selectedModelId: balancedModel.modelId,
-    selectedPromptId: "prompt-default",
     selectedProvider: "fake",
     selectedProviderName: "Fake",
     selectedSearchStrategy: "search-disabled",
@@ -156,11 +143,8 @@ function createControlsProps(overrides: Partial<ComposerControlsProps> = {}): Co
     onBackgroundModeChange: vi.fn(),
     onMaxOutputTokensChange: vi.fn(),
     onMaxOutputTokensCommit: vi.fn(),
-    onOpenPromptLibrary: vi.fn(),
-    onPromptChange: vi.fn(),
     onReasoningEffortChange: vi.fn(),
     onReasoningModeChange: vi.fn(),
-    onRunProfileChange: vi.fn(),
     onSearchStrategyChange: vi.fn(),
     onSelectModel: vi.fn(),
     onStreamModeChange: vi.fn(),
@@ -186,10 +170,11 @@ function openRunSetup() {
 
 describe("ComposerControls", () => {
   afterEach(() => {
+    vi.useRealTimers();
     vi.restoreAllMocks();
   });
 
-  it("keeps model, profile, and search directly reachable beside an explicit More control", () => {
+  it("keeps model and search directly reachable beside an explicit More control", () => {
     renderControls();
 
     const controls = screen.getByTestId("composer-control-bar");
@@ -205,22 +190,17 @@ describe("ComposerControls", () => {
     );
     expect(screen.getByTestId("run-model-summary")).toHaveTextContent("Balanced Research");
     expect(screen.getByTestId("run-model-summary-provider")).toHaveTextContent("Fake");
-    expect(screen.getByTestId("run-profile-summary")).toHaveTextContent("Profile: Balanced");
+    expect(screen.queryByTestId("run-profile-summary")).not.toBeInTheDocument();
     expect(screen.getByTestId("run-reasoning-summary")).toHaveTextContent("Reasoning: Standard · Medium");
     expect(screen.getByTestId("run-search-summary")).toHaveTextContent("Search: Off");
     expect(summary).toHaveAccessibleName(
-      "Open more run settings. Profile Balanced. Model Balanced Research. Reasoning Standard mode, Medium effort. Search Off."
+      "Open more run settings. Model Balanced Research. Reasoning Standard mode, Medium effort. Search Off."
     );
     const model = within(controls).getByRole("button", { name: "Select model" });
     expect(model).toBeVisible();
     expect(within(model).queryByText("Model", { exact: true })).not.toBeInTheDocument();
-    const profile = within(controls).getByRole("button", { name: "Run profile" });
-    expect(profile).toBeVisible();
-    expect(profile).toHaveTextContent("Balanced");
-    expect(within(profile).getByText("Profile", { exact: true })).toHaveClass("sr-only");
-    expect(within(controls).queryByRole("button", { name: "Use Fast run profile" })).not.toBeInTheDocument();
-    expect(within(controls).queryByRole("button", { name: "Use Balanced run profile" })).not.toBeInTheDocument();
-    expect(within(controls).queryByRole("button", { name: "Use Deep run profile" })).not.toBeInTheDocument();
+    expect(screen.queryByTestId("composer-assistant-chip-row")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("composer-assistant-removed-notice")).not.toBeInTheDocument();
     const search = within(controls).getByRole("button", { name: "Search strategy" });
     expect(search).toBeVisible();
     expect(within(search).getByText("Search")).toHaveClass("max-[429px]:sr-only");
@@ -229,8 +209,6 @@ describe("ComposerControls", () => {
     expect(within(controls).queryByRole("button", { name: "Reasoning effort" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Run settings" })).not.toBeInTheDocument();
     expect(summary.querySelector(".lucide-chevron-right")).not.toBeInTheDocument();
-    expect(screen.getByTestId("composer-secondary-controls")).toContainElement(profile);
-    expect(profile).toHaveClass("bg-control-surface", "h-touch");
     expect(screen.getByTestId("run-model-summary").closest("div.relative")).toHaveClass(
       "max-w-full",
       "min-w-[min(14rem,100%)]",
@@ -247,8 +225,6 @@ describe("ComposerControls", () => {
       "data-has-direct-reasoning",
       "true"
     );
-    expect(profile.closest("div.relative")).toHaveClass("flex-[0_1_9rem]");
-    expect(profile.closest("div.relative")).not.toHaveClass("shrink-0");
     expect(controls.querySelector('[data-composer-direct-reasoning="true"]')).toHaveClass(
       "hidden",
       "min-w-0",
@@ -258,17 +234,8 @@ describe("ComposerControls", () => {
     );
   });
 
-  it("routes the direct profile, model, and search controls through the existing actions", () => {
+  it("routes the direct model and search controls through the existing actions", () => {
     const { props } = renderControls();
-
-    fireEvent.click(screen.getByRole("button", { name: "Run profile" }));
-    expect(screen.getByRole("dialog", { name: "Choose profile" })).toBeVisible();
-    fireEvent.click(
-      screen
-        .getByTestId("composer-inline-profile-options")
-        .querySelector('[data-option-value="deep"]')!
-    );
-    expect(props.onRunProfileChange).toHaveBeenCalledWith("deep");
 
     fireEvent.click(screen.getByRole("button", { name: "Select model" }));
     const modelPicker = screen.getByTestId("composer-inline-model-picker");
@@ -285,6 +252,36 @@ describe("ComposerControls", () => {
     expect(props.onSearchStrategyChange).toHaveBeenCalledWith("web-search");
   });
 
+  it("shows the selected assistant chip and the strict-identity removal notice", () => {
+    const assistant = createAssistantView({ removedNotice: true, selected: selectedAssistant });
+    renderControls({ assistant });
+
+    const chipRow = screen.getByTestId("composer-assistant-chip-row");
+    const chip = within(chipRow).getByTestId("composer-assistant-chip");
+    expect(chip).toHaveTextContent("Research Helper");
+    fireEvent.click(chip);
+    expect(assistant.setPickerOpen).toHaveBeenCalledWith(true);
+
+    const notice = screen.getByTestId("composer-assistant-removed-notice");
+    expect(notice).toHaveTextContent("Assistant removed. Your manual settings now apply.");
+    fireEvent.click(within(notice).getByRole("button", { name: "Dismiss" }));
+    expect(assistant.clearRemovedNotice).toHaveBeenCalledOnce();
+
+    expect(screen.getByTestId("composer-run-summary")).toHaveAccessibleName(
+      "Open more run settings. Assistant Research Helper. Model Balanced Research. Reasoning Standard mode, Medium effort. Search Off."
+    );
+  });
+
+  it("mounts the assistant picker only while the view marks it open", () => {
+    const view = renderControls();
+    expect(screen.queryByTestId("assistant-picker")).not.toBeInTheDocument();
+
+    view.rerender(
+      <ComposerControls {...view.props} assistant={createAssistantView({ openPicker: true })} />
+    );
+    expect(screen.getByTestId("assistant-picker")).toBeVisible();
+  });
+
   it("edits the exact Reasoning mode and effort from one wide direct control", () => {
     const { props } = renderControls({ reasoningEffort: "max", reasoningMode: "pro" });
     fireEvent.click(screen.getByRole("button", { name: "Reasoning Pro · Maximum" }));
@@ -298,7 +295,7 @@ describe("ComposerControls", () => {
     expect(dialog).toHaveTextContent("Saved for this exact model");
   });
 
-  it("prints exact non-default profile, mode, effort, and search names", () => {
+  it("prints exact non-default mode, effort, and search names", () => {
     renderControls({
       currentModel: deepModel,
       currentParameterControls: deepModel.parameterControls,
@@ -309,10 +306,8 @@ describe("ComposerControls", () => {
     });
 
     expect(screen.getByTestId("run-model-summary")).toHaveTextContent("Deep Research");
-    expect(screen.getByTestId("run-profile-summary")).toHaveTextContent("Profile: Deep");
     expect(screen.getByTestId("run-reasoning-summary")).toHaveTextContent("Reasoning: Pro · Maximum");
     expect(screen.getByTestId("run-search-summary")).toHaveTextContent("Search: Web Search");
-    expect(screen.getByRole("button", { name: "Run profile" })).toHaveTextContent("Deep");
     const search = screen.getByRole("button", { name: "Search strategy" });
     const searchLabels = within(search).getAllByText("Web Search");
     expect(searchLabels).toHaveLength(2);
@@ -462,8 +457,7 @@ describe("ComposerControls", () => {
     expect(screen.getByTestId("run-setup-backdrop")).toHaveClass("bg-scrim/55");
     expect(screen.getByTestId("run-setup-backdrop")).not.toHaveClass("backdrop-blur-sm");
     expect(screen.getByTestId("run-setup-content")).toHaveClass("overflow-y-auto", "overscroll-contain");
-    expect(within(dialog).getByRole("heading", { name: "Profile" })).toBeVisible();
-    expect(within(dialog).getByRole("group", { name: "Run profile" })).toBeVisible();
+    expect(within(dialog).getByRole("heading", { name: "Answer setup" })).toBeVisible();
     expect(within(dialog).getByRole("button", { name: "Select model" })).toBeVisible();
     expect(within(dialog).getByRole("button", { name: "Reasoning effort" })).toBeVisible();
     expect(within(dialog).getByRole("button", { name: "Search strategy" })).toBeVisible();
@@ -477,7 +471,8 @@ describe("ComposerControls", () => {
     expect(dialog.querySelector("#composer-reasoning-effort-current-value")).toHaveTextContent(
       "Standard · Medium"
     );
-    expect(within(dialog).getByRole("button", { name: "Prompt preset" })).toBeVisible();
+    expect(within(dialog).getByRole("heading", { name: "Assistant" })).toBeVisible();
+    expect(within(dialog).getByTestId("run-setup-use-assistant")).toHaveTextContent("Use an assistant…");
     expect(within(dialog).getByRole("spinbutton", { name: "Temperature" })).toBeVisible();
     expect(within(dialog).getByRole("spinbutton", { name: "Max output tokens" })).toBeVisible();
     expect(within(dialog).getByRole("combobox", { name: "Reasoning mode" })).toBeVisible();
@@ -497,71 +492,31 @@ describe("ComposerControls", () => {
     expect(within(dialog).getByRole("button", { name: "Enable answer sound" })).toBeVisible();
   });
 
-  it("applies quick profiles from inside Run setup without a second owner", () => {
-    const { props } = renderControls();
+  it("hands off from Run setup to the assistant picker without a second owner", () => {
+    vi.useFakeTimers();
+    const assistant = createAssistantView();
+    const { props } = renderControls({ assistant });
     const dialog = openRunSetup();
 
-    const availabilityFacts = dialog.querySelectorAll(
-      '[data-run-profile-availability="available"]'
+    fireEvent.click(within(dialog).getByTestId("run-setup-use-assistant"));
+    expect(screen.queryByRole("dialog", { name: "Run setup" })).not.toBeInTheDocument();
+    expect(props.onTemperatureCommit).toHaveBeenCalledOnce();
+    expect(props.onMaxOutputTokensCommit).toHaveBeenCalledOnce();
+    expect(assistant.setPickerOpen).not.toHaveBeenCalled();
+    vi.runOnlyPendingTimers();
+    expect(assistant.setPickerOpen).toHaveBeenCalledWith(true);
+    vi.useRealTimers();
+  });
+
+  it("labels the Run setup assistant action for the current selection", () => {
+    renderControls({ assistant: createAssistantView({ selected: selectedAssistant }) });
+    const dialog = openRunSetup();
+
+    expect(dialog).toHaveTextContent(
+      "Using Research Helper. Changing any governed control removes it."
     );
-    expect(availabilityFacts).toHaveLength(3);
-    for (const fact of availabilityFacts) {
-      expect(fact).toBeVisible();
-      expect(fact.tagName).toBe("SPAN");
-      expect(fact).not.toHaveAttribute("disabled");
-    }
-    expect(within(dialog).getByText("Selected", { exact: true })).toBeVisible();
-
-    fireEvent.click(within(dialog).getByRole("button", { name: "Use Deep run profile" }));
-    expect(props.onRunProfileChange).toHaveBeenCalledWith("deep");
-  });
-
-  it("omits the Profile section only when the server omits every configured slot", () => {
-    renderControls({ catalog: { ...catalog, runProfiles: [] } });
-    expect(screen.queryByRole("button", { name: "Run profile" })).not.toBeInTheDocument();
-    expect(screen.queryByTestId("run-profile-summary")).not.toBeInTheDocument();
-    const dialog = openRunSetup();
-
-    expect(within(dialog).queryByRole("heading", { name: "Profile" })).not.toBeInTheDocument();
-    expect(within(dialog).getByRole("heading", { name: "Answer setup" })).toBeVisible();
-  });
-
-  it("omits unusable profile shortcuts while retaining their diagnostics in Run setup", () => {
-    const unavailableCatalog: Catalog = {
-      ...catalog,
-      runProfiles: (catalog.runProfiles ?? []).map((profile) => ({
-        available: false,
-        description: profile.description,
-        id: profile.id,
-        label: profile.label,
-        unavailableReason: "model_unavailable"
-      }))
-    };
-    renderControls({ catalog: unavailableCatalog });
-    expect(screen.queryByRole("button", { name: "Run profile" })).not.toBeInTheDocument();
-    expect(screen.queryByTestId("run-profile-summary")).not.toBeInTheDocument();
-    expect(screen.getByTestId("composer-run-summary")).not.toHaveAccessibleName(/Profile/i);
-
-    const dialog = openRunSetup();
-
-    expect(within(dialog).getByRole("heading", { name: "Profile" })).toBeVisible();
-    const profiles = within(dialog).getByRole("group", { name: "Run profile" });
-    for (const label of ["Fast", "Balanced", "Deep"]) {
-      const action = within(profiles).getByRole("button", { name: `Use ${label} run profile` });
-      expect(action).toBeDisabled();
-      expect(action).toHaveAttribute("title", expect.stringContaining(`${label} is not available`));
-    }
-    const unavailableFacts = within(dialog).getAllByText(/Unavailable profiles cannot be used/, {
-      selector: '[data-run-profile-availability="unavailable"]'
-    });
-    expect(unavailableFacts).toHaveLength(1);
-    expect(unavailableFacts[0]).toBeVisible();
-    expect(unavailableFacts[0].tagName).toBe("P");
-    expect(unavailableFacts[0]).not.toHaveClass("rounded-pill", "border");
-    expect(within(profiles).getAllByText("Unavailable", { exact: true })).toHaveLength(3);
-    expect(dialog).not.toHaveTextContent("Disabled");
-    expect(within(dialog).getByTestId("run-profile-unavailable-reason")).toHaveTextContent(
-      "Unavailable profiles cannot be used with your current model access."
+    expect(within(dialog).getByTestId("run-setup-use-assistant")).toHaveTextContent(
+      "Change assistant…"
     );
   });
 
@@ -598,7 +553,7 @@ describe("ComposerControls", () => {
     expect(screen.getByRole("dialog", { name: "Run setup" })).toBeVisible();
   });
 
-  it("routes reasoning, search, prompt, generation, and response controls through existing actions", () => {
+  it("routes reasoning, search, generation, and response controls through existing actions", () => {
     const { props } = renderControls();
     const dialog = openRunSetup();
 
@@ -609,10 +564,6 @@ describe("ComposerControls", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: "Search strategy" }));
     fireEvent.click(screen.getByRole("button", { name: /Web Search/i }));
     expect(props.onSearchStrategyChange).toHaveBeenCalledWith("web-search");
-
-    fireEvent.click(within(dialog).getByRole("button", { name: "Prompt preset" }));
-    fireEvent.click(screen.getByRole("button", { name: /Research Assistant/i }));
-    expect(props.onPromptChange).toHaveBeenCalledWith("prompt-research");
 
     fireEvent.change(within(dialog).getByRole("spinbutton", { name: "Temperature" }), { target: { value: "1.1" } });
     fireEvent.change(within(dialog).getByRole("spinbutton", { name: "Max output tokens" }), { target: { value: "4096" } });
@@ -647,17 +598,6 @@ describe("ComposerControls", () => {
     await waitFor(() => expect(trigger).toHaveFocus());
   });
 
-  it("closes and flushes before opening prompt management", async () => {
-    const { props } = renderControls();
-    const dialog = openRunSetup();
-
-    fireEvent.click(within(dialog).getByRole("button", { name: "Open library" }));
-    expect(screen.queryByRole("dialog", { name: "Run setup" })).not.toBeInTheDocument();
-    expect(props.onTemperatureCommit).toHaveBeenCalledOnce();
-    expect(props.onMaxOutputTokensCommit).toHaveBeenCalledOnce();
-    await waitFor(() => expect(props.onOpenPromptLibrary).toHaveBeenCalledOnce());
-  });
-
   it("closes an open setup when bootstrap readiness disables its owner", async () => {
     const view = renderControls();
     openRunSetup();
@@ -689,19 +629,6 @@ describe("ComposerControls", () => {
     expect(screen.getByTestId("run-search-summary")).toHaveTextContent("Search: Unavailable");
     const dialog = openRunSetup();
     expect(within(dialog).getByRole("button", { name: "Reasoning effort" })).toBeDisabled();
-  });
-
-  it("derives Custom only for applicable profiles and omits a true-empty profile summary", () => {
-    const view = renderControls({ reasoningEffort: "high" });
-    expect(screen.getByTestId("run-profile-summary")).toHaveTextContent("Profile: Custom");
-    const profile = screen.getByRole("button", { name: "Run profile" });
-    expect(profile).toBeVisible();
-    expect(profile).toHaveTextContent("Custom");
-    expect(profile).toHaveAttribute("title", "Current run profile: Custom");
-
-    view.rerender(<ComposerControls {...view.props} catalog={{ ...catalog, runProfiles: [] }} reasoningEffort="high" />);
-    expect(screen.queryByTestId("run-profile-summary")).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Run profile" })).not.toBeInTheDocument();
   });
 
   it("keeps global command shortcuts from escaping an open Run setup", () => {

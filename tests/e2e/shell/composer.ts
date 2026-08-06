@@ -80,16 +80,12 @@ export async function expectRunSummary(
   page: Page,
   expected: Readonly<{
     model?: string;
-    profile?: string;
     reasoning?: string;
     search?: string;
   }>
 ): Promise<void> {
   if (expected.model !== undefined) {
     await expect(page.getByTestId("run-model-summary")).toHaveText(expected.model);
-  }
-  if (expected.profile !== undefined) {
-    await expect(page.getByTestId("run-profile-summary")).toHaveText(`Profile: ${expected.profile}`);
   }
   if (expected.reasoning !== undefined) {
     await expect(page.getByTestId("run-reasoning-summary")).toHaveText(`Reasoning: ${expected.reasoning}`);

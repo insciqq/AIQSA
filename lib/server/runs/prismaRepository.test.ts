@@ -153,20 +153,6 @@ async function deleteMcpFixture(serverId: string): Promise<void> {
   await prisma.mcpServer.deleteMany({ where: { id: serverId } });
 }
 
-async function promptFlags(userId: string): Promise<Map<string, boolean>> {
-  const prompts = await prisma.promptPreset.findMany({
-    select: {
-      id: true,
-      isDefault: true
-    },
-    where: {
-      userId
-    }
-  });
-
-  return new Map(prompts.map((prompt) => [prompt.id, prompt.isDefault]));
-}
-
 function createRunInput(input: {
   attachmentIds?: string[];
   chatId: string;
@@ -178,7 +164,6 @@ function createRunInput(input: {
   const defaults: AcceptedRunDefaults = {
     controlDefaults: input.defaults?.controlDefaults ?? {},
     modelId: providerTemplateIds.fakeModel,
-    promptPresetId: null,
     provider: providerTemplateIds.fakeConnection,
     searchStrategy: "search-disabled",
     userId: input.userId,
@@ -206,7 +191,6 @@ function createRunInput(input: {
       params: {},
       prompt: {
         developer: null,
-        presetId: null,
         system: null
       },
       provider: "fake",
@@ -256,7 +240,6 @@ function storedDefaults(userId: string) {
   return prisma.userSettings.findUnique({
     select: {
       defaultControlValues: true,
-      defaultPromptPresetId: true,
       defaultProviderModelId: true,
       defaultSearchPlan: true,
       defaultSearchStrategyId: true
@@ -913,8 +896,14 @@ describe("Prisma run repository", () => {
       const fixture = await createReadyMcpBinding(userId);
       try {
         const repository = createPrismaRunRepository(prisma);
+        const priorControlValues = { "other:model": { temperature: "0.5" } };
+        await prisma.userSettings.update({
+          data: { defaultControlValues: priorControlValues },
+          where: { userId }
+        });
         const sendInput = createRunInput({
           chatId: chat.id,
+          defaults: { controlDefaults: { temperature: "0.2" } },
           question: "This graph must roll back",
           userId
         });
@@ -933,6 +922,10 @@ describe("Prisma run repository", () => {
         await expect(prisma.mcpRunBinding.count({
           where: { runtimeGenerationId: fixture.generation.id }
         })).resolves.toBe(0);
+        // The failed acceptance must leave previously stored defaults intact.
+        await expect(storedDefaults(userId)).resolves.toMatchObject({
+          defaultControlValues: priorControlValues
+        });
       } finally {
         await deleteMcpFixture(fixture.server.id);
       }
@@ -1519,24 +1512,8 @@ describe("Prisma run repository", () => {
     });
   });
 
-  it("commits run graphs and preferred Search without changing the user prompt default", async () => {
+  it("commits run graphs and preferred Search defaults atomically", async () => {
     await withRunUser(async ({ userId }) => {
-      const first = await prisma.promptPreset.create({
-        data: {
-          isDefault: true,
-          name: "Default",
-          systemPrompt: "Default system prompt.",
-          userId
-        }
-      });
-      const second = await prisma.promptPreset.create({
-        data: {
-          isDefault: false,
-          name: "Second",
-          systemPrompt: "Second system prompt.",
-          userId
-        }
-      });
       await prisma.userSettings.update({
         data: {
           defaultControlValues: {
@@ -1546,8 +1523,7 @@ describe("Prisma run repository", () => {
             "other:model": {
               temperature: "0.4"
             }
-          },
-          defaultPromptPresetId: first.id
+          }
         },
         where: {
           userId
@@ -1567,7 +1543,6 @@ describe("Prisma run repository", () => {
           controlDefaults: {
             temperature: "0.2"
           },
-          promptPresetId: second.id,
           searchPreferencePlan: {
             mode: "model_choice",
             optionIds: ["company-search", "secondary-search"]
@@ -1576,7 +1551,6 @@ describe("Prisma run repository", () => {
         question: "Atomic defaults",
         userId
       });
-      sendInput.normalizedRequest.prompt.presetId = second.id;
       const sent = await repository.createRun(sendInput);
 
       const [afterSend, afterSendChat] = await Promise.all([
@@ -1594,7 +1568,6 @@ describe("Prisma run repository", () => {
             temperature: "0.4"
           }
         },
-        defaultPromptPresetId: first.id,
         defaultSearchPlan: {
           mode: "model_choice",
           optionIds: ["company-search", "secondary-search"]
@@ -1612,22 +1585,13 @@ describe("Prisma run repository", () => {
       await expect(
         prisma.message.findMany({
           orderBy: { createdAt: "asc" },
-          select: { id: true, promptPresetId: true },
+          select: { id: true },
           where: { chatId: chat.id }
         })
       ).resolves.toEqual([
-        { id: sent.userMessageId, promptPresetId: second.id },
-        { id: sent.assistantMessageId, promptPresetId: second.id }
+        { id: sent.userMessageId },
+        { id: sent.assistantMessageId }
       ]);
-      await expect(
-        prisma.chat.findUniqueOrThrow({
-          select: { defaultPromptPresetId: true },
-          where: { id: chat.id }
-        })
-      ).resolves.toEqual({ defaultPromptPresetId: second.id });
-      let flags = await promptFlags(userId);
-      expect(flags.get(first.id)).toBe(true);
-      expect(flags.get(second.id)).toBe(false);
 
       await prisma.modelRun.update({
         data: {
@@ -1642,13 +1606,11 @@ describe("Prisma run repository", () => {
         defaults: {
           controlDefaults: {
             reasoningEffort: "high"
-          },
-          promptPresetId: second.id
+          }
         },
         question: "Atomic defaults",
         userId
       });
-      regenerationPrepared.normalizedRequest.prompt.presetId = second.id;
       const regenerated = await repository.createRegenerationRun(
         createRegenerationInput(regenerationPrepared, sent.userMessageId)
       );
@@ -1669,7 +1631,6 @@ describe("Prisma run repository", () => {
             temperature: "0.4"
           }
         },
-        defaultPromptPresetId: first.id,
         defaultSearchPlan: {
           mode: "model_choice",
           optionIds: ["company-search", "secondary-search"]
@@ -1684,167 +1645,116 @@ describe("Prisma run repository", () => {
         activeLeafMessageId: regenerated.assistantMessageId,
         title: "Atomic defaults"
       });
-      await expect(
-        prisma.message.findUniqueOrThrow({
-          select: { promptPresetId: true },
-          where: { id: regenerated.assistantMessageId }
-        })
-      ).resolves.toEqual({ promptPresetId: second.id });
-      flags = await promptFlags(userId);
-      expect(flags.get(first.id)).toBe(true);
-      expect(flags.get(second.id)).toBe(false);
     });
   });
 
-  it("fails closed for a foreign prompt or missing settings row", async () => {
+  it("fails closed and rolls back run writes when the settings row is missing", async () => {
     await withRunUser(async ({ userId }) => {
-      await withRunUser(async ({ userId: otherUserId }) => {
-        const [ownedPrompt, foreignPrompt] = await Promise.all([
-          prisma.promptPreset.create({
-            data: {
-              isDefault: true,
-              name: "Owned prompt",
-              systemPrompt: "Owned.",
-              userId
-            }
-          }),
-          prisma.promptPreset.create({
-            data: {
-              name: "Foreign prompt",
-              systemPrompt: "Foreign.",
-              userId: otherUserId
-            }
-          })
-        ]);
-        await prisma.userSettings.update({
+      const [sendChat, regenerationChat] = await Promise.all([
+        prisma.chat.create({
           data: {
-            defaultControlValues: {
-              "other:model": {
-                temperature: "0.5"
-              }
-            },
-            defaultPromptPresetId: ownedPrompt.id
-          },
-          where: {
+            defaultProviderModelId: providerTemplateIds.fakeModel,
+            title: "New Chat",
             userId
           }
-        });
-        const [sendChat, regenerationChat] = await Promise.all([
-          prisma.chat.create({
-            data: {
-              defaultProviderModelId: providerTemplateIds.fakeModel,
-              title: "New Chat",
-              userId
-            }
-          }),
-          prisma.chat.create({
-            data: {
-              defaultProviderModelId: providerTemplateIds.fakeModel,
-              title: "Regeneration source",
-              userId
-            }
-          })
-        ]);
-        const source = await prisma.message.create({
+        }),
+        prisma.chat.create({
           data: {
-            chatId: regenerationChat.id,
-            content: textMessageContent("Source"),
-            role: "user",
-            status: "complete"
-          }
-        });
-        await prisma.chat.update({
-          data: {
-            activeLeafMessageId: source.id
-          },
-          where: {
-            id: regenerationChat.id
-          }
-        });
-        const attachment = await prisma.attachment.create({
-          data: {
-            byteSize: 7,
-            fileName: "rollback.txt",
-            kind: "text",
-            metadata: {},
-            mimeType: "text/plain",
-            storageKey: `rollback/${randomUUID()}`,
+            defaultProviderModelId: providerTemplateIds.fakeModel,
+            title: "Regeneration source",
             userId
           }
-        });
-        const repository = createPrismaRunRepository(prisma);
-        const foreignPromptInput = createRunInput({
-          attachmentIds: [attachment.id],
-          chatId: sendChat.id,
-          defaults: {
-            controlDefaults: {
-              temperature: "0.2"
-            },
-            promptPresetId: foreignPrompt.id
-          },
-          question: "Foreign prompt",
-          userId
-        });
-
-        await expect(repository.createRun(foreignPromptInput)).rejects.toThrow(
-          "Run defaults persistence failed: not_found"
-        );
-        const [sendAfter, attachmentAfter, defaultsAfter, flags] = await Promise.all([
-          chatGraph(sendChat.id),
-          prisma.attachment.findUniqueOrThrow({
-            select: {
-              chatId: true,
-              messageId: true
-            },
-            where: {
-              id: attachment.id
-            }
-          }),
-          storedDefaults(userId),
-          promptFlags(userId)
-        ]);
-
-        expect(sendAfter).toEqual({
-          _count: {
-            messages: 0,
-            modelRuns: 0
-          },
-          activeLeafMessageId: null,
-          title: "New Chat"
-        });
-        expect(attachmentAfter).toEqual({ chatId: null, messageId: null });
-        expect(defaultsAfter).toMatchObject({
-          defaultControlValues: {
-            "other:model": {
-              temperature: "0.5"
-            }
-          },
-          defaultPromptPresetId: ownedPrompt.id
-        });
-        expect(flags.get(ownedPrompt.id)).toBe(true);
-
-        await prisma.userSettings.delete({
-          where: {
-            userId
-          }
-        });
-        const regenerationPrepared = createRunInput({
+        })
+      ]);
+      const source = await prisma.message.create({
+        data: {
           chatId: regenerationChat.id,
-          question: "Source",
+          content: textMessageContent("Source"),
+          role: "user",
+          status: "complete"
+        }
+      });
+      await prisma.chat.update({
+        data: {
+          activeLeafMessageId: source.id
+        },
+        where: {
+          id: regenerationChat.id
+        }
+      });
+      const attachment = await prisma.attachment.create({
+        data: {
+          byteSize: 7,
+          fileName: "rollback.txt",
+          kind: "text",
+          metadata: {},
+          mimeType: "text/plain",
+          storageKey: `rollback/${randomUUID()}`,
           userId
-        });
-        await expect(
-          repository.createRegenerationRun(createRegenerationInput(regenerationPrepared, source.id))
-        ).rejects.toThrow("Run defaults persistence failed: not_found");
+        }
+      });
+      const repository = createPrismaRunRepository(prisma);
+      await prisma.userSettings.delete({
+        where: {
+          userId
+        }
+      });
+      const missingSettingsInput = createRunInput({
+        attachmentIds: [attachment.id],
+        chatId: sendChat.id,
+        defaults: {
+          controlDefaults: {
+            temperature: "0.2"
+          }
+        },
+        question: "Missing settings",
+        userId
+      });
 
-        await expect(chatGraph(regenerationChat.id)).resolves.toEqual({
-          _count: {
-            messages: 1,
-            modelRuns: 0
+      await expect(repository.createRun(missingSettingsInput)).rejects.toThrow(
+        "Run defaults persistence failed: not_found"
+      );
+      const [sendAfter, attachmentAfter, defaultsAfter] = await Promise.all([
+        chatGraph(sendChat.id),
+        prisma.attachment.findUniqueOrThrow({
+          select: {
+            chatId: true,
+            messageId: true
           },
-          activeLeafMessageId: source.id,
-          title: "Regeneration source"
-        });
+          where: {
+            id: attachment.id
+          }
+        }),
+        storedDefaults(userId)
+      ]);
+
+      expect(sendAfter).toEqual({
+        _count: {
+          messages: 0,
+          modelRuns: 0
+        },
+        activeLeafMessageId: null,
+        title: "New Chat"
+      });
+      expect(attachmentAfter).toEqual({ chatId: null, messageId: null });
+      expect(defaultsAfter).toBeNull();
+
+      const regenerationPrepared = createRunInput({
+        chatId: regenerationChat.id,
+        question: "Source",
+        userId
+      });
+      await expect(
+        repository.createRegenerationRun(createRegenerationInput(regenerationPrepared, source.id))
+      ).rejects.toThrow("Run defaults persistence failed: not_found");
+
+      await expect(chatGraph(regenerationChat.id)).resolves.toEqual({
+        _count: {
+          messages: 1,
+          modelRuns: 0
+        },
+        activeLeafMessageId: source.id,
+        title: "Regeneration source"
       });
     });
   });

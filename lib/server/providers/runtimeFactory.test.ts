@@ -71,7 +71,7 @@ function compatibleRequest(): ProviderRunRequest {
     },
     modelId: "upstream/model",
     params: { stream: false },
-    prompt: { developer: null, presetId: null, system: null },
+    prompt: { developer: null, system: null },
     provider: "openai_compatible",
     searchStrategy: "search-disabled"
   };
@@ -384,7 +384,7 @@ describe("provider runtime factory", () => {
       },
       modelId: "gemini-3.6-flash",
       params: { stream: false },
-      prompt: { developer: null, presetId: null, system: null },
+      prompt: { developer: null, system: null },
       provider: "gemini",
       searchStrategy: "search-disabled"
     };

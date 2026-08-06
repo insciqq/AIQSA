@@ -26,7 +26,6 @@ export type BranchChatRecord = {
   activeLeafMessageId: string | null;
   createdAt: Date | string;
   defaultModelId: string | null;
-  defaultPromptPresetId: string | null;
   defaultProvider: string | null;
   folderId: string | null;
   id: string;
@@ -116,7 +115,6 @@ function serializeChatSummary(chat: BranchChatRecord): WorkspaceChatSummaryWire 
     activeLeafMessageId: chat.activeLeafMessageId,
     createdAt: chat.createdAt instanceof Date ? chat.createdAt.toISOString() : chat.createdAt,
     defaultModelId: chat.defaultModelId,
-    defaultPromptPresetId: chat.defaultPromptPresetId,
     defaultProvider: chat.defaultProvider,
     folderId: chat.folderId,
     id: chat.id,

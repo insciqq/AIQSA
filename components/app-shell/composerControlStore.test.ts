@@ -1,22 +1,53 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { resetComposerControlStoreForTest, useComposerControlStore } from "./composerControlStore";
-import type { PromptPreset } from "./types";
+import {
+  resetComposerControlStoreForTest,
+  useComposerControlStore,
+  type ComposerAssistantSelection
+} from "./composerControlStore";
+
+function assistantSelection(
+  overrides: Partial<ComposerAssistantSelection> = {}
+): ComposerAssistantSelection {
+  return {
+    avatar: {
+      accents: [0],
+      backgroundShape: "circle",
+      foregroundShape: "diamond",
+      kind: "generated",
+      paletteId: "ocean",
+      recipeVersion: 1,
+      rotations: [0, 1]
+    },
+    description: "Focused helper",
+    id: "assistant-a",
+    name: "Assistant A",
+    promptCharacterCount: 42,
+    starterPrompts: ["Summarize this thread"],
+    ...overrides
+  };
+}
 
 describe("composer control store", () => {
   afterEach(() => {
     resetComposerControlStoreForTest();
   });
 
-  it("applies prompt and control defaults", () => {
-    const prompt: PromptPreset = {
-      developerPrompt: "developer",
-      id: "prompt-a",
-      isDefault: false,
-      name: "Prompt A",
-      systemPrompt: "system"
-    };
-
-    useComposerControlStore.getState().applyPrompt(prompt);
+  it("applies assistant selection and control defaults", () => {
+    useComposerControlStore.getState().applyAssistantSelection({
+      assistant: assistantSelection(),
+      controlDefaults: {
+        backgroundMode: true,
+        maxOutputTokens: "128",
+        reasoningEffort: "low",
+        reasoningMode: "standard",
+        streamMode: false,
+        temperature: "0.9"
+      },
+      modelId: "gpt-5.6-sol",
+      provider: "openai",
+      searchOptionIds: ["perplexity-tool-search"],
+      searchPlanMode: "model_choice"
+    });
     useComposerControlStore.getState().applyControlDefaults({
       backgroundMode: false,
       maxOutputTokens: "96",
@@ -27,15 +58,115 @@ describe("composer control store", () => {
     });
 
     expect(useComposerControlStore.getState()).toMatchObject({
+      assistantRemovedNotice: false,
       backgroundMode: false,
-      developerPrompt: "developer",
       maxOutputTokens: "96",
       reasoningEffort: "high",
       reasoningMode: "pro",
-      selectedPromptId: "prompt-a",
+      searchPlanMode: "model_choice",
+      selectedAssistant: { id: "assistant-a", name: "Assistant A" },
+      selectedModelId: "gpt-5.6-sol",
+      selectedProvider: "openai",
+      selectedSearchOptionIds: ["perplexity-tool-search"],
+      selectedSearchStrategy: "perplexity-tool-search",
       streamMode: true,
-      systemPrompt: "system",
       temperature: "0.4"
+    });
+  });
+
+  it("drops the assistant identity on a user control change and restores the manual backup on removal", () => {
+    useComposerControlStore.getState().setTemperature("0.2");
+    useComposerControlStore.getState().applyAssistantSelection({
+      assistant: assistantSelection(),
+      controlDefaults: {
+        backgroundMode: true,
+        maxOutputTokens: "128",
+        reasoningEffort: "low",
+        reasoningMode: "standard",
+        streamMode: false,
+        temperature: "0.9"
+      },
+      modelId: "gpt-5.6-sol",
+      provider: "openai",
+      searchOptionIds: [],
+      searchPlanMode: "all_selected"
+    });
+
+    useComposerControlStore.getState().setTemperature("0.5");
+
+    expect(useComposerControlStore.getState()).toMatchObject({
+      assistantManualBackup: null,
+      assistantRemovedNotice: true,
+      selectedAssistant: null,
+      temperature: "0.5"
+    });
+
+    useComposerControlStore.getState().clearAssistantRemovedNotice();
+    expect(useComposerControlStore.getState().assistantRemovedNotice).toBe(false);
+
+    useComposerControlStore.getState().applyAssistantSelection({
+      assistant: assistantSelection(),
+      controlDefaults: {
+        backgroundMode: true,
+        maxOutputTokens: "128",
+        reasoningEffort: "low",
+        reasoningMode: "standard",
+        streamMode: false,
+        temperature: "0.9"
+      },
+      modelId: "gpt-5.6-sol",
+      provider: "openai",
+      searchOptionIds: [],
+      searchPlanMode: "all_selected"
+    });
+    useComposerControlStore.getState().removeAssistant();
+
+    expect(useComposerControlStore.getState()).toMatchObject({
+      assistantManualBackup: null,
+      assistantRemovedNotice: false,
+      selectedAssistant: null,
+      temperature: "0.5"
+    });
+  });
+
+  it("clears an assistant silently on a system-origin model selection", () => {
+    useComposerControlStore.getState().applyAssistantSelection({
+      assistant: assistantSelection(),
+      controlDefaults: {
+        backgroundMode: true,
+        maxOutputTokens: "128",
+        reasoningEffort: "low",
+        reasoningMode: "standard",
+        streamMode: false,
+        temperature: "0.9"
+      },
+      modelId: "gpt-5.6-sol",
+      provider: "openai",
+      searchOptionIds: [],
+      searchPlanMode: "all_selected"
+    });
+
+    useComposerControlStore.getState().applyModelSelection(
+      {
+        controlDefaults: {
+          backgroundMode: false,
+          maxOutputTokens: "64000",
+          reasoningEffort: "max",
+          reasoningMode: "pro",
+          streamMode: false,
+          temperature: "0.7"
+        },
+        modelId: "claude-opus",
+        provider: "anthropic"
+      },
+      "system"
+    );
+
+    expect(useComposerControlStore.getState()).toMatchObject({
+      assistantRemovedNotice: false,
+      selectedAssistant: null,
+      selectedModelId: "claude-opus",
+      selectedProvider: "anthropic"
     });
   });
 

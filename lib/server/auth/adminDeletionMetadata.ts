@@ -7,6 +7,7 @@ export type AdminUserDeletionSource = Readonly<{
 
 export type AdminGroupDeletionSource = Readonly<{
   _count: Readonly<{
+    assistantPublications?: number;
     providerCredentialAssignments?: number;
     users: number;
   }>;
@@ -36,7 +37,7 @@ export type AdminUserOwnedDataSource = Readonly<{
     mcpOAuthConnections: number;
     mcpUserServers: number;
     modelRuns: number;
-    promptPresets: number;
+    assistantDefinitions: number;
     sharedSnapshots: number;
     usageEvents: number;
   }>;
@@ -53,7 +54,7 @@ export type AdminOwnedAppDataCounts = Readonly<{
   mcpOAuthConnections: number;
   mcpUserServers: number;
   modelRuns: number;
-  promptPresets: number;
+  assistantDefinitions: number;
   settings: number;
   sharedSnapshots: number;
   usageEvents: number;
@@ -132,8 +133,9 @@ export function adminGroupDeletionInfo(group: AdminGroupDeletionSource): AdminDe
     group.accessGrants.filter((grant) => grant.enabled).length +
     group.mcpGrants.filter((grant) => grant.canUse).length;
   const credentialAssignmentCount = group._count.providerCredentialAssignments ?? 0;
+  const assistantPublicationCount = group._count.assistantPublications ?? 0;
   const block = adminGroupDeletionBlock({
-    activeGrantCount: activeGrantCount + credentialAssignmentCount,
+    activeGrantCount: activeGrantCount + credentialAssignmentCount + assistantPublicationCount,
     memberCount: group._count.users
   });
 
@@ -152,6 +154,9 @@ export function adminGroupDeletionInfo(group: AdminGroupDeletionSource): AdminDe
         : null,
       credentialAssignmentCount
         ? `${credentialAssignmentCount} provider credential assignment${credentialAssignmentCount === 1 ? "" : "s"}`
+        : null,
+      assistantPublicationCount
+        ? `${assistantPublicationCount} assistant publication${assistantPublicationCount === 1 ? "" : "s"}`
         : null
     ].filter((part): part is string => Boolean(part)).join(" and ");
     return {
@@ -164,7 +169,7 @@ export function adminGroupDeletionInfo(group: AdminGroupDeletionSource): AdminDe
   return {
     canDelete: true,
     reason: null,
-    summary: "No members, active grants, or provider credential assignments; this group can be deleted."
+    summary: "No members, active grants, provider credential assignments, or assistant publications; this group can be deleted."
   };
 }
 
@@ -212,7 +217,7 @@ export function adminOwnedAppDataCount(counts: AdminOwnedAppDataCounts): number 
     counts.mcpOAuthConnections +
     counts.mcpUserServers +
     counts.modelRuns +
-    counts.promptPresets +
+    counts.assistantDefinitions +
     counts.settings +
     counts.sharedSnapshots +
     counts.usageEvents

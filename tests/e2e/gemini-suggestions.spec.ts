@@ -37,7 +37,6 @@ test("contains Gemini suggestions and rejects direct provider CSS before it can 
       activeLeafMessageId: null,
       createdAt: "2026-08-05T08:00:00.000Z",
       defaultModelId: "gpt-5.5",
-      defaultPromptPresetId: "prompt-helpful",
       defaultProvider: "openai",
       folderId: null,
       id: chatId,

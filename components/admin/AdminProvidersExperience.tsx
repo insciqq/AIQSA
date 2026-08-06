@@ -3,11 +3,6 @@
 import { AdminProviderQuickSetup } from "@/components/admin/AdminProviderQuickSetup";
 import { AdminProviderCustomSetup } from "@/components/admin/AdminProviderCustomSetup";
 import { AdminProvidersSection } from "@/components/admin/AdminProvidersSection";
-import {
-  AdminRunProfilesPanel,
-  EMPTY_ADMIN_RUN_PROFILES_EDIT_STATE,
-  type AdminRunProfilesEditState
-} from "@/components/admin/AdminRunProfilesPanel";
 import { focusRing, touchTarget } from "@/components/admin/adminPrimitives";
 import { ConfirmationDialog } from "@/components/app-shell/ConfirmationDialog";
 import { useAdminProviderCustomSetupController } from "@/components/admin/useAdminProviderCustomSetupController";
@@ -20,13 +15,12 @@ import type {
 import type { AdminGroup } from "@/lib/contracts/admin";
 import { useCallback, useEffect, useState } from "react";
 
-type ProviderWorkspaceTask = "connections" | "profiles" | "setup";
+type ProviderWorkspaceTask = "connections" | "setup";
 
 export type AdminProvidersExperienceProps = Readonly<{
   active: boolean;
   groups: AdminGroup[];
   onMutationCommitted?(): void | Promise<unknown>;
-  onRunProfilesEditStateChange?(state: AdminRunProfilesEditState): void;
   requestConfirmation?: AdminConfirmationController["requestConfirmation"];
 }>;
 
@@ -34,7 +28,6 @@ export function AdminProvidersExperience({
   active,
   groups,
   onMutationCommitted,
-  onRunProfilesEditStateChange,
   requestConfirmation
 }: AdminProvidersExperienceProps) {
   const [workspaceTask, setWorkspaceTask] = useState<ProviderWorkspaceTask>("setup");
@@ -44,10 +37,6 @@ export function AdminProvidersExperience({
   >(null);
   const [connectionEntryId, setConnectionEntryId] = useState<string | null>(null);
   const [localConfirmation, setLocalConfirmation] = useState<AdminConfirmationRequest | null>(null);
-  const [runProfilesEditState, setRunProfilesEditState] = useState<AdminRunProfilesEditState>(
-    EMPTY_ADMIN_RUN_PROFILES_EDIT_STATE
-  );
-  const [runProfilesResetRevision, setRunProfilesResetRevision] = useState(0);
   const requestProviderConfirmation = requestConfirmation ?? setLocalConfirmation;
   const quick = useAdminProviderQuickSetupController(
     active && workspaceTask === "setup" && setupTask === "quick",
@@ -61,15 +50,6 @@ export function AdminProvidersExperience({
     onMutationCommitted
     }
   );
-
-  const handleRunProfilesEditStateChange = useCallback((state: AdminRunProfilesEditState) => {
-    setRunProfilesEditState(state);
-    onRunProfilesEditStateChange?.(state);
-  }, [onRunProfilesEditStateChange]);
-
-  useEffect(() => () => {
-    onRunProfilesEditStateChange?.(EMPTY_ADMIN_RUN_PROFILES_EDIT_STATE);
-  }, [onRunProfilesEditStateChange]);
 
   const leaveSetup = () => {
     quick.actions.leaveQuickSetup();
@@ -113,24 +93,7 @@ export function AdminProvidersExperience({
   };
 
   const selectWorkspaceTask = (nextTask: ProviderWorkspaceTask) => {
-    if (nextTask === workspaceTask || runProfilesEditState.busy) return;
-
-    if (workspaceTask === "profiles" && runProfilesEditState.dirty) {
-      requestProviderConfirmation({
-        body: "Unsaved Run profile edits will be lost. Save them first, or discard them to continue.",
-        confirmLabel: "Discard and continue",
-        dialogLabel: "Discard Run profile changes",
-        icon: "x",
-        onConfirm: () => {
-          setRunProfilesResetRevision((revision) => revision + 1);
-          commitWorkspaceTask(nextTask);
-        },
-        testId: "admin-confirm-discard-run-profile-task-changes",
-        title: "Discard Run profile changes?",
-        tone: "warning"
-      });
-      return;
-    }
+    if (nextTask === workspaceTask) return;
 
     commitWorkspaceTask(nextTask);
   };
@@ -145,8 +108,7 @@ export function AdminProvidersExperience({
       >
         {([
           ["setup", "Quick setup"],
-          ["connections", "Connections"],
-          ["profiles", "Run profiles"]
+          ["connections", "Connections"]
         ] as const).map(([task, label]) => (
           <button
             aria-selected={workspaceTask === task}
@@ -156,7 +118,6 @@ export function AdminProvidersExperience({
                 : "border-transparent text-ink-muted hover:border-trace-strong hover:text-ink-secondary"
             }`}
             key={task}
-            disabled={runProfilesEditState.busy && workspaceTask !== task}
             onClick={() => selectWorkspaceTask(task)}
             role="tab"
             type="button"
@@ -193,13 +154,6 @@ export function AdminProvidersExperience({
               groups={groups}
               onMutationCommitted={onMutationCommitted}
               requestConfirmation={requestProviderConfirmation}
-            />
-          </div>
-          <div hidden={workspaceTask !== "profiles"}>
-            <AdminRunProfilesPanel
-              active={active && workspaceTask === "profiles"}
-              onEditStateChange={handleRunProfilesEditStateChange}
-              resetRevision={runProfilesResetRevision}
             />
           </div>
         </div>

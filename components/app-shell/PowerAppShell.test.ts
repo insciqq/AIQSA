@@ -32,7 +32,27 @@ describe("PowerAppShell shortcut targets", () => {
 describe("PowerAppShell catalog loading", () => {
   it.each([
     ["search", { selectedSearchStrategy: "perplexity-tool-search" }],
-    ["prompt", { selectedPromptId: "prompt-user-choice", systemPrompt: "User choice" }],
+    [
+      "assistant",
+      {
+        selectedAssistant: {
+          avatar: {
+            accents: [0],
+            backgroundShape: "circle" as const,
+            foregroundShape: "diamond" as const,
+            kind: "generated" as const,
+            paletteId: "ocean" as const,
+            recipeVersion: 1 as const,
+            rotations: [0, 1] as [0, 1]
+          },
+          description: "Focused research helper",
+          id: "assistant-1",
+          name: "Researcher",
+          promptCharacterCount: 120,
+          starterPrompts: []
+        }
+      }
+    ],
     ["temperature", { temperature: "0.3" }],
     ["reasoning", { reasoningEffort: "high" }],
     ["stream", { streamMode: true }],

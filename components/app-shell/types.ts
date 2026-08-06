@@ -6,13 +6,13 @@ export type {
   CatalogSearchStrategy,
   CatalogSearchStrategyKind,
   ModelParameterControls,
-  PromptPreset,
   ReasoningEffort
 } from "@/lib/contracts/catalog";
 
 export type {
   ChatDetail,
   ChatSummary,
+  ThreadAssistantIdentity,
   ChatUsageStats,
   ThreadArtifactSummary,
   ThreadCitation,

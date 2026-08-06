@@ -4,8 +4,7 @@ import { CommandPalette } from "@/components/command-palette/CommandPalette";
 import {
   ChatDeleteConfirmationDialog,
   FolderDeleteConfirmationDialog,
-  MessageDeleteConfirmationDialog,
-  PromptDeleteConfirmationDialog
+  MessageDeleteConfirmationDialog
 } from "@/components/app-shell/ConfirmationDialog";
 import { AccountMenu } from "@/components/app-shell/AccountMenu";
 import { DetailedInspector } from "@/components/app-shell/InspectorPanels";
@@ -16,7 +15,7 @@ import type {
 } from "@/components/app-shell/powerAppShellViewContracts";
 import { ProjectSettingsDialog } from "@/components/app-shell/ProjectSettingsDialog";
 import { ShareDialog } from "@/components/app-shell/ShareDialog";
-import { PromptLibrary } from "@/components/app-shell/PromptLibrary";
+import { AssistantLibrary } from "@/components/assistants/AssistantLibrary";
 import { SettingsDialog } from "@/components/app-shell/SettingsDialog";
 import { ShellLeftPane } from "@/components/app-shell/ShellLeftPane";
 import { ShellNotice } from "@/components/app-shell/ShellNotice";
@@ -90,19 +89,11 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
     message: deleteMessageConfirmation
   } = confirmations;
   const {
-    actions: promptSettingsActions,
+    library: libraryView,
     notice: settingsNotice,
-    prompt: settingsPrompt,
+    settings: settingsState,
     updateTheme
   } = settings;
-  const promptSettings = {
-    deletePromptConfirmation: settingsPrompt.deleteConfirmation,
-    editor: settingsPrompt.editor,
-    open: settingsPrompt.open,
-    section: settingsPrompt.section,
-    saving: settingsPrompt.saving,
-    themeId: settingsPrompt.themeId
-  };
   const {
     mobile: {
       close: closeMobileWorkspace,
@@ -119,7 +110,6 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
   const {
     catalog,
     catalogError,
-    selectedPromptId,
     selectedSearchOptionIds,
     selectedSearchStrategy
   } = composer;
@@ -363,9 +353,9 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
     closeMobileWorkspaceEvent();
     window.setTimeout(palette.show, 0);
   });
-  const openPromptLibraryFromMobileAccount = useEventCallback(() => {
+  const openLibraryFromMobileAccount = useEventCallback(() => {
     closeMobileWorkspaceEvent();
-    window.setTimeout(settings.openPromptLibrary, 0);
+    window.setTimeout(settings.openLibrary, 0);
   });
   const openSettingsFromMobileAccount = useEventCallback(() => {
     closeMobileWorkspaceEvent();
@@ -378,8 +368,8 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
         accountEmail={accountEmail}
         adminHref={adminEntryVisible ? "/admin" : null}
         onOpenChange={setDesktopAccountMenuOpen}
+        onOpenLibrary={settings.openLibrary}
         onOpenPalette={palette.show}
-        onOpenPromptLibrary={settings.openPromptLibrary}
         onOpenSettings={settings.open}
         onSignOut={handleSignOut}
         open={desktopAccountMenuOpen}
@@ -394,7 +384,7 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
       handleSignOut,
       palette.show,
       settings.open,
-      settings.openPromptLibrary,
+      settings.openLibrary,
       signOutError,
       signingOut
     ]
@@ -407,8 +397,9 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
         idPrefix="mobile-"
         layout="mobile"
         onOpenChange={setMobileAccountMenuOpen}
+        onOpenLibrary={openLibraryFromMobileAccount}
         onOpenPalette={openPaletteFromMobileAccount}
-        onOpenPromptLibrary={openPromptLibraryFromMobileAccount}
+
         onOpenSettings={openSettingsFromMobileAccount}
         onSignOut={handleSignOut}
         open={mobileAccountMenuOpen}
@@ -422,7 +413,7 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
       handleSignOut,
       mobileAccountMenuOpen,
       openPaletteFromMobileAccount,
-      openPromptLibraryFromMobileAccount,
+      openLibraryFromMobileAccount,
       openSettingsFromMobileAccount,
       signOutError,
       signingOut
@@ -458,22 +449,22 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
     mobileWorkspaceOpen ||
     Boolean(projectSettingsFolder) ||
     Boolean(share.target) ||
-    promptSettings.open ||
+    settingsState.open ||
+    Boolean(libraryView) ||
     palette.open ||
     Boolean(deleteChatConfirmation) ||
     Boolean(deleteFolderConfirmation) ||
-    Boolean(deleteMessageConfirmation) ||
-    Boolean(promptSettings.deletePromptConfirmation);
+    Boolean(deleteMessageConfirmation);
   const activeDocumentTitle = activeChatId && activeChatTitle.trim()
     ? activeChatTitle.trim()
     : workspace.pane.state.workspaceLoading
       ? "Chat"
       : "New chat";
-  const documentTitle = promptSettings.open
-    ? promptSettings.section === "prompts"
-      ? "Prompt library · AIQSA"
-      : "Settings · AIQSA"
-    : `${activeDocumentTitle} · AIQSA`;
+  const documentTitle = libraryView
+    ? "Library · AIQSA"
+    : settingsState.open
+      ? "Settings · AIQSA"
+      : `${activeDocumentTitle} · AIQSA`;
   useEffect(() => {
     document.title = documentTitle;
   }, [documentTitle]);
@@ -610,7 +601,6 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
               creatingChat={workspace.pane.state.creatingChat}
               noticeSlot={persistentNoticeSlot}
               openMcpSettings={settings.openMcp}
-              openPromptLibrary={settings.openPromptLibrary}
               openRunDetails={openRunDetails}
               pipeline={pipeline}
               retryWorkspace={workspace.pane.actions.retry}
@@ -636,7 +626,7 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
         </div>
       </div>
 
-      {shellNotice && !shellNotice.persistent && !promptSettings.open ? (
+      {shellNotice && !shellNotice.persistent && !settingsState.open && !libraryView ? (
         <div
           className="pointer-events-none absolute inset-x-3 top-32 z-[70] flex justify-center sm:top-16"
           data-testid="shell-notice-layer"
@@ -741,49 +731,22 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
         />
       ) : null}
 
-      {promptSettings.open ? (
-        promptSettings.section === "prompts" ? (
-          <PromptLibrary
-            defaultPromptId={catalog?.defaults.promptPresetId ?? null}
-            editor={promptSettings.editor}
-            nestedDialogOpen={Boolean(promptSettings.deletePromptConfirmation)}
-            notice={settingsNotice}
-            promptCatalogError={catalogError}
-            promptCatalogState={catalog ? "ready" : catalogError ? "error" : "loading"}
-            prompts={catalog?.promptPresets ?? []}
-            saving={promptSettings.saving}
-            onClose={() => {
-              if (settingsNotice) {
-                settings.dismissNotice();
-              }
-              promptSettingsActions.closeSettings();
-            }}
-            onCreatePrompt={() => void promptSettingsActions.createSettingsPrompt()}
-            onDeletePrompt={(prompt) => void promptSettingsActions.deleteSettingsPrompt(prompt)}
-            onDuplicatePrompt={(prompt) => void promptSettingsActions.duplicateSettingsPrompt(prompt)}
-            onEditPrompt={promptSettingsActions.editSettingsPrompt}
-            onEditorChange={promptSettingsActions.setSettingsPromptEditor}
-            onNewPrompt={promptSettingsActions.newSettingsPrompt}
-            onRetryCatalog={composer.retryCatalog}
-            onDismissNotice={settings.dismissNotice}
-            onSetDefaultPrompt={(promptId) => void promptSettingsActions.setDefaultPromptPreset(promptId)}
-            onUpdatePrompt={() => void promptSettingsActions.updateSettingsPrompt()}
-          />
-        ) : (
-          <SettingsDialog
-            initialSection={promptSettings.section}
-            notice={settingsNotice}
-            themeId={promptSettings.themeId}
-            onClose={() => {
-              if (settingsNotice) {
-                settings.dismissNotice();
-              }
-              promptSettingsActions.closeSettings();
-            }}
-            onDismissNotice={settings.dismissNotice}
-            onThemeChange={updateTheme}
-          />
-        )
+      {libraryView ? <AssistantLibrary view={libraryView} /> : null}
+
+      {settingsState.open && !libraryView ? (
+        <SettingsDialog
+          initialSection={settingsState.section}
+          notice={settingsNotice}
+          themeId={settingsState.themeId}
+          onClose={() => {
+            if (settingsNotice) {
+              settings.dismissNotice();
+            }
+            settings.closeSettings();
+          }}
+          onDismissNotice={settings.dismissNotice}
+          onThemeChange={updateTheme}
+        />
       ) : null}
 
       {deleteChatConfirmation ? (
@@ -804,14 +767,6 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
 
       {deleteMessageConfirmation ? (
         <MessageDeleteConfirmationDialog onCancel={cancelDeleteMessage} onConfirm={confirmDeleteMessage} />
-      ) : null}
-
-      {promptSettings.deletePromptConfirmation ? (
-        <PromptDeleteConfirmationDialog
-          promptName={promptSettings.deletePromptConfirmation.name}
-          onCancel={promptSettingsActions.cancelDeletePrompt}
-          onConfirm={promptSettingsActions.confirmDeletePrompt}
-        />
       ) : null}
 
       {palette.open ? (

@@ -21,10 +21,6 @@ import {
   type SavedControlDraft
 } from "@/components/app-shell/powerAppShellData";
 import { useComposerControlStore } from "@/components/app-shell/composerControlStore";
-import {
-  resolveRunProfiles,
-  type RunProfileId
-} from "@/components/app-shell/runProfiles";
 import { useWorkspaceStore } from "@/components/app-shell/workspaceStore";
 import { reconcileSearchPlanSelection } from "@/lib/domain/catalogMatrix";
 import type { SearchPlanMode } from "@/lib/domain/search";
@@ -264,10 +260,14 @@ export function useRunControlsActions({
     return savedControlDraft(currentCatalogFromStore()?.defaults.controlValues[modelControlKey(model)]);
   }
 
-  function mergedCurrentControlDraft(model: CatalogModel, override: SavedControlDraft = {}): SavedControlDraft {
+  function mergedCurrentControlDraft(
+    model: CatalogModel,
+    override: SavedControlDraft = {},
+    options: { excludeCurrentValues?: boolean } = {}
+  ): SavedControlDraft {
     return {
       ...storedDraftForModel(model),
-      ...currentControlDraft({}, model),
+      ...(options.excludeCurrentValues ? {} : currentControlDraft({}, model)),
       ...pendingDraftForModel(model),
       ...override
     };
@@ -286,16 +286,6 @@ export function useRunControlsActions({
               update,
               replaceControlValueKeys
             ),
-            promptPresets:
-              "promptPresetId" in update
-                ? current.promptPresets.map((prompt) => ({
-                    ...prompt,
-                    isDefault: prompt.id === update.promptPresetId
-                  })).sort(
-                    (left, right) =>
-                      Number(right.isDefault) - Number(left.isDefault) || left.name.localeCompare(right.name)
-                  )
-                : current.promptPresets
           }
         : current
     );
@@ -400,9 +390,10 @@ export function useRunControlsActions({
   function persistCurrentModelControlDefaultsWithPending(
     model: CatalogModel,
     override: SavedControlDraft = {},
-    defaultUpdate: Partial<Catalog["defaults"]> = {}
+    defaultUpdate: Partial<Catalog["defaults"]> = {},
+    options: { excludeCurrentValues?: boolean } = {}
   ) {
-    const draft = mergedCurrentControlDraft(model, override);
+    const draft = mergedCurrentControlDraft(model, override, options);
     clearPendingModelControlDefaults(model);
     void persistUserDefaults({
       ...defaultUpdate,
@@ -412,9 +403,13 @@ export function useRunControlsActions({
     });
   }
 
-  function scheduleCurrentModelControlDefaults(model: CatalogModel, override: SavedControlDraft = {}) {
+  function scheduleCurrentModelControlDefaults(
+    model: CatalogModel,
+    override: SavedControlDraft = {},
+    options: { excludeCurrentValues?: boolean } = {}
+  ) {
     pendingControlDefaultsRef.current = {
-      draft: mergedCurrentControlDraft(model, override),
+      draft: mergedCurrentControlDraft(model, override, options),
       model
     };
 
@@ -455,45 +450,62 @@ export function useRunControlsActions({
     });
   }
 
-  function selectRunProfile(profileId: RunProfileId): boolean {
+  /**
+   * Atomically applies one exact Assistant revision to the composer without
+   * persisting any user default: Assistant-derived values never replace the
+   * user's ordinary manual draft or saved per-model control values.
+   */
+  function applyAssistantToComposer(input: {
+    assistant: {
+      avatar: import("@/lib/contracts/assistants").AssistantAvatarRecipe;
+      description: string;
+      id: string;
+      name: string;
+      promptCharacterCount: number;
+      starterPrompts: string[];
+    };
+    revision: import("@/lib/contracts/assistants").AssistantRevisionContent;
+  }): boolean {
     const currentCatalog = currentCatalogFromStore();
-    const resolvedProfile = resolveRunProfiles(currentCatalog).find((profile) => profile.id === profileId);
-    if (!currentCatalog || !resolvedProfile?.available || !resolvedProfile.model) {
+    const model = input.revision.providerModelId
+      ? currentCatalog?.models.find(
+          (candidate) => candidate.modelId === input.revision.providerModelId
+        )
+      : undefined;
+    if (!model) {
       return false;
     }
 
-    const model = resolvedProfile.model;
     flushPendingModelControlDefaults();
-    const store = useComposerControlStore.getState();
-    const selectedModel = selectedModelFromStore();
-    const sameModel = selectedModel ? modelControlKey(selectedModel) === modelControlKey(model) : false;
-    const targetDraft = {
-      ...storedDraftForModel(model),
-      ...(sameModel ? currentControlDraft({}, model) : {}),
-      ...pendingDraftForModel(model),
-      reasoningEffort: resolvedProfile.reasoningEffort,
-      reasoningMode: resolvedProfile.reasoningMode
-    } satisfies SavedControlDraft;
-    const controlDefaults = resolveModelControlDefaults(model, {
-      [modelControlKey(model)]: targetDraft
-    });
-    const completeDraft = { ...controlDefaults } satisfies SavedControlDraft;
-
-    clearPendingModelControlDefaults(model);
-    store.applyModelSelection({
+    const controls = input.revision.runControls;
+    const baseDefaults = resolveModelControlDefaults(model, {});
+    const controlDefaults = {
+      backgroundMode: controls.backgroundMode ?? baseDefaults.backgroundMode,
+      maxOutputTokens:
+        controls.maxOutputTokens !== undefined
+          ? String(controls.maxOutputTokens)
+          : baseDefaults.maxOutputTokens,
+      reasoningEffort: controls.reasoningEffort ?? baseDefaults.reasoningEffort,
+      reasoningMode: controls.reasoningMode ?? baseDefaults.reasoningMode,
+      streamMode: controls.streamMode ?? baseDefaults.streamMode,
+      temperature:
+        controls.temperature !== undefined
+          ? String(controls.temperature)
+          : baseDefaults.temperature
+    };
+    useComposerControlStore.getState().applyAssistantSelection({
+      assistant: input.assistant,
       controlDefaults,
       modelId: model.modelId,
-      provider: model.provider
+      provider: model.provider,
+      searchOptionIds: input.revision.searchPlan.optionIds,
+      searchPlanMode: input.revision.searchPlan.mode
     });
-    void persistUserDefaults({
-      controlValues: {
-        [modelControlKey(model)]: completeDraft
-      },
-      modelId: model.modelId,
-      provider: model.provider
-    });
-
     return true;
+  }
+
+  function removeAssistantFromComposer() {
+    useComposerControlStore.getState().removeAssistant();
   }
 
   function selectSearchStrategy(strategyId: string) {
@@ -541,50 +553,84 @@ export function useRunControlsActions({
   }
 
   function changeReasoningEffort(value: string) {
+    const wasAssistantSelected = Boolean(useComposerControlStore.getState().selectedAssistant);
     useComposerControlStore.getState().setReasoningEffort(value);
     const model = selectedModelFromStore();
     if (model) {
-      persistCurrentModelControlDefaultsWithPending(model, { reasoningEffort: value });
+      persistCurrentModelControlDefaultsWithPending(
+        model,
+        { reasoningEffort: value },
+        {},
+        { excludeCurrentValues: wasAssistantSelected }
+      );
     }
   }
 
   function changeReasoningMode(value: string) {
+    const wasAssistantSelected = Boolean(useComposerControlStore.getState().selectedAssistant);
     useComposerControlStore.getState().setReasoningMode(value);
     const model = selectedModelFromStore();
     if (model) {
-      persistCurrentModelControlDefaultsWithPending(model, { reasoningMode: value });
+      persistCurrentModelControlDefaultsWithPending(
+        model,
+        { reasoningMode: value },
+        {},
+        { excludeCurrentValues: wasAssistantSelected }
+      );
     }
   }
 
   function changeBackgroundMode(value: boolean) {
+    const wasAssistantSelected = Boolean(useComposerControlStore.getState().selectedAssistant);
     useComposerControlStore.getState().setBackgroundMode(value);
     const model = selectedModelFromStore();
     if (model) {
-      persistCurrentModelControlDefaultsWithPending(model, { backgroundMode: value });
+      persistCurrentModelControlDefaultsWithPending(
+        model,
+        { backgroundMode: value },
+        {},
+        { excludeCurrentValues: wasAssistantSelected }
+      );
     }
   }
 
   function changeStreamMode(value: boolean) {
+    const wasAssistantSelected = Boolean(useComposerControlStore.getState().selectedAssistant);
     useComposerControlStore.getState().setStreamMode(value);
     const model = selectedModelFromStore();
     if (model) {
-      persistCurrentModelControlDefaultsWithPending(model, { streamMode: value });
+      persistCurrentModelControlDefaultsWithPending(
+        model,
+        { streamMode: value },
+        {},
+        { excludeCurrentValues: wasAssistantSelected }
+      );
     }
   }
 
   function changeMaxOutputTokens(value: string) {
+    const wasAssistantSelected = Boolean(useComposerControlStore.getState().selectedAssistant);
     useComposerControlStore.getState().setMaxOutputTokens(value);
     const model = selectedModelFromStore();
     if (model) {
-      scheduleCurrentModelControlDefaults(model, { maxOutputTokens: value });
+      scheduleCurrentModelControlDefaults(
+        model,
+        { maxOutputTokens: value },
+        { excludeCurrentValues: wasAssistantSelected }
+      );
     }
   }
 
   function changeTemperature(value: string) {
+    const wasAssistantSelected = Boolean(useComposerControlStore.getState().selectedAssistant);
     useComposerControlStore.getState().setTemperature(value);
     const model = selectedModelFromStore();
     if (model) {
-      scheduleCurrentModelControlDefaults(model, { temperature: value });
+      scheduleCurrentModelControlDefaults(
+        model,
+        { temperature: value },
+        { excludeCurrentValues: wasAssistantSelected }
+      );
     }
   }
 
@@ -619,6 +665,7 @@ export function useRunControlsActions({
   }
 
   return {
+    applyAssistantToComposer,
     applyModelControlDefaults,
     buildControlDraft: currentControlDraft,
     buildParams,
@@ -630,8 +677,8 @@ export function useRunControlsActions({
     changeTemperature,
     flushPendingModelControlDefaults,
     persistUserDefaults,
+    removeAssistantFromComposer,
     selectModel,
-    selectRunProfile,
     selectSearchPlan,
     selectSearchStrategy,
     toggleCitationsVisibility,

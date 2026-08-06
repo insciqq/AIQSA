@@ -31,7 +31,6 @@ function requestWithMessages(messages: ProviderConversationMessage[]): ProviderR
     params: {},
     prompt: {
       developer: null,
-      presetId: null,
       system: null
     },
     provider: "fake",

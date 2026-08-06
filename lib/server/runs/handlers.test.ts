@@ -442,7 +442,6 @@ function createMemoryRepository(
               activeLeafMessageId: assistantMessageId,
               createdAt: "2026-06-08T00:00:00.000Z",
               defaultModelId: "fake-qsa",
-              defaultPromptPresetId: "prompt-1",
               defaultProvider: "fake",
               folderId: null,
               id: chatId,
@@ -484,8 +483,6 @@ function createMemoryRepository(
             ],
           }
         : null,
-    isPromptPresetAvailable: async (_userId, promptPresetId) =>
-      new Set(["prompt-1", "prompt-regen"]).has(promptPresetId),
     isSearchStrategyEnabled: async () => true,
     loadSearchStrategyConfiguration: async (searchStrategyId) => ({
       config: {
@@ -669,7 +666,6 @@ function openAiCreatedRun(): Parameters<RunRepository["createRun"]>[0] {
         searchStrategyId: "search-disabled"
       },
       modelId: "gpt-5.5",
-      promptPresetId: null,
       provider: "openai",
       searchStrategy: "search-disabled",
       userId: config.bootstrapUserId
@@ -691,7 +687,6 @@ function openAiCreatedRun(): Parameters<RunRepository["createRun"]>[0] {
       params: {},
       prompt: {
         developer: null,
-        presetId: null,
         system: null
       },
       provider: "openai",
@@ -1682,13 +1677,9 @@ describe("model run route handlers", () => {
           params: {
             temperature: 0
           },
-          prompt: {
-            developer: "Developer draft",
-            presetId: "prompt-1",
-            system: "System draft"
-          },
           provider: "fake",
-          searchStrategy: "search-disabled"
+          searchStrategy: "search-disabled",
+          timeZone: "Europe/Berlin"
         }),
         headers: {
           cookie: authCookie()
@@ -1746,15 +1737,20 @@ describe("model run route handlers", () => {
         temperature: 0
       },
       prompt: {
-        developer: expect.stringContaining("Developer draft"),
-        presetId: "prompt-1",
-        system: "System draft\n\nProject memory:\nProject prefers short bullet answers."
+        baseline: {
+          source: "standard_chat",
+          timeZone: "Europe/Berlin",
+          timeZoneSource: "client"
+        },
+        developer: expect.stringContaining("Visible answer contract"),
+        system: expect.stringContaining("You are a helpful AI assistant. Today is ")
       },
       provider: "fake",
       searchStrategy: "search-disabled"
     });
-    expect(state.created?.normalizedRequest.prompt.developer).toContain("Visible answer contract");
-    expect(state.created?.normalizedRequest.prompt.system).toContain("Project memory");
+    expect(state.created?.normalizedRequest.prompt.system).toContain(
+      "Project memory:\nProject prefers short bullet answers."
+    );
     expect(state.completed?.usage.outputTokens).toBeGreaterThan(0);
     expect(state.completed?.provider).toBe("fake");
     expect(state.completed?.modelId).toBe("fake-qsa");
@@ -1775,7 +1771,7 @@ describe("model run route handlers", () => {
     ]);
   });
 
-  it("passes non-prompt defaults and prompt provenance from the accepted send", async () => {
+  it("passes accepted run defaults from the accepted send", async () => {
     const { repository, state } = createMemoryRepository();
     const POST = createSendMessageHandler({
       ...authDeps,
@@ -1805,9 +1801,6 @@ describe("model run route handlers", () => {
             },
             temperature: 0.4
           },
-          prompt: {
-            presetId: "prompt-1"
-          },
           provider: "fake",
           searchStrategy: "search-disabled"
         }),
@@ -1832,7 +1825,6 @@ describe("model run route handlers", () => {
         temperature: "0.4"
       },
       modelId: "fake-qsa",
-      promptPresetId: "prompt-1",
       provider: "fake",
       searchPlan: {
         mode: "all_selected",
@@ -1841,10 +1833,10 @@ describe("model run route handlers", () => {
       searchStrategy: "search-disabled",
       userId: config.bootstrapUserId
     });
-    expect(state.created?.normalizedRequest.prompt.presetId).toBe("prompt-1");
+    expect(state.created?.assistant).toBeUndefined();
   });
 
-  it("allows a freeform send with intentionally null prompt provenance", async () => {
+  it("ignores client-sent prompt fields and applies the code-owned baseline", async () => {
     const { repository, state } = createMemoryRepository();
     const POST = createSendMessageHandler({
       ...authDeps,
@@ -1859,7 +1851,6 @@ describe("model run route handlers", () => {
           modelId: "fake-qsa",
           prompt: {
             developer: "Custom developer prompt",
-            presetId: null,
             system: "Custom system prompt"
           },
           provider: "fake",
@@ -1881,14 +1872,19 @@ describe("model run route handlers", () => {
     expect(response.status).toBe(200);
     await response.text();
     expect(state.created?.normalizedRequest.prompt).toMatchObject({
-      presetId: null,
-      system: expect.stringContaining("Custom system prompt")
+      baseline: {
+        source: "standard_chat",
+        timeZone: "UTC",
+        timeZoneSource: "utc_fallback"
+      },
+      system: expect.stringContaining("You are a helpful AI assistant. Today is ")
     });
+    expect(state.created?.normalizedRequest.prompt.system).not.toContain("Custom system prompt");
+    expect(state.created?.normalizedRequest.prompt.developer).not.toContain("Custom developer prompt");
   });
 
-  it("rejects foreign send prompt preset ids before creating a run", async () => {
+  it("rejects an unavailable assistant selection before creating a run", async () => {
     const { repository, state } = createMemoryRepository();
-    repository.isPromptPresetAvailable = async () => false;
     const provider: ProviderAdapter = {
       buildRequestPreview: vi.fn(() => ({
         provider: "fake"
@@ -1897,8 +1893,17 @@ describe("model run route handlers", () => {
         throw new Error("provider should not be called");
       }
     };
+    // A real resolver outcome, not a missing dependency: the lookup ran and
+    // reported the privacy-neutral failure shared by foreign, archived, and
+    // nonexistent assistants.
+    const resolveForRun = vi.fn(async () => ({
+      code: "assistant_not_available" as const,
+      ok: false as const,
+      status: 404 as const
+    }));
     const POST = createSendMessageHandler({
       ...authDeps,
+      assistants: { resolveForRun },
       providers: {
         fake: provider
       },
@@ -1907,13 +1912,45 @@ describe("model run route handlers", () => {
     const response = await POST(
       new Request("http://app.local/api/chats/chat-1/messages", {
         body: JSON.stringify({
+          assistantId: "foreign-assistant",
+          text: "Assistant run"
+        }),
+        headers: {
+          cookie: authCookie()
+        },
+        method: "POST"
+      }),
+      {
+        params: {
+          chatId: "chat-1"
+        }
+      }
+    );
+
+    expect(response.status).toBe(404);
+    await expect(response.json()).resolves.toEqual({
+      error: "assistant_not_available"
+    });
+    expect(resolveForRun).toHaveBeenCalledWith(config.bootstrapUserId, "foreign-assistant");
+    expect(state.created).toBeNull();
+    expect(provider.buildRequestPreview).not.toHaveBeenCalled();
+  });
+
+  it("rejects assistant-governed overrides sent alongside an assistant selection", async () => {
+    const { repository, state } = createMemoryRepository();
+    const POST = createSendMessageHandler({
+      ...authDeps,
+      providers: {
+        fake: createFakeProviderAdapter()
+      },
+      repository
+    });
+    const response = await POST(
+      new Request("http://app.local/api/chats/chat-1/messages", {
+        body: JSON.stringify({
+          assistantId: "assistant-1",
           modelId: "fake-qsa",
-          prompt: {
-            presetId: "foreign-prompt"
-          },
-          provider: "fake",
-          searchStrategy: "search-disabled",
-          text: "Foreign prompt"
+          text: "Assistant run with overrides"
         }),
         headers: {
           cookie: authCookie()
@@ -1929,10 +1966,9 @@ describe("model run route handlers", () => {
 
     expect(response.status).toBe(400);
     await expect(response.json()).resolves.toEqual({
-      error: "default_prompt_unavailable"
+      error: "assistant_overrides_not_allowed"
     });
     expect(state.created).toBeNull();
-    expect(provider.buildRequestPreview).not.toHaveBeenCalled();
   });
 
   it("persists normalized OpenAI streaming token, artifact, usage, and done events", async () => {
@@ -3653,9 +3689,6 @@ describe("model run route handlers", () => {
             maxOutputTokens: 4096,
             temperature: 0.6
           },
-          prompt: {
-            presetId: "prompt-regen"
-          },
           provider: "fake",
           searchStrategy: "search-disabled"
         }),
@@ -3714,7 +3747,6 @@ describe("model run route handlers", () => {
         temperature: "0.6"
       },
       modelId: "fake-qsa",
-      promptPresetId: "prompt-regen",
       provider: "fake",
       searchPlan: {
         mode: "all_selected",
@@ -3771,9 +3803,8 @@ describe("model run route handlers", () => {
     expect(state.completed?.finalText).toContain("Fake answer: Original question");
   });
 
-  it("rejects foreign regenerate prompt preset ids before creating a run", async () => {
+  it("rejects an unavailable assistant selection before creating a regeneration run", async () => {
     const { repository, state } = createMemoryRepository();
-    repository.isPromptPresetAvailable = async () => false;
     const provider: ProviderAdapter = {
       buildRequestPreview: vi.fn(() => ({
         provider: "fake"
@@ -3782,8 +3813,14 @@ describe("model run route handlers", () => {
         throw new Error("provider should not be called");
       }
     };
+    const resolveForRun = vi.fn(async () => ({
+      code: "assistant_not_available" as const,
+      ok: false as const,
+      status: 404 as const
+    }));
     const POST = createRegenerateModelRunHandler({
       ...authDeps,
+      assistants: { resolveForRun },
       providers: {
         fake: provider
       },
@@ -3792,12 +3829,7 @@ describe("model run route handlers", () => {
     const response = await POST(
       new Request("http://app.local/api/messages/assistant-message-1/regenerate", {
         body: JSON.stringify({
-          modelId: "fake-qsa",
-          prompt: {
-            presetId: "foreign-prompt"
-          },
-          provider: "fake",
-          searchStrategy: "search-disabled"
+          assistantId: "foreign-assistant"
         }),
         headers: {
           cookie: authCookie(),
@@ -3812,10 +3844,11 @@ describe("model run route handlers", () => {
       }
     );
 
-    expect(response.status).toBe(400);
+    expect(response.status).toBe(404);
     await expect(response.json()).resolves.toEqual({
-      error: "default_prompt_unavailable"
+      error: "assistant_not_available"
     });
+    expect(resolveForRun).toHaveBeenCalledWith(config.bootstrapUserId, "foreign-assistant");
     expect(state.regenerated).toBeNull();
     expect(provider.buildRequestPreview).not.toHaveBeenCalled();
   });
@@ -4021,7 +4054,6 @@ describe("model run route handlers", () => {
           searchStrategyId: "search-disabled"
         },
         modelId: "gpt-5.5",
-        promptPresetId: null,
         provider: "openai",
         searchStrategy: "search-disabled",
         userId: config.bootstrapUserId
@@ -4042,7 +4074,6 @@ describe("model run route handlers", () => {
         params: {},
         prompt: {
           developer: null,
-          presetId: null,
           system: null
         },
         provider: "openai",
@@ -4432,7 +4463,6 @@ describe("model run route handlers", () => {
           searchStrategyId: "search-disabled"
         },
         modelId: "gpt-5.5",
-        promptPresetId: null,
         provider: "openai",
         searchStrategy: "search-disabled",
         userId: config.bootstrapUserId
@@ -4453,7 +4483,6 @@ describe("model run route handlers", () => {
         params: {},
         prompt: {
           developer: null,
-          presetId: null,
           system: null
         },
         provider: "openai",
@@ -5394,7 +5423,6 @@ describe("model run route handlers", () => {
           searchStrategyId: "search-disabled"
         },
         modelId: "fake-qsa",
-        promptPresetId: null,
         provider: "fake",
         searchStrategy: "search-disabled",
         userId: config.bootstrapUserId
@@ -5415,7 +5443,6 @@ describe("model run route handlers", () => {
         params: {},
         prompt: {
           developer: null,
-          presetId: null,
           system: null
         },
         provider: "fake",

@@ -77,7 +77,6 @@ function createMemoryRepository() {
         activeLeafMessageId: clonedMessages.at(-1)?.id ?? null,
         createdAt: "2026-06-07T09:00:00.000Z",
         defaultModelId: "fake-qsa",
-        defaultPromptPresetId: null,
         defaultProvider: "fake",
         folderId: null,
         id: "chat-branch-1",

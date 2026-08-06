@@ -5,8 +5,8 @@ import { AccountMenu } from "./AccountMenu";
 
 function renderAccountMenu(overrides: Partial<ComponentProps<typeof AccountMenu>> = {}) {
   const callbacks = {
+    onOpenLibrary: vi.fn(),
     onOpenPalette: vi.fn(),
-    onOpenPromptLibrary: vi.fn(),
     onOpenSettings: vi.fn(),
     onSignOut: vi.fn()
   };
@@ -75,7 +75,7 @@ describe("AccountMenu", () => {
     expect(within(screen.getByRole("menu", { name: "Account" })).getByText("Email unavailable")).toBeVisible();
   });
 
-  it("keeps the palette, Prompt library, and Settings as distinct destinations", async () => {
+  it("keeps the palette, Library, and Settings as distinct destinations", async () => {
     const { callbacks } = renderAccountMenu({ adminHref: "/admin" });
     const trigger = screen.getByRole("button", { name: /Account menu/ });
 
@@ -89,9 +89,9 @@ describe("AccountMenu", () => {
     await waitFor(() => expect(callbacks.onOpenSettings).toHaveBeenCalledOnce());
 
     fireEvent.click(trigger);
-    fireEvent.click(screen.getByRole("menuitem", { name: "Prompt library" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Library" }));
     expect(trigger).toHaveFocus();
-    await waitFor(() => expect(callbacks.onOpenPromptLibrary).toHaveBeenCalledOnce());
+    await waitFor(() => expect(callbacks.onOpenLibrary).toHaveBeenCalledOnce());
 
     fireEvent.click(trigger);
     fireEvent.click(screen.getByRole("menuitem", { name: "Command palette" }));
@@ -120,11 +120,11 @@ describe("AccountMenu", () => {
     const paletteItem = await screen.findByRole("menuitem", { name: "Command palette" });
     await waitFor(() => expect(paletteItem).toHaveFocus());
 
-    const promptItem = screen.getByRole("menuitem", { name: "Prompt library" });
+    const libraryItem = screen.getByRole("menuitem", { name: "Library" });
     const scrollIntoView = vi.fn();
-    Object.defineProperty(promptItem, "scrollIntoView", { configurable: true, value: scrollIntoView });
+    Object.defineProperty(libraryItem, "scrollIntoView", { configurable: true, value: scrollIntoView });
     fireEvent.keyDown(screen.getByRole("menu", { name: "Account" }), { key: "ArrowDown" });
-    expect(promptItem).toHaveFocus();
+    expect(libraryItem).toHaveFocus();
     expect(scrollIntoView).toHaveBeenCalledWith({ block: "nearest" });
 
     fireEvent.keyDown(screen.getByRole("menu", { name: "Account" }), { key: "End" });

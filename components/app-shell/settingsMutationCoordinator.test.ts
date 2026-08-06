@@ -12,7 +12,6 @@ function settings(overrides: Partial<UserSettingsWire> = {}): UserSettingsWire {
     defaultControlValues: {},
     defaultModelId: "gpt-5.5",
     organizationSearchPlan: { mode: "all_selected", optionIds: [] },
-    defaultPromptPresetId: null,
     defaultProvider: "openai",
     defaultSearchStrategyId: "search-disabled",
     searchPreferenceSource: "personal",
@@ -157,8 +156,8 @@ describe("settings mutation coordinator", () => {
               streamMode: false
             }
           },
-          defaultPromptPresetId: "prompt-b",
-          showCitations: false
+          showCitations: false,
+          showReasoningBlocks: true
         })
       );
     const coordinator = createSettingsMutationCoordinator({
@@ -186,7 +185,7 @@ describe("settings mutation coordinator", () => {
 
     const second = coordinator.enqueue(
       {
-        promptPresetId: "prompt-b"
+        showReasoningBlocks: true
       },
       {
         noticeScope: "settings"
@@ -206,8 +205,8 @@ describe("settings mutation coordinator", () => {
           streamMode: false
         }
       },
-      promptPresetId: "prompt-b",
-      showCitations: false
+      showCitations: false,
+      showReasoningBlocks: true
     });
   });
 
@@ -254,7 +253,6 @@ describe("settings mutation coordinator", () => {
           }
         },
         modelId: "gpt-5.5",
-        promptPresetId: null,
         provider: "openai",
         searchStrategyId: "search-disabled",
         showCitations: true,

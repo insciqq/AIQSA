@@ -50,7 +50,6 @@ function request(overrides: Partial<ProviderRunRequest> = {}): ProviderRunReques
     },
     prompt: {
       developer: "Use the approved tools.",
-      presetId: "prompt-1",
       system: "Be precise."
     },
     provider: "gemini",

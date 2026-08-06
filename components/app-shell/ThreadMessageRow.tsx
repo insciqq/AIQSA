@@ -6,6 +6,7 @@ import {
   ToolActivityBlock
 } from "@/components/app-shell/ThreadArtifacts";
 import { RunReceipt } from "@/components/app-shell/RunReceipt";
+import { AssistantAvatar } from "@/components/assistants/AssistantAvatar";
 import {
   deriveRunReceipt,
   type RunReceiptSegmentKind
@@ -695,6 +696,7 @@ function ThreadMessageRowComponent({
 
   const receipt = deriveRunReceipt({
     artifactSummary,
+    assistantIdentity: message.assistantIdentity ?? null,
     messageStatus: message.status,
     modelLabel: answerModelLabel,
     runActivity,
@@ -726,7 +728,7 @@ function ThreadMessageRowComponent({
       data-message-id={message.id}
       data-role="assistant"
       data-status={message.status}
-      aria-label="Answer"
+      aria-label={message.assistantIdentity ? `Answer · ${message.assistantIdentity.name}` : "Answer"}
       aria-busy={message.status === "streaming" || undefined}
       tabIndex={0}
       onClick={handleMobileMessageClick}
@@ -735,6 +737,16 @@ function ThreadMessageRowComponent({
         className="relative mx-auto w-full max-w-reading rounded-panel px-3 py-3 sm:px-4"
         data-message-interaction-surface="true"
       >
+        {message.assistantIdentity ? (
+          <div
+            className="mb-3 flex min-w-0 items-center gap-1.5 text-xs leading-5 text-ink-muted"
+            data-testid="answer-assistant-identity"
+            title={`Answer · ${message.assistantIdentity.name}`}
+          >
+            <AssistantAvatar recipe={message.assistantIdentity.avatar} size={18} />
+            <span className="truncate">{message.assistantIdentity.name}</span>
+          </div>
+        ) : null}
         {message.status === "streaming" && answerModelLabel ? (
           <div
             className="mb-3 truncate text-xs leading-5 text-ink-muted"

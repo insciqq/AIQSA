@@ -189,9 +189,9 @@ describe("Prisma registration repository", () => {
       });
       const user = await prisma.user.findUniqueOrThrow({
         include: {
+          assistantDefinitions: true,
           folders: true,
           groups: true,
-          promptPresets: true,
           settings: true
         },
         where: {
@@ -214,8 +214,7 @@ describe("Prisma registration repository", () => {
       expect(user.groups).toHaveLength(1);
       expect(user.settings?.defaultProviderModelId).toBeNull();
       expect(user.settings?.defaultFolderId).toBeNull();
-      expect(user.settings?.defaultPromptPresetId).toBeTruthy();
-      expect(user.promptPresets.some((prompt) => prompt.isDefault)).toBe(true);
+      expect(user.assistantDefinitions).toHaveLength(0);
       expect(user.folders).toHaveLength(0);
       expect(
         entitlements.modelKeys.has(
@@ -507,9 +506,9 @@ describe("Prisma registration repository", () => {
       const [user, identity, acceptedInvite, consumedToken, sessions] = await Promise.all([
         prisma.user.findUniqueOrThrow({
           include: {
+            assistantDefinitions: true,
             folders: true,
             groups: true,
-            promptPresets: true,
             settings: true
           },
           where: { email }
@@ -529,7 +528,7 @@ describe("Prisma registration repository", () => {
       expect(user).toMatchObject({ displayName: "Direct Invite User", status: "active" });
       expect(user.groups).toHaveLength(1);
       expect(user.folders).toHaveLength(0);
-      expect(user.promptPresets.some((prompt) => prompt.isDefault)).toBe(true);
+      expect(user.assistantDefinitions).toHaveLength(0);
       expect(user.settings?.defaultFolderId).toBeNull();
       expect(identity.emailVerifiedAt?.getTime()).toBe(now.getTime());
       await expect(verifyPassword("direct-invite-password", identity.passwordHash)).resolves.toBe(true);

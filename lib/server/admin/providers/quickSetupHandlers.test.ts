@@ -45,7 +45,6 @@ function service(overrides: Partial<AdminProviderQuickSetupService> = {}): Admin
         { displayName: "GPT-5.6 Sol" }
       ],
       outcome: "ready" as const,
-      profilesFilled: ["balanced" as const],
       provider: "openai" as const,
       providerDisplayName: "OpenAI"
     })),
@@ -149,7 +148,6 @@ describe("provider Quick setup handlers", () => {
       model: { displayName: "GPT-5.6 Luna" },
       models: [{ displayName: "GPT-5.6 Luna" }],
       outcome: "ready" as const,
-      profilesFilled: ["fast" as const],
       provider: "openai" as const,
       providerDisplayName: "OpenAI"
     }));

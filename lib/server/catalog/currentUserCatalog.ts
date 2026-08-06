@@ -1,18 +1,8 @@
 import type {
   CurrentUserCatalogWire,
-  CatalogWireModel,
-  PromptPreset
+  CatalogWireModel
 } from "../../contracts/catalog";
-import {
-  RUN_PROFILE_IDS,
-  type CatalogRunProfile,
-  type RunProfileId
-} from "../../contracts/runProfiles";
 import type { ProviderModelCatalogEntry, SearchStrategyCatalogEntry } from "../../domain/catalog";
-import {
-  readableRunProfileControlValue,
-  runProfileMetadata
-} from "../../domain/runProfiles";
 import {
   buildCatalogModel,
   reconcileSearchPlanSelection,
@@ -31,7 +21,6 @@ export type CatalogSettingsRecord = {
   defaultModelId: string;
   defaultProviderConnectionId?: string | null;
   defaultProviderModelId?: string | null;
-  defaultPromptPresetId: string | null;
   defaultProvider: string;
   defaultSearchStrategyId: string;
   defaultSearchPlan?: unknown;
@@ -43,8 +32,6 @@ export type CatalogSettingsRecord = {
 export type CatalogData = {
   entitlements: ResolvedEntitlements;
   models: ProviderModelCatalogEntry[];
-  promptPresets: PromptPreset[];
-  runProfiles: CatalogRunProfileRecord[];
   searchPolicy?: { defaultPlan: unknown } | null;
   searchStrategies: SearchStrategyCatalogEntry[];
   settings: CatalogSettingsRecord;
@@ -54,15 +41,6 @@ export type ResolvedSearchPreference = {
   organizationPlan: SearchPlan;
   preferredPlan: SearchPlan;
   source: "organization" | "personal";
-};
-
-export type CatalogRunProfileRecord = {
-  description: string;
-  enabled: boolean;
-  id: RunProfileId;
-  providerModelId: string | null;
-  reasoningEffort: string;
-  reasoningMode: string;
 };
 
 export type CatalogSelectionData = Pick<
@@ -148,42 +126,6 @@ export function buildCurrentUserCatalog(input: CatalogData): CurrentUserCatalogW
       name: source?.providerDisplayName ?? provider
     };
   });
-  const runProfiles = RUN_PROFILE_IDS.flatMap((id): CatalogRunProfile[] => {
-    const profile = input.runProfiles.find((candidate) => candidate.id === id);
-    if (!profile?.enabled) return [];
-    const metadata = runProfileMetadata(id);
-    const base = {
-      description: profile.description,
-      id,
-      label: metadata.label
-    };
-    const model = profile.providerModelId
-      ? models.find((candidate) => candidate.modelId === profile.providerModelId)
-      : null;
-    if (!model) {
-      return [{ ...base, available: false, unavailableReason: "model_unavailable" }];
-    }
-    const effortValid = model.parameterControls.reasoningEffort.options.includes(
-      profile.reasoningEffort
-    );
-    const modeOptions = model.parameterControls.reasoningMode?.options ?? ["standard"];
-    if (!effortValid || !modeOptions.includes(profile.reasoningMode)) {
-      return [{ ...base, available: false, unavailableReason: "configuration_invalid" }];
-    }
-    return [{
-      ...base,
-      available: true,
-      configurationLabel: [
-        model.displayName,
-        readableRunProfileControlValue(profile.reasoningMode),
-        readableRunProfileControlValue(profile.reasoningEffort)
-      ].join(" · "),
-      modelId: model.modelId,
-      provider: model.provider,
-      reasoningEffort: profile.reasoningEffort,
-      reasoningMode: profile.reasoningMode
-    }];
-  });
   const searchPreference = resolveSearchPreference({
     organizationPlan: input.searchPolicy?.defaultPlan,
     settings: input.settings,
@@ -196,7 +138,6 @@ export function buildCurrentUserCatalog(input: CatalogData): CurrentUserCatalogW
         ? input.settings.defaultControlValues
         : {},
       modelId: defaultModel?.modelId ?? "",
-      promptPresetId: input.settings.defaultPromptPresetId,
       provider: defaultModel?.provider ?? "",
       searchStrategyId: resolveSearchStrategyId(
         defaultModel,
@@ -210,9 +151,7 @@ export function buildCurrentUserCatalog(input: CatalogData): CurrentUserCatalogW
       showToolActivity: input.settings.showToolActivity
     },
     models,
-    promptPresets: input.promptPresets,
     providers,
-    runProfiles,
     searchStrategies: entitledStrategies.map(toCatalogSearchStrategy)
   };
 }

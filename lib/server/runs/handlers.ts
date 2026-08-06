@@ -31,6 +31,7 @@ import {
 import {
   ActiveLeafConflictError,
   ActiveRunConflictError,
+  AssistantRunConflictError,
   AttachmentLinkConflictError,
   McpRunPlanConflictError,
   ProviderAdmissionConflictError
@@ -49,6 +50,7 @@ export type {
 
 export type RunHandlerDeps = {
   allowFakeProvider?: boolean;
+  assistants?: RunPreparationDeps["assistants"];
   getAttachmentLimits?: RunPreparationDeps["getAttachmentLimits"];
   getConfig?: () => AuthConfig;
   mcp?: RunPreparationDeps["mcp"];
@@ -137,6 +139,11 @@ function isProviderAdmissionConflictError(
 ): error is ProviderAdmissionConflictError {
   return error instanceof ProviderAdmissionConflictError ||
     (error instanceof Error && error.name === "ProviderAdmissionConflictError");
+}
+
+function isAssistantRunConflictError(error: unknown): error is AssistantRunConflictError {
+  return error instanceof AssistantRunConflictError ||
+    (error instanceof Error && error.name === "AssistantRunConflictError");
 }
 
 async function acceptedRuntimeBinding(
@@ -297,12 +304,17 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
     };
     try {
       created = await deps.repository.createRun({
+        ...(preparedData.assistant ? { assistant: preparedData.assistant } : {}),
         chatId: preparedData.normalizedRequest.chatId,
         content: preparedData.normalizedRequest.content,
-        defaults: {
-          ...preparedData.defaults,
-          controlDefaults: { ...preparedData.defaults.controlDefaults }
-        },
+        ...(preparedData.defaults
+          ? {
+              defaults: {
+                ...preparedData.defaults,
+                controlDefaults: { ...preparedData.defaults.controlDefaults }
+              }
+            }
+          : {}),
         expectedActiveLeafId: preparedData.expectedActiveLeafId,
         ...(preparedData.mcpBindings ? { mcpBindings: preparedData.mcpBindings } : {}),
         ...(preparedData.providerAdmissionPlan
@@ -333,6 +345,10 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
 
       if (isProviderAdmissionConflictError(error)) {
         return Response.json({ error: "provider_admission_changed" }, { status: 409 });
+      }
+
+      if (isAssistantRunConflictError(error)) {
+        return Response.json({ error: "assistant_not_available" }, { status: 409 });
       }
 
       throw error;
@@ -415,11 +431,16 @@ export function createRegenerateModelRunHandler(deps: RunHandlerDeps) {
     };
     try {
       created = await deps.repository.createRegenerationRun({
+        ...(preparedData.assistant ? { assistant: preparedData.assistant } : {}),
         chatId: preparedData.normalizedRequest.chatId,
-        defaults: {
-          ...preparedData.defaults,
-          controlDefaults: { ...preparedData.defaults.controlDefaults }
-        },
+        ...(preparedData.defaults
+          ? {
+              defaults: {
+                ...preparedData.defaults,
+                controlDefaults: { ...preparedData.defaults.controlDefaults }
+              }
+            }
+          : {}),
         ...(preparedData.mcpBindings ? { mcpBindings: preparedData.mcpBindings } : {}),
         ...(preparedData.providerAdmissionPlan
           ? { providerAdmissionPlan: preparedData.providerAdmissionPlan }
@@ -446,6 +467,10 @@ export function createRegenerateModelRunHandler(deps: RunHandlerDeps) {
 
       if (isProviderAdmissionConflictError(error)) {
         return Response.json({ error: "provider_admission_changed" }, { status: 409 });
+      }
+
+      if (isAssistantRunConflictError(error)) {
+        return Response.json({ error: "assistant_not_available" }, { status: 409 });
       }
 
       throw error;

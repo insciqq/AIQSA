@@ -53,7 +53,6 @@ test.describe("oversized submitted-question reading anchor", () => {
         activeLeafMessageId: "assistant-previous",
         createdAt: "2026-08-05T00:00:00.000Z",
         defaultModelId: "gpt-5.5",
-        defaultPromptPresetId: "prompt-helpful",
         defaultProvider: "openai",
         folderId: null,
         id: chatId,

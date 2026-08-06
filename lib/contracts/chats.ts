@@ -4,6 +4,10 @@ import type {
   SessionErrorCode
 } from "./http";
 import {
+  decodeAssistantAvatarRecipe,
+  type AssistantAvatarRecipe
+} from "./assistants";
+import {
   decodeThreadSearchProviderOperation,
   decodeThreadSearchSource,
   decodeThreadToolActivity,
@@ -25,6 +29,7 @@ export type {
 
 export type ThreadMessage = {
   artifactSummary?: ThreadArtifactSummary | null;
+  assistantIdentity?: ThreadAssistantIdentity | null;
   content: unknown;
   id: string;
   modelId?: string;
@@ -38,6 +43,16 @@ export type ThreadMessage = {
 
 export type ThreadRunUsage = {
   totalTokens: number;
+};
+
+/**
+ * Snapshot-bound Assistant identity from the accepted revision. Later renames,
+ * archives, or access changes never alter this historical projection.
+ */
+export type ThreadAssistantIdentity = {
+  avatar: AssistantAvatarRecipe;
+  name: string;
+  revisionNumber: number;
 };
 
 export type ThreadArtifactSummary = {
@@ -98,7 +113,6 @@ export type WorkspaceChatSummary = {
   activeLeafMessageId: string | null;
   createdAt: string;
   defaultModelId: string;
-  defaultPromptPresetId: string | null;
   defaultProvider: string;
   folderId: string | null;
   id: string;
@@ -125,6 +139,7 @@ export type ChatSummary = WorkspaceChatSummary;
 
 export type ChatMessageWire = {
   artifactSummary?: ThreadArtifactSummary | null;
+  assistantIdentity?: ThreadAssistantIdentity | null;
   content: unknown;
   createdAt: string;
   errorMessage: string | null;
@@ -483,6 +498,28 @@ function decodeThreadArtifactSummary(value: unknown): ThreadArtifactSummary | nu
   };
 }
 
+function decodeThreadAssistantIdentity(value: unknown): ThreadAssistantIdentity | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+  const avatar = decodeAssistantAvatarRecipe(value.avatar);
+  const name = requiredString(value.name);
+  if (
+    !avatar ||
+    !name ||
+    typeof value.revisionNumber !== "number" ||
+    !Number.isInteger(value.revisionNumber) ||
+    value.revisionNumber < 1
+  ) {
+    return null;
+  }
+  return {
+    avatar,
+    name,
+    revisionNumber: value.revisionNumber
+  };
+}
+
 function decodeChatMessageWire(value: unknown): ChatMessageWire | null {
   if (!isRecord(value)) {
     return null;
@@ -514,6 +551,15 @@ function decodeChatMessageWire(value: unknown): ChatMessageWire | null {
       return null;
     }
   }
+  let assistantIdentity: ThreadAssistantIdentity | null | undefined;
+  if (value.assistantIdentity === undefined || value.assistantIdentity === null) {
+    assistantIdentity = value.assistantIdentity;
+  } else {
+    assistantIdentity = decodeThreadAssistantIdentity(value.assistantIdentity);
+    if (!assistantIdentity) {
+      return null;
+    }
+  }
   if (
     !id ||
     !createdAt ||
@@ -532,6 +578,7 @@ function decodeChatMessageWire(value: unknown): ChatMessageWire | null {
 
   return {
     artifactSummary,
+    ...(assistantIdentity !== undefined ? { assistantIdentity } : {}),
     content: value.content,
     createdAt,
     errorMessage,
@@ -582,7 +629,6 @@ function decodeWorkspaceChatSummaryWire(value: unknown): WorkspaceChatSummaryWir
     value.defaultModelId,
     value.defaultProvider
   );
-  const defaultPromptPresetId = nullableId(value.defaultPromptPresetId);
   const folderId = nullableId(value.folderId);
   const messageCount = nonNegativeInteger(value.messageCount);
   const title = requiredString(value.title);
@@ -592,7 +638,6 @@ function decodeWorkspaceChatSummaryWire(value: unknown): WorkspaceChatSummaryWir
     !id ||
     !createdAt ||
     !defaultSelection ||
-    defaultPromptPresetId === undefined ||
     folderId === undefined ||
     messageCount === null ||
     typeof value.pinned !== "boolean" ||
@@ -606,7 +651,6 @@ function decodeWorkspaceChatSummaryWire(value: unknown): WorkspaceChatSummaryWir
     activeLeafMessageId,
     createdAt,
     defaultModelId: defaultSelection.defaultModelId,
-    defaultPromptPresetId,
     defaultProvider: defaultSelection.defaultProvider,
     folderId,
     id,

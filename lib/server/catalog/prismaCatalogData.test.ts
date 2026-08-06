@@ -880,9 +880,6 @@ describe("prisma catalog data loader", () => {
       providerModel: {
         findMany: vi.fn()
       },
-      runProfile: {
-        findMany: vi.fn()
-      },
       searchOption: {
         findMany: vi.fn()
       },
@@ -897,7 +894,6 @@ describe("prisma catalog data loader", () => {
 
     await expect(loader("missing-user")).resolves.toBeNull();
     expect(prisma.providerModel.findMany).not.toHaveBeenCalled();
-    expect(prisma.runProfile.findMany).not.toHaveBeenCalled();
     expect(prisma.searchOption.findMany).not.toHaveBeenCalled();
     expect(loadEntitlements).not.toHaveBeenCalled();
   });
@@ -916,16 +912,6 @@ describe("prisma catalog data loader", () => {
     const prisma = {
       providerModel: {
         findMany: vi.fn(async (_query?: unknown) => [answer, technicalSearch, providerModel({ fake: true })])
-      },
-      runProfile: {
-        findMany: vi.fn(async () => [{
-          description: "Most everyday questions",
-          enabled: true,
-          id: "balanced",
-          providerModelId: "deployment-answer",
-          reasoningEffort: "medium",
-          reasoningMode: "standard"
-        }])
       },
       searchOption: {
         findMany: vi.fn(async (_query?: unknown) => [
@@ -948,17 +934,9 @@ describe("prisma catalog data loader", () => {
       user: {
         findUnique: vi.fn(async () => ({
           groups: [],
-          promptPresets: [{
-            developerPrompt: null,
-            id: "prompt-1",
-            isDefault: true,
-            name: "Helpful",
-            systemPrompt: "System"
-          }],
           settings: {
             defaultControlValues: {},
             defaultModelId: "legacy-upstream",
-            defaultPromptPresetId: "prompt-1",
             defaultProvider: "legacy-family",
             defaultProviderModel: { connectionId: "connection-answer" },
             defaultProviderModelId: "deployment-answer",
@@ -1039,12 +1017,6 @@ describe("prisma catalog data loader", () => {
       models: ["deployment-answer"],
       name: "Primary account"
     }]);
-    expect(catalog.runProfiles).toEqual([expect.objectContaining({
-      available: true,
-      id: "balanced",
-      modelId: "deployment-answer",
-      provider: "connection-answer"
-    })]);
   });
 
   it("does not expose or silently replace an unavailable saved deployment", () => {
@@ -1058,13 +1030,10 @@ describe("prisma catalog data loader", () => {
         models: [["connection-available", "deployment-available"]]
       }),
       models: [available!],
-      promptPresets: [],
-      runProfiles: [],
       searchStrategies: [],
       settings: {
         defaultControlValues: {},
         defaultModelId: "legacy-stale",
-        defaultPromptPresetId: null,
         defaultProvider: "legacy-stale",
         defaultProviderConnectionId: "connection-unavailable",
         defaultProviderModelId: "deployment-unavailable",

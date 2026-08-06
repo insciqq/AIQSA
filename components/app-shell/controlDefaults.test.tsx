@@ -6,6 +6,10 @@ import { useRunControlsActions } from "./runControlsActions";
 import type { SettingsMutationCoordinator } from "./settingsMutationCoordinator";
 import { useEventCallback } from "./useEventCallback";
 import { resetComposerControlStoreForTest, useComposerControlStore } from "./composerControlStore";
+import type {
+  AssistantAvatarRecipe,
+  AssistantRevisionContent
+} from "@/lib/contracts/assistants";
 import type { Catalog, CatalogModel, ChatSummary } from "./types";
 import {
   resolveModelSearchPlan,
@@ -137,7 +141,6 @@ const chat: ChatSummary = {
   activeLeafMessageId: null,
   createdAt: "2026-06-10T00:00:00.000Z",
   defaultModelId: "gpt-5.5",
-  defaultPromptPresetId: null,
   defaultProvider: "openai",
   folderId: null,
   id: "chat-1",
@@ -146,21 +149,58 @@ const chat: ChatSummary = {
   updatedAt: "2026-06-10T00:00:00.000Z"
 };
 
+const assistantAvatar: AssistantAvatarRecipe = {
+  accents: [0],
+  backgroundShape: "circle",
+  foregroundShape: "diamond",
+  kind: "generated",
+  paletteId: "ocean",
+  recipeVersion: 1,
+  rotations: [0, 1]
+};
+
+function assistantSelectionFixture() {
+  return {
+    avatar: assistantAvatar,
+    description: "Difficult or open-ended questions",
+    id: "assistant-1",
+    name: "Deep helper",
+    promptCharacterCount: 120,
+    starterPrompts: []
+  };
+}
+
+function assistantRevisionFixture(
+  overrides: Partial<AssistantRevisionContent> = {}
+): AssistantRevisionContent {
+  return {
+    authorDisplayName: "Operator",
+    avatar: assistantAvatar,
+    category: null,
+    createdAt: "2026-08-01T00:00:00.000Z",
+    description: "Difficult or open-ended questions",
+    developerPrompt: null,
+    mcpServerIds: [],
+    name: "Deep helper",
+    providerModelId: "gpt-5.6-sol",
+    revisionNumber: 1,
+    runControls: {},
+    searchPlan: { mode: "all_selected", optionIds: ["openai-native-web-search"] },
+    starterPrompts: [],
+    systemPrompt: "Answer with care.",
+    ...overrides
+  };
+}
+
 function catalog(
   controlValues: Record<string, unknown> = {},
   models: CatalogModel[] = [model, fakeModel]
 ): Catalog {
-  const profileInput = [
-    { description: "Simple, well-defined questions", id: "fast" as const, label: "Fast", model: gpt56LunaModel, reasoningEffort: "medium", reasoningMode: "standard" },
-    { description: "Most everyday questions", id: "balanced" as const, label: "Balanced", model: gpt56TerraModel, reasoningEffort: "medium", reasoningMode: "standard" },
-    { description: "Difficult or open-ended questions", id: "deep" as const, label: "Deep", model: gpt56Model, reasoningEffort: "max", reasoningMode: "pro" }
-  ];
   return {
     defaults: {
       controlValues,
       modelId: model.modelId,
       organizationSearchPlan: { mode: "all_selected", optionIds: [] },
-      promptPresetId: null,
       provider: model.provider,
       searchStrategyId: "openai-native-web-search",
       searchPreferenceSource: "personal",
@@ -169,7 +209,6 @@ function catalog(
       showToolActivity: true,
     },
     models,
-    promptPresets: [],
     providers: [
       {
         id: "fake",
@@ -182,31 +221,6 @@ function catalog(
         name: "OpenAI"
       }
     ],
-    runProfiles: profileInput.map((profile) => {
-      const available = models.some(
-        (candidate) => candidate.provider === profile.model.provider && candidate.modelId === profile.model.modelId
-      );
-      if (!available) {
-        return {
-          available: false as const,
-          description: profile.description,
-          id: profile.id,
-          label: profile.label,
-          unavailableReason: "model_unavailable" as const
-        };
-      }
-      return {
-        available: true as const,
-        configurationLabel: `${profile.model.displayName} · ${profile.reasoningMode === "pro" ? "Pro" : "Standard"} · ${profile.reasoningEffort === "max" ? "Maximum" : "Medium"}`,
-        description: profile.description,
-        id: profile.id,
-        label: profile.label,
-        modelId: profile.model.modelId,
-        provider: profile.model.provider,
-        reasoningEffort: profile.reasoningEffort,
-        reasoningMode: profile.reasoningMode
-      };
-    }),
     searchStrategies: [
       {
         displayName: "No Search",
@@ -236,7 +250,6 @@ function settingsFetchMock() {
     defaultModelId: model.modelId,
     defaultSearchPlan: { mode: "all_selected", optionIds: ["openai-native-web-search"] },
     organizationSearchPlan: { mode: "all_selected", optionIds: [] },
-    defaultPromptPresetId: null as string | null,
     defaultProvider: model.provider,
     defaultSearchStrategyId: "openai-native-web-search",
     searchPreferenceSource: "personal" as const,
@@ -249,9 +262,6 @@ function settingsFetchMock() {
     const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
     if (typeof body.defaultModelId === "string") {
       saved.defaultModelId = body.defaultModelId;
-    }
-    if (body.defaultPromptPresetId === null || typeof body.defaultPromptPresetId === "string") {
-      saved.defaultPromptPresetId = body.defaultPromptPresetId;
     }
     if (typeof body.defaultProvider === "string") {
       saved.defaultProvider = body.defaultProvider;
@@ -709,32 +719,39 @@ describe("control default freshness", () => {
     expect(claudeHarness.actions().buildParams()).not.toHaveProperty("reasoning");
   });
 
-  it("applies a Deep profile atomically and persists one complete target-model draft", async () => {
+  it("applies an assistant revision atomically without persisting any user default", () => {
+    vi.useFakeTimers();
     const fetchMock = settingsFetchMock();
     vi.stubGlobal("fetch", fetchMock);
     const initialCatalog = catalog(
-      {
-        "openai:gpt-5.6-sol": {
-          backgroundMode: false,
-          maxOutputTokens: "64000",
-          reasoningEffort: "low",
-          reasoningMode: "standard",
-          searchStrategyId: "search-disabled",
-          streamMode: true,
-          temperature: "0.4"
-        }
-      },
+      {},
       [model, fakeModel, gpt56Model, gpt56TerraModel, gpt56LunaModel]
     );
     const harness = createRunControlsHarness(model, initialCatalog);
 
-    expect(harness.actions().selectRunProfile("deep")).toBe(true);
+    expect(
+      harness.actions().applyAssistantToComposer({
+        assistant: assistantSelectionFixture(),
+        revision: assistantRevisionFixture({
+          providerModelId: "gpt-5.6-sol",
+          runControls: {
+            backgroundMode: false,
+            maxOutputTokens: 64000,
+            reasoningEffort: "max",
+            reasoningMode: "pro",
+            streamMode: true,
+            temperature: 0.4
+          }
+        })
+      })
+    ).toBe(true);
 
     expect(useComposerControlStore.getState()).toMatchObject({
       backgroundMode: false,
       maxOutputTokens: "64000",
       reasoningEffort: "max",
       reasoningMode: "pro",
+      selectedAssistant: { id: "assistant-1", name: "Deep helper" },
       selectedModelId: "gpt-5.6-sol",
       selectedProvider: "openai",
       selectedSearchStrategy: "openai-native-web-search",
@@ -747,25 +764,54 @@ describe("control default freshness", () => {
         mode: "pro"
       }
     });
+    // The persistence path defers through window.setTimeout, so drain timers
+    // before asserting that applying an assistant scheduled no settings write.
+    vi.advanceTimersByTime(600);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
 
-    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
-    expect(jsonBodies(fetchMock)[0]).toMatchObject({
-      defaultControlValues: {
+  it("excludes assistant-derived values from the draft persisted after a manual change", async () => {
+    vi.useFakeTimers();
+    const fetchMock = settingsFetchMock();
+    vi.stubGlobal("fetch", fetchMock);
+    const initialCatalog = catalog(
+      {
         "openai:gpt-5.6-sol": {
-          backgroundMode: false,
           maxOutputTokens: "64000",
-          reasoningEffort: "max",
-          reasoningMode: "pro",
-          streamMode: true,
-          temperature: "0.4"
+          reasoningEffort: "low"
         }
       },
-      defaultModelId: "gpt-5.6-sol",
-      defaultProvider: "openai"
+      [model, fakeModel, gpt56Model]
+    );
+    const harness = createRunControlsHarness(model, initialCatalog);
+    harness.actions().applyAssistantToComposer({
+      assistant: assistantSelectionFixture(),
+      revision: assistantRevisionFixture({
+        providerModelId: "gpt-5.6-sol",
+        runControls: {
+          reasoningEffort: "max",
+          reasoningMode: "pro",
+          temperature: 0.9
+        }
+      })
     });
-    expect(Object.keys(jsonBodies(fetchMock)[0]?.defaultControlValues as Record<string, unknown>)).toEqual([
-      "openai:gpt-5.6-sol"
-    ]);
+
+    harness.actions().changeTemperature("0.5");
+    vi.advanceTimersByTime(600);
+
+    expect(useComposerControlStore.getState()).toMatchObject({
+      assistantRemovedNotice: true,
+      selectedAssistant: null,
+      temperature: "0.5"
+    });
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    expect(jsonBodies(fetchMock)[0]?.defaultControlValues).toEqual({
+      "openai:gpt-5.6-sol": {
+        maxOutputTokens: "64000",
+        reasoningEffort: "low",
+        temperature: "0.5"
+      }
+    });
   });
 
   it("restores each model's exact Reasoning tuple after A to B to A switching", () => {
@@ -844,30 +890,27 @@ describe("control default freshness", () => {
       !("defaultSearchPlan" in body))).toBe(true);
   });
 
-  it("maps Fast to Luna Standard/Medium and ignores unavailable profiles", async () => {
+  it("refuses an assistant revision whose model is not in the caller's catalog", () => {
+    vi.useFakeTimers();
     const fetchMock = settingsFetchMock();
     vi.stubGlobal("fetch", fetchMock);
-    const harness = createRunControlsHarness(
-      model,
-      catalog({}, [model, fakeModel, gpt56Model, gpt56TerraModel, gpt56LunaModel])
-    );
-
-    expect(harness.actions().selectRunProfile("fast")).toBe(true);
-    expect(useComposerControlStore.getState()).toMatchObject({
-      reasoningEffort: "medium",
-      reasoningMode: "standard",
-      selectedModelId: "gpt-5.6-luna",
-      selectedProvider: "openai"
-    });
-    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
-
     const unavailableHarness = createRunControlsHarness(model, catalog({}, [model, fakeModel]));
-    fetchMock.mockClear();
-    expect(unavailableHarness.actions().selectRunProfile("deep")).toBe(false);
+
+    expect(
+      unavailableHarness.actions().applyAssistantToComposer({
+        assistant: assistantSelectionFixture(),
+        revision: assistantRevisionFixture({
+          providerModelId: "gpt-5.6-sol",
+          runControls: { reasoningEffort: "max", reasoningMode: "pro" }
+        })
+      })
+    ).toBe(false);
     expect(useComposerControlStore.getState()).toMatchObject({
+      selectedAssistant: null,
       selectedModelId: "gpt-5.5",
       selectedProvider: "openai"
     });
+    vi.advanceTimersByTime(600);
     expect(fetchMock).not.toHaveBeenCalled();
   });
 

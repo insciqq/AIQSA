@@ -175,9 +175,9 @@ describe("Prisma admin repository", () => {
 
       const approved = await prisma.user.findUniqueOrThrow({
         include: {
+          assistantDefinitions: true,
           folders: true,
           groups: true,
-          promptPresets: true,
           settings: true
         },
         where: {
@@ -189,7 +189,7 @@ describe("Prisma admin repository", () => {
       expect(approved.groups).toHaveLength(1);
       expect(approved.groups[0]?.groupId).toBe(groupId);
       expect(approved.folders).toHaveLength(0);
-      expect(approved.promptPresets.some((prompt) => prompt.isDefault)).toBe(true);
+      expect(approved.assistantDefinitions).toHaveLength(0);
       expect(approved.settings?.defaultProviderModelId).toBeNull();
       expect(approved.settings?.defaultFolderId).toBeNull();
     });
@@ -245,9 +245,9 @@ describe("Prisma admin repository", () => {
       await expect(
         prisma.user.findUniqueOrThrow({
           include: {
+            assistantDefinitions: true,
             folders: true,
             groups: true,
-            promptPresets: true,
             settings: true
           },
           where: {
@@ -255,9 +255,9 @@ describe("Prisma admin repository", () => {
           }
         })
       ).resolves.toMatchObject({
+        assistantDefinitions: [],
         folders: [],
         groups: [],
-        promptPresets: [],
         settings: null,
         status: "pending"
       });

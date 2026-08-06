@@ -39,7 +39,6 @@ function request(overrides: Partial<ProviderRunRequest> = {}): ProviderRunReques
     },
     prompt: {
       developer: "Prefer verified citations.",
-      presetId: "prompt-1",
       system: "You are precise."
     },
     provider: "openai",

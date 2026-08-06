@@ -24,7 +24,10 @@ import type {
 } from "@/components/app-shell/types";
 import type { ComposerAttachment } from "@/components/chat/Composer";
 import { calculateContextBudgetLimits, estimateApproxTokens } from "@/lib/domain/contextBudget";
-import { renderLocalPromptTemplate } from "@/lib/domain/promptTemplates";
+import {
+  renderLocalPromptTemplate,
+  STANDARD_CHAT_BASELINE_TEMPLATE
+} from "@/lib/domain/promptTemplates";
 import { useMemo } from "react";
 
 type PowerAppShellViewModelInput = {
@@ -36,7 +39,6 @@ type PowerAppShellViewModelInput = {
   chatContentMatchIds: Set<string>;
   chatQuery: string;
   chats: ChatSummary[];
-  developerPrompt: string;
   draft: string;
   folders: FolderSummary[];
   maxOutputTokens: string;
@@ -44,11 +46,10 @@ type PowerAppShellViewModelInput = {
   projectSettingsFolderId: string | null;
   renderActiveLeafId: string | null;
   runSurface: RunSurfaceSnapshot;
+  selectedAssistantPromptCharacterCount: number | null;
   selectedModelId: string;
-  selectedPromptId: string | null;
   selectedProvider: string;
   selectedSearchStrategy: string;
-  systemPrompt: string;
   visibleMessages: ThreadMessage[];
 };
 
@@ -141,7 +142,6 @@ export function usePowerAppShellViewModel({
   chatContentMatchIds,
   chatQuery,
   chats,
-  developerPrompt,
   draft,
   folders,
   maxOutputTokens,
@@ -149,11 +149,10 @@ export function usePowerAppShellViewModel({
   projectSettingsFolderId,
   renderActiveLeafId,
   runSurface,
+  selectedAssistantPromptCharacterCount,
   selectedModelId,
-  selectedPromptId,
   selectedProvider,
   selectedSearchStrategy,
-  systemPrompt,
   visibleMessages
 }: PowerAppShellViewModelInput) {
   const { events: runEvents, lastRun } = runSurface;
@@ -202,10 +201,6 @@ export function usePowerAppShellViewModel({
     () => summarizeThreadArtifacts(runEvents, lastRun?.searchRuns, lastRun?.toolCalls, lastRun?.status),
     [lastRun?.searchRuns, lastRun?.status, lastRun?.toolCalls, runEvents]
   );
-  const currentPrompt = useMemo(
-    () => catalog?.promptPresets.find((prompt) => prompt.id === selectedPromptId) ?? null,
-    [catalog, selectedPromptId]
-  );
   const searchOptions = useMemo<CatalogSearchStrategy[]>(() => {
     return catalog?.searchStrategies ?? [];
   }, [catalog]);
@@ -248,14 +243,21 @@ export function usePowerAppShellViewModel({
       }).budgetTokens
     : 0;
   const composerContextStats = useMemo<ComposerContextStats>(() => {
+    // Approximation only: the authoritative prompt is resolved server-side (the
+    // standard-chat baseline or the selected Assistant revision).
     const promptSystem = [
-      renderLocalPromptTemplate(systemPrompt),
+      selectedAssistantPromptCharacterCount === null
+        ? renderLocalPromptTemplate(STANDARD_CHAT_BASELINE_TEMPLATE)
+        : "",
       projectMemory ? `Project memory:\n${projectMemory}` : null
     ]
       .filter((part): part is string => Boolean(part?.trim()))
       .join("\n\n");
     const promptTokens =
-      estimateApproxTokens(promptSystem) + estimateApproxTokens(renderLocalPromptTemplate(developerPrompt));
+      estimateApproxTokens(promptSystem) +
+      (selectedAssistantPromptCharacterCount !== null
+        ? Math.ceil(selectedAssistantPromptCharacterCount / 4)
+        : 0);
     const branchTokens = visibleMessages.reduce((total, message) => total + estimateApproxTokens(message.content), 0);
     const draftTokens = estimateApproxTokens({
       blocks: draft.trim()
@@ -275,7 +277,7 @@ export function usePowerAppShellViewModel({
       safeInputBudgetTokens: currentContextWindow ? safeInputBudget : null,
       totalContextTokens: currentContextWindow || null
     };
-  }, [attachments, currentContextWindow, currentModel, developerPrompt, draft, projectMemory, safeInputBudget, systemPrompt, visibleMessages]);
+  }, [attachments, currentContextWindow, currentModel, draft, projectMemory, safeInputBudget, selectedAssistantPromptCharacterCount, visibleMessages]);
   const composerUsageStats = activeThreadUsageStats ?? {
     activeBranchMessageCount: visibleMessages.length,
     cachedInputTokens: 0,
@@ -306,7 +308,6 @@ export function usePowerAppShellViewModel({
     currentErrorText,
     currentModel,
     currentParameterControls,
-    currentPrompt,
     liveArtifactSummary,
     projectSettingsFolder,
     renderActiveLeafId,

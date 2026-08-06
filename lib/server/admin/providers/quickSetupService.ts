@@ -404,7 +404,6 @@ export function createAdminProviderQuickSetupService(input: Readonly<{
         model: { displayName: candidate.displayName },
         models: availableCandidates.map(({ displayName }) => ({ displayName })),
         outcome: "ready",
-        profilesFilled: commit.profilesFilled,
         provider: policy.provider,
         providerDisplayName: policy.connection.displayName,
         search: commit.search

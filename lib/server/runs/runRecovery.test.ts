@@ -367,7 +367,7 @@ function normalizedToolRequest(): NormalizedRunRequest {
     },
     modelId: "gpt-test",
     params: { background: true, stream: true },
-    prompt: { developer: null, presetId: null, system: null },
+    prompt: { developer: null, system: null },
     provider: "openai",
     searchStrategy: null
   };

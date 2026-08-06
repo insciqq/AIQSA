@@ -84,7 +84,6 @@ export type ShellOverlayControllerInput = Readonly<{
   }>;
   blockers: Readonly<{
     projectSettingsOpen: boolean;
-    promptDeleteOpen: boolean;
     settingsOpen: boolean;
   }>;
   onMobileWorkspaceClosed(): void;
@@ -96,7 +95,7 @@ export function useShellOverlayController({
   onMobileWorkspaceClosed
 }: ShellOverlayControllerInput) {
   const { changeMode: changeAppearanceMode, mode: appearanceMode } = appearance;
-  const { projectSettingsOpen, promptDeleteOpen, settingsOpen } = blockers;
+  const { projectSettingsOpen, settingsOpen } = blockers;
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [mobileWorkspaceOpen, setMobileWorkspaceOpen] = useState(false);
   const chatConfirmation = useConfirmationController<ChatSummary>();
@@ -148,7 +147,7 @@ export function useShellOverlayController({
           Boolean(chatConfirmation.target) ||
           Boolean(folderConfirmation.target) ||
           Boolean(messageConfirmation.target) ||
-          promptDeleteOpen;
+          false;
         if (blockingModalOpen) {
           return;
         }
@@ -180,7 +179,6 @@ export function useShellOverlayController({
     mobileWorkspaceOpen,
     paletteOpen,
     projectSettingsOpen,
-    promptDeleteOpen,
     settingsOpen,
     showPalette
   ]);

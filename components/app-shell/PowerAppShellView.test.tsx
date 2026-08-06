@@ -12,6 +12,7 @@ import type {
   ShellWorkspacePaneView
 } from "./powerAppShellViewContracts";
 import type { ShellLeftPaneProps } from "./ShellLeftPane";
+import type { AssistantLibraryView } from "@/components/assistants/libraryViewContracts";
 import type { ChatSummary, FolderSummary, InspectorMode, ThreadMessage } from "./types";
 import { AIQSA_WORKSPACE_RAIL_STORAGE_KEY } from "./shellStorage";
 import {
@@ -48,7 +49,6 @@ type MainThreadProjectionKeys =
   | "creatingChat"
   | "noticeSlot"
   | "openMcpSettings"
-  | "openPromptLibrary"
   | "openRunDetails"
   | "pipeline"
   | "retryWorkspace"
@@ -59,6 +59,10 @@ type MainThreadProjectionKeys =
 
 vi.mock("@/components/app-shell/McpSettingsSection", () => ({
   McpSettingsSection: () => <section data-testid="mcp-settings-section">MCP settings</section>
+}));
+
+vi.mock("@/components/assistants/AssistantLibrary", () => ({
+  AssistantLibrary: () => <section data-testid="assistant-library">Assistant library</section>
 }));
 
 vi.mock("@/components/app-shell/ShellLeftPane", () => ({
@@ -181,6 +185,21 @@ function baseProps(): PowerAppShellViewProps {
 
   return {
     composer: {
+      assistant: {
+        clearRemovedNotice: noop,
+        openLibrary: noop,
+        openPicker: false,
+        pickerItems: [],
+        pickerLoading: false,
+        recentIds: [],
+        remove: noop,
+        removedNotice: false,
+        selectById: noop,
+        selected: null,
+        sendStarter: noop,
+        setPickerOpen: noop,
+        startFromCurrentSetup: noop
+      },
       attachments: [],
       backgroundMode: false,
       compatibleSearchOptionIds: [],
@@ -210,7 +229,6 @@ function baseProps(): PowerAppShellViewProps {
         stream: { defaultValue: false, supported: false },
         temperature: { defaultValue: 1, maxValue: 2, minValue: 0, supported: true }
       },
-      currentPrompt: null,
       draft: "",
       flushPendingModelControlDefaults: noop,
       maxOutputTokens: "1024",
@@ -224,12 +242,9 @@ function baseProps(): PowerAppShellViewProps {
       searchPreferenceSource: "personal",
       searchPlanMode: "all_selected",
       selectModel: noop,
-      selectPrompt: noop,
-      selectRunProfile: noop,
       selectSearchPlan: noop,
       selectSearchStrategy: noop,
       selectedModelId: "test-model",
-      selectedPromptId: null,
       selectedProvider: "test-provider",
       selectedProviderName: "Test provider",
       selectedSearchOptionIds: [],
@@ -296,37 +311,16 @@ function baseProps(): PowerAppShellViewProps {
       shareActiveBranch: noop,
     },
     settings: {
-      actions: {
-        cancelDeletePrompt: noop,
-        closeSettings: noop,
-        confirmDeletePrompt: noop,
-        createSettingsPrompt: async () => undefined,
-        deleteSettingsPrompt: async () => undefined,
-        duplicateSettingsPrompt: async () => undefined,
-        editSettingsPrompt: noop,
-        newSettingsPrompt: noop,
-        openPromptLibrary: noop,
-        selectPrompt: () => null,
-        setDefaultPromptPreset: async () => undefined,
-        setSettingsPromptEditor: noop,
-        updateSettingsPrompt: async () => undefined
-      },
+      closeSettings: noop,
       dismissNotice: noop,
+      library: null,
       notice: null,
       open: noop,
+      openLibrary: noop,
       openMcp: noop,
-      openPromptLibrary: noop,
-      prompt: {
-        deleteConfirmation: null,
-        editor: {
-          developerPrompt: "",
-          id: null,
-          name: "",
-          systemPrompt: ""
-        },
+      settings: {
         open: false,
         section: "appearance",
-        saving: false,
         themeId: "aiqsa"
       },
       updateTheme: noop
@@ -437,6 +431,14 @@ const detailsTestMessage: ThreadMessage = {
   status: "complete"
 };
 
+/**
+ * AssistantLibrary is mocked in this file; the shell only needs a non-null
+ * view value to route to the standalone library surface.
+ */
+function minimalLibraryView(): AssistantLibraryView {
+  return { close: vi.fn() } as unknown as AssistantLibraryView;
+}
+
 function StatefulView({
   flushPendingModelControlDefaults,
   initialMode = "closed",
@@ -484,7 +486,6 @@ const mobileDeleteChat: ChatSummary = {
   activeLeafMessageId: null,
   createdAt: "2026-07-11T00:00:00.000Z",
   defaultModelId: "fake-qsa",
-  defaultPromptPresetId: null,
   defaultProvider: "fake",
   folderId: null,
   id: "chat-mobile-delete",
@@ -633,7 +634,7 @@ describe("PowerAppShellView document title", () => {
         {...props}
         settings={{
           ...props.settings,
-          prompt: { ...props.settings.prompt, open: true, section: "appearance" }
+          settings: { ...props.settings.settings, open: true, section: "appearance" }
         }}
       />
     );
@@ -644,11 +645,11 @@ describe("PowerAppShellView document title", () => {
         {...props}
         settings={{
           ...props.settings,
-          prompt: { ...props.settings.prompt, open: true, section: "prompts" }
+          library: minimalLibraryView()
         }}
       />
     );
-    await waitFor(() => expect(document.title).toBe("Prompt library · AIQSA"));
+    await waitFor(() => expect(document.title).toBe("Library · AIQSA"));
 
     rerender(
       <PowerAppShellView
@@ -1075,42 +1076,30 @@ describe("PowerAppShellView Details composition", () => {
     expect(trigger).toHaveFocus();
   });
 
-  it("renders Prompt library as a standalone full-screen surface and owns its settings notice", () => {
+  it("renders the assistant Library as a standalone surface that suppresses shell notices", () => {
     const props = baseProps();
-    const setSettingsNotice = vi.fn();
     render(
       <PowerAppShellView
         {...props}
+        session={{
+          ...props.session,
+          notice: { kind: "success", text: "Copied" }
+        }}
         settings={{
           ...props.settings,
-          dismissNotice: () => setSettingsNotice(null),
-          notice: { kind: "error", scope: "settings", text: "Prompt save failed" },
-          prompt: {
-            ...props.settings.prompt,
-            open: true,
-            section: "prompts",
-            themeId: "aiqsa"
-          }
+          library: minimalLibraryView(),
+          settings: { ...props.settings.settings, open: true, section: "appearance" }
         }}
       />
     );
 
     const primaryContent = screen.getByTestId("shell-primary-content");
-    const promptLibrary = screen.getByTestId("prompt-library");
-    const noticeRegion = screen.getByTestId("prompt-library-notice-region");
     expect(primaryContent).toHaveAttribute("inert");
     expect(primaryContent).toHaveAttribute("aria-hidden", "true");
-    expect(promptLibrary).toHaveAttribute("data-presentation", "library");
+    expect(screen.getByTestId("assistant-library")).toBeVisible();
     expect(screen.queryByTestId("settings-dialog")).not.toBeInTheDocument();
     expect(screen.queryByTestId("settings-notice-region")).not.toBeInTheDocument();
-    expect(screen.getByRole("alert")).toHaveTextContent("Prompt save failed");
-    expect(screen.getByRole("alert")).toHaveClass("pointer-events-auto");
-    expect(promptLibrary).toContainElement(noticeRegion);
     expect(screen.queryByTestId("shell-notice-layer")).not.toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole("button", { name: "Dismiss notice" }));
-    expect(setSettingsNotice).toHaveBeenCalledWith(null);
-    expect(props.session.dismissNotice).not.toHaveBeenCalled();
   });
 
   it.each(["appearance", "mcp"] as const)(
@@ -1135,13 +1124,10 @@ describe("PowerAppShellView Details composition", () => {
           }}
           settings={{
             ...props.settings,
-            actions: {
-              ...props.settings.actions,
-              closeSettings
-            },
+            closeSettings,
             dismissNotice: () => setSettingsNotice(null),
             notice: { kind: "error", scope: "settings", text: "Settings update failed" },
-            prompt: { ...props.settings.prompt, open: true, section }
+            settings: { ...props.settings.settings, open: true, section }
           }}
         />
       );
@@ -1154,11 +1140,10 @@ describe("PowerAppShellView Details composition", () => {
       expect(primaryContent).toHaveAttribute("inert");
       expect(primaryContent).toHaveAttribute("aria-hidden", "true");
       expect(settings).toBeVisible();
-      expect(screen.queryByTestId("prompt-library")).not.toBeInTheDocument();
+      expect(screen.queryByTestId("assistant-library")).not.toBeInTheDocument();
       expect(settings).toContainElement(settingsNoticeRegion);
       expect(settingsNoticeRegion).toHaveTextContent("Settings update failed");
       expect(settingsNoticeRegion).not.toHaveTextContent("Public link ready");
-      expect(screen.queryByTestId("prompt-library-notice-region")).not.toBeInTheDocument();
       expect(screen.queryByTestId("shell-notice-layer")).not.toBeInTheDocument();
 
       fireEvent.click(screen.getByRole("button", { name: "Close settings" }));
@@ -1167,44 +1152,6 @@ describe("PowerAppShellView Details composition", () => {
       expect(setNotice).not.toHaveBeenCalled();
     }
   );
-
-  it("makes the Prompt library surface inert while nested prompt deletion owns the dialog layer", () => {
-    const props = baseProps();
-    const prompt = {
-      developerPrompt: null,
-      id: "prompt-delete",
-      isDefault: false,
-      name: "Delete candidate",
-      systemPrompt: "Temporary instructions"
-    };
-    render(
-      <PowerAppShellView
-        {...props}
-        settings={{
-          ...props.settings,
-          prompt: {
-            ...props.settings.prompt,
-            deleteConfirmation: prompt,
-            editor: {
-              developerPrompt: "",
-              id: prompt.id,
-              name: prompt.name,
-              systemPrompt: prompt.systemPrompt
-            },
-            open: true,
-            section: "prompts"
-          }
-        }}
-      />
-    );
-
-    const promptLibrary = screen.getByTestId("prompt-library");
-    expect(screen.getByTestId("shell-primary-content")).toHaveAttribute("inert");
-    expect(promptLibrary).toHaveAttribute("inert");
-    expect(promptLibrary).toHaveAttribute("aria-hidden", "true");
-    expect(screen.queryByTestId("settings-dialog")).not.toBeInTheDocument();
-    expect(screen.getByRole("dialog", { name: "Delete prompt Delete candidate" })).toBeVisible();
-  });
 
   it("keeps account sign-out pending and exposes retryable network feedback", async () => {
     let rejectSignOut!: (reason?: unknown) => void;

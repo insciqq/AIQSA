@@ -3,7 +3,6 @@ import type {
   AdminProviderQuickSetupProviderId,
   AdminProviderQuickSetupState
 } from "../../../contracts/adminProviderQuickSetup";
-import type { RunProfileId } from "../../../contracts/runProfiles";
 import type {
   AdminSearchDraft,
   AdminSearchTestEvidence
@@ -80,7 +79,6 @@ export type AdminProviderQuickSetupCommitResult =
   | "stale"
   | Readonly<{
       defaultChanged: boolean;
-      profilesFilled: RunProfileId[];
       search?: "needs_attention" | "ready" | null;
       status: "ready";
     }>;

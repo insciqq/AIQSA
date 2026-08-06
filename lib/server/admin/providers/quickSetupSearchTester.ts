@@ -65,7 +65,6 @@ function request(
     },
     prompt: {
       developer: "Use web search for this fixed connectivity check and return a concise sourced result.",
-      presetId: null,
       system: null
     },
     provider,

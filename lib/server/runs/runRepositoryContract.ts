@@ -1,6 +1,7 @@
 import type {
   ChatUsageStats,
   ThreadArtifactSummary,
+  ThreadAssistantIdentity,
   ThreadRunUsage
 } from "../../contracts/chats";
 import type { CatalogAdapterKind } from "../../domain/catalog";
@@ -90,7 +91,6 @@ export type RunChatUpdateRecord = {
     activeLeafMessageId: string | null;
     createdAt: Date | string;
     defaultModelId: string | null;
-    defaultPromptPresetId: string | null;
     defaultProvider: string | null;
     folderId: string | null;
     id: string;
@@ -102,6 +102,7 @@ export type RunChatUpdateRecord = {
   };
   messages: {
     artifactSummary?: ThreadArtifactSummary | null;
+    assistantIdentity?: ThreadAssistantIdentity | null;
     content: unknown;
     createdAt: Date | string;
     errorMessage?: string | null;
@@ -151,10 +152,22 @@ export class ProviderAdmissionConflictError extends Error {
   }
 }
 
+export class AssistantRunConflictError extends Error {
+  constructor() {
+    super("assistant_not_available");
+    this.name = "AssistantRunConflictError";
+  }
+}
+
+/** Exact accepted Assistant provenance persisted with the run. */
+export type AcceptedAssistantRun = {
+  assistantId: string;
+  revisionId: string;
+};
+
 export type AcceptedRunDefaults = {
   controlDefaults: Record<string, boolean | string>;
   modelId: string;
-  promptPresetId: string | null;
   provider: string;
   searchStrategy: string | null;
   searchPlan?: SearchPlan;
@@ -235,9 +248,10 @@ export type RunRepository = {
     userId: string;
   }): Promise<boolean>;
   createRun(input: {
+    assistant?: AcceptedAssistantRun;
     chatId: string;
     content: { blocks: unknown[] };
-    defaults: AcceptedRunDefaults;
+    defaults?: AcceptedRunDefaults;
     expectedActiveLeafId: string | null;
     mcpBindings?: McpRunPlanBinding[];
     modelId: string;
@@ -252,8 +266,9 @@ export type RunRepository = {
     userMessageId: string;
   }>;
   createRegenerationRun(input: {
+    assistant?: AcceptedAssistantRun;
     chatId: string;
-    defaults: AcceptedRunDefaults;
+    defaults?: AcceptedRunDefaults;
     mcpBindings?: McpRunPlanBinding[];
     modelId: string;
     normalizedRequest: NormalizedRunRequest;
@@ -346,7 +361,6 @@ export type RunRepository = {
     userId: string;
     userMessageId: string;
   }): Promise<RunChatUpdateRecord | null>;
-  isPromptPresetAvailable(userId: string, promptPresetId: string): Promise<boolean>;
   isSearchStrategyEnabled(searchStrategyId: string): Promise<boolean>;
   loadSearchStrategyConfiguration(
     searchStrategyId: string

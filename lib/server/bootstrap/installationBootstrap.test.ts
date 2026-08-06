@@ -1,6 +1,5 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { defaultSearchStrategies } from "@/lib/domain/catalog";
-import { RUN_PROFILE_IDS } from "@/lib/contracts/runProfiles";
 import { providerConnectionTemplates } from "@/lib/domain/providerTemplates";
 import { LOCAL_ORDINARY_USERS } from "@/prisma/local-seed-fixtures";
 import { describe, expect, it, vi } from "vitest";
@@ -74,10 +73,8 @@ function createBootstrapTransaction(input: {
     groupUpdate: record("group.update", { id: "group-id" }),
     mcpGrantUpsert: record("mcpGrant.upsert", { id: "mcp-grant-id" }),
     mcpServerFindMany: record("mcpServer.findMany", []),
-    promptPresetCreate: record("promptPreset.create", { id: "prompt-id" }),
     providerConnectionUpsert: record("providerConnection.upsert", { id: "connection-id" }),
     providerModelUpsert: record("providerModel.upsert", { id: "model-id" }),
-    runProfileUpsert: record("runProfile.upsert", { id: "profile-id" }),
     searchIntegrationRevisionCreate: record("searchIntegrationRevision.create", { id: "search-revision-id" }),
     searchOptionUpsert: record("searchOption.upsert", { id: "search-option-id" }),
     searchStrategyUpdate: record("searchStrategy.update", { id: "strategy-id" }),
@@ -110,17 +107,11 @@ function createBootstrapTransaction(input: {
     mcpServer: {
       findMany: spies.mcpServerFindMany
     },
-    promptPreset: {
-      create: spies.promptPresetCreate
-    },
     providerConnection: {
       upsert: spies.providerConnectionUpsert
     },
     providerModel: {
       upsert: spies.providerModelUpsert
-    },
-    runProfile: {
-      upsert: spies.runProfileUpsert
     },
     searchIntegrationRevision: {
       create: spies.searchIntegrationRevisionCreate
@@ -182,7 +173,6 @@ function allFoundationMutationSpies(fixture: BootstrapTransactionFixture) {
     fixture.spies.userGroupUpsert,
     fixture.spies.mcpGrantUpsert,
     fixture.spies.folderCreate,
-    fixture.spies.promptPresetCreate,
     fixture.spies.userSettingsCreate,
     fixture.spies.accessGrantCreateMany
   ];
@@ -321,36 +311,26 @@ describe("installation bootstrap", () => {
       }
     });
     expect(fixture.spies.folderCreate).not.toHaveBeenCalled();
-    expect(fixture.spies.promptPresetCreate).toHaveBeenCalledWith({
-      data: expect.objectContaining({
-        isDefault: true,
-        name: "Helpful Assistant",
-        userId: USER_ID
-      })
-    });
     expect(fixture.spies.userSettingsCreate).toHaveBeenCalledWith({
       data: expect.objectContaining({
         defaultFolderId: null,
         defaultProviderModelId: null,
-        defaultPromptPresetId: "prompt-id",
         defaultSearchStrategyId: "search-disabled",
         userId: USER_ID
       })
     });
+    const settingsCreateArgs = fixture.spies.userSettingsCreate.mock.calls[0]?.[0] as
+      | { data?: Record<string, unknown> }
+      | undefined;
+    expect(settingsCreateArgs?.data).toBeDefined();
+    expect(settingsCreateArgs?.data).not.toHaveProperty("defaultPromptPresetId");
     expect(fixture.spies.providerConnectionUpsert).toHaveBeenCalledTimes(
       providerConnectionTemplates.length
     );
     expect(fixture.spies.providerModelUpsert).toHaveBeenCalledOnce();
-    expect(fixture.spies.runProfileUpsert).toHaveBeenCalledTimes(RUN_PROFILE_IDS.length);
     expect(fixture.spies.searchOptionUpsert).toHaveBeenCalledTimes(
       defaultSearchStrategies.length
     );
-    expect(fixture.spies.runProfileUpsert.mock.calls.map(([args]) => (
-      args as { create: { enabled: boolean; id: string; providerModelId: string | null }; update: object }
-    ))).toEqual(expect.arrayContaining(RUN_PROFILE_IDS.map((id) => expect.objectContaining({
-      create: expect.objectContaining({ enabled: false, id, providerModelId: null }),
-      update: {}
-    }))));
     expect(fixture.spies.providerModelUpsert.mock.calls[0]?.[0]).toMatchObject({
       create: {
         draftConfig: {
@@ -484,7 +464,6 @@ describe("installation bootstrap", () => {
     expect(fixture.spies.providerModelUpsert).toHaveBeenCalledWith(
       expect.objectContaining({ where: { templateKey: "fake:fake-qsa" } })
     );
-    expect(fixture.spies.runProfileUpsert).toHaveBeenCalledTimes(RUN_PROFILE_IDS.length);
     expect(fixture.spies.searchOptionUpsert).toHaveBeenCalledTimes(
       defaultSearchStrategies.length
     );
@@ -523,7 +502,6 @@ describe("installation bootstrap", () => {
       fixture.spies.userCreate,
       fixture.spies.authIdentityCreate,
       fixture.spies.folderCreate,
-      fixture.spies.promptPresetCreate,
       fixture.spies.userSettingsCreate,
       fixture.spies.accessGrantCreateMany
     ]) {

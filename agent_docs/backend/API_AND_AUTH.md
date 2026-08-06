@@ -8,9 +8,9 @@ Scope: Current route-family ownership and observable server-side auth, admin, ca
 The backend supports a transparent, provider-neutral AI workspace without becoming an unrestricted workflow platform. It owns:
 
 - password and optional Google/Yandex OAuth authentication, access requests, direct invites, verification, reset, revocable sessions, and administrator recovery;
-- user/group entitlements and administrator control planes for providers, Search, run profiles, SMTP, and MCP;
+- user/group entitlements and administrator control planes for providers, Search, SMTP, and MCP;
 - backend-filtered catalogs and saved user defaults;
-- persistent folders, chats, message branches, prompt presets, runs, attachments, shares, usage, and inspection evidence;
+- persistent folders, chats, message branches, Assistants, runs, attachments, shares, usage, and inspection evidence;
 - deterministic fake-provider execution plus OpenAI, Anthropic, Gemini, OpenRouter, and compatible-provider adapters;
 - private upload processing and anonymous sanitized share snapshots;
 - passive administrator-only awareness of stable public GitHub releases.
@@ -23,8 +23,9 @@ Stable route families are:
 
 - health plus password/OAuth/onboarding/recovery authentication;
 - current-user identity, catalog, settings, and MCP configuration;
-- administrator users, groups, grants, rules, invites, providers, Search, run profiles, SMTP, MCP, release awareness, and usage;
-- folders, chats, messages, prompt presets, model runs, and uploads;
+- administrator users, groups, grants, rules, invites, providers, Search, SMTP, MCP, release awareness, and usage;
+- current-user Assistants: Library list/detail, create/revise/archive, duplication, revisions, exact-revision publications, and per-user pins;
+- folders, chats, messages, model runs, and uploads;
 - private share management plus anonymous public-share reads.
 
 There are no standalone current-user provider, model, or usage control planes. User projections remain entitlement-filtered and separate from administrator configuration. Public operational health returns only `ok`, `ready`, or `not_ready`; readiness checks runtime security, Postgres, and private object storage without exposing dependency errors or configuration values.
@@ -74,13 +75,12 @@ All administrator routes recheck an active administrator. Non-admin users receiv
 - The separate release route compares the packaged version only with the fixed official AIQSA latest stable GitHub Release. It accepts no repository or URL from the caller, uses no GitHub credential, applies a bounded cached external read, and returns only current/latest/date/link facts or `unavailable`.
 - Release lookup is optional and never affects liveness, readiness, or other administrator work. The route reports availability only; it cannot update, deploy, migrate, restart, or write configuration.
 
-### Providers and run profiles
+### Providers
 
 - Provider configuration is administrator-only. Browser projections are write-only for secrets and expose safe connection, model, readiness, publication, and assignment facts. Exact active revisions and credential versions are accepted into runs so later configuration changes cannot alter historical execution.
-- Reviewed-provider Quick setup is actor-relative and fenced by an opaque state token. Remote catalog/test work completes before one retry-bounded serializable commit. The commit creates or rotates only the acting administrator's isolated credential assignment, reviewed deployments/checks/direct grants, conditional default, and at most one untouched profile recipe. Existing connections, other users, groups, grants, credentials, models, defaults, and unrelated providers are preserved. Any preflight, stale-state, or post-write catalog-proof failure rolls back the whole mutation.
+- Reviewed-provider Quick setup is actor-relative and fenced by an opaque state token. Remote catalog/test work completes before one retry-bounded serializable commit. The commit creates or rotates only the acting administrator's isolated credential assignment, reviewed deployments/checks/direct grants, and conditional default. Existing connections, other users, groups, grants, credentials, models, defaults, and unrelated providers are preserved. Any preflight, stale-state, or post-write catalog-proof failure rolls back the whole mutation.
 - Quick setup replacement must preserve every existing canonical model still exposed to the actor, within the bounded policy set. Clearing Quick assignment removes only that direct assignment; it does not delete credentials, grants, defaults, or team configuration.
 - Custom compatible setup is discovery-first with manual fallback. Discovery is bounded, SSRF-safe, non-persistent, and returns only validated model IDs plus allowlisted hints. Setup tests every explicitly selected model before one atomic commit. Protocol, auth mode, reasoning mapping, hosted tools, answer eligibility, and private-network opt-in are explicit administrator choices rather than inferred from names.
-- Run profiles are the fixed Fast/Balanced/Deep slots. Updates submit all three versioned rows, revalidate each enabled deployment/reasoning tuple, and commit atomically. Missing/duplicate slots are invalid, unsupported targets are unprocessable, stale versions conflict, and a referenced deployment cannot be deleted.
 
 ### Search
 
@@ -99,18 +99,20 @@ All administrator routes recheck an active administrator. Non-admin users receiv
 
 ## Current-User Catalog And Settings
 
-- The catalog returns only entitled active answer models, ready entitled Search options, prompt presets, enabled system run profiles, saved defaults, resolved Search preference, presentation toggles, and client-safe capabilities. Technical-only models stay available to Search dependency resolution but are invalid answer-grant and admission targets and do not appear as answer choices, defaults, or profiles even for `full_access` members.
-- An unavailable saved model remains persisted but projects as no default; the server never leaks its hidden identity or silently selects the first visible model. Unavailable configured profiles expose only a generic reason, not an undisclosed deployment.
+- The catalog returns only entitled active answer models, ready entitled Search options, saved defaults, resolved Search preference, presentation toggles, and client-safe capabilities. Technical-only models stay available to Search dependency resolution but are invalid answer-grant and admission targets and do not appear as answer choices, defaults, or profiles even for `full_access` members.
+- An unavailable saved model remains persisted but projects as no default; the server never leaks its hidden identity or silently selects the first visible model.
 - The organization Search recommendation is intersected with entitlement and never grants access. User Search state distinguishes inherited (`null`), explicit Off (empty plan), and an ordered personal preference. Model compatibility derives an ephemeral effective plan without mutating the durable preference.
 - Settings updates validate providers, models, prompts, Search, and per-model control drafts against the same filtered catalog. The transaction locks the latest settings row and merges independent model keys, so concurrent accepted patches cannot overwrite unrelated drafts. Presentation toggles never enter normalized provider requests.
 
 ## Chats, Messages, And Runs
 
-### Workspace and prompts
+### Workspace and Assistants
 
 - Chat list/create/update/branch mutations return lightweight summaries with `messageCount` and `pinned`, not messages or usage. Detail reads own the message DAG, active leaf, safe artifacts, and latest assistant run IDs. Archived chats are hidden and non-operational; unarchive is not exposed.
 - Folder operations are current-user scoped. Moves validate ownership and cycles in the same serializable transaction; deleting a folder promotes child folders and unsets chat folders through database relations.
-- Prompt presets are current-user scoped. The current default cannot be deleted. Default, delete, settings, and chat-creation validation share a per-user advisory protocol so a run cannot persist a concurrently deleted preset. Selecting a prompt for one run does not change the user's persisted default.
+- `/api/me/assistants` is the concrete Assistant-specific family. Reads project runner-safe summaries and authorized detail: instructions stay inspectable for anyone entitled to run the Assistant, while hidden dependency identities are censored (a model outside the runner's catalog projects as null, MCP ids narrow to the runner's grants) and availability carries only coarse privacy-neutral reasons. Invisible and nonexistent ids share one `assistant_not_available` response. Writes are owner-only with optimistic-version CAS: revise appends an immutable revision and moves the current pointer, archive/restore toggles soft state, duplicate creates a private copy from the caller's authorized revision, and drafts are strictly bounded and validated against the owner's current catalog. Publications pin exact revisions per active group (publisher needs active membership) or installation-wide (active admin); publish-update moves them explicitly, revoke is owner-or-admin, and pins are per-user preference rows granting no access. Saving never advances a publication.
+- Assistant runs resolve server-side at admission: the request carries only the Assistant identity and user content, override fields are rejected, the currently authorized revision (owner current, or the highest active publication pinned revision) is materialized into model, prompts, controls, Search intent, and the exact MCP allowlist, and the run-creation transaction rechecks access and archive state before atomically persisting `ModelRun.assistantId`/`assistantRevisionId`. Access, archive, and revocation races return a stable privacy-safe conflict; a concurrent revision advance is not a conflict. Assistant runs skip accepted-defaults persistence so saved manual preferences never change.
+- Ordinary no-Assistant sends receive the code-owned standard-chat baseline system prompt rendered server-side from the server clock plus a validated client IANA time zone (UTC fallback recorded); the browser cannot replace it or supply rendered date/time text, and the exact rendered text plus zone evidence persists in `ModelRun.normalizedRequest`.
 
 ### Send, branch, edit, and regenerate
 

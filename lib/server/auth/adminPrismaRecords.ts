@@ -3,6 +3,7 @@ import type { Prisma } from "@prisma/client";
 export const adminGroupRecordInclude = {
   _count: {
     select: {
+      assistantPublications: true,
       providerCredentialAssignments: true,
       users: true
     }

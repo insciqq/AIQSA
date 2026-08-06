@@ -110,7 +110,6 @@ function mixedSearchCatalog(
       controlValues: {},
       modelId: mixedSearchModel.modelId,
       organizationSearchPlan: retainedPlan,
-      promptPresetId: null,
       provider: mixedSearchModel.provider,
       searchPlan: retainedPlan,
       searchPreferenceSource,
@@ -120,7 +119,6 @@ function mixedSearchCatalog(
       showToolActivity: true
     },
     models: [mixedSearchModel],
-    promptPresets: [],
     providers: [
       {
         id: mixedSearchModel.provider,
@@ -153,7 +151,6 @@ function chat(): ChatSummary {
     activeLeafMessageId: null,
     createdAt: "2026-06-10T00:00:00.000Z",
     defaultModelId: "gpt-5.5",
-    defaultPromptPresetId: null,
     defaultProvider: "openai",
     folderId: null,
     id: "chat-a",
@@ -257,14 +254,12 @@ function useMessageRunActionsForTest(input: {
     editingMessageId: input.editingMessageId ?? null
   });
   useComposerControlStore.setState({
-    developerPrompt: "",
+    selectedAssistant: null,
     selectedModelId: "gpt-5.5",
-    selectedPromptId: null,
     selectedProvider: "openai",
     selectedSearchOptionIds: [],
     searchPlanMode: "all_selected",
-    selectedSearchStrategy: "search-disabled",
-    systemPrompt: ""
+    selectedSearchStrategy: "search-disabled"
   });
 
   const activeStreamAbortRef = { current: new Map<string, AbortController>() };
@@ -598,6 +593,44 @@ describe("message run actions", () => {
       "chat-a"
     ).messages.find((message) => message.role === "user");
     expect(optimisticUserMessage?.content).toEqual(expectedContent);
+  });
+
+  it("sends only the assistant identity with content when an assistant is selected", async () => {
+    const fetchMock = vi.fn(async (..._args: unknown[]) => new Response("", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const actions = useMessageRunActionsForTest({
+      attachments: [],
+      draft: "Question for the assistant"
+    });
+    useComposerControlStore.setState({
+      selectedAssistant: {
+        avatar: {
+          accents: [0],
+          backgroundShape: "circle",
+          foregroundShape: "diamond",
+          kind: "generated",
+          paletteId: "ocean",
+          recipeVersion: 1,
+          rotations: [0, 1]
+        },
+        description: "Focused helper",
+        id: "assistant-selected",
+        name: "Researcher",
+        promptCharacterCount: 42,
+        starterPrompts: []
+      }
+    });
+
+    await actions.submitComposer();
+
+    const [, requestInit] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(JSON.parse(String(requestInit.body))).toEqual({
+      assistantId: "assistant-selected",
+      content: {
+        blocks: [{ text: "Question for the assistant", type: "text" }]
+      },
+      expectedActiveLeafId: null
+    });
   });
 
   it.each(["personal", "organization"] as const)(
@@ -1289,16 +1322,13 @@ describe("message run actions", () => {
     });
     useComposerControlStore.setState({
       backgroundMode: false,
-      developerPrompt: "Source developer prompt",
       maxOutputTokens: "4096",
       reasoningEffort: "high",
       selectedModelId: sourceModel.modelId,
-      selectedPromptId: "source-prompt",
       selectedProvider: sourceModel.provider,
       selectedSearchOptionIds: [hostedSearchOptionId, clientSearchOptionId],
       searchPlanMode: "all_selected",
       streamMode: true,
-      systemPrompt: "Source system prompt",
       temperature: "0.25"
     });
     const edit = actions.submitComposer();
@@ -1312,16 +1342,13 @@ describe("message run actions", () => {
     });
     useComposerControlStore.setState({
       backgroundMode: true,
-      developerPrompt: "Other developer prompt",
       maxOutputTokens: "8192",
       reasoningEffort: "low",
       selectedModelId: otherModel.modelId,
-      selectedPromptId: null,
       selectedProvider: otherModel.provider,
       selectedSearchOptionIds: [],
       searchPlanMode: "model_choice",
       streamMode: false,
-      systemPrompt: "Other system prompt",
       temperature: "1"
     });
     resolveEdit(editResponse("Edited answer"));
@@ -1366,11 +1393,6 @@ describe("message run actions", () => {
         capturedModel: `${sourceModel.provider}:${sourceModel.modelId}`,
         maxOutputTokens: 4096
       },
-      prompt: {
-        developer: "Source developer prompt",
-        presetId: "source-prompt",
-        system: "Source system prompt"
-      },
       provider: sourceModel.provider,
       searchPlan: {
         mode: "model_choice",
@@ -1382,6 +1404,7 @@ describe("message run actions", () => {
       },
       searchPreferenceSource: "personal",
       searchStrategy: hostedSearchOptionId,
+      timeZone: expect.any(String),
       tools: "none"
     });
     expect(actions.resetThreadToLatest).not.toHaveBeenCalled();
@@ -2214,17 +2237,13 @@ describe("message run actions", () => {
       },
       modelId: "gpt-5.5",
       params: {},
-      prompt: {
-        developer: "",
-        presetId: null,
-        system: ""
-      },
       provider: "openai",
       searchPlan: {
         mode: "all_selected",
         optionIds: []
       },
-      searchStrategy: "search-disabled"
+      searchStrategy: "search-disabled",
+      timeZone: expect.any(String)
     });
     expect(selectThreadSnapshot(useThreadStore.getState(), "chat-a")).toMatchObject({
       activeLeafId: "assistant-persisted",

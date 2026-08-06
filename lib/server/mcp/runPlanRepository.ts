@@ -148,6 +148,30 @@ export async function loadMcpRunPlanRecords(
     .sort((left, right) => left.serverName.localeCompare(right.serverName) || left.serverId.localeCompare(right.serverId));
 }
 
+/**
+ * Exact-subset loader for Assistant allowlists. It intentionally includes the
+ * runner's disabled preference rows so a requested-but-disabled server surfaces
+ * as an unavailable record rather than silently disappearing; servers without
+ * any preference row remain absent and fail the subset plan closed.
+ */
+export async function loadMcpRunPlanRecordsForServers(
+  userId: string,
+  serverIds: readonly string[],
+  client: PrismaClient = prisma
+): Promise<McpRunPlanRecord[]> {
+  if (serverIds.length === 0) return [];
+  const preferences = await client.mcpUserServer.findMany({
+    select: runPlanPreferenceSelect,
+    where: { serverId: { in: [...serverIds] }, userId }
+  });
+  return preferences
+    .map(serializeRunPlanPreference)
+    .sort((left, right) => left.serverName.localeCompare(right.serverName) || left.serverId.localeCompare(right.serverId));
+}
+
 export function createPrismaMcpRunPlanLoader(client: PrismaClient = prisma) {
-  return (userId: string) => loadMcpRunPlanRecords(userId, client);
+  return (userId: string, serverIds?: readonly string[]) =>
+    serverIds
+      ? loadMcpRunPlanRecordsForServers(userId, serverIds, client)
+      : loadMcpRunPlanRecords(userId, client);
 }

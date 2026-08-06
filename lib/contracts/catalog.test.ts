@@ -12,7 +12,6 @@ function validResponse(): CatalogResponse {
         controlValues: {},
         modelId: "deployment-test",
         organizationSearchPlan: { mode: "all_selected", optionIds: [] },
-        promptPresetId: "prompt-1",
         provider: "connection-test",
         searchStrategyId: "search-disabled",
         searchPreferenceSource: "personal",
@@ -59,29 +58,7 @@ function validResponse(): CatalogResponse {
           upstreamModelId: "gpt-test"
         }
       ],
-      promptPresets: [
-        {
-          developerPrompt: null,
-          id: "prompt-1",
-          isDefault: true,
-          name: "Helpful Assistant",
-          systemPrompt: "Help"
-        }
-      ],
       providers: [{ family: "openai", id: "connection-test", models: ["deployment-test"], name: "OpenAI" }],
-      runProfiles: [
-        {
-          available: true,
-          configurationLabel: "GPT Test · Standard · Medium",
-          description: "Most everyday questions",
-          id: "balanced",
-          label: "Balanced",
-          modelId: "deployment-test",
-          provider: "connection-test",
-          reasoningEffort: "medium",
-          reasoningMode: "standard"
-        }
-      ],
       searchStrategies: [
         {
           displayName: "No Search",
@@ -107,12 +84,6 @@ describe("catalog wire contract", () => {
           provider: "connection-test",
           providerFamily: "openai",
           upstreamModelId: "gpt-test"
-        }
-      ],
-      runProfiles: [
-        {
-          available: true,
-          id: "balanced"
         }
       ],
       searchStrategies: [
@@ -220,19 +191,6 @@ describe("catalog wire contract", () => {
     );
   });
 
-  it("rejects malformed or duplicate run-profile projections", () => {
-    const duplicate = validResponse();
-    duplicate.catalog.runProfiles.push({ ...duplicate.catalog.runProfiles[0] });
-    expect(decodeCatalogResponse(duplicate)).toBeNull();
-
-    const malformed = validResponse() as unknown as {
-      catalog: { runProfiles: Array<Record<string, unknown>> };
-    };
-    malformed.catalog.runProfiles[0]!.available = false;
-    malformed.catalog.runProfiles[0]!.unavailableReason = "private_target_missing";
-    expect(decodeCatalogResponse(malformed)).toBeNull();
-  });
-
   it("rejects a malformed nested parameter control", () => {
     const response = validResponse();
     response.catalog.models[0].parameterControls.temperature.maxValue = Number.NaN;
@@ -271,15 +229,6 @@ describe("catalog wire contract", () => {
       catalog: { models: { capabilities: Record<string, unknown> }[] };
     };
     delete response.catalog.models[0].capabilities.toolCalling;
-
-    expect(decodeCatalogResponse(response)).toBeNull();
-  });
-
-  it("rejects a malformed prompt default", () => {
-    const response = validResponse() as unknown as {
-      catalog: { defaults: { promptPresetId: unknown } };
-    };
-    response.catalog.defaults.promptPresetId = 42;
 
     expect(decodeCatalogResponse(response)).toBeNull();
   });
@@ -419,7 +368,6 @@ describe("catalog wire contract", () => {
 
   it.each([
     ["model id", (response: CatalogResponse) => (response.catalog.models[0].modelId = "")],
-    ["prompt name", (response: CatalogResponse) => (response.catalog.promptPresets[0].name = "")],
     ["provider id", (response: CatalogResponse) => (response.catalog.providers[0].id = "")],
     [
       "search strategy id",

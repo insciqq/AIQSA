@@ -18,7 +18,7 @@ export type AccountMenuProps = {
   layout?: "desktop" | "mobile";
   onOpenChange?(open: boolean): void;
   onOpenPalette(): void;
-  onOpenPromptLibrary(): void;
+  onOpenLibrary(): void;
   onOpenSettings(): void;
   onSignOut(): void;
   open?: boolean;
@@ -34,7 +34,7 @@ export const AccountMenu = forwardRef<HTMLButtonElement, AccountMenuProps>(funct
     layout = "desktop",
     onOpenChange,
     onOpenPalette,
-    onOpenPromptLibrary,
+    onOpenLibrary,
     onOpenSettings,
     onSignOut,
     open: controlledOpen,
@@ -292,11 +292,11 @@ export const AccountMenu = forwardRef<HTMLButtonElement, AccountMenuProps>(funct
             role="menuitem"
             disabled={signingOut}
             onClick={() => {
-              replaceMenuWith(onOpenPromptLibrary);
+              replaceMenuWith(onOpenLibrary);
             }}
           >
             <ScrollText className="size-4 text-ink-muted" aria-hidden="true" />
-            Prompt library
+            Library
           </button>
           <button
             className={menuItemClass}

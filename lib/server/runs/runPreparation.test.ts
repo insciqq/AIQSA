@@ -1,5 +1,6 @@
 import { describe, expect, expectTypeOf, it, vi } from "vitest";
 import { textMessageContent } from "../../domain/content";
+import { resolveStandardChatBaseline } from "../../domain/promptTemplates";
 import { invalidRunParamsError } from "../../domain/runParams";
 import type { ResolvedEntitlements } from "../auth/entitlements";
 import type { McpRunPlanResult } from "../mcp/runPlan";
@@ -338,7 +339,6 @@ type HarnessOptions = Readonly<{
   entitlements?: ResolvedEntitlements;
   mcpPlan?: McpRunPlanResult;
   previewError?: Error;
-  promptAvailable?: boolean;
   providerIds?: readonly string[];
   regenerateContext?: readonly ProviderConversationMessage[];
   searchStrategyEnabled?: boolean;
@@ -357,7 +357,6 @@ function createHarness(options: HarnessOptions = {}) {
   const capabilityLoads: { modelId: string; provider: string }[] = [];
   const entitlementLoads: string[] = [];
   const previewRequests: ProviderRunRequest[] = [];
-  const promptAvailabilityChecks: { promptPresetId: string; userId: string }[] = [];
   const regenerateContextLoads: { chatId: string; leafMessageId: string; userId: string }[] = [];
   const sendContextLoads: { chatId: string; userId: string }[] = [];
   const storageReads: string[] = [];
@@ -418,11 +417,6 @@ function createHarness(options: HarnessOptions = {}) {
   const providerIds = options.providerIds ?? ["fake", "openai", "openrouter"];
   const providers = Object.fromEntries(providerIds.map((provider) => [provider, adapter]));
   const repository: RunPreparationDeps["repository"] = {
-    async isPromptPresetAvailable(userId, promptPresetId) {
-      calls.push("prompt");
-      promptAvailabilityChecks.push({ promptPresetId, userId });
-      return options.promptAvailable ?? true;
-    },
     async isSearchStrategyEnabled(searchStrategyId) {
       searchStrategyChecks.push(searchStrategyId);
       return options.searchStrategyEnabled ?? true;
@@ -564,7 +558,6 @@ function createHarness(options: HarnessOptions = {}) {
     deps,
     entitlementLoads,
     previewRequests,
-    promptAvailabilityChecks,
     regenerateContextLoads,
     searchStrategyChecks,
     searchAdapter,
@@ -597,10 +590,10 @@ function successBody(overrides: Readonly<Record<string, unknown>> = {}): Readonl
     },
     prompt: {
       developer: "Client developer prompt",
-      presetId: " preset-1 ",
       system: "Client system prompt"
     },
     searchStrategy: "search-disabled",
+    timeZone: "Europe/Berlin",
     ...overrides
   };
 }
@@ -664,6 +657,15 @@ function preparedFrom(result: RunPreparationResult): PreparedRun {
   return result.prepared;
 }
 
+async function withFrozenClock<Value>(run: () => Promise<Value>): Promise<Value> {
+  vi.useFakeTimers({ now: new Date("2026-08-06T09:15:00Z"), toFake: ["Date"] });
+  try {
+    return await run();
+  } finally {
+    vi.useRealTimers();
+  }
+}
+
 async function expectFailure(input: {
   calls: readonly string[];
   expected: Readonly<{
@@ -700,7 +702,7 @@ describe("run preparation", () => {
     expectTypeOf<PreparedRun["normalizedRequest"]>().toEqualTypeOf<DeepReadonly<NormalizedRunRequest>>();
     expectTypeOf<PreparedRun["providerRequest"]>().toEqualTypeOf<DeepReadonly<ProviderRunRequest>>();
     expectTypeOf<Extract<keyof PreparedRun, "adapter" | "searchAdapter">>().toEqualTypeOf<never>();
-    expectTypeOf<PreparedRun["defaults"]>().toEqualTypeOf<PreparedRunDefaults>();
+    expectTypeOf<PreparedRun["defaults"]>().toEqualTypeOf<PreparedRunDefaults | null>();
   });
 
   it("defensively separates and deeply freezes prepared data without freezing service dependencies", async () => {
@@ -732,8 +734,11 @@ describe("run preparation", () => {
 
     expect(Object.isFrozen(result)).toBe(true);
     expect(Object.isFrozen(prepared)).toBe(true);
+    // Ordinary runs must keep persisting accepted defaults; guard against null
+    // first because Object.isFrozen(null/undefined) is vacuously true.
+    expect(prepared.defaults).not.toBeNull();
     expect(Object.isFrozen(prepared.defaults)).toBe(true);
-    expect(Object.isFrozen(prepared.defaults.controlDefaults)).toBe(true);
+    expect(Object.isFrozen(prepared.defaults?.controlDefaults)).toBe(true);
     expect(Object.isFrozen(prepared.normalizedRequest)).toBe(true);
     expect(Object.isFrozen(prepared.normalizedRequest.content)).toBe(true);
     expect(Object.isFrozen(prepared.normalizedRequest.content.blocks)).toBe(true);
@@ -804,9 +809,15 @@ describe("run preparation", () => {
   it("keeps send and regeneration preparation in parity while using their server-owned context sources", async () => {
     const sendHarness = createHarness();
     const regenerateHarness = createHarness();
-    const sendPrepared = preparedFrom(await prepareRun(sendHarness.deps, sendInput()));
-    const regeneratePrepared = preparedFrom(
-      await prepareRun(regenerateHarness.deps, regenerateInput(successBody({ text: "Ignored client text" })))
+    const [sendPrepared, regeneratePrepared, expectedBaseline] = await withFrozenClock(
+      async () =>
+        [
+          preparedFrom(await prepareRun(sendHarness.deps, sendInput())),
+          preparedFrom(
+            await prepareRun(regenerateHarness.deps, regenerateInput(successBody({ text: "Ignored client text" })))
+          ),
+          resolveStandardChatBaseline({ timeZone: "Europe/Berlin" })
+        ] as const
     );
     const { context: sendContext, ...sendNormalized } = sendPrepared.normalizedRequest;
     const { context: regenerateContext, ...regenerateNormalized } = regeneratePrepared.normalizedRequest;
@@ -826,11 +837,17 @@ describe("run preparation", () => {
     expect(sendContext?.messages.some((message) => message.id === "client-context")).toBe(false);
     expect(regenerateContext?.messages.some((message) => message.id === "client-context")).toBe(false);
     expect(sendPrepared.normalizedRequest.prompt).toEqual({
-      developer: expect.stringContaining("Client developer prompt"),
-      presetId: "preset-1",
-      system: "Client system prompt\n\nProject memory:\nServer project memory"
+      baseline: {
+        source: "standard_chat",
+        timeZone: "Europe/Berlin",
+        timeZoneSource: "client"
+      },
+      developer: expect.stringContaining("Visible answer contract:"),
+      system: `${expectedBaseline.renderedSystemPrompt}\n\nProject memory:\nServer project memory`
     });
-    expect(sendPrepared.normalizedRequest.prompt.developer).toContain("Visible answer contract:");
+    expect(sendPrepared.normalizedRequest.prompt.system).toContain("You are a helpful AI assistant. Today is ");
+    expect(sendPrepared.normalizedRequest.prompt.system).not.toContain("Client system prompt");
+    expect(sendPrepared.normalizedRequest.prompt.developer).not.toContain("Client developer prompt");
     expect(regeneratePrepared.normalizedRequest.prompt).toEqual(sendPrepared.normalizedRequest.prompt);
     expect(sendPrepared.defaults).toEqual(regeneratePrepared.defaults);
     expect(sendPrepared.defaults).toEqual({
@@ -840,7 +857,6 @@ describe("run preparation", () => {
         temperature: "0"
       },
       modelId: "fake-qsa",
-      promptPresetId: "preset-1",
       provider: "fake",
       searchPlan: {
         mode: "all_selected",
@@ -854,29 +870,50 @@ describe("run preparation", () => {
     expect(sendHarness.calls).toEqual([
       "entitlements",
       "capabilities",
-      "prompt",
       "context:send",
       "preview"
     ]);
     expect(regenerateHarness.calls).toEqual([
       "entitlements",
       "capabilities",
-      "prompt",
       "context:regenerate",
       "preview"
     ]);
     expect(sendHarness.entitlementLoads).toEqual(["user-1"]);
     expect(regenerateHarness.entitlementLoads).toEqual(["user-1"]);
-    expect(sendHarness.promptAvailabilityChecks).toEqual([{ promptPresetId: "preset-1", userId: "user-1" }]);
-    expect(regenerateHarness.promptAvailabilityChecks).toEqual([
-      { promptPresetId: "preset-1", userId: "user-1" }
-    ]);
     expect(sendHarness.sendContextLoads).toEqual([{ chatId: "chat-1", userId: "user-1" }]);
     expect(sendHarness.regenerateContextLoads).toEqual([]);
     expect(regenerateHarness.sendContextLoads).toEqual([]);
     expect(regenerateHarness.regenerateContextLoads).toEqual([
       { chatId: "chat-1", leafMessageId: "stored-user-message", userId: "user-1" }
     ]);
+  });
+
+  it("falls back to the recorded UTC baseline when the client time zone is unusable", async () => {
+    const [invalidZone, missingZone, expectedBaseline] = await withFrozenClock(
+      async () =>
+        [
+          preparedFrom(
+            await prepareRun(createHarness().deps, sendInput(successBody({ timeZone: "Invalid/Zone" })))
+          ),
+          preparedFrom(
+            await prepareRun(createHarness().deps, sendInput(successBody({ timeZone: undefined })))
+          ),
+          resolveStandardChatBaseline({})
+        ] as const
+    );
+
+    for (const prepared of [invalidZone, missingZone]) {
+      expect(prepared.normalizedRequest.prompt).toEqual({
+        baseline: {
+          source: "standard_chat",
+          timeZone: "UTC",
+          timeZoneSource: "utc_fallback"
+        },
+        developer: expect.stringContaining("Visible answer contract:"),
+        system: `${expectedBaseline.renderedSystemPrompt}\n\nProject memory:\nServer project memory`
+      });
+    }
   });
 
   it("uses chat defaults for sends and stored assistant defaults/content for regeneration", async () => {
@@ -1502,8 +1539,8 @@ describe("run preparation", () => {
         })]
       });
       expect(prepared.normalizedRequest.searchStrategy).toBe("openai-native-web-search");
-      expect(prepared.defaults.searchPlan).toEqual(plan.requestedSearchPlan);
-      expect(prepared.defaults.searchStrategy).toBe("openai-native-web-search");
+      expect(prepared.defaults?.searchPlan).toEqual(plan.requestedSearchPlan);
+      expect(prepared.defaults?.searchStrategy).toBe("openai-native-web-search");
       expect(admissionLoad).toHaveBeenCalledWith(expect.objectContaining({
         searchPlan: legacyPlan,
         searchStrategyId: "openai-provider-web-search"
@@ -1552,7 +1589,7 @@ describe("run preparation", () => {
     });
     expect(prepared.providerAdmissionPlan?.searches?.[0]?.role?.snapshot.connectionId)
       .toBe("connection-custom-search");
-    expect(prepared.defaults.searchPlan).toEqual({ mode: "model_choice", optionIds: [optionId] });
+    expect(prepared.defaults?.searchPlan).toEqual({ mode: "model_choice", optionIds: [optionId] });
   });
 
   it("rejects attachment-bearing client Search before attachment loading", async () => {
@@ -1769,9 +1806,10 @@ describe("run preparation", () => {
     if (!result.ok) throw new Error(result.code);
     const prepared = materializePreparedRunData(result.prepared);
     expect(prepared.normalizedRequest.searchStrategy).toBe("company-search");
-    expect(prepared.defaults.searchPlan).toEqual({ mode: "model_choice", optionIds });
-    expect(prepared.defaults.searchStrategy).toBe("company-search");
-    expect(prepared.defaults.controlDefaults).not.toHaveProperty("searchStrategyId");
+    expect(prepared.defaults).not.toBeNull();
+    expect(prepared.defaults?.searchPlan).toEqual({ mode: "model_choice", optionIds });
+    expect(prepared.defaults?.searchStrategy).toBe("company-search");
+    expect(prepared.defaults?.controlDefaults).not.toHaveProperty("searchStrategyId");
     expect(prepared.providerRequestPreview).toMatchObject({
       body: {
         tools: expect.arrayContaining([
@@ -1812,9 +1850,10 @@ describe("run preparation", () => {
       searchPreferencePlan: preferencePlan,
       searchPreferenceSource: "personal"
     }));
-    expect(prepared.defaults.searchPlan).toEqual({ mode: "all_selected", optionIds: [] });
-    expect(prepared.defaults.searchPreferencePlan).toEqual(preferencePlan);
-    expect(prepared.defaults.controlDefaults).not.toHaveProperty("searchStrategyId");
+    expect(prepared.defaults).not.toBeNull();
+    expect(prepared.defaults?.searchPlan).toEqual({ mode: "all_selected", optionIds: [] });
+    expect(prepared.defaults?.searchPreferencePlan).toEqual(preferencePlan);
+    expect(prepared.defaults?.controlDefaults).not.toHaveProperty("searchStrategyId");
   });
 
   it("records organization inheritance as null without copying the current recommendation", async () => {
@@ -1842,7 +1881,7 @@ describe("run preparation", () => {
       searchPreferencePlan: null,
       searchPreferenceSource: "organization"
     }));
-    expect(prepared.defaults.searchPreferencePlan).toBeNull();
+    expect(prepared.defaults?.searchPreferencePlan).toBeNull();
   });
 
   it("rejects an initial MCP request when its exact provider tool schema exceeds context", async () => {
@@ -1916,27 +1955,22 @@ describe("run preparation", () => {
       harness: { capabilities: null }
     });
     await expectFailure({
-      calls: ["entitlements", "capabilities", "prompt"],
-      expected: { code: "default_prompt_unavailable", status: 400 },
-      harness: { promptAvailable: false }
-    });
-    await expectFailure({
-      calls: ["entitlements", "capabilities", "prompt", "context:send"],
+      calls: ["entitlements", "capabilities", "context:send"],
       expected: { code: "invalid_run_params", status: 400 },
       request: sendInput(successBody({ params: { unknown: true } }))
     });
     await expectFailure({
-      calls: ["entitlements", "capabilities", "prompt", "context:send"],
+      calls: ["entitlements", "capabilities", "context:send"],
       expected: { code: "search_strategy_unknown", status: 400 },
       request: sendInput(successBody({ searchStrategy: "unknown-search" }))
     });
     await expectFailure({
-      calls: ["entitlements", "capabilities", "prompt", "context:send"],
+      calls: ["entitlements", "capabilities", "context:send"],
       expected: { code: "search_strategy_not_supported_by_model", status: 400 },
       request: sendInput(successBody({ searchStrategy: "openai-native-web-search" }))
     });
     await expectFailure({
-      calls: ["entitlements", "capabilities", "prompt", "context:send"],
+      calls: ["entitlements", "capabilities", "context:send"],
       expected: { code: "search_provider_not_available", status: 400 },
       harness: { searchProviderAvailable: false },
       request: sendInput(
@@ -1948,7 +1982,7 @@ describe("run preparation", () => {
       )
     });
     await expectFailure({
-      calls: ["entitlements", "capabilities", "prompt", "context:send", "attachments"],
+      calls: ["entitlements", "capabilities", "context:send", "attachments"],
       expected: { code: "attachment_not_found", status: 400 },
       request: sendInput(
         successBody({
@@ -1959,7 +1993,7 @@ describe("run preparation", () => {
       )
     });
     await expectFailure({
-      calls: ["entitlements", "capabilities", "prompt", "context:send", "attachments"],
+      calls: ["entitlements", "capabilities", "context:send", "attachments"],
       expected: { code: "pdf_attachment_not_supported", status: 400 },
       harness: {
         attachments: [
@@ -1985,7 +2019,7 @@ describe("run preparation", () => {
       )
     });
     await expectFailure({
-      calls: ["entitlements", "capabilities", "prompt", "context:send", "attachments"],
+      calls: ["entitlements", "capabilities", "context:send", "attachments"],
       expected: { code: "image_attachment_not_supported", status: 400 },
       harness: {
         attachments: [
@@ -2010,7 +2044,7 @@ describe("run preparation", () => {
       )
     });
     await expectFailure({
-      calls: ["entitlements", "capabilities", "prompt", "context:send"],
+      calls: ["entitlements", "capabilities", "context:send"],
       expected: {
         code: "context_too_large",
         status: 400
@@ -2032,7 +2066,6 @@ describe("run preparation", () => {
     expect(previewHarness.calls).toEqual([
       "entitlements",
       "capabilities",
-      "prompt",
       "context:send",
       "preview"
     ]);
@@ -2056,7 +2089,7 @@ describe("run preparation", () => {
     };
 
     await expectFailure({
-      calls: ["entitlements", "capabilities", "prompt", "context:send", "attachments"],
+      calls: ["entitlements", "capabilities", "context:send", "attachments"],
       expected,
       harness: {
         attachments: [
@@ -2081,7 +2114,7 @@ describe("run preparation", () => {
     });
 
     await expectFailure({
-      calls: ["entitlements", "capabilities", "prompt", "context:send", "attachments"],
+      calls: ["entitlements", "capabilities", "context:send", "attachments"],
       expected: zeroPartialExpected,
       harness: {
         attachments: [
@@ -2107,7 +2140,7 @@ describe("run preparation", () => {
     });
 
     await expectFailure({
-      calls: ["entitlements", "capabilities", "prompt", "context:send", "attachments"],
+      calls: ["entitlements", "capabilities", "context:send", "attachments"],
       expected,
       harness: {
         attachments: [

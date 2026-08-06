@@ -8,7 +8,6 @@ function chatSummary(overrides: Partial<ChatSummary> = {}): ChatSummary {
     activeLeafMessageId: "message-2",
     createdAt: "2026-07-01T00:00:00.000Z",
     defaultModelId: "gpt-5.5",
-    defaultPromptPresetId: null,
     defaultProvider: "openai",
     folderId: null,
     id: "chat-share",

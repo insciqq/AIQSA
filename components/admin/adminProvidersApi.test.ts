@@ -36,12 +36,12 @@ const safeConnection = {
 };
 
 describe("admin provider browser API", () => {
-  it("names a run-profile deletion blocker in readable administrator feedback", () => {
+  it("names an assistant-revision deletion blocker in readable administrator feedback", () => {
     expect(adminProviderErrorMessage({
-      blockers: [{ count: 1, kind: "run_profiles" }],
+      blockers: [{ count: 1, kind: "assistant_revisions" }],
       code: "provider_delete_conflict",
       resourceIds: []
-    })).toContain("run profiles: 1");
+    })).toContain("assistant revisions: 1");
   });
 
   it("sends credentials only in same-origin JSON mutation bodies", async () => {

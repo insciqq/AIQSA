@@ -80,7 +80,6 @@ describe("admin provider Quick setup API", () => {
         { displayName: "GPT-5.6 Sol" }
       ],
       outcome: "ready",
-      profilesFilled: ["balanced"],
       provider: "openai",
       providerDisplayName: "OpenAI",
       search: {
@@ -224,7 +223,6 @@ describe("admin provider Quick setup API", () => {
       model: { displayName: "Model" },
       models: [{ displayName: "Model" }],
       outcome: "ready",
-      profilesFilled: [],
       provider: "openai",
       providerDisplayName: "OpenAI"
     },
@@ -234,7 +232,6 @@ describe("admin provider Quick setup API", () => {
       model: { displayName: "Model" },
       models: [{ displayName: "Model" }],
       outcome: "ready",
-      profilesFilled: [],
       provider: "openai",
       providerDisplayName: "OpenAI",
       search: {

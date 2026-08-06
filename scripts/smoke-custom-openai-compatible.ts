@@ -127,7 +127,6 @@ function smokeRequest(provider: string): ProviderRunRequest {
     },
     prompt: {
       developer: null,
-      presetId: null,
       system: "This request targets a local deterministic smoke fixture."
     },
     provider,

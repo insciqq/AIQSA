@@ -3,6 +3,11 @@ import { memo } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { usePowerAppShellViewModel } from "./usePowerAppShellViewModel";
 import { formatComposerContextStats } from "./composerContextStats";
+import { estimateApproxTokens } from "@/lib/domain/contextBudget";
+import {
+  renderLocalPromptTemplate,
+  STANDARD_CHAT_BASELINE_TEMPLATE
+} from "@/lib/domain/promptTemplates";
 import type { Catalog, ChatGroup, ChatSummary, FolderSummary, ThreadMessage } from "./types";
 
 function chat(id: string): ChatSummary {
@@ -10,7 +15,6 @@ function chat(id: string): ChatSummary {
     activeLeafMessageId: null,
     createdAt: "2026-06-10T00:00:00.000Z",
     defaultModelId: "gpt-5.5",
-    defaultPromptPresetId: null,
     defaultProvider: "openai",
     folderId: null,
     id,
@@ -31,7 +35,6 @@ function renderViewModel(overrides: Partial<Parameters<typeof usePowerAppShellVi
       chatContentMatchIds: new Set(),
       chatQuery: "",
       chats: [chat("chat-a")],
-      developerPrompt: "",
       draft: "",
       folders: [],
       maxOutputTokens: "128000",
@@ -39,11 +42,10 @@ function renderViewModel(overrides: Partial<Parameters<typeof usePowerAppShellVi
       projectSettingsFolderId: null,
       renderActiveLeafId: null,
       runSurface: { events: [], lastRun: null },
+      selectedAssistantPromptCharacterCount: null,
       selectedModelId: "gpt-5.5",
-      selectedPromptId: null,
       selectedProvider: "openai",
       selectedSearchStrategy: "search-disabled",
-      systemPrompt: "",
       visibleMessages: [],
       ...overrides
     })
@@ -54,7 +56,6 @@ const emptyCatalog: Catalog = {
   defaults: {
     controlValues: {},
     modelId: "gpt-5.5",
-    promptPresetId: null,
     provider: "openai",
     searchStrategyId: "search-disabled",
     showCitations: true,
@@ -62,7 +63,6 @@ const emptyCatalog: Catalog = {
     showToolActivity: true,
   },
   models: [],
-  promptPresets: [],
   providers: [],
   searchStrategies: [{ displayName: "No Search", kind: "none", strategyId: "search-disabled" }]
 };
@@ -87,7 +87,6 @@ describe("usePowerAppShellViewModel", () => {
         chatContentMatchIds: contentMatchIds,
         chatQuery: "",
         chats,
-        developerPrompt: "",
         draft: "",
         folders,
         maxOutputTokens: "128000",
@@ -95,11 +94,10 @@ describe("usePowerAppShellViewModel", () => {
         projectSettingsFolderId: null,
         renderActiveLeafId: null,
         runSurface: { events: [], lastRun: null },
+        selectedAssistantPromptCharacterCount: null,
         selectedModelId: "gpt-5.5",
-        selectedPromptId: null,
         selectedProvider: "openai",
         selectedSearchStrategy: "search-disabled",
-        systemPrompt: "",
         visibleMessages
       });
 
@@ -267,12 +265,27 @@ describe("usePowerAppShellViewModel", () => {
     expect(result.current.composerContextStats.totalContextTokens).toBeNull();
   });
 
+  it("swaps the baseline estimate for the assistant prompt size when an assistant is selected", () => {
+    const withoutAssistant = renderViewModel();
+    const baselineTokens = estimateApproxTokens(
+      renderLocalPromptTemplate(STANDARD_CHAT_BASELINE_TEMPLATE)
+    );
+    expect(baselineTokens).toBeGreaterThan(0);
+    expect(withoutAssistant.result.current.composerContextStats.approximateInputTokens).toBe(
+      baselineTokens
+    );
+
+    const withAssistant = renderViewModel({ selectedAssistantPromptCharacterCount: 8001 });
+    expect(withAssistant.result.current.composerContextStats.approximateInputTokens).toBe(
+      Math.ceil(8001 / 4)
+    );
+  });
+
   it("derives current context and active-chat usage stats", () => {
     const catalog: Catalog = {
       defaults: {
         controlValues: {},
         modelId: "gpt-5.5",
-        promptPresetId: null,
         provider: "openai",
         searchStrategyId: "search-disabled",
         showCitations: true,
@@ -306,7 +319,6 @@ describe("usePowerAppShellViewModel", () => {
           searchStrategyIds: ["search-disabled"]
         }
       ],
-      promptPresets: [],
       providers: [{ id: "openai", models: ["gpt-5.5"], name: "OpenAI" }],
       searchStrategies: [{ displayName: "No Search", kind: "none", strategyId: "search-disabled" }]
     };
@@ -339,11 +351,9 @@ describe("usePowerAppShellViewModel", () => {
       activeThreadUsageStats: usageStats,
       catalog,
       chats: [currentChat],
-      developerPrompt: "",
       draft: "draft text",
       maxOutputTokens: "64000",
       renderActiveLeafId: "assistant-1",
-      systemPrompt: "system",
       visibleMessages
     });
 
@@ -357,7 +367,6 @@ describe("usePowerAppShellViewModel", () => {
       defaults: {
         controlValues: {},
         modelId: "fake-model-id",
-        promptPresetId: null,
         provider: "fake-connection-id",
         searchStrategyId: "search-disabled",
         showCitations: true,
@@ -393,7 +402,6 @@ describe("usePowerAppShellViewModel", () => {
           upstreamModelId: "fake-qsa"
         }
       ],
-      promptPresets: [],
       providers: [
         {
           family: "fake",
@@ -420,7 +428,6 @@ describe("usePowerAppShellViewModel", () => {
       defaults: {
         controlValues: {},
         modelId: "gpt-5.5",
-        promptPresetId: null,
         provider: "openai",
         searchStrategyId: "search-disabled",
         showCitations: true,
@@ -454,7 +461,6 @@ describe("usePowerAppShellViewModel", () => {
           searchStrategyIds: ["search-disabled"]
         }
       ],
-      promptPresets: [],
       providers: [{ id: "openai", models: ["gpt-5.5"], name: "OpenAI" }],
       searchStrategies: [{ displayName: "No Search", kind: "none", strategyId: "search-disabled" }]
     };

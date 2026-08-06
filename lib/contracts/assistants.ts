@@ -1,0 +1,792 @@
+import type { ErrorResponse, SessionErrorCode } from "./http";
+import {
+  decodeSearchPlan,
+  MAX_SEARCH_PLAN_OPTIONS,
+  type SearchPlan
+} from "./search";
+
+export const ASSISTANT_NAME_MAX_LENGTH = 80;
+export const ASSISTANT_DESCRIPTION_MAX_LENGTH = 400;
+export const ASSISTANT_SYSTEM_PROMPT_MAX_LENGTH = 32_000;
+export const ASSISTANT_DEVELOPER_PROMPT_MAX_LENGTH = 16_000;
+export const ASSISTANT_STARTER_PROMPT_MAX_LENGTH = 400;
+export const ASSISTANT_MAX_STARTER_PROMPTS = 4;
+export const ASSISTANT_MAX_MCP_SERVERS = 16;
+export const ASSISTANT_MAX_OUTPUT_TOKENS_CEILING = 1_000_000;
+
+export const ASSISTANT_CATEGORIES = [
+  "coding",
+  "writing",
+  "research",
+  "analysis",
+  "support",
+  "productivity",
+  "learning",
+  "other"
+] as const;
+
+export type AssistantCategory = (typeof ASSISTANT_CATEGORIES)[number];
+
+export const ASSISTANT_CATEGORY_LABELS: Readonly<Record<AssistantCategory, string>> = {
+  analysis: "Analysis",
+  coding: "Coding",
+  learning: "Learning",
+  other: "Other",
+  productivity: "Productivity",
+  research: "Research",
+  support: "Support",
+  writing: "Writing"
+};
+
+export const ASSISTANT_AVATAR_PALETTES = [
+  "ember",
+  "ocean",
+  "meadow",
+  "plum",
+  "sand",
+  "slate",
+  "coral",
+  "pine"
+] as const;
+
+export type AssistantAvatarPalette = (typeof ASSISTANT_AVATAR_PALETTES)[number];
+
+export const ASSISTANT_AVATAR_SHAPES = [
+  "circle",
+  "square",
+  "diamond",
+  "hexagon",
+  "triangle",
+  "ring"
+] as const;
+
+export type AssistantAvatarShape = (typeof ASSISTANT_AVATAR_SHAPES)[number];
+
+export type AssistantAvatarRotation = 0 | 1 | 2 | 3;
+
+export const ASSISTANT_AVATAR_MAX_ACCENTS = 4;
+export const ASSISTANT_AVATAR_ACCENT_SLOTS = 8;
+export const ASSISTANT_AVATAR_RECIPE_MIN_BYTES = 6 + ASSISTANT_AVATAR_MAX_ACCENTS;
+
+export type AssistantAvatarRecipe = {
+  accents: number[];
+  backgroundShape: AssistantAvatarShape;
+  foregroundShape: AssistantAvatarShape;
+  kind: "generated";
+  paletteId: AssistantAvatarPalette;
+  recipeVersion: 1;
+  rotations: [AssistantAvatarRotation, AssistantAvatarRotation];
+};
+
+const avatarRecipeKeys = new Set([
+  "accents",
+  "backgroundShape",
+  "foregroundShape",
+  "kind",
+  "paletteId",
+  "recipeVersion",
+  "rotations"
+]);
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isRotation(value: unknown): value is AssistantAvatarRotation {
+  return value === 0 || value === 1 || value === 2 || value === 3;
+}
+
+/**
+ * Strict, fail-closed decoder for the browser-generated avatar recipe. Unknown
+ * versions, keys, enum members, oversized arrays, and non-integer accents all
+ * return null because client-generated data remains untrusted.
+ */
+export function decodeAssistantAvatarRecipe(value: unknown): AssistantAvatarRecipe | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+
+  const keys = Object.keys(value);
+  if (keys.length !== avatarRecipeKeys.size || keys.some((key) => !avatarRecipeKeys.has(key))) {
+    return null;
+  }
+
+  if (value.kind !== "generated" || value.recipeVersion !== 1) {
+    return null;
+  }
+
+  if (
+    !ASSISTANT_AVATAR_PALETTES.includes(value.paletteId as AssistantAvatarPalette) ||
+    !ASSISTANT_AVATAR_SHAPES.includes(value.backgroundShape as AssistantAvatarShape) ||
+    !ASSISTANT_AVATAR_SHAPES.includes(value.foregroundShape as AssistantAvatarShape)
+  ) {
+    return null;
+  }
+
+  const rotations = value.rotations;
+  if (!Array.isArray(rotations) || rotations.length !== 2 || !rotations.every(isRotation)) {
+    return null;
+  }
+
+  const accents = value.accents;
+  if (
+    !Array.isArray(accents) ||
+    accents.length > ASSISTANT_AVATAR_MAX_ACCENTS ||
+    accents.some(
+      (accent) =>
+        typeof accent !== "number" ||
+        !Number.isInteger(accent) ||
+        accent < 0 ||
+        accent >= ASSISTANT_AVATAR_ACCENT_SLOTS
+    ) ||
+    new Set(accents).size !== accents.length
+  ) {
+    return null;
+  }
+
+  return {
+    accents: accents.map((accent) => accent as number),
+    backgroundShape: value.backgroundShape as AssistantAvatarShape,
+    foregroundShape: value.foregroundShape as AssistantAvatarShape,
+    kind: "generated",
+    paletteId: value.paletteId as AssistantAvatarPalette,
+    recipeVersion: 1,
+    rotations: [rotations[0] as AssistantAvatarRotation, rotations[1] as AssistantAvatarRotation]
+  };
+}
+
+/**
+ * Pure bounded generator: maps random bytes (Web Crypto in the browser, fixed
+ * vectors in tests) to one exact recipe. The same bytes always produce the same
+ * recipe; no clock, locale, or environment input participates.
+ */
+export function assistantAvatarRecipeFromBytes(bytes: Uint8Array): AssistantAvatarRecipe {
+  if (bytes.length < ASSISTANT_AVATAR_RECIPE_MIN_BYTES) {
+    throw new RangeError("assistant_avatar_recipe_requires_more_bytes");
+  }
+
+  const accentCount = bytes[5]! % (ASSISTANT_AVATAR_MAX_ACCENTS + 1);
+  const accents: number[] = [];
+  for (let index = 0; index < accentCount; index += 1) {
+    let slot = bytes[6 + index]! % ASSISTANT_AVATAR_ACCENT_SLOTS;
+    while (accents.includes(slot)) {
+      slot = (slot + 1) % ASSISTANT_AVATAR_ACCENT_SLOTS;
+    }
+    accents.push(slot);
+  }
+
+  return {
+    accents,
+    backgroundShape: ASSISTANT_AVATAR_SHAPES[bytes[1]! % ASSISTANT_AVATAR_SHAPES.length]!,
+    foregroundShape: ASSISTANT_AVATAR_SHAPES[bytes[2]! % ASSISTANT_AVATAR_SHAPES.length]!,
+    kind: "generated",
+    paletteId: ASSISTANT_AVATAR_PALETTES[bytes[0]! % ASSISTANT_AVATAR_PALETTES.length]!,
+    recipeVersion: 1,
+    rotations: [
+      (bytes[3]! % 4) as AssistantAvatarRotation,
+      (bytes[4]! % 4) as AssistantAvatarRotation
+    ]
+  };
+}
+
+export type AssistantRunControls = {
+  backgroundMode?: boolean;
+  maxOutputTokens?: number;
+  reasoningEffort?: string;
+  reasoningMode?: string;
+  streamMode?: boolean;
+  temperature?: number;
+};
+
+const runControlKeys = new Set([
+  "backgroundMode",
+  "maxOutputTokens",
+  "reasoningEffort",
+  "reasoningMode",
+  "streamMode",
+  "temperature"
+]);
+
+function boundedControlToken(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0 && value.length <= 64;
+}
+
+export function decodeAssistantRunControls(value: unknown): AssistantRunControls | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+
+  if (Object.keys(value).some((key) => !runControlKeys.has(key))) {
+    return null;
+  }
+
+  const controls: AssistantRunControls = {};
+
+  if ("backgroundMode" in value) {
+    if (typeof value.backgroundMode !== "boolean") return null;
+    controls.backgroundMode = value.backgroundMode;
+  }
+  if ("maxOutputTokens" in value) {
+    if (
+      typeof value.maxOutputTokens !== "number" ||
+      !Number.isInteger(value.maxOutputTokens) ||
+      value.maxOutputTokens < 1 ||
+      value.maxOutputTokens > ASSISTANT_MAX_OUTPUT_TOKENS_CEILING
+    ) {
+      return null;
+    }
+    controls.maxOutputTokens = value.maxOutputTokens;
+  }
+  if ("reasoningEffort" in value) {
+    if (!boundedControlToken(value.reasoningEffort)) return null;
+    controls.reasoningEffort = value.reasoningEffort;
+  }
+  if ("reasoningMode" in value) {
+    if (!boundedControlToken(value.reasoningMode)) return null;
+    controls.reasoningMode = value.reasoningMode;
+  }
+  if ("streamMode" in value) {
+    if (typeof value.streamMode !== "boolean") return null;
+    controls.streamMode = value.streamMode;
+  }
+  if ("temperature" in value) {
+    if (
+      typeof value.temperature !== "number" ||
+      !Number.isFinite(value.temperature) ||
+      value.temperature < -10 ||
+      value.temperature > 10
+    ) {
+      return null;
+    }
+    controls.temperature = value.temperature;
+  }
+
+  return controls;
+}
+
+export type AssistantDraft = {
+  avatar: AssistantAvatarRecipe;
+  category: AssistantCategory | null;
+  description: string;
+  developerPrompt: string | null;
+  mcpServerIds: string[];
+  name: string;
+  providerModelId: string;
+  runControls: AssistantRunControls;
+  searchPlan: SearchPlan;
+  starterPrompts: string[];
+  systemPrompt: string;
+};
+
+export type AssistantDraftDecodeResult =
+  | { code: string; ok: false }
+  | { draft: AssistantDraft; ok: true };
+
+function boundedId(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0 && value.length <= 64;
+}
+
+/**
+ * Strict decoder for create/revise payloads. Every bound fails closed with a
+ * stable field-scoped code so the editor can attach errors to their section.
+ */
+export function decodeAssistantDraft(value: unknown): AssistantDraftDecodeResult {
+  if (!isRecord(value)) {
+    return { code: "assistant_draft_invalid", ok: false };
+  }
+
+  const name = typeof value.name === "string" ? value.name.trim() : "";
+  if (!name || name.length > ASSISTANT_NAME_MAX_LENGTH) {
+    return { code: "assistant_name_invalid", ok: false };
+  }
+
+  const description = typeof value.description === "string" ? value.description.trim() : "";
+  if (description.length > ASSISTANT_DESCRIPTION_MAX_LENGTH) {
+    return { code: "assistant_description_invalid", ok: false };
+  }
+
+  const category = value.category ?? null;
+  if (category !== null && !ASSISTANT_CATEGORIES.includes(category as AssistantCategory)) {
+    return { code: "assistant_category_invalid", ok: false };
+  }
+
+  const avatar = decodeAssistantAvatarRecipe(value.avatar);
+  if (!avatar) {
+    return { code: "assistant_avatar_invalid", ok: false };
+  }
+
+  if (!boundedId(value.providerModelId)) {
+    return { code: "assistant_model_invalid", ok: false };
+  }
+
+  const systemPrompt = typeof value.systemPrompt === "string" ? value.systemPrompt : null;
+  if (systemPrompt === null || systemPrompt.length > ASSISTANT_SYSTEM_PROMPT_MAX_LENGTH) {
+    return { code: "assistant_system_prompt_invalid", ok: false };
+  }
+
+  const developerPrompt = value.developerPrompt ?? null;
+  if (
+    developerPrompt !== null &&
+    (typeof developerPrompt !== "string" ||
+      developerPrompt.length > ASSISTANT_DEVELOPER_PROMPT_MAX_LENGTH)
+  ) {
+    return { code: "assistant_developer_prompt_invalid", ok: false };
+  }
+
+  const runControls = decodeAssistantRunControls(value.runControls ?? {});
+  if (!runControls) {
+    return { code: "assistant_run_controls_invalid", ok: false };
+  }
+
+  const decodedPlan = decodeSearchPlan(value.searchPlan);
+  if (!decodedPlan.ok || decodedPlan.plan.optionIds.length > MAX_SEARCH_PLAN_OPTIONS) {
+    return { code: "assistant_search_plan_invalid", ok: false };
+  }
+
+  const mcpServerIds = value.mcpServerIds ?? [];
+  if (
+    !Array.isArray(mcpServerIds) ||
+    mcpServerIds.length > ASSISTANT_MAX_MCP_SERVERS ||
+    !mcpServerIds.every(boundedId) ||
+    new Set(mcpServerIds).size !== mcpServerIds.length
+  ) {
+    return { code: "assistant_mcp_servers_invalid", ok: false };
+  }
+
+  const starterPromptsInput = value.starterPrompts ?? [];
+  if (
+    !Array.isArray(starterPromptsInput) ||
+    starterPromptsInput.length > ASSISTANT_MAX_STARTER_PROMPTS ||
+    !starterPromptsInput.every(
+      (starter) => typeof starter === "string" && starter.trim().length > 0 &&
+        starter.length <= ASSISTANT_STARTER_PROMPT_MAX_LENGTH
+    )
+  ) {
+    return { code: "assistant_starter_prompts_invalid", ok: false };
+  }
+
+  return {
+    draft: {
+      avatar,
+      category: (category as AssistantCategory | null) ?? null,
+      description,
+      developerPrompt: typeof developerPrompt === "string" ? developerPrompt : null,
+      mcpServerIds: mcpServerIds.map((id) => (id as string).trim()),
+      name,
+      providerModelId: (value.providerModelId as string).trim(),
+      runControls,
+      searchPlan: decodedPlan.plan,
+      starterPrompts: starterPromptsInput.map((starter) => (starter as string).trim()),
+      systemPrompt
+    },
+    ok: true
+  };
+}
+
+export type AssistantAvailabilityReason = "model_access" | "search_access" | "tools_access";
+
+export type AssistantAvailability =
+  | { ok: true }
+  | { ok: false; reason: AssistantAvailabilityReason };
+
+export type AssistantAccessScope =
+  | { groupNames: string[]; kind: "group" }
+  | { kind: "installation" }
+  | { kind: "owner" };
+
+export type AssistantCapabilityFingerprint = {
+  mcpServerCount: number;
+  modelLabel: string | null;
+  reasoningEffort: string | null;
+  searchOptionCount: number;
+};
+
+export type AssistantSummary = {
+  archived: boolean;
+  availability: AssistantAvailability;
+  avatar: AssistantAvatarRecipe;
+  category: AssistantCategory | null;
+  description: string;
+  fingerprint: AssistantCapabilityFingerprint;
+  id: string;
+  name: string;
+  owned: boolean;
+  ownerDisplayName: string;
+  pinned: boolean;
+  published: boolean;
+  revisionNumber: number;
+  scope: AssistantAccessScope;
+  starterPrompts: string[];
+  updatedAt: string;
+};
+
+export type AssistantRevisionContent = {
+  authorDisplayName: string | null;
+  avatar: AssistantAvatarRecipe;
+  category: AssistantCategory | null;
+  createdAt: string;
+  description: string;
+  developerPrompt: string | null;
+  mcpServerIds: string[];
+  name: string;
+  providerModelId: string | null;
+  revisionNumber: number;
+  runControls: AssistantRunControls;
+  searchPlan: SearchPlan;
+  starterPrompts: string[];
+  systemPrompt: string;
+};
+
+export type AssistantPublicationView = {
+  groupId: string | null;
+  groupName: string | null;
+  id: string;
+  revisionNumber: number;
+  scope: "group" | "installation";
+  updatedAt: string;
+};
+
+export type AssistantDetail = {
+  archived: boolean;
+  availability: AssistantAvailability;
+  id: string;
+  owned: boolean;
+  ownerDisplayName: string;
+  pinned: boolean;
+  publications?: AssistantPublicationView[];
+  revision: AssistantRevisionContent;
+  revisionCount?: number;
+  version?: number;
+};
+
+export type AssistantRevisionHistoryEntry = {
+  authorDisplayName: string | null;
+  changedSections: string[];
+  createdAt: string;
+  revisionNumber: number;
+};
+
+export type AssistantPublishableGroup = { id: string; name: string };
+
+export type AssistantListResponse = {
+  assistants: AssistantSummary[];
+  /** The caller's active group memberships, usable as publication targets. */
+  publishableGroups: AssistantPublishableGroup[];
+  viewer: { canPublishInstallation: boolean };
+};
+export type AssistantDetailResponse = { assistant: AssistantDetail };
+export type AssistantRevisionsResponse = { revisions: AssistantRevisionHistoryEntry[] };
+export type AssistantRevisionResponse = { revision: AssistantRevisionContent };
+export type AssistantPublicationResponse = { publication: AssistantPublicationView };
+
+export type AssistantErrorCode =
+  | SessionErrorCode
+  | "assistant_archived"
+  | "assistant_avatar_invalid"
+  | "assistant_category_invalid"
+  | "assistant_description_invalid"
+  | "assistant_developer_prompt_invalid"
+  | "assistant_draft_invalid"
+  | "assistant_mcp_servers_invalid"
+  | "assistant_model_invalid"
+  | "assistant_model_not_available"
+  | "assistant_name_invalid"
+  | "assistant_not_available"
+  | "assistant_publication_invalid"
+  | "assistant_revision_not_found"
+  | "assistant_run_controls_invalid"
+  | "assistant_search_plan_invalid"
+  | "assistant_search_option_not_available"
+  | "assistant_starter_prompts_invalid"
+  | "assistant_system_prompt_invalid"
+  | "assistant_tools_not_available"
+  | "assistant_version_conflict"
+  | "forbidden"
+  | "json_required";
+
+export type AssistantErrorResponse = ErrorResponse<AssistantErrorCode>;
+
+function nonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0;
+}
+
+function stringOrNull(value: unknown): value is string | null {
+  return value === null || typeof value === "string";
+}
+
+function decodeAvailability(value: unknown): AssistantAvailability | null {
+  if (!isRecord(value)) return null;
+  if (value.ok === true) return { ok: true };
+  if (
+    value.ok === false &&
+    (value.reason === "model_access" || value.reason === "search_access" || value.reason === "tools_access")
+  ) {
+    return { ok: false, reason: value.reason };
+  }
+  return null;
+}
+
+function decodeScope(value: unknown): AssistantAccessScope | null {
+  if (!isRecord(value)) return null;
+  if (value.kind === "owner") return { kind: "owner" };
+  if (value.kind === "installation") return { kind: "installation" };
+  if (
+    value.kind === "group" &&
+    Array.isArray(value.groupNames) &&
+    value.groupNames.every((name) => typeof name === "string")
+  ) {
+    return { groupNames: value.groupNames as string[], kind: "group" };
+  }
+  return null;
+}
+
+function decodeFingerprint(value: unknown): AssistantCapabilityFingerprint | null {
+  if (
+    !isRecord(value) ||
+    typeof value.mcpServerCount !== "number" ||
+    !stringOrNull(value.modelLabel) ||
+    !stringOrNull(value.reasoningEffort) ||
+    typeof value.searchOptionCount !== "number"
+  ) {
+    return null;
+  }
+  return {
+    mcpServerCount: value.mcpServerCount,
+    modelLabel: value.modelLabel,
+    reasoningEffort: value.reasoningEffort,
+    searchOptionCount: value.searchOptionCount
+  };
+}
+
+function decodeCategory(value: unknown): AssistantCategory | null | undefined {
+  if (value === null) return null;
+  if (ASSISTANT_CATEGORIES.includes(value as AssistantCategory)) {
+    return value as AssistantCategory;
+  }
+  return undefined;
+}
+
+function stringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((entry) => typeof entry === "string");
+}
+
+export function decodeAssistantSummary(value: unknown): AssistantSummary | null {
+  if (!isRecord(value)) return null;
+  const availability = decodeAvailability(value.availability);
+  const avatar = decodeAssistantAvatarRecipe(value.avatar);
+  const category = decodeCategory(value.category);
+  const fingerprint = decodeFingerprint(value.fingerprint);
+  const scope = decodeScope(value.scope);
+  if (
+    typeof value.archived !== "boolean" ||
+    !availability ||
+    !avatar ||
+    category === undefined ||
+    typeof value.description !== "string" ||
+    !fingerprint ||
+    !nonEmptyString(value.id) ||
+    !nonEmptyString(value.name) ||
+    typeof value.owned !== "boolean" ||
+    typeof value.ownerDisplayName !== "string" ||
+    typeof value.pinned !== "boolean" ||
+    typeof value.published !== "boolean" ||
+    typeof value.revisionNumber !== "number" ||
+    !scope ||
+    !stringArray(value.starterPrompts) ||
+    !nonEmptyString(value.updatedAt)
+  ) {
+    return null;
+  }
+
+  return {
+    archived: value.archived,
+    availability,
+    avatar,
+    category,
+    description: value.description,
+    fingerprint,
+    id: value.id,
+    name: value.name,
+    owned: value.owned,
+    ownerDisplayName: value.ownerDisplayName,
+    pinned: value.pinned,
+    published: value.published,
+    revisionNumber: value.revisionNumber,
+    scope,
+    starterPrompts: value.starterPrompts,
+    updatedAt: value.updatedAt
+  };
+}
+
+export function decodeAssistantRevisionContent(value: unknown): AssistantRevisionContent | null {
+  if (!isRecord(value)) return null;
+  const avatar = decodeAssistantAvatarRecipe(value.avatar);
+  const category = decodeCategory(value.category);
+  const runControls = decodeAssistantRunControls(value.runControls);
+  const searchPlan = decodeSearchPlan(value.searchPlan);
+  if (
+    !stringOrNull(value.authorDisplayName) ||
+    !avatar ||
+    category === undefined ||
+    !nonEmptyString(value.createdAt) ||
+    typeof value.description !== "string" ||
+    !stringOrNull(value.developerPrompt) ||
+    !stringArray(value.mcpServerIds) ||
+    !nonEmptyString(value.name) ||
+    !stringOrNull(value.providerModelId) ||
+    typeof value.revisionNumber !== "number" ||
+    !runControls ||
+    !searchPlan.ok ||
+    !stringArray(value.starterPrompts) ||
+    typeof value.systemPrompt !== "string"
+  ) {
+    return null;
+  }
+
+  return {
+    authorDisplayName: value.authorDisplayName,
+    avatar,
+    category,
+    createdAt: value.createdAt,
+    description: value.description,
+    developerPrompt: value.developerPrompt,
+    mcpServerIds: value.mcpServerIds,
+    name: value.name,
+    providerModelId: value.providerModelId,
+    revisionNumber: value.revisionNumber,
+    runControls,
+    searchPlan: searchPlan.plan,
+    starterPrompts: value.starterPrompts,
+    systemPrompt: value.systemPrompt
+  };
+}
+
+function decodePublicationView(value: unknown): AssistantPublicationView | null {
+  if (
+    !isRecord(value) ||
+    !stringOrNull(value.groupId) ||
+    !stringOrNull(value.groupName) ||
+    !nonEmptyString(value.id) ||
+    typeof value.revisionNumber !== "number" ||
+    (value.scope !== "group" && value.scope !== "installation") ||
+    !nonEmptyString(value.updatedAt)
+  ) {
+    return null;
+  }
+  return {
+    groupId: value.groupId,
+    groupName: value.groupName,
+    id: value.id,
+    revisionNumber: value.revisionNumber,
+    scope: value.scope,
+    updatedAt: value.updatedAt
+  };
+}
+
+export function decodeAssistantDetail(value: unknown): AssistantDetail | null {
+  if (!isRecord(value)) return null;
+  const availability = decodeAvailability(value.availability);
+  const revision = decodeAssistantRevisionContent(value.revision);
+  if (
+    typeof value.archived !== "boolean" ||
+    !availability ||
+    !nonEmptyString(value.id) ||
+    typeof value.owned !== "boolean" ||
+    typeof value.ownerDisplayName !== "string" ||
+    typeof value.pinned !== "boolean" ||
+    !revision
+  ) {
+    return null;
+  }
+
+  let publications: AssistantPublicationView[] | undefined;
+  if (value.publications !== undefined) {
+    if (!Array.isArray(value.publications)) return null;
+    const decoded = value.publications.map(decodePublicationView);
+    if (decoded.some((entry) => entry === null)) return null;
+    publications = decoded as AssistantPublicationView[];
+  }
+
+  if (value.revisionCount !== undefined && typeof value.revisionCount !== "number") return null;
+  if (value.version !== undefined && typeof value.version !== "number") return null;
+
+  return {
+    archived: value.archived,
+    availability,
+    id: value.id,
+    owned: value.owned,
+    ownerDisplayName: value.ownerDisplayName,
+    pinned: value.pinned,
+    ...(publications ? { publications } : {}),
+    revision,
+    ...(value.revisionCount !== undefined ? { revisionCount: value.revisionCount } : {}),
+    ...(value.version !== undefined ? { version: value.version } : {})
+  };
+}
+
+export function decodeAssistantListResponse(value: unknown): AssistantListResponse | null {
+  if (
+    !isRecord(value) ||
+    !Array.isArray(value.assistants) ||
+    !Array.isArray(value.publishableGroups) ||
+    !isRecord(value.viewer) ||
+    typeof value.viewer.canPublishInstallation !== "boolean"
+  ) {
+    return null;
+  }
+  const assistants = value.assistants.map(decodeAssistantSummary);
+  if (assistants.some((assistant) => assistant === null)) return null;
+  const publishableGroups: AssistantPublishableGroup[] = [];
+  for (const group of value.publishableGroups) {
+    if (!isRecord(group) || !nonEmptyString(group.id) || !nonEmptyString(group.name)) {
+      return null;
+    }
+    publishableGroups.push({ id: group.id, name: group.name });
+  }
+  return {
+    assistants: assistants as AssistantSummary[],
+    publishableGroups,
+    viewer: { canPublishInstallation: value.viewer.canPublishInstallation }
+  };
+}
+
+export function decodeAssistantDetailResponse(value: unknown): AssistantDetailResponse | null {
+  if (!isRecord(value)) return null;
+  const assistant = decodeAssistantDetail(value.assistant);
+  return assistant ? { assistant } : null;
+}
+
+export function decodeAssistantRevisionsResponse(value: unknown): AssistantRevisionsResponse | null {
+  if (!isRecord(value) || !Array.isArray(value.revisions)) return null;
+  const revisions: AssistantRevisionHistoryEntry[] = [];
+  for (const entry of value.revisions) {
+    if (
+      !isRecord(entry) ||
+      !stringOrNull(entry.authorDisplayName) ||
+      !stringArray(entry.changedSections) ||
+      !nonEmptyString(entry.createdAt) ||
+      typeof entry.revisionNumber !== "number"
+    ) {
+      return null;
+    }
+    revisions.push({
+      authorDisplayName: entry.authorDisplayName,
+      changedSections: entry.changedSections,
+      createdAt: entry.createdAt,
+      revisionNumber: entry.revisionNumber
+    });
+  }
+  return { revisions };
+}
+
+export function decodeAssistantRevisionResponse(value: unknown): AssistantRevisionResponse | null {
+  if (!isRecord(value)) return null;
+  const revision = decodeAssistantRevisionContent(value.revision);
+  return revision ? { revision } : null;
+}
+
+export function decodeAssistantPublicationResponse(value: unknown): AssistantPublicationResponse | null {
+  if (!isRecord(value)) return null;
+  const publication = decodePublicationView(value.publication);
+  return publication ? { publication } : null;
+}

@@ -130,7 +130,6 @@ export const matrixCatalog = {
     controlValues: {},
     modelId: "gpt-5.5",
     organizationSearchPlan: { mode: "all_selected", optionIds: [] },
-    promptPresetId: "prompt-helpful",
     provider: "openai",
     searchPlan: { mode: "all_selected", optionIds: [] },
     searchPreferenceSource: "personal",
@@ -194,15 +193,6 @@ export const matrixCatalog = {
       reasoningOptions: ["none", "minimal", "low", "medium", "high"]
     })
   ],
-  promptPresets: [
-    {
-      developerPrompt: null,
-      id: "prompt-helpful",
-      isDefault: true,
-      name: "Helpful Assistant",
-      systemPrompt: "You are a helpful AI assistant. Today is {local_date}, local time is {local_time}."
-    }
-  ],
   providers: [
     {
       family: "openai",
@@ -221,33 +211,6 @@ export const matrixCatalog = {
       id: "openrouter",
       models: ["anthropic/claude-opus-4.8", "google/gemini-3.5-flash", "~google/gemini-pro-latest"],
       name: "OpenRouter"
-    }
-  ],
-  runProfiles: [
-    {
-      available: false,
-      description: "Simple, well-defined questions",
-      id: "fast",
-      label: "Fast",
-      unavailableReason: "model_unavailable"
-    },
-    {
-      available: false,
-      description: "Most everyday questions",
-      id: "balanced",
-      label: "Balanced",
-      unavailableReason: "model_unavailable"
-    },
-    {
-      available: true,
-      configurationLabel: "GPT-5.6 Sol · Pro · Maximum",
-      description: "Difficult or open-ended questions",
-      id: "deep",
-      label: "Deep",
-      modelId: "gpt-5.6-sol",
-      provider: "openai",
-      reasoningEffort: "max",
-      reasoningMode: "pro"
     }
   ],
   searchStrategies: [

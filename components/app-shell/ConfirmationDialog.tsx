@@ -158,29 +158,6 @@ export function MessageDeleteConfirmationDialog({
   );
 }
 
-export function PromptDeleteConfirmationDialog({
-  onCancel,
-  onConfirm,
-  promptName
-}: {
-  onCancel(): void;
-  onConfirm(): void;
-  promptName: string;
-}) {
-  return (
-    <ConfirmationDialog
-      confirmLabel="Delete prompt"
-      dialogLabel={`Delete prompt ${promptName}`}
-      onCancel={onCancel}
-      onConfirm={onConfirm}
-      testId="delete-prompt-confirmation"
-      title="Delete prompt?"
-    >
-      {`"${promptName}" will be removed from your prompt presets.`}
-    </ConfirmationDialog>
-  );
-}
-
 export function DiscardChangesConfirmationDialog({
   label,
   onCancel,

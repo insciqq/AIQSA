@@ -24,7 +24,14 @@ export type ModelRunStatus =
  * The client-visible model-run fields. Persistence adapters may return
  * additional inspection fields without making them part of the wire contract.
  */
+export type ModelRunAssistantProvenance = {
+  assistantId: string;
+  name: string;
+  revisionNumber: number;
+};
+
 export type ModelRunResponseProjection = {
+  assistant?: ModelRunAssistantProvenance | null;
   cachedInputTokens: number;
   cacheWriteInputTokens: number;
   errorPayload: unknown;
@@ -193,6 +200,28 @@ export function decodeGetModelRunResponse(value: unknown): PersistedRun | null {
     return null;
   }
 
+  let assistant: ModelRunAssistantProvenance | null = null;
+  if (run.assistant !== undefined && run.assistant !== null) {
+    const candidate = isRecord(run.assistant) ? run.assistant : null;
+    const assistantId = candidate ? nonEmptyString(candidate.assistantId) : null;
+    const assistantName = candidate ? nonEmptyString(candidate.name) : null;
+    const revisionNumber = candidate?.revisionNumber;
+    if (
+      !assistantId ||
+      !assistantName ||
+      typeof revisionNumber !== "number" ||
+      !Number.isInteger(revisionNumber) ||
+      revisionNumber < 1
+    ) {
+      return null;
+    }
+    assistant = {
+      assistantId,
+      name: assistantName,
+      revisionNumber
+    };
+  }
+
   const cachedInputTokens = finiteNumber(run.cachedInputTokens) ?? 0;
   const cacheWriteInputTokens = finiteNumber(run.cacheWriteInputTokens) ?? 0;
   const estimatedCostMicros = finiteNumber(run.estimatedCostMicros);
@@ -201,6 +230,7 @@ export function decodeGetModelRunResponse(value: unknown): PersistedRun | null {
   const totalTokens = finiteNumber(run.totalTokens) ?? inputTokens + outputTokens;
 
   return {
+    assistant,
     cachedInputTokens,
     cacheWriteInputTokens,
     errorPayload: run.errorPayload,

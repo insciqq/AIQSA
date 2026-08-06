@@ -77,7 +77,6 @@ function answerRequest(): ProviderRunRequest {
     params: {},
     prompt: {
       developer: "private developer prompt",
-      presetId: null,
       system: "private system prompt"
     },
     provider: "answer-provider",

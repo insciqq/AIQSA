@@ -26,7 +26,7 @@ function ownedDataSource(
       mcpOAuthConnections: 0,
       mcpUserServers: 0,
       modelRuns: 0,
-      promptPresets: 0,
+      assistantDefinitions: 0,
       sharedSnapshots: 0,
       usageEvents: 0,
       ...counts
@@ -187,6 +187,19 @@ describe("admin deletion metadata", () => {
 
     expect(
       adminGroupDeletionInfo({
+        _count: { assistantPublications: 2, users: 0 },
+        accessGrants: [],
+        mcpGrants: [],
+        systemRole: null
+      })
+    ).toEqual({
+      canDelete: false,
+      reason: "group_has_grants",
+      summary: "Remove 2 assistant publications before deleting this group."
+    });
+
+    expect(
+      adminGroupDeletionInfo({
         _count: { users: 0 },
         accessGrants: [{ enabled: false }],
         mcpGrants: [],
@@ -195,7 +208,7 @@ describe("admin deletion metadata", () => {
     ).toEqual({
       canDelete: true,
       reason: null,
-      summary: "No members, active grants, or provider credential assignments; this group can be deleted."
+      summary: "No members, active grants, provider credential assignments, or assistant publications; this group can be deleted."
     });
   });
 
@@ -326,7 +339,7 @@ describe("admin deletion metadata", () => {
       "mcpOAuthConnections",
       "mcpUserServers",
       "modelRuns",
-      "promptPresets",
+      "assistantDefinitions",
       "sharedSnapshots",
       "usageEvents"
     ];
@@ -344,7 +357,7 @@ describe("admin deletion metadata", () => {
         mcpOAuthConnections: 0,
         mcpUserServers: 0,
         modelRuns: 0,
-        promptPresets: 0,
+        assistantDefinitions: 0,
         sharedSnapshots: 0,
         usageEvents: 0
       };
@@ -367,7 +380,7 @@ describe("admin deletion metadata", () => {
             mcpOAuthConnections: 6,
             mcpUserServers: 7,
             modelRuns: 8,
-            promptPresets: 9,
+            assistantDefinitions: 9,
             sharedSnapshots: 10,
             usageEvents: 11
           },
@@ -386,7 +399,7 @@ describe("admin deletion metadata", () => {
         mcpOAuthConnections: 6,
         mcpUserServers: 7,
         modelRuns: 8,
-        promptPresets: 9,
+        assistantDefinitions: 9,
         settings: 10,
         sharedSnapshots: 11,
         usageEvents: 12

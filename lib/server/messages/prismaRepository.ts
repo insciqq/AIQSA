@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { Prisma, type MessageStatus, type ModelRunStatus } from "@prisma/client";
 import { prisma } from "../prisma";
-import { lockOwnedPromptPreset, lockUserPromptDefaultsShared } from "../prompts/promptDefaultsLock";
 import {
   ActiveMessageMutationConflictError,
   type BranchChatRecord,
@@ -30,7 +29,6 @@ function isActiveMessageStatus(status: MessageStatus): boolean {
 type LockedOwnedChat = {
   activeLeafMessageId: string | null;
   defaultProviderModelId: string | null;
-  defaultPromptPresetId: string | null;
   folderId: string | null;
   id: string;
   title: string;
@@ -44,7 +42,6 @@ async function lockOwnedChatForMessage(
     SELECT
       chat."activeLeafMessageId",
       chat."defaultProviderModelId",
-      chat."defaultPromptPresetId",
       chat."folderId",
       chat."id",
       chat."title"
@@ -180,7 +177,6 @@ export function createPrismaMessageBranchRepository(prismaClient = prisma): Mess
   return {
     createChatBranchFromMessage: async ({ sourceMessageId, userId }) =>
       prismaClient.$transaction(async (tx) => {
-        await lockUserPromptDefaultsShared(tx, userId);
         const lockedChat = await lockOwnedChatForMessage(tx, {
           messageId: sourceMessageId,
           userId
@@ -194,7 +190,6 @@ export function createPrismaMessageBranchRepository(prismaClient = prisma): Mess
           select: {
             chatId: true,
             id: true,
-            promptPresetId: true,
             role: true,
             status: true
           },
@@ -210,12 +205,6 @@ export function createPrismaMessageBranchRepository(prismaClient = prisma): Mess
         if (isActiveMessageStatus(source.status)) {
           throw new ActiveMessageMutationConflictError();
         }
-        const defaultPromptPresetId = source.promptPresetId
-          ? await lockOwnedPromptPreset(tx, {
-              promptId: source.promptPresetId,
-              userId
-            })
-          : null;
 
         const sourceMessages = await tx.message.findMany({
           orderBy: {
@@ -229,7 +218,6 @@ export function createPrismaMessageBranchRepository(prismaClient = prisma): Mess
             modelId: true,
             outputTokens: true,
             parentMessageId: true,
-            promptPresetId: true,
             provider: true,
             reasoningTokens: true,
             role: true,
@@ -318,7 +306,6 @@ export function createPrismaMessageBranchRepository(prismaClient = prisma): Mess
           data: {
             defaultProviderModelId:
               sourceAnswerBinding?.providerModelId ?? lockedChat.defaultProviderModelId,
-            defaultPromptPresetId,
             folderId: lockedChat.folderId,
             pinned: false,
             title: branchChatTitle(lockedChat.title),
@@ -353,7 +340,6 @@ export function createPrismaMessageBranchRepository(prismaClient = prisma): Mess
               modelId: sourceMessage.modelId,
               outputTokens: sourceMessage.outputTokens,
               parentMessageId,
-              promptPresetId: sourceMessage.promptPresetId,
               provider: sourceMessage.provider,
               reasoningTokens: sourceMessage.reasoningTokens,
               role: sourceMessage.role,
@@ -406,7 +392,6 @@ export function createPrismaMessageBranchRepository(prismaClient = prisma): Mess
                 id: true
               }
             },
-            defaultPromptPresetId: true,
             folderId: true,
             id: true,
             pinned: true,
@@ -462,7 +447,6 @@ export function createPrismaMessageBranchRepository(prismaClient = prisma): Mess
             modelId: original.modelId,
             parentMessageId: original.parentMessageId,
             provider: original.provider,
-            promptPresetId: original.promptPresetId,
             role: original.role,
             status: "complete"
           }

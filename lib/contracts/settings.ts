@@ -3,7 +3,6 @@ import { decodeSearchPlan, type SearchPlan } from "./search";
 export type UserSettingsWire = {
   defaultControlValues: Record<string, unknown>;
   defaultModelId: string;
-  defaultPromptPresetId: string | null;
   defaultProvider: string;
   defaultSearchStrategyId: string;
   defaultSearchPlan?: SearchPlan;
@@ -47,7 +46,6 @@ export function decodeUpdateSettingsResponse(value: unknown): UpdateSettingsResp
   if (
     !isRecord(settings.defaultControlValues) ||
     !isString(settings.defaultModelId) ||
-    !isNullableString(settings.defaultPromptPresetId) ||
     !isString(settings.defaultProvider) ||
     !isNonEmptyString(settings.defaultSearchStrategyId) ||
     typeof settings.showCitations !== "boolean" ||
@@ -64,7 +62,6 @@ export function decodeUpdateSettingsResponse(value: unknown): UpdateSettingsResp
     settings: {
       defaultControlValues: { ...settings.defaultControlValues },
       defaultModelId: settings.defaultModelId,
-      defaultPromptPresetId: settings.defaultPromptPresetId,
       defaultProvider: settings.defaultProvider,
       defaultSearchStrategyId: settings.defaultSearchStrategyId,
       ...(defaultSearchPlan?.ok

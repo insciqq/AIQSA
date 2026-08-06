@@ -54,7 +54,6 @@ function request(overrides: Partial<ProviderRunRequest> = {}): ProviderRunReques
     },
     prompt: {
       developer: "Use direct language.",
-      presetId: "prompt-1",
       system: "You are Claude in AIQSA."
     },
     provider: "anthropic",

@@ -17,7 +17,8 @@ import { McpComposerSummary } from "@/components/app-shell/McpComposerSummary";
 import { ThreadMessageRow } from "@/components/app-shell/ThreadMessageRow";
 import { useCompactComposerReadingMode } from "@/components/app-shell/useCompactComposerReadingMode";
 import type { PipelineSnapshot } from "@/components/app-shell/runState";
-import type { RunProfileId } from "@/components/app-shell/runProfiles";
+import { AssistantAvatar } from "@/components/assistants/AssistantAvatar";
+import type { ShellComposerView } from "@/components/app-shell/powerAppShellViewContracts";
 import type {
   Catalog,
   CatalogModel,
@@ -25,7 +26,6 @@ import type {
   ChatUsageStats,
   ModelParameterControls,
   PersistedRun,
-  PromptPreset,
   ThreadArtifactSummary,
   ThreadMessage
 } from "@/components/app-shell/types";
@@ -60,6 +60,7 @@ export type MainThreadPaneProps = {
   activeChatId: string | null;
   activeChatStreaming: boolean;
   adminEntryVisible?: boolean;
+  assistant: ShellComposerView["assistant"];
   attachments: ComposerAttachment[];
   backgroundMode: boolean;
   compatibleSearchOptionIds?: string[];
@@ -78,7 +79,6 @@ export type MainThreadPaneProps = {
   creatingChat: boolean;
   currentModel: CatalogModel | undefined;
   currentParameterControls: ModelParameterControls;
-  currentPrompt: PromptPreset | null;
   currentRunId: string | null;
   draft: string;
   editingMessageId: string | null;
@@ -98,7 +98,6 @@ export type MainThreadPaneProps = {
   operationError: string | null;
   operationErrorLive: boolean;
   openMcpSettings(): void;
-  openPromptLibrary(): void;
   openRunDetails(): void;
   pipeline?: PipelineSnapshot | null;
   reasoningEffort: string;
@@ -111,12 +110,9 @@ export type MainThreadPaneProps = {
   searchPreferenceSource?: "organization" | "personal";
   searchPlanMode: SearchPlanMode;
   selectModel(model: CatalogModel): void;
-  selectPrompt(promptId: string): void;
-  selectRunProfile(profileId: RunProfileId): void;
   selectSearchPlan(optionIds: readonly string[], mode: SearchPlanMode): void;
   selectSearchStrategy(strategyId: string): void;
   selectedModelId: string;
-  selectedPromptId: string | null;
   selectedProvider: string;
   selectedProviderName: string;
   selectedSearchOptionIds: string[];
@@ -150,6 +146,7 @@ export function MainThreadPane({
   activeChatId,
   activeChatStreaming,
   adminEntryVisible = false,
+  assistant,
   attachments,
   backgroundMode,
   compatibleSearchOptionIds = [],
@@ -168,7 +165,6 @@ export function MainThreadPane({
   creatingChat,
   currentModel,
   currentParameterControls,
-  currentPrompt,
   currentRunId,
   draft,
   editingMessageId,
@@ -188,7 +184,6 @@ export function MainThreadPane({
   operationError,
   operationErrorLive,
   openMcpSettings,
-  openPromptLibrary,
   openRunDetails,
   pipeline = null,
   reasoningEffort,
@@ -201,12 +196,9 @@ export function MainThreadPane({
   searchPreferenceSource = "personal",
   searchPlanMode,
   selectModel,
-  selectPrompt,
-  selectRunProfile,
   selectSearchPlan,
   selectSearchStrategy,
   selectedModelId,
-  selectedPromptId,
   selectedProvider,
   selectedProviderName,
   selectedSearchOptionIds,
@@ -548,6 +540,48 @@ export function MainThreadPane({
                     </Link>
                   ) : null}
                 </div>
+              ) : assistant.selected ? (
+                <div
+                  className="mx-auto w-full max-w-reading sm:text-center"
+                  data-testid="assistant-blank-intro"
+                >
+                  <div className="flex flex-col items-start gap-3 sm:items-center">
+                    <AssistantAvatar recipe={assistant.selected.avatar} size={60} />
+                    <div>
+                      <h2 className="text-2xl font-semibold leading-8 tracking-[-0.025em] text-ink sm:text-3xl sm:leading-9">
+                        {assistant.selected.name}
+                      </h2>
+                      {assistant.selected.description ? (
+                        <p className="mt-2 text-sm leading-6 text-ink-secondary">
+                          {assistant.selected.description}
+                        </p>
+                      ) : null}
+                    </div>
+                  </div>
+                  {assistant.selected.starterPrompts.length > 0 &&
+                  !draft.trim() &&
+                  attachments.length === 0 &&
+                  !uploading ? (
+                    <ul
+                      className="mt-4 flex flex-wrap gap-2 sm:justify-center"
+                      data-testid="assistant-starter-prompts"
+                    >
+                      {assistant.selected.starterPrompts.slice(0, 4).map((starter) => (
+                        <li className="min-w-0" key={starter}>
+                          <button
+                            className="max-w-full truncate rounded-full border border-control-boundary bg-control-surface px-3 py-2 text-left text-xs font-medium text-ink-secondary hover:bg-control-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus [@media(hover:none)]:min-h-touch [@media(pointer:coarse)]:min-h-touch"
+                            disabled={composerUnavailable || activeChatStreaming}
+                            title={starter}
+                            type="button"
+                            onClick={() => assistant.sendStarter(starter)}
+                          >
+                            {starter}
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : null}
+                </div>
               ) : (
                 <div className="mx-auto w-full max-w-reading sm:text-center">
                   <h2 className="text-2xl font-semibold leading-8 tracking-[-0.025em] text-ink sm:text-3xl sm:leading-9">
@@ -683,6 +717,7 @@ export function MainThreadPane({
           attachments={attachments}
           controls={
             <ComposerControls
+              assistant={assistant}
               backgroundMode={backgroundMode}
               compatibleSearchOptionIds={compatibleSearchOptionIds}
               catalog={catalog}
@@ -691,7 +726,6 @@ export function MainThreadPane({
               contextLine={composerContextStats ? formatComposerContextStats(composerContextStats) : null}
               currentModel={currentModel}
               currentParameterControls={currentParameterControls}
-              currentPrompt={currentPrompt}
               disabled={composerUnavailable}
               hasAttachments={attachments.length > 0}
               maxOutputTokens={maxOutputTokens}
@@ -701,7 +735,6 @@ export function MainThreadPane({
               searchPreferenceSource={searchPreferenceSource}
               searchPlanMode={searchPlanMode}
               selectedModelId={selectedModelId}
-              selectedPromptId={selectedPromptId}
               selectedProvider={selectedProvider}
               selectedProviderName={selectedProviderName}
               selectedSearchOptionIds={selectedSearchOptionIds}
@@ -714,11 +747,8 @@ export function MainThreadPane({
               onBackgroundModeChange={changeBackgroundMode}
               onMaxOutputTokensChange={changeMaxOutputTokens}
               onMaxOutputTokensCommit={flushPendingModelControlDefaults}
-              onOpenPromptLibrary={openPromptLibrary}
-              onPromptChange={(promptId) => selectPrompt(promptId)}
               onReasoningEffortChange={changeReasoningEffort}
               onReasoningModeChange={changeReasoningMode}
-              onRunProfileChange={selectRunProfile}
               onSearchPlanChange={selectSearchPlan}
               onSearchStrategyChange={selectSearchStrategy}
               onUseOrganizationSearchDefault={useOrganizationSearchDefault}

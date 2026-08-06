@@ -174,19 +174,58 @@ function buildPlan(
   };
 }
 
+function applyAllowedServerSubset(
+  records: McpRunPlanRecord[],
+  allowedServerIds: readonly string[]
+): { missing: string[]; records: McpRunPlanRecord[] } {
+  const allowed = new Set(allowedServerIds);
+  const subset = records.filter((record) => allowed.has(record.serverId));
+  const present = new Set(subset.map((record) => record.serverId));
+  return {
+    missing: allowedServerIds.filter((serverId) => !present.has(serverId)),
+    records: subset
+  };
+}
+
 export async function prepareMcpRunPlan(input: {
+  /**
+   * Exact required server subset. Every requested server must resolve to an
+   * enabled, entitled, ready runtime for this runner; a missing or unavailable
+   * requested server fails the whole plan closed, and unrelated enabled
+   * servers are excluded.
+   */
+  allowedServerIds?: readonly string[];
   isGenerationLive(generationId: string): boolean;
   load(): Promise<McpRunPlanRecord[]>;
   now?: () => Date;
   reconcile?(): Promise<void>;
 }): Promise<McpRunPlanResult> {
+  const build = (records: McpRunPlanRecord[], at: Date): McpRunPlanResult => {
+    if (!input.allowedServerIds) {
+      return buildPlan(records, at, input.isGenerationLive);
+    }
+    const subset = applyAllowedServerSubset(records, input.allowedServerIds);
+    if (subset.missing.length > 0) {
+      return {
+        code: "mcp_not_ready",
+        issues: subset.missing.map(() => ({
+          errorCode: "mcp_server_unavailable",
+          name: "Required MCP server",
+          readiness: "unavailable" as const
+        })),
+        ok: false
+      };
+    }
+    return buildPlan(subset.records, at, input.isGenerationLive);
+  };
+
   const now = input.now?.() ?? new Date();
   let records = await input.load();
-  let result = buildPlan(records, now, input.isGenerationLive);
+  let result = build(records, now);
   if (!result.ok && result.code === "mcp_not_ready" && input.reconcile) {
     await input.reconcile();
     records = await input.load();
-    result = buildPlan(records, input.now?.() ?? new Date(), input.isGenerationLive);
+    result = build(records, input.now?.() ?? new Date());
   }
   return result;
 }

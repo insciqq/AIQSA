@@ -32,8 +32,13 @@ import type {
   ShellWorkspacePaneView,
   ShellWorkspaceView
 } from "@/components/app-shell/powerAppShellViewContracts";
-import { usePromptSettingsActions } from "@/components/app-shell/promptSettingsActions";
-import { usePromptSettingsStore } from "@/components/app-shell/promptSettingsStore";
+import {
+  buildAssistantLibraryView,
+  createAssistantLibraryActions,
+  readRecentAssistantIds
+} from "@/components/app-shell/assistantLibraryController";
+import { useAssistantLibraryStore } from "@/components/app-shell/assistantLibraryStore";
+import { useSettingsDestinationStore } from "@/components/app-shell/settingsDestinationStore";
 import { consumeMcpOAuthReturn, refreshMcpSettings } from "@/components/app-shell/mcpSettingsStore";
 import { useRunControlsActions } from "@/components/app-shell/runControlsActions";
 import {
@@ -99,18 +104,16 @@ import {
 export function workspaceDefaultControlsFingerprint(state: ComposerControlSnapshot): string {
   return JSON.stringify({
     backgroundMode: state.backgroundMode,
-    developerPrompt: state.developerPrompt,
     maxOutputTokens: state.maxOutputTokens,
     reasoningEffort: state.reasoningEffort,
     reasoningMode: state.reasoningMode,
+    selectedAssistantId: state.selectedAssistant?.id ?? null,
     selectedModelId: state.selectedModelId,
-    selectedPromptId: state.selectedPromptId,
     selectedProvider: state.selectedProvider,
     selectedSearchOptionIds: state.selectedSearchOptionIds,
     searchPlanMode: state.searchPlanMode,
     selectedSearchStrategy: state.selectedSearchStrategy,
     streamMode: state.streamMode,
-    systemPrompt: state.systemPrompt,
     temperature: state.temperature
   });
 }
@@ -179,15 +182,15 @@ export function PowerAppShell({
   const activeComposerSessionKey = useComposerSessionStore((state) => state.activeSessionKey);
   const attachments = composerSession.attachments;
   const backgroundMode = useComposerControlStore((state) => state.backgroundMode);
-  const developerPrompt = useComposerControlStore((state) => state.developerPrompt);
   const draft = composerSession.draft;
   const editingMessageId = composerSession.editingMessageId;
   const editingMessagePending = Boolean(composerSession.pendingEdit);
   const maxOutputTokens = useComposerControlStore((state) => state.maxOutputTokens);
   const reasoningEffort = useComposerControlStore((state) => state.reasoningEffort);
   const reasoningMode = useComposerControlStore((state) => state.reasoningMode);
+  const selectedAssistant = useComposerControlStore((state) => state.selectedAssistant);
+  const assistantRemovedNotice = useComposerControlStore((state) => state.assistantRemovedNotice);
   const selectedModelId = useComposerControlStore((state) => state.selectedModelId);
-  const selectedPromptId = useComposerControlStore((state) => state.selectedPromptId);
   const selectedProvider = useComposerControlStore((state) => state.selectedProvider);
   const selectedSearchOptionIds = useComposerControlStore((state) => state.selectedSearchOptionIds);
   const searchPlanMode = useComposerControlStore((state) => state.searchPlanMode);
@@ -196,10 +199,8 @@ export function PowerAppShell({
   const showReasoningBlocks = useComposerControlStore((state) => state.showReasoningBlocks);
   const showToolActivity = useComposerControlStore((state) => state.showToolActivity);
   const streamMode = useComposerControlStore((state) => state.streamMode);
-  const systemPrompt = useComposerControlStore((state) => state.systemPrompt);
   const temperature = useComposerControlStore((state) => state.temperature);
   const applyControlDefaults = useComposerControlStore((state) => state.applyControlDefaults);
-  const applyPrompt = useComposerControlStore((state) => state.applyPrompt);
   const setAttachments = useComposerSessionStore((state) => state.setAttachments);
   const setDraft = useComposerSessionStore((state) => state.setDraft);
   const setSelectedModelId = useComposerControlStore((state) => state.setSelectedModelId);
@@ -208,14 +209,12 @@ export function PowerAppShell({
   const setShowCitations = useComposerControlStore((state) => state.setShowCitations);
   const setShowReasoningBlocks = useComposerControlStore((state) => state.setShowReasoningBlocks);
   const setShowToolActivity = useComposerControlStore((state) => state.setShowToolActivity);
-  const deletePromptConfirmation = usePromptSettingsStore((state) => state.deletePromptConfirmation);
-  const promptSaving = usePromptSettingsStore((state) => state.promptSaving);
-  const settingsOpen = usePromptSettingsStore((state) => state.settingsOpen);
-  const settingsSection = usePromptSettingsStore((state) => state.settingsSection);
-  const settingsPromptEditor = usePromptSettingsStore((state) => state.settingsPromptEditor);
-  const openMcpSettings = usePromptSettingsStore((state) => state.openMcpSettings);
-  const openGeneralSettings = usePromptSettingsStore((state) => state.openSettings);
-  const setSettingsPromptFromPreset = usePromptSettingsStore((state) => state.setSettingsPromptFromPreset);
+  const settingsOpen = useSettingsDestinationStore((state) => state.settingsOpen);
+  const settingsSection = useSettingsDestinationStore((state) => state.settingsSection);
+  const openMcpSettings = useSettingsDestinationStore((state) => state.openMcpSettings);
+  const openGeneralSettings = useSettingsDestinationStore((state) => state.openSettings);
+  const closeGeneralSettings = useSettingsDestinationStore((state) => state.closeSettings);
+  const librarySnapshot = useAssistantLibraryStore();
   const appearance = useShellAppearanceController();
   const {
     activeTab: inspectorActiveTab,
@@ -235,8 +234,7 @@ export function PowerAppShell({
     },
     blockers: {
       projectSettingsOpen: Boolean(projectSettingsFolderId),
-      promptDeleteOpen: Boolean(deletePromptConfirmation),
-      settingsOpen
+      settingsOpen: settingsOpen || librarySnapshot.open
     },
     onMobileWorkspaceClosed: workspaceInteraction.mobileWorkspaceClosed
   });
@@ -331,7 +329,6 @@ export function PowerAppShell({
     currentErrorText,
     currentModel,
     currentParameterControls,
-    currentPrompt,
     liveArtifactSummary,
     projectSettingsFolder,
     searchOptions,
@@ -347,7 +344,6 @@ export function PowerAppShell({
     chatContentMatchIds,
     chatQuery,
     chats,
-    developerPrompt,
     draft,
     folders,
     maxOutputTokens,
@@ -355,11 +351,10 @@ export function PowerAppShell({
     projectSettingsFolderId,
     renderActiveLeafId,
     runSurface: activeRunSurface,
+    selectedAssistantPromptCharacterCount: selectedAssistant?.promptCharacterCount ?? null,
     selectedModelId,
-    selectedPromptId,
     selectedProvider,
     selectedSearchStrategy,
-    systemPrompt,
     visibleMessages
   });
 
@@ -410,14 +405,14 @@ export function PowerAppShell({
     }
 
     const timer = window.setTimeout(() => {
-      setSelectedProvider(fallback.provider);
-      setSelectedModelId(fallback.modelId);
+      setSelectedProvider(fallback.provider, "system");
+      setSelectedModelId(fallback.modelId, "system");
       const plan = resolvePreferredSearchPlan(
         catalog.defaults.searchPlan,
         catalog.defaults.searchStrategyId,
         catalog.searchStrategies
       );
-      setSelectedSearchPlan(plan.optionIds, plan.mode);
+      setSelectedSearchPlan(plan.optionIds, plan.mode, "system");
       const defaults = resolveModelControlDefaults(fallback, catalog.defaults.controlValues);
       applyControlDefaults(defaults);
     }, 0);
@@ -440,6 +435,7 @@ export function PowerAppShell({
     resetKey: activeChatId ?? "blank"
   });
   const {
+    applyAssistantToComposer,
     applyModelControlDefaults,
     buildControlDraft,
     buildParams,
@@ -450,9 +446,8 @@ export function PowerAppShell({
     changeStreamMode,
     changeTemperature,
     flushPendingModelControlDefaults,
-    persistUserDefaults,
+    removeAssistantFromComposer,
     selectModel,
-    selectRunProfile,
     selectSearchPlan,
     selectSearchStrategy,
     toggleCitationsVisibility,
@@ -498,16 +493,6 @@ export function PowerAppShell({
     };
   }, [flushPendingModelControlDefaultsEvent]);
 
-  const promptSettingsActions = usePromptSettingsActions({
-    catalog,
-    currentPrompt,
-    getCatalog: () => useWorkspaceStore.getState().catalog,
-    persistUserDefaults,
-    setCatalog,
-    setNotice: setSettingsNotice
-  });
-  const { openPromptLibrary, selectPrompt } = promptSettingsActions;
-
   const {
     createFolder,
     deleteFolder,
@@ -542,7 +527,6 @@ export function PowerAppShell({
   } = useWorkspaceActions({
     activeChatIdRef,
     applyModelControlDefaults,
-    applyPrompt,
     chatDetailRequestsRef,
     chatHasActiveStream: (chatId) => Boolean(useRunLifecycleStore.getState().activeStreams[chatId]),
     chatMutation: workspaceInteraction.chatMutation,
@@ -590,24 +574,16 @@ export function PowerAppShell({
             ) ??
             nextCatalog.models.find((model) => model.provider !== "fake") ??
             nextCatalog.models[0];
-          const prompt =
-            nextCatalog.promptPresets.find((candidate) => candidate.id === nextCatalog.defaults.promptPresetId) ??
-            nextCatalog.promptPresets.find((candidate) => candidate.isDefault) ??
-            nextCatalog.promptPresets[0] ??
-            null;
-
           setCatalog(nextCatalog);
           setCatalogError(null);
-          setSelectedProvider(defaultModel?.provider ?? "");
-          setSelectedModelId(defaultModel?.modelId ?? "");
+          setSelectedProvider(defaultModel?.provider ?? "", "system");
+          setSelectedModelId(defaultModel?.modelId ?? "", "system");
           const defaultSearchPlan = resolvePreferredSearchPlan(
             nextCatalog.defaults.searchPlan,
             nextCatalog.defaults.searchStrategyId,
             nextCatalog.searchStrategies
           );
-          setSelectedSearchPlan(defaultSearchPlan.optionIds, defaultSearchPlan.mode);
-          applyPrompt(prompt);
-          setSettingsPromptFromPreset(prompt);
+          setSelectedSearchPlan(defaultSearchPlan.optionIds, defaultSearchPlan.mode, "system");
           setShowCitations(nextCatalog.defaults.showCitations);
           setShowReasoningBlocks(nextCatalog.defaults.showReasoningBlocks);
           setShowToolActivity(nextCatalog.defaults.showToolActivity);
@@ -656,6 +632,24 @@ export function PowerAppShell({
       workspaceDefaultControlsFingerprint(useComposerControlStore.getState()) === controlsBeforeRefresh
     ) {
       reapplyActiveChatDefaults(loadedCatalog);
+    }
+  });
+
+  const assistantLibraryActions = createAssistantLibraryActions({
+    activateBlankWorkspace: () => activateBlankWorkspaceEvent(),
+    applyAssistantToComposer,
+    catalog,
+    catalogError,
+    retryCatalog: () => void retryCatalog(),
+    setShellNotice: setNotice
+  });
+  const [assistantPickerOpen, setAssistantPickerOpen] = useState(false);
+  const [recentAssistantIds, setRecentAssistantIds] = useState<string[]>([]);
+  const setAssistantPickerOpenEvent = useEventCallback((open: boolean) => {
+    setAssistantPickerOpen(open);
+    if (open) {
+      setRecentAssistantIds(readRecentAssistantIds());
+      void assistantLibraryActions.refreshList();
     }
   });
 
@@ -728,16 +722,15 @@ export function PowerAppShell({
     closePalette: shellOverlays.palette.close,
     inspectorMode,
     inspectorPinningAvailable,
+    openLibrary: () => assistantLibraryActions.openLibrary("discover"),
     openSettings: openGeneralSettings,
     searchOptions,
     selectModel,
-    selectPrompt,
     selectSearchStrategy,
     selectedModelId,
-    selectedPromptId,
     selectedProvider,
     selectedSearchStrategy,
-    settingsOpen,
+    settingsOpen: settingsOpen || librarySnapshot.open,
     workspaceReady
   });
 
@@ -782,7 +775,7 @@ export function PowerAppShell({
     activeChatStreaming
   });
 
-  const { regenerateMessage, submitComposer } = useMessageRunActions({
+  const { regenerateMessage, sendStarterPrompt, submitComposer } = useMessageRunActions({
     activeChat,
     activeChatDetailLoading,
     activeChatId,
@@ -955,12 +948,32 @@ export function PowerAppShell({
     changeStreamMode,
     changeTemperature,
     composerActions,
+    assistant: {
+      clearRemovedNotice: () => useComposerControlStore.getState().clearAssistantRemovedNotice(),
+      openLibrary: () => assistantLibraryActions.openLibrary("discover"),
+      openPicker: assistantPickerOpen,
+      pickerItems: librarySnapshot.data?.assistants ?? [],
+      pickerLoading: librarySnapshot.dataState === "loading" && !librarySnapshot.data,
+      recentIds: recentAssistantIds,
+      remove: removeAssistantFromComposer,
+      removedNotice: assistantRemovedNotice,
+      selectById: (assistantId: string) => {
+        setAssistantPickerOpen(false);
+        void assistantLibraryActions.useAssistant(assistantId, { navigate: false });
+      },
+      selected: selectedAssistant,
+      sendStarter: (prompt: string) => void sendStarterPrompt(prompt),
+      setPickerOpen: setAssistantPickerOpenEvent,
+      startFromCurrentSetup: () => {
+        setAssistantPickerOpen(false);
+        assistantLibraryActions.openNewAssistantFromCurrentSetup();
+      }
+    },
     composerContextStats,
     composerDisabledHint,
     composerUsageStats,
     currentModel,
     currentParameterControls,
-    currentPrompt,
     draft,
     flushPendingModelControlDefaults: flushPendingModelControlDefaultsEvent,
     maxOutputTokens,
@@ -974,12 +987,9 @@ export function PowerAppShell({
     searchPreferenceSource: catalog?.defaults.searchPreferenceSource ?? "personal",
     searchPlanMode,
     selectModel,
-    selectPrompt,
-    selectRunProfile,
     selectSearchPlan,
     selectSearchStrategy,
     selectedModelId,
-    selectedPromptId,
     selectedProvider,
     selectedProviderName,
     selectedSearchOptionIds,
@@ -1015,18 +1025,27 @@ export function PowerAppShell({
   } satisfies ShellDetailsView;
 
   const settingsView = {
-    actions: promptSettingsActions,
+    closeSettings: closeGeneralSettings,
     dismissNotice: () => setSettingsNotice(null),
+    library: buildAssistantLibraryView(
+      {
+        activateBlankWorkspace: () => activateBlankWorkspaceEvent(),
+        applyAssistantToComposer,
+        catalog,
+        catalogError,
+        retryCatalog: () => void retryCatalog(),
+        setShellNotice: setNotice
+      },
+      assistantLibraryActions,
+      librarySnapshot
+    ),
     notice: settingsNotice,
     open: openGeneralSettings,
+    openLibrary: () => assistantLibraryActions.openLibrary("discover"),
     openMcp: openMcpSettings,
-    openPromptLibrary,
-    prompt: {
-      deleteConfirmation: deletePromptConfirmation,
-      editor: settingsPromptEditor,
+    settings: {
       open: settingsOpen,
       section: settingsSection,
-      saving: promptSaving,
       themeId
     },
     updateTheme: changeTheme

@@ -156,7 +156,6 @@ function preparedData(input: Readonly<{
     params: {},
     prompt: {
       developer: "Answer directly.",
-      presetId: null,
       system: null
     },
     provider,
@@ -169,7 +168,6 @@ function preparedData(input: Readonly<{
     defaults: {
       controlDefaults: { searchStrategyId: searchStrategy },
       modelId,
-      promptPresetId: null,
       provider,
       searchStrategy,
       userId: "user-1"
@@ -208,7 +206,6 @@ function chatUpdate(): RunChatUpdateRecord {
       activeLeafMessageId: "assistant-1",
       createdAt: new Date("2026-07-12T10:00:00.000Z"),
       defaultModelId: "fake-qsa",
-      defaultPromptPresetId: null,
       defaultProvider: "fake",
       folderId: null,
       id: "chat-1",

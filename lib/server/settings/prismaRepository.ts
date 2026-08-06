@@ -7,7 +7,7 @@ import type {
 } from "./handlers";
 import { applySettingsUpdateInTransaction } from "./settingsTransaction";
 
-type SettingsPrismaClient = Pick<PrismaClient, "$transaction" | "promptPreset" | "userSettings">;
+type SettingsPrismaClient = Pick<PrismaClient, "$transaction" | "userSettings">;
 
 export function createPrismaSettingsRepository(prismaClient: SettingsPrismaClient = prisma) {
   return {

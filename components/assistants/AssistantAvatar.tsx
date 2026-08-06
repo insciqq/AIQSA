@@ -1,0 +1,221 @@
+import type {
+  AssistantAvatarPalette,
+  AssistantAvatarRecipe,
+  AssistantAvatarShape
+} from "@/lib/contracts/assistants";
+import type { ReactNode } from "react";
+
+/**
+ * Assistant identity colors are recipe data pinned inside immutable revisions,
+ * not theme styling: the same recipe must render identically in every palette
+ * and after any future theme change, so these values deliberately live outside
+ * the semantic token system. Color here is recognition only and never carries
+ * scope, readiness, or status semantics.
+ */
+const AVATAR_PALETTES: Readonly<
+  Record<AssistantAvatarPalette, { background: string; foreground: string }>
+> = {
+  coral: { background: "#b85560", foreground: "#f6dfe0" },
+  ember: { background: "#b4552d", foreground: "#f6ddc8" },
+  meadow: { background: "#3e7c4f", foreground: "#dcedd8" },
+  ocean: { background: "#2d5e8c", foreground: "#d3e6f4" },
+  pine: { background: "#2f6158", foreground: "#d2e9e2" },
+  plum: { background: "#6c4a7e", foreground: "#e9daf0" },
+  sand: { background: "#a4834a", foreground: "#f3e9d0" },
+  slate: { background: "#4e5c66", foreground: "#dfe6ea" }
+};
+
+const ACCENT_RADIUS = 16;
+
+function shapeElement(
+  shape: AssistantAvatarShape,
+  size: number,
+  fill: string,
+  opacity: number,
+  rotation: number,
+  key: string
+): ReactNode {
+  const transform = `rotate(${rotation} 24 24)`;
+  const half = size / 2;
+  switch (shape) {
+    case "circle":
+      return <circle cx={24} cy={24} fill={fill} key={key} opacity={opacity} r={half} transform={transform} />;
+    case "ring":
+      return (
+        <circle
+          cx={24}
+          cy={24}
+          fill="none"
+          key={key}
+          opacity={opacity}
+          r={half - size * 0.14}
+          stroke={fill}
+          strokeWidth={size * 0.22}
+          transform={transform}
+        />
+      );
+    case "square":
+      return (
+        <rect
+          fill={fill}
+          height={size * 0.9}
+          key={key}
+          opacity={opacity}
+          rx={size * 0.16}
+          transform={transform}
+          width={size * 0.9}
+          x={24 - size * 0.45}
+          y={24 - size * 0.45}
+        />
+      );
+    case "diamond":
+      return (
+        <rect
+          fill={fill}
+          height={size * 0.74}
+          key={key}
+          opacity={opacity}
+          rx={size * 0.12}
+          transform={`${transform} rotate(45 24 24)`}
+          width={size * 0.74}
+          x={24 - size * 0.37}
+          y={24 - size * 0.37}
+        />
+      );
+    case "triangle": {
+      const top = 24 - half * 0.92;
+      const bottom = 24 + half * 0.66;
+      const spread = half * 0.9;
+      return (
+        <path
+          d={`M24 ${top} L${24 + spread} ${bottom} Q24 ${bottom + half * 0.26} ${24 - spread} ${bottom} Z`}
+          fill={fill}
+          key={key}
+          opacity={opacity}
+          transform={transform}
+        />
+      );
+    }
+    case "hexagon": {
+      const r = half * 0.96;
+      const points = Array.from({ length: 6 }, (_, index) => {
+        const angle = (Math.PI / 3) * index - Math.PI / 6;
+        return `${24 + r * Math.cos(angle)} ${24 + r * Math.sin(angle)}`;
+      }).join(" L");
+      return <path d={`M${points} Z`} fill={fill} key={key} opacity={opacity} transform={transform} />;
+    }
+  }
+}
+
+export function AssistantAvatar({
+  className,
+  label,
+  recipe,
+  size
+}: {
+  className?: string;
+  /** Accessible name; omitted for decorative adjacent-to-name usage. */
+  label?: string;
+  recipe: AssistantAvatarRecipe;
+  size: number;
+}) {
+  const palette = AVATAR_PALETTES[recipe.paletteId];
+  const accents = recipe.accents.map((slot) => {
+    const angle = (Math.PI / 4) * slot - Math.PI / 2;
+    return {
+      key: `accent-${slot}`,
+      x: 24 + ACCENT_RADIUS * Math.cos(angle),
+      y: 24 + ACCENT_RADIUS * Math.sin(angle)
+    };
+  });
+
+  return (
+    <svg
+      aria-hidden={label ? undefined : true}
+      aria-label={label}
+      className={className}
+      data-testid="assistant-avatar"
+      height={size}
+      role={label ? "img" : undefined}
+      viewBox="0 0 48 48"
+      width={size}
+    >
+      <rect fill={palette.background} height={48} rx={12} width={48} />
+      {shapeElement(
+        recipe.backgroundShape,
+        40,
+        palette.foreground,
+        0.18,
+        recipe.rotations[0] * 90,
+        "background-shape"
+      )}
+      {shapeElement(
+        recipe.foregroundShape,
+        22,
+        palette.foreground,
+        0.95,
+        recipe.rotations[1] * 90,
+        "foreground-shape"
+      )}
+      {accents.map((accent) => (
+        <circle
+          cx={accent.x}
+          cy={accent.y}
+          fill={palette.foreground}
+          key={accent.key}
+          opacity={0.8}
+          r={2.1}
+        />
+      ))}
+    </svg>
+  );
+}
+
+/**
+ * Deterministic initials fallback for identities without a decodable recipe,
+ * driven by the existing name token rather than another stored asset.
+ */
+export function AssistantInitialsAvatar({
+  className,
+  label,
+  name,
+  size
+}: {
+  className?: string;
+  label?: string;
+  name: string;
+  size: number;
+}) {
+  const initials = name
+    .trim()
+    .split(/\s+/u)
+    .slice(0, 2)
+    .map((word) => word.charAt(0).toUpperCase())
+    .join("");
+
+  return (
+    <svg
+      aria-hidden={label ? undefined : true}
+      aria-label={label}
+      className={className}
+      data-testid="assistant-avatar-initials"
+      height={size}
+      role={label ? "img" : undefined}
+      viewBox="0 0 48 48"
+      width={size}
+    >
+      <rect className="fill-control-surface" height={48} rx={12} width={48} />
+      <text
+        className="fill-ink-secondary"
+        dominantBaseline="central"
+        fontSize={18}
+        fontWeight={600}
+        textAnchor="middle"
+        x={24}
+        y={25}
+      >
+        {initials || "?"}
+      </text>
+    </svg>
+  );
+}

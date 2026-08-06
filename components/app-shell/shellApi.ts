@@ -188,6 +188,7 @@ export function messageFromApi(message: ChatMessageWire): ThreadMessage {
 
   return {
     artifactSummary,
+    assistantIdentity: message.assistantIdentity ?? null,
     content:
       message.status === "error"
         ? persistedText || message.errorMessage || ""
@@ -210,7 +211,6 @@ export function chatSummaryFromApi(chat: WorkspaceChatSummaryWire): ChatSummary 
     activeLeafMessageId: chat.activeLeafMessageId,
     createdAt: chat.createdAt,
     defaultModelId: chat.defaultModelId ?? "",
-    defaultPromptPresetId: chat.defaultPromptPresetId,
     defaultProvider: chat.defaultProvider ?? "",
     folderId: chat.folderId,
     id: chat.id,

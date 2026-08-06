@@ -395,9 +395,6 @@ function ReadyProvider({
     ? controller.state.readyConfirmation
     : null;
   const search = confirmation?.search ?? null;
-  const profileLabels = confirmation?.profilesFilled.map((profile) =>
-    profile.charAt(0).toUpperCase() + profile.slice(1)
-  ) ?? [];
   return (
     <section className="mt-6 border-t border-positive pt-5">
       <p className="text-xs font-semibold uppercase tracking-[0.1em] text-positive">
@@ -423,7 +420,6 @@ function ReadyProvider({
           </p>
           <p>Access: available to this administrator.</p>
           <p>Default selection: {confirmation.defaultChanged ? "updated" : "unchanged"}.</p>
-          <p>Run profiles filled: {profileLabels.length ? profileLabels.join(", ") : "none"}.</p>
           {search ? (
             <p>
               {search.displayName}: {search.status === "ready"

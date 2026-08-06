@@ -49,7 +49,6 @@ function request(overrides: Partial<ProviderRunRequest> = {}): ProviderRunReques
     },
     prompt: {
       developer: "Prefer citations.",
-      presetId: "prompt-1",
       system: "You are precise."
     },
     provider: "openrouter",

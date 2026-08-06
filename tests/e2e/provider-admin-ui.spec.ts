@@ -14,7 +14,6 @@ import {
   adminSearchExecutionDefaults,
   type AdminSearchCatalog
 } from "../../lib/contracts/adminSearch";
-import type { AdminRunProfileCatalog } from "../../lib/contracts/runProfiles";
 import { adminProviderQuickSetupPolicy } from "../../lib/server/admin/providers/quickSetupPolicy";
 import { DEFAULT_BOOTSTRAP_USER_ID } from "../../lib/server/auth/config";
 import { encryptProviderCredentialSecret } from "../../lib/server/providers/credentialSecrets";
@@ -45,14 +44,6 @@ type QuickChatFixture = {
   credentialId: string;
   credentialVersionId: string;
   modelId: string;
-  priorDeepProfile: {
-    enabled: boolean;
-    providerModelId: string | null;
-    reasoningEffort: string;
-    reasoningMode: string;
-    updatedByUserId: string | null;
-    version: number;
-  };
   priorDefaultControlValues: unknown;
   priorDefaultModelId: string | null;
   userId: string;
@@ -250,23 +241,10 @@ async function installQuickChatFixture(apiRoot: string): Promise<QuickChatFixtur
   });
 
   const priorState = await prisma.$transaction(async (tx) => {
-    const [settings, deepProfile] = await Promise.all([
-      tx.userSettings.findUniqueOrThrow({
-        select: { defaultControlValues: true, defaultProviderModelId: true },
-        where: { userId: fixture.userId }
-      }),
-      tx.runProfile.findUniqueOrThrow({
-        select: {
-          enabled: true,
-          providerModelId: true,
-          reasoningEffort: true,
-          reasoningMode: true,
-          updatedByUserId: true,
-          version: true
-        },
-        where: { id: "deep" }
-      })
-    ]);
+    const settings = await tx.userSettings.findUniqueOrThrow({
+      select: { defaultControlValues: true, defaultProviderModelId: true },
+      where: { userId: fixture.userId }
+    });
     await tx.providerConnection.create({
       data: {
         activatedAt: checkedAt,
@@ -384,24 +362,12 @@ async function installQuickChatFixture(apiRoot: string): Promise<QuickChatFixtur
       },
       where: { userId: fixture.userId }
     });
-    await tx.runProfile.update({
-      data: {
-        enabled: true,
-        providerModelId: fixture.modelId,
-        reasoningEffort: "max",
-        reasoningMode: "pro",
-        updatedByUserId: fixture.userId,
-        version: { increment: 1 }
-      },
-      where: { id: "deep" }
-    });
 
-    return { deepProfile, settings };
+    return { settings };
   });
 
   return {
     ...fixture,
-    priorDeepProfile: priorState.deepProfile,
     priorDefaultControlValues: priorState.settings.defaultControlValues,
     priorDefaultModelId: priorState.settings.defaultProviderModelId
   };
@@ -419,10 +385,6 @@ async function cleanupQuickChatFixture(
         defaultProviderModelId: fixture.priorDefaultModelId
       },
       where: { userId: fixture.userId }
-    });
-    await tx.runProfile.update({
-      data: fixture.priorDeepProfile,
-      where: { id: "deep" }
     });
     const fixtureChats = await tx.chat.findMany({
       select: { id: true },
@@ -659,7 +621,7 @@ test("administrator completes the Quick direct-user picker, retry, Ready, and sa
   try {
   page.on("request", (request) => {
     const path = new URL(request.url()).pathname;
-    if (path === "/api/admin/providers" || path === "/api/admin/run-profiles") {
+    if (path === "/api/admin/providers") {
       undisclosedResourceRequests.push(`${request.method()} ${path}`);
     }
     if (request.method() === "POST" && /^\/api\/chats\/[^/]+\/messages$/u.test(path)) {
@@ -756,7 +718,6 @@ test("administrator completes the Quick direct-user picker, retry, Ready, and sa
             { displayName: "GPT-5.6 Sol" }
           ],
           outcome: "ready",
-          profilesFilled: ["deep"],
           provider: "openai",
           providerDisplayName: "OpenAI"
         }
@@ -841,7 +802,7 @@ test("administrator completes the Quick direct-user picker, retry, Ready, and sa
   );
   await expect(readyReceipt).toContainText("Access: available to this administrator.");
   await expect(readyReceipt).toContainText("Default selection: updated.");
-  await expect(readyReceipt).toContainText("Run profiles filled: Deep.");
+  await expect(readyReceipt).not.toContainText("Run profiles filled");
   await expect(section.getByRole("link", { name: "Start chatting" })).toHaveAttribute("href", "/");
   await expect(quickFeedback).toHaveText("OpenAI is ready to chat with GPT-5.6 Sol.");
   await expect(section.getByText("e2e-quick-write-only-key")).toHaveCount(0);
@@ -890,7 +851,7 @@ test("administrator completes the Quick direct-user picker, retry, Ready, and sa
     await expect(section.getByRole("link", { name: "Start chatting" })).toBeVisible();
     await expect(section.getByRole("tab", { name: "Quick setup" })).toBeVisible();
     await expect(section.getByRole("tab", { name: "Connections" })).toBeVisible();
-    await expect(section.getByRole("tab", { name: "Run profiles" })).toBeVisible();
+    await expect(section.getByRole("tab", { name: "Run profiles" })).toHaveCount(0);
     await expect
       .poll(() => section.getByTestId("provider-workspace-tabs").evaluate((element) =>
         getComputedStyle(element).scrollbarWidth
@@ -1155,7 +1116,7 @@ test("administrator discovers and configures a Custom compatible provider on wid
     await page.setViewportSize(viewport);
     await expect(section.getByRole("tab", { name: "Quick setup" })).toBeVisible();
     await expect(section.getByRole("tab", { name: "Connections" })).toBeVisible();
-    await expect(section.getByRole("tab", { name: "Run profiles" })).toBeVisible();
+    await expect(section.getByRole("tab", { name: "Run profiles" })).toHaveCount(0);
     await expect(section.getByTestId("provider-quick-choice-strip").getByRole("button"))
       .toHaveCount(5);
     await section.getByRole("button", { name: /Custom 1 configured/ }).click();
@@ -1875,128 +1836,6 @@ test("administrator completes the OpenRouter key, model, route, check, and activ
   }
 });
 
-test("administrator remaps the three composer run profiles in one save", async ({ page }) => {
-  let providerCatalogRequests = 0;
-  let submittedProfiles: Array<Record<string, unknown>> | null = null;
-  const runProfileCatalog: AdminRunProfileCatalog = {
-    models: [
-      {
-        connectionEnabled: true,
-        defaultReasoningEffort: "medium",
-        defaultReasoningMode: "standard",
-        displayName: "GPT-5.6 Luna",
-        id: "deployment-luna",
-        modelEnabled: true,
-        providerDisplayName: "Primary OpenAI",
-        reasoningEfforts: ["none", "medium", "high", "max"],
-        reasoningModes: ["standard", "pro"],
-        selectable: true
-      },
-      {
-        connectionEnabled: true,
-        defaultReasoningEffort: "max",
-        defaultReasoningMode: "pro",
-        displayName: "GPT-5.6 Sol",
-        id: "deployment-sol",
-        modelEnabled: true,
-        providerDisplayName: "Primary OpenAI",
-        reasoningEfforts: ["none", "medium", "high", "max"],
-        reasoningModes: ["standard", "pro"],
-        selectable: true
-      }
-    ],
-    profiles: [
-      { description: "Simple questions", enabled: true, id: "fast", label: "Fast", providerModelId: "deployment-luna", reasoningEffort: "medium", reasoningMode: "standard", updatedAt: now, version: 2 },
-      { description: "Everyday questions", enabled: true, id: "balanced", label: "Balanced", providerModelId: "deployment-luna", reasoningEffort: "medium", reasoningMode: "standard", updatedAt: now, version: 3 },
-      { description: "Difficult questions", enabled: true, id: "deep", label: "Deep", providerModelId: "deployment-sol", reasoningEffort: "max", reasoningMode: "pro", updatedAt: now, version: 4 }
-    ]
-  };
-
-  await page.route("**/api/admin/providers", async (route) => {
-    providerCatalogRequests += 1;
-    await route.fulfill({ contentType: "application/json", json: { connections: [] } });
-  });
-  await page.route("**/api/admin/providers/quick-setup", async (route) => {
-    await route.fulfill({
-      contentType: "application/json",
-      json: {
-        configuredConnections: [],
-        providers: [
-          { provider: "openai", providerDisplayName: "OpenAI", quickSetupAssigned: false, state: "not_configured", stateToken: "state-openai" },
-          { provider: "anthropic", providerDisplayName: "Anthropic", quickSetupAssigned: false, state: "not_configured", stateToken: "state-anthropic" },
-          { provider: "gemini", providerDisplayName: "Gemini", quickSetupAssigned: false, state: "not_configured", stateToken: "state-gemini" },
-          { provider: "openrouter", providerDisplayName: "OpenRouter", quickSetupAssigned: false, state: "not_configured", stateToken: "state-openrouter" }
-        ],
-        suggestedProvider: null
-      }
-    });
-  });
-  await page.route("**/api/admin/run-profiles", async (route) => {
-    if (route.request().method() === "GET") {
-      await route.fulfill({ contentType: "application/json", json: runProfileCatalog });
-      return;
-    }
-    const body = route.request().postDataJSON() as { profiles: Array<Record<string, unknown>> };
-    submittedProfiles = body.profiles;
-    await route.fulfill({
-      contentType: "application/json",
-      json: {
-        models: runProfileCatalog.models,
-        profiles: body.profiles.map((profile) => ({
-          description: profile.description,
-          enabled: profile.enabled,
-          id: profile.id,
-          label: profile.id === "fast" ? "Fast" : profile.id === "balanced" ? "Balanced" : "Deep",
-          providerModelId: profile.providerModelId,
-          reasoningEffort: profile.reasoningEffort,
-          reasoningMode: profile.reasoningMode,
-          updatedAt: now,
-          version: Number(profile.expectedVersion) + 1
-        }))
-      }
-    });
-  });
-
-  await signInWithLocalToken(page);
-  await page.goto("/admin");
-  const section = page.getByTestId("admin-section-providers");
-  await section.getByRole("tab", { name: "Run profiles" }).click();
-  await expect(section.getByRole("heading", { name: "Run profiles" })).toBeVisible();
-  expect(providerCatalogRequests).toBe(0);
-  await expect(section.getByLabel("Fast description")).toHaveValue("Simple questions");
-  await expect(section.getByLabel("Balanced description")).toHaveValue("Everyday questions");
-  await expect(section.getByLabel("Deep description")).toHaveValue("Difficult questions");
-
-  await section.getByLabel("Fast description").fill("Quick factual questions");
-  await section.getByLabel("Fast model deployment").selectOption("deployment-sol");
-  await expect(section.getByLabel("Fast reasoning mode")).toHaveValue("pro");
-  await expect(section.getByLabel("Fast reasoning effort")).toHaveValue("max");
-  await section.getByRole("tab", { name: "Connections" }).click();
-  const discardConfirmation = page.getByRole("dialog", {
-    name: "Discard Run profile changes"
-  });
-  await expect(discardConfirmation).toBeVisible();
-  await discardConfirmation.getByRole("button", { name: "Cancel" }).click();
-  expect(providerCatalogRequests).toBe(0);
-  await expect(section.getByLabel("Fast description")).toHaveValue("Quick factual questions");
-  await section.getByRole("button", { name: "Save profiles" }).click();
-
-  await expect(section.getByText("Run profiles saved for future messages.")).toBeVisible();
-  expect(submittedProfiles).toHaveLength(3);
-  expect(submittedProfiles?.[0]).toMatchObject({
-    description: "Quick factual questions",
-    expectedVersion: 2,
-    id: "fast",
-    providerModelId: "deployment-sol",
-    reasoningEffort: "max",
-    reasoningMode: "pro"
-  });
-  await section.getByRole("tab", { name: "Connections" }).click();
-  await expect.poll(() => providerCatalogRequests).toBe(1);
-  await section.getByRole("tab", { name: "Run profiles" }).click();
-  await expect(section.getByLabel("Fast description")).toHaveValue("Quick factual questions");
-});
-
 test("administrator saves a versioned Search recommendation that grants no access", async ({ page }) => {
   let search: AdminSearchCatalog = {
     integrations: [{
@@ -2141,7 +1980,7 @@ test("administrator saves a versioned Search recommendation that grants no acces
 test("ordinary user receives real provider-admin denial without provider metadata", async ({ page }) => {
   await signInOrdinaryUser(page);
 
-  const [catalog, customPost, mutation, runProfiles, quickGet, quickPost] = await Promise.all([
+  const [catalog, customPost, mutation, quickGet, quickPost] = await Promise.all([
     page.request.get("/api/admin/providers"),
     page.request.post("/api/admin/providers/custom-setup", {
       data: {
@@ -2159,7 +1998,6 @@ test("ordinary user receives real provider-admin denial without provider metadat
         credentialId: "not-visible"
       }
     }),
-    page.request.get("/api/admin/run-profiles"),
     page.request.get("/api/admin/providers/quick-setup"),
     page.request.post("/api/admin/providers/quick-setup", {
       data: {
@@ -2169,7 +2007,7 @@ test("ordinary user receives real provider-admin denial without provider metadat
       }
     })
   ]);
-  for (const response of [catalog, customPost, mutation, runProfiles, quickGet, quickPost]) {
+  for (const response of [catalog, customPost, mutation, quickGet, quickPost]) {
     expect(response.status()).toBe(403);
     const text = await response.text();
     expect(text).toBe('{"error":"forbidden"}');

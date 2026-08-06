@@ -16,7 +16,6 @@ const kindLabels: Record<CommandKind, { group: string; item: string }> = {
   action: { group: "Actions", item: "Action" },
   chat: { group: "Chats", item: "Chat" },
   model: { group: "Models", item: "Model" },
-  prompt: { group: "Prompts", item: "Prompt" },
   search: { group: "Search strategies", item: "Search" }
 };
 
@@ -31,9 +30,6 @@ function CommandKindIcon({ kind }: { kind: CommandKind }) {
   }
   if (kind === "model") {
     return <Boxes className={className} aria-hidden="true" />;
-  }
-  if (kind === "prompt") {
-    return <FileText className={className} aria-hidden="true" />;
   }
   return <Search className={className} aria-hidden="true" />;
 }
@@ -165,7 +161,7 @@ export function CommandPalette({
           {filteredItems.length === 0 ? (
             <div className="px-4 py-10 text-center" role="status">
               <p className="text-sm font-medium text-ink">No matching commands</p>
-              <p className="mt-1 text-xs text-ink-muted">Try a chat, model, provider, prompt, search, or action name.</p>
+              <p className="mt-1 text-xs text-ink-muted">Try a chat, model, provider, search, or action name.</p>
             </div>
           ) : (
             groupedItems.map((group) => {

@@ -110,9 +110,6 @@ function requestBody(patch: SettingsDefaultsPatch): Record<string, unknown> {
     ...(Object.prototype.hasOwnProperty.call(patch, "modelId")
       ? { defaultModelId: patch.modelId }
       : {}),
-    ...(Object.prototype.hasOwnProperty.call(patch, "promptPresetId")
-      ? { defaultPromptPresetId: patch.promptPresetId }
-      : {}),
     ...(Object.prototype.hasOwnProperty.call(patch, "searchStrategyId") &&
       !Object.prototype.hasOwnProperty.call(patch, "searchPlan")
       ? { defaultSearchStrategyId: patch.searchStrategyId }
@@ -168,9 +165,6 @@ function reconciledPatch(
   }
   if (Object.prototype.hasOwnProperty.call(sent, "modelId")) {
     patch.modelId = settings.defaultModelId;
-  }
-  if (Object.prototype.hasOwnProperty.call(sent, "promptPresetId")) {
-    patch.promptPresetId = settings.defaultPromptPresetId;
   }
   if (Object.prototype.hasOwnProperty.call(sent, "searchStrategyId")) {
     patch.searchStrategyId = settings.defaultSearchStrategyId;

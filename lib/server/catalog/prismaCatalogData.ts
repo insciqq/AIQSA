@@ -14,7 +14,6 @@ import {
 import { isTestModeAllowedEnv } from "@/lib/server/auth/csrf";
 import { loadEntitlementsForUser } from "@/lib/server/auth/dbEntitlements";
 import type { CatalogData } from "@/lib/server/catalog/currentUserCatalog";
-import { isRunProfileId } from "@/lib/domain/runProfiles";
 import { availableSearchStrategiesForModel } from "@/lib/domain/catalogMatrix";
 import {
   normalizeProviderConnectionConfiguration,
@@ -43,19 +42,10 @@ import type {
   SearchStrategy
 } from "@prisma/client";
 
-type CatalogPrismaClient = Pick<PrismaClient, "providerModel" | "runProfile" | "searchOption" | "searchPolicy" | "user">;
-
-type PromptPresetRow = {
-  developerPrompt: string | null;
-  id: string;
-  isDefault: boolean;
-  name: string;
-  systemPrompt: string;
-};
+type CatalogPrismaClient = Pick<PrismaClient, "providerModel" | "searchOption" | "searchPolicy" | "user">;
 
 type UserSettingsRow = {
   defaultControlValues: unknown;
-  defaultPromptPresetId: string | null;
   defaultProviderModel: { connectionId: string } | null;
   defaultProviderModelId: string | null;
   defaultSearchStrategyId: string;
@@ -72,7 +62,6 @@ type CatalogMembershipRow = {
 
 type CatalogUserRow = {
   groups: CatalogMembershipRow[];
-  promptPresets: PromptPresetRow[];
   settings: UserSettingsRow | null;
 };
 
@@ -561,7 +550,6 @@ export function createPrismaCatalogDataLoader({
             }
           }
         },
-        promptPresets: true,
         settings: {
           include: {
             defaultProviderModel: {
@@ -581,7 +569,7 @@ export function createPrismaCatalogDataLoader({
       return null;
     }
 
-    const [models, runProfiles, searchOptions, entitlements, searchPolicy] = await Promise.all([
+    const [models, searchOptions, entitlements, searchPolicy] = await Promise.all([
       prisma.providerModel.findMany({
         include: {
           activeCredentialChecks: {
@@ -631,17 +619,6 @@ export function createPrismaCatalogDataLoader({
           connection: {
             enabled: true
           }
-        }
-      }),
-      prisma.runProfile.findMany({
-        orderBy: { id: "asc" },
-        select: {
-          description: true,
-          enabled: true,
-          id: true,
-          providerModelId: true,
-          reasoningEffort: true,
-          reasoningMode: true
         }
       }),
       prisma.searchOption.findMany({
@@ -711,22 +688,11 @@ export function createPrismaCatalogDataLoader({
       models: exposedModels
         .map(providerModelToCatalogEntry)
         .filter((model): model is ProviderModelCatalogEntry => model !== null),
-      promptPresets: user.promptPresets.map((preset) => ({
-        developerPrompt: preset.developerPrompt,
-        id: preset.id,
-        isDefault: preset.isDefault,
-        name: preset.name,
-        systemPrompt: preset.systemPrompt
-      })),
-      runProfiles: runProfiles.flatMap((profile) => isRunProfileId(profile.id)
-        ? [{ ...profile, id: profile.id }]
-        : []),
       searchPolicy,
       searchStrategies: exposedSearchOptions,
       settings: {
         defaultControlValues: user.settings.defaultControlValues,
         defaultModelId: user.settings.defaultProviderModelId ?? "",
-        defaultPromptPresetId: user.settings.defaultPromptPresetId,
         defaultProvider: user.settings.defaultProviderModel?.connectionId ?? "",
         defaultProviderConnectionId: user.settings.defaultProviderModel?.connectionId ?? null,
         defaultProviderModelId: user.settings.defaultProviderModelId,

@@ -40,14 +40,12 @@ function baseSettingsData(): SettingsHandlerData {
       searchStrategies: new Set(["openai-native-web-search"])
     },
     models: defaultProviderModels,
-    promptPresets: [{ id: "prompt-1" }],
     searchStrategies: defaultSearchStrategies,
     settings: {
       defaultControlValues: {},
       defaultModelId: "gpt-5.5",
       defaultProviderConnectionId: "openai",
       defaultProviderModelId: "gpt-5.5",
-      defaultPromptPresetId: "prompt-1",
       defaultProvider: "openai",
       defaultSearchStrategyId: "openai-native-web-search",
       showCitations: true,
@@ -147,7 +145,6 @@ describe("settings handler", () => {
     expect(Object.keys(responseBody.settings)).toEqual([
       "defaultControlValues",
       "defaultModelId",
-      "defaultPromptPresetId",
       "defaultProvider",
       "defaultSearchStrategyId",
       "defaultSearchPlan",
@@ -394,7 +391,7 @@ describe("settings handler", () => {
     });
   });
 
-  it("rejects unavailable prompt defaults before persisting settings", async () => {
+  it("ignores the retired prompt default field instead of persisting it", async () => {
     let persisted = false;
     const data = baseSettingsData();
     const PATCH = createUpdateSettingsHandler({
@@ -409,7 +406,7 @@ describe("settings handler", () => {
     const response = await PATCH(
       new Request("http://app.local/api/me/settings", {
         body: JSON.stringify({
-          defaultPromptPresetId: "missing-prompt"
+          defaultPromptPresetId: "legacy-prompt"
         }),
         headers: {
           cookie: authCookie()
@@ -421,7 +418,7 @@ describe("settings handler", () => {
     expect(response.status).toBe(400);
     expect(persisted).toBe(false);
     await expect(response.json()).resolves.toEqual({
-      error: "default_prompt_unavailable"
+      error: "settings_update_required"
     });
   });
 

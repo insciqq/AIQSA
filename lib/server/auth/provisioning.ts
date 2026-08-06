@@ -10,9 +10,6 @@ type ProvisionActiveUserInput = {
   userId: string;
 };
 
-const DEFAULT_PROMPT_NAME = "Helpful Assistant";
-const DEFAULT_SYSTEM_PROMPT = "You are a helpful AI assistant. Today is {local_date}, local time is {local_time}.";
-
 const json = (value: unknown) => value as Prisma.InputJsonValue;
 
 export async function provisionActiveUser(
@@ -38,58 +35,14 @@ export async function provisionActiveUser(
     });
   }
 
-  let prompt = await tx.promptPreset.findFirst({
-    where: {
-      isDefault: true,
-      userId: input.userId
-    }
-  });
-
-  if (!prompt) {
-    prompt = await tx.promptPreset.findFirst({
-      where: {
-        name: DEFAULT_PROMPT_NAME,
-        userId: input.userId
-      }
-    });
-
-    if (prompt) {
-      await tx.promptPreset.updateMany({
-        data: {
-          isDefault: false
-        },
-        where: {
-          isDefault: true,
-          userId: input.userId
-        }
-      });
-      prompt = await tx.promptPreset.update({
-        data: {
-          isDefault: true
-        },
-        where: {
-          id: prompt.id
-        }
-      });
-    } else {
-      prompt = await tx.promptPreset.create({
-        data: {
-          developerPrompt: null,
-          isDefault: true,
-          name: DEFAULT_PROMPT_NAME,
-          systemPrompt: DEFAULT_SYSTEM_PROMPT,
-          userId: input.userId
-        }
-      });
-    }
-  }
-
+  // No prompt preset is provisioned: ordinary no-Assistant runs receive the
+  // code-owned standard-chat baseline at run admission instead of a database
+  // object.
   await tx.userSettings.upsert({
     create: {
       defaultControlValues: json({}),
       defaultFolderId: null,
       defaultProviderModelId: null,
-      defaultPromptPresetId: prompt.id,
       defaultSearchStrategyId: "search-disabled",
       showCitations: true,
       showReasoningBlocks: false,

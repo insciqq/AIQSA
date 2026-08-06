@@ -1,24 +1,19 @@
+import { AssistantAvatar } from "@/components/assistants/AssistantAvatar";
+import { ComposerAssistantPicker } from "@/components/app-shell/ComposerAssistantPicker";
 import { ComposerModelPicker } from "@/components/app-shell/ComposerModelPicker";
 import { ComposerOptionPicker } from "@/components/app-shell/ComposerOptionPicker";
-import { ComposerPromptPicker } from "@/components/app-shell/ComposerPromptPicker";
-import { ComposerRunProfiles } from "@/components/app-shell/ComposerRunProfiles";
 import { ComposerSearchPicker } from "@/components/app-shell/ComposerSearchPicker";
 import { ComposerReasoningPicker } from "@/components/app-shell/ComposerReasoningPicker";
 import { projectSearchPlanCompatibility } from "@/components/app-shell/searchPlanCompatibility";
 import { formatTokenCount } from "@/components/app-shell/shellFormatting";
-import {
-  findActiveRunProfile,
-  resolveRunProfiles,
-  type RunProfileId
-} from "@/components/app-shell/runProfiles";
 import { useDialogFocus } from "@/components/app-shell/useDialogFocus";
+import type { ShellComposerView } from "@/components/app-shell/powerAppShellViewContracts";
 import type { ComposerUsageStats } from "@/components/chat/Composer";
 import type {
   Catalog,
   CatalogModel,
   CatalogSearchStrategy,
-  ModelParameterControls,
-  PromptPreset
+  ModelParameterControls
 } from "@/components/app-shell/types";
 import {
   Activity,
@@ -73,6 +68,7 @@ function searchStrategyDescription(strategy: CatalogSearchStrategy): string {
 }
 
 export function ComposerControls({
+  assistant,
   backgroundMode,
   compatibleSearchOptionIds,
   catalog,
@@ -81,18 +77,14 @@ export function ComposerControls({
   contextLine = null,
   currentModel,
   currentParameterControls,
-  currentPrompt,
   disabled = false,
   hasAttachments = false,
   maxOutputTokens,
   onBackgroundModeChange,
   onMaxOutputTokensChange,
   onMaxOutputTokensCommit,
-  onOpenPromptLibrary,
-  onPromptChange,
   onReasoningEffortChange,
   onReasoningModeChange,
-  onRunProfileChange,
   onSearchPlanChange,
   onSearchStrategyChange,
   onUseOrganizationSearchDefault,
@@ -111,7 +103,6 @@ export function ComposerControls({
   searchPreferenceSource = "personal",
   searchPlanMode = "all_selected",
   selectedModelId,
-  selectedPromptId,
   selectedProvider,
   selectedProviderName,
   selectedSearchStrategy,
@@ -124,6 +115,7 @@ export function ComposerControls({
   temperature,
   usageStats = null
 }: {
+  assistant: ShellComposerView["assistant"];
   backgroundMode: boolean;
   compatibleSearchOptionIds?: string[];
   catalog: Catalog | null;
@@ -132,18 +124,14 @@ export function ComposerControls({
   contextLine?: string | null;
   currentModel?: CatalogModel;
   currentParameterControls: ModelParameterControls;
-  currentPrompt: PromptPreset | null;
   disabled?: boolean;
   hasAttachments?: boolean;
   maxOutputTokens: string;
   onBackgroundModeChange(value: boolean): void;
   onMaxOutputTokensChange(value: string): void;
   onMaxOutputTokensCommit?(): void;
-  onOpenPromptLibrary(): void;
-  onPromptChange(promptId: string): void;
   onReasoningEffortChange(value: string): void;
   onReasoningModeChange(value: string): void;
-  onRunProfileChange(profileId: RunProfileId): void;
   onSearchPlanChange?(optionIds: readonly string[], mode: SearchPlanMode): void;
   onSearchStrategyChange(strategyId: string): void;
   onUseOrganizationSearchDefault?(): void;
@@ -162,7 +150,6 @@ export function ComposerControls({
   searchPreferenceSource?: "organization" | "personal";
   searchPlanMode?: SearchPlanMode;
   selectedModelId: string;
-  selectedPromptId: string | null;
   selectedProvider: string;
   selectedProviderName: string;
   selectedSearchOptionIds?: string[];
@@ -221,16 +208,6 @@ export function ComposerControls({
     const strategy = searchOptions.find((candidate) => candidate.strategyId === optionId);
     return strategy ? [strategy] : [];
   });
-  const resolvedProfiles = resolveRunProfiles(catalog);
-  const hasConfiguredProfiles = resolvedProfiles.length > 0;
-  const hasAvailableProfiles = resolvedProfiles.some((profile) => profile.available);
-  const activeProfile = findActiveRunProfile(resolvedProfiles, {
-    modelId: selectedModelId,
-    provider: selectedProvider,
-    reasoningEffort,
-    reasoningMode
-  });
-  const profileLabel = hasAvailableProfiles ? (activeProfile?.label ?? "Custom") : null;
   const modelLabel = currentModel
     ? currentModel.displayName
     : catalogUnavailable
@@ -265,7 +242,7 @@ export function ComposerControls({
   };
   const summaryDescription = [
     "Open more run settings.",
-    profileLabel ? `Profile ${profileLabel}.` : null,
+    assistant.selected ? `Assistant ${assistant.selected.name}.` : null,
     `Model ${modelLabel}.`,
     `Reasoning ${
       reasoningSupported ? reasoningAccessibleDescription(reasoningEffort, reasoningMode) : "not supported"
@@ -307,6 +284,38 @@ export function ComposerControls({
       data-layout="direct"
       data-testid="composer-control-bar"
     >
+      {assistant.selected ? (
+        <div className="flex w-full min-w-0 items-center gap-1.5" data-testid="composer-assistant-chip-row">
+          <button
+            className="inline-flex min-h-touch max-w-full min-w-0 items-center gap-1.5 rounded-control px-1.5 text-left text-xs font-medium text-ink-secondary outline-none hover:bg-control-hover hover:text-ink focus-visible:ring-2 focus-visible:ring-focus sm:min-h-control [@media(hover:none)]:!min-h-touch [@media(pointer:coarse)]:!min-h-touch"
+            type="button"
+            aria-haspopup="dialog"
+            aria-label={`Assistant ${assistant.selected.name}. Change or remove the assistant.`}
+            data-testid="composer-assistant-chip"
+            disabled={disabled || streaming}
+            onClick={() => assistant.setPickerOpen(true)}
+          >
+            <AssistantAvatar recipe={assistant.selected.avatar} size={20} />
+            <span className="truncate">{assistant.selected.name}</span>
+          </button>
+        </div>
+      ) : null}
+      {assistant.removedNotice ? (
+        <p
+          className="flex w-full min-w-0 items-center gap-2 text-metadata text-ink-muted"
+          data-testid="composer-assistant-removed-notice"
+          role="status"
+        >
+          <span className="min-w-0">Assistant removed. Your manual settings now apply.</span>
+          <button
+            className="shrink-0 rounded-control px-1 text-metadata font-medium text-ink-secondary hover:bg-control-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"
+            type="button"
+            onClick={assistant.clearRemovedNotice}
+          >
+            Dismiss
+          </button>
+        </p>
+      ) : null}
       <ComposerModelPicker
         catalog={catalog}
         catalogUnavailable={catalogUnavailable}
@@ -331,32 +340,6 @@ export function ComposerControls({
         data-has-direct-reasoning={reasoningSupported ? "true" : "false"}
         data-testid="composer-secondary-controls"
       >
-        {hasAvailableProfiles ? (
-          <ComposerOptionPicker
-            accessibleDescription={`Current run profile: ${profileLabel ?? "Custom"}`}
-            className="min-w-20 max-w-[9rem] flex-[0_1_9rem]"
-            disabled={disabled || streaming}
-            compactResting
-            id="composer-inline-profile"
-            label="Run profile"
-            options={resolvedProfiles
-              .filter((profile) => profile.available)
-              .map((profile) => ({
-                description: `${profile.description} · ${profile.configurationLabel}`,
-                label: profile.label,
-                value: profile.id
-              }))}
-            pickerDescription="Applies the configured model and reasoning together."
-            pickerTitle="Profile"
-            resting
-            restingLabel="Profile"
-            restingLabelClassName="sr-only"
-            summaryLabel={profileLabel ?? "Custom"}
-            value={activeProfile?.id ?? ""}
-            onChange={(profileId) => onRunProfileChange(profileId as RunProfileId)}
-          />
-        ) : null}
-
         {reasoningSupported ? (
           <ComposerReasoningPicker
             controls={currentParameterControls}
@@ -406,7 +389,7 @@ export function ComposerControls({
         >
           <SlidersHorizontal className="size-3.5 shrink-0 text-ink-muted" aria-hidden="true" />
           <span className="sr-only">
-            {modelLabel}. {profileLabel ? `Profile: ${profileLabel}. ` : ""}Search: {searchSummary}.
+            {modelLabel}. Search: {searchSummary}.
           </span>
           <span className="hidden shrink-0 min-[430px]:inline">More</span>
           <span
@@ -418,9 +401,6 @@ export function ComposerControls({
         </button>
       </div>
 
-      {profileLabel ? (
-        <span className="sr-only" data-testid="run-profile-summary">Profile: {profileLabel}</span>
-      ) : null}
       <span className="sr-only" data-testid="run-search-summary">Search: {searchSummary}</span>
 
       {runSetupOpen ? (
@@ -467,28 +447,7 @@ export function ComposerControls({
               className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-4 sm:px-5"
               data-testid="run-setup-content"
             >
-              {hasConfiguredProfiles ? (
-                <section aria-labelledby="run-profile-heading">
-                  <div className="mb-2">
-                    <h3 className="text-xs font-semibold text-ink-secondary" id="run-profile-heading">Profile</h3>
-                    <p className="mt-0.5 text-xs text-ink-muted">A quick starting point; every value below remains editable.</p>
-                  </div>
-                  <ComposerRunProfiles
-                    catalog={catalog}
-                    disabled={disabled || streaming}
-                    reasoningEffort={reasoningEffort}
-                    reasoningMode={reasoningMode}
-                    selectedModelId={selectedModelId}
-                    selectedProvider={selectedProvider}
-                    onSelect={onRunProfileChange}
-                  />
-                </section>
-              ) : null}
-
-              <section
-                className={hasConfiguredProfiles ? "mt-5 border-t border-trace-subtle pt-4" : undefined}
-                aria-labelledby="run-essentials-heading"
-              >
+              <section aria-labelledby="run-essentials-heading">
                 <h3 className="mb-2 text-xs font-semibold text-ink-secondary" id="run-essentials-heading">Answer setup</h3>
                 <div
                   className="grid min-w-0 gap-2 sm:grid-cols-2"
@@ -581,29 +540,27 @@ export function ComposerControls({
               </section>
 
               <div data-testid="run-setup-advanced">
-                <section className="mt-5 border-t border-trace-subtle pt-4" aria-labelledby="run-prompt-heading">
+                <section className="mt-5 border-t border-trace-subtle pt-4" aria-labelledby="run-assistant-heading">
                   <div className="mb-2 flex items-center justify-between gap-3">
-                    <h3 className="text-xs font-semibold text-ink-secondary" id="run-prompt-heading">Prompt preset</h3>
-                    <button
-                      className="inline-flex h-touch shrink-0 items-center gap-1.5 rounded-control px-2 text-xs font-medium text-ink-secondary hover:bg-control-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus sm:h-control-sm [@media(hover:none)]:!h-touch [@media(pointer:coarse)]:!h-touch"
-                      type="button"
-                      onClick={() => {
-                        closeRunSetup();
-                        window.setTimeout(onOpenPromptLibrary, 0);
-                      }}
-                    >
-                      <ScrollText className="size-3.5" aria-hidden="true" />
-                      Open library
-                    </button>
+                    <h3 className="text-xs font-semibold text-ink-secondary" id="run-assistant-heading">Assistant</h3>
                   </div>
-                  <ComposerPromptPicker
-                    currentPrompt={currentPrompt}
-                    disabled={!catalog || streaming}
-                    prompts={catalog?.promptPresets ?? []}
-                    icon={<ScrollText className="size-4 shrink-0 text-ink-muted" aria-hidden="true" />}
-                    selectedPromptId={selectedPromptId}
-                    onChange={onPromptChange}
-                  />
+                  <p className="mb-2 text-xs text-ink-muted">
+                    {assistant.selected
+                      ? `Using ${assistant.selected.name}. Changing any governed control removes it.`
+                      : "Reuse a saved setup: model, instructions, Search, and tools together."}
+                  </p>
+                  <button
+                    className="inline-flex h-touch shrink-0 items-center gap-1.5 rounded-control px-2 text-xs font-medium text-ink-secondary hover:bg-control-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus sm:h-control-sm [@media(hover:none)]:!h-touch [@media(pointer:coarse)]:!h-touch"
+                    data-testid="run-setup-use-assistant"
+                    type="button"
+                    onClick={() => {
+                      closeRunSetup();
+                      window.setTimeout(() => assistant.setPickerOpen(true), 0);
+                    }}
+                  >
+                    <ScrollText className="size-3.5" aria-hidden="true" />
+                    {assistant.selected ? "Change assistant…" : "Use an assistant…"}
+                  </button>
                 </section>
 
                 <section className="mt-5 border-t border-trace-subtle pt-4" aria-labelledby="run-generation-heading">
@@ -768,6 +725,30 @@ export function ComposerControls({
             </div>
           </div>
         </>
+      ) : null}
+
+      {assistant.openPicker ? (
+        <ComposerAssistantPicker
+          assistants={assistant.pickerItems}
+          loading={assistant.pickerLoading}
+          recentIds={assistant.recentIds}
+          selectedAssistantId={assistant.selected?.id ?? null}
+          onClose={() => assistant.setPickerOpen(false)}
+          onCreateFromCurrentSetup={assistant.startFromCurrentSetup}
+          onOpenLibrary={() => {
+            assistant.setPickerOpen(false);
+            assistant.openLibrary();
+          }}
+          onRemoveAssistant={
+            assistant.selected
+              ? () => {
+                  assistant.setPickerOpen(false);
+                  assistant.remove();
+                }
+              : null
+          }
+          onSelect={assistant.selectById}
+        />
       ) : null}
     </div>
   );

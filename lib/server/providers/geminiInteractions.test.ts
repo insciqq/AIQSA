@@ -20,7 +20,7 @@ function request(stream: boolean): ProviderRunRequest {
     },
     modelId: "gemini-3.6-flash",
     params: { maxTokens: 32, stream },
-    prompt: { developer: null, presetId: null, system: null },
+    prompt: { developer: null, system: null },
     provider: "gemini",
     searchStrategy: "search-disabled"
   };

@@ -51,7 +51,6 @@ export async function installMatrixCatalogFixture(
     defaultControlValues: structuredClone(fixtureCatalog.defaults.controlValues),
     defaultModelId: fixtureCatalog.defaults.modelId,
     defaultSearchPlan: structuredClone(fixtureCatalog.defaults.searchPlan),
-    defaultPromptPresetId: fixtureCatalog.defaults.promptPresetId as string | null,
     defaultProvider: fixtureCatalog.defaults.provider,
     defaultSearchStrategyId: fixtureCatalog.defaults.searchStrategyId,
     organizationSearchPlan: structuredClone(fixtureCatalog.defaults.organizationSearchPlan),
@@ -71,7 +70,6 @@ export async function installMatrixCatalogFixture(
             controlValues: settings.defaultControlValues,
             modelId: settings.defaultModelId,
             organizationSearchPlan: settings.organizationSearchPlan,
-            promptPresetId: settings.defaultPromptPresetId,
             provider: settings.defaultProvider,
             searchPlan: settings.defaultSearchPlan,
             searchPreferenceSource: settings.searchPreferenceSource,
@@ -121,9 +119,6 @@ export async function installMatrixCatalogFixture(
     const body = JSON.parse(route.request().postData() ?? "{}") as Record<string, unknown>;
     if (typeof body.defaultModelId === "string") {
       settings.defaultModelId = body.defaultModelId;
-    }
-    if (body.defaultPromptPresetId === null || typeof body.defaultPromptPresetId === "string") {
-      settings.defaultPromptPresetId = body.defaultPromptPresetId;
     }
     if (typeof body.defaultProvider === "string") {
       settings.defaultProvider = body.defaultProvider;

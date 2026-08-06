@@ -1,10 +1,5 @@
 import type { ErrorResponse, SessionErrorCode } from "./http";
 import {
-  RUN_PROFILE_IDS,
-  type CatalogRunProfile,
-  type RunProfileId
-} from "./runProfiles";
-import {
   decodeSearchPlan,
   type SearchAdapterKind,
   type SearchPlan,
@@ -110,19 +105,10 @@ export type CatalogSearchStrategy = CatalogWireSearchStrategy;
 
 export type CatalogSearchStrategyKind = CatalogSearchStrategy["kind"];
 
-export type PromptPreset = {
-  developerPrompt: string | null;
-  id: string;
-  isDefault: boolean;
-  name: string;
-  systemPrompt: string;
-};
-
 export type CatalogDefaults = {
   controlValues: Record<string, unknown>;
   modelId: string;
   organizationSearchPlan?: SearchPlan;
-  promptPresetId: string | null;
   provider: string;
   searchStrategyId: string;
   searchPlan?: SearchPlan;
@@ -165,16 +151,13 @@ export type Catalog = {
   attachmentLimits?: CatalogAttachmentLimits;
   defaults: CatalogDefaults;
   models: CatalogModel[];
-  promptPresets: PromptPreset[];
   providers: CatalogProvider[];
-  runProfiles?: CatalogRunProfile[];
   searchStrategies: CatalogSearchStrategy[];
 };
 
-export type CurrentUserCatalogWire = Omit<Catalog, "models" | "providers" | "runProfiles" | "searchStrategies"> & {
+export type CurrentUserCatalogWire = Omit<Catalog, "models" | "providers" | "searchStrategies"> & {
   models: CatalogWireModel[];
   providers: CatalogWireProvider[];
-  runProfiles: CatalogRunProfile[];
   searchStrategies: CatalogWireSearchStrategy[];
 };
 
@@ -321,27 +304,6 @@ function decodeCatalogModel(value: unknown): CatalogModel | null {
   };
 }
 
-function decodePromptPreset(value: unknown): PromptPreset | null {
-  if (
-    !isRecord(value) ||
-    !nonEmptyString(value.id) ||
-    typeof value.isDefault !== "boolean" ||
-    !nonEmptyString(value.name) ||
-    !nonEmptyString(value.systemPrompt) ||
-    (value.developerPrompt !== null && typeof value.developerPrompt !== "string")
-  ) {
-    return null;
-  }
-
-  return {
-    developerPrompt: value.developerPrompt,
-    id: value.id,
-    isDefault: value.isDefault,
-    name: value.name,
-    systemPrompt: value.systemPrompt
-  };
-}
-
 function decodeCatalogProvider(value: unknown): CatalogProvider | null {
   if (
     !isRecord(value) ||
@@ -412,54 +374,6 @@ function decodeSearchStrategy(value: unknown): CatalogSearchStrategy | null {
   };
 }
 
-function decodeRunProfile(value: unknown): CatalogRunProfile | null {
-  if (
-    !isRecord(value) ||
-    !RUN_PROFILE_IDS.includes(value.id as RunProfileId) ||
-    !nonEmptyString(value.label) ||
-    !nonEmptyString(value.description) ||
-    typeof value.available !== "boolean"
-  ) {
-    return null;
-  }
-  const base = {
-    description: value.description,
-    id: value.id as RunProfileId,
-    label: value.label
-  };
-  if (value.available) {
-    if (
-      !nonEmptyString(value.configurationLabel) ||
-      !nonEmptyString(value.modelId) ||
-      !nonEmptyString(value.provider) ||
-      !nonEmptyString(value.reasoningEffort) ||
-      !nonEmptyString(value.reasoningMode)
-    ) {
-      return null;
-    }
-    return {
-      ...base,
-      available: true,
-      configurationLabel: value.configurationLabel,
-      modelId: value.modelId,
-      provider: value.provider,
-      reasoningEffort: value.reasoningEffort,
-      reasoningMode: value.reasoningMode
-    };
-  }
-  if (
-    value.unavailableReason !== "configuration_invalid" &&
-    value.unavailableReason !== "model_unavailable"
-  ) {
-    return null;
-  }
-  return {
-    ...base,
-    available: false,
-    unavailableReason: value.unavailableReason
-  };
-}
-
 function decodeCatalogAttachmentLimits(value: unknown): CatalogAttachmentLimits | null {
   if (
     !isRecord(value) ||
@@ -495,39 +409,28 @@ export function decodeCatalogResponse(value: unknown): Catalog | null {
     !isRecord(defaults) ||
     !isRecord(defaults.controlValues) ||
     typeof defaults.modelId !== "string" ||
-    (defaults.promptPresetId !== null && typeof defaults.promptPresetId !== "string") ||
     typeof defaults.provider !== "string" ||
     !nonEmptyString(defaults.searchStrategyId) ||
     typeof defaults.showCitations !== "boolean" ||
     typeof defaults.showReasoningBlocks !== "boolean" ||
     typeof defaults.showToolActivity !== "boolean" ||
     !Array.isArray(catalog.models) ||
-    !Array.isArray(catalog.promptPresets) ||
     !Array.isArray(catalog.providers) ||
-    !Array.isArray(catalog.runProfiles) ||
     !Array.isArray(catalog.searchStrategies)
   ) {
     return null;
   }
 
   const models = catalog.models.map(decodeCatalogModel);
-  const promptPresets = catalog.promptPresets.map(decodePromptPreset);
   const providers = catalog.providers.map(decodeCatalogProvider);
-  const runProfiles = catalog.runProfiles.map(decodeRunProfile);
   const searchStrategies = catalog.searchStrategies.map(decodeSearchStrategy);
   const decodedSearchPlan = defaults.searchPlan === undefined
     ? null
     : decodeSearchPlan(defaults.searchPlan, defaults.searchStrategyId);
   const decodedOrganizationSearchPlan = decodeSearchPlan(defaults.organizationSearchPlan);
-  const runProfileIds = new Set(
-    runProfiles.flatMap((profile) => profile ? [profile.id] : [])
-  );
   if (
     models.some((model) => model === null) ||
-    promptPresets.some((prompt) => prompt === null) ||
     providers.some((provider) => provider === null) ||
-    runProfiles.some((profile) => profile === null) ||
-    runProfileIds.size !== runProfiles.length ||
     searchStrategies.some((strategy) => strategy === null) ||
     (hasAttachmentLimits && attachmentLimits === null) ||
     (defaults.searchPlan !== undefined && !decodedSearchPlan?.ok) ||
@@ -543,7 +446,6 @@ export function decodeCatalogResponse(value: unknown): Catalog | null {
       controlValues: defaults.controlValues,
       modelId: defaults.modelId,
       organizationSearchPlan: decodedOrganizationSearchPlan.plan,
-      promptPresetId: defaults.promptPresetId,
       provider: defaults.provider,
       searchStrategyId: defaults.searchStrategyId,
       ...(decodedSearchPlan?.ok ? { searchPlan: decodedSearchPlan.plan } : {}),
@@ -553,9 +455,7 @@ export function decodeCatalogResponse(value: unknown): Catalog | null {
       showToolActivity: defaults.showToolActivity
     },
     models: models.filter((model): model is CatalogModel => model !== null),
-    promptPresets: promptPresets.filter((prompt): prompt is PromptPreset => prompt !== null),
     providers: providers.filter((provider): provider is CatalogProvider => provider !== null),
-    runProfiles: runProfiles.filter((profile): profile is CatalogRunProfile => profile !== null),
     searchStrategies: searchStrategies.filter(
       (strategy): strategy is CatalogSearchStrategy => strategy !== null
     )

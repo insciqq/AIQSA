@@ -15,7 +15,6 @@ function chat(id: string, title: string): WorkspaceChatSummary {
     activeLeafMessageId: `assistant-${id}`,
     createdAt: "2026-07-12T08:00:00.000Z",
     defaultModelId: "gpt-5.5",
-    defaultPromptPresetId: null,
     defaultProvider: "openai",
     folderId: null,
     id,

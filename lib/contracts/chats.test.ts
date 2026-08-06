@@ -10,7 +10,6 @@ const summary = {
   activeLeafMessageId: "message-1",
   createdAt: "2026-07-14T08:00:00.000Z",
   defaultModelId: "gpt-5.5",
-  defaultPromptPresetId: null,
   defaultProvider: "openai",
   folderId: null,
   id: "chat-1",
@@ -150,7 +149,6 @@ describe("chat wire contracts", () => {
       { ...summary, activeLeafMessageId: undefined },
       { ...summary, defaultModelId: undefined },
       { ...summary, defaultProvider: undefined },
-      { ...summary, defaultPromptPresetId: undefined },
       { ...summary, folderId: undefined },
       { ...summary, messageCount: -1 },
       { ...summary, messageCount: 0.5 },
@@ -224,6 +222,56 @@ describe("chat wire contracts", () => {
         chat: { ...summary, messages: [legacyMessage], usageStats: null }
       })?.messages[0]
     ).toEqual(legacyMessage);
+  });
+
+  it("round-trips the snapshot-bound assistant identity and fails closed on malformed identities", () => {
+    const assistantIdentity = {
+      avatar: {
+        accents: [0, 1, 2, 3],
+        backgroundShape: "circle",
+        foregroundShape: "diamond",
+        kind: "generated",
+        paletteId: "ocean",
+        recipeVersion: 1,
+        rotations: [0, 2]
+      },
+      name: "Docs helper",
+      revisionNumber: 3
+    };
+
+    expect(
+      decodeChatDetailResponse({
+        chat: {
+          ...summary,
+          messages: [{ ...message, assistantIdentity }],
+          usageStats: null
+        }
+      })?.messages[0]?.assistantIdentity
+    ).toEqual(assistantIdentity);
+    expect(
+      decodeChatDetailResponse({
+        chat: {
+          ...summary,
+          messages: [{ ...message, assistantIdentity: null }],
+          usageStats: null
+        }
+      })?.messages[0]?.assistantIdentity
+    ).toBeNull();
+    for (const malformedIdentity of [
+      { ...assistantIdentity, name: "" },
+      { ...assistantIdentity, revisionNumber: 0 },
+      { ...assistantIdentity, avatar: { kind: "uploaded" } }
+    ]) {
+      expect(
+        decodeChatDetailResponse({
+          chat: {
+            ...summary,
+            messages: [{ ...message, assistantIdentity: malformedIdentity }],
+            usageStats: null
+          }
+        })
+      ).toBeNull();
+    }
   });
 
   it("decodes terminal updates only when both owners are complete", () => {

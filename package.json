@@ -38,6 +38,7 @@
     "db:migration:contract": "tsx prisma/scripts/tests/schema-integrity-migration-contract.ts",
     "db:retention:migration:contract": "tsx prisma/scripts/tests/attachment-retention-migration-contract.ts",
     "db:search:migration:contract": "tsx prisma/scripts/tests/search-control-plane-migration-contract.ts",
+    "db:assistants:migration:contract": "tsx prisma/scripts/tests/reusable-assistants-migration-contract.ts",
     "db:seed": "prisma generate && prisma db seed",
     "db:seed:smoke": "prisma generate && tsx prisma/seed-smoke.ts",
     "db:test:bootstrap": "npm run db:migrate:deploy && npm run db:seed",

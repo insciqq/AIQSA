@@ -3,8 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { adminProviderQuickSetupPolicy } from "./quickSetupPolicy";
 import {
   createPrismaAdminProviderQuickSetupRepository,
-  lockAdminProviderQuickSetupState,
-  planAdminProviderQuickSetupProfileFills
+  lockAdminProviderQuickSetupState
 } from "./quickSetupPrismaRepository";
 
 const now = new Date("2026-07-26T10:00:00.000Z");
@@ -141,7 +140,6 @@ function inspectionRepository(input: Readonly<{
   connections?: unknown[];
   grants?: unknown[];
   memberships?: unknown[];
-  profiles?: unknown[];
 }> = {}) {
   const db = {
     accessGrant: { findMany: vi.fn(async () => input.grants ?? []) },
@@ -156,7 +154,6 @@ function inspectionRepository(input: Readonly<{
     providerConnection: {
       findMany: vi.fn(async () => input.connections ?? [canonicalConnection()])
     },
-    runProfile: { findMany: vi.fn(async () => input.profiles ?? []) },
     user: {
       findUnique: vi.fn(async () => ({
         id: "admin",
@@ -264,7 +261,7 @@ describe("Prisma provider Quick setup repository transaction boundary", () => {
     expect(transaction).toHaveBeenCalledTimes(1);
   });
 
-  it("locks provider draft checks and keeps profiles last and initial-only", async () => {
+  it("locks provider draft checks without any run-profile fence", async () => {
     const queryRaw = vi.fn(async (_statement: unknown) => []);
     const basePlan = {
       actor: { sessionId: "session-admin", userId: "admin" },
@@ -294,8 +291,10 @@ describe("Prisma provider Quick setup repository transaction boundary", () => {
     const initialSql = queryRaw.mock.calls.map(([statement]) =>
       (statement as { strings: readonly string[] }).strings.join(" ")
     );
-    expect(initialSql.at(-1)).toContain("RunProfile");
-    expect(initialSql.at(-1)).toContain("WHEN 'fast' THEN 1");
+    expect(initialSql.some((sql) => sql.includes("RunProfile"))).toBe(false);
+    // Without the run-profile fence the lock plan is mode-independent: initial
+    // mode must take the exact replacement lock set in the same order.
+    expect(initialSql).toEqual(replacementSql);
   });
 });
 
@@ -674,37 +673,5 @@ describe("Prisma provider Quick setup connection summaries", () => {
       orderBy: [{ displayName: "asc" }, { id: "asc" }],
       where: expect.objectContaining({ family: { not: "fake" } })
     }));
-  });
-});
-
-describe("Prisma provider Quick setup profile planning", () => {
-  const untouchedProfiles = [
-    { enabled: false, id: "fast", providerModelId: null, updatedByUserId: null, version: 1 },
-    { enabled: false, id: "balanced", providerModelId: null, updatedByUserId: null, version: 1 },
-    { enabled: false, id: "deep", providerModelId: null, updatedByUserId: null, version: 1 }
-  ];
-
-  it("fills only the initial exact-template slot", () => {
-    expect(planAdminProviderQuickSetupProfileFills({
-      mode: "initial",
-      profiles: untouchedProfiles,
-      templateKey: terra.templateKey
-    })).toEqual([{ id: "balanced", reasoningEffort: "medium", reasoningMode: "standard" }]);
-  });
-
-  it("never fills profiles during key replacement", () => {
-    expect(planAdminProviderQuickSetupProfileFills({
-      mode: "replacement",
-      profiles: untouchedProfiles,
-      templateKey: terra.templateKey
-    })).toEqual([]);
-  });
-
-  it("never fills profiles during canonical recovery", () => {
-    expect(planAdminProviderQuickSetupProfileFills({
-      mode: "recovery",
-      profiles: untouchedProfiles,
-      templateKey: terra.templateKey
-    })).toEqual([]);
   });
 });

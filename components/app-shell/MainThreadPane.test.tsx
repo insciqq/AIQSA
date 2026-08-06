@@ -5,8 +5,7 @@ import {
   ChatDeleteConfirmationDialog,
   DiscardChangesConfirmationDialog,
   FolderDeleteConfirmationDialog,
-  MessageDeleteConfirmationDialog,
-  PromptDeleteConfirmationDialog
+  MessageDeleteConfirmationDialog
 } from "./ConfirmationDialog";
 import { MainThreadPane } from "./MainThreadPane";
 import { defaultParameterControls } from "./controlDefaults";
@@ -55,7 +54,6 @@ const catalog: Catalog = {
   defaults: {
     controlValues: {},
     modelId: "fake-qsa",
-    promptPresetId: null,
     provider: "fake",
     searchStrategyId: "search-disabled",
     showCitations: true,
@@ -63,9 +61,46 @@ const catalog: Catalog = {
     showToolActivity: true,
   },
   models: [model],
-  promptPresets: [],
   providers: [{ id: "fake", models: ["fake-qsa"], name: "Fake" }],
   searchStrategies: [{ displayName: "No Search", kind: "none", strategyId: "search-disabled" }]
+};
+
+type PaneAssistantView = ComponentProps<typeof MainThreadPane>["assistant"];
+
+function createAssistantView(overrides: Partial<PaneAssistantView> = {}): PaneAssistantView {
+  return {
+    clearRemovedNotice: vi.fn(),
+    openLibrary: vi.fn(),
+    openPicker: false,
+    pickerItems: [],
+    pickerLoading: false,
+    recentIds: [],
+    remove: vi.fn(),
+    removedNotice: false,
+    selectById: vi.fn(),
+    selected: null,
+    sendStarter: vi.fn(),
+    setPickerOpen: vi.fn(),
+    startFromCurrentSetup: vi.fn(),
+    ...overrides
+  };
+}
+
+const selectedAssistant = {
+  avatar: {
+    accents: [0],
+    backgroundShape: "circle" as const,
+    foregroundShape: "diamond" as const,
+    kind: "generated" as const,
+    paletteId: "ocean" as const,
+    recipeVersion: 1 as const,
+    rotations: [0, 1] as [0, 1]
+  },
+  description: "Careful, sourced answers",
+  id: "assistant-research",
+  name: "Research Helper",
+  promptCharacterCount: 240,
+  starterPrompts: ["Summarize the latest findings", "Draft a research plan"]
 };
 
 const deepProfileModel: CatalogModel = {
@@ -102,34 +137,7 @@ const deepProfileCatalog: Catalog = {
     provider: deepProfileModel.provider
   },
   models: [deepProfileModel],
-  providers: [{ id: deepProfileModel.provider, models: [deepProfileModel.modelId], name: "OpenAI" }],
-  runProfiles: [
-    {
-      available: false,
-      description: "Simple, well-defined questions",
-      id: "fast",
-      label: "Fast",
-      unavailableReason: "model_unavailable"
-    },
-    {
-      available: false,
-      description: "Most everyday questions",
-      id: "balanced",
-      label: "Balanced",
-      unavailableReason: "model_unavailable"
-    },
-    {
-      available: true,
-      configurationLabel: "GPT-5.6 Sol · Pro · Maximum",
-      description: "Difficult or open-ended questions",
-      id: "deep",
-      label: "Deep",
-      modelId: deepProfileModel.modelId,
-      provider: deepProfileModel.provider,
-      reasoningEffort: "max",
-      reasoningMode: "pro"
-    }
-  ]
+  providers: [{ id: deepProfileModel.provider, models: [deepProfileModel.modelId], name: "OpenAI" }]
 };
 
 const readyComposerOverrides: Partial<ComponentProps<typeof MainThreadPane>> = {
@@ -192,6 +200,7 @@ function renderPane(overrides: Partial<ComponentProps<typeof MainThreadPane>> = 
     activeChatDetailLoading: false,
     activeChatId: "chat-1",
     activeChatStreaming: false,
+    assistant: createAssistantView(),
     attachments: [],
     backgroundMode: false,
     catalog: null,
@@ -215,7 +224,6 @@ function renderPane(overrides: Partial<ComponentProps<typeof MainThreadPane>> = 
     creatingChat: false,
     currentModel: undefined,
     currentParameterControls: defaultParameterControls(null),
-    currentPrompt: null,
     currentRunId: null,
     draft: "",
     editingMessageId: null,
@@ -236,7 +244,6 @@ function renderPane(overrides: Partial<ComponentProps<typeof MainThreadPane>> = 
     operationErrorLive: true,
     openRunDetails: vi.fn(),
     openMcpSettings: vi.fn(),
-    openPromptLibrary: vi.fn(),
     reasoningEffort: "none",
     reasoningMode: "standard",
     retryActiveChatDetail: vi.fn(),
@@ -245,12 +252,9 @@ function renderPane(overrides: Partial<ComponentProps<typeof MainThreadPane>> = 
     searchOptions: [],
     searchPlanMode: "all_selected",
     selectModel: vi.fn(),
-    selectPrompt: vi.fn(),
-    selectRunProfile: vi.fn(),
     selectSearchPlan: vi.fn(),
     selectSearchStrategy: vi.fn(),
     selectedModelId: "fake-qsa",
-    selectedPromptId: null,
     selectedProvider: "fake",
     selectedProviderName: "Fake",
     selectedSearchOptionIds: [],
@@ -602,8 +606,7 @@ describe("MainThreadPane", () => {
     });
   });
 
-  it("renders direct model, profile-picker, and Search controls plus one complete More setup", () => {
-    const selectRunProfile = vi.fn();
+  it("renders direct model and Search controls plus one complete More setup", () => {
     renderPane({
       catalog: deepProfileCatalog,
       composerContextStats: {
@@ -618,41 +621,28 @@ describe("MainThreadPane", () => {
       searchOptions: deepProfileCatalog.searchStrategies,
       selectedModelId: deepProfileModel.modelId,
       selectedProvider: deepProfileModel.provider,
-      selectedProviderName: "OpenAI",
-      selectRunProfile
+      selectedProviderName: "OpenAI"
     });
 
     const controls = screen.getByTestId("composer-control-bar");
     const more = screen.getByTestId("composer-run-summary");
     expect(screen.getByTestId("run-model-summary")).toHaveTextContent("GPT-5.6 Sol");
-    expect(screen.getByTestId("run-profile-summary")).toHaveTextContent("Profile: Deep");
+    expect(screen.queryByTestId("run-profile-summary")).not.toBeInTheDocument();
     expect(screen.getByTestId("run-search-summary")).toHaveTextContent("Search: Off");
     expect(within(controls).getByRole("button", { name: "Select model" })).toBeVisible();
-    const directProfile = within(controls).getByRole("button", { name: "Run profile" });
-    expect(directProfile).toHaveTextContent("Deep");
-    expect(directProfile).toHaveAttribute("title", "Current run profile: Deep");
-    fireEvent.click(directProfile);
-    fireEvent.click(
-      screen
-        .getByTestId("composer-inline-profile-options")
-        .querySelector('[data-option-value="deep"]')!
-    );
-    expect(selectRunProfile).toHaveBeenCalledWith("deep");
     expect(within(controls).getByRole("button", { name: "Search strategy" })).toBeVisible();
     expect(more).toHaveTextContent("More");
 
     fireEvent.click(more);
     const setup = screen.getByRole("dialog", { name: "Run setup" });
-    expect(setup).toHaveTextContent("Profile");
     expect(setup).toHaveTextContent("Answer setup");
+    expect(setup).toHaveTextContent("Assistant");
     expect(setup).toHaveTextContent("Generation");
     expect(setup).toHaveTextContent("Next run");
     expect(setup).toHaveTextContent("Display preferences");
-
-    const deep = within(setup).getByRole("button", { name: "Use Deep run profile" });
-    expect(deep).toHaveAttribute("aria-pressed", "true");
-    fireEvent.click(deep);
-    expect(selectRunProfile).toHaveBeenCalledTimes(2);
+    expect(within(setup).getByTestId("run-setup-use-assistant")).toHaveTextContent(
+      "Use an assistant…"
+    );
   });
 
   it("keeps pending edit controls local to the rendered composer session", () => {
@@ -716,49 +706,28 @@ describe("MainThreadPane", () => {
     expect(submitComposer).toHaveBeenCalledOnce();
   });
 
-  it("selects a composer prompt for the next run without requesting default persistence", async () => {
-    const selectPrompt = vi.fn();
-    const promptCatalog: Catalog = {
-      ...catalog,
-      promptPresets: [
-        {
-          developerPrompt: null,
-          id: "prompt-default",
-          isDefault: true,
-          name: "Helpful Assistant",
-          systemPrompt: "Be helpful."
-        },
-        {
-          developerPrompt: "Check sources.",
-          id: "prompt-research",
-          isDefault: false,
-          name: "Research",
-          systemPrompt: "Investigate carefully."
-        }
-      ]
-    };
-    renderPane({
+  it("introduces the selected assistant on a blank workspace and sends starters untouched", () => {
+    const assistant = createAssistantView({ selected: selectedAssistant });
+    const { props, rerender } = renderPane({
       ...readyComposerOverrides,
-      catalog: promptCatalog,
-      currentPrompt: promptCatalog.promptPresets[0]!,
-      selectPrompt,
-      selectedPromptId: "prompt-default"
+      activeChatId: null,
+      assistant
     });
 
-    fireEvent.click(screen.getByTestId("composer-run-summary"));
-    const runSettings = screen.getByRole("dialog", { name: "Run setup" });
-    fireEvent.click(within(runSettings).getByRole("button", { name: "Prompt preset" }));
-    fireEvent.click(
-      screen
-        .getByTestId("prompt-picker-options")
-        .querySelector('[data-option-value="prompt-research"]')!
-    );
+    const intro = screen.getByTestId("assistant-blank-intro");
+    expect(intro).toHaveTextContent("Research Helper");
+    expect(intro).toHaveTextContent("Careful, sourced answers");
+    expect(screen.queryByText("What do you want to work on?")).not.toBeInTheDocument();
 
-    await waitFor(() => expect(selectPrompt).toHaveBeenCalledWith("prompt-research"));
-    expect(selectPrompt).not.toHaveBeenCalledWith(
-      "prompt-research",
-      expect.objectContaining({ persist: true })
+    const starters = screen.getByTestId("assistant-starter-prompts");
+    fireEvent.click(
+      within(starters).getByRole("button", { name: "Summarize the latest findings" })
     );
+    expect(assistant.sendStarter).toHaveBeenCalledWith("Summarize the latest findings");
+
+    rerender(<MainThreadPane {...props} draft="Already typing" />);
+    expect(screen.queryByTestId("assistant-starter-prompts")).not.toBeInTheDocument();
+    expect(screen.getByTestId("assistant-blank-intro")).toBeVisible();
   });
 
   it("shows a described Stop state until an active run can be cancelled", () => {
@@ -1509,7 +1478,6 @@ describe("MainThreadPane", () => {
       activeLeafMessageId: null,
       createdAt: "2026-06-10T00:00:00.000Z",
       defaultModelId: "fake-qsa",
-      defaultPromptPresetId: null,
       defaultProvider: "fake",
       folderId: null,
       id: "chat-delete",
@@ -1569,28 +1537,16 @@ describe("MainThreadPane", () => {
     expect(onConfirm).toHaveBeenCalledOnce();
   });
 
-  it("renders custom message and prompt delete confirmation dialogs", () => {
+  it("renders the custom message delete confirmation dialog", () => {
     const onCancel = vi.fn();
     const onConfirm = vi.fn();
-    const { rerender } = render(
-      <MessageDeleteConfirmationDialog onCancel={onCancel} onConfirm={onConfirm} />
-    );
+    render(<MessageDeleteConfirmationDialog onCancel={onCancel} onConfirm={onConfirm} />);
 
     expect(screen.getByRole("dialog", { name: "Delete message" })).toBeInTheDocument();
     expect(screen.getByTestId("delete-message-confirmation")).toHaveTextContent("every reply below");
 
     fireEvent.click(screen.getByRole("button", { name: "Confirm delete message" }));
     expect(onConfirm).toHaveBeenCalledOnce();
-
-    rerender(
-      <PromptDeleteConfirmationDialog
-        promptName="Research Prompt"
-        onCancel={onCancel}
-        onConfirm={onConfirm}
-      />
-    );
-    expect(screen.getByRole("dialog", { name: "Delete prompt Research Prompt" })).toBeInTheDocument();
-    expect(screen.getByTestId("delete-prompt-confirmation")).toHaveTextContent("Research Prompt");
 
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
     expect(onCancel).toHaveBeenCalledOnce();
@@ -1602,13 +1558,13 @@ describe("MainThreadPane", () => {
 
     render(
       <DiscardChangesConfirmationDialog
-        label="prompt"
+        label="settings"
         onCancel={onCancel}
         onConfirm={onConfirm}
       />
     );
 
-    expect(screen.getByRole("dialog", { name: "Discard prompt changes" })).toBeInTheDocument();
+    expect(screen.getByRole("dialog", { name: "Discard settings changes" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Keep editing" }));
     expect(onCancel).toHaveBeenCalledOnce();
 

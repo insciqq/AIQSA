@@ -1,5 +1,4 @@
 import { Prisma } from "@prisma/client";
-import { lockUserPromptDefaultsExclusive } from "../prompts/promptDefaultsLock";
 import type {
   SettingsValidationModel,
   UserSettingsRecord,
@@ -10,7 +9,7 @@ import { decodeSearchPlan } from "../../domain/search";
 
 export type SettingsTransactionClient = Pick<
   Prisma.TransactionClient,
-  "$queryRaw" | "promptPreset" | "userSettings"
+  "$queryRaw" | "userSettings"
 >;
 
 type LockedSettingsRow = {
@@ -32,7 +31,6 @@ function serializeSettings(settings: {
     connectionId: string;
     id: string;
   } | null;
-  defaultPromptPresetId: string | null;
   defaultSearchStrategyId: string;
   defaultSearchPlan: unknown;
   showCitations: boolean;
@@ -46,7 +44,6 @@ function serializeSettings(settings: {
     defaultModelId: defaultProviderModelId ?? "",
     defaultProviderConnectionId,
     defaultProviderModelId,
-    defaultPromptPresetId: settings.defaultPromptPresetId,
     defaultProvider: defaultProviderConnectionId ?? "",
     defaultSearchStrategyId: settings.defaultSearchStrategyId,
     defaultSearchPlan: settings.defaultSearchPlan,
@@ -152,11 +149,6 @@ export async function applySettingsUpdateInTransaction(
   update: UserSettingsUpdate,
   validationModels: SettingsValidationModel[]
 ): Promise<UserSettingsUpdateResult> {
-  const hasPromptDefault = Object.prototype.hasOwnProperty.call(update, "defaultPromptPresetId");
-  if (hasPromptDefault) {
-    await lockUserPromptDefaultsExclusive(tx, userId);
-  }
-
   const [lockedSettings] = await tx.$queryRaw<LockedSettingsRow[]>`
     SELECT
       settings."id",
@@ -185,48 +177,10 @@ export async function applySettingsUpdateInTransaction(
     };
   }
 
-  if (hasPromptDefault) {
-    const defaultPromptPresetId = update.defaultPromptPresetId ?? null;
-    if (defaultPromptPresetId) {
-      const [prompt] = await tx.$queryRaw<Array<{ id: string }>>`
-        SELECT "id"
-        FROM "PromptPreset"
-        WHERE "id" = ${defaultPromptPresetId}
-          AND "userId" = ${userId}
-        FOR UPDATE
-      `;
-
-      if (!prompt) {
-        return { kind: "not_found" };
-      }
-    }
-
-    await tx.promptPreset.updateMany({
-      data: {
-        isDefault: false
-      },
-      where: {
-        userId
-      }
-    });
-
-    if (defaultPromptPresetId) {
-      await tx.promptPreset.update({
-        data: {
-          isDefault: true
-        },
-        where: {
-          id: defaultPromptPresetId
-        }
-      });
-    }
-  }
-
   const settings = await tx.userSettings.update({
     data: settingsUpdateData(update, lockedSettings.defaultControlValues),
     select: {
       defaultControlValues: true,
-      defaultPromptPresetId: true,
       defaultProviderModel: {
         select: {
           connectionId: true,

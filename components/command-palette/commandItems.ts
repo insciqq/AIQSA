@@ -1,4 +1,4 @@
-export type CommandKind = "action" | "chat" | "model" | "prompt" | "search";
+export type CommandKind = "action" | "chat" | "model" | "search";
 
 export type CommandItem = {
   current?: boolean;
@@ -15,7 +15,6 @@ const kindSearchTerms: Record<CommandKind, string> = {
   action: "action actions command commands",
   chat: "chat chats conversation conversations",
   model: "model models provider providers",
-  prompt: "prompt prompts preset presets",
   search: "search searches strategy strategies"
 };
 

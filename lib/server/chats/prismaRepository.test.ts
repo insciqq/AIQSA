@@ -539,7 +539,6 @@ describe("Prisma chat repository", () => {
           defaults: {
             controlDefaults: {},
             modelId: fakeProviderModelId,
-            promptPresetId: null,
             provider: fakeProviderConnectionId,
             searchStrategy: "search-disabled",
             userId
@@ -561,7 +560,6 @@ describe("Prisma chat repository", () => {
             params: {},
             prompt: {
               developer: null,
-              presetId: null,
               system: null
             },
             provider: "fake",

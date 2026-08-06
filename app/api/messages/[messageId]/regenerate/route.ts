@@ -1,3 +1,4 @@
+import { defaultAssistantRepository } from "@/lib/server/assistants/defaultAssistants";
 import { getAuthConfig } from "@/lib/server/auth/config";
 import { isTestModeAllowedEnv } from "@/lib/server/auth/csrf";
 import { resolveRequestAuth } from "@/lib/server/auth/defaultAuth";
@@ -14,6 +15,7 @@ const repository = createPrismaRunRepository();
 
 export const POST = createRegenerateModelRunHandler({
   allowFakeProvider: isTestModeAllowedEnv(process.env),
+  assistants: defaultAssistantRepository,
   getConfig: () => getAuthConfig(),
   mcp: defaultMcpRunPlan,
   providerAdmission: providerAdmissionService,

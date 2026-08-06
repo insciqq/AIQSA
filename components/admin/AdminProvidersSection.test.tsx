@@ -15,10 +15,6 @@ vi.mock("./useAdminProvidersController", () => ({
   useAdminProvidersController: mocks.useController
 }));
 
-vi.mock("./AdminRunProfilesPanel", () => ({
-  AdminRunProfilesPanel: () => null
-}));
-
 const connection: AdminProviderConnection = {
   activatedAt: null,
   activeChecks: [],

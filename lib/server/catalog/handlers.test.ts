@@ -25,30 +25,12 @@ describe("catalog handler", () => {
           searchStrategies: new Set(["openai-native-web-search"])
         },
         models: defaultProviderModels,
-        promptPresets: [
-          {
-            developerPrompt: null,
-            id: "prompt-1",
-            isDefault: true,
-            name: "Helpful Assistant",
-            systemPrompt: "You are a helpful AI assistant. Today is {local_date}, local time is {local_time}."
-          }
-        ],
-        runProfiles: [{
-          description: "Simple, well-defined questions",
-          enabled: true,
-          id: "fast",
-          providerModelId: "gpt-5.5",
-          reasoningEffort: "medium",
-          reasoningMode: "standard"
-        }],
         searchStrategies: defaultSearchStrategies,
         settings: {
           defaultControlValues: {},
           defaultModelId: "gpt-5.5",
           defaultProviderConnectionId: "openai",
           defaultProviderModelId: "gpt-5.5",
-          defaultPromptPresetId: "prompt-1",
           defaultProvider: "openai",
           defaultSearchStrategyId: "openai-native-web-search",
           showCitations: true,
@@ -80,9 +62,7 @@ describe("catalog handler", () => {
     expect(Object.keys(body.catalog)).toEqual([
       "defaults",
       "models",
-      "promptPresets",
       "providers",
-      "runProfiles",
       "searchStrategies",
       "attachmentLimits"
     ]);
@@ -96,7 +76,6 @@ describe("catalog handler", () => {
     expect(Object.keys(body.catalog.defaults)).toEqual([
       "controlValues",
       "modelId",
-      "promptPresetId",
       "provider",
       "searchStrategyId",
       "organizationSearchPlan",
@@ -135,12 +114,6 @@ describe("catalog handler", () => {
       "search-disabled",
       "openai-native-web-search"
     ]);
-    expect(catalog?.runProfiles).toEqual([expect.objectContaining({
-      available: true,
-      id: "fast",
-      modelId: "gpt-5.5",
-      provider: "openai"
-    })]);
   });
 
   it("projects every supplied current and future catalog item for full access", () => {
@@ -152,15 +125,12 @@ describe("catalog handler", () => {
         searchStrategies: new Set()
       },
       models: defaultProviderModels,
-      promptPresets: [],
-      runProfiles: [],
       searchStrategies: defaultSearchStrategies,
       settings: {
         defaultControlValues: {},
         defaultModelId: "gpt-5.5",
         defaultProviderConnectionId: "openai",
         defaultProviderModelId: "gpt-5.5",
-        defaultPromptPresetId: null,
         defaultProvider: "openai",
         defaultSearchStrategyId: "openai-native-web-search",
         showCitations: true,
@@ -185,15 +155,12 @@ describe("catalog handler", () => {
           searchStrategies: new Set(["perplexity-tool-search"])
         },
         models: defaultProviderModels,
-        promptPresets: [],
-        runProfiles: [],
         searchStrategies: defaultSearchStrategies,
         settings: {
           defaultControlValues: {},
           defaultModelId: "gpt-5.5",
           defaultProviderConnectionId: "openai",
           defaultProviderModelId: "gpt-5.5",
-          defaultPromptPresetId: null,
           defaultProvider: "openai",
           defaultSearchStrategyId: "openai-native-web-search",
           showCitations: true,
@@ -246,15 +213,12 @@ describe("catalog handler", () => {
         searchStrategies: new Set()
       },
       models: defaultProviderModels.filter((model) => model.provider === "openrouter"),
-      promptPresets: [],
-      runProfiles: [],
       searchStrategies: defaultSearchStrategies,
       settings: {
         defaultControlValues: {},
         defaultModelId: "claude-opus-4-8",
         defaultProviderConnectionId: "anthropic",
         defaultProviderModelId: "claude-opus-4-8",
-        defaultPromptPresetId: null,
         defaultProvider: "anthropic",
         defaultSearchStrategyId: "openai-native-web-search",
         showCitations: true,
@@ -278,22 +242,12 @@ describe("catalog handler", () => {
         searchStrategies: new Set()
       },
       models: defaultProviderModels,
-      promptPresets: [],
-      runProfiles: [{
-        description: "Simple questions",
-        enabled: true,
-        id: "fast",
-        providerModelId: "gpt-5.5",
-        reasoningEffort: "medium",
-        reasoningMode: "standard"
-      }],
       searchStrategies: defaultSearchStrategies,
       settings: {
         defaultControlValues: {},
         defaultModelId: "gpt-5.5",
         defaultProviderConnectionId: null,
         defaultProviderModelId: null,
-        defaultPromptPresetId: null,
         defaultProvider: "openai",
         defaultSearchStrategyId: "openai-native-web-search",
         showCitations: true,
@@ -305,15 +259,6 @@ describe("catalog handler", () => {
     expect(catalog.models).toEqual([]);
     expect(catalog.providers).toEqual([]);
     expect(catalog.searchStrategies.map((strategy) => strategy.strategyId)).toEqual(["search-disabled"]);
-    expect(catalog.runProfiles).toEqual([{
-      available: false,
-      description: "Simple questions",
-      id: "fast",
-      label: "Fast",
-      unavailableReason: "model_unavailable"
-    }]);
-    expect(JSON.stringify(catalog.runProfiles)).not.toContain("gpt-5.5");
-    expect(JSON.stringify(catalog.runProfiles)).not.toContain("openai");
   });
 
   it("resolves inherited, personal Off, and entitlement-filtered Search preferences without model clamping", () => {
@@ -325,8 +270,6 @@ describe("catalog handler", () => {
         searchStrategies: new Set<string>()
       },
       models: defaultProviderModels,
-      promptPresets: [],
-      runProfiles: [],
       searchPolicy: {
         defaultPlan: {
           mode: "model_choice",
@@ -339,7 +282,6 @@ describe("catalog handler", () => {
         defaultModelId: "fake-qsa",
         defaultProviderConnectionId: "fake",
         defaultProviderModelId: "fake-qsa",
-        defaultPromptPresetId: null,
         defaultProvider: "fake",
         defaultSearchPlan: null,
         defaultSearchStrategyId: "search-disabled",

@@ -13,6 +13,7 @@ import type {
   ChatSummaryResponseWire,
   CreateChatRequestWire,
   ThreadArtifactSummary,
+  ThreadAssistantIdentity,
   ThreadRunUsage,
   UpdateChatRequestWire,
   WorkspaceChatSummaryWire,
@@ -28,6 +29,7 @@ export type {
 
 export type ChatMessageRecord = {
   artifactSummary?: ThreadArtifactSummary | null;
+  assistantIdentity?: ThreadAssistantIdentity | null;
   content: unknown;
   createdAt: Date | string;
   errorMessage?: string | null;
@@ -45,7 +47,6 @@ export type ChatSummaryRecord = {
   activeLeafMessageId: string | null;
   createdAt: Date | string;
   defaultModelId: string | null;
-  defaultPromptPresetId: string | null;
   defaultProvider: string | null;
   folderId: string | null;
   id: string;
@@ -176,6 +177,7 @@ function iso(value: Date | string): string {
 function serializeMessage(message: ChatMessageRecord): ChatMessageWire {
   return {
     artifactSummary: message.artifactSummary ?? null,
+    assistantIdentity: message.assistantIdentity ?? null,
     content: message.content,
     createdAt: iso(message.createdAt),
     errorMessage: message.errorMessage ?? null,
@@ -195,7 +197,6 @@ function serializeChatSummary(chat: ChatSummaryRecord): WorkspaceChatSummaryWire
     activeLeafMessageId: chat.activeLeafMessageId,
     createdAt: iso(chat.createdAt),
     defaultModelId: chat.defaultModelId,
-    defaultPromptPresetId: chat.defaultPromptPresetId,
     defaultProvider: chat.defaultProvider,
     folderId: chat.folderId,
     id: chat.id,

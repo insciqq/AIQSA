@@ -6,10 +6,6 @@ import {
   providerTemplateIds
 } from "@/lib/domain/providerTemplates";
 import {
-  DEFAULT_RUN_PROFILE_CONFIGURATIONS,
-  runProfileMetadata
-} from "@/lib/domain/runProfiles";
-import {
   hashPassword as hashAuthPassword,
   isPlausibleEmail,
   normalizeAuthEmail,
@@ -24,9 +20,6 @@ import {
 import { searchValidationFingerprint } from "@/lib/server/search/probeBinding";
 
 const BOOTSTRAP_LOCK_KEY = "aiqsa:installation-bootstrap:v1";
-const INITIAL_PROMPT_NAME = "Helpful Assistant";
-const INITIAL_SYSTEM_PROMPT =
-  "You are a helpful AI assistant. Today is {local_date}, local time is {local_time}.";
 const MAX_DISPLAY_NAME_LENGTH = 200;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -247,7 +240,7 @@ async function hasApplicationRows(tx: Prisma.TransactionClient): Promise<boolean
         UNION ALL SELECT 1 FROM "UserSettings"
         UNION ALL SELECT 1 FROM "AccessGrant"
         UNION ALL SELECT 1 FROM "Folder"
-        UNION ALL SELECT 1 FROM "PromptPreset"
+        UNION ALL SELECT 1 FROM "AssistantDefinition"
         UNION ALL SELECT 1 FROM "ProviderModel"
         UNION ALL SELECT 1 FROM "ProviderCredential"
         UNION ALL SELECT 1 FROM "ProviderCredentialVersion"
@@ -422,21 +415,6 @@ async function synchronizeCodeOwnedCatalog(tx: Prisma.TransactionClient): Promis
     where: { templateKey: "fake:fake-qsa" }
   });
 
-  for (const profile of DEFAULT_RUN_PROFILE_CONFIGURATIONS) {
-    await tx.runProfile.upsert({
-      create: {
-        description: runProfileMetadata(profile.id).defaultDescription,
-        enabled: false,
-        id: profile.id,
-        providerModelId: null,
-        reasoningEffort: profile.reasoningEffort,
-        reasoningMode: profile.reasoningMode
-      },
-      update: {},
-      where: { id: profile.id }
-    });
-  }
-
   for (const [optionId, option] of Object.entries(BUILT_IN_SEARCH_OPTIONS)) {
     await tx.searchOption.upsert({
       create: {
@@ -574,22 +552,11 @@ async function createInitialAdminFoundation(
 
   await ensureFullAccessGroup(tx, input.userId);
 
-  const prompt = await tx.promptPreset.create({
-    data: {
-      developerPrompt: null,
-      isDefault: true,
-      name: INITIAL_PROMPT_NAME,
-      systemPrompt: INITIAL_SYSTEM_PROMPT,
-      userId: input.userId
-    }
-  });
-
   await tx.userSettings.create({
     data: {
       defaultControlValues: json({}),
       defaultFolderId: null,
       defaultProviderModelId: null,
-      defaultPromptPresetId: prompt.id,
       defaultSearchStrategyId: "search-disabled",
       showCitations: true,
       showReasoningBlocks: false,

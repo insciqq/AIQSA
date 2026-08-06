@@ -11,7 +11,6 @@ const chat = (id: string): ChatSummary => ({
   activeLeafMessageId: null,
   createdAt: "2026-07-13T00:00:00.000Z",
   defaultModelId: "fake-qsa",
-  defaultPromptPresetId: null,
   defaultProvider: "fake",
   folderId: null,
   id,
@@ -42,7 +41,6 @@ function controllerInput(overrides: {
     },
     blockers: {
       projectSettingsOpen: false,
-      promptDeleteOpen: false,
       settingsOpen: false,
       ...overrides.blockers
     },
@@ -200,7 +198,6 @@ describe("useShellOverlayController shortcuts", () => {
 
   it.each([
     "projectSettingsOpen",
-    "promptDeleteOpen",
     "settingsOpen"
   ] as const)("blocks the palette while %s is active", (blocker) => {
     const { result } = renderHook(() =>

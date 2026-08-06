@@ -50,7 +50,6 @@ function createRunInput(input: {
     defaults: {
       controlDefaults: {},
       modelId: providerTemplateIds.fakeModel,
-      promptPresetId: null,
       provider: providerTemplateIds.fakeConnection,
       searchStrategy: "search-disabled",
       userId: input.userId
@@ -72,7 +71,6 @@ function createRunInput(input: {
       params: {},
       prompt: {
         developer: null,
-        presetId: null,
         system: null
       },
       provider: "fake",
@@ -928,91 +926,6 @@ describe("Prisma message branch repository", () => {
       });
     }
   );
-
-  it("derives a branch-chat prompt default from the selected message provenance, including null", async () => {
-    await withMessageBranchUser(async ({ userId }) => {
-      const [chatDefaultPrompt, selectedPrompt] = await Promise.all([
-        prisma.promptPreset.create({
-          data: {
-            name: "Chat default",
-            systemPrompt: "Chat default prompt",
-            userId
-          }
-        }),
-        prisma.promptPreset.create({
-          data: {
-            name: "Selected run",
-            systemPrompt: "Selected run prompt",
-            userId
-          }
-        })
-      ]);
-      const sourceChat = await prisma.chat.create({
-        data: {
-          defaultProviderModelId: providerTemplateIds.fakeModel,
-          defaultPromptPresetId: chatDefaultPrompt.id,
-
-          title: "Prompt source",
-          userId
-        }
-      });
-      const userMessage = await prisma.message.create({
-        data: {
-          chatId: sourceChat.id,
-          content: { blocks: [{ text: "Question", type: "text" }] },
-          promptPresetId: selectedPrompt.id,
-          role: "user",
-          status: "complete"
-        }
-      });
-      const selectedAssistant = await prisma.message.create({
-        data: {
-          chatId: sourceChat.id,
-          content: { blocks: [{ text: "Prompted answer", type: "text" }] },
-          modelId: "fake-qsa",
-          parentMessageId: userMessage.id,
-          promptPresetId: selectedPrompt.id,
-          provider: "fake",
-          role: "assistant",
-          status: "complete"
-        }
-      });
-      const nullPromptAssistant = await prisma.message.create({
-        data: {
-          chatId: sourceChat.id,
-          content: { blocks: [{ text: "Freeform answer", type: "text" }] },
-          modelId: "fake-qsa",
-          parentMessageId: userMessage.id,
-          promptPresetId: null,
-          provider: "fake",
-          role: "assistant",
-          status: "complete"
-        }
-      });
-      const repository = createPrismaMessageBranchRepository(prisma);
-
-      const promptedBranch = await repository.createChatBranchFromMessage({
-        sourceMessageId: selectedAssistant.id,
-        userId
-      });
-      const nullBranch = await repository.createChatBranchFromMessage({
-        sourceMessageId: nullPromptAssistant.id,
-        userId
-      });
-
-      expect(promptedBranch?.defaultPromptPresetId).toBe(selectedPrompt.id);
-      expect(nullBranch?.defaultPromptPresetId).toBeNull();
-      await expect(
-        prisma.message.findMany({
-          select: { promptPresetId: true },
-          where: { chatId: promptedBranch?.id }
-        })
-      ).resolves.toEqual([
-        { promptPresetId: selectedPrompt.id },
-        { promptPresetId: selectedPrompt.id }
-      ]);
-    });
-  });
 
   it("edits an assistant message by creating a same-parent sibling branch", async () => {
     await withMessageBranchUser(async ({ userId }) => {

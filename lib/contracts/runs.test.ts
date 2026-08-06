@@ -114,6 +114,7 @@ describe("decodeGetModelRunResponse", () => {
     expect(
       decodeGetModelRunResponse({
         run: {
+          assistant: { assistantId: "assistant-1", name: "Docs helper", revisionNumber: 2 },
           cachedInputTokens: 3,
           cacheWriteInputTokens: 4,
           errorPayload,
@@ -132,6 +133,7 @@ describe("decodeGetModelRunResponse", () => {
         }
       })
     ).toEqual({
+      assistant: { assistantId: "assistant-1", name: "Docs helper", revisionNumber: 2 },
       cachedInputTokens: 3,
       cacheWriteInputTokens: 4,
       errorPayload,
@@ -150,6 +152,19 @@ describe("decodeGetModelRunResponse", () => {
     });
   });
 
+  it("rejects a malformed assistant provenance", () => {
+    for (const assistant of [
+      { assistantId: "", name: "Docs helper", revisionNumber: 2 },
+      { assistantId: "assistant-1", name: "Docs helper", revisionNumber: 0 },
+      { assistantId: "assistant-1", revisionNumber: 2 },
+      "assistant-1"
+    ]) {
+      expect(
+        decodeGetModelRunResponse({ run: { ...requiredRunFields(), assistant } })
+      ).toBeNull();
+    }
+  });
+
   it("applies usage, cost, and search defaults", () => {
     expect(
       decodeGetModelRunResponse({
@@ -165,6 +180,7 @@ describe("decodeGetModelRunResponse", () => {
         }
       })
     ).toEqual({
+      assistant: null,
       cachedInputTokens: 0,
       cacheWriteInputTokens: 0,
       errorPayload: undefined,

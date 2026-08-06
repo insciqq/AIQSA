@@ -2,11 +2,13 @@ import { runActivityLabel, type PipelineSnapshot } from "@/components/app-shell/
 import { searchStrategyDescription } from "@/components/app-shell/shellFormatting";
 import type {
   ThreadArtifactSummary,
+  ThreadAssistantIdentity,
   ThreadMessage,
   ThreadRunUsage
 } from "@/components/app-shell/types";
 
 export type RunReceiptFactKind =
+  | "assistant"
   | "citations"
   | "context"
   | "model"
@@ -34,6 +36,7 @@ export type FactualRunReceipt = Readonly<{
 
 export type RunReceiptInput = Readonly<{
   artifactSummary?: ThreadArtifactSummary | null;
+  assistantIdentity?: ThreadAssistantIdentity | null;
   messageStatus: ThreadMessage["status"];
   modelLabel: string | null;
   runUsage?: ThreadRunUsage | null;
@@ -97,6 +100,7 @@ function receiptStatus(
  */
 export function deriveRunReceipt({
   artifactSummary,
+  assistantIdentity,
   messageStatus,
   modelLabel,
   runActivity,
@@ -105,6 +109,15 @@ export function deriveRunReceipt({
 }: RunReceiptInput): FactualRunReceipt {
   const facts: RunReceiptFact[] = [];
   const normalizedModel = modelLabel?.trim();
+
+  if (assistantIdentity) {
+    // Name and revision come from the accepted revision, never the current
+    // Library, so later renames or access changes cannot alter this receipt.
+    facts.push({
+      kind: "assistant",
+      label: `Assistant ${assistantIdentity.name} · revision ${assistantIdentity.revisionNumber}`
+    });
+  }
 
   if (normalizedModel) {
     facts.push({ kind: "model", label: normalizedModel });

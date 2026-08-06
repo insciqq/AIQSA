@@ -49,7 +49,6 @@ function catalog(models: CatalogModel[]): Catalog {
     defaults: {
       controlValues: {},
       modelId: "default-model",
-      promptPresetId: null,
       provider: "openai",
       searchStrategyId: "search-disabled",
       showCitations: true,
@@ -57,7 +56,6 @@ function catalog(models: CatalogModel[]): Catalog {
       showToolActivity: true,
     },
     models,
-    promptPresets: [],
     providers: [],
     searchStrategies: []
   };

@@ -87,7 +87,6 @@ const request: ProviderRunRequest = {
   },
   prompt: {
     developer: null,
-    presetId: null,
     system: "You are running a tiny AIQSA provider adapter smoke test."
   },
   provider: "openai",

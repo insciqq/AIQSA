@@ -45,13 +45,12 @@ type CommandPaletteActionsInput = {
   closePalette(): void;
   inspectorMode: InspectorMode;
   inspectorPinningAvailable: boolean;
+  openLibrary(): void;
   openSettings(): void;
   searchOptions: CatalogSearchStrategy[];
   selectModel(model: CatalogModel): void;
-  selectPrompt(promptId: string): void;
   selectSearchStrategy(strategyId: string): void;
   selectedModelId: string;
-  selectedPromptId: string | null;
   selectedProvider: string;
   selectedSearchStrategy: string;
   settingsOpen: boolean;
@@ -69,13 +68,12 @@ export function useCommandPaletteActions({
   closePalette,
   inspectorMode,
   inspectorPinningAvailable,
+  openLibrary,
   openSettings,
   searchOptions,
   selectModel,
-  selectPrompt,
   selectSearchStrategy,
   selectedModelId,
-  selectedPromptId,
   selectedProvider,
   selectedSearchStrategy,
   settingsOpen,
@@ -109,6 +107,14 @@ export function useCommandPaletteActions({
         keywords: ["settings", "appearance", "mcp", "tools"],
         label: "Open settings",
         subtitle: "Settings"
+      },
+      {
+        current: false,
+        id: "action:open-library",
+        kind: "action",
+        keywords: ["library", "assistants", "assistant", "use an assistant"],
+        label: "Open library",
+        subtitle: "Assistants"
       }
     );
 
@@ -159,17 +165,6 @@ export function useCommandPaletteActions({
       });
     }
 
-    for (const prompt of catalog?.promptPresets ?? []) {
-      items.push({
-        current: prompt.id === selectedPromptId,
-        id: `prompt:${prompt.id}`,
-        kind: "prompt",
-        keywords: [prompt.name, prompt.systemPrompt, prompt.developerPrompt ?? "", prompt.isDefault ? "default" : ""],
-        label: prompt.name,
-        subtitle: prompt.isDefault ? "Default prompt" : "Prompt preset"
-      });
-    }
-
     for (const strategy of searchOptions) {
       items.push({
         current: strategy.strategyId === selectedSearchStrategy,
@@ -190,8 +185,7 @@ export function useCommandPaletteActions({
     inspectorPinningAvailable,
     searchOptions,
     selectedModelId,
-    selectedPromptId,
-    selectedProvider,
+      selectedProvider,
     selectedSearchStrategy,
     settingsOpen,
     workspaceReady
@@ -245,9 +239,9 @@ export function useCommandPaletteActions({
       return;
     }
 
-    if (item.kind === "prompt" && item.id.startsWith("prompt:")) {
-      selectPrompt(item.id.slice("prompt:".length));
+    if (item.id === "action:open-library") {
       closePalette();
+      window.setTimeout(openLibrary, 0);
       return;
     }
 

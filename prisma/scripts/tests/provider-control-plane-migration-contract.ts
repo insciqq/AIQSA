@@ -373,41 +373,6 @@ function runValidMigrationAndLineageChecks(): void {
       psql(database, migrationSql(RUN_PROFILE_MIGRATION)),
       "apply run profile migration"
     );
-    assert.equal(
-      scalar(
-        database,
-        `SELECT string_agg(
-           "id" || ':' || "enabled"::text || ':' || "providerModelId" || ':' ||
-           "reasoningMode" || ':' || "reasoningEffort",
-           '|' ORDER BY CASE "id" WHEN 'fast' THEN 1 WHEN 'balanced' THEN 2 ELSE 3 END
-         ) FROM "RunProfile";`
-      ),
-      [
-        "fast:true:provider-model-luna:standard:medium",
-        "balanced:true:provider-model-terra:standard:medium",
-        "deep:true:provider-model-openai:pro:max"
-      ].join("|")
-    );
-    expectDatabaseRejection(
-      database,
-      "unknown run profile slot",
-      `INSERT INTO "RunProfile" (
-         "id", "description", "enabled", "providerModelId", "reasoningEffort", "reasoningMode"
-       ) VALUES ('custom', 'Custom', false, NULL, 'medium', 'standard');`,
-      /RunProfile_id_check/u
-    );
-    expectDatabaseRejection(
-      database,
-      "inconsistent run profile target",
-      `UPDATE "RunProfile" SET "enabled" = false WHERE "id" = 'fast';`,
-      /RunProfile_enabled_target_check/u
-    );
-    expectDatabaseRejection(
-      database,
-      "delete configured run profile model",
-      `DELETE FROM "ProviderModel" WHERE "id" = 'provider-model-luna';`,
-      /RunProfile_providerModelId_fkey/u
-    );
 
     requireSuccess(
       psql(database, migrationSql(USER_ASSIGNMENT_MIGRATION)),

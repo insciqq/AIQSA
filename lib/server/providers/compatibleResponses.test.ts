@@ -37,7 +37,7 @@ function request(overrides: Partial<ProviderRunRequest> = {}): ProviderRunReques
       stream: false
     },
     previousProviderResponseId: "must-not-be-used",
-    prompt: { developer: null, presetId: null, system: null },
+    prompt: { developer: null, system: null },
     provider: "custom",
     searchStrategy: "search-disabled",
     ...overrides

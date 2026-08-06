@@ -19,13 +19,14 @@ Workspace state is stored in PostgreSQL and private S3-compatible storage. Conte
 - **Multiple providers, one interface.** Use native OpenAI, Anthropic, Gemini, and OpenRouter adapters or configure compatible endpoints.
 - **Tools and search are optional capabilities.** Enable MCP servers and select an ordered web-search plan per run instead of forcing every conversation through the same pipeline.
 - **Runs remain inspectable.** Review citations, tool calls, search evidence, events, reasoning, request previews, and provider-reported usage.
-- **Built for operator-managed teams.** Manage accounts, invitations, access groups, provider credentials, model availability, run profiles, search integrations, SMTP, and MCP servers from the Control Center.
+- **Built for operator-managed teams.** Manage accounts, invitations, access groups, provider credentials, model availability, search integrations, SMTP, and MCP servers from the Control Center.
 - **Self-hosted application data.** Keep workspace records and uploaded objects in infrastructure you control while choosing which external providers receive run content.
 
 ## Current capabilities
 
-- Branchable conversations, projects and nested folders, prompt presets, private attachments, and sanitized read-only share links.
-- Exact model selection with per-model controls, administrator-defined Fast/Balanced/Deep profiles, and optional reasoning or streaming settings where supported.
+- Branchable conversations, projects and nested folders, private attachments, and sanitized read-only share links.
+- Reusable versioned Assistants: save a model, instructions, run controls, Search plan, MCP tool allowlist, and starter prompts as one shareable object in an internal Library, with exact revision provenance on every accepted run.
+- Exact model selection with per-model controls and optional reasoning or streaming settings where supported.
 - Ordered web-search plans with up to three entitled sources, compatibility checks, normalized citations, and per-source evidence.
 - MCP server administration, user enablement, personal fields, OAuth flows, tool readiness, and tool activity in chat.
 - Multi-user accounts, invitations, access rules and groups, optional Google/Yandex sign-in, usage views, and an administrative Control Center.

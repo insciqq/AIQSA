@@ -2,10 +2,9 @@ import type { ComposerAttachment } from "@/components/chat/Composer";
 import type { ComposerContextStats } from "@/components/app-shell/composerContextStats";
 import type { CommandItem } from "@/components/command-palette/commandItems";
 import type { ShareDialogTarget } from "@/components/app-shell/ShareDialog";
-import type { PromptSettingsActions } from "@/components/app-shell/promptSettingsActions";
-import type { SettingsSection } from "@/components/app-shell/promptSettingsStore";
-import type { PromptEditorDraft } from "@/components/app-shell/promptSettingsStore";
-import type { RunProfileId } from "@/components/app-shell/runProfiles";
+import type { AssistantLibraryView } from "@/components/assistants/libraryViewContracts";
+import type { ComposerAssistantSelection } from "@/components/app-shell/composerControlStore";
+import type { SettingsSection } from "@/components/app-shell/settingsDestinationStore";
 import type { ThemeId } from "@/components/app-shell/theme";
 import type { InspectorTabId } from "@/components/inspector/InspectorTabs";
 import type {
@@ -20,7 +19,6 @@ import type {
   ModelParameterControls,
   Notice,
   PersistedRun,
-  PromptPreset,
   RunEventView,
   ThreadArtifactSummary,
   ThreadMessage
@@ -179,9 +177,23 @@ export type ShellComposerView = {
   composerContextStats: ComposerContextStats | null;
   composerDisabledHint: string | null;
   composerUsageStats: ChatUsageStats | null;
+  assistant: {
+    clearRemovedNotice(): void;
+    openLibrary(): void;
+    openPicker: boolean;
+    pickerItems: import("@/lib/contracts/assistants").AssistantSummary[];
+    pickerLoading: boolean;
+    recentIds: string[];
+    remove(): void;
+    removedNotice: boolean;
+    selectById(assistantId: string): void;
+    selected: ComposerAssistantSelection | null;
+    sendStarter(prompt: string): void;
+    setPickerOpen(open: boolean): void;
+    startFromCurrentSetup(): void;
+  };
   currentModel: CatalogModel | undefined;
   currentParameterControls: ModelParameterControls;
-  currentPrompt: PromptPreset | null;
   draft: string;
   flushPendingModelControlDefaults(): void;
   maxOutputTokens: string;
@@ -195,12 +207,9 @@ export type ShellComposerView = {
   searchPreferenceSource: "organization" | "personal";
   searchPlanMode: SearchPlanMode;
   selectModel(model: CatalogModel): void;
-  selectPrompt(promptId: string): void;
-  selectRunProfile(profileId: RunProfileId): void;
   selectSearchPlan(optionIds: readonly string[], mode: SearchPlanMode): void;
   selectSearchStrategy(strategyId: string): void;
   selectedModelId: string;
-  selectedPromptId: string | null;
   selectedProvider: string;
   selectedProviderName: string;
   selectedSearchOptionIds: string[];
@@ -236,18 +245,16 @@ export type ShellDetailsView = {
 };
 
 export type ShellSettingsView = {
-  actions: PromptSettingsActions;
+  closeSettings(): void;
   dismissNotice(): void;
+  library: AssistantLibraryView | null;
   notice: Notice | null;
   open(): void;
+  openLibrary(): void;
   openMcp(): void;
-  openPromptLibrary(): void;
-  prompt: {
-    deleteConfirmation: PromptPreset | null;
-    editor: PromptEditorDraft;
+  settings: {
     open: boolean;
     section: SettingsSection;
-    saving: boolean;
     themeId: ThemeId;
   };
   updateTheme(themeId: ThemeId): void;

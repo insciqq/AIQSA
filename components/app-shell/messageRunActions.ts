@@ -32,21 +32,16 @@ import type {
 import type { SavedControlDraft } from "@/components/app-shell/powerAppShellData";
 import type { RunStreamTokenBuffer } from "@/components/app-shell/useRunStream";
 import { useWorkspaceStore } from "@/components/app-shell/workspaceStore";
-import { renderLocalPromptTemplate } from "@/lib/domain/promptTemplates";
 import type { SearchPlanMode } from "@/lib/domain/search";
 
 type MutableRef<T> = { current: T };
 
 type MessageRunControlSnapshot = {
+  assistantId: string | null;
   controlDefaults: SavedControlDraft;
   model: CatalogModel | undefined;
   modelId: string;
   params: Record<string, unknown>;
-  prompt: {
-    developer: string;
-    presetId: string | null;
-    system: string;
-  };
   provider: string;
   searchPreferencePlan: {
     mode: SearchPlanMode;
@@ -129,13 +124,11 @@ export function useMessageRunActions({
 }: MessageRunActionsInput) {
   function captureRunControlSnapshot(): MessageRunControlSnapshot {
     const {
-      developerPrompt,
+      selectedAssistant,
       selectedModelId,
-      selectedPromptId,
       selectedProvider,
       selectedSearchOptionIds,
-      searchPlanMode,
-      systemPrompt
+      searchPlanMode
     } = useComposerControlStore.getState();
     const catalog = useWorkspaceStore.getState().catalog;
     const selectedModel = modelForCurrentSelection(
@@ -165,15 +158,11 @@ export function useMessageRunActions({
     const searchPreferenceOptionIds = [...selectedSearchOptionIds];
 
     return {
+      assistantId: selectedAssistant?.id ?? null,
       controlDefaults: { ...buildControlDraft() },
       model,
       modelId: selectedModelId,
       params: { ...buildParams() },
-      prompt: {
-        developer: renderLocalPromptTemplate(developerPrompt),
-        presetId: selectedPromptId,
-        system: renderLocalPromptTemplate(systemPrompt)
-      },
       provider: selectedProvider,
       searchPreferencePlan: {
         mode: searchPlanMode,
@@ -191,10 +180,25 @@ export function useMessageRunActions({
     };
   }
 
+  function clientTimeZone(): string | undefined {
+    try {
+      return Intl.DateTimeFormat().resolvedOptions().timeZone || undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
   function runControlPayload(
     snapshot: MessageRunControlSnapshot,
     hasAttachments: boolean
   ) {
+    if (snapshot.assistantId) {
+      // The server resolves the currently authorized revision at admission;
+      // the request carries only the Assistant identity plus user content and
+      // never an expanded client copy of the governed controls.
+      return { assistantId: snapshot.assistantId };
+    }
+
     const effectiveSearchPlan = projectSearchPlanCompatibility({
       hasAttachments,
       mode: snapshot.searchPreferencePlan.mode,
@@ -202,12 +206,12 @@ export function useMessageRunActions({
       searchOptions: snapshot.searchOptions,
       selectedOptionIds: snapshot.searchPreferencePlan.optionIds
     }).effectivePlan;
+    const timeZone = clientTimeZone();
 
     return {
       controlDefaults: snapshot.controlDefaults,
       modelId: snapshot.modelId,
       params: snapshot.params,
-      prompt: snapshot.prompt,
       provider: snapshot.provider,
       searchPlan: effectiveSearchPlan,
       ...(snapshot.searchPreferenceSource
@@ -218,6 +222,7 @@ export function useMessageRunActions({
         : {}),
       searchStrategy:
         effectiveSearchPlan.optionIds[0] ?? "search-disabled",
+      ...(timeZone ? { timeZone } : {}),
       ...snapshot.toolsOverride
     };
   }
@@ -702,6 +707,185 @@ export function useMessageRunActions({
     }
   }
 
+  /**
+   * Sends a stored starter prompt as an ordinary user message through the exact
+   * normal send/admission path. It never touches the composer draft: failure
+   * reports a notice instead of restoring starter text into the draft.
+   */
+  async function sendStarterPrompt(promptText: string) {
+    const text = promptText.trim();
+    if (!text || activeChatDetailLoading) {
+      return;
+    }
+    const sourceSessionKey = useComposerSessionStore.getState().activeSessionKey;
+    const sourceSession = selectComposerSession(
+      useComposerSessionStore.getState(),
+      sourceSessionKey
+    );
+    if (
+      sourceSession.draft.trim() ||
+      sourceSession.attachments.length > 0 ||
+      sourceSession.pendingSend ||
+      sourceSession.pendingUploadGenerations.length > 0
+    ) {
+      return;
+    }
+    const runControlSnapshot = captureRunControlSnapshot();
+    if (!runControlSnapshot.model) {
+      return;
+    }
+    const sourceComposerChatId = chatIdFromComposerSessionKey(sourceSessionKey);
+    if (sourceComposerChatId !== activeChatId) {
+      return;
+    }
+    if (
+      sourceComposerChatId &&
+      hasUnreconciledOptimisticLeaf(sourceComposerChatId) &&
+      !(await reconcileBeforeRunMutation(sourceComposerChatId))
+    ) {
+      return;
+    }
+
+    const contentBlocks = [{ text, type: "text" as const }];
+    const starterControlPayload = runControlPayload(runControlSnapshot, false);
+
+    try {
+      let chatIdForSend = sourceComposerChatId;
+      const thread = selectThreadSnapshot(useThreadStore.getState(), chatIdForSend);
+      const currentChatSummary = chatIdForSend
+        ? useWorkspaceStore
+            .getState()
+            .chats.find((candidate) => candidate.id === chatIdForSend)
+        : null;
+      let parentLeafForSend =
+        effectiveActiveLeafId(thread.messages, thread.activeLeafId) ??
+        currentChatSummary?.activeLeafMessageId ??
+        activeChat?.activeLeafMessageId ??
+        null;
+      if (!chatIdForSend) {
+        const chat = await createChat(
+          folderIdFromComposerSessionKey(sourceSessionKey),
+          sourceSessionKey
+        );
+        if (!chat) {
+          return;
+        }
+
+        chatIdForSend = chat.id;
+        parentLeafForSend = chat.activeLeafMessageId;
+      }
+
+      if (useRunLifecycleStore.getState().activeStreams[chatIdForSend]) {
+        return;
+      }
+
+      if (chatIdForSend && parentLeafForSend) {
+        try {
+          await persistActiveLeaf(chatIdForSend, parentLeafForSend);
+        } catch (error) {
+          setNotice({ kind: "error", text: errorMessage(error) });
+          return;
+        }
+      }
+
+      const userMessage: ThreadMessage = {
+        content: text,
+        id: `user-${Date.now()}`,
+        modelId: runControlSnapshot.modelId,
+        parentMessageId: parentLeafForSend,
+        provider: runControlSnapshot.provider,
+        role: "user",
+        status: "complete"
+      };
+      const assistantId = `assistant-${Date.now()}`;
+      const assistantMessage: ThreadMessage = {
+        content: "",
+        id: assistantId,
+        modelId: runControlSnapshot.modelId,
+        parentMessageId: userMessage.id,
+        provider: runControlSnapshot.provider,
+        role: "assistant",
+        status: "streaming"
+      };
+
+      mergeStreamChatMessages(chatIdForSend, [userMessage, assistantMessage]);
+      updateStreamChatActiveLeaf(chatIdForSend, assistantId);
+      if (activeChatIdRef.current === chatIdForSend) {
+        resetThreadToLatest();
+      }
+
+      await executeMessageRunLifecycle({
+        activeChatIdRef,
+        activeStreamAbortRef,
+        chatId: chatIdForSend,
+        consumeRunStream,
+        createStreamTokenBuffer,
+        failurePrefix: "send_failed",
+        fetchRun,
+        notifyAnswerReady,
+        optimisticAssistantMessageId: assistantId,
+        primeAnswerSound,
+        reconcileMessageIds({ currentRunId, messageIds }) {
+          const persistedUserId = messageIds.userMessageId;
+          const persistedAssistantId = messageIds.assistantMessageId;
+
+          if (persistedAssistantId) {
+            updateStreamChatActiveLeaf(chatIdForSend, persistedAssistantId, assistantId);
+          }
+
+          updateStreamChatMessages(chatIdForSend, (current) =>
+            current.map((message) => {
+              if (persistedUserId && message.id === userMessage.id) {
+                return { ...message, id: persistedUserId };
+              }
+              if (persistedAssistantId && message.id === assistantId) {
+                return {
+                  ...message,
+                  id: persistedAssistantId,
+                  parentMessageId: persistedUserId ?? message.parentMessageId,
+                  runId: currentRunId ?? message.runId
+                };
+              }
+              if (persistedUserId && message.parentMessageId === userMessage.id) {
+                return { ...message, parentMessageId: persistedUserId };
+              }
+              return message;
+            })
+          );
+        },
+        refreshActiveChat,
+        request(signal) {
+          return shellFetch(`/api/chats/${chatIdForSend}/messages`, {
+            body: JSON.stringify({
+              content: { blocks: contentBlocks },
+              expectedActiveLeafId: parentLeafForSend,
+              ...starterControlPayload
+            }),
+            headers: { "content-type": "application/json" },
+            method: "POST",
+            signal
+          });
+        },
+        async settleFailedRunState({ kind }) {
+          if (kind === "rejected") {
+            rollbackOptimisticRun({
+              chatId: chatIdForSend,
+              expectedParentMessageId: parentLeafForSend,
+              optimisticAssistantMessageId: assistantId,
+              optimisticUserMessageId: userMessage.id,
+              previousLeafId: parentLeafForSend
+            });
+            return;
+          }
+
+          await reconcileAmbiguousRun(chatIdForSend);
+        }
+      });
+    } catch (error) {
+      setNotice({ kind: "error", text: errorMessage(error) });
+    }
+  }
+
   async function regenerateMessage(messageId: string) {
     const chatIdForRegenerate = activeChatId;
     if (!chatIdForRegenerate) {
@@ -818,6 +1002,7 @@ export function useMessageRunActions({
 
   return {
     regenerateMessage,
+    sendStarterPrompt,
     submitComposer
   };
 }

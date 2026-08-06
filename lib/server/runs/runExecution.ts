@@ -231,7 +231,6 @@ function serializeChatUpdate(
       activeLeafMessageId: update.chat.activeLeafMessageId,
       createdAt: iso(update.chat.createdAt),
       defaultModelId: update.chat.defaultModelId,
-      defaultPromptPresetId: update.chat.defaultPromptPresetId,
       defaultProvider: update.chat.defaultProvider,
       folderId: update.chat.folderId,
       id: update.chat.id,
@@ -243,6 +242,7 @@ function serializeChatUpdate(
     },
     messages: update.messages.map((message) => ({
       artifactSummary: message.artifactSummary ?? null,
+      assistantIdentity: message.assistantIdentity ?? null,
       content:
         liveGroundedAnswer && message.id === liveGroundedAnswer.assistantMessageId
           ? textMessageContent(liveGroundedAnswer.finalText)

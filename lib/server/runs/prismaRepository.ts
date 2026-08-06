@@ -36,6 +36,7 @@ import {
 import {
   ActiveLeafConflictError,
   ActiveRunConflictError,
+  AssistantRunConflictError,
   AttachmentLinkConflictError,
   McpRunPlanConflictError,
   ProviderAdmissionConflictError,
@@ -44,6 +45,10 @@ import {
   type RunAttachmentRecord,
   type RunRepository
 } from "./runRepositoryContract";
+import {
+  decodeAssistantAvatarRecipe,
+  type AssistantAvatarRecipe
+} from "../../contracts/assistants";
 import type { McpRunPlanBinding } from "../mcp/runPlan";
 import { persistedToolCallActivity } from "./toolInspection";
 import {
@@ -195,21 +200,6 @@ async function persistAcceptedRunDefaults(
     throw new Error("Run defaults user does not match run owner");
   }
 
-  if (defaults.promptPresetId) {
-    const prompt = await tx.promptPreset.findFirst({
-      select: {
-        id: true
-      },
-      where: {
-        id: defaults.promptPresetId,
-        userId
-      }
-    });
-    if (!prompt) {
-      throw new Error("Run defaults persistence failed: not_found");
-    }
-  }
-
   const updatesSearchPreference = Object.prototype.hasOwnProperty.call(
     defaults,
     "searchPreferencePlan"
@@ -246,6 +236,73 @@ async function persistAcceptedRunDefaults(
   if (result.kind !== "updated") {
     throw new Error(`Run defaults persistence failed: ${result.kind}`);
   }
+}
+
+/**
+ * In-transaction Assistant acceptance recheck: the definition must still exist
+ * unarchived, the revision must belong to it, and the runner must currently be
+ * the owner or hold an active group/installation publication. A concurrent
+ * revision advance is not a conflict — the run records the revision resolved at
+ * admission — but access loss, archive, and publication revocation fail with a
+ * stable privacy-safe conflict.
+ */
+async function assertAssistantRunProvenance(
+  tx: Pick<Prisma.TransactionClient, "$queryRaw">,
+  input: {
+    assistantId: string;
+    revisionId: string;
+    userId: string;
+  }
+): Promise<void> {
+  const rows = await tx.$queryRaw<Array<{ id: string }>>`
+    SELECT definition."id"
+    FROM "AssistantDefinition" AS definition
+    INNER JOIN "AssistantRevision" AS revision
+      ON revision."assistantId" = definition."id"
+     AND revision."id" = ${input.revisionId}
+    WHERE definition."id" = ${input.assistantId}
+      AND definition."archivedAt" IS NULL
+      AND (
+        definition."ownerUserId" = ${input.userId}
+        OR EXISTS (
+          SELECT 1
+          FROM "AssistantPublication" AS publication
+          WHERE publication."assistantId" = definition."id"
+            AND (
+              publication."scope" = 'installation'
+              OR (
+                publication."scope" = 'group'
+                AND publication."groupId" IN (
+                  SELECT membership."groupId"
+                  FROM "UserGroup" AS membership
+                  INNER JOIN "Group" AS member_group
+                    ON member_group."id" = membership."groupId"
+                   AND member_group."archivedAt" IS NULL
+                  WHERE membership."userId" = ${input.userId}
+                )
+              )
+            )
+        )
+      )
+  `;
+
+  if (!rows[0]) {
+    throw new AssistantRunConflictError();
+  }
+}
+
+function serializeRunAssistantIdentity(modelRun: {
+  assistantRevision?: { avatar: unknown; name: string; revisionNumber: number } | null;
+} | undefined): { avatar: AssistantAvatarRecipe; name: string; revisionNumber: number } | null {
+  const revision = modelRun?.assistantRevision;
+  if (!revision) return null;
+  const avatar = decodeAssistantAvatarRecipe(revision.avatar);
+  if (!avatar) return null;
+  return {
+    avatar,
+    name: revision.name,
+    revisionNumber: revision.revisionNumber
+  };
 }
 
 export async function insertAcceptedMcpRunBindings(
@@ -1221,7 +1278,6 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
               content: json(input.content),
               modelId: input.modelId,
               parentMessageId: input.expectedActiveLeafId,
-              promptPresetId: input.normalizedRequest.prompt.presetId ?? null,
               provider: input.provider,
               role: "user",
               status: "complete"
@@ -1233,7 +1289,6 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
               content: json(textMessageContent("")),
               modelId: input.modelId,
               parentMessageId: userMessage.id,
-              promptPresetId: input.normalizedRequest.prompt.presetId ?? null,
               provider: input.provider,
               role: "assistant",
               status: "streaming"
@@ -1261,9 +1316,23 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
             }
           }
 
+          if (input.assistant) {
+            await assertAssistantRunProvenance(tx, {
+              assistantId: input.assistant.assistantId,
+              revisionId: input.assistant.revisionId,
+              userId: input.userId
+            });
+          }
+
           const run = await tx.modelRun.create({
             data: {
               assistantMessageId: assistantMessage.id,
+              ...(input.assistant
+                ? {
+                    assistantId: input.assistant.assistantId,
+                    assistantRevisionId: input.assistant.revisionId
+                  }
+                : {}),
               chatId: input.chatId,
               modelId: input.modelId,
               normalizedRequest: json(input.normalizedRequest),
@@ -1288,15 +1357,16 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
             userId: input.userId
           });
 
-          await persistAcceptedRunDefaults(tx, input.userId, input.defaults);
+          if (input.defaults) {
+            await persistAcceptedRunDefaults(tx, input.userId, input.defaults);
+          }
 
           await tx.chat.update({
             data: {
               activeLeafMessageId: assistantMessage.id,
-              ...(chat._count.messages === 0
+              ...(chat._count.messages === 0 && input.defaults
                 ? {
-                    defaultProviderModelId: input.defaults.modelId,
-                    defaultPromptPresetId: input.normalizedRequest.prompt.presetId ?? null,
+                    defaultProviderModelId: input.defaults.modelId
                   }
                 : {})
             },
@@ -1368,15 +1438,27 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
               content: json(textMessageContent("")),
               modelId: input.modelId,
               parentMessageId: input.userMessageId,
-              promptPresetId: input.normalizedRequest.prompt.presetId ?? null,
               provider: input.provider,
               role: "assistant",
               status: "streaming"
             }
           });
+          if (input.assistant) {
+            await assertAssistantRunProvenance(tx, {
+              assistantId: input.assistant.assistantId,
+              revisionId: input.assistant.revisionId,
+              userId: input.userId
+            });
+          }
           const run = await tx.modelRun.create({
             data: {
               assistantMessageId: assistantMessage.id,
+              ...(input.assistant
+                ? {
+                    assistantId: input.assistant.assistantId,
+                    assistantRevisionId: input.assistant.revisionId
+                  }
+                : {}),
               chatId: input.chatId,
               modelId: input.modelId,
               normalizedRequest: json(input.normalizedRequest),
@@ -1401,7 +1483,9 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
             userId: input.userId
           });
 
-          await persistAcceptedRunDefaults(tx, input.userId, input.defaults);
+          if (input.defaults) {
+            await persistAcceptedRunDefaults(tx, input.userId, input.defaults);
+          }
 
           await tx.chat.update({
             data: {
@@ -1799,6 +1883,12 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
     getRunForUser: async (runId, userId) => {
       const run = await prismaClient.modelRun.findFirst({
         include: {
+          assistantRevision: {
+            select: {
+              name: true,
+              revisionNumber: true
+            }
+          },
           events: {
             orderBy: {
               sequence: "asc"
@@ -1824,6 +1914,13 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
       }
 
       return {
+        assistant: run.assistantId && run.assistantRevision
+          ? {
+              assistantId: run.assistantId,
+              name: run.assistantRevision.name,
+              revisionNumber: run.assistantRevision.revisionNumber
+            }
+          : null,
         assistantMessageId: run.assistantMessageId,
         chatId: run.chatId,
         createdAt: run.createdAt.toISOString(),
@@ -1889,7 +1986,6 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
               id: true
             }
           },
-          defaultPromptPresetId: true,
           folderId: true,
           id: true,
           messages: {
@@ -1899,6 +1995,14 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
                   createdAt: "desc"
                 },
                 select: {
+                  assistantId: true,
+                  assistantRevision: {
+                    select: {
+                      avatar: true,
+                      name: true,
+                      revisionNumber: true
+                    }
+                  },
                   events: {
                     orderBy: {
                       sequence: "asc"
@@ -1980,7 +2084,6 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
           activeLeafMessageId: chat.activeLeafMessageId,
           createdAt: chat.createdAt,
           defaultModelId: chat.defaultProviderModel?.id ?? null,
-          defaultPromptPresetId: chat.defaultPromptPresetId,
           defaultProvider: chat.defaultProviderModel?.connectionId ?? null,
           folderId: chat.folderId,
           id: chat.id,
@@ -1995,6 +2098,7 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
 
           return {
             artifactSummary: modelRun ? summarizeMessageRunArtifacts(modelRun) : null,
+            assistantIdentity: serializeRunAssistantIdentity(modelRun),
             content: message.content,
             createdAt: message.createdAt,
             errorMessage: message.errorMessage,
@@ -2018,19 +2122,6 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
           };
         })
       };
-    },
-    isPromptPresetAvailable: async (userId, promptPresetId) => {
-      const prompt = await prismaClient.promptPreset.findFirst({
-        select: {
-          id: true
-        },
-        where: {
-          id: promptPresetId,
-          userId
-        }
-      });
-
-      return Boolean(prompt);
     },
     isSearchStrategyEnabled: async (searchStrategyId) => {
       const strategy = await prismaClient.searchStrategy.findFirst({

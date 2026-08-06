@@ -27,7 +27,7 @@ const adminDashboardUserSelect = {
       mcpOAuthConnections: true,
       mcpUserServers: true,
       modelRuns: true,
-      promptPresets: true,
+      assistantDefinitions: true,
       sharedSnapshots: true,
       usageEvents: true
     }

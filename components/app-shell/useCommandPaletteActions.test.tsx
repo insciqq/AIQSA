@@ -6,6 +6,7 @@ import { useCommandPaletteActions } from "./useCommandPaletteActions";
 function renderActions(mode: InspectorMode, pinningAvailable = false, workspaceReady = true) {
   const setInspectorMode = vi.fn();
   const closePalette = vi.fn();
+  const openLibrary = vi.fn();
   const openSettings = vi.fn();
   const { result } = renderHook(() =>
     useCommandPaletteActions({
@@ -19,13 +20,12 @@ function renderActions(mode: InspectorMode, pinningAvailable = false, workspaceR
       closePalette,
       inspectorMode: mode,
       inspectorPinningAvailable: pinningAvailable,
+      openLibrary,
       openSettings,
       searchOptions: [],
       selectModel: vi.fn(),
-      selectPrompt: vi.fn(),
       selectSearchStrategy: vi.fn(),
       selectedModelId: "test-model",
-      selectedPromptId: null,
       selectedProvider: "test-provider",
       selectedSearchStrategy: "search-disabled",
       settingsOpen: false,
@@ -33,7 +33,7 @@ function renderActions(mode: InspectorMode, pinningAvailable = false, workspaceR
     })
   );
 
-  return { closePalette, openSettings, result, setInspectorMode };
+  return { closePalette, openLibrary, openSettings, result, setInspectorMode };
 }
 
 describe("useCommandPaletteActions", () => {
@@ -90,12 +90,11 @@ describe("useCommandPaletteActions", () => {
     );
   });
 
-  it("builds and dispatches every searchable category with readable non-id subtitles", () => {
+  it("builds and dispatches every searchable category with readable non-id subtitles", async () => {
     const chat: ChatSummary = {
       activeLeafMessageId: null,
       createdAt: "2026-07-11T00:00:00.000Z",
       defaultModelId: "gpt-5.5",
-      defaultPromptPresetId: "prompt-default",
       defaultProvider: "openai",
       folderId: null,
       id: "chat-1",
@@ -107,7 +106,6 @@ describe("useCommandPaletteActions", () => {
       defaults: {
         controlValues: {},
         modelId: "gpt-5.5",
-        promptPresetId: "prompt-default",
         provider: "openai",
         searchStrategyId: "openai-native-web-search",
         showCitations: true,
@@ -141,15 +139,6 @@ describe("useCommandPaletteActions", () => {
           searchStrategyIds: ["openai-native-web-search"]
         }
       ],
-      promptPresets: [
-        {
-          developerPrompt: null,
-          id: "prompt-default",
-          isDefault: true,
-          name: "Helpful Assistant",
-          systemPrompt: "Be helpful."
-        }
-      ],
       providers: [{ id: "openai", models: ["gpt-5.5"], name: "OpenAI" }],
       searchStrategies: [
         {
@@ -162,7 +151,7 @@ describe("useCommandPaletteActions", () => {
     };
     const activateChat = vi.fn();
     const selectModel = vi.fn();
-    const selectPrompt = vi.fn();
+    const openLibrary = vi.fn();
     const selectSearchStrategy = vi.fn();
     const closePalette = vi.fn();
     const { result } = renderHook(() =>
@@ -177,13 +166,12 @@ describe("useCommandPaletteActions", () => {
         closePalette,
         inspectorMode: "closed",
         inspectorPinningAvailable: false,
+        openLibrary,
         openSettings: vi.fn(),
         searchOptions: catalog.searchStrategies,
         selectModel,
-        selectPrompt,
         selectSearchStrategy,
         selectedModelId: "gpt-5.5",
-        selectedPromptId: "prompt-default",
         selectedProvider: "openai",
         selectedSearchStrategy: "openai-native-web-search",
         settingsOpen: false,
@@ -192,7 +180,7 @@ describe("useCommandPaletteActions", () => {
     );
 
     expect(new Set(result.current.commandItems.map((item) => item.kind))).toEqual(
-      new Set(["action", "chat", "model", "prompt", "search"])
+      new Set(["action", "chat", "model", "search"])
     );
     expect(result.current.commandItems.some((item) => item.id.startsWith("provider:"))).toBe(false);
     const modelCommand = result.current.commandItems.find((item) => item.kind === "model");
@@ -205,17 +193,25 @@ describe("useCommandPaletteActions", () => {
       "Search the web with OpenAI."
     );
     expect(result.current.commandItems.filter((item) => item.current).map((item) => item.kind)).toEqual(
-      expect.arrayContaining(["chat", "model", "prompt", "search"])
+      expect.arrayContaining(["chat", "model", "search"])
     );
 
-    for (const kind of ["chat", "model", "prompt", "search"] as const) {
+    for (const kind of ["chat", "model", "search"] as const) {
       const item = result.current.commandItems.find((candidate) => candidate.kind === kind);
       act(() => result.current.runCommand(item!));
     }
     expect(activateChat).toHaveBeenCalledWith(chat);
     expect(selectModel).toHaveBeenCalledWith(catalog.models[0]);
-    expect(selectPrompt).toHaveBeenCalledWith("prompt-default");
     expect(selectSearchStrategy).toHaveBeenCalledWith("openai-native-web-search");
+    expect(closePalette).toHaveBeenCalledTimes(3);
+
+    const libraryCommand = result.current.commandItems.find(
+      (item) => item.id === "action:open-library"
+    );
+    expect(libraryCommand?.label).toBe("Open library");
+    act(() => result.current.runCommand(libraryCommand!));
     expect(closePalette).toHaveBeenCalledTimes(4);
+    expect(openLibrary).not.toHaveBeenCalled();
+    await waitFor(() => expect(openLibrary).toHaveBeenCalledOnce());
   });
 });

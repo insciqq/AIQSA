@@ -11,10 +11,6 @@ import { AdminInvitesSection } from "@/components/admin/AdminInvitesSection";
 import { AdminMcpGroupAccessPanel, AdminMcpUserAccessPanel } from "@/components/admin/AdminMcpGrantPanels";
 import { AdminMcpServersSection } from "@/components/admin/AdminMcpServersSection";
 import { AdminProvidersExperience } from "@/components/admin/AdminProvidersExperience";
-import {
-  EMPTY_ADMIN_RUN_PROFILES_EDIT_STATE,
-  type AdminRunProfilesEditState
-} from "@/components/admin/AdminRunProfilesPanel";
 import { AdminSafetySection } from "@/components/admin/AdminSafetySection";
 import { AdminSearchSection } from "@/components/admin/AdminSearchSection";
 import { AdminSectionFrame } from "@/components/admin/AdminSectionFrame";
@@ -120,7 +116,6 @@ function AdminSectionContent({
   mcp,
   mcpSection,
   onMutationCommitted,
-  onRunProfilesEditStateChange,
   requestConfirmation,
   onRequestRevokeAllSessions,
   submitting,
@@ -136,7 +131,6 @@ function AdminSectionContent({
   mcp: AdminMcpController;
   mcpSection: AdminMcpSectionState;
   onMutationCommitted(): void | Promise<unknown>;
-  onRunProfilesEditStateChange(state: AdminRunProfilesEditState): void;
   requestConfirmation: AdminConfirmationController["requestConfirmation"];
   onRequestRevokeAllSessions(): void;
   submitting: boolean;
@@ -165,7 +159,6 @@ function AdminSectionContent({
           active
           groups={dashboard.groups}
           onMutationCommitted={onMutationCommitted}
-          onRunProfilesEditStateChange={onRunProfilesEditStateChange}
           requestConfirmation={requestConfirmation}
         />
       );
@@ -210,20 +203,12 @@ function AdminSectionContent({
 }
 
 export function AdminPanel({ adminEmail, adminUserId }: AdminPanelProps) {
-  const [runProfilesEditState, setRunProfilesEditState] = useState<AdminRunProfilesEditState>(
-    EMPTY_ADMIN_RUN_PROFILES_EDIT_STATE
-  );
-  const runProfilesEditStateRef = useRef(runProfilesEditState);
   const navigationBlockedRef = useRef(false);
   const requestNavigationConfirmationRef = useRef<(
     (navigation: AdminBlockedNavigation) => void
   ) | null>(null);
-  const canSelectSection = useCallback(() => (
-    !navigationBlockedRef.current && !runProfilesEditStateRef.current.dirty
-  ), []);
-  const canExitAdmin = useCallback(() => (
-    !navigationBlockedRef.current && !runProfilesEditStateRef.current.dirty
-  ), []);
+  const canSelectSection = useCallback(() => !navigationBlockedRef.current, []);
+  const canExitAdmin = useCallback(() => !navigationBlockedRef.current, []);
   const onNavigationBlocked = useCallback((navigation: AdminBlockedNavigation) => {
     requestNavigationConfirmationRef.current?.(navigation);
   }, []);
@@ -244,14 +229,9 @@ export function AdminPanel({ adminEmail, adminUserId }: AdminPanelProps) {
   const fieldErrors = useAdminFieldErrors(feedback);
   const operationalFocus = useAdminOperationalFocus();
   const nowMs = resource.lastLoadedAt?.getTime() ?? 0;
-  const actionsDisabled = Boolean(actionRunner.submitting || runProfilesEditState.busy);
-  const allowUnloadRef = useRef(false);
+  const actionsDisabled = Boolean(actionRunner.submitting);
   const allowReturnToChatRef = useRef(false);
   const returnToChatLinkRef = useRef<HTMLAnchorElement | null>(null);
-
-  useEffect(() => {
-    runProfilesEditStateRef.current = runProfilesEditState;
-  }, [runProfilesEditState]);
 
   useEffect(() => {
     navigationBlockedRef.current = actionsDisabled;
@@ -269,67 +249,12 @@ export function AdminPanel({ adminEmail, adminUserId }: AdminPanelProps) {
       if (navigationBlockedRef.current) {
         return;
       }
-      if (!runProfilesEditStateRef.current.dirty) {
-        blockedNavigation.proceed();
-        return;
-      }
-
-      const returningToChat = blockedNavigation.target.kind === "exit" &&
-        new URL(blockedNavigation.target.href, window.location.href).pathname === "/";
-      const leavingAdmin = blockedNavigation.target.kind === "exit";
-      confirmation.requestConfirmation({
-        body: returningToChat
-          ? "Unsaved Run profile edits will be lost if you return to chat."
-          : leavingAdmin
-            ? "Unsaved Run profile edits will be lost if you leave Control Center."
-            : "Unsaved Run profile edits will be lost if you leave Providers.",
-        confirmLabel: returningToChat ? "Discard and return" : "Discard and leave",
-        dialogLabel: "Discard Run profile changes",
-        icon: "x",
-        onConfirm: () => {
-          if (leavingAdmin) {
-            allowUnloadRef.current = true;
-          }
-          blockedNavigation.proceed();
-          if (leavingAdmin) {
-            window.setTimeout(() => {
-              allowUnloadRef.current = false;
-            }, 1_000);
-          }
-        },
-        testId: returningToChat
-          ? "admin-confirm-discard-run-profile-return-changes"
-          : leavingAdmin
-            ? "admin-confirm-discard-run-profile-exit-changes"
-            : "admin-confirm-discard-run-profile-section-changes",
-        title: returningToChat
-          ? "Discard Run profile changes?"
-          : leavingAdmin
-            ? "Leave Control Center?"
-            : "Discard Run profile changes?",
-        tone: "warning"
-      });
+      blockedNavigation.proceed();
     };
     return () => {
       requestNavigationConfirmationRef.current = null;
     };
   }, [confirmation]);
-
-  useEffect(() => {
-    if (!runProfilesEditState.dirty && !runProfilesEditState.busy) {
-      return;
-    }
-
-    const protectUnsavedChanges = (event: BeforeUnloadEvent) => {
-      if (allowUnloadRef.current) {
-        return;
-      }
-      event.preventDefault();
-      event.returnValue = "";
-    };
-    window.addEventListener("beforeunload", protectUnsavedChanges);
-    return () => window.removeEventListener("beforeunload", protectUnsavedChanges);
-  }, [runProfilesEditState.busy, runProfilesEditState.dirty]);
 
   const requestReturnToChat = useCallback((event: MouseEvent<HTMLAnchorElement>) => {
     if (allowReturnToChatRef.current) {
@@ -480,7 +405,6 @@ export function AdminPanel({ adminEmail, adminUserId }: AdminPanelProps) {
                   mcp={mcp}
                   mcpSection={mcpSection}
                   onMutationCommitted={resource.refresh}
-                  onRunProfilesEditStateChange={setRunProfilesEditState}
                   requestConfirmation={confirmation.requestConfirmation}
                   onRequestRevokeAllSessions={requestRevokeAllSessions}
                   submitting={actionsDisabled}

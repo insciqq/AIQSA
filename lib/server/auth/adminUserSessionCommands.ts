@@ -222,7 +222,7 @@ async function countUserOwnedAppData(tx: Prisma.TransactionClient, userId: strin
     mcpOAuthConnections,
     mcpUserServers,
     modelRuns,
-    promptPresets,
+    assistantDefinitions,
     settings,
     sharedSnapshots,
     usageEvents
@@ -272,9 +272,9 @@ async function countUserOwnedAppData(tx: Prisma.TransactionClient, userId: strin
         userId
       }
     }),
-    tx.promptPreset.count({
+    tx.assistantDefinition.count({
       where: {
-        userId
+        ownerUserId: userId
       }
     }),
     tx.userSettings.count({
@@ -304,7 +304,7 @@ async function countUserOwnedAppData(tx: Prisma.TransactionClient, userId: strin
     mcpOAuthConnections,
     mcpUserServers,
     modelRuns,
-    promptPresets,
+    assistantDefinitions,
     settings,
     sharedSnapshots,
     usageEvents

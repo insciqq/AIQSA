@@ -83,8 +83,18 @@ export type NormalizedRunRequest = {
   modelId: string;
   params: Record<string, unknown>;
   prompt: {
+    /**
+     * Exact standard-chat baseline evidence for ordinary runs: the resolved
+     * zone and its source are recorded because the rendered text in `system`
+     * must never depend on a live clock or mutable template after acceptance.
+     * Assistant runs use their immutable revision instructions and omit this.
+     */
+    baseline?: {
+      source: "standard_chat";
+      timeZone: string;
+      timeZoneSource: "client" | "utc_fallback";
+    };
     developer: string | null;
-    presetId: string | null;
     system: string | null;
   };
   provider: string;

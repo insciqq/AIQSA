@@ -2,7 +2,7 @@ import { expect, type Locator, type Page } from "@playwright/test";
 
 export async function runAccountMenuAction(
   page: Page,
-  name: "Command palette" | "Prompt library" | "Settings"
+  name: "Command palette" | "Library" | "Settings"
 ): Promise<Locator> {
   const desktopTrigger = page.getByTestId("left-chat-pane").getByRole("button", { name: /Account menu/ });
   if (await desktopTrigger.isVisible()) {

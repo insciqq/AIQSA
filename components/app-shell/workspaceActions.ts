@@ -16,7 +16,6 @@ import type {
   ChatSummary,
   FolderSummary,
   Notice,
-  PromptPreset,
   RunEventView
 } from "@/components/app-shell/types";
 import { visibleMessagePath } from "@/components/app-shell/threadPath";
@@ -60,7 +59,6 @@ type ActivateChatOptions = {
 type WorkspaceActionsInput = {
   activeChatIdRef: MutableRef<string | null>;
   applyModelControlDefaults(model?: CatalogModel | null, controlValues?: Record<string, unknown>): void;
-  applyPrompt(prompt: PromptPreset | null): void;
   chatDetailRequestsRef: MutableRef<Map<string, Promise<ChatDetail | null>>>;
   chatHasActiveStream(chatId: string): boolean;
   chatMutation: WorkspaceChatMutationPort;
@@ -68,16 +66,19 @@ type WorkspaceActionsInput = {
   loadingChatDetailIdRef: MutableRef<string | null>;
   resumeChatRun(chat: ChatSummary): void;
   setNotice(notice: Notice): void;
-  setSelectedModelId(value: string): void;
-  setSelectedProvider(value: string): void;
-  setSelectedSearchPlan(optionIds: readonly string[], mode: SearchPlanMode): void;
+  setSelectedModelId(value: string, origin?: "assistant" | "system" | "user"): void;
+  setSelectedProvider(value: string, origin?: "assistant" | "system" | "user"): void;
+  setSelectedSearchPlan(
+    optionIds: readonly string[],
+    mode: SearchPlanMode,
+    origin?: "assistant" | "system" | "user"
+  ): void;
   workspaceRefreshPromiseRef: MutableRef<Promise<ChatDetail | null> | null>;
 };
 
 export function useWorkspaceActions({
   activeChatIdRef,
   applyModelControlDefaults,
-  applyPrompt,
   chatDetailRequestsRef,
   chatHasActiveStream,
   chatMutation,
@@ -95,7 +96,6 @@ export function useWorkspaceActions({
       activeLeafMessageId: detail.activeLeafMessageId,
       createdAt: detail.createdAt,
       defaultModelId: detail.defaultModelId,
-      defaultPromptPresetId: detail.defaultPromptPresetId,
       defaultProvider: detail.defaultProvider,
       folderId: detail.folderId,
       id: detail.id,
@@ -251,22 +251,15 @@ export function useWorkspaceActions({
       provider: chat.defaultProvider
     });
 
-    setSelectedProvider(model?.provider ?? chat.defaultProvider);
-    setSelectedModelId(model?.modelId ?? chat.defaultModelId);
+    setSelectedProvider(model?.provider ?? chat.defaultProvider, "system");
+    setSelectedModelId(model?.modelId ?? chat.defaultModelId, "system");
     const searchPlan = resolvePreferredSearchPlan(
       catalogOverride?.defaults.searchPlan,
       catalogOverride?.defaults.searchStrategyId,
       catalogOverride?.searchStrategies
     );
-    setSelectedSearchPlan(searchPlan.optionIds, searchPlan.mode);
+    setSelectedSearchPlan(searchPlan.optionIds, searchPlan.mode, "system");
     applyModelControlDefaults(model, catalogOverride?.defaults.controlValues);
-
-    const prompt = chat.defaultPromptPresetId
-      ? catalogOverride?.promptPresets.find(
-          (candidate) => candidate.id === chat.defaultPromptPresetId
-        ) ?? null
-      : null;
-    applyPrompt(prompt);
   }
 
   function reapplyActiveChatDefaults(catalogOverride: Catalog): boolean {

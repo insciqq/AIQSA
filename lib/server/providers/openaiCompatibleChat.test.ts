@@ -21,7 +21,7 @@ function request(overrides: Partial<ProviderRunRequest> = {}): ProviderRunReques
     },
     modelId: "vendor/model-1",
     params: { maxOutputTokens: 32, stream: false },
-    prompt: { developer: null, presetId: null, system: null },
+    prompt: { developer: null, system: null },
     provider: "custom-connection-1",
     searchStrategy: null,
     ...overrides

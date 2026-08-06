@@ -51,8 +51,7 @@ const INITIAL_WRITE_BOUNDARIES = [
   "providerUserCredentialAssignment.upsert#1",
   "providerModelCredentialCheck.create#1",
   "accessGrant.create#1",
-  "userSettings.update#1",
-  "runProfile.update#1"
+  "userSettings.update#1"
 ] as const;
 
 const REPLACEMENT_WRITE_BOUNDARIES = [
@@ -71,7 +70,6 @@ const WRITE_DELEGATES = new Set([
   "providerModel",
   "providerModelCredentialCheck",
   "providerUserCredentialAssignment",
-  "runProfile",
   "searchIntegrationRevision",
   "searchStrategy",
   "userSettings"
@@ -239,7 +237,6 @@ async function quickGraphSnapshot(
     credentialAssignments,
     accessGrants,
     settings,
-    profiles,
     groups
   ] = await Promise.all([
     transaction.providerConnection.findMany({
@@ -291,7 +288,6 @@ async function quickGraphSnapshot(
       }
     }),
     transaction.userSettings.findUnique({ where: { userId } }),
-    transaction.runProfile.findMany({ orderBy: { id: "asc" } }),
     groupGraphSnapshot(transaction)
   ]);
   return {
@@ -304,7 +300,6 @@ async function quickGraphSnapshot(
     draftChecks,
     groups,
     models,
-    profiles,
     settings
   };
 }
@@ -678,8 +673,6 @@ const ISOLATED_TABLES = [
   "ProviderModel",
   "ProviderModelCredentialCheck",
   "ProviderRunBinding",
-  "PromptPreset",
-  "RunProfile",
   "SearchIntegrationRevision",
   "SearchOption",
   "SearchPolicy",
@@ -746,9 +739,6 @@ async function createIsolatedQuickSetupDatabase(): Promise<Readonly<{
       `SELECT * FROM ${sourceSchema}."ProviderModel" ` +
       `WHERE "id" IN (${modelPlaceholders})`,
       ...candidateModelIds
-    );
-    await administrationDatabase.$executeRawUnsafe(
-      `INSERT INTO ${schema}."RunProfile" SELECT * FROM ${sourceSchema}."RunProfile"`
     );
     await administrationDatabase.$executeRawUnsafe(
       `INSERT INTO ${schema}."SearchOption" SELECT * FROM ${sourceSchema}."SearchOption"`
@@ -1476,15 +1466,6 @@ integration("Prisma provider Quick setup atomic graph", () => {
       await resetOpenAiToInitial(transaction);
       const suffix = randomUUID();
       const actor = await createActor(transaction, suffix);
-      await transaction.runProfile.update({
-        data: {
-          enabled: false,
-          providerModelId: null,
-          updatedByUserId: null,
-          version: 1
-        },
-        where: { id: "balanced" }
-      });
       const groupGraphBefore = await groupGraphSnapshot(transaction);
       const repository = createPrismaAdminProviderQuickSetupRepository(
         transactionBackedClient(transaction)
@@ -1509,7 +1490,6 @@ integration("Prisma provider Quick setup atomic graph", () => {
         versionId: firstVersionId
       }))).resolves.toEqual({
         defaultChanged: true,
-        profilesFilled: ["balanced"],
         status: "ready"
       });
 
@@ -1590,7 +1570,6 @@ integration("Prisma provider Quick setup atomic graph", () => {
         modelBefore,
         grantBefore,
         settingsBefore,
-        profileBefore,
         firstVersionBefore,
         replacementGroupGraphBefore
       ] =
@@ -1599,7 +1578,6 @@ integration("Prisma provider Quick setup atomic graph", () => {
           transaction.providerModel.findUniqueOrThrow({ where: { id: terra.modelId } }),
           transaction.accessGrant.findUniqueOrThrow({ where: { id: directGrant[0].id } }),
           transaction.userSettings.findUniqueOrThrow({ where: { userId: actor.userId } }),
-          transaction.runProfile.findUniqueOrThrow({ where: { id: "balanced" } }),
           transaction.providerCredentialVersion.findUniqueOrThrow({
             where: { id: firstVersionId }
           }),
@@ -1617,21 +1595,19 @@ integration("Prisma provider Quick setup atomic graph", () => {
         mode: "replacement",
         preservedModels: ready.preservedModels,
         versionId: secondVersionId
-      }))).resolves.toEqual({ defaultChanged: false, profilesFilled: [], status: "ready" });
+      }))).resolves.toEqual({ defaultChanged: false, status: "ready" });
 
-      const [connectionAfter, modelAfter, grantAfter, settingsAfter, profileAfter] =
+      const [connectionAfter, modelAfter, grantAfter, settingsAfter] =
         await Promise.all([
           transaction.providerConnection.findUniqueOrThrow({ where: { id: policy.connection.id } }),
           transaction.providerModel.findUniqueOrThrow({ where: { id: terra.modelId } }),
           transaction.accessGrant.findUniqueOrThrow({ where: { id: directGrant[0].id } }),
-          transaction.userSettings.findUniqueOrThrow({ where: { userId: actor.userId } }),
-          transaction.runProfile.findUniqueOrThrow({ where: { id: "balanced" } })
+          transaction.userSettings.findUniqueOrThrow({ where: { userId: actor.userId } })
         ]);
       expect(connectionAfter).toEqual(connectionBefore);
       expect(modelAfter).toEqual(modelBefore);
       expect(grantAfter).toEqual(grantBefore);
       expect(settingsAfter).toEqual(settingsBefore);
-      expect(profileAfter).toEqual(profileBefore);
       const firstVersionAfter = await transaction.providerCredentialVersion.findUniqueOrThrow({
         where: { id: firstVersionId }
       });
@@ -1957,20 +1933,11 @@ integration("Prisma provider Quick setup atomic graph", () => {
     );
   });
 
-  it("repairs only a bounded personal graph and leaves profiles and groups untouched", async () => {
+  it("repairs only a bounded personal graph and leaves groups untouched", async () => {
     await expect(database.$transaction(async (transaction) => {
       await resetOpenAiToInitial(transaction);
       const suffix = randomUUID();
       const actor = await createActor(transaction, suffix);
-      await transaction.runProfile.update({
-        data: {
-          enabled: false,
-          providerModelId: null,
-          updatedByUserId: null,
-          version: 1
-        },
-        where: { id: "balanced" }
-      });
       const repository = createPrismaAdminProviderQuickSetupRepository(
         transactionBackedClient(transaction)
       );
@@ -2000,15 +1967,6 @@ integration("Prisma provider Quick setup atomic graph", () => {
         transaction.userSettings.update({
           data: { defaultProviderModelId: null },
           where: { userId: actor.userId }
-        }),
-        transaction.runProfile.update({
-          data: {
-            enabled: false,
-            providerModelId: null,
-            updatedByUserId: null,
-            version: 1
-          },
-          where: { id: "balanced" }
         })
       ]);
       const recovery = await repository.inspect({
@@ -2021,11 +1979,10 @@ integration("Prisma provider Quick setup atomic graph", () => {
         model: { id: terra.modelId, templateKey: terra.templateKey },
         state: "disabled"
       });
-      const [grantBefore, profileBefore, groupGraphBefore] = await Promise.all([
+      const [grantBefore, groupGraphBefore] = await Promise.all([
         transaction.accessGrant.findFirstOrThrow({
           where: { providerModelId: terra.modelId, userId: actor.userId }
         }),
-        transaction.runProfile.findUniqueOrThrow({ where: { id: "balanced" } }),
         groupGraphSnapshot(transaction)
       ]);
       const secondVersionId = `quick-recovery-version-two-${suffix}`;
@@ -2040,7 +1997,6 @@ integration("Prisma provider Quick setup atomic graph", () => {
         versionId: secondVersionId
       }))).resolves.toEqual({
         defaultChanged: true,
-        profilesFilled: [],
         status: "ready"
       });
 
@@ -2052,9 +2008,6 @@ integration("Prisma provider Quick setup atomic graph", () => {
       expect(await transaction.accessGrant.findUniqueOrThrow({
         where: { id: grantBefore.id }
       })).toEqual(grantBefore);
-      expect(await transaction.runProfile.findUniqueOrThrow({
-        where: { id: "balanced" }
-      })).toEqual(profileBefore);
       expect(await transaction.providerCredentialVersion.count({
         where: { credentialId }
       })).toBe(2);
@@ -2070,15 +2023,6 @@ integration("Prisma provider Quick setup atomic graph", () => {
       await resetOpenAiToInitial(transaction);
       const suffix = randomUUID();
       const actor = await createActor(transaction, suffix);
-      await transaction.runProfile.update({
-        data: {
-          enabled: false,
-          providerModelId: null,
-          updatedByUserId: null,
-          version: 1
-        },
-        where: { id: "balanced" }
-      });
       const repository = createPrismaAdminProviderQuickSetupRepository(
         transactionBackedClient(transaction)
       );
@@ -2165,15 +2109,6 @@ integration("Prisma provider Quick setup atomic graph", () => {
       await resetOpenAiToInitial(transaction);
       const suffix = randomUUID();
       const actor = await createActor(transaction, suffix);
-      await transaction.runProfile.update({
-        data: {
-          enabled: false,
-          providerModelId: null,
-          updatedByUserId: null,
-          version: 1
-        },
-        where: { id: "balanced" }
-      });
       const repository = createPrismaAdminProviderQuickSetupRepository(
         transactionBackedClient(transaction)
       );
@@ -2250,15 +2185,6 @@ integration("Prisma provider Quick setup atomic graph", () => {
       await resetOpenAiToInitial(transaction);
       const suffix = randomUUID();
       const actor = await createActor(transaction, suffix);
-      await transaction.runProfile.update({
-        data: {
-          enabled: false,
-          providerModelId: null,
-          updatedByUserId: null,
-          version: 1
-        },
-        where: { id: "balanced" }
-      });
       const repository = createPrismaAdminProviderQuickSetupRepository(
         transactionBackedClient(transaction)
       );
@@ -2484,15 +2410,6 @@ integration("Prisma provider Quick setup atomic graph", () => {
       const suffix = randomUUID();
       const actor = await isolated.client.$transaction(async (transaction) => {
         await resetOpenAiToInitial(transaction);
-        await transaction.runProfile.update({
-          data: {
-            enabled: false,
-            providerModelId: null,
-            updatedByUserId: null,
-            version: 1
-          },
-          where: { id: "balanced" }
-        });
         return createActor(transaction, suffix);
       });
       const repository = createPrismaAdminProviderQuickSetupRepository(isolated.client);

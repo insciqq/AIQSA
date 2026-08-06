@@ -93,7 +93,6 @@ function tinyGenerationRequest(input: AdminProviderDraftTesterInput): ProviderRu
     },
     prompt: {
       developer: null,
-      presetId: null,
       system: "This is an administrator-requested connectivity test."
     },
     provider: input.providerFamily,

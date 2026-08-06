@@ -52,7 +52,6 @@ function request(overrides: Partial<ProviderRunRequest> = {}): ProviderRunReques
     previousProviderResponseId: "ignored-provider-state",
     prompt: {
       developer: "Use the supplied tool when needed.",
-      presetId: "prompt-1",
       system: "Be concise."
     },
     provider: "custom-connection-1",

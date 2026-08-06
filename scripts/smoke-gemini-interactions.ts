@@ -92,7 +92,6 @@ const request: ProviderRunRequest = {
   params: defaultParams,
   prompt: {
     developer: null,
-    presetId: null,
     system: searchEnabled
       ? "This is a bounded AIQSA Google Search smoke test. Use Google Search before answering."
       : [

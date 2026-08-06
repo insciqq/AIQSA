@@ -1,14 +1,14 @@
 import { DiscardChangesConfirmationDialog } from "@/components/app-shell/ConfirmationDialog";
 import { McpSettingsSection } from "@/components/app-shell/McpSettingsSection";
 import { ShellNotice } from "@/components/app-shell/ShellNotice";
-import type { SettingsSection } from "@/components/app-shell/promptSettingsStore";
+import type { SettingsSection } from "@/components/app-shell/settingsDestinationStore";
 import { AIQSA_THEMES, type ThemeId } from "@/components/app-shell/theme";
 import type { Notice } from "@/components/app-shell/types";
 import { Check, Palette, Wrench, X } from "lucide-react";
 import { useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { useDialogFocus } from "./useDialogFocus";
 
-type GeneralSettingsSection = Exclude<SettingsSection, "prompts">;
+type GeneralSettingsSection = SettingsSection;
 
 type DiscardIntent =
   | { kind: "close" }

@@ -16,19 +16,13 @@ import {
 
 export type UserSettingsRecord = CatalogSettingsRecord;
 
-export type PromptPresetSettingsRecord = {
-  id: string;
-};
-
 export type SettingsHandlerData = CatalogSelectionData & {
-  promptPresets: PromptPresetSettingsRecord[];
   searchPolicy?: { defaultPlan: unknown } | null;
 };
 
 export type UserSettingsUpdate = Partial<{
   defaultControlValues: Record<string, unknown>;
   defaultProviderModelId: string | null;
-  defaultPromptPresetId: string | null;
   defaultSearchStrategyId: string;
   defaultSearchPlan: SearchPlan | null;
   showCitations: boolean;
@@ -166,23 +160,6 @@ function sanitizeControlValues(input: unknown, models: CatalogWireModel[]): Reco
   return output;
 }
 
-function promptPresetIdValue(body: Record<string, unknown>, data: SettingsHandlerData): string | null | undefined {
-  if (!("defaultPromptPresetId" in body)) {
-    return undefined;
-  }
-
-  if (body.defaultPromptPresetId === null) {
-    return null;
-  }
-
-  if (typeof body.defaultPromptPresetId !== "string") {
-    return undefined;
-  }
-
-  const promptId = body.defaultPromptPresetId.trim();
-  return data.promptPresets.some((prompt) => prompt.id === promptId) ? promptId : undefined;
-}
-
 function buildSettingsUpdate(
   body: Record<string, unknown> | null,
   data: SettingsHandlerData
@@ -251,15 +228,6 @@ function buildSettingsUpdate(
     }
   }
 
-  if ("defaultPromptPresetId" in body) {
-    const promptId = promptPresetIdValue(body, data);
-    if (promptId === undefined) {
-      return { error: "default_prompt_unavailable" };
-    }
-
-    update.defaultPromptPresetId = promptId;
-  }
-
   if ("showCitations" in body) {
     if (typeof body.showCitations !== "boolean") {
       return { error: "show_citations_boolean_required" };
@@ -306,7 +274,6 @@ function serializeSettings(
   return {
     defaultControlValues: isRecord(settings.defaultControlValues) ? settings.defaultControlValues : {},
     defaultModelId: settings.defaultModelId,
-    defaultPromptPresetId: settings.defaultPromptPresetId,
     defaultProvider: settings.defaultProvider,
     defaultSearchStrategyId: settings.defaultSearchStrategyId,
     defaultSearchPlan: searchPreference.preferredPlan,

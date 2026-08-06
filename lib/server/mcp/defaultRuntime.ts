@@ -76,15 +76,21 @@ export function kickDefaultMcpRuntime(userId?: string): void {
 const loadRunPlan = createPrismaMcpRunPlanLoader();
 
 export const defaultMcpRunPlan = {
-  prepare(userId: string) {
+  prepare(
+    userId: string,
+    options?: Readonly<{ allowedServerIds?: readonly string[] }>
+  ) {
     let coordinator: McpRuntimeCoordinator | null = null;
     const currentCoordinator = () => {
       coordinator ??= getDefaultMcpRuntimeCoordinator();
       return coordinator;
     };
     return prepareMcpRunPlan({
+      ...(options?.allowedServerIds
+        ? { allowedServerIds: options.allowedServerIds }
+        : {}),
       isGenerationLive: (generationId) => currentCoordinator().hasLiveGeneration(generationId),
-      load: () => loadRunPlan(userId),
+      load: () => loadRunPlan(userId, options?.allowedServerIds),
       reconcile: () => currentCoordinator().reconcileNow(userId)
     });
   }

@@ -19,7 +19,6 @@ function chat(input: Partial<ChatSummary> & { id: string; title: string }): Chat
     activeLeafMessageId: null,
     createdAt: "2026-06-10T00:00:00.000Z",
     defaultModelId: "gpt-5.5",
-    defaultPromptPresetId: null,
     defaultProvider: "openai",
     folderId: null,
     messageCount: 0,
@@ -43,7 +42,6 @@ function apiChatSummary(summary: ChatSummary) {
     activeLeafMessageId: summary.activeLeafMessageId,
     createdAt: summary.createdAt,
     defaultModelId: summary.defaultModelId,
-    defaultPromptPresetId: summary.defaultPromptPresetId,
     defaultProvider: summary.defaultProvider,
     folderId: summary.folderId,
     id: summary.id,
@@ -86,7 +84,6 @@ function useWorkspaceActionsForTest(input: {
     defaults: {
       controlValues: {},
       modelId: "gpt-5.5",
-      promptPresetId: null,
       provider: "openai",
       searchStrategyId: "search-disabled",
       showCitations: true,
@@ -94,7 +91,6 @@ function useWorkspaceActionsForTest(input: {
       showToolActivity: true,
     },
     models: [],
-    promptPresets: [],
     providers: [],
     searchStrategies: []
   } satisfies Catalog;
@@ -120,7 +116,6 @@ function useWorkspaceActionsForTest(input: {
   useComposerSessionStore.getState().setDraft(input.draft);
   const confirmDeleteChat = vi.fn(async () => true);
   const applyModelControlDefaults = vi.fn();
-  const applyPrompt = vi.fn();
   const resumeChatRun = vi.fn();
   const setSelectedModelId = vi.fn();
   const setSelectedProvider = vi.fn();
@@ -139,7 +134,6 @@ function useWorkspaceActionsForTest(input: {
   const actions = useWorkspaceActions({
     activeChatIdRef,
     applyModelControlDefaults,
-    applyPrompt,
     chatDetailRequestsRef: { current: new Map() },
     chatHasActiveStream,
     chatMutation,
@@ -156,7 +150,6 @@ function useWorkspaceActionsForTest(input: {
   return {
     actions,
     applyModelControlDefaults,
-    applyPrompt,
     activeComposer: () => selectActiveComposerSession(useComposerSessionStore.getState()),
     attachments: () => selectActiveComposerSession(useComposerSessionStore.getState()).attachments,
     chatA,
@@ -469,7 +462,6 @@ describe("workspace actions", () => {
           }
         },
         modelId: "catalog-startup",
-        promptPresetId: null,
         provider: "openai",
         searchStrategyId: "search-disabled",
         showCitations: true,
@@ -503,76 +495,19 @@ describe("workspace actions", () => {
           searchStrategyIds: ["search-disabled"]
         }
       ],
-      promptPresets: [
-        {
-          developerPrompt: "Use recovered context.",
-          id: "prompt-chat",
-          isDefault: false,
-          name: "Recovered chat prompt",
-          systemPrompt: "Follow the remembered chat prompt."
-        }
-      ],
       providers: [{ id: "openai", models: ["gpt-5.5"], name: "OpenAI" }],
       searchStrategies: [{ displayName: "No Search", kind: "none", strategyId: "search-disabled" }]
     };
-    useWorkspaceStore.setState((current) => ({
-      chats: current.chats.map((candidate) =>
-        candidate.id === state.chatA.id
-          ? { ...candidate, defaultPromptPresetId: "prompt-chat" }
-          : candidate
-      )
-    }));
 
     expect(state.actions.reapplyActiveChatDefaults(recoveredCatalog)).toBe(true);
-    expect(state.setSelectedProvider).toHaveBeenCalledWith("openai");
-    expect(state.setSelectedModelId).toHaveBeenCalledWith("gpt-5.5");
-    expect(state.setSelectedSearchPlan).toHaveBeenCalledWith([], "all_selected");
+    expect(state.setSelectedProvider).toHaveBeenCalledWith("openai", "system");
+    expect(state.setSelectedModelId).toHaveBeenCalledWith("gpt-5.5", "system");
+    expect(state.setSelectedSearchPlan).toHaveBeenCalledWith([], "all_selected", "system");
     expect(state.applyModelControlDefaults).toHaveBeenCalledWith(
       recoveredCatalog.models[0],
       recoveredCatalog.defaults.controlValues
     );
-    expect(state.applyPrompt).toHaveBeenCalledWith(recoveredCatalog.promptPresets[0]);
     expect(state.resumeChatRun).not.toHaveBeenCalled();
-  });
-
-  it.each([
-    ["null", null],
-    ["unavailable", "prompt-missing"]
-  ])("clears the previous prompt when activating a chat with a %s prompt default", async (_label, promptId) => {
-    const state = useWorkspaceActionsForTest({
-      attachments: [],
-      draft: ""
-    });
-    const prompt = {
-      developerPrompt: "Keep this private to Chat A.",
-      id: "prompt-a",
-      isDefault: false,
-      name: "Chat A prompt",
-      systemPrompt: "Only apply to Chat A."
-    };
-    const catalog = {
-      ...useWorkspaceStore.getState().catalog!,
-      promptPresets: [prompt]
-    };
-    const chatA = { ...state.chatA, defaultPromptPresetId: prompt.id };
-    const chatB = { ...state.chatB, defaultPromptPresetId: promptId };
-    useWorkspaceStore.setState({
-      activeChatId: chatA.id,
-      catalog,
-      chats: [chatA, chatB]
-    });
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => Response.json({ chat: apiChatDetail(chatB, []) }))
-    );
-
-    expect(state.actions.reapplyActiveChatDefaults(catalog)).toBe(true);
-    expect(state.applyPrompt).toHaveBeenLastCalledWith(prompt);
-    state.applyPrompt.mockClear();
-
-    await state.actions.activateChat(chatB, { resumeRuns: false });
-
-    expect(state.applyPrompt).toHaveBeenCalledWith(null);
   });
 
   it("remembers a pending folder for folder-scoped blank chats", () => {
@@ -652,8 +587,8 @@ describe("workspace actions", () => {
 
     await state.actions.activateChat(savedChat, { resumeRuns: false });
 
-    expect(state.setSelectedModelId).toHaveBeenCalledWith("saved-model-a");
-    expect(state.setSelectedProvider).toHaveBeenCalledWith("saved-provider-a");
+    expect(state.setSelectedModelId).toHaveBeenCalledWith("saved-model-a", "system");
+    expect(state.setSelectedProvider).toHaveBeenCalledWith("saved-provider-a", "system");
   });
 
   it("transfers an inactive blank session without stealing the selected chat", async () => {

@@ -1,6 +1,5 @@
 import { createHash } from "node:crypto";
 import { Prisma, type PrismaClient } from "@prisma/client";
-import type { RunProfileId } from "../../../contracts/runProfiles";
 import { defaultProviderModels } from "../../../domain/catalog";
 import {
   ANTHROPIC_PROVIDER_SEARCH_INTEGRATION_ID,
@@ -14,10 +13,6 @@ import {
   providerModelTemplateId,
   type ProviderModelTemplateKey
 } from "../../../domain/providerTemplates";
-import {
-  DEFAULT_RUN_PROFILE_CONFIGURATIONS,
-  isRunProfileId
-} from "../../../domain/runProfiles";
 import {
   filterAvailableProviderModels,
   filterExposedProviderModels,
@@ -57,7 +52,6 @@ type QuickSetupDb = Pick<
   | "providerModel"
   | "providerModelCredentialCheck"
   | "providerUserCredentialAssignment"
-  | "runProfile"
   | "searchIntegrationRevision"
   | "searchOption"
   | "searchStrategy"
@@ -244,42 +238,6 @@ function quickSetupCredentialLabel(credentialId: string): string {
   return `Quick setup · ${credentialId}`;
 }
 
-type QuickSetupProfileFill = Readonly<{
-  id: RunProfileId;
-  reasoningEffort: string;
-  reasoningMode: string;
-}>;
-
-export function planAdminProviderQuickSetupProfileFills(input: Readonly<{
-  mode: "initial" | "recovery" | "replacement";
-  profiles: ReadonlyArray<Readonly<{
-    enabled: boolean;
-    id: string;
-    providerModelId: string | null;
-    updatedByUserId: string | null;
-    version: number;
-  }>>;
-  templateKey: ProviderModelTemplateKey;
-}>): QuickSetupProfileFill[] {
-  if (input.mode !== "initial") return [];
-  return input.profiles.flatMap((profile) => {
-    if (!isRunProfileId(profile.id)) return [];
-    const recipe = DEFAULT_RUN_PROFILE_CONFIGURATIONS.find(
-      (candidate) => candidate.id === profile.id &&
-        candidate.targetTemplateKey === input.templateKey
-    );
-    if (!recipe || profile.enabled || profile.providerModelId !== null ||
-      profile.version !== 1 || profile.updatedByUserId !== null) {
-      return [];
-    }
-    return [{
-      id: profile.id,
-      reasoningEffort: recipe.reasoningEffort,
-      reasoningMode: recipe.reasoningMode
-    }];
-  });
-}
-
 async function loadQuickSetupState(
   db: QuickSetupDb,
   input: AdminProviderQuickSetupActor & Readonly<{
@@ -288,7 +246,7 @@ async function loadQuickSetupState(
   }>
 ) {
   const policy = adminProviderQuickSetupPolicy(input.provider);
-  const [actor, session, settings, profiles, connections, grants, memberships] = await Promise.all([
+  const [actor, session, settings, connections, grants, memberships] = await Promise.all([
     db.user.findUnique({
       select: { id: true, role: true, status: true, updatedAt: true },
       where: { id: input.userId }
@@ -301,7 +259,6 @@ async function loadQuickSetupState(
       select: { defaultProviderModelId: true, id: true, updatedAt: true },
       where: { userId: input.userId }
     }),
-    db.runProfile.findMany({ orderBy: { id: "asc" } }),
     db.providerConnection.findMany({
       include: {
         credentials: {
@@ -752,19 +709,6 @@ async function loadQuickSetupState(
       userId: membership.userId
     })),
     preservedModels,
-    profiles: mode === "initial"
-      ? profiles.map((profile) => ({
-          description: profile.description,
-          enabled: profile.enabled,
-          id: profile.id,
-          providerModelId: profile.providerModelId,
-          reasoningEffort: profile.reasoningEffort,
-          reasoningMode: profile.reasoningMode,
-          updatedAt: profile.updatedAt,
-          updatedByUserId: profile.updatedByUserId,
-          version: profile.version
-        }))
-      : [],
     provider: input.provider,
     session: session ? {
       expiresAt: session.expiresAt,
@@ -776,7 +720,7 @@ async function loadQuickSetupState(
       defaultProviderModelId: settings.defaultProviderModelId,
       id: settings.id
     } : null,
-    version: 3
+    version: 4
   });
 
   const inspection: AdminProviderQuickSetupInspection = {
@@ -799,7 +743,7 @@ async function loadQuickSetupState(
     provider: input.provider,
     state: advancedReason || !actorAuthorized || !settings ? "advanced_required" : state
   };
-  return { connection, inspection, profiles, settings };
+  return { connection, inspection, settings };
 }
 
 export async function lockAdminProviderQuickSetupState(
@@ -913,18 +857,6 @@ export async function lockAdminProviderQuickSetupState(
          grant_row."searchStrategy" = 'gemini-google-search')
     ORDER BY grant_row."id" FOR UPDATE OF grant_row
   `);
-  if ("mode" in plan && plan.mode === "initial") {
-    await tx.$queryRaw(Prisma.sql`
-      SELECT "id" FROM "RunProfile"
-      ORDER BY CASE "id"
-        WHEN 'fast' THEN 1
-        WHEN 'balanced' THEN 2
-        WHEN 'deep' THEN 3
-        ELSE 4
-      END
-      FOR UPDATE
-    `);
-  }
 }
 
 async function synchronizeQuickSetupSearch(
@@ -1629,29 +1561,8 @@ async function applyQuickSetupPlan(
     });
   }
 
-  const profileFills = planAdminProviderQuickSetupProfileFills({
-    mode: plan.mode,
-    profiles: current.profiles,
-    templateKey: selectedCandidate.templateKey
-  });
-  const profilesFilled = [] as RunProfileId[];
-  for (const profile of profileFills) {
-    await tx.runProfile.update({
-      data: {
-        enabled: true,
-        providerModelId: selectedCandidate.modelId,
-        reasoningEffort: profile.reasoningEffort,
-        reasoningMode: profile.reasoningMode,
-        updatedByUserId: plan.actor.userId,
-        version: { increment: 1 }
-      },
-      where: { id: profile.id }
-    });
-    profilesFilled.push(profile.id);
-  }
   return {
     defaultChanged,
-    profilesFilled,
     ...(plan.search ? { search } : {}),
     status: "ready"
   };

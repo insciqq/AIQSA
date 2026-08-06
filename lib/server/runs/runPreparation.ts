@@ -1,4 +1,10 @@
 import { textMessageContent } from "../../domain/content";
+import { resolveStandardChatBaseline } from "../../domain/promptTemplates";
+import { materializeAssistantRunParams } from "../assistants/runControlMaterialization";
+import type {
+  AssistantRunMaterialization,
+  AssistantRunResolver
+} from "../assistants/runMaterialization";
 import {
   parameterControlsForModel,
   type CatalogAdapterKind
@@ -87,7 +93,6 @@ function parameterDialect(adapterKind: CatalogAdapterKind, providerFamily: strin
 
 type RunPreparationRepository = Pick<
   RunRepository,
-  | "isPromptPresetAvailable"
   | "loadAttachments"
   | "loadConversationContextForExpectedLeaf"
   | "loadConversationContextForLeaf"
@@ -99,9 +104,13 @@ type RunPreparationRepository = Pick<
 
 export type RunPreparationDeps = Readonly<{
   allowFakeProvider?: boolean;
+  assistants?: AssistantRunResolver;
   getAttachmentLimits?: () => RunAttachmentLimits;
   mcp?: Readonly<{
-    prepare(userId: string): Promise<McpRunPlanResult>;
+    prepare(
+      userId: string,
+      options?: Readonly<{ allowedServerIds?: readonly string[] }>
+    ): Promise<McpRunPlanResult>;
   }>;
   providers: Readonly<Record<string, ProviderAdapter>>;
   providerAdmission?: Readonly<{
@@ -182,8 +191,9 @@ type PreparedRunDefaultsData = AcceptedRunDefaults;
 export type PreparedRunDefaults = DeepReadonly<PreparedRunDefaultsData>;
 
 export type MaterializedPreparedRunData = {
+  assistant?: { assistantId: string; revisionId: string };
   contextTruncation: ContextTruncationSummary | null;
-  defaults: PreparedRunDefaultsData;
+  defaults: PreparedRunDefaultsData | null;
   expectedActiveLeafId: string | null;
   mcpBindings?: McpRunPlanBinding[];
   normalizedRequest: NormalizedRunRequest;
@@ -201,7 +211,7 @@ export type RunPreparationFailure = Readonly<{
   limits?: AttachmentLimitNumericFacts;
   message?: string;
   ok: false;
-  status: 400 | 403 | 409 | 413 | 503;
+  status: 400 | 403 | 404 | 409 | 413 | 503;
 }>;
 
 export type RunPreparationResult =
@@ -216,7 +226,7 @@ export type RunPreparationResult =
 
 function failure(
   code: string,
-  status: 400 | 403 | 409 | 413 | 503,
+  status: 400 | 403 | 404 | 409 | 413 | 503,
   message?: string,
   facts: Readonly<{
     actual?: AttachmentLimitNumericFacts;
@@ -348,8 +358,11 @@ function mutablePreparedData<Value>(value: DeepReadonly<Value>): Value {
 
 export function materializePreparedRunData(prepared: PreparedRun): MaterializedPreparedRunData {
   return {
+    ...(prepared.assistant
+      ? { assistant: mutablePreparedData<{ assistantId: string; revisionId: string }>(prepared.assistant) }
+      : {}),
     contextTruncation: mutablePreparedData<ContextTruncationSummary | null>(prepared.contextTruncation),
-    defaults: mutablePreparedData<PreparedRunDefaultsData>(prepared.defaults),
+    defaults: mutablePreparedData<PreparedRunDefaultsData | null>(prepared.defaults),
     expectedActiveLeafId: prepared.expectedActiveLeafId,
     ...(prepared.mcpBindings
       ? { mcpBindings: mutablePreparedData<McpRunPlanBinding[]>(prepared.mcpBindings) }
@@ -587,24 +600,52 @@ function runControlDefaultsFromBody(
   return next;
 }
 
-function normalizePrompt(body: Readonly<Record<string, unknown>> | null): NormalizedRunRequest["prompt"] {
-  if (typeof body?.prompt !== "object" || body.prompt === null || Array.isArray(body.prompt)) {
-    return {
-      developer: visibleAnswerContract,
-      presetId: null,
-      system: null
-    };
-  }
-
-  const prompt = body.prompt as Record<string, unknown>;
-  const developer = typeof prompt.developer === "string" ? prompt.developer : null;
+/**
+ * Ordinary no-Assistant runs receive the code-owned standard-chat baseline
+ * resolved from the server clock and a validated client time-zone hint. The
+ * browser cannot replace the baseline or supply rendered date/time text; a
+ * legacy client-sent `prompt` object has no authority and is ignored.
+ */
+function standardChatPrompt(body: Readonly<Record<string, unknown>> | null): NormalizedRunRequest["prompt"] {
+  const baseline = resolveStandardChatBaseline({ timeZone: body?.timeZone });
 
   return {
-    developer: [developer, visibleAnswerContract].filter((part): part is string => Boolean(part?.trim())).join("\n\n"),
-    presetId: typeof prompt.presetId === "string" && prompt.presetId.trim() ? prompt.presetId.trim() : null,
-    system: typeof prompt.system === "string" ? prompt.system : null
+    baseline: {
+      source: "standard_chat",
+      timeZone: baseline.timeZone,
+      timeZoneSource: baseline.timeZoneSource
+    },
+    developer: visibleAnswerContract,
+    system: baseline.renderedSystemPrompt
   };
 }
+
+/**
+ * Assistant runs use the selected immutable revision's own instructions and do
+ * not inherit the standard-chat baseline; the cross-cutting visible-answer
+ * contract remains explicit in the resolved developer prompt for both modes.
+ */
+function assistantPrompt(assistant: AssistantRunMaterialization): NormalizedRunRequest["prompt"] {
+  return {
+    developer: [assistant.developerPrompt, visibleAnswerContract]
+      .filter((part): part is string => Boolean(part?.trim()))
+      .join("\n\n"),
+    system: assistant.systemPrompt.trim() ? assistant.systemPrompt : null
+  };
+}
+
+const assistantGovernedBodyKeys = [
+  "controlDefaults",
+  "modelId",
+  "params",
+  "prompt",
+  "provider",
+  "searchPlan",
+  "searchPreferencePlan",
+  "searchPreferenceSource",
+  "searchStrategy",
+  "tools"
+] as const;
 
 function promptWithProjectMemory(
   prompt: NormalizedRunRequest["prompt"],
@@ -765,16 +806,53 @@ export async function prepareRun(
   input: RunPreparationInput
 ): Promise<RunPreparationResult> {
   const body = input.body;
-  const decodedSearchPlan = decodeSearchPlan(body?.searchPlan, body?.searchStrategy);
-  if (!decodedSearchPlan.ok) {
+
+  let assistantRun: AssistantRunMaterialization | null = null;
+  if (body && "assistantId" in body && body.assistantId !== undefined && body.assistantId !== null) {
+    if (
+      typeof body.assistantId !== "string" ||
+      !body.assistantId.trim() ||
+      body.assistantId.length > 64
+    ) {
+      return failure("assistant_not_available", 404);
+    }
+    // There is no per-run override patch: a request that both selects an
+    // Assistant and carries Assistant-governed controls is rejected instead of
+    // silently preferring either side.
+    for (const key of assistantGovernedBodyKeys) {
+      if (key in body) {
+        return failure("assistant_overrides_not_allowed", 400);
+      }
+    }
+    if (!deps.assistants) {
+      return failure("assistant_not_available", 404);
+    }
+    const resolution = await deps.assistants.resolveForRun(
+      input.userId,
+      body.assistantId.trim()
+    );
+    if (!resolution.ok) {
+      return failure(resolution.code, resolution.status);
+    }
+    assistantRun = resolution.assistant;
+  }
+
+  const decodedSearchPlan = assistantRun
+    ? null
+    : decodeSearchPlan(body?.searchPlan, body?.searchStrategy);
+  if (decodedSearchPlan && !decodedSearchPlan.ok) {
     return failure(decodedSearchPlan.code, 400);
   }
-  let requestedSearchPlan = decodedSearchPlan.plan;
+  let requestedSearchPlan = assistantRun
+    ? assistantRun.searchPlan
+    : decodedSearchPlan && decodedSearchPlan.ok
+      ? decodedSearchPlan.plan
+      : { mode: "all_selected" as const, optionIds: [] as string[] };
   let requestedSearchPreference: {
     plan: import("../../domain/search").SearchPlan | null;
     source: "organization" | "personal";
   } | null = null;
-  if (body && ("searchPreferencePlan" in body || "searchPreferenceSource" in body)) {
+  if (!assistantRun && body && ("searchPreferencePlan" in body || "searchPreferenceSource" in body)) {
     if (body.searchPreferenceSource === "organization") {
       requestedSearchPreference = { plan: null, source: "organization" };
     } else if (body.searchPreferenceSource === "personal") {
@@ -786,14 +864,16 @@ export async function prepareRun(
     }
   }
   const chat = input.source.kind === "send" ? input.source.chat : input.source.source.chat;
-  const selectedProvider =
-    typeof body?.provider === "string"
+  const selectedProvider = assistantRun
+    ? assistantRun.provider
+    : typeof body?.provider === "string"
       ? body.provider
       : input.source.kind === "send"
         ? chat.defaultProvider
         : input.source.source.assistantMessage?.provider ?? chat.defaultProvider;
-  const selectedModelId =
-    typeof body?.modelId === "string"
+  const selectedModelId = assistantRun
+    ? assistantRun.providerModelId
+    : typeof body?.modelId === "string"
       ? body.modelId
       : input.source.kind === "send"
         ? chat.defaultModelId
@@ -917,14 +997,7 @@ export async function prepareRun(
     }
   }
 
-  const paramsBody = normalizeParams(body);
-  const normalizedPrompt = normalizePrompt(body);
-  if (
-    normalizedPrompt.presetId &&
-    !(await deps.repository.isPromptPresetAvailable(input.userId, normalizedPrompt.presetId))
-  ) {
-    return failure("default_prompt_unavailable", 400);
-  }
+  const normalizedPrompt = assistantRun ? assistantPrompt(assistantRun) : standardChatPrompt(body);
   const prompt = promptWithProjectMemory(normalizedPrompt, chat.projectMemory);
   const sendContext =
     input.source.kind === "send"
@@ -1017,6 +1090,23 @@ export async function prepareRun(
       return failure("search_strategy_not_available", 403);
     }
   }
+  let paramsBody: Record<string, unknown>;
+  if (assistantRun) {
+    const materialized = materializeAssistantRunParams({
+      baseParams: defaultParams,
+      controls: parameterControls,
+      parameterProvider,
+      runControls: assistantRun.runControls
+    });
+    if (!materialized.ok) {
+      // A saved control the current model no longer supports is never clamped
+      // or silently dropped; the run fails closed with a stable conflict.
+      return failure("assistant_configuration_unavailable", 409);
+    }
+    paramsBody = materialized.params;
+  } else {
+    paramsBody = normalizeParams(body);
+  }
   const paramValidation = validateRunParams({
     controls: parameterControls,
     params: paramsBody,
@@ -1049,10 +1139,24 @@ export async function prepareRun(
     return failure("search_provider_not_available", 400);
   }
 
-  const mcpPlan = deps.mcp && body?.tools !== "none"
-    ? await deps.mcp.prepare(input.userId)
-    : null;
+  if (assistantRun && assistantRun.mcpServerIds.length > 0 && !deps.mcp) {
+    return failure("assistant_tools_not_available", 409, "Required MCP tools are unavailable.");
+  }
+  const mcpPlan = assistantRun
+    ? assistantRun.mcpServerIds.length > 0 && deps.mcp
+      ? await deps.mcp.prepare(input.userId, {
+          allowedServerIds: assistantRun.mcpServerIds
+        })
+      : null
+    : deps.mcp && body?.tools !== "none"
+      ? await deps.mcp.prepare(input.userId)
+      : null;
   if (mcpPlan && !mcpPlan.ok) {
+    if (assistantRun) {
+      // Consumers may lack visibility into a required server, so the failure
+      // is privacy-neutral and never names the affected servers.
+      return failure("assistant_tools_not_available", 409, "Required MCP tools are unavailable.");
+    }
     const affected = mcpPlan.issues.map((issue) => issue.name).join(", ");
     return failure(
       mcpPlan.code,
@@ -1217,20 +1321,31 @@ export async function prepareRun(
     ...(clientTools.length > 0 ? { tools: clientTools } : {})
   };
   const providerRequestPreview = adapter.buildRequestPreview(providerRequest);
-  const defaults: PreparedRunDefaultsData = {
-    controlDefaults: runControlDefaultsFromBody(body, parameterControls),
-    modelId: selectedModelId,
-    promptPresetId: prompt.presetId,
-    provider: selectedProvider,
-    searchStrategy: requestedSearchStrategy,
-    searchPlan: requestedSearchPlan,
-    ...(requestedSearchPreference && deps.providerAdmission
-      ? { searchPreferencePlan: requestedSearchPreference.plan }
-      : {}),
-    userId: input.userId
-  };
+  // Assistant-derived values never overwrite the user's ordinary manual
+  // defaults, so an Assistant run persists no accepted-defaults update.
+  const defaults: PreparedRunDefaultsData | null = assistantRun
+    ? null
+    : {
+        controlDefaults: runControlDefaultsFromBody(body, parameterControls),
+        modelId: selectedModelId,
+        provider: selectedProvider,
+        searchStrategy: requestedSearchStrategy,
+        searchPlan: requestedSearchPlan,
+        ...(requestedSearchPreference && deps.providerAdmission
+          ? { searchPreferencePlan: requestedSearchPreference.plan }
+          : {}),
+        userId: input.userId
+      };
 
   const prepared = immutablePreparedData<MaterializedPreparedRunData>({
+    ...(assistantRun
+      ? {
+          assistant: {
+            assistantId: assistantRun.assistantId,
+            revisionId: assistantRun.revisionId
+          }
+        }
+      : {}),
     contextTruncation: providerBudget.contextTruncation,
     defaults,
     expectedActiveLeafId: input.source.kind === "send" ? input.source.chat.activeLeafMessageId : null,
