@@ -153,7 +153,7 @@ export function AssistantLibrary({ view }: { view: AssistantLibraryView }) {
       className="fixed inset-0 z-50 flex h-[100dvh] w-full flex-col overflow-hidden bg-app-canvas pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)] pt-[env(safe-area-inset-top)] text-ink"
       role="dialog"
       aria-busy={view.busy || undefined}
-      aria-label="Assistant library"
+      aria-label="Assistants"
       aria-modal="true"
       data-testid="assistant-library"
     >
@@ -239,8 +239,7 @@ function ListTask({
             Back to chat
           </button>
           <div className="min-w-0 flex-1">
-            <h1 className="truncate text-xl font-semibold tracking-tight text-ink">Library</h1>
-            <p className="text-xs text-ink-muted">Assistants</p>
+            <h1 className="truncate text-xl font-semibold tracking-tight text-ink">Assistants</h1>
           </div>
           <label className="relative block w-full min-w-0 sm:w-64" htmlFor="assistant-library-search">
             <span className="sr-only">Search assistants</span>
@@ -270,7 +269,7 @@ function ListTask({
             New assistant
           </button>
         </div>
-        <div aria-label="Library modes" className="mt-2 flex gap-6" role="tablist">
+        <div aria-label="Assistant views" className="mt-2 flex gap-6" role="tablist">
           {(
             [
               ["discover", "Discover"],
@@ -300,7 +299,7 @@ function ListTask({
               <>
                 <LoaderCircle className="mx-auto size-6 animate-spin text-proof" aria-hidden="true" />
                 <p className="mt-3 text-sm font-semibold text-ink" role="status">
-                  Loading the library…
+                  Loading assistants…
                 </p>
                 <p className="mt-1 text-xs leading-5 text-ink-muted">
                   Assistants appear when the catalog finishes loading.
@@ -310,7 +309,7 @@ function ListTask({
               <>
                 <RotateCcw className="mx-auto size-6 text-critical" aria-hidden="true" />
                 <p className="mt-3 text-sm font-semibold text-ink" role="alert">
-                  The library didn’t load
+                  Assistants didn’t load
                 </p>
                 <p className="mt-1 text-xs leading-5 text-ink-secondary">
                   {catalogError ?? "Try loading assistants again."}
@@ -810,7 +809,7 @@ function EditorTask({
       <header className="flex shrink-0 flex-wrap items-center gap-2 border-b border-trace-subtle bg-app-canvas px-3 py-3 sm:gap-3 sm:px-6 lg:px-8">
         <button className={quietButton} disabled={editor.saving} onClick={editor.onCancel} type="button">
           <ArrowLeft className="size-4 shrink-0" aria-hidden="true" />
-          Back to library
+          Back to assistants
         </button>
         <h1 className="min-w-0 flex-1 truncate text-xl font-semibold tracking-tight text-ink">{title}</h1>
         <span className="rounded-pill bg-control-surface px-2.5 py-1 text-metadata font-medium text-ink-secondary">
@@ -877,7 +876,7 @@ function EditorTask({
                       onChange={(event) => editor.onChange({ description: event.currentTarget.value })}
                     />
                     <p className="mt-1 text-metadata text-ink-muted" id="assistant-editor-description-help">
-                      Shown in the Library and picker. Never added to the prompt.
+                      Shown in Assistants and the picker. Never added to the prompt.
                     </p>
                   </div>
                   <div>

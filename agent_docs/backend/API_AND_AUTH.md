@@ -24,7 +24,7 @@ Stable route families are:
 - health plus password/OAuth/onboarding/recovery authentication;
 - current-user identity, catalog, settings, and MCP configuration;
 - administrator users, groups, grants, rules, invites, providers, Search, SMTP, MCP, release awareness, and usage;
-- current-user Assistants: Library list/detail, create/revise/archive, duplication, revisions, exact-revision publications, and per-user pins;
+- current-user Assistants: list/detail, create/revise/archive, duplication, revisions, exact-revision publications, and per-user pins;
 - folders, chats, messages, model runs, and uploads;
 - private share management plus anonymous public-share reads.
 

@@ -113,8 +113,8 @@ export function useCommandPaletteActions({
         id: "action:open-library",
         kind: "action",
         keywords: ["library", "assistants", "assistant", "use an assistant"],
-        label: "Open library",
-        subtitle: "Assistants"
+        label: "Open assistants",
+        subtitle: "Reusable run setups"
       }
     );
 

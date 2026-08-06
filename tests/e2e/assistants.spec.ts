@@ -168,7 +168,7 @@ async function deleteChat(page: Page, chatId: string | null): Promise<void> {
 }
 
 async function openLibraryYoursTab(page: Page): Promise<Locator> {
-  await runAccountMenuAction(page, "Library");
+  await runAccountMenuAction(page, "Assistants");
   const library = page.getByTestId("assistant-library");
   await expect(library).toBeVisible();
   await library.getByRole("tab", { name: "Yours" }).click();
@@ -218,7 +218,7 @@ test.afterEach(async ({ page }) => {
 test("creates an assistant through the Library editor", async ({ page }) => {
   const name = `${assistantNamePrefix} ${Date.now()}`;
 
-  await runAccountMenuAction(page, "Library");
+  await runAccountMenuAction(page, "Assistants");
   const library = page.getByTestId("assistant-library");
   await expect(library).toBeVisible();
   await library.getByRole("button", { name: "New assistant" }).click();
@@ -248,7 +248,7 @@ test("creates an assistant through the Library editor", async ({ page }) => {
   await expect(save).toHaveText("Save revision");
   await expect(editor.getByRole("button", { name: "Use in chat" })).toBeVisible();
 
-  await editor.getByRole("button", { name: "Back to library" }).click();
+  await editor.getByRole("button", { name: "Back to assistants" }).click();
   await expect(library.getByTestId("assistant-editor")).toHaveCount(0);
   await library.getByRole("tab", { name: "Yours" }).click();
   await expect(
@@ -384,7 +384,7 @@ test("keeps accepted answers on their historical revision after a revise", async
     await expect(library.getByTestId("assistant-library-notice")).toContainText("Saved revision 2");
     await expect(editor.getByText("Revision 2", { exact: true })).toBeVisible();
 
-    await editor.getByRole("button", { name: "Back to library" }).click();
+    await editor.getByRole("button", { name: "Back to assistants" }).click();
     await library.getByRole("button", { name: "Back to chat" }).click();
     await expect(library).toHaveCount(0);
 
@@ -430,11 +430,11 @@ test("pins an assistant from the Library card and groups it in the quick picker"
 test("keeps the Library one-task and reachable at 390x844", async ({ page }) => {
   await page.setViewportSize({ height: 844, width: 390 });
 
-  await runAccountMenuAction(page, "Library");
+  await runAccountMenuAction(page, "Assistants");
   const library = page.getByTestId("assistant-library");
   await expect(library).toBeVisible();
   await expect(library.getByTestId("assistant-editor")).toHaveCount(0);
-  await expect(library.getByRole("heading", { name: "Library" })).toBeVisible();
+  await expect(library.getByRole("heading", { name: "Assistants" })).toBeVisible();
   await expect(library.getByRole("button", { name: "Back to chat" })).toBeInViewport();
   await expect(library.getByRole("button", { name: "New assistant" })).toBeInViewport();
   await expectWithinViewport(page, library);
@@ -444,11 +444,11 @@ test("keeps the Library one-task and reachable at 390x844", async ({ page }) => 
   const editor = library.getByTestId("assistant-editor");
   await expect(editor).toBeVisible();
   await expect(library.getByRole("tab", { name: "Discover" })).toHaveCount(0);
-  await expect(editor.getByRole("button", { name: "Back to library" })).toBeInViewport();
+  await expect(editor.getByRole("button", { name: "Back to assistants" })).toBeInViewport();
   await expect(editor.getByTestId("assistant-editor-save")).toBeInViewport();
   await expectNoHorizontalOverflow(page);
 
-  await editor.getByRole("button", { name: "Back to library" }).click();
+  await editor.getByRole("button", { name: "Back to assistants" }).click();
   await expect(library.getByTestId("assistant-editor")).toHaveCount(0);
   await expect(library.getByRole("button", { name: "Back to chat" })).toBeInViewport();
   await library.getByRole("button", { name: "Back to chat" }).click();

@@ -130,7 +130,7 @@ export function ComposerAssistantPicker({
             <p className="px-2 py-3 text-sm text-ink-muted" data-testid="assistant-picker-empty">
               {query.trim()
                 ? "No assistants match this search."
-                : "No assistants yet. Create one from the Library."}
+                : "No assistants yet. Create one from your current setup below."}
             </p>
           ) : (
             groups.map((group) => (

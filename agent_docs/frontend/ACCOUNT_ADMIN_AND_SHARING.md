@@ -1,7 +1,7 @@
 # FRONTEND ACCOUNT ADMIN AND SHARING
 
 Owner: Account and Control Center UI maintainers
-Scope: Functional interaction contracts for authentication, public shares, Control Center, Settings, the Assistants Library, and guarded navigation.
+Scope: Functional interaction contracts for authentication, public shares, Control Center, Settings, the Assistants surface, and guarded navigation.
 
 Visual tokens, geometry, and reusable recipes belong to `DESIGN_SYSTEM.md`. Server authorization, secret handling, and transactional outcomes belong to `SECURITY.md` and `backend/API_AND_AUTH.md`.
 
@@ -92,7 +92,7 @@ Visual tokens, geometry, and reusable recipes belong to `DESIGN_SYSTEM.md`. Serv
 - Email delivery owns one installation SMTP draft and active snapshot. Draft, active lifecycle, and health are distinct. Before activation it is `Not configured`, not falsely Disabled. Passwords remain write-only; Save, one-recipient Test, Activate, and Clear are explicit version-bound actions. Plaintext SMTP requires a fresh exact-relay acknowledgement after every draft change.
 - Safety isolates global session revocation and states that the acting administrator's current session may be included. User-level revocation stays in user detail.
 
-## Settings And Library
+## Settings And Assistants
 
 ### Settings and MCP tools
 
@@ -102,18 +102,18 @@ Visual tokens, geometry, and reusable recipes belong to `DESIGN_SYSTEM.md`. Serv
 - Readiness refreshes on entry, mutation/OAuth return, and visibility-aware polling while work is transient. `queued`, `starting`, `idle`, and `restarting` are working states; `Needs setup`, authorization, and runtime failure remain distinct actionable facts.
 - The composer exposes one aggregate Tools entry. Unsupported model capability takes precedence; otherwise it reports Not configured, Disabled, Activating, a concrete blocker, or Enabled with ready-tool count. Persistent per-server enablement is edited only in Settings.
 
-### Library
+### Assistants
 
-- The Library is the authenticated full-screen internal discovery and sharing surface, reached from Account or the Command palette, never a Settings subsection or rounded modal. Its only shipped resource type is Assistants; no empty future type tabs render. It has explicit Back to chat, no scrim/backdrop dismissal, and browsing never applies an Assistant to the composer — only `Use` does, and `Use` navigates to the blank workspace with the exact revision selected without creating a chat until send.
+- Assistants is the authenticated full-screen internal discovery and sharing surface — menu label, heading, and document title all read `Assistants` — reached from Account or the Command palette, never a Settings subsection or rounded modal. It hosts only Assistants today; no empty future resource-type tabs render. It has explicit Back to chat, no scrim/backdrop dismissal, and browsing never applies an Assistant to the composer — only `Use` does, and `Use` navigates to the blank workspace with the exact revision selected without creating a chat until send.
 - Discover and Yours share one avatar-prominent card grid with single-select filter chips (Pinned, groups, installation, unavailable; Yours adds Archived) and one bounded category filter. Cards disclose only runner-safe facts: name, description, capability fingerprint, publisher display name, authorized scope, category, exact published revision, availability, and a per-user pin toggle. An unavailable item stays visible with a privacy-neutral reason such as `Required access unavailable` and never reveals a hidden model, group, tool, or dependency name.
-- Pinned Assistants are per-user server-stored preferences surfacing first in the Library and quick picker; pinning never changes access, publication, or the Assistant, and pin state never enters run evidence. Shared consumers get Use and Duplicate; duplication creates a private copy owned by the consumer. Owned cards additionally expose Edit, Version history, Duplicate, and Archive/Restore in an overflow menu.
+- Pinned Assistants are per-user server-stored preferences surfacing first in Assistants and the quick picker; pinning never changes access, publication, or the Assistant, and pin state never enters run evidence. Shared consumers get Use and Duplicate; duplication creates a private copy owned by the consumer. Owned cards additionally expose Edit, Version history, Duplicate, and Archive/Restore in an overflow menu.
 - The identity-first editor owns avatar with browser-only `Generate another`, name, description (explicitly user-facing, never added to prompts), bounded category, system/developer instructions, model, run controls gated by the selected model's capabilities, the logical Search plan, the exact MCP server allowlist, up to four ordered starter prompts, and — in edit mode — Sharing. Save/create is the sole primary footer action; the header shows `Draft` before creation and `Revision N` afterward, and saving explains that existing runs keep the setup they used.
 - Sharing pins exact revisions: any active user may publish an owned Assistant to groups with active membership, installation-wide publication is admin-curated, saving never advances a publication, `Publish update` moves it explicitly, and revoke neither archives the Assistant nor changes accepted runs. Version history is read-only with author, time, and changed sections; Restore creates a new revision from old content and never rewrites history.
 - Loading, resource failure, no matches, and a true empty library are distinct. Editor validation attaches to its field with the stable server code; a CAS conflict reports that the Assistant changed in another session. Mutation failure preserves the list and dirty draft with readable retry/dismiss feedback.
 
 ### Focus, appearance, and project settings
 
-- Settings uses dialog focus containment, Escape/backdrop close, opener restoration, and an inert shell. The Library exits only through Back to chat and keeps the covered shell inert without a scrim. Nested confirmations own focus/Escape before returning to their surviving invoker.
+- Settings uses dialog focus containment, Escape/backdrop close, opener restoration, and an inert shell. Assistants exits only through Back to chat and keeps the covered shell inert without a scrim. Nested confirmations own focus/Escape before returning to their surviving invoker.
 - Appearance presents the palette registry in stable order: AIQSA, Graphite, Verdant, Classic Dark, Classic Light, Paper. It is a calm divided comparison list at every width. Selection applies immediately.
 - Theme is browser-local UI state: LocalStorage is primary after hydration, mirrored to the same-site theme cookie for server first paint. Invalid local state yields to the validated server theme; runtime updates set theme and color-scheme together. Theme is not account, prompt, or conversation data.
 - Project settings owns `Project instructions`, explains that they are supplied to project chats, and preserves modal focus, Escape, opener restoration, and dirty-confirmation behavior.
@@ -123,4 +123,4 @@ Visual tokens, geometry, and reusable recipes belong to `DESIGN_SYSTEM.md`. Serv
 - Preserve authorization and least-data boundaries; client affordances never replace server enforcement.
 - Keep resource facts, readiness, publication, entitlement, and action state distinct.
 - Keep compact navigation and focus recovery operable at 390x844 and 844x390 without page-level horizontal overflow.
-- Update this document for durable account, admin, share, Settings, or Library behavior. File wiring and implementation chronology belong in source and focused tests.
+- Update this document for durable account, admin, share, Settings, or Assistants behavior. File wiring and implementation chronology belong in source and focused tests.

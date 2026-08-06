@@ -25,7 +25,7 @@ Workspace state is stored in PostgreSQL and private S3-compatible storage. Conte
 ## Current capabilities
 
 - Branchable conversations, projects and nested folders, private attachments, and sanitized read-only share links.
-- Reusable versioned Assistants: save a model, instructions, run controls, Search plan, MCP tool allowlist, and starter prompts as one shareable object in an internal Library, with exact revision provenance on every accepted run.
+- Reusable versioned Assistants: save a model, instructions, run controls, Search plan, MCP tool allowlist, and starter prompts as one shareable object in the internal Assistants surface, with exact revision provenance on every accepted run.
 - Exact model selection with per-model controls and optional reasoning or streaming settings where supported.
 - Ordered web-search plans with up to three entitled sources, compatibility checks, normalized citations, and per-source evidence.
 - MCP server administration, user enablement, personal fields, OAuth flows, tool readiness, and tool activity in chat.

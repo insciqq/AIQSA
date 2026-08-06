@@ -296,7 +296,7 @@ export const AccountMenu = forwardRef<HTMLButtonElement, AccountMenuProps>(funct
             }}
           >
             <ScrollText className="size-4 text-ink-muted" aria-hidden="true" />
-            Library
+            Assistants
           </button>
           <button
             className={menuItemClass}

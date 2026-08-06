@@ -649,7 +649,7 @@ describe("PowerAppShellView document title", () => {
         }}
       />
     );
-    await waitFor(() => expect(document.title).toBe("Library · AIQSA"));
+    await waitFor(() => expect(document.title).toBe("Assistants · AIQSA"));
 
     rerender(
       <PowerAppShellView
@@ -1076,7 +1076,7 @@ describe("PowerAppShellView Details composition", () => {
     expect(trigger).toHaveFocus();
   });
 
-  it("renders the assistant Library as a standalone surface that suppresses shell notices", () => {
+  it("renders the Assistants surface standalone and suppresses shell notices", () => {
     const props = baseProps();
     render(
       <PowerAppShellView

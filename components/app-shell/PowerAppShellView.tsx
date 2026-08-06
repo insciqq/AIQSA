@@ -461,7 +461,7 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
       ? "Chat"
       : "New chat";
   const documentTitle = libraryView
-    ? "Library · AIQSA"
+    ? "Assistants · AIQSA"
     : settingsState.open
       ? "Settings · AIQSA"
       : `${activeDocumentTitle} · AIQSA`;

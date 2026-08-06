@@ -13,7 +13,7 @@ const items: CommandItem[] = [
     id: "action:open-library",
     kind: "action",
     keywords: ["assistants"],
-    label: "Open library",
+    label: "Open assistants",
     subtitle: "Browse assistants"
   }
 ];

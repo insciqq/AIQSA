@@ -75,7 +75,7 @@ describe("AccountMenu", () => {
     expect(within(screen.getByRole("menu", { name: "Account" })).getByText("Email unavailable")).toBeVisible();
   });
 
-  it("keeps the palette, Library, and Settings as distinct destinations", async () => {
+  it("keeps the palette, Assistants, and Settings as distinct destinations", async () => {
     const { callbacks } = renderAccountMenu({ adminHref: "/admin" });
     const trigger = screen.getByRole("button", { name: /Account menu/ });
 
@@ -89,7 +89,7 @@ describe("AccountMenu", () => {
     await waitFor(() => expect(callbacks.onOpenSettings).toHaveBeenCalledOnce());
 
     fireEvent.click(trigger);
-    fireEvent.click(screen.getByRole("menuitem", { name: "Library" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Assistants" }));
     expect(trigger).toHaveFocus();
     await waitFor(() => expect(callbacks.onOpenLibrary).toHaveBeenCalledOnce());
 
@@ -120,7 +120,7 @@ describe("AccountMenu", () => {
     const paletteItem = await screen.findByRole("menuitem", { name: "Command palette" });
     await waitFor(() => expect(paletteItem).toHaveFocus());
 
-    const libraryItem = screen.getByRole("menuitem", { name: "Library" });
+    const libraryItem = screen.getByRole("menuitem", { name: "Assistants" });
     const scrollIntoView = vi.fn();
     Object.defineProperty(libraryItem, "scrollIntoView", { configurable: true, value: scrollIntoView });
     fireEvent.keyDown(screen.getByRole("menu", { name: "Account" }), { key: "ArrowDown" });

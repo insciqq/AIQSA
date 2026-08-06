@@ -184,10 +184,10 @@ describe("AssistantLibrary", () => {
     ];
     const { rerender } = render(<AssistantLibrary view={makeView({ list: makeList({ assistants }) })} />);
 
-    const dialog = screen.getByRole("dialog", { name: "Assistant library" });
+    const dialog = screen.getByRole("dialog", { name: "Assistants" });
     expect(dialog).toBe(screen.getByTestId("assistant-library"));
     expect(dialog).toHaveAttribute("aria-modal", "true");
-    expect(screen.getByRole("heading", { level: 1, name: "Library" })).toBeVisible();
+    expect(screen.getByRole("heading", { level: 1, name: "Assistants" })).toBeVisible();
     expect(screen.getByRole("button", { name: "Back to chat" })).toBeVisible();
 
     expect(renderedCardIds()).toEqual(["assistant-card-shared-zulu", "assistant-card-shared-beta"]);

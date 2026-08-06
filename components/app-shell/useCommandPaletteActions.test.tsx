@@ -208,7 +208,7 @@ describe("useCommandPaletteActions", () => {
     const libraryCommand = result.current.commandItems.find(
       (item) => item.id === "action:open-library"
     );
-    expect(libraryCommand?.label).toBe("Open library");
+    expect(libraryCommand?.label).toBe("Open assistants");
     act(() => result.current.runCommand(libraryCommand!));
     expect(closePalette).toHaveBeenCalledTimes(4);
     expect(openLibrary).not.toHaveBeenCalled();

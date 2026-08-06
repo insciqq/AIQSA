@@ -83,9 +83,9 @@ A failed assistant's visible Retry action delegates to that same regenerate owne
 
 Foreground token deltas are buffered for React updates and adjacent event aggregation. Historical rows, Markdown/artifacts, and workspace summaries do not repaint for token-only changes. Malformed SSE frames are skipped, later frames continue, and one readable warning appears in the UI/Details.
 
-### Library, Settings, and MCP workflows
+### Assistants, Settings, and MCP workflows
 
-`settingsDestinationStore` owns the bounded Settings destination (Appearance, MCP & tools). The Assistant Library owns its own focused state: `assistantLibraryStore` holds the open full-screen task (list, editor, history), Discover/Yours mode, filter/category/query, fetched list data, and editor/history drafts, while `assistantLibraryController` owns every Library mutation (create, revise with CAS, archive/restore, duplicate, publish/revoke, pin, restore-as-new-revision) and `Use` application into the composer owner. Editor avatar generation happens exactly once per new draft plus once per explicit `Generate another`, entirely in the browser. Current-composer Assistant selection remains with composer controls; the Library never mutates next-run state except through the atomic apply/remove actions.
+`settingsDestinationStore` owns the bounded Settings destination (Appearance, MCP & tools). The Assistants surface owns its own focused state: `assistantLibraryStore` holds the open full-screen task (list, editor, history), Discover/Yours mode, filter/category/query, fetched list data, and editor/history drafts, while `assistantLibraryController` owns every surface mutation (create, revise with CAS, archive/restore, duplicate, publish/revoke, pin, restore-as-new-revision) and `Use` application into the composer owner. Editor avatar generation happens exactly once per new draft plus once per explicit `Generate another`, entirely in the browser. Current-composer Assistant selection remains with composer controls; the surface never mutates next-run state except through the atomic apply/remove actions.
 
 MCP settings owns its coalesced catalog refresh, mutation replacement, OAuth outcome, readiness polling, and last ready/error presentation. Personal input values remain leaf-local and write-only. Background reads do not flash an empty catalog over last-known useful state.
 
@@ -121,7 +121,7 @@ The memoized left-pane adapter intentionally ignores callback identity churn and
 
 ### Shell and session ownership
 
-- The conversation edge rail owns Workspace, compact New chat, truthful Pipeline activity, Share, state-aware Details, and Conversation actions. The fixed Workspace footer owns the only visible Account trigger plus Command palette, Library, Settings, Sign out, and entitled Admin.
+- The conversation edge rail owns Workspace, compact New chat, truthful Pipeline activity, Share, state-aware Details, and Conversation actions. The fixed Workspace footer owns the only visible Account trigger plus Command palette, Assistants, Settings, Sign out, and entitled Admin.
 - Initial bootstrap has one actionable Retry surface and disables dependent mutations. Blank-chat and zero-model states render only after readiness and distinguish an empty workspace from missing granted access. The zero-model projection also distinguishes admin authority: only an administrator receives the direct Control Center provider-setup action.
 - Above the compact shell threshold, Workspace-rail visibility is one browser-local presentation preference. Hiding closes rail-owned menus and focuses the surviving Workspace trigger; restoring focuses the rail's hide action. At compact widths the same trigger continues to own the modal drawer, and no chat/folder/account state migrates into this preference.
 - A persisted chat with no provider/model default is valid. The shell may show a visible catalog fallback without persisting it. Legacy paired empty-string defaults remain readable during compatibility; half-populated pairs fail closed.

@@ -689,11 +689,11 @@ test("recovers catalog loading through the Library while Settings Appearance rem
   );
   await expectRunSummary(page, { model: "Models unavailable" });
 
-  await runAccountMenuAction(page, "Library");
+  await runAccountMenuAction(page, "Assistants");
   const library = page.getByTestId("assistant-library");
   await expect(library).toBeVisible();
   const libraryError = library.getByRole("alert");
-  await expect(libraryError).toHaveText("The library didn’t load");
+  await expect(libraryError).toHaveText("Assistants didn’t load");
   await expect(library.getByTestId("assistant-library-grid")).toHaveCount(0);
   await expect(library.getByRole("group", { name: "Filters" })).toHaveCount(0);
   await library.getByRole("button", { name: "Retry" }).click();
@@ -1036,10 +1036,10 @@ test("keeps the standalone Library and Settings Appearance safe in the narrow sh
   await expectNoHorizontalOverflow(page);
   await settingsDialog.getByRole("button", { name: "Close settings" }).click();
 
-  await runAccountMenuAction(page, "Library");
+  await runAccountMenuAction(page, "Assistants");
   const library = page.getByTestId("assistant-library");
-  await expect(library).toHaveAttribute("aria-label", "Assistant library");
-  await expect(library.getByRole("heading", { name: "Library" })).toBeVisible();
+  await expect(library).toHaveAttribute("aria-label", "Assistants");
+  await expect(library.getByRole("heading", { name: "Assistants" })).toBeVisible();
   await expect(library.getByRole("tab", { name: "Discover" })).toHaveAttribute("aria-selected", "true");
   await expect(library.getByRole("button", { name: "Back to chat" })).toBeInViewport();
   await expect(library.getByRole("button", { name: "New assistant" })).toBeInViewport();
@@ -1056,12 +1056,12 @@ test("keeps the standalone Library and Settings Appearance safe in the narrow sh
   const narrowEditor = library.getByTestId("assistant-editor");
   await expect(narrowEditor).toBeVisible();
   await expect(library.getByRole("tab", { name: "Discover" })).toHaveCount(0);
-  await expect(narrowEditor.getByRole("button", { name: "Back to library" })).toBeInViewport();
+  await expect(narrowEditor.getByRole("button", { name: "Back to assistants" })).toBeInViewport();
   await expect(narrowEditor.getByLabel("Name", { exact: true })).toBeVisible();
   await expect(narrowEditor.getByTestId("assistant-editor-save")).toBeInViewport();
   await expectWithinViewport(page, library);
   await expectNoHorizontalOverflow(page);
-  await narrowEditor.getByRole("button", { name: "Back to library" }).click();
+  await narrowEditor.getByRole("button", { name: "Back to assistants" }).click();
   await expect(library.getByTestId("assistant-editor")).toHaveCount(0);
   await expect(library.getByRole("tab", { name: "Yours" })).toHaveAttribute("aria-selected", "true");
 
@@ -1219,7 +1219,7 @@ test("uses the Library editor side column only when both width and height can su
     });
   });
   await signIn(page);
-  await runAccountMenuAction(page, "Library");
+  await runAccountMenuAction(page, "Assistants");
 
   const library = page.getByTestId("assistant-library");
   await library.getByRole("button", { name: "New assistant" }).click();
@@ -2712,8 +2712,8 @@ test("keeps route-aware titles and complete two-line chat names across shell vie
   await page.getByRole("button", { name: "Close settings" }).click();
   await expect(page).toHaveTitle(`${cyrillicTitle} · AIQSA`);
 
-  await runAccountMenuAction(page, "Library");
-  await expect(page).toHaveTitle("Library · AIQSA");
+  await runAccountMenuAction(page, "Assistants");
+  await expect(page).toHaveTitle("Assistants · AIQSA");
   await page.getByRole("button", { name: "Back to chat" }).click();
   await expect(page).toHaveTitle(`${cyrillicTitle} · AIQSA`);
 
