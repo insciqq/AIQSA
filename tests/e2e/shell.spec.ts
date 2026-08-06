@@ -1860,7 +1860,13 @@ test("sends GPT-5.6 Pro/max controls and keeps selected search after an immediat
   await expectRunSummary(page, { search: "Perplexity tool" });
 });
 
-test("loads catalog before activating a stored chat and avoids hydration warnings", async ({ page }) => {
+test.describe("stored-chat bootstrap in a divergent client zone", () => {
+  // A client zone/locale far from the UTC en-US server surfaces any SSR string
+  // that leaks the live clock, zone, or locale into hydrated markup (for
+  // example the composer's baseline token estimate).
+  test.use({ locale: "ru-RU", timezoneId: "Asia/Novosibirsk" });
+
+  test("loads catalog before activating a stored chat and avoids hydration warnings", async ({ page }) => {
   const consoleErrors: string[] = [];
   let releaseCatalog!: () => void;
   let workspaceReads = 0;
@@ -1970,6 +1976,7 @@ test("loads catalog before activating a stored chat and avoids hydration warning
   );
   await closeRunSetup(page);
   expect(consoleErrors.filter((text) => /hydration|did not match/i.test(text))).toEqual([]);
+  });
 });
 
 test("shows a readable recovery state for malformed workspace payloads", async ({ page }) => {

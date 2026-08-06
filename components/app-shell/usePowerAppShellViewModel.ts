@@ -24,10 +24,7 @@ import type {
 } from "@/components/app-shell/types";
 import type { ComposerAttachment } from "@/components/chat/Composer";
 import { calculateContextBudgetLimits, estimateApproxTokens } from "@/lib/domain/contextBudget";
-import {
-  renderLocalPromptTemplate,
-  STANDARD_CHAT_BASELINE_TEMPLATE
-} from "@/lib/domain/promptTemplates";
+import { STANDARD_CHAT_BASELINE_TEMPLATE } from "@/lib/domain/promptTemplates";
 import { useMemo } from "react";
 
 type PowerAppShellViewModelInput = {
@@ -244,10 +241,12 @@ export function usePowerAppShellViewModel({
     : 0;
   const composerContextStats = useMemo<ComposerContextStats>(() => {
     // Approximation only: the authoritative prompt is resolved server-side (the
-    // standard-chat baseline or the selected Assistant revision).
+    // standard-chat baseline or the selected Assistant revision). The raw
+    // template stands in for the rendered baseline: substituting the live
+    // clock/zone/locale here would make SSR and hydration disagree.
     const promptSystem = [
       selectedAssistantPromptCharacterCount === null
-        ? renderLocalPromptTemplate(STANDARD_CHAT_BASELINE_TEMPLATE)
+        ? STANDARD_CHAT_BASELINE_TEMPLATE
         : "",
       projectMemory ? `Project memory:\n${projectMemory}` : null
     ]

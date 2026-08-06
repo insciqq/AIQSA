@@ -4,10 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import { usePowerAppShellViewModel } from "./usePowerAppShellViewModel";
 import { formatComposerContextStats } from "./composerContextStats";
 import { estimateApproxTokens } from "@/lib/domain/contextBudget";
-import {
-  renderLocalPromptTemplate,
-  STANDARD_CHAT_BASELINE_TEMPLATE
-} from "@/lib/domain/promptTemplates";
+import { STANDARD_CHAT_BASELINE_TEMPLATE } from "@/lib/domain/promptTemplates";
 import type { Catalog, ChatGroup, ChatSummary, FolderSummary, ThreadMessage } from "./types";
 
 function chat(id: string): ChatSummary {
@@ -266,11 +263,11 @@ describe("usePowerAppShellViewModel", () => {
   });
 
   it("swaps the baseline estimate for the assistant prompt size when an assistant is selected", () => {
+    // The baseline estimate must come from the raw template, never a live
+    // clock/zone/locale render: SSR and hydration would disagree otherwise.
     const withoutAssistant = renderViewModel();
-    const baselineTokens = estimateApproxTokens(
-      renderLocalPromptTemplate(STANDARD_CHAT_BASELINE_TEMPLATE)
-    );
-    expect(baselineTokens).toBeGreaterThan(0);
+    const baselineTokens = estimateApproxTokens(STANDARD_CHAT_BASELINE_TEMPLATE);
+    expect(baselineTokens).toBe(21);
     expect(withoutAssistant.result.current.composerContextStats.approximateInputTokens).toBe(
       baselineTokens
     );
