@@ -1,7 +1,6 @@
 .git
 .agents
 .codex
-.omp
 .aiqsa
 node_modules
 .next

@@ -56,7 +56,6 @@ const LIVING_DOC_SIZE_EXEMPTIONS = new Map();
 const DISCOVERY_EXCLUDED_PREFIXES = [
   ".agents/",
   ".codex/",
-  ".omp/",
   ".git/",
   ".next/",
   ".turbo/",
