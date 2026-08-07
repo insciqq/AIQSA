@@ -1,0 +1,47 @@
+enabledModels:
+  - codex-lb/gpt-5.6-sol
+modelProviderOrder:
+  - codex-lb
+modelRoles:
+  default: codex-lb/gpt-5.6-sol:max
+  smol: codex-lb/gpt-5.6-sol:low
+  slow: codex-lb/gpt-5.6-sol:max
+  plan: codex-lb/gpt-5.6-sol:max
+  task: codex-lb/gpt-5.6-sol:medium
+  designer: codex-lb/gpt-5.6-sol:high
+  commit: codex-lb/gpt-5.6-sol:low
+  tiny: codex-lb/gpt-5.6-sol:low
+  advisor: codex-lb/gpt-5.6-sol:high
+  vision: codex-lb/gpt-5.6-sol:high
+defaultThinkingLevel: max
+retry:
+  modelFallback: false
+tier:
+  openai: none
+  subagent: none
+providers:
+  maxInFlightRequests:
+    codex-lb: 5
+task:
+  eager: always
+  batch: true
+  enableEffort: true
+  maxEffort: max
+  maxConcurrency: 5
+  maxRecursionDepth: 1
+  isolation:
+    mode: auto
+    apply: true
+    merge: patch
+    commits: generic
+  showResolvedModelBadge: true
+  agentModelOverrides:
+    task: codex-lb/gpt-5.6-sol:medium
+    scout: codex-lb/gpt-5.6-sol:low
+    sonic: codex-lb/gpt-5.6-sol:low
+    librarian: codex-lb/gpt-5.6-sol:medium
+    designer: codex-lb/gpt-5.6-sol:high
+    reviewer: codex-lb/gpt-5.6-sol:high
+    security-reviewer: codex-lb/gpt-5.6-sol:max
+async:
+  enabled: true

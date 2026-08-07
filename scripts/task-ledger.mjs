@@ -17,8 +17,7 @@ const TASK_DIRECTORY = "agent_docs/tasks";
 const TASK_FILE = /^(\d{17})-([a-z0-9]+(?:-[a-z0-9]+)*)\.md$/;
 const TASK_STEM = /^(\d{17})-([a-z0-9]+(?:-[a-z0-9]+)*)$/;
 const TASK_ID = /^\d{17}$/;
-const ALLOWED_STATUSES = new Set(["backlog", "ready", "in_progress", "blocked", "review"]);
-const ALLOWED_HUMAN_REVIEW = new Set(["optional", "required"]);
+const ALLOWED_STATUSES = new Set(["backlog", "ready", "in_progress", "blocked"]);
 const DURABLE_RATIONALE_PREFIX = "moved to ";
 const REQUIRED_SECTIONS = [
   "Goal",
@@ -161,7 +160,6 @@ function discoverTasks(root) {
       dependencies: null,
       durableRationale: field(body, "Durable rationale"),
       filename,
-      humanReview: field(body, "Human review"),
       id: match[1],
       path: absolutePath,
       relativePath: portable(path.join(TASK_DIRECTORY, filename)),
@@ -280,7 +278,7 @@ function durableRationaleErrors(record, root, { requireSettled = false } = {}) {
   const value = record.durableRationale;
   if (!value) return [`${record.relativePath}: missing Durable rationale field`];
   if (value === "pending") {
-    return requireSettled ? [`${record.relativePath}: Durable rationale must be settled before review or completion`] : [];
+    return requireSettled ? [`${record.relativePath}: Durable rationale must be settled before completion`] : [];
   }
   if (value === "none") return [];
   if (!value.startsWith(DURABLE_RATIONALE_PREFIX)) {
@@ -315,11 +313,11 @@ function completionReadiness(record, root) {
   const plan = section(record.body, "Plan") ?? "";
   const uncheckedPlanItems = [...plan.matchAll(/^-\s*\[\s\]\s+\S.*$/gmu)].length;
   if (uncheckedPlanItems > 0) {
-    errors.push(`${record.relativePath}: ## Plan has ${uncheckedPlanItems} unchecked milestone(s); remove or resolve every item before review or completion`);
+    errors.push(`${record.relativePath}: ## Plan has ${uncheckedPlanItems} unchecked milestone(s); remove or resolve every item before completion`);
   }
 
   if ((section(record.body, "Progress") ?? "").trim() === "- Not started.") {
-    errors.push(`${record.relativePath}: ## Progress must replace the scaffold value \`- Not started.\` before review or completion`);
+    errors.push(`${record.relativePath}: ## Progress must replace the scaffold value \`- Not started.\` before completion`);
   }
   if ((section(record.body, "Decisions") ?? "").trim() === "- None yet.") {
     errors.push(`${record.relativePath}: ## Decisions must replace the scaffold value \`- None yet.\`; use \`- None.\` when no task-local decision was needed`);
@@ -327,7 +325,7 @@ function completionReadiness(record, root) {
 
   const evidence = verificationEvidence(record.body);
   if (!evidence.complete) {
-    errors.push(`${record.relativePath}: Verification must contain checked results or concrete unavailable evidence and no unchecked checks before review or completion`);
+    errors.push(`${record.relativePath}: Verification must contain checked results or concrete unavailable evidence and no unchecked checks before completion`);
   }
   errors.push(...evidence.errors.map((error) => `${record.relativePath}: ${error}`));
   errors.push(...durableRationaleErrors(record, root, { requireSettled: true }));
@@ -347,7 +345,6 @@ export function validateTaskLedger(root = process.cwd()) {
     if (matches.length > 1) errors.push(`${id}: duplicate task id`);
   }
 
-  let inProgress = 0;
   for (const record of ledger.tasks.records) {
     if (!isIgnoredTask(ledger.root, record.relativePath)) {
       errors.push(`${record.relativePath}: task instances must be ignored and must not be tracked by public Git`);
@@ -356,10 +353,7 @@ export function validateTaskLedger(root = process.cwd()) {
       errors.push(`${record.relativePath}: task id is not a valid local timestamp`);
     }
     if (!ALLOWED_STATUSES.has(record.status)) {
-      errors.push(`${record.relativePath}: Status must be backlog, ready, in_progress, blocked, or review`);
-    }
-    if (!ALLOWED_HUMAN_REVIEW.has(record.humanReview)) {
-      errors.push(`${record.relativePath}: Human review must be optional or required`);
+      errors.push(`${record.relativePath}: Status must be backlog, ready, in_progress, or blocked`);
     }
     if (!record.blockedBy) {
       errors.push(`${record.relativePath}: missing Blocked by field`);
@@ -384,27 +378,17 @@ export function validateTaskLedger(root = process.cwd()) {
       if (dependency === record.stem) errors.push(`${record.relativePath}: task cannot depend on itself`);
     }
 
-    if (["ready", "in_progress", "review"].includes(record.status) && record.dependencies.length > 0) {
+    if (["ready", "in_progress"].includes(record.status) && record.dependencies.length > 0) {
       errors.push(`${record.relativePath}: ${record.status} task cannot have open dependencies`);
     }
-    if (record.status === "in_progress") inProgress += 1;
 
     errors.push(...contentErrors(record));
-    if (record.status !== "review") {
-      errors.push(...durableRationaleErrors(record, ledger.root));
-    }
-    if (["ready", "in_progress", "blocked", "review"].includes(record.status)) {
+    errors.push(...durableRationaleErrors(record, ledger.root));
+    if (["ready", "in_progress", "blocked"].includes(record.status)) {
       errors.push(...readinessErrors(record));
-    }
-    if (record.status === "review") {
-      if (record.humanReview !== "required") {
-        errors.push(`${record.relativePath}: review status requires Human review: required`);
-      }
-      errors.push(...completionReadiness(record, ledger.root).errors);
     }
   }
 
-  if (inProgress > 1) errors.push(`task queue has ${inProgress} in_progress tasks; only one integrating task is allowed`);
   errors.push(...cycleErrors(ledger.tasks.records));
   return { errors, ledger };
 }
@@ -455,7 +439,7 @@ export function createTask({ root = process.cwd(), slug, summary, date = new Dat
   const stem = `${id}-${slug}`;
   const destination = path.join(ledger.tasks.directory, `${stem}.md`);
   mkdirSync(ledger.tasks.directory, { recursive: true });
-  writeFileSync(destination, `# ${stem}\n\nStatus: backlog\nDepends on: none\nHuman review: optional\nBlocked by: none\nDurable rationale: pending\n\n## Goal\n\n${summary.trim()}\n\n## Context\n\n- Link the current owner documents and relevant code paths before promotion.\n\n## Scope\n\n- Define the implementation slice.\n\n## Out Of Scope\n\n- Unrelated product changes.\n\n## Acceptance Criteria\n\n- The goal is observable and verified.\n\n## Plan\n\n- [ ] Replace this scaffold with concrete implementation milestones.\n\n## Progress\n\n- Not started.\n\n## Decisions\n\n- None yet.\n\n## Verification\n\n- [ ] Replace this scaffold with exact focused checks.\n`, "utf8");
+  writeFileSync(destination, `# ${stem}\n\nStatus: backlog\nDepends on: none\nBlocked by: none\nDurable rationale: pending\n\n## Goal\n\n${summary.trim()}\n\n## Context\n\n- Link the current owner documents and relevant code paths before promotion.\n\n## Scope\n\n- Define the implementation slice.\n\n## Out Of Scope\n\n- Unrelated product changes.\n\n## Acceptance Criteria\n\n- The goal is observable and verified.\n\n## Plan\n\n- [ ] Replace this scaffold with concrete implementation milestones.\n\n## Progress\n\n- Not started.\n\n## Decisions\n\n- None yet.\n\n## Verification\n\n- [ ] Replace this scaffold with exact focused checks.\n`, "utf8");
   const relativePath = portable(path.relative(ledger.root, destination));
   if (!isIgnoredTask(ledger.root, relativePath)) {
     unlinkSync(destination);
@@ -484,8 +468,6 @@ export function startTask({ root = process.cwd(), reference }) {
   const ledger = assertValid(root);
   const record = resolveTask(ledger, reference);
   if (record.status !== "ready") throw new Error(`${record.stem} is ${record.status}, not ready to start`);
-  const current = ledger.tasks.records.find((candidate) => candidate.status === "in_progress");
-  if (current) throw new Error(`${current.stem} is already in_progress`);
   noOpenDependencies(record);
   writeFileSync(record.path, replaceField(record.body, "Status", "in_progress"), "utf8");
   return record.stem;
@@ -495,28 +477,12 @@ export function blockTask({ root = process.cwd(), reference, reason }) {
   if (!reason?.trim() || /[\r\n]/u.test(reason)) throw new Error("--reason must be one non-empty line");
   const ledger = assertValid(root);
   const record = resolveTask(ledger, reference);
-  if (!["ready", "in_progress", "review", "blocked"].includes(record.status)) {
+  if (!["ready", "in_progress", "blocked"].includes(record.status)) {
     throw new Error(`${record.stem} is ${record.status}, not eligible to block`);
   }
   let body = replaceField(record.body, "Status", "blocked");
   body = replaceField(body, "Blocked by", reason.trim());
   writeFileSync(record.path, body, "utf8");
-  return record.stem;
-}
-
-export function reviewTask({ root = process.cwd(), reference }) {
-  const ledger = assertValid(root);
-  const record = resolveTask(ledger, reference);
-  if (record.status !== "in_progress") throw new Error(`${record.stem} is ${record.status}, not in_progress`);
-  if (record.humanReview !== "required") {
-    throw new Error(`${record.stem} uses Human review: optional and should complete directly`);
-  }
-  noOpenDependencies(record);
-  const readiness = completionReadiness(record, ledger.root);
-  if (readiness.errors.length) {
-    throw new Error(readiness.errors.join("\n"));
-  }
-  writeFileSync(record.path, replaceField(record.body, "Status", "review"), "utf8");
   return record.stem;
 }
 
@@ -527,24 +493,18 @@ function removeDependency(body, dependency) {
   return replaceField(body, "Depends on", remaining.length ? remaining.join(", ") : "none");
 }
 
-export function completeTask({ root = process.cwd(), reference, approved = false }) {
+export function completeTask({ root = process.cwd(), reference }) {
   const ledger = assertValid(root);
   const record = resolveTask(ledger, reference);
-  if (!["in_progress", "review"].includes(record.status)) {
+  if (record.status !== "in_progress") {
     throw new Error(`${record.stem} is ${record.status}, not completable`);
-  }
-  if (record.humanReview === "required" && record.status !== "review") {
-    throw new Error(`${record.stem} requires human review before completion`);
-  }
-  if (record.humanReview === "required" && !approved) {
-    throw new Error(`${record.stem} requires explicit operator approval; rerun complete with --approved after acceptance`);
   }
   noOpenDependencies(record);
   const readiness = completionReadiness(record, ledger.root);
   if (readiness.errors.length) throw new Error(readiness.errors.join("\n"));
   const { evidence } = readiness;
-  if (evidence.unavailableOnly && (record.humanReview !== "required" || record.status !== "review" || !approved)) {
-    throw new Error("Unavailable-only verification requires required human review, review status, and --approved");
+  if (evidence.unavailableOnly) {
+    throw new Error("Unavailable-only verification cannot complete a task; block it or add passed evidence");
   }
 
   let cleared = 0;
@@ -578,13 +538,6 @@ function takeOption(arguments_, name) {
   return value;
 }
 
-function takeFlag(arguments_, name) {
-  const index = arguments_.indexOf(name);
-  if (index < 0) return false;
-  arguments_.splice(index, 1);
-  return true;
-}
-
 function oneReference(arguments_, command) {
   const reference = arguments_.shift();
   if (!reference || arguments_.length) {
@@ -613,19 +566,17 @@ export function runTaskCli(argv = process.argv.slice(2)) {
     const reference = oneReference(arguments_, command);
     return `Blocked ${blockTask({ root, reference, reason })}.`;
   }
-  if (["promote", "start", "review"].includes(command)) {
+  if (["promote", "start"].includes(command)) {
     const reference = oneReference(arguments_, command);
     if (command === "promote") return `Promoted ${promoteTask({ root, reference })} to ready.`;
-    if (command === "start") return `Started ${startTask({ root, reference })}.`;
-    return `Moved ${reviewTask({ root, reference })} to review.`;
+    return `Started ${startTask({ root, reference })}.`;
   }
   if (command === "complete") {
-    const approved = takeFlag(arguments_, "--approved");
     const reference = oneReference(arguments_, command);
-    const result = completeTask({ root, reference, approved });
+    const result = completeTask({ root, reference });
     return `Completed and deleted ${result.stem}; cleared ${result.cleared} dependency reference(s).`;
   }
-  throw new Error("usage: task-ledger <new|promote|start|block|review|complete|list> ...");
+  throw new Error("usage: task-ledger <new|promote|start|block|complete|list> ...");
 }
 
 const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);

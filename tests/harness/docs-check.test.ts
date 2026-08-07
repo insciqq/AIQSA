@@ -90,7 +90,6 @@ function task(root: string, stem: string, status = "backlog", dependencies = "no
 
 Status: ${status}
 Depends on: ${dependencies}
-Human review: optional
 Blocked by: none
 Durable rationale: none
 
@@ -300,6 +299,8 @@ describe("current documentation and harness sanity check", () => {
     expect(check(root).stderr).toContain("custom.config.ts: references obsolete harness");
 
     rmSync(path.join(root, "custom.config.ts"));
+    mkdirSync(path.join(root, ".omp"), { recursive: true });
+    writeFileSync(path.join(root, ".omp/config.yml"), "# See agent_docs/ADR/0001-old.md\n");
     mkdirSync(path.join(root, "prisma/migrations/20260101000000_history"), { recursive: true });
     writeFileSync(
       path.join(root, "prisma/migrations/20260101000000_history/migration.sql"),

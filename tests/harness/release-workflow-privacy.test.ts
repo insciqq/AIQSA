@@ -30,6 +30,7 @@ describe("public release privacy contract", () => {
     const dockerignore = readFileSync(path.join(root, ".dockerignore"), "utf8");
     const dockerfile = readFileSync(path.join(root, "Dockerfile"), "utf8");
 
+    expect(dockerignore).toMatch(/^\.omp$/mu);
     expect(dockerignore).toMatch(/^agent_docs$/mu);
     expect(dockerignore).toMatch(/^\*\*\/AGENTS\.md$/mu);
     expect(dockerignore).toMatch(/^\*\*\/CLAUDE\.md$/mu);

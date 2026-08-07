@@ -10,30 +10,19 @@ If the operator says "start implementation", "begin", "go ahead", or an equivale
 
 1. Follow the reading map for the requested scope.
 2. Inspect repository state.
-3. Classify the change against the Human Review Policy below. A concrete same-session review-optional change may run directly without a task.
-4. For review-required work, create or use a task and mark it `in_progress` before implementation, even in the same session.
-5. For broad, queued, dependency-bearing, or multi-session work, resume the sole `in_progress` task or select the first unblocked `ready` task when no scope was named.
-6. Mark a selected queued task `in_progress` before implementation.
-7. Implement the smallest complete vertical slice; the integrating agent owns task state and integration.
-8. Run proportional checks and update an owning living document only when its durable contract changed.
-9. Move review-required work to `review`. Otherwise complete its task when one exists; completion deletes it and clears remaining dependency references.
-10. Continue only when broad implementation was requested and the next task is concrete and unblocked.
+3. A concrete same-session change may run directly without a task. Create or use a task for queued, dependency-bearing, broad, or multi-session work.
+4. For broad queued work, reconcile existing `in_progress` tasks and select unblocked `ready` tasks. Use the parallel-wave rules in `agent_docs/AUTONOMOUS_WORKFLOW.md` when the operator requests parallel execution.
+5. Mark every selected queued task `in_progress` before implementation.
+6. Implement the smallest complete vertical slice; the integrating agent owns task state, automated review, conflict resolution, and integration.
+7. Run proportional checks and update an owning living document only when its durable contract changed.
+8. Complete verified tasks directly; completion deletes each task and clears remaining dependency references.
+9. Continue only when broad implementation was requested and another concrete unblocked task or safe parallel wave remains.
 
 Stop only for missing secrets, unrequested destructive work, an unmockable unavailable service, or a product decision not covered by current contracts. Provider-smoke permission is in `agent_docs/CRITICAL_INVARIANTS.md`; dependency-security permission is in `agent_docs/SECURITY.md`.
 
-## Human Review Policy
+## Completion Policy
 
-This is the sole authoritative trigger list. Human review is required for changes to:
-
-- `agent_docs/CRITICAL_INVARIANTS.md`;
-- credentials, secrets, password/token handling, cryptography, or another security/privacy boundary;
-- admission policy, account-verification authority, session/cookie behavior, or identity linking;
-- authorization, entitlements, ownership, tenancy, privacy disclosure, public sharing, retention, abuse/rate-limit policy, or security-relevant server error semantics;
-- persistent schema/migrations, destructive data behavior, public API or stored-data compatibility, or release/publication safeguards;
-- a user-visible product contract not already decided by current living documents; or
-- completion supported only by unavailable verification.
-
-Verified presentation-only auth UI work may remain review-optional: accessibility/focus, operation-specific recovery copy, or client error association/announcement. It must preserve server codes, privacy-neutral outcomes, session/admission/authorization behavior, and every other security contract; reclassify it before crossing a boundary above.
+There is no human-review task status or operator-acceptance gate. The integrating agent completes work after automated inspection and proportional verification. If required evidence is unavailable, block the task instead of completing it. Stop before implementation only when the requested outcome needs missing authority, secrets, destructive work, an unavailable unmockable service, or a product decision not covered by current contracts.
 
 ## Reading Map
 
@@ -43,7 +32,7 @@ Then read only what the scope requires:
 
 - Before changing a scoped directory, read the nearest `AGENTS.md`; Claude-compatible scopes import it through the adjacent `CLAUDE.md`.
 
-- Read `agent_docs/AUTONOMOUS_WORKFLOW.md` only for broad selection, queued/task-state work, dependencies, multi-session work, or review-required changes. For queued work, also read `agent_docs/tasks/README.md` and the selected task. Named same-session review-optional work does not require the full workflow.
+- Read `agent_docs/AUTONOMOUS_WORKFLOW.md` only for broad selection, queued/task-state work, dependencies, parallel waves, or multi-session work. For queued work, also read `agent_docs/tasks/README.md` and the selected task. Named same-session work does not require the full workflow.
 - When the operator left a product or implementation choice open, read `agent_docs/DECISION_DEFAULTS.md`.
 - Before topology, module-boundary, data-boundary, or deployment-shape work, read `agent_docs/ARCHITECTURE.md`.
 - `agent_docs/RUN_PIPELINE.md` before run-pipeline, Search, tool-loop, provider-run, or inspection work.
@@ -58,7 +47,7 @@ Then read only what the scope requires:
 ## Contract Authority
 
 - The operator's current request defines intended scope.
-- `agent_docs/CRITICAL_INVARIANTS.md` defines non-negotiable safety and product-semantic boundaries unless the operator explicitly requests a reviewed contract change.
+- `agent_docs/CRITICAL_INVARIANTS.md` defines non-negotiable safety and product-semantic boundaries unless the operator explicitly requests a contract change.
 - Executable code, schemas, migrations, and tests plus the owning living document define current behavior.
 - When executable behavior/tests and a living contract disagree, treat it as drift. Resolve a clear mismatch from the request, observable behavior, tests, and nearby owners, updating both sides; escalate only when two plausible readings change product semantics.
 - A task may change a living contract only when its goal says so and the owner is updated in the same implementation.
@@ -86,7 +75,7 @@ For repository sharing, export an inspected commit/tree with `git archive`; neve
 
 - Prefer the smallest change that leaves the app runnable or clearly verifiable.
 - Use existing code and current local contracts before inventing scope or another abstraction.
-- Use the fast hermetic lane for deterministic static/unit work and `docker-compose.dev.yml` only for required container parity or integration. Never run destructive development or test workflows against the default persistent installation.
+- Use the focused hermetic lane for deterministic static/unit work and `docker-compose.dev.yml` only for required container parity or integration. Never run destructive development or test workflows against the default persistent installation.
 - Keep one task file as the specification, execution plan, progress log, and task-local decision log. Do not create a second plan document for the same work.
 - Keep only local unfinished tasks in `agent_docs/tasks/`. Do not force-add them or create completion journals or decision-history directories.
 - Update the owning living document only when the change modifies a durable product contract, invariant, architecture/data boundary, configuration/environment contract, operator workflow, security boundary, or verification policy. A bug fix or implementation change that restores or preserves an already documented contract does not require a documentation edit.
@@ -107,4 +96,4 @@ For documentation-only changes:
 npm run docs:check
 ```
 
-For application code changes, run the checks routed by `agent_docs/TESTING.md`. Report exact checks run, checks not run with reasons, material decisions, and any remaining blocker or human-review request.
+For application code changes, run the checks routed by `agent_docs/TESTING.md`. Report exact checks run, checks not run with reasons, material decisions, and any remaining blocker.

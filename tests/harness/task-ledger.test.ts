@@ -25,7 +25,6 @@ type TaskOptions = {
   blockedBy?: string;
   decisions?: string;
   dependencies?: string;
-  humanReview?: "optional" | "required";
   plan?: string;
   progress?: string;
   rationale?: string;
@@ -37,7 +36,6 @@ function task(root: string, stem: string, status: string, options: TaskOptions =
 
 Status: ${status}
 Depends on: ${options.dependencies ?? "none"}
-Human review: ${options.humanReview ?? "optional"}
 Blocked by: ${options.blockedBy ?? (status === "blocked" ? "waiting for operator input" : "none")}
 Durable rationale: ${options.rationale ?? "none"}
 
@@ -100,6 +98,7 @@ describe("local unified task ledger", () => {
     const body = readFileSync(path.join(root, "agent_docs/tasks", filename!), "utf8");
     expect(body).toContain("Status: backlog");
     expect(body).toContain("Durable rationale: pending");
+    expect(body).not.toContain("Human review:");
     expect(spawnSync("git", ["check-ignore", "-q", `agent_docs/tasks/${filename}`], { cwd: root }).status).toBe(0);
   });
 
@@ -129,14 +128,14 @@ describe("local unified task ledger", () => {
     expect(result.stdout).toContain("cleared 1 dependency reference");
   });
 
-  it("enforces one in_progress task and dependency-free executable states", () => {
+  it("allows parallel in_progress tasks and enforces dependency-free executable states", () => {
     const root = fixture();
     task(root, "20260801120000001-first", "in_progress");
     task(root, "20260801120000002-second", "in_progress");
 
-    const duplicate = run(root, "list");
-    expect(duplicate.status).toBe(1);
-    expect(duplicate.stderr).toContain("only one integrating task is allowed");
+    const parallel = run(root, "list");
+    expect(parallel.status).toBe(0);
+    expect(parallel.stdout.match(/in_progress/g)).toHaveLength(2);
 
     rmSync(path.join(root, "agent_docs/tasks/20260801120000002-second.md"));
     task(root, "20260801120000002-second", "ready", { dependencies: "20260801120000001-first" });
@@ -160,18 +159,7 @@ describe("local unified task ledger", () => {
     expect(missing.stderr).toContain("does not resolve to exactly one open task");
   });
 
-  it("requires review status and explicit approval for required human review", () => {
-    const root = fixture();
-    const stem = "20260801120000001-reviewed-change";
-    task(root, stem, "in_progress", { humanReview: "required" });
-
-    expect(run(root, "complete", stem).stderr).toContain("requires human review before completion");
-    expect(run(root, "review", stem).status).toBe(0);
-    expect(run(root, "complete", stem).stderr).toContain("requires explicit operator approval");
-    expect(run(root, "complete", stem, "--approved").status).toBe(0);
-  });
-
-  it("allows checked plus unavailable evidence but reviews unavailable-only evidence", () => {
+  it("allows checked plus unavailable evidence but blocks unavailable-only completion", () => {
     const root = fixture();
     const mixed = "20260801120000001-mixed-evidence";
     task(root, mixed, "in_progress", {
@@ -179,22 +167,13 @@ describe("local unified task ledger", () => {
     });
     expect(run(root, "complete", mixed).status).toBe(0);
 
-    const optional = "20260801120000002-optional-unavailable";
-    task(root, optional, "in_progress", {
+    const unavailable = "20260801120000002-unavailable";
+    task(root, unavailable, "in_progress", {
       verification: "- Not run: provider smoke — credentials are unavailable"
     });
-    const rejected = run(root, "complete", optional);
+    const rejected = run(root, "complete", unavailable);
     expect(rejected.status).toBe(1);
-    expect(rejected.stderr).toContain("Unavailable-only verification requires required human review");
-
-    rmSync(path.join(root, "agent_docs/tasks", `${optional}.md`));
-    const required = "20260801120000003-required-unavailable";
-    task(root, required, "in_progress", {
-      humanReview: "required",
-      verification: "- Not run: provider smoke — credentials are unavailable"
-    });
-    expect(run(root, "review", required).status).toBe(0);
-    expect(run(root, "complete", required, "--approved").status).toBe(0);
+    expect(rejected.stderr).toContain("Unavailable-only verification cannot complete a task");
   });
 
   it("blocks unchecked or malformed verification evidence", () => {
@@ -213,30 +192,14 @@ describe("local unified task ledger", () => {
     ["an unchecked Plan item", { plan: "- [ ] Finish the fixture milestone." }, "## Plan has 1 unchecked milestone"],
     ["the untouched Progress scaffold", { progress: "- Not started." }, "## Progress must replace the scaffold value"],
     ["the untouched Decisions scaffold", { decisions: "- None yet." }, "## Decisions must replace the scaffold value"]
-  ])("rejects %s before completion and review", (_label, override, expected) => {
+  ])("rejects %s before completion", (_label, override, expected) => {
     const root = fixture();
-    const optional = "20260801120000001-optional-readiness";
-    task(root, optional, "in_progress", override);
+    const stem = "20260801120000001-completion-readiness";
+    task(root, stem, "in_progress", override);
 
-    const completion = run(root, "complete", optional);
+    const completion = run(root, "complete", stem);
     expect(completion.status).toBe(1);
     expect(completion.stderr).toContain(expected);
-
-    rmSync(path.join(root, "agent_docs/tasks", `${optional}.md`));
-    const required = "20260801120000002-required-readiness";
-    task(root, required, "in_progress", { ...override, humanReview: "required" });
-
-    const review = run(root, "review", required);
-    expect(review.status).toBe(1);
-    expect(review.stderr).toContain(expected);
-
-    const body = readFileSync(path.join(root, "agent_docs/tasks", `${required}.md`), "utf8");
-    writeFileSync(
-      path.join(root, "agent_docs/tasks", `${required}.md`),
-      body.replace("Status: in_progress", "Status: review"),
-      "utf8"
-    );
-    expect(run(root, "list").stderr).toContain(expected);
   });
 
   it("accepts an explicit no-decisions completion value", () => {
