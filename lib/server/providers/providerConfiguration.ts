@@ -33,6 +33,7 @@ const RESERVED_REASONING_REQUEST_ROOTS = new Set([
   "prompt_cache_retention",
   "store",
   "stream",
+  "stream_options",
   "temperature",
   "tool_choice",
   "tools"
@@ -283,6 +284,7 @@ export function normalizeProviderModelCapabilities(value: unknown): ProviderMode
     "nativeImageGeneration",
     "parallelToolCalls",
     "streaming",
+    "streamUsage",
     "toolCalling"
   ] as const;
   if (optional.some((key) => value[key] !== undefined && typeof value[key] !== "boolean")) {
@@ -348,6 +350,7 @@ export function normalizeProviderModelCapabilities(value: unknown): ProviderMode
     ...(reasoningEfforts ? { reasoningEfforts } : {}),
     ...(reasoningModes ? { reasoningModes } : {}),
     ...(typeof value.streaming === "boolean" ? { streaming: value.streaming } : {}),
+    ...(typeof value.streamUsage === "boolean" ? { streamUsage: value.streamUsage } : {}),
     ...(typeof value.toolCalling === "boolean" ? { toolCalling: value.toolCalling } : {}),
     vision: value.vision as boolean
   };
@@ -421,6 +424,12 @@ export function normalizeProviderModelConfiguration(value: unknown): ProviderMod
 
   const adapterKind = value.adapterKind as ProviderAdapterKind;
   const capabilities = normalizeProviderModelCapabilities(value.capabilities);
+  if (
+    capabilities.streamUsage !== undefined &&
+    adapterKind !== "openai_chat_completions_compatible"
+  ) {
+    throw new ProviderConfigurationError("provider_model_capabilities_invalid");
+  }
   const compatibleProtocol = adapterKind === "openai_responses_compatible"
     ? "responses"
     : adapterKind === "openai_chat_completions_compatible"

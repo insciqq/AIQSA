@@ -568,6 +568,25 @@ export function AdminProviderCustomSetup({
                   />
                   Tool calling
                 </label>
+                {form.protocol === "chat_completions" ? (
+                  <label className="flex min-h-control items-start gap-2 rounded-control bg-answer-paper px-3 py-2 text-xs text-ink-secondary">
+                    <input
+                      checked={form.streamUsage}
+                      className="mt-0.5 size-4 shrink-0 accent-proof"
+                      disabled={controller.state.formLocked}
+                      onChange={(event) => controller.actions.update({
+                        streamUsage: event.currentTarget.checked
+                      })}
+                      type="checkbox"
+                    />
+                    <span>
+                      <span className="block font-medium text-ink">Streaming usage totals</span>
+                      <span className="mt-0.5 block leading-4 text-ink-muted">
+                        Sends `stream_options.include_usage`; enable only when this endpoint supports it.
+                      </span>
+                    </span>
+                  </label>
+                ) : null}
               </div>
             </div>
           </details>

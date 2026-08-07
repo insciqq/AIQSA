@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
 import type { ProviderAdapter, ProviderRunRequest } from "../providers/types";
-import { openAIResponsesToolBridge } from "../tools/bridges";
+import { createAnthropicMessagesAdapter, type AnthropicStreamEvent } from "../providers/anthropicMessages";
+import { anthropicMessagesToolBridge, openAIResponsesToolBridge } from "../tools/bridges";
 import { runProviderToolLoop } from "./providerToolLoop";
 
 function request(): ProviderRunRequest {
@@ -167,5 +168,158 @@ describe("provider tool loop", () => {
       { call_id: "older-call", output: "older result", type: "function_call_output" },
       { call_id: "call-a", output: "current result", type: "function_call_output" }
     ]);
+  });
+
+  it("propagates an Anthropic refusal after a client tool round", async () => {
+    let providerRounds = 0;
+    const client = {
+      async *stream(): AsyncGenerator<AnthropicStreamEvent> {
+        providerRounds += 1;
+        const values: AnthropicStreamEvent[] = providerRounds === 1
+          ? [
+              { message: { id: "msg-tool-round" }, type: "message_start" },
+              {
+                content_block: {
+                  id: "toolu-alpha",
+                  input: { query: "first" },
+                  name: "alpha",
+                  type: "tool_use"
+                },
+                index: 0,
+                type: "content_block_start"
+              },
+              { index: 0, type: "content_block_stop" },
+              {
+                delta: { stop_reason: "tool_use" },
+                type: "message_delta",
+                usage: { output_tokens: 1 }
+              },
+              { type: "message_stop" }
+            ]
+          : [
+              {
+                message: {
+                  id: "msg-refusal-round",
+                  provider_detail: "provider-only refusal explanation",
+                  usage: { input_tokens: 2 }
+                },
+                type: "message_start"
+              },
+              {
+                delta: {
+                  provider_detail: "provider-only refusal explanation",
+                  stop_reason: "refusal"
+                },
+                type: "message_delta",
+                usage: { output_tokens: 0 }
+              },
+              { type: "message_stop" }
+            ];
+        for (const value of values) yield value;
+      }
+    };
+    const executeTool = vi.fn(async () => ({
+      status: "complete" as const,
+      value: {
+        callId: "toolu-alpha",
+        content: [{ text: "tool result", type: "text" as const }],
+        name: "alpha",
+        status: "complete" as const
+      }
+    }));
+    const onProviderResult = vi.fn();
+    const initialRequest: ProviderRunRequest = {
+      ...request(),
+      modelId: "claude-test",
+      provider: "anthropic"
+    };
+
+    const outcome = await runProviderToolLoop({
+      adapter: createAnthropicMessagesAdapter({ client }),
+      bridge: anthropicMessagesToolBridge,
+      budgets: { maxConcurrency: 1, maxToolCalls: 2, maxToolRounds: 2 },
+      executeTool,
+      initialRequest,
+      onProviderResult,
+      parallelToolCalls: false,
+      tools: [
+        { capability: "mcp", description: "A", inputSchema: { type: "object" }, name: "alpha" }
+      ]
+    });
+
+    expect(outcome).toMatchObject({
+      failure: {
+        code: "provider_round_failed",
+        message: "anthropic_message_refusal",
+        round: 2,
+        stage: "provider"
+      },
+      providerRounds: 2,
+      status: "failed",
+      toolCalls: 1,
+      toolRounds: 1
+    });
+    expect(outcome).not.toHaveProperty("final");
+    expect(JSON.stringify(outcome)).not.toContain("provider-only refusal explanation");
+
+    expect(providerRounds).toBe(2);
+    expect(executeTool).toHaveBeenCalledTimes(1);
+    expect(onProviderResult).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not execute an Anthropic client tool call without a tool_use terminal", async () => {
+    const client = {
+      async *stream(): AsyncGenerator<AnthropicStreamEvent> {
+        yield { message: { id: "msg-invalid-tool-terminal" }, type: "message_start" };
+        yield {
+          content_block: {
+            id: "toolu-alpha",
+            input: { query: "must not execute" },
+            name: "alpha",
+            type: "tool_use"
+          },
+          index: 0,
+          type: "content_block_start"
+        };
+        yield { index: 0, type: "content_block_stop" };
+        yield {
+          delta: { stop_reason: "end_turn" },
+          type: "message_delta",
+          usage: { output_tokens: 1 }
+        };
+        yield { type: "message_stop" };
+      }
+    };
+    const executeTool = vi.fn();
+
+    const outcome = await runProviderToolLoop({
+      adapter: createAnthropicMessagesAdapter({ client }),
+      bridge: anthropicMessagesToolBridge,
+      budgets: { maxConcurrency: 1, maxToolCalls: 1, maxToolRounds: 1 },
+      executeTool,
+      initialRequest: {
+        ...request(),
+        modelId: "claude-test",
+        provider: "anthropic"
+      },
+      parallelToolCalls: false,
+      tools: [
+        { capability: "mcp", description: "A", inputSchema: { type: "object" }, name: "alpha" }
+      ]
+    });
+
+    expect(outcome).toMatchObject({
+      failure: {
+        code: "provider_round_failed",
+        message: "anthropic_message_terminal_invalid",
+        round: 1,
+        stage: "provider"
+      },
+      providerRounds: 1,
+      status: "failed",
+      toolCalls: 0,
+      toolRounds: 0
+    });
+    expect(executeTool).not.toHaveBeenCalled();
   });
 });

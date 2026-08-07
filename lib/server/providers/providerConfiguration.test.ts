@@ -201,6 +201,34 @@ describe("provider model configuration", () => {
     }).capabilities.nativeImageGeneration).toBe(true);
   });
 
+  it("allows streaming usage only for compatible Chat Completions", () => {
+    expect(normalizeProviderModelConfiguration({
+      adapterKind: "openai_chat_completions_compatible",
+      capabilities: { ...capabilities, streamUsage: true },
+      defaultParams: {},
+      upstreamModelId: "chat-usage-model"
+    }).capabilities.streamUsage).toBe(true);
+
+    for (const adapterKind of [
+      "openai_responses_compatible",
+      "openai_responses_native",
+      "openrouter_chat_completions"
+    ] as const) {
+      expectCode(
+        () => normalizeProviderModelConfiguration({
+          adapterKind,
+          capabilities: { ...capabilities, streamUsage: true },
+          defaultParams: {},
+          ...(adapterKind === "openrouter_chat_completions"
+            ? { openRouterRouting: { mode: "automatic", providers: [] } }
+            : {}),
+          upstreamModelId: "invalid-stream-usage-model"
+        }),
+        "provider_model_capabilities_invalid"
+      );
+    }
+  });
+
   it("accepts the explicit native Gemini Interactions adapter kind", () => {
     expect(normalizeProviderModelConfiguration({
       adapterKind: "gemini_interactions_native",
@@ -262,6 +290,8 @@ describe("provider model configuration", () => {
 
   it.each([
     { effortPath: "model" },
+    { effortPath: "stream_options" },
+    { effortPath: "stream_options.include_usage" },
     { effortPath: "reasoning.__proto__.effort" },
     { effortPath: "reasoning..effort" },
     { effortPath: "one.two.three.four.five" },

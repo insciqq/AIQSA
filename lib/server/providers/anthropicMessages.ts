@@ -579,6 +579,34 @@ function normalizedArtifactIdentity(event: ModelRunSseEvent): string {
   return JSON.stringify(event);
 }
 
+function assertAnthropicNonHostedTerminal(
+  stopReason: string | undefined,
+  toolCallCount: number
+): void {
+  if (stopReason === undefined) {
+    if (toolCallCount === 0) return;
+    throw new Error("anthropic_message_terminal_invalid");
+  }
+
+  switch (stopReason) {
+    case "end_turn":
+    case "max_tokens":
+    case "stop_sequence":
+      if (toolCallCount === 0) return;
+      throw new Error("anthropic_message_terminal_invalid");
+    case "tool_use":
+      if (toolCallCount > 0) return;
+      throw new Error("anthropic_message_tool_use");
+    case "pause_turn":
+      throw new Error("anthropic_pause_turn_unexpected");
+    case "model_context_window_exceeded":
+    case "refusal":
+      throw new Error(`anthropic_message_${stopReason}`);
+    default:
+      throw new Error("anthropic_message_terminal_invalid");
+  }
+}
+
 export function createAnthropicMessagesAdapter(options: AnthropicMessagesAdapterOptions): ProviderAdapter {
   return {
     buildRequestPreview(request) {
@@ -1078,8 +1106,8 @@ export function createAnthropicMessagesAdapter(options: AnthropicMessagesAdapter
           if (inspection.sources.length === 0) {
             throw new Error("anthropic_search_sources_missing");
           }
-        } else if (attemptStopReason === "pause_turn") {
-          throw new Error("anthropic_pause_turn_unexpected");
+        } else {
+          assertAnthropicNonHostedTerminal(attemptStopReason, toolCalls.length);
         }
 
         messageId = attemptMessageId ?? messageId;

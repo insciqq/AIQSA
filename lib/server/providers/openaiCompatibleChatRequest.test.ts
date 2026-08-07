@@ -76,7 +76,9 @@ function request(overrides: Partial<ProviderRunRequest> = {}): ProviderRunReques
 
 describe("OpenAI-compatible Chat Completions request", () => {
   it("replays context and emits only the reviewed Chat Completions subset", () => {
-    const body = buildOpenAICompatibleChatRequest(request());
+    const runRequest = request();
+    const body = buildOpenAICompatibleChatRequest(runRequest);
+    const preview = buildOpenAICompatibleChatRequestPreview(runRequest);
 
     expect(body).toEqual({
       max_completion_tokens: 128,
@@ -111,9 +113,27 @@ describe("OpenAI-compatible Chat Completions request", () => {
       ]
     });
 
+    expect(body).not.toHaveProperty("stream_options");
+    expect(preview.body).not.toHaveProperty("stream_options");
+
     for (const key of ["cache_control", "metadata", "plugins", "provider", "session_id"]) {
       expect(body).not.toHaveProperty(key);
     }
+  });
+
+  it("requests streaming usage only for an explicitly opted-in model", () => {
+    const runRequest = request({
+      modelCapabilities: {
+        ...request().modelCapabilities,
+        streamUsage: true
+      }
+    });
+    const body = buildOpenAICompatibleChatRequest(runRequest);
+    const preview = buildOpenAICompatibleChatRequestPreview(runRequest);
+
+    expect(body.stream).toBe(true);
+    expect(body.stream_options).toEqual({ include_usage: true });
+    expect(preview.body.stream_options).toEqual({ include_usage: true });
   });
 
   it("appends provider tool messages and keeps full manual replay despite a response id", () => {
@@ -139,6 +159,7 @@ describe("OpenAI-compatible Chat Completions request", () => {
     );
 
     expect(body.stream).toBe(false);
+    expect(body).not.toHaveProperty("stream_options");
     expect(body.messages.slice(-2)).toEqual([
       {
         content: null,
@@ -174,6 +195,7 @@ describe("OpenAI-compatible Chat Completions request", () => {
       stream: false
     });
     expect(body).not.toHaveProperty("temperature");
+    expect(body).not.toHaveProperty("stream_options");
   });
 
   it("maps effort and pro mode identically in actual requests and previews", () => {
@@ -197,6 +219,7 @@ describe("OpenAI-compatible Chat Completions request", () => {
     expect(body).toMatchObject({ reason: { effort: "max", mode: "pro" } });
     expect(body).not.toHaveProperty("reasoning_effort");
     expect(preview.body).toMatchObject({ reason: { effort: "max", mode: "pro" } });
+    expect(preview.body).not.toHaveProperty("stream_options");
   });
 
   it("redacts attachment and continuation canaries while preserving transport payloads", () => {

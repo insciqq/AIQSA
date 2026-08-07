@@ -65,6 +65,7 @@ describe("OpenAI-compatible Chat Completions adapter", () => {
       expect.objectContaining({ model: "vendor/model-1", stream: false }),
       { signal: undefined }
     );
+    expect(createChatCompletion.mock.calls[0]?.[0]).not.toHaveProperty("stream_options");
     expect(streamChatCompletion).not.toHaveBeenCalled();
     expect(adapter.buildRequestPreview(request())).toMatchObject({
       provider: "custom-connection-1",
@@ -81,10 +82,23 @@ describe("OpenAI-compatible Chat Completions adapter", () => {
       client: { createChatCompletion, streamChatCompletion }
     });
 
-    const result = await collect(adapter.stream(request({ params: { stream: true } })));
+    const baseRequest = request();
+    const result = await collect(adapter.stream(request({
+      modelCapabilities: {
+        ...baseRequest.modelCapabilities,
+        streamUsage: true
+      },
+      params: { stream: true }
+    })));
 
     expect(result.finalText).toBe("streamed");
-    expect(streamChatCompletion).toHaveBeenCalledOnce();
+    expect(streamChatCompletion).toHaveBeenCalledWith(
+      expect.objectContaining({
+        stream: true,
+        stream_options: { include_usage: true }
+      }),
+      { signal: undefined }
+    );
     expect(createChatCompletion).not.toHaveBeenCalled();
   });
 });

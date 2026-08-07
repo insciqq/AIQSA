@@ -459,6 +459,8 @@ export function AdminProviderModelEditor({
     if (adapterKind === "openai_chat_completions_compatible") {
       capabilities.nativeSearch = false;
       capabilities.nativeImageGeneration = false;
+    } else {
+      delete capabilities.streamUsage;
     }
     const mapping = compatibleReasoningRequestMappingDefault(
       adapterKind === "openai_responses_compatible" ? "responses" : "chat_completions"
@@ -815,7 +817,7 @@ export function AdminProviderModelEditor({
         <section className="grid gap-3 rounded-control border border-trace-subtle bg-answer-paper p-3" aria-labelledby="compatible-model-features">
           <div>
             <h4 className="text-xs font-semibold text-ink" id="compatible-model-features">OpenAI-compatible model features</h4>
-            <p className={helpText}>These controls are part of the model contract and appear in Run setup after activation.</p>
+            <p className={helpText}>These controls are part of the model and request contract after activation.</p>
           </div>
           <div className="grid gap-3 md:grid-cols-2">
             <div>
@@ -840,22 +842,27 @@ export function AdminProviderModelEditor({
                 checked={form.capabilities.nativeSearch === true}
                 className="mt-0.5 size-4 shrink-0 accent-proof"
                 disabled={controller.state.busy}
-                onChange={(event) => setForm({
-                  ...form,
-                  adapterKind: event.currentTarget.checked
-                    ? "openai_responses_compatible"
-                    : form.adapterKind,
-                  capabilities: {
+                onChange={(event) => {
+                  const enabled = event.currentTarget.checked;
+                  const capabilities = {
                     ...form.capabilities,
-                    nativeSearch: event.currentTarget.checked
-                  },
-                  ...(event.currentTarget.checked && form.adapterKind !== "openai_responses_compatible"
-                    ? {
-                        reasoningEffortPath: "reasoning.effort",
-                        reasoningModePath: "reasoning.mode"
-                      }
-                    : {})
-                })}
+                    nativeSearch: enabled
+                  };
+                  if (enabled) delete capabilities.streamUsage;
+                  setForm({
+                    ...form,
+                    adapterKind: enabled
+                      ? "openai_responses_compatible"
+                      : form.adapterKind,
+                    capabilities,
+                    ...(enabled && form.adapterKind !== "openai_responses_compatible"
+                      ? {
+                          reasoningEffortPath: "reasoning.effort",
+                          reasoningModePath: "reasoning.mode"
+                        }
+                      : {})
+                  });
+                }}
                 type="checkbox"
               />
               <span>
@@ -863,6 +870,26 @@ export function AdminProviderModelEditor({
                 <span className="mt-0.5 block leading-4 text-ink-muted">Enabling this selects Responses, where AIQSA can serialize the hosted tool and citations.</span>
               </span>
             </label>
+            {form.adapterKind === "openai_chat_completions_compatible" ? (
+              <label className={`flex min-h-control items-start gap-2 rounded-control bg-control-surface px-3 py-2 text-xs text-ink-secondary ${touchTarget}`}>
+                <input
+                  checked={form.capabilities.streamUsage === true}
+                  className="mt-0.5 size-4 shrink-0 accent-proof"
+                  disabled={controller.state.busy}
+                  onChange={(event) => updateCapability(
+                    "streamUsage",
+                    event.currentTarget.checked || undefined
+                  )}
+                  type="checkbox"
+                />
+                <span>
+                  <span className="block font-medium text-ink">Streaming usage totals</span>
+                  <span className="mt-0.5 block leading-4 text-ink-muted">
+                    Sends `stream_options.include_usage`; enable only when this endpoint supports it.
+                  </span>
+                </span>
+              </label>
+            ) : null}
             {form.capabilities.reasoning ? (
               <div className="grid gap-3 rounded-control border border-trace-subtle bg-control-surface/45 p-3 md:col-span-2 md:grid-cols-2">
                 <label>

@@ -879,6 +879,15 @@ describe("AdminProvidersSection", () => {
       .toHaveValue("automatic");
     expect(screen.getByText(/Effort: none, low, medium, high, xhigh, max; default medium/))
       .toBeInTheDocument();
+    fireEvent.change(screen.getByRole("combobox", { name: /^Protocol/ }), {
+      target: { value: "openai_chat_completions_compatible" }
+    });
+    fireEvent.click(screen.getByRole("checkbox", { name: /Streaming usage totals/ }));
+    expect(screen.getByRole("checkbox", { name: /Streaming usage totals/ }))
+      .toBeChecked();
+    fireEvent.click(screen.getByRole("checkbox", { name: /Hosted web search/ }));
+    expect(screen.queryByRole("checkbox", { name: /Streaming usage totals/ }))
+      .not.toBeInTheDocument();
     expect(screen.getByLabelText(/^Reasoning effort field/)).toHaveValue("reasoning.effort");
     expect(screen.getByLabelText(/^Reasoning mode field \(optional\)/)).toHaveValue("reasoning.mode");
     fireEvent.change(screen.getByLabelText(/^Reasoning effort field/), {
@@ -887,7 +896,6 @@ describe("AdminProvidersSection", () => {
     fireEvent.change(screen.getByLabelText(/^Reasoning mode field \(optional\)/), {
       target: { value: "mode" }
     });
-    fireEvent.click(screen.getByRole("checkbox", { name: /Hosted web search/ }));
     fireEvent.click(screen.getByRole("button", { name: "Save model" }));
 
     await waitFor(() => expect(view.actions.createModel).toHaveBeenCalledWith(
@@ -912,6 +920,8 @@ describe("AdminProvidersSection", () => {
         displayName: "local/model-b"
       })
     ));
+    expect(view.actions.createModel.mock.calls[0]?.[1].configuration.capabilities)
+      .not.toHaveProperty("streamUsage");
   });
 
   it("keeps model actions outside the list clip and leaves the upstream id in configuration only", () => {

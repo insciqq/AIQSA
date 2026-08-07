@@ -39,6 +39,7 @@ type AdminProviderCustomSetupForm = {
   reasoningModePath: string;
   secret: string;
   streaming: boolean;
+  streamUsage: boolean;
   toolCalling: boolean;
   webSearch: boolean;
 };
@@ -61,6 +62,7 @@ function initialForm(): AdminProviderCustomSetupForm {
     reasoningModePath: "",
     secret: "",
     streaming: ADMIN_PROVIDER_CUSTOM_DEFAULT_CAPABILITIES.streaming,
+    streamUsage: false,
     toolCalling: ADMIN_PROVIDER_CUSTOM_DEFAULT_CAPABILITIES.toolCalling,
     webSearch: false
   };
@@ -310,6 +312,9 @@ export function useAdminProviderCustomSetupController(
         nativeSearch: form.webSearch,
         ...reasoning,
         streaming: form.streaming,
+        ...(form.protocol === "chat_completions" && form.streamUsage
+          ? { streamUsage: true }
+          : {}),
         toolCalling: form.toolCalling
       },
       confirmPaidRequest: true,

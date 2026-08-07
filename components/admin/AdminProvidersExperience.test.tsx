@@ -281,7 +281,11 @@ describe("AdminProvidersExperience", () => {
     fireEvent.click(screen.getByText("Advanced settings"));
     expect(screen.getByRole("combobox", { name: /^Reasoning controls/ }))
       .toHaveValue("automatic");
+    expect(screen.getByRole("checkbox", { name: /Streaming usage totals/ }))
+      .not.toBeChecked();
     fireEvent.click(screen.getByLabelText("Hosted web search"));
+    expect(screen.queryByRole("checkbox", { name: /Streaming usage totals/ }))
+      .not.toBeInTheDocument();
     fireEvent.click(screen.getByLabelText("Image generation (future workflows)"));
     expect(screen.getByLabelText(/^Reasoning effort field/)).toHaveValue("reasoning.effort");
     expect(screen.getByLabelText(/^Reasoning mode field \(optional\)/)).toHaveValue("reasoning.mode");

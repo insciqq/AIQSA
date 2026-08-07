@@ -79,12 +79,32 @@ describe("useAdminProviderCustomSetupController", () => {
       streaming: true,
       toolCalling: false
     });
+    expect(api.submit.mock.calls[0]?.[0].capabilities).not.toHaveProperty("streamUsage");
     expect(api.submit.mock.calls[0]?.[0].reasoningRequestMapping).toEqual({
       effortPath: "reasoning_effort"
     });
     expect(result.current.state.form.secret).toBe("");
     expect(result.current.state.ready).toEqual(ready);
     await waitFor(() => expect(onMutationCommitted).toHaveBeenCalledOnce());
+  });
+
+  it("opts into streaming usage only for Chat Completions", async () => {
+    api.submit.mockResolvedValue({ data: ready, ok: true });
+    const { result } = renderHook(() => useAdminProviderCustomSetupController(true));
+    fillRequired(result, { streamUsage: true });
+
+    await act(async () => {
+      await result.current.actions.submit();
+    });
+
+    expect(api.submit.mock.calls[0]?.[0].capabilities).toMatchObject({ streamUsage: true });
+
+    fillRequired(result, { protocol: "responses", streamUsage: true });
+    await act(async () => {
+      await result.current.actions.submit();
+    });
+
+    expect(api.submit.mock.calls[1]?.[0].capabilities).not.toHaveProperty("streamUsage");
   });
 
   it("uses explicit none only for an allowed private HTTP endpoint", async () => {

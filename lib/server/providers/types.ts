@@ -48,6 +48,8 @@ export type ProviderModelCapabilities = {
   reasoningEfforts?: string[];
   reasoningModes?: string[];
   streaming?: boolean;
+  /** Opts a compatible Chat endpoint into `stream_options.include_usage`. */
+  streamUsage?: boolean;
   toolCalling?: boolean;
   vision: boolean;
 };

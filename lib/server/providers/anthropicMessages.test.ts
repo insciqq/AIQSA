@@ -737,6 +737,200 @@ describe("Anthropic Messages adapter", () => {
     });
   });
 
+  it.each(["refusal", "model_context_window_exceeded"])(
+    "rejects a non-hosted %s terminal without exposing provider details",
+    async (stopReason) => {
+      const providerDetail = `${remoteSecret}: provider-only terminal detail`;
+      const client: AnthropicMessagesClient = {
+        stream: () => events([
+          {
+            message: {
+              id: `msg-${stopReason}`,
+              provider_detail: providerDetail,
+              usage: { input_tokens: 4 }
+            },
+            type: "message_start"
+          },
+          {
+            delta: { provider_detail: providerDetail, stop_reason: stopReason },
+            type: "message_delta",
+            usage: { output_tokens: 0 }
+          },
+          { type: "message_stop" }
+        ])
+      };
+
+      try {
+        await collectAdapterStream(client, DEFAULT_PROVIDER_STREAM_LIMITS.maxOutputChars);
+        throw new Error("Expected Anthropic terminal failure.");
+      } catch (error) {
+        expect(error).toEqual(new Error(`anthropic_message_${stopReason}`));
+        expect(String(error)).not.toContain(providerDetail);
+      }
+    }
+  );
+
+  it("rejects an unknown provider-controlled stop reason with a stable identity", async () => {
+    const stopReason = `future_${remoteSecret}`;
+    const client: AnthropicMessagesClient = {
+      stream: () => events([
+        { message: { id: "msg-unknown-stop-reason" }, type: "message_start" },
+        { delta: { stop_reason: stopReason }, type: "message_delta" },
+        { type: "message_stop" }
+      ])
+    };
+
+    const failure = await collectAdapterStream(
+      client,
+      DEFAULT_PROVIDER_STREAM_LIMITS.maxOutputChars
+    ).then(
+      () => new Error("Expected Anthropic terminal failure."),
+      (error: unknown) => error
+    );
+
+    expect(failure).toEqual(new Error("anthropic_message_terminal_invalid"));
+    expect(String(failure)).not.toContain(remoteSecret);
+  });
+
+  it.each(["max_tokens", "stop_sequence"])(
+    "preserves partial text, usage, and preview for %s",
+    async (stopReason) => {
+      const client: AnthropicMessagesClient = {
+        stream: () => events([
+          {
+            message: {
+              id: `msg-${stopReason}`,
+              model: "claude-opus-4-8",
+              usage: { input_tokens: 4 }
+            },
+            type: "message_start"
+          },
+          { content_block: { text: "", type: "text" }, index: 0, type: "content_block_start" },
+          {
+            delta: { text: "Usable partial answer", type: "text_delta" },
+            index: 0,
+            type: "content_block_delta"
+          },
+          { index: 0, type: "content_block_stop" },
+          {
+            delta: { stop_reason: stopReason },
+            type: "message_delta",
+            usage: { output_tokens: 3 }
+          },
+          { type: "message_stop" }
+        ])
+      };
+
+      const normalized = await collectAdapterStream(
+        client,
+        DEFAULT_PROVIDER_STREAM_LIMITS.maxOutputChars
+      );
+
+      expect(normalized.result).toMatchObject({
+        finalProviderResponsePreview: {
+          id: `msg-${stopReason}`,
+          model: "claude-opus-4-8",
+          provider: "anthropic",
+          stopReason,
+          text: "Usable partial answer",
+          usage: { input_tokens: 4, output_tokens: 3, reasoning_tokens: 0 }
+        },
+        finalText: "Usable partial answer",
+        providerResponseId: `msg-${stopReason}`,
+        usage: { inputTokens: 4, outputTokens: 3, reasoningTokens: 0, totalTokens: 7 }
+      });
+    }
+  );
+
+  it("preserves a non-hosted success without message_delta", async () => {
+    const client: AnthropicMessagesClient = {
+      stream: () => events([
+        {
+          message: {
+            id: "msg-no-message-delta",
+            model: "claude-opus-4-8",
+            usage: { input_tokens: 2, output_tokens: 1 }
+          },
+          type: "message_start"
+        },
+        {
+          content_block: { text: "Terminal-only shape", type: "text" },
+          index: 0,
+          type: "content_block_start"
+        },
+        { index: 0, type: "content_block_stop" },
+        { type: "message_stop" }
+      ])
+    };
+
+    await expect(collectAdapterStream(
+      client,
+      DEFAULT_PROVIDER_STREAM_LIMITS.maxOutputChars
+    )).resolves.toMatchObject({
+      result: {
+        finalProviderResponsePreview: {
+          stopReason: undefined,
+          text: "Terminal-only shape"
+        },
+        finalText: "Terminal-only shape",
+        usage: { inputTokens: 2, outputTokens: 1, reasoningTokens: 0, totalTokens: 3 }
+      }
+    });
+  });
+
+  it.each([undefined, "end_turn", "max_tokens", "stop_sequence"] as const)(
+    "rejects a client tool call paired with non-tool terminal %s",
+    async (stopReason) => {
+      const streamEvents: AnthropicStreamEvent[] = [
+        { message: { id: "msg-invalid-tool-terminal" }, type: "message_start" },
+        {
+          content_block: {
+            id: "toolu-invalid-terminal",
+            input: { query: "must not execute" },
+            name: "mem0__search",
+            type: "tool_use"
+          },
+          index: 0,
+          type: "content_block_start"
+        },
+        { index: 0, type: "content_block_stop" },
+        ...(stopReason === undefined
+          ? []
+          : [{ delta: { stop_reason: stopReason }, type: "message_delta" } as const]),
+        { type: "message_stop" }
+      ];
+      const client: AnthropicMessagesClient = {
+        stream: () => events(streamEvents)
+      };
+
+      await expect(collectAdapterStream(
+        client,
+        DEFAULT_PROVIDER_STREAM_LIMITS.maxOutputChars,
+        request({ tools: [mcpTool] })
+      )).rejects.toThrow("anthropic_message_terminal_invalid");
+    }
+  );
+
+  it("rejects pause_turn and tool_use without a parsed client tool call", async () => {
+    const terminal = (stopReason: "pause_turn" | "tool_use"): AnthropicMessagesClient => ({
+      stream: () => events([
+        { message: { id: `msg-${stopReason}` }, type: "message_start" },
+        { delta: { stop_reason: stopReason }, type: "message_delta" },
+        { type: "message_stop" }
+      ])
+    });
+
+    await expect(collectAdapterStream(
+      terminal("pause_turn"),
+      DEFAULT_PROVIDER_STREAM_LIMITS.maxOutputChars
+    )).rejects.toThrow("anthropic_pause_turn_unexpected");
+    await expect(collectAdapterStream(
+      terminal("tool_use"),
+      DEFAULT_PROVIDER_STREAM_LIMITS.maxOutputChars,
+      request({ tools: [mcpTool] })
+    )).rejects.toThrow("anthropic_message_tool_use");
+  });
+
   it("normalizes hosted Search SSE without exposing server blocks as client tool calls", async () => {
     const client: AnthropicMessagesClient = {
       stream: () => events([
@@ -1189,6 +1383,7 @@ describe("Anthropic Messages adapter", () => {
           type: "content_block_delta"
         },
         { index: 0, type: "content_block_stop" },
+        { delta: { stop_reason: "tool_use" }, type: "message_delta" },
         { type: "message_stop" }
       ])
     });
@@ -1220,6 +1415,7 @@ describe("Anthropic Messages adapter", () => {
           type: "content_block_start"
         },
         { index: 0, type: "content_block_stop" },
+        { delta: { stop_reason: "tool_use" }, type: "message_delta" },
         { type: "message_stop" }
       ])
     });
@@ -1273,6 +1469,7 @@ describe("Anthropic Messages adapter", () => {
           type: "content_block_start"
         },
         { index: 0, type: "content_block_stop" },
+        { delta: { stop_reason: "tool_use" }, type: "message_delta" },
         { type: "message_stop" }
       ])
     });

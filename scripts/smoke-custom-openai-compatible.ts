@@ -29,6 +29,7 @@ type CapturedRequest = Readonly<{
   method: string | undefined;
   model: unknown;
   stream: unknown;
+  streamOptions: unknown;
   url: string | undefined;
 }>;
 
@@ -102,7 +103,7 @@ async function collect(
   return { result: next.value, textDeltas, usageEventCount };
 }
 
-function smokeRequest(provider: string): ProviderRunRequest {
+function smokeRequest(provider: string, streamUsage = false): ProviderRunRequest {
   return {
     attachmentIds: [],
     attachments: [],
@@ -117,6 +118,7 @@ function smokeRequest(provider: string): ProviderRunRequest {
       pdf: false,
       reasoning: false,
       streaming: true,
+      ...(streamUsage ? { streamUsage: true } : {}),
       toolCalling: false,
       vision: false
     },
@@ -157,6 +159,7 @@ async function main(): Promise<void> {
         method: request.method,
         model: body.model,
         stream: body.stream,
+        streamOptions: body.stream_options,
         url: request.url
       });
 
@@ -191,7 +194,7 @@ async function main(): Promise<void> {
           bearerToken: BEARER_TOKEN
         })
       }),
-      smokeRequest("custom-bearer")
+      smokeRequest("custom-bearer", true)
     );
     const noAuth = await collect(
       createOpenAICompatibleChatAdapter({
@@ -215,22 +218,25 @@ async function main(): Promise<void> {
       });
     }
     assert.equal(captured.length, 2);
-    assert.deepEqual(captured.map(({ method, model, stream, url }) => ({
+    assert.deepEqual(captured.map(({ method, model, stream, streamOptions, url }) => ({
       method,
       model,
       stream,
+      streamOptions,
       url
     })), [
       {
         method: "POST",
         model: MANUAL_MODEL_ID,
         stream: true,
+        streamOptions: { include_usage: true },
         url: "/v1/chat/completions"
       },
       {
         method: "POST",
         model: MANUAL_MODEL_ID,
         stream: true,
+        streamOptions: undefined,
         url: "/v1/chat/completions"
       }
     ]);
@@ -246,6 +252,7 @@ async function main(): Promise<void> {
       requestCount: captured.length,
       status: "passed",
       streamingTextVerified: true,
+      streamUsageOptInVerified: true,
       usageVerified: true
     }, null, 2));
   } finally {

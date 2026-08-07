@@ -25,6 +25,7 @@ export type OpenAICompatibleChatRequestBody = Record<string, unknown> & {
   parallel_tool_calls?: boolean;
   reasoning_effort?: string;
   stream: boolean;
+  stream_options?: { include_usage: true };
   temperature?: number;
   tool_choice?: "auto" | "none";
   tools?: Record<string, unknown>[];
@@ -209,14 +210,19 @@ function buildBody(
   request: ProviderRunRequest,
   options: PrivateBuildOptions
 ): OpenAICompatibleChatRequestBody {
+  const stream = request.forceNonStreaming ? false : request.params.stream === true;
   const body: OpenAICompatibleChatRequestBody = {
     messages: buildMessages(request, options),
     model: request.modelId,
-    stream: request.forceNonStreaming ? false : request.params.stream === true
+    stream
   };
   const maxCompletionTokens = maxOutputTokensFromParams(request.params);
   const tools = (request.tools ?? []).map(serializeTool);
   const reasoning = isRecord(request.params.reasoning) ? request.params.reasoning : null;
+
+  if (stream && request.modelCapabilities.streamUsage === true) {
+    body.stream_options = { include_usage: true };
+  }
 
   if (maxCompletionTokens !== undefined) {
     body.max_completion_tokens = maxCompletionTokens;
