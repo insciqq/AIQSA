@@ -39,6 +39,10 @@ const RESERVED_REASONING_REQUEST_ROOTS = new Set([
   "tools"
 ]);
 
+export const DEFAULT_PROVIDER_RESPONSE_TIMEOUT_MS = 300_000;
+export const MIN_PROVIDER_RESPONSE_TIMEOUT_MS = 5_000;
+export const MAX_PROVIDER_RESPONSE_TIMEOUT_MS = 900_000;
+
 export const providerAdapterKinds = [
   "anthropic_messages",
   "gemini_interactions_native",
@@ -62,6 +66,8 @@ export type ProviderConnectionConfiguration = {
   allowPrivateNetwork: boolean;
   apiRoot: string;
   authenticationMode?: ProviderAuthenticationMode;
+  /** Missing only on legacy persisted JSON and normalized to the default. */
+  responseTimeoutMs?: number;
 };
 
 export type OpenRouterRoutingConfiguration =
@@ -81,6 +87,8 @@ export type ProviderModelConfiguration = {
   defaultParams: Record<string, unknown>;
   openRouterRouting?: OpenRouterRoutingConfiguration;
   reasoningRequestMapping?: ProviderReasoningRequestMapping;
+  /** Missing means inherit the connection response deadline. */
+  responseTimeoutMs?: number;
   upstreamModelId: string;
 };
 
@@ -92,6 +100,7 @@ export type ProviderConfigurationErrorCode =
   | "provider_default_params_invalid"
   | "provider_model_capabilities_invalid"
   | "provider_reasoning_mapping_invalid"
+  | "provider_response_timeout_invalid"
   | "provider_routing_invalid"
   | "provider_upstream_model_invalid";
 
@@ -140,6 +149,42 @@ function jsonByteLength(value: unknown): number {
   } catch {
     return Infinity;
   }
+}
+
+export function normalizeProviderResponseTimeoutMs(
+  value: unknown,
+  fallback: number | null = DEFAULT_PROVIDER_RESPONSE_TIMEOUT_MS
+): number | undefined {
+  if (value === undefined && fallback !== null) return fallback;
+  if (value === undefined) return undefined;
+  if (
+    !Number.isSafeInteger(value) ||
+    Number(value) < MIN_PROVIDER_RESPONSE_TIMEOUT_MS ||
+    Number(value) > MAX_PROVIDER_RESPONSE_TIMEOUT_MS
+  ) {
+    throw new ProviderConfigurationError("provider_response_timeout_invalid");
+  }
+  return Number(value);
+}
+
+export function providerResponseTimeoutMsFromSeconds(
+  value: unknown,
+  fallbackMs: number | null = DEFAULT_PROVIDER_RESPONSE_TIMEOUT_MS
+): number | undefined {
+  if (value === undefined) return fallbackMs ?? undefined;
+  if (!Number.isSafeInteger(value)) {
+    throw new ProviderConfigurationError("provider_response_timeout_invalid");
+  }
+  return normalizeProviderResponseTimeoutMs(Number(value) * 1_000, null);
+}
+
+export function effectiveProviderResponseTimeoutMs(
+  connection: ProviderConnectionConfiguration,
+  model?: Pick<ProviderModelConfiguration, "responseTimeoutMs"> | null
+): number {
+  return normalizeProviderResponseTimeoutMs(
+    model?.responseTimeoutMs ?? connection.responseTimeoutMs
+  )!;
 }
 
 function normalizeReasoningPath(value: unknown): string {
@@ -236,6 +281,7 @@ export function normalizeProviderConnectionConfiguration(
     throw new ProviderConfigurationError("provider_authentication_mode_invalid");
   }
   const apiRoot = normalizeProviderApiRoot(value.apiRoot, value.allowPrivateNetwork);
+  const responseTimeoutMs = normalizeProviderResponseTimeoutMs(value.responseTimeoutMs)!;
   if (
     value.authenticationMode === "none" &&
     (!value.allowPrivateNetwork || new URL(apiRoot).protocol !== "http:")
@@ -248,7 +294,8 @@ export function normalizeProviderConnectionConfiguration(
     apiRoot,
     ...(value.authenticationMode === "bearer" || value.authenticationMode === "none"
       ? { authenticationMode: value.authenticationMode }
-      : {})
+      : {}),
+    responseTimeoutMs
   };
 }
 
@@ -455,6 +502,10 @@ export function normalizeProviderModelConfiguration(value: unknown): ProviderMod
   const defaultParams = openRouterRouting
     ? openRouterDefaultParams(rawDefaultParams, openRouterRouting)
     : rawDefaultParams;
+  const responseTimeoutMs = normalizeProviderResponseTimeoutMs(
+    value.responseTimeoutMs,
+    null
+  );
 
   return {
     adapterKind,
@@ -463,6 +514,7 @@ export function normalizeProviderModelConfiguration(value: unknown): ProviderMod
     defaultParams,
     ...(openRouterRouting ? { openRouterRouting } : {}),
     ...(reasoningRequestMapping ? { reasoningRequestMapping } : {}),
+    ...(responseTimeoutMs === undefined ? {} : { responseTimeoutMs }),
     upstreamModelId: value.upstreamModelId.trim()
   };
 }

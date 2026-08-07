@@ -13,6 +13,7 @@ import {
 } from "./openaiCompatibleChatTransport";
 import type { ProviderAdapter, ProviderRunResult } from "./types";
 import type { ProviderReasoningRequestMapping } from "../../contracts/providerReasoningRequestMapping";
+import { providerStreamTimingLimits } from "./network";
 
 export {
   buildOpenAICompatibleChatRequest,
@@ -43,17 +44,20 @@ export function createOpenAICompatibleChatAdapter(
 
       if (body.stream) {
         const response = await options.client.streamChatCompletion(body, {
-          signal: runOptions.signal
+          signal: runOptions.signal,
+          timeoutMs: runOptions.timeoutMs
         });
         return yield* streamOpenAICompatibleChatSseResponse(
           response,
           request,
-          runOptions.signal
+          runOptions.signal,
+          providerStreamTimingLimits(runOptions.timeoutMs)
         );
       }
 
       const response = await options.client.createChatCompletion(body, {
-        signal: runOptions.signal
+        signal: runOptions.signal,
+        timeoutMs: runOptions.timeoutMs
       });
       return yield* streamOpenAICompatibleChatJsonResponse(response, request);
     }

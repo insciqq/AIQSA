@@ -784,7 +784,10 @@ describe("OpenAI Responses adapter", () => {
 
     await stream.next();
     const expired = stream.next();
-    const expiration = expect(expired).rejects.toThrow("openai_background_response_poll_timeout");
+    const expiration = expect(expired).rejects.toMatchObject({
+      code: "provider_request_timed_out",
+      timeoutMs: 50
+    });
     await vi.advanceTimersByTimeAsync(50);
 
     await expiration;

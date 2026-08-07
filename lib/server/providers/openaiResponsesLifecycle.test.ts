@@ -194,55 +194,48 @@ describe("OpenAI Responses lifecycle", () => {
 
   it("uses one captured deadline across slow create, waits, retry, and retrieve work", async () => {
     const retryable = await transportError(503);
-    const previousTimeout = process.env.AIQSA_OPENAI_BACKGROUND_POLL_TIMEOUT_MS;
-    process.env.AIQSA_OPENAI_BACKGROUND_POLL_TIMEOUT_MS = "100";
     let retrieveCalls = 0;
     vi.useFakeTimers();
 
-    try {
-      const lifecycle = createOpenAIResponsesLifecycle({
-        client: client({
-          create: async (_body, options) =>
-            afterDelay(25, options?.signal, () => ({ id: "resp-timeout", status: "queued" })),
-          retrieve: async (_responseId, options) => {
-            retrieveCalls += 1;
-            return afterDelay(20, options?.signal, () => {
-              if (retrieveCalls === 1) {
-                throw retryable;
-              }
-              return { id: "resp-timeout", status: "in_progress" };
-            });
-          }
-        }),
-        maxRetryableRetrieveErrors: 1,
-        pollIntervalMs: 20
-      });
-      process.env.AIQSA_OPENAI_BACKGROUND_POLL_TIMEOUT_MS = "1000";
-      const generator = lifecycle.createAndPoll({});
+    const lifecycle = createOpenAIResponsesLifecycle({
+      client: client({
+        create: async (_body, options) =>
+          afterDelay(25, options?.signal, () => ({ id: "resp-timeout", status: "queued" })),
+        retrieve: async (_responseId, options) => {
+          retrieveCalls += 1;
+          return afterDelay(20, options?.signal, () => {
+            if (retrieveCalls === 1) {
+              throw retryable;
+            }
+            return { id: "resp-timeout", status: "in_progress" };
+          });
+        }
+      }),
+      maxRetryableRetrieveErrors: 1,
+      pollIntervalMs: 20,
+      pollTimeoutMs: 100
+    });
+    const generator = lifecycle.createAndPoll({});
 
-      const created = generator.next();
-      await vi.advanceTimersByTimeAsync(25);
-      await expect(created).resolves.toMatchObject({ value: { kind: "created" } });
+    const created = generator.next();
+    await vi.advanceTimersByTimeAsync(25);
+    await expect(created).resolves.toMatchObject({ value: { kind: "created" } });
 
-      const retry = generator.next();
-      await vi.advanceTimersByTimeAsync(40);
-      await expect(retry).resolves.toMatchObject({
-        value: { attempt: 1, kind: "retrieve_retry" }
-      });
+    const retry = generator.next();
+    await vi.advanceTimersByTimeAsync(40);
+    await expect(retry).resolves.toMatchObject({
+      value: { attempt: 1, kind: "retrieve_retry" }
+    });
 
-      const expired = generator.next();
-      const expiration = expect(expired).rejects.toThrow("openai_background_response_poll_timeout");
-      await vi.advanceTimersByTimeAsync(35);
-      await expiration;
-      expect(retrieveCalls).toBe(2);
-      expect(vi.getTimerCount()).toBe(0);
-    } finally {
-      if (typeof previousTimeout === "undefined") {
-        delete process.env.AIQSA_OPENAI_BACKGROUND_POLL_TIMEOUT_MS;
-      } else {
-        process.env.AIQSA_OPENAI_BACKGROUND_POLL_TIMEOUT_MS = previousTimeout;
-      }
-    }
+    const expired = generator.next();
+    const expiration = expect(expired).rejects.toMatchObject({
+      code: "provider_request_timed_out",
+      timeoutMs: 100
+    });
+    await vi.advanceTimersByTimeAsync(35);
+    await expiration;
+    expect(retrieveCalls).toBe(2);
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it("bounds a create client that ignores the lifecycle abort signal", async () => {
@@ -254,7 +247,10 @@ describe("OpenAI Responses lifecycle", () => {
       pollTimeoutMs: 50
     });
     const pending = lifecycle.createAndPoll({}).next();
-    const expiration = expect(pending).rejects.toThrow("openai_background_response_poll_timeout");
+    const expiration = expect(pending).rejects.toMatchObject({
+      code: "provider_request_timed_out",
+      timeoutMs: 50
+    });
 
     await vi.advanceTimersByTimeAsync(50);
 

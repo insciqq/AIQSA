@@ -18,6 +18,7 @@ import {
 import {
   ProviderResponseTooLargeError,
   providerHttpErrorMessage,
+  providerStreamTimingLimits,
   readBoundedResponseText,
   resolveProviderStreamLimits,
   withTimeoutSignal,
@@ -53,7 +54,11 @@ export type AnthropicStreamEvent = Record<string, unknown>;
 export type AnthropicMessagesClient = {
   stream(
     body: Record<string, unknown>,
-    options?: { signal?: AbortSignal; streamLimits?: ProviderStreamLimits }
+    options?: {
+      signal?: AbortSignal;
+      streamLimits?: ProviderStreamLimits;
+      timeoutMs?: number;
+    }
   ): AsyncGenerator<AnthropicStreamEvent>;
 };
 
@@ -710,7 +715,10 @@ export function createAnthropicMessagesAdapter(options: AnthropicMessagesAdapter
       };
     },
     async *stream(request, runOptions = {}): AsyncGenerator<ModelRunSseEvent, ProviderRunResult> {
-      const streamLimits = resolveProviderStreamLimits(options.streamLimits);
+      const streamLimits = resolveProviderStreamLimits({
+        ...options.streamLimits,
+        ...providerStreamTimingLimits(runOptions.timeoutMs)
+      });
       let body = buildAnthropicMessagesRequest(request, {
         maxAttachmentTextChars: options.maxAttachmentTextChars,
         preview: false,
@@ -781,7 +789,8 @@ export function createAnthropicMessagesAdapter(options: AnthropicMessagesAdapter
             streamLimits,
             streamStartedAt,
             streamBytesUsed
-          )
+          ),
+          timeoutMs: runOptions.timeoutMs
         })) {
           const snapshot = providerStreamSafetySnapshot(event);
           attemptStreamBytes = Math.max(
@@ -1231,6 +1240,7 @@ async function throwAnthropicHttpError(response: Response, signal: AbortSignal):
 export function createFetchAnthropicMessagesClient(input: {
   apiKey: string;
   baseUrl?: string;
+  defaultTimeoutMs?: number;
   fetchFn?: typeof fetch;
   version?: string;
 }): AnthropicMessagesClient & AnthropicMessagesSearchClient {
@@ -1239,7 +1249,10 @@ export function createFetchAnthropicMessagesClient(input: {
 
   return {
     async createMessage(body, options) {
-      const timeout = withTimeoutSignal(options?.signal, options?.timeoutMs);
+      const timeout = withTimeoutSignal(
+        options?.signal,
+        options?.timeoutMs ?? input.defaultTimeoutMs
+      );
       try {
         const response = await fetchFn(`${baseUrl}/messages`, {
           body: JSON.stringify(body),
@@ -1273,7 +1286,10 @@ export function createFetchAnthropicMessagesClient(input: {
     async *stream(body, options) {
       const streamLimits = resolveProviderStreamLimits(options?.streamLimits);
       const deadline = withTimeoutSignal(options?.signal, streamLimits.maxDurationMs);
-      const requestTimeout = withTimeoutSignal(deadline.signal);
+      const requestTimeout = withTimeoutSignal(
+        deadline.signal,
+        options?.timeoutMs ?? input.defaultTimeoutMs ?? streamLimits.maxDurationMs
+      );
       try {
         const response = await fetchFn(`${baseUrl}/messages`, {
           body: JSON.stringify(body),

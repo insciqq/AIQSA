@@ -15,6 +15,11 @@ import type {
   AdminProviderConnection,
   AdminProviderFamily
 } from "@/lib/contracts/adminProviders";
+import {
+  ADMIN_PROVIDER_RESPONSE_TIMEOUT_DEFAULT_SECONDS,
+  ADMIN_PROVIDER_RESPONSE_TIMEOUT_MAX_SECONDS,
+  ADMIN_PROVIDER_RESPONSE_TIMEOUT_MIN_SECONDS
+} from "@/lib/contracts/adminProviders";
 import { useRef, useState } from "react";
 
 type ConnectionForm = {
@@ -23,6 +28,7 @@ type ConnectionForm = {
   authenticationMode: "bearer" | "none";
   displayName: string;
   family: AdminProviderFamily;
+  responseTimeoutSeconds: string;
 };
 
 const fieldLabel = "mb-1 block text-xs font-medium text-ink-secondary";
@@ -35,7 +41,8 @@ function blankConnection(family: ProviderAdvancedFamily | null): ConnectionForm 
     apiRoot: providerFamilyRoot(selectedFamily),
     authenticationMode: "bearer",
     displayName: providerFamilyLabel(selectedFamily),
-    family: selectedFamily
+    family: selectedFamily,
+    responseTimeoutSeconds: String(ADMIN_PROVIDER_RESPONSE_TIMEOUT_DEFAULT_SECONDS)
   };
 }
 
@@ -45,7 +52,11 @@ function connectionForm(connection: AdminProviderConnection): ConnectionForm {
     apiRoot: connection.draftConfig.apiRoot,
     authenticationMode: connection.draftConfig.authenticationMode ?? "bearer",
     displayName: connection.displayName,
-    family: connection.family === "fake" ? "openai_compatible" : connection.family
+    family: connection.family === "fake" ? "openai_compatible" : connection.family,
+    responseTimeoutSeconds: String(
+      connection.draftConfig.responseTimeoutSeconds ??
+        ADMIN_PROVIDER_RESPONSE_TIMEOUT_DEFAULT_SECONDS
+    )
   };
 }
 
@@ -77,6 +88,7 @@ export function AdminProviderConnectionEditor({
           configuration: {
             allowPrivateNetwork: form.allowPrivateNetwork,
             apiRoot: form.apiRoot,
+            responseTimeoutSeconds: Number(form.responseTimeoutSeconds),
             ...(form.family === "openai_compatible"
               ? { authenticationMode: form.authenticationMode }
               : {})
@@ -160,6 +172,26 @@ export function AdminProviderConnectionEditor({
           />
           <span className={helpText}>
             AIQSA derives reviewed request paths from this canonical root. Query strings, embedded credentials, and arbitrary headers are not accepted.
+          </span>
+        </label>
+        <label>
+          <span className={fieldLabel}>Response timeout (seconds)</span>
+          <input
+            className={inputClass}
+            disabled={controller.state.busy}
+            max={ADMIN_PROVIDER_RESPONSE_TIMEOUT_MAX_SECONDS}
+            min={ADMIN_PROVIDER_RESPONSE_TIMEOUT_MIN_SECONDS}
+            onChange={(event) => setForm({
+              ...form,
+              responseTimeoutSeconds: event.currentTarget.value
+            })}
+            required
+            step={1}
+            type="number"
+            value={form.responseTimeoutSeconds}
+          />
+          <span className={helpText}>
+            Default complete-response deadline for this endpoint. Use a whole value from 5 to 900 seconds; streaming uses the same deadline.
           </span>
         </label>
         <label className="flex min-h-touch items-start gap-3 rounded-control bg-caution/10 px-3 py-2.5 text-xs leading-5 text-caution md:col-span-2">

@@ -7,6 +7,7 @@ import {
 
 export type OpenAICompatibleChatClientRequestOptions = {
   signal?: AbortSignal;
+  timeoutMs?: number;
 };
 
 export type OpenAICompatibleChatClient = {
@@ -100,6 +101,7 @@ export function createFetchOpenAICompatibleChatClient(input: {
   apiRoot: string;
   authenticationMode?: "bearer" | "none";
   bearerToken?: string | null;
+  defaultTimeoutMs?: number;
   fetchFn?: typeof fetch;
 }): OpenAICompatibleChatClient {
   const endpoint = deriveOpenAICompatibleChatEndpoint(input.apiRoot);
@@ -125,7 +127,10 @@ export function createFetchOpenAICompatibleChatClient(input: {
     body: Record<string, unknown>,
     options?: OpenAICompatibleChatClientRequestOptions
   ) {
-    const timeout = withTimeoutSignal(options?.signal);
+    const timeout = withTimeoutSignal(
+      options?.signal,
+      options?.timeoutMs ?? input.defaultTimeoutMs
+    );
     try {
       const response = await fetchFn(endpoint, {
         body: JSON.stringify(body),

@@ -7,6 +7,20 @@ import {
   normalizeProviderExecutionSnapshot
 } from "./runtimeFactory";
 
+const runtimeAdapterKinds = [
+  "gemini_interactions_native",
+  "openai_responses_native",
+  "openai_responses_compatible",
+  "openai_chat_completions_compatible",
+  "anthropic_messages",
+  "openrouter_chat_completions"
+] as const;
+
+const runtimeDeadlineCases = runtimeAdapterKinds.flatMap((adapterKind) => [
+  { adapterKind, streaming: false },
+  { adapterKind, streaming: true }
+]);
+
 function snapshot(
   adapterKind: Exclude<ProviderExecutionSnapshot["model"]["adapterKind"], "fake">
 ): ProviderExecutionSnapshot {
@@ -86,14 +100,7 @@ async function collect(
 }
 
 describe("provider runtime factory", () => {
-  it.each([
-    "gemini_interactions_native",
-    "openai_responses_native",
-    "openai_responses_compatible",
-    "openai_chat_completions_compatible",
-    "anthropic_messages",
-    "openrouter_chat_completions"
-  ] as const)("constructs %s only with an explicit safe fetch", (adapterKind) => {
+  it.each(runtimeAdapterKinds)("constructs %s only with an explicit safe fetch", (adapterKind) => {
     const fetchFn = vi.fn<typeof fetch>();
     const runtime = createProviderRuntimeBinding({
       options: { allowFake: false, fetchFn },
@@ -109,6 +116,96 @@ describe("provider runtime factory", () => {
     })).toBe(true);
     expect(fetchFn).not.toHaveBeenCalled();
   });
+
+  it("resolves legacy, connection, and model response deadlines into the immutable binding", () => {
+    const legacy = snapshot("openai_chat_completions_compatible");
+    const connection = {
+      ...legacy,
+      connection: { ...legacy.connection, responseTimeoutMs: 500_000 }
+    };
+    const overridden = {
+      ...connection,
+      model: { ...connection.model, responseTimeoutMs: 800_000 }
+    };
+    const create = (value: ProviderExecutionSnapshot) => createProviderRuntimeBinding({
+      options: { allowFake: false, fetchFn: vi.fn<typeof fetch>() },
+      secret: "secret",
+      snapshot: value
+    });
+
+    expect(create(legacy).responseTimeoutMs).toBe(300_000);
+    expect(create(connection).responseTimeoutMs).toBe(500_000);
+    expect(create(overridden).responseTimeoutMs).toBe(800_000);
+    expect(normalizeProviderExecutionSnapshot(overridden)).toMatchObject({
+      connection: { responseTimeoutMs: 500_000 },
+      model: { responseTimeoutMs: 800_000 }
+    });
+  });
+
+  it.each(runtimeDeadlineCases)(
+    "classifies the configured deadline and parent cancellation for $adapterKind (streaming=$streaming)",
+    async ({ adapterKind, streaming }) => {
+      vi.useFakeTimers();
+      try {
+        const fetchFn = vi.fn<typeof fetch>(async (_request, init) =>
+          new Promise<Response>((_resolve, reject) => {
+            const signal = init?.signal;
+            if (!signal) {
+              reject(new Error("test_signal_missing"));
+              return;
+            }
+            const rejectFromSignal = () => reject(signal.reason);
+            if (signal.aborted) rejectFromSignal();
+            else signal.addEventListener("abort", rejectFromSignal, { once: true });
+          })
+        );
+        const configured = snapshot(adapterKind);
+        const runtime = createProviderRuntimeBinding({
+          options: { allowFake: false, fetchFn },
+          secret: "secret",
+          snapshot: {
+            ...configured,
+            connection: { ...configured.connection, responseTimeoutMs: 5_000 }
+          }
+        });
+        const request: ProviderRunRequest = {
+          ...compatibleRequest(),
+          forceNonStreaming: !streaming,
+          modelCapabilities: {
+            ...compatibleRequest().modelCapabilities,
+            streaming
+          },
+          params: { stream: streaming },
+          provider: configured.providerFamily
+        };
+
+        const timedOut = collect(runtime.adapter.stream(request));
+        const timeoutExpectation = expect(timedOut).rejects.toMatchObject({
+          code: "provider_request_timed_out",
+          timeoutMs: 5_000
+        });
+        await vi.advanceTimersByTimeAsync(5_000);
+        await timeoutExpectation;
+        expect(vi.getTimerCount()).toBe(0);
+
+        const controller = new AbortController();
+        const cancelled = collect(runtime.adapter.stream(request, {
+          signal: controller.signal
+        }));
+        const cancellation = new DOMException("operator_cancelled", "AbortError");
+        controller.abort(cancellation);
+        const cancellationError = await cancelled.then(
+          () => null,
+          (error: unknown) => error
+        );
+        expect(cancellationError).toMatchObject({ name: "AbortError" });
+        expect(cancellationError).not.toMatchObject({ code: "provider_request_timed_out" });
+        expect(vi.getTimerCount()).toBe(0);
+      } finally {
+        vi.useRealTimers();
+      }
+    }
+  );
 
   it("never falls back to global fetch", () => {
     expect(() => createProviderRuntimeBinding({

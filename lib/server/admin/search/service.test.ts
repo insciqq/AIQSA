@@ -75,7 +75,11 @@ function providerModel(input: Readonly<{
     activeVersion: 1,
     activatedAt: NOW,
     connection: {
-      activeConfig: {},
+      activeConfig: {
+        allowPrivateNetwork: false,
+        apiRoot: "https://provider.example.test/v1",
+        responseTimeoutMs: 500_000
+      },
       activeVersion: 1,
       activatedAt: NOW,
       displayName: adapterKind === "gemini_interactions_native" ? "Gemini" : "Compatible gateway",
@@ -244,6 +248,7 @@ describe("admin Search service", () => {
       expect.objectContaining({
         connectionId: "connection-1",
         id: "technical-1",
+        responseTimeoutSeconds: 500,
         searchKind: "web_search",
         searchReasoningSupported: true
       })

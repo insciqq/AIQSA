@@ -680,7 +680,8 @@ describe("admin provider service", () => {
     expect(createDiscoveryClient).toHaveBeenCalledWith({
       allowPrivateNetwork: false,
       apiRoot: "https://openrouter.example.test/api/v1",
-      bearerToken: "openrouter-draft-key"
+      bearerToken: "openrouter-draft-key",
+      responseTimeoutMs: 300_000
     });
     expect(listModels).toHaveBeenCalledOnce();
     expect(listModelEndpoints).toHaveBeenCalledWith("vendor/model", { signal: undefined });

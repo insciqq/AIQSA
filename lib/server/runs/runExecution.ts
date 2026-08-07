@@ -1233,7 +1233,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
             }
           : {
               code: pipelineError?.code ??
-                (timedOut ? "provider_stream_timeout" : "provider_stream_failed"),
+                (timedOut ? "provider_request_timed_out" : "provider_stream_failed"),
               message: failure instanceof Error ? failure.message : "Provider stream failed"
             };
         if (streamSafetyReport) {
@@ -1248,7 +1248,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
           runId,
           input.created.assistantMessageId,
           payload,
-          safetyCode ? { recoveryTerminal: true } : undefined
+          safetyCode || timedOut ? { recoveryTerminal: true } : undefined
         );
         await persistReportedUsageForIncompleteRun().catch(() => undefined);
         if (failed) {

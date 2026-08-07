@@ -53,7 +53,8 @@ describe("custom provider model discovery handler", () => {
       connection: {
         allowPrivateNetwork: false,
         apiRoot: "https://llm.example.test/v1",
-        authenticationMode: "bearer"
+        authenticationMode: "bearer",
+        responseTimeoutMs: 300_000
       },
       family: "openai_compatible",
       secret: "write-only-key"
@@ -88,4 +89,24 @@ describe("custom provider model discovery handler", () => {
       error: "provider_custom_setup_discovery_failed"
     });
   });
+
+  it.each([4, 5.5, 901, "300"])(
+    "rejects invalid response timeout %# before provider I/O",
+    async (responseTimeoutSeconds) => {
+      const test = vi.fn();
+      const response = await createAdminProviderCustomDiscoveryHandler({
+        resolveAuth: vi.fn(async () => session),
+        tester: { test }
+      } as never)(post({
+        allowPrivateNetwork: false,
+        apiRoot: "https://llm.example.test/v1",
+        authenticationMode: "bearer",
+        responseTimeoutSeconds,
+        secret: "write-only-key"
+      }));
+
+      expect(response.status).toBe(400);
+      expect(test).not.toHaveBeenCalled();
+    }
+  );
 });

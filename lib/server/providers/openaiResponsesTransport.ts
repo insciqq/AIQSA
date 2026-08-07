@@ -88,6 +88,7 @@ export function openAIRetryableErrorPayload(error: unknown): OpenAIRetryableErro
 export function createFetchOpenAIResponsesClient(input: {
   apiKey: string | null;
   baseUrl?: string;
+  defaultTimeoutMs?: number;
   fetchFn?: typeof fetch;
 }): OpenAIResponsesClient {
   const baseUrl = input.baseUrl?.trim() || "https://api.openai.com/v1";
@@ -103,7 +104,10 @@ export function createFetchOpenAIResponsesClient(input: {
     body: OpenAIResponseObject,
     options?: OpenAIResponsesClientRequestOptions
   ) {
-    const timeout = withTimeoutSignal(options?.signal, options?.timeoutMs);
+    const timeout = withTimeoutSignal(
+      options?.signal,
+      options?.timeoutMs ?? input.defaultTimeoutMs
+    );
     try {
       const response = await fetchFn(`${baseUrl}/responses`, {
         body: JSON.stringify(body),
@@ -120,7 +124,7 @@ export function createFetchOpenAIResponsesClient(input: {
 
   return {
     async cancel(responseId) {
-      const timeout = withTimeoutSignal();
+      const timeout = withTimeoutSignal(undefined, input.defaultTimeoutMs);
       try {
         const response = await fetchFn(`${baseUrl}/responses/${responseId}/cancel`, {
           body: "{}",
@@ -152,7 +156,10 @@ export function createFetchOpenAIResponsesClient(input: {
       }
     },
     async retrieve(responseId, options) {
-      const timeout = withTimeoutSignal(options?.signal, options?.timeoutMs);
+      const timeout = withTimeoutSignal(
+        options?.signal,
+        options?.timeoutMs ?? input.defaultTimeoutMs
+      );
       try {
         const response = await fetchFn(`${baseUrl}/responses/${responseId}`, {
           headers,

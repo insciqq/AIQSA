@@ -71,6 +71,7 @@ describe("useAdminProviderCustomSetupController", () => {
       authenticationMode: "bearer",
       confirmPaidRequest: true,
       modelId: "vendor/model-1",
+      responseTimeoutSeconds: 300,
       secret: "browser-only-key"
     }));
     expect(api.submit.mock.calls[0]?.[0].capabilities).toMatchObject({
@@ -201,6 +202,21 @@ describe("useAdminProviderCustomSetupController", () => {
     expect(api.submit).not.toHaveBeenCalled();
     expect(result.current.state.errorCode).toBe("provider_configuration_invalid");
   });
+
+  it.each(["4", "5.5", "901"])(
+    "keeps invalid response timeout %s out of setup requests",
+    async (responseTimeoutSeconds) => {
+      const { result } = renderHook(() => useAdminProviderCustomSetupController(true));
+      fillRequired(result, { responseTimeoutSeconds });
+
+      await act(async () => {
+        await expect(result.current.actions.submit()).resolves.toBe(false);
+      });
+
+      expect(api.submit).not.toHaveBeenCalled();
+      expect(result.current.state.errorCode).toBe("provider_configuration_invalid");
+    }
+  );
 
   it("locks the form, rejects duplicate submits, and retains the key after failure", async () => {
     const pending = deferred<{ error: { code: string }; ok: false }>();

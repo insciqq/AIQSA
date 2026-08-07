@@ -13,12 +13,14 @@ const publicLookup = async () => [
 
 function input(
   family: AdminProviderCredentialTesterInput["family"],
-  secret: AdminProviderCredentialTesterInput["secret"] = "exact-secret"
+  secret: AdminProviderCredentialTesterInput["secret"] = "exact-secret",
+  connection: Partial<AdminProviderCredentialTesterInput["connection"]> = {}
 ): AdminProviderCredentialTesterInput {
   return {
     connection: {
       allowPrivateNetwork: false,
-      apiRoot: `https://${family}.example.test/v1/`
+      apiRoot: `https://${family}.example.test/v1/`,
+      ...connection
     },
     family,
     secret
@@ -323,26 +325,33 @@ describe("admin provider credential tester", () => {
   });
 
   it("keeps one timeout through body consumption and rejects redirects", async () => {
-    vi.stubEnv("AIQSA_PROVIDER_TIMEOUT_MS", "10");
+    vi.useFakeTimers();
     let cancellationReason: unknown;
-    const stalled = createAdminProviderCredentialTester({
-      network: {
-        dispatch: async () => new Response(new ReadableStream<Uint8Array>({
-          cancel(reason) {
-            cancellationReason = reason;
-          },
-          pull() {
-            // Keep the body pending beyond the absolute credential-test deadline.
-          }
-        })),
-        lookupHostname: publicLookup
-      }
-    });
     try {
-      await stalled.test(input("openai"));
-      throw new Error("Expected a timeout.");
-    } catch (error) {
-      expectStableFailure(error);
+      const stalled = createAdminProviderCredentialTester({
+        network: {
+          dispatch: async () => new Response(new ReadableStream<Uint8Array>({
+            cancel(reason) {
+              cancellationReason = reason;
+            },
+            pull() {
+              // Keep the body pending beyond the absolute credential-test deadline.
+            }
+          })),
+          lookupHostname: publicLookup
+        }
+      });
+      const rejection = expect(stalled.test(input(
+        "openai",
+        "exact-secret",
+        { responseTimeoutMs: 5_000 }
+      ))).rejects.toMatchObject({
+        code: "provider_credential_test_failed"
+      });
+      await vi.advanceTimersByTimeAsync(5_000);
+      await rejection;
+    } finally {
+      vi.useRealTimers();
     }
     expect(cancellationReason).toBeInstanceOf(Error);
 

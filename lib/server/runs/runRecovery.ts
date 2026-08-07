@@ -15,6 +15,7 @@ import type {
   ProviderSearchAdapter
 } from "../providers/types";
 import type { ProviderRuntimeBinding } from "../providers/runtimeFactory";
+import { DEFAULT_PROVIDER_RESPONSE_TIMEOUT_MS } from "../providers/providerConfiguration";
 import {
   isProviderStreamSafetyCode,
   providerStreamSafeMessage,
@@ -152,7 +153,9 @@ async function resolveAnswerRuntime(
     return deps.providerRuntime.resolve(runId, "answer");
   }
   const adapter = deps.providers[provider];
-  return adapter ? { adapter } : null;
+  return adapter
+    ? { adapter, responseTimeoutMs: DEFAULT_PROVIDER_RESPONSE_TIMEOUT_MS }
+    : null;
 }
 
 async function resolveSearchRuntime(
@@ -178,6 +181,7 @@ async function resolvePlanSearchRuntime(
   if (!adapter) return null;
   return {
     adapter,
+    responseTimeoutMs: DEFAULT_PROVIDER_RESPONSE_TIMEOUT_MS,
     ...(deps.searchProviders?.[option.provider]
       ? { searchAdapter: deps.searchProviders[option.provider] }
       : {})

@@ -26,12 +26,14 @@ type ModelSpec = Readonly<{
     | "openai_responses_native"
     | "openrouter_chat_completions";
   answerSelectable?: boolean;
+  connectionResponseTimeoutMs?: number;
   connectionId: string;
   contextWindow?: number;
   displayName?: string;
   family: "anthropic" | "gemini" | "openai" | "openai_compatible" | "openrouter";
   id: string;
   nativeSearch?: boolean;
+  responseTimeoutMs?: number;
   toolCalling?: boolean;
   upstreamModelId: string;
 }>;
@@ -78,13 +80,19 @@ function providerModel(spec: ModelSpec) {
       ...(spec.adapterKind === "openrouter_chat_completions"
         ? { openRouterRouting: { mode: "automatic", providers: [] } }
         : {}),
+      ...(spec.responseTimeoutMs === undefined
+        ? {}
+        : { responseTimeoutMs: spec.responseTimeoutMs }),
       upstreamModelId: spec.upstreamModelId
     },
     activeVersion: 1,
     connection: {
       activeConfig: {
         allowPrivateNetwork: false,
-        apiRoot: apiRoot(spec.family)
+        apiRoot: apiRoot(spec.family),
+        ...(spec.connectionResponseTimeoutMs === undefined
+          ? {}
+          : { responseTimeoutMs: spec.connectionResponseTimeoutMs })
       },
       activeVersion: 1,
       defaultCredentialId: null,
@@ -411,6 +419,38 @@ describe("provider admission", () => {
     expect(plan.answer.modelConfiguration.capabilities.contextWindow).toBe(1_050_000);
     expect(plan.answer.snapshot.model.capabilities.contextWindow).toBe(1_050_000);
     expect(plan.answer.credentialSource).toBe("user");
+  });
+
+  it.each([
+    { expectedModelTimeoutMs: undefined, modelTimeoutMs: undefined },
+    { expectedModelTimeoutMs: 800_000, modelTimeoutMs: 800_000 }
+  ])("snapshots the accepted connection deadline and $modelTimeoutMs model override", async ({
+    expectedModelTimeoutMs,
+    modelTimeoutMs
+  }) => {
+    const answer: ModelSpec = {
+      ...officialOpenAiModel,
+      connectionResponseTimeoutMs: 500_000,
+      ...(modelTimeoutMs === undefined ? {} : { responseTimeoutMs: modelTimeoutMs })
+    };
+    const { db } = admissionDb({ answer, options: [off] });
+
+    const plan = await loadProviderAdmissionPlan(db as unknown as Prisma.TransactionClient, {
+      providerConnectionId: answer.connectionId,
+      providerModelId: answer.id,
+      searchStrategyId: "search-disabled",
+      userId: "user-1"
+    });
+
+    expect(plan.answer.snapshot.connection.responseTimeoutMs).toBe(500_000);
+    expect(plan.answer.snapshot.model).toMatchObject(
+      expectedModelTimeoutMs === undefined
+        ? { adapterKind: "openai_responses_native" }
+        : { responseTimeoutMs: expectedModelTimeoutMs }
+    );
+    if (expectedModelTimeoutMs === undefined) {
+      expect(plan.answer.snapshot.model).not.toHaveProperty("responseTimeoutMs");
+    }
   });
 
   it("does not let full access bypass credential selection", async () => {

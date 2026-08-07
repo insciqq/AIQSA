@@ -22,6 +22,7 @@ import type {
   ProviderRunResult,
   ProviderSearchAdapter
 } from "./types";
+import { providerStreamTimingLimits } from "./network";
 
 export {
   buildOpenRouterChatRequest,
@@ -47,13 +48,20 @@ export function createOpenRouterChatAdapter(options: OpenRouterAdapterOptions): 
       });
       if (body.stream && options.client.streamChatCompletion) {
         const response = await options.client.streamChatCompletion(body, {
-          signal: runOptions.signal
+          signal: runOptions.signal,
+          timeoutMs: runOptions.timeoutMs
         });
-        return yield* streamOpenRouterSseResponse(response, request, runOptions.signal);
+        return yield* streamOpenRouterSseResponse(
+          response,
+          request,
+          runOptions.signal,
+          providerStreamTimingLimits(runOptions.timeoutMs)
+        );
       }
 
       const response = await options.client.createChatCompletion(body, {
-        signal: runOptions.signal
+        signal: runOptions.signal,
+        timeoutMs: runOptions.timeoutMs
       });
       return yield* streamOpenRouterJsonResponse(response, request);
     }

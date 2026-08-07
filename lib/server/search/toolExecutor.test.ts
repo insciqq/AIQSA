@@ -108,6 +108,7 @@ function runtime(input: Readonly<{
   findings?: string;
   onOptions?(options: ProviderSearchOptions | undefined): void;
   onRequest?(request: ProviderSearchRequest): void;
+  responseTimeoutMs?: number;
   sources?: readonly SearchSource[];
   sourceUrl?: string;
 }> = {}): ProviderRuntimeBinding {
@@ -118,6 +119,7 @@ function runtime(input: Readonly<{
         throw new Error("answer_adapter_must_not_execute_search");
       }
     },
+    responseTimeoutMs: input.responseTimeoutMs ?? 300_000,
     searchAdapter: {
       buildRequestPreview: (request) => ({
         maxOutputTokens: request.searchPolicy.provider === "openrouter"
@@ -163,6 +165,7 @@ function hangingRuntime(): ProviderRuntimeBinding {
         throw new Error("answer_adapter_must_not_execute_search");
       }
     },
+    responseTimeoutMs: 300_000,
     searchAdapter: {
       buildRequestPreview: () => ({}),
       async search(_request, options) {
@@ -893,6 +896,29 @@ describe("Search plan tool router", () => {
     expect(result.status).toBe("error");
     expect(searchExecutionsFromToolResult(result)[0]).toMatchObject({
       failure: { code: "search_timeout" }
+    });
+  });
+
+  it("uses the earlier provider-model deadline when Search allows longer", async () => {
+    const onOptions = vi.fn();
+    const selected = option("selected", {
+      config: { ...option("base").config, timeoutMs: 5_000 }
+    });
+    const router = createSearchPlanToolRouter({
+      plan: { mode: "model_choice", options: [selected] },
+      runtimes: {
+        selected: runtime({ onOptions, responseTimeoutMs: 2_000 })
+      }
+    })!;
+
+    const result = await router.execute(call(router.tools[0]!.name), answerRequest());
+
+    expect(result.status).toBe("complete");
+    expect(onOptions).toHaveBeenCalledWith(expect.objectContaining({ timeoutMs: 2_000 }));
+    expect(searchExecutionsFromToolResult(result)[0]?.requestPreview).toMatchObject({
+      effectiveTimeoutMs: 2_000,
+      providerResponseTimeoutMs: 2_000,
+      searchTimeoutMs: 5_000
     });
   });
 

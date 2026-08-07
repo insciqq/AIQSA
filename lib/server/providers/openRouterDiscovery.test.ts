@@ -230,29 +230,39 @@ describe("OpenRouter account-filtered discovery", () => {
     );
 
     vi.stubEnv("AIQSA_PROVIDER_RESPONSE_MAX_BYTES", "2097152");
-    vi.stubEnv("AIQSA_PROVIDER_TIMEOUT_MS", "10");
-    let cancellationReason: unknown;
-    const stalled = createOpenRouterDiscoveryClient({
-      apiRoot: "https://openrouter.example.test/api/v1",
-      bearerToken: "key",
-      network: {
-        dispatch: async () =>
-          new Response(
-            new ReadableStream<Uint8Array>({
-              cancel(reason) {
-                cancellationReason = reason;
-              },
-              pull() {
-                // Keep the body pending beyond the absolute discovery deadline.
-              }
-            })
-          ),
-        lookupHostname: publicLookup
-      }
-    });
+    vi.useFakeTimers();
+    try {
+      let cancellationReason: unknown;
+      const stalled = createOpenRouterDiscoveryClient({
+        apiRoot: "https://openrouter.example.test/api/v1",
+        bearerToken: "key",
+        network: {
+          dispatch: async () =>
+            new Response(
+              new ReadableStream<Uint8Array>({
+                cancel(reason) {
+                  cancellationReason = reason;
+                },
+                pull() {
+                  // Keep the body pending beyond the absolute discovery deadline.
+                }
+              })
+            ),
+          lookupHostname: publicLookup
+        },
+        responseTimeoutMs: 5_000
+      });
 
-    await expect(stalled.listModels()).rejects.toThrow("Provider request timed out");
-    expect(cancellationReason).toBeInstanceOf(Error);
+      const rejection = expect(stalled.listModels()).rejects.toMatchObject({
+        code: "provider_request_timed_out",
+        timeoutMs: 5_000
+      });
+      await vi.advanceTimersByTimeAsync(5_000);
+      await rejection;
+      expect(cancellationReason).toBeInstanceOf(Error);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("sanitizes HTTP failures and never follows their redirect target", async () => {

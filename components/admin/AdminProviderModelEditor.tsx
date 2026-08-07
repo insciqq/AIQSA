@@ -34,6 +34,11 @@ import type {
   AdminProviderModelCapabilities
 } from "@/lib/contracts/adminProviders";
 import {
+  ADMIN_PROVIDER_RESPONSE_TIMEOUT_DEFAULT_SECONDS,
+  ADMIN_PROVIDER_RESPONSE_TIMEOUT_MAX_SECONDS,
+  ADMIN_PROVIDER_RESPONSE_TIMEOUT_MIN_SECONDS
+} from "@/lib/contracts/adminProviders";
+import {
   ArrowDown,
   ArrowUp,
   ChevronDown,
@@ -59,6 +64,7 @@ type ModelForm = {
   providerTags: string[];
   reasoningEffortPath: string;
   reasoningModePath: string;
+  responseTimeoutSeconds: string;
   upstreamModelId: string;
 };
 
@@ -126,6 +132,7 @@ function blankModel(connection: AdminProviderConnection): ModelForm {
     reasoningModePath: adapterFor(connection.family) === "openai_responses_compatible"
       ? "reasoning.mode"
       : "",
+    responseTimeoutSeconds: "",
     upstreamModelId: ""
   };
 }
@@ -146,6 +153,9 @@ function existingModel(model: AdminProviderModel): ModelForm {
     providerTags: [...(model.draftConfig.openRouterRouting?.providers ?? [])],
     reasoningEffortPath: mapping.effortPath,
     reasoningModePath: mapping.modePath ?? "",
+    responseTimeoutSeconds: model.draftConfig.responseTimeoutSeconds === undefined
+      ? ""
+      : String(model.draftConfig.responseTimeoutSeconds),
     upstreamModelId: model.draftConfig.upstreamModelId
   };
 }
@@ -506,6 +516,17 @@ export function AdminProviderModelEditor({
       setFormError("Select at least one downstream provider or use Automatic routing.");
       return;
     }
+    if (
+      form.responseTimeoutSeconds.trim() && (
+        !/^\d+$/u.test(form.responseTimeoutSeconds) ||
+        !Number.isSafeInteger(Number(form.responseTimeoutSeconds)) ||
+        Number(form.responseTimeoutSeconds) < ADMIN_PROVIDER_RESPONSE_TIMEOUT_MIN_SECONDS ||
+        Number(form.responseTimeoutSeconds) > ADMIN_PROVIDER_RESPONSE_TIMEOUT_MAX_SECONDS
+      )
+    ) {
+      setFormError("Model timeout must be blank or a whole value from 5 to 900 seconds.");
+      return;
+    }
     setFormError(null);
     const body = {
       ...(editing ? { action: "update", expectedDraftVersion: editing.draftVersion } : {}),
@@ -527,6 +548,9 @@ export function AdminProviderModelEditor({
               : {})
           }
         } : {}),
+        ...(form.responseTimeoutSeconds.trim()
+          ? { responseTimeoutSeconds: Number(form.responseTimeoutSeconds) }
+          : {}),
         upstreamModelId: form.upstreamModelId
       },
       displayName: form.displayName
@@ -810,6 +834,29 @@ export function AdminProviderModelEditor({
           <span className="mt-0.5 block leading-4 text-ink-muted">
             Turn this off for a technical runtime used only by Search. Search integrations can still use it after activation.
           </span>
+        </span>
+      </label>
+
+      <label className="max-w-md">
+        <span className={fieldLabel}>Response timeout override (seconds)</span>
+        <input
+          className={inputClass}
+          disabled={controller.state.busy}
+          max={ADMIN_PROVIDER_RESPONSE_TIMEOUT_MAX_SECONDS}
+          min={ADMIN_PROVIDER_RESPONSE_TIMEOUT_MIN_SECONDS}
+          onChange={(event) => setForm({
+            ...form,
+            responseTimeoutSeconds: event.currentTarget.value
+          })}
+          placeholder={`Inherit ${connection.draftConfig.responseTimeoutSeconds ?? ADMIN_PROVIDER_RESPONSE_TIMEOUT_DEFAULT_SECONDS}`}
+          step={1}
+          type="number"
+          value={form.responseTimeoutSeconds}
+        />
+        <span className={helpText}>
+          Blank inherits the connection. Effective deadline: {form.responseTimeoutSeconds.trim() ||
+            connection.draftConfig.responseTimeoutSeconds ||
+            ADMIN_PROVIDER_RESPONSE_TIMEOUT_DEFAULT_SECONDS} seconds, for buffered and streamed responses. Allowed override: 5–900.
         </span>
       </label>
 

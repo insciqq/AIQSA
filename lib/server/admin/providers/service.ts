@@ -14,6 +14,11 @@ import {
   encryptProviderCredentialSecret
 } from "../../providers/credentialSecrets";
 import {
+  normalizeAdminProviderConnectionConfiguration,
+  normalizeAdminProviderModelConfiguration
+} from "./adminConfiguration";
+import {
+  effectiveProviderResponseTimeoutMs,
   normalizeProviderConnectionConfiguration,
   normalizeProviderModelConfiguration,
   type ProviderModelConfiguration
@@ -221,6 +226,7 @@ export function createAdminProviderService(input: Readonly<{
     allowPrivateNetwork: boolean;
     apiRoot: string;
     bearerToken: ProviderCredentialSource;
+    responseTimeoutMs: number;
   }) => OpenRouterDiscoveryClient;
   encryptionKey?: () => Buffer;
   idFactory?: () => string;
@@ -283,7 +289,7 @@ export function createAdminProviderService(input: Readonly<{
   }): Promise<AdminProviderCredentialTestOutcome> {
     try {
       return await input.credentialTester.test({
-        connection: normalizeProviderConnectionConfiguration(value.connection),
+        connection: normalizeAdminProviderConnectionConfiguration(value.connection),
         family: realProviderFamily(value.family),
         secret: value.secret,
         signal: value.signal
@@ -312,7 +318,8 @@ export function createAdminProviderService(input: Readonly<{
     return (input.createDiscoveryClient ?? createOpenRouterDiscoveryClient)({
       allowPrivateNetwork: configuration.allowPrivateNetwork,
       apiRoot: configuration.apiRoot,
-      bearerToken
+      bearerToken,
+      responseTimeoutMs: effectiveProviderResponseTimeoutMs(configuration)
     });
   }
 
@@ -491,7 +498,7 @@ export function createAdminProviderService(input: Readonly<{
     }) {
       const id = idFactory();
       await input.repository.createConnection({
-        configuration: normalizeProviderConnectionConfiguration(value.configuration),
+        configuration: normalizeAdminProviderConnectionConfiguration(value.configuration),
         displayName: name(value.displayName),
         family: value.family,
         id,
@@ -508,7 +515,7 @@ export function createAdminProviderService(input: Readonly<{
       unassignedPolicy: AdminProviderUnassignedPolicy;
     }) {
       const result = await input.repository.updateConnectionDraft({
-        configuration: normalizeProviderConnectionConfiguration(value.configuration),
+        configuration: normalizeAdminProviderConnectionConfiguration(value.configuration),
         connectionId: value.connectionId,
         displayName: name(value.displayName),
         expectedDraftVersion: value.expectedDraftVersion,
@@ -523,7 +530,7 @@ export function createAdminProviderService(input: Readonly<{
       connectionId: string;
       displayName: string;
     }) {
-      const configuration = normalizeProviderModelConfiguration(value.configuration);
+      const configuration = normalizeAdminProviderModelConfiguration(value.configuration);
       const id = idFactory();
       const result = await input.repository.createModel({
         configuration,
@@ -547,7 +554,7 @@ export function createAdminProviderService(input: Readonly<{
       expectedDraftVersion: number;
       modelId: string;
     }) {
-      const configuration = normalizeProviderModelConfiguration(value.configuration);
+      const configuration = normalizeAdminProviderModelConfiguration(value.configuration);
       const result = await input.repository.updateModelDraft({
         configuration,
         displayName: name(value.displayName),

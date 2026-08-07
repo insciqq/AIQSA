@@ -19,6 +19,7 @@ import {
 import {
   normalizeProviderConnectionConfiguration,
   normalizeProviderModelConfiguration,
+  providerResponseTimeoutMsFromSeconds,
   type ProviderModelConfiguration
 } from "../../providers/providerConfiguration";
 import { getSecretEncryptionKey } from "../../secrets/envelope";
@@ -90,7 +91,10 @@ function connectionConfiguration(
   const normalized = normalizeProviderConnectionConfiguration({
     allowPrivateNetwork: request.allowPrivateNetwork,
     apiRoot: request.apiRoot,
-    authenticationMode: request.authenticationMode
+    authenticationMode: request.authenticationMode,
+    responseTimeoutMs: providerResponseTimeoutMsFromSeconds(
+      request.responseTimeoutSeconds
+    )
   });
   if (request.authenticationMode === "none") {
     const url = new URL(normalized.apiRoot);

@@ -285,11 +285,13 @@ export function createOpenRouterDiscoveryClient(input: {
   apiRoot: string;
   bearerToken: ProviderCredentialSource;
   network?: DiscoveryNetworkOptions;
+  responseTimeoutMs?: number;
 }): OpenRouterDiscoveryClient {
   const configuration: ProviderConnectionConfiguration =
     normalizeProviderConnectionConfiguration({
       allowPrivateNetwork: input.allowPrivateNetwork === true,
-      apiRoot: input.apiRoot
+      apiRoot: input.apiRoot,
+      responseTimeoutMs: input.responseTimeoutMs
     });
   assertProviderCredentialSource(
     input.bearerToken,
@@ -301,7 +303,7 @@ export function createOpenRouterDiscoveryClient(input: {
   });
 
   async function get(path: string, signal?: AbortSignal): Promise<unknown> {
-    const timeout = withTimeoutSignal(signal);
+    const timeout = withTimeoutSignal(signal, configuration.responseTimeoutMs);
     try {
       const bearerToken = requiredBearerToken(
         await resolveProviderCredentialSource(

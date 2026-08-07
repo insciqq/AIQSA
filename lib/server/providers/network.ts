@@ -1,4 +1,8 @@
-const defaultProviderTimeoutMs = 30_000;
+import {
+  DEFAULT_PROVIDER_RESPONSE_TIMEOUT_MS,
+  MAX_PROVIDER_RESPONSE_TIMEOUT_MS
+} from "./providerConfiguration";
+
 const defaultProviderResponseMaxBytes = 16 * 1024 * 1024;
 
 export type ProviderStreamLimits = Readonly<{
@@ -10,28 +14,26 @@ export type ProviderStreamLimits = Readonly<{
 }>;
 
 export const DEFAULT_PROVIDER_STREAM_LIMITS: ProviderStreamLimits = Object.freeze({
-  idleTimeoutMs: 30_000,
+  idleTimeoutMs: DEFAULT_PROVIDER_RESPONSE_TIMEOUT_MS,
   maxBytes: 64 * 1024 * 1024,
-  maxDurationMs: 600_000,
+  maxDurationMs: DEFAULT_PROVIDER_RESPONSE_TIMEOUT_MS,
   maxEventBytes: 4 * 1024 * 1024,
   maxOutputChars: 8 * 1024 * 1024
 });
 
 export const PROVIDER_STREAM_LIMIT_CEILINGS: ProviderStreamLimits = Object.freeze({
-  idleTimeoutMs: 120_000,
+  idleTimeoutMs: MAX_PROVIDER_RESPONSE_TIMEOUT_MS,
   maxBytes: 256 * 1024 * 1024,
-  maxDurationMs: 660_000,
+  maxDurationMs: MAX_PROVIDER_RESPONSE_TIMEOUT_MS,
   maxEventBytes: 16 * 1024 * 1024,
   maxOutputChars: 32 * 1024 * 1024
 });
 
 const streamLimitEnvironmentNames = Object.freeze({
-  idleTimeoutMs: "AIQSA_PROVIDER_STREAM_IDLE_TIMEOUT_MS",
   maxBytes: "AIQSA_PROVIDER_STREAM_MAX_BYTES",
-  maxDurationMs: "AIQSA_PROVIDER_STREAM_MAX_DURATION_MS",
   maxEventBytes: "AIQSA_PROVIDER_STREAM_MAX_EVENT_BYTES",
   maxOutputChars: "AIQSA_PROVIDER_STREAM_MAX_OUTPUT_CHARS"
-} satisfies Record<keyof ProviderStreamLimits, string>);
+} satisfies Record<"maxBytes" | "maxEventBytes" | "maxOutputChars", string>);
 
 export class ProviderResponseTooLargeError extends Error {
   readonly code = "provider_response_too_large";
@@ -95,17 +97,9 @@ export function getProviderStreamLimits(
   );
 
   return Object.freeze({
-    idleTimeoutMs: boundedPositiveIntegerEnvironmentValue(
-      environment[streamLimitEnvironmentNames.idleTimeoutMs],
-      DEFAULT_PROVIDER_STREAM_LIMITS.idleTimeoutMs,
-      PROVIDER_STREAM_LIMIT_CEILINGS.idleTimeoutMs
-    ),
+    idleTimeoutMs: DEFAULT_PROVIDER_STREAM_LIMITS.idleTimeoutMs,
     maxBytes,
-    maxDurationMs: boundedPositiveIntegerEnvironmentValue(
-      environment[streamLimitEnvironmentNames.maxDurationMs],
-      DEFAULT_PROVIDER_STREAM_LIMITS.maxDurationMs,
-      PROVIDER_STREAM_LIMIT_CEILINGS.maxDurationMs
-    ),
+    maxDurationMs: DEFAULT_PROVIDER_STREAM_LIMITS.maxDurationMs,
     maxEventBytes: Math.min(configuredMaxEventBytes, maxBytes),
     maxOutputChars: boundedPositiveIntegerEnvironmentValue(
       environment[streamLimitEnvironmentNames.maxOutputChars],
@@ -152,8 +146,17 @@ export function resolveProviderStreamLimits(
   });
 }
 
+export function providerStreamTimingLimits(
+  responseTimeoutMs: number = DEFAULT_PROVIDER_RESPONSE_TIMEOUT_MS
+): Pick<ProviderStreamLimits, "idleTimeoutMs" | "maxDurationMs"> {
+  return Object.freeze({
+    idleTimeoutMs: responseTimeoutMs,
+    maxDurationMs: responseTimeoutMs
+  });
+}
+
 export function providerTimeoutMs(): number {
-  return positiveIntegerEnv("AIQSA_PROVIDER_TIMEOUT_MS", defaultProviderTimeoutMs);
+  return DEFAULT_PROVIDER_RESPONSE_TIMEOUT_MS;
 }
 
 export function providerStreamIdleTimeoutMs(): number {
@@ -180,6 +183,18 @@ export function providerResponseMaxBytes(): number {
   return positiveIntegerEnv("AIQSA_PROVIDER_RESPONSE_MAX_BYTES", defaultProviderResponseMaxBytes);
 }
 
+export class ProviderRequestTimeoutError extends Error {
+  readonly code = "provider_request_timed_out";
+  readonly timeoutMs: number;
+
+  constructor(timeoutMs: number) {
+    const seconds = timeoutMs / 1_000;
+    super(`Provider response exceeded the configured ${seconds}-second timeout.`);
+    this.name = "ProviderRequestTimeoutError";
+    this.timeoutMs = timeoutMs;
+  }
+}
+
 export function timeoutError(message = "Provider request timed out"): Error {
   const error = new Error(message);
   error.name = "TimeoutError";
@@ -187,12 +202,16 @@ export function timeoutError(message = "Provider request timed out"): Error {
 }
 
 export function isProviderTimeoutError(error: unknown): boolean {
-  return error instanceof Error && (error.name === "TimeoutError" || /timed out|timeout/i.test(error.message));
+  return error instanceof ProviderRequestTimeoutError ||
+    (error instanceof Error && (error.name === "TimeoutError" || /timed out|timeout/i.test(error.message)));
 }
 
 export function withTimeoutSignal(parentSignal?: AbortSignal, timeoutMs = providerTimeoutMs()) {
   const timeoutController = new AbortController();
-  const timeout = setTimeout(() => timeoutController.abort(timeoutError()), timeoutMs);
+  const timeout = setTimeout(
+    () => timeoutController.abort(new ProviderRequestTimeoutError(timeoutMs)),
+    timeoutMs
+  );
   const signal = parentSignal
     ? AbortSignal.any([parentSignal, timeoutController.signal])
     : timeoutController.signal;

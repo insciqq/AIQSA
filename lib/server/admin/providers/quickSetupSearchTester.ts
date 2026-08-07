@@ -12,7 +12,6 @@ import { createProviderRuntimeBinding } from "../../providers/runtimeFactory";
 import type { ProviderRunRequest } from "../../providers/types";
 
 const connectivityQuery = "Find the official OpenAI home page and return one source.";
-const SEARCH_PROBE_TIMEOUT_MS = 60_000;
 
 export type AdminProviderQuickSetupSearchTestOutcome = Readonly<{
   normalizedSourceCount: number;
@@ -102,8 +101,7 @@ export function createAdminProviderQuickSetupSearchTester(
       });
       const artifacts: unknown[] = [];
       const stream = runtime.adapter.stream(request(input.model, family), {
-        ...(input.signal ? { signal: input.signal } : {}),
-        timeoutMs: SEARCH_PROBE_TIMEOUT_MS
+        ...(input.signal ? { signal: input.signal } : {})
       });
       let next = await stream.next();
       while (!next.done) {

@@ -68,6 +68,7 @@ export type AdminSearchIntegration = {
     connectionId: string;
     displayName: string;
     id: string;
+    responseTimeoutSeconds?: number;
   };
   ready: boolean;
   readiness: AdminSearchReadiness;
@@ -82,6 +83,7 @@ export type AdminSearchProviderModelOption = {
   displayName: string;
   enabled: boolean;
   id: string;
+  responseTimeoutSeconds?: number;
   searchReasoningSupported: boolean;
   searchKind: "anthropic_web_search" | "gemini_google_search" | "perplexity_search" | "web_search";
 };
@@ -196,7 +198,8 @@ function integration(value: unknown): boolean {
     (providerModel === null ||
       (isRecord(providerModel) && string(providerModel.connectionDisplayName) &&
         string(providerModel.connectionId) && string(providerModel.displayName) &&
-        string(providerModel.id))) &&
+        string(providerModel.id) && (providerModel.responseTimeoutSeconds === undefined ||
+          boundedInteger(providerModel.responseTimeoutSeconds, 5, 900)))) &&
     typeof value.ready === "boolean" &&
     (value.readiness === "ready" || value.readiness === "setup_required" ||
       value.readiness === "source_unavailable") &&
@@ -208,6 +211,8 @@ function integration(value: unknown): boolean {
 function providerModel(value: unknown): boolean {
   return isRecord(value) && string(value.connectionDisplayName) && string(value.connectionId) &&
     string(value.displayName) && typeof value.enabled === "boolean" && string(value.id) &&
+    (value.responseTimeoutSeconds === undefined ||
+      boundedInteger(value.responseTimeoutSeconds, 5, 900)) &&
     (value.searchReasoningSupported === undefined ||
       typeof value.searchReasoningSupported === "boolean") &&
     (value.searchKind === "anthropic_web_search" ||

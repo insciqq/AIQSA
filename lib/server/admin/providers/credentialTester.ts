@@ -238,7 +238,7 @@ export function createAdminProviderCredentialTester(
           configuration: connection,
           ...options.network
         });
-        const timeout = withTimeoutSignal(input.signal);
+        const timeout = withTimeoutSignal(input.signal, connection.responseTimeoutMs);
         try {
           const response = await fetchFn(`${connection.apiRoot}/${catalogPath(input.family)}`, {
             headers: authenticationHeaders(input.family, secret),

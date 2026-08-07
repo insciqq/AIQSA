@@ -10,6 +10,10 @@ import type {
   AdminProviderModelCapabilities,
   AdminProviderReasoningRequestMapping
 } from "../../../contracts/adminProviders";
+import {
+  ADMIN_PROVIDER_RESPONSE_TIMEOUT_MAX_SECONDS,
+  ADMIN_PROVIDER_RESPONSE_TIMEOUT_MIN_SECONDS
+} from "../../../contracts/adminProviders";
 import type { RequestAuthResolver } from "../../auth/requestAuth";
 import {
   readJsonBodyOrNull,
@@ -142,6 +146,7 @@ export function createAdminProviderCustomSetupHandler(
       "modelIds",
       "protocol",
       "reasoningRequestMapping",
+      "responseTimeoutSeconds",
       "secret"
     ]);
     if (Object.keys(body).some((key) => !allowedKeys.has(key))) {
@@ -178,6 +183,13 @@ export function createAdminProviderCustomSetupHandler(
     const secret = body.secret === undefined
       ? undefined
       : boundedText(body.secret, 16_384) ?? null;
+    const responseTimeoutSeconds = body.responseTimeoutSeconds === undefined
+      ? undefined
+      : Number.isSafeInteger(body.responseTimeoutSeconds) &&
+          Number(body.responseTimeoutSeconds) >= ADMIN_PROVIDER_RESPONSE_TIMEOUT_MIN_SECONDS &&
+          Number(body.responseTimeoutSeconds) <= ADMIN_PROVIDER_RESPONSE_TIMEOUT_MAX_SECONDS
+        ? Number(body.responseTimeoutSeconds)
+        : null;
     if (
       !mode ||
       !selectedProtocol ||
@@ -189,6 +201,7 @@ export function createAdminProviderCustomSetupHandler(
       body.confirmPaidRequest !== true ||
       connectionDisplayName === null ||
       modelDisplayName === null ||
+      responseTimeoutSeconds === null ||
       (normalizedModelIds !== undefined &&
         normalizedModelIds.length > 1 && modelDisplayName !== undefined) ||
       secret === null ||
@@ -222,6 +235,7 @@ export function createAdminProviderCustomSetupHandler(
             reasoningRequestMapping:
               body.reasoningRequestMapping as AdminProviderReasoningRequestMapping
           }),
+      ...(responseTimeoutSeconds === undefined ? {} : { responseTimeoutSeconds }),
       ...(secret === undefined ? {} : { secret })
     };
     return safely(async () => Response.json(await deps.service.setup({

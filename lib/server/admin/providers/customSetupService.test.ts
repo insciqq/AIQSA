@@ -111,7 +111,8 @@ describe("custom OpenAI-compatible provider setup service", () => {
       connection: {
         allowPrivateNetwork: false,
         apiRoot: "https://llm.example.test/v1",
-        authenticationMode: "bearer"
+        authenticationMode: "bearer",
+        responseTimeoutMs: 300_000
       },
       model: expect.objectContaining({
         adapterKind: "openai_chat_completions_compatible",

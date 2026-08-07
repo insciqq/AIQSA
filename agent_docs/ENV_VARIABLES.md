@@ -83,16 +83,20 @@ With proxy trust blank or explicitly false, the release runtime ignores `X-Forwa
 
 ```text
 AIQSA_PROVIDER_RESPONSE_MAX_BYTES=16777216
-AIQSA_PROVIDER_TIMEOUT_MS=30000
-AIQSA_PROVIDER_STREAM_IDLE_TIMEOUT_MS=30000
 AIQSA_PROVIDER_STREAM_MAX_EVENT_BYTES=4194304
 AIQSA_PROVIDER_STREAM_MAX_BYTES=67108864
-AIQSA_PROVIDER_STREAM_MAX_DURATION_MS=600000
 AIQSA_PROVIDER_STREAM_MAX_OUTPUT_CHARS=8388608
-AIQSA_OPENAI_BACKGROUND_POLL_TIMEOUT_MS=660000
 ```
 
-Provider connections, endpoints, adapter protocols, explicit compatible authentication mode, models, routing, credentials, direct-user/group assignments, activation evidence, stored diagnostics, and enabled state are database-owned and configured through `Control Center -> Providers`. Reviewed Quick and Custom endpoint setup persist neither an unsuccessful key nor failed test evidence. The long-running application receives no provider key/base-URL variables and has no environment fallback. `AIQSA_PROVIDER_TIMEOUT_MS` bounds an ordinary request through its complete buffered response; `AIQSA_PROVIDER_RESPONSE_MAX_BYTES` caps that non-stream body. A successful SSE instead has an independent 30-second idle-read guard, 10-minute absolute deadline, 4 MiB event-frame limit, 64 MiB total raw-wire limit, and 8 Mi-character retained provider-output limit. Activity resets only the idle guard. Stream values accept positive safe decimal integers; invalid or out-of-range values fall back to their defaults. Hard ceilings are 120,000 ms idle, 16 MiB/event, 256 MiB/stream, 660,000 ms absolute duration, and 32 Mi characters retained output; the effective event limit is also clamped to the total stream limit. Client Search calls use the selected immutable Search revision's database-owned timeout instead of `AIQSA_PROVIDER_TIMEOUT_MS`; the Search setting is bounded from 5 seconds through 15 minutes and defaults new integrations to 5 minutes. `AIQSA_OPENAI_BACKGROUND_POLL_TIMEOUT_MS` separately bounds the complete OpenAI background polling lifecycle.
+Provider connections, endpoints, adapter protocols, explicit compatible authentication mode, models, routing, credentials, direct-user/group assignments, activation evidence, stored diagnostics, enabled state, and response deadlines are database-owned and configured through `Control Center -> Providers`. Reviewed Quick and Custom endpoint setup persist neither an unsuccessful key nor failed test evidence. The long-running application receives no provider key/base-URL variables and has no environment fallback.
+
+The connection response deadline is a whole 5–900 seconds in Admin and integer milliseconds in versioned storage/runtime. New and legacy/missing connection values use 300 seconds. A model may override that value in the same range; blank inherits the connection. Accepted `ProviderRunBinding` snapshots retain both versioned configurations, and every answer round resolves `model override ?? connection default` from that immutable snapshot. Buffered bodies, OpenAI background polling, streamed responses, and stream idle/absolute guards use that one effective ceiling; there is no separate installation timing control. Connection discovery and diagnostics use the connection value. External provider, reverse-proxy, and platform limits may still end an exchange earlier and are outside this application-owned guarantee.
+
+Client Search retains its immutable revision-owned end-to-end deadline, also bounded from 5 seconds through 15 minutes and defaulting new integrations to 5 minutes. When its technical provider model has an earlier snapshotted response deadline, the effective invocation ceiling is the minimum of the two explicit budgets; Admin shows the Search budget, model deadline, and result.
+
+`AIQSA_PROVIDER_TIMEOUT_MS`, `AIQSA_PROVIDER_STREAM_IDLE_TIMEOUT_MS`, `AIQSA_PROVIDER_STREAM_MAX_DURATION_MS`, and `AIQSA_OPENAI_BACKGROUND_POLL_TIMEOUT_MS` are removed controls. Non-empty legacy values are ignored and produce one value-free startup warning with code `provider_timeout_environment_ignored` and variable names only. Compose forwards those names only during migration so an existing installation receives that warning; they are not supported configuration and are absent from `.env.example`.
+
+`AIQSA_PROVIDER_RESPONSE_MAX_BYTES` caps buffered success/error bodies. Streaming keeps independent size/retention bounds of 4 MiB per event frame, 64 MiB total raw wire, and 8 Mi characters of retained provider output by default. Size values accept positive safe decimal integers; invalid or out-of-range values fall back to defaults. Hard ceilings are 16 MiB/event, 256 MiB/stream, and 32 Mi characters retained output, and the effective event limit is clamped to the total stream limit. Timing derives only from the accepted Admin configuration.
 
 `AIQSA_DEFAULT_MODEL`, `AIQSA_DEFAULT_SEARCH_MODEL`, `GEMINI_API_KEY`,
 `AIQSA_GEMINI_SMOKE_MODEL`, `ANTHROPIC_API_KEY`, and

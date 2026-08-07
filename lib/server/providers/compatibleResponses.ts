@@ -14,6 +14,7 @@ import {
 } from "./openaiResponsesResponse";
 import type { OpenAIResponsesClient } from "./openaiResponsesTransport";
 import type { ProviderAdapter, ProviderRunRequest, ProviderRunResult } from "./types";
+import { providerStreamTimingLimits } from "./network";
 import {
   OPENAI_RESPONSES_REASONING_REQUEST_MAPPING,
   type ProviderReasoningRequestMapping
@@ -129,7 +130,8 @@ export function createCompatibleResponsesAdapter(
           provider: "openai-compatible",
           responseBody: response.body,
           signal: runOptions.signal,
-          stream: true
+          stream: true,
+          streamLimits: providerStreamTimingLimits(runOptions.timeoutMs)
         });
       }
 

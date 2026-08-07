@@ -12,6 +12,7 @@ import {
   type GeminiInteractionsClient
 } from "./geminiInteractionsTransport";
 import type { ProviderAdapter, ProviderRunResult } from "./types";
+import { providerStreamTimingLimits } from "./network";
 
 export {
   buildGeminiInteractionsRequest,
@@ -43,7 +44,8 @@ export function createGeminiInteractionsAdapter(
       ) ?? false;
       if (body.stream === true) {
         const response = await options.client.streamInteraction(body, {
-          signal: runOptions.signal
+          signal: runOptions.signal,
+          timeoutMs: runOptions.timeoutMs
         });
         if (!response.body) {
           throw new Error("gemini_interactions_stream_body_missing");
@@ -52,12 +54,14 @@ export function createGeminiInteractionsAdapter(
           groundingExpected,
           modelId: request.modelId,
           responseBody: response.body,
-          signal: runOptions.signal
+          signal: runOptions.signal,
+          streamLimits: providerStreamTimingLimits(runOptions.timeoutMs)
         });
       }
 
       const response = await options.client.createInteraction(body, {
-        signal: runOptions.signal
+        signal: runOptions.signal,
+        timeoutMs: runOptions.timeoutMs
       });
       return yield* streamGeminiInteractionsJsonResponse(response, {
         groundingExpected,

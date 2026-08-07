@@ -18,6 +18,10 @@ import {
   normalizeProviderModelConfiguration,
   type ProviderModelConfiguration
 } from "../../providers/providerConfiguration";
+import {
+  adminProviderConnectionConfiguration,
+  adminProviderModelConfiguration
+} from "./adminConfiguration";
 import { normalizeSearchDraft, searchDraftHash } from "../../search/configuration";
 import { searchValidationFingerprint } from "../../search/probeBinding";
 import type {
@@ -716,7 +720,7 @@ export function createPrismaAdminProviderRepository(
           .map(activeCheck),
         activeConfig: connection.activeConfig === null
           ? null
-          : normalizeProviderConnectionConfiguration(connection.activeConfig),
+          : adminProviderConnectionConfiguration(connection.activeConfig),
         activeVersion: connection.activeVersion,
         assignments: connection.credentials.flatMap((credential) =>
           credential.groupAssignments.map((assignment) => ({
@@ -757,7 +761,7 @@ export function createPrismaAdminProviderRepository(
           .filter((check) => check.connectionId === connection.id)
           .map(draftCheck)
           .filter((check): check is AdminProviderDraftCheck => check !== null),
-        draftConfig: normalizeProviderConnectionConfiguration(connection.draftConfig),
+        draftConfig: adminProviderConnectionConfiguration(connection.draftConfig),
         draftVersion: connection.draftVersion,
         enabled: connection.enabled,
         family: family(connection.family),
@@ -766,12 +770,12 @@ export function createPrismaAdminProviderRepository(
           activatedAt: date(model.activatedAt),
           activeConfig: model.activeConfig === null
             ? null
-            : normalizeProviderModelConfiguration(model.activeConfig),
+            : adminProviderModelConfiguration(model.activeConfig),
           activeVersion: model.activeVersion,
           connectionId: model.connectionId,
           createdAt: model.createdAt.toISOString(),
           displayName: model.displayName,
-          draftConfig: normalizeProviderModelConfiguration(model.draftConfig),
+          draftConfig: adminProviderModelConfiguration(model.draftConfig),
           draftVersion: model.draftVersion,
           enabled: model.enabled,
           id: model.id,

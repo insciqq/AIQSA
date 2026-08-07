@@ -12,12 +12,13 @@ import {
   providerModelTemplateId,
   type ProviderModelTemplateKey
 } from "../../../domain/providerTemplates";
-import type {
-  ProviderConnectionConfiguration,
-  ProviderModelConfiguration
+import {
+  DEFAULT_PROVIDER_RESPONSE_TIMEOUT_MS,
+  type ProviderConnectionConfiguration,
+  type ProviderModelConfiguration
 } from "../../providers/providerConfiguration";
 
-export const ADMIN_PROVIDER_QUICK_SETUP_POLICY_VERSION = 3;
+export const ADMIN_PROVIDER_QUICK_SETUP_POLICY_VERSION = 4;
 
 type QuickSetupCandidateDefinition = Readonly<{
   candidateId: string;
@@ -187,7 +188,10 @@ function createPolicy(provider: AdminProviderQuickSetupProviderId): AdminProvide
       });
     }),
     connection: {
-      configuration: connection.config,
+      configuration: {
+        ...connection.config,
+        responseTimeoutMs: DEFAULT_PROVIDER_RESPONSE_TIMEOUT_MS
+      },
       displayName: connection.displayName,
       id: connection.id,
       templateKey: provider

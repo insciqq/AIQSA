@@ -610,6 +610,7 @@ function SearchFormFields({
     (!kind || kind === model.searchKind ||
       (kind === "web_search" && model.searchKind === "anthropic_web_search")));
   const selectedModel = providerModels.find((model) => model.id === form.draft.providerModelId);
+  const selectedModelTimeoutSeconds = selectedModel?.responseTimeoutSeconds ?? 300;
   const executionValidation = searchExecutionValidation(form);
   const executionFieldId = useId();
   const outputHelpId = `${executionFieldId}-output-help`;
@@ -652,7 +653,13 @@ function SearchFormFields({
         <label>
           <span className={fieldLabel}>Search timeout, seconds</span>
           <input className={`${inputClass} mt-1.5`} disabled={disabled} max={900} min={5} onChange={(event) => updateDraft({ timeoutMs: Number(event.currentTarget.value) * 1_000 })} step={5} type="number" value={form.draft.timeoutMs / 1_000} />
-          <span className={helpText}>Maximum 15 minutes.</span>
+          <span className={helpText}>
+            Search budget: {form.draft.timeoutMs / 1_000} seconds.
+            {selectedModel ? ` Selected model deadline: ${selectedModelTimeoutSeconds} seconds. Effective limit: ${Math.min(
+              form.draft.timeoutMs / 1_000,
+              selectedModelTimeoutSeconds
+            )} seconds (the earlier deadline wins).` : " Maximum 15 minutes."}
+          </span>
         </label>
       </div>
       {form.draft.adapterKind === "provider_model_client" ? (

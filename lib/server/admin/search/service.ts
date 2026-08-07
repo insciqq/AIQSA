@@ -20,7 +20,11 @@ import {
   OPENAI_PROVIDER_SEARCH_STRATEGY_ID,
   type SearchPlan
 } from "../../../domain/search";
-import { normalizeProviderModelConfiguration } from "../../providers/providerConfiguration";
+import {
+  effectiveProviderResponseTimeoutMs,
+  normalizeProviderConnectionConfiguration,
+  normalizeProviderModelConfiguration
+} from "../../providers/providerConfiguration";
 import { lowestSupportedOpenAIResponsesSearchEffort } from "../../providers/openaiResponsesSearch";
 import {
   SearchConfigurationError,
@@ -286,9 +290,10 @@ function hostedDraftFor(draft: AdminSearchDraft): AdminSearchDraft | null {
     : null;
 }
 
-type RuntimeProviderModel = AdminSearchProviderModelOption & {
+type RuntimeProviderModel = Omit<AdminSearchProviderModelOption, "responseTimeoutSeconds"> & {
   adapterKind: string;
   nativeSearch: boolean;
+  responseTimeoutSeconds: number;
 };
 
 type SearchChild = {
@@ -451,7 +456,8 @@ function serializeIntegration(
           connectionDisplayName: providerModel.connectionDisplayName,
           connectionId: providerModel.connectionId,
           displayName: providerModel.displayName,
-          id: providerModel.id
+          id: providerModel.id,
+          responseTimeoutSeconds: providerModel.responseTimeoutSeconds
         }
       : null,
     ready,
@@ -672,6 +678,14 @@ export function createAdminSearchService(input: Readonly<{
     ]);
     const runtimeModels: RuntimeProviderModel[] = providerModels.flatMap((model) => {
       const configuration = providerModelConfiguration(model.activeConfig);
+      let connectionConfiguration: ReturnType<typeof normalizeProviderConnectionConfiguration>;
+      try {
+        connectionConfiguration = normalizeProviderConnectionConfiguration(
+          model.connection.activeConfig
+        );
+      } catch {
+        return [];
+      }
       if (!configuration) return [];
       const searchKind = clientSearchKind(configuration.adapterKind) ?? "web_search";
       return [{
@@ -684,6 +698,10 @@ export function createAdminSearchService(input: Readonly<{
           model.connection.activeConfig !== null,
         id: model.id,
         nativeSearch: configuration.capabilities.nativeSearch,
+        responseTimeoutSeconds: effectiveProviderResponseTimeoutMs(
+          connectionConfiguration,
+          configuration
+        ) / 1_000,
         searchReasoningSupported:
           (configuration.adapterKind === "anthropic_messages" ||
             configuration.adapterKind === "openai_responses_native" ||
@@ -709,6 +727,7 @@ export function createAdminSearchService(input: Readonly<{
               displayName: model.displayName,
               enabled: model.enabled,
               id: model.id,
+              responseTimeoutSeconds: model.responseTimeoutSeconds,
               searchReasoningSupported: model.searchReasoningSupported,
               searchKind
             }]

@@ -438,7 +438,7 @@ describe("provider Quick setup service", () => {
         { candidateId: "p2-o3" }
       ],
       outcome: "selection_required",
-      policyVersion: 3
+      policyVersion: 4
     });
     expect(value.test).toHaveBeenCalledTimes(1);
     expect(value.commit).not.toHaveBeenCalled();
@@ -454,7 +454,7 @@ describe("provider Quick setup service", () => {
         expectedState: state,
         provider: "openai",
         secret: "sk-picker",
-        selectedModel: { candidateId: "p2-o2", policyVersion: 3 }
+        selectedModel: { candidateId: "p2-o2", policyVersion: 4 }
       }
     });
     expect(result.outcome).toBe("ready");

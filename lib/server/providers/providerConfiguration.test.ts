@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  DEFAULT_PROVIDER_RESPONSE_TIMEOUT_MS,
+  effectiveProviderResponseTimeoutMs,
   normalizeProviderConnectionConfiguration,
   normalizeProviderModelConfiguration,
   providerAuthenticationMode,
@@ -36,7 +38,8 @@ describe("provider connection configuration", () => {
 
     expect(configuration).toEqual({
       allowPrivateNetwork: false,
-      apiRoot: "https://api.example.test/v1"
+      apiRoot: "https://api.example.test/v1",
+      responseTimeoutMs: DEFAULT_PROVIDER_RESPONSE_TIMEOUT_MS
     });
     expect(providerRequestEndpoint(configuration, "openai_responses_compatible"))
       .toBe("https://api.example.test/v1/responses");
@@ -87,6 +90,42 @@ describe("provider connection configuration", () => {
     expect(none.authenticationMode).toBe("none");
   });
 
+  it("defaults legacy response deadlines and accepts the inclusive configured range", () => {
+    const legacy = normalizeProviderConnectionConfiguration({
+      allowPrivateNetwork: false,
+      apiRoot: "https://api.example.test/v1"
+    });
+    const configured = normalizeProviderConnectionConfiguration({
+      allowPrivateNetwork: false,
+      apiRoot: "https://api.example.test/v1",
+      responseTimeoutMs: 500_000
+    });
+
+    expect(legacy.responseTimeoutMs).toBe(300_000);
+    expect(configured.responseTimeoutMs).toBe(500_000);
+    for (const responseTimeoutMs of [5_000, 900_000]) {
+      expect(normalizeProviderConnectionConfiguration({
+        allowPrivateNetwork: false,
+        apiRoot: "https://api.example.test/v1",
+        responseTimeoutMs
+      }).responseTimeoutMs).toBe(responseTimeoutMs);
+    }
+  });
+
+  it.each([4_999, 900_001, 5_000.5, "300000", null, {}])(
+    "rejects invalid connection response deadline %#",
+    (responseTimeoutMs) => {
+      expectCode(
+        () => normalizeProviderConnectionConfiguration({
+          allowPrivateNetwork: false,
+          apiRoot: "https://api.example.test/v1",
+          responseTimeoutMs
+        }),
+        "provider_response_timeout_invalid"
+      );
+    }
+  );
+
   it.each([
     { allowPrivateNetwork: false, apiRoot: "https://api.example.test/v1", authenticationMode: "none" },
     { allowPrivateNetwork: true, apiRoot: "https://api.example.test/v1", authenticationMode: "none" },
@@ -112,6 +151,48 @@ describe("provider connection configuration", () => {
 });
 
 describe("provider model configuration", () => {
+  it("inherits the connection deadline or preserves a bounded model override", () => {
+    const connection = normalizeProviderConnectionConfiguration({
+      allowPrivateNetwork: false,
+      apiRoot: "https://api.example.test/v1",
+      responseTimeoutMs: 500_000
+    });
+    const inherited = normalizeProviderModelConfiguration({
+      adapterKind: "openai_responses_compatible",
+      capabilities,
+      defaultParams: {},
+      upstreamModelId: "inherited"
+    });
+    const overridden = normalizeProviderModelConfiguration({
+      adapterKind: "openai_responses_compatible",
+      capabilities,
+      defaultParams: {},
+      responseTimeoutMs: 800_000,
+      upstreamModelId: "overridden"
+    });
+
+    expect(inherited.responseTimeoutMs).toBeUndefined();
+    expect(overridden.responseTimeoutMs).toBe(800_000);
+    expect(effectiveProviderResponseTimeoutMs(connection, inherited)).toBe(500_000);
+    expect(effectiveProviderResponseTimeoutMs(connection, overridden)).toBe(800_000);
+  });
+
+  it.each([4_999, 900_001, 5_000.5, "300000", null, {}])(
+    "rejects invalid model response deadline %#",
+    (responseTimeoutMs) => {
+      expectCode(
+        () => normalizeProviderModelConfiguration({
+          adapterKind: "openai_responses_compatible",
+          capabilities,
+          defaultParams: {},
+          responseTimeoutMs,
+          upstreamModelId: "invalid-timeout"
+        }),
+        "provider_response_timeout_invalid"
+      );
+    }
+  );
+
   it("keeps legacy models answer-selectable and preserves an explicit technical-only role", () => {
     const legacy = normalizeProviderModelConfiguration({
       adapterKind: "openai_responses_compatible",

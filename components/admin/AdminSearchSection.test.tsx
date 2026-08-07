@@ -57,7 +57,8 @@ const catalog: AdminSearchCatalog = {
       connectionDisplayName: "Compatible gateway",
       connectionId: "connection-1",
       displayName: "Search model",
-      id: "technical-1"
+      id: "technical-1",
+      responseTimeoutSeconds: 240
     },
     ready: true,
     readiness: "ready",
@@ -76,6 +77,7 @@ const catalog: AdminSearchCatalog = {
     displayName: "Search model",
     enabled: true,
     id: "technical-1",
+    responseTimeoutSeconds: 240,
     searchKind: "web_search",
     searchReasoningSupported: true
   }]
@@ -121,7 +123,10 @@ describe("AdminSearchSection", () => {
     expect(screen.getByText("Saved changes take effect immediately for new runs.")).toBeVisible();
     const timeout = await screen.findByRole("spinbutton", { name: /Search timeout, seconds/ });
     expect(timeout).toHaveValue(300);
+    expect(screen.getByText(/Selected model deadline: 240 seconds\. Effective limit: 240 seconds/))
+      .toBeVisible();
     fireEvent.change(timeout, { target: { value: "420" } });
+    expect(screen.getByText(/Search budget: 420 seconds\./)).toBeVisible();
     const advanced = screen.getByText("Advanced Search execution");
     expect(screen.getByLabelText(/^Search model/)).not.toBeVisible();
     fireEvent.click(advanced);

@@ -12,6 +12,10 @@ import {
 } from "@/components/admin/adminProviderReasoning";
 import type { AdminProviderCustomSetupController } from "@/components/admin/useAdminProviderCustomSetupController";
 import { MAX_ADMIN_PROVIDER_CUSTOM_SETUP_MODELS } from "@/lib/contracts/adminProviderCustomSetup";
+import {
+  ADMIN_PROVIDER_RESPONSE_TIMEOUT_MAX_SECONDS,
+  ADMIN_PROVIDER_RESPONSE_TIMEOUT_MIN_SECONDS
+} from "@/lib/contracts/adminProviders";
 import { compatibleReasoningRequestMappingDefault } from "@/lib/contracts/providerReasoningRequestMapping";
 import { ArrowLeft, ChevronDown, KeyRound, ServerCog, X } from "lucide-react";
 import Link from "next/link";
@@ -357,6 +361,25 @@ export function AdminProviderCustomSetup({
                   type="checkbox"
                 />
                 Allow only this exact configured private or local endpoint. This also permits HTTP and an empty API-key field; DNS and destination checks still fail closed.
+              </label>
+              <label>
+                <span className={fieldLabel}>Response timeout (seconds)</span>
+                <input
+                  className={inputClass}
+                  disabled={controller.state.formLocked}
+                  max={ADMIN_PROVIDER_RESPONSE_TIMEOUT_MAX_SECONDS}
+                  min={ADMIN_PROVIDER_RESPONSE_TIMEOUT_MIN_SECONDS}
+                  onChange={(event) => controller.actions.update({
+                    responseTimeoutSeconds: event.currentTarget.value
+                  })}
+                  required
+                  step={1}
+                  type="number"
+                  value={form.responseTimeoutSeconds}
+                />
+                <span className={helpText}>
+                  Complete provider-response deadline, including streamed responses. Allowed range: 5–900 seconds.
+                </span>
               </label>
               <label>
                 <span className={fieldLabel}>OpenAI-compatible protocol</span>

@@ -96,6 +96,7 @@ async function throwHttpError(response: Response, signal: AbortSignal): Promise<
 export function createFetchGeminiInteractionsClient(input: Readonly<{
   apiKey: string;
   apiRoot?: string;
+  defaultTimeoutMs?: number;
   fetchFn?: typeof fetch;
 }>): GeminiInteractionsClient {
   const endpoint = deriveGeminiInteractionsEndpoint(
@@ -113,7 +114,10 @@ export function createFetchGeminiInteractionsClient(input: Readonly<{
     body: Record<string, unknown>,
     options?: GeminiInteractionsClientRequestOptions
   ): Promise<Readonly<{ response: Response; timeout: ReturnType<typeof withTimeoutSignal> }>> {
-    const timeout = withTimeoutSignal(options?.signal, options?.timeoutMs);
+    const timeout = withTimeoutSignal(
+      options?.signal,
+      options?.timeoutMs ?? input.defaultTimeoutMs
+    );
     try {
       const response = await fetchFn(endpoint, {
         body: JSON.stringify(body),

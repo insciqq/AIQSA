@@ -607,11 +607,16 @@ describe("AdminProvidersSection", () => {
     fireEvent.change(screen.getByLabelText("Display name"), {
       target: { value: "Edited OpenRouter" }
     });
+    expect(screen.getByLabelText(/^Response timeout \(seconds\)/)).toHaveValue(300);
+    fireEvent.change(screen.getByLabelText(/^Response timeout \(seconds\)/), {
+      target: { value: "500" }
+    });
     fireEvent.click(screen.getByRole("button", { name: "Save connection" }));
 
     expect(view.actions.updateConnection).toHaveBeenCalledWith(
       connection.id,
       expect.objectContaining({
+        configuration: expect.objectContaining({ responseTimeoutSeconds: 500 }),
         displayName: "Edited OpenRouter",
         expectedDraftVersion: 1,
         unassignedPolicy: "use_default"
@@ -651,7 +656,8 @@ describe("AdminProvidersSection", () => {
         configuration: {
           allowPrivateNetwork: true,
           apiRoot: "http://127.0.0.1:11434/v1",
-          authenticationMode: "none"
+          authenticationMode: "none",
+          responseTimeoutSeconds: 300
         },
         displayName: "Custom local edited"
       })
@@ -754,6 +760,15 @@ describe("AdminProvidersSection", () => {
 
   it("supports the OpenRouter key to model to ordered provider draft flow", async () => {
     const view = controller();
+    const timeoutConnection: AdminProviderConnection = {
+      ...connection,
+      draftConfig: {
+        ...connection.draftConfig,
+        responseTimeoutSeconds: 500
+      }
+    };
+    view.state.connections = [timeoutConnection];
+    view.state.selectedConnection = timeoutConnection;
     view.actions.discoverEndpoints.mockResolvedValue([
       {
         name: "Provider A endpoint",
@@ -786,6 +801,14 @@ describe("AdminProvidersSection", () => {
     fireEvent.click(screen.getByRole("option", { name: /Fetched Model/ }));
 
     expect(screen.getByRole("textbox", { name: /Deployment name/ })).toHaveValue("Fetched Model");
+    expect(screen.getByLabelText(/^Response timeout override \(seconds\)/)).toHaveAttribute(
+      "placeholder",
+      "Inherit 500"
+    );
+    fireEvent.change(screen.getByLabelText(/^Response timeout override \(seconds\)/), {
+      target: { value: "800" }
+    });
+    expect(screen.getByText(/Effective deadline: 800 seconds/)).toBeInTheDocument();
     const answerModelToggle = screen.getByRole("checkbox", {
       name: /Available as answer model/
     });
@@ -831,6 +854,7 @@ describe("AdminProvidersSection", () => {
             mode: "only_selected",
             providers: ["provider-a", "provider-b"]
           },
+          responseTimeoutSeconds: 800,
           upstreamModelId: "vendor/fetched-model"
         }),
         displayName: "Fetched Model"

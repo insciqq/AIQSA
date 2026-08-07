@@ -50,6 +50,8 @@ export type AdminProviderCustomSetupRequest = Readonly<{
   /** Defaults to Chat Completions for backward compatibility. */
   protocol?: AdminProviderCustomProtocol;
   reasoningRequestMapping?: ProviderReasoningRequestMapping;
+  /** Defaults to 300 for backward-compatible callers. */
+  responseTimeoutSeconds?: number;
   secret?: string;
 }>;
 
@@ -57,6 +59,8 @@ export type AdminProviderCustomDiscoveryRequest = Readonly<{
   allowPrivateNetwork: boolean;
   apiRoot: string;
   authenticationMode: AdminProviderCustomAuthenticationMode;
+  /** Defaults to 300 for backward-compatible callers. */
+  responseTimeoutSeconds?: number;
   secret?: string;
 }>;
 

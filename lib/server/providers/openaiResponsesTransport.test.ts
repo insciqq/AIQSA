@@ -168,45 +168,40 @@ describe("OpenAI Responses transport", () => {
   });
 
   it("applies the provider request timeout to create, retrieve, cancel, and stream", async () => {
-    const previousTimeout = process.env.AIQSA_PROVIDER_TIMEOUT_MS;
-    process.env.AIQSA_PROVIDER_TIMEOUT_MS = "5";
+    const client = createFetchOpenAIResponsesClient({
+      apiKey: "key",
+      defaultTimeoutMs: 5,
+      fetchFn: async (_input, init) =>
+        new Promise<Response>((_resolve, reject) => {
+          const signal = init?.signal;
+          if (!signal) {
+            reject(new Error("missing_signal"));
+            return;
+          }
 
-    try {
-      const client = createFetchOpenAIResponsesClient({
-        apiKey: "key",
-        fetchFn: async (_input, init) =>
-          new Promise<Response>((_resolve, reject) => {
-            const signal = init?.signal;
-            if (!signal) {
-              reject(new Error("missing_signal"));
-              return;
-            }
+          const rejectFromSignal = () => reject(signal.reason);
+          if (signal.aborted) {
+            rejectFromSignal();
+            return;
+          }
+          signal.addEventListener("abort", rejectFromSignal, { once: true });
+        })
+    });
 
-            const rejectFromSignal = () => reject(signal.reason);
-            if (signal.aborted) {
-              rejectFromSignal();
-              return;
-            }
-            signal.addEventListener("abort", rejectFromSignal, { once: true });
-          })
+    for (const operation of [
+      () => client.create({}),
+      () => client.retrieve("resp-timeout"),
+      () => client.cancel("resp-timeout"),
+      () => client.stream!({ stream: true })
+    ]) {
+      await expect(operation()).rejects.toMatchObject({
+        code: "provider_request_timed_out",
+        timeoutMs: 5
       });
-
-      await expect(client.create({})).rejects.toThrow("Provider request timed out");
-      await expect(client.retrieve("resp-timeout")).rejects.toThrow("Provider request timed out");
-      await expect(client.cancel("resp-timeout")).rejects.toThrow("Provider request timed out");
-      await expect(client.stream!({ stream: true })).rejects.toThrow("Provider request timed out");
-    } finally {
-      if (typeof previousTimeout === "undefined") {
-        delete process.env.AIQSA_PROVIDER_TIMEOUT_MS;
-      } else {
-        process.env.AIQSA_PROVIDER_TIMEOUT_MS = previousTimeout;
-      }
     }
   });
 
   it("keeps the request deadline active after headers through JSON and HTTP-error bodies", async () => {
-    const previousTimeout = process.env.AIQSA_PROVIDER_TIMEOUT_MS;
-    process.env.AIQSA_PROVIDER_TIMEOUT_MS = "5";
     const cancellationReasons: unknown[] = [];
     const responses = [
       delayedResponse({
@@ -222,29 +217,22 @@ describe("OpenAI Responses transport", () => {
       })
     ];
 
-    try {
-      const client = createFetchOpenAIResponsesClient({
-        apiKey: "key",
-        fetchFn: async () => responses.shift() ?? new Response("{}")
-      });
+    const client = createFetchOpenAIResponsesClient({
+      apiKey: "key",
+      defaultTimeoutMs: 5,
+      fetchFn: async () => responses.shift() ?? new Response("{}")
+    });
 
-      await expect(client.create({})).rejects.toMatchObject({
-        message: "Provider request timed out",
-        name: "TimeoutError"
-      });
-      await expect(client.retrieve("resp-stalled-error")).rejects.toMatchObject({
-        message: "Provider request timed out",
-        name: "TimeoutError"
-      });
-      expect(cancellationReasons).toHaveLength(2);
-      expect(openAIRetryableErrorPayload(cancellationReasons[1])).toBeNull();
-    } finally {
-      if (typeof previousTimeout === "undefined") {
-        delete process.env.AIQSA_PROVIDER_TIMEOUT_MS;
-      } else {
-        process.env.AIQSA_PROVIDER_TIMEOUT_MS = previousTimeout;
-      }
-    }
+    await expect(client.create({})).rejects.toMatchObject({
+      code: "provider_request_timed_out",
+      timeoutMs: 5
+    });
+    await expect(client.retrieve("resp-stalled-error")).rejects.toMatchObject({
+      code: "provider_request_timed_out",
+      timeoutMs: 5
+    });
+    expect(cancellationReasons).toHaveLength(2);
+    expect(openAIRetryableErrorPayload(cancellationReasons[1])).toBeNull();
   });
 
   it("bounds raw success and error bodies while retaining HTTP retry classification", async () => {
@@ -288,37 +276,28 @@ describe("OpenAI Responses transport", () => {
   });
 
   it("releases the ordinary deadline at successful SSE headers but keeps caller cancellation", async () => {
-    const previousTimeout = process.env.AIQSA_PROVIDER_TIMEOUT_MS;
-    process.env.AIQSA_PROVIDER_TIMEOUT_MS = "5";
     const caller = new AbortController();
     let transportSignal: AbortSignal | undefined;
     const response = new Response(new ReadableStream<Uint8Array>());
 
-    try {
-      const client = createFetchOpenAIResponsesClient({
-        apiKey: "key",
-        fetchFn: async (_input, init) => {
-          transportSignal = init?.signal ?? undefined;
-          return response;
-        }
-      });
-
-      await expect(client.stream!({}, { signal: caller.signal })).resolves.toBe(response);
-      await new Promise((resolve) => setTimeout(resolve, 15));
-      expect(transportSignal?.aborted).toBe(false);
-
-      const cancellation = new Error("caller_cancelled_after_headers");
-      caller.abort(cancellation);
-      expect(transportSignal?.aborted).toBe(true);
-      expect(transportSignal?.reason).toBe(cancellation);
-      await response.body?.cancel();
-    } finally {
-      if (typeof previousTimeout === "undefined") {
-        delete process.env.AIQSA_PROVIDER_TIMEOUT_MS;
-      } else {
-        process.env.AIQSA_PROVIDER_TIMEOUT_MS = previousTimeout;
+    const client = createFetchOpenAIResponsesClient({
+      apiKey: "key",
+      defaultTimeoutMs: 5,
+      fetchFn: async (_input, init) => {
+        transportSignal = init?.signal ?? undefined;
+        return response;
       }
-    }
+    });
+
+    await expect(client.stream!({}, { signal: caller.signal })).resolves.toBe(response);
+    await new Promise((resolve) => setTimeout(resolve, 15));
+    expect(transportSignal?.aborted).toBe(false);
+
+    const cancellation = new Error("caller_cancelled_after_headers");
+    caller.abort(cancellation);
+    expect(transportSignal?.aborted).toBe(true);
+    expect(transportSignal?.reason).toBe(cancellation);
+    await response.body?.cancel();
   });
 
   it("combines caller cancellation with transport timeouts for signal-aware methods", async () => {

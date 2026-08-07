@@ -149,7 +149,8 @@ async function testOpenRouterCatalog(
   }) ?? createOpenRouterDiscoveryClient({
     allowPrivateNetwork: input.connection.allowPrivateNetwork,
     apiRoot: input.connection.apiRoot,
-    bearerToken: input.secret
+    bearerToken: input.secret,
+    responseTimeoutMs: input.connection.responseTimeoutMs
   });
   const models = await client.listModels({ signal: input.signal });
   const model = models.find(({ id }) => id === input.model.upstreamModelId);

@@ -317,13 +317,20 @@ async function executeOne(input: Readonly<{
   }
   const request = queryOnlyRequest(invocationId, input.option, input.query);
   const configured = configuration(input.option);
+  const effectiveTimeoutMs = Math.min(
+    configured.timeoutMs,
+    input.runtime.responseTimeoutMs
+  );
   const executionRequestPreview = {
+    effectiveTimeoutMs,
     maxOutputTokens: configured.maxOutputTokens,
     modelId: input.option.modelId,
     protocol: input.option.protocol,
     provider: input.option.provider,
+    providerResponseTimeoutMs: input.runtime.responseTimeoutMs,
     queryCharacters: input.query.length,
     reasoningPolicy: configured.reasoningPolicy,
+    searchTimeoutMs: configured.timeoutMs,
     sourceLimit: configured.maxResults,
     ...(input.runtime.searchAdapter
       ? { providerRequest: input.runtime.searchAdapter.buildRequestPreview(request) }
@@ -334,7 +341,7 @@ async function executeOne(input: Readonly<{
   input.signal?.addEventListener("abort", relayAbort, { once: true });
   const timeout = setTimeout(
     () => timeoutController.abort(new Error("search_timeout")),
-    configuration(input.option).timeoutMs
+    effectiveTimeoutMs
   );
   try {
     const result = await consumeProviderSearch(
@@ -342,7 +349,7 @@ async function executeOne(input: Readonly<{
       request,
       input.option,
       timeoutController.signal,
-      configured.timeoutMs
+      effectiveTimeoutMs
     );
     const providerTrace = providerSearchOperationsFromArtifacts(result.artifacts);
     return {

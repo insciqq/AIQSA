@@ -18,10 +18,16 @@ export type AdminProviderAdapterKind =
 export type AdminProviderUnassignedPolicy = "require_assignment" | "use_default";
 export type AdminProviderCheckStatus = "available" | "unavailable";
 
+export const ADMIN_PROVIDER_RESPONSE_TIMEOUT_DEFAULT_SECONDS = 300;
+export const ADMIN_PROVIDER_RESPONSE_TIMEOUT_MAX_SECONDS = 900;
+export const ADMIN_PROVIDER_RESPONSE_TIMEOUT_MIN_SECONDS = 5;
+
 export type AdminProviderConnectionConfiguration = {
   allowPrivateNetwork: boolean;
   apiRoot: string;
   authenticationMode?: "bearer" | "none";
+  /** Whole seconds. Older cached payloads may omit this and inherit 300. */
+  responseTimeoutSeconds?: number;
 };
 
 export type AdminProviderModelCapabilities = {
@@ -60,6 +66,8 @@ export type AdminProviderModelConfiguration = {
   defaultParams: Record<string, unknown>;
   openRouterRouting?: AdminOpenRouterRouting;
   reasoningRequestMapping?: ProviderReasoningRequestMapping;
+  /** Whole seconds; omission means inherit the connection value. */
+  responseTimeoutSeconds?: number;
   upstreamModelId: string;
 };
 

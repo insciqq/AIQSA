@@ -209,6 +209,15 @@ describe("custom provider setup handler", () => {
       confirmPaidRequest: true,
       modelIds: ["model-1", "model-1"],
       secret: "key"
+    }, 400],
+    [{
+      allowPrivateNetwork: false,
+      apiRoot: "https://llm.example.test/v1",
+      authenticationMode: "bearer",
+      confirmPaidRequest: true,
+      modelId: "model-1",
+      responseTimeoutSeconds: 5.5,
+      secret: "key"
     }, 400]
   ])("rejects malformed or ambiguous request bodies", async (body, expectedStatus) => {
     const customService = service();

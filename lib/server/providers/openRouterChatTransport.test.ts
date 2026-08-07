@@ -189,12 +189,9 @@ describe("OpenRouter Chat transport", () => {
   });
 
   it("applies the configured provider timeout to regular and streaming calls", async () => {
-    const previousTimeout = process.env.AIQSA_PROVIDER_TIMEOUT_MS;
-    process.env.AIQSA_PROVIDER_TIMEOUT_MS = "5";
-
-    try {
-      const client = createFetchOpenRouterChatClient({
+    const client = createFetchOpenRouterChatClient({
         apiKey: "key",
+        defaultTimeoutMs: 5,
         fetchFn: async (_input, init) =>
           new Promise<Response>((_resolve, reject) => {
             const signal = init?.signal;
@@ -210,24 +207,19 @@ describe("OpenRouter Chat transport", () => {
             }
             signal.addEventListener("abort", rejectFromSignal, { once: true });
           })
-      });
+    });
 
-      await expect(client.createChatCompletion({})).rejects.toThrow("Provider request timed out");
-      await expect(client.streamChatCompletion!({ stream: true })).rejects.toThrow(
-        "Provider request timed out"
-      );
-    } finally {
-      if (typeof previousTimeout === "undefined") {
-        delete process.env.AIQSA_PROVIDER_TIMEOUT_MS;
-      } else {
-        process.env.AIQSA_PROVIDER_TIMEOUT_MS = previousTimeout;
-      }
-    }
+    await expect(client.createChatCompletion({})).rejects.toMatchObject({
+      code: "provider_request_timed_out",
+      timeoutMs: 5
+    });
+    await expect(client.streamChatCompletion!({ stream: true })).rejects.toMatchObject({
+      code: "provider_request_timed_out",
+      timeoutMs: 5
+    });
   });
 
   it("keeps the request deadline active after headers through JSON and HTTP-error bodies", async () => {
-    const previousTimeout = process.env.AIQSA_PROVIDER_TIMEOUT_MS;
-    process.env.AIQSA_PROVIDER_TIMEOUT_MS = "5";
     const cancellationReasons: unknown[] = [];
     const responses = [
       delayedResponse({
@@ -243,28 +235,21 @@ describe("OpenRouter Chat transport", () => {
       })
     ];
 
-    try {
-      const client = createFetchOpenRouterChatClient({
+    const client = createFetchOpenRouterChatClient({
         apiKey: "key",
+        defaultTimeoutMs: 5,
         fetchFn: async () => responses.shift() ?? new Response("{}")
-      });
+    });
 
-      await expect(client.createChatCompletion({})).rejects.toMatchObject({
-        message: "Provider request timed out",
-        name: "TimeoutError"
-      });
-      await expect(client.streamChatCompletion!({ stream: true })).rejects.toMatchObject({
-        message: "Provider request timed out",
-        name: "TimeoutError"
-      });
-      expect(cancellationReasons).toHaveLength(2);
-    } finally {
-      if (typeof previousTimeout === "undefined") {
-        delete process.env.AIQSA_PROVIDER_TIMEOUT_MS;
-      } else {
-        process.env.AIQSA_PROVIDER_TIMEOUT_MS = previousTimeout;
-      }
-    }
+    await expect(client.createChatCompletion({})).rejects.toMatchObject({
+      code: "provider_request_timed_out",
+      timeoutMs: 5
+    });
+    await expect(client.streamChatCompletion!({ stream: true })).rejects.toMatchObject({
+      code: "provider_request_timed_out",
+      timeoutMs: 5
+    });
+    expect(cancellationReasons).toHaveLength(2);
   });
 
   it("bounds raw success and error bodies with an explicit overflow marker", async () => {
@@ -296,39 +281,30 @@ describe("OpenRouter Chat transport", () => {
   });
 
   it("releases the ordinary deadline at successful SSE headers but keeps caller cancellation", async () => {
-    const previousTimeout = process.env.AIQSA_PROVIDER_TIMEOUT_MS;
-    process.env.AIQSA_PROVIDER_TIMEOUT_MS = "5";
     const caller = new AbortController();
     let transportSignal: AbortSignal | undefined;
     const response = new Response(new ReadableStream<Uint8Array>());
 
-    try {
-      const client = createFetchOpenRouterChatClient({
-        apiKey: "key",
-        fetchFn: async (_input, init) => {
-          transportSignal = init?.signal ?? undefined;
-          return response;
-        }
-      });
-
-      await expect(
-        client.streamChatCompletion!({}, { signal: caller.signal })
-      ).resolves.toBe(response);
-      await new Promise((resolve) => setTimeout(resolve, 15));
-      expect(transportSignal?.aborted).toBe(false);
-
-      const cancellation = new Error("caller_cancelled_after_headers");
-      caller.abort(cancellation);
-      expect(transportSignal?.aborted).toBe(true);
-      expect(transportSignal?.reason).toBe(cancellation);
-      await response.body?.cancel();
-    } finally {
-      if (typeof previousTimeout === "undefined") {
-        delete process.env.AIQSA_PROVIDER_TIMEOUT_MS;
-      } else {
-        process.env.AIQSA_PROVIDER_TIMEOUT_MS = previousTimeout;
+    const client = createFetchOpenRouterChatClient({
+      apiKey: "key",
+      defaultTimeoutMs: 5,
+      fetchFn: async (_input, init) => {
+        transportSignal = init?.signal ?? undefined;
+        return response;
       }
-    }
+    });
+
+    await expect(
+      client.streamChatCompletion!({}, { signal: caller.signal })
+    ).resolves.toBe(response);
+    await new Promise((resolve) => setTimeout(resolve, 15));
+    expect(transportSignal?.aborted).toBe(false);
+
+    const cancellation = new Error("caller_cancelled_after_headers");
+    caller.abort(cancellation);
+    expect(transportSignal?.aborted).toBe(true);
+    expect(transportSignal?.reason).toBe(cancellation);
+    await response.body?.cancel();
   });
 
   it("rejects successful streaming responses without a body", async () => {

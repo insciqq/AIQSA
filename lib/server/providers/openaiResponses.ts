@@ -20,6 +20,7 @@ import {
   type OpenAIResponsesClient
 } from "./openaiResponsesTransport";
 import type { ProviderAdapter, ProviderRunRefreshResult, ProviderRunResult } from "./types";
+import { providerStreamTimingLimits } from "./network";
 
 export { buildOpenAIResponsesRequest, createFetchOpenAIResponsesClient };
 export type { OpenAIResponsesClient };
@@ -137,7 +138,8 @@ export function createOpenAIResponsesAdapter(options: OpenAIResponsesAdapterOpti
           background: body.background,
           responseBody: response.body,
           signal: runOptions.signal,
-          stream: body.stream
+          stream: body.stream,
+          streamLimits: providerStreamTimingLimits(runOptions.timeoutMs)
         });
       }
 

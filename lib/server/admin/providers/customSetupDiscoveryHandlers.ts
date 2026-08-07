@@ -3,6 +3,10 @@ import {
   type AdminProviderCustomAuthenticationMode,
   type AdminProviderCustomDiscoveryResult
 } from "../../../contracts/adminProviderCustomSetup";
+import {
+  ADMIN_PROVIDER_RESPONSE_TIMEOUT_MAX_SECONDS,
+  ADMIN_PROVIDER_RESPONSE_TIMEOUT_MIN_SECONDS
+} from "../../../contracts/adminProviders";
 import type { RequestAuthResolver } from "../../auth/requestAuth";
 import {
   readJsonBodyOrNull,
@@ -75,6 +79,7 @@ export function createAdminProviderCustomDiscoveryHandler(
       "allowPrivateNetwork",
       "apiRoot",
       "authenticationMode",
+      "responseTimeoutSeconds",
       "secret"
     ]);
     if (Object.keys(body).some((key) => !allowedKeys.has(key))) {
@@ -86,10 +91,18 @@ export function createAdminProviderCustomDiscoveryHandler(
     const rawSecret = body.secret === undefined
       ? undefined
       : boundedText(body.secret, 16_384) ?? null;
+    const responseTimeoutSeconds = body.responseTimeoutSeconds === undefined
+      ? undefined
+      : Number.isSafeInteger(body.responseTimeoutSeconds) &&
+          Number(body.responseTimeoutSeconds) >= ADMIN_PROVIDER_RESPONSE_TIMEOUT_MIN_SECONDS &&
+          Number(body.responseTimeoutSeconds) <= ADMIN_PROVIDER_RESPONSE_TIMEOUT_MAX_SECONDS
+        ? Number(body.responseTimeoutSeconds)
+        : null;
     if (
       !mode ||
       !apiRoot ||
       typeof body.allowPrivateNetwork !== "boolean" ||
+      responseTimeoutSeconds === null ||
       rawSecret === null ||
       (mode === "bearer" && rawSecret === undefined) ||
       (mode === "none" && rawSecret !== undefined)
@@ -101,7 +114,10 @@ export function createAdminProviderCustomDiscoveryHandler(
       const connection = normalizeProviderConnectionConfiguration({
         allowPrivateNetwork: body.allowPrivateNetwork,
         apiRoot,
-        authenticationMode: mode
+        authenticationMode: mode,
+        ...(responseTimeoutSeconds === undefined
+          ? {}
+          : { responseTimeoutMs: responseTimeoutSeconds * 1_000 })
       });
       const secret = rawSecret === undefined
         ? null

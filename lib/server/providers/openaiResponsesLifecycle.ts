@@ -1,4 +1,5 @@
-import { positiveIntegerEnv } from "./network";
+import { ProviderRequestTimeoutError } from "./network";
+import { DEFAULT_PROVIDER_RESPONSE_TIMEOUT_MS } from "./providerConfiguration";
 import {
   isTerminalOpenAIResponse,
   resolveOpenAIResponseIdentity,
@@ -64,7 +65,6 @@ export type OpenAIResponsesLifecycle = {
 };
 
 const defaultPollIntervalMs = 1000;
-const defaultBackgroundPollTimeoutMs = 11 * 60_000;
 
 function abortError(): Error {
   const error = new Error("provider_run_aborted");
@@ -104,6 +104,7 @@ class OpenAIBackgroundDeadline {
   private readonly controller = new AbortController();
   private readonly expiresAt: number;
   private readonly interrupted: Promise<void>;
+  private readonly timeoutMs: number;
   private resolveInterrupted!: () => void;
   private timeout?: ReturnType<typeof setTimeout>;
 
@@ -112,6 +113,7 @@ class OpenAIBackgroundDeadline {
     private readonly callerSignal?: AbortSignal
   ) {
     const boundedTimeoutMs = Math.max(0, timeoutMs);
+    this.timeoutMs = boundedTimeoutMs;
     this.expiresAt = performance.now() + boundedTimeoutMs;
     this.interrupted = new Promise((resolve) => {
       this.resolveInterrupted = resolve;
@@ -142,8 +144,12 @@ class OpenAIBackgroundDeadline {
     }
 
     this.interruption = kind;
-    this.interruptionError =
-      kind === "timeout" ? new Error("openai_background_response_poll_timeout") : abortError();
+    const callerReason = this.callerSignal?.reason;
+    this.interruptionError = kind === "timeout"
+      ? new ProviderRequestTimeoutError(this.timeoutMs)
+      : callerReason instanceof Error && callerReason.name !== "AbortError"
+        ? callerReason
+        : abortError();
     if (typeof this.timeout !== "undefined") {
       clearTimeout(this.timeout);
       this.timeout = undefined;
@@ -202,9 +208,7 @@ class OpenAIBackgroundDeadline {
 
 export function createOpenAIResponsesLifecycle(options: OpenAIResponsesLifecycleOptions): OpenAIResponsesLifecycle {
   const pollIntervalMs = options.pollIntervalMs ?? defaultPollIntervalMs;
-  const pollTimeoutMs =
-    options.pollTimeoutMs ??
-    positiveIntegerEnv("AIQSA_OPENAI_BACKGROUND_POLL_TIMEOUT_MS", defaultBackgroundPollTimeoutMs);
+  const pollTimeoutMs = options.pollTimeoutMs ?? DEFAULT_PROVIDER_RESPONSE_TIMEOUT_MS;
   const maxRetryableRetrieveErrors = options.maxRetryableRetrieveErrors ?? 5;
 
   return {

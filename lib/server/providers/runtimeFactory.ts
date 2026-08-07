@@ -26,10 +26,12 @@ import {
   normalizeProviderDefaultParams,
   normalizeProviderModelCapabilities,
   normalizeProviderModelConfiguration,
+  effectiveProviderResponseTimeoutMs,
   providerAuthenticationMode,
   type ProviderConnectionConfiguration,
   type ProviderModelConfiguration
 } from "./providerConfiguration";
+import { withTimeoutSignal } from "./network";
 import type { ProviderAdapter, ProviderSearchAdapter } from "./types";
 import { warnProviderStreamSafetyOnce } from "./streamSafetyObservability";
 import {
@@ -73,10 +75,14 @@ export type ProviderRuntimeFactoryOptions = Readonly<{
   fetchFn?: typeof fetch;
 }>;
 
-export type ProviderRuntimeBinding = Readonly<{
+type ProviderRuntimeComponents = Readonly<{
   adapter: ProviderAdapter;
   searchAdapter?: ProviderSearchAdapter;
   toolBridge?: ProviderToolBridge;
+}>;
+
+export type ProviderRuntimeBinding = ProviderRuntimeComponents & Readonly<{
+  responseTimeoutMs: number;
 }>;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -205,8 +211,12 @@ function createProviderRuntimeBindingUnobserved(input: Readonly<{
   options: ProviderRuntimeFactoryOptions;
   secret: ProviderCredentialSource | null;
   snapshot: ProviderExecutionSnapshot;
-}>): ProviderRuntimeBinding {
+}>): ProviderRuntimeComponents {
   const snapshot = normalizeProviderExecutionSnapshot(input.snapshot);
+  const responseTimeoutMs = effectiveProviderResponseTimeoutMs(
+    snapshot.connection,
+    snapshot.model.adapterKind === "fake" ? null : snapshot.model
+  );
 
   if (snapshot.model.adapterKind === "fake") {
     if (!input.options.allowFake) {
@@ -228,6 +238,7 @@ function createProviderRuntimeBindingUnobserved(input: Readonly<{
       const client = createFetchOpenAIResponsesClient({
         apiKey: null,
         baseUrl: snapshot.connection.apiRoot,
+        defaultTimeoutMs: responseTimeoutMs,
         fetchFn
       });
       return {
@@ -253,6 +264,7 @@ function createProviderRuntimeBindingUnobserved(input: Readonly<{
           apiRoot: snapshot.connection.apiRoot,
           authenticationMode,
           bearerToken: null,
+          defaultTimeoutMs: responseTimeoutMs,
           fetchFn
         }),
         reasoningRequestMapping: snapshot.model.reasoningRequestMapping
@@ -280,6 +292,7 @@ function createProviderRuntimeBindingUnobserved(input: Readonly<{
       const client = createFetchGeminiInteractionsClient({
         apiKey: clientSecret,
         apiRoot: baseUrl,
+        defaultTimeoutMs: responseTimeoutMs,
         fetchFn
       });
       return {
@@ -293,9 +306,14 @@ function createProviderRuntimeBindingUnobserved(input: Readonly<{
       };
     }
     case "openai_responses_native": {
-      const client = createFetchOpenAIResponsesClient({ apiKey: clientSecret, baseUrl, fetchFn });
+      const client = createFetchOpenAIResponsesClient({
+        apiKey: clientSecret,
+        baseUrl,
+        defaultTimeoutMs: responseTimeoutMs,
+        fetchFn
+      });
       return {
-        adapter: createOpenAIResponsesAdapter({ client }),
+        adapter: createOpenAIResponsesAdapter({ client, pollTimeoutMs: responseTimeoutMs }),
         ...(snapshot.model.capabilities.nativeSearch
           ? {
               searchAdapter: createOpenAIResponsesSearchAdapter({
@@ -308,7 +326,12 @@ function createProviderRuntimeBindingUnobserved(input: Readonly<{
       };
     }
     case "openai_responses_compatible": {
-      const client = createFetchOpenAIResponsesClient({ apiKey: clientSecret, baseUrl, fetchFn });
+      const client = createFetchOpenAIResponsesClient({
+        apiKey: clientSecret,
+        baseUrl,
+        defaultTimeoutMs: responseTimeoutMs,
+        fetchFn
+      });
       return {
         adapter: createCompatibleResponsesAdapter({
           client,
@@ -333,6 +356,7 @@ function createProviderRuntimeBindingUnobserved(input: Readonly<{
             apiRoot: baseUrl,
             authenticationMode,
             bearerToken: clientSecret,
+            defaultTimeoutMs: responseTimeoutMs,
             fetchFn
           }),
           reasoningRequestMapping: snapshot.model.reasoningRequestMapping
@@ -340,7 +364,12 @@ function createProviderRuntimeBindingUnobserved(input: Readonly<{
         toolBridge: openAICompatibleChatToolBridge
       };
     case "anthropic_messages": {
-      const client = createFetchAnthropicMessagesClient({ apiKey: clientSecret, baseUrl, fetchFn });
+      const client = createFetchAnthropicMessagesClient({
+        apiKey: clientSecret,
+        baseUrl,
+        defaultTimeoutMs: responseTimeoutMs,
+        fetchFn
+      });
       return {
         adapter: createAnthropicMessagesAdapter({
           client
@@ -352,7 +381,12 @@ function createProviderRuntimeBindingUnobserved(input: Readonly<{
       };
     }
     case "openrouter_chat_completions": {
-      const client = createFetchOpenRouterChatClient({ apiKey: clientSecret, baseUrl, fetchFn });
+      const client = createFetchOpenRouterChatClient({
+        apiKey: clientSecret,
+        baseUrl,
+        defaultTimeoutMs: responseTimeoutMs,
+        fetchFn
+      });
       return {
         adapter: createOpenRouterChatAdapter({ client }),
         searchAdapter: createOpenRouterPerplexitySearchAdapter({ client }),
@@ -363,9 +397,17 @@ function createProviderRuntimeBindingUnobserved(input: Readonly<{
 }
 
 function withProviderStreamSafetyObservability(
-  binding: ProviderRuntimeBinding,
+  binding: ProviderRuntimeComponents,
   snapshot: ProviderExecutionSnapshot
 ): ProviderRuntimeBinding {
+  const responseTimeoutMs = effectiveProviderResponseTimeoutMs(
+    snapshot.connection,
+    snapshot.model.adapterKind === "fake" ? null : snapshot.model
+  );
+  const operationTimeoutMs = (requested?: number) =>
+    typeof requested === "number" && Number.isSafeInteger(requested) && requested > 0
+      ? Math.min(requested, responseTimeoutMs)
+      : responseTimeoutMs;
   const adapter = binding.adapter;
   const observedAdapter: ProviderAdapter = {
     buildRequestPreview: (request) => adapter.buildRequestPreview(request),
@@ -379,8 +421,14 @@ function withProviderStreamSafetyObservability(
       ? { retrieve: (providerResponseId: string) => adapter.retrieve!(providerResponseId) }
       : {}),
     async *stream(request, options) {
+      const timeoutMs = operationTimeoutMs(options?.timeoutMs);
+      const timeout = withTimeoutSignal(options?.signal, timeoutMs);
       try {
-        return yield* adapter.stream(request, options);
+        return yield* adapter.stream(request, {
+          ...options,
+          signal: timeout.signal,
+          timeoutMs
+        });
       } catch (error) {
         warnProviderStreamSafetyOnce(error, {
           adapterKind: snapshot.model.adapterKind,
@@ -389,12 +437,37 @@ function withProviderStreamSafetyObservability(
           providerModelId: snapshot.providerModelId
         });
         throw error;
+      } finally {
+        timeout.clear();
       }
     }
   };
+  const searchAdapter = binding.searchAdapter
+    ? {
+        buildRequestPreview: (request: Parameters<ProviderSearchAdapter["buildRequestPreview"]>[0]) =>
+          binding.searchAdapter!.buildRequestPreview(request),
+        async search(
+          request: Parameters<ProviderSearchAdapter["search"]>[0],
+          options?: Parameters<ProviderSearchAdapter["search"]>[1]
+        ) {
+          const timeoutMs = operationTimeoutMs(options?.timeoutMs);
+          const timeout = withTimeoutSignal(options?.signal, timeoutMs);
+          try {
+            return await binding.searchAdapter!.search(request, {
+              ...options,
+              signal: timeout.signal,
+              timeoutMs
+            });
+          } finally {
+            timeout.clear();
+          }
+        }
+      } satisfies ProviderSearchAdapter
+    : undefined;
   return {
     adapter: observedAdapter,
-    ...(binding.searchAdapter ? { searchAdapter: binding.searchAdapter } : {}),
+    responseTimeoutMs,
+    ...(searchAdapter ? { searchAdapter } : {}),
     ...(binding.toolBridge ? { toolBridge: binding.toolBridge } : {})
   };
 }

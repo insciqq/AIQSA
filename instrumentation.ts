@@ -1,5 +1,9 @@
 export async function register(): Promise<void> {
   if (process.env.NEXT_RUNTIME !== "nodejs") return;
+  const { warnIgnoredProviderTimeoutEnvironmentOnce } = await import(
+    "./lib/server/providers/legacyTimeoutEnvironment"
+  );
+  warnIgnoredProviderTimeoutEnvironmentOnce();
   const { startDefaultRunRecoveryScheduler } = await import(
     "./lib/server/runs/defaultRecoveryScheduler"
   );

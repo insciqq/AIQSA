@@ -160,7 +160,7 @@ describe("OpenAI Search source probe", () => {
     })).resolves.toEqual({ normalizedSourceCount: 1, status: "available" });
   });
 
-  it("bounds the optional connectivity probe to one minute", async () => {
+  it("bounds the optional connectivity probe to the connection deadline", async () => {
     vi.useFakeTimers();
     try {
       const policy = adminProviderQuickSetupPolicy("openai");
@@ -182,7 +182,10 @@ describe("OpenAI Search source probe", () => {
         }
       });
       const outcome = tester.test({
-        connection: policy.connection.configuration,
+        connection: {
+          ...policy.connection.configuration,
+          responseTimeoutMs: 5_000
+        },
         model: candidate.configuration,
         secret: "write-only-openai-key"
       }).then(
@@ -192,7 +195,7 @@ describe("OpenAI Search source probe", () => {
 
       await vi.advanceTimersByTimeAsync(0);
       expect(requestSignal?.aborted).toBe(false);
-      await vi.advanceTimersByTimeAsync(59_999);
+      await vi.advanceTimersByTimeAsync(4_999);
       expect(requestSignal?.aborted).toBe(false);
       await vi.advanceTimersByTimeAsync(1);
 

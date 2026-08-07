@@ -193,15 +193,14 @@ describe("Anthropic Messages adapter", () => {
 
   it("bounds non-2xx provider bodies by the request deadline and byte limit", async () => {
     const previousMaxBytes = process.env.AIQSA_PROVIDER_RESPONSE_MAX_BYTES;
-    const previousTimeout = process.env.AIQSA_PROVIDER_TIMEOUT_MS;
     let stalledBodyCancelled = false;
     let oversizedBodyCancelled = false;
 
     try {
       process.env.AIQSA_PROVIDER_RESPONSE_MAX_BYTES = "1024";
-      process.env.AIQSA_PROVIDER_TIMEOUT_MS = "5";
       const stalledClient = createFetchAnthropicMessagesClient({
         apiKey: "key",
+        defaultTimeoutMs: 5,
         fetchFn: async () =>
           new Response(
             new ReadableStream<Uint8Array>({
@@ -213,13 +212,16 @@ describe("Anthropic Messages adapter", () => {
           )
       });
 
-      await expect(stalledClient.stream({}).next()).rejects.toThrow("Provider request timed out");
+      await expect(stalledClient.stream({}).next()).rejects.toMatchObject({
+        code: "provider_request_timed_out",
+        timeoutMs: 5
+      });
       expect(stalledBodyCancelled).toBe(true);
 
       process.env.AIQSA_PROVIDER_RESPONSE_MAX_BYTES = "4";
-      process.env.AIQSA_PROVIDER_TIMEOUT_MS = "100";
       const oversizedClient = createFetchAnthropicMessagesClient({
         apiKey: "key",
+        defaultTimeoutMs: 100,
         fetchFn: async () =>
           new Response(
             new ReadableStream<Uint8Array>({
@@ -244,11 +246,6 @@ describe("Anthropic Messages adapter", () => {
       } else {
         process.env.AIQSA_PROVIDER_RESPONSE_MAX_BYTES = previousMaxBytes;
       }
-      if (previousTimeout === undefined) {
-        delete process.env.AIQSA_PROVIDER_TIMEOUT_MS;
-      } else {
-        process.env.AIQSA_PROVIDER_TIMEOUT_MS = previousTimeout;
-      }
     }
   });
 
@@ -272,7 +269,10 @@ describe("Anthropic Messages adapter", () => {
         ...DEFAULT_PROVIDER_STREAM_LIMITS,
         maxDurationMs: 20
       }
-    }).next()).rejects.toThrow("Provider request timed out");
+    }).next()).rejects.toMatchObject({
+      code: "provider_request_timed_out",
+      timeoutMs: 20
+    });
     expect(fetchFn).toHaveBeenCalledOnce();
   });
 

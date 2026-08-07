@@ -12,6 +12,7 @@ import { McpClientSessionError } from "../mcp/clientSession";
 import type { McpRunPlanSnapshot } from "../mcp/runPlan";
 import { buildOpenAIResponsesRequestPreview } from "../providers/openaiResponsesRequest";
 import { buildOpenRouterChatRequestPreview } from "../providers/openRouterChatRequest";
+import { ProviderRequestTimeoutError } from "../providers/network";
 import { ProviderStreamTooLargeError } from "../providers/streamSafety";
 import type {
   NormalizedRunRequest,
@@ -1128,6 +1129,45 @@ describe("run execution", () => {
     warning.mockRestore();
   });
 
+  it("persists a configured provider deadline as the primary terminal failure", async () => {
+    const repository = createRepository();
+    const adapter = createAdapter(async function* () {
+      yield { data: { delta: "partial" }, type: "token" };
+      throw new ProviderRequestTimeoutError(500_000);
+    });
+
+    const events = parseSse(
+      await createRunExecutionResponse(
+        executionInput({ adapter, repository: repository.repository })
+      ).text()
+    );
+
+    expect(events.map((event) => event.type)).toEqual([
+      "run_start",
+      "message_start",
+      "token",
+      "error"
+    ]);
+    expect(events.at(-1)).toEqual({
+      data: {
+        code: "provider_request_timed_out",
+        message: "Provider response exceeded the configured 500-second timeout."
+      },
+      type: "error"
+    });
+    expect(repository.assistantTexts).toEqual(["partial"]);
+    expect(repository.failedRuns).toEqual([{
+      assistantMessageId: "assistant-1",
+      error: {
+        code: "provider_request_timed_out",
+        message: "Provider response exceeded the configured 500-second timeout."
+      },
+      options: { recoveryTerminal: true },
+      runId: "run-1"
+    }]);
+    expect(repository.completeRuns).toEqual([]);
+  });
+
   it("does not execute tools or continue rounds after a tool-enabled stream safety failure", async () => {
     const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     let answerRounds = 0;
@@ -1798,6 +1838,7 @@ describe("run execution", () => {
       searchRuntimes: {
         "gemini-google-search": {
           adapter: answerAdapter,
+          responseTimeoutMs: 300_000,
           searchAdapter: geminiSearchAdapter
         }
       }
@@ -1997,6 +2038,7 @@ describe("run execution", () => {
       searchRuntimes: {
         "anthropic-web-search": {
           adapter: answerAdapter,
+          responseTimeoutMs: 300_000,
           searchAdapter: anthropicSearchAdapter
         }
       }

@@ -519,6 +519,7 @@ const discoveredEndpoints: AdminOpenRouterDiscoveredEndpoint[] = [
 function connectionDraft(configuration: {
   allowPrivateNetwork: boolean;
   apiRoot: string;
+  responseTimeoutSeconds?: number;
 }, displayName: string): AdminProviderConnection {
   return {
     activatedAt: null,
@@ -1436,6 +1437,7 @@ test("administrator completes the OpenRouter key, model, route, check, and activ
   let connections: AdminProviderConnection[] = [];
   const discoveryActions: Array<Record<string, unknown>> = [];
   let activationBody: Record<string, unknown> | null = null;
+  let submittedConnectionBody: Record<string, unknown> | null = null;
   let submittedModelBody: Record<string, unknown> | null = null;
   let submittedKey: string | null = null;
   let testedKey: string | null = null;
@@ -1468,7 +1470,12 @@ test("administrator completes the OpenRouter key, model, route, check, and activ
       return;
     }
     if (method === "POST" && path === "/api/admin/providers") {
-      const configuration = body.configuration as { allowPrivateNetwork: boolean; apiRoot: string };
+      submittedConnectionBody = body;
+      const configuration = body.configuration as {
+        allowPrivateNetwork: boolean;
+        apiRoot: string;
+        responseTimeoutSeconds?: number;
+      };
       connections = [connectionDraft(configuration, String(body.displayName))];
       await route.fulfill({ contentType: "application/json", json: { connections }, status: 201 });
       return;
@@ -1657,7 +1664,18 @@ test("administrator completes the OpenRouter key, model, route, check, and activ
   await expect(section.getByRole("heading", { name: "New provider connection" })).toBeVisible();
   await expect(section.getByLabel("Provider family")).toHaveValue("openrouter");
   await section.getByLabel("Display name").fill("E2E OpenRouter");
+  const connectionTimeout = section.getByLabel("Response timeout (seconds)");
+  await expect(connectionTimeout).toHaveValue("300");
+  await page.setViewportSize({ height: 844, width: 390 });
+  await connectionTimeout.scrollIntoViewIfNeeded();
+  await expect(connectionTimeout).toBeInViewport();
+  await expectNoPageOverflow(page);
+  await connectionTimeout.fill("500");
+  await page.setViewportSize({ height: 900, width: 1440 });
   await section.getByRole("button", { name: "Save connection" }).click();
+  expect(submittedConnectionBody).toMatchObject({
+    configuration: { responseTimeoutSeconds: 500 }
+  });
   await expect(connectionIndex).toBeVisible();
   await connectionIndex.getByRole("button", { name: /E2E OpenRouter/ }).click();
   await expect(section.getByRole("heading", { name: "E2E OpenRouter" })).toBeVisible();
@@ -1725,6 +1743,15 @@ test("administrator completes the OpenRouter key, model, route, check, and activ
   await expect(section.getByText("128,000 context tokens · tools, reasoning")).toBeVisible();
   await expect(section.getByRole("checkbox", { name: /Available as answer model/ }))
     .toBeChecked();
+  const modelTimeout = section.getByLabel("Response timeout override (seconds)");
+  await expect(modelTimeout).toHaveAttribute("placeholder", "Inherit 500");
+  await page.setViewportSize({ height: 844, width: 390 });
+  await modelTimeout.scrollIntoViewIfNeeded();
+  await expect(modelTimeout).toBeInViewport();
+  await expectNoPageOverflow(page);
+  await modelTimeout.fill("800");
+  await expect(section.getByText(/Effective deadline: 800 seconds/)).toBeVisible();
+  await page.setViewportSize({ height: 900, width: 1440 });
 
   const endpointCatalogResponse = page.waitForResponse((response) => {
     const request = response.request();
@@ -1760,6 +1787,7 @@ test("administrator completes the OpenRouter key, model, route, check, and activ
         mode: "only_selected",
         providers: ["acme-primary", "acme-backup"]
       },
+      responseTimeoutSeconds: 800,
       upstreamModelId: "vendor/e2e-model"
     },
     displayName: "E2E Model"

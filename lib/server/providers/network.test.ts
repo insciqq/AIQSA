@@ -1,14 +1,17 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   DEFAULT_PROVIDER_STREAM_LIMITS,
   getProviderStreamLimits,
   PROVIDER_STREAM_LIMIT_CEILINGS,
+  ProviderRequestTimeoutError,
   ProviderResponseTooLargeError,
   providerResponseMaxBytes,
   providerStreamIdleTimeoutMs,
+  providerStreamTimingLimits,
   readBoundedResponseText,
   resolveProviderStreamLimits,
-  timeoutError
+  timeoutError,
+  withTimeoutSignal
 } from "./network";
 
 const encoder = new TextEncoder();
@@ -17,23 +20,25 @@ describe("provider network response bounds", () => {
   it("resolves independent provider-stream defaults", () => {
     expect(getProviderStreamLimits({})).toEqual(DEFAULT_PROVIDER_STREAM_LIMITS);
     expect(getProviderStreamLimits({})).toEqual({
-      idleTimeoutMs: 30_000,
+      idleTimeoutMs: 300_000,
       maxBytes: 64 * 1024 * 1024,
-      maxDurationMs: 600_000,
+      maxDurationMs: 300_000,
       maxEventBytes: 4 * 1024 * 1024,
       maxOutputChars: 8 * 1024 * 1024
     });
     expect(Object.isFrozen(getProviderStreamLimits({}))).toBe(true);
   });
 
-  it("accepts each documented hard ceiling", () => {
-    expect(getProviderStreamLimits({
-      AIQSA_PROVIDER_STREAM_IDLE_TIMEOUT_MS: String(PROVIDER_STREAM_LIMIT_CEILINGS.idleTimeoutMs),
+  it("accepts each documented hard ceiling without environment-owned timing", () => {
+    const environment = {
       AIQSA_PROVIDER_STREAM_MAX_BYTES: String(PROVIDER_STREAM_LIMIT_CEILINGS.maxBytes),
-      AIQSA_PROVIDER_STREAM_MAX_DURATION_MS: String(PROVIDER_STREAM_LIMIT_CEILINGS.maxDurationMs),
       AIQSA_PROVIDER_STREAM_MAX_EVENT_BYTES: String(PROVIDER_STREAM_LIMIT_CEILINGS.maxEventBytes),
       AIQSA_PROVIDER_STREAM_MAX_OUTPUT_CHARS: String(PROVIDER_STREAM_LIMIT_CEILINGS.maxOutputChars)
-    })).toEqual(PROVIDER_STREAM_LIMIT_CEILINGS);
+    };
+    expect(resolveProviderStreamLimits({
+      idleTimeoutMs: PROVIDER_STREAM_LIMIT_CEILINGS.idleTimeoutMs,
+      maxDurationMs: PROVIDER_STREAM_LIMIT_CEILINGS.maxDurationMs
+    }, environment)).toEqual(PROVIDER_STREAM_LIMIT_CEILINGS);
   });
 
   it.each([
@@ -88,12 +93,12 @@ describe("provider network response bounds", () => {
     }, {})).toEqual(DEFAULT_PROVIDER_STREAM_LIMITS);
   });
 
-  it("keeps the legacy idle-timeout getter while applying the hard ceiling", () => {
+  it("ignores removed environment timing controls", () => {
     const previous = process.env.AIQSA_PROVIDER_STREAM_IDLE_TIMEOUT_MS;
 
     try {
       process.env.AIQSA_PROVIDER_STREAM_IDLE_TIMEOUT_MS = "1234";
-      expect(providerStreamIdleTimeoutMs()).toBe(1234);
+      expect(providerStreamIdleTimeoutMs()).toBe(DEFAULT_PROVIDER_STREAM_LIMITS.idleTimeoutMs);
 
       process.env.AIQSA_PROVIDER_STREAM_IDLE_TIMEOUT_MS = String(
         PROVIDER_STREAM_LIMIT_CEILINGS.idleTimeoutMs + 1
@@ -105,6 +110,36 @@ describe("provider network response bounds", () => {
       } else {
         process.env.AIQSA_PROVIDER_STREAM_IDLE_TIMEOUT_MS = previous;
       }
+    }
+  });
+
+  it("derives both stream timing guards from the response deadline", () => {
+    expect(providerStreamTimingLimits(800_000)).toEqual({
+      idleTimeoutMs: 800_000,
+      maxDurationMs: 800_000
+    });
+  });
+
+  it("emits a typed configured timeout and clears its timer", async () => {
+    vi.useFakeTimers();
+    try {
+      const timeout = withTimeoutSignal(undefined, 5_000);
+      const aborted = new Promise<unknown>((resolve) => {
+        timeout.signal.addEventListener("abort", () => resolve(timeout.signal.reason), {
+          once: true
+        });
+      });
+      await vi.advanceTimersByTimeAsync(5_000);
+      await expect(aborted).resolves.toMatchObject({
+        code: "provider_request_timed_out",
+        message: "Provider response exceeded the configured 5-second timeout.",
+        timeoutMs: 5_000
+      });
+      expect(timeout.signal.reason).toBeInstanceOf(ProviderRequestTimeoutError);
+      timeout.clear();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
     }
   });
 

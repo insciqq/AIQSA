@@ -18,6 +18,11 @@ import {
 } from "@/components/admin/adminProviderReasoning";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { compatibleReasoningRequestMappingDefault } from "@/lib/contracts/providerReasoningRequestMapping";
+import {
+  ADMIN_PROVIDER_RESPONSE_TIMEOUT_DEFAULT_SECONDS,
+  ADMIN_PROVIDER_RESPONSE_TIMEOUT_MAX_SECONDS,
+  ADMIN_PROVIDER_RESPONSE_TIMEOUT_MIN_SECONDS
+} from "@/lib/contracts/adminProviders";
 
 export type UseAdminProviderCustomSetupControllerOptions = Readonly<{
   onMutationCommitted?(): void | Promise<unknown>;
@@ -37,6 +42,7 @@ type AdminProviderCustomSetupForm = {
   reasoningChoice: AdminProviderReasoningChoice;
   reasoningEffortPath: string;
   reasoningModePath: string;
+  responseTimeoutSeconds: string;
   secret: string;
   streaming: boolean;
   streamUsage: boolean;
@@ -60,6 +66,7 @@ function initialForm(): AdminProviderCustomSetupForm {
     reasoningChoice: "automatic",
     reasoningEffortPath: compatibleReasoningRequestMappingDefault("chat_completions").effortPath,
     reasoningModePath: "",
+    responseTimeoutSeconds: String(ADMIN_PROVIDER_RESPONSE_TIMEOUT_DEFAULT_SECONDS),
     secret: "",
     streaming: ADMIN_PROVIDER_CUSTOM_DEFAULT_CAPABILITIES.streaming,
     streamUsage: false,
@@ -163,6 +170,10 @@ export function useAdminProviderCustomSetupController(
     }
     if (
       !apiRoot ||
+      !/^\d+$/u.test(form.responseTimeoutSeconds) ||
+      !Number.isSafeInteger(Number(form.responseTimeoutSeconds)) ||
+      Number(form.responseTimeoutSeconds) < ADMIN_PROVIDER_RESPONSE_TIMEOUT_MIN_SECONDS ||
+      Number(form.responseTimeoutSeconds) > ADMIN_PROVIDER_RESPONSE_TIMEOUT_MAX_SECONDS ||
       (authenticationMode === "none" &&
         (!form.allowPrivateNetwork || protocol !== "http:"))
     ) {
@@ -183,6 +194,7 @@ export function useAdminProviderCustomSetupController(
       allowPrivateNetwork: form.allowPrivateNetwork,
       apiRoot,
       authenticationMode,
+      responseTimeoutSeconds: Number(form.responseTimeoutSeconds),
       ...(secret ? { secret } : {})
     }, fetch, abort.signal);
     if (generation !== generationRef.current) return false;
@@ -208,7 +220,12 @@ export function useAdminProviderCustomSetupController(
         : []
     }));
     return true;
-  }, [form.allowPrivateNetwork, form.apiRoot, form.secret]);
+  }, [
+    form.allowPrivateNetwork,
+    form.apiRoot,
+    form.responseTimeoutSeconds,
+    form.secret
+  ]);
 
   const selectDiscoveredModel = useCallback((modelId: string) => {
     if (submittingRef.current) return;
@@ -281,6 +298,10 @@ export function useAdminProviderCustomSetupController(
       form.contextWindow < 1 ||
       !Number.isInteger(form.defaultMaxOutputTokens) ||
       form.defaultMaxOutputTokens < 1 ||
+      !/^\d+$/u.test(form.responseTimeoutSeconds) ||
+      !Number.isSafeInteger(Number(form.responseTimeoutSeconds)) ||
+      Number(form.responseTimeoutSeconds) < ADMIN_PROVIDER_RESPONSE_TIMEOUT_MIN_SECONDS ||
+      Number(form.responseTimeoutSeconds) > ADMIN_PROVIDER_RESPONSE_TIMEOUT_MAX_SECONDS ||
       (reasoning.reasoning && !form.reasoningEffortPath.trim()) ||
       (authenticationMode === "none" &&
         (!form.allowPrivateNetwork || protocol !== "http:" ||
@@ -326,6 +347,7 @@ export function useAdminProviderCustomSetupController(
         : {}),
       ...(usesDiscoveredModels ? { modelIds } : { modelId }),
       protocol: form.protocol,
+      responseTimeoutSeconds: Number(form.responseTimeoutSeconds),
       ...(reasoning.reasoning
         ? {
             reasoningRequestMapping: {

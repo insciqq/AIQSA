@@ -6,6 +6,10 @@ import type {
   AdminProviderCredentialTestResult,
   AdminProviderDraftCheck
 } from "@/lib/contracts/adminProviders";
+import {
+  ADMIN_PROVIDER_RESPONSE_TIMEOUT_MAX_SECONDS,
+  ADMIN_PROVIDER_RESPONSE_TIMEOUT_MIN_SECONDS
+} from "@/lib/contracts/adminProviders";
 
 type Fetcher = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
@@ -44,6 +48,14 @@ function stringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((entry) => typeof entry === "string");
 }
 
+function optionalResponseTimeoutSeconds(value: unknown): boolean {
+  return value === undefined || (
+    Number.isSafeInteger(value) &&
+    Number(value) >= ADMIN_PROVIDER_RESPONSE_TIMEOUT_MIN_SECONDS &&
+    Number(value) <= ADMIN_PROVIDER_RESPONSE_TIMEOUT_MAX_SECONDS
+  );
+}
+
 function isCredential(value: unknown): boolean {
   return record(value) && typeof value.id === "string" && typeof value.label === "string" &&
     typeof value.enabled === "boolean" && typeof value.draftSecretConfigured === "boolean" &&
@@ -57,6 +69,7 @@ function isModel(value: unknown): boolean {
     typeof value.enabled === "boolean" && typeof value.draftVersion === "number" &&
     record(value.draftConfig) && typeof value.draftConfig.adapterKind === "string" &&
     typeof value.draftConfig.answerSelectable === "boolean" &&
+    optionalResponseTimeoutSeconds(value.draftConfig.responseTimeoutSeconds) &&
     typeof value.draftConfig.upstreamModelId === "string";
 }
 
@@ -64,6 +77,7 @@ function isConnection(value: unknown): value is AdminProviderConnection {
   return record(value) && typeof value.id === "string" && typeof value.displayName === "string" &&
     typeof value.family === "string" && typeof value.enabled === "boolean" &&
     typeof value.draftVersion === "number" && record(value.draftConfig) &&
+    optionalResponseTimeoutSeconds(value.draftConfig.responseTimeoutSeconds) &&
     Array.isArray(value.credentials) && value.credentials.every(isCredential) &&
     Array.isArray(value.models) && value.models.every(isModel) &&
     Array.isArray(value.assignments) && Array.isArray(value.draftChecks) &&
