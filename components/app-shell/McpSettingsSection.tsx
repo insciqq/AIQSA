@@ -497,10 +497,10 @@ export function McpSettingsSection({
                 How tools use data
               </summary>
               <div className="space-y-2 border-t border-trace-subtle px-3 py-3 text-xs leading-5 text-ink-muted">
-                <p>Every ready tool is automatically available to your chats.</p>
+                <p>Every ready, administrator-enabled tool is automatically available to your chats.</p>
                 <p>One tool’s output may influence a later call to another enabled server.</p>
                 <p>
-                  Up to {MCP_RUN_PLAN_LIMITS.maxEnabledServers} servers and {MCP_RUN_PLAN_LIMITS.maxTools} discovered
+                  Up to {MCP_RUN_PLAN_LIMITS.maxEnabledServers} servers and {MCP_RUN_PLAN_LIMITS.maxTools} enabled
                   tools can enter one run; exact schema and context fit is checked again before the model starts.
                 </p>
               </div>
@@ -523,7 +523,7 @@ export function McpSettingsSection({
 
         {enabledToolCount > MCP_RUN_PLAN_LIMITS.maxTools ? (
           <p className="mt-4 border-l-2 border-critical/45 bg-critical/[0.05] px-3 py-2 text-sm text-critical" role="alert">
-            Your enabled MCPs have {enabledToolCount} known tools, above the {MCP_RUN_PLAN_LIMITS.maxTools}-tool run limit. Disable at least one server before sending a run.
+            Your enabled MCPs expose {enabledToolCount} enabled tools, above the {MCP_RUN_PLAN_LIMITS.maxTools}-tool run limit. Disable at least one server before sending a run.
           </p>
         ) : null}
 
@@ -551,7 +551,7 @@ export function McpSettingsSection({
                   ? `You can enable at most ${MCP_RUN_PLAN_LIMITS.maxEnabledServers} MCP servers.`
                   : !server.enabled && server.knownToolCount > 0 &&
                       enabledToolCount + server.knownToolCount > MCP_RUN_PLAN_LIMITS.maxTools
-                    ? `This would expose ${enabledToolCount + server.knownToolCount} known tools, above the ${MCP_RUN_PLAN_LIMITS.maxTools}-tool run limit.`
+                    ? `This would expose ${enabledToolCount + server.knownToolCount} enabled tools, above the ${MCP_RUN_PLAN_LIMITS.maxTools}-tool run limit.`
                   : null}
                 key={server.id}
                 onBusyChange={(busy) => setServerBusy(server.id, busy)}

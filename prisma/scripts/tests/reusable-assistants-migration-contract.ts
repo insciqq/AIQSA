@@ -406,6 +406,10 @@ function main(): void {
     psql(migrationSql(RUN_PROFILE_GUARD_CLEANUP_MIGRATION)),
     "remove the retired RunProfile write-guard function"
   );
+  requireSuccess(
+    psql(migrationSql(RUN_PROFILE_GUARD_CLEANUP_MIGRATION)),
+    "repeat the retired RunProfile write-guard cleanup after interrupted settlement"
+  );
   assert.equal(
     scalar(`
       SELECT concat_ws('|',

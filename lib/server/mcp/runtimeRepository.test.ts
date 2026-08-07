@@ -589,7 +589,9 @@ describe("local MCP runtime candidates", () => {
 
 describe("Prisma MCP runtime desired-state snapshots", () => {
   it("persists only an encrypted effective snapshot while returning the required launch headers", async () => {
-    const record = runtimeRecord();
+    const record = runtimeRecord({
+      configuration: { ...configuration, disabledToolNames: ["dangerous_tool"] }
+    });
     const expected = remoteRuntimeCandidate({ key: KEY, record });
     const createGeneration = vi.fn(async (input: { data: Record<string, unknown> }) => ({
       credentialSources: input.data.credentialSources,
@@ -631,6 +633,7 @@ describe("Prisma MCP runtime desired-state snapshots", () => {
     expect(launches).toEqual([{
       allowPrivateNetwork: false,
       callTimeoutMs: 28_000,
+      disabledToolNames: ["dangerous_tool"],
       fingerprint: expected?.fingerprint,
       generationId: "generation-1",
       headers: expected?.headers,
@@ -683,7 +686,7 @@ describe("Prisma MCP runtime desired-state snapshots", () => {
       oauthConnectionId: null,
       retryAt: null,
       revision: {
-        configuration,
+        configuration: { ...configuration, disabledToolNames: ["historical_tool"] },
         id: REVISION_ID,
         serverId: SERVER_ID
       },
@@ -703,6 +706,7 @@ describe("Prisma MCP runtime desired-state snapshots", () => {
     await expect(repository.loadAcceptedGeneration("generation-accepted", NOW)).resolves.toEqual({
       allowPrivateNetwork: false,
       callTimeoutMs: 28_000,
+      disabledToolNames: ["historical_tool"],
       fingerprint: expected.fingerprint,
       generationId: "generation-accepted",
       headers: expected.headers,

@@ -60,10 +60,10 @@ describe("McpSettingsSection", () => {
     fireEvent.click(screen.getByText("How tools use data"));
 
     expect(disclosure).toHaveAttribute("open");
-    expect(screen.getByText("Every ready tool is automatically available to your chats.")).toBeVisible();
+    expect(screen.getByText("Every ready, administrator-enabled tool is automatically available to your chats.")).toBeVisible();
     expect(screen.getByText("One tool’s output may influence a later call to another enabled server.")).toBeVisible();
     expect(screen.getByText(
-      `Up to ${MCP_RUN_PLAN_LIMITS.maxEnabledServers} servers and ${MCP_RUN_PLAN_LIMITS.maxTools} discovered tools can enter one run; exact schema and context fit is checked again before the model starts.`
+      `Up to ${MCP_RUN_PLAN_LIMITS.maxEnabledServers} servers and ${MCP_RUN_PLAN_LIMITS.maxTools} enabled tools can enter one run; exact schema and context fit is checked again before the model starts.`
     )).toBeVisible();
   });
 
@@ -322,7 +322,7 @@ describe("McpSettingsSection", () => {
     fireEvent.click(screen.getByRole("button", { name: "Enable Candidate" }));
 
     expect(screen.getByText(
-      `This would expose ${MCP_RUN_PLAN_LIMITS.maxTools + 1} known tools, above the ${MCP_RUN_PLAN_LIMITS.maxTools}-tool run limit.`
+      `This would expose ${MCP_RUN_PLAN_LIMITS.maxTools + 1} enabled tools, above the ${MCP_RUN_PLAN_LIMITS.maxTools}-tool run limit.`
     )).toBeVisible();
     expect(fetchMock.mock.calls.some(([, init]) => init?.method === "PATCH")).toBe(false);
   });
@@ -349,7 +349,7 @@ describe("McpSettingsSection", () => {
     fireEvent.click(screen.getByRole("button", { name: "Enable Candidate" }));
 
     expect(screen.getByText(
-      `This would expose ${MCP_RUN_PLAN_LIMITS.maxTools + 1} known tools, above the ${MCP_RUN_PLAN_LIMITS.maxTools}-tool run limit.`
+      `This would expose ${MCP_RUN_PLAN_LIMITS.maxTools + 1} enabled tools, above the ${MCP_RUN_PLAN_LIMITS.maxTools}-tool run limit.`
     )).toBeVisible();
     expect(fetchMock.mock.calls.some(([, init]) => init?.method === "PATCH")).toBe(false);
   });

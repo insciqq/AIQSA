@@ -41,10 +41,11 @@ describe("MCP user readiness", () => {
     };
 
     expect(deriveKnownMcpToolCount({
+      disabledToolNames: ["revision_two", "REVISION_ONE"],
       revisionCreatedAt: now,
       revisionValidationEvidence,
       runtimeInventory: null
-    })).toBe(2);
+    })).toBe(1);
     expect(deriveKnownMcpToolCount({
       revisionCreatedAt: now,
       revisionValidationEvidence,

@@ -29,6 +29,7 @@ export type McpClientSessionErrorCode =
   | "mcp_call_result_invalid"
   | "mcp_call_result_too_large"
   | "mcp_call_result_unsupported"
+  | "mcp_tool_not_available"
   | "mcp_initialize_failed"
   | "mcp_initialize_response_too_large"
   | "mcp_inventory_cursor_cycle"
@@ -60,6 +61,7 @@ const ERROR_MESSAGES: Record<McpClientSessionErrorCode, string> = {
   mcp_call_result_invalid: "The MCP tool returned an invalid result.",
   mcp_call_result_too_large: "The MCP tool result exceeds the configured byte limit.",
   mcp_call_result_unsupported: "The MCP tool result contains no supported content.",
+  mcp_tool_not_available: "The MCP tool is not enabled for this runtime generation.",
   mcp_initialize_failed: "The MCP session could not be initialized.",
   mcp_initialize_response_too_large: "The MCP initialization response exceeds the configured byte limit.",
   mcp_inventory_cursor_cycle: "The MCP tool inventory repeated a pagination cursor.",

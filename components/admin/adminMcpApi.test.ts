@@ -84,6 +84,21 @@ describe("adminMcpApi", () => {
     }));
   });
 
+  it("sends and decodes an exact candidate disabled-tool policy", async () => {
+    const policyDraft = { ...server.draft, disabledToolNames: ["semantic_code_search"] };
+    const policyServer = { ...server, draft: policyDraft };
+    const fetcher = vi.fn().mockResolvedValue(response({ server: policyServer }));
+
+    await expect(updateAdminMcpServer(server.id, { draft: policyDraft }, fetcher)).resolves.toEqual({
+      data: policyServer,
+      ok: true
+    });
+    expect(fetcher).toHaveBeenCalledWith("/api/admin/mcp/server-1", expect.objectContaining({
+      body: JSON.stringify({ draft: policyDraft }),
+      method: "PATCH"
+    }));
+  });
+
   it("uses the narrow server endpoint for irreversible deletion", async () => {
     const tombstone = { ...server, archivedAt: "2026-07-23T01:00:00.000Z", enabled: false };
     const fetcher = vi.fn().mockResolvedValue(response({ server: tombstone }));
@@ -102,6 +117,12 @@ describe("adminMcpApi", () => {
     });
     await expect(requestAdminMcpCatalog(vi.fn().mockResolvedValue(response({
       servers: [{ ...server, activeRevision: { id: "revision-without-identity" } }]
+    })))).resolves.toEqual({
+      error: { code: "mcp_admin_response_invalid", issues: [] },
+      ok: false
+    });
+    await expect(requestAdminMcpCatalog(vi.fn().mockResolvedValue(response({
+      servers: [{ ...server, draft: { ...server.draft, disabledToolNames: ["not a tool"] } }]
     })))).resolves.toEqual({
       error: { code: "mcp_admin_response_invalid", issues: [] },
       ok: false

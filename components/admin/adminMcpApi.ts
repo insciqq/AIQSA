@@ -31,7 +31,16 @@ function isIssue(value: unknown): value is McpValidationIssue {
 }
 
 function hasIdentityHash(value: unknown): boolean {
-  return isRecord(value) && typeof value.identityHash === "string" && value.identityHash.length > 0;
+  return isRecord(value) &&
+    typeof value.identityHash === "string" && value.identityHash.length > 0 &&
+    hasValidDisabledToolNames(value);
+}
+
+function hasValidDisabledToolNames(value: Record<string, unknown>): boolean {
+  if (!("disabledToolNames" in value)) return true;
+  return Array.isArray(value.disabledToolNames) && value.disabledToolNames.length <= 512 &&
+    value.disabledToolNames.every((name) =>
+      typeof name === "string" && /^[A-Za-z0-9_.-]{1,128}$/u.test(name));
 }
 
 function isActivation(value: unknown): boolean {
@@ -87,7 +96,7 @@ function isServer(value: unknown): value is AdminMcpServer {
     typeof value.enabled === "boolean" &&
     (value.archivedAt === null || typeof value.archivedAt === "string") &&
     typeof value.draftTested === "boolean" &&
-    isRecord(value.draft) &&
+    isRecord(value.draft) && hasValidDisabledToolNames(value.draft) &&
     Array.isArray(value.grants) &&
     isRecord(value.sharedValues) &&
     typeof value.updatedAt === "string" &&

@@ -7,6 +7,7 @@ import { ToolHiveClientError } from "./toolhiveClient";
 import {
   McpRuntimeCoordinator,
   type McpRuntimeCoordinatorRepository,
+  type McpRuntimeInventoryTool,
   type McpRuntimeLaunch,
   type McpRuntimeSession
 } from "./runtimeCoordinator";
@@ -43,6 +44,7 @@ function harness(input: {
   dispose?: () => Promise<void>;
   dynamicSecrets?: string[];
   failList?: boolean;
+  inventory?: McpRuntimeInventoryTool[];
   inventoryDescription?: string;
   retainedFingerprints?: string[];
 } = {}) {
@@ -51,6 +53,12 @@ function harness(input: {
   let fatalResponseErrorCode: McpFatalResponseErrorCode | null = null;
   let launches = [launch()];
   let listChanged: (() => void) | null = null;
+  let inventory = input.inventory ?? ["echo", "large", "slow"].map((name) => ({
+    definitionHash: `hash-${name}`,
+    description: input.inventoryDescription ?? null,
+    inputSchema: { type: "object" },
+    name
+  }));
   const session: McpRuntimeSession = {
     callTool: vi.fn(async ({ name }) => ({
       isError: false,
@@ -66,12 +74,7 @@ function harness(input: {
     isClosed: () => closed,
     listTools: vi.fn(async () => {
       if (input.failList) throw new Error("inventory schema invalid");
-      return [{
-        definitionHash: "hash-1",
-        description: input.inventoryDescription ?? null,
-        inputSchema: { type: "object" },
-        name: "echo"
-      }];
+      return inventory;
     })
   };
   if (input.dispose) session.dispose = input.dispose;
@@ -124,11 +127,124 @@ function harness(input: {
     setFatalResponseErrorCode(value: McpFatalResponseErrorCode | null) {
       fatalResponseErrorCode = value;
     },
+    setInventory(value: McpRuntimeInventoryTool[]) { inventory = value; },
     setLaunches(value: McpRuntimeLaunch[]) { launches = value; }
   };
 }
 
 describe("MCP runtime coordinator", () => {
+  it("publishes only enabled tools and fences disabled calls before settlement or I/O", async () => {
+    const test = harness({
+      inventory: ["echo", "Echo", "new_tool"].map((name) => ({
+        definitionHash: `hash-${name}`,
+        description: null,
+        inputSchema: { type: "object" },
+        name
+      }))
+    });
+    test.setLaunches([launch({ disabledToolNames: ["Echo"] })]);
+
+    await test.coordinator.reconcileNow();
+
+    expect(test.repository.markReady).toHaveBeenCalledWith(expect.objectContaining({
+      inventory: {
+        tools: expect.arrayContaining([
+          expect.objectContaining({ name: "echo" }),
+          expect.objectContaining({ name: "new_tool" })
+        ]),
+        version: 1
+      }
+    }));
+    const readyInventory = vi.mocked(test.repository.markReady).mock.calls[0]![0].inventory;
+    expect(readyInventory.tools.map((tool) => tool.name)).toEqual(["echo", "new_tool"]);
+
+    await expect(test.coordinator.callTool({
+      arguments: {},
+      generationId: "generation-1",
+      inputSchema: { type: "object" },
+      name: "Echo"
+    })).rejects.toMatchObject({ code: "mcp_tool_not_available", operation: "call_tool" });
+    expect(test.repository.touchLastUsed).not.toHaveBeenCalled();
+    expect(test.session.callTool).not.toHaveBeenCalled();
+    await test.coordinator.stop();
+  });
+
+  it("allows an all-disabled runtime to stay ready with an empty effective inventory", async () => {
+    const test = harness({
+      inventory: [{
+        definitionHash: "hash-echo",
+        description: null,
+        inputSchema: { type: "object" },
+        name: "echo"
+      }]
+    });
+    test.setLaunches([launch({ disabledToolNames: ["echo"] })]);
+
+    await test.coordinator.reconcileNow();
+
+    expect(test.coordinator.hasLiveGeneration("generation-1")).toBe(true);
+    expect(test.repository.markReady).toHaveBeenCalledWith(expect.objectContaining({
+      inventory: { tools: [], version: 1 }
+    }));
+    await test.coordinator.stop();
+  });
+
+  it("refreshes the exact enabled-name fence only with accepted inventory", async () => {
+    const test = harness({
+      inventory: [{
+        definitionHash: "hash-echo",
+        description: null,
+        inputSchema: { type: "object" },
+        name: "echo"
+      }]
+    });
+    await test.coordinator.reconcileNow();
+    test.setInventory([{
+      definitionHash: "hash-new",
+      description: null,
+      inputSchema: { type: "object" },
+      name: "new_tool"
+    }]);
+    test.listChanged();
+    await vi.waitFor(() => expect(test.repository.markReady).toHaveBeenCalledTimes(2));
+
+    await expect(test.coordinator.callTool({
+      arguments: {},
+      generationId: "generation-1",
+      inputSchema: { type: "object" },
+      name: "echo"
+    })).rejects.toMatchObject({ code: "mcp_tool_not_available" });
+    await expect(test.coordinator.callTool({
+      arguments: {},
+      generationId: "generation-1",
+      inputSchema: { type: "object" },
+      name: "new_tool"
+    })).resolves.toMatchObject({ structuredContent: { name: "new_tool" } });
+    await test.coordinator.stop();
+  });
+
+  it("validates the complete upstream inventory before filtering disabled tools", async () => {
+    const secret = "inventory-secret-value";
+    const test = harness({
+      inventory: [{
+        definitionHash: "hash-secret",
+        description: `Never expose ${secret}`,
+        inputSchema: { type: "object" },
+        name: "secret_tool"
+      }]
+    });
+    test.setLaunches([launch({
+      disabledToolNames: ["secret_tool"],
+      redactionValues: [secret]
+    })]);
+
+    await test.coordinator.reconcileNow();
+
+    expect(test.repository.markReady).not.toHaveBeenCalled();
+    expect(test.coordinator.hasLiveGeneration("generation-1")).toBe(false);
+    await test.coordinator.stop();
+  });
+
   it("coalesces a desired generation, marks it ready, reuses it, and routes calls", async () => {
     const test = harness();
     await test.coordinator.reconcileNow("user-1");

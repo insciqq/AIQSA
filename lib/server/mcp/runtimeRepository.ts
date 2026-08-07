@@ -142,6 +142,7 @@ export type RemoteRuntimeCandidate = {
     version: 1;
   };
   credentialSources: readonly McpCredentialSource[];
+  disabledToolNames?: readonly string[];
   externalAccountLabel: string | null;
   fingerprint: string;
   headers: Record<string, string>;
@@ -162,6 +163,7 @@ export type LocalRuntimeCandidate = {
     version: 1;
   };
   credentialSources: readonly McpCredentialSource[];
+  disabledToolNames?: readonly string[];
   externalAccountLabel: null;
   fingerprint: string;
   oauthConnectionId?: undefined;
@@ -320,6 +322,9 @@ export function remoteRuntimeCandidate(input: {
     allowPrivateNetwork: source.allowPrivateNetwork === true,
     callTimeoutMs: configuration.runtime.callTimeoutMs,
     credentialSources: base.credentialSources,
+    ...(base.configuration.disabledToolNames?.length
+      ? { disabledToolNames: base.configuration.disabledToolNames }
+      : {}),
     effectiveEnvelope: base.effectiveEnvelope,
     externalAccountLabel: base.externalAccountLabel,
     fingerprint: base.fingerprint,
@@ -354,6 +359,9 @@ export function localRuntimeCandidate(input: {
   return {
     callTimeoutMs: base.configuration.runtime.callTimeoutMs,
     credentialSources: base.credentialSources,
+    ...(base.configuration.disabledToolNames?.length
+      ? { disabledToolNames: base.configuration.disabledToolNames }
+      : {}),
     effectiveEnvelope: base.effectiveEnvelope,
     externalAccountLabel: null,
     fingerprint: base.fingerprint,
@@ -438,6 +446,9 @@ export function createPrismaMcpRuntimeRepository(input: {
         if (fingerprint !== generation.fingerprint) return null;
         const commonLaunch = {
           callTimeoutMs: configuration.runtime.callTimeoutMs,
+          ...(configuration.disabledToolNames?.length
+            ? { disabledToolNames: configuration.disabledToolNames }
+            : {}),
           fingerprint: generation.fingerprint,
           generationId: generation.id,
           headers: {},
@@ -628,6 +639,9 @@ export function createPrismaMcpRuntimeRepository(input: {
         if (!generation) continue;
         const commonLaunch = {
           callTimeoutMs: candidate.callTimeoutMs,
+          ...(candidate.disabledToolNames?.length
+            ? { disabledToolNames: candidate.disabledToolNames }
+            : {}),
           fingerprint: candidate.fingerprint,
           generationId: generation.id,
           headers: {},

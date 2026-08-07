@@ -131,7 +131,7 @@ describe("AdminMcpServersSection", () => {
     const view = viewController();
     render(<TestSection controller={view.controller} />);
 
-    expect(screen.getByText(/model may invoke every current or future valid tool/i)).toBeInTheDocument();
+    expect(screen.getByText(/newly discovered tool names are enabled by default/i)).toBeInTheDocument();
     expect(screen.getByText(/user-scoped; not returned by this admin catalog/i)).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: /Validate & tools/i }));
@@ -166,6 +166,41 @@ describe("AdminMcpServersSection", () => {
     fireEvent.click(screen.getByRole("button", { name: "Test draft" }));
 
     await waitFor(() => expect(oneTime).toHaveValue(""));
+  });
+
+  it("edits candidate tool policy without implying the active revision changed", () => {
+    const policyServer: AdminMcpServer = {
+      ...server,
+      activeRevision: server.activeRevision
+        ? { ...server.activeRevision, disabledToolNames: ["remember"] }
+        : null,
+      draft: {
+        ...server.draft,
+        disabledToolNames: ["recall", "stale_tool"]
+      },
+      draftTested: false
+    };
+    const view = viewController(policyServer);
+    render(<TestSection controller={view.controller} />);
+
+    fireEvent.click(screen.getByRole("button", { name: /Validate & tools/i }));
+
+    expect(screen.getByText("Candidate draft — 1 enabled · 1 disabled")).toBeInTheDocument();
+    expect(screen.getByText("Active revision 1 — 0 enabled · 1 disabled")).toBeInTheDocument();
+    expect(screen.getByText(/inventory came from the previous draft test/i)).toBeInTheDocument();
+    expect(screen.getByRole("checkbox", { name: "Enabled for remember" })).toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "Enabled for recall" })).not.toBeChecked();
+    expect(screen.getByText("stale_tool")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "Enabled for remember" }));
+    expect(view.actions.update).toHaveBeenNthCalledWith(1, "server-1", {
+      draft: { ...policyServer.draft, disabledToolNames: ["recall", "remember", "stale_tool"] }
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Remove disabled name stale_tool" }));
+    expect(view.actions.update).toHaveBeenNthCalledWith(2, "server-1", {
+      draft: { ...policyServer.draft, disabledToolNames: ["recall"] }
+    });
   });
 
   it("makes disabled installation availability and its restoration action explicit", () => {
@@ -440,6 +475,8 @@ describe("AdminMcpServersSection", () => {
     expect(screen.getByText("Legacy archived")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /Definition Source, auth, and fields/i }));
     expect(screen.getByRole("button", { name: "Edit draft" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: /Validate & tools/i }));
+    expect(screen.getByRole("checkbox", { name: "Enabled for remember" })).toBeDisabled();
     fireEvent.click(screen.getByRole("button", { name: /Delete Irreversible removal/i }));
     expect(screen.getByText(/Legacy archived records are read-only/i)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Delete…" })).not.toBeInTheDocument();

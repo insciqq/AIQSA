@@ -33,6 +33,20 @@ function record(overrides: Partial<McpRunPlanRecord> = {}): McpRunPlanRecord {
 }
 
 describe("MCP run plans", () => {
+  it("keeps an all-disabled ready server while contributing zero run tools", async () => {
+    const result = await prepareMcpRunPlan({
+      isGenerationLive: () => true,
+      load: async () => [record({ inventory: { tools: [], version: 1 } })],
+      now: () => now
+    });
+
+    expect(result).toMatchObject({
+      bindings: [{ runtimeGenerationId: "generation-1", serverId: "server-1" }],
+      ok: true,
+      snapshot: { servers: [{ serverId: "server-1" }], tools: [] }
+    });
+  });
+
   it("snapshots every enabled ready server/tool and creates stable collision-safe names", async () => {
     const result = await prepareMcpRunPlan({
       isGenerationLive: () => true,

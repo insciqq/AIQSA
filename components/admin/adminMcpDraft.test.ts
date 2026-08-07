@@ -3,11 +3,37 @@ import {
   changeMcpRemoteSource,
   defaultMcpDraft,
   diffMcpToolInventory,
+  enabledMcpToolInventory,
   normalizeMcpImport,
-  preparedMcpOAuthPolicy
+  preparedMcpOAuthPolicy,
+  staleDisabledMcpToolNames,
+  withMcpToolEnabled
 } from "./adminMcpDraft";
 
 describe("adminMcpDraft", () => {
+  it("edits an exact-name opt-out policy while new tools remain enabled", () => {
+    const draft = defaultMcpDraft();
+    const disabled = withMcpToolEnabled(
+      withMcpToolEnabled(draft, "Echo", false),
+      "remember",
+      false
+    );
+
+    expect(disabled.disabledToolNames).toEqual(["Echo", "remember"]);
+    expect(enabledMcpToolInventory([
+      { description: null, name: "Echo" },
+      { description: null, name: "echo" },
+      { description: null, name: "new_tool" }
+    ], disabled.disabledToolNames).map((tool) => tool.name)).toEqual(["echo", "new_tool"]);
+    expect(staleDisabledMcpToolNames(disabled, [
+      { description: null, name: "Echo" }
+    ])).toEqual(["remember"]);
+
+    const enabled = withMcpToolEnabled(disabled, "Echo", true);
+    expect(enabled.disabledToolNames).toEqual(["remember"]);
+    expect(withMcpToolEnabled(enabled, "remember", true)).not.toHaveProperty("disabledToolNames");
+  });
+
   it("starts with the one supported transport for each source kind", () => {
     expect(defaultMcpDraft("remote")).toMatchObject({
       source: { kind: "remote" },

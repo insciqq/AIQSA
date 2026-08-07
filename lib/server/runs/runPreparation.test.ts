@@ -1257,6 +1257,28 @@ describe("run preparation", () => {
     expect(prepared.mcpBindings).toEqual(mcpPlan.ok ? mcpPlan.bindings : undefined);
   });
 
+  it("retains an all-disabled MCP server snapshot without requiring tool calling or provider schemas", async () => {
+    const base = readyMcpPlan();
+    if (!base.ok) throw new Error("invalid MCP fixture");
+    const mcpPlan: McpRunPlanResult = {
+      ...base,
+      snapshot: { ...base.snapshot, tools: [] }
+    };
+    const harness = createHarness({
+      capabilities: { ...baseCapabilities, toolCalling: false },
+      mcpPlan
+    });
+
+    const prepared = preparedFrom(await prepareRun(
+      harness.deps,
+      sendInput(successBody({ modelId: "openai-no-tools", provider: "openai" }))
+    ));
+
+    expect(prepared.normalizedRequest.mcp).toEqual(mcpPlan.snapshot);
+    expect(prepared.mcpBindings).toEqual(mcpPlan.bindings);
+    expect(prepared.providerRequest.tools).toBeUndefined();
+  });
+
   it.each([
     "openai_responses_compatible",
     "openai_chat_completions_compatible"

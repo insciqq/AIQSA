@@ -535,6 +535,105 @@ integration("Prisma MCP repository", () => {
     await expect(repository.listUserServers(userId)).resolves.toEqual([]);
   });
 
+  it("versions exact disabled-tool policy while retaining full inventory evidence", async () => {
+    const policyDraft: McpDraftConfiguration = {
+      ...draft,
+      slots: draft.slots.filter((slot) => slot.slotKey !== "workspace-key")
+    };
+    const created = await repository.createServer({
+      description: "Tool policy integration server",
+      draft: policyDraft,
+      name: "Tool policy MCP",
+      sharedValues: { "api-key": "policy-shared-secret", visibility: "team" }
+    });
+    expect(created.kind).toBe("ok");
+    if (created.kind !== "ok") return;
+    const policyServerId = created.value.id;
+    serverIds.add(policyServerId);
+
+    expect((await repository.testDraft({ oneTimeValues: {}, serverId: policyServerId })).kind)
+      .toBe("ok");
+    const activatedV1 = await repository.activateDraft(policyServerId);
+    expect(activatedV1).toMatchObject({
+      kind: "ok",
+      value: {
+        activeRevision: {
+          revisionNumber: 1,
+          validationEvidence: { toolInventory: [{ name: "create_task" }] }
+        }
+      }
+    });
+    if (activatedV1.kind !== "ok" || !activatedV1.value.activeRevision) return;
+
+    const candidateDraft: McpDraftConfiguration = {
+      ...policyDraft,
+      disabledToolNames: ["create_task", "temporarily_missing"]
+    };
+    const edited = await repository.updateServer({ draft: candidateDraft, serverId: policyServerId });
+    expect(edited).toMatchObject({
+      kind: "ok",
+      value: {
+        activeRevision: { id: activatedV1.value.activeRevision.id },
+        draft: { disabledToolNames: ["create_task", "temporarily_missing"] },
+        draftTest: { toolInventory: [{ name: "create_task" }] },
+        draftTested: false
+      }
+    });
+    await expect(repository.activateDraft(policyServerId)).resolves.toEqual({ kind: "revision_required" });
+
+    expect((await repository.testDraft({ oneTimeValues: {}, serverId: policyServerId })).kind)
+      .toBe("ok");
+    const activatedV2 = await repository.activateDraft(policyServerId);
+    expect(activatedV2).toMatchObject({
+      kind: "ok",
+      value: {
+        activeRevision: {
+          disabledToolNames: ["create_task", "temporarily_missing"],
+          revisionNumber: 2,
+          validationEvidence: { toolInventory: [{ name: "create_task" }] }
+        }
+      }
+    });
+    if (activatedV2.kind !== "ok" || !activatedV2.value.activeRevision) return;
+
+    expect((await repository.setGrant({
+      canUse: true,
+      groupId,
+      personalSlotKeys: [],
+      serverId: policyServerId,
+      userId: null
+    })).kind).toBe("ok");
+    expect((await repository.listUserServers(userId)).find((server) => server.id === policyServerId))
+      .toMatchObject({ knownToolCount: 0, tools: [] });
+
+    const rolledBack = await repository.rollbackServer({
+      revisionId: activatedV1.value.activeRevision.id,
+      serverId: policyServerId
+    });
+    expect(rolledBack).toMatchObject({
+      kind: "ok",
+      value: { activeRevision: { id: activatedV1.value.activeRevision.id } }
+    });
+    expect(rolledBack.kind === "ok" ? rolledBack.value.activeRevision?.disabledToolNames : undefined)
+      .toBeUndefined();
+    expect((await repository.listUserServers(userId)).find((server) => server.id === policyServerId))
+      .toMatchObject({ knownToolCount: 1 });
+
+    const rebuilt = await repository.rebuildRevision({
+      oneTimeValues: {},
+      replaceDraft: true,
+      revisionId: activatedV2.value.activeRevision.id,
+      serverId: policyServerId
+    });
+    expect(rebuilt).toMatchObject({
+      kind: "ok",
+      value: {
+        activeRevision: { disabledToolNames: ["create_task", "temporarily_missing"] },
+        draft: { disabledToolNames: ["create_task", "temporarily_missing"] }
+      }
+    });
+  });
+
   it("atomically queues, exclusively claims, reclaims, fences, and publishes an activation", async () => {
     const asyncDraft: McpDraftConfiguration = {
       ...draft,

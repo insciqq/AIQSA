@@ -41,6 +41,47 @@ function environmentSlot(overrides: Record<string, unknown> = {}) {
 }
 
 describe("MCP definition validation", () => {
+  it("keeps missing and empty tool policies identity-compatible", () => {
+    const legacy = validateMcpDraft(remoteDraft("https://mcp.example.test/api"));
+    const empty = validateMcpDraft({
+      ...remoteDraft("https://mcp.example.test/api"),
+      disabledToolNames: []
+    });
+
+    expect(legacy.ok).toBe(true);
+    expect(empty.ok).toBe(true);
+    if (!legacy.ok || !empty.ok) throw new Error("invalid test fixture");
+    expect(empty.value).toEqual(legacy.value);
+    expect(hashCanonicalMcpValue(empty.value)).toBe(hashCanonicalMcpValue(legacy.value));
+    expect(empty.value).not.toHaveProperty("disabledToolNames");
+  });
+
+  it("canonicalizes a bounded exact-name disabled tool set", () => {
+    const result = validateMcpDraft({
+      ...remoteDraft("https://mcp.example.test/api"),
+      disabledToolNames: ["zeta", "Echo", "echo", "zeta"]
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      value: { disabledToolNames: ["Echo", "echo", "zeta"] }
+    });
+    expect(validateMcpDraft({
+      ...remoteDraft("https://mcp.example.test/api"),
+      disabledToolNames: ["not a tool"]
+    })).toEqual({
+      issues: [{ code: "disabled_tool_names_invalid", path: "disabledToolNames" }],
+      ok: false
+    });
+    expect(validateMcpDraft({
+      ...remoteDraft("https://mcp.example.test/api"),
+      disabledToolNames: Array.from({ length: 513 }, (_, index) => `tool_${index}`)
+    })).toEqual({
+      issues: [{ code: "disabled_tool_names_invalid", path: "disabledToolNames" }],
+      ok: false
+    });
+  });
+
   it("accepts the initial npm, PyPI, OCI, and remote source shapes", () => {
     const ociImage = `example.invalid/mcp@sha256:${"a".repeat(64)}`;
     const npm = validateMcpDraft(localDraft({

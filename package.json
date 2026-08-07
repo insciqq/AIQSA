@@ -1,6 +1,6 @@
 {
   "name": "aiqsa",
-  "version": "0.1.22",
+  "version": "0.1.23",
   "private": true,
   "description": "Self-hosted multi-user AI workspace with multi-provider chat, MCP tools, and web search.",
   "license": "AGPL-3.0-only",

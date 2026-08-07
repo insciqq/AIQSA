@@ -12,6 +12,7 @@ import type {
 
 const MAX_ARGS = 64;
 const MAX_ARGUMENT_LENGTH = 2_048;
+const MAX_DISABLED_TOOL_NAMES = 512;
 const MAX_SLOTS = 64;
 const MAX_SLOT_VALUE_LENGTH = 16_384;
 const RUNTIME_CONTROL_NAMES = new Set([
@@ -53,6 +54,16 @@ function stringArray(value: unknown, maxItems: number, maxLength: number): strin
   const entries = value.map((entry) => (typeof entry === "string" ? entry : null));
   if (entries.some((entry) => entry === null || entry.length > maxLength || entry.includes("\0"))) return null;
   return entries as string[];
+}
+
+function disabledToolNamesFrom(value: unknown, issues: McpValidationIssue[]): string[] | null {
+  if (typeof value === "undefined") return [];
+  if (!Array.isArray(value) || value.length > MAX_DISABLED_TOOL_NAMES || value.some((name) =>
+    typeof name !== "string" || !/^[A-Za-z0-9_.-]{1,128}$/u.test(name))) {
+    issues.push({ code: "disabled_tool_names_invalid", path: "disabledToolNames" });
+    return null;
+  }
+  return [...new Set(value)].sort();
 }
 
 function sourceFrom(value: unknown, issues: McpValidationIssue[]): McpSource | null {
@@ -344,13 +355,14 @@ export function validateMcpDraft(value: unknown): McpDraftValidationResult {
   }
   const slots = slotsFrom(value.slots, source, issues);
   const auth = authFrom(value.auth, source, issues);
+  const disabledToolNames = disabledToolNamesFrom(value.disabledToolNames, issues);
   const runtime = isObject(value.runtime) ? value.runtime : {};
   const startupTimeoutMs = boundedMilliseconds(runtime.startupTimeoutMs, 60_000);
   const callTimeoutMs = boundedMilliseconds(runtime.callTimeoutMs, 60_000);
   if (!startupTimeoutMs) issues.push({ code: "startup_timeout_invalid", path: "runtime.startupTimeoutMs" });
   if (!callTimeoutMs) issues.push({ code: "call_timeout_invalid", path: "runtime.callTimeoutMs" });
 
-  if (issues.length || !source || !slots || !auth || !startupTimeoutMs || !callTimeoutMs ||
+  if (issues.length || !source || !slots || !auth || !disabledToolNames || !startupTimeoutMs || !callTimeoutMs ||
     (transport !== "stdio" && transport !== "streamable_http")) {
     return { issues, ok: false };
   }
@@ -360,6 +372,7 @@ export function validateMcpDraft(value: unknown): McpDraftValidationResult {
     ok: true,
     value: {
       auth,
+      ...(disabledToolNames.length ? { disabledToolNames } : {}),
       runtime: { callTimeoutMs, startupTimeoutMs },
       slots,
       source,

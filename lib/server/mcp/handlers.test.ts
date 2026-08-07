@@ -554,6 +554,40 @@ describe("MCP handler input validation", () => {
     expect(repository.createCalls).toEqual([]);
   });
 
+  it("allows only an active administrator to persist a validated exact tool policy", async () => {
+    const repository = new MemoryMcpRepository();
+    const update = createAdminMcpUpdateHandler(deps(repository));
+    const policyDraft = { ...draft, disabledToolNames: ["semantic_code_search"] };
+
+    const forbidden = await update(request({
+      body: { draft: policyDraft },
+      contentType: "application/json",
+      method: "PATCH",
+      user: "user-1"
+    }), routeContext);
+    const accepted = await update(request({
+      body: { draft: policyDraft },
+      contentType: "application/json",
+      method: "PATCH",
+      user: "admin"
+    }), routeContext);
+    const invalid = await update(request({
+      body: { draft: { ...draft, disabledToolNames: ["not a tool"] } },
+      contentType: "application/json",
+      method: "PATCH",
+      user: "admin"
+    }), routeContext);
+
+    expect(forbidden.status).toBe(403);
+    expect(accepted.status).toBe(200);
+    expect(repository.updateCalls).toEqual([{ draft: policyDraft, serverId: SERVER_ID }]);
+    expect(invalid.status).toBe(400);
+    await expect(invalid.json()).resolves.toEqual({
+      error: "invalid_draft",
+      issues: [{ code: "disabled_tool_names_invalid", path: "disabledToolNames" }]
+    });
+  });
+
   it("accepts shared and personal secrets without returning either plaintext value", async () => {
     const repository = new MemoryMcpRepository();
     const create = createAdminMcpCreateHandler(deps(repository));

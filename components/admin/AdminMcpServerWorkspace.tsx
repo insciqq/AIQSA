@@ -4,7 +4,10 @@ import {
   activeInventory,
   diffMcpToolInventory,
   draftInventory,
-  sourceDisplay
+  enabledMcpToolInventory,
+  sourceDisplay,
+  staleDisabledMcpToolNames,
+  withMcpToolEnabled
 } from "@/components/admin/adminMcpDraft";
 import {
   adminMcpActivationStage,
@@ -300,19 +303,42 @@ function OneTimeValues({
   );
 }
 
-function InventoryList({ empty, tools }: Readonly<{
+function ToolPolicyList({ disabled, disabledToolNames, empty, onChange, tools }: Readonly<{
+  disabled: boolean;
+  disabledToolNames: readonly string[];
   empty: string;
+  onChange(name: string, enabled: boolean): void;
   tools: readonly McpToolInventoryEntry[];
 }>) {
   if (!tools.length) return <p className="py-3 text-xs text-ink-muted">{empty}</p>;
+  const disabledNames = new Set(disabledToolNames);
   return (
     <ul className="divide-y divide-trace-subtle border-y border-trace-subtle">
-      {tools.map((tool) => (
-        <li className="min-w-0 py-3" key={tool.name}>
-          <div className="break-words font-mono text-xs font-medium text-ink [overflow-wrap:anywhere]">{tool.name}</div>
-          {tool.description ? <p className="mt-1 break-words text-xs leading-5 text-ink-muted [overflow-wrap:anywhere]">{tool.description}</p> : null}
-        </li>
-      ))}
+      {tools.map((tool) => {
+        const enabled = !disabledNames.has(tool.name);
+        return (
+          <li className="flex min-w-0 items-start justify-between gap-4 py-3" key={tool.name}>
+            <div className="min-w-0 flex-1">
+              <div className="break-words font-mono text-xs font-medium text-ink [overflow-wrap:anywhere]">{tool.name}</div>
+              {tool.description ? <p className="mt-1 break-words text-xs leading-5 text-ink-muted [overflow-wrap:anywhere]">{tool.description}</p> : null}
+              <p className={`mt-1 text-metadata ${enabled ? "text-positive" : "text-ink-muted"}`}>
+                {enabled ? "Included in the candidate revision" : "Excluded from the candidate revision"}
+              </p>
+            </div>
+            <label className={`flex min-h-touch shrink-0 cursor-pointer items-center gap-2 text-xs font-medium text-ink-secondary ${disabled ? "cursor-not-allowed opacity-60" : ""}`}>
+              <input
+                aria-label={`Enabled for ${tool.name}`}
+                checked={enabled}
+                className={`size-4 shrink-0 accent-proof ${focusRing}`}
+                disabled={disabled}
+                onChange={(event) => onChange(tool.name, event.currentTarget.checked)}
+                type="checkbox"
+              />
+              Enabled
+            </label>
+          </li>
+        );
+      })}
     </ul>
   );
 }
@@ -401,7 +427,7 @@ function OverviewTask({ controller, onOpenTask, server }: Readonly<{
       <section className="border-l-2 border-caution bg-caution/10 px-4 py-3 text-xs leading-5 text-caution">
         <div className="flex items-start gap-2">
           <ShieldAlert aria-hidden="true" className="mt-0.5 size-4 shrink-0" />
-          <p>Activation trusts this server as one unit. The model may invoke every current or future valid tool it exposes, including state-changing tools. Local workloads also have unrestricted outbound network access and can observe Docker metadata available inside the runtime boundary.</p>
+          <p>Activation trusts this server and every tool enabled in that exact revision. Newly discovered tool names are enabled by default unless an administrator disables the exact name. Enabled tools may change state without per-call confirmation. Local workloads also have unrestricted outbound network access and can observe Docker metadata available inside the runtime boundary.</p>
         </div>
       </section>
 
@@ -458,12 +484,13 @@ function DefinitionTask({ controller, onEdit, server }: Readonly<{
     <div className="grid gap-6">
       <section>
         <h4 className="text-sm font-semibold text-ink">Current mutable draft</h4>
-        <p className="mt-1 max-w-3xl text-xs leading-5 text-ink-muted">Editing invalidates prior draft-test evidence. The active revision keeps running until another exact tested identity is activated.</p>
+        <p className="mt-1 max-w-3xl text-xs leading-5 text-ink-muted">Editing invalidates the prior activation binding. Tool-policy edits retain the last discovery as stale evidence, but the active revision keeps running until the candidate is tested and activated.</p>
         <dl className="mt-4 divide-y divide-trace-subtle border-y border-trace-subtle text-xs">
           <div className="grid gap-1 py-3 sm:grid-cols-[10rem_minmax(0,1fr)]"><dt className="text-ink-muted">Source</dt><dd className="break-words font-mono text-ink [overflow-wrap:anywhere]">{sourceDisplay(server.draft.source)}</dd></div>
           <div className="grid gap-1 py-3 sm:grid-cols-[10rem_minmax(0,1fr)]"><dt className="text-ink-muted">Transport</dt><dd className="text-ink">{server.draft.transport === "streamable_http" ? "Streamable HTTP" : "stdio"}</dd></div>
           <div className="grid gap-1 py-3 sm:grid-cols-[10rem_minmax(0,1fr)]"><dt className="text-ink-muted">Authentication</dt><dd className="text-ink">{auth}</dd></div>
           <div className="grid gap-1 py-3 sm:grid-cols-[10rem_minmax(0,1fr)]"><dt className="text-ink-muted">Configuration fields</dt><dd className="text-ink">{server.draft.slots.length}</dd></div>
+          <div className="grid gap-1 py-3 sm:grid-cols-[10rem_minmax(0,1fr)]"><dt className="text-ink-muted">Disabled tool names</dt><dd className="text-ink">{server.draft.disabledToolNames?.length ?? 0}</dd></div>
           <div className="grid gap-1 py-3 sm:grid-cols-[10rem_minmax(0,1fr)]"><dt className="text-ink-muted">Timeouts</dt><dd className="text-ink">Startup {server.draft.runtime.startupTimeoutMs} ms · call {server.draft.runtime.callTimeoutMs} ms</dd></div>
         </dl>
         <button className={`${primaryButton} mt-4`} disabled={controller.state.busy || Boolean(server.archivedAt)} onClick={onEdit} type="button">
@@ -492,9 +519,12 @@ function ValidationTask({
   setOneTimeValues(values: Record<string, string>): void;
 }>) {
   const active = activeInventory(server);
-  const candidate = server.draftTested ? draftInventory(server) : [];
+  const candidate = draftInventory(server);
   const staleEvidence = !server.draftTested && Boolean(server.draftTest);
   const diff = diffMcpToolInventory(active, candidate);
+  const candidateEnabled = enabledMcpToolInventory(candidate, server.draft.disabledToolNames);
+  const activeEnabled = enabledMcpToolInventory(active, server.activeRevision?.disabledToolNames);
+  const staleDisabledNames = staleDisabledMcpToolNames(server.draft, candidate);
   const values = oneTimeRequest(server, oneTimeValues);
   const busy = controller.state.busy || Boolean(server.archivedAt);
   const run = async (operation: "check" | "test") => {
@@ -541,17 +571,58 @@ function ValidationTask({
       <section className="grid gap-5 xl:grid-cols-2">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <h4 className="text-sm font-semibold text-ink">Tested draft tools</h4>
-            <span className="font-mono text-metadata text-ink-muted">{candidate.length}</span>
+            <h4 className="text-sm font-semibold text-ink">Discovered draft tools</h4>
+            <span className="text-metadata text-ink-muted">{candidate.length} upstream</span>
           </div>
-          <InventoryList
+          <div className="my-3 grid gap-1 border-l-2 border-proof px-3 text-xs leading-5">
+            <p className="font-medium text-ink">Candidate draft — {candidateEnabled.length} enabled · {candidate.length - candidateEnabled.length} disabled</p>
+            <p className="text-ink-muted">
+              {server.activeRevision
+                ? `Active revision ${server.activeRevision.revisionNumber} — ${activeEnabled.length} enabled · ${active.length - activeEnabled.length} disabled`
+                : "No active revision"}
+            </p>
+            <p className="text-ink-muted">Changes here update only the candidate draft. Test and activate it before the active policy changes.</p>
+          </div>
+          {staleEvidence ? (
+            <p className="mb-3 border-l-2 border-caution px-3 text-xs leading-5 text-caution">This complete inventory came from the previous draft test. The tool policy changed, so retest before activation.</p>
+          ) : null}
+          <ToolPolicyList
+            disabled={busy}
+            disabledToolNames={server.draft.disabledToolNames ?? []}
             empty={staleEvidence
-              ? "Previous test evidence belongs to an older draft and is not shown as current inventory. Test this draft again."
+              ? "Previous test evidence exposed no tools. Retest this policy before activation."
               : server.draftTested
                 ? "The tested server exposed no tools."
                 : "Test the current draft to discover tools."}
+            onChange={(name, enabled) => void controller.actions.update(server.id, {
+              draft: withMcpToolEnabled(server.draft, name, enabled)
+            })}
             tools={candidate}
           />
+          {staleDisabledNames.length ? (
+            <section className="mt-5">
+              <h5 className="text-xs font-semibold text-ink">Disabled names not currently advertised</h5>
+              <p className="mt-1 text-xs leading-5 text-ink-muted">These exact names remain disabled if they return. Remove a name to enable it on a future discovery.</p>
+              <ul className="mt-2 divide-y divide-trace-subtle border-y border-trace-subtle">
+                {staleDisabledNames.map((name) => (
+                  <li className="flex min-w-0 items-center justify-between gap-3 py-2" key={name}>
+                    <code className="min-w-0 break-words text-xs text-ink [overflow-wrap:anywhere]">{name}</code>
+                    <button
+                      aria-label={`Remove disabled name ${name}`}
+                      className={quietButton}
+                      disabled={busy}
+                      onClick={() => void controller.actions.update(server.id, {
+                        draft: withMcpToolEnabled(server.draft, name, true)
+                      })}
+                      type="button"
+                    >
+                      Remove
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          ) : null}
         </div>
         <div className="min-w-0">
           <div className="flex flex-wrap items-center justify-between gap-2">
@@ -621,7 +692,7 @@ function RevisionsTask({
               <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                 <div className="min-w-0">
                   <h5 className="text-sm font-medium text-ink">Revision {revision.revisionNumber}{active ? " · Current" : ""}</h5>
-                  <p className="mt-1 text-xs text-ink-muted">Tested {new Date(revision.validationEvidence.testedAt).toLocaleString()} · {revision.validationEvidence.toolInventory.length} tools</p>
+                  <p className="mt-1 text-xs text-ink-muted">Tested {new Date(revision.validationEvidence.testedAt).toLocaleString()} · {revision.validationEvidence.toolInventory.length} upstream · {enabledMcpToolInventory(revision.validationEvidence.toolInventory, revision.disabledToolNames).length} enabled</p>
                   <p className={`mt-1 text-xs ${revision.artifactStatus === "missing" ? "text-critical" : revision.artifactStatus === "available" ? "text-positive" : "text-ink-muted"}`}>{artifact}</p>
                 </div>
                 <div className="flex flex-wrap gap-2">

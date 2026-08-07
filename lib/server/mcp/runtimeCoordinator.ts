@@ -20,6 +20,7 @@ export type McpRuntimeInventoryTool = {
 export type McpRuntimeLaunch = {
   allowPrivateNetwork?: boolean;
   callTimeoutMs: number;
+  disabledToolNames?: readonly string[];
   fingerprint: string;
   generationId: string;
   headers: Record<string, string>;
@@ -85,6 +86,8 @@ export type McpRuntimeLifecycle = {
 };
 
 type LiveRuntime = {
+  disabledToolNames: ReadonlySet<string>;
+  enabledToolNames: ReadonlySet<string>;
   evictionErrorCode: string | null;
   fingerprint: string;
   local: boolean;
@@ -92,6 +95,13 @@ type LiveRuntime = {
   repositoryStateWrite: Promise<boolean> | null;
   session: McpRuntimeSession;
 };
+
+function effectiveRuntimeTools(
+  tools: readonly McpRuntimeInventoryTool[],
+  disabledToolNames: ReadonlySet<string>
+): McpRuntimeInventoryTool[] {
+  return tools.filter((tool) => !disabledToolNames.has(tool.name));
+}
 
 function assertInventoryDoesNotExposeCredentials(
   tools: readonly McpRuntimeInventoryTool[],
@@ -305,6 +315,9 @@ export class McpRuntimeCoordinator {
   }): Promise<AiqsaMcpToolCallResult> {
     const runtime = this.#live.get(input.generationId);
     if (!runtime) throw new Error("mcp_runtime_not_ready");
+    if (!runtime.enabledToolNames.has(input.name)) {
+      throw new McpClientSessionError({ code: "mcp_tool_not_available", operation: "call_tool" });
+    }
     validateMcpToolArguments(input.inputSchema, input.arguments);
     await this.#repository.touchLastUsed(input.generationId, this.#now());
     try {
@@ -460,10 +473,12 @@ export class McpRuntimeCoordinator {
       const tools = await session.listTools();
       if (isClosedSession(session)) throw new Error("mcp_session_closed");
       assertInventoryDoesNotExposeCredentials(tools, launch.redactionValues, session);
+      const disabledToolNames = new Set(launch.disabledToolNames ?? []);
+      const effectiveTools = effectiveRuntimeTools(tools, disabledToolNames);
       const accepted = await this.#repository.markReady({
         fingerprint: launch.fingerprint,
         generationId: launch.generationId,
-        inventory: { tools, version: 1 },
+        inventory: { tools: effectiveTools, version: 1 },
         now: this.#now()
       });
       if (!accepted) {
@@ -472,6 +487,8 @@ export class McpRuntimeCoordinator {
       }
       if (isClosedSession(session)) throw new Error("mcp_session_closed");
       this.#live.set(launch.generationId, {
+        disabledToolNames,
+        enabledToolNames: new Set(effectiveTools.map((tool) => tool.name)),
         evictionErrorCode: null,
         fingerprint: launch.fingerprint,
         local: Boolean(launch.toolHive),
@@ -566,11 +583,12 @@ export class McpRuntimeCoordinator {
       const tools = await live.session.listTools();
       if (isClosedSession(live.session)) throw new Error("mcp_session_closed");
       assertInventoryDoesNotExposeCredentials(tools, live.redactionValues, live.session);
+      const effectiveTools = effectiveRuntimeTools(tools, live.disabledToolNames);
       if (this.#live.get(generationId) !== live) return false;
       const readinessWrite = this.#repository.markReady({
         fingerprint,
         generationId,
-        inventory: { tools, version: 1 },
+        inventory: { tools: effectiveTools, version: 1 },
         now: this.#now()
       });
       live.repositoryStateWrite = readinessWrite;
@@ -596,6 +614,7 @@ export class McpRuntimeCoordinator {
         return false;
       }
       if (isClosedSession(live.session)) throw new Error("mcp_session_closed");
+      live.enabledToolNames = new Set(effectiveTools.map((tool) => tool.name));
       return true;
     } catch (error) {
       if (live.evictionErrorCode !== null) return false;

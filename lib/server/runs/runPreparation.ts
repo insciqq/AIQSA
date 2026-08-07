@@ -1167,7 +1167,7 @@ export async function prepareRun(
   const mcpCompatibility = validateMcpCapabilities({
     ...(toolBridge ? { bridge: toolBridge } : {}),
     capabilities: modelCapabilities,
-    enabled: Boolean(mcpPlan?.ok && mcpPlan.snapshot.servers.length),
+    enabled: Boolean(mcpPlan?.ok && mcpPlan.snapshot.tools.length),
     modelId: executionModelId,
     params: runParams,
     provider: executionProvider
@@ -1177,7 +1177,7 @@ export async function prepareRun(
     admissionPlan &&
     deps.providerAdmission &&
     mcpPlan?.ok &&
-    mcpPlan.snapshot.servers.length > 0 &&
+    mcpPlan.snapshot.tools.length > 0 &&
     admissionPlan.searches?.some((candidate) =>
       candidate.configuration.adapterKind === "answer_provider_hosted")
   ) {

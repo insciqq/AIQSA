@@ -192,6 +192,11 @@ function draftFrom(value: Prisma.JsonValue): McpDraftConfiguration {
   return result.value;
 }
 
+function draftDefinitionHash(draft: McpDraftConfiguration): string {
+  const { disabledToolNames: _disabledToolNames, ...definition } = draft;
+  return hashCanonicalMcpValue(definition);
+}
+
 function slotLineageIssues(
   draft: McpDraftConfiguration,
   revisions: readonly Readonly<{ configuration: Prisma.JsonValue }>[]
@@ -342,9 +347,13 @@ function revisionArtifactStatus(revision: RevisionRecord): McpRevisionSummary["a
 }
 
 function serializeRevision(revision: RevisionRecord): McpRevisionSummary {
+  const configuration = draftFrom(revision.configuration);
   return {
     artifactStatus: revisionArtifactStatus(revision),
     createdAt: revision.createdAt.toISOString(),
+    ...(configuration.disabledToolNames?.length
+      ? { disabledToolNames: configuration.disabledToolNames }
+      : {}),
     draftHash: revision.draftHash,
     id: revision.id,
     identityHash: storedRevisionIdentityHash(revision),
@@ -494,15 +503,16 @@ function toolInventory(value: Prisma.JsonValue | null): UserMcpServer["tools"] |
 }
 
 export function deriveKnownMcpToolCount(input: {
+  disabledToolNames?: readonly string[];
   revisionCreatedAt: Date;
   revisionValidationEvidence: Prisma.JsonValue;
   runtimeInventory: Prisma.JsonValue | null;
 }): number {
   const runtimeInventory = toolInventory(input.runtimeInventory);
-  return runtimeInventory?.length ?? validationEvidenceFrom(
-    input.revisionValidationEvidence,
-    input.revisionCreatedAt
-  ).toolInventory.length;
+  if (runtimeInventory) return runtimeInventory.length;
+  const disabledToolNames = new Set(input.disabledToolNames ?? []);
+  return validationEvidenceFrom(input.revisionValidationEvidence, input.revisionCreatedAt)
+    .toolInventory.filter((tool) => !disabledToolNames.has(tool.name)).length;
 }
 
 export function deriveMcpUserReadiness(input: {
@@ -646,6 +656,7 @@ function serializeUserServer(input: {
     fields,
     id: input.record.id,
     knownToolCount: deriveKnownMcpToolCount({
+      disabledToolNames: draft.disabledToolNames,
       revisionCreatedAt: input.record.activeRevision.createdAt,
       revisionValidationEvidence: input.record.activeRevision.validationEvidence,
       runtimeInventory: preference?.desiredRuntimeGeneration?.inventory ?? null
@@ -1634,14 +1645,18 @@ export function createPrismaMcpRepository(input: {
         const existing = await tx.mcpServer.findFirst({ where: { archivedAt: null, id: serverId } });
         if (!existing) return { kind: "not_found" as const };
         if (enabled === true && !existing.activeRevisionId) return { kind: "revision_required" as const };
-        const effectiveDraft = draft ?? draftFrom(existing.draft);
+        const storedDraft = draftFrom(existing.draft);
+        const effectiveDraft = draft ?? storedDraft;
         if (sharedValues) {
           const issues = valueIssues(effectiveDraft.slots, sharedValues, (slot) => slot.policy.kind === "shared");
           if (issues.length) return { issues, kind: "invalid_values" as const };
         }
         const data: Prisma.McpServerUpdateInput = {};
         const draftChanged = Boolean(
-          draft && hashCanonicalMcpValue(draft) !== hashCanonicalMcpValue(draftFrom(existing.draft))
+          draft && hashCanonicalMcpValue(draft) !== hashCanonicalMcpValue(storedDraft)
+        );
+        const policyOnlyDraftChange = Boolean(
+          draftChanged && draft && draftDefinitionHash(draft) === draftDefinitionHash(storedDraft)
         );
         const sharedConfigChanged = Boolean(sharedValues && Object.keys(sharedValues).length);
         if (description !== undefined) data.description = description;
@@ -1649,8 +1664,10 @@ export function createPrismaMcpRepository(input: {
         if (enabled !== undefined) data.enabled = enabled;
         if (draftChanged) {
           data.draft = draft as Prisma.InputJsonValue;
-          data.draftTestEvidence = Prisma.DbNull;
-          data.testedDraftHash = null;
+          if (!policyOnlyDraftChange) {
+            data.draftTestEvidence = Prisma.DbNull;
+            data.testedDraftHash = null;
+          }
         }
         if (sharedConfigChanged) {
           const sharedConfigVersion = existing.sharedConfigVersion + 1;

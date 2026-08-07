@@ -60,6 +60,7 @@ export type McpAuthPolicy =
 
 export type McpDraftConfiguration = {
   auth: McpAuthPolicy;
+  disabledToolNames?: string[];
   runtime: {
     callTimeoutMs: number;
     startupTimeoutMs: number;
@@ -125,6 +126,7 @@ export type AdminMcpActivationSummary = {
 export type McpRevisionSummary = {
   artifactStatus: "available" | "missing" | "not_applicable" | "unknown";
   createdAt: string;
+  disabledToolNames?: string[];
   draftHash: string;
   id: string;
   identityHash: string;

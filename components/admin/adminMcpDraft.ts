@@ -207,6 +207,35 @@ export function activeInventory(server: AdminMcpServer): McpToolInventoryEntry[]
   return server.activeRevision?.validationEvidence.toolInventory ?? [];
 }
 
+export function enabledMcpToolInventory(
+  tools: readonly McpToolInventoryEntry[],
+  disabledToolNames: readonly string[] | undefined
+): McpToolInventoryEntry[] {
+  const disabled = new Set(disabledToolNames ?? []);
+  return tools.filter((tool) => !disabled.has(tool.name));
+}
+
+export function staleDisabledMcpToolNames(
+  draft: McpDraftConfiguration,
+  tools: readonly McpToolInventoryEntry[]
+): string[] {
+  const advertised = new Set(tools.map((tool) => tool.name));
+  return (draft.disabledToolNames ?? []).filter((name) => !advertised.has(name));
+}
+
+export function withMcpToolEnabled(
+  draft: McpDraftConfiguration,
+  name: string,
+  enabled: boolean
+): McpDraftConfiguration {
+  const disabled = new Set(draft.disabledToolNames ?? []);
+  if (enabled) disabled.delete(name);
+  else disabled.add(name);
+  const { disabledToolNames: _disabledToolNames, ...definition } = draft;
+  const disabledToolNames = [...disabled].sort();
+  return disabledToolNames.length ? { ...definition, disabledToolNames } : definition;
+}
+
 export function diffMcpToolInventory(
   active: readonly McpToolInventoryEntry[],
   candidate: readonly McpToolInventoryEntry[]

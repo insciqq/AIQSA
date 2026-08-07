@@ -20,7 +20,7 @@ const DEFAULT_RUNTIME_LIMITS = {
   maxToolMetadataBytes: 256 * 1_024,
   maxToolResultBytes: 128 * 1_024,
   maxToolSchemaBytes: 64 * 1_024,
-  maxTools: 128
+  maxTools: 256
 } as const;
 
 type McpRuntimeGlobal = typeof globalThis & {
