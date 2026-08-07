@@ -26,6 +26,19 @@ describe("public release privacy contract", () => {
     expect(workflow).toContain("target: release");
   });
 
+  it("builds both release architectures on native runners before publishing one manifest", () => {
+    const workflow = readFileSync(path.join(root, ".github/workflows/release.yml"), "utf8");
+
+    expect(workflow).toContain("platform: linux/amd64\n            runner: ubuntu-24.04");
+    expect(workflow).toContain("platform: linux/arm64\n            runner: ubuntu-24.04-arm");
+    expect(workflow).toContain("runs-on: ${{ matrix.runner }}");
+    expect(workflow).not.toContain("docker/setup-qemu-action@");
+    expect(workflow).toContain("push-by-digest=true,name-canonical=true,push=true");
+    expect(workflow).toContain("pattern: digests-*");
+    expect(workflow).toContain("docker buildx imagetools create");
+    expect(workflow).toContain("expected_platforms=(linux/amd64 linux/arm64)");
+  });
+
   it("keeps agent-only files out of every Docker stage context", () => {
     const dockerignore = readFileSync(path.join(root, ".dockerignore"), "utf8");
     const dockerfile = readFileSync(path.join(root, "Dockerfile"), "utf8");

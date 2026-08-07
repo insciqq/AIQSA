@@ -11,13 +11,17 @@ concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
 
+env:
+  IMAGE: ghcr.io/insciqq/aiqsa
+
 jobs:
-  publish:
-    name: Publish image and GitHub Release
+  prepare:
+    name: Validate release
     runs-on: ubuntu-24.04
     permissions:
-      contents: write
-      packages: write
+      contents: read
+    outputs:
+      version: ${{ steps.release.outputs.version }}
 
     steps:
       - name: Check out release tag
@@ -43,14 +47,33 @@ jobs:
           fi
           echo "version=${version}" >> "${GITHUB_OUTPUT}"
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@06116385d9baf250c9f4dcb4858b16962ea869c3 # v3.7.0
+  build:
+    name: Build ${{ matrix.platform }}
+    needs: prepare
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - id: amd64
+            platform: linux/amd64
+            runner: ubuntu-24.04
+          - id: arm64
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
+
+    steps:
+      - name: Check out release tag
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6.0.2
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v3.11.1
+        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
 
       - name: Sign in to GHCR
-        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v3.6.0
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -58,9 +81,9 @@ jobs:
 
       - name: Generate image metadata
         id: metadata
-        uses: docker/metadata-action@80c7e94dd9b9319bd5eb7a0e0fe9291e23a2a2e9 # v5.8.0
+        uses: docker/metadata-action@80c7e94dd9b9319bd5eb7a0e0fe9291e23a2a2e9 # v6.1.0
         with:
-          images: ghcr.io/insciqq/aiqsa
+          images: ${{ env.IMAGE }}
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}},enable=${{ !contains(github.ref_name, '-') }}
@@ -70,26 +93,167 @@ jobs:
             org.opencontainers.image.title=AIQSA
             org.opencontainers.image.description=Self-hosted multi-user AI workspace with multi-provider chat, MCP tools, and web search
 
-      - name: Build and publish one release image
+      - name: Build and publish platform image by digest
         id: image
-        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v6.18.0
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
         with:
           context: .
           target: release
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.metadata.outputs.tags }}
+          platforms: ${{ matrix.platform }}
           labels: ${{ steps.metadata.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: |
+            type=gha,scope=release-${{ matrix.id }}
+            type=gha
+          cache-to: type=gha,mode=max,scope=release-${{ matrix.id }}
+
+      - name: Export platform digest
+        env:
+          DIGEST: ${{ steps.image.outputs.digest }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "${DIGEST}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "Build returned an invalid image digest." >&2
+            exit 1
+          fi
+          digest_dir="${RUNNER_TEMP}/digests"
+          mkdir -p "${digest_dir}"
+          touch "${digest_dir}/${DIGEST#sha256:}"
+
+      - name: Upload platform digest
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: digests-${{ matrix.id }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+
+  publish:
+    name: Publish multi-platform image and GitHub Release
+    needs:
+      - prepare
+      - build
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      contents: write
+      packages: write
+
+    steps:
+      - name: Check out release tag
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Download platform digests
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: digests-*
+          path: ${{ runner.temp }}/digests
+          merge-multiple: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
+
+      - name: Sign in to GHCR
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate image metadata
+        id: metadata
+        uses: docker/metadata-action@80c7e94dd9b9319bd5eb7a0e0fe9291e23a2a2e9 # v6.1.0
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}},enable=${{ !contains(github.ref_name, '-') }}
+            type=raw,value=latest,enable=${{ !contains(github.ref_name, '-') }}
+            type=sha,format=short,prefix=sha-
+          labels: |
+            org.opencontainers.image.title=AIQSA
+            org.opencontainers.image.description=Self-hosted multi-user AI workspace with multi-provider chat, MCP tools, and web search
+
+      - name: Create and verify multi-platform manifest
+        id: manifest
+        env:
+          METADATA_JSON: ${{ steps.metadata.outputs.json }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          digest_dir="${RUNNER_TEMP}/digests"
+          shopt -s nullglob
+          digest_files=("${digest_dir}"/*)
+          if (( ${#digest_files[@]} != 2 )); then
+            echo "Expected exactly two platform digests, found ${#digest_files[@]}." >&2
+            exit 1
+          fi
+
+          sources=()
+          for digest_file in "${digest_files[@]}"; do
+            digest="${digest_file##*/}"
+            if [[ ! "${digest}" =~ ^[0-9a-f]{64}$ ]]; then
+              echo "Downloaded an invalid platform digest artifact." >&2
+              exit 1
+            fi
+            sources+=("${IMAGE}@sha256:${digest}")
+          done
+
+          mapfile -t tags < <(jq -er '.tags[]' <<< "${METADATA_JSON}")
+          if (( ${#tags[@]} == 0 )); then
+            echo "Image metadata produced no publication tags." >&2
+            exit 1
+          fi
+          tag_args=()
+          for tag in "${tags[@]}"; do
+            if [[ "${tag}" != "${IMAGE}:"* ]]; then
+              echo "Image metadata produced a tag outside the release repository." >&2
+              exit 1
+            fi
+            tag_args+=(--tag "${tag}")
+          done
+
+          docker buildx imagetools create "${tag_args[@]}" "${sources[@]}"
+
+          release_ref="${IMAGE}:${VERSION}"
+          manifest_json="$(docker buildx imagetools inspect --raw "${release_ref}")"
+          manifest_digest="$(docker buildx imagetools inspect --format '{{json .Manifest}}' "${release_ref}" | jq -er '.digest')"
+          if [[ ! "${manifest_digest}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "Published manifest has an invalid digest." >&2
+            exit 1
+          fi
+
+          for tag in "${tags[@]}"; do
+            tag_digest="$(docker buildx imagetools inspect --format '{{json .Manifest}}' "${tag}" | jq -er '.digest')"
+            if [[ "${tag_digest}" != "${manifest_digest}" ]]; then
+              echo "Published image tags do not resolve to one manifest digest." >&2
+              exit 1
+            fi
+          done
+
+          mapfile -t platforms < <(
+            jq -r '.manifests[] | select(.platform.os != "unknown") | "\(.platform.os)/\(.platform.architecture)"' \
+              <<< "${manifest_json}" | sort
+          )
+          expected_platforms=(linux/amd64 linux/arm64)
+          if [[ "${platforms[*]}" != "${expected_platforms[*]}" ]]; then
+            echo "Published manifest platforms are not exactly linux/amd64 and linux/arm64." >&2
+            exit 1
+          fi
+
+          echo "digest=${manifest_digest}" >> "${GITHUB_OUTPUT}"
 
       - name: Create GitHub Release
         env:
-          DIGEST: ${{ steps.image.outputs.digest }}
+          DIGEST: ${{ steps.manifest.outputs.digest }}
           GH_TOKEN: ${{ github.token }}
-          IMAGE: ghcr.io/insciqq/aiqsa
           TAG: ${{ github.ref_name }}
-          VERSION: ${{ steps.release.outputs.version }}
+          VERSION: ${{ needs.prepare.outputs.version }}
         shell: bash
         run: |
           set -euo pipefail
