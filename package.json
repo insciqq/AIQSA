@@ -47,6 +47,7 @@
     "mcp:cleanup": "tsx scripts/mcp-toolhive-cleanup.ts",
     "prune": "tsx scripts/prune.ts",
     "security:deps": "npm audit --audit-level=high",
+    "smoke:anthropic": "tsx scripts/smoke-anthropic-messages.ts",
     "smoke:custom-openai-compatible": "tsx scripts/smoke-custom-openai-compatible.ts",
     "smoke:openai": "tsx scripts/smoke-openai-responses.ts",
     "smoke:gemini": "tsx scripts/smoke-gemini-interactions.ts",

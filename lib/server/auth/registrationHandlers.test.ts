@@ -326,54 +326,101 @@ describe("registration auth handlers", () => {
     expect(mailer.sent).toHaveLength(0);
   });
 
-  it("reports unavailable verification mail without claiming delivery", async () => {
-    const repository = createMemoryRegistrationRepository();
-    const POST = createRegisterHandler({
-      getConfig: () => getAuthConfig({ AIQSA_AUTH_SESSION_SECRET: "test-secret" }),
-      mailer: {
-        async send() {
-          return { kind: "unavailable" } as const;
-        }
-      },
-      repository
+  it.each([
+    ["unavailable", { kind: "unavailable" } as const],
+    ["failed", { code: "smtp_tls_failed", kind: "failed" } as const]
+  ])("keeps mailable and hidden registration responses identical when mail is %s", async (_label, delivery) => {
+    const errorLog = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const mailer = {
+      send: vi.fn(async () => delivery)
+    };
+    const config = getAuthConfig({ AIQSA_AUTH_SESSION_SECRET: "test-secret" });
+    const mailablePOST = createRegisterHandler({
+      getConfig: () => config,
+      mailer,
+      repository: createMemoryRegistrationRepository(),
+      responseFloorMs: 0
+    });
+    const hiddenPOST = createRegisterHandler({
+      getConfig: () => config,
+      mailer,
+      repository: createMemoryRegistrationRepository({
+        registerResult: { ok: true, sentToEmail: null }
+      }),
+      responseFloorMs: 0
     });
 
-    const response = await POST(
-      jsonRequest("/api/auth/register", {
-        email: "allowed@example.com"
-      })
+    const mailableResponse = await mailablePOST(
+      jsonRequest("/api/auth/register", { email: "allowed@example.com" })
     );
-
-    expect(response.status).toBe(503);
-    await expect(response.json()).resolves.toEqual({
-      error: "verification_email_unavailable"
+    const hiddenResponse = await hiddenPOST(
+      jsonRequest("/api/auth/register", { email: "hidden@example.com" })
+    );
+    const responseShape = async (response: Response) => ({
+      body: await response.json(),
+      headers: Object.fromEntries(response.headers),
+      status: response.status
     });
+
+    expect(await responseShape(mailableResponse)).toEqual(await responseShape(hiddenResponse));
+    expect(mailer.send).toHaveBeenCalledTimes(1);
+    if (delivery.kind === "failed") {
+      await vi.waitFor(() => {
+        expect(errorLog).toHaveBeenCalledWith("verification_email_failed", expect.any(Error));
+      });
+    }
   });
 
-  it("reports verification mail send failures", async () => {
-    const repository = createMemoryRegistrationRepository();
-    const errorLog = vi.spyOn(console, "error").mockImplementation(() => undefined);
-    const POST = createRegisterHandler({
-      getConfig: () => getAuthConfig({ AIQSA_AUTH_SESSION_SECRET: "test-secret" }),
-      mailer: {
-        async send() {
-          return { code: "smtp_tls_failed", kind: "failed" } as const;
-        }
-      },
-      repository
+  it("applies the common response floor without waiting for a slow mailer", async () => {
+    async function runRegistration(input: {
+      email: string;
+      sentToEmail: string | null;
+    }) {
+      let clockMs = 1_000;
+      const sleep = vi.fn(async (milliseconds: number) => {
+        clockMs += milliseconds;
+      });
+      const mailer = {
+        send: vi.fn(async () => await new Promise<never>(() => undefined))
+      };
+      const repository = createMemoryRegistrationRepository({
+        registerResult: { ok: true, sentToEmail: input.sentToEmail }
+      });
+      const register = vi.spyOn(repository, "registerPasswordUser");
+      const POST = createRegisterHandler({
+        clock: () => clockMs,
+        getConfig: () => handlerConfig,
+        mailer,
+        repository,
+        responseFloorMs: 75,
+        sleep
+      });
+
+      const response = await POST(
+        jsonRequest("/api/auth/register", { email: input.email })
+      );
+
+      return { mailer, register, response, sleep };
+    }
+
+    const mailable = await runRegistration({
+      email: "mailable@example.com",
+      sentToEmail: "mailable@example.com"
+    });
+    const hidden = await runRegistration({
+      email: "hidden@example.com",
+      sentToEmail: null
     });
 
-    const response = await POST(
-      jsonRequest("/api/auth/register", {
-        email: "allowed@example.com"
-      })
+    expect(mailable.response.status).toBe(200);
+    expect(hidden.response.status).toBe(200);
+    expect(mailable.sleep).toHaveBeenCalledWith(75);
+    expect(hidden.sleep).toHaveBeenCalledWith(75);
+    expect(mailable.mailer.send).toHaveBeenCalledTimes(1);
+    expect(hidden.mailer.send).not.toHaveBeenCalled();
+    expect(mailable.register.mock.invocationCallOrder[0]).toBeLessThan(
+      mailable.mailer.send.mock.invocationCallOrder[0]!
     );
-
-    expect(response.status).toBe(502);
-    await expect(response.json()).resolves.toEqual({
-      error: "verification_email_failed"
-    });
-    expect(errorLog).toHaveBeenCalledWith("verification_email_failed", expect.any(Error));
   });
 
   it("returns active and pending verification states", async () => {

@@ -22,6 +22,7 @@ const EXPECTED_USAGE = {
   totalTokens: 10
 };
 const MAX_REQUEST_BYTES = 64 * 1_024;
+let failureStage = "startup";
 
 type CapturedRequest = Readonly<{
   authorization: string | null;
@@ -52,7 +53,11 @@ async function requestBody(request: IncomingMessage): Promise<Record<string, unk
   return value as Record<string, unknown>;
 }
 
-function writeStreamingAnswer(response: ServerResponse, responseId: string): void {
+function writeStreamingAnswer(
+  response: ServerResponse,
+  responseId: string,
+  includeUsage: boolean
+): void {
   response.writeHead(200, {
     "cache-control": "no-cache",
     connection: "close",
@@ -69,11 +74,15 @@ function writeStreamingAnswer(response: ServerResponse, responseId: string): voi
     id: responseId,
     model: MANUAL_MODEL_ID,
     object: "chat.completion.chunk",
-    usage: {
-      completion_tokens: EXPECTED_USAGE.outputTokens,
-      prompt_tokens: EXPECTED_USAGE.inputTokens,
-      total_tokens: EXPECTED_USAGE.totalTokens
-    }
+    ...(includeUsage
+      ? {
+          usage: {
+            completion_tokens: EXPECTED_USAGE.outputTokens,
+            prompt_tokens: EXPECTED_USAGE.inputTokens,
+            total_tokens: EXPECTED_USAGE.totalTokens
+          }
+        }
+      : {})
   })}\n\n`);
   response.end("data: [DONE]\n\n");
 }
@@ -170,7 +179,11 @@ async function main(): Promise<void> {
       }
       writeStreamingAnswer(
         response,
-        authorization ? "fixture-bearer-response" : "fixture-no-auth-response"
+        authorization ? "fixture-bearer-response" : "fixture-no-auth-response",
+        typeof body.stream_options === "object" &&
+          body.stream_options !== null &&
+          !Array.isArray(body.stream_options) &&
+          (body.stream_options as Record<string, unknown>).include_usage === true
       );
     } catch {
       response.writeHead(400, { connection: "close" });
@@ -186,6 +199,7 @@ async function main(): Promise<void> {
     assert(address && typeof address === "object", "fixture_address_missing");
     const apiRoot = `http://${LOOPBACK_HOST}:${address.port}/v1`;
 
+    failureStage = "bearer_request";
     const bearer = await collect(
       createOpenAICompatibleChatAdapter({
         client: createFetchOpenAICompatibleChatClient({
@@ -196,6 +210,7 @@ async function main(): Promise<void> {
       }),
       smokeRequest("custom-bearer", true)
     );
+    failureStage = "no_auth_request";
     const noAuth = await collect(
       createOpenAICompatibleChatAdapter({
         client: createFetchOpenAICompatibleChatClient({
@@ -207,16 +222,27 @@ async function main(): Promise<void> {
       smokeRequest("custom-no-auth")
     );
 
+    failureStage = "streamed_output";
     for (const outcome of [bearer, noAuth]) {
       assert.equal(outcome.result.finalText, EXPECTED_TEXT);
       assert.deepEqual(outcome.textDeltas, ["AIQSA_", "CUSTOM_OK"]);
-      assert.equal(outcome.usageEventCount, 1);
-      assert.deepEqual(outcome.result.usage, {
-        cacheWriteInputTokens: 0,
-        cachedInputTokens: 0,
-        ...EXPECTED_USAGE
-      });
     }
+    failureStage = "bearer_usage";
+    assert.equal(bearer.usageEventCount, 1);
+    assert.deepEqual(bearer.result.usage, {
+      cacheWriteInputTokens: 0,
+      cachedInputTokens: 0,
+      ...EXPECTED_USAGE
+    });
+    failureStage = "absent_usage_event";
+    assert.equal(noAuth.usageEventCount, 0);
+    failureStage = "absent_usage_result";
+    assert.deepEqual(noAuth.result.usage, {
+      inputTokens: 0,
+      outputTokens: 0,
+      reasoningTokens: 0
+    });
+    failureStage = "captured_request";
     assert.equal(captured.length, 2);
     assert.deepEqual(captured.map(({ method, model, stream, streamOptions, url }) => ({
       method,
@@ -240,6 +266,7 @@ async function main(): Promise<void> {
         url: "/v1/chat/completions"
       }
     ]);
+    failureStage = "authorization";
     assert.equal(captured[0]?.authorization, `Bearer ${BEARER_TOKEN}`);
     assert.equal(captured[1]?.authorization, null);
     assert.equal(captured[0]?.maxCompletionTokens, 8);
@@ -247,6 +274,7 @@ async function main(): Promise<void> {
 
     console.log(JSON.stringify({
       bearerAuthorizationVerified: true,
+      absentUsageConsequenceVerified: true,
       manualModelIdVerified: true,
       noAuthAuthorizationOmitted: true,
       requestCount: captured.length,
@@ -261,6 +289,6 @@ async function main(): Promise<void> {
 }
 
 main().catch(() => {
-  console.error("Custom OpenAI-compatible local smoke failed.");
+  console.error(JSON.stringify({ failureStage, status: "failed" }));
   process.exit(1);
 });

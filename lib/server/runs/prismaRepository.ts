@@ -550,8 +550,11 @@ type LockedToolLoopRun = {
 
 async function lockToolLoopRun(
   tx: Prisma.TransactionClient,
-  input: { runId: string; userId: string }
+  input: { runId: string; userId?: string }
 ): Promise<LockedToolLoopRun | null> {
+  const ownerPredicate = input.userId
+    ? Prisma.sql`AND "userId" = ${input.userId}`
+    : Prisma.empty;
   const [run] = await tx.$queryRaw<LockedToolLoopRun[]>(Prisma.sql`
     SELECT
       "assistantMessageId",
@@ -561,7 +564,7 @@ async function lockToolLoopRun(
       "toolLoopState"
     FROM "ModelRun"
     WHERE "id" = ${input.runId}
-      AND "userId" = ${input.userId}
+      ${ownerPredicate}
     FOR UPDATE
   `);
   return run ?? null;
@@ -1121,8 +1124,7 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
         const recoveredCompletion = Boolean(
           existingRun &&
             existingRun.status === "error" &&
-            input.providerResponseId &&
-            existingRun.providerResponseId === input.providerResponseId &&
+            existingRun.providerResponseId === (input.providerResponseId ?? null) &&
             !isRecoveredRunTerminalPayload(existingRun.errorPayload)
         );
         if (
@@ -2839,30 +2841,18 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
       return (aggregate._max.sequence ?? -1) + 1;
     },
     updateRunProviderResponseId: async (runId, providerResponseId) => {
-      const updated = await prismaClient.modelRun.updateMany({
-        data: {
-          providerResponseId
-        },
-        where: {
-          id: runId,
-          status: {
-            in: activeModelRunStatuses
-          }
-        }
-      });
-      if (updated.count > 0) {
-        return "published";
-      }
+      return prismaClient.$transaction(async (tx) => {
+        const run = await lockToolLoopRun(tx, { runId });
+        if (!run) return "terminal" as const;
+        if (run.status === "cancelled") return "cancelled" as const;
+        if (!activeToolLoopRun(run)) return "terminal" as const;
 
-      const current = await prismaClient.modelRun.findUnique({
-        select: {
-          status: true
-        },
-        where: {
-          id: runId
-        }
+        await tx.modelRun.update({
+          data: { providerResponseId },
+          where: { id: runId }
+        });
+        return "published" as const;
       });
-      return current?.status === "cancelled" ? "cancelled" : "terminal";
     },
     updateRunProviderRequestPreview: async (runId, providerRequestPreview) => {
       await prismaClient.modelRun.update({

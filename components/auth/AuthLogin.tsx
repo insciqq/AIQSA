@@ -275,8 +275,6 @@ function authErrorMessage(code: string, operation: PendingAction): string {
     reset_token_password_required: "Enter a new password.",
     token_required: "Enter an access token.",
     unauthorized: "The credentials were not accepted.",
-    verification_email_failed: "The server could not send the verification email. Ask the operator to check SMTP delivery.",
-    verification_email_unavailable: "Verification email is not configured on this server. Ask the operator to configure SMTP.",
     verification_token_password_required: "Open the verification link and choose a password.",
     verification_token_required: "Open the verification link from your email."
   };

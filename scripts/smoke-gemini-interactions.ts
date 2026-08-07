@@ -1,4 +1,9 @@
 import { existsSync, readFileSync } from "node:fs";
+import {
+  buildGeminiInteractionsRequest,
+  createFetchGeminiInteractionsClient
+} from "../lib/server/providers/geminiInteractions";
+import { extractGeminiInteractionsUsage } from "../lib/server/providers/geminiInteractionsResponse";
 import { createProviderSafeFetch } from "../lib/server/providers/providerSafeFetch";
 import { createProviderRuntimeBinding } from "../lib/server/providers/runtimeFactory";
 import type { ProviderRunRequest } from "../lib/server/providers/types";
@@ -40,7 +45,8 @@ if (!apiKey) {
 const apiRoot = "https://generativelanguage.googleapis.com/v1";
 const modelId = process.env.AIQSA_GEMINI_SMOKE_MODEL || "gemini-3.6-flash";
 const searchEnabled = process.env.AIQSA_GEMINI_SMOKE_SEARCH === "1";
-const maxOutputTokens = searchEnabled ? 4_096 : 64;
+const emptyTextEnabled = process.env.AIQSA_GEMINI_SMOKE_EMPTY_TEXT === "1";
+const maxOutputTokens = searchEnabled ? 4_096 : emptyTextEnabled ? 8 : 64;
 const connection = {
   allowPrivateNetwork: false,
   apiRoot
@@ -58,7 +64,7 @@ const modelCapabilities = {
 const defaultParams = {
   maxTokens: maxOutputTokens,
   reasoning: { effort: searchEnabled ? "medium" : "minimal" },
-  stream: true
+  stream: !emptyTextEnabled
 };
 const smokeTool = {
   capability: "mcp" as const,
@@ -83,10 +89,37 @@ const request: ProviderRunRequest = {
     blocks: [{
       text: searchEnabled
         ? "Find one current news headline from Spain today and answer in one short sentence."
+        : emptyTextEnabled
+          ? "Reply with one short word."
         : "Call aiqsa_smoke_marker exactly once. After its result, reply exactly AIQSA_TOOL_OK.",
       type: "text"
     }]
   },
+  ...(emptyTextEnabled
+    ? {
+        context: {
+          messages: [
+            {
+              content: { blocks: [{ attachmentId: "smoke-historical-image", type: "image" }] },
+              id: "historical-attachment-only",
+              role: "user"
+            },
+            {
+              content: { blocks: [{ text: "Acknowledged.", type: "text" }] },
+              id: "historical-assistant",
+              role: "assistant"
+            },
+            {
+              content: { blocks: [{ text: "Reply with one short word.", type: "text" }] },
+              id: "current-user",
+              role: "user"
+            }
+          ],
+          mode: "branch_path" as const
+        },
+        forceNonStreaming: true
+      }
+    : {}),
   modelCapabilities,
   modelId,
   params: defaultParams,
@@ -94,6 +127,8 @@ const request: ProviderRunRequest = {
     developer: null,
     system: searchEnabled
       ? "This is a bounded AIQSA Google Search smoke test. Use Google Search before answering."
+      : emptyTextEnabled
+        ? "This is a bounded AIQSA request-shape smoke test."
       : [
           "This is a tiny deterministic AIQSA provider tool-loop smoke test.",
           "On the first round, call aiqsa_smoke_marker exactly once with marker AIQSA_TOOL_OK.",
@@ -102,7 +137,7 @@ const request: ProviderRunRequest = {
   },
   provider: "gemini",
   searchStrategy: searchEnabled ? "gemini-google-search" : "search-disabled",
-  tools: searchEnabled ? [] : [smokeTool]
+  tools: searchEnabled || emptyTextEnabled ? [] : [smokeTool]
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -121,7 +156,92 @@ function providerSignature(value: unknown): string | null {
   return null;
 }
 
+function httpStatusFromError(error: unknown): number | null {
+  const message = error instanceof Error ? error.message : "";
+  const match = /Gemini request failed with status (\d{3})$/u.exec(message);
+  return match ? Number(match[1]) : null;
+}
+
+async function runEmptyTextProbe(): Promise<void> {
+  const body = buildGeminiInteractionsRequest(request);
+  const input = Array.isArray(body.input) ? body.input : [];
+  const firstStep = isRecord(input[0]) ? input[0] : {};
+  const firstContent = Array.isArray(firstStep.content) ? firstStep.content : [];
+  const firstPart = isRecord(firstContent[0]) ? firstContent[0] : {};
+  const emptyTextPartPresent = input.some((step) => {
+    if (!isRecord(step) || !Array.isArray(step.content)) return false;
+    return step.content.some((part) =>
+      isRecord(part) && part.type === "text" &&
+      typeof part.text === "string" && !part.text.trim());
+  });
+  const historicalAttachmentMarkerPresent = firstStep.type === "user_input" &&
+    firstPart.type === "text" && firstPart.text === "[image attachment]";
+
+  if (emptyTextPartPresent || !historicalAttachmentMarkerPresent) {
+    console.error(JSON.stringify({
+      emptyTextPartPresent,
+      historicalAttachmentMarkerPresent,
+      status: "failed"
+    }, null, 2));
+    process.exitCode = 1;
+    return;
+  }
+
+  let observedHttpStatus: number | null = null;
+  const safeFetch = createProviderSafeFetch({ configuration: connection });
+  const observingFetch: typeof fetch = async (...args) => {
+    const response = await safeFetch(...args);
+    observedHttpStatus = response.status;
+    return response;
+  };
+  const client = createFetchGeminiInteractionsClient({
+    apiKey,
+    apiRoot,
+    fetchFn: observingFetch
+  });
+
+  try {
+    const response = await client.createInteraction(body, { timeoutMs: 30_000 });
+    const usage = extractGeminiInteractionsUsage(response.usage);
+    const responseStepCount = Array.isArray(response.steps) ? response.steps.length : 0;
+    const passed = observedHttpStatus === 200 && response.status === "completed" &&
+      responseStepCount > 0 && (usage.totalTokens ?? 0) > 0;
+    console.log(JSON.stringify({
+      emptyTextPartPresent,
+      historicalAttachmentMarkerPresent,
+      httpStatus: observedHttpStatus,
+      inputStepCount: input.length,
+      providerAccepted: true,
+      responseStepCount,
+      status: passed ? "passed" : "failed",
+      terminalCompleted: response.status === "completed",
+      usage
+    }, null, 2));
+    if (!passed) process.exitCode = 1;
+  } catch (error) {
+    const httpStatus = observedHttpStatus ?? httpStatusFromError(error);
+    console.log(JSON.stringify({
+      emptyTextPartPresent,
+      historicalAttachmentMarkerPresent,
+      httpStatus,
+      inputStepCount: input.length,
+      providerAccepted: false,
+      status: "failed",
+      usage: extractGeminiInteractionsUsage(undefined)
+    }, null, 2));
+    process.exitCode = 1;
+  }
+}
+
 async function main(): Promise<void> {
+  if (searchEnabled && emptyTextEnabled) {
+    throw new Error("gemini_smoke_modes_conflict");
+  }
+  if (emptyTextEnabled) {
+    await runEmptyTextProbe();
+    return;
+  }
+
   const runtime = createProviderRuntimeBinding({
     options: {
       allowFake: false,

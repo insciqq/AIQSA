@@ -214,6 +214,7 @@ const blockerLabels: Record<AdminProviderDeleteBlocker["kind"], string> = {
   resource_enabled: "enabled resource",
   run_bindings: "active or recoverable runs",
   search_references: "search references",
+  search_revision_references: "immutable Search history (cannot be removed; keep deployment disabled)",
   user_assignments: "user assignments",
   user_defaults: "user defaults"
 };

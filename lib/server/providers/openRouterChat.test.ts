@@ -249,7 +249,8 @@ describe("OpenRouter Chat facade", () => {
         "attachment_extracted_text",
         "attachment_filename",
         "image_data_url",
-        "pdf_base64"
+        "pdf_base64",
+        "provider_continuation_opaque_fields"
       ]
     });
     expect(previewJson).toContain("[Document attachment text omitted]");

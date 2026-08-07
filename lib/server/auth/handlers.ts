@@ -29,6 +29,10 @@ import {
   type LoginRateLimitIdentity
 } from "./clientIdentity";
 import { readJsonBodyOrNull, requestBodyErrorResponse } from "../http/requestBody";
+import {
+  AUTH_RESPONSE_FLOOR_MS,
+  waitForAuthResponseFloor
+} from "./responseFloor";
 
 export { getLoginRateLimitKey } from "./clientIdentity";
 
@@ -102,7 +106,7 @@ const defaultLoginRateLimiter = createFixedWindowLoginRateLimiter();
 const defaultResetRateLimiter = createFixedWindowLoginRateLimiter();
 const defaultResetCompleteRateLimiter = createFixedWindowLoginRateLimiter();
 export const PASSWORD_RESET_MAX_AGE_SECONDS = 60 * 60;
-export const PASSWORD_RESET_RESPONSE_FLOOR_MS = 100;
+export const PASSWORD_RESET_RESPONSE_FLOOR_MS = AUTH_RESPONSE_FLOOR_MS;
 const DUMMY_PASSWORD_HASH =
   "aiqsa-scrypt-v1$N=16384,r=8,p=1$AAAAAAAAAAAAAAAAAAAAAA$rmM9JCGyQbwbUPgnezPVMCI7l8Gg0Gv7nvxL4hxR8ngyb8E3JmLHq607G0T-uTPPDSb_c-X3RWDvsVF8ZusM3Q";
 
@@ -257,25 +261,6 @@ function passwordResetEmail(input: { resetUrl: string; to: string }): { subject:
     ].join("\n"),
     to: input.to
   };
-}
-
-function sleep(milliseconds: number): Promise<void> {
-  return new Promise((resolve) => {
-    setTimeout(resolve, milliseconds);
-  });
-}
-
-async function waitForResponseFloor(input: {
-  clock: () => number;
-  floorMs: number;
-  sleepFor: (milliseconds: number) => Promise<void>;
-  startedAtMs: number;
-}): Promise<void> {
-  const remainingMs = Math.max(0, input.floorMs - (input.clock() - input.startedAtMs));
-
-  if (remainingMs > 0) {
-    await input.sleepFor(remainingMs);
-  }
 }
 
 export function createTokenLoginHandler(deps: AuthHandlerDeps) {
@@ -563,10 +548,10 @@ export function createPasswordResetRequestHandler(deps: PasswordResetRequestHand
         .catch(() => undefined);
     }
 
-    await waitForResponseFloor({
+    await waitForAuthResponseFloor({
       clock,
-      floorMs: deps.responseFloorMs ?? PASSWORD_RESET_RESPONSE_FLOOR_MS,
-      sleepFor: deps.sleep ?? sleep,
+      floorMs: deps.responseFloorMs,
+      sleep: deps.sleep,
       startedAtMs
     });
 

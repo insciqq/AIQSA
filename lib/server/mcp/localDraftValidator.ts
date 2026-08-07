@@ -17,6 +17,10 @@ import {
   type McpLocalResolvedArtifact
 } from "./localArtifact";
 import {
+  getDefaultInFlightValidationWorkloadRegistry,
+  type InFlightValidationWorkloadRegistry
+} from "./inFlightValidationWorkloads";
+import {
   createMcpLocalPackageResolver,
   type McpPackageResolution
 } from "./localPackageResolver";
@@ -51,6 +55,7 @@ export type McpLocalDraftValidatorOptions = Readonly<{
   driver: LocalValidationDriver;
   packageResolver?: ReturnType<typeof createMcpLocalPackageResolver>;
   randomToken?: () => string;
+  retentionRegistry?: InFlightValidationWorkloadRegistry;
   sessions: McpRuntimeSessionFactory;
 }>;
 
@@ -223,6 +228,8 @@ export function createLocalMcpDraftValidator(
 ): McpDraftValidator {
   const resolvePackage = options.packageResolver ?? createMcpLocalPackageResolver();
   const randomToken = options.randomToken ?? (() => randomBytes(32).toString("hex"));
+  const retentionRegistry = options.retentionRegistry ??
+    getDefaultInFlightValidationWorkloadRegistry();
 
   return {
     async validate(input) {
@@ -248,6 +255,7 @@ export function createLocalMcpDraftValidator(
         return invalid("mcp_local_validation_identity_invalid", "source");
       }
 
+      const registration = retentionRegistry.register(generationToken);
       let session: McpRuntimeSession | null = null;
       try {
         await input.onProgress?.("preparing_runtime");
@@ -323,6 +331,7 @@ export function createLocalMcpDraftValidator(
       } finally {
         await session?.close().catch(() => undefined);
         await options.driver.deleteOwnedWorkload(generationToken).catch(() => undefined);
+        registration.release();
       }
     }
   };

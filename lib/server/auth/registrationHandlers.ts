@@ -18,13 +18,20 @@ import {
 } from "./session";
 import { hashToken } from "./token";
 import { readJsonBodyOrNull, requestBodyErrorResponse } from "../http/requestBody";
+import {
+  AUTH_RESPONSE_FLOOR_MS,
+  waitForAuthResponseFloor
+} from "./responseFloor";
 
 export type RegisterHandlerDeps = {
+  clock?: () => number;
   getConfig(): AuthConfig;
   mailer: AuthMailer;
   now?: () => Date;
   registrationRateLimiter?: LoginRateLimiter;
   repository: AuthRegistrationRepository;
+  responseFloorMs?: number;
+  sleep?: (milliseconds: number) => Promise<void>;
 };
 
 export type EmailVerificationHandlerDeps = {
@@ -46,6 +53,7 @@ const defaultRegistrationRateLimiter = createFixedWindowLoginRateLimiter();
 const defaultInviteAcceptanceRateLimiter = createFixedWindowLoginRateLimiter();
 const defaultVerificationRateLimiter = createFixedWindowLoginRateLimiter();
 export const EMAIL_VERIFICATION_MAX_AGE_SECONDS = 24 * 60 * 60;
+export const REGISTRATION_RESPONSE_FLOOR_MS = AUTH_RESPONSE_FLOOR_MS;
 
 function json(data: unknown, init?: ResponseInit): Response {
   return Response.json(data, init);
@@ -359,6 +367,8 @@ export function createRegisterHandler(deps: RegisterHandlerDeps) {
       return rateLimitedResponse(rateLimit);
     }
 
+    const clock = deps.clock ?? Date.now;
+    const startedAtMs = clock();
     const now = deps.now?.() ?? new Date();
     const token = createSessionToken();
     const result = await deps.repository.registerPasswordUser({
@@ -376,22 +386,29 @@ export function createRegisterHandler(deps: RegisterHandlerDeps) {
     }
 
     if (result.sentToEmail) {
-      const delivery = await deliverAuthEmail(
+      void deliverAuthEmail(
         deps.mailer,
         verificationEmail({
           to: result.sentToEmail,
           verificationUrl: verificationUrl(config.appBaseUrl, token)
         }),
         "verification"
-      );
-      if (delivery.kind === "unavailable") {
-        return json({ error: "verification_email_unavailable" }, { status: 503 });
-      }
-      if (delivery.kind === "failed") {
-        console.error("verification_email_failed", delivery.error);
-        return json({ error: "verification_email_failed" }, { status: 502 });
-      }
+      )
+        .then((delivery) => {
+          if (delivery.kind === "failed") {
+            console.error("verification_email_failed", delivery.error);
+          }
+        })
+        .catch(() => undefined);
     }
+
+    await waitForAuthResponseFloor({
+      clock,
+      floorMs: deps.responseFloorMs,
+      sleep: deps.sleep,
+      startedAtMs
+    });
+
     return json({
       status: "request_received"
     });

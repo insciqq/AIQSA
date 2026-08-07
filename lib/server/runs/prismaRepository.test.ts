@@ -274,6 +274,53 @@ async function createActiveRun(repository: RunRepository, userId: string, title:
   };
 }
 
+async function createRecoverableFreshProviderRound(
+  repository: RunRepository,
+  userId: string,
+  title: string
+) {
+  const created = await createActiveRun(repository, userId, title);
+  await expect(repository.beginToolLoopProviderRound({
+    providerContinuation: { responseId: "response-before-tools" },
+    roundIndex: 0,
+    runId: created.runId,
+    userId
+  })).resolves.toBe("started");
+  const persisted = await repository.persistToolLoopCallBatch({
+    calls: [{ arguments: {}, ordinal: 0, providerCallId: "call-1", toolName: "lookup" }],
+    providerContinuation: { responseId: "response-before-tools" },
+    roundIndex: 0,
+    runId: created.runId,
+    userId
+  });
+  if (persisted.kind !== "persisted") throw new Error("expected persisted recovery batch");
+  const claimed = await repository.claimToolLoopCall({
+    callId: persisted.calls[0]!.id,
+    runId: created.runId,
+    userId
+  });
+  if (claimed.kind !== "claimed") throw new Error("expected claimed recovery call");
+  await expect(repository.settleToolLoopCall({
+    callId: claimed.call.id,
+    result: { output: "settled" },
+    runId: created.runId,
+    state: "complete",
+    userId
+  })).resolves.toBe("settled");
+  await expect(repository.failRun(
+    created.runId,
+    created.assistantMessageId,
+    { code: "recoverable_failure", message: "Resume the saved tool loop" }
+  )).resolves.toBe(true);
+  await expect(repository.advanceToolLoopCallBatch({
+    roundIndex: 0,
+    runId: created.runId,
+    userId
+  })).resolves.toBe("advanced");
+
+  return created;
+}
+
 function completionInput(input: {
   assistantMessageId: string;
   chatId: string;
@@ -2735,6 +2782,159 @@ describe("Prisma run repository", () => {
           providerResponseId: "response-published"
         }
       });
+    });
+  });
+
+  it("publishes and completes a fresh round on a recoverable error-status run", async () => {
+    await withRunUser(async ({ userId }) => {
+      const repository = createPrismaRunRepository(prisma);
+      const recovered = await createRecoverableFreshProviderRound(
+        repository,
+        userId,
+        "Publish recovered response"
+      );
+
+      await expect(
+        repository.updateRunProviderResponseId(recovered.runId, "response-recovered")
+      ).resolves.toBe("published");
+      await expect(
+        prisma.modelRun.findUniqueOrThrow({
+          select: { providerResponseId: true, status: true },
+          where: { id: recovered.runId }
+        })
+      ).resolves.toEqual({ providerResponseId: "response-recovered", status: "error" });
+      await expect(repository.completeRun({
+        ...completionInput(recovered),
+        providerResponseId: "response-foreign"
+      })).resolves.toBe(false);
+      await expect(repository.completeRun({
+        ...completionInput(recovered),
+        providerResponseId: "response-recovered"
+      })).resolves.toBe(true);
+      await expectTerminalState(recovered, "complete");
+    });
+  });
+
+  it("completes a recovered fresh round when the adapter has no response id", async () => {
+    await withRunUser(async ({ userId }) => {
+      const repository = createPrismaRunRepository(prisma);
+      const recovered = await createRecoverableFreshProviderRound(
+        repository,
+        userId,
+        "Complete recovered response without native id"
+      );
+
+      await expect(repository.completeRun(completionInput(recovered))).resolves.toBe(true);
+      await expect(
+        prisma.modelRun.findUniqueOrThrow({
+          select: { providerResponseId: true, status: true },
+          where: { id: recovered.runId }
+        })
+      ).resolves.toEqual({ providerResponseId: null, status: "complete" });
+      await expectTerminalState(recovered, "complete");
+    });
+  });
+
+  it("rejects publication and completion after recovered error settlement", async () => {
+    await withRunUser(async ({ userId }) => {
+      const repository = createPrismaRunRepository(prisma);
+      const recovered = await createRecoverableFreshProviderRound(
+        repository,
+        userId,
+        "Reject late recovered publication"
+      );
+      await expect(repository.settleRecoveredRunError({
+        error: { code: "recovery_terminal", message: "Recovery is terminal" },
+        events: [],
+        runId: recovered.runId,
+        usageAttributions: [],
+        userId
+      })).resolves.toBe(true);
+
+      await expect(
+        repository.updateRunProviderResponseId(recovered.runId, "response-too-late")
+      ).resolves.toBe("terminal");
+      await expect(repository.completeRun({
+        ...completionInput(recovered),
+        providerResponseId: "response-too-late"
+      })).resolves.toBe(false);
+      await expect(
+        prisma.modelRun.findUniqueOrThrow({
+          select: { errorPayload: true, providerResponseId: true, status: true },
+          where: { id: recovered.runId }
+        })
+      ).resolves.toMatchObject({
+        errorPayload: { recoveryTerminal: true },
+        providerResponseId: null,
+        status: "error"
+      });
+    });
+  });
+
+  it("serializes response publication against cancellation and recovered settlement", async () => {
+    await withRunUser(async ({ userId }) => {
+      const repository = createPrismaRunRepository(prisma);
+      const cancellationRace = await createActiveRun(
+        repository,
+        userId,
+        "Publication cancellation race"
+      );
+      const [publication, cancellation] = await Promise.all([
+        repository.updateRunProviderResponseId(cancellationRace.runId, "response-racing-cancel"),
+        repository.cancelRun({
+          payload: cancelPayload,
+          runId: cancellationRace.runId,
+          userId
+        })
+      ]);
+      expect(cancellation).toMatchObject({ kind: "cancelled" });
+      expect(["cancelled", "published"]).toContain(publication);
+      await expect(
+        prisma.modelRun.findUniqueOrThrow({
+          select: { providerResponseId: true, status: true },
+          where: { id: cancellationRace.runId }
+        })
+      ).resolves.toEqual({
+        providerResponseId: publication === "published" ? "response-racing-cancel" : null,
+        status: "cancelled"
+      });
+
+      const settlementRace = await createRecoverableFreshProviderRound(
+        repository,
+        userId,
+        "Publication settlement race"
+      );
+      const [recoveredPublication, settled] = await Promise.all([
+        repository.updateRunProviderResponseId(settlementRace.runId, "response-racing-settlement"),
+        repository.settleRecoveredRunError({
+          error: { code: "recovery_terminal", message: "Terminal recovery writer" },
+          events: [],
+          runId: settlementRace.runId,
+          usageAttributions: [],
+          userId
+        })
+      ]);
+      expect(settled).toBe(true);
+      expect(["published", "terminal"]).toContain(recoveredPublication);
+      await expect(
+        prisma.modelRun.findUniqueOrThrow({
+          select: { errorPayload: true, providerResponseId: true, status: true },
+          where: { id: settlementRace.runId }
+        })
+      ).resolves.toEqual({
+        errorPayload: {
+          code: "recovery_terminal",
+          message: "Terminal recovery writer",
+          recoveryTerminal: true
+        },
+        providerResponseId: recoveredPublication === "published"
+          ? "response-racing-settlement"
+          : null,
+        status: "error"
+      });
+      await expect(
+        repository.updateRunProviderResponseId(settlementRace.runId, "response-later")
+      ).resolves.toBe("terminal");
     });
   });
 

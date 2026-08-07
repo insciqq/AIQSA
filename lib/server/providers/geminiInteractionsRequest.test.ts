@@ -74,6 +74,19 @@ function hostedGoogleSearch(): NormalizedSearchPlanOption {
   };
 }
 
+function expectNoBlankGeminiTextParts(body: Record<string, unknown>): void {
+  const input = body.input as Array<{ content?: Array<Record<string, unknown>> }>;
+
+  for (const step of input) {
+    for (const part of step.content ?? []) {
+      if (part.type === "text") {
+        expect(part.text).toEqual(expect.any(String));
+        expect((part.text as string).trim()).not.toBe("");
+      }
+    }
+  }
+}
+
 describe("Gemini Interactions request builder", () => {
   it("builds the stable stateless native body with flat function tools", () => {
     expect(buildGeminiInteractionsRequest(request({ tools: [tool] }))).toEqual({
@@ -206,10 +219,147 @@ describe("Gemini Interactions request builder", () => {
     expect(preview.redactions).toEqual([
       "attachment_base64",
       "attachment_extracted_text",
+      "attachment_filename",
       "attachment_media_type",
       "grounding_suggestions",
       "provider_signatures"
     ]);
+  });
+
+  it("represents attachment-only history without replaying private attachment data", () => {
+    const fileName = "HISTORY_FILENAME_CANARY.txt";
+    const runRequest = request({
+      context: {
+        messages: [
+          {
+            content: {
+              blocks: [
+                {
+                  attachmentId: "HISTORY_IMAGE_ID_CANARY",
+                  dataUrl: "HISTORY_IMAGE_BYTES_CANARY",
+                  mediaType: "HISTORY_IMAGE_MEDIA_TYPE_CANARY",
+                  type: "image"
+                },
+                {
+                  attachmentId: "HISTORY_FILE_ID_CANARY",
+                  extractedText: "HISTORY_EXTRACTED_TEXT_CANARY",
+                  fileName,
+                  storageKey: "HISTORY_STORAGE_KEY_CANARY",
+                  type: "file"
+                },
+                {
+                  attachmentId: "HISTORY_LEGACY_ID_CANARY",
+                  privateValue: "HISTORY_LEGACY_PRIVATE_CANARY",
+                  type: "legacy"
+                }
+              ]
+            },
+            id: "attachment-only-user",
+            role: "user"
+          },
+          {
+            content: { blocks: [{ text: "I reviewed the attachments.", type: "text" }] },
+            id: "assistant-answer",
+            role: "assistant"
+          },
+          {
+            content: { blocks: [{ text: "Answer briefly.", type: "text" }] },
+            id: "current-user-message",
+            role: "user"
+          }
+        ],
+        mode: "branch_path"
+      }
+    });
+    const body = buildGeminiInteractionsRequest(runRequest);
+    const preview = buildGeminiInteractionsRequestPreview(runRequest);
+    const bodyJson = JSON.stringify(body);
+    const previewJson = JSON.stringify(preview);
+
+    expect(body.input[0]).toEqual({
+      content: [{
+        text: `[image attachment]\n[file attachment: ${fileName}]\n[attachment]`,
+        type: "text"
+      }],
+      type: "user_input"
+    });
+    expect(preview.body.input[0]).toEqual({
+      content: [{
+        text: "[image attachment]\n[file attachment]\n[attachment]",
+        type: "text"
+      }],
+      type: "user_input"
+    });
+    for (const canary of [
+      "HISTORY_IMAGE_ID_CANARY",
+      "HISTORY_IMAGE_BYTES_CANARY",
+      "HISTORY_IMAGE_MEDIA_TYPE_CANARY",
+      "HISTORY_FILE_ID_CANARY",
+      "HISTORY_EXTRACTED_TEXT_CANARY",
+      "HISTORY_STORAGE_KEY_CANARY",
+      "HISTORY_LEGACY_ID_CANARY",
+      "HISTORY_LEGACY_PRIVATE_CANARY"
+    ]) {
+      expect(bodyJson).not.toContain(canary);
+      expect(previewJson).not.toContain(canary);
+    }
+    expect(bodyJson).toContain(fileName);
+    expect(previewJson).not.toContain(fileName);
+    expect(preview.redactions).toContain("attachment_filename");
+    expectNoBlankGeminiTextParts(body);
+    expectNoBlankGeminiTextParts(preview.body);
+  });
+
+  it("uses ordered attachment markers when current attachment payloads yield no content", () => {
+    const currentContent = {
+      blocks: [
+        { attachmentId: "document-1", fileName: "blank.txt", type: "file" },
+        { attachmentId: "legacy-1", type: "legacy" }
+      ]
+    };
+    const runRequest = request({
+      attachmentIds: ["document-1", "legacy-1"],
+      attachments: [
+        {
+          byteSize: 3,
+          extractedText: " \n ",
+          fileName: "blank.txt",
+          id: "document-1",
+          kind: "document",
+          metadata: {},
+          mimeType: "text/plain",
+          status: "ready"
+        },
+        {
+          byteSize: 0,
+          extractedText: null,
+          fileName: "legacy.bin",
+          id: "legacy-1",
+          kind: "legacy",
+          metadata: {},
+          mimeType: "application/octet-stream",
+          status: "ready"
+        }
+      ],
+      content: currentContent,
+      context: {
+        messages: [{ content: currentContent, id: "current-user", role: "user" }],
+        mode: "branch_path"
+      }
+    });
+    const body = buildGeminiInteractionsRequest(runRequest);
+    const preview = buildGeminiInteractionsRequestPreview(runRequest);
+
+    expect(body.input).toEqual([{
+      content: [{ text: "[file attachment: blank.txt]\n[attachment]", type: "text" }],
+      type: "user_input"
+    }]);
+    expect(preview.body.input).toEqual([{
+      content: [{ text: "[file attachment]\n[attachment]", type: "text" }],
+      type: "user_input"
+    }]);
+    expectNoBlankGeminiTextParts(body);
+    expectNoBlankGeminiTextParts(preview.body);
   });
 
   it("enables only native Google Search and rejects mixed hosted/client tools", () => {

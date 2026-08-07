@@ -1646,11 +1646,20 @@ export function createPrismaAdminProviderRepository(
         });
         if (!model) return { status: "not_found" } as const;
         await cleanupProviderReferences(tx, { providerModelId: modelId });
-        const [accessGrants, userDefaults, chatDefaults, searchReferences, assistantRevisions, runBindings] = await Promise.all([
+        const [
+          accessGrants,
+          userDefaults,
+          chatDefaults,
+          searchReferences,
+          searchRevisionReferences,
+          assistantRevisions,
+          runBindings
+        ] = await Promise.all([
           tx.accessGrant.count({ where: { providerModelId: modelId } }),
           tx.userSettings.count({ where: { defaultProviderModelId: modelId } }),
           tx.chat.count({ where: { defaultProviderModelId: modelId } }),
           tx.searchStrategy.count({ where: { providerModelId: modelId } }),
+          tx.searchIntegrationRevision.count({ where: { providerModelId: modelId } }),
           tx.assistantRevision.count({ where: { providerModelId: modelId } }),
           tx.providerRunBinding.count({ where: { providerModelId: modelId } })
         ]);
@@ -1661,6 +1670,9 @@ export function createPrismaAdminProviderRepository(
           userDefaults ? { count: userDefaults, kind: "user_defaults" } : null,
           chatDefaults ? { count: chatDefaults, kind: "chat_defaults" } : null,
           searchReferences ? { count: searchReferences, kind: "search_references" } : null,
+          searchRevisionReferences
+            ? { count: searchRevisionReferences, kind: "search_revision_references" }
+            : null,
           assistantRevisions ? { count: assistantRevisions, kind: "assistant_revisions" } : null,
           runBindings ? { count: runBindings, kind: "run_bindings" } : null
         ]);
@@ -1730,8 +1742,11 @@ export function createPrismaAdminProviderRepository(
           ]);
           const modelIds = models.map(({ id }) => id);
           const credentialIds = credentials.map(({ id }) => id);
-          const [searchReferences, assistantRevisions] = await Promise.all([
+          const [searchReferences, searchRevisionReferences, assistantRevisions] = await Promise.all([
             tx.searchStrategy.count({
+              where: { providerModelId: { in: modelIds } }
+            }),
+            tx.searchIntegrationRevision.count({
               where: { providerModelId: { in: modelIds } }
             }),
             tx.assistantRevision.count({
@@ -1742,6 +1757,9 @@ export function createPrismaAdminProviderRepository(
           const hardBlockers = blockers([
             totalSearchReferences
               ? { count: totalSearchReferences, kind: "search_references" }
+              : null,
+            searchRevisionReferences
+              ? { count: searchRevisionReferences, kind: "search_revision_references" }
               : null,
             assistantRevisions
               ? { count: assistantRevisions, kind: "assistant_revisions" }

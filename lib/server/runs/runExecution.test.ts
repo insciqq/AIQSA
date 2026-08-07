@@ -11,6 +11,7 @@ import type { ResolvedEntitlements } from "../auth/entitlements";
 import { McpClientSessionError } from "../mcp/clientSession";
 import type { McpRunPlanSnapshot } from "../mcp/runPlan";
 import { buildOpenAIResponsesRequestPreview } from "../providers/openaiResponsesRequest";
+import { buildOpenRouterChatRequestPreview } from "../providers/openRouterChatRequest";
 import { ProviderStreamTooLargeError } from "../providers/streamSafety";
 import type {
   NormalizedRunRequest,
@@ -1588,6 +1589,91 @@ describe("run execution", () => {
         }
       }
     ]);
+  });
+
+  it("persists a redacted OpenRouter tool-round preview without changing its transport transcript", async () => {
+    const providerRequests: ProviderRunRequest[] = [];
+    const repository = createRepository();
+    const adapter: ProviderAdapter = {
+      buildRequestPreview: buildOpenRouterChatRequestPreview,
+      async *stream(request) {
+        providerRequests.push(request);
+        if (providerRequests.length === 1) {
+          return providerResult({
+            finalText: "",
+            providerToolCallMessage: {
+              content: null,
+              opaque_message_field: "OPENROUTER_MESSAGE_FIELD_CANARY",
+              role: "assistant",
+              tool_calls: [
+                {
+                  function: {
+                    arguments: "{\"query\":\"OPENROUTER_ARGUMENT_CANARY\"}",
+                    name: "search_via_perplexity",
+                    opaque_function_field: "OPENROUTER_FUNCTION_FIELD_CANARY"
+                  },
+                  id: "tool-call-1",
+                  opaque_call_field: "OPENROUTER_CALL_FIELD_CANARY",
+                  type: "function"
+                }
+              ]
+            },
+            toolCalls: [
+              {
+                arguments: { query: "latest AIQSA news" },
+                id: "tool-call-1",
+                name: "search_via_perplexity"
+              }
+            ]
+          });
+        }
+
+        yield { data: { delta: "Sourced answer" }, type: "token" };
+        return providerResult({ finalText: "Sourced answer" });
+      }
+    };
+    const searchAdapter: ProviderSearchAdapter = {
+      buildRequestPreview: () => ({}),
+      async search() {
+        return {
+          artifacts: [],
+          finalProviderResponsePreview: { search: "safe" },
+          findings: "OPENROUTER_TOOL_OUTPUT_CANARY",
+          providerResponseId: "search-response-1",
+          requestPreview: { status: "redacted" },
+          sources: [{ rank: 1, title: "Search source", url: "https://example.com/search" }],
+          usage: usage(1, 1, 0)
+        };
+      }
+    };
+    const prepared = preparedData({
+      modelId: "openrouter-answer-model",
+      provider: "openrouter",
+      searchStrategy: "perplexity-tool-search"
+    });
+
+    await createRunExecutionResponse(
+      executionInput({ adapter, prepared, repository: repository.repository, searchAdapter })
+    ).text();
+
+    expect(providerRequests).toHaveLength(2);
+    expect(repository.providerRequestPreviews).toHaveLength(2);
+    const transportJson = JSON.stringify(providerRequests[1]?.providerToolMessages);
+    const durablePreviewJson = JSON.stringify(repository.providerRequestPreviews[1]);
+    for (const canary of [
+      "OPENROUTER_MESSAGE_FIELD_CANARY",
+      "OPENROUTER_ARGUMENT_CANARY",
+      "OPENROUTER_FUNCTION_FIELD_CANARY",
+      "OPENROUTER_CALL_FIELD_CANARY",
+      "OPENROUTER_TOOL_OUTPUT_CANARY"
+    ]) {
+      expect(transportJson).toContain(canary);
+      expect(durablePreviewJson).not.toContain(canary);
+    }
+    expect(durablePreviewJson).toContain("[tool output omitted]");
+    expect(repository.providerRequestPreviews[1]).toMatchObject({
+      redactions: expect.arrayContaining(["provider_continuation_opaque_fields"])
+    });
   });
 
   it("persists normalized Gemini client findings and reuses them in foreground continuation", async () => {

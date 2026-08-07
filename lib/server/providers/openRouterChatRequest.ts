@@ -64,7 +64,8 @@ export type OpenRouterChatRequestPreview = {
     "attachment_extracted_text",
     "attachment_filename",
     "image_data_url",
-    "pdf_base64"
+    "pdf_base64",
+    "provider_continuation_opaque_fields"
   ];
   replayedContext: {
     id: string;
@@ -259,6 +260,47 @@ function mergeAdjacentOpenRouterMessages(messages: OpenRouterMessage[]): OpenRou
   return merged;
 }
 
+function providerToolPreviewMessages(messages: unknown[] | undefined): OpenRouterMessage[] {
+  return (messages ?? []).flatMap((message): OpenRouterMessage[] => {
+    if (!isRecord(message)) {
+      return [];
+    }
+
+    if (message.role === "tool") {
+      return [{
+        content: "[tool output omitted]",
+        role: "tool",
+        ...(typeof message.tool_call_id === "string"
+          ? { tool_call_id: message.tool_call_id }
+          : {})
+      }];
+    }
+
+    if (message.role !== "assistant" || !Array.isArray(message.tool_calls)) {
+      return [];
+    }
+
+    const toolCalls = message.tool_calls.flatMap((toolCall) => {
+      if (!isRecord(toolCall) || !isRecord(toolCall.function)) {
+        return [];
+      }
+      return [{
+        function: {
+          ...(typeof toolCall.function.name === "string"
+            ? { name: toolCall.function.name }
+            : {})
+        },
+        ...(typeof toolCall.id === "string" ? { id: toolCall.id } : {}),
+        ...(typeof toolCall.type === "string" ? { type: toolCall.type } : {})
+      }];
+    });
+
+    return toolCalls.length > 0
+      ? [{ content: null, role: "assistant", tool_calls: toolCalls }]
+      : [];
+  });
+}
+
 function buildMessages(request: ProviderRunRequest, options: PrivateBuildOptions): OpenRouterMessage[] {
   const messages: OpenRouterMessage[] = [];
   const instructions = combineInstructions(request);
@@ -279,9 +321,13 @@ function buildMessages(request: ProviderRunRequest, options: PrivateBuildOptions
     });
   });
 
-  for (const message of request.providerToolMessages ?? []) {
-    if (isRecord(message) && typeof message.role === "string") {
-      messages.push(message as OpenRouterMessage);
+  if (options.preview) {
+    messages.push(...providerToolPreviewMessages(request.providerToolMessages));
+  } else {
+    for (const message of request.providerToolMessages ?? []) {
+      if (isRecord(message) && typeof message.role === "string") {
+        messages.push(message as OpenRouterMessage);
+      }
     }
   }
 
@@ -450,7 +496,8 @@ export function buildOpenRouterChatRequestPreview(
       "attachment_extracted_text",
       "attachment_filename",
       "image_data_url",
-      "pdf_base64"
+      "pdf_base64",
+      "provider_continuation_opaque_fields"
     ]
   };
 }

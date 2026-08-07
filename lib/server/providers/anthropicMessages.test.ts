@@ -92,6 +92,19 @@ function hostedSearchRequest(
   });
 }
 
+function expectNoBlankAnthropicTextBlocks(body: Record<string, unknown>): void {
+  const messages = body.messages as Array<{ content: Array<Record<string, unknown>> }>;
+
+  for (const message of messages) {
+    for (const block of message.content) {
+      if (block.type === "text") {
+        expect(block.text).toEqual(expect.any(String));
+        expect((block.text as string).trim()).not.toBe("");
+      }
+    }
+  }
+}
+
 async function* events(values: AnthropicStreamEvent[]): AsyncGenerator<AnthropicStreamEvent> {
   for (const value of values) {
     yield value;
@@ -425,6 +438,191 @@ describe("Anthropic Messages adapter", () => {
     expect(JSON.stringify(body.messages[0].content)).toContain("Answer briefly.");
   });
 
+  it("represents attachment-only history turns without replaying private attachment data", () => {
+    const historyFileName = "HISTORY_FILENAME_CANARY.txt";
+    const runRequest = request({
+      context: {
+        messages: [
+          {
+            content: {
+              blocks: [
+                {
+                  attachmentId: "HISTORY_IMAGE_ID_CANARY",
+                  dataUrl: "HISTORY_IMAGE_BYTES_CANARY",
+                  mediaType: "HISTORY_IMAGE_MEDIA_TYPE_CANARY",
+                  type: "image"
+                },
+                {
+                  attachmentId: "HISTORY_FILE_ID_CANARY",
+                  extractedText: "HISTORY_EXTRACTED_TEXT_CANARY",
+                  fileName: historyFileName,
+                  storageKey: "HISTORY_STORAGE_KEY_CANARY",
+                  type: "file"
+                }
+              ]
+            },
+            id: "attachment-only-user",
+            role: "user"
+          },
+          {
+            content: {
+              blocks: [{ text: "I reviewed the attachments.", type: "text" }]
+            },
+            id: "assistant-answer",
+            role: "assistant"
+          },
+          {
+            content: {
+              blocks: [{ text: "Answer briefly.", type: "text" }]
+            },
+            id: "current-user-message",
+            role: "user"
+          }
+        ],
+        mode: "branch_path"
+      }
+    });
+    const body = buildAnthropicMessagesRequest(runRequest) as {
+      messages: Array<{ content: Array<Record<string, unknown>>; role: string }>;
+    };
+    const preview = buildAnthropicMessagesRequest(runRequest, {
+      preview: true,
+      redactFiles: true,
+      redactImages: true
+    }) as {
+      messages: Array<{ content: Array<Record<string, unknown>>; role: string }>;
+    };
+    const bodyJson = JSON.stringify(body);
+    const previewJson = JSON.stringify(preview);
+
+    expect(body.messages[0]).toEqual({
+      content: [
+        {
+          text: `[image attachment]\n[file attachment: ${historyFileName}]`,
+          type: "text"
+        }
+      ],
+      role: "user"
+    });
+    expect(preview.messages[0]).toEqual({
+      content: [
+        {
+          text: "[image attachment]\n[file attachment]",
+          type: "text"
+        }
+      ],
+      role: "user"
+    });
+    for (const canary of [
+      "HISTORY_IMAGE_ID_CANARY",
+      "HISTORY_IMAGE_BYTES_CANARY",
+      "HISTORY_IMAGE_MEDIA_TYPE_CANARY",
+      "HISTORY_FILE_ID_CANARY",
+      "HISTORY_EXTRACTED_TEXT_CANARY",
+      "HISTORY_STORAGE_KEY_CANARY"
+    ]) {
+      expect(bodyJson).not.toContain(canary);
+      expect(previewJson).not.toContain(canary);
+    }
+    expect(bodyJson).toContain(historyFileName);
+    expect(previewJson).not.toContain(historyFileName);
+    expectNoBlankAnthropicTextBlocks(body);
+    expectNoBlankAnthropicTextBlocks(preview);
+  });
+
+  it("keeps attachment-only content non-empty when adjacent user turns merge", () => {
+    const body = buildAnthropicMessagesRequest(
+      request({
+        context: {
+          messages: [
+            {
+              content: {
+                blocks: [
+                  {
+                    attachmentId: "history-file-id",
+                    fileName: "history.txt",
+                    type: "file"
+                  }
+                ]
+              },
+              id: "attachment-only-user",
+              role: "user"
+            },
+            {
+              content: {
+                blocks: [{ text: "Answer briefly.", type: "text" }]
+              },
+              id: "current-user-message",
+              role: "user"
+            }
+          ],
+          mode: "branch_path"
+        }
+      })
+    ) as {
+      messages: Array<{ content: Array<Record<string, unknown>>; role: string }>;
+    };
+
+    expect(body.messages).toEqual([
+      {
+        content: [
+          { text: "[file attachment: history.txt]", type: "text" },
+          { text: "Answer briefly.", type: "text" }
+        ],
+        role: "user"
+      }
+    ]);
+    expectNoBlankAnthropicTextBlocks(body);
+  });
+
+  it("uses an attachment placeholder when current document text is whitespace-only", () => {
+    const runRequest = request({
+      attachmentIds: ["document-1"],
+      attachments: [
+        {
+          byteSize: 3,
+          extractedText: " \n ",
+          fileName: "blank.txt",
+          id: "document-1",
+          kind: "document",
+          metadata: {},
+          mimeType: "text/plain",
+          status: "ready"
+        }
+      ],
+      content: {
+        blocks: [
+          {
+            attachmentId: "document-1",
+            fileName: "blank.txt",
+            type: "file"
+          }
+        ]
+      }
+    });
+    const body = buildAnthropicMessagesRequest(runRequest);
+    const preview = buildAnthropicMessagesRequest(runRequest, {
+      preview: true,
+      redactFiles: true,
+      redactImages: true
+    });
+
+    expect(body.messages).toEqual([
+      {
+        content: [{ text: "[file attachment: blank.txt]", type: "text" }],
+        role: "user"
+      }
+    ]);
+    expect(preview.messages).toEqual([
+      {
+        content: [{ text: "[file attachment]", type: "text" }],
+        role: "user"
+      }
+    ]);
+    expectNoBlankAnthropicTextBlocks(body);
+    expectNoBlankAnthropicTextBlocks(preview);
+  });
+
   it("serializes tools and replays Anthropic tool_use/tool_result messages", () => {
     const body = buildAnthropicMessagesRequest(
       request({
@@ -513,6 +711,104 @@ describe("Anthropic Messages adapter", () => {
       disable_parallel_tool_use: true,
       type: "auto"
     });
+  });
+
+  it("redacts Anthropic tool transcripts and thinking only in request previews", () => {
+    const client: AnthropicMessagesClient = {
+      stream: () => events([])
+    };
+    const adapter = createAnthropicMessagesAdapter({ client });
+    const runRequest = request({
+      providerToolMessages: [
+        {
+          content: [
+            {
+              id: "toolu-1",
+              input: { query: "ANTHROPIC_TOOL_INPUT_CANARY" },
+              name: "mem0__search",
+              opaque_tool_use_field: "ANTHROPIC_TOOL_USE_FIELD_CANARY",
+              type: "tool_use"
+            },
+            {
+              signature: "ANTHROPIC_THINKING_SIGNATURE_CANARY",
+              thinking: "ANTHROPIC_THINKING_TEXT_CANARY",
+              type: "thinking"
+            },
+            {
+              data: "ANTHROPIC_REDACTED_THINKING_CANARY",
+              type: "redacted_thinking"
+            },
+            {
+              text: "ANTHROPIC_ASSISTANT_TEXT_CANARY",
+              type: "text"
+            },
+            {
+              opaque: "ANTHROPIC_UNKNOWN_BLOCK_CANARY",
+              type: "unknown"
+            }
+          ],
+          role: "assistant"
+        },
+        {
+          content: [
+            {
+              content: [{ text: "ANTHROPIC_TOOL_OUTPUT_CANARY", type: "text" }],
+              is_error: true,
+              opaque_result_field: "ANTHROPIC_RESULT_FIELD_CANARY",
+              tool_use_id: "toolu-1",
+              type: "tool_result"
+            }
+          ],
+          role: "user"
+        }
+      ]
+    });
+    const transport = buildAnthropicMessagesRequest(runRequest);
+    const preview = adapter.buildRequestPreview(runRequest) as {
+      body: { messages: Array<{ content: Array<Record<string, unknown>>; role: string }> };
+      redactions: string[];
+    };
+    const transportJson = JSON.stringify(transport);
+    const previewJson = JSON.stringify(preview);
+
+    for (const canary of [
+      "ANTHROPIC_TOOL_INPUT_CANARY",
+      "ANTHROPIC_TOOL_USE_FIELD_CANARY",
+      "ANTHROPIC_THINKING_SIGNATURE_CANARY",
+      "ANTHROPIC_THINKING_TEXT_CANARY",
+      "ANTHROPIC_REDACTED_THINKING_CANARY",
+      "ANTHROPIC_ASSISTANT_TEXT_CANARY",
+      "ANTHROPIC_UNKNOWN_BLOCK_CANARY",
+      "ANTHROPIC_TOOL_OUTPUT_CANARY",
+      "ANTHROPIC_RESULT_FIELD_CANARY"
+    ]) {
+      expect(transportJson).toContain(canary);
+      expect(previewJson).not.toContain(canary);
+    }
+    expect(preview.body.messages.slice(-2)).toEqual([
+      {
+        content: [
+          {
+            id: "toolu-1",
+            name: "mem0__search",
+            type: "tool_use"
+          }
+        ],
+        role: "assistant"
+      },
+      {
+        content: [
+          {
+            content: "[tool output omitted]",
+            is_error: true,
+            tool_use_id: "toolu-1",
+            type: "tool_result"
+          }
+        ],
+        role: "user"
+      }
+    ]);
+    expect(preview.redactions).toContain("provider_continuation_opaque_fields");
   });
 
   it("serializes only the reviewed hosted Search declaration and rejects client-tool mixing", () => {
@@ -609,9 +905,11 @@ describe("Anthropic Messages adapter", () => {
     expect(preview).toMatchObject({
       redactions: [
         "attachment_extracted_text",
+        "attachment_filename",
         "attachment_media_type",
         "image_base64",
-        "pdf_base64"
+        "pdf_base64",
+        "provider_continuation_opaque_fields"
       ]
     });
   });

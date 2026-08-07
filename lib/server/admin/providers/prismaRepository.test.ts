@@ -250,6 +250,7 @@ describe("Prisma admin provider repository", () => {
         count: vi.fn(async () => 1),
         updateMany: vi.fn(async () => ({ count: 0 }))
       },
+      searchIntegrationRevision: { count: vi.fn(async () => 3) },
       searchStrategy: { count: vi.fn(async () => 1) },
       userSettings: { count: vi.fn(async () => 1) }
     });
@@ -261,10 +262,42 @@ describe("Prisma admin provider repository", () => {
         { count: 1, kind: "user_defaults" },
         { count: 1, kind: "chat_defaults" },
         { count: 1, kind: "search_references" },
+        { count: 3, kind: "search_revision_references" },
         { count: 1, kind: "assistant_revisions" },
         { count: 1, kind: "run_bindings" }
       ],
       status: "conflict"
+    });
+    expect(remove).not.toHaveBeenCalled();
+  });
+
+  it("blocks model deletion when only immutable Search revisions retain the model", async () => {
+    const remove = vi.fn(async () => ({}));
+    const db = transactional({
+      accessGrant: { count: vi.fn(async () => 0) },
+      assistantRevision: { count: vi.fn(async () => 0) },
+      chat: { count: vi.fn(async () => 0) },
+      providerModel: {
+        delete: remove,
+        findUnique: vi.fn(async () => ({ enabled: false, templateKey: null }))
+      },
+      providerCredentialVersion: { deleteMany: vi.fn(async () => ({ count: 0 })) },
+      providerRunBinding: {
+        count: vi.fn(async () => 0),
+        updateMany: vi.fn(async () => ({ count: 0 }))
+      },
+      searchIntegrationRevision: { count: vi.fn(async () => 2) },
+      searchStrategy: { count: vi.fn(async () => 0) },
+      userSettings: { count: vi.fn(async () => 0) }
+    });
+    const repository = createPrismaAdminProviderRepository(db as unknown as PrismaClient);
+
+    await expect(repository.deleteModel("model-1")).resolves.toEqual({
+      blockers: [{ count: 2, kind: "search_revision_references" }],
+      status: "conflict"
+    });
+    expect(db.searchIntegrationRevision.count).toHaveBeenCalledWith({
+      where: { providerModelId: "model-1" }
     });
     expect(remove).not.toHaveBeenCalled();
   });
@@ -897,6 +930,7 @@ describe("Prisma admin provider repository", () => {
         deleteMany: vi.fn(async () => ({ count: 1 }))
       },
       assistantRevision: { count: vi.fn(async () => 0) },
+      searchIntegrationRevision: { count: vi.fn(async () => 0) },
       searchOption: { count: vi.fn(async () => 0) },
       searchStrategy: { count: vi.fn(async () => 0) },
       userSettings: { updateMany: vi.fn(async () => ({ count: 1 })) }
@@ -940,6 +974,7 @@ describe("Prisma admin provider repository", () => {
         count: vi.fn(async () => 1),
         updateMany: vi.fn(async () => ({ count: 0 }))
       },
+      searchIntegrationRevision: { count: vi.fn(async () => 5) },
       searchOption: { count: vi.fn(async () => 1) },
       searchStrategy: { count: vi.fn(async () => 3) }
     });
@@ -948,12 +983,16 @@ describe("Prisma admin provider repository", () => {
     await expect(repository.deleteConnection("connection-1")).resolves.toEqual({
       blockers: [
         { count: 4, kind: "search_references" },
+        { count: 5, kind: "search_revision_references" },
         { count: 2, kind: "assistant_revisions" },
         { count: 1, kind: "run_bindings" }
       ],
       status: "conflict"
     });
     expect(db.assistantRevision.count).toHaveBeenCalledWith({
+      where: { providerModelId: { in: ["model-1"] } }
+    });
+    expect(db.searchIntegrationRevision.count).toHaveBeenCalledWith({
       where: { providerModelId: { in: ["model-1"] } }
     });
     expect(deleteConnection).not.toHaveBeenCalled();
@@ -978,6 +1017,7 @@ describe("Prisma admin provider repository", () => {
         count: vi.fn(async () => 0),
         updateMany: vi.fn(async () => ({ count: 0 }))
       },
+      searchIntegrationRevision: { count: vi.fn(async () => 0) },
       searchOption: { count: vi.fn(async () => 1) },
       searchStrategy: { count: vi.fn(async () => 0) }
     });

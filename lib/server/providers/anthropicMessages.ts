@@ -10,7 +10,11 @@ import {
   assertBoundedStructuredTextLength,
   BoundedTextAccumulator
 } from "./boundedText";
-import { conversationPreview, textConversationForRequest } from "./context";
+import {
+  conversationMessagesForRequest,
+  conversationPreview,
+  textConversationForRequest
+} from "./context";
 import {
   ProviderResponseTooLargeError,
   providerHttpErrorMessage,
@@ -165,6 +169,32 @@ function attachmentTextBlock(
   };
 }
 
+function attachmentPlaceholderText(
+  content: { blocks?: readonly unknown[] } | undefined,
+  preview: boolean
+): string {
+  const lines = (content?.blocks ?? []).flatMap((value): string[] => {
+    const block = objectValue(value);
+    if (!block || typeof block.attachmentId !== "string") {
+      return [];
+    }
+
+    if (block.type === "image") {
+      return ["[image attachment]"];
+    }
+
+    if (block.type === "file") {
+      return preview || typeof block.fileName !== "string" || block.fileName.length === 0
+        ? ["[file attachment]"]
+        : [`[file attachment: ${block.fileName}]`];
+    }
+
+    return ["[attachment]"];
+  });
+
+  return lines.join("\n") || "[attachment]";
+}
+
 function pdfDocumentData(attachment: ProviderAttachment, redactFiles: boolean): string {
   if (redactFiles) {
     return "[base64 PDF data omitted]";
@@ -214,7 +244,11 @@ function imageSource(
   };
 }
 
-function buildUserContent(request: ProviderRunRequest, options: BuildOptions): Record<string, unknown>[] {
+function buildUserContent(
+  request: ProviderRunRequest,
+  options: BuildOptions,
+  storedContent: { blocks?: readonly unknown[] } | undefined
+): Record<string, unknown>[] {
   const content: Record<string, unknown>[] = [];
   const text = textFromContentBlocks(request.content);
 
@@ -256,10 +290,7 @@ function buildUserContent(request: ProviderRunRequest, options: BuildOptions): R
   }
 
   if (content.length === 0) {
-    content.push({
-      text: "",
-      type: "text"
-    });
+    content.push(textContentBlock(attachmentPlaceholderText(storedContent, options.preview)));
   }
 
   return content;
@@ -291,7 +322,33 @@ function mergeAdjacentAnthropicMessages(messages: AnthropicRequestMessage[]): An
   return merged;
 }
 
-function anthropicProviderToolMessages(messages: unknown[] | undefined): AnthropicRequestMessage[] {
+function anthropicProviderToolPreviewBlock(
+  block: Record<string, unknown>
+): Record<string, unknown> | null {
+  if (block.type === "tool_use") {
+    return {
+      ...(typeof block.id === "string" ? { id: block.id } : {}),
+      ...(typeof block.name === "string" ? { name: block.name } : {}),
+      type: "tool_use"
+    };
+  }
+
+  if (block.type === "tool_result") {
+    return {
+      content: "[tool output omitted]",
+      ...(typeof block.is_error === "boolean" ? { is_error: block.is_error } : {}),
+      ...(typeof block.tool_use_id === "string" ? { tool_use_id: block.tool_use_id } : {}),
+      type: "tool_result"
+    };
+  }
+
+  return null;
+}
+
+function anthropicProviderToolMessages(
+  messages: unknown[] | undefined,
+  preview: boolean
+): AnthropicRequestMessage[] {
   return (messages ?? []).flatMap((message): AnthropicRequestMessage[] => {
     const record = objectValue(message);
     if (!record || (record.role !== "assistant" && record.role !== "user")) {
@@ -301,7 +358,10 @@ function anthropicProviderToolMessages(messages: unknown[] | undefined): Anthrop
     const content = Array.isArray(record.content)
       ? record.content.flatMap((value) => {
           const block = objectValue(value);
-          return block ? [block] : [];
+          if (!block) return [];
+          if (!preview) return [block];
+          const previewBlock = anthropicProviderToolPreviewBlock(block);
+          return previewBlock ? [previewBlock] : [];
         })
       : [];
     if (content.length === 0) {
@@ -348,22 +408,42 @@ export function buildAnthropicMessagesRequest(
   options: Partial<BuildOptions> = {}
 ): Record<string, unknown> {
   const params = normalizeAnthropicMessagesParams(request.params);
+  const storedConversationById = new Map(
+    conversationMessagesForRequest(request).map((message) => [message.id, message.content])
+  );
   const conversation = textConversationForRequest(request);
   const messages = mergeAdjacentAnthropicMessages(
     [
-      ...conversation.map((message, index) => ({
-        content:
-          index === conversation.length - 1 && message.role === "user"
-            ? buildUserContent(request, {
-                maxAttachmentTextChars: options.maxAttachmentTextChars,
-                preview: options.preview ?? false,
-                redactFiles: options.redactFiles ?? false,
-                redactImages: options.redactImages ?? false
-              })
-            : [textContentBlock(message.content)],
-        role: message.role
-      })),
-      ...anthropicProviderToolMessages(request.providerToolMessages)
+      ...conversation.map((message, index) => {
+        const storedContent = storedConversationById.get(message.id);
+
+        return {
+          content:
+            index === conversation.length - 1 && message.role === "user"
+              ? buildUserContent(
+                  request,
+                  {
+                    maxAttachmentTextChars: options.maxAttachmentTextChars,
+                    preview: options.preview ?? false,
+                    redactFiles: options.redactFiles ?? false,
+                    redactImages: options.redactImages ?? false
+                  },
+                  storedContent
+                )
+              : [
+                  textContentBlock(
+                    message.content.trim()
+                      ? message.content
+                      : attachmentPlaceholderText(storedContent, options.preview ?? false)
+                  )
+                ],
+          role: message.role
+        };
+      }),
+      ...anthropicProviderToolMessages(
+        request.providerToolMessages,
+        options.preview ?? false
+      )
     ]
   );
   const clientTools = (request.tools ?? []).map((tool) =>
@@ -621,9 +701,11 @@ export function createAnthropicMessagesAdapter(options: AnthropicMessagesAdapter
         replayedContext: conversationPreview(request),
         redactions: [
           "attachment_extracted_text",
+          "attachment_filename",
           "attachment_media_type",
           "image_base64",
-          "pdf_base64"
+          "pdf_base64",
+          "provider_continuation_opaque_fields"
         ]
       };
     },

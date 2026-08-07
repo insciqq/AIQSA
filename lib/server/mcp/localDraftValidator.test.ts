@@ -1,5 +1,7 @@
 import type { McpDraftConfiguration } from "@/lib/contracts/mcp";
 import { describe, expect, it, vi } from "vitest";
+import { McpDraftValidationAbortedError } from "./draftValidator";
+import { createInFlightValidationWorkloadRegistry } from "./inFlightValidationWorkloads";
 import type { McpRuntimeSession } from "./runtimeCoordinator";
 import { createLocalMcpDraftValidator } from "./localDraftValidator";
 
@@ -66,11 +68,23 @@ function detail(image = GENERATED_IMAGE) {
   } as const;
 }
 
+function deferred<Value = void>() {
+  let resolve!: (value: Value) => void;
+  const promise = new Promise<Value>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
 describe("local MCP draft validation", () => {
   it("materializes an exact npm package, inventories tools, and deletes the validation workload", async () => {
     const progress: string[] = [];
     const active = session();
-    const create = vi.fn(async () => active);
+    const retentionRegistry = createInFlightValidationWorkloadRegistry();
+    const create = vi.fn(async () => {
+      expect(retentionRegistry.snapshot()).toEqual([TOKEN]);
+      return active;
+    });
     const deleteOwnedWorkload = vi.fn(async () => true);
     const getWorkload = vi.fn(async () => detail());
     const validator = createLocalMcpDraftValidator({
@@ -94,6 +108,7 @@ describe("local MCP draft validation", () => {
       randomToken: () => {
         throw new Error("persisted workload token must win");
       },
+      retentionRegistry,
       sessions: { create }
     });
 
@@ -140,6 +155,7 @@ describe("local MCP draft validation", () => {
     expect(JSON.stringify(outcome)).not.toContain("super-secret");
     expect(active.close).toHaveBeenCalledTimes(1);
     expect(deleteOwnedWorkload).toHaveBeenCalledWith(TOKEN);
+    expect(retentionRegistry.snapshot()).toEqual([]);
     expect(progress).toEqual(["resolving", "preparing_runtime", "discovering_tools"]);
   });
 
@@ -193,6 +209,7 @@ describe("local MCP draft validation", () => {
       name: "example.run"
     }]);
     const deleteOwnedWorkload = vi.fn(async () => true);
+    const retentionRegistry = createInFlightValidationWorkloadRegistry();
     const validator = createLocalMcpDraftValidator({
       client: {
         getWorkload: vi.fn(async () => detail()),
@@ -215,6 +232,7 @@ describe("local MCP draft validation", () => {
         }
       }),
       randomToken: () => TOKEN,
+      retentionRegistry,
       sessions: { create: vi.fn(async () => active) }
     });
 
@@ -230,6 +248,7 @@ describe("local MCP draft validation", () => {
     expect(JSON.stringify(outcome)).not.toContain("super-secret");
     expect(active.close).toHaveBeenCalledTimes(1);
     expect(deleteOwnedWorkload).toHaveBeenCalledWith(TOKEN);
+    expect(retentionRegistry.snapshot()).toEqual([]);
   });
 
   it("turns bounded startup output into an actionable missing-environment issue", async () => {
@@ -339,6 +358,137 @@ describe("local MCP draft validation", () => {
     });
     expect(JSON.stringify(outcome)).not.toContain(rawOutput);
     expect(JSON.stringify(outcome)).not.toContain("super-secret");
+  });
+
+  it("releases retention when validation is aborted before a session exists", async () => {
+    const retentionRegistry = createInFlightValidationWorkloadRegistry();
+    const deleteOwnedWorkload = vi.fn(async () => {
+      throw new Error("cleanup unavailable");
+    });
+    const validator = createLocalMcpDraftValidator({
+      client: {
+        getWorkload: vi.fn(async () => detail()),
+        getWorkloadLogs: vi.fn(async () => "")
+      },
+      driver: {
+        deleteOwnedWorkload,
+        workloadName: (token) => `aiqsa-owner-${token}`
+      },
+      packageResolver: async () => ({
+        kind: "ok",
+        value: {
+          artifactUrl: "https://registry.npmjs.org/example-mcp/-/example-mcp-1.2.3.tgz",
+          exactVersion: "1.2.3",
+          integrity: "sha512-YWJjZA==",
+          materializer: "npx",
+          packageName: "example-mcp",
+          protocolImage: "npx://example-mcp@1.2.3",
+          sourceKind: "npm"
+        }
+      }),
+      randomToken: () => TOKEN,
+      retentionRegistry,
+      sessions: {
+        create: vi.fn(async () => {
+          expect(retentionRegistry.snapshot()).toEqual([TOKEN]);
+          throw new McpDraftValidationAbortedError();
+        })
+      }
+    });
+
+    await expect(validator.validate({
+      draft,
+      values: { "api-key": "super-secret", mode: "safe" }
+    })).rejects.toBeInstanceOf(McpDraftValidationAbortedError);
+    expect(deleteOwnedWorkload).toHaveBeenCalledWith(TOKEN);
+    expect(retentionRegistry.snapshot()).toEqual([]);
+  });
+
+  it("retains concurrent validation workloads independently", async () => {
+    const firstToken = "c".repeat(32);
+    const secondToken = "d".repeat(32);
+    const firstEntered = deferred();
+    const secondEntered = deferred();
+    const releaseFirst = deferred();
+    const releaseSecond = deferred();
+    const retentionRegistry = createInFlightValidationWorkloadRegistry();
+    const validator = createLocalMcpDraftValidator({
+      client: {
+        getWorkload: vi.fn(async () => detail()),
+        getWorkloadLogs: vi.fn(async () => "")
+      },
+      driver: {
+        deleteOwnedWorkload: vi.fn(async () => true),
+        workloadName: (token) => `aiqsa-owner-${token}`
+      },
+      packageResolver: async () => ({
+        kind: "ok",
+        value: {
+          artifactUrl: "https://registry.npmjs.org/example-mcp/-/example-mcp-1.2.3.tgz",
+          exactVersion: "1.2.3",
+          integrity: "sha512-YWJjZA==",
+          materializer: "npx",
+          packageName: "example-mcp",
+          protocolImage: "npx://example-mcp@1.2.3",
+          sourceKind: "npm"
+        }
+      }),
+      retentionRegistry,
+      sessions: {
+        create: vi.fn(async (launch) => {
+          if (launch.toolHive?.generationToken === firstToken) {
+            firstEntered.resolve();
+            await releaseFirst.promise;
+          } else {
+            secondEntered.resolve();
+            await releaseSecond.promise;
+          }
+          return session();
+        })
+      }
+    });
+    const first = validator.validate({
+      draft,
+      values: { "api-key": "super-secret", mode: "safe" },
+      workloadToken: firstToken
+    });
+    const second = validator.validate({
+      draft,
+      values: { "api-key": "super-secret", mode: "safe" },
+      workloadToken: secondToken
+    });
+
+    await Promise.all([firstEntered.promise, secondEntered.promise]);
+    expect(retentionRegistry.snapshot()).toEqual([firstToken, secondToken]);
+    releaseFirst.resolve();
+    await first;
+    expect(retentionRegistry.snapshot()).toEqual([secondToken]);
+    releaseSecond.resolve();
+    await second;
+    expect(retentionRegistry.snapshot()).toEqual([]);
+  });
+
+  it("does not retain remote-source validation", async () => {
+    const register = vi.fn(() => ({ release: vi.fn() }));
+    const validator = createLocalMcpDraftValidator({
+      client: { getWorkload: vi.fn(), getWorkloadLogs: vi.fn() },
+      driver: { deleteOwnedWorkload: vi.fn(), workloadName: vi.fn() },
+      retentionRegistry: { register, snapshot: () => [] },
+      sessions: { create: vi.fn() }
+    });
+
+    await expect(validator.validate({
+      draft: {
+        ...draft,
+        source: { allowPrivateNetwork: false, kind: "remote", url: "https://mcp.example.test" },
+        transport: "streamable_http"
+      },
+      values: { "api-key": "super-secret", mode: "safe" }
+    })).resolves.toEqual({
+      issues: [{ code: "mcp_local_source_required", path: "source.kind" }],
+      kind: "invalid"
+    });
+    expect(register).not.toHaveBeenCalled();
   });
 
   it("runs a digest-pinned OCI draft directly without package resolution", async () => {

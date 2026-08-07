@@ -161,6 +161,8 @@ function createHarness(options: Readonly<{
   storage?: RunRecoveryDeps["storage"];
 }> = {}) {
   const controls = options.controls ?? [control()];
+  const initialControl = controls.find((candidate): candidate is RunControlRecord => candidate !== null) ??
+    control();
   let controlIndex = 0;
   let appendCollision = false;
   let nextSequence = 0;
@@ -178,8 +180,14 @@ function createHarness(options: Readonly<{
     operations: string[];
     providerResponseIds: { providerResponseId: string; runId: string }[];
     recoveredErrors: Parameters<RunRecoveryRepository["settleRecoveredRunError"]>[0][];
+    run: {
+      providerResponseId: string | null;
+      recoverySettled: boolean;
+      status: RunControlRecord["status"];
+    };
     staleQueries: Parameters<RunRecoveryRepository["findStaleActiveRunsForUser"]>[0][];
     sweeps: string[][];
+    usageAttributions: RunUsageAttribution[][];
   } = {
     assistantAppendOptions: [],
     assistantTexts: [],
@@ -190,8 +198,14 @@ function createHarness(options: Readonly<{
     operations: [],
     providerResponseIds: [],
     recoveredErrors: [],
+    run: {
+      providerResponseId: initialControl.providerResponseId,
+      recoverySettled: initialControl.recoverySettled ?? false,
+      status: initialControl.status
+    },
     staleQueries: [],
-    sweeps: []
+    sweeps: [],
+    usageAttributions: []
   };
   const repository: RunRecoveryRepository = {
     advanceToolLoopCallBatch: async () => "not_found",
@@ -217,8 +231,15 @@ function createHarness(options: Readonly<{
       if (options.completeRun === false) {
         return false;
       }
+      const active = state.run.status === "streaming" || state.run.status === "queued" ||
+        state.run.status === "in_progress";
+      const recovered = state.run.status === "error" && !state.run.recoverySettled &&
+        state.run.providerResponseId === (input.providerResponseId ?? null);
+      if (!active && !recovered) return false;
 
       state.completed = input;
+      state.run.providerResponseId = input.providerResponseId ?? state.run.providerResponseId;
+      state.run.status = "complete";
       for (const event of [
         ...(input.eventsBeforeTerminal ?? []),
         { data: input.usage, type: "usage" as const },
@@ -234,11 +255,13 @@ function createHarness(options: Readonly<{
     },
     claimToolLoopCall: async () => ({ kind: "not_found" }),
     createSearchRun: async () => undefined,
-    failRun: async (failedRunId, assistantMessageId, error) => {
+    failRun: async (failedRunId, assistantMessageId, error, failOptions) => {
       if (options.failRun === false) {
         return false;
       }
       state.operations.push(`fail:${error.code}`);
+      state.run.recoverySettled = failOptions?.recoveryTerminal === true;
+      state.run.status = "error";
       state.failed.push({ assistantMessageId, error, runId: failedRunId });
       state.events.push({
         event: { data: error, type: "error" },
@@ -272,13 +295,20 @@ function createHarness(options: Readonly<{
     markAssistantMessageGroundedLiveOnly: async () => true,
     nextRunEventSequence: async () => nextSequence,
     persistToolLoopCallBatch: async () => ({ kind: "not_found" }),
-    recordRunUsageEvents: async () => true,
+    recordRunUsageEvents: async (input) => {
+      if (state.run.status === "complete") return false;
+      state.usageAttributions.push(input.usageAttributions);
+      return true;
+    },
     resetToolLoopAssistantDraft: async () => false,
     settleRecoveredRunError: async (input) => {
-      if (options.settleRecoveredRunError === false) {
+      if (options.settleRecoveredRunError === false || state.run.status === "cancelled" ||
+        state.run.status === "complete" || state.run.recoverySettled) {
         return false;
       }
       state.operations.push(`settle_recovered:${input.error.code}`);
+      state.run.recoverySettled = true;
+      state.run.status = "error";
       state.recoveredErrors.push(input);
       state.failed.push({
         assistantMessageId: "assistant-1",
@@ -301,6 +331,13 @@ function createHarness(options: Readonly<{
     },
     updateRunProviderResponseId: async (responseRunId, providerResponseId) => {
       state.operations.push("update_response_id");
+      if (state.run.status === "cancelled") return "cancelled";
+      const active = state.run.status === "streaming" || state.run.status === "queued" ||
+        state.run.status === "in_progress";
+      if (!active && !(state.run.status === "error" && !state.run.recoverySettled)) {
+        return "terminal";
+      }
+      state.run.providerResponseId = providerResponseId;
       state.providerResponseIds.push({ providerResponseId, runId: responseRunId });
       return "published";
     },
@@ -324,6 +361,9 @@ function createHarness(options: Readonly<{
     },
     deps,
     repository,
+    setStoredRun(input: Partial<typeof state.run>) {
+      Object.assign(state.run, input);
+    },
     state
   };
 }
@@ -525,6 +565,11 @@ function installCheckpointState(
 ) {
   let currentCheckpoint = initial.checkpoint;
   let calls = initial.calls.map((call) => ({ ...call }));
+  harness.setStoredRun({
+    providerResponseId: initial.providerResponseId,
+    recoverySettled: false,
+    status: initial.status
+  });
   harness.repository.loadCheckpointedToolLoopRun = async () => ({
     ...initial,
     calls,
@@ -599,6 +644,7 @@ function installCheckpointState(
       roundIndex + 1,
       currentCheckpoint.providerContinuation
     );
+    harness.setStoredRun({ providerResponseId: null });
     return "advanced";
   };
   harness.repository.updateRunProviderRequestPreview = async () => undefined;
@@ -1167,6 +1213,124 @@ describe("run recovery", () => {
     expect(harness.state.events.map(({ event }) => event.type)).toEqual(["artifact"]);
   });
 
+  it.each([
+    { providerResponseId: "response-fresh", variant: "with a provider response id" },
+    { providerResponseId: undefined, variant: "without a provider response id" }
+  ])("completes a recoverable error-status tool round $variant", async ({
+    providerResponseId
+  }) => {
+    const runtimeCall = vi.fn(async () => ({
+      isError: false,
+      structuredContent: null,
+      text: ["remembered"],
+      unsupportedContentTypes: []
+    }));
+    const adapter: ProviderAdapter = {
+      buildRequestPreview: () => ({}),
+      async *stream() {
+        return {
+          finalProviderResponsePreview: { status: "completed" },
+          finalText: "Recovered fresh answer",
+          ...(providerResponseId ? { providerResponseId } : {}),
+          usage: { inputTokens: 6, outputTokens: 4, reasoningTokens: 1 }
+        };
+      }
+    };
+    const harness = createHarness({
+      controls: [control({
+        providerResponseId: "response-tool-1",
+        recoverySettled: false,
+        status: "error"
+      })],
+      mcpRuntime: {
+        callTool: runtimeCall,
+        ensureAcceptedGeneration: async () => true
+      },
+      providers: { openai: adapter }
+    });
+    installCheckpointState(harness, {
+      ...checkpointedRun({
+        calls: [persistedRecoveryCall()],
+        phase: "tools_pending",
+        providerResponseId: "response-tool-1"
+      }),
+      status: "error"
+    });
+
+    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+
+    expect(runtimeCall).toHaveBeenCalledOnce();
+    expect(harness.state.completed).toMatchObject({
+      finalText: "Recovered fresh answer",
+      providerResponseId,
+      usage: { inputTokens: 6, outputTokens: 4, reasoningTokens: 1, totalTokens: 10 }
+    });
+    expect(harness.state.run).toEqual({
+      providerResponseId: providerResponseId ?? null,
+      recoverySettled: false,
+      status: "complete"
+    });
+    expect(harness.state.providerResponseIds).toEqual(providerResponseId
+      ? [{ providerResponseId, runId }]
+      : []);
+    expect(harness.state.usageAttributions.flat()).toEqual([
+      expect.objectContaining({
+        modelId: "gpt-test",
+        provider: "openai",
+        usage: expect.objectContaining({ inputTokens: 6, outputTokens: 4, reasoningTokens: 1 })
+      })
+    ]);
+    expect(harness.state.recoveredErrors).toEqual([]);
+  });
+
+  it("attributes a finished round when cancellation wins response-id publication", async () => {
+    const cancel = vi.fn(async () => ({}));
+    let harness!: ReturnType<typeof createHarness>;
+    const adapter: ProviderAdapter = {
+      buildRequestPreview: () => ({}),
+      cancel,
+      async *stream() {
+        harness.setStoredRun({ status: "cancelled" });
+        return {
+          finalProviderResponsePreview: { status: "completed" },
+          finalText: "Late answer",
+          providerResponseId: "response-late",
+          usage: { inputTokens: 8, outputTokens: 5, reasoningTokens: 0 }
+        };
+      }
+    };
+    harness = createHarness({
+      controls: [control({ recoverySettled: false, status: "error" })],
+      mcpRuntime: {
+        callTool: async () => ({
+          isError: false,
+          structuredContent: null,
+          text: ["remembered"],
+          unsupportedContentTypes: []
+        }),
+        ensureAcceptedGeneration: async () => true
+      },
+      providers: { openai: adapter }
+    });
+    installCheckpointState(harness, {
+      ...checkpointedRun({ calls: [persistedRecoveryCall()], phase: "tools_pending" }),
+      status: "error"
+    });
+
+    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+
+    expect(cancel).toHaveBeenCalledWith("response-late");
+    expect(harness.state.providerResponseIds).toEqual([]);
+    expect(harness.state.completed).toBeNull();
+    expect(harness.state.run.status).toBe("cancelled");
+    expect(harness.state.usageAttributions.flat()).toEqual([
+      expect.objectContaining({
+        usage: expect.objectContaining({ inputTokens: 8, outputTokens: 5 })
+      })
+    ]);
+    expect(harness.state.recoveredErrors).toEqual([]);
+  });
+
   it("continues a checkpointed OpenAI background tool round from its response id", async () => {
     const requests: ProviderRunRequest[] = [];
     const runtimeCall = vi.fn(async () => ({
@@ -1515,7 +1679,6 @@ describe("run recovery", () => {
         code: "provider_stream_too_large",
         message: "The provider stream exceeded a safety limit."
       },
-      providerResponseId: "response-tool-1",
       runId,
       usageAttributions: [{
         modelId: "gpt-test",
@@ -1523,6 +1686,7 @@ describe("run recovery", () => {
         usage: { inputTokens: 4, outputTokens: 2, reasoningTokens: 0 }
       }]
     });
+    expect(harness.state.recoveredErrors[0]).not.toHaveProperty("providerResponseId");
     expect(harness.state.completed).toBeNull();
     expect(harness.state.events.map(({ event }) => event.type)).not.toContain("done");
     expect(warning).toHaveBeenCalledOnce();

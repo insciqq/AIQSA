@@ -825,55 +825,6 @@ describe("AuthLogin", () => {
     expect(screen.queryByText("Use the verification link we sent before signing in.")).not.toBeInTheDocument();
   });
 
-  it("shows SMTP configuration failures without entering the check-email state", async () => {
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      new Response(JSON.stringify({ error: "verification_email_unavailable" }), {
-        status: 503
-      })
-    );
-    render(<AuthLogin nextPath="/" />);
-
-    fireEvent.click(screen.getByRole("button", { name: "Request access" }));
-    fireEvent.change(screen.getByLabelText("Email"), {
-      target: {
-        value: "person@example.com"
-      }
-    });
-    fireEvent.submit(screen.getByRole("button", { name: "Request access" }).closest("form")!);
-
-    const alert = await screen.findByRole("alert");
-    expect(alert).toHaveTextContent(
-      "Verification email is not configured on this server. Ask the operator to configure SMTP. (verification_email_unavailable)"
-    );
-    expect(screen.getByLabelText("Email")).not.toHaveAttribute("aria-invalid");
-    expect(screen.getByLabelText("Email")).toHaveAttribute("aria-describedby", "register-email-help");
-    expect(screen.queryByText("Use the verification link we sent before signing in.")).not.toBeInTheDocument();
-  });
-
-  it("keeps a retryable registration form visible after an SMTP send failure", async () => {
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      new Response(JSON.stringify({ error: "verification_email_failed" }), {
-        status: 502
-      })
-    );
-    render(<AuthLogin nextPath="/" />);
-
-    fireEvent.click(screen.getByRole("button", { name: "Request access" }));
-    fireEvent.change(screen.getByLabelText("Email"), {
-      target: {
-        value: "person@example.com"
-      }
-    });
-    fireEvent.submit(screen.getByRole("button", { name: "Request access" }).closest("form")!);
-
-    expect(await screen.findByRole("alert")).toHaveTextContent(
-      "The server could not send the verification email. Ask the operator to check SMTP delivery. (verification_email_failed)"
-    );
-    expect(screen.getByLabelText("Email")).toHaveValue("person@example.com");
-    expect(screen.getByRole("button", { name: "Request access" })).toBeEnabled();
-    expect(screen.queryByRole("heading", { level: 1, name: "Request received" })).not.toBeInTheDocument();
-  });
-
   it("verifies email links and shows the active sign-in state", async () => {
     const fetch = vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response(JSON.stringify({ status: "active" }), {

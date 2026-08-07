@@ -12,6 +12,108 @@ const oneByOnePng = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=",
   "base64"
 );
+
+function uint16LE(value: number): Buffer {
+  const buffer = Buffer.alloc(2);
+  buffer.writeUInt16LE(value);
+  return buffer;
+}
+
+function uint32LE(value: number): Buffer {
+  const buffer = Buffer.alloc(4);
+  buffer.writeUInt32LE(value);
+  return buffer;
+}
+
+function packFixedWidthCodes(codes: number[], width: number): Buffer {
+  const bytes: number[] = [];
+  let bits = 0;
+  let bitCount = 0;
+
+  for (const code of codes) {
+    bits |= code << bitCount;
+    bitCount += width;
+    while (bitCount >= 8) {
+      bytes.push(bits & 0xff);
+      bits >>>= 8;
+      bitCount -= 8;
+    }
+  }
+
+  if (bitCount > 0) {
+    bytes.push(bits & 0xff);
+  }
+
+  return Buffer.from(bytes);
+}
+
+function gifFrame(compressedData: Buffer, lzwMinimumCodeSize: number): Buffer {
+  return Buffer.concat([
+    Buffer.from([0x2c]),
+    uint16LE(0),
+    uint16LE(0),
+    uint16LE(1),
+    uint16LE(1),
+    Buffer.from([0, lzwMinimumCodeSize, compressedData.length]),
+    compressedData,
+    Buffer.from([0])
+  ]);
+}
+
+function gifFile(input: { animated?: boolean; grayscalePalette?: boolean }): Buffer {
+  const colorTable = input.grayscalePalette
+    ? Buffer.from(Array.from({ length: 256 }, (_value, index) => [index, index, index]).flat())
+    : Buffer.from([0, 0, 0, 255, 255, 255]);
+  const colorTableSize = input.grayscalePalette ? 7 : 0;
+  const compressedData = input.grayscalePalette
+    ? packFixedWidthCodes([256, 0, 257], 9)
+    : Buffer.from([0x44, 0x01]);
+  const frame = gifFrame(compressedData, input.grayscalePalette ? 8 : 2);
+  const control = Buffer.from([0x21, 0xf9, 0x04, 0, 0, 0, 0, 0]);
+  const blocks = input.grayscalePalette
+    ? [frame]
+    : [control, frame, ...(input.animated ? [control, frame] : [])];
+
+  return Buffer.concat([
+    Buffer.from(input.grayscalePalette ? "GIF87a" : "GIF89a", "ascii"),
+    uint16LE(input.grayscalePalette ? 4 : 1),
+    uint16LE(input.grayscalePalette ? 4 : 1),
+    Buffer.from([0x80 | (colorTableSize << 4) | colorTableSize, 0, 0]),
+    colorTable,
+    ...blocks,
+    Buffer.from([0x3b])
+  ]);
+}
+
+function vp8lWebp(width: number, height: number): Buffer {
+  const payload = Buffer.alloc(5);
+  payload[0] = 0x2f;
+  payload.writeUInt32LE((width - 1) | ((height - 1) << 14), 1);
+  const paddedPayload = payload.length % 2 === 0
+    ? payload
+    : Buffer.concat([payload, Buffer.from([0])]);
+
+  return Buffer.concat([
+    Buffer.from("RIFF", "ascii"),
+    uint32LE(4 + 8 + paddedPayload.length),
+    Buffer.from("WEBPVP8L", "ascii"),
+    uint32LE(payload.length),
+    paddedPayload
+  ]);
+}
+
+function unsupportedWebp(): Buffer {
+  const payload = Buffer.from([0]);
+
+  return Buffer.concat([
+    Buffer.from("RIFF", "ascii"),
+    uint32LE(4 + 8 + 2),
+    Buffer.from("WEBPICCP", "ascii"),
+    uint32LE(payload.length),
+    payload,
+    Buffer.from([0])
+  ]);
+}
 const config = getAuthConfig({
   AIQSA_BOOTSTRAP_AUTH_TOKEN: TEST_AUTH_TOKEN,
   AIQSA_AUTH_SESSION_SECRET: "secret"
@@ -201,6 +303,113 @@ describe("upload handler", () => {
     expect(body.attachment.metadata.image).toMatchObject({ height: 1, width: 1 });
     expect(storage.objects.has(body.attachment.storageKey)).toBe(true);
     expect(gate.snapshot().active).toBe(0);
+  });
+
+  it("stores a static GIF whose palette contains descriptor-like bytes", async () => {
+    const storage = createMemoryStorageAdapter();
+    const POST = createUploadHandler({
+      createAttachment: async (input) => ({ ...input, id: "static-gif" }),
+      resolveAuth: auth.resolveAuth,
+      storage
+    });
+
+    const response = await POST(
+      authenticatedUploadRequest(
+        new File([gifFile({ grayscalePalette: true })], "static.gif", { type: "image/gif" })
+      )
+    );
+
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as {
+      attachment: {
+        metadata: { image: Record<string, unknown> };
+        storageKey: string;
+      };
+    };
+    expect(body.attachment.metadata.image).toEqual({
+      animated: false,
+      format: "gif",
+      height: 4,
+      width: 4
+    });
+    expect(storage.objects.has(body.attachment.storageKey)).toBe(true);
+  });
+
+  it("rejects an animated GIF before storage or attachment creation", async () => {
+    const storage = createMemoryStorageAdapter();
+    let attachmentCreated = false;
+    const POST = createUploadHandler({
+      createAttachment: async (input) => {
+        attachmentCreated = true;
+        return { ...input, id: "should-not-create" };
+      },
+      resolveAuth: auth.resolveAuth,
+      storage
+    });
+
+    const response = await POST(
+      authenticatedUploadRequest(
+        new File([gifFile({ animated: true })], "animated.gif", { type: "image/gif" })
+      )
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({ error: "animated_gif_not_supported" });
+    expect(attachmentCreated).toBe(false);
+    expect(storage.objects.size).toBe(0);
+  });
+
+  it("stores a VP8L WebP upload with exact dimensions", async () => {
+    const storage = createMemoryStorageAdapter();
+    const POST = createUploadHandler({
+      createAttachment: async (input) => ({ ...input, id: "lossless-webp" }),
+      resolveAuth: auth.resolveAuth,
+      storage
+    });
+
+    const response = await POST(
+      authenticatedUploadRequest(
+        new File([vp8lWebp(321, 123)], "lossless.webp", { type: "image/webp" })
+      )
+    );
+
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as {
+      attachment: {
+        metadata: { image: Record<string, unknown> };
+        storageKey: string;
+      };
+    };
+    expect(body.attachment.metadata.image).toEqual({
+      format: "webp",
+      height: 123,
+      width: 321
+    });
+    expect(storage.objects.has(body.attachment.storageKey)).toBe(true);
+  });
+
+  it("returns a stable unsupported WebP code without writing private upload state", async () => {
+    const storage = createMemoryStorageAdapter();
+    let attachmentCreated = false;
+    const POST = createUploadHandler({
+      createAttachment: async (input) => {
+        attachmentCreated = true;
+        return { ...input, id: "should-not-create" };
+      },
+      resolveAuth: auth.resolveAuth,
+      storage
+    });
+
+    const response = await POST(
+      authenticatedUploadRequest(
+        new File([unsupportedWebp()], "unsupported.webp", { type: "image/webp" })
+      )
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({ error: "webp_unsupported_format" });
+    expect(attachmentCreated).toBe(false);
+    expect(storage.objects.size).toBe(0);
   });
 
   it("uses a unique object key for identical uploads", async () => {

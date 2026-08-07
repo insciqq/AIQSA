@@ -1119,7 +1119,7 @@ async function recoverCheckpointedToolLoop(
       await persistCumulativeUsage();
       if ((refreshed.result.toolCalls?.length ?? 0) === 0) {
         const groupedAttributions = groupedUsageAttributions(usageAttributions);
-        await finalizeRunCompletion({
+        const completion = await finalizeRunCompletion({
           eventsBeforeTerminal: refreshed.events,
           repository: deps.repository,
           result: {
@@ -1137,6 +1137,12 @@ async function recoverCheckpointedToolLoop(
             userId: run.userId
           }
         });
+        if (completion.status === "not_completed") {
+          throw new ToolLoopRecoveryError(
+            "tool_loop_completion_conflict",
+            "The recovered model round could not win terminal completion."
+          );
+        }
         return;
       }
       for (const event of refreshed.events) await appendEvent(event);
@@ -1211,6 +1217,7 @@ async function recoverCheckpointedToolLoop(
         "The recovered tool batch could not advance."
       );
     }
+    currentProviderResponseId = null;
 
     const outcome = await runProviderToolLoop({
       adapter,
@@ -1227,6 +1234,7 @@ async function recoverCheckpointedToolLoop(
             "A recovered tool batch could not advance."
           );
         }
+        currentProviderResponseId = null;
       },
       beforeProviderRound: async ({ request, round }) => {
         await deps.repository.updateRunProviderRequestPreview(
@@ -1367,7 +1375,7 @@ async function recoverCheckpointedToolLoop(
     await tokenBuffer.flush();
     const groupedAttributions = groupedUsageAttributions(usageAttributions);
     const usage = sumTokenUsage(groupedAttributions.map((attribution) => attribution.usage));
-    await finalizeRunCompletion({
+    const completion = await finalizeRunCompletion({
       repository: deps.repository,
       result: {
         ...outcome.final,
@@ -1384,6 +1392,12 @@ async function recoverCheckpointedToolLoop(
         userId: run.userId
       }
     });
+    if (completion.status === "not_completed") {
+      throw new ToolLoopRecoveryError(
+        "tool_loop_completion_conflict",
+        "The recovered model round could not win terminal completion."
+      );
+    }
   } catch (error) {
     if (signal.aborted || error instanceof ToolLoopRecoveryStopped) {
       await tokenBuffer?.flush().catch(() => undefined);

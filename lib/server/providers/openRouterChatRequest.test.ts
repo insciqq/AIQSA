@@ -249,6 +249,72 @@ describe("OpenRouter request builders", () => {
     expect(buildOpenRouterChatRequest(request({ forceNonStreaming: true })).stream).toBe(false);
   });
 
+  it("redacts provider tool output and opaque call fields only in request previews", () => {
+    const runRequest = request({
+      providerToolMessages: [
+        {
+          content: null,
+          opaque_message_field: "OPENROUTER_MESSAGE_FIELD_CANARY",
+          role: "assistant",
+          tool_calls: [
+            {
+              function: {
+                arguments: "{\"secret\":\"OPENROUTER_ARGUMENT_CANARY\"}",
+                name: "search_via_perplexity",
+                opaque_function_field: "OPENROUTER_FUNCTION_FIELD_CANARY"
+              },
+              id: "call-1",
+              opaque_call_field: "OPENROUTER_CALL_FIELD_CANARY",
+              type: "function"
+            }
+          ]
+        },
+        {
+          content: "OPENROUTER_TOOL_OUTPUT_CANARY",
+          name: "search_via_perplexity",
+          opaque_tool_field: "OPENROUTER_TOOL_FIELD_CANARY",
+          role: "tool",
+          tool_call_id: "call-1"
+        }
+      ]
+    });
+    const transport = buildOpenRouterChatRequest(runRequest);
+    const preview = buildOpenRouterChatRequestPreview(runRequest);
+    const transportJson = JSON.stringify(transport);
+    const previewJson = JSON.stringify(preview);
+
+    for (const canary of [
+      "OPENROUTER_MESSAGE_FIELD_CANARY",
+      "OPENROUTER_ARGUMENT_CANARY",
+      "OPENROUTER_FUNCTION_FIELD_CANARY",
+      "OPENROUTER_CALL_FIELD_CANARY",
+      "OPENROUTER_TOOL_OUTPUT_CANARY",
+      "OPENROUTER_TOOL_FIELD_CANARY"
+    ]) {
+      expect(transportJson).toContain(canary);
+      expect(previewJson).not.toContain(canary);
+    }
+    expect(preview.body.messages.slice(-2)).toEqual([
+      {
+        content: null,
+        role: "assistant",
+        tool_calls: [
+          {
+            function: { name: "search_via_perplexity" },
+            id: "call-1",
+            type: "function"
+          }
+        ]
+      },
+      {
+        content: "[tool output omitted]",
+        role: "tool",
+        tool_call_id: "call-1"
+      }
+    ]);
+    expect(preview.redactions).toContain("provider_continuation_opaque_fields");
+  });
+
   it("keeps model-specific cache and reasoning differences", () => {
     const verboseClaude = buildOpenRouterChatRequest(
       request({
@@ -386,7 +452,8 @@ describe("OpenRouter request builders", () => {
         "attachment_extracted_text",
         "attachment_filename",
         "image_data_url",
-        "pdf_base64"
+        "pdf_base64",
+        "provider_continuation_opaque_fields"
       ],
       replayedContext: [
         {

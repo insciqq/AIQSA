@@ -170,6 +170,56 @@ describe("provider tool loop", () => {
     ]);
   });
 
+  it("reports terminal-round usage even when provider-id publication stops the round", async () => {
+    const operations: string[] = [];
+    const adapter: ProviderAdapter = {
+      buildRequestPreview: () => ({}),
+      async *stream() {
+        return {
+          finalProviderResponsePreview: {},
+          finalText: "late result",
+          providerResponseId: "response-late",
+          usage: { inputTokens: 7, outputTokens: 3, reasoningTokens: 1 }
+        };
+      }
+    };
+    const publicationError = Object.assign(new Error("publication stopped"), {
+      code: "provider_publication_stopped"
+    });
+    const onUsage = vi.fn(() => {
+      operations.push("usage");
+    });
+
+    const outcome = await runProviderToolLoop({
+      adapter,
+      bridge: openAIResponsesToolBridge,
+      budgets: { maxConcurrency: 1, maxToolCalls: 1, maxToolRounds: 1 },
+      executeTool: vi.fn(),
+      initialRequest: request(),
+      onProviderResult: () => {
+        operations.push("publication");
+        throw publicationError;
+      },
+      onUsage,
+      parallelToolCalls: false,
+      tools: []
+    });
+
+    expect(operations).toEqual(["publication", "usage"]);
+    expect(onUsage).toHaveBeenCalledWith(
+      { inputTokens: 7, outputTokens: 3, reasoningTokens: 1 },
+      expect.objectContaining({ modelId: "gpt-test", provider: "openai" })
+    );
+    expect(outcome).toMatchObject({
+      failure: {
+        code: "provider_publication_stopped",
+        message: "publication stopped",
+        stage: "provider"
+      },
+      status: "failed"
+    });
+  });
+
   it("propagates an Anthropic refusal after a client tool round", async () => {
     let providerRounds = 0;
     const client = {

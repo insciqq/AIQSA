@@ -1,5 +1,9 @@
 import { createHmac } from "node:crypto";
 import { getMcpEncryptionKey } from "./encryption";
+import {
+  getDefaultInFlightValidationWorkloadRegistry,
+  type InFlightValidationWorkloadRegistry
+} from "./inFlightValidationWorkloads";
 import type { McpRuntimeLifecycle } from "./runtimeCoordinator";
 import { ToolHiveClient } from "./toolhiveClient";
 import { ToolHiveMcpRuntimeDriver } from "./toolhiveRuntimeDriver";
@@ -34,11 +38,17 @@ export function getDefaultToolHiveDriver(): ToolHiveMcpRuntimeDriver {
 }
 
 export function createToolHiveRuntimeLifecycle(
-  driver: Pick<ToolHiveMcpRuntimeDriver, "cleanupOwnedWorkloads">
+  driver: Pick<ToolHiveMcpRuntimeDriver, "cleanupOwnedWorkloads">,
+  retentionRegistry: Pick<InFlightValidationWorkloadRegistry, "snapshot"> =
+    getDefaultInFlightValidationWorkloadRegistry()
 ): McpRuntimeLifecycle {
   return {
     async cleanupOrphans(keepGenerationTokens) {
-      await driver.cleanupOwnedWorkloads({ keepGenerationTokens });
+      await driver.cleanupOwnedWorkloads({
+        keepGenerationTokens: [
+          ...new Set([...keepGenerationTokens, ...retentionRegistry.snapshot()])
+        ]
+      });
     }
   };
 }

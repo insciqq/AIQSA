@@ -6,7 +6,11 @@ import {
   providerAttachmentPreviewText,
   providerAttachmentText
 } from "./attachmentPayload";
-import { conversationPreview, textConversationForRequest } from "./context";
+import {
+  conversationMessagesForRequest,
+  conversationPreview,
+  textConversationForRequest
+} from "./context";
 import { geminiInteractionStepForWire } from "./geminiInteractionsProtocol";
 import type { ProviderAttachment, ProviderRunRequest } from "./types";
 
@@ -51,6 +55,7 @@ export type GeminiInteractionsRequestPreview = {
   redactions: [
     "attachment_base64",
     "attachment_extracted_text",
+    "attachment_filename",
     "attachment_media_type",
     "grounding_suggestions",
     "provider_signatures"
@@ -136,6 +141,31 @@ function pdfContent(attachment: ProviderAttachment, preview: boolean): Record<st
   };
 }
 
+function attachmentPlaceholderText(
+  content: { blocks?: readonly unknown[] } | undefined,
+  preview: boolean
+): string {
+  const lines = (content?.blocks ?? []).flatMap((value): string[] => {
+    if (!isRecord(value) || typeof value.attachmentId !== "string") {
+      return [];
+    }
+
+    if (value.type === "image") {
+      return ["[image attachment]"];
+    }
+
+    if (value.type === "file") {
+      return preview || typeof value.fileName !== "string" || value.fileName.length === 0
+        ? ["[file attachment]"]
+        : [`[file attachment: ${value.fileName}]`];
+    }
+
+    return ["[attachment]"];
+  });
+
+  return lines.join("\n") || "[attachment]";
+}
+
 function latestUserContent(
   request: ProviderRunRequest,
   options: BuildOptions
@@ -169,7 +199,10 @@ function latestUserContent(
   }
 
   if (content.length === 0) {
-    content.push({ text: "", type: "text" });
+    content.push({
+      text: attachmentPlaceholderText(request.content, options.preview),
+      type: "text"
+    });
   }
 
   return content;
@@ -361,6 +394,9 @@ function buildGeminiInteractionsBody(
   request: ProviderRunRequest,
   options: BuildOptions
 ): GeminiInteractionsRequestBody {
+  const storedConversationById = new Map(
+    conversationMessagesForRequest(request).map((message) => [message.id, message.content])
+  );
   const conversation = textConversationForRequest(request);
   let latestUserIndex = -1;
   for (let index = conversation.length - 1; index >= 0; index -= 1) {
@@ -376,7 +412,12 @@ function buildGeminiInteractionsBody(
         type: "user_input"
       };
     }
-    return textStep(message.role, message.content);
+    return textStep(
+      message.role,
+      message.role === "user" && !message.content.trim()
+        ? attachmentPlaceholderText(storedConversationById.get(message.id), options.preview)
+        : message.content
+    );
   });
   input.push(...continuationSteps(request.providerToolMessages, options.preview));
 
@@ -439,6 +480,7 @@ export function buildGeminiInteractionsRequestPreview(
     redactions: [
       "attachment_base64",
       "attachment_extracted_text",
+      "attachment_filename",
       "attachment_media_type",
       "grounding_suggestions",
       "provider_signatures"

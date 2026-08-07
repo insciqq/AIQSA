@@ -215,8 +215,22 @@ export async function runProviderToolLoop(
         throw error;
       }
       const result = next.value;
-      await input.onProviderResult?.({ request: roundRequest, result, round });
-      await input.onUsage?.(result.usage, roundRequest);
+      let publicationFailed = false;
+      let publicationError: unknown;
+      try {
+        await input.onProviderResult?.({ request: roundRequest, result, round });
+      } catch (error) {
+        publicationFailed = true;
+        publicationError = error;
+      }
+      try {
+        await input.onUsage?.(result.usage, roundRequest);
+      } catch (error) {
+        if (!publicationFailed) throw error;
+        // Preserve the publication failure as the causal stop after making the
+        // best effort to attribute the provider-reported usage.
+      }
+      if (publicationFailed) throw publicationError;
       const calls = result.toolCalls ?? [];
       if (calls.length === 0) return { final: result, status: "complete" as const };
       return {

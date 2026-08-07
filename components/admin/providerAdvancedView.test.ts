@@ -140,6 +140,8 @@ describe("providerAdvancedView", () => {
       .toBe("run profiles: 2");
     expect(providerDeleteBlockerLabel({ count: 1, kind: "user_assignments" }))
       .toBe("user assignments: 1");
+    expect(providerDeleteBlockerLabel({ count: 2, kind: "search_revision_references" }))
+      .toBe("immutable Search history (cannot be removed; keep deployment disabled): 2");
   });
 
   it("prefers the canonical Quick connection and otherwise requires one family match", () => {
